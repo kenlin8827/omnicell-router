@@ -408,4 +408,15 @@ export class TraceTracker {
     this.sessionTraceIndex.clear();
     this.traceOrder = [];
   }
+
+  /**
+   * Clear every trace — in memory AND the durable store (console
+   * "clear sessions"). Returns what was removed so the UI can confirm.
+   */
+  public clearAll(): { sessions: number; traces: number } {
+    const stats = { sessions: this.sessionTraceIndex.size, traces: this.traces.size };
+    this.clear();
+    this.store?.clearAll();
+    return stats;
+  }
 }

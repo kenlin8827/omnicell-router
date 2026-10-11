@@ -1572,5 +1572,28 @@ export function registerConsoleRoutes(
     return { status: 'ok', message: `Capture archive ${date} deleted` };
   });
 
+  /* ---------------------------------------------------------------------- *
+   * Session observation maintenance (console /sessions page cleanup).
+   * Console pages cannot present API keys, so destructive session ops live
+   * under /api/admin — same trust surface as the capture-archive deletes
+    * above. (DELETE /api/admin/sessions/:id is registered in server.ts together
+    * with the rest of the sessions* surface.)
+   * ---------------------------------------------------------------------- */
+
+  // Clear ALL sessions: live routing state (pin / ratchet) plus every trace
+  // in memory and the durable store.
+  app.post('/api/admin/sessions/clear', async () => {
+    const sessionMgr = orchestrator.getSessionManager();
+    const sessionsCleared = sessionMgr?.getAllSessions().length ?? 0;
+    sessionMgr?.clear();
+    const { traces } = orchestrator.getTraceTracker().clearAll();
+    return {
+      status: 'ok',
+      sessionsCleared,
+      tracesCleared: traces,
+      message: `Cleared ${sessionsCleared} session(s) and ${traces} trace(s)`,
+    };
+  });
+
 }
 

@@ -453,6 +453,15 @@ export interface TranslationDict {
     emptySessions: string;
     copiedSessionId: string;
     copyFailed: string;
+    clearAll: string;
+    clearConfirmTitle: string;
+    clearConfirmDesc: string;
+    clearDone: string;
+    deleteSession: string;
+    deleteConfirmTitle: string;
+    deleteConfirmDesc: string;
+    deleteDone: string;
+    thActions: string;
   };
   logs: {
     title: string;

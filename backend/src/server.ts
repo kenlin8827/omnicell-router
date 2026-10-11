@@ -522,10 +522,14 @@ export function createServer(
   app.delete('/api/admin/sessions/:id', async (req, reply) => {
     const { id } = req.params as { id: string };
     const sessionMgr = orchestrator.getSessionManager();
-    const existed = sessionMgr?.deleteSession(id);
-    orchestrator.getTraceTracker().deleteBySession(id);
+    const existed = sessionMgr?.deleteSession(id) ?? false;
+    const tracker = orchestrator.getTraceTracker();
+    // The session may exist only as reconstructed trace history (e.g. after a
+    // gateway restart) — deleting its traces is still a successful delete.
+    const hadTraces = tracker.getSessionIds().includes(id);
+    tracker.deleteBySession(id);
 
-    if (!existed) {
+    if (!existed && !hadTraces) {
       return reply.status(404).send({
         error: {
           message: `Session '${id}' not found`,

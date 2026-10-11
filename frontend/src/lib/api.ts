@@ -614,6 +614,21 @@ export const api = {
     return json.data || [];
   },
 
+  /**
+   * Clear ALL sessions (console maintenance surface — browser pages cannot
+   * present API keys, so destructive ops go through /api/admin).
+   */
+  async clearSessions(): Promise<{ status: string; sessionsCleared?: number; tracesCleared?: number; message?: string }> {
+    const res = await fetch('/api/admin/sessions/clear', { method: 'POST' });
+    return res.json();
+  },
+
+  /** Delete one session (live state + traces, including reconstructed history). */
+  async deleteSession(sessionId: string): Promise<{ status: string; message?: string }> {
+    const res = await fetch(`/api/admin/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+    return res.json();
+  },
+
   async getLogs(tail = 500, level?: string, q?: string): Promise<LogsResponse> {
     const qs = new URLSearchParams();
     qs.set('tail', String(tail));

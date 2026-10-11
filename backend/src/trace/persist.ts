@@ -16,6 +16,8 @@ export interface TraceStore {
   /** Most recent `limit` traces, oldest first (ready for ring replay). */
   loadRecent(limit: number): ExecutionTrace[];
   deleteBySession(sessionId: string): void;
+  /** Delete every trace (console "clear sessions" — must match the in-memory clear). */
+  clearAll(): void;
   /** Age-based deletion, then oldest-first deletion to a total-size budget. */
   sweep(retentionMs: number, maxTotalBytes: number): void;
   close(): void;
@@ -79,6 +81,14 @@ export async function openTraceStore(dir: string): Promise<TraceStore | null> {
       deleteBySession(sessionId) {
         try {
           db.query('DELETE FROM traces WHERE session_id = ?').run([sessionId]);
+        } catch {
+          // ignore
+        }
+      },
+
+      clearAll() {
+        try {
+          db.query('DELETE FROM traces').run();
         } catch {
           // ignore
         }

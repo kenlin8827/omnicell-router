@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Users, RefreshCw, Archive, GitBranch, X, Search } from 'lucide-react';
+import { Users, RefreshCw, Archive, GitBranch, X, Search, Trash2 } from 'lucide-react';
 import { api, type SessionRecord, type TraceRecord } from '../lib/api';
 import { copyToClipboard, formatSessionId } from '../lib/format';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
+import { useConfirm } from '../components/ConfirmProvider';
 import { Pagination } from '../components/Pagination';
 
 const PAGE_SIZES = [10, 20, 50, 100, 200];
@@ -87,6 +88,7 @@ const buildSwitchTimeline = (traces: TraceRecord[]): SwitchEvent[] => {
 export const SessionsPage: React.FC = () => {
   const { t } = useI18n();
   const toast = useToast();
+  const confirmDialog = useConfirm();
   const navigate = useNavigate();
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
   const [total, setTotal] = useState(0);
@@ -151,6 +153,56 @@ export const SessionsPage: React.FC = () => {
     [t, toast]
   );
 
+  /** Clear ALL sessions (live routing state + every trace, incl. durable store). */
+  const clearAll = useCallback(async () => {
+    const ok = await confirmDialog({
+      title: t('sessions.clearConfirmTitle'),
+      description: t('sessions.clearConfirmDesc'),
+      danger: true,
+      confirmLabel: t('sessions.clearAll'),
+    });
+    if (!ok) return;
+    try {
+      const res = await api.clearSessions();
+      if (res.status === 'ok') {
+        toast.success(
+          t('sessions.clearDone', { sessions: res.sessionsCleared ?? 0, traces: res.tracesCleared ?? 0 })
+        );
+        setPage(1);
+        await loadData();
+      } else {
+        toast.error(res.message || t('common.failed'));
+      }
+    } catch (err: any) {
+      toast.error(err.message || t('common.failed'));
+    }
+  }, [confirmDialog, t, toast, loadData]);
+
+  /** Delete ONE session (live state + traces, incl. reconstructed history). */
+  const deleteOne = useCallback(
+    async (s: SessionRecord) => {
+      const ok = await confirmDialog({
+        title: t('sessions.deleteConfirmTitle'),
+        description: t('sessions.deleteConfirmDesc', { id: formatSessionId(s.id) }),
+        danger: true,
+        confirmLabel: t('common.delete'),
+      });
+      if (!ok) return;
+      try {
+        const res = await api.deleteSession(s.id);
+        if (res.status === 'ok') {
+          toast.success(t('sessions.deleteDone'));
+          await loadData();
+        } else {
+          toast.error(res.message || t('common.failed'));
+        }
+      } catch (err: any) {
+        toast.error(err.message || t('common.failed'));
+      }
+    },
+    [confirmDialog, t, toast, loadData]
+  );
+
   return (
     <div className="card" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <div className="card-header">
@@ -172,6 +224,10 @@ export const SessionsPage: React.FC = () => {
               style={{ fontSize: '12px', padding: '5px 8px 5px 24px', width: 240 }}
             />
           </div>
+          <button className="btn btn-sm" onClick={clearAll} disabled={loading || total === 0}>
+            <Trash2 size={12} />
+            <span>{t('sessions.clearAll')}</span>
+          </button>
           <button className="btn btn-sm" onClick={loadData} disabled={loading}>
             <RefreshCw size={12} />
             <span>{t('sessions.refresh')}</span>
@@ -195,6 +251,7 @@ export const SessionsPage: React.FC = () => {
               <th style={TH_STYLE}>{t('sessions.thCache')}</th>
               <th style={TH_STYLE}>{t('sessions.thCostSaved')}</th>
               <th style={TH_STYLE}>{t('sessions.thActive')}</th>
+              <th style={TH_STYLE}>{t('sessions.thActions')}</th>
               {captureOn && <th style={{ ...TH_STYLE, width: 60, whiteSpace: 'nowrap' }}>{t('sessions.thCapture')}</th>}
             </tr>
           </thead>
@@ -258,6 +315,24 @@ export const SessionsPage: React.FC = () => {
                   <td style={{ padding: '10px 14px', color: 'var(--text-dim)' }}>
                     {new Date(s.lastActiveAt).toLocaleTimeString()}
                   </td>
+                  <td style={{ padding: '10px 14px' }}>
+                    <span
+                      role="button"
+                      aria-label={t('sessions.deleteSession')}
+                      title={t('sessions.deleteSession')}
+                      onClick={() => deleteOne(s)}
+                      style={{
+                        color: 'var(--text-dim)',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        cursor: 'pointer',
+                      }}
+                      onMouseEnter={e => (e.currentTarget.style.color = 'var(--accent-rose)')}
+                      onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-dim)')}
+                    >
+                      <Trash2 size={13} />
+                    </span>
+                  </td>
                   {captureOn && (
                     <td style={{ padding: '10px 14px' }}>
                       <span
@@ -282,7 +357,7 @@ export const SessionsPage: React.FC = () => {
               ))
             ) : (
               <tr>
-                <td colSpan={captureOn ? 10 : 9} style={{ padding: '24px', textAlign: 'center', color: 'var(--text-dim)' }}>
+                <td colSpan={captureOn ? 11 : 10} style={{ padding: '24px', textAlign: 'center', color: 'var(--text-dim)' }}>
                   {filter ? t('sessions.filterEmpty') : t('sessions.emptySessions')}
                 </td>
               </tr>
