@@ -192,9 +192,17 @@ export function registerSystemoneRoutes(app: FastifyInstance, orchestrator: Pipe
       });
     }
 
-    // Per-key model access gate (403 when the key's policy denies this model)
+    // Per-key model access gate (403 when the key's policy denies this model).
+    // The PHYSICAL model that will actually serve must always be admitted:
+    // 'auto'/'default' resolve to `systemone.defaultModel`, so checking only
+    // the alias would let a key denied for that model reach it via `auto`.
+    // A named alias is additionally checked as itself — mirroring the chat
+    // surfaces, where an allow-mode key must name `auto` explicitly.
     const enforceModelAccess = makeModelAccessGuard(registry);
-    if (!enforceModelAccess(req, reply, rawModel || effective)) {
+    if (rawModel && rawModel !== effective && !enforceModelAccess(req, reply, rawModel)) {
+      return reply;
+    }
+    if (!enforceModelAccess(req, reply, effective)) {
       return reply;
     }
 

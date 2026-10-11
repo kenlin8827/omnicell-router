@@ -541,6 +541,35 @@ describe('POST /v1/systemone end-to-end', () => {
     }
   });
 
+  test("model:'auto' is gated by the RESOLVED physical model, not just the alias", async () => {
+    useSandbox('with-default'); // sandbox defaultModel: "test/chat"
+    const config = makeConfig(
+      [{ name: 'dummy', type: 'openai-compatible', baseUrl: 'http://localhost:1', apiKey: 'sk-dummy' }],
+      [
+        {
+          id: 'test/chat',
+          provider: 'dummy',
+          upstreamModel: 'dummy',
+          tier: 'plus',
+          pricing: { input: 0, output: 0, cacheRead: 0 },
+        },
+      ]
+    );
+    // Deny-mode key that denies exactly the resolved physical model.
+    config.apiKeys = [
+      { name: 'limited', key: 'sk-limited', modelAccess: { mode: 'deny', models: ['test/chat'] } },
+    ] as any;
+    const { app } = createServer(config);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/systemone',
+      headers: { authorization: 'Bearer sk-limited' },
+      payload: { ...REQ, model: 'auto' },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(String(res.json().error?.message)).toContain('not allowed');
+  });
+
   test('rejects an unknown model and a missing default', async () => {
     useSandbox('plain');
     // createServer demands at least one routable model (the orchestrator
