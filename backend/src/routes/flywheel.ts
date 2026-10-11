@@ -34,6 +34,10 @@ export function registerFlywheelRoutes(app: FastifyInstance, orchestrator: Pipel
     orchestrator.getClassifierConfig()?.localModel?.enabled === true
   );
 
+  // A pre-existing multi-hundred-MB dataset takes one cold pass to index; walk
+  // it down in slices so the first console visit doesn't pay for it all at once.
+  dataset.warmup();
+
   app.get('/api/admin/flywheel/stats', async () => {
     return {
       ...dataset.summary(),
@@ -81,9 +85,9 @@ export function registerFlywheelRoutes(app: FastifyInstance, orchestrator: Pipel
     }
 
     try {
-      const updated = dataset.setLabel(id, body.tier === null ? null : (body.tier as TierLevel));
-      if (!updated) return reply.status(404).send({ error: `Unknown sample id: ${id}` });
-      return { ok: true, label: updated.label };
+      const label = dataset.setLabel(id, body.tier === null ? null : (body.tier as TierLevel));
+      if (!label) return reply.status(404).send({ error: `Unknown sample id: ${id}` });
+      return { ok: true, label };
     } catch (err: any) {
       return reply.status(400).send({ error: err?.message || String(err) });
     }

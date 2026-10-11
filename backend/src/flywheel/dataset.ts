@@ -202,8 +202,11 @@ export class FlywheelDataset {
         continue;
       }
       const complete = chunk.slice(0, lastNewline + 1);
+      // The block starts where the previous carry ended: file offset of the
+      // first line = current read position minus the carry we prepended.
+      const blockFileStart = readFrom - carry.length;
       carry = chunk.slice(lastNewline + 1);
-      this.indexLines(complete, readFrom - carry.length);
+      this.indexLines(complete, blockFileStart);
       readFrom += got;
       this.indexedBytes = readFrom - carry.length;
     }
@@ -359,12 +362,14 @@ export class FlywheelDataset {
   }
 
   /**
-   * Set or clear an operator label. Returns true when the id exists in the
-   * dataset (the relabelled row is the most recent one bearing that id).
+   * Set or clear an operator label. Returns the row's effective label after
+   * the change (human override or re-derived observation), or null when the
+   * id does not exist in the dataset. Targets the most recent row with that id.
    */
-  public setLabel(id: string, tier: TierLevel | null): boolean {
+  public setLabel(id: string, tier: TierLevel | null): FlywheelRecord['label'] | null {
     this.ensureIndexed();
-    if (!this.idToIdx.has(id)) return false;
+    const entry = this.idToIdx.get(id);
+    if (!entry) return null;
     if (tier === null) {
       delete this.overrides[id];
     } else {
@@ -372,7 +377,7 @@ export class FlywheelDataset {
       this.overrides[id] = { tier, updatedAt: new Date().toISOString() };
     }
     this.writeOverrides();
-    return true;
+    return this.effectiveLabel(entry.idx);
   }
 
   /** Clear every operator label (does not touch the append-only dataset). */
@@ -463,17 +468,36 @@ export class FlywheelDataset {
 
   // ---- query ----------------------------------------------------------------
 
+  /** Effective tier for row i — the overlay if present, else the indexed value. */
+  private effTier(i: number): TierLevel | null {
+    const o = this.overrides[this.ids[i]];
+    if (o) return o.tier;
+    return this.tierIdx[i] === TIER_NONE ? null : FLYWHEEL_TIERS[this.tierIdx[i]];
+  }
+
+  /** Effective label source for row i — 'human' when an overlay exists. */
+  private effSource(i: number): FlywheelLabelSource {
+    return this.overrides[this.ids[i]] ? 'human' : SOURCE_ORDER[this.srcIdx[i]];
+  }
+
   private matchesIndex(i: number, q: SampleQuery): boolean {
     const f = this.flags[i];
     if (!q.includeSynthetic && f & F_SYNTHETIC) return false;
-    if (q.trainableOnly && !(f & F_TRAINABLE && !(f & F_SYNTHETIC) && this.tierIdx[i] !== TIER_NONE)) return false;
+    if (q.trainableOnly && !(f & F_TRAINABLE && !(f & F_SYNTHETIC) && this.effTier(i) !== null)) return false;
 
+    // Tier/source filtering MUST consult the effective (overlay-aware) values:
+    // a human relabel changes both without touching the index columns. The
+    // lookup is skipped entirely while no overrides exist — the common case.
     if (q.tier && q.tier !== 'any') {
+      const t = Object.keys(this.overrides).length > 0 ? this.effTier(i) : (this.tierIdx[i] === TIER_NONE ? null : FLYWHEEL_TIERS[this.tierIdx[i]]);
       if (q.tier === 'none') {
-        if (this.tierIdx[i] !== TIER_NONE) return false;
-      } else if (FLYWHEEL_TIERS[this.tierIdx[i]] !== q.tier) return false;
+        if (t !== null) return false;
+      } else if (t !== q.tier) return false;
     }
-    if (q.source && q.source !== 'any' && SOURCE_ORDER[this.srcIdx[i]] !== q.source) return false;
+    if (q.source && q.source !== 'any') {
+      const s = Object.keys(this.overrides).length > 0 ? this.effSource(i) : SOURCE_ORDER[this.srcIdx[i]];
+      if (s !== q.source) return false;
+    }
 
     if (q.search) {
       const needle = q.search.toLowerCase();
@@ -500,14 +524,15 @@ export class FlywheelDataset {
     const limit = Math.min(Math.max(query.limit ?? 50, 1), 500);
     const offset = Math.max(query.offset ?? 0, 0);
 
-    // Walk newest-first (append order reversed) and collect the page bounds.
+    // Walk newest-first (append order reversed). The full pass is required for
+    // an exact `total`; over the columnar index this is a few typed-array
+    // comparisons per row, not file I/O.
     const pageIdx: number[] = [];
     let total = 0;
     for (let i = this.n - 1; i >= 0; i--) {
       if (!this.matchesIndex(i, query)) continue;
-      if (total >= offset && total < offset + limit) pageIdx.push(i);
+      if (total >= offset && pageIdx.length < limit) pageIdx.push(i);
       total++;
-      if (pageIdx.length === limit && total >= offset + limit) break;
     }
 
     const rows: SampleRow[] = [];

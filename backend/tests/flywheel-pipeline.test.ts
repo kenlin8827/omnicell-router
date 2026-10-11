@@ -125,6 +125,15 @@ describe('Flywheel dataset + training pipeline', () => {
 
     assert.strictEqual(ds.query({ search: 'red-black' }).total, 1);
     assert.strictEqual(ds.query({ trainableOnly: true }).total, 2);
+
+    // Human relabels must be visible to tier/source filters even though the
+    // index columns still hold the observed values.
+    ds.setLabel('a', 'ultra');
+    assert.strictEqual(ds.query({ tier: 'ultra', source: 'human' }).total, 1);
+    assert.strictEqual(ds.query({ tier: 'ultra' }).total, 1);
+    assert.strictEqual(ds.query({ source: 'human' }).total, 1);
+    assert.strictEqual(ds.setLabel('a', null)?.tier, 'lite');
+    assert.strictEqual(ds.query({ tier: 'ultra', source: 'human' }).total, 0);
   });
 
   it('relabelling writes an overlay and never rewrites the dataset', async () => {
@@ -132,9 +141,9 @@ describe('Flywheel dataset + training pipeline', () => {
     const before = fs.readFileSync(datasetPath, 'utf8');
 
     const updated = ds.setLabel('x', 'ultra');
-    assert.strictEqual(updated?.label.tier, 'ultra');
-    assert.strictEqual(updated?.label.source, 'human');
-    assert.strictEqual(updated?.label.confidence, 1);
+    assert.strictEqual(updated?.tier, 'ultra');
+    assert.strictEqual(updated?.source, 'human');
+    assert.strictEqual(updated?.confidence, 1);
 
     // Append-only dataset is byte-identical.
     assert.strictEqual(fs.readFileSync(datasetPath, 'utf8'), before);
@@ -145,7 +154,7 @@ describe('Flywheel dataset + training pipeline', () => {
     assert.strictEqual(ds.summary().humanLabeled, 1);
 
     // Clearing restores the observed label.
-    assert.strictEqual(ds.setLabel('x', null)?.label.tier, 'lite');
+    assert.strictEqual(ds.setLabel('x', null)?.tier, 'lite');
     assert.strictEqual(ds.setLabel('nope', 'pro'), null);
 
     assert.strictEqual(ds.clearOverrides(), 0);
