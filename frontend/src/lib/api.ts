@@ -708,6 +708,58 @@ export const api = {
     return res.json();
   },
 
+  // ── Console webAuth ────────────────────────────────────────────────────────
+
+  /** Session probe — App boot gate: does the console need a login? */
+  async getAuthSession(): Promise<AuthSessionResponse> {
+    const res = await fetch('/api/admin/auth/session');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async login(username: string, password: string): Promise<{ status?: string; success?: boolean; message?: string }> {
+    const res = await fetch('/api/admin/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error(body?.message || `HTTP ${res.status}`) as Error & { status?: number };
+      err.status = res.status;
+      throw err;
+    }
+    return body;
+  },
+
+  async logout(): Promise<{ status: string }> {
+    const res = await fetch('/api/admin/auth/logout', { method: 'POST' });
+    return res.json();
+  },
+
+  async getWebAuthConfig(): Promise<{ status: string; webAuth: WebAuthConfigView }> {
+    const res = await fetch('/api/admin/auth/config');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async updateWebAuthConfig(
+    payload: { enabled?: boolean; username?: string; password?: string }
+  ): Promise<{ status: string; webAuth: WebAuthStatus; message?: string }> {
+    const res = await fetch('/api/admin/auth/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error(body?.message || `HTTP ${res.status}`) as Error & { status?: number };
+      err.status = res.status;
+      throw err;
+    }
+    return body;
+  },
+
   /** Effective model view for one key — what it can see & use right now. */
   async getKeyModels(
     id: string
@@ -823,6 +875,29 @@ export interface ApiKeyItem {
   expiresAt?: string;
   description?: string;
   modelAccess?: ApiKeyModelAccess;
+}
+
+// ---------------------------------------------------------------------------
+// Console webAuth (username/password login for /admin)
+// Mirrors backend GET /api/admin/auth/config (passwordHash never leaves the server)
+// ---------------------------------------------------------------------------
+
+export interface WebAuthStatus {
+  active: boolean; // console requires login (enabled or forced by non-loopback bind)
+  forced: boolean; // forced on because the gateway binds a non-loopback host
+  enabled: boolean; // explicit config toggle
+}
+
+export interface AuthSessionResponse {
+  status: string;
+  webAuth: WebAuthStatus;
+  authenticated: boolean;
+}
+
+export interface WebAuthConfigView extends WebAuthStatus {
+  username: string;
+  hasPassword: boolean;
+  host: string;
 }
 
 // ---------------------------------------------------------------------------

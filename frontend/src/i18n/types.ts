@@ -598,6 +598,32 @@ export interface TranslationDict {
     capMaxBody: string;
     capPrivacyHint: string;
     capHotHint: string;
+    waTitle: string;
+    waEnable: string;
+    waForcedHint: string;
+    waUsername: string;
+    waNewPassword: string;
+    waKeepPassword: string;
+    waConfirm: string;
+    waSave: string;
+    waSaved: string;
+    waHint: string;
+    waLogout: string;
+    waLogoutConfirmTitle: string;
+    waLogoutConfirmDesc: string;
+    waPasswordRequired: string;
+    waMismatch: string;
+    waTooShort: string;
+  };
+  authLogin: {
+    title: string;
+    subtitle: string;
+    username: string;
+    password: string;
+    submit: string;
+    submitting: string;
+    failed: string;
+    locked: string;
   };
   proxy: {
     title: string;

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { Layout } from './components/Layout';
 import { OverviewPage } from './pages/OverviewPage';
@@ -22,8 +22,40 @@ import { CombosPage } from './pages/CombosPage';
 import { YamlPage } from './pages/YamlPage';
 import { ConfirmProvider } from './components/ConfirmProvider';
 import { ToastProvider } from './components/ToastProvider';
+import { LoginPage } from './pages/LoginPage';
+import { api } from './lib/api';
+
+type AuthGateState = 'checking' | 'ok' | 'locked';
 
 export const App: React.FC = () => {
+  // Console-auth gate: on boot, ask the gateway whether the webAuth console
+  // login is active and whether this browser already holds a session cookie.
+  const [authState, setAuthState] = useState<AuthGateState>('checking');
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .getAuthSession()
+      .then((s) => {
+        if (alive) setAuthState(s.authenticated ? 'ok' : 'locked');
+      })
+      .catch(() => {
+        // Gateway unreachable (or older backend without the auth probe):
+        // render the console as before instead of bricking the UI.
+        if (alive) setAuthState('ok');
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  if (authState === 'checking') {
+    return <div style={{ minHeight: '100vh' }} />;
+  }
+  if (authState === 'locked') {
+    return <LoginPage onSuccess={() => setAuthState('ok')} />;
+  }
+
   return (
     <ToastProvider>
       <ConfirmProvider>

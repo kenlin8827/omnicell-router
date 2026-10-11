@@ -450,11 +450,24 @@ export interface LoggingConfig {
   keepArchives?: number; // default 7
 }
 
+/**
+ * Console (web UI) login credentials. The password is stored ONLY as a
+ * scrypt hash (`scrypt$<saltHex>$<hashHex>`), never in plaintext. When the
+ * gateway binds a non-loopback host, `enabled: true` is MANDATORY — boot
+ * refuses to start otherwise (see auth/web-auth.ts validateWebAuthStartup).
+ */
+export interface WebAuthConfig {
+  enabled?: boolean; // default false; forced on for non-loopback binding
+  username?: string;
+  passwordHash?: string; // scrypt$<saltHex>$<hashHex>
+}
+
 export interface RouterConfig {
   port: number;
   host: string;
   adminApiKey?: string;
   apiKeys?: ApiKeyConfig[];
+  webAuth?: WebAuthConfig;
   opencode?: OpenCodeConfig;
   proxy?: ProxyConfig;
   forwardProxy?: ForwardProxyConfig;

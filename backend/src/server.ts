@@ -1,4 +1,5 @@
 import { registerConsoleRoutes, validateApiKey } from './routes/console.js';
+import { isWebAuthActive, isAdminAuthEndpoint, parseSessionCookie, verifySessionToken } from './auth/web-auth.js';
 import { getModelAccessPolicy, isModelAllowed, isAutoEntryUsable, makeModelAccessGuard, tierFromVirtualEntry, ModelAccessConfig } from './auth/model-access.js';
 import { registerRuntimeConfigRef } from './config/index.js';
 import { registerAnthropicRoutes } from './routes/anthropic.js';
@@ -182,6 +183,41 @@ export function createServer(
 
   app.addHook('preHandler', async (req, reply) => {
     const { activeKeys, adminKey } = resolveActiveAuthConfig();
+    const rawUrl = req.url.split('?')[0];
+
+    // Console webAuth gate — independent of the inference-surface API-key
+    // auth below. When active, /api/admin/* (except the auth endpoints
+    // themselves) requires a login session cookie OR the master adminApiKey
+    // as Bearer/x-api-key (programmatic access). The SPA HTML + hashed
+    // assets under /admin* stay open — the login view lives client-side.
+    if (rawUrl.startsWith('/api/admin/') && !isAdminAuthEndpoint(rawUrl) && isWebAuthActive(config)) {
+      const cookieToken = parseSessionCookie(req.headers.cookie);
+      let consoleAuthed = verifySessionToken(cookieToken);
+      if (!consoleAuthed) {
+        const authHeader = req.headers.authorization;
+        const xApiKeyHeader = req.headers['x-api-key'] as string | undefined;
+        const bearer = (authHeader ? authHeader.replace(/^Bearer\s+/i, '').trim() : '') || xApiKeyHeader?.trim() || '';
+        consoleAuthed = Boolean(adminKey && bearer && bearer === adminKey);
+      }
+      if (!consoleAuthed) {
+        // Deterministic abort: reply.hijack() flips `reply.sent` synchronously
+        // (fastify v5's getter = hijacked || raw.writableEnded; a plain
+        // reply.send() finalizes a tick later, so the lifecycle races into
+        // the route handler — "Reply was already sent" + double response).
+        // We then own the response via reply.raw; shape matches the API
+        // error envelope used across the gateway.
+        reply.hijack();
+        reply.raw.writeHead(401, { 'content-type': 'application/json; charset=utf-8' });
+        reply.raw.end(JSON.stringify({
+          error: {
+            message: 'Console authentication required. Log in at /admin/ or present the master adminApiKey.',
+            type: 'authentication_error',
+            code: 'console_auth_required',
+          },
+        }));
+        return;
+      }
+    }
 
     const isAuthEnabled = Boolean(adminKey || (activeKeys && activeKeys.length > 0));
     if (!isAuthEnabled) return;
@@ -191,7 +227,6 @@ export function createServer(
       adminApiKey: adminKey,
       apiKeys: activeKeys,
     };
-    const rawUrl = req.url.split('?')[0];
 
     // Whitelist routes: health probe, console entry redirect, and the whole
     // /admin* management surface — pages + hashed assets + backing API all

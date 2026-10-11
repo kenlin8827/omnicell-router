@@ -21,11 +21,16 @@ const authHeaders = (): Record<string, string> => ({ authorization: `Bearer ${TE
 
 describe('Fastify Gateway Server & OpenAI Endpoints', () => {
   const config = loadConfig();
+  // Tests must not inherit the operator's live config.yaml webAuth gate
+  // (console endpoints would 401 for the fixture key): force it off.
+  config.host = '127.0.0.1';
+  config.webAuth = { enabled: false };
   config.apiKeys = [
     {
       id: 'key-server-test',
       name: 'server.test fixture',
       key: TEST_KEY,
+      role: 'user',
       enabled: true,
       createdAt: new Date().toISOString(),
     },

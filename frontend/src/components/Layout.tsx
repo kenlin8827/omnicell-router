@@ -26,6 +26,7 @@ import {
   Layers,
   Server,
   LogIn,
+  LogOut,
   ShieldCheck,
   Waves,
   Settings,
@@ -157,11 +158,20 @@ export const Layout: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [theme, setTheme] = useState(() => localStorage.getItem('ocr_theme') || 'obsidian');
+  // Console webAuth active → show the logout control in the header.
+  const [webAuthActive, setWebAuthActive] = useState(false);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('ocr_theme', theme);
   }, [theme]);
+
+  useEffect(() => {
+    api
+      .getAuthSession()
+      .then(s => setWebAuthActive(Boolean(s.webAuth?.active)))
+      .catch(() => setWebAuthActive(false));
+  }, []);
 
   // Load gateway status periodically
   useEffect(() => {
@@ -490,6 +500,26 @@ export const Layout: React.FC = () => {
               <Globe size={13} color="var(--accent)" />
               <span className="hdr-label hdr-label-opt" style={{ fontWeight: 700 }}>{t('header.langBtn')}</span>
             </button>
+
+            {/* Console Logout — only when webAuth login is active */}
+            {webAuthActive && (
+              <button
+                className="btn"
+                onClick={async () => {
+                  const ok = await confirmDialog({
+                    title: t('settings.waLogoutConfirmTitle'),
+                    description: t('settings.waLogoutConfirmDesc'),
+                    confirmLabel: t('settings.waLogout'),
+                  });
+                  if (ok) api.logout().finally(() => window.location.reload());
+                }}
+                style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+                title={t('settings.waLogout')}
+              >
+                <LogOut size={13} color="var(--accent-red, #ef4444)" />
+                <span className="hdr-label hdr-label-opt" style={{ fontWeight: 700 }}>{t('settings.waLogout')}</span>
+              </button>
+            )}
 
             {/* Theme Picker */}
             <Combobox

@@ -182,6 +182,8 @@ describe('Per-key model access policy (auth/model-access.ts)', () => {
 
     const buildConfig = (): RouterConfig => ({
       ...loadConfig(),
+      host: '127.0.0.1', // loopback: webAuth forced gate stays off (console endpoints stay anonymous)
+      webAuth: { enabled: false }, // tests read the operator's live config.yaml via loadConfig() — never inherit its login gate
       models: [],
       adminApiKey: 'ma-master-key',
       apiKeys: [

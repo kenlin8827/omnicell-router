@@ -2,14 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { isMap, parse, parseDocument, stringify } from 'yaml';
 import dotenv from 'dotenv';
-import { RouterConfig } from './types.js';
+import { RouterConfig, WebAuthConfig } from './types.js';
 import { DEFAULT_RETRIABLE_CAUSES } from '../resilience/types.js';
 
 dotenv.config();
 
 const DEFAULT_CONFIG: RouterConfig = {
   port: parseInt(process.env.PORT || '3000', 10),
-  host: process.env.HOST || '0.0.0.0',
+  host: process.env.HOST || '127.0.0.1',
   adminApiKey: process.env.ROUTER_API_KEY || undefined,
   baselineModel: 'auto',
   tiers: {},
@@ -119,6 +119,18 @@ export function getConfigPath(customPath?: string): string {
   return cwdPath;
 }
 
+/**
+ * webAuth sanitizer: shallow-copies and strips anything that must never
+ * persist — a hand-written plaintext `password` key (hashes only), so a
+ * round-tripped config can't leak or overwrite the stored hash format.
+ */
+function sanitizeWebAuthInput(input: unknown): WebAuthConfig | undefined {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const wa = { ...(input as WebAuthConfig) };
+  delete (wa as { password?: unknown }).password;
+  return wa;
+}
+
 export function loadConfig(configPath?: string): RouterConfig {
   const resolvedPath = getConfigPath(configPath);
   if (fs.existsSync(resolvedPath)) {
@@ -134,10 +146,8 @@ export function loadConfig(configPath?: string): RouterConfig {
         // Legacy `role` (removed key-level RBAC — unrestricted is expressed by
         // simply not configuring modelAccess) is stripped so stale keys don't
         // get re-persisted on the next config save.
-        // Legacy `role` (removed key-level RBAC — unrestricted is expressed by
-        // simply not configuring modelAccess) is stripped so stale keys don't
-        // get re-persisted on the next config save.
         apiKeys: (parsed?.apiKeys || DEFAULT_CONFIG.apiKeys).map(({ role: _role, ...k }: { role?: unknown; [k: string]: unknown }) => k),
+        webAuth: sanitizeWebAuthInput(parsed?.webAuth),
         tiers: parsed?.tiers || {},
         routing: { ...DEFAULT_CONFIG.routing, ...parsed?.routing },
         fallback: { ...DEFAULT_CONFIG.fallback, ...parsed?.fallback },
@@ -244,16 +254,36 @@ export function registerRuntimeConfigRef(cfg: RouterConfig): void {
   runtimeConfigRef = cfg;
 }
 
+/**
+ * Live config snapshot (createServer's object, hot-synced by saveConfig for
+ * the fields the running gateway reads per request: apiKeys, webAuth).
+ * Console-auth endpoints prefer it over a disk re-read so the gate and the
+ * credential checks can never disagree.
+ */
+export function getRuntimeConfigRef(): RouterConfig | undefined {
+  return runtimeConfigRef;
+}
+
 export function saveConfig(newConfig: Partial<RouterConfig>): { success: boolean; error?: string } {
   const configPath = getConfigPath();
   try {
     const current = loadConfig();
     const merged = { ...current, ...newConfig };
+    // webAuth passwordHash preservation: GET /api/admin/config strips the
+    // hash, so UI round-trips (SettingsPage saveConfig(config)) would erase
+    // it — re-attach the stored hash whenever the incoming payload lacks one.
+    if (merged.webAuth && current.webAuth?.passwordHash && !merged.webAuth.passwordHash) {
+      merged.webAuth = { ...merged.webAuth, passwordHash: current.webAuth.passwordHash };
+    }
+    merged.webAuth = sanitizeWebAuthInput(merged.webAuth);
     const yamlContent = annotateYamlComments(stringify(merged));
     fs.writeFileSync(configPath, yamlContent, 'utf8');
     // Single sync point: whichever path saved the config (key CRUD, visual
     // editor, ...), the running gateway's key snapshot follows immediately.
     if (runtimeConfigRef) runtimeConfigRef.apiKeys = merged.apiKeys;
+    // Same for webAuth — the console-auth gate reads it per request and the
+    // runtime ref IS the createServer snapshot object, so this is hot.
+    if (runtimeConfigRef) runtimeConfigRef.webAuth = merged.webAuth;
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err.message };
@@ -279,8 +309,12 @@ const padComment = (text: string) => ' ' + text.replace(/\n/g, '\n ');
 /** Field path (dotted, relative to root) → zh-CN comment. `tiers.*` covers any tier name. */
 const YAML_FIELD_COMMENTS: Record<string, string> = {
   port: '网关监听端口',
-  host: '监听地址（0.0.0.0 = 监听所有网卡）',
-  adminApiKey: '管理 API 密钥（保护 /api/console 等管理接口，生产环境必须设置）',
+  host: '监听地址（默认 127.0.0.1 仅本机；0.0.0.0 = 监听所有网卡，非回环绑定强制启用 webAuth 登录）',
+  adminApiKey: '推理面主密钥（/v1/* 全模型访问），亦可作为控制台 /api/admin/* 的程序化访问凭据（Authorization: Bearer）',
+  webAuth: '控制台登录鉴权（/admin 管理面的账号密码；绑定非回环地址时强制启用）',
+  'webAuth.enabled': '控制台登录开关：true 需账号密码登录；绑定 0.0.0.0 / 局域网 IP 时必须为 true（否则网关拒绝启动），仅 127.0.0.1 绑定可关闭',
+  'webAuth.username': '控制台登录用户名',
+  'webAuth.passwordHash': '登录密码的 scrypt 哈希（格式 scrypt$<saltHex>$<hashHex>，绝不存明文；在控制台「系统设置」页修改，勿手写）',
   baselineModel: '基线模型 id（FinOps 成本节省的对照基准）',
   tiers: '梯队成员策略：候选池唯一依据 = 各梯队显式 members 成员列表 + 全局排除名单；无任何规则命中的模型=未分类，不进任何池；主选策略只影响池内用法（控制台 /tiers 页可视化编辑，保存即时生效）',
   'tiers.*.members': '成员列表（顺序=优先级/failover 链）：每项 { pattern, weight?, effortMap? } —— pattern 匹配完整模型 id（provider/model），glob 通配（* 任意 / ? 单字符，不区分大小写），不带通配符=子串匹配、写完整 id=单项；effortMap=思考级别翻译（如 { none: high, low: high }，未配置的级别原样透传）；同一模型只归属一个梯队（跨档重叠按 lite→plus→pro→ultra 先得，保存时提示）',

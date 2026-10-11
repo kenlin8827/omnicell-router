@@ -1,23 +1,93 @@
 import React, { useState, useEffect } from 'react';
-import { Sliders, Save, Check, Globe, HardDrive, Orbit, Archive } from 'lucide-react';
+import { Sliders, Save, Check, Globe, HardDrive, Orbit, Archive, ShieldCheck, LogOut } from 'lucide-react';
 import { api } from '../lib/api';
+import type { WebAuthConfigView } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
+import { useConfirm } from '../components/ConfirmProvider';
 import { Switch } from '../components/Switch';
 
 export const SettingsPage: React.FC = () => {
   const { t } = useI18n();
   const toast = useToast();
+  const confirmDialog = useConfirm();
   const [config, setConfig] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [savedNotice, setSavedNotice] = useState(false);
+
+  // Console webAuth (dedicated endpoints, NOT part of the whole-config save —
+  // the password is hashed server-side and never round-trips through the UI)
+  const [waConfig, setWaConfig] = useState<WebAuthConfigView | null>(null);
+  const [waEnabled, setWaEnabled] = useState(false);
+  const [waUsername, setWaUsername] = useState('');
+  const [waPassword, setWaPassword] = useState('');
+  const [waPassword2, setWaPassword2] = useState('');
+  const [waSaving, setWaSaving] = useState(false);
 
   useEffect(() => {
     api.getConfig().then(data => {
       setConfig(data);
       setLoading(false);
     }).catch(console.error);
+    api.getWebAuthConfig().then(res => {
+      setWaConfig(res.webAuth);
+      setWaEnabled(res.webAuth.enabled);
+      setWaUsername(res.webAuth.username);
+    }).catch(console.error);
   }, []);
+
+  const handleWebAuthSave = async () => {
+    if (!waConfig || waSaving) return;
+    try {
+      if (waEnabled && waPassword === '' && !waConfig.hasPassword) {
+        toast.error(t('settings.waPasswordRequired'));
+        return;
+      }
+      if (waEnabled && waPassword !== '') {
+        if (waPassword !== waPassword2) {
+          toast.error(t('settings.waMismatch'));
+          return;
+        }
+        if (waPassword.length < 6) {
+          toast.error(t('settings.waTooShort'));
+          return;
+        }
+      }
+      setWaSaving(true);
+      await api.updateWebAuthConfig({
+        enabled: waEnabled,
+        username: waUsername.trim(),
+        ...(waPassword !== '' ? { password: waPassword } : {}),
+      });
+      if (waEnabled && waPassword !== '') {
+        // Silent self-login: the gate just activated and this browser has no
+        // session cookie yet — without it the reload below would lock us out.
+        try {
+          await api.login(waUsername.trim(), waPassword);
+        } catch { /* the login screen will simply show after reload */ }
+      }
+      toast.success(t('settings.waSaved'));
+      window.location.reload();
+    } catch (err: any) {
+      toast.error(err?.message || t('common.saveFailed'));
+    } finally {
+      setWaSaving(false);
+    }
+  };
+
+  const handleWebAuthLogout = async () => {
+    const ok = await confirmDialog({
+      title: t('settings.waLogoutConfirmTitle'),
+      description: t('settings.waLogoutConfirmDesc'),
+      confirmLabel: t('settings.waLogout'),
+    });
+    if (!ok) return;
+    try {
+      await api.logout();
+    } finally {
+      window.location.reload();
+    }
+  };
 
   const handleSave = async () => {
     try {
@@ -199,6 +269,94 @@ export const SettingsPage: React.FC = () => {
             </div>
           </div>
         </div>
+      </div>
+
+      {/* Console Access (webAuth) — dedicated save flow, see handleWebAuthSave */}
+      <div className="card">
+        <div className="card-header">
+          <div className="card-title">
+            <ShieldCheck size={18} color="var(--accent)" />
+            <span>{t('settings.waTitle')}</span>
+          </div>
+          <button className="btn btn-primary" onClick={handleWebAuthSave} disabled={waSaving || !waConfig}>
+            <Save size={14} />
+            <span>{t('settings.waSave')}</span>
+          </button>
+        </div>
+
+        {!waConfig ? (
+          <div style={{ color: 'var(--text-dim)', fontSize: '13px' }}>…</div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px' }}>
+              <span>{t('settings.waEnable')}</span>
+              <Switch
+                checked={waEnabled}
+                disabled={waConfig.forced}
+                onChange={v => setWaEnabled(v)}
+              />
+            </label>
+
+            {waConfig.forced && (
+              <div style={{ fontSize: '12px', color: 'var(--accent-amber, #f59e0b)', lineHeight: 1.6 }}>
+                {t('settings.waForcedHint')}
+              </div>
+            )}
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
+              <div>
+                <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
+                  {t('settings.waUsername')}
+                </label>
+                <input
+                  type="text"
+                  value={waUsername}
+                  onChange={e => setWaUsername(e.target.value)}
+                  placeholder="admin"
+                  className="input"
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
+                  {t('settings.waNewPassword')}
+                </label>
+                <input
+                  type="password"
+                  value={waPassword}
+                  onChange={e => setWaPassword(e.target.value)}
+                  placeholder={waConfig.hasPassword ? t('settings.waKeepPassword') : '••••••'}
+                  autoComplete="new-password"
+                  className="input"
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
+                  {t('settings.waConfirm')}
+                </label>
+                <input
+                  type="password"
+                  value={waPassword2}
+                  onChange={e => setWaPassword2(e.target.value)}
+                  disabled={waPassword === ''}
+                  autoComplete="new-password"
+                  className="input"
+                />
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
+              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
+                {t('settings.waHint')}
+              </div>
+              {waConfig.active && (
+                <button className="btn btn-sm" onClick={handleWebAuthLogout}>
+                  <LogOut size={13} />
+                  <span>{t('settings.waLogout')}</span>
+                </button>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

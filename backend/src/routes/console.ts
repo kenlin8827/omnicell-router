@@ -8,7 +8,7 @@ import { resolveTierMembers, matchingTiers, MEMBER_TIER_ORDER, asTierLevel } fro
 import { globMatchAny } from '../utils/glob.js';
 import { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import { Layer2Judge } from '../router/layer2-judge.js';
-import { getRawConfig, loadConfig, saveConfig, saveRawConfig } from '../config/index.js';
+import { getRawConfig, loadConfig, saveConfig, saveRawConfig, getRuntimeConfigRef } from '../config/index.js';
 import { initProxyConfig } from '../utils/proxy.js';
 import { getOcrHomeDir } from '../cli/paths.js';
 import { ensureCa } from '../forward-proxy/ca.js';
@@ -24,6 +24,21 @@ import {
   validateModelAccess,
 } from '../auth/api-keys.js';
 import { getModelAccessPolicy, isAutoEntryUsable, isModelAllowed, tierFromVirtualEntry } from '../auth/model-access.js';
+import {
+  checkLoginAllowed,
+  createSessionToken,
+  hashPassword,
+  hasWebAuthCredentials,
+  isLoopbackHost,
+  isWebAuthActive,
+  parseSessionCookie,
+  recordLoginFailure,
+  recordLoginSuccess,
+  sessionClearCookie,
+  sessionSetCookie,
+  verifyPassword,
+  verifySessionToken,
+} from '../auth/web-auth.js';
 
 export { validateApiKey };
 
@@ -387,8 +402,122 @@ export function registerConsoleRoutes(
   app.post('/api/admin/client/:client/setup', handleSetup);
   app.post('/api/admin/client/:client/teardown', handleTeardown);
 
+  // 4b. Console webAuth — login/logout/session probes + credential management.
+  // login/logout/session stay reachable pre-login (server.ts gate whitelist);
+  // the two config endpoints ride the normal console gate (session cookie or
+  // master adminApiKey Bearer).
+  app.get('/api/admin/auth/session', async (req) => {
+    const disk = getRuntimeConfigRef() || loadConfig(); // runtime snapshot (see gate comment)
+    const active = isWebAuthActive(disk);
+    const cookieToken = parseSessionCookie(req.headers.cookie);
+    return {
+      status: 'ok',
+      webAuth: {
+        active,
+        forced: !isLoopbackHost(disk.host),
+        enabled: disk.webAuth?.enabled === true,
+      },
+      authenticated: !active || verifySessionToken(cookieToken),
+    };
+  });
+
+  app.post('/api/admin/auth/login', async (req, reply) => {
+    const disk = getRuntimeConfigRef() || loadConfig(); // runtime snapshot (see gate comment)
+    if (!isWebAuthActive(disk)) {
+      return reply.status(400).send({ success: false, message: 'webAuth is not active on this gateway' });
+    }
+    const ip = req.ip || 'unknown';
+    const allow = checkLoginAllowed(ip);
+    if (!allow.allowed) {
+      reply.header('retry-after', String(allow.retryAfterSec ?? 60));
+      return reply.status(429).send({
+        success: false,
+        message: `Too many failed login attempts. Retry in ${allow.retryAfterSec}s.`,
+      });
+    }
+    const body = req.body as { username?: string; password?: string };
+    const ok =
+      hasWebAuthCredentials(disk.webAuth) &&
+      (body?.username?.trim() || '') === (disk.webAuth!.username || '').trim() &&
+      verifyPassword(body?.password || '', disk.webAuth!.passwordHash);
+    if (!ok) {
+      recordLoginFailure(ip);
+      return reply.status(401).send({ success: false, message: 'Invalid username or password' });
+    }
+    recordLoginSuccess(ip);
+    reply.header('set-cookie', sessionSetCookie(createSessionToken()));
+    return { status: 'ok' };
+  });
+
+  app.post('/api/admin/auth/logout', async (_req, reply) => {
+    reply.header('set-cookie', sessionClearCookie());
+    return { status: 'ok' };
+  });
+
+  app.get('/api/admin/auth/config', async () => {
+    const disk = getRuntimeConfigRef() || loadConfig(); // runtime snapshot (see gate comment)
+    return {
+      status: 'ok',
+      webAuth: {
+        active: isWebAuthActive(disk),
+        forced: !isLoopbackHost(disk.host),
+        enabled: disk.webAuth?.enabled === true,
+        username: disk.webAuth?.username || '',
+        hasPassword: Boolean(disk.webAuth?.passwordHash),
+        host: disk.host,
+      },
+    };
+  });
+
+  app.post('/api/admin/auth/config', async (req, reply) => {
+    const body = req.body as { enabled?: boolean; username?: string; password?: string };
+    const disk = getRuntimeConfigRef() || loadConfig(); // runtime snapshot (see gate comment)
+    const wa = disk.webAuth || {};
+    const nextEnabled = body?.enabled ?? wa.enabled === true;
+    const username = body?.username !== undefined ? body.username.trim() : wa.username || '';
+    if (body?.password !== undefined && body.password !== '' && body.password.length < 6) {
+      return reply.status(400).send({ success: false, message: 'Password must be at least 6 characters' });
+    }
+    const passwordHash =
+      body?.password !== undefined && body.password !== '' ? hashPassword(body.password) : wa.passwordHash;
+
+    if (nextEnabled && (!username || !passwordHash)) {
+      return reply.status(400).send({
+        success: false,
+        message: 'Enabling webAuth requires a username and a password (submit both, or keep the existing password).',
+      });
+    }
+    if (!nextEnabled && !isLoopbackHost(disk.host)) {
+      return reply.status(409).send({
+        success: false,
+        message: `webAuth cannot be disabled while the gateway binds non-loopback host '${disk.host}' — console login is mandatory.`,
+      });
+    }
+    const result = saveConfig({
+      webAuth: {
+        enabled: nextEnabled || undefined,
+        username: username || undefined,
+        passwordHash: passwordHash || undefined,
+      },
+    });
+    if (!result.success) return reply.status(400).send(result);
+    return {
+      status: 'ok',
+      webAuth: { active: nextEnabled || !isLoopbackHost(disk.host), forced: !isLoopbackHost(disk.host), enabled: nextEnabled },
+    };
+  });
+
   // 5. Configuration Read & Write API
-  app.get('/api/admin/config', async () => ({ status: 'ok', config: loadConfig() }));
+  // webAuth passwordHash is stripped from the payload — the UI never needs
+  // it, and round-tripping it through the visual editor would invite erasure.
+  app.get('/api/admin/config', async () => {
+    const cfg = loadConfig();
+    if (cfg.webAuth) {
+      const { passwordHash: _ph, ...webAuthSafe } = cfg.webAuth;
+      cfg.webAuth = webAuthSafe;
+    }
+    return { status: 'ok', config: cfg };
+  });
 
   const handleSaveConfig = async (req: any, reply: any) => {
     const body = req.body as Partial<RouterConfig>;

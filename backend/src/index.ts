@@ -14,6 +14,7 @@ import { adoptRestartParent, writeDaemonFiles } from './cli/daemon.js';
 import { openFinOpsStore } from './trace/persist.js';
 import { getOcrHomeDir } from './cli/paths.js';
 import { getWarnThrottle } from './observability/warn-throttle.js';
+import { validateWebAuthStartup } from './auth/web-auth.js';
 import { startForwardProxy } from './forward-proxy/index.js';
 import { setForwardProxyStatus } from './forward-proxy/status.js';
 
@@ -32,6 +33,11 @@ async function main() {
 
   const config = loadConfig();
   initProxyConfig(config.proxy);
+
+  // Console webAuth boot gate — a non-loopback binding FORCES console login
+  // on. Throws (crash with a clear message) on an insecure/contradictory
+  // setup instead of silently serving an open admin console to the LAN.
+  validateWebAuthStartup(config);
 
   // -1. Provider/model catalog sync (config-driven sources; defaults when unset)
   try {
