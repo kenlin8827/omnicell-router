@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef, useLayoutEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Zap, Scale, Brain, Sparkles, Save, RefreshCw, Plus, X, Eye, GripVertical, Search, ArrowUpToLine, ArrowUp, ArrowDown, ArrowRightLeft } from 'lucide-react';
+import { Zap, Scale, Brain, Sparkles, Save, RefreshCw, Plus, X, Eye, GripVertical, Search, ArrowUpToLine, ArrowUp, ArrowDown, ArrowRightLeft, Trash2 } from 'lucide-react';
 import { api, opencodeApi, type TierPoolInfo } from '../lib/api';
+import { useConfirm } from '../components/ConfirmProvider';
 import { Combobox } from '../components/Combobox';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
@@ -156,6 +157,7 @@ const ProviderLogo: React.FC<{ providerId: string; logoMap: Record<string, strin
 export const RulesPage: React.FC = () => {
   const { t } = useI18n();
   const toast = useToast();
+  const confirmDialog = useConfirm();
   const [forms, setForms] = useState<Record<Tier, TierPolicyForm>>({
     lite: defaultFormFor(),
     plus: defaultFormFor(),
@@ -367,6 +369,22 @@ export const RulesPage: React.FC = () => {
       ...prev,
       [tier]: { ...prev[tier], members: prev[tier].members.filter((_, i) => i !== index) },
     }));
+
+  /** Clear ALL member rules of one tier (draft-only, like removeMember):
+      useful as a "reset this tier" action. Still requires Save to commit —
+      the empty list IS the intent (explicit `[]` clears the tier's pool). */
+  const clearMembers = async (tier: Tier) => {
+    if (forms[tier].members.length === 0) return;
+    const meta = TIERS.find((x) => x.key === tier);
+    const ok = await confirmDialog({
+      title: t('tierPolicy.clearMembersConfirmTitle', { tier: meta ? t(meta.labelKey) : tier }),
+      description: t('tierPolicy.clearMembersConfirmDesc'),
+      danger: true,
+      confirmLabel: t('tierPolicy.clearMembers'),
+    });
+    if (!ok) return;
+    updateForm(tier, { members: [] });
+  };
 
   const moveMember = (tier: Tier, index: number, dir: -1 | 1) =>
     setForms((prev) => {
@@ -654,7 +672,21 @@ export const RulesPage: React.FC = () => {
               <div style={{ display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
                   <label style={{ ...labelStyle, marginBottom: 0 }}>{t('tierPolicy.membersTitle')}</label>
-                  <span style={{ fontSize: '10px', color: 'var(--text-dim)' }}>{t('tierPolicy.membersCount', { n: f.members.length })}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                    <span style={{ fontSize: '10px', color: 'var(--text-dim)' }}>{t('tierPolicy.membersCount', { n: f.members.length })}</span>
+                    {f.members.length > 0 && (
+                      <button
+                        className="btn"
+                        title={t('tierPolicy.clearMembersHint')}
+                        style={{ padding: '3px 6px', flexShrink: 0 }}
+                        disabled={savingTier !== null || loading}
+                        onClick={() => void clearMembers(tier)}
+                      >
+                        <Trash2 size={11} />
+                        <span>{t('tierPolicy.clearMembers')}</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
                 {/* Always rendered (not just >8 members): keeps the pre-list
                     stack identical across all four cards so sections align.

@@ -227,6 +227,10 @@ export interface TranslationDict {
     moveUp: string;
     moveDown: string;
     removeMember: string;
+    clearMembers: string;
+    clearMembersHint: string;
+    clearMembersConfirmTitle: string;
+    clearMembersConfirmDesc: string;
     moveTop: string;
     dragSort: string;
     membersEmpty: string;
