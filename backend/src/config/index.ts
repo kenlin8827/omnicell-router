@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { isMap, parse, parseDocument, stringify } from 'yaml';
 import dotenv from 'dotenv';
-import { RouterConfig, WebAuthConfig } from './types.js';
+import { Layer2JudgeConfig, RouterConfig, WebAuthConfig } from './types.js';
 import { DEFAULT_RETRIABLE_CAUSES } from '../resilience/types.js';
 
 dotenv.config();
@@ -27,13 +27,17 @@ const DEFAULT_CONFIG: RouterConfig = {
     },
     layer2: {
       enabled: false,
-      provider: 'typesafe',
-      model: 'typesafe/jev',
+      // No model pinned by default — the judge then follows
+      // `systemone.defaultModel`.
       timeoutMs: 1500,
     },
   },
   flywheel: {
-    enabled: true,
+    // Opt-in: writing user prompts to disk is not a sensible default, and with
+    // it on, every `bun test` run appends its fixtures to the production
+    // dataset. Existing deployments that set `flywheel.enabled: true` in
+    // config.yaml keep collecting — only the implicit default changes.
+    enabled: false,
     datasetPath: './data/flywheel.jsonl',
     maxSamples: 100000,
     logUserPrompt: true,
@@ -131,6 +135,26 @@ function sanitizeWebAuthInput(input: unknown): WebAuthConfig | undefined {
   return wa;
 }
 
+/**
+ * Layer 2 sanitizer: drops the retired vendor-connection keys (`provider`,
+ * `baseUrl`, `apiKey`) left over from the pre-System-One judge, which talked
+ * to a hand-configured vendor endpoint. The judge now addresses a REGISTERED
+ * model through the gateway's own System One protocol, so those
+ * keys are meaningless — and keeping them would re-persist dead settings on
+ * every console save.
+ */
+function sanitizeLayer2Input(input: unknown): Layer2JudgeConfig {
+  const merged = { ...DEFAULT_CONFIG.classifier?.layer2, ...(input as Layer2JudgeConfig) } as Layer2JudgeConfig & {
+    provider?: unknown;
+    baseUrl?: unknown;
+    apiKey?: unknown;
+  };
+  delete merged.provider;
+  delete merged.baseUrl;
+  delete merged.apiKey;
+  return merged;
+}
+
 export function loadConfig(configPath?: string): RouterConfig {
   const resolvedPath = getConfigPath(configPath);
   if (fs.existsSync(resolvedPath)) {
@@ -140,7 +164,7 @@ export function loadConfig(configPath?: string): RouterConfig {
       // Legacy `rules:` (removed prompt-override system) is stripped so stale
       // keys don't get re-persisted on the next config save.
       const { rules: _legacyRules, ...parsedRest } = parsed || {};
-      return {
+      return applyTestEnvOverrides({
         ...DEFAULT_CONFIG,
         ...parsedRest,
         // Legacy `role` (removed key-level RBAC — unrestricted is expressed by
@@ -153,7 +177,11 @@ export function loadConfig(configPath?: string): RouterConfig {
         fallback: { ...DEFAULT_CONFIG.fallback, ...parsed?.fallback },
         classifier: {
           localModel: { ...DEFAULT_CONFIG.classifier?.localModel, ...parsed?.classifier?.localModel },
-          layer2: { ...DEFAULT_CONFIG.classifier?.layer2, ...parsed?.classifier?.layer2 },
+          // Retired Layer 2 vendor keys (`provider` / `baseUrl` / `apiKey` — the
+          // judge now calls a registered model over the System One protocol)
+          // are stripped so stale values don't get re-persisted on
+          // the next console save.
+          layer2: sanitizeLayer2Input(parsed?.classifier?.layer2),
         },
         flywheel: { ...DEFAULT_CONFIG.flywheel, ...parsed?.flywheel },
         proxy: { ...DEFAULT_CONFIG.proxy, ...parsed?.proxy },
@@ -175,12 +203,28 @@ export function loadConfig(configPath?: string): RouterConfig {
         models: parsed?.models || DEFAULT_CONFIG.models,
         combos: parsed?.combos || [],
         catalog: parsed?.catalog,
-      };
+      });
     } catch (err) {
       console.warn(`[Config] Failed to parse ${resolvedPath}, falling back to defaults:`, err);
     }
   }
-  return DEFAULT_CONFIG;
+  return applyTestEnvOverrides(DEFAULT_CONFIG);
+}
+
+/**
+ * Test-run guard for the flywheel collector.
+ *
+ * `bun test` sets NODE_ENV=test, and the test process loads the REAL config.yaml
+ * — where operators reasonably keep `flywheel.enabled: true` for live traffic.
+ * Without this override, every test run appends its fixtures to the production
+ * dataset (observed: 6,600+ synthetic rows accumulated alongside 8 real ones).
+ * Only the flywheel switch is forced off; every other config value is passed
+ * through untouched, and tests that exercise the collector directly construct
+ * FlywheelCollector with an explicit config + temp path, bypassing loadConfig.
+ */
+function applyTestEnvOverrides(cfg: RouterConfig): RouterConfig {
+  if (process.env.NODE_ENV !== 'test') return cfg;
+  return { ...cfg, flywheel: { ...cfg.flywheel, enabled: false } };
 }
 
 /**
@@ -320,12 +364,12 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'tiers.*.members': '成员列表（顺序=优先级/failover 链）：每项 { pattern, weight?, effortMap? } —— pattern 匹配完整模型 id（provider/model），glob 通配（* 任意 / ? 单字符，不区分大小写），不带通配符=子串匹配、写完整 id=单项；effortMap=思考级别翻译（如 { none: high, low: high }，未配置的级别原样透传）；同一模型只归属一个梯队（跨档重叠按 lite→plus→pro→ultra 先得，保存时提示）',
   'tiers.exclude': '全局排除名单（在原始 YAML 页编辑；/tiers 页保存时原样回传）：命中的模型不进入任何梯队候选池（无条件；仅可按 id 直连或经组合调用）',
   'tiers.*.selection': '主选策略：priority 优先级 / weighted 加权随机 / round_robin 轮询',
-  'tiers.*.match': '【仅建议引擎】不参与路由：目录页推荐 / 一键导入 / 首启种子仍沿用此匹配规则',
-  'tiers.*.match.patterns': '【仅建议引擎】名称通配符（glob）',
-  'tiers.*.match.minInputPerM': '【仅建议引擎】输入价下限 $/M',
-  'tiers.*.match.maxInputPerM': '【仅建议引擎】输入价上限 $/M',
-  'tiers.*.match.exclude': '【已弃用】不参与路由',
-  'tiers.*.match.excludeTiers': '【已弃用】不参与路由',
+  'tiers.*.match': '【仅首启种子】不参与路由：仅当四个梯队都没有 members 时，用这套匹配规则自动生成首份成员列表并写回本文件',
+  'tiers.*.match.patterns': '【仅首启种子】名称通配符（glob）',
+  'tiers.*.match.minInputPerM': '【仅首启种子】输入价下限 $/M',
+  'tiers.*.match.maxInputPerM': '【仅首启种子】输入价上限 $/M',
+  'tiers.*.match.exclude': '【仅首启种子】名称/价格否决（不生成成员）',
+  'tiers.*.match.excludeTiers': '【仅首启种子】锚定排除（被引梯队的条件命中即否决）',
   routing: '路由模式：smart=分类级联（默认）/ cost=始终 lite / quality=始终 pro',
   fallback: '失败兜底：重试耗尽后按梯队升级重试',
   'fallback.maxRetries': '兜底重试次数',
@@ -334,12 +378,12 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   classifier: '意图分类器（smart 模式的 lite/pro/ultra 判定）',
   'classifier.localModel.enabled': '本地分类模型开关',
   'classifier.localModel.confidenceThreshold': '置信度阈值（低于则交给 layer2 判定）',
-  'classifier.layer2.enabled': 'Layer2 LLM 二次判定开关',
-  'classifier.layer2.provider': '判定服务提供方：typesafe/opencode/openrouter/custom',
-  'classifier.layer2.model': '判定模型 id',
+  'classifier.layer2.enabled': 'Layer2 判定开关（经本机 System One 协议调用已注册模型）',
+  'classifier.layer2.model': '判定模型 id（已注册的模型；留空则用 systemone.defaultModel）',
   'classifier.layer2.timeoutMs': '判定超时（毫秒，超时放行 Layer1 结果）',
   'classifier.layer2.decisionCache': '判定决策缓存（相同上下文复用判定结果）',
-  flywheel: '数据飞轮（会话样本沉淀，用于微调数据集）',
+  'classifier.layer2.decisionCapture': '判定采集（可选：落盘 state+答案，供蒸馏原生决策模型；默认关）',
+  flywheel: '学习飞轮（路由决策样本沉淀，用于训练分类器；默认关闭）',
   'flywheel.datasetPath': '样本数据集路径（JSONL）',
   'flywheel.maxSamples': '样本条数上限',
   'flywheel.logUserPrompt': '是否记录用户提示词原文（隐私敏感）',

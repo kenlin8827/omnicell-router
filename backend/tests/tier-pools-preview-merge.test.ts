@@ -74,7 +74,7 @@ describe('/tier-pools/preview input merge (console.ts handleTierPoolsPreview)', 
   });
 
   it('"price exactly at ceiling" is included in the band (preview projects the same closed intervals as runtime)', () => {
-    // The Rules page shows "候选池 N" numbers — those are produced by the
+    // The Rules page shows "candidate pool N" counts — those are produced by the
     // preview endpoint, so if the preview used `<` instead of `<=`, the
     // count would silently drop by one for every boundary model.
     const body = { lite: { match: { maxInputPerM: 0.8 } } };

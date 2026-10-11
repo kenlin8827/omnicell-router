@@ -215,7 +215,7 @@ export async function openFinOpsStore(dir: string): Promise<FinOpsStore | null> 
       // safe — if `since` already exists we leave it alone. This means
       // the very first `record()` of a fresh gateway seeds `since` to
       // roughly the construction time, which is what the console
-      // surfaces as "数据自 X 起累计".
+      // surfaces as the "accumulated since X" banner.
       if (meta.since === 0) {
         const now = Date.now();
         try {

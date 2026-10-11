@@ -44,7 +44,7 @@ $$\text{Softmax}(z) = \left[\frac{e^0}{4}, \frac{e^0}{4}, \frac{e^0}{4}, \frac{e
 - 默认置信度门限阈值 $\theta = 0.85$；
 - 因 $0.25 < 0.85$，`isConfident` 在**数学上严格恒为 `false`**；
 - 缺省绑定安全质量基线：`targetTier: 'plus'`（绝不会因为字数少而擅自降级给 Lite 小模型）；
-- `routeAsync` 依据 `!isConfident`，**100% 确定性直接级联至 Layer 2（TypeSafe Jev / OpenCode 判决模型）**。
+- `routeAsync` 依据 `!isConfident`，**100% 确定性直接级联至 Layer 2（System One 判决模型）**。
 
 ### 4. 数据飞轮闭环自进化 (In-Place Distillation)
 空白底座并非死代码，而是可生长的物理实体：

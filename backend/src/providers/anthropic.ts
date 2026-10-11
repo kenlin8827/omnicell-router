@@ -103,7 +103,11 @@ export function buildAnthropicPayload(request: ChatCompletionRequest, model: Mod
     max_tokens: request.max_tokens || request.max_completion_tokens || 4096,
     messages: anthropicMessages,
     system: systemPrompt,
-    temperature: request.temperature,
+    // Models the catalog marks temperature:false (next-gen Claude etc.) have
+    // deprecated sampling params — strip it to avoid the upstream 400
+    // "`temperature` is deprecated for this model". undefined is dropped
+    // automatically by JSON.stringify, i.e. the field is simply not sent.
+    temperature: model.temperature === false ? undefined : request.temperature,
   };
   // Extended thinking: Anthropic requires `thinking.type=enabled` plus a positive
   // `budget_tokens`; budget is the upper bound on thinking tokens consumed

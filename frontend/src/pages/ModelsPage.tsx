@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Cpu, RefreshCw, Search, Brain, Wrench, Eye, AudioLines, Video, Thermometer, Pencil, Zap, Loader2, Lock, LockOpen } from 'lucide-react';
+import { Cpu, RefreshCw, Search, Brain, Wrench, Eye, EyeOff, AudioLines, Video, Thermometer, Pencil, Zap, Loader2, Lock, LockOpen } from 'lucide-react';
 import { opencodeApi, type OpenCodeModelView } from '../lib/api';
 import { useModelTest } from '../lib/useModelTest';
 import { useI18n } from '../i18n/I18nContext';
@@ -8,6 +8,7 @@ import { useToast } from '../components/ToastProvider';
 import { ModelEditDialog } from '../components/ModelEditDialog';
 import { Combobox } from '../components/Combobox';
 import { Pagination } from '../components/Pagination';
+import { Chip } from '../components/Chip';
 import { Switch } from '../components/Switch';
 
 type SortKey = 'default' | 'priceAsc' | 'priceDesc' | 'contextDesc' | 'name';
@@ -102,6 +103,10 @@ export const ModelsPage: React.FC = () => {
   const [provider, setProvider] = useState(searchParams.get('provider') || '');
   // Connected-only is a stable personal preference — remember it (first visit: unchecked).
   const [onlyConnected, setOnlyConnected] = useState(() => localStorage.getItem('ocr_models_only_connected') === '1');
+  // Flag filters (same chips as the OCR catalog viewer); compose with each
+  // other and with the search / provider / connected filters.
+  const [onlyLocked, setOnlyLocked] = useState(false);
+  const [onlyHidden, setOnlyHidden] = useState(false);
   const [sort, setSort] = useState<SortKey>('default');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(PAGE_SIZE);
@@ -145,6 +150,27 @@ export const ModelsPage: React.FC = () => {
     }
   };
 
+  /** Hide / show a model in the catalog.
+   *
+   *  Writes the OVERRIDE layer (overrides.json), not the opencode.jsonc def:
+   *  that works for every row (catalog-sourced, credential-only and def-backed)
+   *  and creates no def, which matters because a provider that suddenly gains a
+   *  def would have its model universe collapse to the enabled defs. Read back
+   *  from the same plane, so what the row shows is what the pool does. */
+const toggleHidden = async (m: OpenCodeModelView) => {
+    const hidden = m.disabled !== true;
+    try {
+      await opencodeApi.putCatalogOverride(m.providerId, m.id, { disabled: hidden });
+      await load();
+      // The catalog store rebuilds immediately, but the ROUTING pool is built
+      // at boot — without this note the row looks hidden while the model keeps
+      // serving until a restart.
+      toast.info(t(hidden ? 'models.hiddenToast' : 'models.shownToast', { id: `${m.providerId}/${m.id}` }));
+    } catch (err: any) {
+      toast.error('Failed: ' + err.message);
+    }
+  };
+
   const providerOptions = useMemo(() => {
     const map = new Map<string, { id: string; name?: string; connected: boolean; count: number }>();
     for (const m of models) {
@@ -162,6 +188,9 @@ export const ModelsPage: React.FC = () => {
     let list = models.filter((m) => {
       if (onlyConnected && !m.connected) return false;
       if (provider && m.providerId !== provider) return false;
+      // flag filters compose (locked ∩ hidden), same as the catalog viewer
+      if (onlyLocked && !lockedIds.has(rowLockKey(m))) return false;
+      if (onlyHidden && m.disabled !== true) return false;
       if (!q) return true;
       return (
         m.id.toLowerCase().includes(q) ||
@@ -187,7 +216,13 @@ export const ModelsPage: React.FC = () => {
         break;
     }
     return list;
-  }, [models, query, provider, onlyConnected, sort]);
+  }, [models, query, provider, onlyConnected, onlyLocked, onlyHidden, lockedIds, sort]);
+
+  const lockedCount = useMemo(
+    () => models.filter((m) => lockedIds.has(rowLockKey(m))).length,
+    [models, lockedIds]
+  );
+  const hiddenCount = useMemo(() => models.filter((m) => m.disabled === true).length, [models]);
 
   const selectProvider = (id: string) => {
     setProvider(id);
@@ -253,6 +288,29 @@ export const ModelsPage: React.FC = () => {
               { value: 'name', label: t('models.sortName') },
             ]}
           />
+          <Chip
+            label={
+              <>
+                <Lock size={10} />
+                {t('catalogPage.ocrLocked', { n: lockedCount })}
+              </>
+            }
+            pressed={onlyLocked}
+            tone="amber"
+            title={t('catalogPage.ocrOnlyLockedHint')}
+            onToggle={() => { setOnlyLocked((v) => !v); setPage(1); }}
+          />
+          <Chip
+            label={
+              <>
+                <EyeOff size={10} />
+                {t('catalogPage.ocrHidden', { n: hiddenCount })}
+              </>
+            }
+            pressed={onlyHidden}
+            title={t('catalogPage.ocrOnlyHiddenHint')}
+            onToggle={() => { setOnlyHidden((v) => !v); setPage(1); }}
+          />
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
             <Switch
               size="sm"
@@ -286,9 +344,9 @@ export const ModelsPage: React.FC = () => {
                 const rowKey = `${m.providerId}/${m.id}`;
                 const res = testResults[rowKey];
                 return (
-                <tr key={rowKey}>
+                <tr key={rowKey} style={m.disabled === true ? { opacity: 0.5 } : undefined}>
                   <td style={tdStyle}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                       <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, wordBreak: 'break-all' }}>{m.id}</span>
                       {res && (
                         <span
@@ -304,19 +362,30 @@ export const ModelsPage: React.FC = () => {
                         </span>
                       )}
                       <button
-                        className="btn btn-sm"
-                        style={{ padding: '2px 5px', display: 'inline-flex', flexShrink: 0 }}
+                        style={{ color: 'var(--text-dim)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', flexShrink: 0 }}
                         title={testingIds.has(rowKey) ? t('op.testing') : t('op.testBtn')}
                         disabled={isBusy}
                         onClick={() => testOne({ key: rowKey, providerId: m.providerId, modelId: m.id })}
                       >
-                        {testingIds.has(rowKey) ? <Loader2 size={10} style={{ animation: 'ocr-spin 0.8s linear infinite' }} /> : <Zap size={10} />}
+                        {testingIds.has(rowKey) ? <Loader2 size={11} style={{ animation: 'ocr-spin 0.8s linear infinite' }} /> : <Zap size={11} />}
                       </button>
-                      {m.custom && (
+                      <button
+                        style={{ color: 'var(--text-dim)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', flexShrink: 0, opacity: m.disabled === true ? 0.6 : 1 }}
+                        title={m.disabled === true ? t('models.showInCatalog') : t('models.hideFromCatalog')}
+                        disabled={isBusy}
+                        onClick={() => void toggleHidden(m)}
+                      >
+                        {m.disabled === true ? <EyeOff size={11} /> : <Eye size={11} />}
+                      </button>
+                      {/* editing needs a local def to patch — `m.custom` is a PROVIDER-level flag
+                          and would offer the pencil on catalog-filled models, which then
+                          fail with "model is not defined for provider". `source === 'config'`
+                          is exactly "has an opencode.jsonc definition". */}
+                      {m.source === 'config' && (
                         <button
+                          style={{ color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', flexShrink: 0 }}
                           title={t('op.pmEdit')}
                           onClick={() => setEditTarget({ providerId: m.providerId, modelId: m.id })}
-                          style={{ color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', flexShrink: 0 }}
                         >
                           <Pencil size={11} />
                         </button>
@@ -331,7 +400,6 @@ export const ModelsPage: React.FC = () => {
                             border: 'none',
                             cursor: 'pointer',
                             padding: 0,
-                            marginLeft: 6,
                             display: 'inline-flex',
                             flexShrink: 0,
                           }}
@@ -375,6 +443,7 @@ export const ModelsPage: React.FC = () => {
                       {m.modalities?.input?.includes('video') && <span style={badgeStyle('#60a5fa', 'rgba(96,165,250,0.12)')}><Video size={10} />{t('models.badgeVideo')}</span>}
                       {m.temperature && <span style={badgeStyle('#fb923c', 'rgba(251,146,60,0.12)')}><Thermometer size={10} />{t('models.badgeTemperature')}</span>}
                       {!hasCapability(m) && <span style={{ color: 'var(--text-dim)' }}>—</span>}
+                      {m.disabled === true && <span style={badgeStyle('var(--text-dim)', 'rgba(255,255,255,0.06)')}>{t('models.hiddenBadge')}</span>}
                     </div>
                   </td>
                   <td style={tdStyle}>

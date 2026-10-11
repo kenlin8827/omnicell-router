@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Layer1Classifier, DEFAULT_BASE_MODEL } from '../src/router/layer1-classifier.js';
-import { Layer2Judge } from '../src/router/layer2-judge.js';
+
 import { RouterEngine } from '../src/router/index.js';
 import { FlywheelCollector } from '../src/flywheel/collector.js';
+import { FLYWHEEL_SCHEMA_VERSION } from '../src/flywheel/schema.js';
 import { ChatCompletionRequest } from '../src/types/openai.js';
 
 describe('Layer 1 & Layer 2 Routing and Data Flywheel', () => {
@@ -63,7 +64,7 @@ describe('Layer 1 & Layer 2 Routing and Data Flywheel', () => {
       messages: [{ role: 'user', content: 'What is the capital of France?' }],
     };
 
-    const decision = await RouterEngine.routeAsync(req, undefined, {
+    const decision = await RouterEngine.routeAsync(req, {
       localModel: { enabled: true, confidenceThreshold: 0.85 },
       // Layer 2 not enabled in this unit test -> cascades to default safe plus baseline
     });
@@ -196,7 +197,6 @@ describe('Layer 1 & Layer 2 Routing and Data Flywheel', () => {
     const stats = collector.getStats();
     assert.strictEqual(stats.totalSamples, 2);
     assert.strictEqual(stats.fallbackCount, 1);
-    assert.strictEqual(stats.negativeSampleCount, 1);
     assert.strictEqual(stats.tierDistribution.lite, 1);
     assert.strictEqual(stats.tierDistribution.plus, 1);
 
@@ -205,10 +205,60 @@ describe('Layer 1 & Layer 2 Routing and Data Flywheel', () => {
     const content = fs.readFileSync(testFlywheelPath, 'utf8').trim().split('\n');
     assert.strictEqual(content.length, 2);
 
+    // Schema v2: the label records the tier that actually SERVED the request,
+    // and the decision reason is kept as the provenance signal.
     const record2 = JSON.parse(content[1]);
+    assert.strictEqual(record2.v, FLYWHEEL_SCHEMA_VERSION);
     assert.strictEqual(record2.id, 'test-req-2');
-    assert.strictEqual(record2.label.isNegativeSampleForLite, true);
-    assert.strictEqual(record2.label.groundTruthTier, 'plus');
-    assert.strictEqual(record2.label.labelSource, 'runtime_fallback');
+    assert.strictEqual(record2.label.isNegativeForLite, true);
+    assert.strictEqual(record2.label.tier, 'plus');
+    assert.strictEqual(record2.label.source, 'runtime_fallback');
+    assert.strictEqual(record2.label.overridden, true); // wanted lite, served plus
+    assert.strictEqual(record2.decision.reason, 'Initial guess');
+    // The trainer's input: 8 structural features captured at request time.
+    assert.strictEqual(record2.input.featureVector.length, DEFAULT_BASE_MODEL.featureDimensions);
+    assert.deepStrictEqual(record2.input.featureNames, DEFAULT_BASE_MODEL.featureNames);
+    // mock-* fixtures are auto-flagged so they never reach the training pool.
+    assert.strictEqual(record2.execution.isSynthetic, true);
+  });
+
+  it('FlywheelCollector v2 labels from the tier that served, not the tier requested', async () => {
+    const collector = new FlywheelCollector({ enabled: true, datasetPath: testFlywheelPath });
+    const req: ChatCompletionRequest = {
+      model: 'auto',
+      messages: [{ role: 'user', content: 'Refactor the auth middleware' }],
+    };
+
+    await collector.record({
+      requestId: 'v2-override',
+      request: req,
+      decision: {
+        targetTier: 'ultra',
+        confidence: 0.25,
+        layerUsed: 'layer1',
+        reason: 'Safe quality-first fallback',
+        needsSchemaValidation: false,
+        features: {
+          tokenCountEstimate: 8, hasCode: true, hasMathOrProof: false,
+          hasMultiTurn: false, hasToolsOrSchema: false, complexityScore: 4,
+        },
+      },
+      tierUsed: 'plus', // the session ratchet clamped it below the request
+      modelUsed: 'anthropic/claude-sonnet',
+      fallbackOccurred: false,
+      costUsd: 0.01,
+      latencyMs: 1200,
+    });
+
+    const rows = fs.readFileSync(testFlywheelPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const rec = rows.find((r) => r.id === 'v2-override');
+    assert.ok(rec, 'record should be written');
+    // v1 copied decision.targetTier into the label, which silently erased the
+    // single most informative field in the dataset.
+    assert.strictEqual(rec.label.tier, 'plus');
+    assert.strictEqual(rec.decision.targetTier, 'ultra');
+    assert.strictEqual(rec.label.overridden, true);
+    assert.strictEqual(rec.label.source, 'observed_execution');
+    assert.strictEqual(rec.execution.isSynthetic, false);
   });
 });

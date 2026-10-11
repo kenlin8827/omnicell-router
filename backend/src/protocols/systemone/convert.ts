@@ -5,8 +5,7 @@
  * The conversion path targets ordinary chat models: one chat completion
  * carries ALL questions (mirroring System One's parallel evaluation), and the
  * reply is normalized back into the System One `answers` shape. Probabilities
- * produced this way are self-reported estimates — NOT calibrated (see
- * ADR-0014, fidelity statement).
+ * produced this way are self-reported estimates — NOT calibrated.
  */
 import { ChatCompletionRequest, ChatCompletionResponse, ChatMessage } from '../../types/openai.js';
 import { EFFORT_LADDER, EffortMap, ReasoningEffort } from '../../types/router.js';

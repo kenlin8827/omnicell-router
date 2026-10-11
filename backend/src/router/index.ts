@@ -3,6 +3,7 @@ import { RoutingDecision, TierLevel } from '../types/router.js';
 import { Layer1Classifier } from './layer1-classifier.js';
 import { Layer2Judge } from './layer2-judge.js';
 import { ClassifierConfig, RoutingMode } from '../config/types.js';
+import { ProviderRegistry } from '../providers/registry.js';
 
 /**
  * Global routing mode → forced tier for auto/default requests. Returns undefined
@@ -75,11 +76,18 @@ export class RouterEngine {
 
   /**
    * Asynchronous Hierarchical Routing
-   * Layer 1 (Local Model Base / Experience) -> Layer 2 (Jev / OpenCode Proxy) -> Safe Quality Baseline (plus tier)
+   * Layer 1 (Local Model Base / Experience) -> Layer 2 (System One decision model) -> Safe Quality Baseline (plus tier)
+   *
+   * `registry` + `systemoneDefaultModel` are the Layer 2 judge's dependencies:
+   * it resolves and calls a registered model over the gateway's own System One
+   * protocol, so it needs the model pool and the default decision
+   * model that backs an unset `classifier.layer2.model`.
    */
   public static async routeAsync(
     request: ChatCompletionRequest,
-    classifierConfig?: ClassifierConfig
+    classifierConfig?: ClassifierConfig,
+    registry?: ProviderRegistry,
+    systemoneDefaultModel?: string
   ): Promise<RoutingDecision> {
     const messages = request.messages || [];
     const extracted = Layer1Classifier.extractFeatures(request);
@@ -113,9 +121,14 @@ export class RouterEngine {
       };
     }
 
-    // 4. Layer 2: Specialized Semantic Decision Judge (TypeSafe Jev / OpenCode / External)
-    if (classifierConfig?.layer2?.enabled) {
-      const decisionResult = await Layer2Judge.evaluate(request, classifierConfig.layer2);
+    // 4. Layer 2: Specialized Semantic Decision Judge over the System One protocol
+    if (classifierConfig?.layer2?.enabled && registry) {
+      const decisionResult = await Layer2Judge.evaluate(
+        request,
+        classifierConfig.layer2,
+        registry,
+        systemoneDefaultModel
+      );
       if (decisionResult) {
         return {
           targetTier: decisionResult.targetTier,

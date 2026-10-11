@@ -479,7 +479,7 @@ export const RulesPage: React.FC = () => {
     });
     // Intentionally keep the pool modal open so the user can batch-exclude multiple models
     // without re-opening it. The model disappears from the candidate list and reappears
-    // in the "被策略排除" section below — both visible in the same view.
+    // in the "excluded by policy" section below — both visible in the same view.
     toast.success(t('tierPolicy.addedToExclude'));
   };
 
@@ -590,7 +590,7 @@ export const RulesPage: React.FC = () => {
           // 500ms via loadPools). Updates as the user edits, so the count
           // reflects "what would happen if I saved now" — not the committed
           // state. For the committed (post-save) state, use the detail modal
-          // and switch to the 实时 tab.
+          // and switch to the live tab.
           const poolInfo = pools[tier] ?? poolsLive[tier];
           return (
             <div

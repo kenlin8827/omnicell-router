@@ -21,9 +21,9 @@ Design and implement a **Hierarchical Decision Pipeline** paired with an **Activ
 - **Layer 1: Local Micro-Tensor / ONNX Model with Confidence Gating**
   - Runs locally on CPU via micro-tensor linear softmax or ONNX runtime (`0.1~1ms` inference, zero token cost).
   - **Confidence Gating**: The model outputs calibrated softmax probabilities. When $\max(P) \ge \text{threshold}$ (e.g., 0.85), it routes immediately; otherwise, it cascades gracefully to Layer 2.
-- **Layer 2: Dedicated Context-Aware Judge Model (TypeSafe Jev / OpenCode Proxy)**
-  - Invokes a non-autoregressive decision model equipped with recent dialogue history turns.
-  - Generates type-safe tier decisions with calibrated confidence metrics, eliminating generation formatting errors.
+- **Layer 2: Dedicated Context-Aware Judge Model (System One protocol)**
+  - Invokes a registered decision model equipped with recent dialogue history turns, over the gateway's own System One protocol (`POST /v1/systemone` wire — see ADR-0014): a native `type: 'systemone'` upstream passes through natively, any registered chat model serves by protocol conversion.
+  - Generates type-safe tier decisions with calibrated confidence metrics, eliminating generation formatting errors. (Converted chat-model answers are self-reported estimates, NOT calibrated.)
 - **Layer 3: Runtime Execution & Cascading Assertion (Fallback Engine)**
   - lite tier model attempts execution -> Local AST / JSON schema assertion.
   - Upon assertion failure, silently escalates to plus tier and records a negative training sample.

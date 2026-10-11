@@ -25,7 +25,7 @@ import { Pagination } from '../components/Pagination';
 const KEY_PAGE_SIZE = 20;
 const KEY_PAGE_SIZES = [10, 20, 50, 100, 200];
 
-// Tier → i18n short-label key (rendered as "lite·轻量" in the tier column).
+// Tier → i18n short-label key (rendered as "lite" / its localized short name in the tier column).
 const TIER_LABEL_KEYS: Record<string, string> = {
   lite: 'apiKeys.tierLite',
   plus: 'apiKeys.tierPlus',

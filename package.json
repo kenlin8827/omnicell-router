@@ -19,12 +19,13 @@
     "build:frontend": "vite build frontend",
     "start": "node backend/dist/index.js",
     "start:bun": "bun backend/src/index.ts",
-    "test": "bun test backend/tests",
+    "test": "bun run scripts/test-isolated.ts",
     "test:node": "tsx --test backend/tests/**/*.test.ts",
     "test:system": "bun run scripts/full-system-test.ts",
     "typecheck": "tsc -p backend --noEmit && tsc -p frontend --noEmit",
     "train:layer1": "bun run scripts/train-layer1-classifier.ts",
-    "flywheel:stats": "bun run scripts/flywheel-stats.ts"
+    "flywheel:stats": "bun run scripts/flywheel-stats.ts",
+    "flywheel:prune": "bun run scripts/flywheel-prune.ts"
   },
   "keywords": [
     "llm",

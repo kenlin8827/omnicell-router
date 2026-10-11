@@ -5,6 +5,7 @@ import { registerRuntimeConfigRef } from './config/index.js';
 import { registerAnthropicRoutes } from './routes/anthropic.js';
 import { registerResponsesRoutes } from './routes/responses.js';
 import { registerSystemoneRoutes } from './routes/systemone.js';
+import { registerFlywheelRoutes } from './routes/flywheel.js';
 import { buildChatStreamChunks } from './utils/chat-sse.js';
 import fastify, { FastifyInstance, LogController } from 'fastify';
 import cors from '@fastify/cors';
@@ -161,6 +162,9 @@ export function createServer(
 
   // Register System One decision-protocol endpoint (POST /v1/systemone)
   registerSystemoneRoutes(app, orchestrator);
+
+  // Flywheel console: dataset browsing, operator relabelling, manual training
+  registerFlywheelRoutes(app, orchestrator);
 
   // Authentication hook: validates adminApiKey (master) or client API keys (apiKeys)
   const resolveActiveAuthConfig = () => {
@@ -494,10 +498,8 @@ export function createServer(
     return { status: 'ok', message: 'Metrics reset successfully' };
   });
 
-  // 3B. Active Learning Data Flywheel Statistics
-  app.get('/api/admin/flywheel/stats', async () => {
-    return orchestrator.getFlywheel()?.getStats() || { status: 'disabled' };
-  });
+  // Flywheel console endpoints (dataset inspection, relabelling, training) are
+  // registered in routes/flywheel.ts — see registerFlywheelRoutes below.
 
   // 3C. Active Conversation Sessions Inspection (optional limit/offset pagination)
   app.get('/api/admin/sessions', async (req) => {

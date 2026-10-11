@@ -23,13 +23,6 @@ export const MEMBER_TIER_ORDER: TierLevel[] = ['lite', 'plus', 'pro', 'ultra'];
 /** Descending tier order (highest first) — the cross-tier effort-search fallback. */
 export const TIER_DESCENDING_ORDER: TierLevel[] = [...MEMBER_TIER_ORDER].reverse();
 
-/** Narrow an unknown value to a TierLevel (data hygiene at every config boundary). */
-export function asTierLevel(value: unknown): TierLevel | undefined {
-  return typeof value === 'string' && (MEMBER_TIER_ORDER as readonly string[]).includes(value)
-    ? (value as TierLevel)
-    : undefined;
-}
-
 export interface ResolvedMembers {
   tiers: Record<TierLevel, TierMemberRule[]>;
   /**
@@ -116,27 +109,32 @@ export function applyEffortMap(map: EffortMap | undefined, requested: ReasoningE
   return map?.[requested] ?? requested;
 }
 
-// ─── Import / seed generator (legacy classifier as the suggestion engine) ───
+// ─── First-boot seed generator (the only bootstrap for member lists) ───
+//
+// NOT dead legacy: DEFAULT_CONFIG.tiers is `{}`, so a brand-new install has
+// no members anywhere and every model would classify as `unclassified`
+// (all four pools empty → nothing routes). This runs exactly once per
+// install, on the first boot that finds no `members` key, and persists the
+// lists back to config.yaml.
 
 export interface ImportableModel {
   /** Full id (`provider/model`) — becomes the seeded rule pattern. */
   id: string;
-  /** Bare model id (no provider prefix) — the legacy classifier's matcher input. */
+  /** Bare model id (no provider prefix) — the seed classifier's matcher input. */
   bareId: string;
   inputPerM?: number;
   reasoningFlag: boolean;
   configTier?: TierLevel;
-  overrideTier?: TierLevel;
   /** Old chain sort key (isDefaultInTier ? 0 : priority ?? 10) — preserves order. */
   chainPriority: number;
 }
 
 /**
- * Generate explicit member lists from the LEGACY classification pipeline
- * (pin > configTier > patterns/band/flag). Order within a tier
- * follows the old chain order so the migrated lists behave like the pools
- * the operator was looking at. Ids matched by the global denylist are
- * skipped (they belong to no pool).
+ * Generate the FIRST member lists for an install that has none, from the
+ * classification pipeline (configTier > patterns/band/flag). Order within a
+ * tier follows the chain order so the seeded lists pick the same leaders the
+ * pools would have picked. Ids matched by the global denylist are skipped
+ * (they belong to no pool).
  */
 export function generateMemberLists(
   models: ImportableModel[],
@@ -147,7 +145,6 @@ export function generateMemberLists(
   for (const m of models) {
     if (isDenied?.(m.id)) continue;
     const membership =
-      m.overrideTier ??
       m.configTier ??
       classifyTier({ modelId: m.bareId, inputPerM: m.inputPerM, reasoningFlag: m.reasoningFlag }, match);
     if (membership === 'unclassified') continue;

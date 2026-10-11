@@ -796,7 +796,26 @@ async setSourceEnabled(id: string, enabled: boolean): Promise<CatalogSourceView>
         if (entry.modalities) model.modalities = entry.modalities;
         if (entry.tool_call !== undefined) model.tool_call = entry.tool_call;
         if (entry.reasoning !== undefined) model.reasoning = entry.reasoning;
-        if (entry.tier != null) model.tier = entry.tier;
+        if (entry.temperature !== undefined) model.temperature = entry.temperature;
+        if (entry.disabled !== undefined) model.disabled = entry.disabled;
+        if (entry.reasoningEfforts !== undefined) {
+          model.reasoningOptions =
+            entry.reasoningEfforts.length > 0
+              ? [{ type: 'effort', values: [...entry.reasoningEfforts] }]
+              : [{ type: 'toggle' }]; // empty = no explicit level control
+        }
+        if (entry.npm !== undefined) model.npm = entry.npm;
+        if (entry.defaultEffort !== undefined) {
+          if (entry.defaultEffort === null) delete model.defaultEffort; // clear → follow catalog/def
+          else model.defaultEffort = entry.defaultEffort;
+        }
+        if (entry.variants !== undefined) {
+          // UI short shape → def shape; effort-less entries are dropped (they
+          // contribute nothing routable — see boot-direct routableVariants).
+          model.variants = entry.variants
+            .filter((v) => v.id && v.effort)
+            .map((v) => ({ id: v.id, settings: { reasoningEffort: v.effort } }));
+        }
       }
     }
 

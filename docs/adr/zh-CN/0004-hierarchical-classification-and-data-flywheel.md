@@ -24,8 +24,8 @@
   - **技术方案**：基于 ONNX Runtime 或微张量矩阵运行微型分类器，单次 CPU 推理耗时 `0.1~1ms`，本地零成本。
   - **置信度门控**：小模型输出 Softmax 概率，当 $\max(P) \ge \text{threshold}$（如 0.85）时直接决策；若置信度低于阈值，则自动放行下沉到 Layer 2。
   - **可插拔配置**：在配置中提供 `enabled: boolean` 开关，支持冷启动阶段一键关闭。
-- **Layer 2: 专职决策判决模型 (Specialized Decision Model - 如 TypeSafe Jev)**
-  - **技术方案**：接入专用于系统决策的非自回归模型（如 TypeSafe Jev 等通过 OpenRouter / 专用接口调用）。
+- **Layer 2: 专职决策判决模型 (Specialized Decision Model — System One 协议)**
+  - **技术方案**：走本机 System One 协议调用已注册模型（见 [ADR-0014](./0014-systemone-protocol-gateway.md)）：`type: systemone` 原生上游 1:1 直通，任意已注册对话模型经协议转换作答，不再有厂商 SDK / 专用接口。
   - **优势**：不生成冗余文本，输出带有统计校准置信度（Calibrated Probability）的强类型结构，彻底消除传统生成式 Prompt 评估的格式错误与过度自信问题。
   - **职责**：针对 Layer 1 未能高置信度决断的疑难请求进行高精度裁决（时延 ~100-250ms），并兼作后续离线训练的 Teacher 伪标签生成器。
 - **Layer 3: 运行闭环与级联修正 (Runtime Cascade Fallback)**
@@ -38,10 +38,10 @@ flowchart TD
     UserReq[用户请求] --> L0[Layer 0: 零耗时结构规则]
     L0 -->|未命中| L1[Layer 1: 本地CPU经验模型]
     L1 -->|置信度高| RouteDirect[直接命中梯队]
-    L1 -->|置信度低/未启用| L2[Layer 2: TypeSafe Jev 裁决模型]
-    L2 --> RouteJev[权威裁决梯队]
+    L1 -->|置信度低/未启用| L2[Layer 2: System One 裁决模型]
+    L2 --> RouteJudge[权威裁决梯队]
     
-    RouteDirect & RouteJev --> Execute[上游模型执行 & 级联校验]
+    RouteDirect & RouteJudge --> Execute[上游模型执行 & 级联校验]
     Execute -->|记录决策元数据+降级事件| FlywheelLog[(飞轮数据日志池)]
     
     FlywheelLog -->|定期蒸馏清洗| Retrain[轻量模型本地训练]

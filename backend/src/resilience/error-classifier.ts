@@ -100,7 +100,7 @@ export class ErrorClassifier {
     }
 
     // -------------------------------------------------------------
-    // 1. QUOTA_EXHAUSTED (余额不足 / 额度耗尽 / 欠费停机)
+    // 1. QUOTA_EXHAUSTED (out of balance / quota burned down / suspended for non-payment)
     // -------------------------------------------------------------
     const isQuotaPattern =
       statusCode === 402 ||
@@ -134,7 +134,7 @@ export class ErrorClassifier {
     }
 
     // -------------------------------------------------------------
-    // 2. AUTHENTICATION_ERROR (Key 无效 / 未授权)
+    // 2. AUTHENTICATION_ERROR (invalid key / unauthorized)
     // -------------------------------------------------------------
     const isAuthPattern =
       statusCode === 401 ||
@@ -159,7 +159,7 @@ export class ErrorClassifier {
     }
 
     // -------------------------------------------------------------
-    // 3. RATE_LIMITED (频控限流 429)
+    // 3. RATE_LIMITED (HTTP 429 throttling)
     // -------------------------------------------------------------
     const isRateLimitPattern =
       statusCode === 429 ||
@@ -204,7 +204,7 @@ export class ErrorClassifier {
     }
 
     // -------------------------------------------------------------
-    // 4. CLIENT_ERROR (客户端传参错误 / 上下文超限 - 绝不惩罚模型健康度!)
+    // 4. CLIENT_ERROR (bad client params / context length exceeded — never penalizes model health!)
     // -------------------------------------------------------------
     const isClientErrorPattern =
       (statusCode === 400 || statusCode === 422) &&
@@ -232,7 +232,7 @@ export class ErrorClassifier {
     }
 
     // -------------------------------------------------------------
-    // 5. SERVICE_UNAVAILABLE (上游服务宕机 / 5xx / 网络超时 / ETIMEDOUT)
+    // 5. SERVICE_UNAVAILABLE (upstream outage / 5xx / network timeout / ETIMEDOUT)
     // -------------------------------------------------------------
     const isServerUnavailable =
       (statusCode !== undefined && statusCode >= 500 && statusCode < 600) ||

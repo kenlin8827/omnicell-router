@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
 import { ExecutionResult, ModelPricing, ReasoningEffort, EFFORT_LADDER, RoutingDecision, TIER_RANK, TierLevel, downgradeReasoning } from '../types/router.js';
-import { ModelRegistration, RouterConfig } from '../config/types.js';
+import { ClassifierConfig, FlywheelConfig, ModelRegistration, RouterConfig } from '../config/types.js';
 import { PromptOptimizer } from './prompt-optimizer.js';
 import { applyCompression } from '../compression/index.js';
 import { RouterEngine, routingModeForceTier } from '../router/index.js';
@@ -134,6 +134,19 @@ export class PipelineOrchestrator {
 
   public getFlywheel(): FlywheelCollector {
     return this.flywheel;
+  }
+
+  /**
+   * The routing config snapshot this orchestrator was built with. Exposed so
+   * the flywheel training route can resolve the same Layer 1 model path the
+   * classifier actually loads, instead of guessing a second path.
+   */
+  public getClassifierConfig(): ClassifierConfig | undefined {
+    return this.config.classifier;
+  }
+
+  public getFlywheelConfig(): FlywheelConfig | undefined {
+    return this.config.flywheel;
   }
 
   public getSessionManager(): SessionManager {
@@ -368,8 +381,9 @@ export class PipelineOrchestrator {
       );
     const sessionId = sessionResolve.sessionId;
 
-    // 2B. Token-saver compression (toolOutput 工具输出压缩 → headroom sidecar →
-    // outputStyle 输出风格注入). All stages fail open. Snapshot the PRE-compression
+    // 2B. Token-saver compression (toolOutput tool-output compression → headroom
+    // sidecar → outputStyle injection). All stages fail open. Snapshot the
+    // PRE-compression
     // messages for the post-turn prefix fingerprint: the client always sends
     // uncompressed bytes, so the session chain must be indexed on the original
     // content — matching registerCompletedTurn below against compressed bytes
@@ -383,7 +397,7 @@ export class PipelineOrchestrator {
     }));
     await applyCompression(normalizedRequest, this.config.compression, sessionId);
 
-    // 3. Multi-Layer Hierarchical Router (Layer 1 Local CPU -> Layer 2 Jev)
+    // 3. Multi-Layer Hierarchical Router (Layer 1 Local CPU -> Layer 2 System One decision)
     // Combo requests bypass the classifier entirely: the combo id IS the
     // explicit routing decision; targetTier here is a placeholder — the
     // executed member's real tier overwrites it after the pool run.
@@ -403,7 +417,12 @@ export class PipelineOrchestrator {
             complexityScore: 0,
           },
         }
-      : await RouterEngine.routeAsync(normalizedRequest, this.config.classifier);
+      : await RouterEngine.routeAsync(
+          normalizedRequest,
+          this.config.classifier,
+          this.registry,
+          this.config.systemone?.defaultModel
+        );
 
     // 4. Apply Monotonic Session Ratchet — three session-interaction modes,
     // resolved once here (the unified policy seam for all entry modes):
@@ -490,6 +509,14 @@ export class PipelineOrchestrator {
     // makes no-effort requests think). The written-back value is what the
     // provider builders construct the upstream payload from; `reasoningDegraded`
     // is surfaced via `X-OCR-Thinking-Actual` / `X-OCR-Thinking-Degraded`.
+    // Model-default effort pin: the client omitted `reasoning_effort`
+    // entirely (explicit values — 'none' included — always win) and the
+    // selected model declares a default → pin it as the requested level so
+    // every downstream step (effort matching, payload thinking block,
+    // X-OCR-Thinking-* observability) treats it as a normal request.
+    if (normalizedRequest.reasoning_effort === undefined && actualModel.defaultEffort) {
+      normalizedRequest.reasoning_effort = actualModel.defaultEffort;
+    }
     const requestedEffort: ReasoningEffort | undefined = normalizedRequest.reasoning_effort;
     let actualEffort: ReasoningEffort | undefined;
     let reasoningDegraded = false;

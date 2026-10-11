@@ -32,7 +32,29 @@ export function normalizeModelsDev(raw: Record<string, any>): CatalogProviderRec
           attachment: m.attachment === true || undefined,
           reasoning: m.reasoning === true || undefined,
           tool_call: m.tool_call === true || undefined,
-          temperature: m.temperature === true || undefined,
+          // Tri-state capability flag: true = confirmed supported / false =
+          // explicitly unsupported (next-gen Claude etc.) / absent = no data.
+          // Must NOT be written as `=== true || undefined` — that conflates
+          // false with unknown, leaving the provider layer unable to strip the
+          // param (upstream 400 "`temperature` is deprecated").
+          temperature: m.temperature === true ? true : m.temperature === false ? false : undefined,
+          reasoningOptions:
+            Array.isArray(m.reasoning_options) && m.reasoning_options.length > 0
+              ? m.reasoning_options
+              : undefined,
+          interleaved: m.interleaved && typeof m.interleaved === 'object' ? m.interleaved : undefined,
+          structured_output: m.structured_output === true || undefined,
+          status: m.status || undefined,
+          // Passthrough display metadata — kept verbatim so the catalog is the
+          // complete models.dev schema; consumers attach progressively.
+          description: m.description || undefined,
+          family: m.family || undefined,
+          release_date: m.release_date || undefined,
+          last_updated: m.last_updated || undefined,
+          open_weights: m.open_weights === true || undefined,
+          knowledge: m.knowledge || undefined,
+          canonical_model_id: m.canonical_model_id || undefined,
+          experimental: m.experimental && typeof m.experimental === 'object' ? m.experimental : undefined,
           modalities: m.modalities && typeof m.modalities === 'object' ? m.modalities : undefined,
           cost: m.cost && typeof m.cost === 'object' ? m.cost : undefined,
           limit: m.limit && typeof m.limit === 'object' ? m.limit : undefined,

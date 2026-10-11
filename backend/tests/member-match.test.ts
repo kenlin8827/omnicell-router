@@ -91,7 +91,7 @@ describe('applyEffortMap — passthrough + translation', () => {
   });
 });
 
-describe('generateMemberLists — legacy classifier as the import/seed engine', () => {
+describe('generateMemberLists — the first-boot seed engine', () => {
   const match = resolveTierMatch({}); // built-in baseline (price bands + default patterns)
 
   it('buckets by the legacy classification and preserves the old chain order', () => {
@@ -113,17 +113,17 @@ describe('generateMemberLists — legacy classifier as the import/seed engine', 
     expect(all.includes('p/mystery')).toBe(false);
   });
 
-  it('honors pins (overrideTier > configTier) and skips denied ids', () => {
+  it('honors configTier pins and skips denied ids', () => {
     const lists = generateMemberLists(
       [
-        { id: 'p/pinned-pro', bareId: 'pinned-pro', inputPerM: 0.2, reasoningFlag: false, overrideTier: 'pro', chainPriority: 0 },
+        { id: 'p/cheap-pinned-pro', bareId: 'cheap-pinned-pro', inputPerM: 0.2, reasoningFlag: false, configTier: 'pro', chainPriority: 0 },
         { id: 'p/jsonc-ultra', bareId: 'jsonc-ultra', inputPerM: 0.2, reasoningFlag: false, configTier: 'ultra', chainPriority: 0 },
         { id: 'p/denied', bareId: 'denied', inputPerM: 0.2, reasoningFlag: false, chainPriority: 0 },
       ],
       match,
       (id) => id === 'p/denied',
     );
-    expect(lists.pro.map((r) => r.pattern)).toEqual(['p/pinned-pro']);
+    expect(lists.pro.map((r) => r.pattern)).toEqual(['p/cheap-pinned-pro']);
     expect(lists.ultra.map((r) => r.pattern)).toEqual(['p/jsonc-ultra']);
     expect(lists.lite.map((r) => r.pattern)).toEqual([]);
   });

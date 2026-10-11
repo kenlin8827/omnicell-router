@@ -29,6 +29,11 @@ export function normalizeOpenRouter(raw: { data?: any[] }): CatalogModel[] {
       name: m.name || undefined,
       reasoning: params.includes('reasoning') || undefined,
       tool_call: params.includes('tools') || undefined,
+      // OpenRouter's supported_parameters containing `temperature` IS a support
+      // declaration; absence may mean "not declared" rather than "explicitly
+      // unsupported", so emit only true — false's authoritative source is the
+      // baseline catalog.
+      temperature: params.includes('temperature') || undefined,
       limit: {
         context: m.context_length ?? m.top_provider?.context_length,
         output: m.top_provider?.max_completion_tokens,

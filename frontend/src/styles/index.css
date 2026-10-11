@@ -366,6 +366,149 @@ td, th {
   font-size: 11px;
 }
 
+/* Toggle chip for multi-select option rows (thinking-effort ladder,
+   capability pickers, filter pills). Rendered by components/Chip.tsx as a
+   real <button> carrying `aria-pressed`, so the unselected state must still
+   read as pressable: filled surface + visible border + hover/focus
+   feedback. Never restyle chips inline — that is how they regressed into
+   unclickable text. */
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+/* Sub-label inside a field block (e.g. the input/output column headings of
+   the modality picker). */
+.field-sub-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 3px;
+}
+/* Form layout primitives (components/Form.tsx) — shared by the model editor
+   and the OCR source editor so both group their fields identically. */
+.form-section {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.form-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-dim);
+}
+.form-section-title::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--card-border);
+}
+.form-section-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.form-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+.form-hint {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+.form-switch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+/* Square icon-only action button (row actions in the models list). Pairs with
+   `.btn btn-sm btn-icon` — icon size ~11px needs a fixed, generous box. */
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 6px;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 4px 12px;
+  border-radius: 12px;
+  cursor: pointer;
+  user-select: none;
+  background: var(--btn-bg);
+  border: 1px solid var(--card-border);
+  color: var(--text-muted);
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, transform 0.1s ease;
+}
+.chip:hover {
+  background: var(--btn-bg-hover);
+  border-color: var(--card-border-hover);
+  color: var(--text-main);
+}
+.chip:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.chip:active {
+  transform: scale(0.97);
+}
+.chip[aria-pressed='true'] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--btn-primary-text);
+  font-weight: 600;
+}
+.chip[aria-pressed='true']:hover {
+  filter: brightness(1.12);
+}
+/* One row of the variant editor (components/VariantListEditor.tsx): id input
+   + effort dropdown + remove button. `align-items: stretch` plus the shared
+   `.input` control height makes the three controls one strip, and the remove
+   button is a full-height icon button rather than a glyph-sized stub. */
+.variant-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+.variant-remove {
+  flex-shrink: 0;
+  min-width: 40px;
+  padding: 0 12px;
+  color: var(--text-dim);
+}
+.variant-remove:hover {
+  background: rgba(244, 63, 94, 0.15);
+  border-color: rgba(244, 63, 94, 0.3);
+  color: var(--accent-rose);
+}
+/* Warning-tone chip variant (e.g. the "locked only" filter). Declared after
+   the accent rules so it wins on equal specificity. */
+.chip--amber[aria-pressed='true'] {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: var(--accent-amber);
+  color: var(--accent-amber);
+  font-weight: 700;
+}
+.chip--amber[aria-pressed='true']:hover {
+  background: rgba(245, 158, 11, 0.2);
+}
+
 .input {
   width: 100%;
   background: var(--input-bg);

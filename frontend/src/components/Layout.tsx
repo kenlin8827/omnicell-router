@@ -104,6 +104,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
       { to: '/sessions', labelKey: 'nav.sessions', icon: Users },
       { to: '/cache', labelKey: 'nav.cache', icon: Database },
       { to: '/captures', labelKey: 'nav.captures', icon: Archive },
+      { to: '/flywheel', labelKey: 'nav.flywheel', icon: BrainCircuit },
       { to: '/logs', labelKey: 'nav.logs', icon: ScrollText },
     ],
   },
@@ -144,6 +145,7 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/cache': { groupKey: 'nav.grpObservability', titleKey: 'nav.cache' },
   '/logs': { groupKey: 'nav.grpObservability', titleKey: 'nav.logs' },
   '/captures': { groupKey: 'nav.grpObservability', titleKey: 'nav.captures' },
+  '/flywheel': { groupKey: 'nav.grpObservability', titleKey: 'nav.flywheel' },
   '/settings': { groupKey: 'nav.grpSystem', titleKey: 'nav.settings' },
   '/yaml': { groupKey: 'nav.grpSystem', titleKey: 'nav.yaml' },
 };

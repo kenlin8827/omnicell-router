@@ -91,7 +91,7 @@ export function buildResponsesPayload(request: ChatCompletionRequest, model: Mod
   if (joined) payload.instructions = joined;
   if (request.max_tokens != null) payload.max_output_tokens = request.max_tokens;
   else if (request.max_completion_tokens != null) payload.max_output_tokens = request.max_completion_tokens;
-  if (request.temperature != null) payload.temperature = request.temperature;
+  if (request.temperature != null && model.temperature !== false) payload.temperature = request.temperature;
   if (request.top_p != null) payload.top_p = request.top_p;
   if (request.tools?.length) payload.tools = request.tools;
   if (request.reasoning_effort || request.max_thinking_tokens != null) {

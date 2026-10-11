@@ -3,8 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getAllClientStatuses, setupClient, teardownClient } from '../cli/clients/index.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import { resolveTierMatch } from '../providers/tier-match.js';
-import { resolveTierMembers, matchingTiers, MEMBER_TIER_ORDER, asTierLevel } from '../providers/member-match.js';
+import { resolveTierMembers, matchingTiers, MEMBER_TIER_ORDER } from '../providers/member-match.js';
 import { globMatchAny } from '../utils/glob.js';
 import { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import { Layer2Judge } from '../router/layer2-judge.js';
@@ -96,8 +95,9 @@ function parseLogLine(raw: string): ParsedLogLine {
 /**
  * Catalog-style model payload → opencode v2 model definition shape
  * (https://opencode.ai/v2/docs/models/): capabilities{tools,input,output},
- * limit, settings.reasoningEffort, headers, body, compatibility.reasoningField,
- * variants, modelID, disabled.
+ * reasoning / temperature (tri-state capability flags), limit,
+ * settings.reasoningEffort, reasoningOptions (via reasoningEfforts),
+ * headers, body, compatibility.reasoningField, variants, modelID, disabled.
  */
 function bodyToModelDef(body: any): Record<string, any> {
   if (body?.definition && typeof body.definition === 'object') return { ...body.definition };
@@ -144,6 +144,27 @@ function bodyToModelDef(body: any): Record<string, any> {
     def.settings = s;
   } else if (body?.reasoningEffort) {
     def.settings = { reasoningEffort: String(body.reasoningEffort) };
+  }
+
+  // tri-state temperature capability (def top level; null = clear the key —
+  // modelUpdate deletes it after the spread so the def falls back to catalog)
+  if (body?.temperature === 'true' || body?.temperature === true) def.temperature = true;
+  else if (body?.temperature === 'false' || body?.temperature === false) def.temperature = false;
+  else if (body?.temperature === null) def.temperature = null;
+
+  // tri-state reasoning capability (def top level; same contract as
+  // `temperature` above). `reasoning` is the standard catalog flag that marks
+  // a model as thinking-capable; the level control lives separately in
+  // reasoningOptions (see reasoningEfforts below).
+  if (body?.reasoning === 'true' || body?.reasoning === true) def.reasoning = true;
+  else if (body?.reasoning === 'false' || body?.reasoning === false) def.reasoning = false;
+  else if (body?.reasoning === null) def.reasoning = null;
+
+  // supported thinking levels (def top level, models.dev `reasoningOptions`
+  // shape): non-empty → effort list, empty → toggle (no explicit control)
+  if (Array.isArray(body?.reasoningEfforts)) {
+    const vals = body.reasoningEfforts.map((x: any) => String(x)).filter(Boolean);
+    def.reasoningOptions = vals.length > 0 ? [{ type: 'effort', values: vals }] : [{ type: 'toggle' }];
   }
 
   // headers: { Name: Value } map or "Name: Value" lines (presence = full replace)
@@ -623,14 +644,12 @@ export function registerConsoleRoutes(
 
   const handleTierPools = async () => {
     // Snapshot of the SAVED file state (what a restart would load anyway, and
-    // what the save-commit has already applied). `match` rides along as the
-    // suggestion engine's resolved config (catalog-page recommendations).
+    // what the save-commit has already applied).
     const freshTiers = loadConfig().tiers;
     return {
       status: 'ok',
       pools: await projectTierPools(freshTiers),
       members: resolveTierMembers(freshTiers).tiers,
-      match: resolveTierMatch(freshTiers),
     };
   };
   app.get('/api/admin/tier-pools', handleTierPools);
@@ -680,7 +699,6 @@ export function registerConsoleRoutes(
       preview: true,
       pools: await projectTierPools(tiers),
       members: resolveTierMembers(tiers as any).tiers,
-      match: resolveTierMatch(tiers as any),
     };
   };
   app.post('/api/admin/tier-pools/preview', handleTierPoolsPreview);
@@ -902,15 +920,11 @@ export function registerConsoleRoutes(
     if (!body?.providerId || !body?.modelId || typeof body.entry !== 'object') {
       return reply.status(400).send({ success: false, error: 'providerId, modelId and entry are required' });
     }
-    if ('tier' in body.entry && body.entry.tier !== null && asTierLevel(body.entry.tier) === undefined) {
-      return reply.status(400).send({ success: false, error: 'entry.tier must be lite | plus | pro | ultra or null' });
-    }
     const { upsertOverride } = await import('../opencode/catalog/overrides-store.js');
     const result = upsertOverride(String(body.providerId), String(body.modelId), body.entry);
     if (!result.success) return reply.status(400).send(result);
     const { catalogRepository } = await import('../opencode/catalog/repository.js');
     await catalogRepository.ensureOcrStore();
-    registry.applyTierConfigNow(); // explicit catalog tier edits commit to pools immediately
     return { status: 'ok' };
   };
 
@@ -924,7 +938,6 @@ export function registerConsoleRoutes(
     if (!result.success) return reply.status(400).send(result);
     const { catalogRepository } = await import('../opencode/catalog/repository.js');
     await catalogRepository.ensureOcrStore();
-    registry.applyTierConfigNow(); // explicit catalog tier edits commit to pools immediately
     return { status: 'ok' };
   };
 

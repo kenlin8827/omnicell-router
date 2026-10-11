@@ -72,7 +72,7 @@ const Section: React.FC<{
   enableLabel: string;
   children?: React.ReactNode;
 }> = ({ title, desc, enabled, onToggle, enableLabel, children }) => (
-  <div style={{ borderTop: '1px solid var(--border)', paddingTop: '16px' }}>
+  <div style={{ borderTop: '1px solid var(--card-border)', paddingTop: '16px' }}>
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
       <span style={{ fontSize: '14px', fontWeight: 600 }}>{title}</span>
       <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', cursor: 'pointer' }}>

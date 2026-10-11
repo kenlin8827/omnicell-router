@@ -392,13 +392,6 @@ export interface TierPoolInfo {
 export interface TierPoolsResponse {
   status: string;
   pools: Record<string, TierPoolInfo>;
-  /** effective smart-match config (per tier, fully symmetric), for suggestion previews */
-  match?: Partial<
-    Record<
-      'lite' | 'plus' | 'pro' | 'ultra',
-      { patterns?: string[]; minInputPerM?: number; maxInputPerM?: number; exclude?: string[]; excludeTiers?: string[] }
-    >
-  >;
   /** resolved member lists (post-sanitize) — the routing source of truth */
   members?: Record<string, TierMemberRule[]>;
 }
@@ -462,10 +455,166 @@ export interface LogsResponse {
   lines: LogLine[];
 }
 
+export type TierName = 'lite' | 'plus' | 'pro' | 'ultra';
+export type FlywheelLabelSource = 'human' | 'runtime_fallback' | 'observed_execution' | 'unlabeled';
+
+export interface FlywheelSummary {
+  total: number;
+  trainable: number;
+  synthetic: number;
+  humanLabeled: number;
+  unlabeled: number;
+  trainableByTier: Record<string, number>;
+  sourceDistribution: Record<string, number>;
+  datasetPath: string;
+  labelsPath: string;
+  fileBytes: number;
+  firstTimestamp: string | null;
+  lastTimestamp: string | null;
+  tiers: TierName[];
+}
+
+export interface FlywheelSample {
+  id: string;
+  timestamp: string;
+  userPrompt: string;
+  tokenCount: number;
+  featureVector: number[] | null;
+  decision: {
+    targetTier: TierName;
+    confidence: number;
+    layerUsed: 'layer0' | 'layer1' | 'layer2';
+    reason: string;
+  };
+  execution: {
+    tierUsed: TierName;
+    modelUsed: string;
+    fallbackOccurred: boolean;
+    fallbackReason?: string;
+    costUsd: number;
+    latencyMs: number;
+    isSynthetic: boolean;
+  };
+  label: {
+    tier: TierName | null;
+    source: FlywheelLabelSource;
+    confidence: number;
+    overridden: boolean;
+    isNegativeForLite: boolean;
+    updatedAt?: string;
+  };
+  trainable: boolean;
+}
+
+export interface FlywheelTrainingReport {
+  trainedSamples: number;
+  skipped: Record<string, number>;
+  classDistribution: Record<string, number>;
+  finalLoss: number;
+  accuracy: number;
+  epochs: number;
+  lr: number;
+  l2: number;
+  balanced: boolean;
+  durationMs: number;
+  modelPath: string;
+}
+
+export interface FlywheelTrainingState {
+  status: 'idle' | 'training' | 'success' | 'failed';
+  lastStartedAt: string | null;
+  lastTrainedAt: string | null;
+  lastDurationMs: number | null;
+  lastResult: FlywheelTrainingReport | null;
+  error: string | null;
+  model: {
+    modelPath: string;
+    exists: boolean;
+    isBaseModel: boolean;
+    sampleCount: number;
+    lastTrainedAt: string | null;
+    featureDimensions: number;
+    classes: string[];
+    routingConsumesModel: boolean;
+    previousModelPath: string;
+    previousModelExists: boolean;
+  };
+}
+
+async function throwFor(res: Response): Promise<never> {
+  const err = await res.json().catch(() => ({}));
+  throw new Error(err?.error || err?.message || `HTTP ${res.status}`);
+}
+
 export const api = {
   async getStatus(): Promise<GatewayStatusResponse> {
     const res = await fetch('/api/admin/status');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async getFlywheelStats(): Promise<FlywheelSummary> {
+    const res = await fetch('/api/admin/flywheel/stats');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async getFlywheelSamples(params: {
+    limit?: number;
+    offset?: number;
+    tier?: string;
+    source?: string;
+    includeSynthetic?: boolean;
+    trainableOnly?: boolean;
+    search?: string;
+  }): Promise<{ rows: FlywheelSample[]; total: number; offset: number; limit: number }> {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null && v !== '') qs.set(k, String(v));
+    }
+    const res = await fetch(`/api/admin/flywheel/samples?${qs.toString()}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async setFlywheelLabel(id: string, tier: TierName | null): Promise<void> {
+    const res = await fetch(`/api/admin/flywheel/samples/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tier }),
+    });
+    if (!res.ok) await throwFor(res);
+  },
+
+  async getFlywheelTraining(): Promise<FlywheelTrainingState> {
+    const res = await fetch('/api/admin/flywheel/training');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async rollbackFlywheelModel(): Promise<{ ok: boolean; model: FlywheelTrainingState['model'] }> {
+    const res = await fetch('/api/admin/flywheel/model/rollback', { method: 'POST' });
+    if (!res.ok) await throwFor(res);
+    return res.json();
+  },
+
+  async startFlywheelTraining(options: {
+    epochs?: number;
+    balanceClasses?: boolean;
+    minLabelSource?: string;
+  }): Promise<{ started: boolean; state: FlywheelTrainingState; report?: FlywheelTrainingReport }> {
+    const res = await fetch('/api/admin/flywheel/training', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(options),
+    });
+    if (!res.ok) await throwFor(res);
+    return res.json();
+  },
+
+  async clearFlywheelLabels(): Promise<{ cleared: number }> {
+    const res = await fetch('/api/admin/flywheel/labels', { method: 'DELETE' });
+    if (!res.ok) await throwFor(res);
     return res.json();
   },
 
@@ -958,14 +1107,32 @@ export interface CatalogSourceView {
 export interface CatalogSourceDataModelRecord {
   id: string;
   name?: string;
+  npm?: string;
   reasoning?: boolean;
   tool_call?: boolean;
+  temperature?: boolean;
+  defaultEffort?: string;
+  reasoningOptions?: { type: string; values?: string[]; min?: number }[];
+  variants?: { id: string; effort: string }[];
+  interleaved?: { field?: string };
+  structured_output?: boolean;
+  status?: string;
+  description?: string;
+  family?: string;
+  release_date?: string;
+  last_updated?: string;
+  open_weights?: boolean;
+  knowledge?: string;
+  canonical_model_id?: string;
+  experimental?: Record<string, unknown>;
+  modalities?: { input?: string[]; output?: string[] };
   cost?: { input?: number; output?: number; cache_read?: number; cache_write?: number };
-  limit?: { context?: number; output?: number };
+  limit?: { context?: number; input?: number; output?: number };
   /** ocr view only: creating source of this model entry */
   source?: string;
-  /** OCR tier assignment (set only via aggregate overrides) */
-  tier?: string;
+  /** hidden from the model catalog (overrides.json `disabled`) — kept in the
+   *  aggregate, excluded from the routing pool at boot */
+  disabled?: boolean;
 }
 
 /** Full aggregated catalog (catalogRepository.list()) — mirrors backend CatalogProviderRecord. */
@@ -1040,6 +1207,8 @@ export interface OpenCodeModelView {
   modalities?: { input?: string[]; output?: string[] };
   cost?: { input?: number; output?: number; cache_read?: number; cache_write?: number };
   limit?: { context?: number; output?: number };
+  /** def-level `disabled` — hidden from the model catalog (row toggle action). */
+  disabled?: boolean;
   source: string;
 }
 

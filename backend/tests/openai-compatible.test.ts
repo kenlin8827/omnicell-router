@@ -69,6 +69,56 @@ describe('OpenAICompatibleProvider payload shaping', () => {
     }
   });
 
+  test('createCompletion strips temperature when model.temperature === false (models.dev tri-state)', async () => {
+    let received: any = null;
+    const server = serve({
+      port: 0,
+      async fetch(req) {
+        received = await req.json();
+        return Response.json({
+          id: 'chatcmpl-test',
+          object: 'chat.completion',
+          created: 1700000000,
+          model: 'upstream-model-id',
+          choices: [
+            { index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' },
+          ],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        });
+      },
+    });
+
+    try {
+      const config: ProviderConfig = {
+        name: 'test-provider',
+        type: 'openai',
+        baseUrl: `http://localhost:${server.port}`,
+        apiKey: 'sk-test',
+      };
+      const provider = new OpenAICompatibleProvider(config);
+      const request: ChatCompletionRequest = {
+        model: 'test-provider/test-model',
+        messages: [{ role: 'user', content: 'hi' }],
+        temperature: 1,
+        top_p: 0.9,
+      } as ChatCompletionRequest;
+
+      // false → strip temperature (top_p has no capability flag, so it still passes through)
+      const stripped = { ...makeModel(), temperature: false as const };
+      await provider.createCompletion(request, stripped);
+      expect(received.temperature).toBeUndefined();
+      expect(received.top_p).toBe(0.9);
+
+      // true / undefined → passed through unchanged
+      await provider.createCompletion(request, { ...makeModel(), temperature: true });
+      expect(received.temperature).toBe(1);
+      await provider.createCompletion(request, makeModel());
+      expect(received.temperature).toBe(1);
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test('createStream sets stream and stream_options together', async () => {
     let received: any = null;
     const server = serve({

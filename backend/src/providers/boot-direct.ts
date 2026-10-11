@@ -1,8 +1,9 @@
 import { ModelRegistration, ModelVariant, ProviderConfig, TiersConfig } from '../config/types.js';
+import type { CatalogModel } from '../opencode/catalog/types.js';
 import { PoolMembership, TierLevel, EFFORT_LADDER, type ReasoningEffort } from '../types/router.js';
 import { loadConfig, saveConfig } from '../config/index.js';
 import { resolveTierMatch, classifyTier } from './tier-match.js';
-import { resolveTierMembers, claimModel, generateMemberLists, MEMBER_TIER_ORDER, asTierLevel, type ImportableModel } from './member-match.js';
+import { resolveTierMembers, claimModel, generateMemberLists, MEMBER_TIER_ORDER, type ImportableModel } from './member-match.js';
 import { globMatchAny } from '../utils/glob.js';
 import { catalogRepository } from '../opencode/catalog/repository.js';
 import {
@@ -20,7 +21,7 @@ import { WireKind, wireFor, unroutableReason, baseForWire } from './wire.js';
  *   - auth.json credentials                                            [user-config.ts]
  *   - models.dev catalog (pricing/capabilities/provider+model npm)     [catalogRepository]
  * Wire per model = wireFor(model npm > config npm > provider npm, base hint).
- * OAuth providers are excluded explicitly (P2 owns their refresh lifecycle).
+ * OAuth providers are excluded explicitly; token refresh is owned elsewhere.
  */
 
 export interface DirectBootResult {
@@ -53,6 +54,40 @@ export function routableVariants(raw: unknown): ModelVariant[] | undefined {
     out.push({ id, reasoningEffort: effortRaw as ReasoningEffort });
   }
   return out.length > 0 ? out : undefined;
+}
+
+/**
+ * Catalog `reasoning_options` → the gateway's effort ladder for
+ * `supportedReasoningEfforts`.
+ *  - `effort`: intersect values with EFFORT_LADDER — the real tiers
+ *    (glm-5.3 only has low/high/max, o3 has no xhigh, so the "boolean expands
+ *    into the full ladder" assumption over-declares for this model set);
+ *  - `budget_tokens`: the full ladder (continuous budget, any tier maps to a
+ *    budget);
+ *  - `toggle` / unknown shape: `[]` — the model has NO explicit level
+ *    control (selection skips it for effort requests; wire-side clamps to
+ *    'none'). Never `undefined`: that means "assume everything" and the
+ *    legacy boolean, when present, would resurrect a full-ladder claim;
+ *  - legacy data with no reasoning_options: fall back to the boolean-expanded
+ *    ladder (backward compatibility).
+ */
+export function effortLadderFor(
+  catModel: CatalogModel | undefined,
+  isReasoning: boolean
+): readonly ReasoningEffort[] | undefined {
+  const opts = catModel?.reasoningOptions;
+  if (!Array.isArray(opts) || opts.length === 0) {
+    return isReasoning ? EFFORT_LADDER : undefined;
+  }
+  const effortOpt = opts.find((o) => o?.type === 'effort');
+  if (effortOpt && Array.isArray(effortOpt.values) && effortOpt.values.length > 0) {
+    const allowed = effortOpt.values.filter(
+      (v): v is ReasoningEffort => (EFFORT_LADDER as readonly string[]).includes(v)
+    );
+    if (allowed.length > 0) return allowed;
+  }
+  if (opts.some((o) => o?.type === 'budget_tokens')) return EFFORT_LADDER;
+  return [];
 }
 
 export async function buildDirectPool(): Promise<DirectBootResult> {
@@ -93,9 +128,16 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
 
     const defs = getProviderModelDefs(rec.id) || {};
     const catById = new Map(rec.models.map((m) => [m.id, m]));
-    const defIds = Object.keys(defs).filter((k) => (defs as any)[k]?.disabled !== true);
-    // config definitions win as the model universe when present (opencode semantics);
-    // auth-only providers fall back to the full catalog listing.
+    // config definitions win as the model universe when present (opencode
+    // semantics); auth-only providers (no defs at all) fall back to the full
+    // catalog listing. "Present but every def disabled" is NOT that case — it
+    // must end up with an empty universe, or hidden models leak back in
+    // through the catalog fallback.
+    // NOTE: no def-level `disabled` filter here — visibility is decided ONCE
+    // below from the aggregate (which merges def values + overrides.json, with
+    // the override winning). Filtering here would make a def-level
+    // `disabled: true` unrecoverable from the UI.
+    const defIds = Object.keys(defs);
     const modelIds = defIds.length > 0 ? defIds : rec.models.map((m) => m.id);
     if (modelIds.length === 0) {
       excluded.push({ provider: rec.id, reason: '目录与配置均无可用模型' });
@@ -107,6 +149,15 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
     for (const mid of modelIds) {
       const d = (defs as any)[mid];
       const catModel = catById.get(mid);
+      // Hidden from the catalog (overrides.json `disabled`, or a def-level
+      // `disabled` flag which the aggregation already carried over). Read from
+      // the AGGREGATE so both write paths are honored by this one check —
+      // hidden models stay listed in the catalog viewer but never reach the
+      // routing pool, so /v1/models omits them and nothing can be pinned.
+      if (catModel?.disabled === true) {
+        excluded.push({ provider: rec.id, model: `${rec.id}/${mid}`, reason: '已在模型目录中隐藏（disabled）' });
+        continue;
+      }
       // the routing pool speaks chat/responses/anthropic only —
       // image/audio/video OUTPUT models (qwen-image, TTS, ASR…) belong to tool
       // extension mechanisms and would answer 400 ModelProtocolUnsupported or
@@ -131,22 +182,27 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
       const outputCost = catModel?.cost?.output ?? inputCost * 4.0;
       const cacheRead = catModel?.cost?.cache_read ?? inputCost * 0.25;
 
-      // Explicit tier (catalog override / jsonc model def) wins; otherwise the
-      // configurable smart match classifies (patterns → price band → thinking-effort
-      // flag). Free models (input = 0) can hit the lite band; models without
-      // catalog pricing simply skip bands and now end up
+      // Explicit tier from the opencode.jsonc model definition wins; otherwise
+      // the configurable smart match classifies (patterns → price band →
+      // thinking-effort flag). Free models (input = 0) can hit the lite band;
+      // models without catalog pricing simply skip bands and now end up
       // UNCLASSIFIED (no residual tier) unless something claims them.
+      // NOTE: this is only the first-boot migration seed — the committed
+      // member lists below (claimModel) are the sole membership source.
       const explicitTier = (v: unknown): TierLevel | undefined =>
         v === 'lite' || v === 'plus' || v === 'pro' || v === 'ultra' ? (v as TierLevel) : undefined;
       const rawInputPerM = catModel?.cost?.input;
       const configTier = explicitTier(d?.tier);
-      const membership: PoolMembership =
-        explicitTier(catModel?.tier) ??
-        configTier ??
-        classifyTier({ modelId: mid, inputPerM: rawInputPerM, reasoningFlag: isReasoning }, tierMatch);
+      const membership: PoolMembership = configTier ?? classifyTier({ modelId: mid, inputPerM: rawInputPerM, reasoningFlag: isReasoning }, tierMatch);
       const unclassified = membership === 'unclassified';
       const tier: TierLevel = unclassified ? 'plus' : membership;
-      const variants = routableVariants((d as any)?.variants ?? (catModel as any)?.variants);
+      const variants = routableVariants((d as any)?.variants ?? catModel?.variants);
+      // Model-default thinking level: override (catalog) wins over the def's
+      // `settings.reasoningEffort`; invalid values are dropped defensively.
+      const rawDefaultEffort = catModel?.defaultEffort ?? (d?.settings?.reasoningEffort as string | undefined);
+      const defaultEffort = (EFFORT_LADDER as readonly string[]).includes(rawDefaultEffort ?? '')
+        ? (rawDefaultEffort as ReasoningEffort)
+        : undefined;
 
       models.push({
         id: `${rec.id}/${mid}`,
@@ -154,14 +210,20 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
         upstreamModel: (d && typeof d === 'object' && d.modelID ? String(d.modelID) : mid),
         tier,
         isDefaultInTier: false,
-        // The catalog only declares a boolean thinking-effort capability flag,
-        // so we map it to the full EFFORT_LADDER.
-        supportedReasoningEfforts: isReasoning ? EFFORT_LADDER : undefined,
-        supportsReasoningEffort: isReasoning || undefined,
+        // Catalog reasoning_options → the real effort tiers (see effortLadderFor).
+        // The legacy `supportsReasoningEffort` boolean is intentionally NOT set:
+        // `supportedReasoningEfforts` is always resolved here, and the legacy
+        // true-branch would resurrect a full-ladder claim for [] (toggle) models.
+        supportedReasoningEfforts: effortLadderFor(catModel, isReasoning),
+        // Tri-state sampling-parameter capability flag — the provider layer
+        // strips params for temperature:false models.
+        temperature: catModel?.temperature,
         supportsPromptCaching: wire === 'anthropic' || (catModel?.cost?.cache_read != null ? true : undefined),
         // Variants become routable sibling ids (`<id>-<variant>`) + `#variant`
         // syntax; the jsonc def is the source (catalog records may mirror it).
         variants,
+        // Pinned when the client omits `reasoning_effort` (orchestrator).
+        defaultEffort,
         wire,
         // Classification inputs → the registry replays tier membership live
         // (config match + catalog overrides) without a gateway restart.
@@ -196,45 +258,42 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
   }
 
   // ─── membership: explicit member lists are the ONLY source ──────
-  // First boot after the switch: if NO tier defines `members`, seed explicit
-  // lists from the legacy classification (pins > configTier > match) so the
-  // gateway keeps routing exactly what it routed before — then persist.
-  // Afterwards list order IS the chain order (priority = rule index + 1) and
-  // the list leader is the tier representative.
+  // Bootstrap: a brand-new install has no `members` anywhere (DEFAULT_CONFIG
+  // ships tiers: {}), so seed the first lists from the classifier
+  // (configTier > match) and persist them — otherwise every model would come
+  // out `unclassified` and all four pools would be empty. Afterwards list
+  // order IS the chain order (priority = rule index + 1) and the list leader
+  // is the tier representative.
   let resolved = resolveTierMembers(loadConfig().tiers);
   if (!resolved.configured) {
-    const { readOverridesStore, overrideKey } = await import('../opencode/catalog/overrides-store.js');
-    const overrides = readOverridesStore()?.models ?? {};
     const tiersCfg = loadConfig().tiers || {};
-    // Legacy chain leaders (pre-members price pyramid: cheapest lite / median
-    // plus / first-reasoning pro / priciest ultra) must land at list index 0 —
-    // at this point isDefaultInTier/priority are not yet assigned, so without
-    // this pass the seeded order would degenerate to registration insertion
-    // order and the migrated chain would pick a different primary (ADR-0013 §4).
+    // The tier leaders must land at list index 0 (cheapest lite / median plus
+    // / first-reasoning pro / priciest ultra) — at this point
+    // isDefaultInTier/priority are not yet assigned, so without this pass the
+    // seeded order would degenerate to registration insertion order and the
+    // seeded chain would pick a different primary.
     const external = models.filter((m) => m.provider !== 'opencode');
-    const legacyPool = external.length > 0 ? external : models;
-    const legacyLeaders = new Set<string>();
+    const seedPool = external.length > 0 ? external : models;
+    const seedLeaders = new Set<string>();
     const byInput = (a: ModelRegistration, b: ModelRegistration) => (a.pricing.input ?? 0) - (b.pricing.input ?? 0);
-    const tLite = legacyPool.filter((m) => m.tier === 'lite').sort(byInput);
-    if (tLite[0]) legacyLeaders.add(tLite[0].id);
-    let tPlus = legacyPool.filter((m) => m.tier === 'plus').sort(byInput);
-    if (tPlus.length === 0) tPlus = legacyPool.filter((m) => m.tier !== 'pro' && m.tier !== 'ultra');
-    if (tPlus.length > 0) legacyLeaders.add(tPlus[Math.floor(tPlus.length / 2)].id);
-    const tPro = legacyPool.filter((m) => m.tier === 'pro');
-    if (tPro.length > 0) legacyLeaders.add((tPro.find((m) => m.supportsReasoningEffort) || tPro[0]).id);
-    const tUltra = legacyPool.filter((m) => m.tier === 'ultra').sort((a, b) => -byInput(a, b));
-    if (tUltra[0]) legacyLeaders.add(tUltra[0].id);
+    const tLite = seedPool.filter((m) => m.tier === 'lite').sort(byInput);
+    if (tLite[0]) seedLeaders.add(tLite[0].id);
+    let tPlus = seedPool.filter((m) => m.tier === 'plus').sort(byInput);
+    if (tPlus.length === 0) tPlus = seedPool.filter((m) => m.tier !== 'pro' && m.tier !== 'ultra');
+    if (tPlus.length > 0) seedLeaders.add(tPlus[Math.floor(tPlus.length / 2)].id);
+    const tPro = seedPool.filter((m) => m.tier === 'pro');
+    if (tPro.length > 0) seedLeaders.add((tPro.find((m) => (m.supportedReasoningEfforts?.length ?? 0) > 0) || tPro[0]).id);
+    const tUltra = seedPool.filter((m) => m.tier === 'ultra').sort((a, b) => -byInput(a, b));
+    if (tUltra[0]) seedLeaders.add(tUltra[0].id);
     const inputs: ImportableModel[] = models.map((m) => {
       const bareId = m.id.startsWith(m.provider + '/') ? m.id.slice(m.provider.length + 1) : m.id;
-      const overrideTier = asTierLevel(overrides[overrideKey(m.provider, bareId)]?.tier);
       return {
         id: m.id,
         bareId,
         inputPerM: m.tierMatch?.rawInputPerM,
         reasoningFlag: m.tierMatch?.reasoningFlag ?? false,
         configTier: m.configTier,
-        overrideTier,
-        chainPriority: legacyLeaders.has(m.id) ? 0 : 10,
+        chainPriority: seedLeaders.has(m.id) ? 0 : 10,
       };
     });
     const deny = tiersCfg.exclude ?? [];
@@ -249,7 +308,7 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
     const saved = saveConfig({ tiers: mergedTiers });
     if (saved.success) {
       console.log(
-        `[OCR] seeded explicit tier members from the legacy match ` +
+        `[OCR] seeded the first tier member lists from the built-in match ` +
           `(lite ${seeded.lite.length} / plus ${seeded.plus.length} / pro ${seeded.pro.length} / ultra ${seeded.ultra.length}) ` +
           `and saved to config.yaml — review/adjust on the /tiers page.`
       );

@@ -8,7 +8,7 @@ Implemented — 2026-10-11.
 
 **System One** is a decision-model protocol introduced by TypeSafe AI (September 2026, first model Jev) and independently adopted by Alibaba Cloud Model Studio's decision-model API (`decision-model-preview`) and LiteLLM's Auto Router (self-hosted classifiers Laya / Bespoke Nimble; hosted Jev). A System One request evaluates one `state` against a map of typed `questions` (`choice` / `noul` / `score`) and receives typed `answers` with probabilities and confidence — never generated text. Callers are routers, guardrails and triage pipelines that consume the values directly.
 
-The gateway already carried a dormant TypeSafe touchpoint: the Layer 2 judge's `provider: 'typesafe'` branch posts to `POST {base}/decision/choice`, a shape that does not exist in TypeSafe's current public API (the only documented endpoint is `POST /v1/systemone`). That branch ships disabled (`classifier.layer2.enabled: false`) in both the example and live configs.
+The gateway already carried a dormant TypeSafe touchpoint: the Layer 2 judge's old `provider: 'typesafe'` branch posted to `POST {base}/decision/choice`, a shape that does not exist in TypeSafe's current public API (the only documented endpoint is `POST /v1/systemone`). That branch is GONE (see §5) — `classifier.layer2` ships disabled (`classifier.layer2.enabled: false`) in both the example and live configs.
 
 Operators want `POST /v1/systemone` served by the gateway — backed either by a native System One upstream (Jev / Bailian decision model) or by ANY registered chat model, with the protocol contract staying valid in all cases.
 
@@ -48,9 +48,14 @@ Operators want `POST /v1/systemone` served by the gateway — backed either by a
 - Converted calls execute through `registry.execute` — the exact named model, with provider-level proxy policy, timeout and `UpstreamError` classification applying. The orchestrator's session / classifier / schema-assertion machinery is deliberately NOT engaged.
 - Deliberately out of v1 scope: circuit-breaker tripping, FinOps accounting, trace/flywheel/capture records and decision caching for this surface; native upstream 4xx/5xx statuses are mirrored to the caller.
 
-### 5. L2 judge migration path
+### 5. Layer 2 judge migration path
 
-The retired-on-touch `classifier.layer2.provider: 'typesafe'` branch (`/decision/choice`) should target the new native System One path when it is next enabled. It remains disabled by default; nothing in this ADR activates it.
+**Implemented** — the Layer 2 judge no longer speaks any vendor wire. It composes one System One `choice` question over the four-tier vocabulary (`lite` / `plus` / `pro` / `ultra`, criteria carrying the full per-tier rubric and the "never judge by character length" rule) and runs it through the SAME executor as this route (`protocols/systemone/decide.ts` → `runSystemoneDecision`), reading `answers.tier.choice` + `confidence`. A native `type: 'systemone'` model therefore serves the judge natively; any other registered chat model serves it by conversion.
+
+- Config collapses to `classifier.layer2.{enabled, model, timeoutMs, decisionCache}` — `provider` / `baseUrl` / `apiKey` are deleted. `model` is a registered id; `'auto'` (or unset) resolves via `systemone.defaultModel`.
+- The judge's own `timeoutMs` is a hard deadline that outranks the upstream's: on expiry the judge returns null and the cascade falls back to Layer 1 (the converted path cannot be cancelled mid-flight — providers own their AbortControllers — so the loser simply stops being awaited).
+- Opt-in decision capture (`classifier.layer2.decisionCapture`, default OFF): judged (state, answer, tier) pairs land in `data/layer2-decisions.jsonl` — the raw material for distilling a native decision model and for calibrating converted confidence. Recorded only on the race-winner path; nothing consumes the file yet.
+- The converted-answer fidelity caveat applies to routing exactly as it does to the client surface: a tier chosen from a converted chat model rests on an uncalibrated self-report, and the judge records that in its `reason` string so traces stay honest.
 
 ## Consequences
 

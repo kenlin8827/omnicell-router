@@ -9,6 +9,8 @@ import { readCacheFile, writeCacheFile } from '../src/opencode/catalog/cache.js'
 import { readOcrStore, writeOcrStore } from '../src/opencode/catalog/ocr-store.js';
 import { isAllowedLogoUrl, localLogoApiPath, getLogoCached, writeLogoCache } from '../src/opencode/catalog/logos.js';
 import { resolveSources, parseByType, normalizeOpenAICompatible, normalizeMapped } from '../src/opencode/catalog/sources/registry.js';
+import { effortLadderFor } from '../src/providers/boot-direct.js';
+import { EFFORT_LADDER } from '../src/types/router.js';
 import type { CatalogModel } from '../src/opencode/catalog/types.js';
 
 describe('Catalog sources & repository', () => {
@@ -46,8 +48,28 @@ describe('Catalog sources & repository', () => {
             name: 'Claude Haiku',
             reasoning: true,
             tool_call: true,
-            limit: { context: 200000, output: 64000 },
+            temperature: true,
+            reasoning_options: [{ type: 'budget_tokens', min: 1024 }],
+            limit: { context: 200000, input: 180000, output: 64000 },
             cost: { input: 1, output: 5, cache_read: 0.1, cache_write: 1.25 },
+            structured_output: true,
+            status: 'beta',
+            description: 'Fast Claude model',
+            family: 'claude',
+            release_date: '2025-10-15',
+            last_updated: '2026-01-01',
+            open_weights: false,
+            knowledge: '2025-07',
+            canonical_model_id: 'anthropic/claude-haiku',
+            interleaved: { field: 'reasoning_content' },
+            experimental: { modes: { fast: { cost: { input: 2 } } } },
+          },
+          // Next-gen Claude: the raw models.dev data explicitly marks temperature:false
+          'claude-opus-5': {
+            name: 'Claude Opus 5',
+            reasoning: true,
+            temperature: false,
+            reasoning_options: [{ type: 'effort', values: ['low', 'high', 'max'] }],
           },
         },
       },
@@ -62,8 +84,26 @@ describe('Catalog sources & repository', () => {
     expect(m.source).toBe('opencode');
     expect(m.tool_call).toBe(true);
     expect(m.reasoning).toBe(true);
-    expect(m.limit).toEqual({ context: 200000, output: 64000 });
+    expect(m.limit).toEqual({ context: 200000, input: 180000, output: 64000 });
     expect(m.cost).toEqual({ input: 1, output: 5, cache_read: 0.1, cache_write: 1.25 });
+    // Tri-state capability flag + reasoning_options preserved verbatim
+    expect(m.temperature).toBe(true);
+    expect(m.reasoningOptions).toEqual([{ type: 'budget_tokens', min: 1024 }]);
+    // Full models.dev schema passthrough (capability bits + display metadata)
+    expect(m.structured_output).toBe(true);
+    expect(m.status).toBe('beta');
+    expect(m.description).toBe('Fast Claude model');
+    expect(m.family).toBe('claude');
+    expect(m.release_date).toBe('2025-10-15');
+    expect(m.last_updated).toBe('2026-01-01');
+    expect(m.open_weights).toBeUndefined(); // false collapses to absent (true-only flag)
+    expect(m.knowledge).toBe('2025-07');
+    expect(m.canonical_model_id).toBe('anthropic/claude-haiku');
+    expect(m.interleaved).toEqual({ field: 'reasoning_content' });
+    expect(m.experimental).toEqual({ modes: { fast: { cost: { input: 2 } } } });
+    const opus5 = a.models.find((x) => x.id === 'claude-opus-5');
+    expect(opus5?.temperature).toBe(false); // explicitly unsupported — must not collapse to missing
+    expect(opus5?.reasoningOptions).toEqual([{ type: 'effort', values: ['low', 'high', 'max'] }]);
     expect(modelsDevLogoUrl('deepseek')).toBe('https://models.dev/logos/deepseek.svg');
   });
 
@@ -97,7 +137,45 @@ describe('Catalog sources & repository', () => {
     expect(gpt.limit?.output).toBe(16384);
     expect(gpt.tool_call).toBe(true);
     expect(gpt.reasoning).toBeUndefined();
+    // supported_parameters containing temperature → declared supported; absent → undefined (never false)
+    expect(gpt.temperature).toBe(true);
     expect(models[1].reasoning).toBe(true);
+    expect(models[1].temperature).toBeUndefined();
+  });
+
+  it('maps reasoning_options to supportedReasoningEfforts (effort intersect / budget full ladder / toggle)', () => {
+    // effort: intersect with EFFORT_LADDER ('max' is declared on the anthropic wire and survives the intersection)
+    expect(
+      effortLadderFor({ id: 'm', reasoningOptions: [{ type: 'effort', values: ['low', 'high', 'max'] }] } as CatalogModel, true)
+    ).toEqual(['low', 'high', 'max']);
+    expect(
+      effortLadderFor({ id: 'm', reasoningOptions: [{ type: 'effort', values: ['unknown-level'] }] } as CatalogModel, true)
+    ).toEqual([]); // empty intersection → explicit "no level control" (never undefined)
+    expect(
+      effortLadderFor({ id: 'm', reasoningOptions: [{ type: 'budget_tokens', min: 1024 }] } as CatalogModel, true)
+    ).toEqual(EFFORT_LADDER); // continuous budget → full ladder
+    expect(effortLadderFor({ id: 'm', reasoningOptions: [{ type: 'toggle' }] } as CatalogModel, true)).toEqual([]);
+    // legacy data with no reasoning_options: fall back to the boolean-expanded ladder
+    expect(effortLadderFor({ id: 'm' } as CatalogModel, true)).toEqual(EFFORT_LADDER);
+    expect(effortLadderFor({ id: 'm' } as CatalogModel, false)).toBeUndefined();
+  });
+
+  it('preserves explicit temperature:false through fill-missing merge (first non-blank wins)', () => {
+    const backfilled = mergeModels(
+      [{ id: 'x', source: 'config' }],
+      [{ id: 'x', temperature: false, source: 'openrouter' }]
+    );
+    expect(backfilled[0].temperature).toBe(false); // missing → backfilled from false
+    const kept = mergeModels(
+      [{ id: 'z', temperature: true, source: 'config' }],
+      [{ id: 'z', temperature: false, source: 'openrouter' }]
+    );
+    expect(kept[0].temperature).toBe(true); // first source already declared → later source does not override
+    const keptFalse = mergeModels(
+      [{ id: 'w', temperature: false, source: 'config' }],
+      [{ id: 'w', temperature: true, source: 'openrouter' }]
+    );
+    expect(keptFalse[0].temperature).toBe(false); // false is a non-blank value, so it is never overwritten
   });
 
   it('merges model lists fill-missing-only: first non-blank value wins, source kept', () => {

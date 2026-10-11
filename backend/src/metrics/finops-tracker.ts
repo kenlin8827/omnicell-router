@@ -37,8 +37,9 @@ export interface FinOpsStats {
    * ms when the current cumulative window started (updates on every
    * reset and on the first record after construction). `lastWriteTs` is
    * the wall-clock ts of the last successful persist write; `null` until
-   * the first record. The console uses this trio to surface "数据自 X
-   * 起累计" and to detect silent write failure (`now - lastWriteTs > N`).
+   * the first record. The console uses this trio to surface the
+   * "accumulated since X" banner and to detect silent write failure
+   * (`now - lastWriteTs > N`).
    *
    * All OTHER fields on this snapshot (tier distribution, tokens, cost,
    * latency) are process-local and reset to zero on restart. They are

@@ -46,6 +46,10 @@ export class OpenAICompatibleProvider implements LLMProvider {
     // into a non-streaming payload (strict upstreams like Alibaba reject
     // stream_options without stream: true with a 400).
     delete payload.stream_options;
+    // Models the catalog marks temperature:false (next-gen Claude etc.) reject
+    // sampling params — strip them from the passthrough payload to avoid an
+    // upstream 400 invalid_request_error.
+    if (model.temperature === false) delete payload.temperature;
     // reasoning_effort is the OpenAI-standard field; forwarded verbatim.
     // `max` (Anthropic's top tier) is not a valid OpenAI value — the
     // orchestrator's downgrade step collapses it to `xhigh` (or lower)
@@ -181,6 +185,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
       stream_options: { include_usage: true },
     };
     delete payload.router_options;
+    // Models the catalog marks temperature:false — strip the param (same as the non-streaming path).
+    if (model.temperature === false) delete payload.temperature;
     // reasoning_effort is the OpenAI-standard field; forwarded verbatim.
     if (request.reasoning_effort) payload.reasoning_effort = request.reasoning_effort;
 

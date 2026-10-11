@@ -35,6 +35,20 @@ export interface ModelRegistration {
   supportsReasoningEffort?: boolean;
   supportsPromptCaching?: boolean;
   /**
+   * Tri-state sampling-parameter capability flag (from the models.dev catalog).
+   * false = the upstream explicitly rejects `temperature` (e.g. next-gen Claude
+   * answers "`temperature` is deprecated for this model"), so the provider layer
+   * strips it; true / undefined = pass through unchanged (undefined also covers
+   * hand-registered models with no catalog data).
+   */
+  temperature?: boolean;
+  /**
+   * Model-default thinking level — pinned when the client OMITS
+   * `reasoning_effort` entirely (explicit values, 'none' included, always
+   * win). Sourced from overrides.json / def `settings.reasoningEffort`.
+   */
+  defaultEffort?: ReasoningEffort;
+  /**
    * Named model variants, materialized by the boot-direct pool from
    * opencode.jsonc model defs (effort-bearing entries only — see
    * boot-direct.ts `routableVariants`). Each variant is routable as a
@@ -249,17 +263,33 @@ export interface Layer1ClassifierConfig {
 }
 export type LocalModelConfig = Layer1ClassifierConfig;
 
+/**
+ * Layer 2 judge configuration. The judge calls a REGISTERED model over the
+ * gateway's own System One protocol — there is no vendor endpoint,
+ * credential or wire format to configure: `provider`, `baseUrl` and `apiKey`
+ * are gone. Point `model` at any registered id (a `type: 'systemone'` provider
+ * for native passthrough, or any chat model for protocol conversion); when it
+ * is omitted, `systemone.defaultModel` is used.
+ */
 export interface Layer2JudgeConfig {
   enabled: boolean;
-  provider: 'typesafe' | 'opencode' | 'openrouter' | 'custom';
-  baseUrl?: string;
-  apiKey?: string;
-  model?: string; // e.g. 'typesafe/jev'
+  /** Registered model id, or 'auto' to fall back to `systemone.defaultModel`. */
+  model?: string;
   timeoutMs?: number;
   decisionCache?: { // reuse prior judge decisions for identical contexts
     enabled?: boolean; // default true
     ttlSeconds?: number; // default 1800
     maxEntries?: number; // default 500
+  };
+  /**
+   * Opt-in sink for judged System One decisions (state + answer + tier) —
+   * the raw material for distilling a native decision model and for
+   * calibrating converted confidence. Default OFF: `state` carries
+   * user conversation content. Nothing consumes the file yet.
+   */
+  decisionCapture?: {
+    enabled?: boolean; // default false
+    datasetPath?: string; // default './data/layer2-decisions.jsonl' (gitignored)
   };
 }
 export type Layer2DecisionConfig = Layer2JudgeConfig;
@@ -467,7 +497,7 @@ export interface WebAuthConfig {
  * System One protocol surface (POST /v1/systemone). Native upstreams declare
  * `type: 'systemone'` in providers; every other registered model serves via
  * chat-model conversion. `defaultModel` backs requests that omit `model`
- * (or send 'auto') — never routed through the tier cascade (ADR-0014).
+ * (or send 'auto') — never routed through the tier cascade.
  */
 export interface SystemoneSurfaceConfig {
   defaultModel?: string;
@@ -491,7 +521,7 @@ export interface RouterConfig {
   routing?: RoutingConfig;
   fallback: FallbackConfig;
   classifier?: ClassifierConfig;
-  /** System One protocol surface (POST /v1/systemone) — see ADR-0014. */
+  /** System One protocol surface (POST /v1/systemone). */
   systemone?: SystemoneSurfaceConfig;
   flywheel?: FlywheelConfig;
   session?: SessionConfig;

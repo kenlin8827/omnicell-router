@@ -270,7 +270,7 @@ export class SessionManager {
       // key always carries an assistant message PLUS a distinguishing third
       // message. Length-2 windows ([user, assistant]) are location-free keys
       // whose content can be byte-identical across conversations of the same
-      // harness (generic exchanges like "继续"/"好的") — a false-merge vector.
+      // harness (generic exchanges like "continue" / "ok") — a false-merge vector.
       // The extra message flips that failure into a self-healing false split.
       for (let s = end - 2; s >= startMin && probes < MAX_TAIL_PROBES; s--, probes++) {
         const hash = SessionManager.hashWindow(priorHistory.slice(s, end + 1), 'T');

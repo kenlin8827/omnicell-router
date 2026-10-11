@@ -1,99 +1,84 @@
-import fs from 'node:fs';
+/**
+ * CLI front-end for the learning flywheel's training stage.
+ *
+ * Delegates to FlywheelDataset + FlywheelTrainer — the same modules the console
+ * API uses — so a CLI run and a console-triggered run cannot drift apart.
+ *
+ * (This script previously re-implemented its own JSONL parsing: it rebuilt a
+ * synthetic request from the stored prompt text and re-extracted features from
+ * it, which silently produced wrong vectors for truncated/redacted rows, and it
+ * read the v1 `label.groundTruthTier` self-copy as ground truth.)
+ */
 import path from 'node:path';
-import { Layer1Classifier } from '../backend/src/router/layer1-classifier.js';
-import { FlywheelRecord } from '../backend/src/flywheel/collector.js';
-import { TierLevel } from '../backend/src/types/router.js';
+import { loadConfig } from '../backend/src/config/index.js';
+import { FlywheelDataset } from '../backend/src/flywheel/dataset.js';
+import { FlywheelTrainer } from '../backend/src/flywheel/trainer.js';
+import { FLYWHEEL_TIERS } from '../backend/src/flywheel/schema.js';
 
 async function main() {
   console.log('============================================================');
-  console.log('🧠 OCR (OpenCode Router) Layer 1 Classifier Trainer (Active Learning)');
+  console.log('🧠 OCR (OpenCode Router) Layer 1 Classifier Trainer (Learning Flywheel)');
   console.log('============================================================\n');
 
-  const datasetPath = path.resolve(process.cwd(), './data/flywheel.jsonl');
-  const modelPath = path.resolve(process.cwd(), './models/layer1-classifier.json');
+  const config = loadConfig();
+  const datasetPath = path.resolve(
+    process.cwd(),
+    config.flywheel?.datasetPath || './data/flywheel.jsonl'
+  );
+  const modelPath =
+    config.classifier?.localModel?.modelPath ||
+    path.resolve(process.cwd(), 'models/layer1-classifier.json');
 
-  // 1. Initialize Layer 1 classifier to ensure base model exists
-  await Layer1Classifier.init({ enabled: true, modelPath });
-  console.log(`📌 Current base model status: ${Layer1Classifier.getModelStatus()}`);
+  const dataset = new FlywheelDataset(datasetPath);
+  const trainer = new FlywheelTrainer(dataset, modelPath);
+  const summary = dataset.summary();
 
-  if (!fs.existsSync(datasetPath)) {
-    console.log(`⚠️ No flywheel dataset found at (${datasetPath}).`);
-    console.log(`💡 Note: As the gateway processes live traffic, records and fallback samples will accumulate automatically.`);
+  console.log(`📂 Dataset : ${datasetPath}`);
+  console.log(`🧠 Model   : ${modelPath}`);
+  console.log(`📝 Records : ${summary.total} (trainable ${summary.trainable}, test traffic ${summary.synthetic})`);
+
+  if (summary.total === 0) {
+    console.log('\n⚠️ Dataset is empty. Send some gateway traffic first.');
+    return;
+  }
+  if (summary.trainable === 0) {
+    console.log('\n⚠️ No trainable samples.');
+    console.log('💡 Trainable rows need BOTH a feature vector and a label.');
+    console.log('   Legacy v1 rows kept only a truncated prompt, so their 8 features');
+    console.log('   cannot be reconstructed — they stay visible in the console but are');
+    console.log('   never trained on. Collect traffic under schema v2 to fill the pool.');
     return;
   }
 
-  const lines = fs.readFileSync(datasetPath, 'utf8').trim().split('\n').filter(Boolean);
-  if (lines.length === 0) {
-    console.log('⚠️ Flywheel dataset is empty. No training samples available.');
+  console.log('\n⏳ Running micro-tensor softmax cross-entropy gradient descent (L2 regularized)...');
+  const outcome = await trainer.train({ balanceClasses: true, epochs: 200, lr: 0.15 });
+
+  if (outcome.error || !outcome.report) {
+    console.error(`\n❌ Training failed: ${outcome.error ?? 'unknown error'}\n`);
+    process.exitCode = 1;
     return;
   }
 
-  console.log(`📊 Successfully loaded flywheel dataset: ${lines.length} records`);
-
-  // 2. Parse samples and build training dataset
-  const trainingSamples: Array<{ features: number[]; targetTier: TierLevel }> = [];
-  let negativeCorrections = 0;
-
-  for (const line of lines) {
-    try {
-      const raw = JSON.parse(line) as any;
-      const userPrompt = raw.userPrompt || '';
-      const dummyReq: any = raw.request || {
-        model: 'auto',
-        messages: [{ role: 'user', content: userPrompt }],
-        response_format: raw.features?.hasToolsOrSchema ? { type: 'json_object' } : undefined,
-      };
-
-      // Extract language-agnostic features
-      const extracted = Layer1Classifier.extractFeatures(dummyReq);
-      
-      // Determine ground truth label
-      let targetTier: TierLevel = raw.label?.groundTruthTier || raw.execution?.tierUsed || raw.routing?.targetTier || 'plus';
-
-      // If schema assertion fallback occurred on lite tier, it's a strong negative sample -> escalate to plus
-      if (raw.label?.isNegativeSampleForLite || (raw.execution?.fallbackOccurred && targetTier === 'lite')) {
-        targetTier = 'plus';
-        negativeCorrections++;
-      }
-
-      trainingSamples.push({
-        features: extracted.vector,
-        targetTier,
-      });
-    } catch {
-      // skip invalid lines
-    }
-  }
-
-  if (trainingSamples.length === 0) {
-    console.log('⚠️ No valid feature samples could be extracted.');
-    return;
-  }
-
-  console.log(`🎯 Valid training samples: ${trainingSamples.length} (including ${negativeCorrections} fallback-corrected negative samples)`);
-  console.log('⏳ Running micro-tensor Softmax cross-entropy gradient descent (with L2 regularization)...');
-
-  // 3. Train base model
-  const trainResult = Layer1Classifier.train(trainingSamples, {
-    epochs: 200,
-    lr: 0.15,
-    l2: 0.005,
-  });
-
-  // 4. Save trained weights to disk
-  const updatedModel = Layer1Classifier.getLoadedModel();
-  Layer1Classifier.saveModel(updatedModel, modelPath);
-
+  const r = outcome.report;
   console.log('\n============================================================');
   console.log('✅ Layer 1 model training complete!');
   console.log('============================================================');
-  console.log(`👉 Total Trained Samples : ${trainResult.trainedSamples}`);
-  console.log(`👉 Final Converged Loss  : ${trainResult.finalLoss}`);
-  console.log(`👉 Training Set Accuracy : ${(trainResult.accuracy * 100).toFixed(1)}%`);
-  console.log(`👉 Model Output Path     : ${modelPath}`);
-  console.log(`👉 Status Transition     : isBaseModel (true -> false)`);
+  console.log(`👉 Total Trained Samples : ${r.trainedSamples}`);
+  console.log(`👉 Final Converged Loss  : ${r.finalLoss}`);
+  console.log(`👉 Training Set Accuracy : ${(r.accuracy * 100).toFixed(1)}%`);
+  console.log(`👉 Duration              : ${r.durationMs} ms`);
+  console.log(`👉 Class Mix             : ${FLYWHEEL_TIERS.map((t) => `${t}:${r.classDistribution[t] ?? 0}`).join('  ')}`);
+  console.log(`👉 Model Output Path     : ${r.modelPath}`);
   console.log('============================================================');
-  console.log('⚡ Effective immediately: High-confidence requests will be dispatched locally on CPU (0.1ms)!\n');
+
+  const skipped = Object.entries(r.skipped)
+    .filter(([, n]) => n > 0)
+    .map(([k, n]) => `${k}=${n}`)
+    .join('  ');
+  if (skipped) console.log(`⏭️  Skipped              : ${skipped}`);
+
+  console.log('\n⚡ Effective immediately — set classifier.localModel.enabled=true to route on it.');
+  console.log('   (The base scaffold always stays below the confidence threshold.)\n');
 }
 
 main().catch(err => {

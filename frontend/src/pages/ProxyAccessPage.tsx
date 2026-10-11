@@ -139,7 +139,7 @@ export const ProxyAccessPage: React.FC = () => {
 
   // ── help wizard steps (content only — configuration lives in the card above) ──
   // Wizard steps (display order — the i18n key numbers are historical: the old
-  // 「启用代理」 step was removed since enabling lives in the always-visible
+  // "enable proxy" step was removed since enabling lives in the always-visible
   // config card above). Steps: 1 trust CA · 2 point clients · 3 verify.
   const steps: { id: string; title: string; body: React.ReactNode }[] = [
     {

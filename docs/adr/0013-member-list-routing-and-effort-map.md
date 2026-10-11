@@ -49,7 +49,7 @@ nothing matched → 'unclassified'               // fourth state KEPT (ADR-0012)
 Application (all entry modes: auto / explicit / combo members — it is a MODEL property):
 
 ```
-effectiveTarget = effortMap[requested] ?? requested        // "未配置 = 原样透传"
+effectiveTarget = effortMap[requested] ?? requested        // unconfigured = passed through verbatim
 actual          = downgradeReasoning(effectiveTarget, supported(model))   // capability clamp
 skip candidate  if effectiveTarget !== 'none' and actual === 'none'       // honesty contract
 degraded        = rank(actual) < rank(requested)            // vs the CLIENT ask, not the map target

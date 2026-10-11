@@ -162,17 +162,18 @@ classifier:
     modelPath: "./models/layer1-classifier.json"
     confidenceThreshold: 0.85       # Confidence threshold: >=0.85 serves locally, <0.85 cascades to Layer 2
 
-  # Layer 2: Dedicated context-aware decision model (TypeSafe Jev / OpenCode proxy)
+  # Layer 2: Dedicated context-aware decision model, called over the
+  # gateway's OWN System One protocol (POST /v1/systemone) — no vendor SDK,
+  # no vendor endpoint. ANY registered model id serves it: a `type: systemone`
+  # provider passes through natively, a chat model via protocol conversion.
   layer2:
     enabled: false                  # Enable Layer 2 dedicated judge model
-    provider: "typesafe"            # Options: 'typesafe' | 'openrouter' | 'opencode'
-    model: "typesafe/jev"           # Non-autoregressive decision model
-    # apiKey: "${TYPESAFE_API_KEY}"
+    model: "auto"                   # Registered model id; 'auto' = systemone.defaultModel
     timeoutMs: 1500                 # Decision timeout in ms (graceful fallback to Layer 0 on timeout)
 
 # Active Learning Data Flywheel
 flywheel:
-  enabled: true                     # Automatically log routing decisions, execution results, and negative samples
+  enabled: false                    # OPT-IN — the learning flywheel's dataset collection (default: off)
   datasetPath: "./data/flywheel.jsonl" # Path to JSONL dataset
   logUserPrompt: true               # Set to false if prompt logging should be omitted for privacy
 

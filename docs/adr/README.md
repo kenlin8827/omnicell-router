@@ -1,6 +1,6 @@
 # Architecture Decision Records (ADR)
 
-> 🇨🇳 中文版索引与文档请参阅 [Chinese Version (中文版)](./zh-CN/README.md)。
+> 🇨🇳 Chinese translation index & docs: [Chinese Version](./zh-CN/README.md).
 
 This project adopts Architecture Decision Records (ADR) to document key architectural decisions, motivations, context, and trade-offs, ensuring long-term consistency and traceability.
 

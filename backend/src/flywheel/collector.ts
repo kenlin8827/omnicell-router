@@ -3,60 +3,36 @@ import path from 'node:path';
 import { RoutingDecision, TierLevel } from '../types/router.js';
 import { ChatCompletionRequest } from '../types/openai.js';
 import { FlywheelConfig } from '../config/types.js';
-
-export interface FlywheelRecord {
-  id: string;
-  timestamp: string;
-  userPrompt: string;
-  tokenCount: number;
-  features: {
-    hasCode: boolean;
-    hasMathOrProof: boolean;
-    hasMultiTurn: boolean;
-    hasToolsOrSchema: boolean;
-    complexityScore: number;
-  };
-  routing: {
-    targetTier: TierLevel;
-    confidence: number;
-    layerUsed: 'layer0' | 'layer1' | 'layer2';
-  };
-  execution: {
-    tierUsed: TierLevel;
-    modelUsed: string;
-    fallbackOccurred: boolean;
-    fallbackReason?: string;
-    costUsd: number;
-    latencyMs: number;
-  };
-  label: {
-    groundTruthTier: TierLevel;
-    labelSource: 'runtime_fallback' | 'layer2_jev' | 'layer1_confident' | 'layer0_lite';
-    isNegativeSampleForLite: boolean;
-  };
-}
+import { Layer1Classifier } from '../router/layer1-classifier.js';
+import {
+  FLYWHEEL_SCHEMA_VERSION,
+  FlywheelRecord,
+  deriveDefaultLabel,
+  detectSynthetic,
+} from './schema.js';
 
 export interface FlywheelStats {
   totalSamples: number;
-  tierDistribution: Record<TierLevel, number>;
+  tierDistribution: Record<string, number>;
   layerDistribution: Record<'layer0' | 'layer1' | 'layer2', number>;
   fallbackCount: number;
-  negativeSampleCount: number;
 }
 
 export class FlywheelCollector {
   private config: FlywheelConfig;
   private datasetPath: string;
-  private memoryStats: FlywheelStats = {
+  private stats: FlywheelStats = {
     totalSamples: 0,
-    tierDistribution: { lite: 0, plus: 0, pro: 0, ultra: 0 },
+    tierDistribution: {},
     layerDistribution: { layer0: 0, layer1: 0, layer2: 0 },
     fallbackCount: 0,
-    negativeSampleCount: 0,
   };
 
   constructor(config?: FlywheelConfig) {
-    this.config = config || { enabled: true, datasetPath: './data/flywheel.jsonl' };
+    // Default matches DEFAULT_CONFIG.flywheel: opt-in. Tests that build an
+    // orchestrator with a hand-rolled config object (no `flywheel` field) must
+    // not silently start collecting into the production dataset path.
+    this.config = config ?? { enabled: false, datasetPath: './data/flywheel.jsonl' };
     this.datasetPath = path.resolve(process.cwd(), this.config.datasetPath || './data/flywheel.jsonl');
     this.ensureDirectory();
   }
@@ -74,7 +50,12 @@ export class FlywheelCollector {
   }
 
   /**
-   * Record a full end-to-end execution turn into the data flywheel pool
+   * Record one end-to-end execution turn into the data flywheel dataset.
+   *
+   * The feature vector is captured HERE, at request time, because the 8
+   * features the trainer consumes are computed from the full request and
+   * cannot be reconstructed later from a truncated (or redacted) prompt —
+   * which is exactly why the legacy v1 rows are not trainable.
    */
   public async record(params: {
     requestId: string;
@@ -86,10 +67,14 @@ export class FlywheelCollector {
     fallbackReason?: string;
     costUsd: number;
     latencyMs: number;
+    /** Test-bench traffic marker; overrides the built-in fingerprint heuristic. */
+    synthetic?: boolean;
   }): Promise<void> {
     if (!this.config.enabled) return;
 
-    // Extract user prompt text
+    // Redaction and truncation only affect the human-readable copy — the
+    // feature vector below is what training actually consumes, so a redacted
+    // dataset still trains fine.
     const messages = params.request.messages || [];
     const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
     let promptText = typeof lastUserMsg?.content === 'string'
@@ -104,39 +89,31 @@ export class FlywheelCollector {
       promptText = promptText.slice(0, 2000) + '...[TRUNCATED]';
     }
 
-    // Determine Ground Truth label from execution outcomes:
-    // If fallback occurred, lite small model was NOT sufficient -> groundTruth is escalated tier (plus/pro)
-    let groundTruthTier: TierLevel = params.decision.targetTier;
-    let labelSource: 'runtime_fallback' | 'layer2_jev' | 'layer1_confident' | 'layer0_lite' = 'layer0_lite';
-    const isNegativeSampleForLite = params.fallbackOccurred;
+    const extracted = Layer1Classifier.extractFeatures(params.request);
 
-    if (params.fallbackOccurred) {
-      groundTruthTier = params.tierUsed;
-      labelSource = 'runtime_fallback';
-    } else if (params.decision.layerUsed === 'layer2') {
-      groundTruthTier = params.decision.targetTier;
-      labelSource = 'layer2_jev';
-    } else if (params.decision.layerUsed === 'layer1') {
-      groundTruthTier = params.decision.targetTier;
-      labelSource = 'layer1_confident';
-    }
+    // The label is what actually SERVED the request, not what the router
+    // asked for. Copying `decision.targetTier` into the label (the v1 bug)
+    // made every non-fallback row self-labelled and erased the strongest
+    // signal in the dataset: 73% of rows had targetTier != tierUsed.
+    const isSynthetic = params.synthetic ?? detectSynthetic(params.requestId, params.modelUsed, params.fallbackReason);
+    const targetTier = params.decision.targetTier;
 
     const record: FlywheelRecord = {
+      v: FLYWHEEL_SCHEMA_VERSION,
       id: params.requestId,
       timestamp: new Date().toISOString(),
-      userPrompt: promptText,
-      tokenCount: params.decision.features.tokenCountEstimate,
-      features: {
-        hasCode: params.decision.features.hasCode,
-        hasMathOrProof: params.decision.features.hasMathOrProof,
-        hasMultiTurn: params.decision.features.hasMultiTurn,
-        hasToolsOrSchema: params.decision.features.hasToolsOrSchema,
-        complexityScore: params.decision.features.complexityScore,
+      input: {
+        userPrompt: promptText,
+        featureVector: extracted.vector,
+        featureNames: extracted.featureNames,
+        tokenCount: extracted.metrics.tokenCount,
+        turnCount: extracted.metrics.turnCount,
       },
-      routing: {
-        targetTier: params.decision.targetTier,
+      decision: {
+        targetTier,
         confidence: params.decision.confidence,
         layerUsed: params.decision.layerUsed || 'layer0',
+        reason: params.decision.reason || '',
       },
       execution: {
         tierUsed: params.tierUsed,
@@ -145,22 +122,25 @@ export class FlywheelCollector {
         fallbackReason: params.fallbackReason,
         costUsd: params.costUsd,
         latencyMs: params.latencyMs,
+        isSynthetic,
       },
-      label: {
-        groundTruthTier,
-        labelSource,
-        isNegativeSampleForLite,
-      },
+      label: deriveDefaultLabel({
+        targetTier,
+        tierUsed: params.tierUsed,
+        fallbackOccurred: params.fallbackOccurred,
+      }),
+      trainable: true,
     };
 
     // Update memory stats
-    this.memoryStats.totalSamples++;
-    this.memoryStats.tierDistribution[groundTruthTier] = (this.memoryStats.tierDistribution[groundTruthTier] || 0) + 1;
-    const layer = params.decision.layerUsed || 'layer0';
-    this.memoryStats.layerDistribution[layer] = (this.memoryStats.layerDistribution[layer] || 0) + 1;
+    this.stats.totalSamples++;
+    if (record.label.tier) {
+      this.stats.tierDistribution[record.label.tier] = (this.stats.tierDistribution[record.label.tier] || 0) + 1;
+    }
+    const layer = record.decision.layerUsed;
+    this.stats.layerDistribution[layer]++;
     if (params.fallbackOccurred) {
-      this.memoryStats.fallbackCount++;
-      this.memoryStats.negativeSampleCount++;
+      this.stats.fallbackCount++;
     }
 
     // Asynchronously append to JSONL file
@@ -172,11 +152,9 @@ export class FlywheelCollector {
     }
   }
 
-  /**
-   * Get in-memory flywheel statistics
-   */
+  /** In-memory counters for the current process lifetime (reset on restart). */
   public getStats(): FlywheelStats {
-    return { ...this.memoryStats };
+    return { ...this.stats };
   }
 
   public getDatasetPath(): string {

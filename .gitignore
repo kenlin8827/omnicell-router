@@ -4,6 +4,7 @@ dist/
 *.log
 config.yaml
 data/*.jsonl
+data/*.jsonl.*
 !data/.gitkeep
 
 # runtime artifacts

@@ -1,8 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { CloudDownload, Plus, RefreshCw, Trash2, Lock, LockOpen, Globe, Eye, ChevronDown, ChevronRight, Database, Info, Braces, Copy, Pencil } from 'lucide-react';
+import { CloudDownload, Plus, RefreshCw, Trash2, Lock, LockOpen, Globe, Eye, EyeOff, ChevronDown, ChevronRight, Database, Info, Braces, Copy, Pencil, Check, Loader2 } from 'lucide-react';
 import {
-  api,
   opencodeApi,
   type CatalogSourceView,
   type CatalogSourceDataResponse,
@@ -10,21 +9,18 @@ import {
   type CatalogSourceDataModelRecord,
   type OcrCatalogProvider,
 } from '../lib/api';
-import { ModelEditDialog } from '../components/ModelEditDialog';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
 import { Switch } from '../components/Switch';
 import { Combobox } from '../components/Combobox';
-import { classifyTierDetailed, DEFAULT_TIER_MATCH, type ResolvedTierMatch, type TierMatchCfg, type TierReasonCode } from '../lib/tierMatch';
+import { Chip, EffortChips } from '../components/Chip';
+import { VariantListEditor } from '../components/VariantListEditor';
+import { ModalityPicker } from '../components/ModalityPicker';
+import { Dialog } from '../components/Dialog';
+import { Field, FieldRow, FormSection } from '../components/Form';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
-
-const TIER_REASON_KEYS: Record<TierReasonCode, string> = {
-  name: 'catalogPage.ocrTierWhyName',
-  flag: 'catalogPage.ocrTierWhyReasoning',
-  cost: 'catalogPage.ocrTierWhyCost',
-  unclassified: 'catalogPage.ocrTierWhyUnclassified',
-};
+import { EFFORT_LADDER, effectiveEffortLadder, effortOptionList } from '../lib/effort';
 
 /**
  * /catalog — remote catalog source management: view sync state (origin +
@@ -97,7 +93,7 @@ const TypeBadge: React.FC<{ source: CatalogSourceView }> = ({ source }) => {
         fontSize: '10px',
         padding: '2px 8px',
         borderRadius: '999px',
-        border: '1px solid var(--border)',
+        border: '1px solid var(--card-border)',
         color: 'var(--text-dim)',
         whiteSpace: 'nowrap',
         overflow: 'hidden',
@@ -128,7 +124,7 @@ const JSON_PRE: React.CSSProperties = {
   lineHeight: 1.55,
   color: 'var(--text-main)',
   background: 'rgba(255,255,255,0.03)',
-  border: '1px solid var(--border)',
+  border: '1px solid var(--card-border)',
   borderRadius: '6px',
   padding: '10px 12px',
   margin: 0,
@@ -148,8 +144,10 @@ const ModelTable: React.FC<{
   providerId?: string;
   lockedIds?: Set<string>;
   onToggleLock?: (m: CatalogSourceDataModelRecord) => void;
+  /** Hide / show from the model catalog — writes overrides.json (see ModelsPage). */
+  onToggleHidden?: (m: CatalogSourceDataModelRecord) => void;
   onEdit?: (m: CatalogSourceDataModelRecord) => void;
-}> = ({ models, showSource, providerId, lockedIds, onToggleLock, onEdit }) => {
+}> = ({ models, showSource, providerId, lockedIds, onToggleLock, onToggleHidden, onEdit }) => {
   const lockKey = (mid: string): string => (providerId ? `${providerId}||${mid}` : mid);
   const isLocked = (mid: string): boolean => Boolean(lockedIds?.has(lockKey(mid)));
   const { t } = useI18n();
@@ -161,6 +159,15 @@ const ModelTable: React.FC<{
     textAlign: 'left',
   };
   const cell: React.CSSProperties = { fontSize: '11px', color: 'var(--text-main)', padding: '3px 6px 3px 0' };
+  const iconBtn = (color: string, title: string, onClick: () => void, node: React.ReactNode, marginLeft: number): React.ReactElement => (
+    <button
+      onClick={onClick}
+      title={title}
+      style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, marginLeft, display: 'inline-flex', verticalAlign: 'middle', color }}
+    >
+      {node}
+    </button>
+  );
   return (
     <div style={{ display: 'grid', gridTemplateColumns: MODEL_GRID }}>
       <div style={head}>{t('catalogPage.dataColModel')}</div>
@@ -168,73 +175,63 @@ const ModelTable: React.FC<{
       <div style={head}>{t('catalogPage.dataColInput')}</div>
       <div style={head}>{t('catalogPage.dataColOutput')}</div>
       <div style={head}>{t('catalogPage.dataColCtx')}</div>
-      {models.map((m) => (
+      {models.map((m) => {
+        const hidden = m.disabled === true;
+        // hidden models stay listed here (that is how you find and restore
+        // them) but the row reads as out-of-routing at a glance
+        const rcell: React.CSSProperties = hidden ? { ...cell, opacity: 0.55 } : cell;
+        return (
         <React.Fragment key={m.id}>
-          <div style={{ ...cell, fontFamily: "'JetBrains Mono', monospace", fontSize: '10px' }}>
+          <div style={{ ...rcell, fontFamily: "'JetBrains Mono', monospace", fontSize: '10px' }}>
             {m.id}
-            {onEdit && (
-              <button
-                onClick={() => onEdit(m)}
-                title={t('op.pmEdit')}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, marginLeft: 6, display: 'inline-flex', verticalAlign: 'middle', color: 'var(--accent)' }}
-              >
-                <Pencil size={9} />
-              </button>
-            )}
-            {onToggleLock ? (
-              <button
-                onClick={() => onToggleLock(m)}
-                title={isLocked(m.id) ? t('models.unlockHint') : t('models.lockHint')}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  cursor: 'pointer',
-                  padding: 0,
-                  marginLeft: 8,
-                  display: 'inline-flex',
-                  verticalAlign: 'middle',
-                  color: isLocked(m.id) ? 'var(--accent-amber)' : 'var(--text-dim)',
-                }}
-              >
-                {isLocked(m.id) ? <Lock size={9} /> : <LockOpen size={9} />}
-              </button>
-            ) : (
-              isLocked(m.id) && (
-                <span title={t('models.lockHint')} style={{ display: 'inline-flex', color: 'var(--accent-amber)', marginLeft: 4, verticalAlign: 'middle' }}>
-                  <Lock size={9} />
-                </span>
-              )
-            )}
-            {m.tier && (
-              <span
-                title={t('catalogPage.ocrEditTier')}
-                style={{
-                  marginLeft: 6,
-                  fontSize: 9,
-                  fontWeight: 700,
-                  padding: '0 5px',
-                  borderRadius: 999,
-                  border: '1px solid var(--border)',
-                  color: m.tier === 'lite' ? 'var(--accent-emerald)' : m.tier === 'pro' || m.tier === 'ultra' ? 'var(--accent-violet)' : 'var(--accent)',
-                }}
-              >
-                {m.tier}
+            {hidden && (
+              <span style={{ marginLeft: 6, fontSize: 9, color: 'var(--text-dim)', border: '1px solid var(--card-border)', borderRadius: 999, padding: '0 5px' }}>
+                {t('models.hiddenBadge')}
               </span>
             )}
+            {onEdit &&
+              iconBtn('var(--accent)', t('op.pmEdit'), () => onEdit(m), <Pencil size={9} />, 6)}
+            {onToggleHidden
+              ? iconBtn(
+                  hidden ? 'var(--text-dim)' : 'var(--text-dim)',
+                  hidden ? t('models.showInCatalog') : t('models.hideFromCatalog'),
+                  () => onToggleHidden(m),
+                  hidden ? <EyeOff size={9} /> : <Eye size={9} />,
+                  8,
+                )
+              : hidden && (
+                  <span title={t('models.hideFromCatalog')} style={{ display: 'inline-flex', color: 'var(--text-dim)', marginLeft: 8, verticalAlign: 'middle' }}>
+                    <EyeOff size={9} />
+                  </span>
+                )}
+            {onToggleLock
+              ? iconBtn(
+                  isLocked(m.id) ? 'var(--accent-amber)' : 'var(--text-dim)',
+                  isLocked(m.id) ? t('models.unlockHint') : t('models.lockHint'),
+                  () => onToggleLock(m),
+                  isLocked(m.id) ? <Lock size={9} /> : <LockOpen size={9} />,
+                  8,
+                )
+              : isLocked(m.id) && (
+                  <span title={t('models.lockHint')} style={{ display: 'inline-flex', color: 'var(--accent-amber)', marginLeft: 4, verticalAlign: 'middle' }}>
+                    <Lock size={9} />
+                  </span>
+                )}
           </div>
-          <div style={{ ...cell, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <div style={{ ...rcell, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {m.name || '—'}
             {showSource && m.source && (
-              <span style={{ marginLeft: 5, fontSize: 9, color: 'var(--text-dim)', border: '1px solid var(--border)', borderRadius: 999, padding: '0 5px' }}>
+              <span style={{ marginLeft: 5, fontSize: 9, color: 'var(--text-dim)', border: '1px solid var(--card-border)', borderRadius: 999, padding: '0 5px' }}>
                 {m.source}
               </span>
             )}
           </div>
-          <div style={cell}>{fmtPrice(m.cost?.input)}</div>
-          <div style={cell}>{fmtPrice(m.cost?.output)}</div>
-          <div style={cell}>{m.limit?.context ? m.limit.context.toLocaleString() : '—'}</div>
+          <div style={rcell}>{fmtPrice(m.cost?.input)}</div>
+          <div style={rcell}>{fmtPrice(m.cost?.output)}</div>
+          <div style={rcell}>{m.limit?.context ? m.limit.context.toLocaleString() : '—'}</div>
         </React.Fragment>
-      ))}
+        );
+      })}
     </div>
   );
 };
@@ -403,7 +400,7 @@ const DataViewerModal: React.FC<{ source: CatalogSourceView; onClose: () => void
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
-            <div style={{ overflowY: 'auto', flex: 1, minHeight: 0, borderTop: '1px solid var(--border)', paddingTop: '8px' }}>
+            <div style={{ overflowY: 'auto', flex: 1, minHeight: 0, borderTop: '1px solid var(--card-border)', paddingTop: '8px' }}>
               {isProviderSource ? (
                 providers.length === 0 ? (
                   <div style={{ ...fieldLabel, padding: '24px 0', textAlign: 'center' }}>{t('catalogPage.dataEmpty')}</div>
@@ -412,7 +409,7 @@ const DataViewerModal: React.FC<{ source: CatalogSourceView; onClose: () => void
                     const open = expanded.has(p.id);
                     const ms = p.models ?? [];
                     return (
-                      <div key={p.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                      <div key={p.id} style={{ borderBottom: '1px solid var(--card-border)' }}>
                         <div
                           onClick={() => toggle(p.id)}
                           style={{ display: 'flex', alignItems: 'center', gap: '7px', padding: '7px 4px', cursor: 'pointer', userSelect: 'none' }}
@@ -485,6 +482,7 @@ const OcrCatalogModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const [showJson, setShowJson] = useState(false);
   const [editTarget, setEditTarget] = useState<{ providerId: string; modelId: string; current: CatalogSourceDataModelRecord } | null>(null);
   const [onlyLocked, setOnlyLocked] = useState(false);
+  const [onlyHidden, setOnlyHidden] = useState(false);
   useBodyScrollLock(true);
 
   const loadData = useCallback(async () => {
@@ -511,6 +509,19 @@ const OcrCatalogModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     }
   };
 
+  /** Hide / show from the model catalog — the SAME writer as the model list
+   *  (overrides.json), so either surface shows what the routing pool will do. */
+  const handleToggleHidden = async (m: CatalogSourceDataModelRecord, providerId: string) => {
+    const hidden = m.disabled !== true;
+    try {
+      await opencodeApi.putCatalogOverride(providerId, m.id, { disabled: hidden });
+      await loadData();
+      toast.info(t(hidden ? 'models.hiddenToast' : 'models.shownToast', { id: `${providerId}/${m.id}` }));
+    } catch (err: any) {
+      toast.error('Failed: ' + err.message);
+    }
+  };
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -522,12 +533,23 @@ const OcrCatalogModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const q = query.trim().toLowerCase();
   const MAX_RENDER = 300;
 
+  const hiddenCount = React.useMemo(
+    () => (data?.providers ?? []).reduce((n, p) => n + p.models.filter((m) => m.disabled === true).length, 0),
+    [data]
+  );
+
   const providers = React.useMemo(() => {
     let list = data?.providers ?? [];
-    if (onlyLocked) {
-      // 只看已锚定：仅保留含锁定模型的 provider，模型行也只显示锁定的
+    if (onlyLocked || onlyHidden) {
+      // narrow to the flagged models only (both filters compose: locked ∩ hidden)
       list = list
-        .map((p) => ({ ...p, models: p.models.filter((m) => lockedIds.has(`${p.id}||${m.id}`)) }))
+        .map((p) => ({
+          ...p,
+          models: p.models.filter(
+            (m) =>
+              (!onlyLocked || lockedIds.has(`${p.id}||${m.id}`)) && (!onlyHidden || m.disabled === true)
+          ),
+        }))
         .filter((p) => p.models.length > 0);
     }
     if (!q) return list;
@@ -540,7 +562,7 @@ const OcrCatalogModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         return self || models.length > 0 ? { ...p, models } : null;
       })
       .filter((x): x is OcrCatalogProvider => x !== null);
-  }, [data, q, onlyLocked, lockedIds]);
+  }, [data, q, onlyLocked, onlyHidden, lockedIds]);
 
   const totalModels = React.useMemo(() => (data?.providers ?? []).reduce((n, p) => n + p.models.length, 0), [data]);
 
@@ -636,26 +658,29 @@ const OcrCatalogModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             <div style={{ display: 'flex', gap: '14px', fontSize: '11px', alignItems: 'center' }}>
               <span style={{ color: 'var(--accent)', fontWeight: 700 }}>{t('catalogPage.dataProviders', { n: data.providers.length })}</span>
               <span style={{ color: 'var(--accent)', fontWeight: 700 }}>{t('catalogPage.dataModelsN', { n: totalModels })}</span>
-              <button
-                onClick={() => setOnlyLocked((v) => !v)}
+              <Chip
+                label={
+                  <>
+                    <Lock size={10} />
+                    {t('catalogPage.ocrLocked', { n: lockedIds.size })}
+                  </>
+                }
+                pressed={onlyLocked}
+                tone="amber"
                 title={t('catalogPage.ocrOnlyLockedHint')}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 4,
-                  fontSize: '11px',
-                  fontWeight: 700,
-                  padding: '2px 10px',
-                  borderRadius: 999,
-                  cursor: 'pointer',
-                  color: onlyLocked ? 'var(--accent-amber)' : 'var(--text-dim)',
-                  border: `1px solid ${onlyLocked ? 'var(--accent-amber)' : 'var(--border)'}`,
-                  background: onlyLocked ? 'rgba(245,158,11,0.12)' : 'transparent',
-                }}
-              >
-                <Lock size={10} />
-                {t('catalogPage.ocrLocked', { n: lockedIds.size })}
-              </button>
+                onToggle={() => setOnlyLocked((v) => !v)}
+              />
+              <Chip
+                label={
+                  <>
+                    <EyeOff size={10} />
+                    {t('catalogPage.ocrHidden', { n: hiddenCount })}
+                  </>
+                }
+                pressed={onlyHidden}
+                title={t('catalogPage.ocrOnlyHiddenHint')}
+                onToggle={() => setOnlyHidden((v) => !v)}
+              />
             </div>
           </>
         )}
@@ -668,16 +693,20 @@ const OcrCatalogModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
-            <div style={{ overflowY: 'auto', flex: 1, minHeight: 0, borderTop: '1px solid var(--border)', paddingTop: '8px' }}>
+            <div style={{ overflowY: 'auto', flex: 1, minHeight: 0, borderTop: '1px solid var(--card-border)', paddingTop: '8px' }}>
               {providers.length === 0 ? (
                 <div style={{ ...dim, padding: '24px 0', textAlign: 'center' }}>
-                  {onlyLocked ? t('catalogPage.ocrNoLocked') : t('catalogPage.dataEmpty')}
+                  {onlyLocked
+                    ? t('catalogPage.ocrNoLocked')
+                    : onlyHidden
+                      ? t('catalogPage.ocrNoHidden')
+                      : t('catalogPage.dataEmpty')}
                 </div>
               ) : (
                 providers.slice(0, MAX_RENDER).map((p) => {
                   const open = expanded.has(p.id);
                   return (
-                    <div key={p.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                    <div key={p.id} style={{ borderBottom: '1px solid var(--card-border)' }}>
                       <div
                         onClick={() => toggle(p.id)}
                         style={{ display: 'flex', alignItems: 'center', gap: '7px', padding: '7px 4px', cursor: 'pointer', userSelect: 'none' }}
@@ -689,7 +718,7 @@ const OcrCatalogModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                         )}
                         <span style={{ display: 'inline-flex', gap: 4, flexShrink: 0 }}>
                           {p.sources.map((s) => (
-                            <span key={s} style={{ fontSize: 9, color: 'var(--text-dim)', border: '1px solid var(--border)', borderRadius: 999, padding: '0 5px' }}>
+                            <span key={s} style={{ fontSize: 9, color: 'var(--text-dim)', border: '1px solid var(--card-border)', borderRadius: 999, padding: '0 5px' }}>
                               {s}
                             </span>
                           ))}
@@ -711,6 +740,7 @@ const OcrCatalogModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                             providerId={p.id}
                             lockedIds={lockedIds}
                             onToggleLock={(m) => void handleToggleLock(m, p.id)}
+                            onToggleHidden={(m) => void handleToggleHidden(m, p.id)}
                             onEdit={(m) => setEditTarget({ providerId: p.id, modelId: m.id, current: m })}
                           />
                         </div>
@@ -778,9 +808,37 @@ const OcrEditModal: React.FC<{
   const [costOutput, setCostOutput] = useState(cur.cost?.output != null ? String(cur.cost.output) : '');
   const [contextLimit, setContextLimit] = useState(cur.limit?.context != null ? String(cur.limit.context) : '');
   const [outputLimit, setOutputLimit] = useState(cur.limit?.output != null ? String(cur.limit.output) : '');
+  // Capability switches show the CURRENT effective value (override first, then
+  // the aggregated catalog value) — WYSIWYG. Save diffs every field against
+  // this open-time effective value: changed fields land in the override,
+  // untouched fields keep following source refreshes.
+  const [caps, setCaps] = useState<Record<'tool_call' | 'reasoning' | 'temperature', boolean>>({
+    tool_call: cur.tool_call === true,
+    reasoning: cur.reasoning === true,
+    temperature: cur.temperature === true,
+  });
+  // Open-time baseline of the switches, captured AFTER the override fetch
+  // resolves (it can overwrite `caps`). The save diff compares against THIS,
+  // not the raw catalog field: a Switch has no "unset" position, so
+  // `cur.reasoning === undefined` initializes it to false, and diffing that
+  // against the raw `undefined` reported every untouched model as changed and
+  // silently pinned `reasoning: false` / `temperature: false` as a sticky
+  // override on the next source sync.
+  const [capsBaseline, setCapsBaseline] = useState<Record<'tool_call' | 'reasoning' | 'temperature', boolean>>({
+    tool_call: cur.tool_call === true,
+    reasoning: cur.reasoning === true,
+    temperature: cur.temperature === true,
+  });
+  const [efforts, setEfforts] = useState<string[]>(effectiveEffortLadder(cur));
+  const [npm, setNpm] = useState(cur.npm ?? '');
+  const [cacheRead, setCacheRead] = useState(cur.cost?.cache_read != null ? String(cur.cost.cache_read) : '');
+  const [cacheWrite, setCacheWrite] = useState(cur.cost?.cache_write != null ? String(cur.cost.cache_write) : '');
+  const [modIn, setModIn] = useState<string[]>(cur.modalities?.input ?? []);
+  const [modOut, setModOut] = useState<string[]>(cur.modalities?.output ?? []);
+  const [variants, setVariants] = useState<{ id: string; effort: string }[]>(cur.variants ?? []);
+  const [defaultEffort, setDefaultEffort] = useState<string>(cur.defaultEffort ?? '');
   const [hasOverride, setHasOverride] = useState(false);
   const [saving, setSaving] = useState(false);
-  useBodyScrollLock(true);
 
   useEffect(() => {
     opencodeApi
@@ -792,8 +850,26 @@ const OcrEditModal: React.FC<{
         if (e.name !== undefined) setName(String(e.name));
         if (e.cost?.input != null) setCostInput(String(e.cost.input));
         if (e.cost?.output != null) setCostOutput(String(e.cost.output));
+        if (e.cost?.cache_read != null) setCacheRead(String(e.cost.cache_read));
+        if (e.cost?.cache_write != null) setCacheWrite(String(e.cost.cache_write));
         if (e.limit?.context != null) setContextLimit(String(e.limit.context));
         if (e.limit?.output != null) setOutputLimit(String(e.limit.output));
+        if (e.reasoningEfforts !== undefined) setEfforts(e.reasoningEfforts);
+        if (e.npm !== undefined) setNpm(String(e.npm));
+        if (e.variants !== undefined) setVariants(e.variants);
+        if (e.defaultEffort !== undefined) setDefaultEffort(e.defaultEffort ?? '');
+        if (e.modalities?.input) setModIn(e.modalities.input);
+        if (e.modalities?.output) setModOut(e.modalities.output);
+        setCaps((c) => ({
+          tool_call: e.tool_call !== undefined ? e.tool_call : c.tool_call,
+          reasoning: e.reasoning !== undefined ? e.reasoning : c.reasoning,
+          temperature: e.temperature !== undefined ? e.temperature : c.temperature,
+        }));
+        setCapsBaseline({
+          tool_call: e.tool_call !== undefined ? e.tool_call : cur.tool_call === true,
+          reasoning: e.reasoning !== undefined ? e.reasoning : cur.reasoning === true,
+          temperature: e.temperature !== undefined ? e.temperature : cur.temperature === true,
+        });
       })
       .catch(() => undefined);
   }, [target.providerId, target.modelId]);
@@ -804,24 +880,56 @@ const OcrEditModal: React.FC<{
   };
 
   const save = async () => {
+    // A default effort outside the declared levels would be pinned onto every
+    // Backstop for data this form did not produce (e.g. hand-edited
+    // overrides.json): a default effort outside the declared levels would be
+    // pinned onto every routed request. Picking a default auto-checks its
+    // level, so this only fires on pre-existing mismatches. An empty ladder
+    // declares no explicit levels → skip.
+    if (defaultEffort && efforts.length > 0 && !efforts.includes(defaultEffort)) {
+      toast.error(t('catalogPage.ocrDefaultEffortNotInLadder', { effort: defaultEffort }));
+      return;
+    }
     setSaving(true);
     try {
       // Partial-patch semantics: overrides merge key-by-key over the catalog
       // (overrides-store.ts), so ONLY send fields the user actually filled —
       // blanks mean "keep the catalog value", never an implicit 0.
       const entry: Record<string, any> = {};
-      if (name.trim()) entry.name = name.trim();
+      // WYSIWYG diff: a field lands in the override ONLY when the value on
+      // screen differs from the effective value at open time (`cur` — the
+      // aggregated catalog view already includes prior overrides). Untouched
+      // fields keep following source refreshes; blanks never imply 0.
+      const changed = (v: unknown, base: unknown): boolean => JSON.stringify(v ?? null) !== JSON.stringify(base ?? null);
+      if (name.trim() && changed(name.trim(), cur.name)) entry.name = name.trim();
       const cost: Record<string, number> = {};
-      if (num(costInput) !== undefined) cost.input = num(costInput)!;
-      if (num(costOutput) !== undefined) cost.output = num(costOutput)!;
+      if (num(costInput) !== undefined && changed(num(costInput), cur.cost?.input)) cost.input = num(costInput)!;
+      if (num(costOutput) !== undefined && changed(num(costOutput), cur.cost?.output)) cost.output = num(costOutput)!;
+      if (num(cacheRead) !== undefined && changed(num(cacheRead), cur.cost?.cache_read)) cost.cache_read = num(cacheRead)!;
+      if (num(cacheWrite) !== undefined && changed(num(cacheWrite), cur.cost?.cache_write)) cost.cache_write = num(cacheWrite)!;
       if (Object.keys(cost).length > 0) entry.cost = cost;
       const limit: Record<string, number> = {};
-      if (num(contextLimit) !== undefined) limit.context = num(contextLimit)!;
-      if (num(outputLimit) !== undefined) limit.output = num(outputLimit)!;
+      if (num(contextLimit) !== undefined && changed(num(contextLimit), cur.limit?.context)) limit.context = num(contextLimit)!;
+      if (num(outputLimit) !== undefined && changed(num(outputLimit), cur.limit?.output)) limit.output = num(outputLimit)!;
       if (Object.keys(limit).length > 0) entry.limit = limit;
-      // tier membership moved to the /tiers member lists — this
-      // modal no longer writes overrides.tier (existing values are kept and
-      // honored once by the import/seed).
+      if (caps.tool_call !== capsBaseline.tool_call) entry.tool_call = caps.tool_call;
+      if (caps.reasoning !== capsBaseline.reasoning) entry.reasoning = caps.reasoning;
+      if (caps.temperature !== capsBaseline.temperature) entry.temperature = caps.temperature;
+      const ladderNow = EFFORT_LADDER.filter((l) => efforts.includes(l));
+      if (changed(ladderNow, effectiveEffortLadder(cur))) entry.reasoningEfforts = ladderNow;
+      if (npm.trim() && changed(npm.trim(), cur.npm)) entry.npm = npm.trim();
+      if (changed(variants.filter((v) => v.id.trim() && v.effort), cur.variants ?? [])) {
+        entry.variants = variants.filter((v) => v.id.trim() && v.effort).map((v) => ({ id: v.id.trim(), effort: v.effort }));
+      }
+      if (changed(defaultEffort || null, cur.defaultEffort ?? null)) {
+        entry.defaultEffort = defaultEffort || null; // '' = clear the override (follow catalog/def)
+      }
+      const mod: Record<string, string[]> = {};
+      if (changed(modIn, cur.modalities?.input ?? [])) mod.input = modIn;
+      if (changed(modOut, cur.modalities?.output ?? [])) mod.output = modOut;
+      if (Object.keys(mod).length > 0) entry.modalities = mod;
+      // Tier membership is NOT edited here — it lives in the /tiers member
+      // lists, the single source of routing membership.
       await opencodeApi.putCatalogOverride(target.providerId, target.modelId, entry);
       toast.success(t('catalogPage.ocrEditSaved'));
       onSaved();
@@ -844,151 +952,166 @@ const OcrEditModal: React.FC<{
     }
   };
 
-  const fieldLabel: React.CSSProperties = { fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', display: 'block', marginBottom: '5px' };
+  const spin: React.CSSProperties = { animation: 'ocr-spin 0.8s linear infinite' };
 
-  // Preview of the backend smart match. The effective config (user `match`
-  // rules merged over the built-in baseline) comes from /tier-pools; the
-  // static DEFAULT mirror is only the offline fallback — never re-implement
-  // the heuristic here (it would drift from providers/tier-match.ts).
-  //
-  // r.match is declared `Partial<Record<Tier, TierMatchCfg>>` on the wire
-  // (TierPoolsResponse.match? in lib/api.ts); layer the partial over the
-  // baseline so any missing tier falls back to the built-in default — both
-  // for preview correctness and to keep `match[tier].X` from blowing up when
-  // a tier is absent in the live payload. We only overlay KEYS that are
-  // actually present (not just set to `undefined`); the backend's
-  // resolveTierMatch omits unset fields, but defensive copying costs nothing.
-  const mergeMatch = (wire: Partial<Record<keyof ResolvedTierMatch, Partial<TierMatchCfg>>> | undefined): ResolvedTierMatch => {
-    const out = {} as ResolvedTierMatch;
-    (['lite', 'plus', 'pro', 'ultra'] as const).forEach((tier) => {
-      const base = { ...DEFAULT_TIER_MATCH[tier] };
-      const patch = wire?.[tier];
-      if (patch) {
-        for (const k of Object.keys(patch) as (keyof TierMatchCfg)[]) {
-          const v = (patch as Record<string, unknown>)[k];
-          if (v !== undefined) (base as Record<string, unknown>)[k] = v;
-        }
+  return (
+    <Dialog
+      title={t('catalogPage.ocrEditTitle')}
+      subtitle={
+        <>
+          <span>{t('catalogPage.ocrEditHint')}</span>
+          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: 'var(--accent)' }}>
+            {target.providerId}/{target.modelId}
+          </span>
+        </>
       }
-      out[tier] = base;
-    });
-    return out;
-  };
-  const [matchCfg, setMatchCfg] = useState<ResolvedTierMatch | null>(null);
-  useEffect(() => {
-    api
-      .getTierPools()
-      .then((r) => setMatchCfg(mergeMatch(r.match as Partial<Record<keyof ResolvedTierMatch, TierMatchCfg>> | undefined)))
-      .catch(() => setMatchCfg(null));
-  }, []);
-  // Until the live config lands (or if the request fails), fall back to the
-  // static baseline. After the load, mergeMatch guarantees every tier is a
-  // real object — so match[tier].patterns never throws on the preview.
-  const sug = classifyTierDetailed(cur.id, cur.cost?.input, cur.reasoning === true, matchCfg ?? DEFAULT_TIER_MATCH);
-  const suggest = { tier: sug.tier, why: [t(TIER_REASON_KEYS[sug.reason])] };
-
-  return createPortal(
-    <div
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(0, 0, 0, 0.85)',
-        zIndex: 210,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: '16px',
-      }}
-    >
-      <div
-        className="card"
-        style={{
-          width: '100%',
-          maxWidth: '460px',
-          padding: '22px',
-          boxShadow: '0 20px 40px rgba(0,0,0,0.6)',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '12px',
-        }}
-      >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h3 style={{ fontSize: '15px', fontWeight: 800, color: 'var(--text-main)' }}>{t('catalogPage.ocrEditTitle')}</h3>
-          <button onClick={onClose} style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', fontSize: '18px', cursor: 'pointer' }}>
-            ✕
+      footerLeft={
+        hasOverride ? (
+          <button type="button" className="btn btn-danger btn-sm" onClick={() => void restore()}>
+            {t('catalogPage.ocrEditRestore')}
           </button>
-        </div>
-        <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>{t('catalogPage.ocrEditHint')}</div>
-        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '12px', color: 'var(--accent)' }}>
-          {target.providerId}/{target.modelId}
-        </div>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            void save();
-          }}
-          style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}
-        >
-          <div>
-            <label style={fieldLabel}>{t('catalogPage.dataColName')}</label>
+        ) : undefined
+      }
+      footerRight={
+        <>
+          <button type="button" className="btn" onClick={onClose}>
+            {t('catalogPage.close')}
+          </button>
+          <button type="submit" form="ocr-edit-form" className="btn btn-primary" disabled={saving}>
+            {saving ? <Loader2 size={12} style={spin} /> : <Check size={12} />}
+            <span>{t('catalogPage.ocrEditSave')}</span>
+          </button>
+        </>
+      }
+      onClose={onClose}
+      closeLabel={t('catalogPage.close')}
+      width={660}
+    >
+      <form
+        id="ocr-edit-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void save();
+        }}
+        style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}
+      >
+        {/* Same canonical order as the model editor: identity → capability →
+            limits → cost → reasoning → variants → integration. */}
+        <FormSection title={t('form.identity')}>
+          <Field label={t('catalogPage.dataColName')}>
             <input type="text" value={name} onChange={(e) => setName(e.target.value)} className="input" />
+          </Field>
+        </FormSection>
+
+        <FormSection title={t('form.capability')}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
+            {([
+              ['tool_call', t('catalogPage.capToolCall')],
+              ['reasoning', t('catalogPage.capReasoning')],
+              ['temperature', t('catalogPage.capTemperature')],
+            ] as const).map(([key, label]) => (
+              <label key={key} className="form-switch">
+                <Switch
+                  checked={caps[key]}
+                  onChange={(v) => setCaps((c) => ({ ...c, [key]: v }))}
+                  ariaLabel={key}
+                  size="sm"
+                />
+                {label}
+              </label>
+            ))}
           </div>
-          <div>
-            <label style={fieldLabel}>{t('catalogPage.ocrEditTier')}</label>
-            <div
-              style={{
-                fontSize: '12px',
-                padding: '6px 10px',
-                border: '1px solid var(--card-border)',
-                borderRadius: 6,
-                color: 'var(--text-muted)',
-                fontFamily: "'JetBrains Mono', monospace",
-              }}
-            >
-              {suggest.tier}
-            </div>
-            <div style={{ fontSize: '10px', color: 'var(--text-dim)', marginTop: '4px' }}>
-              {t('catalogPage.ocrEditTierSuggested', { tier: suggest.tier })}
-              {suggest.why.length > 0 ? ` —— ${suggest.why.join(' / ')}` : ''}
-            </div>
-            <div style={{ fontSize: '10px', color: 'var(--text-dim)', marginTop: '2px' }}>{t('catalogPage.ocrEditTierRestart')}</div>
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-            <div>
-              <label style={fieldLabel}>{t('catalogPage.dataColInput')}</label>
-              <input type="number" step="any" min={0} value={costInput} onChange={(e) => setCostInput(e.target.value)} className="input" />
-            </div>
-            <div>
-              <label style={fieldLabel}>{t('catalogPage.dataColOutput')}</label>
-              <input type="number" step="any" min={0} value={costOutput} onChange={(e) => setCostOutput(e.target.value)} className="input" />
-            </div>
-            <div>
-              <label style={fieldLabel}>{t('catalogPage.dataColCtx')}</label>
+          <Field label={t('catalogPage.ocrEditModalities')}>
+            <ModalityPicker
+              input={modIn}
+              output={modOut}
+              onChange={({ input, output }) => { setModIn(input); setModOut(output); }}
+              inputLabel={t('catalogPage.ocrEditModIn')}
+              outputLabel={t('catalogPage.ocrEditModOut')}
+            />
+          </Field>
+        </FormSection>
+
+        <FormSection title={t('form.limits')}>
+          <FieldRow>
+            <Field label={t('catalogPage.dataColCtx')}>
               <input type="number" step="any" min={0} value={contextLimit} onChange={(e) => setContextLimit(e.target.value)} className="input" />
-            </div>
-            <div>
-              <label style={fieldLabel}>{t('catalogPage.dataColOutputLimit')}</label>
+            </Field>
+            <Field label={t('catalogPage.dataColOutputLimit')}>
               <input type="number" step="any" min={0} value={outputLimit} onChange={(e) => setOutputLimit(e.target.value)} className="input" />
-            </div>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', marginTop: '4px' }}>
-            {hasOverride && (
-              <button type="button" className="btn btn-danger btn-sm" onClick={() => void restore()}>
-                {t('catalogPage.ocrEditRestore')}
-              </button>
-            )}
-            <div style={{ display: 'flex', gap: '8px', marginLeft: 'auto' }}>
-              <button type="button" className="btn" onClick={onClose}>
-                {t('catalogPage.close')}
-              </button>
-              <button type="submit" className="btn btn-primary" disabled={saving}>
-                {t('catalogPage.ocrEditSave')}
-              </button>
-            </div>
-          </div>
-        </form>
-      </div>
-    </div>,
-    document.body
+            </Field>
+          </FieldRow>
+        </FormSection>
+
+        <FormSection title={t('form.cost')}>
+          <FieldRow columns={4}>
+            <Field label={t('catalogPage.dataColInput')}>
+              <input type="number" step="any" min={0} value={costInput} onChange={(e) => setCostInput(e.target.value)} className="input" />
+            </Field>
+            <Field label={t('catalogPage.dataColOutput')}>
+              <input type="number" step="any" min={0} value={costOutput} onChange={(e) => setCostOutput(e.target.value)} className="input" />
+            </Field>
+            <Field label={t('catalogPage.dataColCacheRead')}>
+              <input type="number" step="any" min={0} value={cacheRead} onChange={(e) => setCacheRead(e.target.value)} className="input" />
+            </Field>
+            <Field label={t('catalogPage.dataColCacheWrite')}>
+              <input type="number" step="any" min={0} value={cacheWrite} onChange={(e) => setCacheWrite(e.target.value)} className="input" />
+            </Field>
+          </FieldRow>
+        </FormSection>
+
+        <FormSection title={t('form.reasoning')}>
+          <Field label={t('catalogPage.ocrEditDefaultEffort')}>
+            <Combobox
+              value={defaultEffort}
+              // picking a default auto-checks that level, so the default is
+              // always one of the levels this model declares
+              onChange={(v) => {
+                setDefaultEffort(v);
+                if (v && !efforts.includes(v)) setEfforts((prev) => [...prev, v]);
+              }}
+              options={effortOptionList(t, EFFORT_LADDER, ' — ')}
+            />
+          </Field>
+          <Field label={t('catalogPage.ocrEditEfforts')}>
+            {/* un-checking the level the default points at clears the default */}
+            <EffortChips
+              value={efforts}
+              onChange={(next) => {
+                setEfforts(next);
+                if (defaultEffort && !next.includes(defaultEffort)) setDefaultEffort('');
+              }}
+            />
+          </Field>
+        </FormSection>
+
+        <FormSection title={t('form.variants')}>
+          <VariantListEditor
+            value={variants}
+            onChange={setVariants}
+            addLabel={t('catalogPage.ocrEditAddVariant')}
+            removeLabel={t('catalogPage.ocrEditRemoveVariant')}
+            options={effortOptionList(t, EFFORT_LADDER, ' — ')}
+          />
+        </FormSection>
+
+        <FormSection title={t('form.integration')}>
+          <Field label={t('catalogPage.ocrEditNpm')} hint={t('catalogPage.ocrEditNpmHint')}>
+            <Combobox
+              value={npm}
+              onChange={(v) => setNpm(v)}
+              options={[
+                { value: '', label: t('catalogPage.ocrEditNpmFollow') },
+                { value: '@ai-sdk/openai-compatible', label: '@ai-sdk/openai-compatible', meta: 'OpenAI Chat' },
+                { value: '@ai-sdk/openai', label: '@ai-sdk/openai', meta: 'OpenAI Responses' },
+                { value: '@ai-sdk/anthropic', label: '@ai-sdk/anthropic', meta: 'Anthropic' },
+                { value: '@ai-sdk/google', label: '@ai-sdk/google', meta: 'Gemini' },
+              ]}
+            />
+          </Field>
+        </FormSection>
+      </form>
+    </Dialog>
   );
 };
 

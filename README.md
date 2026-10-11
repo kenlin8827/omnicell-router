@@ -9,7 +9,7 @@
 [![OpenAI Compatible](https://img.shields.io/badge/API-OpenAI%20Compatible-green.svg)](https://platform.openai.com/docs/api-reference)
 [![FinOps](https://img.shields.io/badge/Cost%20Optimization-70%25%20~%2090%25-orange.svg)]()
 
-**[Quick Start](#quick-start)** · **[Client Integrations](#client-integrations)** · **[Features](#features)** · **[Developer Guide](DEVELOPMENT.md)** · **[简体中文](README.zh-CN.md)**
+**[Quick Start](#quick-start)** · **[Client Integrations](#client-integrations)** · **[Features](#features)** · **[Developer Guide](DEVELOPMENT.md)** · **[Chinese Version](README.zh-CN.md)**
 
 </div>
 

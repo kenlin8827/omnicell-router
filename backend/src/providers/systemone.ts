@@ -11,7 +11,7 @@ import { proxiedFetch } from '../utils/proxy.js';
  *
  * NOT part of the LLMProvider pool: native System One upstreams are called
  * directly by the /v1/systemone route and can never be dispatched by chat
- * routing (see ADR-0014).
+ * routing.
  */
 export class SystemoneProvider {
   public name: string;
@@ -22,7 +22,11 @@ export class SystemoneProvider {
     this.config = config;
   }
 
-  public async createDecision(request: SystemoneRequest, model: ModelRegistration): Promise<SystemoneResponse> {
+  public async createDecision(
+    request: SystemoneRequest,
+    model: ModelRegistration,
+    signal?: AbortSignal
+  ): Promise<SystemoneResponse> {
     const url = `${this.config.baseUrl.replace(/\/+$/, '')}/systemone`;
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -35,6 +39,13 @@ export class SystemoneProvider {
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs || 30000);
+    // Caller-side cancellation (the Layer 2 judge's own deadline) aborts the
+    // fetch for real, so an abandoned decision stops costing the upstream.
+    const onCallerAbort = () => controller.abort();
+    if (signal) {
+      if (signal.aborted) controller.abort();
+      else signal.addEventListener('abort', onCallerAbort, { once: true });
+    }
 
     try {
       const res = await proxiedFetch(
@@ -84,6 +95,7 @@ export class SystemoneProvider {
       return json as SystemoneResponse;
     } finally {
       clearTimeout(timeout);
+      if (signal) signal.removeEventListener('abort', onCallerAbort);
     }
   }
 }

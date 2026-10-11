@@ -4,7 +4,7 @@
 [![Architecture](https://img.shields.io/badge/Architecture-Three--Layer%20Model--Driven-purple.svg)]()
 [![Tests](https://img.shields.io/badge/Tests-37%2F37%20Pass%20(100%25)-brightgreen.svg)]()
 
-[English Version](DEVELOPMENT.md) | [简体中文](DEVELOPMENT.zh-CN.md) | [User README](README.md)
+[English Version](DEVELOPMENT.md) | [Chinese Version](DEVELOPMENT.zh-CN.md) | [User README](README.md)
 
 > This document is designed for developers, contributors, and researchers working on **OpenCode Router (OCR)** core algorithms, extensions, private deployments, and architecture.  
 > It covers the 3-layer model-driven pipeline architecture, mathematical fallthrough proofs, monotonic session ratcheting, active learning data flywheel workflows, and testing matrices.

@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { CatalogCost, CatalogLimit, CatalogModalities, CatalogTier } from './types.js';
+import type { CatalogCost, CatalogLimit, CatalogModalities } from './types.js';
 import { getOcrStorePath } from './ocr-store.js';
+import type { ReasoningEffort } from '../../types/router.js';
 
 /**
  * Aggregate override store (~/.opencode-router/catalog/overrides.json).
@@ -20,10 +21,30 @@ export interface OverrideEntry {
   tool_call?: boolean;
   reasoning?: boolean;
   /**
-   * Explicit OCR tier assignment. `null` in an upsert payload = clear the
-   * key (fall back to the boot heuristic); absent = keep the stored value.
+   * Hide from the model catalog: the model stays in the aggregate (and in the
+   * catalog viewer) but boot-direct keeps it out of the routing pool, so
+   * `/v1/models` omits it and no request can be pinned to it.
+   *
+   * This is the ONLY writer of the flag in the UI (both model-list rows) — a
+   * def-level `disabled: true` in opencode.jsonc is still honoured, but the
+   * override wins, exactly like `temperature` below.
    */
-  tier?: CatalogTier | null;
+  disabled?: boolean;
+  /** Manual correction of the tri-state sampling-parameter capability flag (real behavior of a reseller's custom models, which catalog sources cannot cover). */
+  temperature?: boolean;
+  /**
+   * Explicit thinking-level list (subset of EFFORT_LADDER). Materialized at
+   * aggregation into `reasoningOptions=[{type:'effort',values}]` (empty array
+   * → `[{type:'toggle'}]` = no explicit level control), which boot-direct's
+   * effortLadderFor resolves into supportedReasoningEfforts.
+   */
+  reasoningEfforts?: ReasoningEffort[];
+  /** Model-default thinking level; `null` clears the override (follow the catalog/def). */
+  defaultEffort?: ReasoningEffort | null;
+  /** Model-level AI-SDK package override — decides the wire protocol (boot-direct wire resolution). */
+  npm?: string;
+  /** Named thinking-level variants (UI short shape `{id, effort}` — materialized to the def shape at aggregation). */
+  variants?: { id: string; effort: string }[];
 }
 
 export interface OverrideStore {
@@ -73,10 +94,15 @@ export function upsertOverride(providerId: string, modelId: string, entry: Overr
     if (entry.modalities) merged.modalities = entry.modalities;
     if (entry.tool_call !== undefined) merged.tool_call = entry.tool_call;
     if (entry.reasoning !== undefined) merged.reasoning = entry.reasoning;
-    if (entry.tier !== undefined) {
-      if (entry.tier === null) delete merged.tier;
-      else merged.tier = entry.tier;
+    if (entry.temperature !== undefined) merged.temperature = entry.temperature;
+    if (entry.disabled !== undefined) merged.disabled = entry.disabled;
+    if (entry.reasoningEfforts !== undefined) merged.reasoningEfforts = entry.reasoningEfforts;
+    if (entry.npm !== undefined) merged.npm = entry.npm;
+    if (entry.defaultEffort !== undefined) {
+      if (entry.defaultEffort === null) delete merged.defaultEffort;
+      else merged.defaultEffort = entry.defaultEffort;
     }
+    if (entry.variants !== undefined) merged.variants = entry.variants;
     store.models[overrideKey(providerId, modelId)] = merged;
     persist(store);
     return { success: true };

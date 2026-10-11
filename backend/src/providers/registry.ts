@@ -39,10 +39,10 @@ export class ProviderRegistry {
     for (const pConfig of config.providers || []) {
       this.providerConfigs.set(pConfig.name, pConfig);
       if (pConfig.type === 'systemone') {
-        // Native System One upstreams are NOT chat executors — the
-        // /v1/systemone route calls them directly (routes/systemone.ts).
+        // Native System One upstreams are NOT chat executors — the shared
+        // decision executor calls them directly (protocols/systemone/decide.ts).
         // Skipping the LLMProvider pool keeps chat routing from ever
-        // dispatching to them (ADR-0014).
+        // dispatching to them.
         continue;
       }
       if (pConfig.type === 'anthropic') {

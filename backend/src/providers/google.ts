@@ -104,7 +104,7 @@ export function buildGooglePayload(request: ChatCompletionRequest, model: ModelR
   const generationConfig: Record<string, any> = {};
   if (request.max_tokens != null) generationConfig.maxOutputTokens = request.max_tokens;
   else if (request.max_completion_tokens != null) generationConfig.maxOutputTokens = request.max_completion_tokens;
-  if (request.temperature != null) generationConfig.temperature = request.temperature;
+  if (request.temperature != null && model.temperature !== false) generationConfig.temperature = request.temperature;
   if (request.top_p != null) generationConfig.topP = request.top_p;
   if (request.stop?.length) generationConfig.stopSequences = request.stop;
   // effort level → thinkingConfig.thinkingBudget. The full 6-level

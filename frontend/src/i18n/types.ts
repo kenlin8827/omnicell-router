@@ -9,6 +9,18 @@ export interface TranslationDict {
     /** Multi-select panel header × button that closes the panel. */
     close: string;
   };
+  /** Section titles shared by the configuration dialogs (model editor, OCR
+   * source editor) so both forms group their fields the same way. */
+  form: {
+    identity: string;
+    capability: string;
+    limits: string;
+    cost: string;
+    reasoning: string;
+    variants: string;
+    integration: string;
+    raw: string;
+  };
   common: {
     loading: string;
     failed: string;
@@ -40,6 +52,7 @@ export interface TranslationDict {
     sessions: string;
     logs: string;
     captures: string;
+    flywheel: string;
     settings: string;
     yaml: string;
     auto: string;
@@ -303,6 +316,10 @@ export interface TranslationDict {
     pmAddId: string;
     pmModelID: string;
     pmSettingsReasoning: string;
+    /** Save-time validation: default effort is outside the declared levels. */
+    pmEffortNotInLadder: string;
+    pmTemperature: string;
+    pmEfforts: string;
     pmHeaders: string;
     pmBody: string;
     pmReasoningField: string;
@@ -318,6 +335,8 @@ export interface TranslationDict {
     pmBodyInvalid: string;
     pmAddName: string;
     pmAdd: string;
+    pmRemoveVariant: string;
+    pmModalities: string;
     pmAddTitle: string;
     pmEditTitle: string;
     pmDeleteConfirm: string;
@@ -370,6 +389,17 @@ export interface TranslationDict {
     thSource: string;
     badgeReasoning: string;
     badgeToolCall: string;
+    /** Hint shown under the effort ladder when reasoning is explicitly off. */
+    reasoningOffHint: string;
+    /** Row action: hide the model from the catalog. */
+    hideFromCatalog: string;
+    /** Row action: show a hidden model in the catalog again. */
+    showInCatalog: string;
+    /** Row badge for a model hidden from the catalog. */
+hiddenBadge: string;
+    /** Toast after toggling the hide flag (the pool is rebuilt at boot). */
+    hiddenToast: string;
+    shownToast: string;
     badgeVision: string;
     badgeAudio: string;
     badgeVideo: string;
@@ -490,6 +520,87 @@ export interface TranslationDict {
     empty: string;
     noFile: string;
   };
+  flywheel: {
+    pageTitle: string;
+    pageSubtitle: string;
+    trainingTitle: string;
+    trainingInProgress: string;
+    lastTrained: string;
+    modelStatus: string;
+    modelBase: string;
+    modelTrained: string;
+    trainablePool: string;
+    features: string;
+    balanceClasses: string;
+    trainNow: string;
+    trainConfirmTitle: string;
+    trainConfirmDesc: string;
+    trainStarted: string;
+    trainFailed: string;
+    routingActive: string;
+    routingInactive: string;
+    rollback: string;
+    rollbackTitle: string;
+    rollbackConfirmTitle: string;
+    rollbackConfirmDesc: string;
+    rollbackDone: string;
+    rollbackFailed: string;
+    resultSamples: string;
+    resultAccuracy: string;
+    resultLoss: string;
+    resultDuration: string;
+    resultClasses: string;
+    datasetTitle: string;
+    rows: string;
+    refresh: string;
+    statTotal: string;
+    statTrainable: string;
+    statHuman: string;
+    statSynthetic: string;
+    statUnlabeled: string;
+    syntheticNotice: string;
+    searchPlaceholder: string;
+    filterTierAll: string;
+    filterTierNone: string;
+    filterSourceAll: string;
+    sourceHuman: string;
+    sourceFallback: string;
+    sourceObserved: string;
+    sourceUnlabeled: string;
+    trainableOnly: string;
+    includeSynthetic: string;
+    clearLabels: string;
+    clearLabelsTitle: string;
+    clearLabelsDesc: string;
+    clearLabelsDone: string;
+    clearLabelsFailed: string;
+    loading: string;
+    noSamples: string;
+    lockedWhileTraining: string;
+    labelPlaceholder: string;
+    labelSaved: string;
+    labelCleared: string;
+    labelFailed: string;
+    loadFailed: string;
+    revertLabel: string;
+    details: string;
+    collapse: string;
+    decisionVsExecution: string;
+    fallbackBadge: string;
+    syntheticBadge: string;
+    legacyBadge: string;
+    legacyNoVector: string;
+    noVector: string;
+    fieldId: string;
+    fieldModel: string;
+    fieldLayer: string;
+    fieldCost: string;
+    fieldReason: string;
+    fieldFallbackReason: string;
+    fieldVector: string;
+    fieldRelabeled: string;
+  };
+
   captures: {
     title: string;
     refresh: string;
@@ -775,13 +886,23 @@ export interface TranslationDict {
     ocrEditRestore: string;
     ocrEditSaved: string;
     ocrEditRestored: string;
-    ocrEditTier: string;
-    ocrEditTierSuggested: string;
-    ocrEditTierRestart: string;
-    ocrTierWhyReasoning: string;
-    ocrTierWhyName: string;
-    ocrTierWhyCost: string;
-    ocrTierWhyUnclassified: string;
+    capToolCall: string;
+    capReasoning: string;
+    capTemperature: string;
+    ocrEditEfforts: string;
+    ocrEditModalities: string;
+    ocrEditModIn: string;
+    ocrEditModOut: string;
+    ocrEditNpm: string;
+    ocrEditAddVariant: string;
+    ocrEditDefaultEffort: string;
+    /** Save-time validation: default effort is outside the declared levels. */
+    ocrDefaultEffortNotInLadder: string;
+    ocrEditRemoveVariant: string;
+    ocrEditNpmHint: string;
+    ocrEditNpmFollow: string;
+    dataColCacheRead: string;
+    dataColCacheWrite: string;
     dataColOutputLimit: string;
     typeCustom: string;
     mapLabel: string;
@@ -823,6 +944,9 @@ export interface TranslationDict {
     ocrHint: string;
     ocrLocked: string;
     ocrOnlyLockedHint: string;
+    ocrHidden: string;
+    ocrOnlyHiddenHint: string;
+    ocrNoHidden: string;
     ocrNoLocked: string;
     ocrLocal: string;
   };

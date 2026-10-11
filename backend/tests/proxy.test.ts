@@ -110,7 +110,8 @@ describe('resolveProxyUrl', () => {
   test('layer2 judge participates via its own provider/model', () => {
     initProxyConfig({ enabled: true, url: 'http://proxy:8080', includes: ['openrouter/*'] } as ProxyConfig);
     expect(resolveProxyUrl('https://openrouter.ai/api/v1/chat/completions', { provider: 'openrouter', model: 'mistral-7b' })).toBe('http://proxy:8080');
-    expect(resolveProxyUrl('https://api.typesafe.ai/v1/decision/choice', { provider: 'typesafe', model: 'typesafe/jev' })).toBeUndefined();
+    // Layer 2 rides the native System One wire (ADR-0014), not a vendor SDK call.
+    expect(resolveProxyUrl('https://api.typesafe.ai/v1/systemone', { provider: 'typesafe', model: 'typesafe/jev' })).toBeUndefined();
   });
 
   test('invalid proxy.url falls back to direct (warn, never throw)', () => {

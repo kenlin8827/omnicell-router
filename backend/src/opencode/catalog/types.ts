@@ -9,6 +9,8 @@
  * (models.dev `cost` is already $/1M; OpenRouter is converted at the source).
  */
 
+import type { ReasoningEffort } from '../../types/router.js';
+
 export type CatalogSourceId =
   | 'opencode'
   | 'models-dev'
@@ -19,9 +21,6 @@ export type CatalogSourceId =
   | 'mapped'
   | 'service';
 
-/** OCR-level tier classification (mirrors backend TierLevel). */
-export type CatalogTier = 'lite' | 'plus' | 'pro' | 'ultra';
-
 export interface CatalogCost {
   input?: number;
   output?: number;
@@ -31,12 +30,22 @@ export interface CatalogCost {
 
 export interface CatalogLimit {
   context?: number;
+  /** max INPUT tokens (models.dev `limit.input`) — prompt-side cap, distinct from context */
+  input?: number;
   output?: number;
 }
 
 export interface CatalogModalities {
   input?: string[];
   output?: string[];
+}
+
+/** One models.dev `reasoning_options` entry — loose shape, tolerant of upstream schema drift. */
+export interface CatalogReasoningOption {
+  type: string;
+  values?: string[];
+  min?: number;
+  [k: string]: unknown;
 }
 
 export interface CatalogModel {
@@ -50,20 +59,54 @@ export interface CatalogModel {
    * chat/completions wire with `ModelProtocolUnsupported`.
    */
   npm?: string;
+  /** Model-default thinking level (OCR extension — pinned when the client omits `reasoning_effort`). */
+  defaultEffort?: ReasoningEffort;
   attachment?: boolean;
   reasoning?: boolean;
   tool_call?: boolean;
   temperature?: boolean;
+  /**
+   * Hidden from the model catalog — kept in the aggregate (the catalog viewer
+   * still lists it) but excluded from the boot-direct routing pool, so
+   * `/v1/models` omits it and nothing can be pinned to it. Written by the
+   * overrides layer (`OverrideEntry.disabled`) and, for hand-written configs,
+   * carried over from a def-level `disabled` flag.
+   */
+  disabled?: boolean;
+  /**
+   * models.dev `reasoning_options` — the model's real reasoning-tier declaration,
+   * kept verbatim (the shape varies per vendor): `{type:'effort', values:[...]}`
+   * = exact tier table / `{type:'budget_tokens', min}` = continuous budget /
+   * `{type:'toggle'}` = on-off only. boot-direct derives
+   * supportedReasoningEfforts from this instead of assuming "boolean expands
+   * into the full ladder".
+   */
+  reasoningOptions?: CatalogReasoningOption[];
+  /**
+   * Named thinking-level variants (def shape `{id, settings{reasoningEffort}}`,
+   * routable as sibling `<id>-<variant>` ids and via `#variant` syntax).
+   * Sourced values never carry it; overrides.json materializes it.
+   */
+  variants?: { id: string; settings?: { reasoningEffort?: string } }[];
+  /** interleaved thinking output field (models.dev `interleaved.field`, e.g. 'reasoning_content') */
+  interleaved?: { field?: string };
+  /** structured/JSON output support (models.dev `structured_output`) */
+  structured_output?: boolean;
+  /** model lifecycle: 'deprecated' | 'beta' | 'alpha' (models.dev `status`) */
+  status?: string;
+  // ── passthrough display metadata (non-routing; kept verbatim for UI/future consumers) ──
+  description?: string;
+  family?: string;
+  release_date?: string;
+  last_updated?: string;
+  open_weights?: boolean;
+  knowledge?: string;
+  canonical_model_id?: string;
+  /** models.dev `experimental` blob (e.g. { modes: { fast: { cost, provider } } }) — verbatim */
+  experimental?: Record<string, unknown>;
   modalities?: CatalogModalities;
   cost?: CatalogCost;
   limit?: CatalogLimit;
-  /**
-   * Explicit tier assignment (OCR extension — not part of the models.dev
-   * schema). Sourced values never carry it; only aggregate overrides
-   * (overrides.json) set it. When present, boot-direct uses it verbatim
-   * instead of the price/name heuristic.
-   */
-  tier?: CatalogTier;
   source: CatalogSourceId;
 }
 

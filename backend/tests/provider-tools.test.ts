@@ -467,3 +467,32 @@ describe('Thinking controls across upstreams', () => {
     assert.strictEqual(p.thinking, undefined, 'none must not construct thinking block');
   });
 });
+
+describe('Provider payload builders: temperature capability (models.dev tri-state)', () => {
+  const reqWithTemp = { ...chatRequest, temperature: 1 } as ChatCompletionRequest;
+  const strippedModel = { ...model, temperature: false } as any;
+  const allowedModel = { ...model, temperature: true } as any;
+
+  it('anthropic: temperature:false → field dropped from the serialized wire body', () => {
+    const p = buildAnthropicPayload(reqWithTemp, strippedModel) as any;
+    assert.strictEqual(p.temperature, undefined);
+    assert.ok(!JSON.stringify(p).includes('"temperature"'), 'wire body must not carry temperature');
+  });
+
+  it('anthropic: temperature:true / undefined (manual registration) keeps passthrough', () => {
+    assert.strictEqual((buildAnthropicPayload(reqWithTemp, allowedModel) as any).temperature, 1);
+    assert.strictEqual((buildAnthropicPayload(reqWithTemp, model) as any).temperature, 1);
+  });
+
+  it('google: temperature:false → generationConfig.temperature omitted', () => {
+    const p = buildGooglePayload(reqWithTemp, strippedModel) as any;
+    assert.strictEqual(p.generationConfig?.temperature, undefined);
+    assert.strictEqual((buildGooglePayload(reqWithTemp, allowedModel) as any).generationConfig.temperature, 1);
+  });
+
+  it('responses: temperature:false → payload.temperature omitted', () => {
+    const p = buildResponsesPayload(reqWithTemp, strippedModel) as any;
+    assert.strictEqual(p.temperature, undefined);
+    assert.strictEqual((buildResponsesPayload(reqWithTemp, allowedModel) as any).temperature, 1);
+  });
+});

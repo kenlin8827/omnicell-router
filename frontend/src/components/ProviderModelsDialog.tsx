@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { Plus, Trash2, Download, Eye, Pencil, Check, X, Eraser, Loader2, AudioLines, Video, Thermometer, Wand2, Zap, Search } from 'lucide-react';
+import { Plus, Trash2, Download, Eye, EyeOff, Pencil, Check, X, Eraser, Loader2, AudioLines, Video, Thermometer, Wand2, Zap, Search } from 'lucide-react';
 import { opencodeApi, type OpenCodeModelView } from '../lib/api';
 import { matchCatalogModel, catalogAutofillPatch, detectEffortLevel } from '../lib/catalogAutofill';
 import { effortOptionList } from '../lib/effort';
+import { modalityLabel } from '../lib/modality';
 import { useI18n } from '../i18n/I18nContext';
 import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
@@ -434,6 +435,19 @@ export const ProviderModelsDialog: React.FC<{
       await refreshAll();
     });
 
+  /** Hide / show a model in the catalog. Writes the OVERRIDE layer
+   *  (overrides.json) — the single writer of the flag, shared with the model
+   *  list rows, so what either surface shows is what the routing pool does. */
+  const handleToggleHidden = (mid: string, hidden: boolean) =>
+    run('toggle-hidden', async () => {
+      await opencodeApi.putCatalogOverride(providerId, mid, { disabled: hidden });
+      await refreshAll();
+      // The catalog store rebuilds immediately, but the ROUTING pool is built
+      // at boot — without this note the row looks hidden while the model keeps
+      // serving until a restart.
+      toast.info(t(hidden ? 'models.hiddenToast' : 'models.shownToast', { id: `${providerId}/${mid}` }));
+    });
+
   const handleDelete = async (mid: string) => {
     const ok = await confirmDialog({
       title: t('op.pmDeleteConfirm', { id: mid }),
@@ -498,15 +512,6 @@ export const ProviderModelsDialog: React.FC<{
   };
 
   const sourceLabel = (id?: string): string => (id ? (SOURCE_BADGE[id] ? t(SOURCE_BADGE[id].labelKey) : id) : '');
-  const modLabel = (m: string): string => {
-    const key = `models.mod${m.charAt(0).toUpperCase()}${m.slice(1)}`;
-    try {
-      const v = t(key as any);
-      return v && v !== key ? v : m;
-    } catch {
-      return m;
-    }
-  };
   const spin: React.CSSProperties = { animation: 'ocr-spin 0.8s linear infinite' };
 
   const modalityChecks = (
@@ -528,7 +533,7 @@ export const ProviderModelsDialog: React.FC<{
               })
             }
           />
-          {modLabel(m)}
+          {modalityLabel(t, m)}
         </label>
       ))}
     </div>
@@ -648,7 +653,7 @@ export const ProviderModelsDialog: React.FC<{
                   {Array.isArray(d.variants) && d.variants.length > 0 && (
                     <span style={badge('#e879f9', 'rgba(232,121,249,0.12)')} title={t('op.pmVariants')}>#{d.variants.length}</span>
                   )}
-                  {d.disabled === true && <span style={badge('var(--text-dim)', 'rgba(255,255,255,0.06)')}>off</span>}
+                  {d.disabled === true && <span style={badge('var(--text-dim)', 'rgba(255,255,255,0.06)')}>{t('models.hiddenBadge')}</span>}
                   {row.source && <span style={badge(SOURCE_BADGE[row.source]?.color ?? 'var(--text-dim)', SOURCE_BADGE[row.source]?.bg ?? 'rgba(255,255,255,0.06)')}>{sourceLabel(row.source)}</span>}
                   {d.limit?.context ? <span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-dim)', marginLeft: 'auto' }}>{fmtContext(d.limit.context)}</span> : null}
                   {testResults[row.id] && (
@@ -667,8 +672,7 @@ export const ProviderModelsDialog: React.FC<{
                   )}
                   <div style={{ display: 'flex', gap: 4, marginLeft: d.limit?.context || testResults[row.id] ? 0 : 'auto' }}>
                     <button
-                      className="btn btn-sm"
-                      style={{ padding: '3px 6px' }}
+                      className="btn btn-sm btn-icon"
                       title={t('op.testBtn')}
                       disabled={testingIds.size > 0 || testAll.running}
                       onClick={() => testOne({ key: row.id, providerId, modelId: row.id })}
@@ -677,10 +681,19 @@ export const ProviderModelsDialog: React.FC<{
                     </button>
                     {!readOnly && (
                       <>
-                        <button className="btn btn-sm" style={{ padding: '3px 6px' }} title={t('op.pmEdit')} onClick={() => openEdit(row)} disabled={busy}>
+                        <button
+                          className="btn btn-sm btn-icon"
+                          style={d.disabled === true ? { color: 'var(--text-dim)' } : undefined}
+                          title={d.disabled === true ? t('models.showInCatalog') : t('models.hideFromCatalog')}
+                          onClick={() => handleToggleHidden(row.id, d.disabled !== true)}
+                          disabled={busy || testingIds.size > 0 || testAll.running}
+                        >
+                          {d.disabled === true ? <EyeOff size={11} /> : <Eye size={11} />}
+                        </button>
+                        <button className="btn btn-sm btn-icon" title={t('op.pmEdit')} onClick={() => openEdit(row)} disabled={busy}>
                           <Pencil size={11} />
                         </button>
-                        <button className="btn btn-sm" style={{ padding: '3px 6px', color: 'var(--accent-rose)' }} onClick={() => handleDelete(row.id)} disabled={busy || testingIds.size > 0 || testAll.running}>
+                        <button className="btn btn-sm btn-icon" style={{ color: 'var(--accent-rose)' }} onClick={() => handleDelete(row.id)} disabled={busy || testingIds.size > 0 || testAll.running}>
                           <Trash2 size={11} />
                         </button>
                       </>
@@ -790,8 +803,8 @@ export const ProviderModelsDialog: React.FC<{
                   <span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-main)' }}>{fmtPrice(d.cost?.output)}</span>
                   {typeof d.cost?.cache_read === 'number' && (<><span>{t('models.costCacheRead')}</span><span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-main)' }}>{fmtPrice(d.cost.cache_read)}</span></>)}
                   {typeof d.cost?.cache_write === 'number' && (<><span>{t('models.costCacheWrite')}</span><span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-main)' }}>{fmtPrice(d.cost.cache_write)}</span></>)}
-                  {defInput(d).length > 0 && (<><span>{t('models.modalitiesInput')}</span><span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-main)' }}>{defInput(d).map(modLabel).join(', ')}</span></>)}
-                  {defOutput(d).length > 0 && (<><span>{t('models.modalitiesOutput')}</span><span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-main)' }}>{defOutput(d).map(modLabel).join(', ')}</span></>)}
+                  {defInput(d).length > 0 && (<><span>{t('models.modalitiesInput')}</span><span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-main)' }}>{defInput(d).map((m) => modalityLabel(t, m)).join(', ')}</span></>)}
+                  {defOutput(d).length > 0 && (<><span>{t('models.modalitiesOutput')}</span><span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-main)' }}>{defOutput(d).map((m) => modalityLabel(t, m)).join(', ')}</span></>)}
                   {d.settings?.reasoningEffort && (<><span>{t('op.pmSettingsReasoning')}</span><span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-main)' }}>{d.settings.reasoningEffort}</span></>)}
                   {d.compatibility?.reasoningField && (<><span>{t('op.pmReasoningField')}</span><span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-main)' }}>{d.compatibility.reasoningField}</span></>)}
                   {Object.keys(d.headers || {}).length > 0 && (<><span>{t('op.pmHeaders')}</span><span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-main)', wordBreak: 'break-all' }}>{Object.entries(d.headers).map(([k, v]) => `${k}: ${v}`).join(' · ')}</span></>)}
