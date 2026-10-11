@@ -134,6 +134,9 @@ export function loadConfig(configPath?: string): RouterConfig {
         // Legacy `role` (removed key-level RBAC — unrestricted is expressed by
         // simply not configuring modelAccess) is stripped so stale keys don't
         // get re-persisted on the next config save.
+        // Legacy `role` (removed key-level RBAC — unrestricted is expressed by
+        // simply not configuring modelAccess) is stripped so stale keys don't
+        // get re-persisted on the next config save.
         apiKeys: (parsed?.apiKeys || DEFAULT_CONFIG.apiKeys).map(({ role: _role, ...k }: { role?: unknown; [k: string]: unknown }) => k),
         tiers: parsed?.tiers || {},
         routing: { ...DEFAULT_CONFIG.routing, ...parsed?.routing },
@@ -170,12 +173,47 @@ export function loadConfig(configPath?: string): RouterConfig {
   return DEFAULT_CONFIG;
 }
 
+/**
+ * Annotated default-config template: DEFAULT_CONFIG serialized through the
+ * same self-documenting comment pipeline as saveConfig(). Single source of
+ * truth for what a fresh config.yaml looks like — never a static example
+ * file that would drift from DEFAULT_CONFIG / YAML_FIELD_COMMENTS.
+ */
+export function defaultConfigYaml(): string {
+  return annotateYamlComments(stringify(DEFAULT_CONFIG));
+}
+
+/**
+ * First-boot template initialization: when no config.yaml resolves at the
+ * default path, write the annotated default template to disk so a fresh
+ * install starts with a self-documenting file instead of silent in-memory
+ * defaults plus an empty raw-YAML editor. Idempotent — an existing file is
+ * never touched; write failures only warn (the gateway can run purely on
+ * in-memory defaults). Called once at gateway boot, deliberately NOT inside
+ * loadConfig (which runs on auth hot paths and in tests: no write side
+ * effects on a read function).
+ */
+export function ensureDefaultConfigFile(): { created: boolean; path: string } {
+  const configPath = getConfigPath();
+  if (fs.existsSync(configPath)) return { created: false, path: configPath };
+  try {
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, defaultConfigYaml(), 'utf8');
+    return { created: true, path: configPath };
+  } catch (err: any) {
+    console.warn(`[Config] Could not write default config template to ${configPath}: ${err.message}`);
+    return { created: false, path: configPath };
+  }
+}
+
 export function getRawConfig(): string {
   const configPath = getConfigPath();
   if (fs.existsSync(configPath)) {
     return fs.readFileSync(configPath, 'utf8');
   }
-  return '';
+  // No file yet — return the annotated default template so the raw-YAML
+  // editor starts from a self-documenting draft; saving it creates the file.
+  return defaultConfigYaml();
 }
 
 export function saveRawConfig(yamlContent: string): { success: boolean; error?: string } {

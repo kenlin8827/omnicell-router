@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { loadConfig } from './config/index.js';
+import { loadConfig, ensureDefaultConfigFile } from './config/index.js';
 import { createServer } from './server.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { DispatchingProvider } from './providers/dispatch.js';
@@ -21,6 +21,14 @@ async function main() {
   // If this process was spawned by the UI "Restart Gateway" button, wait for
   // the old gateway to die (and take over) before booting further.
   const isRestartChild = await adoptRestartParent();
+
+  // First-boot template: a fresh install gets a self-documenting config.yaml
+  // (annotated DEFAULT_CONFIG) instead of silent in-memory defaults + an empty
+  // raw-YAML editor. No-op when any config file already resolves.
+  const cfgTemplate = ensureDefaultConfigFile();
+  if (cfgTemplate.created) {
+    console.log(`[OCR] No config.yaml found — wrote default template to ${cfgTemplate.path} (edit + restart to apply)`);
+  }
 
   const config = loadConfig();
   initProxyConfig(config.proxy);
