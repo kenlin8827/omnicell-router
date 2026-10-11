@@ -62,6 +62,7 @@ export const enUS: TranslationDict = {
     restartTimeout: 'Gateway did not come back in time — check the log or run `ocr start` manually',
     resetSuccess: 'All circuit breakers reset successfully!',
     resetFailed: 'Reset failed: ',
+    resetConfirm: 'Reset all model circuit breakers? Tripped upstreams will rejoin routing immediately.',
     switchLang: 'Switch language',
     langBtn: 'Chinese',
     themes: {

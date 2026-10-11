@@ -185,6 +185,8 @@ export const Layout: React.FC = () => {
   };
 
   const handleResetBreakers = async () => {
+    const ok = await confirmDialog({ title: t('header.resetConfirm') });
+    if (!ok) return;
     try {
       await api.resetBreakers();
       toast.success(t('header.resetSuccess'));
@@ -252,7 +254,7 @@ export const Layout: React.FC = () => {
           top: 0,
           height: '100vh',
           zIndex: 40,
-          overflowY: 'auto',
+          overflowY: 'hidden',
         }}
       >
         {/* Brand Header */}
@@ -263,10 +265,6 @@ export const Layout: React.FC = () => {
             alignItems: 'center',
             gap: '12px',
             borderBottom: '1px solid var(--card-border)',
-            position: 'sticky',
-            top: 0,
-            background: 'var(--sidebar-bg)',
-            zIndex: 10,
           }}
         >
           <div
@@ -293,7 +291,9 @@ export const Layout: React.FC = () => {
           </div>
         </div>
 
-        {/* Sidebar Search Bar */}
+        {/* Sidebar Search Bar — fixed above the nav scroller; only the tree
+            below scrolls, so nothing ever paints underneath these bars and
+            the translucent sidebar background can't ghost scrolled items */}
         <div style={{ padding: '12px 14px 4px 14px' }}>
           <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
             <Search size={13} style={{ position: 'absolute', left: '10px', color: 'var(--text-dim)', pointerEvents: 'none' }} />
@@ -312,8 +312,8 @@ export const Layout: React.FC = () => {
           </div>
         </div>
 
-        {/* Grouped Multi-Menu Tree */}
-        <div style={{ padding: '12px 10px', display: 'flex', flexDirection: 'column', gap: '14px', flex: 1 }}>
+        {/* Grouped Multi-Menu Tree — the ONLY scrolling region in the sidebar */}
+        <div style={{ padding: '12px 10px', display: 'flex', flexDirection: 'column', gap: '14px', flex: 1, overflowY: 'auto', minHeight: 0 }}>
           {NAV_GROUP_DEFS.map(group => {
             const filteredItems = group.items.filter(item => {
               const label = t(item.labelKey);
@@ -433,21 +433,23 @@ export const Layout: React.FC = () => {
             position: 'sticky',
             top: 0,
             zIndex: 30,
-            padding: '12px 28px',
+            padding: '12px clamp(14px, 2.5vw, 28px)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            rowGap: 8,
           }}
         >
           {/* Breadcrumb Trail */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', fontWeight: 500 }}>
-            <span style={{ color: 'var(--text-muted)' }}>{t(currentRouteMeta.groupKey)}</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', fontWeight: 500, minWidth: 0, overflow: 'hidden', whiteSpace: 'nowrap' }}>
+            <span className="hdr-crumb-group" style={{ color: 'var(--text-muted)' }}>{t(currentRouteMeta.groupKey)}</span>
             <span style={{ color: 'var(--text-dim)' }}>/</span>
             <span style={{ color: 'var(--text-main)', fontWeight: 600 }}>{t(currentRouteMeta.titleKey)}</span>
           </div>
 
           {/* Right Action Tools */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <div className="hdr-actions" style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', rowGap: 8, justifyContent: 'flex-end' }}>
             {/* Live Status Badge */}
             <div
               style={{
@@ -456,6 +458,8 @@ export const Layout: React.FC = () => {
                 gap: '7px',
                 padding: '5px 12px',
                 borderRadius: '9999px',
+                flexShrink: 0,
+                whiteSpace: 'nowrap',
                 fontSize: '12px',
                 fontWeight: 600,
                 background: 'rgba(16, 185, 129, 0.12)',
@@ -484,12 +488,12 @@ export const Layout: React.FC = () => {
               title={t('header.switchLang')}
             >
               <Globe size={13} color="var(--accent)" />
-              <span style={{ fontWeight: 700 }}>{t('header.langBtn')}</span>
+              <span className="hdr-label hdr-label-opt" style={{ fontWeight: 700 }}>{t('header.langBtn')}</span>
             </button>
 
             {/* Theme Picker */}
             <Combobox
-              style={{ width: 168, flexShrink: 0, padding: '6px 12px', fontSize: '12px', cursor: 'pointer' }}
+              style={{ width: 'clamp(120px, 13vw, 168px)', flexShrink: 0, padding: '6px 12px', fontSize: '12px', cursor: 'pointer' }}
               value={theme}
               onChange={setTheme}
               options={[
@@ -506,11 +510,11 @@ export const Layout: React.FC = () => {
             {/* Quick Actions */}
             <button className="btn" onClick={handleRestartGateway} title={t('header.restart')}>
               <RotateCcw size={13} />
-              <span>{t('header.restart')}</span>
+              <span className="hdr-label">{t('header.restart')}</span>
             </button>
             <button className="btn btn-primary" onClick={handleResetBreakers} title={t('header.resetBreakers')}>
               <RefreshCw size={13} />
-              <span>{t('header.resetBreakers')}</span>
+              <span className="hdr-label">{t('header.resetBreakers')}</span>
             </button>
           </div>
         </header>
@@ -518,7 +522,7 @@ export const Layout: React.FC = () => {
         {/* Page Content Container — scrolls for long pages so the sidebar and
             header stay fixed; fixed-viewport pages (logs/captures) get their
             own internal scrollbars because this box has a definite height. */}
-        <main style={{ padding: '28px', flex: 1, minWidth: 0, minHeight: 0, overflowY: 'auto' }}>
+        <main style={{ padding: 'clamp(14px, 2.5vw, 28px)', flex: 1, minWidth: 0, minHeight: 0, overflowY: 'auto' }}>
           <Outlet context={{ status, statusError }} />
         </main>
       </div>

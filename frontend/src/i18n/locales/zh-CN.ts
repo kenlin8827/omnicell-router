@@ -63,6 +63,7 @@ export const zhCN: TranslationDict = {
     restartTimeout: '网关未能在预期时间内恢复，请检查日志或手动执行 ocr start',
     resetSuccess: '所有模型熔断器已全部成功重置！',
     resetFailed: '重置失败: ',
+    resetConfirm: '确定重置所有模型熔断器？已跳闸的上游将立即重新参与调度。',
     switchLang: '切换系统语言',
     langBtn: 'English',
     themes: {

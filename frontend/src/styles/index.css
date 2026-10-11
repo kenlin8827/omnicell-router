@@ -518,3 +518,27 @@ td, th {
   from { transform: translateX(48px); opacity: 0; }
   to { transform: translateX(0); opacity: 1; }
 }
+
+/* ---- Console top header: responsive degradation (Layout.tsx) ---- */
+/* Wrapping + nowrap (inline styles in Layout) stop CJK labels from breaking
+   one-character-per-line; these rules then collapse labels to icon-only as
+   the viewport narrows — the buttons' `title` tooltip still explains them. */
+.hdr-actions .btn {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+@media (max-width: 1280px) {
+  /* Secondary text first: language switcher + logout go icon-only */
+  .hdr-label-opt {
+    display: none;
+  }
+}
+@media (max-width: 1024px) {
+  /* Everything collapsible goes icon-only; breadcrumb keeps only the page title */
+  .hdr-label {
+    display: none;
+  }
+  .hdr-crumb-group {
+    display: none;
+  }
+}

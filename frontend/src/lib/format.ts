@@ -6,7 +6,8 @@
  * Session IDs are client-supplied verbatim (explicit session header wins) and
  * some clients send a whole JSON blob (e.g. {"device_id":"...","account_uuid":
  * "","session_id":"<uuid>"}). For display, extract the inner session_id when
- * parseable, otherwise truncate over-long ids; full value stays in the tooltip.
+ * parseable; otherwise show the id in full (never middle-abbreviated — users
+ * need to match ids across pages). Long ids wrap via the table's word-break.
  */
 export const formatSessionId = (raw: string): string => {
   try {
@@ -17,7 +18,7 @@ export const formatSessionId = (raw: string): string => {
   } catch {
     /* plain string id */
   }
-  return raw.length <= 24 ? raw : `${raw.slice(0, 12)}…${raw.slice(-8)}`;
+  return raw;
 };
 
 /** Clipboard write with boolean outcome (pages surface success/error toasts). */

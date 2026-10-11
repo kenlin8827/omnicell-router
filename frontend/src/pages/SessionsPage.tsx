@@ -259,7 +259,15 @@ export const SessionsPage: React.FC = () => {
             {sessions.length > 0 ? (
               sessions.map(s => (
                 <tr key={s.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
-                  <td style={{ padding: '10px 14px', fontFamily: 'JetBrains Mono, monospace', color: 'var(--accent)' }}>
+                  <td
+                    style={{
+                      padding: '10px 14px',
+                      fontFamily: 'JetBrains Mono, monospace',
+                      color: 'var(--accent)',
+                      wordBreak: 'break-all',
+                      maxWidth: 320,
+                    }}
+                  >
                     <span
                       title={s.id}
                       style={{ cursor: 'copy' }}

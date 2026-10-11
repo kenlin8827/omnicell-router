@@ -644,7 +644,14 @@ export const RulesPage: React.FC = () => {
 
               {/* Member list — the ONLY pool-membership source. List order =
                   priority chain; higher weight overrides the order. */}
-              <div>
+              {/* Members section = the card's FLEXIBLE MIDDLE (flex:'1 1 auto'
+                  so its content still drives row height): header/desc stay on
+                  top, add-input/strategy/footer anchor the bottom, and ALL
+                  slack flows into the list below — a short pool next to a tall
+                  sibling grows its list box instead of a dead gap above the
+                  footer. basis:auto (not 0) keeps long pools tall; minHeight:0
+                  lets it shrink inside the stretched card. */}
+              <div style={{ display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
                   <label style={{ ...labelStyle, marginBottom: 0 }}>{t('tierPolicy.membersTitle')}</label>
                   <span style={{ fontSize: '10px', color: 'var(--text-dim)' }}>{t('tierPolicy.membersCount', { n: f.members.length })}</span>
@@ -660,18 +667,21 @@ export const RulesPage: React.FC = () => {
                   value={memberFilters[tier]}
                   onChange={(e) => setMemberFilters((prev) => ({ ...prev, [tier]: e.target.value }))}
                 />
-                {/* Fixed-height member list: keeps all four tier cards
-                    structurally equal so footers align (short pools just
-                    leave inner whitespace instead of stretching the card). */}
+                {/* The list flex-grows (basis auto) so a short pool next to a
+                    tall sibling still fills its card — capped at EXACTLY 5
+                    rows: rows are pinned to 40px + 6px gap, so maxHeight =
+                    5*40 + 4*6 = 224px. Longer pools scroll internally. */}
                 <div
                   style={{
                     display: 'flex',
                     flexDirection: 'column',
                     gap: '6px',
                     marginTop: '6px',
-                    height: '360px',
+                    flex: '1 1 auto',
+                    minHeight: '120px',
+                    maxHeight: 'calc(5 * 40px + 4 * 6px)',
                     overflowY: 'auto',
-                    paddingRight: f.members.length > 8 ? '4px' : undefined,
+                    paddingRight: visibleMembers(tier).length > 5 ? '4px' : undefined,
                   }}
                 >
                   {/* Stable row keys (pattern + occurrence, NOT index): index
@@ -711,7 +721,8 @@ export const RulesPage: React.FC = () => {
                           display: 'flex',
                           alignItems: 'center',
                           gap: '6px',
-                          padding: '5px 8px',
+                          height: '40px',
+                          padding: '0 8px',
                           border: '1px solid var(--card-border)',
                           borderRadius: 8,
                           flexShrink: 0,

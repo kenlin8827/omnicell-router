@@ -66,6 +66,7 @@ export interface TranslationDict {
     restartTimeout: string;
     resetSuccess: string;
     resetFailed: string;
+    resetConfirm: string;
     switchLang: string;
     langBtn: string;
     themes: {
