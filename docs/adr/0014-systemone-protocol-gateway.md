@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented — 2026-10-11.
+Implemented — 2026-10-11. Amended same day: `auto-*` tier alias resolution on this surface (§1).
 
 ## Context
 
@@ -18,7 +18,7 @@ Operators want `POST /v1/systemone` served by the gateway — backed either by a
 
 - New route (`backend/src/routes/systemone.ts`), registered next to the other protocol compatibility layers (`server.ts`). Auth and per-key model-access policies apply exactly like `/v1/chat/completions`.
 - Structural validation only (`protocols/systemone/convert.ts#validateSystemoneRequest`): required `state`; non-empty `questions`; per-type shape (`choice` non-empty option map; `score` array of ≥2 levels; `noul` optional `{true,false}` hints). Upstream-specific limits (e.g. TypeSafe score ≤10 levels vs Bailian ≤255) are NOT enforced here — the upstream stays the authority. Invalid bodies → 400 `invalid_request_error` (gateway envelope; upstreams themselves use 422).
-- `model` resolution: a registered physical model id; missing / `'auto'` / `'default'` falls back to config `systemone.defaultModel`; neither present → 400. No tier cascade, session ratchet or combo resolution — System One is a stateless decision surface: the model named is the model served.
+- `model` resolution: a registered physical model id; missing / `'auto'` / `'default'` falls back to config `systemone.defaultModel`; neither present → 400. The virtual tier aliases `auto-lite` / `auto-plus` / `auto-pro` / `auto-ultra` resolve to the chain-head healthy member of the named tier — candidates are access-filtered per key BEFORE the pick (an allow-mode key must name the alias; a deny-mode key must not have the tier denied), and the surface fails explicitly when the tier has no candidate pool (404), admits nothing (403) or has no healthy member (503) — never a silent fallback to another tier. The pick is the chain head (weight/priority order), not the chat pool's weighted/round-robin strategies, and is classifier-free (no Layer 1 call, no request synthesis — pure registry pool projection). `X-OCR-Model` still discloses who served. Still no tier cascade, session ratchet or combo resolution — System One is a stateless decision surface: the alias constrains ONE tier; the resolved model is the model served.
 
 ### 2. Two upstream paths, selected by provider type
 
@@ -46,7 +46,7 @@ Operators want `POST /v1/systemone` served by the gateway — backed either by a
 ### 4. Execution semantics (v1)
 
 - Converted calls execute through `registry.execute` — the exact named model, with provider-level proxy policy, timeout and `UpstreamError` classification applying. The orchestrator's session / classifier / schema-assertion machinery is deliberately NOT engaged.
-- Deliberately out of v1 scope: circuit-breaker tripping, FinOps accounting, trace/flywheel/capture records and decision caching for this surface; native upstream 4xx/5xx statuses are mirrored to the caller.
+- Deliberately out of v1 scope: circuit-breaker tripping and outcome recording (alias resolution READS breaker availability to gate the tier pick, but never trips or records on this surface), FinOps accounting, trace/flywheel/capture records and decision caching; native upstream 4xx/5xx statuses are mirrored to the caller.
 
 ### 5. Layer 2 judge migration path
 
@@ -60,6 +60,7 @@ Operators want `POST /v1/systemone` served by the gateway — backed either by a
 ## Consequences
 
 - `/v1/systemone` becomes a first-class gateway surface: any registered model can serve it; native System One upstreams get exact passthrough.
+- `auto-*` tier aliases resolve on this surface with zero classifier involvement (registry pool projection only), so they add no decision latency and no Layer 2 recursion; per-key access filtering runs BEFORE the pick so a denied member never blocks an allowed sibling.
 - Operators can host a LiteLLM-style classifier endpoint on the gateway without a dedicated decision model — at the cost of uncalibrated probabilities (documented above).
-- Converted-call resilience is provider-level only (timeout / proxy / error classification). Breaker + retry + FinOps integration for this surface is explicit follow-up work.
+- Converted-call resilience is provider-level only (timeout / proxy / error classification). Breaker tripping/recording + retry + FinOps integration for this surface is explicit follow-up work.
 - The console has no System One provider editor yet — native upstreams are configured via `config.yaml` (`type: 'systemone'`; see `config.example.yaml`).

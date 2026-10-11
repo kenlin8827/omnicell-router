@@ -1,4 +1,5 @@
 import { ApiKeyConfig, ModelAccessConfig } from '../config/types.js';
+import { TierLevel } from '../types/router.js';
 
 export type { ModelAccessConfig };
 
@@ -8,12 +9,12 @@ export type { ModelAccessConfig };
 export const ENTRY_PATTERN = /^[A-Za-z0-9._:/\-]+(\*[A-Za-z0-9._:/\-]*)*$/;
 
 /**
- * Virtual force-tier id → tier name. Policy lists accept these entries as
- * tier-wide rules: `deny auto-plus` blocks EVERY plus-tier model (not just a
- * literal id that happens to be named auto-plus, which matches nothing).
- * Bare `auto` and physical ids return '' (no tier meaning).
+ * Virtual force-tier id → tier name (`TierLevel | ''`). Policy lists accept
+ * these entries as tier-wide rules: `deny auto-plus` blocks EVERY plus-tier
+ * model (not just a literal id that happens to be named auto-plus, which
+ * matches nothing). Bare `auto` and physical ids return '' (no tier meaning).
  */
-export function tierFromVirtualEntry(entry: string): string {
+export function tierFromVirtualEntry(entry: string): TierLevel | '' {
   switch (entry) {
     case 'auto-lite':
       return 'lite';

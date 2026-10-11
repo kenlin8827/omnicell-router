@@ -599,3 +599,229 @@ describe('POST /v1/systemone end-to-end', () => {
     expect(res3.statusCode).toBe(400);
   });
 });
+
+describe('System One: auto-* tier alias resolution', () => {
+  /** One native systemone upstream + one model per tier: alias resolution is
+   *  observable purely through X-OCR-Model (native passthrough echoes the
+   *  upstream body, so the header is the only honest disclosure). */
+  function tieredConfig(upstreamPort: number, apiKeys: any[] = []): RouterConfig {
+    const config = makeConfig(
+      [{ name: 'native-tiers', type: 'systemone', baseUrl: `http://localhost:${upstreamPort}`, apiKey: 'sk-test' }],
+      [
+        {
+          id: 'native/lite-a',
+          provider: 'native-tiers',
+          upstreamModel: 'lite-a',
+          tier: 'lite',
+          pricing: { input: 0, output: 0, cacheRead: 0 },
+        },
+        {
+          id: 'native/plus-b',
+          provider: 'native-tiers',
+          upstreamModel: 'plus-b',
+          tier: 'plus',
+          pricing: { input: 0, output: 0, cacheRead: 0 },
+        },
+        {
+          id: 'native/plus-c',
+          provider: 'native-tiers',
+          upstreamModel: 'plus-c',
+          tier: 'plus',
+          pricing: { input: 0, output: 0, cacheRead: 0 },
+        },
+      ]
+    );
+    config.apiKeys = apiKeys as any;
+    return config;
+  }
+
+  const NATIVE_ANSWERS = {
+    model: 'jev-test',
+    answers: { department: { type: 'choice', choice: 'billing', probabilities: { billing: 1 } } },
+    usage: { input_tokens: 1, output_tokens: 0 },
+  };
+
+  test('auto-plus / auto-lite resolve to the chain-head member of the named tier', async () => {
+    useSandbox('plain');
+    const upstream = serve({
+      port: 0,
+      async fetch() {
+        return Response.json(NATIVE_ANSWERS);
+      },
+    });
+    try {
+      const { app } = createServer(tieredConfig(upstream.port));
+      const plus = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'auto-plus' } });
+      expect(plus.statusCode).toBe(200);
+      expect(plus.headers['x-ocr-model']).toBe('native/plus-b'); // first registered plus member
+
+      const lite = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'auto-lite' } });
+      expect(lite.statusCode).toBe(200);
+      expect(lite.headers['x-ocr-model']).toBe('native/lite-a');
+    } finally {
+      upstream.stop(true);
+    }
+  });
+
+  test('a denied plus member never blocks its allowed sibling (filter before pick)', async () => {
+    useSandbox('plain');
+    const upstream = serve({
+      port: 0,
+      async fetch() {
+        return Response.json(NATIVE_ANSWERS);
+      },
+    });
+    try {
+      const config = tieredConfig(upstream.port, [
+        { name: 'skip-b', key: 'sk-skip', modelAccess: { mode: 'deny', models: ['native/plus-b'] } },
+      ]);
+      const { app } = createServer(config);
+      // plus-b is the chain head but denied; the pick must land on plus-c.
+      const res = await app.inject({
+        method: 'POST',
+        url: '/v1/systemone',
+        headers: { authorization: 'Bearer sk-skip' },
+        payload: { ...REQ, model: 'auto-plus' },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['x-ocr-model']).toBe('native/plus-c');
+    } finally {
+      upstream.stop(true);
+    }
+  });
+
+  test('deny-mode key denying every plus member → 403 model_not_allowed', async () => {
+    useSandbox('plain');
+    const config = tieredConfig(1, [
+      { name: 'no-plus', key: 'sk-no-plus', modelAccess: { mode: 'deny', models: ['native/plus-b', 'native/plus-c'] } },
+    ]);
+    const { app } = createServer(config);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/systemone',
+      headers: { authorization: 'Bearer sk-no-plus' },
+      payload: { ...REQ, model: 'auto-plus' },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe('model_not_allowed');
+    expect(String(res.json().error.message)).toContain('auto-plus');
+  });
+
+  test('tier with no registered members → 404 model_not_found', async () => {
+    useSandbox('plain');
+    const config = tieredConfig(1); // lite/plus members exist; ultra/pro tiers are empty
+    const { app } = createServer(config);
+    const res = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'auto-ultra' } });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error.code).toBe('model_not_found');
+    // Pinned to the tier-pool message so this test discriminates the alias
+    // resolution path from the generic unknown-model 404.
+    expect(String(res.json().error.message)).toContain("No candidate model in tier 'ultra'");
+  });
+
+  test('allow-mode key whitelisting a physical member but NOT the alias → 403 at the alias gate', async () => {
+    useSandbox('plain');
+    const config = tieredConfig(1, [
+      { name: 'narrow', key: 'sk-narrow', modelAccess: { mode: 'allow', models: ['native/plus-c'] } },
+    ]);
+    const { app } = createServer(config);
+    // Mirrors the chat surfaces: an allow-mode key must NAME the tier alias.
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/systemone',
+      headers: { authorization: 'Bearer sk-narrow' },
+      payload: { ...REQ, model: 'auto-plus' },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe('model_not_allowed');
+  });
+
+  test('allow-mode key naming the tier alias → tier-wide whitelist serves the chain head', async () => {
+    useSandbox('plain');
+    const upstream = serve({
+      port: 0,
+      async fetch() {
+        return Response.json(NATIVE_ANSWERS);
+      },
+    });
+    try {
+      const config = tieredConfig(upstream.port, [
+        { name: 'tier-wide', key: 'sk-tier', modelAccess: { mode: 'allow', models: ['auto-plus'] } },
+      ]);
+      const { app } = createServer(config);
+      // 'auto-plus' in the whitelist expands to EVERY plus-tier member, so
+      // both plus-b and plus-c are admissible; the chain head serves.
+      const res = await app.inject({
+        method: 'POST',
+        url: '/v1/systemone',
+        headers: { authorization: 'Bearer sk-tier' },
+        payload: { ...REQ, model: 'auto-plus' },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['x-ocr-model']).toBe('native/plus-b');
+    } finally {
+      upstream.stop(true);
+    }
+  });
+
+  test('every tier member breaker-open → 503 no_healthy_model', async () => {
+    useSandbox('plain');
+    const config = tieredConfig(1);
+    const { app, registry } = createServer(config);
+    const breaker = registry.getCircuitBreakerManager();
+    breaker.trip('native/plus-b', { reason: 'test', cooldownMs: 60000 });
+    breaker.trip('native/plus-c', { reason: 'test', cooldownMs: 60000 });
+    const res = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'auto-plus' } });
+    expect(res.statusCode).toBe(503);
+    expect(res.json().error.code).toBe('no_healthy_model');
+  });
+
+  test("bare 'auto' still resolves via systemone.defaultModel (non-regression)", async () => {
+    useSandbox('with-default'); // sandbox defaultModel: "test/chat"
+    const seen: any[] = [];
+    const upstream = serve({
+      port: 0,
+      async fetch(req) {
+        seen.push(await req.json());
+        return Response.json(
+          fakeChat(
+            JSON.stringify({
+              answers: { department: { choice: 'billing' }, escalate: { noul: 0.5 }, severity: { score: 1 } },
+            })
+          )
+        );
+      },
+    });
+    try {
+      const config = makeConfig(
+        [
+          {
+            name: 'chat-test',
+            type: 'openai-compatible',
+            baseUrl: `http://localhost:${upstream.port}`,
+            apiKey: 'sk-test',
+            timeoutMs: 5000,
+          },
+        ],
+        [
+          {
+            id: 'test/chat',
+            provider: 'chat-test',
+            upstreamModel: 'upstream-chat',
+            tier: 'plus',
+            supportedReasoningEfforts: ['none', 'low'],
+            pricing: { input: 1, output: 1, cacheRead: 0 },
+          },
+        ],
+        { defaultModel: 'test/chat' }
+      );
+      const { app } = createServer(config);
+      const res = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'auto' } });
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['x-ocr-model']).toBe('test/chat');
+      expect(seen[0].model).toBe('upstream-chat');
+    } finally {
+      upstream.stop(true);
+    }
+  });
+});
