@@ -257,7 +257,7 @@ describe('ProviderRegistry.pickModelForEffort — effort=none short-circuits', (
 });
 
 describe('ProviderRegistry.pickModelForEffort — legacy boolean compat', () => {
-  it('supportsReasoningEffort=true is treated as supporting all 4 non-default levels', () => {
+  it('supportsReasoningEffort=true resolves to the full EFFORT_LADDER (all 6 levels)', () => {
     const cfg = configWithModels([
       { id: 'legacy', tier: 'pro', supportsReasoningEffort: true },
     ]);

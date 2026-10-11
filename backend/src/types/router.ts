@@ -117,9 +117,14 @@ export interface TierModelConfig {
   supportedReasoningEfforts?: readonly ReasoningEffort[];
   /**
    * Legacy boolean kept for back-compat with catalog / config files that
-   * pre-date the per-level vocabulary. Treated as "supports the 5
-   * non-`none` levels" (low / medium / high / xhigh / max) when true
-   * and no `supportedReasoningEfforts` is set.
+   * pre-date the per-level vocabulary. When true and no
+   * `supportedReasoningEfforts` is set, `modelSupportsEfforts` resolves it to
+   * the FULL `EFFORT_LADDER` (all 6 levels, `none` included). Carrying `none`
+   * is a no-op on every generic path: a `none` target short-circuits before
+   * the support set is read, and a clamp that can reach only `none` yields
+   * `'none'` anyway. The ONE place where legacy still means the 5 non-`none`
+   * levels is the System One wire, whose vendor enum has no `none`
+   * (protocols/systemone/convert.ts → `'low'`).
    */
   supportsReasoningEffort?: boolean;
   supportsPromptCaching?: boolean;

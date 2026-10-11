@@ -101,8 +101,8 @@ const DECISION_SYSTEM_PROMPT = [
  *   2. explicit `supportedReasoningEfforts` → its lowest level ('none' is
  *      trusted only here — an exact declaration);
  *   3. coarse legacy/catalog boolean → 'low': "thinking-capable" cannot
- *      certify that the vendor enum accepts 'none', and the documented
- *      legacy semantics are the 5 non-none levels;
+ *      certify that the vendor enum accepts 'none' — start at the lowest
+ *      non-none level (the safest universally-accepted value);
  *   4. no effort declaration at all → undefined (send nothing).
  * Catalog capability data is coarse (a boolean says nothing about the real
  * enum) — the /v1/systemone route therefore also calibrates at runtime: a

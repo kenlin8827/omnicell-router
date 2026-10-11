@@ -30,7 +30,8 @@ export interface ModelRegistration {
    */
   supportedReasoningEfforts?: readonly ReasoningEffort[];
   /** Legacy boolean; if true and `supportedReasoningEfforts` is unset, the model
-   *  is treated as supporting all 4 non-default levels (low/medium/high/xhigh). */
+   *  is treated as supporting the FULL `EFFORT_LADDER` (all 6 levels, `none`
+   *  included) — see `modelSupportsEfforts` in types/router.ts. */
   supportsReasoningEffort?: boolean;
   supportsPromptCaching?: boolean;
   /**
