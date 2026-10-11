@@ -596,10 +596,8 @@ export const CombosPage: React.FC = () => {
               <div
                 key={idx}
                 className="card"
-                onClick={() => setEditing({ draft: { ...combo, models: combo.models.map(m => ({ ...m })) }, index: idx })}
                 style={{
                   padding: '14px',
-                  cursor: 'pointer',
                   display: 'flex',
                   flexDirection: 'column',
                   gap: '10px',
