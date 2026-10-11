@@ -21,6 +21,13 @@ export const formatSessionId = (raw: string): string => {
   return raw;
 };
 
+/**
+ * Head-truncated id for dense lists (GitHub short-SHA style): first `n`
+ * chars + ellipsis. Pair with a full-value tooltip; search accepts fragments.
+ */
+export const shortId = (id: string, n = 16): string =>
+  id.length <= n ? id : `${id.slice(0, n)}…`;
+
 /** Clipboard write with boolean outcome (pages surface success/error toasts). */
 export const copyToClipboard = async (text: string): Promise<boolean> => {
   try {

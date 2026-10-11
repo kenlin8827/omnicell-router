@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
 import { Archive, RefreshCw, Trash2, X, AlertTriangle, Download, Search, Copy, Check, Braces } from 'lucide-react';
@@ -15,6 +15,14 @@ import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
 import { Switch } from '../components/Switch';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
+import { copyToClipboard, shortId } from '../lib/format';
+import { useSplitterWidth, VSplitter } from '../components/Splitter';
+
+// Left-rail splitter bounds + persistence (captures page session list).
+const RAIL_MIN = 240;
+const RAIL_MAX = 640;
+const RAIL_DEFAULT = 320;
+const RAIL_WIDTH_KEY = 'ocr.captures.railWidth';
 
 function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -138,6 +146,7 @@ const CaptureDrawer: React.FC<{
   onClose: () => void;
 }> = ({ turn, onClose }) => {
   const { t } = useI18n();
+  const toast = useToast();
   const [tab, setTab] = useState<DrawerTab>('clientRequest');
   useBodyScrollLock(true);
 
@@ -271,9 +280,15 @@ const CaptureDrawer: React.FC<{
             </span>
           )}
           {/* TraceId — the linkable key for joining this turn
-              across capture events and the trace record. */}
+              across capture events and the trace record. Head-truncated
+              display; full value in tooltip, click copies it. */}
           <span
-            title={t('captures.traceId')}
+            title={turn.traceId}
+            onClick={async () => {
+              const ok = await copyToClipboard(turn.traceId);
+              if (ok) toast.success(t('captures.copied'));
+              else toast.error(t('common.failed'));
+            }}
             style={{
               fontSize: '11px',
               color: 'var(--text-dim)',
@@ -281,13 +296,10 @@ const CaptureDrawer: React.FC<{
               background: 'rgba(255,255,255,0.04)',
               padding: '2px 6px',
               borderRadius: '4px',
-              maxWidth: '160px',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
+              cursor: 'copy',
             }}
           >
-            trace:{turn.traceId.slice(0, 16)}
+            trace:{shortId(turn.traceId)}
           </span>
           {/* Per-direction latency: gateway = client cycle, upstream =
               upstream cycle. Missing when one side never fired. */}
@@ -598,6 +610,15 @@ export const CapturesPage: React.FC = () => {
   const [pendingFile, setPendingFile] = useState<string>('');
   const [searchParams] = useSearchParams();
   const sessionParam = searchParams.get('session') || '';
+
+  // Left-rail width: draggable splitter (persisted; double-click resets).
+  const {
+    width: railWidth,
+    hot: railHot,
+    onResizeStart: onRailResizeStart,
+    reset: resetRailWidth,
+    setHot: setRailHot,
+  } = useSplitterWidth({ storageKey: RAIL_WIDTH_KEY, initial: RAIL_DEFAULT, min: RAIL_MIN, max: RAIL_MAX });
 
   const loadStatus = useCallback(async () => {
     try {
@@ -923,10 +944,11 @@ export const CapturesPage: React.FC = () => {
               </div>
 
               <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
-                {/* Left rail: filter + session list of the selected day */}
+                {/* Left rail: filter + session list of the selected day.
+                    Width is user-resizable via the splitter; persisted. */}
                 <div
                   style={{
-                    width: 320,
+                    width: railWidth,
                     flexShrink: 0,
                     borderRight: '1px solid var(--card-border)',
                     display: 'flex',
@@ -964,27 +986,43 @@ export const CapturesPage: React.FC = () => {
                         borderLeft: s.file === selectedFile ? '2px solid var(--accent)' : '2px solid transparent',
                       }}
                     >
-                      {/* Last-turn status dot */}
-                      {s.lastStatus && (
-                        <span
-                          title={s.lastStatus === 'ok' ? t('captures.lastOkTitle') : t('captures.lastErrorTitle')}
-                          style={{
-                            width: 8,
-                            height: 8,
-                            borderRadius: '50%',
-                            flexShrink: 0,
-                            background: s.lastStatus === 'ok' ? 'var(--accent-emerald)' : '#ef4444',
-                            boxShadow: s.lastStatus === 'error' ? '0 0 6px rgba(239,68,68,0.5)' : '0 0 6px rgba(16,185,129,0.4)',
-                          }}
-                        />
-                      )}
+                      {/* Last-turn status dot: emerald = ok, red = error,
+                          dim gray = unknown (archive has the request half
+                          only — no gateway response was ever recorded). */}
+                      <span
+                        title={
+                          s.lastStatus === 'ok'
+                            ? t('captures.lastOkTitle')
+                            : s.lastStatus === 'error'
+                              ? t('captures.lastErrorTitle')
+                              : t('captures.lastUnknownTitle')
+                        }
+                        style={{
+                          width: 8,
+                          height: 8,
+                          borderRadius: '50%',
+                          flexShrink: 0,
+                          background:
+                            s.lastStatus === 'ok'
+                              ? 'var(--accent-emerald)'
+                              : s.lastStatus === 'error'
+                                ? '#ef4444'
+                                : 'rgba(255,255,255,0.18)',
+                          boxShadow:
+                            s.lastStatus === 'error'
+                              ? '0 0 6px rgba(239,68,68,0.5)'
+                              : s.lastStatus === 'ok'
+                                ? '0 0 6px rgba(16,185,129,0.4)'
+                                : 'none',
+                        }}
+                      />
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div
                           style={{
                             fontFamily: 'JetBrains Mono, monospace',
+                            whiteSpace: 'nowrap',
                             overflow: 'hidden',
                             textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
                           }}
                         >
                           {s.sessionId}
@@ -1063,6 +1101,14 @@ export const CapturesPage: React.FC = () => {
                   )}
                   </div>
                 </div>
+
+                {/* Drag splitter: resize the rail (double-click = reset). */}
+                <VSplitter
+                  hot={railHot}
+                  onResizeStart={onRailResizeStart}
+                  onHotChange={setRailHot}
+                  onReset={resetRailWidth}
+                />
 
                 {/* Main pane: session timeline */}
                 <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
@@ -1200,6 +1246,11 @@ export const CapturesPage: React.FC = () => {
                                 )}
                                 <span
                                   title={`traceId=${turn.traceId}`}
+                                  onClick={async () => {
+                                    const ok = await copyToClipboard(turn.traceId);
+                                    if (ok) toast.success(t('captures.copied'));
+                                    else toast.error(t('common.failed'));
+                                  }}
                                   style={{
                                     fontSize: '11px',
                                     color: 'var(--text-dim)',
@@ -1207,9 +1258,10 @@ export const CapturesPage: React.FC = () => {
                                     background: 'rgba(255,255,255,0.04)',
                                     padding: '2px 6px',
                                     borderRadius: '4px',
+                                    cursor: 'copy',
                                   }}
                                 >
-                                  trace:{turn.traceId.slice(0, 12)}…
+                                  trace:{shortId(turn.traceId)}
                                 </span>
                                 {turn.gatewayLatencyMs !== undefined && (
                                   <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace' }}>

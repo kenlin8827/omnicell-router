@@ -531,7 +531,6 @@ export interface TranslationDict {
     tabGatewayResponse: string;
     tabUpstreamRequest: string;
     tabUpstreamResponse: string;
-    traceId: string;
     gatewayLatency: string;
     upstreamLatency: string;
     copy: string;
@@ -546,6 +545,7 @@ export interface TranslationDict {
     exportBtn: string;
     lastOkTitle: string;
     lastErrorTitle: string;
+    lastUnknownTitle: string;
     searchPlaceholder: string;
     noMatchSessions: string;
     sessionNotFound: string;
