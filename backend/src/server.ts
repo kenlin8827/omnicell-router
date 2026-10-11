@@ -4,7 +4,7 @@ import { registerRuntimeConfigRef } from './config/index.js';
 import { registerAnthropicRoutes } from './routes/anthropic.js';
 import { registerResponsesRoutes } from './routes/responses.js';
 import { buildChatStreamChunks } from './utils/chat-sse.js';
-import fastify, { FastifyInstance } from 'fastify';
+import fastify, { FastifyInstance, LogController } from 'fastify';
 import cors from '@fastify/cors';
 import { RouterConfig } from './config/types.js';
 import { loadConfig } from './config/index.js';
@@ -57,10 +57,22 @@ export function createServer(
   registry: ProviderRegistry;
   tracker: FinOpsTracker;
 } {
+  // disableRequestLogging: Fastify's built-in per-request lifecycle logs
+  // ("incoming request" / "request completed" at info) are pure noise here —
+  // every UI poll of /health + /api/* produced a pair, drowning ocr.log.
+  // Request/response observability lives in /v1/traces + capture instead.
+  // The hook below keeps 5xx visibility: disabling request logging also
+  // suppresses Fastify's own 'request errored' / defaultErrorLog output.
+  // NB: passed via the logController option — the top-level
+  // disableRequestLogging flag is deprecated (FSTDEP023, removed in fastify@6).
   const app = fastify({
     logger: {
       level: process.env.LOG_LEVEL || 'info',
     },
+    logController: new LogController({ disableRequestLogging: true }),
+  });
+  app.addHook('onError', async (req, _reply, err) => {
+    req.log.error(err, 'request errored');
   });
 
   const registry = customRegistry || new ProviderRegistry(config, mockMode);
