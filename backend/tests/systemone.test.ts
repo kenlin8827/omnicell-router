@@ -8,6 +8,7 @@ import { loadConfig } from '../src/config/index.js';
 import { RouterConfig } from '../src/config/types.js';
 import {
   buildDecisionChatRequest,
+  decisionReasoningEffort,
   synthesizeSystemoneResponse,
   validateSystemoneRequest,
 } from '../src/protocols/systemone/convert.js';
@@ -123,6 +124,18 @@ describe('System One: chat request synthesis', () => {
     expect(chat.messages.length).toBe(4);
     expect((chat.messages[2] as any).role).toBe('assistant');
     expect(String((chat.messages[3] as any).content)).toContain('could not be used');
+  });
+});
+
+describe('System One: reasoning-effort pin', () => {
+  test('none when supported, lowest level for thinking-only models, omitted otherwise', () => {
+    expect(decisionReasoningEffort({ supportedReasoningEfforts: ['none', 'low', 'high'] })).toBe('none');
+    // Legacy boolean = full ladder (includes none).
+    expect(decisionReasoningEffort({ supportsReasoningEffort: true })).toBe('none');
+    // Thinking-only model → its lowest declared level.
+    expect(decisionReasoningEffort({ supportedReasoningEfforts: ['medium', 'low', 'high'] })).toBe('low');
+    // No explicit effort control → omit the field entirely.
+    expect(decisionReasoningEffort({})).toBeUndefined();
   });
 });
 
@@ -279,6 +292,7 @@ describe('POST /v1/systemone end-to-end', () => {
             provider: 'chat-test',
             upstreamModel: 'upstream-chat',
             tier: 'plus',
+            supportedReasoningEfforts: ['none', 'low', 'medium', 'high'],
             pricing: { input: 1, output: 1, cacheRead: 0 },
           },
         ],
@@ -297,7 +311,9 @@ describe('POST /v1/systemone end-to-end', () => {
       expect(res.headers['x-ocr-systemone-upstream']).toBe('converted');
       expect(seen.length).toBe(2);
       expect(seen[0].response_format).toEqual({ type: 'json_object' });
+      expect(seen[0].reasoning_effort).toBe('none');
       expect(String(seen[0].messages[0].content)).toContain('System One');
+      expect(seen[1].reasoning_effort).toBe('none');
       expect(String(seen[1].messages[3].content)).toContain('could not be used');
     } finally {
       upstream.stop(true);

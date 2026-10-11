@@ -33,6 +33,7 @@ Operators want `POST /v1/systemone` served by the gateway — backed either by a
 ### 3. Conversion contract (chat models)
 
 - Request side: ONE chat completion carries all questions (`state` + `questions` JSON in the user message; a fixed system prompt pins the JSON contract). `temperature: 0`, `response_format: json_object`, `max_tokens: 4096`. Batching all questions mirrors System One's parallel evaluation (TypeSafe's own guidance: one batched call is ~12× cheaper and faster than sequential).
+- Reasoning effort is pinned for the decision call (`decisionReasoningEffort` in convert.ts): `'none'` when the model declares `none` support (explicit no-think), the LOWEST declared level for thinking-only models (minimal thinking), and omitted entirely for models without explicit effort control (never inject a field a strict upstream may reject). System One is a fast-decision protocol — conversion calls must not burn thinking tokens by default.
 - Response side: tolerant JSON extraction (code fences / first-`{` fallback) → per-question synthesis with normalization:
   - `choice`: declared option matched case-insensitively against the criteria keys; probabilities filtered to the criteria space and renormalized; empty distribution → degenerate `{winner: 1}` over the full option set; winner = declared else argmax; `confidence` = provided else distribution peak.
   - `noul`: numeric / boolean / yes-no string → clamped `[0,1]`.

@@ -8,6 +8,7 @@ import { ChatCompletionResponse } from '../types/openai.js';
 import { SystemoneRequest, SystemoneResponse } from '../protocols/systemone/types.js';
 import {
   buildDecisionChatRequest,
+  decisionReasoningEffort,
   synthesizeSystemoneResponse,
   validateSystemoneRequest,
 } from '../protocols/systemone/convert.js';
@@ -41,14 +42,22 @@ async function convertViaChatModel(
   body: SystemoneRequest,
   model: ModelRegistration
 ): Promise<SystemoneResponse> {
-  let chat = await registry.execute(buildDecisionChatRequest(body, model.id), model);
+  // System One = fast structured decisions: pin the decision call's reasoning
+  // effort (decisionReasoningEffort) on the initial AND repair requests.
+  const effort = decisionReasoningEffort(model);
+  const build = (repair?: { previousOutput: string; reason: string }) => {
+    const request = buildDecisionChatRequest(body, model.id, repair);
+    if (effort) request.reasoning_effort = effort;
+    return request;
+  };
+
+  let chat = await registry.execute(build(), model);
   let synth = synthesizeSystemoneResponse(chat, body, model.id);
   for (let attempt = 0; attempt < CONVERSION_REPAIR_ATTEMPTS && !synth.ok; attempt++) {
-    const repair = buildDecisionChatRequest(body, model.id, {
-      previousOutput: chatText(chat),
-      reason: synth.reason,
-    });
-    chat = await registry.execute(repair, model);
+    chat = await registry.execute(
+      build({ previousOutput: chatText(chat), reason: synth.reason }),
+      model
+    );
     synth = synthesizeSystemoneResponse(chat, body, model.id);
   }
   if (!synth.ok) {

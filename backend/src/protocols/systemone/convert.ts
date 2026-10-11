@@ -9,6 +9,7 @@
  * ADR-0014, fidelity statement).
  */
 import { ChatCompletionRequest, ChatCompletionResponse, ChatMessage } from '../../types/openai.js';
+import { EFFORT_LADDER, ReasoningEffort, modelSupportsEfforts } from '../../types/router.js';
 import {
   SystemoneAnswer,
   SystemoneChoiceAnswer,
@@ -88,6 +89,29 @@ export const DECISION_SYSTEM_PROMPT = [
   '5. Probabilities and confidence are honest calibrated estimates, not uniform filler.',
   '6. Output the JSON object only — no markdown fences, no commentary.',
 ].join('\n');
+
+/**
+ * Reasoning-effort pin for the conversion path: System One calls are fast
+ * structured decisions — never let a reasoning model burn thinking tokens on
+ * them when its declared capability allows a lower / no-think setting.
+ *   - `none` in the declared support set  → 'none' (explicit no-think)
+ *   - thinking-only model                 → its LOWEST declared level
+ *   - no explicit effort control declared → undefined (omit the field —
+ *     never inject a parameter a strict upstream might reject)
+ */
+export function decisionReasoningEffort(model: {
+  supportedReasoningEfforts?: readonly ReasoningEffort[];
+  supportsReasoningEffort?: boolean;
+}): ReasoningEffort | undefined {
+  const supported = modelSupportsEfforts(model.supportedReasoningEfforts, model.supportsReasoningEffort);
+  if (!supported) return undefined;
+  if (supported.includes('none')) return 'none';
+  let lowest = supported[0];
+  for (const level of supported) {
+    if (EFFORT_LADDER.indexOf(level) < EFFORT_LADDER.indexOf(lowest)) lowest = level;
+  }
+  return lowest;
+}
 
 /**
  * Synthesize the chat completion that serves a System One request on an
