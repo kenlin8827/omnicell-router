@@ -4,7 +4,7 @@ import { CircuitBreakerConfig, RetryConfig } from '../resilience/types.js';
 
 export interface ProviderConfig {
   name: string;
-  type: 'openai-compatible' | 'anthropic' | 'google' | 'responses' | 'dispatch';
+  type: 'openai-compatible' | 'anthropic' | 'google' | 'responses' | 'dispatch' | 'systemone';
   baseUrl: string;
   apiKey: string;
   organization?: string;
@@ -462,6 +462,16 @@ export interface WebAuthConfig {
   passwordHash?: string; // scrypt$<saltHex>$<hashHex>
 }
 
+/**
+ * System One protocol surface (POST /v1/systemone). Native upstreams declare
+ * `type: 'systemone'` in providers; every other registered model serves via
+ * chat-model conversion. `defaultModel` backs requests that omit `model`
+ * (or send 'auto') — never routed through the tier cascade (ADR-0014).
+ */
+export interface SystemoneSurfaceConfig {
+  defaultModel?: string;
+}
+
 export interface RouterConfig {
   port: number;
   host: string;
@@ -480,6 +490,8 @@ export interface RouterConfig {
   routing?: RoutingConfig;
   fallback: FallbackConfig;
   classifier?: ClassifierConfig;
+  /** System One protocol surface (POST /v1/systemone) — see ADR-0014. */
+  systemone?: SystemoneSurfaceConfig;
   flywheel?: FlywheelConfig;
   session?: SessionConfig;
   circuitBreaker?: CircuitBreakerConfig;

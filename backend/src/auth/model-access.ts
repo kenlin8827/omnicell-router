@@ -168,8 +168,9 @@ export function isAutoEntryUsable(
 }
 
 /**
- * Fastify guard factory shared by all three inference surfaces
- * (/v1/chat/completions, /v1/messages, /v1/responses). Reads the `authInfo`
+ * Fastify guard factory shared by all inference surfaces
+ * (/v1/chat/completions, /v1/messages, /v1/responses, /v1/systemone).
+ * Reads the `authInfo`
  * the auth preHandler attached (absent when auth is disabled — unrestricted),
  * resolves variants/combos to physical member ids and 403s with an
  * OpenAI-style error when the key's policy denies the requested model.

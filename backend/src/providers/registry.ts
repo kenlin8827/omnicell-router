@@ -20,6 +20,10 @@ export class ProviderRegistry {
   private rrCursor = new Map<TierLevel, number>();
   private combos = new Map<string, ComboConfig>();
   private comboRrCursor = new Map<string, number>();
+  /** Raw configs for every configured provider (all types) — lets the
+   *  /v1/systemone route detect native System One upstreams and reach their
+   *  baseUrl/apiKey (systemone providers build no chat executor). */
+  private providerConfigs = new Map<string, ProviderConfig>();
   /** Sibling-id index for model variants: `<baseId>-<variantId>` → base + variant. */
   private variantIndex = new Map<string, { baseId: string; variant: ModelVariant }>();
   private mockMode = false;
@@ -33,6 +37,14 @@ export class ProviderRegistry {
 
     // Initialize providers
     for (const pConfig of config.providers || []) {
+      this.providerConfigs.set(pConfig.name, pConfig);
+      if (pConfig.type === 'systemone') {
+        // Native System One upstreams are NOT chat executors — the
+        // /v1/systemone route calls them directly (routes/systemone.ts).
+        // Skipping the LLMProvider pool keeps chat routing from ever
+        // dispatching to them (ADR-0014).
+        continue;
+      }
       if (pConfig.type === 'anthropic') {
         this.providers.set(pConfig.name, new AnthropicProvider(pConfig));
       } else if (pConfig.type === 'responses') {
@@ -127,6 +139,12 @@ export class ProviderRegistry {
 
   public getModel(modelId: string): ModelRegistration | undefined {
     return this.models.get(modelId);
+  }
+
+  /** Raw provider config (any type) — the /v1/systemone route uses it to
+   *  detect native System One upstreams and reach their baseUrl/apiKey. */
+  public getProviderConfig(name: string): ProviderConfig | undefined {
+    return this.providerConfigs.get(name);
   }
 
   /**

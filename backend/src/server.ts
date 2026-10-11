@@ -4,6 +4,7 @@ import { getModelAccessPolicy, isModelAllowed, isAutoEntryUsable, makeModelAcces
 import { registerRuntimeConfigRef } from './config/index.js';
 import { registerAnthropicRoutes } from './routes/anthropic.js';
 import { registerResponsesRoutes } from './routes/responses.js';
+import { registerSystemoneRoutes } from './routes/systemone.js';
 import { buildChatStreamChunks } from './utils/chat-sse.js';
 import fastify, { FastifyInstance, LogController } from 'fastify';
 import cors from '@fastify/cors';
@@ -157,6 +158,9 @@ export function createServer(
   // Register Anthropic-protocol compatibility endpoint (POST /v1/messages)
   registerAnthropicRoutes(app, orchestrator);
   registerResponsesRoutes(app, orchestrator);
+
+  // Register System One decision-protocol endpoint (POST /v1/systemone)
+  registerSystemoneRoutes(app, orchestrator);
 
   // Authentication hook: validates adminApiKey (master) or client API keys (apiKeys)
   const resolveActiveAuthConfig = () => {
