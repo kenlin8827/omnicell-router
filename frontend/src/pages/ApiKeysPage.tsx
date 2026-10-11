@@ -289,9 +289,9 @@ export const ApiKeysPage: React.FC = () => {
 
   useBodyScrollLock(showCreateModal || !!createdKey || showPicker || !!editingKey || !!viewingKey);
 
-  // Active tab for quick connect code examples (dual protocol: OpenAI + Anthropic)
+  // Active tab for quick connect code examples (OpenAI + Anthropic + System One)
   const [connectTab, setConnectTab] = useState<
-    'cursor' | 'claude' | 'python' | 'anthropic' | 'curl' | 'anthropic-curl'
+    'cursor' | 'claude' | 'python' | 'anthropic' | 'curl' | 'anthropic-curl' | 'systemone-curl'
   >('cursor');
 
   const [page, setPage] = useState(1);
@@ -840,6 +840,7 @@ export const ApiKeysPage: React.FC = () => {
                 ['claude', 'Claude Code'],
                 ['anthropic', 'Python · Anthropic'],
                 ['anthropic-curl', 'cURL · Anthropic'],
+                ['systemone-curl', 'cURL · System One'],
               ] as const
             ).map(([tab, label]) => (
               <button
@@ -1014,6 +1015,25 @@ print(message.content[0].text)`
     "model": "auto",
     "max_tokens": 1024,
     "messages": [{"role": "user", "content": "Ping!"}]
+  }'`
+          )}
+
+          {connectTab === 'systemone-curl' && (
+`# System One 决策协议端点：state + 类型化问题 → 类型化答案（不走 chat 级联）
+# 上游二选一：任意已注册模型（网关自动做协议转换），或原生决策模型
+#（config.yaml 里配 providers[].type: systemone，如 TypeSafe Jev / 百炼决策模型）
+# model 填已注册模型 ID；配置了 systemone.defaultModel 后可直接用 auto
+curl http://127.0.0.1:3000/v1/systemone \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer ${inlineKey}" \\
+  -d '{
+    "model": "auto",
+    "state": "订单支付后超过 24 小时未到账，用户要求立即处理",
+    "questions": {
+      "department": {"type": "choice", "instructions": "应该由哪个团队处理？", "criteria": {"billing": "支付、退款和账单问题", "technical": "产品故障和集成问题"}},
+      "urgent":     {"type": "noul",   "instructions": "是否需要立即通知值班人员？"},
+      "severity":   {"type": "score",  "instructions": "这个问题有多严重？", "criteria": ["轻微问题", "部分功能受影响", "核心功能不可用"]}
+    }
   }'`
           )}
         </pre>
