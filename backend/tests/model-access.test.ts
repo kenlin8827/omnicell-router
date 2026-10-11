@@ -332,8 +332,8 @@ describe('Per-key model access policy (auth/model-access.ts)', () => {
       assert.ok(remoteIds.includes(ALLOWED), 'remote anonymous also sees everything');
     });
 
-    it('GET /api/ui/gateway-models serves the console picker with the FULL catalog', async () => {
-      const res = await app.inject({ method: 'GET', url: '/api/ui/gateway-models' });
+    it('GET /api/admin/gateway-models serves the console picker with the FULL catalog', async () => {
+      const res = await app.inject({ method: 'GET', url: '/api/admin/gateway-models' });
       assert.strictEqual(res.statusCode, 200);
       const body = JSON.parse(res.body);
       assert.strictEqual(body.status, 'ok');

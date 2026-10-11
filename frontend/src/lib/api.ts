@@ -64,7 +64,7 @@ export interface BreakerInfo {
   halfOpenProbes: number;
 }
 
-// Masked provider entry from /api/ui/status (ProviderConfig with apiKey masked)
+// Masked provider entry from /api/admin/status (ProviderConfig with apiKey masked)
 export interface MaskedProviderStatus {
   name: string;
   type: 'openai-compatible' | 'anthropic';
@@ -76,7 +76,7 @@ export interface MaskedProviderStatus {
   timeoutMs?: number;
 }
 
-// Mirrors backend /api/ui/status payload exactly (backend/src/routes/console.ts handleStatus)
+// Mirrors backend /api/admin/status payload exactly (backend/src/routes/console.ts handleStatus)
 export interface GatewayStatusResponse {
   status: string;
   timestamp: string;
@@ -104,7 +104,7 @@ export interface GatewayStatusResponse {
   };
 }
 
-// Mirrors backend ExecutionTrace (backend/src/trace/tracker.ts) returned by /v1/traces
+// Mirrors backend ExecutionTrace (backend/src/trace/tracker.ts) returned by /api/admin/traces
 export interface TraceRecord {
   traceId: string;
   sessionId: string;
@@ -444,13 +444,13 @@ export interface LogsResponse {
 
 export const api = {
   async getStatus(): Promise<GatewayStatusResponse> {
-    const res = await fetch('/api/ui/status');
+    const res = await fetch('/api/admin/status');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },
 
   async getConfig(): Promise<any> {
-    const res = await fetch('/api/ui/config');
+    const res = await fetch('/api/admin/config');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const body = await res.json();
     // Unwrap the { status, config } envelope — consumers want the RouterConfig
@@ -459,7 +459,7 @@ export const api = {
   },
 
   async saveConfig(config: any): Promise<{ status: string; message: string }> {
-    const res = await fetch('/api/ui/config', {
+    const res = await fetch('/api/admin/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(config),
@@ -472,14 +472,14 @@ export const api = {
   },
 
   async getTierPools(): Promise<TierPoolsResponse> {
-    const res = await fetch('/api/ui/tier-pools');
+    const res = await fetch('/api/admin/tier-pools');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },
 
   /** Ephemeral pool preview computed from (unsaved) tier-policy form state. */
   async previewTierPools(tiers: unknown): Promise<TierPoolsResponse> {
-    const res = await fetch('/api/ui/tier-pools/preview', {
+    const res = await fetch('/api/admin/tier-pools/preview', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tiers }),
@@ -490,13 +490,13 @@ export const api = {
 
   /** Live (committed) pool snapshot — the registry's m.tier after the last applyTierConfigNow. */
   async getLiveTierPools(): Promise<TierPoolsResponse> {
-    const res = await fetch('/api/ui/tier-pools/live');
+    const res = await fetch('/api/admin/tier-pools/live');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },
 
   async getCombos(): Promise<CombosResponse> {
-    const res = await fetch('/api/ui/combos');
+    const res = await fetch('/api/admin/combos');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },
@@ -508,19 +508,19 @@ export const api = {
    */
   async getCacheStats(sinceMs?: number): Promise<CacheStatsResponse> {
     const qs = sinceMs !== undefined ? `?since=${Math.floor(sinceMs)}` : '';
-    const res = await fetch(`/api/ui/cache-stats${qs}`);
+    const res = await fetch(`/api/admin/cache-stats${qs}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },
 
   async getRawYaml(): Promise<{ status: string; yaml: string }> {
-    const res = await fetch('/api/ui/config/raw');
+    const res = await fetch('/api/admin/config/raw');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },
 
   async saveRawYaml(yaml: string): Promise<{ status: string; message: string }> {
-    const res = await fetch('/api/ui/config/raw', {
+    const res = await fetch('/api/admin/config/raw', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ yaml }),
@@ -542,7 +542,7 @@ export const api = {
       extraModels?: string[];
     }
   ): Promise<{ status: string; message: string }> {
-    const res = await fetch(`/api/ui/client/${client}/${action}`, {
+    const res = await fetch(`/api/admin/client/${client}/${action}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload || {}),
@@ -557,7 +557,7 @@ export const api = {
   /** All models the gateway can route to: virtual (auto/auto-lite/…) + registered.
    *  Reads the console endpoint — /v1/models requires a key like every surface. */
   async listGatewayModels(): Promise<{ id: string; owned_by: string; tier?: string }[]> {
-    const res = await fetch('/api/ui/gateway-models');
+    const res = await fetch('/api/admin/gateway-models');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
     return (json?.models || []).map((m: any) => ({
@@ -568,7 +568,7 @@ export const api = {
   },
 
   async resetBreakers(model?: string): Promise<{ status: string; message?: string }> {
-    const res = await fetch('/v1/health/circuit-breakers/reset', {
+    const res = await fetch('/api/admin/health/circuit-breakers/reset', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(model ? { model } : {}),
@@ -580,7 +580,7 @@ export const api = {
     model: string,
     options?: { reason?: string; cooldownMs?: number }
   ): Promise<{ status: string; message?: string }> {
-    const res = await fetch('/v1/health/circuit-breakers/trip', {
+    const res = await fetch('/api/admin/health/circuit-breakers/trip', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model, ...options }),
@@ -589,7 +589,7 @@ export const api = {
   },
 
   async restartGateway(): Promise<{ status: string; message?: string }> {
-    const res = await fetch('/api/ui/restart', { method: 'POST' });
+    const res = await fetch('/api/admin/restart', { method: 'POST' });
     return res.json();
   },
 
@@ -598,19 +598,19 @@ export const api = {
     if (limit !== undefined) qs.set('limit', String(limit));
     qs.set('offset', String(offset));
     if (q) qs.set('q', q);
-    const res = await fetch(`/v1/sessions?${qs.toString()}`);
+    const res = await fetch(`/api/admin/sessions?${qs.toString()}`);
     if (!res.ok) return { sessions: [], total: 0 };
     const json = await res.json();
-    // /v1/sessions responds { object, total, limit?, offset, data }
+    // /api/admin/sessions responds { object, total, limit?, offset, data }
     return { sessions: json.data || [], total: json.total || 0 };
   },
 
   /** Full chronological trajectory of one session — source for the switch timeline. */
   async getSessionTraces(sessionId: string): Promise<TraceRecord[]> {
-    const res = await fetch(`/v1/sessions/${encodeURIComponent(sessionId)}/traces`);
+    const res = await fetch(`/api/admin/sessions/${encodeURIComponent(sessionId)}/traces`);
     if (!res.ok) return [];
     const json = await res.json();
-    // /v1/sessions/:id/traces responds { object, sessionId, total, data }
+    // /api/admin/sessions/:id/traces responds { object, sessionId, total, data }
     return json.data || [];
   },
 
@@ -619,13 +619,13 @@ export const api = {
     qs.set('tail', String(tail));
     if (level) qs.set('level', level);
     if (q) qs.set('q', q);
-    const res = await fetch(`/api/ui/logs?${qs.toString()}`);
+    const res = await fetch(`/api/admin/logs?${qs.toString()}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },
 
   async getApiKeys(): Promise<{ status: string; keys: ApiKeyItem[] }> {
-    const res = await fetch('/api/ui/api-keys');
+    const res = await fetch('/api/admin/api-keys');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },
@@ -638,7 +638,7 @@ export const api = {
     description?: string;
     modelAccess?: ApiKeyModelAccess;
   }): Promise<{ success: boolean; data?: ApiKeyItem; error?: string }> {
-    const res = await fetch('/api/ui/api-keys', {
+    const res = await fetch('/api/admin/api-keys', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -650,7 +650,7 @@ export const api = {
     id: string,
     updates: Partial<Omit<ApiKeyItem, 'modelAccess'>> & { modelAccess?: ApiKeyModelAccess | null }
   ): Promise<{ success: boolean; data?: ApiKeyItem; error?: string }> {
-    const res = await fetch(`/api/ui/api-keys/${id}`, {
+    const res = await fetch(`/api/admin/api-keys/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(updates),
@@ -659,7 +659,7 @@ export const api = {
   },
 
   async deleteApiKey(id: string): Promise<{ success: boolean; error?: string }> {
-    const res = await fetch(`/api/ui/api-keys/${id}`, { method: 'DELETE' });
+    const res = await fetch(`/api/admin/api-keys/${id}`, { method: 'DELETE' });
     return res.json();
   },
 
@@ -672,30 +672,30 @@ export const api = {
     policyModels: string[];
     models: { id: string; provider: string; tier: string; virtual: boolean; allowed: boolean }[];
   }> {
-    const res = await fetch(`/api/ui/api-keys/${encodeURIComponent(id)}/models`);
+    const res = await fetch(`/api/admin/api-keys/${encodeURIComponent(id)}/models`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },
 
   /* ------------------------------------------------------------------ *
-   * Request-capture archive (full bodies, opt-in; /api/ui/capture/*)
+   * Request-capture archive (full bodies, opt-in; /api/admin/capture/*)
    * ------------------------------------------------------------------ */
 
   async getCaptureStatus(): Promise<CaptureStatus> {
-    const res = await fetch('/api/ui/capture/status');
+    const res = await fetch('/api/admin/capture/status');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },
 
   async getCaptureDates(): Promise<CaptureDateRow[]> {
-    const res = await fetch('/api/ui/capture/dates');
+    const res = await fetch('/api/admin/capture/dates');
     if (!res.ok) return [];
     const json = await res.json();
     return json.dates || [];
   },
 
   async getCaptureSessions(date: string): Promise<CaptureSessionRow[]> {
-    const res = await fetch(`/api/ui/capture/${encodeURIComponent(date)}/sessions`);
+    const res = await fetch(`/api/admin/capture/${encodeURIComponent(date)}/sessions`);
     if (!res.ok) return [];
     const json = await res.json();
     return json.sessions || [];
@@ -704,7 +704,7 @@ export const api = {
   /** Locate a session's archive(s) across all dates by raw session id. */
   async findCaptureSessions(sessionId: string): Promise<CaptureSessionMatch[]> {
     const qs = new URLSearchParams({ id: sessionId });
-    const res = await fetch(`/api/ui/capture/find-session?${qs.toString()}`);
+    const res = await fetch(`/api/admin/capture/find-session?${qs.toString()}`);
     if (!res.ok) return [];
     const json = await res.json();
     return json.matches || [];
@@ -721,7 +721,7 @@ export const api = {
     fileTruncated: boolean;
   }> {
     const res = await fetch(
-      `/api/ui/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}/events?limit=${limit}`
+      `/api/admin/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}/events?limit=${limit}`
     );
     if (!res.ok) return { events: [], turns: [], totalLines: 0, fileTruncated: false };
     return res.json();
@@ -733,7 +733,7 @@ export const api = {
     limit = 200
   ): Promise<{ records: CaptureRecord[]; totalLines: number; fileTruncated: boolean }> {
     const res = await fetch(
-      `/api/ui/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}?limit=${limit}`
+      `/api/admin/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}?limit=${limit}`
     );
     if (!res.ok) return { records: [], totalLines: 0, fileTruncated: false };
     return res.json();
@@ -744,20 +744,20 @@ export const api = {
     const params = new URLSearchParams({ format: 'raw' });
     if (exclude && exclude.length > 0) params.set('exclude', exclude.join(','));
     const res = await fetch(
-      `/api/ui/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}?${params.toString()}`
+      `/api/admin/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}?${params.toString()}`
     );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.blob();
   },
 
   async deleteCaptureDate(date: string): Promise<{ status: string; message?: string }> {
-    const res = await fetch(`/api/ui/capture/${encodeURIComponent(date)}`, { method: 'DELETE' });
+    const res = await fetch(`/api/admin/capture/${encodeURIComponent(date)}`, { method: 'DELETE' });
     return res.json();
   },
 
   async deleteCaptureSession(date: string, file: string): Promise<{ status: string; message?: string }> {
     const res = await fetch(
-      `/api/ui/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}`,
+      `/api/admin/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}`,
       { method: 'DELETE' }
     );
     return res.json();
@@ -943,20 +943,20 @@ export const opencodeApi = {
     authPath: string;
     providers: OpenCodeProviderView[];
   }> {
-    return ocJson(await fetch('/api/ui/opencode/providers'));
+    return ocJson(await fetch('/api/admin/opencode/providers'));
   },
 
   async catalog(refresh = false): Promise<{ status: string; source: string; providers: OpenCodeCatalogProvider[] }> {
-    return ocJson(await fetch(`/api/ui/opencode/catalog${refresh ? '?refresh=1' : ''}`));
+    return ocJson(await fetch(`/api/admin/opencode/catalog${refresh ? '?refresh=1' : ''}`));
   },
 
   async catalogSources(): Promise<{ status: string; syncIntervalMs: number; sources: CatalogSourceView[] }> {
-    return ocJson(await fetch('/api/ui/catalog/sources'));
+    return ocJson(await fetch('/api/admin/catalog/sources'));
   },
 
   async setCatalogSyncInterval(intervalMs: number): Promise<{ status: string; syncIntervalMs: number }> {
     return ocJson(
-      await fetch('/api/ui/catalog/sync-interval', {
+      await fetch('/api/admin/catalog/sync-interval', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ intervalMs }),
@@ -965,7 +965,7 @@ export const opencodeApi = {
   },
 
   async catalogSourceData(id: string): Promise<CatalogSourceDataResponse> {
-    return ocJson(await fetch(`/api/ui/catalog/sources/${encodeURIComponent(id)}/data`));
+    return ocJson(await fetch(`/api/admin/catalog/sources/${encodeURIComponent(id)}/data`));
   },
 
   async addCatalogSource(payload: {
@@ -977,7 +977,7 @@ export const opencodeApi = {
     map?: Record<string, any>;
   }): Promise<{ status: string; source: CatalogSourceView }> {
     return ocJson(
-      await fetch('/api/ui/catalog/sources', {
+      await fetch('/api/admin/catalog/sources', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -987,7 +987,7 @@ export const opencodeApi = {
 
   async toggleCatalogSource(id: string, enabled: boolean): Promise<{ status: string; source: CatalogSourceView }> {
     return ocJson(
-      await fetch(`/api/ui/catalog/sources/${encodeURIComponent(id)}`, {
+      await fetch(`/api/admin/catalog/sources/${encodeURIComponent(id)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled }),
@@ -996,28 +996,28 @@ export const opencodeApi = {
   },
 
   async removeCatalogSource(id: string): Promise<{ status: string }> {
-    return ocJson(await fetch(`/api/ui/catalog/sources/${encodeURIComponent(id)}`, { method: 'DELETE' }));
+    return ocJson(await fetch(`/api/admin/catalog/sources/${encodeURIComponent(id)}`, { method: 'DELETE' }));
   },
 
   async refreshCatalogSource(id: string): Promise<{ status: string; source: CatalogSourceView }> {
-    return ocJson(await fetch(`/api/ui/catalog/sources/${encodeURIComponent(id)}/refresh`, { method: 'POST' }));
+    return ocJson(await fetch(`/api/admin/catalog/sources/${encodeURIComponent(id)}/refresh`, { method: 'POST' }));
   },
 
   async refreshAllCatalogSources(): Promise<{ status: string; sources: CatalogSourceView[] }> {
-    return ocJson(await fetch('/api/ui/catalog/sources/refresh', { method: 'POST' }));
+    return ocJson(await fetch('/api/admin/catalog/sources/refresh', { method: 'POST' }));
   },
 
   async lockedCatalogModels(): Promise<{ status: string; lockedModels: string[] }> {
-    return ocJson(await fetch('/api/ui/catalog/locked-models'));
+    return ocJson(await fetch('/api/admin/catalog/locked-models'));
   },
 
   async ocrCatalog(): Promise<{ status: string; providers: OcrCatalogProvider[] }> {
-    return ocJson(await fetch('/api/ui/catalog/ocr'));
+    return ocJson(await fetch('/api/admin/catalog/ocr'));
   },
 
   async getCatalogOverride(providerId: string, modelId: string): Promise<{ status: string; entry: Record<string, any> | null }> {
     const qs = new URLSearchParams({ providerId, modelId });
-    return ocJson(await fetch(`/api/ui/catalog/override?${qs.toString()}`));
+    return ocJson(await fetch(`/api/admin/catalog/override?${qs.toString()}`));
   },
 
   async putCatalogOverride(
@@ -1026,7 +1026,7 @@ export const opencodeApi = {
     entry: Record<string, any>
   ): Promise<{ status: string }> {
     return ocJson(
-      await fetch('/api/ui/catalog/override', {
+      await fetch('/api/admin/catalog/override', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ providerId, modelId, entry }),
@@ -1036,12 +1036,12 @@ export const opencodeApi = {
 
   async removeCatalogOverride(providerId: string, modelId: string): Promise<{ status: string }> {
     const qs = new URLSearchParams({ providerId, modelId });
-    return ocJson(await fetch(`/api/ui/catalog/override?${qs.toString()}`, { method: 'DELETE' }));
+    return ocJson(await fetch(`/api/admin/catalog/override?${qs.toString()}`, { method: 'DELETE' }));
   },
 
   async toggleCatalogModelLock(id: string, locked: boolean): Promise<{ status: string; lockedModels: string[] }> {
     return ocJson(
-      await fetch('/api/ui/catalog/locked-models', {
+      await fetch('/api/admin/catalog/locked-models', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id, locked }),
@@ -1059,12 +1059,12 @@ export const opencodeApi = {
     if (params?.provider) qs.set('provider', params.provider);
     if (params?.connected) qs.set('connected', '1');
     const suffix = qs.toString() ? `?${qs.toString()}` : '';
-    return ocJson(await fetch(`/api/ui/opencode/models${suffix}`));
+    return ocJson(await fetch(`/api/admin/opencode/models${suffix}`));
   },
 
   async createProvider(payload: CustomProviderPayload): Promise<{ status: string; success: boolean }> {
     return ocJson(
-      await fetch('/api/ui/opencode/providers', {
+      await fetch('/api/admin/opencode/providers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -1074,7 +1074,7 @@ export const opencodeApi = {
 
   async updateProvider(id: string, payload: Partial<CustomProviderPayload>): Promise<{ status: string; success: boolean }> {
     return ocJson(
-      await fetch(`/api/ui/opencode/providers/${encodeURIComponent(id)}`, {
+      await fetch(`/api/admin/opencode/providers/${encodeURIComponent(id)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -1084,7 +1084,7 @@ export const opencodeApi = {
 
   async connectProvider(id: string, apiKey: string, baseURL?: string): Promise<{ status: string; success: boolean; message?: string }> {
     return ocJson(
-      await fetch(`/api/ui/opencode/providers/${encodeURIComponent(id)}/connect`, {
+      await fetch(`/api/admin/opencode/providers/${encodeURIComponent(id)}/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ apiKey, baseURL }),
@@ -1098,7 +1098,7 @@ export const opencodeApi = {
     payload?: { modelId?: string; apiKey?: string; baseURL?: string }
   ): Promise<TestProviderResult> {
     return ocJson(
-      await fetch(`/api/ui/opencode/providers/${encodeURIComponent(id)}/test`, {
+      await fetch(`/api/admin/opencode/providers/${encodeURIComponent(id)}/test`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload ?? {}),
@@ -1108,7 +1108,7 @@ export const opencodeApi = {
 
   async deleteProvider(id: string, purgeAuth = false): Promise<{ status: string; success: boolean; message?: string }> {
     return ocJson(
-      await fetch(`/api/ui/opencode/providers/${encodeURIComponent(id)}${purgeAuth ? '?purgeAuth=1' : ''}`, {
+      await fetch(`/api/admin/opencode/providers/${encodeURIComponent(id)}${purgeAuth ? '?purgeAuth=1' : ''}`, {
         method: 'DELETE',
       })
     );
@@ -1117,7 +1117,7 @@ export const opencodeApi = {
   // -- Per-provider model maintenance (config-defined providers only) ----
 
   async listProviderModels(id: string): Promise<{ status: string; id: string; models: Record<string, any> }> {
-    return ocJson(await fetch(`/api/ui/opencode/providers/${encodeURIComponent(id)}/models`));
+    return ocJson(await fetch(`/api/admin/opencode/providers/${encodeURIComponent(id)}/models`));
   },
 
   async addProviderModel(
@@ -1145,7 +1145,7 @@ export const opencodeApi = {
     }
   ): Promise<{ status: string; success: boolean; model: string }> {
     return ocJson(
-      await fetch(`/api/ui/opencode/providers/${encodeURIComponent(id)}/models`, {
+      await fetch(`/api/admin/opencode/providers/${encodeURIComponent(id)}/models`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(model),
@@ -1179,7 +1179,7 @@ export const opencodeApi = {
     }
   ): Promise<{ status: string; success: boolean; model: string }> {
     return ocJson(
-      await fetch(`/api/ui/opencode/providers/${encodeURIComponent(id)}/models/${encodeURIComponent(modelId)}`, {
+      await fetch(`/api/admin/opencode/providers/${encodeURIComponent(id)}/models/${encodeURIComponent(modelId)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(patch),
@@ -1189,7 +1189,7 @@ export const opencodeApi = {
 
   async deleteProviderModel(id: string, modelId: string): Promise<{ status: string; success: boolean }> {
     return ocJson(
-      await fetch(`/api/ui/opencode/providers/${encodeURIComponent(id)}/models/${encodeURIComponent(modelId)}`, {
+      await fetch(`/api/admin/opencode/providers/${encodeURIComponent(id)}/models/${encodeURIComponent(modelId)}`, {
         method: 'DELETE',
       })
     );
@@ -1210,7 +1210,7 @@ export const opencodeApi = {
     models: OpenCodeModelView[] | string[];
   }> {
     return ocJson(
-      await fetch(`/api/ui/opencode/providers/${encodeURIComponent(id)}/models/pull`, {
+      await fetch(`/api/admin/opencode/providers/${encodeURIComponent(id)}/models/pull`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(opts),
@@ -1220,7 +1220,7 @@ export const opencodeApi = {
 
   async clearProviderModels(id: string, pattern?: string): Promise<{ status: string; success: boolean; removed?: number }> {
     return ocJson(
-      await fetch(`/api/ui/opencode/providers/${encodeURIComponent(id)}/models/clear`, {
+      await fetch(`/api/admin/opencode/providers/${encodeURIComponent(id)}/models/clear`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pattern }),

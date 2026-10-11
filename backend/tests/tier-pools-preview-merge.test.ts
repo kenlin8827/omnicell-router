@@ -2,14 +2,14 @@ import { describe, it, expect } from 'bun:test';
 import { resolveTierMatch, classifyTier, type ResolvedTierMatch } from '../src/providers/tier-match.js';
 
 /**
- * Integration-ish lock for /api/ui/tier-pools/preview and the matching console
+ * Integration-ish lock for /api/admin/tier-pools/preview and the matching console
  * endpoint. Those endpoints merge the request body's `tiers` over the saved
  * config before calling resolveTierMatch(). The merge itself is a one-liner
  * (`body.tiers ?? loadConfig().tiers ?? {}`) — but the resulting match config
  * is what the user sees as "the live preview". If the merge ever stops being
  * a deep per-field overlay, every preview number on the Rules page will lie.
  *
- * ADR-0012 rules under test:
+ * rules under test:
  *   - per-field merge: a saved value is replaced by a request value of the
  *     same field; a missing request field falls back to the saved value
  *   - missing request field + missing saved value → DEFAULT_TIER_MATCH

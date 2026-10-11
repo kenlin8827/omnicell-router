@@ -133,7 +133,7 @@ describe('API Key Authentication & Client Auth Flow', () => {
     const healthRes = await app.inject({ method: 'GET', url: '/health' });
     assert.strictEqual(healthRes.statusCode, 200);
 
-    const uiStatusRes = await app.inject({ method: 'GET', url: '/api/ui/status' });
+    const uiStatusRes = await app.inject({ method: 'GET', url: '/api/admin/status' });
     assert.strictEqual(uiStatusRes.statusCode, 200);
   });
 });

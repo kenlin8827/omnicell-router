@@ -166,34 +166,32 @@ describe('Embedded UI & Management API Endpoints', () => {
     rateLimit: { maxRequestsPerMinute: 1000 },
   };
 
-  it('should serve HTML UI on GET / and /ui', async () => {
+  it('should serve HTML UI under /admin and redirect / to it', async () => {
     const { app } = createServer(dummyConfig, true);
+
+    // `/` is an entry redirect to the console prefix, not a page.
     const resRoot = await app.inject({ method: 'GET', url: '/' });
-    expect(resRoot.statusCode).toBe(200);
-    expect(resRoot.headers['content-type']).toContain('text/html');
-    expect(resRoot.body).toContain('OpenCode Router');
-    expect(resRoot.body).toContain('Gateway Console');
+    expect(resRoot.statusCode).toBe(301);
+    expect(resRoot.headers.location).toBe('/admin/');
 
-    const resUi = await app.inject({ method: 'GET', url: '/ui' });
-    expect(resUi.statusCode).toBe(200);
-    expect(resUi.body).toContain('OpenCode Router');
+    const resAdmin = await app.inject({ method: 'GET', url: '/admin' });
+    expect(resAdmin.statusCode).toBe(200);
+    expect(resAdmin.headers['content-type']).toContain('text/html');
+    expect(resAdmin.body).toContain('OpenCode Router');
+    expect(resAdmin.body).toContain('Gateway Console');
 
-    const resTiers = await app.inject({ method: 'GET', url: '/tiers' });
+    const resTiers = await app.inject({ method: 'GET', url: '/admin/tiers' });
     expect(resTiers.statusCode).toBe(200);
     expect(resTiers.headers['content-type']).toContain('text/html');
 
-    const resKeys = await app.inject({ method: 'GET', url: '/providers' });
-    expect(resKeys.statusCode).toBe(200);
-    expect(resKeys.headers['content-type']).toContain('text/html');
-
-    // legacy alias still serves the SPA
-    const resKeysAlias = await app.inject({ method: 'GET', url: '/keys' });
-    expect(resKeysAlias.statusCode).toBe(200);
+    const resProviders = await app.inject({ method: 'GET', url: '/admin/providers' });
+    expect(resProviders.statusCode).toBe(200);
+    expect(resProviders.headers['content-type']).toContain('text/html');
   });
 
-  it('should return aggregated status on GET /api/ui/status', async () => {
+  it('should return aggregated status on GET /api/admin/status', async () => {
     const { app } = createServer(dummyConfig, true);
-    const res = await app.inject({ method: 'GET', url: '/api/ui/status' });
+    const res = await app.inject({ method: 'GET', url: '/api/admin/status' });
     expect(res.statusCode).toBe(200);
     const json = JSON.parse(res.body);
     expect(json.status).toBe('ok');
@@ -203,9 +201,9 @@ describe('Embedded UI & Management API Endpoints', () => {
     expect(json.clients.length).toBe(3);
   });
 
-  it('should support reading and validating raw YAML config on /api/ui/config/raw', async () => {
+  it('should support reading and validating raw YAML config on /api/admin/config/raw', async () => {
     const { app } = createServer(dummyConfig, true);
-    const resGet = await app.inject({ method: 'GET', url: '/api/ui/config/raw' });
+    const resGet = await app.inject({ method: 'GET', url: '/api/admin/config/raw' });
     expect(resGet.statusCode).toBe(200);
     const json = JSON.parse(resGet.body);
     expect(json.status).toBe('ok');
@@ -214,17 +212,17 @@ describe('Embedded UI & Management API Endpoints', () => {
     // Test saving invalid YAML
     const resInvalid = await app.inject({
       method: 'POST',
-      url: '/api/ui/config/raw',
+      url: '/api/admin/config/raw',
       payload: { yaml: 'invalid: : yaml: [' },
     });
     expect(resInvalid.statusCode).toBe(400);
   });
 
-  it('should probe provider ping connectivity on /api/ui/providers/test', async () => {
+  it('should probe provider ping connectivity on /api/admin/providers/test', async () => {
     const { app } = createServer(dummyConfig, true);
     const res = await app.inject({
       method: 'POST',
-      url: '/api/ui/providers/test',
+      url: '/api/admin/providers/test',
       payload: { baseUrl: 'https://api.openai.com/v1', apiKey: 'sk-invalid-test-key' },
     });
     expect(res.statusCode).toBe(404);

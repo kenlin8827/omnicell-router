@@ -8,7 +8,7 @@ import { Switch } from '../components/Switch';
 
 /**
  * /auto — Auto virtual-model routing (decision layer).
- * Aggregates: routing.mode, Layer1 classifier, Layer2 Judge + decision cache (ADR-0010).
+ * Aggregates: routing.mode, Layer1 classifier, Layer2 Judge + decision cache.
  * Tier composition lives at /tiers; cache stats at /cache; hit traces at /traces.
  */
 export const AutoPage: React.FC = () => {

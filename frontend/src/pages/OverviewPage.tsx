@@ -31,7 +31,7 @@ export const OverviewPage: React.FC = () => {
   const metrics = status?.metrics;
 
   // Two of the four Overview cards (cacheHit, tokensTotal) report
-  // TRACE-WINDOWED values from /api/ui/cache-stats. The other two
+  // TRACE-WINDOWED values from /api/admin/cache-stats. The other two
   // (costSaved, avgLatency) keep their CUMULATIVE semantics from the
   // FinOps tracker — "since install" — because turning those into
   // windowed views would silently break the cumulative-savings

@@ -33,7 +33,6 @@ export const App: React.FC = () => {
         <Route path="tiers" element={<RulesPage />} />
         <Route path="auto" element={<AutoPage />} />
         <Route path="combos" element={<CombosPage />} />
-        <Route path="rules" element={<Navigate to="/tiers" replace />} />
         <Route path="cache" element={<CachePage />} />
         <Route path="api-keys" element={<ApiKeysPage />} />
         <Route path="providers" element={<KeysPage />} />
@@ -44,8 +43,6 @@ export const App: React.FC = () => {
         <Route path="clients" element={<ClientsPage />} />
         <Route path="proxy-access" element={<ProxyAccessPage />} />
         <Route path="guardrails" element={<GuardrailsPage />} />
-        <Route path="usage" element={<Navigate to="/sessions" replace />} />
-        <Route path="traces" element={<Navigate to="/sessions" replace />} />
         <Route path="sessions" element={<SessionsPage />} />
         <Route path="logs" element={<LogsPage />} />
         <Route path="captures" element={<CapturesPage />} />

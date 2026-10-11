@@ -67,7 +67,7 @@ async function main() {
       registry.registerProvider(inst.name, new DispatchingProvider(inst.config, inst.wireBases));
     }
     console.log(
-      `[OCR] Direct pool: ${boot.instances.length} providers / ${boot.models.length} models (ADR-0011, no daemon)`
+      `[OCR] Direct pool: ${boot.instances.length} providers / ${boot.models.length} models (no daemon)`
     );
     const providerLevel = boot.excluded.filter((e) => !e.model);
     const modelLevel = boot.excluded.filter((e) => e.model);
@@ -94,14 +94,14 @@ async function main() {
     console.log(`👉 Chat Completions : http://127.0.0.1:${config.port}/v1/chat/completions`);
     console.log(`👉 Anthropic Msgs   : http://127.0.0.1:${config.port}/v1/messages`);
     console.log(`👉 Models List      : http://127.0.0.1:${config.port}/v1/models`);
-    console.log(`👉 FinOps Metrics   : http://127.0.0.1:${config.port}/v1/metrics`);
-    console.log(`👉 Sessions Inspect : http://127.0.0.1:${config.port}/v1/sessions`);
+    console.log(`👉 FinOps Metrics   : http://127.0.0.1:${config.port}/api/admin/metrics`);
+    console.log(`👉 Sessions Inspect : http://127.0.0.1:${config.port}/api/admin/sessions`);
     console.log('============================================================\n');
 
     // Inbound forward proxy (HTTP_PROXY / HTTPS_PROXY server) — opt-in.
     // Fault-tolerance contract: started WITHOUT awaiting the boot path — a
     // failing / slow proxy must never block or crash the gateway. Failures are
-    // logged here and surfaced on the Proxy Access page via /api/ui/status.
+    // logged here and surfaced on the Proxy Access page via /api/admin/status.
     if (config.forwardProxy?.enabled) {
       const fpCfg = config.forwardProxy;
       const fpHost = fpCfg.host || '127.0.0.1';

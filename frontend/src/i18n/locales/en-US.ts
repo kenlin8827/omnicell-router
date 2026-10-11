@@ -471,7 +471,7 @@ export const enUS: TranslationDict = {
     on: 'Capturing',
     off: 'Off',
     hotHint: 'Toggle and parameters apply immediately after saving — no gateway restart needed.',
-    enableConfirm: 'Enable request capture?\n\nFull request/response bodies will be archived to disk (potentially sensitive data), readable via auth-exempt /api/ui/* console endpoints. Continue?',
+    enableConfirm: 'Enable request capture?\n\nFull request/response bodies will be archived to disk (potentially sensitive data), readable via auth-exempt /api/admin/* console endpoints. Continue?',
     toggleSaved: 'Capture config saved and applied instantly',
     emptyDates: 'No capture archives yet. Once enabled, requests are archived as date directories / per-session files and listed here.',
     sessionsUnit: 'sessions',
@@ -566,7 +566,7 @@ export const enUS: TranslationDict = {
     capRetention: 'Archive retention (days)',
     capMaxTotal: 'Archive total size cap (MB)',
     capMaxBody: 'Per-body truncation cap (bytes)',
-    capPrivacyHint: 'Capture persists full request/response bodies (potentially sensitive data), readable via auth-exempt /api/ui/* console endpoints. Request headers are never recorded.',
+    capPrivacyHint: 'Capture persists full request/response bodies (potentially sensitive data), readable via auth-exempt /api/admin/* console endpoints. Request headers are never recorded.',
     capHotHint: 'This section applies immediately after saving — no gateway restart needed. Browse archives on the Request Capture page.',
   },
   proxy: {

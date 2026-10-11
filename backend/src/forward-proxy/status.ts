@@ -1,6 +1,6 @@
 /**
  * Runtime status of the inbound forward proxy — a module singleton so the
- * console status endpoint (/api/ui/status) can report it without threading the
+ * console status endpoint (/api/admin/status) can report it without threading the
  * handle through createServer(). index.ts is the ONLY writer: it records a
  * successful start (running + port/startedAt) or the failure message.
  *

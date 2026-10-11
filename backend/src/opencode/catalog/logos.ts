@@ -9,7 +9,7 @@ import { proxiedFetch } from '../../utils/proxy.js';
  *
  * Catalog records carry REMOTE logo URLs; handing them straight to the browser
  * means every page render re-fetches from the origin — and fails offline. The
- * console exposes GET /api/console/catalog/logo?url=... which serves a cached
+ * console exposes GET /api/admin/catalog/logo?url=... which serves a cached
  * copy from ~/.cache/opencode-router/logos/ and only hits the network on a
  * miss (or after the soft TTL), falling back to an even-stale copy on error.
  */
@@ -23,7 +23,7 @@ const MAX_LOGO_BYTES = 512 * 1024;
 /** Only these hosts may be proxied (SSRF guard — the console API is unauthenticated). */
 const ALLOWED_LOGO_HOSTS = new Set(['models.dev', 'openrouter.ai']);
 
-export const LOGO_PROXY_PATH = '/api/console/catalog/logo';
+export const LOGO_PROXY_PATH = '/api/admin/catalog/logo';
 
 export function isAllowedLogoUrl(url: string): boolean {
   try {

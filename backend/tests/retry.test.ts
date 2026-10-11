@@ -20,7 +20,7 @@ const authHeaders = (): Record<string, string> => {
   return diskKeys.length > 0 ? { authorization: `Bearer ${diskKeys[0].key}` } : {};
 };
 
-describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation (ADR-0009)', () => {
+describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation ', () => {
   const baseConfig: RouterConfig = {
     port: 3000,
     host: '127.0.0.1',
@@ -202,7 +202,7 @@ describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation (ADR-000
   });
 });
 
-describe('Resilience: Hierarchical Failover & Tier Crossing Policies (ADR-0009)', () => {
+describe('Resilience: Hierarchical Failover & Tier Crossing Policies ', () => {
   const crossTierConfig: RouterConfig = {
     port: 3000,
     host: '127.0.0.1',
@@ -404,7 +404,7 @@ describe('Resilience: End-to-End HTTP Headers & Observability', () => {
   });
 });
 
-describe('Resilience: Fine-Grained Network Jitter Taxonomy & Cause Filtering (ADR-0009)', () => {
+describe('Resilience: Fine-Grained Network Jitter Taxonomy & Cause Filtering ', () => {
   it('should accurately diagnose specific network jitter causes and in-place retriability', () => {
     // 1. Connection reset
     const errReset = new Error('read ECONNRESET: socket hang up');

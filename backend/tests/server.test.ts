@@ -227,11 +227,11 @@ describe('Fastify Gateway Server & OpenAI Endpoints', () => {
     assert.strictEqual(body.error.type, 'invalid_request_error');
   });
 
-  it('GET /v1/metrics should expose FinOps economics summary', async () => {
+  it('GET /api/admin/metrics should expose FinOps economics summary', async () => {
     const res = await app.inject({
       headers: authHeaders(),
       method: 'GET',
-      url: '/v1/metrics',
+      url: '/api/admin/metrics',
     });
 
     assert.strictEqual(res.statusCode, 200);

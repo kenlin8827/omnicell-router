@@ -53,11 +53,11 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
     assert.strictEqual(sessionId, 'sess_unit_test_trace_1');
   });
 
-  it('GET /v1/sessions should list active sessions with traceCount', async () => {
+  it('GET /api/admin/sessions should list active sessions with traceCount', async () => {
     const res = await app.inject({
       headers: authHeaders(),
       method: 'GET',
-      url: '/v1/sessions',
+      url: '/api/admin/sessions',
     });
 
     assert.strictEqual(res.statusCode, 200);
@@ -77,7 +77,7 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
     const filtered = await app.inject({
       headers: authHeaders(),
       method: 'GET',
-      url: '/v1/sessions?q=sess_unit_test',
+      url: '/api/admin/sessions?q=sess_unit_test',
     });
     assert.strictEqual(filtered.statusCode, 200);
     const fb = JSON.parse(filtered.body);
@@ -87,17 +87,17 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
     const noMatch = await app.inject({
       headers: authHeaders(),
       method: 'GET',
-      url: '/v1/sessions?q=zzz_no_such_session_zzz',
+      url: '/api/admin/sessions?q=zzz_no_such_session_zzz',
     });
     assert.strictEqual(JSON.parse(noMatch.body).total, 0, 'q filter with no hit must return empty');
   });
 
-  it('GET /v1/sessions/:id should return single session details with recent traces', async () => {
+  it('GET /api/admin/sessions/:id should return single session details with recent traces', async () => {
     // 1. Success case
     const res = await app.inject({
       headers: authHeaders(),
       method: 'GET',
-      url: '/v1/sessions/sess_unit_test_trace_1',
+      url: '/api/admin/sessions/sess_unit_test_trace_1',
     });
 
     assert.strictEqual(res.statusCode, 200);
@@ -112,12 +112,12 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
     const notFoundRes = await app.inject({
       headers: authHeaders(),
       method: 'GET',
-      url: '/v1/sessions/non_existent_session_id',
+      url: '/api/admin/sessions/non_existent_session_id',
     });
     assert.strictEqual(notFoundRes.statusCode, 404);
   });
 
-  it('GET /v1/sessions/:id/traces should return chronological trajectory for the session', async () => {
+  it('GET /api/admin/sessions/:id/traces should return chronological trajectory for the session', async () => {
     // Make a 2nd turn on the same session
     await app.inject({
       headers: { ...authHeaders(), 'x-session-id': 'sess_unit_test_trace_1' },
@@ -136,7 +136,7 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
     const res = await app.inject({
       headers: authHeaders(),
       method: 'GET',
-      url: '/v1/sessions/sess_unit_test_trace_1/traces',
+      url: '/api/admin/sessions/sess_unit_test_trace_1/traces',
     });
 
     assert.strictEqual(res.statusCode, 200);
@@ -160,12 +160,12 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
     assert.ok(secondTurn.timestamp >= firstTurn.timestamp);
   });
 
-  it('GET /v1/traces should list global traces and support filtering by session_id', async () => {
+  it('GET /api/admin/traces should list global traces and support filtering by session_id', async () => {
     // 1. Global list
     const res = await app.inject({
       headers: authHeaders(),
       method: 'GET',
-      url: '/v1/traces?limit=10',
+      url: '/api/admin/traces?limit=10',
     });
     assert.strictEqual(res.statusCode, 200);
     const body = JSON.parse(res.body);
@@ -177,7 +177,7 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
     const filterRes = await app.inject({
       headers: authHeaders(),
       method: 'GET',
-      url: '/v1/traces?session_id=sess_unit_test_trace_1',
+      url: '/api/admin/traces?session_id=sess_unit_test_trace_1',
     });
     assert.strictEqual(filterRes.statusCode, 200);
     const filterBody = JSON.parse(filterRes.body);
@@ -185,12 +185,12 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
     assert.ok(filterBody.data.every((t: any) => t.sessionId === 'sess_unit_test_trace_1'));
   });
 
-  it('GET /v1/traces/:id should return single trace or 404', async () => {
+  it('GET /api/admin/traces/:id should return single trace or 404', async () => {
     // Get existing trace ID from session traces
     const listRes = await app.inject({
       headers: authHeaders(),
       method: 'GET',
-      url: '/v1/sessions/sess_unit_test_trace_1/traces',
+      url: '/api/admin/sessions/sess_unit_test_trace_1/traces',
     });
     const listBody = JSON.parse(listRes.body);
     const sampleTraceId = listBody.data[0].traceId;
@@ -199,7 +199,7 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
     const res = await app.inject({
       headers: authHeaders(),
       method: 'GET',
-      url: `/v1/traces/${sampleTraceId}`,
+      url: `/api/admin/traces/${sampleTraceId}`,
     });
     assert.strictEqual(res.statusCode, 200);
     const body = JSON.parse(res.body);
@@ -211,16 +211,16 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
     const notFoundRes = await app.inject({
       headers: authHeaders(),
       method: 'GET',
-      url: '/v1/traces/trace_non_existent_12345',
+      url: '/api/admin/traces/trace_non_existent_12345',
     });
     assert.strictEqual(notFoundRes.statusCode, 404);
   });
 
-  it('DELETE /v1/sessions/:id should delete the session and its traces', async () => {
+  it('DELETE /api/admin/sessions/:id should delete the session and its traces', async () => {
     const delRes = await app.inject({
       headers: authHeaders(),
       method: 'DELETE',
-      url: '/v1/sessions/sess_unit_test_trace_1',
+      url: '/api/admin/sessions/sess_unit_test_trace_1',
     });
     assert.strictEqual(delRes.statusCode, 200);
     const delBody = JSON.parse(delRes.body);
@@ -230,7 +230,7 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
     const checkRes = await app.inject({
       headers: authHeaders(),
       method: 'GET',
-      url: '/v1/sessions/sess_unit_test_trace_1',
+      url: '/api/admin/sessions/sess_unit_test_trace_1',
     });
     assert.strictEqual(checkRes.statusCode, 404);
 
@@ -238,13 +238,13 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
     const traceRes = await app.inject({
       headers: authHeaders(),
       method: 'GET',
-      url: '/v1/sessions/sess_unit_test_trace_1/traces',
+      url: '/api/admin/sessions/sess_unit_test_trace_1/traces',
     });
     const traceBody = JSON.parse(traceRes.body);
     assert.strictEqual(traceBody.total, 0);
   });
 
-  it('GET /v1/traces should support ?since=<epoch-ms> time-window filter', async () => {
+  it('GET /api/admin/traces should support ?since=<epoch-ms> time-window filter', async () => {
     // Inject one more turn under a fresh session so we have a known trace
     // set that survives the DELETE above.
     const sessId = 'sess_unit_test_since_filter';
@@ -261,7 +261,7 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
     const futureRes = await app.inject({
       headers: authHeaders(),
       method: 'GET',
-      url: `/v1/traces?session_id=${sessId}&since=${now + 60_000}`,
+      url: `/api/admin/traces?session_id=${sessId}&since=${now + 60_000}`,
     });
     assert.strictEqual(futureRes.statusCode, 200);
     const futureBody = JSON.parse(futureRes.body);
@@ -273,7 +273,7 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
     const pastRes = await app.inject({
       headers: authHeaders(),
       method: 'GET',
-      url: `/v1/traces?session_id=${sessId}&since=${now - 60_000}`,
+      url: `/api/admin/traces?session_id=${sessId}&since=${now - 60_000}`,
     });
     assert.strictEqual(pastRes.statusCode, 200);
     const pastBody = JSON.parse(pastRes.body);
@@ -285,7 +285,7 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
     const garbageRes = await app.inject({
       headers: authHeaders(),
       method: 'GET',
-      url: '/v1/traces?since=not-a-number',
+      url: '/api/admin/traces?since=not-a-number',
     });
     assert.strictEqual(garbageRes.statusCode, 200);
     const garbageBody = JSON.parse(garbageRes.body);

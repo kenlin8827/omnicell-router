@@ -282,7 +282,7 @@ describe('Catalog sources & repository', () => {
     const md = modelsDevLogoUrl('anthropic');
     expect(isAllowedLogoUrl(md)).toBe(true);
     expect(isAllowedLogoUrl('https://openrouter.ai/brand/v2/openrouter-glyph-light.svg')).toBe(true);
-    expect(localLogoApiPath(md)).toBe(`/api/console/catalog/logo?url=${encodeURIComponent(md)}`);
+    expect(localLogoApiPath(md)).toBe(`/api/admin/catalog/logo?url=${encodeURIComponent(md)}`);
     expect(localLogoApiPath(undefined)).toBeUndefined();
 
     expect(isAllowedLogoUrl('https://evil.example/logo.svg')).toBe(false);

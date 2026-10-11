@@ -1,4 +1,4 @@
-import { registerConsoleRoutes, validateApiKey, SPA_ROUTES } from './routes/console.js';
+import { registerConsoleRoutes, validateApiKey } from './routes/console.js';
 import { getModelAccessPolicy, isModelAllowed, isAutoEntryUsable, makeModelAccessGuard, tierFromVirtualEntry, ModelAccessConfig } from './auth/model-access.js';
 import { registerRuntimeConfigRef } from './config/index.js';
 import { registerAnthropicRoutes } from './routes/anthropic.js';
@@ -181,27 +181,24 @@ export function createServer(
     };
     const rawUrl = req.url.split('?')[0];
 
-    // Whitelist routes: health probes, frontend assets, UI pages and the
-    // read-only observability endpoints the console pages fetch from the
-    // browser (/v1/sessions, /v1/traces). Inference endpoints
-    // (/v1/chat/completions, /v1/messages) stay auth-protected.
-    // SPA page paths come from SPA_ROUTES (console.ts) — single source of truth,
-    // so a new console page can never 401 on browser refresh again.
+    // Whitelist routes: health probe, console entry redirect, and the whole
+    // /admin* management surface — pages + hashed assets + backing API all
+    // live under it (wildcard-served pages in console.ts; observability
+    // endpoints were moved out of /v1 into /api/admin so the client protocol
+    // namespace stays pure and needs no per-endpoint auth special cases).
+    // `/` only 301-redirects to /admin/.
+    // Inference endpoints (/v1/chat/completions, /v1/messages) stay
+    // auth-protected: /v1 is the client protocol surface.
     if (
-      SPA_ROUTES.includes(rawUrl) ||
-      rawUrl.startsWith('/assets/') ||
-      rawUrl.startsWith('/api/ui/') ||
-      rawUrl.startsWith('/api/console/') ||
-      rawUrl === '/health' ||
-      rawUrl.startsWith('/v1/health') ||
+      rawUrl === '/' ||
+      rawUrl === '/admin' ||
+      rawUrl.startsWith('/admin/') ||
+      rawUrl.startsWith('/api/admin/') ||
+      rawUrl === '/health'
       // NOTE: /v1/models is NOT whitelisted — the preHandler enforces its
       // three-tier auth itself (anonymous → full listing, invalid key → 401,
       // valid key → policy-filtered view) and the handlers read the policy
       // off req.authInfo.
-      rawUrl === '/v1/sessions' ||
-      rawUrl.startsWith('/v1/sessions/') ||
-      rawUrl === '/v1/traces' ||
-      rawUrl.startsWith('/v1/traces/')
     ) {
       return;
     }
@@ -262,12 +259,12 @@ export function createServer(
   });
 
   // 1B. Circuit Breakers Inspection Endpoint
-  app.get('/v1/health/circuit-breakers', async () => {
+  app.get('/api/admin/health/circuit-breakers', async () => {
     return registry.getCircuitBreakerManager().getSummary();
   });
 
   // 1C. Reset Tripped Circuit Breakers (Admin recovery after quota top-up)
-  app.post('/v1/health/circuit-breakers/reset', async (req) => {
+  app.post('/api/admin/health/circuit-breakers/reset', async (req) => {
     const query = req.query as { model?: string };
     const body = req.body as { model?: string } | undefined;
     const targetModel = query?.model || body?.model;
@@ -279,7 +276,7 @@ export function createServer(
   });
 
   // 1D. Manually trip a model's circuit breaker (admin takes a model out of rotation from the console)
-  app.post('/v1/health/circuit-breakers/trip', async (req, reply) => {
+  app.post('/api/admin/health/circuit-breakers/trip', async (req, reply) => {
     const query = req.query as { model?: string };
     const body = (req.body || {}) as { model?: string; reason?: string; cooldownMs?: number };
     const targetModel = query?.model || body?.model;
@@ -436,23 +433,23 @@ export function createServer(
   });
 
   // 3. FinOps Economics & Analytics Dashboard
-  app.get('/v1/metrics', async () => {
+  app.get('/api/admin/metrics', async () => {
     return orchestrator.getTracker().getStats();
   });
 
   // Reset metrics
-  app.post('/v1/metrics/reset', async () => {
+  app.post('/api/admin/metrics/reset', async () => {
     orchestrator.getTracker().reset();
     return { status: 'ok', message: 'Metrics reset successfully' };
   });
 
   // 3B. Active Learning Data Flywheel Statistics
-  app.get('/v1/flywheel/stats', async () => {
+  app.get('/api/admin/flywheel/stats', async () => {
     return orchestrator.getFlywheel()?.getStats() || { status: 'disabled' };
   });
 
   // 3C. Active Conversation Sessions Inspection (optional limit/offset pagination)
-  app.get('/v1/sessions', async (req) => {
+  app.get('/api/admin/sessions', async (req) => {
     const query = req.query as { limit?: string; offset?: string; q?: string };
     const limit = query.limit !== undefined ? parseInt(query.limit, 10) : undefined;
     const offset = query.offset ? parseInt(query.offset, 10) : 0;
@@ -500,7 +497,7 @@ export function createServer(
   });
 
   // 3D. Single Session Details Query
-  app.get('/v1/sessions/:id', async (req, reply) => {
+  app.get('/api/admin/sessions/:id', async (req, reply) => {
     const { id } = req.params as { id: string };
     const session = orchestrator.getSessionManager()?.getSession(id);
     if (!session) {
@@ -522,7 +519,7 @@ export function createServer(
   });
 
   // 3E. Delete / Reset Single Session
-  app.delete('/v1/sessions/:id', async (req, reply) => {
+  app.delete('/api/admin/sessions/:id', async (req, reply) => {
     const { id } = req.params as { id: string };
     const sessionMgr = orchestrator.getSessionManager();
     const existed = sessionMgr?.deleteSession(id);
@@ -544,7 +541,7 @@ export function createServer(
   });
 
   // 3F. Query Trajectory / Traces by Session ID
-  app.get('/v1/sessions/:id/traces', async (req, reply) => {
+  app.get('/api/admin/sessions/:id/traces', async (req, reply) => {
     const { id } = req.params as { id: string };
     const session = orchestrator.getSessionManager()?.getSession(id);
     const traces = orchestrator.getTraceTracker().getTracesBySession(id);
@@ -560,7 +557,7 @@ export function createServer(
   });
 
   // 3G. Global Request Trajectory Queries (with optional session_id filter, time-window & pagination)
-  app.get('/v1/traces', async (req) => {
+  app.get('/api/admin/traces', async (req) => {
     const query = req.query as { session_id?: string; limit?: string; offset?: string; since?: string };
     const limit = query.limit ? parseInt(query.limit, 10) : 50;
     const offset = query.offset ? parseInt(query.offset, 10) : 0;
@@ -589,7 +586,7 @@ export function createServer(
   });
 
   // 3H. Query Single Execution Trace by traceId
-  app.get('/v1/traces/:id', async (req, reply) => {
+  app.get('/api/admin/traces/:id', async (req, reply) => {
     const { id } = req.params as { id: string };
     const trace = orchestrator.getTraceTracker().getTrace(id);
     if (!trace) {

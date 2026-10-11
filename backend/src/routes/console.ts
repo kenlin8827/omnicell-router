@@ -26,7 +26,7 @@ import { getModelAccessPolicy, isAutoEntryUsable, isModelAllowed, tierFromVirtua
 export { validateApiKey };
 
 /* ------------------------------------------------------------------------ *
- * Process-log tail helpers (for GET /api/ui/logs).
+ * Process-log tail helpers (for GET /api/admin/logs).
  * Pino writes NDJSON with a numeric `level`; banner text is plain lines.
  * ------------------------------------------------------------------------ */
 const PINO_LEVELS: Record<number, string> = {
@@ -75,40 +75,6 @@ function parseLogLine(raw: string): ParsedLogLine {
     return { raw };
   }
 }
-
-/**
- * All frontend SPA page paths served by handleHtml below. Single source of
- * truth — the auth preHandler hook in server.ts whitelists these exact
- * paths so that refreshing a console page never hits API-key auth.
- * Adding a new console page = add it HERE (nothing else to update).
- */
-export const SPA_ROUTES = [
-  '/',
-  '/ui',
-  '/dashboard',
-  '/tiers',
-  '/auto',
-  '/rules',
-  '/cache',
-  '/providers',
-  '/keys', // legacy alias for /providers
-  '/api-keys',
-  '/models',
-  '/catalog',
-  '/proxy',
-  '/token-saver',
-  '/clients',
-  '/proxy-access',
-  '/guardrails',
-  '/usage',
-  '/traces',
-  '/sessions',
-  '/logs',
-  '/captures',
-  '/settings',
-  '/yaml',
-  '/combos',
-];
 
 /**
  * Catalog-style model payload → opencode v2 model definition shape
@@ -271,8 +237,9 @@ export function registerConsoleRoutes(
   ];
   const FRONTEND_DIST = candidateDistDirs.find((p) => fs.existsSync(p)) || path.resolve(process.cwd(), 'frontend/dist');
 
-  // 1. Static Asset Serving from frontend/dist/assets
-  app.get('/assets/:file', async (req: any, reply: any) => {
+  // 1. Static Asset Serving from frontend/dist/assets — production vite
+  // builds use base '/admin/' so HTML references /admin/assets/* below.
+  app.get('/admin/assets/:file', async (req: any, reply: any) => {
     const file = req.params.file;
     // Path traversal guard: the router percent-decodes :file, so "..%2f" arrives
     // as "../". Reject separators/dot-segments outright (asset names are flat
@@ -321,9 +288,16 @@ export function registerConsoleRoutes(
     `);
   };
 
-  for (const route of SPA_ROUTES) {
-    app.get(route, handleHtml);
-  }
+  // Everything under /admin/ is the console. Wildcard registration (not an
+  // explicit page list) makes a new React page impossible to 401/404 on
+  // browser refresh — App.tsx stays the single source of truth for pages.
+  // Router specificity: the parametric /admin/assets/:file handler above
+  // outranks this wildcard, so hashed build assets hit the static handler.
+  app.get('/admin', handleHtml);
+  app.get('/admin/*', handleHtml);
+
+  // `/` is an entry redirect, not a page: land on the console prefix.
+  app.get('/', async (_req: any, reply: any) => reply.redirect('/admin/', 301));
 
   // 3. Status Aggregation API for Console
   const handleStatus = async () => {
@@ -358,14 +332,13 @@ export function registerConsoleRoutes(
     };
   };
 
-  app.get('/api/ui/status', handleStatus);
-  app.get('/api/console/status', handleStatus);
+  app.get('/api/admin/status', handleStatus);
 
   // 3B. Prompt-cache observability (provider-native caching, aggregated from traces).
   // Optional `?since=<epoch-ms>` narrows the totals / per-model rows / hourly
   // series to traces with `timestamp >= since`. Back-compat: when omitted the
   // response is the legacy 24-hour window.
-  app.get('/api/ui/cache-stats', async (req) => {
+  app.get('/api/admin/cache-stats', async (req) => {
     const query = req.query as { since?: string };
     const sinceRaw = query.since ? Number(query.since) : NaN;
     const sinceTs = Number.isFinite(sinceRaw) && sinceRaw > 0 ? sinceRaw : undefined;
@@ -409,14 +382,11 @@ export function registerConsoleRoutes(
     return result;
   };
 
-  app.post('/api/ui/client/:client/setup', handleSetup);
-  app.post('/api/console/client/:client/setup', handleSetup);
-  app.post('/api/ui/client/:client/teardown', handleTeardown);
-  app.post('/api/console/client/:client/teardown', handleTeardown);
+  app.post('/api/admin/client/:client/setup', handleSetup);
+  app.post('/api/admin/client/:client/teardown', handleTeardown);
 
   // 5. Configuration Read & Write API
-  app.get('/api/ui/config', async () => ({ status: 'ok', config: loadConfig() }));
-  app.get('/api/console/config', async () => ({ status: 'ok', config: loadConfig() }));
+  app.get('/api/admin/config', async () => ({ status: 'ok', config: loadConfig() }));
 
   const handleSaveConfig = async (req: any, reply: any) => {
     const body = req.body as Partial<RouterConfig>;
@@ -436,12 +406,10 @@ export function registerConsoleRoutes(
     warnOnEmptyTierPools(); // ADR-0012: no residual tier → an empty pool is now possible
     return result;
   };
-  app.post('/api/ui/config', handleSaveConfig);
-  app.post('/api/console/config', handleSaveConfig);
+  app.post('/api/admin/config', handleSaveConfig);
 
   // 6. Raw YAML Configuration
-  app.get('/api/ui/config/raw', async () => ({ status: 'ok', yaml: getRawConfig() }));
-  app.get('/api/console/config/raw', async () => ({ status: 'ok', yaml: getRawConfig() }));
+  app.get('/api/admin/config/raw', async () => ({ status: 'ok', yaml: getRawConfig() }));
 
   const handleSaveRawYaml = async (req: any, reply: any) => {
     const body = req.body as { yaml?: string };
@@ -457,8 +425,7 @@ export function registerConsoleRoutes(
     warnOnEmptyTierPools(); // ADR-0012: no residual tier → an empty pool is now possible
     return result;
   };
-  app.post('/api/ui/config/raw', handleSaveRawYaml);
-  app.post('/api/console/config/raw', handleSaveRawYaml);
+  app.post('/api/admin/config/raw', handleSaveRawYaml);
 
   // 6a. Forward-proxy MITM CA export — clients using the inbound forward
   // proxy must trust this CA. Generated on first request when absent (the
@@ -475,8 +442,7 @@ export function registerConsoleRoutes(
       return reply.status(500).send({ status: 'error', message: err?.message || 'Failed to load CA' });
     }
   };
-  app.get('/api/ui/proxy/ca', handleForwardProxyCa);
-  app.get('/api/console/proxy/ca', handleForwardProxyCa);
+  app.get('/api/admin/proxy/ca', handleForwardProxyCa);
 
   // 6b. Tier composition policies — candidate pool snapshots (console preview).
   // PREVIEW is always a pure projection (resolveTierPool with a match arg never
@@ -536,8 +502,7 @@ export function registerConsoleRoutes(
     const match = resolveTierMatch(freshTiers);
     return { status: 'ok', pools: await projectTierPools(freshTiers, match), match };
   };
-  app.get('/api/ui/tier-pools', handleTierPools);
-  app.get('/api/console/tier-pools', handleTierPools);
+  app.get('/api/admin/tier-pools', handleTierPools);
 
   // 6b'. Live (committed) tier pool snapshot — reflects the registry's
   // current m.tier (the last applyTierConfigNow result) plus the global
@@ -572,8 +537,7 @@ export function registerConsoleRoutes(
     }
     return { status: 'ok', live: true, pools };
   };
-  app.get('/api/ui/tier-pools/live', handleTierPoolsLive);
-  app.get('/api/console/tier-pools/live', handleTierPoolsLive);
+  app.get('/api/admin/tier-pools/live', handleTierPoolsLive);
 
   // 6b'. Ephemeral preview from UNSAVED form state — { tiers } in the body;
   // the console shows what the pools WOULD be, without touching routing.
@@ -583,8 +547,7 @@ export function registerConsoleRoutes(
     const match = resolveTierMatch(tiers as any);
     return { status: 'ok', preview: true, pools: await projectTierPools(tiers, match), match };
   };
-  app.post('/api/ui/tier-pools/preview', handleTierPoolsPreview);
-  app.post('/api/console/tier-pools/preview', handleTierPoolsPreview);
+  app.post('/api/admin/tier-pools/preview', handleTierPoolsPreview);
 
   // 6b-2. Catalog source management — view/add/remove/toggle/refresh the remote
   // catalog sources (config.catalog.sources). Mutations apply to the live
@@ -787,7 +750,7 @@ export function registerConsoleRoutes(
     return { status: 'ok' };
   };
 
-  for (const prefix of ['/api/ui', '/api/console']) {
+  for (const prefix of ['/api/admin']) {
     app.get(`${prefix}/catalog/sources`, listCatalogSources);
     app.post(`${prefix}/catalog/sources`, handleAddCatalogSource);
     app.post(`${prefix}/catalog/sources/refresh`, handleRefreshCatalogSources);
@@ -835,8 +798,7 @@ export function registerConsoleRoutes(
     }));
     return { status: 'ok', combos };
   };
-  app.get('/api/ui/combos', handleCombos);
-  app.get('/api/console/combos', handleCombos);
+  app.get('/api/admin/combos', handleCombos);
 
   // 7. OpenCode-native Provider Management (opencode.jsonc `provider` node + auth.json)
   //     - Definitions live in ~/.config/opencode/opencode.jsonc (JSONC, comment-preserving edits)
@@ -1044,7 +1006,7 @@ export function registerConsoleRoutes(
         return reply.status(400).send({ success: false, error: `'${id}' 没有可用于测试的模型 —— 请先添加模型` });
       }
 
-      // ADR-0011: probes run DIRECT against the provider on the same wire the
+      // probes run DIRECT against the provider on the same wire the
       // executor resolved for this model (shared wireFor()). The opencode
       // daemon is not in any request path — no test-vs-inference divergence.
       const apiKey = body.apiKey || expandEnvTemplate(def?.options?.apiKey) || authEntry?.key || authEntry?.access;
@@ -1296,7 +1258,7 @@ export function registerConsoleRoutes(
     },
   };
 
-  for (const prefix of ['/api/ui', '/api/console']) {
+  for (const prefix of ['/api/admin']) {
     app.get(`${prefix}/opencode/providers`, ocHandlers.list);
     app.get(`${prefix}/opencode/catalog`, ocHandlers.catalog);
     app.get(`${prefix}/opencode/models`, ocHandlers.models);
@@ -1326,15 +1288,13 @@ export function registerConsoleRoutes(
     if (!logo) return reply.status(404).send();
     return reply.header('Cache-Control', 'public, max-age=604800').type(logo.contentType).send(logo.body);
   };
-  app.get('/api/ui/catalog/logo', handleCatalogLogo);
-  app.get('/api/console/catalog/logo', handleCatalogLogo);
+  app.get('/api/admin/catalog/logo', handleCatalogLogo);
 
   // 9. Client API Keys Management (for external client access)
   const handleListApiKeys = async () => {
     return { status: 'ok', keys: listApiKeys(false) };
   };
-  app.get('/api/ui/api-keys', handleListApiKeys);
-  app.get('/api/console/api-keys', handleListApiKeys);
+  app.get('/api/admin/api-keys', handleListApiKeys);
 
   const handleCreateApiKey = async (req: any, reply: any) => {
     const body = req.body as { name: string; key?: string; role?: 'admin' | 'user'; expiresAt?: string; description?: string; modelAccess?: unknown };
@@ -1349,8 +1309,7 @@ export function registerConsoleRoutes(
     if (!result.success) return reply.status(400).send(result);
     return result;
   };
-  app.post('/api/ui/api-keys', handleCreateApiKey);
-  app.post('/api/console/api-keys', handleCreateApiKey);
+  app.post('/api/admin/api-keys', handleCreateApiKey);
 
   const handleUpdateApiKey = async (req: any, reply: any) => {
     const { id } = req.params as { id: string };
@@ -1363,8 +1322,7 @@ export function registerConsoleRoutes(
     if (!result.success) return reply.status(400).send(result);
     return result;
   };
-  app.put('/api/ui/api-keys/:id', handleUpdateApiKey);
-  app.put('/api/console/api-keys/:id', handleUpdateApiKey);
+  app.put('/api/admin/api-keys/:id', handleUpdateApiKey);
 
   const handleDeleteApiKey = async (req: any, reply: any) => {
     const { id } = req.params as { id: string };
@@ -1372,8 +1330,7 @@ export function registerConsoleRoutes(
     if (!result.success) return reply.status(400).send(result);
     return result;
   };
-  app.delete('/api/ui/api-keys/:id', handleDeleteApiKey);
-  app.delete('/api/console/api-keys/:id', handleDeleteApiKey);
+  app.delete('/api/admin/api-keys/:id', handleDeleteApiKey);
 
   // 9b. Effective model view for ONE key — what this key can actually see &
   //     use right now (mirrors the /v1/models policy filter + the execution
@@ -1409,8 +1366,7 @@ export function registerConsoleRoutes(
       models: [...virtual, ...registered],
     };
   };
-  app.get('/api/ui/api-keys/:id/models', handleGetKeyModels);
-  app.get('/api/console/api-keys/:id/models', handleGetKeyModels);
+  app.get('/api/admin/api-keys/:id/models', handleGetKeyModels);
 
   // 9c. Full gateway catalog for CONSOLE-internal consumers (model pickers).
   //     /v1/models now requires a key like every other surface; the trusted
@@ -1428,8 +1384,7 @@ export function registerConsoleRoutes(
     ];
     return { status: 'ok', models };
   };
-  app.get('/api/ui/gateway-models', handleGatewayModels);
-  app.get('/api/console/gateway-models', handleGatewayModels);
+  app.get('/api/admin/gateway-models', handleGatewayModels);
 
   // 10. Remote restart trigger from UI — spawn a detached replacement gateway
   //     first (it waits for our pid to die, boots, and self-registers the
@@ -1452,8 +1407,7 @@ export function registerConsoleRoutes(
     setTimeout(() => process.exit(0), 500);
     return { status: 'restarting', message: 'Gateway restart signal acknowledged — replacement process is booting' };
   };
-  app.post('/api/ui/restart', handleRestart);
-  app.post('/api/console/restart', handleRestart);
+  app.post('/api/admin/restart', handleRestart);
 
   // 11. Process-log tail viewer — reads ~/.opencode-router/ocr.log (only
   //     written when the gateway runs under `ocr start`; a manual `bun
@@ -1498,27 +1452,26 @@ export function registerConsoleRoutes(
       fs.closeSync(fd);
     }
   };
-  app.get('/api/ui/logs', handleGetLogs);
-  app.get('/api/console/logs', handleGetLogs);
+  app.get('/api/admin/logs', handleGetLogs);
 
   /* ---------------------------------------------------------------------- *
    * 12. Request-capture archive browser (CaptureRecorder; opt-in audit log)
-   * Bodies may contain sensitive data — these endpoints sit under /api/ui/*
-   * which the auth preHandler whitelists, exactly like /api/ui/logs.
+   * Bodies may contain sensitive data — these endpoints sit under /api/admin/*
+   * which the auth preHandler whitelists, exactly like /api/admin/logs.
    * ---------------------------------------------------------------------- */
   const captureRecorder = orchestrator.getCaptureRecorder();
   const CAPTURE_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
   const handleCaptureStatus = async () => captureRecorder.getStatus();
-  app.get('/api/ui/capture/status', handleCaptureStatus);
+  app.get('/api/admin/capture/status', handleCaptureStatus);
 
   const handleCaptureDates = async () => ({ status: 'ok', dates: captureRecorder.listDates() });
-  app.get('/api/ui/capture/dates', handleCaptureDates);
+  app.get('/api/admin/capture/dates', handleCaptureDates);
 
   // Locate a session's archive(s) across all dates by raw session id.
   // Query param (not path segment) — client-supplied ids may contain "/", '"'
   // or even be whole JSON blobs; encodeURIComponent round-trips them safely.
-  app.get('/api/ui/capture/find-session', async (req: any, reply: any) => {
+  app.get('/api/admin/capture/find-session', async (req: any, reply: any) => {
     const id = String((req.query as any)?.id || '').trim();
     if (!id) {
       return reply.status(400).send({ status: 'error', message: 'query param "id" (session id) is required' });
@@ -1526,7 +1479,7 @@ export function registerConsoleRoutes(
     return { status: 'ok', matches: captureRecorder.findBySession(id) };
   });
 
-  app.get('/api/ui/capture/:date/sessions', async (req: any, reply: any) => {
+  app.get('/api/admin/capture/:date/sessions', async (req: any, reply: any) => {
     const { date } = req.params as { date: string };
     if (!CAPTURE_DATE_RE.test(date)) {
       return reply.status(400).send({ status: 'error', message: 'date must be YYYY-MM-DD' });
@@ -1534,7 +1487,7 @@ export function registerConsoleRoutes(
     return { status: 'ok', date, sessions: captureRecorder.listSessions(date) };
   });
 
-  app.get('/api/ui/capture/:date/:file', async (req: any, reply: any) => {
+  app.get('/api/admin/capture/:date/:file', async (req: any, reply: any) => {
     const { date, file } = req.params as { date: string; file: string };
     if (!CAPTURE_DATE_RE.test(date)) {
       return reply.status(400).send({ status: 'error', message: 'date must be YYYY-MM-DD' });
@@ -1582,7 +1535,7 @@ export function registerConsoleRoutes(
    * client-request, gateway-response, upstream-request, upstream-response.
    * The console joins them into one logical turn via `traceId` / `spanId`.
    */
-  app.get('/api/ui/capture/:date/:file/events', async (req: any, reply: any) => {
+  app.get('/api/admin/capture/:date/:file/events', async (req: any, reply: any) => {
     const { date, file } = req.params as { date: string; file: string };
     if (!CAPTURE_DATE_RE.test(date)) {
       return reply.status(400).send({ status: 'error', message: 'date must be YYYY-MM-DD' });
@@ -1595,7 +1548,7 @@ export function registerConsoleRoutes(
     return { status: 'ok', date, file, ...result };
   });
 
-  app.delete('/api/ui/capture/:date/:file', async (req: any, reply: any) => {
+  app.delete('/api/admin/capture/:date/:file', async (req: any, reply: any) => {
     const { date, file } = req.params as { date: string; file: string };
     if (!CAPTURE_DATE_RE.test(date)) {
       return reply.status(400).send({ status: 'error', message: 'date must be YYYY-MM-DD' });
@@ -1607,7 +1560,7 @@ export function registerConsoleRoutes(
     return { status: 'ok', message: `Capture session ${date}/${file} deleted` };
   });
 
-  app.delete('/api/ui/capture/:date', async (req: any, reply: any) => {
+  app.delete('/api/admin/capture/:date', async (req: any, reply: any) => {
     const { date } = req.params as { date: string };
     if (!CAPTURE_DATE_RE.test(date)) {
       return reply.status(400).send({ status: 'error', message: 'date must be YYYY-MM-DD' });
@@ -1618,7 +1571,6 @@ export function registerConsoleRoutes(
     }
     return { status: 'ok', message: `Capture archive ${date} deleted` };
   });
+
 }
 
-// Backwards compatibility export
-export const registerUiRoutes = registerConsoleRoutes;

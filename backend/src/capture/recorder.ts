@@ -765,7 +765,7 @@ export class CaptureRecorder {
           events.push(obj as unknown as HttpExchangeEvent);
         }
         // cap_xxx entries (turn-centric) are skipped — the console reads
-        // those via /api/ui/capture/:date/:file (readRecords path).
+        // those via /api/admin/capture/:date/:file (readRecords path).
       } catch {
         // Corrupt/partial line — skip, never fail the whole read.
       }

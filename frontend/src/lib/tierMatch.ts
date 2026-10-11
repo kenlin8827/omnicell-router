@@ -1,10 +1,10 @@
 /**
  * Frontend mirror of backend/src/providers/tier-match.ts — the smart-match that
  * decides which candidate pool a model belongs to. Kept in sync deliberately:
- * live config is fetched from /api/ui/tier-pools (`match`) whenever possible;
+ * live config is fetched from /api/admin/tier-pools (`match`) whenever possible;
  * DEFAULT_TIER_MATCH is only the offline/fallback copy of the built-in baseline.
  *
- * ADR-0012: there is NO residual tier any more. All four tiers are configured
+ * there is NO residual tier any more. All four tiers are configured
  * identically (patterns / price band / exclude), and a model that matches no
  * positive condition is `'unclassified'` — it joins no candidate pool instead of
  * silently landing in a default tier.
@@ -28,7 +28,7 @@ export interface TierMatchCfg {
   minInputPerM?: number;
   maxInputPerM?: number;
   exclude?: string[]; // vetoes this tier's auto-claim (explicit pins bypass)
-  excludeTiers?: Tier[]; // ADR-0012 anchor-exclude: models matching these tiers' conditions are not claimed here
+  excludeTiers?: Tier[]; // anchor-exclude: models matching these tiers' conditions are not claimed here
 }
 
 export type ResolvedTierMatch = Record<Tier, TierMatchCfg>;
@@ -60,7 +60,7 @@ function globMatch(pattern: string, value: string): boolean {
 const globMatchAny = (patterns: string[] | undefined, value: string): boolean =>
   Boolean(patterns?.length) && patterns!.some((p) => globMatch(p, value));
 
-/** Safe access — the runtime payload from /api/ui/tier-pools is `Partial<Record<Tier,
+/** Safe access — the runtime payload from /api/admin/tier-pools is `Partial<Record<Tier,
  * TierMatchCfg>>` (per TierPoolsResponse.match? in lib/api.ts), and even the
  * baseline can hand a half-configured object to us. Fill in the missing tier
  * with the built-in default so match[tier].X is always a real object. */

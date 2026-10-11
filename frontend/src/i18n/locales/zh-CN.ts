@@ -472,7 +472,7 @@ export const zhCN: TranslationDict = {
     on: '捕捉中',
     off: '已关闭',
     hotHint: '开关与参数保存后立即生效，无需重启网关。',
-    enableConfirm: '开启请求捕捉？\n\n完整请求/响应体将落盘归档（可能包含敏感信息），控制台 /api/ui/* 接口免鉴权可读。确认开启？',
+    enableConfirm: '开启请求捕捉？\n\n完整请求/响应体将落盘归档（可能包含敏感信息），控制台 /api/admin/* 接口免鉴权可读。确认开启？',
     toggleSaved: '捕捉配置已保存并立即生效',
     emptyDates: '暂无捕捉归档。开启捕捉后，请求将按「日期目录 / 会话文件」归档在此展示。',
     sessionsUnit: '个会话',
@@ -567,7 +567,7 @@ export const zhCN: TranslationDict = {
     capRetention: '归档保留天数',
     capMaxTotal: '归档总容量上限（MB）',
     capMaxBody: '单条记录截断上限（字节）',
-    capPrivacyHint: '捕捉会落盘完整请求/响应体（可能包含敏感信息），控制台 /api/ui/* 接口免鉴权可读；请求头永不记录。',
+    capPrivacyHint: '捕捉会落盘完整请求/响应体（可能包含敏感信息），控制台 /api/admin/* 接口免鉴权可读；请求头永不记录。',
     capHotHint: '本节保存后立即生效，无需重启网关。归档可在「请求捕捉」页浏览。',
   },
   proxy: {

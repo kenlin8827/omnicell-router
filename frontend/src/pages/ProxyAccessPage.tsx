@@ -14,7 +14,7 @@ import { Switch } from '../components/Switch';
  *           bypass form; Export-CA + Save live in the header).
  *  Card 2 — the setup HELP rendered as a wizard: horizontal clickable stepper,
  *           click a step → its content panel shows; prev/next walk the flow.
- * The status chip polls /api/ui/status every 4s: running / failed /
+ * The status chip polls /api/admin/status every 4s: running / failed /
  * enabled-pending-restart / disabled — a failed start stays visible (the
  * gateway itself never fails on it).
  */
@@ -188,7 +188,7 @@ export const ProxyAccessPage: React.FC = () => {
             <span>{t('forwardProxy.title')}</span>
           </div>
           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-            <a className="btn" href="/api/ui/proxy/ca" download style={{ gap: '6px' }}>
+            <a className="btn" href="/api/admin/proxy/ca" download style={{ gap: '6px' }}>
               {t('forwardProxy.caBtn')}
             </a>
             <button className="btn btn-primary" onClick={handleSave} disabled={saving}>

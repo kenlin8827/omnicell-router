@@ -424,11 +424,11 @@ describe('Resilience: REST Observability & Administrative API Endpoints', () => 
     assert.equal(jsonTripped.circuitBreakers.tripped, 1);
   });
 
-  it('GET /v1/health/circuit-breakers should expose detailed snapshot metrics', async () => {
+  it('GET /api/admin/health/circuit-breakers should expose detailed snapshot metrics', async () => {
     const { app, registry } = createServer(testConfig, true);
     registry.getCircuitBreakerManager().getBreaker('plus-1')?.trip('Quota exhausted 402', 'QUOTA_EXHAUSTED', 12 * 3600 * 1000);
 
-    const res = await app.inject({ method: 'GET', url: '/v1/health/circuit-breakers' });
+    const res = await app.inject({ method: 'GET', url: '/api/admin/health/circuit-breakers' });
     assert.equal(res.statusCode, 200);
     const data = res.json();
     assert.equal(data.object, 'circuit_breaker_summary');
@@ -438,14 +438,14 @@ describe('Resilience: REST Observability & Administrative API Endpoints', () => 
     assert.ok(data.breakers[0].remainingCooldownMs > 0);
   });
 
-  it('POST /v1/health/circuit-breakers/reset should reset tripped breakers to CLOSED', async () => {
+  it('POST /api/admin/health/circuit-breakers/reset should reset tripped breakers to CLOSED', async () => {
     const { app, registry } = createServer(testConfig, true);
     registry.getCircuitBreakerManager().getBreaker('plus-1')?.trip('Test trip', 'SERVICE_UNAVAILABLE', 3600000);
 
     // Call reset endpoint
     const resReset = await app.inject({
       method: 'POST',
-      url: '/v1/health/circuit-breakers/reset?model=plus-1',
+      url: '/api/admin/health/circuit-breakers/reset?model=plus-1',
     });
     assert.equal(resReset.statusCode, 200);
     const resetJson = resReset.json();
