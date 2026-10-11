@@ -654,7 +654,10 @@ export const CapturesPage: React.FC = () => {
     setLoading(true);
     try {
       const res = await api.getCaptureEvents(date, file);
-      setTurns(res.turns);
+      // Timeline renders newest-first: the read window is the file's tail, so
+      // the most recent turn is the one worth seeing first. Reverse ONCE here
+      // at state level so selectedTurnIdx / drawer / list keys stay consistent.
+      setTurns([...res.turns].reverse());
       setEvents(res.events);
       setTotalLines(res.totalLines);
       setFileTruncated(res.fileTruncated);
