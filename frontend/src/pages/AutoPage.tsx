@@ -86,7 +86,7 @@ export const AutoPage: React.FC = () => {
 
         {/* Alias family overview */}
         <div style={{ padding: '14px', borderRadius: '10px', border: '1px dashed var(--card-border)', display: 'flex', flexWrap: 'wrap', gap: '10px', marginBottom: '16px' }}>
-          {(['famAuto', 'famFast', 'famFlagship', 'famReasoning'] as const).map(k => (
+          {(['famAuto', 'famLite', 'famPlus', 'famPro', 'famUltra'] as const).map(k => (
             <div key={k} style={{ flex: '1 1 200px', fontSize: '12px', color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: '8px' }}>
               <Zap size={13} color="var(--accent)" />
               <span>{t('auto.' + k)}</span>
