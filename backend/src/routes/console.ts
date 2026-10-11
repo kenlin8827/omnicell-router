@@ -1394,7 +1394,10 @@ export function registerConsoleRoutes(
     const registered = registry.getAllModels().map((m) => ({
       id: m.id,
       provider: m.provider,
-      tier: m.tier as string,
+      // Unclassified = not in any pool; m.tier there is a stale boot-time
+      // classification. Never report it, or `tierAllowed` counts models no
+      // pool can route toward auto-X viability.
+      tier: m.unclassified ? undefined : (m.tier as string),
       virtual: false,
       allowed: isModelAllowed(m.id, policy, m.tier),
     }));
@@ -1427,9 +1430,20 @@ export function registerConsoleRoutes(
         owned_by: 'opencode-router',
         tier: '',
       })),
-      ...registry.getAllModels().map((m) => ({ id: m.id, owned_by: m.provider, tier: m.tier as string })),
+      // `unclassified` is the live membership truth; m.tier on those models is
+      // a stale registration-time classification (legacy boot classifier).
+      // Reporting it let console pickers badge models that belong to NO pool.
+      ...registry.getAllModels().map((m) => ({
+        id: m.id,
+        owned_by: m.provider,
+        tier: m.unclassified ? undefined : (m.tier as string),
+      })),
       ...registry.getCombos().map((c) => ({ id: c.id, owned_by: 'opencode-router', tier: '' })),
-      ...registry.getVariantExposures().map(({ id, base }) => ({ id, owned_by: base.provider, tier: base.tier as string })),
+      ...registry.getVariantExposures().map(({ id, base }) => ({
+        id,
+        owned_by: base.provider,
+        tier: base.unclassified ? undefined : (base.tier as string),
+      })),
     ];
     return { status: 'ok', models };
   };

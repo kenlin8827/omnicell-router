@@ -485,11 +485,11 @@ export const CombosPage: React.FC = () => {
         for (const c of comboRes.combos || []) byId[c.id] = c;
         setMeta(byId);
         setCombos((comboRes.combos || []).map(toDraft));
-        // Registered physical models only (/v1/models also lists virtual auto-*
-        // entries and combos); picker candidates are further narrowed to
-        // providers whose auth is connected — an unconnected provider cannot
-        // serve requests, so its models make no sense as combo members.
-        const registered = models.filter(m => m.tier);
+        // Registered physical models only — virtual auto-* entries and combos
+        // are owned_by 'opencode-router'. Tier presence is deliberately NOT
+        // the criterion: combos are the sanctioned way to call pool-less
+        // (unclassified) models, so those must stay selectable here.
+        const registered = models.filter(m => m.owned_by !== 'opencode-router');
         const connected = new Set((provRes.providers || []).filter(p => p.auth?.connected).map(p => p.id));
         setRegisteredIds(new Set(registered.map(m => m.id)));
         setModelOptions(registered.filter(m => connected.has(m.owned_by)).map(m => ({ value: m.id, label: m.id })));
