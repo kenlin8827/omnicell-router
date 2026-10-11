@@ -455,6 +455,9 @@ td, th {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  /* Pills must never wrap internally — squeezed table cells push the
+     badge narrower and the label breaks into one char per line. */
+  white-space: nowrap;
 }
 .badge-success {
   background: rgba(16, 185, 129, 0.12);

@@ -612,11 +612,11 @@ export const ApiKeysPage: React.FC = () => {
                     letterSpacing: '0.04em',
                   }}
                 >
-                  <th style={{ padding: '12px 20px' }}>{t('apiKeys.thName')}</th>
+                  <th style={{ padding: '12px 20px', whiteSpace: 'nowrap' }}>{t('apiKeys.thName')}</th>
                   <th style={{ padding: '12px 20px' }}>{t('apiKeys.thKey')}</th>
                   <th style={{ padding: '12px 20px' }}>{t('apiKeys.thRole')}</th>
-                  <th style={{ padding: '12px 20px' }}>{t('apiKeys.thAccess')}</th>
-                  <th style={{ padding: '12px 20px' }}>{t('apiKeys.thStatus')}</th>
+                  <th style={{ padding: '12px 20px', whiteSpace: 'nowrap' }}>{t('apiKeys.thAccess')}</th>
+                  <th style={{ padding: '12px 20px', whiteSpace: 'nowrap' }}>{t('apiKeys.thStatus')}</th>
                   <th style={{ padding: '12px 20px' }}>{t('apiKeys.thCreated')}</th>
                   <th style={{ padding: '12px 20px', textAlign: 'right' }}>{t('apiKeys.thActions')}</th>
                 </tr>
@@ -638,9 +638,34 @@ export const ApiKeysPage: React.FC = () => {
                     >
                       {/* Name & Desc */}
                       <td style={{ padding: '14px 20px' }}>
-                        <div style={{ fontWeight: 700, color: 'var(--text-main)' }}>{item.name}</div>
+                        <div
+                          style={{
+                            fontWeight: 700,
+                            color: 'var(--text-main)',
+                            // Squeezed columns must not wrap CJK names into a
+                            // 2-char-per-line vertical strip — truncate instead.
+                            whiteSpace: 'nowrap',
+                            maxWidth: 260,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                          }}
+                          title={item.name}
+                        >
+                          {item.name}
+                        </div>
                         {item.description && (
-                          <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginTop: '2px' }}>
+                          <div
+                            style={{
+                              fontSize: '11px',
+                              color: 'var(--text-dim)',
+                              marginTop: '2px',
+                              whiteSpace: 'nowrap',
+                              maxWidth: 260,
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                            }}
+                            title={item.description}
+                          >
                             {item.description}
                           </div>
                         )}

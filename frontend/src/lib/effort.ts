@@ -26,7 +26,7 @@ export type EffortValue = ReasoningEffort | typeof EFFORT_UNSET;
 export const EFFORT_OPTIONS = [EFFORT_UNSET, ...EFFORT_LADDER] as const;
 
 /** i18n key for each reasoning-effort level. The label rendering is
- * `<wire> (<localized>)` so the protocol token the client will send
+ * `<wire> <localized>` so the protocol token the client will send
  * stays in view. */
 export const EFFORT_I18N_KEY: Record<ReasoningEffort, string> = {
   none: 'pmEffortNone',
@@ -41,12 +41,12 @@ export const EFFORT_I18N_KEY: Record<ReasoningEffort, string> = {
  * `[{value, label}, ...]` with one entry for "unset" plus one per
  * `ReasoningEffort`. The label format is:
  *   - `EFFORT_UNSET`  → the i18n `pmUnset` label (e.g. "不设置")
- *   - `<effort>`      → `<effort> (<localized>)` so users see both the
+ *   - `<effort>`      → `<effort> <localized>` so users see both the
  *                       protocol token and a short hint in their language
  */
 export const effortOptionList = (t: (k: string) => string) =>
   EFFORT_OPTIONS.map((o) => ({
     value: o,
-    label: o === EFFORT_UNSET ? t('op.pmUnset') : `${o} (${t(`op.${EFFORT_I18N_KEY[o]}`)})`,
+    label: o === EFFORT_UNSET ? t('op.pmUnset') : `${o} ${t(`op.${EFFORT_I18N_KEY[o]}`)}`,
   }));
 
