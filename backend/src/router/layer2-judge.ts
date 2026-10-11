@@ -30,7 +30,7 @@ export class Layer2Judge {
 
   private static readonly CHOICES = ['lite', 'plus', 'pro', 'ultra'];
 
-  // ADR-0010: routing decision cache (LRU+TTL over judge results)
+  // routing decision cache (LRU+TTL over judge results)
   private static decisionCache: RoutingDecisionCache | null = null;
 
   private static getDecisionCache(config?: Layer2JudgeConfig): RoutingDecisionCache {
@@ -78,7 +78,7 @@ export class Layer2Judge {
       })
       .join('\n');
 
-    // ADR-0010: reuse a prior identical-context decision before calling out
+    // reuse a prior identical-context decision before calling out
     const decisionCache = this.getDecisionCache(config);
     const cacheKey = RoutingDecisionCache.buildCacheKey(provider, model, userText);
     const cached = decisionCache.get(cacheKey);

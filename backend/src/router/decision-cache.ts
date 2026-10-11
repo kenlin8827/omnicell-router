@@ -27,11 +27,11 @@ interface DecisionCacheConfig {
 const DEFAULTS: DecisionCacheConfig = { enabled: true, ttlSeconds: 1800, maxEntries: 500 };
 
 /**
- * ADR-0010: LRU+TTL cache for Layer 2 judge decisions.
+ * LRU+TTL cache for Layer 2 judge decisions.
  * Key = provider::model::sha256(userText). Only successful decisions are
  * stored; a hit skips the external judge call (network + token cost).
  * A stale/wrong hit degrades routing quality at worst — it can never
- * contaminate response content (unlike the response cache banned in ADR-0001).
+ * contaminate response content (unlike the response cache banned earlier).
  */
 export class RoutingDecisionCache {
   private entries = new Map<string, RoutingDecisionCacheEntry>(); // Map iteration order = LRU order

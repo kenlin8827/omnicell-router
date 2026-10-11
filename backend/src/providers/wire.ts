@@ -1,5 +1,5 @@
 /**
- * ADR-0011: canonical wire-shape decision, ONE source of truth shared by the
+ * canonical wire-shape decision, ONE source of truth shared by the
  * execution dispatchers and the console probe. Rationale: protocol truth lives
  * in DATA (models.dev `provider.npm`, provider-level and model-level), not in
  * daemon behavior; any place that maps npm → wire must call this function so
@@ -15,7 +15,7 @@ export type WireKind = 'openai' | 'anthropic' | 'google' | 'responses' | 'unrout
 /**
  * npm packages that need SDK-side URL construction or request signing beyond a
  * plain HTTPS POST (Azure deployment paths + api-version, Vertex rawPredict +
- * project/location, Bedrock SigV4). ADR-0011 §5: mark explicitly unroutable —
+ * project/location, Bedrock SigV4) → explicitly unroutable —
  * never fire a guessed wire that later blames a 400 on the upstream.
  */
 function isUnroutable(npm: string): boolean {
@@ -45,7 +45,7 @@ export function wireFor(npm?: string, baseHint?: string): WireKind {
 
 /** Human-readable exclusion reason for console/logs when a wire is unroutable. */
 export function unroutableReason(npm?: string): string {
-  return `该 provider 的 SDK 包需要专用端点构造/签名（${npm || '未知 npm'}），网关直连暂不支持（ADR-0011 §5，显式不可路由）`;
+  return `该 provider 的 SDK 包需要专用端点构造/签名（${npm || '未知 npm'}），网关直连暂不支持（显式不可路由）`;
 }
 
 /**

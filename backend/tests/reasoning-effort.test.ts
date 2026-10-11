@@ -398,7 +398,7 @@ describe('ProviderRegistry.pickModelForEffort — effort="none" boundary', () =>
     assert.strictEqual(pick!.degraded, false);
   });
 
-  it('effort=none falls through to tier-default model even when tier pool is empty (ADR-0012 contract)', () => {
+  it('effort=none falls through to tier-default model even when tier pool is empty (contract)', () => {
     // getModelForTier() always returns SOMETHING (even via cross-tier
     // escalation). pickModelForEffort('none') delegates to it. So an empty
     // pool never returns null for effort=none — the gateway must always be

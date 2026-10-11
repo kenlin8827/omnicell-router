@@ -12,7 +12,7 @@ import { UpstreamError } from '../resilience/error-classifier.js';
 import { proxiedFetch, resolveProxyUrl } from '../utils/proxy.js';
 
 /**
- * ADR-0011: OpenAI Responses API wire (`@ai-sdk/openai`) — POST {base}/responses.
+ * OpenAI Responses API wire (`@ai-sdk/openai`) — POST {base}/responses.
  * Serves providers (or single models, via model-level npm override) that reject
  * chat/completions with `ModelProtocolUnsupported` — e.g. Zen's gpt-6-luna.
  *

@@ -1,4 +1,4 @@
-import { ModelPricing, ReasoningEffort, TierLevel } from '../types/router.js';
+import { EffortMap, ModelPricing, ReasoningEffort, TierLevel } from '../types/router.js';
 
 import { CircuitBreakerConfig, RetryConfig } from '../resilience/types.js';
 
@@ -18,7 +18,7 @@ export interface ModelRegistration {
   upstreamModel: string; // actual model name sent to upstream
   tier: TierLevel;
   pricing: ModelPricing;
-  /** ADR-0011: resolved wire for direct execution (model-level npm beats provider npm). */
+  /** resolved wire for direct execution (model-level npm beats provider npm). */
   wire?: 'openai' | 'anthropic' | 'google' | 'responses';
   priority?: number; // lower number = higher priority within the tier (e.g. 1 is primary, 2 is backup)
   isDefaultInTier?: boolean;
@@ -51,12 +51,18 @@ export interface ModelRegistration {
   /** Explicit tier from the opencode.jsonc model definition (catalog overrides are read live) */
   configTier?: TierLevel;
   /**
-   * ADR-0012 fourth state: the model matched no tier's positive conditions
+   * fourth state: the model matched no tier's positive conditions
    * (no residual fallback any more). It joins NO candidate pool. Kept as a
    * flag rather than widening `tier` so TIER_RANK / failover chains / session
    * ratchet keep operating on the strict four-state TierLevel.
    */
   unclassified?: boolean;
+  /**
+   * the effective thinking-level translation inherited from the
+   * claiming member rule (re-applied on every reclassify). Undefined = no
+   * translation (passthrough).
+   */
+  effortMap?: EffortMap;
 }
 
 /**
@@ -104,34 +110,55 @@ export interface FallbackConfig {
 
 /**
  * Per-tier composition policy. Pool membership has exactly ONE basis: the
- * `match` decision function (providers/tier-match.ts) — patterns claim,
- * price bands bound, exclude vetoes. Since ADR-0012 all four tiers are
- * FULLY SYMMETRIC (no residual tier): a model matching nothing ends up
- * `unclassified` and joins no pool. Selection strategy and weights shape
- * HOW the pool is used, never WHO is in it.
- * Patterns are wildcards (`*` any chars, `?` single char, case-insensitive;
- * no wildcard = substring).
+ * explicit `members` list below — a model matching no rule ends up
+ * `unclassified` and joins no pool. List order IS the chain/priority order;
+ * selection strategy and per-rule weights shape HOW the pool is used,
+ * never WHO is in it.
  */
-export interface TierWeightRule {
-  pattern: string; // wildcard pattern over model id
-  weight: number; // >= 1, default 1; first matching rule wins
+
+/**
+ * tier member rule — the ONLY source of pool membership (routing).
+ * `pattern` is a glob over the FULL model id (`provider/model`): `*`/`?`
+ * wildcards, case-insensitive; NO wildcard = substring match (a full id
+ * therefore pins a single model). The list order IS priority: within a tier
+ * the first matching rule claims the model, and the first rule's models lead
+ * the tier's failover chain. Across tiers the claim order is
+ * lite → plus → pro → ultra (first claim wins; overlaps are warned at save).
+ */
+export interface TierMemberRule {
+  pattern: string;
+  /** >= 1, default 1 — reserved for weighted / round_robin selection (v1 UI does not expose). */
+  weight?: number;
+  /**
+   * inline thinking-level translation (client-requested → upstream
+   * value), e.g. `{ none: 'high', low: 'high' }`. Missing key = passthrough.
+   * Applied per candidate at selection AND at execution; capability clamps
+   * afterwards (downgradeReasoning) keep the honesty contract.
+   */
+  effortMap?: EffortMap;
 }
 
 export interface TierPolicy {
+  /** explicit member list — routing's ONLY pool-membership source. */
+  members?: TierMemberRule[];
+  selection?: 'priority' | 'weighted' | 'round_robin'; // primary-pick strategy (see ProviderRegistry.pickPrimary)
+  /**
+   * @deprecated never consulted by routing. The classifier
+   * survives as the suggestion/import engine (catalog suggestions, /tiers
+   * import, first-boot seed, save-time checks) and still reads this config.
+   */
   match?: {
     patterns?: string[]; // wildcard patterns over model id (all tiers claim)
     minInputPerM?: number; // price-band floor — configured for EVERY tier incl. plus
     maxInputPerM?: number; // price-band ceiling; a band with no ceiling is a WEAK condition (consulted last)
     exclude?: string[]; // vetoes this tier's auto-claim (explicit pins bypass it)
     /**
-     * ADR-0012 anchor-exclude: a model matching ANY condition (patterns / price
+     * anchor-exclude: a model matching ANY condition (patterns / price
      * band / thinking-effort flag) of one of these tiers may not be AUTO-claimed by
      * THIS tier. Runtime filter derived from the other tiers' own conditions.
      */
     excludeTiers?: TierLevel[];
   };
-  selection?: 'priority' | 'weighted' | 'round_robin'; // primary-pick strategy (see ProviderRegistry.pickPrimary)
-  weights?: TierWeightRule[]; // multi-role: selection probability (weighted) / rotation share (round_robin) / same-priority order tie-break (priority)
 }
 
 export interface TiersConfig {
@@ -228,7 +255,7 @@ export interface Layer2JudgeConfig {
   apiKey?: string;
   model?: string; // e.g. 'typesafe/jev'
   timeoutMs?: number;
-  decisionCache?: { // ADR-0010: reuse prior judge decisions for identical contexts
+  decisionCache?: { // reuse prior judge decisions for identical contexts
     enabled?: boolean; // default true
     ttlSeconds?: number; // default 1800
     maxEntries?: number; // default 500
@@ -393,7 +420,7 @@ export interface CompressionConfig {
  *   <dir>/<YYYY-MM-DD>/<sanitized-sessionId>.jsonl
  *
  * OFF by default (opt-in): captured bodies may contain sensitive data, and the
- * console /api/ui/* endpoints are auth-exempt — enable consciously.
+ * console /api/admin/* endpoints are auth-exempt — enable consciously.
  * Request headers are NEVER recorded.
  */
 export interface CaptureConfig {

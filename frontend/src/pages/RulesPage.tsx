@@ -1,31 +1,35 @@
 import React, { useState, useEffect, useCallback, useRef, useLayoutEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Zap, Scale, Brain, Sparkles, Save, RefreshCw, Plus, X, RotateCcw, Eye, Search } from 'lucide-react';
+import { Zap, Scale, Brain, Sparkles, Save, RefreshCw, Plus, X, Eye, GripVertical, Search, ArrowUpToLine, ArrowUp, ArrowDown, ArrowRightLeft } from 'lucide-react';
 import { api, opencodeApi, type TierPoolInfo } from '../lib/api';
-import { DEFAULT_TIER_MATCH } from '../lib/tierMatch';
+import { Combobox } from '../components/Combobox';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
+import { effortOptionList, EFFORT_UNSET, EFFORT_I18N_KEY } from '../lib/effort';
 
 type Tier = 'lite' | 'plus' | 'pro' | 'ultra';
 
-interface WeightRow {
-  pattern: string;
-  weight: string;
-}
-
 type SelectionStrategy = 'priority' | 'weighted' | 'round_robin';
 
+/** thinking-level vocabulary (mirrors backend EFFORT_LADDER). */
+const EFFORT_LEVELS = ['none', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+
+/** Shared column template for the effort-map dialog's header + data rows:
+ * [level label] [arrow] [mapped-level combobox]. Keeping both on the same
+ * grid is what makes the dialog read as a table. */
+const EFFORT_MAP_GRID = '78px 14px minmax(0, 1fr)';
+
+/** One member rule row. `effortMap` values: '' / missing = passthrough. */
+interface MemberRow {
+  pattern: string;
+  weight?: number; // preserved verbatim; not edited in the v1 UI
+  effortMap: Record<string, string>;
+}
+
 interface TierPolicyForm {
-  matchPatterns: string; // textarea, one wildcard pattern per line; untouched = omitted (default), touched+cleared = saves [] (closes condition)
-  matchPatternsTouched: boolean; // true = user edited (incl. cleared); false = untouched
-  matchMinInputPerM: string;
-  matchMaxInputPerM: string;
-  excludePatterns: string; // per-tier veto on auto-claim — SAME meaning for every tier (ADR-0012)
-  excludePatternsTouched: boolean; // true = user edited (incl. cleared); false = untouched
-  matchExcludeTiers: Tier[]; // ADR-0012 anchor-exclude: models matching these tiers' conditions are not claimed here
+  members: MemberRow[]; // order = priority / failover chain
   selection: SelectionStrategy;
-  weights: WeightRow[];
 }
 
 const TIERS: { key: Tier; labelKey: string; descKey: string; icon: typeof Zap; color: string }[] = [
@@ -34,6 +38,8 @@ const TIERS: { key: Tier; labelKey: string; descKey: string; icon: typeof Zap; c
   { key: 'pro', labelKey: 'tierPolicy.tierPro', descKey: 'tierPolicy.tierDescPro', icon: Brain, color: 'var(--accent-violet)' },
   { key: 'ultra', labelKey: 'tierPolicy.tierUltra', descKey: 'tierPolicy.tierDescUltra', icon: Sparkles, color: 'var(--accent-amber, var(--accent))' },
 ];
+
+const TIER_KEYS = TIERS.map((x) => x.key);
 
 const splitPatterns = (s: string): string[] =>
   s
@@ -48,77 +54,56 @@ const parseNum = (s: string): number | undefined => {
   return Number.isFinite(n) ? n : undefined;
 };
 
-// The match inputs come PRE-FILLED with the built-in baseline (editable as-is).
-// An UNTOUCHED field is omitted on save → the backend falls back to its
-// baseline (providers/tier-match.ts). A TOUCHED field is saved as-is: clearing
-// it writes `[]`, closing the condition instead of restoring the default.
-const dmMatchFields = (tier: Tier) => {
-  const dm = DEFAULT_TIER_MATCH[tier];
-  return {
-    matchPatterns: (dm.patterns || []).join('\n'),
-    matchMinInputPerM: dm.minInputPerM != null ? String(dm.minInputPerM) : '',
-    matchMaxInputPerM: dm.maxInputPerM != null ? String(dm.maxInputPerM) : '',
-  };
+/** Normalize a raw effortMap from config into the 6-key form shape (unknown levels dropped). */
+const normalizeEffortMap = (raw: unknown): Record<string, string> => {
+  const out: Record<string, string> = {};
+  if (raw && typeof raw === 'object') {
+    for (const k of EFFORT_LEVELS) {
+      const v = (raw as Record<string, unknown>)[k];
+      if (typeof v === 'string' && (EFFORT_LEVELS as readonly string[]).includes(v)) out[k] = v;
+    }
+  }
+  return out;
 };
 
-const defaultFormFor = (tier: Tier): TierPolicyForm => ({
-  ...dmMatchFields(tier),
-  matchPatternsTouched: false,
-  excludePatternsTouched: false,
-  excludePatterns: '',
-  matchExcludeTiers: [],
-  selection: 'priority',
-  weights: [],
+const memberRowFromRaw = (raw: unknown): MemberRow | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const pattern = typeof (raw as any).pattern === 'string' ? (raw as any).pattern.trim() : '';
+  if (!pattern) return null;
+  const row: MemberRow = { pattern, effortMap: normalizeEffortMap((raw as any).effortMap) };
+  const w = Number((raw as any).weight);
+  if (Number.isFinite(w) && w >= 1) row.weight = w;
+  return row;
+};
+
+const toFormMembers = (rules: unknown): MemberRow[] =>
+  Array.isArray(rules) ? rules.map(memberRowFromRaw).filter((m): m is MemberRow => m !== null) : [];
+
+const defaultFormFor = (): TierPolicyForm => ({ members: [], selection: 'priority' });
+
+const formFromPolicy = (p: any): TierPolicyForm => ({
+  members: toFormMembers(p?.members),
+  selection: p?.selection ?? 'priority',
 });
 
-const formFromPolicy = (tier: Tier, p: any): TierPolicyForm => {
-  const dm = dmMatchFields(tier);
-  // Per-field: a saved value wins; an absent field shows the built-in baseline.
-  const withDefaults = {
-    matchPatterns: p?.match?.patterns != null ? p.match.patterns.join('\n') : dm.matchPatterns,
-    matchMinInputPerM: p?.match?.minInputPerM != null ? String(p.match.minInputPerM) : dm.matchMinInputPerM,
-    matchMaxInputPerM: p?.match?.maxInputPerM != null ? String(p.match.maxInputPerM) : dm.matchMaxInputPerM,
-  };
-  return {
-    ...dm,
-    ...withDefaults,
-    excludePatterns: p?.match?.exclude?.join('\n') ?? '',
-    // Key present in saved config (even []) = explicit user state → touched.
-    matchPatternsTouched: p?.match?.patterns != null,
-    excludePatternsTouched: p?.match?.exclude != null,
-    matchExcludeTiers: (Array.isArray(p?.match?.excludeTiers) ? p.match.excludeTiers : []).filter(
-      (x: unknown): x is Tier => x === 'lite' || x === 'plus' || x === 'pro' || x === 'ultra',
-    ),
-    selection: p?.selection ?? (p?.weights?.length ? 'weighted' : 'priority'),
-    weights: (p?.weights || []).map((w: any) => ({ pattern: String(w.pattern ?? ''), weight: String(w.weight ?? 1) })),
-  };
-};
-
+/**
+ * the member list is the tier's ONLY pool-membership source.
+ * `members` is ALWAYS sent (an explicit `[]` = "this tier is intentionally
+ * empty" and marks the config as migrated — the first-boot seed never runs
+ * again). tiers.exclude (global denylist) round-trips untouched elsewhere.
+ */
 const buildTierPolicy = (f: TierPolicyForm): Record<string, unknown> => {
-  const policy: Record<string, unknown> = {};
-  // Smart match — only the fields the user TOUCHED; untouched blanks keep the
-  // built-in baseline (backend providers/tier-match.ts DEFAULT_TIER_MATCH),
-  // while a touched-but-cleared field writes [] to close the condition.
-  // ADR-0012: every tier is configured IDENTICALLY (patterns + price band +
-  // exclude + anchor-exclude tiers). tiers.exclude (global denylist) is not
-  // managed here — it round-trips untouched.
-  const match: Record<string, unknown> = {};
-  const mp = splitPatterns(f.matchPatterns);
-  if (f.matchPatternsTouched) match.patterns = mp;
-  const matchMin = parseNum(f.matchMinInputPerM);
-  const matchMax = parseNum(f.matchMaxInputPerM);
-  if (matchMin != null) match.minInputPerM = matchMin;
-  if (matchMax != null) match.maxInputPerM = matchMax;
-  const ex = splitPatterns(f.excludePatterns);
-  if (f.excludePatternsTouched) match.exclude = ex;
-  if (f.matchExcludeTiers.length) match.excludeTiers = f.matchExcludeTiers;
-  if (Object.keys(match).length > 0) policy.match = match;
-  policy.selection = f.selection;
-  const weights = f.weights
-    .map((w) => ({ pattern: w.pattern.trim(), weight: Math.max(1, Math.round(Number(w.weight) || 1)) }))
-    .filter((w) => w.pattern);
-  if (weights.length) policy.weights = weights;
-  return policy;
+  const members = f.members
+    .map((m) => {
+      const rule: Record<string, unknown> = { pattern: m.pattern.trim() };
+      if (m.weight != null) rule.weight = Math.max(1, Math.round(m.weight));
+      const map: Record<string, string> = {};
+      for (const k of EFFORT_LEVELS) if (m.effortMap[k]) map[k] = m.effortMap[k];
+      if (Object.keys(map).length) rule.effortMap = map;
+      return rule;
+    })
+    .filter((r) => (r.pattern as string).length > 0);
+  return { members, selection: f.selection };
 };
 
 const REASON_LABEL_KEY: Record<string, string> = {
@@ -157,7 +142,7 @@ const ProviderLogo: React.FC<{ providerId: string; logoMap: Record<string, strin
   }
   return (
     <img
-      src={`/api/ui/catalog/logo?url=${encodeURIComponent(url)}`}
+      src={`/api/admin/catalog/logo?url=${encodeURIComponent(url)}`}
       width={size}
       height={size}
       alt={providerId}
@@ -172,17 +157,34 @@ export const RulesPage: React.FC = () => {
   const { t } = useI18n();
   const toast = useToast();
   const [forms, setForms] = useState<Record<Tier, TierPolicyForm>>({
-    lite: defaultFormFor('lite'),
-    plus: defaultFormFor('plus'),
-    pro: defaultFormFor('pro'),
-    ultra: defaultFormFor('ultra'),
+    lite: defaultFormFor(),
+    plus: defaultFormFor(),
+    pro: defaultFormFor(),
+    ultra: defaultFormFor(),
   });
   // tiers.exclude (GLOBAL denylist) has no card on this page — it is edited on
   // the raw-YAML page. It is still round-tripped here because the backend
   // replaces the whole `tiers` object on save (omitting it would wipe it).
   const [globalExclude, setGlobalExclude] = useState('');
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+  const [savingTier, setSavingTier] = useState<Tier | null>(null);
+  const [pendingSaveTier, setPendingSaveTier] = useState<Tier | null>(null);
+  const [memberDrafts, setMemberDrafts] = useState<Record<Tier, string>>({ lite: '', plus: '', pro: '', ultra: '' });
+  const [mapTarget, setMapTarget] = useState<{ tier: Tier; index: number } | null>(null);
+  const [saveWarnings, setSaveWarnings] = useState<
+    { kind: string; tiers?: string[]; count?: number; tier?: string; pattern?: string }[] | null
+  >(null);
+  const [memberFilters, setMemberFilters] = useState<Record<Tier, string>>({ lite: '', plus: '', pro: '', ultra: '' });
+  // HTML5 drag-sort: armedDrag = `${tier}:${i}` while the grip is held (the
+  // row becomes draggable only then, so inputs/buttons keep normal pointer
+  // behaviour); dragMember tracks the in-flight row for live reorder.
+  const [armedDrag, setArmedDrag] = useState<string | null>(null);
+  const [dragMember, setDragMember] = useState<{ tier: Tier; index: number } | null>(null);
+  const [pickerTier, setPickerTier] = useState<Tier | null>(null);
+  const [pickerQuery, setPickerQuery] = useState('');
+  const [pickerSelected, setPickerSelected] = useState<string[]>([]);
+  const [pickerTierFilter, setPickerTierFilter] = useState('');
+  const [gatewayModels, setGatewayModels] = useState<{ id: string; owned_by: string; tier?: string }[]>([]);
   const [pools, setPools] = useState<Record<string, TierPoolInfo>>({});
   const [poolsLive, setPoolsLive] = useState<Record<string, TierPoolInfo>>({});
   const [poolsError, setPoolsError] = useState<string | null>(null);
@@ -193,7 +195,7 @@ export const RulesPage: React.FC = () => {
   const [poolsLoadingMode, setPoolsLoadingMode] = useState<'preview' | 'live' | null>(null);
   const [poolsAt, setPoolsAt] = useState<number | null>(null);
   const [poolsLiveAt, setPoolsLiveAt] = useState<number | null>(null);
-  useBodyScrollLock(!!poolModalTier);
+  useBodyScrollLock(!!poolModalTier || !!mapTarget || !!saveWarnings || !!pickerTier);
 
   const buildTiersPayload = useCallback((): Record<string, unknown> => {
     const tiers: Record<string, unknown> = {};
@@ -209,7 +211,7 @@ export const RulesPage: React.FC = () => {
 
   // Pool numbers = EPHEMERAL preview computed from the current FORM state
   // (server-side pure projection, live pools untouched). Real membership is
-  // rewritten only by handleSave → applyTierConfigNow commit.
+  // rewritten only by a per-tier save → applyTierConfigNow commit.
   //
   // The card footer count is driven by `poolsLive` (committed state) — what
   // routing will actually use after the next save — NOT by `pools` (the form
@@ -269,10 +271,10 @@ export const RulesPage: React.FC = () => {
         const cfg = await api.getConfig();
         const tiers = cfg?.tiers || {};
         setForms({
-          lite: formFromPolicy('lite', tiers.lite),
-          plus: formFromPolicy('plus', tiers.plus),
-          pro: formFromPolicy('pro', tiers.pro),
-          ultra: formFromPolicy('ultra', tiers.ultra),
+          lite: formFromPolicy(tiers.lite),
+          plus: formFromPolicy(tiers.plus),
+          pro: formFromPolicy(tiers.pro),
+          ultra: formFromPolicy(tiers.ultra),
         });
         setGlobalExclude((tiers.exclude || []).join('\n'));
         await loadPools();
@@ -289,23 +291,174 @@ export const RulesPage: React.FC = () => {
   const updateForm = (tier: Tier, patch: Partial<TierPolicyForm>) =>
     setForms((prev) => ({ ...prev, [tier]: { ...prev[tier], ...patch } }));
 
-  // Per-tier reset: restore suggested defaults (form-local until saved).
-  const resetTier = (tier: Tier) => setForms((prev) => ({ ...prev, [tier]: defaultFormFor(tier) }));
+  /* ─── member-list editing ─────────────────────────────────── */
 
-  const handleSave = async () => {
-    setSaving(true);
+  const addMember = (tier: Tier) => {
+    const pattern = memberDrafts[tier].trim();
+    if (!pattern) return;
+    setForms((prev) => ({
+      ...prev,
+      [tier]: { ...prev[tier], members: [...prev[tier].members, { pattern, effortMap: {} }] },
+    }));
+    setMemberDrafts((prev) => ({ ...prev, [tier]: '' }));
+  };
+
+  /** Change a member rule's weight: ≥ 2 is stored; 1 / blank = default (not written). */
+  const updateWeight = (tier: Tier, index: number, raw: string) => {
+    const n = Math.round(Number(raw));
+    setForms((prev) => {
+      const members = [...prev[tier].members];
+      if (!members[index]) return prev;
+      members[index] = { ...members[index] };
+      if (!Number.isFinite(n) || n <= 1) delete members[index].weight;
+      else members[index].weight = n;
+      return { ...prev, [tier]: { ...prev[tier], members } };
+    });
+  };
+
+  /** Filtered view of a tier's members (edit actions still target the real indices). */
+  const visibleMembers = (tier: Tier) => {
+    const q = memberFilters[tier].trim().toLowerCase();
+    const rows = forms[tier].members.map((m, idx) => ({ m, idx }));
+    return q ? rows.filter(({ m }) => m.pattern.toLowerCase().includes(q)) : rows;
+  };
+
+  /** idx → effective chain position (weight desc, then list order) — mirrors the backend sort. */
+  const chainPositions = (tier: Tier) => {
+    const pos = new Map<number, number>();
+    forms[tier].members
+      .map((m, idx) => ({ m, idx }))
+      .sort((a, b) => (b.m.weight ?? 1) - (a.m.weight ?? 1) || a.idx - b.idx)
+      .forEach(({ idx }, n) => pos.set(idx, n + 1));
+    return pos;
+  };
+
+  /** Model picker (mirrors the API-key access picker): registered models only. */
+  const pickerModels = () =>
+    gatewayModels.filter((m) => m.owned_by !== 'opencode-router'); // virtual auto* ids are not real members
+
+  const openModelPicker = (tier: Tier) => {
+    setPickerTier(tier);
+    setPickerQuery('');
+    setPickerSelected([]);
+    setPickerTierFilter('');
+    if (gatewayModels.length === 0) {
+      api.listGatewayModels().then(setGatewayModels).catch(() => {});
+    }
+  };
+
+  const togglePickedModel = (id: string) =>
+    setPickerSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+
+  const confirmModelPicker = () => {
+    const tier = pickerTier;
+    const selected = pickerSelected;
+    setPickerTier(null);
+    if (!tier || selected.length === 0) return;
+    setForms((prev) => {
+      const existing = new Set(prev[tier].members.map((m) => m.pattern));
+      const additions = selected.filter((id) => !existing.has(id)).map((id) => ({ pattern: id, effortMap: {} }));
+      return { ...prev, [tier]: { ...prev[tier], members: [...prev[tier].members, ...additions] } };
+    });
+  };
+
+  const removeMember = (tier: Tier, index: number) =>
+    setForms((prev) => ({
+      ...prev,
+      [tier]: { ...prev[tier], members: prev[tier].members.filter((_, i) => i !== index) },
+    }));
+
+  const moveMember = (tier: Tier, index: number, dir: -1 | 1) =>
+    setForms((prev) => {
+      const members = [...prev[tier].members];
+      const to = index + dir;
+      if (to < 0 || to >= members.length) return prev;
+      [members[index], members[to]] = [members[to], members[index]];
+      return { ...prev, [tier]: { ...prev[tier], members } };
+    });
+
+  const reorderMember = (tier: Tier, from: number, to: number) =>
+    setForms((prev) => {
+      const members = [...prev[tier].members];
+      if (from === to || to < 0 || to >= members.length) return prev;
+      const [row] = members.splice(from, 1);
+      members.splice(to, 0, row);
+      return { ...prev, [tier]: { ...prev[tier], members } };
+    });
+
+  const moveMemberTop = (tier: Tier, index: number) =>
+    setForms((prev) => {
+      const members = [...prev[tier].members];
+      if (index <= 0) return prev;
+      const [row] = members.splice(index, 1);
+      members.unshift(row);
+      return { ...prev, [tier]: { ...prev[tier], members } };
+    });
+
+  const updateEffortMap = (tier: Tier, index: number, level: string, value: string) =>
+    setForms((prev) => {
+      const members = [...prev[tier].members];
+      if (!members[index]) return prev;
+      const effortMap = { ...members[index].effortMap };
+      if (value) effortMap[level] = value;
+      else delete effortMap[level];
+      members[index] = { ...members[index], effortMap };
+      return { ...prev, [tier]: { ...prev[tier], members } };
+    });
+
+  const clearEffortMap = (tier: Tier, index: number) =>
+    setForms((prev) => {
+      const members = [...prev[tier].members];
+      if (!members[index]) return prev;
+      members[index] = { ...members[index], effortMap: {} };
+      return { ...prev, [tier]: { ...prev[tier], members } };
+    });
+
+  /** Save ONE tier only: merge over the LATEST disk state so other tiers'
+   *  unsaved drafts are never committed by a single-tier save. */
+  const doSaveTier = async (tier: Tier) => {
+    setSavingTier(tier);
     try {
-      // Tiers whose fields are all blank are omitted → the backend's
-      // whole-object `tiers` replacement drops their policies (clear = remove).
-      await api.saveConfig({ tiers: buildTiersPayload() });
-      toast.success(t('tierPolicy.saved'));
+      const latest = await api.getConfig();
+      const tiersPayload: Record<string, unknown> = { ...(latest?.tiers || {}) };
+      tiersPayload[tier] = buildTierPolicy(forms[tier]);
+      const ex = splitPatterns(globalExclude);
+      if (ex.length) tiersPayload.exclude = ex;
+      else delete tiersPayload.exclude;
+      await api.saveConfig({ tiers: tiersPayload });
+      const meta = TIERS.find((x) => x.key === tier);
+      toast.success(t('tierPolicy.savedTier', { tier: meta ? t(meta.labelKey) : tier }));
+      setSaveWarnings(null);
       await loadPools();
       await loadLivePools();
     } catch (err: any) {
       toast.error(t('common.saveFailed') + err.message);
     } finally {
-      setSaving(false);
+      setSavingTier(null);
     }
+  };
+
+  const runCheck = async (): Promise<any[]> => {
+    try {
+      // Dry-run check first (overlap / orphan warnings, non-blocking).
+      const check = await api.checkTiers(buildTiersPayload());
+      return check?.warnings || [];
+    } catch {
+      // The check endpoint is best-effort — never block saving on it.
+      return [];
+    }
+  };
+
+  const saveTier = async (tier: Tier) => {
+    setSavingTier(tier);
+    const warnings = await runCheck();
+    setSavingTier(null);
+    if (warnings.length > 0) {
+      setPendingSaveTier(tier);
+      setSaveWarnings(warnings);
+      return;
+    }
+    await doSaveTier(tier);
   };
 
   const openPoolModal = (tier: Tier) => {
@@ -317,7 +470,7 @@ export const RulesPage: React.FC = () => {
     ensureLogos();
   };
 
-  /** Add a model to the GLOBAL denylist (exact id) — writes tiers.exclude (ADR-0012: its own field). */
+  /** Add a model to the GLOBAL denylist (exact id) — writes tiers.exclude (its own field). */
   const addToExclude = (modelId: string) => {
     setGlobalExclude((prev) => {
       const lines = splitPatterns(prev);
@@ -382,26 +535,57 @@ export const RulesPage: React.FC = () => {
   }, [modalVisiblePool.length, scrollTop, viewportH]);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', height: '100%' }}>
       <div className="card">
         <div className="card-header">
           <div className="card-title">
             <Zap size={18} color="var(--accent)" />
             <span>{t('tierPolicy.title')}</span>
           </div>
-          <button className="btn btn-primary" onClick={handleSave} disabled={saving || loading}>
-            <Save size={13} />
-            <span>{saving ? t('common.loading') : t('tierPolicy.saveBtn')}</span>
-          </button>
+          {/* Quick-nav chips: jump to the corresponding tier card below */}
+          <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+            {TIERS.map(({ key: navTier, labelKey: navLabel, icon: NavIcon, color: navColor }) => (
+              <button
+                key={navTier}
+                className="btn"
+                style={{ padding: '4px 10px', fontSize: '11px', color: navColor }}
+                onClick={() => document.getElementById(`tier-card-${navTier}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+              >
+                <NavIcon size={12} />
+                <span>{t(navLabel)}</span>
+              </button>
+            ))}
+          </div>
+          
         </div>
         <p style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: '1.6', margin: 0, marginBottom: '6px', whiteSpace: 'pre-line' }}>{t('tierPolicy.desc')}</p>
         <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginTop: '6px' }}>{t('tierPolicy.defaultsHint')}</div>
       </div>
 
-      {/* One policy card per tier */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: '16px' }}>
+      {/* One policy card per tier. This grid is the page's INTERNAL scroll
+          region (same pattern as logs/captures): the header card above sits
+          outside it in normal flow, so it stays fixed while only the cards
+          scroll — no sticky/fixed needed. alignContent:start keeps rows at
+          content height (no stretch-to-fill on tall viewports). */}
+      {/* Responsive 1→3 columns: the column floor is max(480px, ⅓ of the
+          container), so wide viewports get exactly 3 columns, mid screens 2,
+          below ~1000px a single column — and a card is never squeezed below
+          480px (member rows keep usable model-id space). */}
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflowY: 'auto',
+          alignContent: 'start',
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(max(480px, calc(100% / 3 - 11px)), 1fr))',
+          gap: '16px',
+          padding: '0 4px 12px',
+        }}
+      >
         {TIERS.map(({ key: tier, labelKey, descKey, icon: Icon, color }) => {
           const f = forms[tier];
+          const pos = chainPositions(tier);
           // Card footer = EPHEMERAL preview from the current form (debounced
           // 500ms via loadPools). Updates as the user edits, so the count
           // reflects "what would happen if I saved now" — not the committed
@@ -411,6 +595,7 @@ export const RulesPage: React.FC = () => {
           return (
             <div
               key={tier}
+              id={`tier-card-${tier}`}
               style={{
                 background: 'var(--card-bg)',
                 border: '1px solid var(--card-border)',
@@ -429,159 +614,271 @@ export const RulesPage: React.FC = () => {
                 <button
                   className="btn"
                   style={{ padding: '3px 10px', fontSize: '11px', flexShrink: 0 }}
-                  title={t('tierPolicy.resetHint')}
-                  onClick={() => resetTier(tier)}
+                  disabled={savingTier !== null || loading}
+                  onClick={() => void saveTier(tier)}
                 >
-                  <RotateCcw size={11} />
-                  <span>{t('tierPolicy.resetBtn')}</span>
+                  <Save size={11} />
+                  <span>{savingTier === tier ? t('common.loading') : t('tierPolicy.saveTierBtn')}</span>
                 </button>
+                
               </div>
 
-              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.5, marginTop: '-6px' }}>{t(descKey)}</div>
+              {/* Single line + ellipsis (full text on hover): every card shows
+                  exactly one desc line, so member sections stay aligned without
+                  a 2-line reserve. */}
+              <div
+                title={t(descKey)}
+                style={{
+                  fontSize: '11px',
+                  color: 'var(--text-dim)',
+                  lineHeight: 1.5,
+                  marginTop: '-6px',
+                  minHeight: '17px',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {t(descKey)}
+              </div>
 
-              {/* Smart match — classification rules that put models INTO this
-                  tier at boot (blank fields = built-in baseline, shown as
-                  placeholders). Takes effect on gateway restart. */}
+              {/* Member list — the ONLY pool-membership source. List order =
+                  priority chain; higher weight overrides the order. */}
               <div>
-                <label style={labelStyle}>{t('tierPolicy.matchTitle')}</label>
-                <textarea
-                  rows={2}
-                  className="input"
-                  style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '12px', resize: 'vertical' }}
-                  placeholder={(DEFAULT_TIER_MATCH[tier].patterns || []).join('\n')}
-                  value={f.matchPatterns}
-                  onChange={(e) => updateForm(tier, { matchPatterns: e.target.value, matchPatternsTouched: true })}
-                />
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginTop: '6px' }}>
-                  <input
-                    type="number"
-                    step="any"
-                    min={0}
-                    className="input"
-                    placeholder={t('tierPolicy.minInputPrice')}
-                    value={f.matchMinInputPerM}
-                    onChange={(e) => updateForm(tier, { matchMinInputPerM: e.target.value })}
-                  />
-                  <input
-                    type="number"
-                    step="any"
-                    min={0}
-                    className="input"
-                    placeholder={t('tierPolicy.maxInputPrice')}
-                    value={f.matchMaxInputPerM}
-                    onChange={(e) => updateForm(tier, { matchMaxInputPerM: e.target.value })}
-                  />
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+                  <label style={{ ...labelStyle, marginBottom: 0 }}>{t('tierPolicy.membersTitle')}</label>
+                  <span style={{ fontSize: '10px', color: 'var(--text-dim)' }}>{t('tierPolicy.membersCount', { n: f.members.length })}</span>
                 </div>
-                <label style={{ ...labelStyle, marginTop: '8px' }}>{t('tierPolicy.tierExcludeLabel')}</label>
-                <textarea
-                  rows={2}
+                {/* Always rendered (not just >8 members): keeps the pre-list
+                    stack identical across all four cards so sections align.
+                    Filtering still works for short lists, it's just a no-op. */}
+                <input
+                  type="text"
                   className="input"
-                  style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '12px', resize: 'vertical' }}
-                  placeholder={t('tierPolicy.excludePlaceholder')}
-                  value={f.excludePatterns}
-                  onChange={(e) => updateForm(tier, { excludePatterns: e.target.value, excludePatternsTouched: true })}
+                  style={{ marginTop: '6px', fontSize: '11px', padding: '4px 8px' }}
+                  placeholder={t('tierPolicy.filterPlaceholder')}
+                  value={memberFilters[tier]}
+                  onChange={(e) => setMemberFilters((prev) => ({ ...prev, [tier]: e.target.value }))}
                 />
-                <label style={{ ...labelStyle, marginTop: '8px' }}>{t('tierPolicy.excludeTiersLabel')}</label>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                  {TIERS.filter((x) => x.key !== tier).map(({ key: other, labelKey }) => {
-                    const on = f.matchExcludeTiers.includes(other);
-                    return (
-                      <button
-                        key={other}
-                        type="button"
-                        className={on ? 'btn btn-primary' : 'btn'}
-                        style={{ fontSize: '12px', padding: '5px 12px', whiteSpace: 'nowrap' }}
-                        title={t('tierPolicy.excludeTiersHint')}
-                        onClick={() =>
-                          updateForm(tier, {
-                            matchExcludeTiers: on
-                              ? f.matchExcludeTiers.filter((x) => x !== other)
-                              : [...f.matchExcludeTiers, other],
-                          })
-                        }
+                {/* Fixed-height member list: keeps all four tier cards
+                    structurally equal so footers align (short pools just
+                    leave inner whitespace instead of stretching the card). */}
+                <div
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '6px',
+                    marginTop: '6px',
+                    height: '360px',
+                    overflowY: 'auto',
+                    paddingRight: f.members.length > 8 ? '4px' : undefined,
+                  }}
+                >
+                  {/* Stable row keys (pattern + occurrence, NOT index): index
+                      keys remount every shifted row on live reorder, detaching
+                      the dragged DOM node mid-drag so `dragend` never fires and
+                      the row stays dimmed. Occurrence-stable keys let React MOVE
+                      the same node instead, keeping dragend alive. */}
+                  {(() => {
+                    const seen = new Map<string, number>();
+                    return visibleMembers(tier).map(({ m, idx: i }) => {
+                      const occ = seen.get(m.pattern) ?? 0;
+                      seen.set(m.pattern, occ + 1);
+                      const mapped = Object.values(m.effortMap).filter(Boolean).length;
+                      return (
+                      <div
+                        key={`${m.pattern}#${occ}`}
+                        draggable={armedDrag === `${tier}:${i}`}
+                        onDragStart={(e) => {
+                          setDragMember({ tier, index: i });
+                          e.dataTransfer.effectAllowed = 'move';
+                          e.dataTransfer.setData('text/plain', m.pattern);
+                        }}
+                        onDragOver={(e) => {
+                          if (!dragMember || dragMember.tier !== tier || dragMember.index === i) return;
+                          e.preventDefault();
+                          e.dataTransfer.dropEffect = 'move';
+                          reorderMember(tier, dragMember.index, i);
+                          setDragMember({ tier, index: i });
+                        }}
+                        onDrop={(e) => e.preventDefault()}
+                        onDragEnd={() => {
+                          setArmedDrag(null);
+                          setDragMember(null);
+                        }}
+                        onMouseUp={() => setArmedDrag(null)}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          padding: '5px 8px',
+                          border: '1px solid var(--card-border)',
+                          borderRadius: 8,
+                          flexShrink: 0,
+                          opacity: dragMember?.tier === tier && dragMember.index === i ? 0.4 : undefined,
+                        }}
                       >
-                        {on ? <X size={12} /> : <Plus size={12} />}
-                        <span>{t(labelKey)}</span>
-                      </button>
+                        {/* grip + index in a tight sub-group: the parent row's
+                            6px gap plus the right-aligned index's empty left
+                            space made them look disconnected (~16px apart) */}
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '2px', flexShrink: 0 }}>
+                          <span
+                            onMouseDown={() => setArmedDrag(`${tier}:${i}`)}
+                            title={t('tierPolicy.dragSort')}
+                            style={{ cursor: 'grab', color: 'var(--text-dim)', display: 'inline-flex', flexShrink: 0 }}
+                          >
+                            <GripVertical size={12} />
+                          </span>
+                          <span
+                            title={t('tierPolicy.memberWeightHint')}
+                            style={{
+                              minWidth: '22px',
+                              flexShrink: 0,
+                              fontSize: '10px',
+                              fontFamily: 'JetBrains Mono, monospace',
+                              color: 'var(--text-dim)',
+                              textAlign: 'right',
+                            }}
+                          >
+                            #{pos.get(i) ?? ''}
+                          </span>
+                        </span>
+                        <span
+                          title={m.pattern}
+                          style={{
+                            flex: 1,
+                            minWidth: 0,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                            fontFamily: 'JetBrains Mono, monospace',
+                            fontSize: '12px',
+                            fontWeight: 600,
+                          }}
+                        >
+                          {m.pattern}
+                        </span>
+                        <input
+                          type="number"
+                          min={1}
+                          step={1}
+                          className="input"
+                          title={t('tierPolicy.memberWeightHint')}
+                          style={{ width: '52px', padding: '3px 6px', fontSize: '11px', textAlign: 'center', flexShrink: 0 }}
+                          value={m.weight ?? 1}
+                          onChange={(e) => updateWeight(tier, i, e.target.value)}
+                        />
+                        <button
+                          className="btn"
+                          style={{ padding: '2px 8px', fontSize: '10px', display: 'inline-flex', alignItems: 'center', gap: 4, flexShrink: 0 }}
+                          title={t('tierPolicy.effortMapHint')}
+                          onClick={() => setMapTarget({ tier, index: i })}
+                        >
+                          <ArrowRightLeft size={10} />
+                          <span>{mapped > 0 ? `${t('tierPolicy.effortMapBtn')} ${mapped}` : t('tierPolicy.effortMapBtn')}</span>
+                        </button>
+                        <button
+                          className="btn"
+                          style={{ padding: '3px 6px', flexShrink: 0 }}
+                          disabled={i === 0}
+                          title={t('tierPolicy.moveTop')}
+                          onClick={() => moveMemberTop(tier, i)}
+                        >
+                          <ArrowUpToLine size={11} />
+                        </button>
+                        <button
+                          className="btn"
+                          style={{ padding: '3px 6px', flexShrink: 0 }}
+                          disabled={i === 0}
+                          title={t('tierPolicy.moveUp')}
+                          onClick={() => moveMember(tier, i, -1)}
+                        >
+                          <ArrowUp size={11} />
+                        </button>
+                        <button
+                          className="btn"
+                          style={{ padding: '3px 6px', flexShrink: 0 }}
+                          disabled={i === f.members.length - 1}
+                          title={t('tierPolicy.moveDown')}
+                          onClick={() => moveMember(tier, i, 1)}
+                        >
+                          <ArrowDown size={11} />
+                        </button>
+                        <button
+                          className="btn"
+                          style={{ padding: '3px 6px', flexShrink: 0 }}
+                          title={t('tierPolicy.removeMember')}
+                          onClick={() => removeMember(tier, i)}
+                        >
+                          <X size={11} />
+                        </button>
+                      </div>
                     );
-                  })}
+                    });
+                  })()}
+                  {/* !loading: forms start as empty arrays before the config
+                      fetch resolves — don't flash a false "empty pool" error */}
+                  {!loading && f.members.length === 0 && (
+                    <div style={{ fontSize: '11px', color: 'var(--accent-rose)', lineHeight: 1.5 }}>{t('tierPolicy.membersEmpty')}</div>
+                  )}
+                  {f.members.length > 0 && visibleMembers(tier).length === 0 && (
+                    <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('common.noResults')}</div>
+                  )}
                 </div>
+                <div style={{ display: 'flex', gap: '8px', marginTop: '6px' }}>
+                  <input
+                    type="text"
+                    className="input"
+                    style={{ flex: 1, fontFamily: 'JetBrains Mono, monospace', fontSize: '11px', padding: '4px 8px' }}
+                    placeholder={t('tierPolicy.addMemberPlaceholder')}
+                    value={memberDrafts[tier]}
+                    onChange={(e) => setMemberDrafts((prev) => ({ ...prev, [tier]: e.target.value }))}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        addMember(tier);
+                      }
+                    }}
+                  />
+                  <button className="btn" style={{ padding: '4px 10px', fontSize: '11px' }} onClick={() => addMember(tier)}>
+                    <Plus size={11} />
+                    <span>{t('tierPolicy.addMemberBtn')}</span>
+                  </button>
+                  <button className="btn" style={{ padding: '4px 10px', fontSize: '11px' }} onClick={() => openModelPicker(tier)}>
+                    <Search size={11} />
+                    <span>{t('tierPolicy.pickModelBtn')}</span>
+                  </button>
+                </div>
+                <div style={{ fontSize: '10px', color: 'var(--text-dim)', lineHeight: 1.5, marginTop: '6px' }}>{t('tierPolicy.membersHint')}</div>
               </div>
 
-              {/* Selection strategy + weights */}
+              {/* Selection strategy (weight comes from the member rules) */}
               <div>
                 <label style={labelStyle}>{t('tierPolicy.selection')}</label>
-                <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+                <div style={{ display: 'flex', gap: '8px' }}>
                   {(['priority', 'weighted', 'round_robin'] as SelectionStrategy[]).map((s) => (
                     <button
                       key={s}
                       type="button"
                       className={f.selection === s ? 'btn btn-primary' : 'btn'}
-                      style={{ fontSize: '12px', flex: 1 }}
+                      style={{ fontSize: '11px', padding: '5px 8px', flex: 1 }}
                       onClick={() => updateForm(tier, { selection: s })}
                     >
                       {t(s === 'priority' ? 'tierPolicy.selPriority' : s === 'weighted' ? 'tierPolicy.selWeighted' : 'tierPolicy.selRoundRobin')}
                     </button>
                   ))}
                 </div>
-
-                <label style={labelStyle}>{t('tierPolicy.weightsTitle')}</label>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  {f.weights.map((w, i) => (
-                    <div key={i} style={{ display: 'flex', gap: '8px' }}>
-                      <input
-                        type="text"
-                        className="input"
-                        style={{ flex: 1, fontFamily: 'JetBrains Mono, monospace', fontSize: '12px' }}
-                        placeholder={t('tierPolicy.weightPatternPlaceholder')}
-                        value={w.pattern}
-                        onChange={(e) => {
-                          const weights = [...f.weights];
-                          weights[i] = { ...weights[i], pattern: e.target.value };
-                          updateForm(tier, { weights });
-                        }}
-                      />
-                      <input
-                        type="number"
-                        min={1}
-                        className="input"
-                        style={{ width: '84px' }}
-                        placeholder={t('tierPolicy.weightPlaceholder')}
-                        value={w.weight}
-                        onChange={(e) => {
-                          const weights = [...f.weights];
-                          weights[i] = { ...weights[i], weight: e.target.value };
-                          updateForm(tier, { weights });
-                        }}
-                      />
-                      <button
-                        className="btn"
-                        style={{ padding: '4px 8px' }}
-                        onClick={() => updateForm(tier, { weights: f.weights.filter((_, j) => j !== i) })}
-                      >
-                        <X size={12} />
-                      </button>
-                    </div>
-                  ))}
-                  <div>
-                    <button
-                      className="btn"
-                      style={{ padding: '4px 10px', fontSize: '11px' }}
-                      onClick={() => updateForm(tier, { weights: [...f.weights, { pattern: '', weight: '1' }] })}
-                    >
-                      <Plus size={11} />
-                      <span>{t('tierPolicy.addWeight')}</span>
-                    </button>
-                  </div>
-                </div>
                 <div style={{ fontSize: '10px', color: 'var(--text-dim)', marginTop: '4px' }}>{t('tierPolicy.selectionHint')}</div>
               </div>
 
-              {/* Candidate pool summary → opens the detail modal */}
+              {/* Candidate pool summary → opens the detail modal.
+                  marginTop:auto pins it to the card bottom so the footers of
+                  all four tier cards align regardless of member-list length. */}
               <div
                 style={{
                   borderTop: '1px solid var(--card-border)',
                   paddingTop: '12px',
+                  marginTop: 'auto',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'space-between',
@@ -1004,6 +1301,352 @@ export const RulesPage: React.FC = () => {
             </div>
           </>,
           document.body
+        )}
+
+      {/* Model picker — add registered models (exact ids) as member rules. */}
+      {pickerTier &&
+        createPortal(
+          <div
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(0, 0, 0, 0.85)',
+              zIndex: 100,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '16px',
+            }}
+            onClick={() => setPickerTier(null)}
+          >
+            <div
+              className="card"
+              style={{
+                width: '100%',
+                maxWidth: '560px',
+                maxHeight: '78vh',
+                padding: '22px',
+                boxShadow: '0 20px 40px rgba(0,0,0,0.6)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '12px',
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h3 style={{ fontSize: '14px', fontWeight: 800, color: 'var(--text-main)', margin: 0 }}>{t('tierPolicy.pickModelTitle')}</h3>
+                <button
+                  onClick={() => setPickerTier(null)}
+                  style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', fontSize: '18px', cursor: 'pointer', lineHeight: 1 }}
+                >
+                  ✕
+                </button>
+              </div>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <input
+                  type="text"
+                  className="input"
+                  style={{ fontSize: '12px', flex: 1, minWidth: 0 }}
+                  placeholder={t('tierPolicy.pickModelSearch')}
+                  value={pickerQuery}
+                  onChange={(e) => setPickerQuery(e.target.value)}
+                />
+                {/* Tier filter labels follow the tier cards (t(labelKey));
+                    row badges below use the same mapping so filter and rows
+                    stay visually consistent. */}
+                <Combobox
+                  value={pickerTierFilter}
+                  onChange={setPickerTierFilter}
+                  options={[
+                    { value: '', label: t('tierPolicy.pickModelTierAll') },
+                    ...TIERS.map((x) => ({ value: x.key as string, label: t(x.labelKey) })),
+                  ]}
+                  style={{ width: '128px', fontSize: '12px', padding: '5px 10px', flexShrink: 0 }}
+                />
+              </div>
+              <div style={{ overflowY: 'auto', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                {(() => {
+                  const q = pickerQuery.trim().toLowerCase();
+                  const models = pickerModels().filter(
+                    (m) => (!pickerTierFilter || m.tier === pickerTierFilter) && (!q || m.id.toLowerCase().includes(q)),
+                  );
+                  if (models.length === 0) {
+                    return <div style={{ fontSize: '12px', color: 'var(--text-dim)', padding: '8px 2px' }}>{t('common.noResults')}</div>;
+                  }
+                  return models.map((m) => {
+                    const already = forms[pickerTier].members.some((x) => x.pattern === m.id);
+                    const selected = pickerSelected.includes(m.id);
+                    const rowTierMeta = TIERS.find((x) => x.key === m.tier);
+                    return (
+                      <button
+                        key={m.id}
+                        type="button"
+                        disabled={already}
+                        onClick={() => togglePickedModel(m.id)}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                          padding: '6px 10px',
+                          borderRadius: 6,
+                          border: selected ? '1px solid var(--accent)' : '1px solid transparent',
+                          background: selected ? 'var(--card-border)' : 'transparent',
+                          color: already ? 'var(--text-dim)' : 'var(--text-main)',
+                          cursor: already ? 'default' : 'pointer',
+                          textAlign: 'left',
+                          fontFamily: "'JetBrains Mono', monospace",
+                          fontSize: '12px',
+                          opacity: already ? 0.55 : 1,
+                        }}
+                      >
+                        <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.id}</span>
+                        {m.tier && (
+                          <span style={{ fontSize: '10px', color: 'var(--text-dim)', flexShrink: 0 }}>
+                            {rowTierMeta ? t(rowTierMeta.labelKey) : m.tier}
+                          </span>
+                        )}
+                        <span style={{ fontSize: '10px', color: 'var(--text-dim)', flexShrink: 0 }}>
+                          {already ? t('tierPolicy.pickModelAlreadyAdded') : selected ? '✓' : ''}
+                        </span>
+                      </button>
+                    );
+                  });
+                })()}
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                <button className="btn" style={{ padding: '5px 14px', fontSize: '12px' }} onClick={() => setPickerTier(null)}>
+                  {t('common.cancel')}
+                </button>
+                <button
+                  className="btn btn-primary"
+                  style={{ padding: '5px 14px', fontSize: '12px' }}
+                  disabled={pickerSelected.length === 0}
+                  onClick={confirmModelPicker}
+                >
+                  {t('tierPolicy.pickModelAdd', { n: pickerSelected.length })}
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
+
+      {/* thinking-level map editor — one row per client level. */}
+      {mapTarget &&
+        (() => {
+          const row = forms[mapTarget.tier].members[mapTarget.index];
+          const tierMeta = TIERS.find((x) => x.key === mapTarget.tier);
+          if (!row || !tierMeta) return null;
+          return createPortal(
+            <div
+              style={{
+                position: 'fixed',
+                inset: 0,
+                background: 'rgba(0, 0, 0, 0.85)',
+                zIndex: 100,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: '16px',
+              }}
+              onClick={() => setMapTarget(null)}
+            >
+              <div
+                className="card"
+                style={{
+                  width: '100%',
+                  maxWidth: '460px',
+                  padding: '22px',
+                  boxShadow: '0 20px 40px rgba(0,0,0,0.6)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '12px',
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+                  <h3 style={{ fontSize: '14px', fontWeight: 800, color: 'var(--text-main)', margin: 0 }}>
+                    {t('tierPolicy.effortMapEditTitle')}
+                  </h3>
+                  <button
+                    onClick={() => setMapTarget(null)}
+                    style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', fontSize: '18px', cursor: 'pointer', lineHeight: 1, flexShrink: 0 }}
+                  >
+                    ✕
+                  </button>
+                </div>
+                <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>{t('tierPolicy.effortMapHint')}</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {/* Table header band: left = owning tier, right = model id
+                      (moved here from the dialog title so the header carries
+                      the full tier+model context the title used to lack). */}
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: EFFORT_MAP_GRID,
+                      columnGap: '10px',
+                      alignItems: 'center',
+                      paddingBottom: '6px',
+                      borderBottom: '1px solid var(--card-border)',
+                    }}
+                  >
+                    <span
+                      style={{
+                        gridColumn: '1 / 3',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '5px',
+                        fontSize: '12px',
+                        fontWeight: 700,
+                        color: tierMeta.color,
+                        overflow: 'hidden',
+                        whiteSpace: 'nowrap',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      <tierMeta.icon size={12} />
+                      <span>{t(tierMeta.labelKey)}</span>
+                    </span>
+                    <span
+                      title={row.pattern}
+                      style={{
+                        fontFamily: 'JetBrains Mono, monospace',
+                        fontSize: '11px',
+                        color: 'var(--text-muted)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {row.pattern}
+                    </span>
+                  </div>
+                  {EFFORT_LEVELS.map((lvl) => (
+                    <div
+                      key={lvl}
+                      style={{ display: 'grid', gridTemplateColumns: EFFORT_MAP_GRID, columnGap: '10px', alignItems: 'center' }}
+                    >
+                      <span
+                        title={t(`op.${EFFORT_I18N_KEY[lvl]}`)}
+                        style={{ width: '78px', flexShrink: 0, display: 'flex', alignItems: 'baseline', gap: '4px', overflow: 'hidden' }}
+                      >
+                        <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '12px', color: 'var(--text-muted)', flexShrink: 0 }}>
+                          {lvl}
+                        </span>
+                        <span
+                          style={{
+                            fontSize: '10px',
+                            color: 'var(--text-dim)',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {t(`op.${EFFORT_I18N_KEY[lvl]}`)}
+                        </span>
+                      </span>
+                      <span style={{ color: 'var(--text-dim)', textAlign: 'center' }}>→</span>
+                      <Combobox
+                        value={row.effortMap[lvl] ?? ''}
+                        onChange={(v) => updateEffortMap(mapTarget.tier, mapTarget.index, lvl, v)}
+                        options={[
+                          { value: '', label: t('tierPolicy.effortPassthrough') },
+                          ...effortOptionList(t).filter((o) => o.value !== EFFORT_UNSET),
+                        ]}
+                        style={{ width: '100%', fontSize: '12px', padding: '5px 10px' }}
+                        panelMinWidth={170}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', marginTop: '4px' }}>
+                  <button
+                    className="btn"
+                    style={{ padding: '5px 12px', fontSize: '11px' }}
+                    onClick={() => clearEffortMap(mapTarget.tier, mapTarget.index)}
+                  >
+                    <X size={11} />
+                    <span>{t('tierPolicy.clearEffortMap')}</span>
+                  </button>
+                  <button className="btn btn-primary" style={{ padding: '5px 14px', fontSize: '11px' }} onClick={() => setMapTarget(null)}>
+                    {t('common.confirm')}
+                  </button>
+                </div>
+              </div>
+            </div>,
+            document.body,
+          );
+        })()}
+
+      {/* Pre-save check warnings  — non-blocking, user decides. */}
+      {saveWarnings &&
+        createPortal(
+          <div
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(0, 0, 0, 0.85)',
+              zIndex: 100,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '16px',
+            }}
+            onClick={() => setSaveWarnings(null)}
+          >
+            <div
+              className="card"
+              style={{
+                width: '100%',
+                maxWidth: '560px',
+                maxHeight: '70vh',
+                overflowY: 'auto',
+                padding: '22px',
+                boxShadow: '0 20px 40px rgba(0,0,0,0.6)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '12px',
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h3 style={{ fontSize: '14px', fontWeight: 800, color: 'var(--text-main)', margin: 0 }}>{t('tierPolicy.saveCheckTitle')}</h3>
+                <button
+                  onClick={() => setSaveWarnings(null)}
+                  style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', fontSize: '18px', cursor: 'pointer', lineHeight: 1 }}
+                >
+                  ✕
+                </button>
+              </div>
+              <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{t('tierPolicy.saveCheckIntro')}</div>
+              <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {saveWarnings.map((w, i) => (
+                  <li key={i} style={{ fontSize: '12px', color: 'var(--accent-amber, var(--accent))', lineHeight: 1.5 }}>
+                    {w.kind === 'overlap'
+                      ? t('tierPolicy.saveCheckOverlap', { count: w.count ?? 0, tiers: (w.tiers || []).join(' ↔ ') })
+                      : t('tierPolicy.saveCheckOrphan', { tier: w.tier ?? '', pattern: w.pattern ?? '' })}
+                  </li>
+                ))}
+              </ul>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '4px' }}>
+                <button className="btn" style={{ padding: '5px 14px', fontSize: '12px' }} onClick={() => setSaveWarnings(null)}>
+                  {t('tierPolicy.saveCheckBack')}
+                </button>
+                <button
+                  className="btn btn-primary"
+                  style={{ padding: '5px 14px', fontSize: '12px' }}
+                  onClick={() => {
+                    const target = pendingSaveTier;
+                    setSaveWarnings(null);
+                    if (target) void doSaveTier(target);
+                  }}
+                >
+                  {t('tierPolicy.saveCheckContinue')}
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body,
         )}
     </div>
   );

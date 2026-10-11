@@ -13,7 +13,7 @@ import {
 } from '../observability/upstream-events.js';
 
 /**
- * ADR-0011: Google Generative Language wire (`@ai-sdk/google`) —
+ * Google Generative Language wire (`@ai-sdk/google`) —
  * POST {base}/models/{model}:generateContent with x-goog-api-key.
  *
  * Tools are fully mapped both directions (2026-10): request.tools →

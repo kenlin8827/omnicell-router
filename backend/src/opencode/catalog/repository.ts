@@ -1,4 +1,4 @@
-import { OpenCodeConnector } from '../sync.js';
+import { OpenCodeConnector } from '../connector.js';
 import { listOpenCodeProviders, getProviderNodeById, getOpenCodeConfigPath } from '../user-config.js';
 import { BUILTIN_SOURCE_ID, type CatalogConfig, type CatalogSourceConfig, type SourceMapConfig } from '../../config/types.js';
 import { resolveSources, parseByType, isKnownSourceType, type RemoteSourceDef, type ParsedSource } from './sources/registry.js';

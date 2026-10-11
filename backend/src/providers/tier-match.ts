@@ -6,7 +6,7 @@ import { TiersConfig } from '../config/types.js';
  * Smart-match configuration per tier — the SINGLE basis of candidate-pool
  * membership: patterns claim, price bands bound, exclude vetoes.
  *
- * ADR-0012 removed the residual catch-all tier: all four tiers are configured
+ * removed the residual catch-all tier: all four tiers are configured
  * identically and a model that matches no positive condition becomes
  * `'unclassified'` (joins no pool) instead of silently landing in a tier.
  * There is no dead configuration — every field below is honored for every tier.
@@ -37,12 +37,12 @@ export interface TierMatch {
   maxInputPerM?: number; // price-band ceiling; undefined = open-ended (weak)
   /**
    * Per-tier veto on AUTOMATIC claiming (explicit catalog/jsonc pins bypass it).
-   * A vetoed model falls to the next claimant in the chain — since ADR-0012 it
+   * A vetoed model falls to the next claimant in the chain — now it
    * may end up `'unclassified'` rather than defaulting to a tier.
    */
   exclude?: string[];
   /**
-   * ADR-0012 anchor-exclude: a model matching ANY positive condition of one of
+   * anchor-exclude: a model matching ANY positive condition of one of
    * these tiers may not be AUTO-claimed by THIS tier. It is a convenience veto
    * derived from the other tiers' own patterns / band / flag, so overlapping
    * ranges can be resolved without reordering the chain.
@@ -147,7 +147,7 @@ export function matchesTierConditions(tier: TierLevel, input: TierClassifyInput,
 
 /** Classify a model by the effective match config (see the chain above).
  * Returns `'unclassified'` when nothing claims it — there is no residual tier
- * any more (ADR-0012). Hand-configured models (no captured tierMatch) never
+ * any more. Hand-configured models (no captured tierMatch) never
  * reach this function; explicit pins short-circuit it in the registry. */
 export function classifyTier(input: TierClassifyInput, match: ResolvedTierMatch): PoolMembership {
   const mid = input.modelId.toLowerCase();

@@ -4,6 +4,8 @@ import path from 'node:path';
 import { getAllClientStatuses, setupClient, teardownClient } from '../cli/clients/index.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { resolveTierMatch } from '../providers/tier-match.js';
+import { resolveTierMembers, matchingTiers, MEMBER_TIER_ORDER, asTierLevel } from '../providers/member-match.js';
+import { globMatchAny } from '../utils/glob.js';
 import { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import { Layer2Judge } from '../router/layer2-judge.js';
 import { getRawConfig, loadConfig, saveConfig, saveRawConfig } from '../config/index.js';
@@ -402,8 +404,8 @@ export function registerConsoleRoutes(
     initProxyConfig(loadConfig().proxy);
     orchestrator.getCaptureRecorder().applyConfig(loadConfig().capture);
     orchestrator.getRegistry().applyCombos(loadConfig().combos);
-    orchestrator.getRegistry().applyTierConfigNow(); // tier match/policies commit immediately (no restart)
-    warnOnEmptyTierPools(); // ADR-0012: no residual tier → an empty pool is now possible
+    orchestrator.getRegistry().applyTierConfigNow(); // tier member lists commit immediately (no restart)
+    warnOnEmptyTierPools(); // no residual tier → an empty pool is now possible
     return result;
   };
   app.post('/api/admin/config', handleSaveConfig);
@@ -421,8 +423,8 @@ export function registerConsoleRoutes(
     initProxyConfig(loadConfig().proxy); // hot-apply proxy policy (see handleSaveConfig)
     orchestrator.getCaptureRecorder().applyConfig(loadConfig().capture); // hot-apply capture too
     orchestrator.getRegistry().applyCombos(loadConfig().combos); // hot-apply combos too
-    orchestrator.getRegistry().applyTierConfigNow(); // hot-commit tier match/policies too
-    warnOnEmptyTierPools(); // ADR-0012: no residual tier → an empty pool is now possible
+    orchestrator.getRegistry().applyTierConfigNow(); // hot-commit tier member lists too
+    warnOnEmptyTierPools(); // no residual tier → an empty pool is now possible
     return result;
   };
   app.post('/api/admin/config/raw', handleSaveRawYaml);
@@ -444,21 +446,14 @@ export function registerConsoleRoutes(
   };
   app.get('/api/admin/proxy/ca', handleForwardProxyCa);
 
-  // 6b. Tier composition policies — candidate pool snapshots (console preview).
-  // PREVIEW is always a pure projection (resolveTierPool with a match arg never
-  // mutates live pools); real membership is committed ONLY by the save events
-  // below (applyTierConfigNow) — editing rules takes effect without a restart.
-  //
-  // Catalog overrides (overrides.json) are read FRESH and passed in explicitly —
-  // no implicit fallback inside the registry. The preview MUST honor whatever
-  // pin state the user is looking at; if overrides were re-read lazily inside
-  // resolveTierPool, a concurrent edit between the two reads could yield two
-  // different memberships for the same model in the same response.
-  const projectTierPools = async (policies: any, match: any) => {
+  // 6b. Tier member lists — candidate pool snapshots (console preview).
+  // membership is a PURE projection of (model id × tiers.members);
+  // PREVIEW never mutates live pools — real membership is committed ONLY by
+  // the save events below (applyTierConfigNow), so editing takes effect
+  // without a restart.
+  const projectTierPools = async (policies: any) => {
     const pools: Record<string, unknown> = {};
     const cb = registry.getCircuitBreakerManager();
-    const { readOverridesStore } = await import('../opencode/catalog/overrides-store.js');
-    const overrides = readOverridesStore()?.models ?? {};
     const shape = (pool: { model: any; weight: number }[]) =>
       pool.map(({ model, weight }) => ({
         id: model.id,
@@ -471,25 +466,27 @@ export function registerConsoleRoutes(
         healthy: cb.isAvailable(model.id),
         weight,
       }));
-    for (const tier of ['lite', 'plus', 'pro', 'ultra'] as const) {
-      const { pool, excluded } = registry.resolveTierPool(tier, policies, { match, overrides });
+    for (const tier of MEMBER_TIER_ORDER) {
+      const { pool, excluded } = registry.resolveTierPool(tier, policies);
       pools[tier] = { pool: shape(pool), excluded };
     }
     return pools;
   };
 
-  // ADR-0012: with the residual tier gone a pool can legitimately become EMPTY
-  // (no pattern/band/flag claims it), after which routing degrades across
-  // tiers. Degradation is allowed but never silent — warn on every commit.
+  // membership is explicit — an empty pool means the member list is
+  // empty or matches no registered model. Degradation is allowed but never
+  // silent — warn on every commit.
   const warnOnEmptyTierPools = () => {
     const tiers = loadConfig().tiers;
-    const match = resolveTierMatch(tiers);
-    for (const tier of ['lite', 'plus', 'pro', 'ultra'] as const) {
-      const { pool } = registry.resolveTierPool(tier, tiers, { match });
+    const resolved = resolveTierMembers(tiers);
+    for (const tier of MEMBER_TIER_ORDER) {
+      const { pool } = registry.resolveTierPool(tier, tiers);
       if (pool.length === 0) {
+        const cause =
+          resolved.tiers[tier].length === 0 ? 'the member list is empty' : 'no rule matches a registered model';
         console.warn(
-          `[Console] Tier '${tier}' has an EMPTY candidate pool — its requests will degrade to another tier. ` +
-            `Loosen tiers.${tier}.match (patterns / price band) or pin models on the Catalog page.`,
+          `[Console] Tier '${tier}' has an EMPTY candidate pool (${cause}) — its requests will degrade to another tier. ` +
+            `Add models to tiers.${tier}.members on the /tiers page.`,
         );
       }
     }
@@ -497,10 +494,15 @@ export function registerConsoleRoutes(
 
   const handleTierPools = async () => {
     // Snapshot of the SAVED file state (what a restart would load anyway, and
-    // what the save-commit has already applied).
+    // what the save-commit has already applied). `match` rides along as the
+    // suggestion engine's resolved config (catalog-page recommendations).
     const freshTiers = loadConfig().tiers;
-    const match = resolveTierMatch(freshTiers);
-    return { status: 'ok', pools: await projectTierPools(freshTiers, match), match };
+    return {
+      status: 'ok',
+      pools: await projectTierPools(freshTiers),
+      members: resolveTierMembers(freshTiers).tiers,
+      match: resolveTierMatch(freshTiers),
+    };
   };
   app.get('/api/admin/tier-pools', handleTierPools);
 
@@ -518,7 +520,7 @@ export function registerConsoleRoutes(
     const policies = registry.getTierPolicies();
     const pools: Record<string, unknown> = {};
     const cb = registry.getCircuitBreakerManager();
-    for (const tier of ['lite', 'plus', 'pro', 'ultra'] as const) {
+    for (const tier of MEMBER_TIER_ORDER) {
       const { pool, excluded } = registry.resolveTierPool(tier, policies);
       pools[tier] = {
         pool: pool.map(({ model, weight }) => ({
@@ -544,10 +546,57 @@ export function registerConsoleRoutes(
   const handleTierPoolsPreview = async (req: any) => {
     const body = req.body as { tiers?: unknown };
     const tiers = body?.tiers ?? loadConfig().tiers ?? {};
-    const match = resolveTierMatch(tiers as any);
-    return { status: 'ok', preview: true, pools: await projectTierPools(tiers, match), match };
+    return {
+      status: 'ok',
+      preview: true,
+      pools: await projectTierPools(tiers),
+      members: resolveTierMembers(tiers as any).tiers,
+      match: resolveTierMatch(tiers as any),
+    };
   };
   app.post('/api/admin/tier-pools/preview', handleTierPoolsPreview);
+
+  // Check: dry-run validation of a DRAFT tiers config — non-blocking warnings:
+  //   overlap — a model claimable by 2+ tiers (runtime resolves by tier order)
+  //   orphan  — a rule matching no registered model (rename / typo / removed)
+  const handleTiersCheck = async (req: any) => {
+    const body = req.body as { tiers?: unknown };
+    const tiers = (body?.tiers ?? loadConfig().tiers ?? {}) as any;
+    const members = resolveTierMembers(tiers).tiers;
+    const modelIds = registry
+      .getAllModels()
+      .filter((m) => m.tierMatch)
+      .map((m) => m.id);
+    const overlapGroups = new Map<string, { tiers: string[]; count: number; sampleIds: string[] }>();
+    for (const id of modelIds) {
+      const hits = matchingTiers(id, members);
+      if (hits.length < 2) continue;
+      const key = hits.join('|');
+      const g = overlapGroups.get(key) ?? { tiers: hits, count: 0, sampleIds: [] };
+      g.count++;
+      if (g.sampleIds.length < 5) g.sampleIds.push(id);
+      overlapGroups.set(key, g);
+    }
+    const orphans: { tier: string; pattern: string }[] = [];
+    for (const tier of MEMBER_TIER_ORDER) {
+      for (const rule of members[tier]) {
+        if (!modelIds.some((id) => globMatchAny([rule.pattern], id))) orphans.push({ tier, pattern: rule.pattern });
+      }
+    }
+    return {
+      status: 'ok',
+      warnings: [
+        ...[...overlapGroups.values()].map((g) => ({
+          kind: 'overlap' as const,
+          tiers: g.tiers,
+          count: g.count,
+          sampleIds: g.sampleIds,
+        })),
+        ...orphans.map((o) => ({ kind: 'orphan' as const, tier: o.tier, pattern: o.pattern })),
+      ],
+    };
+  };
+  app.post('/api/admin/tiers/check', handleTiersCheck);
 
   // 6b-2. Catalog source management — view/add/remove/toggle/refresh the remote
   // catalog sources (config.catalog.sources). Mutations apply to the live
@@ -724,7 +773,7 @@ export function registerConsoleRoutes(
     if (!body?.providerId || !body?.modelId || typeof body.entry !== 'object') {
       return reply.status(400).send({ success: false, error: 'providerId, modelId and entry are required' });
     }
-    if ('tier' in body.entry && body.entry.tier !== null && !['lite', 'plus', 'pro', 'ultra'].includes(body.entry.tier)) {
+    if ('tier' in body.entry && body.entry.tier !== null && asTierLevel(body.entry.tier) === undefined) {
       return reply.status(400).send({ success: false, error: 'entry.tier must be lite | plus | pro | ultra or null' });
     }
     const { upsertOverride } = await import('../opencode/catalog/overrides-store.js');

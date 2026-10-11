@@ -392,13 +392,33 @@ export interface TierPoolInfo {
 export interface TierPoolsResponse {
   status: string;
   pools: Record<string, TierPoolInfo>;
-  /** effective smart-match config (per tier, fully symmetric — ADR-0012), for suggestion previews */
+  /** effective smart-match config (per tier, fully symmetric), for suggestion previews */
   match?: Partial<
     Record<
       'lite' | 'plus' | 'pro' | 'ultra',
       { patterns?: string[]; minInputPerM?: number; maxInputPerM?: number; exclude?: string[]; excludeTiers?: string[] }
     >
   >;
+  /** resolved member lists (post-sanitize) — the routing source of truth */
+  members?: Record<string, TierMemberRule[]>;
+}
+
+/** tier member rule — mirrors backend config/types.ts TierMemberRule. */
+export interface TierMemberRule {
+  pattern: string;
+  weight?: number;
+  /** thinking-level translation (client requested → upstream); '' / missing = passthrough */
+  effortMap?: Record<string, string>;
+}
+
+/** Dry-run save-check warnings overlap across tiers / orphan rules. */
+export interface TierCheckWarning {
+  kind: 'overlap' | 'orphan';
+  tiers?: string[];
+  count?: number;
+  sampleIds?: string[];
+  tier?: string;
+  pattern?: string;
 }
 
 export interface ComboMemberView {
@@ -491,6 +511,17 @@ export const api = {
   /** Live (committed) pool snapshot — the registry's m.tier after the last applyTierConfigNow. */
   async getLiveTierPools(): Promise<TierPoolsResponse> {
     const res = await fetch('/api/admin/tier-pools/live');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /** Dry-run validation of a DRAFT tiers config (non-blocking warnings: overlap / orphan). */
+  async checkTiers(tiers: unknown): Promise<{ status: string; warnings: TierCheckWarning[] }> {
+    const res = await fetch('/api/admin/tiers/check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tiers }),
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },

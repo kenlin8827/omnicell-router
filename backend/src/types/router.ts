@@ -3,7 +3,7 @@ import { ChatCompletionResponse } from './openai.js';
 export type TierLevel = 'lite' | 'plus' | 'pro' | 'ultra';
 
 /**
- * ADR-0012: what a model's smart-match classification yields. `TierLevel`
+ * what a model's smart-match classification yields. `TierLevel`
  * is the REQUEST-side four-state vocabulary (targetTier, TIER_RANK,
  * escalateTier, flywheel labels, session ratchet); `'unclassified'` is a
  * MODEL-side pool-membership outcome only. Kept as a separate type so the
@@ -43,8 +43,6 @@ export const TIER_RANK: Record<TierLevel, number> = {
  *
  * Default `supportedReasoningEfforts` for a thinking-capable model is
  * the full 6-level ladder — there is no 5-level "thinking subset".
- * Operators can narrow the supported set via the catalog overrides-store
- * `reasoningEfforts` field (see opencode/sync.ts).
  */
 export const EFFORT_LADDER = ['none', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type ReasoningEffort = (typeof EFFORT_LADDER)[number];
@@ -65,6 +63,31 @@ export function downgradeReasoning(
     .filter((lvl) => EFFORT_LADDER.indexOf(lvl) <= reqRank)
     .sort((a, b) => EFFORT_LADDER.indexOf(b) - EFFORT_LADDER.indexOf(a));
   return candidates[0] ?? 'none';
+}
+
+/**
+ * per-model thinking-level TRANSLATION table (client-requested →
+ * upstream value), inline on a tier member rule. `effortMap[requested] ??
+ * requested` — a missing key means passthrough. Applied per candidate at
+ * selection AND at execution (it is a model property, not a routing policy).
+ */
+export type EffortMap = Partial<Record<ReasoningEffort, ReasoningEffort>>;
+
+/**
+ * Shared resolution of a model's explicit-effort support (registry pick +
+ * orchestrator recompute use the SAME rule):
+ *   - a non-empty `supportedReasoningEfforts` wins;
+ *   - the legacy boolean `true` → the full EFFORT_LADDER;
+ *   - otherwise `undefined` = "no explicit effort control" (callers decide:
+ *     selection skips the candidate; wire-side recompute clamps to `[]`).
+ */
+export function modelSupportsEfforts(
+  supported: readonly ReasoningEffort[] | undefined,
+  legacyFlag: boolean | undefined
+): ReasoningEffort[] | undefined {
+  if (supported && supported.length > 0) return [...supported];
+  if (legacyFlag === true) return [...EFFORT_LADDER];
+  return undefined;
 }
 
 export interface ModelPricing {
@@ -89,8 +112,7 @@ export interface TierModelConfig {
    * Subset of `ReasoningEffort` this model can natively serve. Empty /
    * missing means "no explicit effort control — the model handles effort
    * internally". Default for thinking-capable models is the full
-   * `EFFORT_LADDER` (all 6 levels). Operators narrow via the catalog
-   * overrides-store `reasoningEfforts` field.
+   * `EFFORT_LADDER` (all 6 levels).
    */
   supportedReasoningEfforts?: readonly ReasoningEffort[];
   /**

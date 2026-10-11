@@ -20,13 +20,6 @@ export interface OverrideEntry {
   tool_call?: boolean;
   reasoning?: boolean;
   /**
-   * Per-level effort support override. When set, replaces the catalog-derived
-   * `supportedReasoningEfforts` for this model. Lets operators correct
-   * catalog drift (e.g. "gpt-5.1 has no xhigh even though the catalog said
-   * it does"). Absent means keep the catalog default.
-   */
-  reasoningEfforts?: string[];
-  /**
    * Explicit OCR tier assignment. `null` in an upsert payload = clear the
    * key (fall back to the boot heuristic); absent = keep the stored value.
    */

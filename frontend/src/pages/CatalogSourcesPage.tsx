@@ -778,8 +778,6 @@ const OcrEditModal: React.FC<{
   const [costOutput, setCostOutput] = useState(cur.cost?.output != null ? String(cur.cost.output) : '');
   const [contextLimit, setContextLimit] = useState(cur.limit?.context != null ? String(cur.limit.context) : '');
   const [outputLimit, setOutputLimit] = useState(cur.limit?.output != null ? String(cur.limit.output) : '');
-  const [tier, setTier] = useState(cur.tier ?? '');
-  const [hadOverrideTier, setHadOverrideTier] = useState(false);
   const [hasOverride, setHasOverride] = useState(false);
   const [saving, setSaving] = useState(false);
   useBodyScrollLock(true);
@@ -796,10 +794,6 @@ const OcrEditModal: React.FC<{
         if (e.cost?.output != null) setCostOutput(String(e.cost.output));
         if (e.limit?.context != null) setContextLimit(String(e.limit.context));
         if (e.limit?.output != null) setOutputLimit(String(e.limit.output));
-        if (typeof e.tier === 'string') {
-          setTier(e.tier);
-          setHadOverrideTier(true);
-        }
       })
       .catch(() => undefined);
   }, [target.providerId, target.modelId]);
@@ -825,9 +819,9 @@ const OcrEditModal: React.FC<{
       if (num(contextLimit) !== undefined) limit.context = num(contextLimit)!;
       if (num(outputLimit) !== undefined) limit.output = num(outputLimit)!;
       if (Object.keys(limit).length > 0) entry.limit = limit;
-      // '' = 自动（不写 tier，走 boot 智能匹配）；从显式值改回自动要下发 null 清除旧键。
-      if (tier) entry.tier = tier;
-      else if (hadOverrideTier) entry.tier = null;
+      // tier membership moved to the /tiers member lists — this
+      // modal no longer writes overrides.tier (existing values are kept and
+      // honored once by the import/seed).
       await opencodeApi.putCatalogOverride(target.providerId, target.modelId, entry);
       toast.success(t('catalogPage.ocrEditSaved'));
       onSaved();
@@ -940,18 +934,18 @@ const OcrEditModal: React.FC<{
           </div>
           <div>
             <label style={fieldLabel}>{t('catalogPage.ocrEditTier')}</label>
-            <Combobox
-              value={tier}
-              onChange={setTier}
-              options={[
-                { value: '', label: t('catalogPage.ocrEditTierAuto'), meta: suggest.tier },
-                { value: 'lite', label: t('tierPolicy.tierLite') },
-                { value: 'plus', label: t('tierPolicy.tierPlus') },
-                { value: 'pro', label: t('tierPolicy.tierPro') },
-                { value: 'ultra', label: t('tierPolicy.tierUltra') },
-              ]}
-              style={{ fontSize: '12px', padding: '5px 10px', width: '100%' }}
-            />
+            <div
+              style={{
+                fontSize: '12px',
+                padding: '6px 10px',
+                border: '1px solid var(--card-border)',
+                borderRadius: 6,
+                color: 'var(--text-muted)',
+                fontFamily: "'JetBrains Mono', monospace",
+              }}
+            >
+              {suggest.tier}
+            </div>
             <div style={{ fontSize: '10px', color: 'var(--text-dim)', marginTop: '4px' }}>
               {t('catalogPage.ocrEditTierSuggested', { tier: suggest.tier })}
               {suggest.why.length > 0 ? ` —— ${suggest.why.join(' / ')}` : ''}

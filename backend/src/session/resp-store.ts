@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
  * Response Tree Store — server-side conversation state for the Responses API
  * (POST /v1/responses, stateful `previous_response_id` mode).
  *
- * Design (ADR: gateway-owned stateful emulation):
+ * Design (gateway-owned stateful emulation):
  * - State belongs to the GATEWAY, not to any upstream provider. Clients send
  *   only a delta plus `previous_response_id`; the store walks the parent chain
  *   and rebuilds the full chat-completions message array. This keeps model

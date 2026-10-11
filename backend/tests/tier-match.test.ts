@@ -4,13 +4,13 @@ import { DEFAULT_TIER_MATCH, bandOrder, classifyTier, resolveTierMatch, type Res
 const base = resolveTierMatch(undefined);
 
 /**
- * ADR-0012 — symmetric tiers, no residual. classifyTier returns
+ * symmetric tiers, no residual. classifyTier returns
  * PoolMembership: 'lite' | 'plus' | 'pro' | 'ultra' | 'unclassified'.
  *
  * Four-tier vocabulary with `ultra` at the top of the price band [8, +∞) for
  * frontier-tier cases (e.g. Claude Fable).
  */
-describe('tier smart match (providers/tier-match, ADR-0012)', () => {
+describe('tier smart match (providers/tier-match)', () => {
   it('lite is PRICE-driven now: a bare name never classifies (no preset patterns)', () => {
     // a recognizable economy NAME + a low price lands in lite by its BAND…
     expect(classifyTier({ modelId: 'gemini-2.5-flash', inputPerM: 0.3, reasoningFlag: false }, base)).toBe('lite');
@@ -42,7 +42,7 @@ describe('tier smart match (providers/tier-match, ADR-0012)', () => {
 
   it('price >= 8 is ultra; the flag is consulted AFTER bands (existing rule)', () => {
     expect(classifyTier({ modelId: 'claude-fable-5', inputPerM: 15, reasoningFlag: false }, base)).toBe('ultra');
-    // ADR-0012 behavior delta: a mid-priced flagged model is claimed by plus's
+    // behavior delta: a mid-priced flagged model is claimed by plus's
     // band first — 'bands outrank the thinking-effort flag' now applies to plus too.
     expect(classifyTier({ modelId: 'kimi-k2', inputPerM: 1, reasoningFlag: true }, base)).toBe('plus');
     // unpriced + flag still reaches pro (bands skip)

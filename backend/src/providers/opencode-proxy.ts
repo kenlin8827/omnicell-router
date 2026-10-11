@@ -1,7 +1,7 @@
 import { LLMProvider, type UpstreamEventContext } from './base.js';
 import { ModelRegistration } from '../config/types.js';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
-import { OpenCodeServiceConfig } from '../opencode/sync.js';
+import { OpenCodeServiceConfig } from '../opencode/connector.js';
 import { proxiedFetch, resolveProxyUrl } from '../utils/proxy.js';
 import {
   emitUpstreamRequestOnce,

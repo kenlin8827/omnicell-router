@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
-import { ExecutionResult, ModelPricing, ReasoningEffort, EFFORT_LADDER, RoutingDecision, TierLevel, downgradeReasoning } from '../types/router.js';
+import { ExecutionResult, ModelPricing, ReasoningEffort, EFFORT_LADDER, RoutingDecision, TIER_RANK, TierLevel, downgradeReasoning } from '../types/router.js';
 import { ModelRegistration, RouterConfig } from '../config/types.js';
 import { PromptOptimizer } from './prompt-optimizer.js';
 import { applyCompression } from '../compression/index.js';
@@ -9,6 +9,7 @@ import { SchemaAssertion } from '../validator/schema-assertion.js';
 import { FallbackContextBuilder } from '../validator/parser.js';
 import { BudgetManager } from '../budget/budget-manager.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { applyEffortMap } from '../providers/member-match.js';
 import { FinOpsTracker } from '../metrics/finops-tracker.js';
 import { FlywheelCollector } from '../flywheel/collector.js';
 import { SessionManager, SessionResolveResult } from '../session/session-manager.js';
@@ -478,28 +479,32 @@ export class PipelineOrchestrator {
 
     let finalResponse: ChatCompletionResponse;
     let actualModel: ModelRegistration = preferredModel || this.registry.getModelForTier(actualTier, true);
-    // Reasoning-effort matching. `requestedEffort` is the literal value the
-    // client sent (undefined if the field was omitted — distinct from
-    // `'none'`, which is the client EXPLICITLY asking for no thinking).
-    // `actualEffort` is what we actually served: undefined when the client
-    // didn't ask at all, `'none'` when the client asked for no thinking,
-    // or the (possibly downgraded) level when the client asked for a level.
-    // The actual served level is written back onto the request so the
-    // upstream payload builder sees the truth. `reasoningDegraded` is
-    // surfaced to the client via `X-OCR-Thinking-Actual` /
-    // `X-OCR-Thinking-Degraded` response headers (see server.ts).
+    // Reasoning-effort matching. `requestedEffort` is the
+    // literal value the client sent (undefined if the field was omitted —
+    // distinct from `'none'`, which is the client EXPLICITLY asking for no
+    // thinking). `actualEffort` is what we actually served: undefined when the
+    // client didn't ask at all, `'none'` for explicit no-thinking, or the
+    // (translated, possibly downgraded) level. Member rules' inline
+    // `effortMap` applies per model — `effortMap[requested] ?? requested`,
+    // then capability-clamped; `none` participates too (a none→high rule
+    // makes no-effort requests think). The written-back value is what the
+    // provider builders construct the upstream payload from; `reasoningDegraded`
+    // is surfaced via `X-OCR-Thinking-Actual` / `X-OCR-Thinking-Degraded`.
     const requestedEffort: ReasoningEffort | undefined = normalizedRequest.reasoning_effort;
     let actualEffort: ReasoningEffort | undefined;
     let reasoningDegraded = false;
     const effortPick = (() => {
-      // No effort requested AND no explicit model pinned — leave the
-      // default tier pick alone. `actualEffort` stays undefined; the
-      // provider builder sees `request.reasoning_effort === undefined`
-      // and does not construct a thinking block.
-      if (requestedEffort === undefined) return null;
       // Skip effort-based pick when the request is an explicit model choice
-      // OR a combo — both are pinned by the caller and must not be re-routed.
+      // OR a combo — both are pinned by the caller and must not be re-routed
+      // (the preferredModel branch below still translates/clamps THEIR map).
       if (preferredModel || comboId) return null;
+      if (requestedEffort === undefined || requestedEffort === 'none') {
+        // No explicit level asked — still engage when a member rule
+        // maps `none` to a real level (e.g. none→high) — the pick becomes
+        // effort-aware. Otherwise leave the default tier pick alone.
+        const mapped = this.registry.pickModelForEffort(actualTier, 'none', true);
+        return mapped && mapped.actualEffort !== 'none' ? mapped : null;
+      }
       return this.registry.pickModelForEffort(actualTier, requestedEffort, true);
     })();
     if (effortPick) {
@@ -512,25 +517,28 @@ export class PipelineOrchestrator {
       if (actualEffort !== requestedEffort) {
         normalizedRequest.reasoning_effort = actualEffort;
       }
-    } else if (preferredModel && requestedEffort !== undefined && requestedEffort !== 'none') {
-      // Explicit model choice (or pinned combo) with a level request: the
-      // caller pinned the model, but the effort match must STILL downgrade
-      // to whatever that model can serve — same honesty contract. We
-      // never re-route, but we do write back the lower effort so the
-      // upstream sees the truth.
-      const supported = preferredModel.supportedReasoningEfforts
-        ?? (preferredModel.supportsReasoningEffort
-          ? EFFORT_LADDER
-          : []);
-      const recomputed = downgradeReasoning(requestedEffort, supported);
-      actualEffort = recomputed;
-      reasoningDegraded = recomputed !== requestedEffort;
-      if (recomputed !== requestedEffort) {
-        normalizedRequest.reasoning_effort = recomputed;
+    } else if (preferredModel) {
+      // Explicit model choice / session pin: never re-route, but translate by
+      // the model's effortMap first (none included), then clamp to what it
+      // can serve and write back the truth.
+      const target = applyEffortMap(preferredModel.effortMap, requestedEffort ?? 'none');
+      if (target === 'none') {
+        actualEffort = requestedEffort; // nothing in play — mirror exactly
+      } else {
+        const supported = preferredModel.supportedReasoningEfforts
+          ?? (preferredModel.supportsReasoningEffort
+            ? EFFORT_LADDER
+            : []);
+        const recomputed = downgradeReasoning(target, supported);
+        actualEffort = recomputed;
+        reasoningDegraded =
+          EFFORT_LADDER.indexOf(recomputed) < EFFORT_LADDER.indexOf(requestedEffort ?? 'none');
+        if (recomputed !== requestedEffort) {
+          normalizedRequest.reasoning_effort = recomputed;
+        }
       }
     } else {
-      // No effort-based pick: client asked for `none` explicitly, or
-      // didn't ask at all. `actualEffort` mirrors that exactly.
+      // No effort in play (no pick and no pinned model): mirror the client.
       actualEffort = requestedEffort;
     }
     let fallbackOccurred = false;
@@ -559,6 +567,7 @@ export class PipelineOrchestrator {
           allowEscalate: tierCrossPolicy === 'allow_escalate',
           attemptCap: maxFailoverCandidates,
           modelAccess: context?.modelAccess,
+          requestedEffort,
         },
         upstreamEventContext
       );
@@ -579,18 +588,12 @@ export class PipelineOrchestrator {
           actualTier = 'lite';
           actualModel = liteResult.modelUsed!;
           // Same post-execution recompute as the direct path — lite failover
-          // may have served a model whose supported set differs from the
-          // tier-pick prediction. Only meaningful for a level request;
-          // `undefined` (client didn't ask) and `'none'` (client asked
-          // for no thinking) are both passed through unchanged.
-          if (requestedEffort !== undefined && requestedEffort !== 'none') {
-            const servedSupported = actualModel.supportedReasoningEfforts
-              ?? (actualModel.supportsReasoningEffort
-                ? EFFORT_LADDER
-                : []);
-            const recomputed = downgradeReasoning(requestedEffort, servedSupported);
-            actualEffort = recomputed;
-            reasoningDegraded = recomputed !== requestedEffort;
+          // may have served a model whose translation/capability differs from
+          // the tier-pick prediction (helper: map → clamp → mirror).
+          {
+            const r = this.resolveServedEffort(actualModel, requestedEffort);
+            actualEffort = r.actualEffort;
+            reasoningDegraded = r.degraded;
           }
           failoverOccurred = liteResult.failoverOccurred;
           failoverAttempts = liteResult.failoverAttempts;
@@ -625,6 +628,7 @@ export class PipelineOrchestrator {
             allowEscalate: false,
             attemptCap: maxFailoverCandidates,
             modelAccess: context?.modelAccess,
+            requestedEffort,
           },
           upstreamEventContext
         );
@@ -644,14 +648,10 @@ export class PipelineOrchestrator {
         actualModel = plusResult.modelUsed!;
         // Recompute effort against the actually-served model (same contract
         // as the direct path).
-        if (requestedEffort !== undefined && requestedEffort !== 'none') {
-          const servedSupported = actualModel.supportedReasoningEfforts
-            ?? (actualModel.supportsReasoningEffort
-              ? EFFORT_LADDER
-              : []);
-          const recomputed = downgradeReasoning(requestedEffort, servedSupported);
-          actualEffort = recomputed;
-          reasoningDegraded = recomputed !== requestedEffort;
+        {
+          const r = this.resolveServedEffort(actualModel, requestedEffort);
+          actualEffort = r.actualEffort;
+          reasoningDegraded = r.degraded;
         }
         failoverOccurred = plusResult.failoverOccurred;
         failoverAttempts = plusResult.failoverAttempts;
@@ -695,7 +695,7 @@ export class PipelineOrchestrator {
         const accessPolicy = context?.modelAccess;
         const isBareAuto = !normalizedRequest.model || normalizedRequest.model === 'auto' || normalizedRequest.model === 'default';
         if (accessPolicy && isBareAuto && !explicitModel && !comboId) {
-          const rank: Record<string, number> = { lite: 1, plus: 2, pro: 3, ultra: 4 };
+          const rank = TIER_RANK;
           const widened = this.registry
             .getAllModels()
             .filter((m) => isModelAllowed(m.id, accessPolicy, m.tier))
@@ -719,7 +719,7 @@ export class PipelineOrchestrator {
       // Standard Direct Model Execution with Multi-Model Failover & Circuit Breaker
       const execResult = await this.executeCandidatePool(
         normalizedRequest,
-        { chain, tier: actualTier, allowEscalate, attemptCap, label: poolLabel, modelAccess: context?.modelAccess },
+        { chain, tier: actualTier, allowEscalate, attemptCap, label: poolLabel, modelAccess: context?.modelAccess, requestedEffort },
         upstreamEventContext
       );
 
@@ -741,15 +741,11 @@ export class PipelineOrchestrator {
       // Recompute `actualEffort` against the model that ACTUALLY served the
       // request — failover may have shifted to a different model than the
       // one `pickModelForEffort` originally picked, with a different effort
-      // ceiling. The header / ExecutionResult must reflect reality.
-      if (requestedEffort !== undefined && requestedEffort !== 'none') {
-        const servedSupported = actualModel.supportedReasoningEfforts
-          ?? (actualModel.supportsReasoningEffort
-            ? EFFORT_LADDER
-            : []);
-        const recomputed = downgradeReasoning(requestedEffort, servedSupported);
-        actualEffort = recomputed;
-        reasoningDegraded = recomputed !== requestedEffort;
+      // translation/ceiling. The header / ExecutionResult must reflect reality.
+      {
+        const r = this.resolveServedEffort(actualModel, requestedEffort);
+        actualEffort = r.actualEffort;
+        reasoningDegraded = r.degraded;
       }
       failoverOccurred = execResult.failoverOccurred;
       failoverAttempts = execResult.failoverAttempts;
@@ -957,7 +953,29 @@ export class PipelineOrchestrator {
   }
 
   /**
-   * Resilient candidate-chain executor (ADR-0008, ADR-0009) — the single
+   * post-execution contract: translate the client ask through the
+   * SERVED model's effortMap (`none` included), clamp to its declared
+   * capability, and mirror the client exactly when nothing is in play.
+   * `degraded` compares the final value against what the client asked
+   * (`undefined` / `'none'` count as the none level).
+   */
+  private resolveServedEffort(
+    model: ModelRegistration,
+    requestedEffort: ReasoningEffort | undefined
+  ): { actualEffort: ReasoningEffort | undefined; degraded: boolean } {
+    const ask = requestedEffort ?? 'none';
+    const target = applyEffortMap(model.effortMap, ask);
+    if (target === 'none' && ask === 'none') return { actualEffort: requestedEffort, degraded: false };
+    const supported = model.supportedReasoningEfforts ?? (model.supportsReasoningEffort ? EFFORT_LADDER : []);
+    const actual = target === 'none' ? 'none' : downgradeReasoning(target, supported);
+    return {
+      actualEffort: actual,
+      degraded: EFFORT_LADDER.indexOf(actual) < EFFORT_LADDER.indexOf(ask),
+    };
+  }
+
+  /**
+   * Resilient candidate-chain executor — the single
    * execution path shared by ALL entry modes (auto / explicit model / combo /
    * schema-assertion cascade). Callers resolve a candidate chain + policy
    * fields; this function only runs the loop.
@@ -995,6 +1013,13 @@ export class PipelineOrchestrator {
       label?: string;
       /** Per-key model access policy — candidates outside it are dropped before the loop. */
       modelAccess?: ModelAccessConfig;
+      /**
+       * the client's ORIGINAL effort ask (undefined = omitted).
+       * Each candidate serves through its own effortMap translated from this
+       * value and clamped by its declared capability — the request copy
+       * executed per candidate carries exactly what gets sent upstream.
+       */
+      requestedEffort?: ReasoningEffort;
     },
     upstreamEventContext?: UpstreamEventContext
   ): Promise<{
@@ -1072,6 +1097,24 @@ export class PipelineOrchestrator {
       failoverAttempts++;
       failoverPath.push(candidate.id);
 
+      // per-candidate effort translation. Each chain member serves
+      // through ITS OWN effortMap (`none` included), clamped by its declared
+      // capability — the request copy carries exactly what gets sent (a
+      // byte-identical request when nothing is in play).
+      let candidateReq = request;
+      {
+        const ask = opts.requestedEffort ?? 'none';
+        const target = applyEffortMap(candidate.effortMap, ask);
+        if (!(target === 'none' && ask === 'none')) {
+          const supported =
+            candidate.supportedReasoningEfforts ?? (candidate.supportsReasoningEffort ? EFFORT_LADDER : []);
+          const candidateEffort = target === 'none' ? 'none' : downgradeReasoning(target, supported);
+          if (candidateEffort !== request.reasoning_effort) {
+            candidateReq = { ...request, reasoning_effort: candidateEffort };
+          }
+        }
+      }
+
       // In-place retry loop on the SAME candidate model
       let candidateSucceeded = false;
       let candidateResponse: ChatCompletionResponse | undefined = undefined;
@@ -1079,7 +1122,7 @@ export class PipelineOrchestrator {
       for (let attempt = 0; attempt <= maxInplaceAttempts; attempt++) {
         try {
           candidateResponse = await this.registry.execute(
-            request,
+            candidateReq,
             candidate,
             upstreamEventContext
           );

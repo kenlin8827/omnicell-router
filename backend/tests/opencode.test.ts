@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { OpenCodeConnector } from '../src/opencode/sync.js';
+import { OpenCodeConnector } from '../src/opencode/connector.js';
 
 describe('OpenCode v2 Connect & Dynamic Model Sync', () => {
   const connector = new OpenCodeConnector();
@@ -20,22 +20,5 @@ describe('OpenCode v2 Connect & Dynamic Model Sync', () => {
     assert.ok(names.some(n => n.includes('Alibaba') || n.includes('DeepSeek') || n.includes('Kimi')));
   });
 
-  it('should dynamically sync models and automatically categorize into lite, plus, pro, and ultra tiers', async () => {
-    const tierModels = await connector.syncToTierModels();
-    assert.ok(tierModels.length > 10, 'Expected dozens of active models synced');
-
-    const lite = tierModels.filter(m => m.tier === 'lite');
-    const plus = tierModels.filter(m => m.tier === 'plus');
-    const pro = tierModels.filter(m => m.tier === 'pro');
-    const ultra = tierModels.filter(m => m.tier === 'ultra');
-
-    assert.ok(lite.length > 0, 'Lite tier models should be present');
-    assert.ok(plus.length > 0, 'Plus tier models should be present');
-    assert.ok(pro.length > 0, 'Pro tier models should be present');
-
-    // Check pricing presence
-    assert.ok(lite[0].pricing.input !== undefined);
-    assert.ok(lite[0].pricing.output !== undefined);
-    assert.ok(lite[0].pricing.cacheRead !== undefined);
-  });
+  
 });

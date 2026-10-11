@@ -55,15 +55,43 @@ opencode:
 #   caDir: ""                       # default: ~/.opencode-router/forward-proxy
 #   viaOutboundProxy: false         # non-bypass forwards (non-intercepted GETs etc.) egress via config.proxy
 
-# Tier smart-match baseline (Optional) — how a model is auto-claimed into a
-# candidate pool. Classification is fully PRICE-DRIVEN by default: each tier
-# is a price band over the raw catalog $/M input price; a model matching NO
-# band (or with no price) is 'unclassified' (joins no pool; still callable by
-# id / combo). Vendor tier words ("flash"/"pro"/"air") mean very different
-# prices across vendors, so NO name patterns are preset — add `patterns` per
-# tier only if a name genuinely correlates in YOUR catalog.
-# Shown below as the BUILT-IN defaults — uncomment + edit to override, or just
-# edit on the console /tiers page (takes effect on save, no restart).
+# Tier membership  — each tier's candidate pool is an EXPLICIT
+# `members` list; list order = priority / failover-chain order. A rule's
+# `pattern` is a glob over the FULL model id (provider/model): `*` any chars,
+# `?` one char, case-insensitive; NO wildcard = substring match; a full id
+# pins exactly one model. Optional per-rule fields:
+#   weight    — >= 1, default 1 (reserved for weighted / round_robin selection)
+#   effortMap — thinking-level translation (client requested → upstream value),
+#               e.g. { none: high, low: high }: mapped keys are translated,
+#               unmapped levels pass through; capability clamps afterwards and
+#               the actual served level is reported via X-OCR-Thinking-* headers.
+# A model matching NO rule is 'unclassified' (joins no pool; still callable by
+# id / combo). On first boot, IF no tier defines `members`, explicit lists are
+# auto-seeded from the legacy match below (one-time migration). Edit on the
+# console /tiers page (takes effect on save, no restart).
+# tiers:
+#   lite:
+#     members:
+#       - pattern: "anthropic/claude-haiku-4.5"
+#         effortMap: { none: "high", low: "high" }
+#       - pattern: "*flash*"
+#     selection: priority
+#   plus:
+#     members:
+#       - pattern: "*sonnet*"
+#   pro:
+#     members:
+#       - pattern: "*opus*"
+#   ultra:
+#     members:
+#       - pattern: "*fable*"
+
+# Legacy smart-match (DEPRECATED for routing) — kept ONLY as
+# the suggestion/import engine: catalog-page recommendations, the /tiers
+# one-click import and the first-boot seed still consult these rules
+# (price bands over the raw catalog $/M input price; a model matching NO band
+# or with no price is 'unclassified'). Shown as the BUILT-IN defaults;
+# uncomment + edit to steer the suggestions.
 # tiers:
 #   lite:
 #     match:
@@ -125,7 +153,7 @@ fallback:
   injectErrorContext: true          # Injects parsing error context to guide plus-tier model to fix in one shot
 
 # ==============================================================================
-# Multi-Layer Classification & Data Flywheel (ADR-0004 & ADR-0005)
+# Multi-Layer Classification & Data Flywheel 
 # ==============================================================================
 classifier:
   # Layer 1: Local micro-tensor CPU model (Sub-millisecond latency, zero extra API cost)
@@ -165,7 +193,7 @@ capture:
   maxBodyBytes: 65536               # Per-body truncation budget (request & response separately)
 
 # ==============================================================================
-# Multi-Turn Monotonic Session Ratchet & KV Cache Protection (ADR-0006)
+# Multi-Turn Monotonic Session Ratchet & KV Cache Protection 
 # ==============================================================================
 session:
   enabled: true                     # Enable monotonic ratchet and upstream KV cache protection
@@ -174,7 +202,7 @@ session:
   maxSessions: 10000                # Maximum concurrent active sessions in memory LRU cache
 
 # ==============================================================================
-# Industrial-Grade Circuit Breaker & Health Management (ADR-0008)
+# Industrial-Grade Circuit Breaker & Health Management 
 # ==============================================================================
 circuitBreaker:
   enabled: true                     # Enable Circuit Breaker and proactive upstream fault isolation
@@ -191,7 +219,7 @@ circuitBreaker:
     intervalMs: 60000               # Health check interval in ms (1 minute)
 
 # ==============================================================================
-# Cost-Aware Resilience & Hierarchical Retry (ADR-0009)
+# Cost-Aware Resilience & Hierarchical Retry 
 # ==============================================================================
 retry:
   enabled: true                     # Enable two-tier cost-aware retry strategy

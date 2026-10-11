@@ -45,7 +45,7 @@ export interface ProbeResult {
 const DEFAULT_TIMEOUT_MS = 20_000;
 
 /**
- * Wire decision for probes — DELEGATES to the shared `wireFor()` (ADR-0011):
+ * Wire decision for probes — DELEGATES to the shared `wireFor()` — 
  * the console probe and the execution dispatcher use the identical npm→wire
  * function, so a model can never be tested on one wire and routed on another.
  */
@@ -68,7 +68,7 @@ function statusHint(status: number, body = ''): { authHint?: boolean; hint?: str
 export async function probeProvider(opts: ProbeOptions): Promise<ProbeResult> {
   const kind = opts.kind ?? 'openai';
   if (kind === 'unroutable') {
-    // ADR-0011 §5: never fire a guessed wire at a package we cannot speak.
+    // never fire a guessed wire at a package we cannot speak.
     return { ok: false, kind, model: opts.model, error: unroutableReason() };
   }
   const base = opts.baseURL.replace(/\/+$/, '');

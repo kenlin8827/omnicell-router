@@ -8,7 +8,7 @@ import { ResponsesProvider } from './responses.js';
 import { GoogleProvider } from './google.js';
 
 /**
- * ADR-0011: one logical provider may host models on different wires
+ * one logical provider may host models on different wires
  * (e.g. Zen: chat/completions for most, Responses API for gpt-6-luna,
  * Anthropic Messages for claude-*) — and even different MOUNTS per wire
  * (Zen: /zen/v1 vs /inference/anthropic/v1). Dispatch is driven purely by
@@ -35,7 +35,7 @@ export class DispatchingProvider implements LLMProvider {
     const w: WireKind = model.wire ?? 'openai';
     const exec = this.execs.get(w);
     if (!exec) {
-      throw new Error(`模型 '${model.id}' 线型 ${w} 未在直连池注册（ADR-0011 显式不可路由，非上游问题）`);
+      throw new Error(`模型 '${model.id}' 线型 ${w} 未在直连池注册（显式不可路由，非上游问题）`);
     }
     return exec;
   }
@@ -54,7 +54,7 @@ export class DispatchingProvider implements LLMProvider {
   ): Promise<AsyncIterable<ChatCompletionChunk>> {
     const exec = this.exec(model);
     if (!exec.createStream) {
-      throw new Error(`线型 ${model.wire ?? 'openai'} 暂不支持原生流式（ADR-0011 P3 范围）`);
+      throw new Error(`线型 ${model.wire ?? 'openai'} 暂不支持原生流式`);
     }
     return exec.createStream(request, model);
   }
