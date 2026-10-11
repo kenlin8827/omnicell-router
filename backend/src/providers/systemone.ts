@@ -50,15 +50,12 @@ export class SystemoneProvider {
 
       if (!res.ok) {
         const errorText = await res.text().catch(() => '');
-        const retryAfterHeader = res.headers.get('retry-after');
-        const retryAfterSeconds = retryAfterHeader ? parseInt(retryAfterHeader, 10) : undefined;
         throw new UpstreamError({
           message: `Upstream ${this.name} returned status ${res.status}: ${errorText}`,
           status: res.status,
           errorBody: errorText,
           provider: this.name,
           modelId: model.id,
-          retryAfterSeconds: Number.isNaN(retryAfterSeconds as number) ? undefined : retryAfterSeconds,
         });
       }
 

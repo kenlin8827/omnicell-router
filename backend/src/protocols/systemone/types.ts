@@ -12,7 +12,7 @@
  *  - Bailian:  POST https://{WorkspaceId}.<region>.maas.aliyuncs.com/compatible-mode/v1/systemone
  */
 
-export type SystemoneQuestionType = 'choice' | 'noul' | 'score';
+type SystemoneQuestionType = 'choice' | 'noul' | 'score';
 
 export interface SystemoneQuestion {
   type: SystemoneQuestionType;

@@ -21,7 +21,7 @@ import {
   SystemoneScoreAnswer,
 } from './types.js';
 
-export type SystemoneValidation =
+type SystemoneValidation =
   | { ok: true; value: SystemoneRequest }
   | { ok: false; message: string };
 
@@ -71,7 +71,7 @@ export function validateSystemoneRequest(body: unknown): SystemoneValidation {
   return { ok: true, value: req };
 }
 
-export const DECISION_SYSTEM_PROMPT = [
+const DECISION_SYSTEM_PROMPT = [
   'You are a System One decision engine. You evaluate a STATE and answer typed QUESTIONS.',
   'You never write prose, code, or explanations — you output ONLY one JSON object.',
   '',
@@ -166,7 +166,7 @@ export function buildDecisionChatRequest(
   };
 }
 
-export type SystemoneSynthesis =
+type SystemoneSynthesis =
   | { ok: true; response: SystemoneResponse }
   | { ok: false; reason: string };
 
