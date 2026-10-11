@@ -201,17 +201,15 @@ export const ApiKeysPage: React.FC = () => {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [formName, setFormName] = useState('');
   const [formKey, setFormKey] = useState('');
-  const [formRole, setFormRole] = useState<'admin' | 'user'>('user');
   const [formDesc, setFormDesc] = useState('');
   const [formAccessMode, setFormAccessMode] = useState<AccessMode>('none');
   const [formAccessModels, setFormAccessModels] = useState<string[]>([]);
   const [creating, setCreating] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
 
-  // Edit key modal state (name / role / description / model access)
+  // Edit key modal state (name / description / model access)
   const [editingKey, setEditingKey] = useState<ApiKeyItem | null>(null);
   const [editName, setEditName] = useState('');
-  const [editRole, setEditRole] = useState<'admin' | 'user'>('user');
   const [editDesc, setEditDesc] = useState('');
   const [editAccessMode, setEditAccessMode] = useState<AccessMode>('none');
   const [editAccessModels, setEditAccessModels] = useState<string[]>([]);
@@ -382,7 +380,6 @@ export const ApiKeysPage: React.FC = () => {
       const res = await api.createApiKey({
         name: formName.trim(),
         key: formKey.trim() || undefined,
-        role: formRole,
         description: formDesc.trim() || undefined,
         modelAccess,
       });
@@ -393,7 +390,6 @@ export const ApiKeysPage: React.FC = () => {
         setFormName('');
         setFormKey('');
         setFormDesc('');
-        setFormRole('user');
         setFormAccessMode('none');
         setFormAccessModels([]);
         fetchKeys();
@@ -410,7 +406,6 @@ export const ApiKeysPage: React.FC = () => {
   const openEditKey = (item: ApiKeyItem) => {
     setEditingKey(item);
     setEditName(item.name);
-    setEditRole(item.role ?? 'user');
     setEditDesc(item.description ?? '');
     setEditAccessMode(item.modelAccess?.mode ?? 'none');
     setEditAccessModels(item.modelAccess?.models ?? []);
@@ -433,7 +428,6 @@ export const ApiKeysPage: React.FC = () => {
         editAccessMode === 'none' ? null : { mode: editAccessMode, models: editAccessModels };
       const res = await api.updateApiKey(editingKey.id, {
         name: editName.trim(),
-        role: editRole,
         // empty string clears the description (PUT semantics: '' = set empty)
         description: editDesc.trim(),
         modelAccess,
@@ -614,7 +608,6 @@ export const ApiKeysPage: React.FC = () => {
                 >
                   <th style={{ padding: '12px 20px', whiteSpace: 'nowrap' }}>{t('apiKeys.thName')}</th>
                   <th style={{ padding: '12px 20px' }}>{t('apiKeys.thKey')}</th>
-                  <th style={{ padding: '12px 20px' }}>{t('apiKeys.thRole')}</th>
                   <th style={{ padding: '12px 20px', whiteSpace: 'nowrap' }}>{t('apiKeys.thAccess')}</th>
                   <th style={{ padding: '12px 20px', whiteSpace: 'nowrap' }}>{t('apiKeys.thStatus')}</th>
                   <th style={{ padding: '12px 20px' }}>{t('apiKeys.thCreated')}</th>
@@ -718,20 +711,6 @@ export const ApiKeysPage: React.FC = () => {
                             {copiedId === item.id ? <Check size={13} /> : <Copy size={13} />}
                           </button>
                         </div>
-                      </td>
-
-                      {/* Role */}
-                      <td style={{ padding: '14px 20px' }}>
-                        <span
-                          className="badge"
-                          style={{
-                            background: item.role === 'admin' ? 'rgba(139, 92, 246, 0.15)' : 'rgba(255, 255, 255, 0.05)',
-                            color: item.role === 'admin' ? 'var(--accent-violet)' : 'var(--text-muted)',
-                            border: item.role === 'admin' ? '1px solid rgba(139, 92, 246, 0.3)' : '1px solid var(--card-border)',
-                          }}
-                        >
-                          {item.role || 'user'}
-                        </span>
                       </td>
 
                       {/* Model Access */}
@@ -1278,21 +1257,6 @@ print(message.content[0].text)`
                 />
               </div>
 
-              <div>
-                <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', display: 'block', marginBottom: '6px' }}>
-                  {t('apiKeys.roleLabel')}
-                </label>
-                <Combobox
-                  style={{ cursor: 'pointer' }}
-                  value={formRole}
-                  onChange={(v) => setFormRole(v as 'admin' | 'user')}
-                  options={[
-                    { value: 'user', label: t('apiKeys.roleUser') },
-                    { value: 'admin', label: t('apiKeys.roleAdmin') },
-                  ]}
-                />
-              </div>
-
               <ModelAccessPicker
                 mode={formAccessMode}
                 models={formAccessModels}
@@ -1530,7 +1494,7 @@ print(message.content[0].text)`
         </div>
       )}
 
-      {/* 5b. Modal: Edit API Key (name / role / description / model access) */}
+      {/* 5b. Modal: Edit API Key (name / description / model access) */}
       {editingKey && (
         <div
           role="dialog"
@@ -1588,29 +1552,6 @@ print(message.content[0].text)`
                 placeholder={t('apiKeys.namePlaceholder')}
                 className="input"
               />
-            </div>
-
-            <div>
-              <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', display: 'block', marginBottom: '6px' }}>
-                {t('apiKeys.roleLabel')}
-              </label>
-              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                {(
-                  [
-                    ['user', t('apiKeys.roleUser')],
-                    ['admin', t('apiKeys.roleAdmin')],
-                  ] as const
-                ).map(([value, label]) => (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => setEditRole(value)}
-                    className={`btn btn-sm ${editRole === value ? 'btn-primary' : ''}`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
             </div>
 
             <ModelAccessPicker

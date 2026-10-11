@@ -13,9 +13,9 @@ import { RouterConfig } from '../src/config/types.js';
 
 describe('Per-key model access policy (auth/model-access.ts)', () => {
   describe('pure helpers', () => {
-    it('getModelAccessPolicy: undefined for absent/malformed/admin, extracted otherwise', () => {
+    it('getModelAccessPolicy: undefined for absent/malformed policy, extracted otherwise', () => {
       assert.strictEqual(getModelAccessPolicy(undefined), undefined);
-      assert.strictEqual(getModelAccessPolicy({ role: 'admin' } as any), undefined);
+      assert.strictEqual(getModelAccessPolicy({} as any), undefined);
       assert.strictEqual(getModelAccessPolicy({ modelAccess: undefined } as any), undefined);
       assert.strictEqual(getModelAccessPolicy({ modelAccess: { mode: 'weird', models: ['x'] } } as any), undefined);
       assert.strictEqual(getModelAccessPolicy({ modelAccess: { mode: 'allow' } } as any), undefined);
@@ -189,8 +189,7 @@ describe('Per-key model access policy (auth/model-access.ts)', () => {
           id: 'key-allow',
           name: 'Allow-listed client',
           key: 'sk-ocr-test-allow',
-          role: 'user',
-          enabled: true,
+            enabled: true,
           createdAt: new Date().toISOString(),
           modelAccess: { mode: 'allow', models: [ALLOWED] },
         },
@@ -198,8 +197,7 @@ describe('Per-key model access policy (auth/model-access.ts)', () => {
           id: 'key-deny',
           name: 'Deny-listed client',
           key: 'sk-ocr-test-deny',
-          role: 'user',
-          enabled: true,
+            enabled: true,
           createdAt: new Date().toISOString(),
           modelAccess: { mode: 'deny', models: [DENIED] },
         },
@@ -207,8 +205,7 @@ describe('Per-key model access policy (auth/model-access.ts)', () => {
           id: 'key-pattern',
           name: 'Pattern allow client',
           key: 'sk-ocr-test-pattern',
-          role: 'user',
-          enabled: true,
+            enabled: true,
           createdAt: new Date().toISOString(),
           modelAccess: { mode: 'allow', models: ['mock-p*'] },
         },
@@ -241,8 +238,7 @@ describe('Per-key model access policy (auth/model-access.ts)', () => {
             id: 'key-allow-auto',
             name: 'Allow with auto',
             key: 'sk-ocr-test-allow-auto',
-            role: 'user',
-            enabled: true,
+                enabled: true,
             createdAt: new Date().toISOString(),
             // Every tier whitelisted + auto: whichever tier the classifier
             // lands in, the pool has an allowed model → deterministic 200.
@@ -271,8 +267,7 @@ describe('Per-key model access policy (auth/model-access.ts)', () => {
             id: 'key-allow-auto-plus-only',
             name: 'Allow auto + plus only',
             key: 'sk-ocr-test-allow-auto-plus-only',
-            role: 'user',
-            enabled: true,
+                enabled: true,
             createdAt: new Date().toISOString(),
             modelAccess: { mode: 'allow', models: ['auto', 'mock-plus'] },
           },
@@ -299,8 +294,7 @@ describe('Per-key model access policy (auth/model-access.ts)', () => {
             id: 'key-allow-auto-only',
             name: 'Allow auto only',
             key: 'sk-ocr-test-allow-auto-only',
-            role: 'user',
-            enabled: true,
+                enabled: true,
             createdAt: new Date().toISOString(),
             modelAccess: { mode: 'allow', models: ['auto'] },
           },
@@ -439,8 +433,7 @@ describe('Per-key model access policy (auth/model-access.ts)', () => {
             id: 'key-deny-tier',
             name: 'Tier deny client',
             key: 'sk-ocr-test-deny-tier',
-            role: 'user',
-            enabled: true,
+                enabled: true,
             createdAt: new Date().toISOString(),
             modelAccess: { mode: 'deny', models: ['auto-ultra'] },
           },

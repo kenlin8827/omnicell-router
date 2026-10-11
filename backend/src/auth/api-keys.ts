@@ -5,7 +5,6 @@ import { ENTRY_PATTERN } from './model-access.js';
 
 export interface AuthValidationResult {
   valid: boolean;
-  isAdmin?: boolean;
   keyConfig?: ApiKeyConfig;
   error?: string;
 }
@@ -20,7 +19,7 @@ export function validateApiKey(token: string, config: RouterConfig): AuthValidat
 
   // 1. Check Master / Admin API Key
   if (config.adminApiKey && token === config.adminApiKey) {
-    return { valid: true, isAdmin: true };
+    return { valid: true };
   }
 
   // 2. Check Client API Keys
@@ -44,7 +43,6 @@ export function validateApiKey(token: string, config: RouterConfig): AuthValidat
 
   return {
     valid: true,
-    isAdmin: found.role === 'admin',
     keyConfig: found,
   };
 }
@@ -120,7 +118,6 @@ export function validateModelAccess(
 export function createApiKey(payload: {
   name: string;
   key?: string;
-  role?: 'admin' | 'user';
   expiresAt?: string;
   description?: string;
   modelAccess?: ModelAccessConfig;
@@ -144,7 +141,6 @@ export function createApiKey(payload: {
     id: `key-${crypto.randomBytes(4).toString('hex')}`,
     name: trimmedName,
     key: generatedKey,
-    role: payload.role || 'user',
     enabled: true,
     createdAt: new Date().toISOString(),
     expiresAt: payload.expiresAt || undefined,
@@ -168,7 +164,7 @@ export function createApiKey(payload: {
  */
 export function updateApiKey(
   id: string,
-  updates: Partial<Pick<ApiKeyConfig, 'name' | 'enabled' | 'expiresAt' | 'description' | 'role'>> & {
+  updates: Partial<Pick<ApiKeyConfig, 'name' | 'enabled' | 'expiresAt' | 'description'>> & {
     modelAccess?: ModelAccessConfig | null;
   }
 ): { success: boolean; data?: ApiKeyConfig; error?: string } {
@@ -187,7 +183,6 @@ export function updateApiKey(
     ...(updates.enabled !== undefined && { enabled: Boolean(updates.enabled) }),
     ...(updates.expiresAt !== undefined && { expiresAt: updates.expiresAt }),
     ...(updates.description !== undefined && { description: updates.description.trim() }),
-    ...(updates.role !== undefined && { role: updates.role }),
     ...(updates.modelAccess !== undefined && { modelAccess: updates.modelAccess ?? undefined }),
   };
 

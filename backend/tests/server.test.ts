@@ -26,7 +26,6 @@ describe('Fastify Gateway Server & OpenAI Endpoints', () => {
       id: 'key-server-test',
       name: 'server.test fixture',
       key: TEST_KEY,
-      role: 'user',
       enabled: true,
       createdAt: new Date().toISOString(),
     },

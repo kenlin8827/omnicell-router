@@ -1346,7 +1346,7 @@ export function registerConsoleRoutes(
   app.get('/api/admin/api-keys', handleListApiKeys);
 
   const handleCreateApiKey = async (req: any, reply: any) => {
-    const body = req.body as { name: string; key?: string; role?: 'admin' | 'user'; expiresAt?: string; description?: string; modelAccess?: unknown };
+    const body = req.body as { name: string; key?: string; expiresAt?: string; description?: string; modelAccess?: unknown };
     if (!body?.name) {
       return reply.status(400).send({ success: false, message: 'API Key name is required' });
     }
@@ -1362,7 +1362,7 @@ export function registerConsoleRoutes(
 
   const handleUpdateApiKey = async (req: any, reply: any) => {
     const { id } = req.params as { id: string };
-    const body = req.body as { name?: string; enabled?: boolean; expiresAt?: string; description?: string; role?: 'admin' | 'user'; modelAccess?: unknown };
+    const body = req.body as { name?: string; enabled?: boolean; expiresAt?: string; description?: string; modelAccess?: unknown };
     const access = validateModelAccess(body?.modelAccess);
     if (access.error) {
       return reply.status(400).send({ success: false, error: access.error });

@@ -56,12 +56,12 @@ function compileEntryMatcher(entry: string): (modelId: string) => boolean {
 
 /**
  * Extract the effective model-access policy for a validated key.
- * Returns undefined when the key is unrestricted (no policy configured, or
- * admin role — admins always see & use everything).
+ * Returns undefined when the key is unrestricted (no policy configured —
+ * unrestricted is the default; restrictions only apply when a key has an
+ * explicit modelAccess policy).
  */
 export function getModelAccessPolicy(keyConfig?: ApiKeyConfig): ModelAccessConfig | undefined {
   if (!keyConfig) return undefined;
-  if (keyConfig.role === 'admin') return undefined;
   const access = keyConfig.modelAccess;
   if (!access || (access.mode !== 'allow' && access.mode !== 'deny')) return undefined;
   if (!Array.isArray(access.models)) return undefined;

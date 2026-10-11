@@ -301,7 +301,6 @@ export interface ApiKeyConfig {
   id: string; // Unique identifier, e.g. 'key-xxxxxx'
   name: string; // Client / application name, e.g. 'Cursor IDE', 'NextChat'
   key: string; // The token string, e.g. 'sk-ocr-xxxxxx'
-  role?: 'admin' | 'user';
   enabled: boolean;
   createdAt: string;
   expiresAt?: string;

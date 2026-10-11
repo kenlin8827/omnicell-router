@@ -679,7 +679,6 @@ export const api = {
   async createApiKey(payload: {
     name: string;
     key?: string;
-    role?: 'admin' | 'user';
     expiresAt?: string;
     description?: string;
     modelAccess?: ApiKeyModelAccess;
@@ -819,7 +818,6 @@ export interface ApiKeyItem {
   id: string;
   name: string;
   key: string;
-  role?: 'admin' | 'user';
   enabled: boolean;
   createdAt: string;
   expiresAt?: string;

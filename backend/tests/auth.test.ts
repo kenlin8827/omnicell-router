@@ -16,7 +16,6 @@ describe('API Key Authentication & Client Auth Flow', () => {
         id: 'key-test-client',
         name: 'Cursor IDE',
         key: 'sk-ocr-test-client-valid',
-        role: 'user',
         enabled: true,
         createdAt: new Date().toISOString(),
       },
@@ -24,7 +23,6 @@ describe('API Key Authentication & Client Auth Flow', () => {
         id: 'key-disabled-client',
         name: 'Disabled App',
         key: 'sk-ocr-test-disabled',
-        role: 'user',
         enabled: false,
         createdAt: new Date().toISOString(),
       },
@@ -40,7 +38,6 @@ describe('API Key Authentication & Client Auth Flow', () => {
     // 2. Master Admin Key
     const adminCheck = validateApiKey('master-secret-key-1234', testConfig);
     assert.strictEqual(adminCheck.valid, true);
-    assert.strictEqual(adminCheck.isAdmin, true);
 
     // 3. Valid Client Key
     const clientCheck = validateApiKey('sk-ocr-test-client-valid', testConfig);

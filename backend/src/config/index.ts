@@ -131,7 +131,10 @@ export function loadConfig(configPath?: string): RouterConfig {
       return {
         ...DEFAULT_CONFIG,
         ...parsedRest,
-        apiKeys: parsed?.apiKeys || DEFAULT_CONFIG.apiKeys,
+        // Legacy `role` (removed key-level RBAC — unrestricted is expressed by
+        // simply not configuring modelAccess) is stripped so stale keys don't
+        // get re-persisted on the next config save.
+        apiKeys: (parsed?.apiKeys || DEFAULT_CONFIG.apiKeys).map(({ role: _role, ...k }: { role?: unknown; [k: string]: unknown }) => k),
         tiers: parsed?.tiers || {},
         routing: { ...DEFAULT_CONFIG.routing, ...parsed?.routing },
         fallback: { ...DEFAULT_CONFIG.fallback, ...parsed?.fallback },

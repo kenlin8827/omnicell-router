@@ -873,9 +873,6 @@ export interface TranslationDict {
     namePlaceholder: string;
     customKeyLabel: string;
     customKeyPlaceholder: string;
-    roleLabel: string;
-    roleUser: string;
-    roleAdmin: string;
     descLabel: string;
     descPlaceholder: string;
     cancelBtn: string;
@@ -887,7 +884,6 @@ export interface TranslationDict {
     doneBtn: string;
     thName: string;
     thKey: string;
-    thRole: string;
     thAccess: string;
     thStatus: string;
     thCreated: string;
