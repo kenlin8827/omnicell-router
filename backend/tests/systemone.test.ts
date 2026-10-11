@@ -128,12 +128,15 @@ describe('System One: chat request synthesis', () => {
 });
 
 describe('System One: reasoning-effort pin', () => {
-  test('none when supported, lowest level for thinking-only models, omitted otherwise', () => {
+  test('lowest trustworthy level: explicit → its lowest, coarse boolean → low, undeclared → omitted', () => {
+    // Explicit declaration → its lowest level ('none' is trusted only here).
     expect(decisionReasoningEffort({ supportedReasoningEfforts: ['none', 'low', 'high'] })).toBe('none');
-    // Legacy boolean = full ladder (includes none).
-    expect(decisionReasoningEffort({ supportsReasoningEffort: true })).toBe('none');
-    // Thinking-only model → its lowest declared level.
     expect(decisionReasoningEffort({ supportedReasoningEfforts: ['medium', 'low', 'high'] })).toBe('low');
+    // Coarse legacy boolean certifies "thinking-capable", NOT that the
+    // vendor enum accepts 'none' → start at the lowest universally-safe level.
+    expect(decisionReasoningEffort({ supportsReasoningEffort: true })).toBe('low');
+    // Operator effortMap translation wins over capability inference.
+    expect(decisionReasoningEffort({ effortMap: { none: 'low' } })).toBe('low');
     // No explicit effort control → omit the field entirely.
     expect(decisionReasoningEffort({})).toBeUndefined();
   });
@@ -315,6 +318,224 @@ describe('POST /v1/systemone end-to-end', () => {
       expect(String(seen[0].messages[0].content)).toContain('System One');
       expect(seen[1].reasoning_effort).toBe('none');
       expect(String(seen[1].messages[3].content)).toContain('could not be used');
+    } finally {
+      upstream.stop(true);
+    }
+  });
+
+  test('upstream rejecting the effort value → retried with low, then memoized', async () => {
+    useSandbox('plain');
+    const seen: any[] = [];
+    const upstream = serve({
+      port: 0,
+      async fetch(req) {
+        const payload = await req.json();
+        seen.push(payload);
+        if (payload.reasoning_effort === 'none') {
+          return Response.json(
+            {
+              error: {
+                code: 'invalid_parameter_error',
+                message: "'reasoning_effort' must be one of: 'low', 'high', 'max'",
+                type: 'invalid_request_error',
+              },
+            },
+            { status: 400 }
+          );
+        }
+        return Response.json(
+          fakeChat(
+            JSON.stringify({
+              answers: {
+                department: { choice: 'billing' },
+                escalate: { noul: 0.5 },
+                severity: { score: 1 },
+              },
+            })
+          )
+        );
+      },
+    });
+    try {
+      const config = makeConfig(
+        [
+          {
+            name: 'reject-none',
+            type: 'openai-compatible',
+            baseUrl: `http://localhost:${upstream.port}`,
+            apiKey: 'sk-test',
+            timeoutMs: 5000,
+          },
+        ],
+        [
+          {
+            id: 'test/reject-none',
+            provider: 'reject-none',
+            upstreamModel: 'reject-none',
+            tier: 'plus',
+            supportedReasoningEfforts: ['none', 'low', 'high'],
+            pricing: { input: 0, output: 0, cacheRead: 0 },
+          },
+        ]
+      );
+      const { app } = createServer(config);
+      const res = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'test/reject-none' } });
+      expect(res.statusCode).toBe(200);
+      expect(seen.length).toBe(2);
+      expect(seen[0].reasoning_effort).toBe('none');
+      expect(seen[1].reasoning_effort).toBe('low');
+      // Memoized: the next request goes straight to 'low' — no extra attempt.
+      const res2 = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'test/reject-none' } });
+      expect(res2.statusCode).toBe(200);
+      expect(seen.length).toBe(3);
+      expect(seen[2].reasoning_effort).toBe('low');
+    } finally {
+      upstream.stop(true);
+    }
+  });
+
+  test('upstream rejecting every effort value → retried without the field, then memoized', async () => {
+    useSandbox('plain');
+    const seen: any[] = [];
+    const upstream = serve({
+      port: 0,
+      async fetch(req) {
+        const payload = await req.json();
+        seen.push(payload);
+        if (payload.reasoning_effort !== undefined) {
+          return Response.json(
+            {
+              error: {
+                code: 'invalid_parameter_error',
+                message: "'reasoning_effort' must be one of: 'low', 'high', 'max'",
+                type: 'invalid_request_error',
+              },
+            },
+            { status: 400 }
+          );
+        }
+        return Response.json(
+          fakeChat(
+            JSON.stringify({
+              answers: {
+                department: { choice: 'billing' },
+                escalate: { noul: 0.5 },
+                severity: { score: 1 },
+              },
+            })
+          )
+        );
+      },
+    });
+    try {
+      const config = makeConfig(
+        [
+          {
+            name: 'reject-all',
+            type: 'openai-compatible',
+            baseUrl: `http://localhost:${upstream.port}`,
+            apiKey: 'sk-test',
+            timeoutMs: 5000,
+          },
+        ],
+        [
+          {
+            id: 'test/reject-all',
+            provider: 'reject-all',
+            upstreamModel: 'reject-all',
+            tier: 'plus',
+            supportedReasoningEfforts: ['none'],
+            pricing: { input: 0, output: 0, cacheRead: 0 },
+          },
+        ]
+      );
+      const { app } = createServer(config);
+      const res = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'test/reject-all' } });
+      expect(res.statusCode).toBe(200);
+      expect(seen.length).toBe(3);
+      expect(seen[0].reasoning_effort).toBe('none');
+      expect(seen[1].reasoning_effort).toBe('low');
+      expect(seen[2].reasoning_effort).toBeUndefined();
+      // Memoized as 'omit': the next request sends no effort field at all.
+      const res2 = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'test/reject-all' } });
+      expect(res2.statusCode).toBe(200);
+      expect(seen.length).toBe(4);
+      expect(seen[3].reasoning_effort).toBeUndefined();
+    } finally {
+      upstream.stop(true);
+    }
+  });
+
+  test('effort rejection targeting an enum without none/low → picks its lowest allowed level', async () => {
+    useSandbox('plain');
+    const seen: any[] = [];
+    const upstream = serve({
+      port: 0,
+      async fetch(req) {
+        const payload = await req.json();
+        seen.push(payload);
+        if (
+          payload.reasoning_effort !== undefined &&
+          payload.reasoning_effort !== 'medium' &&
+          payload.reasoning_effort !== 'high'
+        ) {
+          return Response.json(
+            {
+              error: {
+                code: 'invalid_parameter_error',
+                message: "'reasoning_effort' must be one of: 'medium', 'high'",
+                type: 'invalid_request_error',
+              },
+            },
+            { status: 400 }
+          );
+        }
+        return Response.json(
+          fakeChat(
+            JSON.stringify({
+              answers: {
+                department: { choice: 'billing' },
+                escalate: { noul: 0.5 },
+                severity: { score: 1 },
+              },
+            })
+          )
+        );
+      },
+    });
+    try {
+      const config = makeConfig(
+        [
+          {
+            name: 'reject-none-low',
+            type: 'openai-compatible',
+            baseUrl: `http://localhost:${upstream.port}`,
+            apiKey: 'sk-test',
+            timeoutMs: 5000,
+          },
+        ],
+        [
+          {
+            id: 'test/parse-enum',
+            provider: 'reject-none-low',
+            upstreamModel: 'parse-enum',
+            tier: 'plus',
+            supportedReasoningEfforts: ['none', 'medium', 'high'],
+            pricing: { input: 0, output: 0, cacheRead: 0 },
+          },
+        ]
+      );
+      const { app } = createServer(config);
+      const res = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'test/parse-enum' } });
+      expect(res.statusCode).toBe(200);
+      expect(seen.length).toBe(2);
+      expect(seen[0].reasoning_effort).toBe('none');
+      expect(seen[1].reasoning_effort).toBe('medium');
+      // Memoized: straight to 'medium' next time.
+      const res2 = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'test/parse-enum' } });
+      expect(res2.statusCode).toBe(200);
+      expect(seen.length).toBe(3);
+      expect(seen[2].reasoning_effort).toBe('medium');
     } finally {
       upstream.stop(true);
     }

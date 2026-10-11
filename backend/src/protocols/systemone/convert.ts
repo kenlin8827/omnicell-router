@@ -9,7 +9,8 @@
  * ADR-0014, fidelity statement).
  */
 import { ChatCompletionRequest, ChatCompletionResponse, ChatMessage } from '../../types/openai.js';
-import { EFFORT_LADDER, ReasoningEffort, modelSupportsEfforts } from '../../types/router.js';
+import { EFFORT_LADDER, EffortMap, ReasoningEffort } from '../../types/router.js';
+import { applyEffortMap } from '../../providers/member-match.js';
 import {
   SystemoneAnswer,
   SystemoneChoiceAnswer,
@@ -93,24 +94,42 @@ export const DECISION_SYSTEM_PROMPT = [
 /**
  * Reasoning-effort pin for the conversion path: System One calls are fast
  * structured decisions — never let a reasoning model burn thinking tokens on
- * them when its declared capability allows a lower / no-think setting.
- *   - `none` in the declared support set  → 'none' (explicit no-think)
- *   - thinking-only model                 → its LOWEST declared level
- *   - no explicit effort control declared → undefined (omit the field —
- *     never inject a parameter a strict upstream might reject)
+ * them when the model can serve a lower level. ONE rule: the LOWEST level we
+ * can trust — never a hard-coded 'none'.
+ *   1. operator `effortMap` translation of 'none' (explicit override — a
+ *      none→low map teaches an upstream whose real enum lacks 'none');
+ *   2. explicit `supportedReasoningEfforts` → its lowest level ('none' is
+ *      trusted only here — an exact declaration);
+ *   3. coarse legacy/catalog boolean → 'low': "thinking-capable" cannot
+ *      certify that the vendor enum accepts 'none', and the documented
+ *      legacy semantics are the 5 non-none levels;
+ *   4. no effort declaration at all → undefined (send nothing).
+ * Catalog capability data is coarse (a boolean says nothing about the real
+ * enum) — the /v1/systemone route therefore also calibrates at runtime: a
+ * rejected effort value is re-targeted from the vendor's own error
+ * enumeration (its lowest allowed level), then falls back to the omit
+ * chain, and the accepted preference is memoized per model.
  */
 export function decisionReasoningEffort(model: {
   supportedReasoningEfforts?: readonly ReasoningEffort[];
   supportsReasoningEffort?: boolean;
+  effortMap?: EffortMap;
 }): ReasoningEffort | undefined {
-  const supported = modelSupportsEfforts(model.supportedReasoningEfforts, model.supportsReasoningEffort);
-  if (!supported) return undefined;
-  if (supported.includes('none')) return 'none';
-  let lowest = supported[0];
-  for (const level of supported) {
-    if (EFFORT_LADDER.indexOf(level) < EFFORT_LADDER.indexOf(lowest)) lowest = level;
+  const mapped = applyEffortMap(model.effortMap, 'none');
+  if (mapped !== 'none') return mapped;
+
+  const explicit = model.supportedReasoningEfforts;
+  if (explicit && explicit.length > 0) {
+    let lowest = explicit[0];
+    for (const level of explicit) {
+      if (EFFORT_LADDER.indexOf(level) < EFFORT_LADDER.indexOf(lowest)) lowest = level;
+    }
+    return lowest;
   }
-  return lowest;
+
+  if (model.supportsReasoningEffort === true) return 'low';
+
+  return undefined;
 }
 
 /**
