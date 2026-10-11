@@ -341,7 +341,7 @@ export function registerConsoleRoutes(
   const handleStatus = async () => {
     const cbSummary = registry.getCircuitBreakerManager().getSummary();
     const metrics = orchestrator.getTracker().getStats();
-    const clients = getAllClientStatuses();
+    const clients = await getAllClientStatuses();
     const config = loadConfig();
 
     const maskedProviders = (config.providers || []).map((p) => ({

@@ -421,7 +421,7 @@ export async function getStatusOutput(): Promise<{
     }
   }
 
-  const clients = getAllClientStatuses();
+  const clients = await getAllClientStatuses();
 
   let uptime: string | undefined;
   if (info?.startTime) {

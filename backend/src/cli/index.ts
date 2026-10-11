@@ -43,10 +43,12 @@ ${C.bold}USER INTERFACE:${C.reset}
 
 ${C.bold}CLIENT INTEGRATIONS (SETUP & TEARDOWN):${C.reset}
   ${C.magenta}ocr setup opencode${C.reset}      Hook OpenCode to route via local OCR gateway
+  ${C.magenta}ocr setup opencode-proxy${C.reset} Hook OpenCode (proxy mode) via the OCR forward proxy
   ${C.magenta}ocr setup claude${C.reset}        Hook Claude Code / Desktop to route via local OCR gateway
   ${C.magenta}ocr setup codex${C.reset}         Hook Codex / OpenAI-compatible CLI to local OCR gateway
 
   ${C.yellow}ocr teardown opencode${C.reset}   Unhook OpenCode and restore original configuration
+  ${C.yellow}ocr teardown opencode-proxy${C.reset} Unhook OpenCode proxy mode and restore service env
   ${C.yellow}ocr teardown claude${C.reset}     Unhook Claude and restore official direct connection
   ${C.yellow}ocr teardown codex${C.reset}      Unhook Codex and restore standard settings
 
@@ -170,7 +172,7 @@ async function main(): Promise<void> {
       printBanner();
       const client = args[1] as SupportedClient;
       if (!client) {
-        console.error(`${C.red}✗ Missing client target.${C.reset} Usage: \`ocr setup <opencode | claude | codex>\``);
+        console.error(`${C.red}✗ Missing client target.${C.reset} Usage: \`ocr setup <opencode | opencode-proxy | claude | codex>\``);
         process.exit(1);
       }
       const res = await setupClient(client, { port });
@@ -187,7 +189,7 @@ async function main(): Promise<void> {
       printBanner();
       const client = args[1] as SupportedClient;
       if (!client) {
-        console.error(`${C.red}✗ Missing client target.${C.reset} Usage: \`ocr teardown <opencode | claude | codex>\``);
+        console.error(`${C.red}✗ Missing client target.${C.reset} Usage: \`ocr teardown <opencode | opencode-proxy | claude | codex>\``);
         process.exit(1);
       }
       const res = await teardownClient(client);

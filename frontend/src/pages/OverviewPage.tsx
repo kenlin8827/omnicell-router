@@ -236,9 +236,9 @@ export const OverviewPage: React.FC = () => {
                 }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
-                  <BrandIcon name={c.name} size={18} />
+                  <BrandIcon name={c.name === 'opencode-proxy' ? 'opencode' : c.name} size={18} />
                   <div>
-                    <div style={{ fontWeight: 600, fontSize: '13px' }}>{c.displayName}</div>
+                    <div style={{ fontWeight: 600, fontSize: '13px' }}>{c.name === 'opencode-proxy' ? t('clients.nameOpencodeProxy') : c.displayName}</div>
                     <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace' }}>
                       {c.configPath}
                     </div>

@@ -691,6 +691,21 @@ hiddenBadge: string;
     addModel: string;
     modelAuto: string;
     reset: string;
+    proxyHint: string;
+    nameOpencodeProxy: string;
+    /** Static "Other clients" row: manual hookup guide for non-hooked clients. */
+    otherTitle: string;
+    otherBadge: string;
+    otherHint: string;
+    otherIntro: string;
+    otherStep1: string;
+    otherStep2: string;
+    otherProtoOpenai: string;
+    otherProtoAnthropic: string;
+    otherOpenaiAuth: string;
+    otherAnthropicAuth: string;
+    otherStep3: string;
+    otherMore: string;
   };
   settings: {
     title: string;

@@ -39,8 +39,9 @@ export interface ClientStatus {
   backupExists: boolean;
   /** Extra concrete models exposed in the client's model switcher (opencode) */
   extraModels?: string[];
-  /** This client's model slots; value undefined = auto (intelligent routing) */
-  modelSlots: { key: string; value?: string; default?: string }[];
+  /** This client's model slots; value undefined = auto (intelligent routing).
+   *  Optional: legacy backend responses (pre-modelSlots) omit the field entirely. */
+  modelSlots?: { key: string; value?: string; default?: string }[];
 }
 
 // Mirrors backend CircuitBreakerSnapshot (backend/src/resilience/types.ts)

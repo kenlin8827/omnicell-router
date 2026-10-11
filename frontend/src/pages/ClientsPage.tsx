@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Terminal, Check, X, RefreshCw, Undo2, ArrowUpRight, RotateCcw, ChevronDown } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Terminal, Check, X, RefreshCw, Undo2, ArrowUpRight, RotateCcw, ChevronDown, Puzzle } from 'lucide-react';
 import { BrandIcon } from '../components/BrandIcons';
 import { Combobox } from '../components/Combobox';
 import { api, type ClientStatus, type ApiKeyItem } from '../lib/api';
@@ -7,12 +8,16 @@ import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 
 /**
- * Slots to render for a client. Falls back to a single `main` slot when the
- * backend predates modelSlots (old gateway process) so the selector never
- * disappears from the UI.
+ * Slots to render for a client. An explicit `[]` means the client is
+ * slot-less by design (opencode-proxy routes traffic transparently and keeps
+ * opencode-native models — no model picker). A MISSING field means the
+ * backend predates modelSlots (old gateway process) — fall back to a single
+ * `main` slot so the selector never disappears from the UI.
  */
-const clientSlots = (c: ClientStatus): { key: string; value?: string; default?: string }[] =>
-  c.modelSlots && c.modelSlots.length > 0 ? c.modelSlots : [{ key: 'main', default: 'auto' }];
+const clientSlots = (c: ClientStatus): { key: string; value?: string; default?: string }[] => {
+  if (c.modelSlots === undefined) return [{ key: 'main', default: 'auto' }];
+  return c.modelSlots;
+};
 
 export const ClientsPage: React.FC = () => {
   const { t } = useI18n();
@@ -45,11 +50,15 @@ export const ClientsPage: React.FC = () => {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   /** Seeds the default expansion (first un-hooked client) exactly once, on initial load */
   const didSeedExpand = useRef(false);
+  /** Live gateway port for the manual-endpoint guide ('' → fall back to console origin / OCR default). */
+  const [port, setPort] = useState<string>('');
+  const gwPort = port || window.location.port || '4000';
 
   const loadClients = async () => {
     try {
       const data = await api.getStatus();
       setClients(data.clients || []);
+      if (data.port) setPort(String(data.port));
       // Progressive setup: with nothing hooked yet, pre-expand the first candidate so
       // its form is visible; once anything is hooked, keep everything collapsed.
       if (!didSeedExpand.current) {
@@ -189,6 +198,10 @@ export const ClientsPage: React.FC = () => {
       </button>
     );
 
+  /** Accordion state for the static "Other clients" manual-setup row ('other' can't collide with adapter names). */
+  const otherOpen = !!expanded['other'];
+  const toggleOther = () => setExpanded(prev => ({ ...prev, other: !otherOpen }));
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <div className="card">
@@ -249,8 +262,8 @@ export const ClientsPage: React.FC = () => {
                     style={{ flexShrink: 0, transition: 'transform 0.15s ease', transform: open ? 'rotate(180deg)' : 'none' }}
                   />
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', fontSize: '14px', fontWeight: 700 }}>
-                    <BrandIcon name={c.name} size={18} />
-                    {c.displayName}
+                    <BrandIcon name={c.name === 'opencode-proxy' ? 'opencode' : c.name} size={18} />
+                    {c.name === 'opencode-proxy' ? t('clients.nameOpencodeProxy') : c.displayName}
                   </span>
                   <span
                     title={c.configPath}
@@ -288,18 +301,26 @@ export const ClientsPage: React.FC = () => {
                       </div>
                     </div>
 
+                    {c.name === 'opencode-proxy' && (
+                      <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, borderLeft: '2px solid var(--accent)', paddingLeft: '10px' }}>
+                        {t('clients.proxyHint')}
+                      </div>
+                    )}
+
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '12px' }}>
-                <div style={{ gridColumn: '1 / -1' }}>
-                  <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '6px' }}>{t('clients.apiKey')}</div>
-                  <Combobox
-                    value={apiKeySel[c.name] || ''}
-                    onChange={v => setApiKeySel(prev => ({ ...prev, [c.name]: v }))}
-                    options={[
-                      { value: '', label: t('clients.apiKeyKeep') },
-                      ...apiKeys.map(k => ({ value: k.key, label: k.name, meta: k.key.length > 8 ? `…${k.key.slice(-4)}` : undefined })),
-                    ]}
-                  />
-                </div>
+                {c.name !== 'opencode-proxy' && (
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '6px' }}>{t('clients.apiKey')}</div>
+                    <Combobox
+                      value={apiKeySel[c.name] || ''}
+                      onChange={v => setApiKeySel(prev => ({ ...prev, [c.name]: v }))}
+                      options={[
+                        { value: '', label: t('clients.apiKeyKeep') },
+                        ...apiKeys.map(k => ({ value: k.key, label: k.name, meta: k.key.length > 8 ? `…${k.key.slice(-4)}` : undefined })),
+                      ]}
+                    />
+                  </div>
+                )}
                       {c.name === 'claude' && (
                   <div>
                     <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '6px' }}>{t('clients.contextWindow')}</div>
@@ -354,18 +375,109 @@ export const ClientsPage: React.FC = () => {
                       )}
                     </div>
 
-                    <div style={{ display: 'flex', gap: '8px' }}>
-                      {renderActionButtons(c, true)}
-                      <button className="btn btn-sm" onClick={() => handleResetModel(c.name)} disabled={loading} title={t('clients.reset')}>
-                        <RotateCcw size={12} />
-                        <span>{t('clients.reset')}</span>
-                      </button>
-                    </div>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  {renderActionButtons(c, true)}
+                  {clientSlots(c).length > 0 && (
+                    <button className="btn btn-sm" onClick={() => handleResetModel(c.name)} disabled={loading} title={t('clients.reset')}>
+                      <RotateCcw size={12} />
+                      <span>{t('clients.reset')}</span>
+                    </button>
+                  )}
+                </div>
                   </div>
                 )}
               </div>
             );
           })}
+
+          {/* Static row: manual hookup guide for clients the gateway can't auto-hook
+              (anything speaking OpenAI or Anthropic wire protocol). Pure documentation —
+              no backend adapter, no status, no action buttons. */}
+          <div
+            style={{
+              background: 'rgba(255, 255, 255, 0.02)',
+              border: '1px solid var(--card-border)',
+              borderRadius: '10px',
+              overflow: 'hidden',
+            }}
+          >
+            <div
+              role="button"
+              tabIndex={0}
+              aria-expanded={otherOpen}
+              onClick={toggleOther}
+              onKeyDown={e => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  toggleOther();
+                }
+              }}
+              style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '14px 18px', cursor: 'pointer', userSelect: 'none' }}
+            >
+              <ChevronDown
+                size={16}
+                color="var(--text-dim)"
+                style={{ flexShrink: 0, transition: 'transform 0.15s ease', transform: otherOpen ? 'rotate(180deg)' : 'none' }}
+              />
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', fontSize: '14px', fontWeight: 700 }}>
+                <Puzzle size={18} color="var(--accent)" />
+                {t('clients.otherTitle')}
+              </span>
+              <span style={{ flex: 1, fontSize: '11px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {t('clients.otherHint')}
+              </span>
+              <span className="badge" style={{ background: 'rgba(255,255,255,0.06)', color: 'var(--text-dim)' }}>
+                {t('clients.otherBadge')}
+              </span>
+            </div>
+
+            {otherOpen && (
+              <div style={{ padding: '16px 18px', borderTop: '1px solid var(--card-border)', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.7 }}>
+                  {t('clients.otherIntro')}
+                </p>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.7 }}>
+                  <div>{t('clients.otherStep1')}</div>
+                  <div>{t('clients.otherStep2')}</div>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '12px' }}>
+                  <div style={{ background: 'var(--input-bg)', border: '1px solid var(--card-border)', borderRadius: '8px', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('clients.otherProtoOpenai')}</div>
+                    <code style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '12px', color: 'var(--text-main)', wordBreak: 'break-all' }}>
+                      {`http://127.0.0.1:${gwPort}/v1`}
+                    </code>
+                    <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '11px', color: 'var(--text-dim)' }}>
+                      POST /v1/chat/completions · /v1/responses · /v1/models
+                    </div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('clients.otherOpenaiAuth')}</div>
+                  </div>
+                  <div style={{ background: 'var(--input-bg)', border: '1px solid var(--card-border)', borderRadius: '8px', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('clients.otherProtoAnthropic')}</div>
+                    <code style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '12px', color: 'var(--text-main)', wordBreak: 'break-all' }}>
+                      {`http://127.0.0.1:${gwPort}`}
+                    </code>
+                    <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '11px', color: 'var(--text-dim)' }}>
+                      POST /v1/messages
+                    </div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('clients.otherAnthropicAuth')}</div>
+                  </div>
+                </div>
+
+                <div style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.7 }}>
+                  {t('clients.otherStep3')}
+                </div>
+
+                <div style={{ fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.7 }}>
+                  {t('clients.otherMore')}{' '}
+                  <Link to="/api-keys" style={{ color: 'var(--accent)', textDecoration: 'none' }}>
+                    {t('nav.apiKeys')} →
+                  </Link>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>

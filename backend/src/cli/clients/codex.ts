@@ -26,7 +26,7 @@ export class CodexClientAdapter implements ClientAdapter {
     return candidateCodex;
   }
 
-  getStatus(): ClientHookStatus {
+  async getStatus(): Promise<ClientHookStatus> {
     const configPath = this.getConfigPath();
     const exists = fs.existsSync(configPath);
     const backupExists = fs.existsSync(`${configPath}.bak.ocr`);

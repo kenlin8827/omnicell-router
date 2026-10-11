@@ -80,7 +80,8 @@ export interface ClientAdapter {
   name: SupportedClient;
   displayName: string;
   getConfigPath(): string;
-  getStatus(): ClientHookStatus;
+  /** Async by contract: adapters may probe external processes (e.g. `opencode service get env`); never block the event loop. */
+  getStatus(): Promise<ClientHookStatus>;
   /**
    * Model slots: slotKey → model id | 'auto' (intelligent routing default).
    * Only slots present in the record are written; absent slots stay untouched

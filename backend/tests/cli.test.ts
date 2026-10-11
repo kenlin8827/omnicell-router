@@ -33,7 +33,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     adapter.getConfigPath = () => configPath;
 
     // Initial status
-    let status = adapter.getStatus();
+    let status = await adapter.getStatus();
     expect(status.exists).toBe(true);
     expect(status.hooked).toBe(false);
 
@@ -42,7 +42,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(setupRes.success).toBe(true);
     expect(fs.existsSync(`${configPath}.bak.ocr`)).toBe(true);
 
-    status = adapter.getStatus();
+    status = await adapter.getStatus();
     expect(status.hooked).toBe(true);
 
     const updated = JSON.parse(fs.readFileSync(configPath, 'utf8'));
@@ -54,7 +54,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     const teardownRes = await adapter.teardown();
     expect(teardownRes.success).toBe(true);
 
-    status = adapter.getStatus();
+    status = await adapter.getStatus();
     expect(status.hooked).toBe(false);
 
     const restored = JSON.parse(fs.readFileSync(configPath, 'utf8'));
@@ -101,7 +101,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     const adapter = new ClaudeClientAdapter();
     adapter.getConfigPath = () => configPath;
 
-    let status = adapter.getStatus();
+    let status = await adapter.getStatus();
     expect(status.hooked).toBe(false);
 
     // Setup
@@ -109,7 +109,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(setupRes.success).toBe(true);
     expect(fs.existsSync(`${configPath}.bak.ocr`)).toBe(true);
 
-    status = adapter.getStatus();
+    status = await adapter.getStatus();
     expect(status.hooked).toBe(true);
 
     const updated = JSON.parse(fs.readFileSync(configPath, 'utf8'));
@@ -119,7 +119,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     const teardownRes = await adapter.teardown();
     expect(teardownRes.success).toBe(true);
 
-    status = adapter.getStatus();
+    status = await adapter.getStatus();
     expect(status.hooked).toBe(false);
 
     const restored = JSON.parse(fs.readFileSync(configPath, 'utf8'));
@@ -134,13 +134,13 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     const adapter = new CodexClientAdapter();
     adapter.getConfigPath = () => configPath;
 
-    let status = adapter.getStatus();
+    let status = await adapter.getStatus();
     expect(status.hooked).toBe(false);
 
     const setupRes = await adapter.setup({ port: 4000 });
     expect(setupRes.success).toBe(true);
 
-    status = adapter.getStatus();
+    status = await adapter.getStatus();
     expect(status.hooked).toBe(true);
 
     const updated = JSON.parse(fs.readFileSync(configPath, 'utf8'));
@@ -149,7 +149,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     const teardownRes = await adapter.teardown();
     expect(teardownRes.success).toBe(true);
 
-    status = adapter.getStatus();
+    status = await adapter.getStatus();
     expect(status.hooked).toBe(false);
 
     const restored = JSON.parse(fs.readFileSync(configPath, 'utf8'));
@@ -198,7 +198,7 @@ describe('Embedded UI & Management API Endpoints', () => {
     expect(json.metrics).toBeDefined();
     expect(json.circuitBreakers).toBeDefined();
     expect(Array.isArray(json.clients)).toBe(true);
-    expect(json.clients.length).toBe(3);
+    expect(json.clients.length).toBe(4);
   });
 
   it('should support reading and validating raw YAML config on /api/admin/config/raw', async () => {
