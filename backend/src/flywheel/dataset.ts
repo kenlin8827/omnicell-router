@@ -182,7 +182,12 @@ export class FlywheelDataset {
     }
 
     const buf = Buffer.allocUnsafe(Math.min(READ_CHUNK, size - this.indexedBytes));
-    let carry = ''; // unterminated tail of the previous chunk
+    // All splitting below works in BYTES, never in string offsets. Prompts are
+    // multibyte UTF-8, so string positions drift apart from real file offsets
+    // and every recorded line start after non-ASCII text would be wrong — rows
+    // then fail to re-read in readRow() and silently vanish from the browser
+    // while `total` still counts them.
+    let carry: Buffer = Buffer.alloc(0); // undecoded tail bytes after the last newline
     let readFrom = this.indexedBytes;
     while (readFrom < size) {
       const want = Math.min(buf.length, size - readFrom);
@@ -193,21 +198,28 @@ export class FlywheelDataset {
         break;
       }
       if (got <= 0) break;
-      const chunk = carry + buf.toString('utf8', 0, got);
-      // Only complete lines are consumed; the tail (if any) waits for more bytes.
-      const lastNewline = chunk.lastIndexOf('\n');
+      readFrom += got;
+
+      // Copy even when `carry` is empty: a chunk that ends without a newline
+      // becomes the next carry and must survive the following readSync into the
+      // reused `buf` — a subarray would alias it and be overwritten.
+      const chunk = carry.length === 0 ? Buffer.from(buf.subarray(0, got)) : Buffer.concat([carry, buf.subarray(0, got)]);
+      // Only complete lines are consumed; the tail (if any) waits for more
+      // bytes. JSONL never embeds raw newline bytes, so scanning for 0x0A is
+      // an exact line terminator even inside multibyte characters, and the
+      // per-line decode in indexLines() can't corrupt a character split at a
+      // chunk boundary.
+      const lastNewline = chunk.lastIndexOf(0x0a);
       if (lastNewline === -1) {
         carry = chunk;
-        readFrom += got;
         continue;
       }
-      const complete = chunk.slice(0, lastNewline + 1);
+      const complete = chunk.subarray(0, lastNewline + 1);
+      carry = chunk.subarray(lastNewline + 1);
       // The block starts where the previous carry ended: file offset of the
-      // first line = current read position minus the carry we prepended.
-      const blockFileStart = readFrom - carry.length;
-      carry = chunk.slice(lastNewline + 1);
+      // first line = current read position minus the whole chunk in bytes.
+      const blockFileStart = readFrom - chunk.length;
       this.indexLines(complete, blockFileStart);
-      readFrom += got;
       this.indexedBytes = readFrom - carry.length;
     }
     this.indexVersion++;
@@ -246,18 +258,22 @@ export class FlywheelDataset {
   }
 
   /** Parse a block of complete newline-terminated lines into the index. */
-  private indexLines(block: string, blockStartOffset: number): void {
+  private indexLines(block: Buffer, blockStartOffset: number): void {
     let lineStart = 0;
     for (;;) {
-      const nl = block.indexOf('\n', lineStart);
+      const nl = block.indexOf(0x0a, lineStart);
       if (nl === -1) break;
-      const line = block.slice(lineStart, nl).trim();
+      // Decode per line: `lineStart`/`nl` are byte offsets, so each line is a
+      // complete UTF-8 sequence regardless of chunk boundaries.
+      const line = block.toString('utf8', lineStart, nl).trim();
       this.indexOne(line, blockStartOffset + lineStart);
       lineStart = nl + 1;
     }
   }
 
   private indexOne(line: string, byteOffset: number): void {
+    // No size cap here: the collector truncates prompts far below readRow()'s
+    // 4 MiB range cap, so oversized lines are only reachable via out-of-band writes.
     if (!line) return;
     let raw: any;
     try {
@@ -396,7 +412,11 @@ export class FlywheelDataset {
     this.ensureIndexed();
     if (i < 0 || i >= this.n) return null;
     const start = this.offsets[i];
-    const end = i + 1 < this.n ? this.offsets[i + 1] : this.fileSize();
+    // The last indexed row ends where the last COMPLETE line ends
+    // (indexedBytes), not at fileSize(): a torn trailing line (crash
+    // mid-append) must not glue itself onto the last record and break its
+    // JSON.parse.
+    const end = i + 1 < this.n ? this.offsets[i + 1] : this.indexedBytes;
     const len = Math.max(0, end - start);
     if (len === 0 || len > 4 * 1024 * 1024) return null;
     if (this.fd === null) {
@@ -405,9 +425,18 @@ export class FlywheelDataset {
     const buf = Buffer.allocUnsafe(len);
     try {
       const got = fs.readSync(this.fd, buf, 0, len, start);
-      const raw = JSON.parse(buf.toString('utf8', 0, got).trim());
-      const rec = migrateRecord(raw);
-      return rec ? { ...rec, label: this.effectiveLabel(i) } : null;
+      // The range can contain more than one physical line when torn writes or
+      // malformed rows sit between indexed records. Record i starts exactly at
+      // `start`, so the first non-blank line IS record i — parse only that one
+      // and never fall through: a later line would serve a different record's
+      // content under row i's label.
+      for (const line of buf.toString('utf8', 0, got).split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const rec = migrateRecord(JSON.parse(trimmed));
+        return rec ? { ...rec, label: this.effectiveLabel(i) } : null;
+      }
+      return null;
     } catch {
       return null;
     }
