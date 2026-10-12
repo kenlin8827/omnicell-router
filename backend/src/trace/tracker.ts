@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { ReasonParams, TierLevel } from '../types/router.js';
-import { getOcrHomeDir } from '../cli/paths.js';
+import { getEnvPaths } from '../config/env.js';
 import type { TracePersistConfig } from '../config/types.js';
 import type { CaptureKeyIdentity } from '../capture/recorder.js';
 import { openTraceStore, type TraceStore } from './persist.js';
@@ -126,7 +126,7 @@ export class TraceTracker {
 
   private async initPersist(persist?: TracePersistConfig): Promise<void> {
     if (!this.storeWanted) return;
-    const dir = persist?.dir || path.join(getOcrHomeDir(), 'traces');
+    const dir = persist?.dir || getEnvPaths().tracesDir;
     const store = await openTraceStore(dir);
     if (!store) return; // runtime lacks bun:sqlite — memory-only mode
     this.store = store;

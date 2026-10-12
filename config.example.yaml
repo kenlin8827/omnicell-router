@@ -194,11 +194,9 @@ flywheel:
 # at boot + hourly. Request headers are NEVER recorded.
 # WARNING: captured bodies may contain sensitive data; the console /api/ui/*
 # endpoints are auth-exempt. Enable consciously.
-# NOTE: renamed from the legacy `capture:` section — an old file still loads
-# (fields map onto requestCapture: automatically, with a startup warning).
 requestCapture:
   enabled: false                    # Master switch — off by default; the sub-switches below only matter when on
-  # dir: "~/.opencode-router/capture"   # Archive root directory
+  # dir: ""                         # Archive root; default = the active environment's envs/<env>/capture
   retentionDays: 7                  # Date dirs older than today-N are deleted
   maxTotalMB: 512                   # Oldest date dirs deleted first when exceeded
   maxBodyBytes: 65536               # Per-body truncation budget (request & response separately)

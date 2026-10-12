@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createServer } from '../src/server.js';
 import { loadConfig } from '../src/config/index.js';
+import { __resetEnvResolutionForTests } from '../src/config/env.js';
 import { RouterConfig } from '../src/config/types.js';
 import {
   buildDecisionChatRequest,
@@ -15,11 +16,11 @@ import {
 import { ChatCompletionResponse } from '../src/types/openai.js';
 
 // ---------------------------------------------------------------------------
-// Isolation: getConfigPath() prefers cwd/config.yaml, and request-time paths
-// (auth preHandler, systemone.defaultModel) re-read the disk config per call —
-// so chdir into sandboxes holding minimal placeholders BEFORE any server
-// construction. The repo's real (gitignored) config.yaml — api keys, per-key
-// policies, webAuth — must never leak into these tests.
+// Isolation: config resolves from OCR_HOME (envs/<env>/config.yaml) and
+// request-time code re-reads the disk config per call, so a sandbox switch is
+// an OCR_ENV swap plus a resolution-cache reset. The operator's real
+// ~/.opencode-router config — api keys, per-key policies, webAuth — must never
+// leak into these tests.
 // ---------------------------------------------------------------------------
 const originalCwd = process.cwd();
 const sandboxRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-systemone-'));
@@ -27,15 +28,25 @@ const sandboxPlain = path.join(sandboxRoot, 'plain');
 const sandboxDefault = path.join(sandboxRoot, 'with-default');
 fs.mkdirSync(sandboxPlain);
 fs.mkdirSync(sandboxDefault);
+process.env.OCR_HOME = path.join(sandboxRoot, 'home');
 const baseYaml = 'port: 3000\nhost: 127.0.0.1\napiKeys: []\nmodels: []\n';
-fs.writeFileSync(path.join(sandboxPlain, 'config.yaml'), baseYaml);
-fs.writeFileSync(
-  path.join(sandboxDefault, 'config.yaml'),
-  baseYaml + 'systemone:\n  defaultModel: "test/chat"\n'
-);
+
+/** Materialize a sandbox environment under the throwaway OCR_HOME. */
+function seedSandboxEnv(name: string, yaml: string): void {
+  const dir = path.join(process.env.OCR_HOME as string, 'envs', name);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'config.yaml'), yaml);
+  fs.writeFileSync(path.join(dir, 'env.json'), JSON.stringify({ name, type: 'regular', schemaVersion: 1 }));
+}
+
+seedSandboxEnv('plain', baseYaml);
+seedSandboxEnv('with-default', baseYaml + 'systemone:\n  defaultModel: "test/chat"\n');
+process.env.OCR_ENV = 'plain';
 process.chdir(sandboxPlain);
 
 function useSandbox(name: 'plain' | 'with-default'): void {
+  process.env.OCR_ENV = name;
+  __resetEnvResolutionForTests(); // "switch = restart": re-resolve against the new env
   process.chdir(name === 'plain' ? sandboxPlain : sandboxDefault);
 }
 

@@ -22,6 +22,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig } from '../backend/src/config/index.js';
+import { getEnvRootDir } from '../backend/src/config/env.js';
 import { pruneDataset } from '../backend/src/flywheel/prune.js';
 
 function main() {
@@ -30,14 +31,12 @@ function main() {
     apply: args.has('--apply'),
     dropSynthetic: !args.has('--keep-synthetic'),
     dropDuplicates: !args.has('--keep-duplicates'),
-    // Schema v1 rows carry no feature vector and can never be trained on, so
-    // once the v2 pool has real data they are dead weight. Off by default:
-    // they are still the only record of past routing decisions.
-    dropLegacy: args.has('--drop-legacy'),
   };
 
   const config = loadConfig();
-  const datasetPath = path.resolve(process.cwd(), config.flywheel?.datasetPath || './data/flywheel.jsonl');
+  // Same base the gateway uses for a relative datasetPath: the active
+  // environment's root, not the shell's cwd.
+  const datasetPath = path.resolve(getEnvRootDir(), config.flywheel?.datasetPath || './data/flywheel.jsonl');
 
   if (!fs.existsSync(datasetPath)) {
     console.log(`[Flywheel] No dataset at ${datasetPath}.`);
@@ -51,7 +50,6 @@ function main() {
   console.log(`  lines read      : ${result.total}`);
   console.log(`  kept            : ${result.kept}`);
   if (opts.dropSynthetic) console.log(`  dropped synthetic: ${result.dropped.synthetic}`);
-  if (opts.dropLegacy) console.log(`  dropped legacy v1: ${result.dropped.legacy}`);
   if (opts.dropDuplicates) console.log(`  dropped duplicate: ${result.dropped.duplicate}`);
   if (result.dropped.malformed) console.log(`  dropped malformed: ${result.dropped.malformed}`);
 

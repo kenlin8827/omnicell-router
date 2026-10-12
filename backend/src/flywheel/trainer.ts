@@ -17,6 +17,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Layer1Classifier, Layer1ModelWeights, DEFAULT_BASE_MODEL } from '../router/layer1-classifier.js';
+import { getEnvRootDir } from '../config/env.js';
 import { FlywheelDataset } from './dataset.js';
 import { TierLevel } from '../types/router.js';
 
@@ -99,7 +100,9 @@ export class FlywheelTrainer {
     routingEnabled?: boolean
   ) {
     this.dataset = dataset;
-    this.modelPath = modelPath || path.resolve(process.cwd(), 'models/layer1-classifier.json');
+    // Trained weights live inside the environment: <home>/envs/<env>/models/
+    // layer1-classifier.json, so every book-set keeps its own model.
+    this.modelPath = modelPath || path.resolve(getEnvRootDir(), 'models/layer1-classifier.json');
     this.defaultMaxSamples = defaultMaxSamples;
     this.routingEnabled = routingEnabled === true;
   }
@@ -201,10 +204,7 @@ export class FlywheelTrainer {
     });
 
     if (samples.length === 0) {
-      throw new Error(
-        'No trainable samples. The dataset has no labelled rows with a feature vector ' +
-          '(legacy v1 rows predate the feature vector and cannot be back-filled).'
-      );
+      throw new Error('No trainable samples. The dataset has no labelled rows with a feature vector.');
     }
 
     if (featureDimensions !== DEFAULT_BASE_MODEL.featureDimensions) {

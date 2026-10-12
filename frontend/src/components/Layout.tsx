@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutGrid,
   Network,
@@ -32,6 +32,7 @@ import {
   Settings,
   ScrollText,
   Archive,
+  FolderCog,
   type LucideIcon,
 } from 'lucide-react';
 import { api, type GatewayStatusResponse } from '../lib/api';
@@ -97,6 +98,14 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     ],
   },
   {
+    id: 'grp-safety',
+    headingKey: 'nav.grpSafety',
+    icon: ShieldCheck,
+    items: [
+      { to: '/guardrails', labelKey: 'nav.guardrails', icon: ShieldAlert },
+    ],
+  },
+  {
     id: 'grp-observability',
     headingKey: 'nav.grpObservability',
     icon: Waves,
@@ -109,23 +118,20 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     ],
   },
   {
-    id: 'grp-safety',
-    headingKey: 'nav.grpSafety',
-    icon: ShieldCheck,
-    items: [
-      { to: '/guardrails', labelKey: 'nav.guardrails', icon: ShieldAlert },
-    ],
-  },
-  {
     id: 'grp-system',
     headingKey: 'nav.grpSystem',
     icon: Settings,
     items: [
+      { to: '/environments', labelKey: 'nav.environments', icon: FolderCog },
       { to: '/settings', labelKey: 'nav.settings', icon: Sliders },
       { to: '/yaml', labelKey: 'nav.yaml', icon: FileCode2 },
     ],
   },
 ];
+
+// Backend DEFAULT_ENV_NAME — the bootstrap environment every resolution falls
+// back to when neither OCR_ENV nor the pointer names an env.
+const BOOTSTRAP_DEFAULT_ENV = 'default';
 
 const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = {
   '/': { groupKey: 'nav.grpOverview', titleKey: 'nav.overview' },
@@ -146,12 +152,14 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/logs': { groupKey: 'nav.grpObservability', titleKey: 'nav.logs' },
   '/captures': { groupKey: 'nav.grpObservability', titleKey: 'nav.captures' },
   '/flywheel': { groupKey: 'nav.grpObservability', titleKey: 'nav.flywheel' },
+  '/environments': { groupKey: 'nav.grpSystem', titleKey: 'nav.environments' },
   '/settings': { groupKey: 'nav.grpSystem', titleKey: 'nav.settings' },
   '/yaml': { groupKey: 'nav.grpSystem', titleKey: 'nav.yaml' },
 };
 
 export const Layout: React.FC = () => {
   const location = useLocation();
+  const navigate = useNavigate();
   const { lang, setLang, t } = useI18n();
   const confirmDialog = useConfirm();
   const toast = useToast();
@@ -462,6 +470,37 @@ export const Layout: React.FC = () => {
 
           {/* Right Action Tools */}
           <div className="hdr-actions" style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', rowGap: 8, justifyContent: 'flex-end' }}>
+            {/* Current environment (book-set) chip — answers "which config is
+                live" at a glance; the pointer / next-boot view and all env
+                actions live on the Environments page. */}
+            {status?.env?.name && (
+              <button
+                className="btn"
+                onClick={() => navigate('/environments')}
+                title={`${t('env.badge.running')} · ${status.env.name}\n${status.env.configPath}`}
+                style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, maxWidth: 210, flexShrink: 1 }}
+              >
+                <FolderCog size={13} color="var(--accent)" style={{ flexShrink: 0 }} />
+                <span
+                  style={{
+                    fontFamily: 'JetBrains Mono, monospace',
+                    fontSize: 12,
+                    fontWeight: 700,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {status.env.name}
+                </span>
+                {status.env.name === BOOTSTRAP_DEFAULT_ENV && (
+                  <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
+                    {t('env.badge.bootstrap')}
+                  </span>
+                )}
+              </button>
+            )}
+
             {/* Live Status Badge */}
             <div
               style={{

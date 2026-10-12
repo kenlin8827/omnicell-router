@@ -73,8 +73,8 @@ function buildRouterProviderNode(port: number, model?: string, extraModels?: str
     name: 'OpenCode Router',
     options: {
       baseURL: targetUrl,
-      // Gateway-issued key when the user picks one; legacy fallback keeps the
-      // historical placeholder (works only if config.apiKeys contains it).
+      // Gateway-issued key when the user picks one; the placeholder works
+      // only if config.apiKeys contains it.
       apiKey: apiKey || 'ocr-local-token',
     },
     models,
@@ -97,17 +97,13 @@ export class OpenCodeClientAdapter implements ClientAdapter {
     let details = 'Not configured';
 
     if (exists) {
-      // Tolerant JSONC read (comments-safe); fall back to legacy plain-JSON reader.
+      // Tolerant read: JSONC first (comments-safe), plain-JSON fallback.
       const data = readJsonc(configPath) ?? safeReadJson(configPath);
       if (data) {
         const routerEntry = data.provider?.[ROUTER_PROVIDER_ID];
         if (routerEntry?.options?.baseURL) {
           hooked = true;
           details = `Routed to OpenCode Router gateway (${routerEntry.options.baseURL})`;
-        } else if (data.providers?.ocr || data.providers?.['opencode-router']) {
-          // Legacy (invalid-schema) leftovers from previous adapter versions
-          hooked = true;
-          details = 'Legacy hook detected (invalid schema) — re-run setup to fix';
         } else {
           details = 'Active with native providers';
         }
@@ -230,20 +226,6 @@ export class OpenCodeClientAdapter implements ClientAdapter {
     const subagentModel = (data as any)?.agent?.general?.model;
     if (typeof subagentModel === 'string' && subagentModel.startsWith(`${ROUTER_PROVIDER_ID}/`)) {
       patchJsonc(configPath, ['agent', 'general', 'model'], undefined);
-    }
-
-    // Clean legacy invalid-schema leftovers (providers.ocr etc.)
-    const legacy = safeReadJson(configPath);
-    if (legacy?.providers?.ocr || legacy?.[ 'opencode-router-managed' ]) {
-      const cleaned = { ...legacy };
-      delete cleaned.providers?.ocr;
-      delete cleaned[ 'opencode-router-managed' ];
-      if (cleaned._ocr_previous_default !== undefined) {
-        if (cleaned._ocr_previous_default) cleaned.defaultProvider = cleaned._ocr_previous_default;
-        delete cleaned._ocr_previous_default;
-      }
-      if (cleaned.defaultProvider === 'ocr') delete cleaned.defaultProvider;
-      fs.writeFileSync(configPath, JSON.stringify(cleaned, null, 2) + '\n', 'utf8');
     }
 
     return {

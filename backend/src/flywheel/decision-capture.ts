@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig } from '../config/index.js';
+import { getEnvRootDir } from '../config/env.js';
 import type { Layer2JudgeConfig } from '../config/types.js';
 
 /**
@@ -49,10 +50,11 @@ export interface DecisionCaptureRecord {
   latencyMs: number;
 }
 
-// Fixed dataset path (cwd-relative, gitignored data/): the trainer-side
-// contract reads this exact file, so unlike the retired decisionCapture block
-// it is no longer a config knob. Upgrade path if it ever must move: add a
-// classifier.layer2.collectDatasetPath key next to the gate.
+// Fixed dataset path, relative to the ACTIVE ENVIRONMENT's root (see
+// applyConfig): the trainer-side contract reads this exact file, so unlike
+// the retired decisionCapture block it is no longer a config knob. The path
+// resolves against the env root (env.ts getEnvPaths). Upgrade path if it ever
+// must move: add a classifier.layer2.collectDatasetPath key next to the gate.
 const DATASET_PATH = './data/layer2-decisions.jsonl';
 
 // Hard ceiling for the dataset: past this, sampling pauses (see capWarned).
@@ -69,7 +71,7 @@ let capWarned = false;
  */
 export function applyConfig(cfg?: Layer2JudgeConfig): { enabled: boolean; datasetPath: string } {
   const enabled = cfg?.collectEnabled === true;
-  const datasetPath = path.resolve(process.cwd(), DATASET_PATH);
+  const datasetPath = path.resolve(getEnvRootDir(), DATASET_PATH);
   captureConfig = { enabled, datasetPath };
   if (enabled) {
     const dir = path.dirname(datasetPath);

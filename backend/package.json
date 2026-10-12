@@ -6,18 +6,19 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "dev": "bun --watch src/index.ts",
+    "dev": "bun --no-env-file --watch src/index.ts",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "bun test tests",
+    "test": "bun test --no-env-file tests",
     "test:node": "tsx --test tests/**/*.test.ts",
     "start": "node dist/index.js",
-    "start:bun": "bun src/index.ts"
+    "start:bun": "bun --no-env-file src/index.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.0.0",
-    "dotenv": "^16.4.7",
+    "@zip.js/zip.js": "^2.23.0",
     "fastify": "^5.2.1",
+    "fflate": "^0.8.3",
     "jsonc-parser": "^3.3.1",
     "node-forge": "^1.4.0",
     "yaml": "^2.7.0",

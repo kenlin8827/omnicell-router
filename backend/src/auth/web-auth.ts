@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { RouterConfig, WebAuthConfig } from '../config/types.js';
-import { getOcrHomeDir } from '../cli/paths.js';
+import { getEnvPaths } from '../config/env.js';
 
 /* ------------------------------------------------------------------------- *
  * Console (web UI) authentication — username/password login for /admin.
@@ -11,10 +11,12 @@ import { getOcrHomeDir } from '../cli/paths.js';
  *  - Password stored ONLY as `scrypt$<saltHex>$<hashHex>` in config.yaml
  *    (webAuth.passwordHash). Plaintext never persists.
  *  - Stateless HMAC-signed session token in an HttpOnly SameSite=Lax cookie
- *    (`ocr_session`). The signing secret lives in <ocrHome>/webauth-secret
- *    (created on first use) so sessions survive gateway restarts — the UI
+ *    (`ocr_session`). The signing secret lives in the ACTIVE ENVIRONMENT's
+ *    webauth-secret file (default env: <ocrHome>/webauth-secret, created on
+ *    first use) so sessions survive gateway restarts — the UI
  *    "Restart Gateway" button and daemon self-heal must not log the operator
- *    out.
+ *    out. Per-env secrets also stop a cookie from one env being replayed as
+ *    valid in another.
  *  - Non-loopback binding (0.0.0.0, ::, LAN IP) FORCES webAuth on:
  *    validateWebAuthStartup() hard-fails the boot when disabled, because an
  *    unauthenticated admin console reachable from the LAN is a real hole.
@@ -78,7 +80,9 @@ export function verifyPassword(password: string, stored: string | undefined): bo
 let cachedSecret: Buffer | undefined;
 
 function sessionSecretFile(): string {
-  return path.join(getOcrHomeDir(), 'webauth-secret');
+  // Per-ENVIRONMENT secret (<home>/envs/<env>/webauth-secret): two envs signed
+  // with different secrets can never replay each other's session cookies.
+  return getEnvPaths().webauthSecretPath;
 }
 
 /**

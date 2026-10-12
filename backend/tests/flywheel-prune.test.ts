@@ -67,8 +67,8 @@ function v2(id: string, opts: { days?: number; synthetic?: boolean; prompt?: str
   };
 }
 
-/** Legacy v1 row — no feature vector, not prune-legacy-eligible by default. */
-function v1(id: string): Record<string, unknown> {
+/** A pre-v2 row — parseable JSON but no v2 reader: kept verbatim, no keptId. */
+function preV2(id: string): Record<string, unknown> {
   return {
     v: 1,
     id,
@@ -119,25 +119,27 @@ describe('flywheel prune engine (QA-1)', () => {
       dupLine,
       line(v2('synth', { synthetic: true })),
       'not json at all',
-      line(v1('old')),
+      line(preV2('old')),
       dupLine, // same id + content again
     ];
     const before = fs.readdirSync(tmpDir);
-    const plan = planPrune(lines, { dropSynthetic: true, dropDuplicates: true, dropLegacy: false });
+    const plan = planPrune(lines, { dropSynthetic: true, dropDuplicates: true });
 
     assert.strictEqual(plan.total, 5);
-    assert.deepStrictEqual(plan.dropped, { synthetic: 1, duplicate: 1, legacy: 0, malformed: 1 });
+    assert.deepStrictEqual(plan.dropped, { synthetic: 1, duplicate: 1, malformed: 1 });
     // Survivor lines are the ORIGINAL string instances, byte-for-byte.
     assert.deepStrictEqual(plan.keptLines, [lines[0], lines[3]]);
-    assert.ok(plan.keptIds.has('dup') && plan.keptIds.has('old'));
+    // Only records with a parsed id enter keptIds — the pre-v2 line has none.
+    assert.ok(plan.keptIds.has('dup'));
+    assert.strictEqual(plan.keptIds.size, 1);
     assert.deepStrictEqual(fs.readdirSync(tmpDir), before, 'planner wrote nothing');
   });
 
   it('planPrune with every flag off drops only malformed lines', () => {
-    const lines = [line(v2('a', { synthetic: true })), line(v1('b')), 'garbage!!', line(v2('a'))];
-    const plan = planPrune(lines, { dropSynthetic: false, dropDuplicates: false, dropLegacy: false });
+    const lines = [line(v2('a', { synthetic: true })), line(preV2('b')), 'garbage!!', line(v2('a'))];
+    const plan = planPrune(lines, { dropSynthetic: false, dropDuplicates: false });
     assert.strictEqual(plan.total, 4);
-    assert.deepStrictEqual(plan.dropped, { synthetic: 0, duplicate: 0, legacy: 0, malformed: 1 });
+    assert.deepStrictEqual(plan.dropped, { synthetic: 0, duplicate: 0, malformed: 1 });
     assert.strictEqual(plan.keptLines.length, 3);
   });
 
@@ -147,7 +149,7 @@ describe('flywheel prune engine (QA-1)', () => {
     const raw = writeDataset([line(v2('k')), line(v2('s', { synthetic: true }))]);
     const mtimeBefore = fs.statSync(datasetPath).mtimeMs;
 
-    const preview = pruneDataset(datasetPath, { dropSynthetic: true, dropDuplicates: true, dropLegacy: false }, false);
+    const preview = pruneDataset(datasetPath, { dropSynthetic: true, dropDuplicates: true }, false);
     assert.ok(preview);
     assert.strictEqual(preview.applied, false);
     assert.strictEqual(preview.total, 2);
@@ -163,7 +165,7 @@ describe('flywheel prune engine (QA-1)', () => {
     const lines = [line(v2('keep1')), line(v2('syn', { synthetic: true })), line(v2('keep2'))];
     const raw = writeDataset(lines);
 
-    const res = pruneDataset(datasetPath, { dropSynthetic: true, dropDuplicates: true, dropLegacy: false }, true);
+    const res = pruneDataset(datasetPath, { dropSynthetic: true, dropDuplicates: true }, true);
     assert.ok(res && res.applied === true);
     assert.strictEqual(res.backupPath && fs.readFileSync(res.backupPath, 'utf8'), raw, '.bak is the original file');
     assert.strictEqual(fs.readFileSync(datasetPath, 'utf8'), [lines[0], lines[2]].join('\n') + '\n');
@@ -172,7 +174,7 @@ describe('flywheel prune engine (QA-1)', () => {
   it('nothing-to-prune apply: no rewrite, no backup, mtime untouched, applied false', () => {
     writeDataset([line(v2('a')), line(v2('b'))]);
     const mtimeBefore = fs.statSync(datasetPath).mtimeMs;
-    const res = pruneDataset(datasetPath, { dropSynthetic: true, dropDuplicates: true, dropLegacy: false }, true);
+    const res = pruneDataset(datasetPath, { dropSynthetic: true, dropDuplicates: true }, true);
     assert.ok(res);
     assert.strictEqual(res.applied, false);
     assert.strictEqual(res.backupPath, null);
@@ -180,7 +182,7 @@ describe('flywheel prune engine (QA-1)', () => {
   });
 
   it('pruneDataset returns null when the dataset file is missing', () => {
-    const res = pruneDataset(datasetPath, { dropSynthetic: true, dropDuplicates: true, dropLegacy: false }, true);
+    const res = pruneDataset(datasetPath, { dropSynthetic: true, dropDuplicates: true }, true);
     assert.strictEqual(res, null);
     assert.strictEqual(fs.readdirSync(tmpDir).length, 0, 'no-op left no files behind');
   });
@@ -188,7 +190,7 @@ describe('flywheel prune engine (QA-1)', () => {
   it('prune apply purges orphaned overlay entries for dropped ids', () => {
     writeDataset([line(v2('alive')), line(v2('dead', { synthetic: true })), line(v2('ghostly', { synthetic: true }))]);
     writeOverlay({ alive: labelEntry, dead: labelEntry, ghostly: labelEntry });
-    const res = pruneDataset(datasetPath, { dropSynthetic: true, dropDuplicates: true, dropLegacy: false }, true);
+    const res = pruneDataset(datasetPath, { dropSynthetic: true, dropDuplicates: true }, true);
     assert.ok(res);
     assert.strictEqual(res.removedLabels, 2);
     assert.deepStrictEqual(readOverlay(), { alive: labelEntry });
@@ -564,7 +566,7 @@ describe('flywheel lifecycle engine — gap closures', () => {
     const raw = put([line(v2('ok')), line(v2('syn', { synthetic: true }))]);
     for (const ts of ['1', '2', '3']) fs.writeFileSync(`${ds2}.bak-${ts}`, 'stale\n', 'utf8');
 
-    const res = pruneDataset(ds2, { dropSynthetic: true, dropDuplicates: true, dropLegacy: false }, true);
+    const res = pruneDataset(ds2, { dropSynthetic: true, dropDuplicates: true }, true);
     assert.ok(res?.applied === true);
     assert.ok(res.backupPath && fs.existsSync(res.backupPath));
     assert.strictEqual(fs.readFileSync(res.backupPath, 'utf8'), raw, "this call's backup is the pre-rewrite snapshot");
@@ -648,7 +650,7 @@ describe('flywheel lifecycle engine — gap closures', () => {
 
     // Rewrite while the reader is alive: with a cached fd this rename would
     // fail EPERM on Windows — the open-per-read deviation must keep it green.
-    const res = pruneDataset(ds2, { dropSynthetic: true, dropDuplicates: true, dropLegacy: false }, true);
+    const res = pruneDataset(ds2, { dropSynthetic: true, dropDuplicates: true }, true);
     assert.ok(res?.applied === true, 'prune rename succeeded over a live reader instance');
 
     // Equal-size external replacement (offline-CLI style): a pure size check
@@ -702,23 +704,29 @@ describe('FlywheelTrainer re-entrancy — the shared 409 predicate', () => {
 
 /**
  * QA-3 CLI smoke for BE-6: scripts/flywheel-prune.ts is now a thin wrapper
- * over pruneDataset(). The spawn gets its own sandbox cwd holding a minimal
- * config.yaml (the same placeholder shape scripts/test-isolated.ts creates),
- * so loadConfig() resolves the dataset path under the temp dir — never the
- * operator's real config.
+ * over pruneDataset(). The spawn gets its own sandbox OCR_HOME holding a
+ * minimal config.yaml in the bootstrap `default` env — the same shape
+ * scripts/test-isolated.ts creates — so loadConfig() resolves the dataset
+ * path inside the temp dir and never the operator's real config.
  */
 describe('flywheel-prune CLI wrapper (BE-6 / QA-3 smoke)', () => {
   const cliDir = path.resolve(process.cwd(), './data/test_fw_cli');
-  const cliDataset = path.join(cliDir, 'flywheel.jsonl');
+  const cliHome = path.join(cliDir, 'home');
+  const cliEnvDir = path.join(cliHome, 'envs', 'default');
+  const cliDataset = path.join(cliEnvDir, 'flywheel.jsonl'); // relative datasetPath resolves against the ENV ROOT
   const scriptPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../scripts/flywheel-prune.ts');
 
   beforeEach(() => {
     fs.rmSync(cliDir, { recursive: true, force: true });
-    fs.mkdirSync(cliDir, { recursive: true });
+    fs.mkdirSync(cliEnvDir, { recursive: true });
     fs.writeFileSync(
-      path.join(cliDir, 'config.yaml'),
+      path.join(cliEnvDir, 'config.yaml'),
       'port: 3000\nhost: 127.0.0.1\napiKeys: []\nmodels: []\nflywheel:\n  datasetPath: ./flywheel.jsonl\n',
       'utf8'
+    );
+    fs.writeFileSync(
+      path.join(cliEnvDir, 'env.json'),
+      JSON.stringify({ name: 'default', type: 'regular', schemaVersion: 1 })
     );
   });
 
@@ -727,7 +735,11 @@ describe('flywheel-prune CLI wrapper (BE-6 / QA-3 smoke)', () => {
   });
 
   function runCli(args: string[]): { out: string; code: number } {
-    const proc = spawnSync(process.execPath, [scriptPath, ...args], { cwd: cliDir, encoding: 'utf8' });
+    const proc = spawnSync(process.execPath, [scriptPath, ...args], {
+      cwd: cliDir,
+      encoding: 'utf8',
+      env: { ...process.env, OCR_HOME: cliHome, OCR_ENV: 'default' },
+    });
     return { out: `${proc.stdout ?? ''}${proc.stderr ?? ''}`, code: proc.status ?? 1 };
   }
 
@@ -744,20 +756,20 @@ describe('flywheel-prune CLI wrapper (BE-6 / QA-3 smoke)', () => {
     assert.match(dry.out, /dropped synthetic: 1/);
     assert.match(dry.out, /Dry run/);
     assert.strictEqual(fs.readFileSync(cliDataset, 'utf8'), raw, 'dry-run performed zero writes');
-    assert.strictEqual(fs.readdirSync(cliDir).filter((n) => n.includes('.bak-')).length, 0);
+    assert.strictEqual(fs.readdirSync(cliEnvDir).filter((n) => n.includes('.bak-')).length, 0);
 
     const applied = runCli(['--apply']);
     assert.strictEqual(applied.code, 0, applied.out);
     assert.match(applied.out, /✓ Pruned\. Backup: /);
     assert.strictEqual(fs.readFileSync(cliDataset, 'utf8'), [l0, l2].join('\n') + '\n', 'survivors verbatim');
-    const baks = fs.readdirSync(cliDir).filter((n) => n.includes('.bak-'));
+    const baks = fs.readdirSync(cliEnvDir).filter((n) => n.includes('.bak-'));
     assert.strictEqual(baks.length, 1);
-    assert.strictEqual(fs.readFileSync(path.join(cliDir, baks[0]), 'utf8'), raw, '.bak holds the original file');
+    assert.strictEqual(fs.readFileSync(path.join(cliEnvDir, baks[0]), 'utf8'), raw, '.bak holds the original file');
 
     const again = runCli(['--apply']);
     assert.strictEqual(again.code, 0, again.out);
     assert.match(again.out, /Nothing to prune\./);
-    assert.strictEqual(fs.readdirSync(cliDir).filter((n) => n.includes('.bak-')).length, 1, 'no-op apply wrote no second backup');
+    assert.strictEqual(fs.readdirSync(cliEnvDir).filter((n) => n.includes('.bak-')).length, 1, 'no-op apply wrote no second backup');
   });
 
   it('no dataset file: prints the path, exits 0, creates nothing', () => {

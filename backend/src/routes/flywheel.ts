@@ -5,6 +5,7 @@ import { FlywheelTrainer } from '../flywheel/trainer.js';
 import { PruneOptions, deleteRecordsById, pruneDataset, resetDataset } from '../flywheel/prune.js';
 import { FLYWHEEL_TIERS, FlywheelLabelSource, isTier } from '../flywheel/schema.js';
 import { TierLevel } from '../types/router.js';
+import { getEnvRootDir } from '../config/env.js';
 import path from 'node:path';
 
 /**
@@ -40,7 +41,7 @@ export function registerFlywheelRoutes(app: FastifyInstance, orchestrator: Pipel
   const dataset = new FlywheelDataset(datasetPath);
   const modelPath =
     orchestrator.getClassifierConfig()?.localModel?.modelPath ||
-    path.resolve(process.cwd(), 'models/layer1-classifier.json');
+    path.resolve(getEnvRootDir(), 'models/layer1-classifier.json');
   const trainer = new FlywheelTrainer(
     dataset,
     modelPath,
@@ -127,7 +128,7 @@ export function registerFlywheelRoutes(app: FastifyInstance, orchestrator: Pipel
   app.post('/api/admin/flywheel/prune', async (req, reply) => {
     const body = asObjectBody(req.body);
     if (!body) return reply.status(400).send({ error: 'Body must be a JSON object' });
-    const boolField = (['apply', 'dropSynthetic', 'dropDuplicates', 'dropLegacy'] as const).find(
+    const boolField = (['apply', 'dropSynthetic', 'dropDuplicates'] as const).find(
       (k) => body[k] !== undefined && typeof body[k] !== 'boolean'
     );
     if (boolField) return reply.status(400).send({ error: `"${boolField}" must be a boolean` });
@@ -138,7 +139,6 @@ export function registerFlywheelRoutes(app: FastifyInstance, orchestrator: Pipel
     const opts: PruneOptions = {
       dropSynthetic: body.dropSynthetic !== false,
       dropDuplicates: body.dropDuplicates !== false,
-      dropLegacy: body.dropLegacy === true,
     };
     try {
       const outcome = pruneDataset(datasetPath, opts, body.apply === true);

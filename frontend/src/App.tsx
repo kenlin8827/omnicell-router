@@ -16,6 +16,7 @@ import { UsagePage } from './pages/UsagePage';
 import { LogsPage } from './pages/LogsPage';
 import { CapturesPage } from './pages/CapturesPage';
 import { ClientsPage } from './pages/ClientsPage';
+import { EnvironmentsPage } from './pages/EnvironmentsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { AutoPage } from './pages/AutoPage';
 import { CombosPage } from './pages/CombosPage';
@@ -80,6 +81,7 @@ export const App: React.FC = () => {
         <Route path="logs" element={<LogsPage />} />
         <Route path="captures" element={<CapturesPage />} />
         <Route path="flywheel" element={<FlywheelPage />} />
+        <Route path="environments" element={<EnvironmentsPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="yaml" element={<YamlPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />

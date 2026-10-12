@@ -5,12 +5,9 @@
  * v1 stored five derived booleans (`hasCode`, `complexityScore`, …) that the
  * trainer cannot consume: `Layer1Classifier.train()` needs the 8-dimensional
  * vector produced by `Layer1Classifier.extractFeatures()`. v2 stores THAT
- * vector, so a record is trainable the moment it is written.
- *
- * A v1 record cannot be upgraded into a trainable one — the 8 features are
- * computed from the full ChatCompletionRequest, while v1 only kept a possibly
- * truncated (or redacted) prompt string. `migrateRecord` therefore marks such
- * records `trainable: false` instead of fabricating a vector.
+ * vector, so a record is trainable the moment it is written. There is no v1
+ * reader: a v1 line parses as malformed and is dropped with a warning
+ * (0.0.1 — no dataset outside this install ever existed).
  */
 import { ReasonParams, TierLevel } from '../types/router.js';
 
@@ -26,7 +23,7 @@ export type FlywheelLabelSource =
   | 'unlabeled'; // no trustworthy label yet
 
 export interface FlywheelLabel {
-  /** Training target. null = not trainable yet (see `FlywheelRecord.trainable`). */
+  /** Training target. null = not labelled yet. */
   tier: TierLevel | null;
   source: FlywheelLabelSource;
   /** 0..1 — how much the label can be trusted. Drives sample weighting in the UI. */
@@ -75,8 +72,6 @@ export interface FlywheelRecord {
     isSynthetic: boolean;
   };
   label: FlywheelLabel;
-  /** v1 legacy only: true when the record predates the schema bump. */
-  trainable: boolean;
 }
 
 export interface LabelOverride {
@@ -140,16 +135,10 @@ export function detectSynthetic(id: string, modelUsed: string, fallbackReason?: 
   return false;
 }
 
-/** Tiers that shipped before the 4-tier vocabulary replaced them. */
-function normalizeLegacyTier(value: unknown): TierLevel | null {
-  if (isTier(value)) return value;
-  return null;
-}
-
 /**
  * Disk rows are external input: accept the params object only property by
  * property, dropping values that are not primitives. Absent/invalid →
- * undefined, so legacy rows without the field parse unchanged.
+ * undefined, so rows without the field parse unchanged.
  */
 function optReasonParams(value: unknown): ReasonParams | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
@@ -161,130 +150,54 @@ function optReasonParams(value: unknown): ReasonParams | undefined {
 }
 
 /**
- * Bring any record — v2 native or v1 legacy — up to the current shape.
- * Never throws on malformed input: a dataset line that cannot be parsed is a
- * logging concern, not a reason to break the console.
- *
- * The v1 branch below is a deliberate safety net, NOT unfinished migration
- * code. Schema v1 predates the feature vector, so such rows can never be
- * trained on; what this branch buys is that they stay VISIBLE (tagged
- * `trainable: false`, surfaced as "legacy · untrainable" in the console)
- * instead of silently vanishing when an old or restored dataset shows up.
- * Delete it once no v1 dataset can reach the gateway — and if you do, delete
- * `trainable` from the interface and the console badge with it, so an
- * unexpected shape still fails loudly rather than by omission.
+ * Parse one dataset line into the current shape. Never throws on malformed
+ * input: a line that cannot be parsed is a logging concern, not a reason to
+ * break the console. There is no v1 reader (0.0.1 — no dataset outside this
+ * install ever existed): a pre-v2 line returns null and the caller counts it
+ * as malformed.
  */
 export function migrateRecord(raw: any): FlywheelRecord | null {
   if (!raw || typeof raw !== 'object') return null;
+  if (raw.v !== FLYWHEEL_SCHEMA_VERSION || raw.input === undefined) return null;
 
-  const isV2 = raw.v === FLYWHEEL_SCHEMA_VERSION && raw.input !== undefined;
-
-  if (isV2) {
-    const exec = raw.execution || {};
-    const label = raw.label || {};
-    return {
-      v: FLYWHEEL_SCHEMA_VERSION,
-      id: str(raw.id, `anon_${Date.now()}`),
-      timestamp: str(raw.timestamp, new Date().toISOString()),
-      input: {
-        userPrompt: str(raw.input.userPrompt),
-        featureVector: Array.isArray(raw.input.featureVector) ? raw.input.featureVector.map((n: any) => num(n)) : null,
-        featureNames: Array.isArray(raw.input.featureNames) ? raw.input.featureNames.map((s: any) => str(s)) : [],
-        tokenCount: num(raw.input.tokenCount),
-        turnCount: num(raw.input.turnCount),
-      },
-      decision: {
-        targetTier: normalizeLegacyTier(raw.decision?.targetTier) || 'plus',
-        confidence: num(raw.decision?.confidence),
-        layerUsed: ['layer0', 'layer1', 'layer2'].includes(raw.decision?.layerUsed) ? raw.decision.layerUsed : 'layer0',
-        reason: str(raw.decision?.reason),
-        reasonCode: str(raw.decision?.reasonCode) || undefined,
-        reasonParams: optReasonParams(raw.decision?.reasonParams),
-      },
-      execution: {
-        tierUsed: normalizeLegacyTier(exec.tierUsed) || normalizeLegacyTier(raw.decision?.targetTier) || 'plus',
-        modelUsed: str(exec.modelUsed),
-        fallbackOccurred: exec.fallbackOccurred === true,
-        fallbackReason: str(exec.fallbackReason) || undefined,
-        latencyMs: num(exec.latencyMs),
-        isSynthetic: exec.isSynthetic === true || detectSynthetic(str(raw.id), str(exec.modelUsed), exec.fallbackReason),
-      },
-      label: {
-        tier: isTier(label.tier) ? label.tier : null,
-        source: (['human', 'runtime_fallback', 'observed_execution', 'unlabeled'] as string[]).includes(label.source)
-          ? label.source
-          : 'unlabeled',
-        confidence: num(label.confidence),
-        overridden: label.overridden === true,
-        isNegativeForLite: label.isNegativeForLite === true,
-        updatedAt: str(label.updatedAt) || undefined,
-      },
-      trainable: raw.trainable !== false,
-    };
-  }
-
-  // ---- v1 legacy (safety net — see the note on migrateRecord) ----------
-  // No featureVector exists and none can be reconstructed: the 8 features come
-  // from the full request, and v1 kept only a truncated/redacted prompt.
-  const legacyLabel = raw.label || {};
-  const routing = raw.routing || {};
   const exec = raw.execution || {};
-  const legacySource = str(legacyLabel.labelSource, 'layer0_lite');
-  const modelUsed = str(exec.modelUsed);
-  const id = str(raw.id, `anon_${Date.now()}`);
-  const fallbackReason = str(exec.fallbackReason) || undefined;
-  const tierUsed = normalizeLegacyTier(exec.tierUsed);
-  const targetTier = normalizeLegacyTier(routing.targetTier);
-
-  // Map the legacy label sources onto the v2 provenance vocabulary. The old
-  // names misdescribed their mechanism (e.g. `layer1_confident` was emitted for
-  // the safe quality-first fallback, not for a confident short-circuit), so
-  // only the two that actually carried evidence are upgraded.
-  let source: FlywheelLabelSource = 'unlabeled';
-  let tier: TierLevel | null = null;
-  let confidence = 0;
-  if (legacySource === 'runtime_fallback' && tierUsed) {
-    source = 'runtime_fallback';
-    tier = tierUsed;
-    confidence = 0.9;
-  } else if (tierUsed) {
-    source = 'observed_execution';
-    tier = tierUsed;
-    confidence = 0.5;
-  }
-
+  const label = raw.label || {};
   return {
     v: FLYWHEEL_SCHEMA_VERSION,
-    id,
-    timestamp: str(raw.timestamp, new Date(0).toISOString()),
+    id: str(raw.id, `anon_${Date.now()}`),
+    timestamp: str(raw.timestamp, new Date().toISOString()),
     input: {
-      userPrompt: str(raw.userPrompt),
-      featureVector: null,
-      featureNames: [],
-      tokenCount: num(raw.tokenCount),
-      turnCount: 0,
+      userPrompt: str(raw.input.userPrompt),
+      featureVector: Array.isArray(raw.input.featureVector) ? raw.input.featureVector.map((n: any) => num(n)) : null,
+      featureNames: Array.isArray(raw.input.featureNames) ? raw.input.featureNames.map((s: any) => str(s)) : [],
+      tokenCount: num(raw.input.tokenCount),
+      turnCount: num(raw.input.turnCount),
     },
     decision: {
-      targetTier: targetTier || tierUsed || 'plus',
-      confidence: num(routing.confidence),
-      layerUsed: ['layer0', 'layer1', 'layer2'].includes(routing.layerUsed) ? routing.layerUsed : 'layer0',
-      reason: '',
+      targetTier: isTier(raw.decision?.targetTier) ? raw.decision.targetTier : 'plus',
+      confidence: num(raw.decision?.confidence),
+      layerUsed: ['layer0', 'layer1', 'layer2'].includes(raw.decision?.layerUsed) ? raw.decision.layerUsed : 'layer0',
+      reason: str(raw.decision?.reason),
+      reasonCode: str(raw.decision?.reasonCode) || undefined,
+      reasonParams: optReasonParams(raw.decision?.reasonParams),
     },
     execution: {
-      tierUsed: tierUsed || targetTier || 'plus',
-      modelUsed,
+      tierUsed: isTier(exec.tierUsed) ? exec.tierUsed : isTier(raw.decision?.targetTier) ? raw.decision.targetTier : 'plus',
+      modelUsed: str(exec.modelUsed),
       fallbackOccurred: exec.fallbackOccurred === true,
-      fallbackReason,
+      fallbackReason: str(exec.fallbackReason) || undefined,
       latencyMs: num(exec.latencyMs),
-      isSynthetic: detectSynthetic(id, modelUsed, fallbackReason),
+      isSynthetic: exec.isSynthetic === true || detectSynthetic(str(raw.id), str(exec.modelUsed), exec.fallbackReason),
     },
     label: {
-      tier,
-      source,
-      confidence,
-      overridden: !!(targetTier && tierUsed && targetTier !== tierUsed),
-      isNegativeForLite: exec.fallbackOccurred === true,
+      tier: isTier(label.tier) ? label.tier : null,
+      source: (['human', 'runtime_fallback', 'observed_execution', 'unlabeled'] as string[]).includes(label.source)
+        ? label.source
+        : 'unlabeled',
+      confidence: num(label.confidence),
+      overridden: label.overridden === true,
+      isNegativeForLite: label.isNegativeForLite === true,
+      updatedAt: str(label.updatedAt) || undefined,
     },
-    trainable: false,
   };
 }

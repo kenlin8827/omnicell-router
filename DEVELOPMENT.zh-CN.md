@@ -77,7 +77,7 @@ OpenCode Router (OCR) 摒弃了行业内常见的字符长度规则（如 `promp
 ## 二、核心算法与数学确定性证明
 
 ### 1. 空白微张量底座与 Softmax 确定性穿透证明
-为实现零冷启动硬编码与平滑自演进，网关在初次启动且无模型文件时，自动初始化落地 `models/layer1-classifier.json`，并将初始权重与偏置全部设为零：
+为实现零冷启动硬编码与平滑自演进，网关在初次启动且无模型文件时，自动在当前环境的 `envs/<env>/models/layer1-classifier.json` 落地初始模型，并将初始权重与偏置全部设为零：
 $$W \in \mathbb{R}^{8 \times 3} = \mathbf{0}, \quad b \in \mathbb{R}^3 = \mathbf{0}$$
 
 **前向传播数学推导**：
@@ -176,7 +176,7 @@ opencode-router/
 Layer 2 专职裁决 / Layer 1 Schema 校验失败
       │
       ▼
-写入 data/flywheel.jsonl (含 Ground Truth 标签与负样本标定)
+写入当前环境的 envs/<env>/data/flywheel.jsonl (含 Ground Truth 标签与负样本标定)
       │
       ▼
 运行 bun run train:layer1
@@ -185,7 +185,7 @@ Layer 2 专职裁决 / Layer 1 Schema 校验失败
 计算 Softmax 交叉熵损失与 L2 正则化微梯度
       │
       ▼
-原地更新 models/layer1-classifier.json (isBaseModel: true -> false)
+原地更新 envs/<env>/models/layer1-classifier.json (isBaseModel: true -> false)
       │
       ▼
 后续高频同类请求由 Layer 1 CPU 直接毫秒级命中 (<0.1ms, 零边际成本)
@@ -209,7 +209,7 @@ Layer 2 专职裁决 / Layer 1 Schema 校验失败
    👉 Total Trained Samples : 58
    👉 Final Converged Loss  : 0.4869
    👉 Training Set Accuracy : 79.3%
-   👉 Model Output Path     : models/layer1-classifier.json
+   👉 Model Output Path     : envs/<env>/models/layer1-classifier.json
    👉 Status Transition     : isBaseModel (true -> false)
    ```
 

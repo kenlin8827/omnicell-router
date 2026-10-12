@@ -55,11 +55,16 @@ npm install
 ```
 
 ### 3. 配置
-复制模板配置文件并启动：
+每个环境拥有自己的配置文件——默认环境位于 `~/.opencode-router/envs/default/config.yaml`。首次启动会自动写入一份带注释的模板；如果想用完整示例配置起步，复制到该位置即可：
 ```bash
-cp config.example.yaml config.yaml
+mkdir -p ~/.opencode-router/envs/default
+cp config.example.yaml ~/.opencode-router/envs/default/config.yaml
 ```
 > 💡 **提示**：上游模型和密钥完全由本地 OpenCode 自动托管，`config.yaml` 默认开箱即用，无需填入任何模型密钥！
+
+> 📦 **多环境**：`~/.opencode-router/envs/<name>/` 下每套环境都是完全独立的一整套（配置、密钥、会话、抓包、飞轮数据互不共享）。用 `ocr env create <name>` / `ocr env use <name>`，或控制台 `/environments` 页面管理；切换环境会重启网关。
+
+> ⚙️ **引导开关**：`OCR_ENV`（启动哪套环境）与 `OCR_HOME`（状态根目录，默认 `~/.opencode-router`）**只从进程环境变量读取**——OCR 没有 `.env` 文件加载机制。需要临时隔离实例时：`OCR_HOME=/tmp/ocr-scratch bun run ocr start`。日常切换环境请用 `ocr env use <name>`（或控制台页面），它写入 `~/.opencode-router/envs/current` 指针。
 
 ### 4. 启动网关
 ```bash

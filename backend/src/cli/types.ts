@@ -9,6 +9,7 @@ export type CliAction =
   | 'setup'
   | 'teardown'
   | 'install-shims'
+  | 'env'
   | 'version'
   | 'help';
 
@@ -29,6 +30,8 @@ export interface DaemonInfo {
   pid: number;
   port: number;
   host: string;
+  /** Active environment (book-set) name this gateway booted with. */
+  env?: string;
   startTime: string;
   version: string;
 }

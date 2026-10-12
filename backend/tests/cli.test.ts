@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { createServer } from '../src/server.js';
+import { buildGatewayChildEnv, buildWindowsEnvSets, RESTART_PARENT_ENV } from '../src/cli/daemon.js';
 import { OpenCodeClientAdapter } from '../src/cli/clients/opencode.js';
 import { ClaudeClientAdapter } from '../src/cli/clients/claude.js';
 import { CodexClientAdapter } from '../src/cli/clients/codex.js';
@@ -226,5 +227,52 @@ describe('Embedded UI & Management API Endpoints', () => {
       payload: { baseUrl: 'https://api.openai.com/v1', apiKey: 'sk-invalid-test-key' },
     });
     expect(res.statusCode).toBe(404);
+  });
+});
+
+describe('daemon spawn-args builders (env-switch must not inherit PORT/HOST)', () => {
+  const prevPort = process.env.PORT;
+  const prevHost = process.env.HOST;
+
+  beforeEach(() => {
+    process.env.PORT = '9999';
+    process.env.HOST = '0.0.0.0';
+  });
+  afterEach(() => {
+    if (prevPort === undefined) delete process.env.PORT;
+    else process.env.PORT = prevPort;
+    if (prevHost === undefined) delete process.env.HOST;
+    else process.env.HOST = prevHost;
+  });
+
+  it('plain restart: PORT/HOST inherited AND pinned (byte-identical semantics)', () => {
+    const env = buildGatewayChildEnv({ extraEnv: { PORT: '4000', HOST: '127.0.0.1' } });
+    expect(env.PORT).toBe('4000');
+    expect(env.HOST).toBe('127.0.0.1');
+    expect(env.NODE_ENV).toBe('production');
+    expect(env[RESTART_PARENT_ENV]).toBe(String(process.pid));
+    const sets = buildWindowsEnvSets({ extraEnv: { PORT: '4000', HOST: '127.0.0.1' } });
+    // no clear-prefix; RESTART → PORT → HOST → NODE_ENV order preserved
+    expect(sets).toBe(
+      `set "${RESTART_PARENT_ENV}=${process.pid}" && set "PORT=4000" && set "HOST=127.0.0.1" && set "NODE_ENV=production" && `
+    );
+  });
+
+  it('env switch: inherited PORT/HOST DROPPED, only OCR_ENV injected', () => {
+    const env = buildGatewayChildEnv({ extraEnv: { OCR_ENV: 'dev' }, omitPortHost: true });
+    expect(env.PORT).toBeUndefined(); // the L3 P1-2 hole: previously inherited 9999
+    expect(env.HOST).toBeUndefined();
+    expect(env.OCR_ENV).toBe('dev');
+    expect(env.NODE_ENV).toBe('production');
+    expect(env[RESTART_PARENT_ENV]).toBe(String(process.pid));
+  });
+
+  it('env switch Windows: `set "PORT=" && set "HOST=" &&` clears precede the settings', () => {
+    const sets = buildWindowsEnvSets({ extraEnv: { OCR_ENV: 'dev' }, omitPortHost: true });
+    expect(sets.startsWith('set "PORT=" && set "HOST=" && ')).toBe(true);
+    expect(sets).toContain(`set "${RESTART_PARENT_ENV}=${process.pid}" && `);
+    expect(sets).toContain('set "OCR_ENV=dev" && ');
+    expect(sets).toContain('set "NODE_ENV=production" && ');
+    expect(sets).not.toMatch(/set "PORT=9999"/);
   });
 });

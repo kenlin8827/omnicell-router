@@ -29,7 +29,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { FLYWHEEL_SCHEMA_VERSION, FlywheelRecord, detectSynthetic, migrateRecord } from './schema.js';
+import { FlywheelRecord, detectSynthetic, migrateRecord } from './schema.js';
 
 // ---- shared path conventions ------------------------------------------------
 
@@ -48,13 +48,12 @@ export function sidecarPathFor(datasetPath: string): string {
 export interface PruneOptions {
   dropSynthetic: boolean;
   dropDuplicates: boolean;
-  dropLegacy: boolean;
+
 }
 
 export interface PruneCounters {
   synthetic: number;
   duplicate: number;
-  legacy: number;
   malformed: number;
 }
 
@@ -69,17 +68,16 @@ export interface PrunePlan {
 
 /**
  * Pure prune planner — no fs at all, so a preview can never write. Decision
- * order is identical to the historic CLI: synthetic → legacy → duplicate;
- * malformed (unparseable) lines are dropped unconditionally — hygiene IS
- * prune's job (D4). Valid-JSON lines that are not records are kept verbatim
- * (CLI parity).
+ * order is identical to the historic CLI: synthetic → duplicate; malformed
+ * (unparseable) lines are dropped unconditionally — hygiene IS prune's job
+ * (D4). Valid-JSON lines that are not records are kept verbatim (CLI parity).
  */
 export function planPrune(lines: string[], opts: PruneOptions): PrunePlan {
   const keptLines: string[] = [];
   const removedLines: string[] = [];
   const keptIds = new Set<string>();
   const seenIds = new Set<string>();
-  const dropped: PruneCounters = { synthetic: 0, duplicate: 0, legacy: 0, malformed: 0 };
+  const dropped: PruneCounters = { synthetic: 0, duplicate: 0, malformed: 0 };
   let total = 0;
 
   for (const line of lines) {
@@ -100,7 +98,9 @@ export function planPrune(lines: string[], opts: PruneOptions): PrunePlan {
     }
 
     // Reuse the collector's own detector so a prune can never disagree with
-    // what the console labels as test traffic.
+    // what the console labels as test traffic. migrateRecord validates
+    // property by property; a pre-v2 line comes back null and is kept
+    // verbatim unless a drop option applies.
     const exec = parsed?.execution;
     const isSynthetic =
       exec?.isSynthetic === true ||
@@ -108,11 +108,6 @@ export function planPrune(lines: string[], opts: PruneOptions): PrunePlan {
 
     if (opts.dropSynthetic && isSynthetic) {
       dropped.synthetic++;
-      removedLines.push(line);
-      continue;
-    }
-    if (opts.dropLegacy && parsed?.v !== FLYWHEEL_SCHEMA_VERSION) {
-      dropped.legacy++;
       removedLines.push(line);
       continue;
     }
@@ -214,6 +209,41 @@ export function rewriteDataset(
   return writeRewrite(datasetPath, kept, removed, opts);
 }
 
+/** Sync spin wait — the whole rewrite is synchronous (D2); Atomics.wait is Node's only timer-free sleep. */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Atomic tmp→target swap with a bounded retry. Windows rejects renaming over
+ * a file an AV/indexer handle momentarily holds open (intermittent EPERM /
+ * EACCES / EBUSY sharing violations — reproduced ~1/40 runs on the dev host).
+ * Up to 4 backoff sleeps (10/20/30/40 ms) keeps the engine fully synchronous
+ * and the stall operator-invisible. On exhaustion: tmp is cleaned, the
+ * original file is untouched, and the error is rethrown fail-loud (R3 stays
+ * all-or-nothing). Marked ceiling (cp-marked): upgrade path is platform
+ * share-flags or a queued writer if contention ever turns chronic.
+ */
+function atomicSwap(tmp: string, target: string): void {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      fs.renameSync(tmp, target);
+      return;
+    } catch (err: any) {
+      const transient = ['EPERM', 'EACCES', 'EBUSY'].includes(err?.code);
+      if (!transient || attempt >= 4) {
+        try {
+          fs.rmSync(tmp, { force: true });
+        } catch {
+          /* tmp never materialised */
+        }
+        throw err;
+      }
+      sleepSync(10 * (attempt + 1));
+    }
+  }
+}
+
 /**
  * The single writer. Order matters for fail-safety: backup first, sidecar
  * before the swap (a failed rewrite must never lose the removed lines — a
@@ -251,7 +281,6 @@ function writeRewrite(
   const content = kept.length ? kept.join('\n') + '\n' : '';
   try {
     fs.writeFileSync(tmp, content, 'utf8');
-    fs.renameSync(tmp, datasetPath);
   } catch (err) {
     try {
       fs.rmSync(tmp, { force: true });
@@ -260,6 +289,7 @@ function writeRewrite(
     }
     throw err;
   }
+  atomicSwap(tmp, datasetPath);
   result.rewrote = true;
   return result;
 }
@@ -557,7 +587,6 @@ function writeOverlayJson(labelsPath: string, map: Record<string, unknown>): voi
   const tmp = `${labelsPath}.tmp-${process.pid}`;
   try {
     fs.writeFileSync(tmp, JSON.stringify(map, null, 2), 'utf8');
-    fs.renameSync(tmp, labelsPath);
   } catch (err) {
     try {
       fs.rmSync(tmp, { force: true });
@@ -566,4 +595,5 @@ function writeOverlayJson(labelsPath: string, map: Record<string, unknown>): voi
     }
     throw err;
   }
+  atomicSwap(tmp, labelsPath);
 }

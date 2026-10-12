@@ -1,11 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { isMap, parse, parseDocument, stringify } from 'yaml';
-import dotenv from 'dotenv';
 import { Layer2JudgeConfig, RequestCaptureConfig, RouterConfig, WebAuthConfig } from './types.js';
 import { DEFAULT_RETRIABLE_CAUSES } from '../resilience/types.js';
+import { ensureEnvScaffold, getEnvPaths, resolveEnvName } from './env.js';
 
-dotenv.config();
+// Bootstrap levers (OCR_ENV / OCR_HOME) come from the REAL process environment
+// only — there is no .env loader. A file-based override would be a second,
+// cwd-dependent source of truth next to the envs/current pointer (ADR-0018).
 
 const DEFAULT_CONFIG: RouterConfig = {
   port: parseInt(process.env.PORT || '3000', 10),
@@ -127,29 +129,20 @@ const DEFAULT_CONFIG: RouterConfig = {
 };
 
 export function getConfigPath(customPath?: string): string {
+  // Top priority: an explicit path from the caller (CLI --config, tests).
   if (customPath) return path.resolve(customPath);
-
-  const cwdPath = path.resolve(process.cwd(), 'config.yaml');
-  if (fs.existsSync(cwdPath)) return cwdPath;
-
-  // Fallback: search upward to repository root
-  try {
-    const currentDir = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
-    const repoRootPath = path.resolve(currentDir, '..', '..', 'config.yaml'); // backend/src/config -> backend/src -> backend -> root
-    const altRootPath = path.resolve(currentDir, '..', '..', '..', 'config.yaml');
-    if (fs.existsSync(repoRootPath)) return repoRootPath;
-    if (fs.existsSync(altRootPath)) return altRootPath;
-  } catch {}
-
-  return cwdPath;
+  // Otherwise the active environment's own config.yaml. resolveEnvName()
+  // fails fast on an unknown env — loud startup error.
+  return getEnvPaths().configPath;
 }
 
 /**
  * webAuth sanitizer: shallow-copies and strips anything that must never
  * persist — a hand-written plaintext `password` key (hashes only), so a
  * round-tripped config can't leak or overwrite the stored hash format.
+ * (Exported for the environment-archive import path — config/env-archive.ts.)
  */
-function sanitizeWebAuthInput(input: unknown): WebAuthConfig | undefined {
+export function sanitizeWebAuthInput(input: unknown): WebAuthConfig | undefined {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
   const wa = { ...(input as WebAuthConfig) };
   delete (wa as { password?: unknown }).password;
@@ -180,27 +173,17 @@ function sanitizeLayer2Input(input: unknown): Layer2JudgeConfig {
 }
 
 /**
- * Resolve the `requestCapture:` tree from a raw parsed config, migrating the
- * legacy `capture:` section (config restructure). Precedence: new section >
- * legacy section > defaults. Legacy `capture.systemoneEnabled` maps onto
- * `requestCapture.systemone.enabled` (the System One surface master). The
- * intermediate name `clientEnabled` never shipped to any live config, but a
- * parsed `requestCapture.systemone.clientEnabled` still maps onto `enabled`
- * defensively (draft-tree tolerance).
- * Dataset-semantics `l2DecisionEnabled` (flat on either section) is NOT
- * mapped — it was never the HTTP-leg switch — and is warned separately.
- * Only known fields are picked, so retired/junk keys never round-trip into a
- * saved config.yaml. Raw YAML values pass through unchecked (parity with the
- * pre-restructure spread — type enforcement is the consumers' nullish-merge).
+ * Resolve the `requestCapture:` tree from a raw parsed config. Only known
+ * fields are picked, so retired/junk keys never round-trip into a saved
+ * config.yaml. Raw YAML values pass through unchecked (type enforcement is
+ * the consumers' nullish-merge).
  */
 function resolveRequestCapture(parsed: any): RequestCaptureConfig {
   const base = DEFAULT_CONFIG.requestCapture as RequestCaptureConfig;
-  const legacy = parsed?.capture as Record<string, unknown> | undefined;
   const raw = (parsed?.requestCapture ?? {}) as Record<string, unknown>;
-  const legacyFlat = (legacy ?? {}) as Record<string, unknown>;
   // `as` cast: raw YAML is untyped at this boundary; the old spread was too.
   const pick = <K extends 'enabled' | 'retentionDays' | 'maxTotalMB' | 'maxBodyBytes' | 'dir'>(key: K) =>
-    (raw[key] ?? legacyFlat[key] ?? base[key]) as RequestCaptureConfig[K];
+    (raw[key] ?? base[key]) as RequestCaptureConfig[K];
   const sysRaw = raw.systemone as Record<string, unknown> | undefined;
   return {
     enabled: pick('enabled'),
@@ -209,10 +192,7 @@ function resolveRequestCapture(parsed: any): RequestCaptureConfig {
     maxBodyBytes: pick('maxBodyBytes'),
     dir: pick('dir'),
     systemone: {
-      // ?? (not ||) keeps an explicit FALSE from the legacy section.
-      // `clientEnabled`: never-shipped intermediate name, folded onto the
-      // surface master `enabled` defensively.
-      enabled: (sysRaw?.enabled ?? sysRaw?.clientEnabled ?? legacy?.systemoneEnabled ?? base.systemone?.enabled) as boolean,
+      enabled: (sysRaw?.enabled ?? base.systemone?.enabled) as boolean,
       l2DecisionEnabled: (sysRaw?.l2DecisionEnabled ?? base.systemone?.l2DecisionEnabled) as boolean,
     },
   };
@@ -224,51 +204,21 @@ export function loadConfig(configPath?: string): RouterConfig {
     try {
       const raw = fs.readFileSync(resolvedPath, 'utf8');
       const parsed = parse(raw);
-      // Retired namespace (dataset sampling): the sink lived under
-      // classifier.layer2.decisionCapture before moving to a single-key
-      // classifier.layer2.collectEnabled. The old key is IGNORED — no
-      // dual-read, no compat shim — but one warn per load names it and points
-      // at the new home so hand-edited configs never silently lose the setting.
-      const legacyDecisionCapture = (parsed?.classifier?.layer2 as { decisionCapture?: unknown } | undefined)?.decisionCapture;
-      if (legacyDecisionCapture !== undefined) {
-        console.warn(
-          '[Config] Retired key "classifier.layer2.decisionCapture" is IGNORED: L2 decision dataset sampling moved to "classifier.layer2.collectEnabled" (single-key gate, data/layer2-decisions.jsonl). Remove the old key.'
-        );
-      }
-      // Section rename (config restructure): legacy `capture:` maps onto
-      // `requestCapture:` in-memory (resolveRequestCapture) and is STRIPPED
-      // from the parsed rest, so the next config save round-trips clean.
-      const legacyCaptureSection = parsed?.capture as Record<string, unknown> | undefined;
-      if (legacyCaptureSection !== undefined) {
-        console.warn('[Config] Retired section "capture:" migrated to "requestCapture:"');
-      }
-      // Dataset-semantics flag (born under the old `capture:` three-tier
-      // gate): flat `l2DecisionEnabled` on EITHER section is IGNORED. It
-      // sounds like `requestCapture.systemone.l2DecisionEnabled` but means
-      // dataset sampling — the ambiguity below is pinned by contract.
-      const legacyDatasetKeys = [
-        legacyCaptureSection?.l2DecisionEnabled !== undefined ? 'capture.l2DecisionEnabled' : undefined,
-        (parsed?.requestCapture as Record<string, unknown> | undefined)?.l2DecisionEnabled !== undefined
-          ? 'requestCapture.l2DecisionEnabled'
-          : undefined,
-      ].filter((k): k is string => k !== undefined);
-      if (legacyDatasetKeys.length > 0) {
-        console.warn(
-          `[Config] Retired key${legacyDatasetKeys.length > 1 ? 's' : ''} "${legacyDatasetKeys.join(
-            '" and "'
-          )}" is IGNORED: L2 decision dataset sampling lives in a different switch now — "classifier.layer2.collectEnabled" (single-key gate, data/layer2-decisions.jsonl). requestCapture.systemone.l2DecisionEnabled is a DIFFERENT switch (HTTP-leg capture of L2 judge calls). Remove the old key.`
-        );
-      }
-      // Legacy `rules:` (removed prompt-override system) and the renamed
-      // `capture:` section are stripped so stale keys don't get re-persisted
-      // on the next config save.
-      const { rules: _legacyRules, capture: _legacyCapture, ...parsedRest } = parsed || {};
+      // Removed keys (retired systems: `rules:`, `classifier.layer2.decisionCapture`,
+      // the renamed `capture:` section, key-level `role`) are STRIPPED here so
+      // stale keys never re-persist on the next config save. No dual-read, no
+      // migration — the config tree is the only source of truth.
+      const {
+        rules: _removedRules,
+        capture: _removedCapture,
+        ...parsedRest
+      } = parsed || {};
       return applyTestEnvOverrides({
         ...DEFAULT_CONFIG,
         ...parsedRest,
-        // Legacy `role` (removed key-level RBAC — unrestricted is expressed by
-        // simply not configuring modelAccess) is stripped so stale keys don't
-        // get re-persisted on the next config save.
+        // `role` (removed key-level RBAC — unrestricted is expressed by
+        // simply not configuring modelAccess) is stripped so stale keys
+        // don't get re-persisted on the next config save.
         apiKeys: (parsed?.apiKeys || DEFAULT_CONFIG.apiKeys).map(({ role: _role, ...k }: { role?: unknown; [k: string]: unknown }) => k),
         webAuth: sanitizeWebAuthInput(parsed?.webAuth),
         // Absent `tiers:` section → ship the DEFAULT_CONFIG template members
@@ -341,8 +291,8 @@ export function defaultConfigYaml(): string {
 }
 
 /**
- * First-boot template initialization: when no config.yaml resolves at the
- * default path, write the annotated default template to disk so a fresh
+ * First-boot template initialization: when the active environment has no
+ * config.yaml yet, write the annotated default template to disk so a fresh
  * install starts with a self-documenting file instead of silent in-memory
  * defaults plus an empty raw-YAML editor. Idempotent — an existing file is
  * never touched; write failures only warn (the gateway can run purely on
@@ -352,9 +302,15 @@ export function defaultConfigYaml(): string {
  */
 export function ensureDefaultConfigFile(): { created: boolean; path: string } {
   const configPath = getConfigPath();
+  // Every env needs its tree (state dirs + env.json) before the first write
+  // lands in it — the bootstrap `default` included. Idempotent.
+  try {
+    ensureEnvScaffold(resolveEnvName());
+  } catch (err: any) {
+    console.warn(`[Config] Could not scaffold the environment tree for ${configPath}: ${err.message}`);
+  }
   if (fs.existsSync(configPath)) return { created: false, path: configPath };
   try {
-    fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(configPath, defaultConfigYaml(), 'utf8');
     return { created: true, path: configPath };
   } catch (err: any) {

@@ -77,6 +77,11 @@ export interface GatewayStatusResponse {
   timestamp: string;
   /** Actual gateway listening port (config.yaml `port`). */
   port: number;
+  /**
+   * Book-set this process booted with (backend console.ts handleStatus).
+   * Optional: older gateways omit the field entirely.
+   */
+  env?: { name: string; configPath: string };
   metrics: GatewayMetrics;
   circuitBreakers: {
     total: number;
@@ -564,7 +569,6 @@ export interface FlywheelPruneRequest {
   apply?: boolean;
   dropSynthetic?: boolean;
   dropDuplicates?: boolean;
-  dropLegacy?: boolean;
 }
 
 export interface FlywheelPruneResult {
@@ -572,7 +576,7 @@ export interface FlywheelPruneResult {
   applied: boolean;
   total: number;
   kept: number;
-  dropped: { synthetic: number; duplicate: number; legacy: number; malformed: number };
+  dropped: { synthetic: number; duplicate: number; malformed: number };
   removedLabels: number;
   backupPath: string | null;
 }
@@ -596,9 +600,126 @@ export interface FlywheelResetResult {
   modelUntouched: true;
 }
 
+/* ─── Environments ("book-sets", ADR 0017 — admin API client) ────────────── */
+
+export type AdminEnvType = 'regular' | 'sandbox';
+
+/** POST /api/admin/environments seeding templates (backend create route enum). */
+export type AdminEnvTemplate = 'blank' | 'copy-current' | 'copy-default';
+
+/** One row of GET /api/admin/environments (backend EnvInfo + route extras). */
+export interface AdminEnvironment {
+  name: string;
+  type: AdminEnvType;
+  dir: string;
+  configPath: string;
+  createdAt: string | null;
+  description?: string;
+  /** Backend's active flag (== current pointer resolves to this env). */
+  active: boolean;
+  /** Next boot resolves to this env (pointer / OCR_ENV). */
+  current: boolean;
+  /** THIS process booted with this env. */
+  running: boolean;
+  sizeBytes: number;
+}
+
+export interface EnvironmentsListResponse {
+  status: 'ok';
+  /** Env name the NEXT boot resolves (lenient — may name a missing dir). */
+  current: string;
+  /** Env name THIS process is running. */
+  running: string;
+  environments: AdminEnvironment[];
+}
+
+/** env.json metadata as echoed back by create / rename. */
+export interface AdminEnvMeta {
+  name: string;
+  type: AdminEnvType;
+  createdAt?: string;
+  description?: string;
+}
+
+/** POST .../switch — the three legal success-path shapes (failures throw). */
+export type EnvSwitchResult =
+  | { status: 'restarting'; env: string; newPort?: number; message?: string }
+  | { status: 'ok'; env: string; message?: string }
+  | { status: 'failed'; env: string; error: string };
+
+/**
+ * Shape of `manifest.json` inside an .orc_env.zip archive, as read client-side.
+ * Every field optional: this is UNTRUSTED file input, so the page only reads
+ * what it needs for the summary panel and lets the backend do the real
+ * validation (format/version/checksums/sanitizing) before anything is written.
+ */
+export interface EnvArchiveManifest {
+  format?: unknown;
+  version?: unknown;
+  exportedAt?: unknown;
+  source?: { name?: unknown; type?: unknown; appVersion?: unknown };
+  secrets?: unknown;
+  redactedPaths?: unknown;
+  checksums?: unknown;
+}
+
+/** Client-side mirror of backend ENVELOPE_VERSION (backend/src/config/env-archive.ts). */
+export const ENV_ARCHIVE_VERSION = 1;
+export const ENV_ARCHIVE_FORMAT = 'ocr-env';
+export const ENV_ARCHIVE_SUFFIX = '.orc_env.zip';
+/** Mirrors backend IMPORT_BODY_LIMIT_BYTES (fastify bodyLimit on the import route). */
+export const ENV_IMPORT_BODY_LIMIT_BYTES = 64 * 1024 * 1024;
+
+/**
+ * HTTP-aware error for the admin-environment endpoints. The pages need the
+ * status code to pick a localized message (409 taken vs 409 running vs 400
+ * default) and the import route's `suggestion` body field; plain Error loses
+ * both. Other api.ts methods keep throwing plain Errors.
+ */
+export class EnvApiError extends Error {
+  readonly status: number;
+  readonly suggestion?: string;
+  /**
+   * True when the failure response carried a parsable `{status,error}` JSON
+   * body — i.e. the gateway is alive and told us what went wrong. The switch
+   * flow uses this to separate "server refused" from "connection dropped
+   * because the old process exited".
+   */
+  readonly hasErrorBody: boolean;
+
+  constructor(message: string, status: number, opts: { suggestion?: string; hasErrorBody?: boolean } = {}) {
+    super(message);
+    this.name = 'EnvApiError';
+    this.status = status;
+    this.suggestion = opts.suggestion;
+    this.hasErrorBody = opts.hasErrorBody ?? false;
+  }
+}
+
 async function throwFor(res: Response): Promise<never> {
   const err = await res.json().catch(() => ({}));
   throw new Error(err?.error || err?.message || `HTTP ${res.status}`);
+}
+
+/**
+ * Read the JSON error body the admin-environments routes emit:
+ * `{ status:'error', error, suggestion? }`. `hasErrorBody` records whether the
+ * response actually parsed into that contract, so callers can tell "gateway
+ * answered" apart from "gateway vanished mid-request".
+ */
+async function throwEnvFor(res: Response): Promise<never> {
+  const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+  const hasErrorBody = !!body && (typeof body.error === 'string' || typeof body.status === 'string');
+  const detail =
+    typeof body?.error === 'string'
+      ? body.error
+      : typeof body?.message === 'string'
+        ? body.message
+        : `HTTP ${res.status}`;
+  throw new EnvApiError(detail, res.status, {
+    suggestion: typeof body?.suggestion === 'string' ? body.suggestion : undefined,
+    hasErrorBody,
+  });
 }
 
 export const api = {
@@ -860,6 +981,137 @@ export const api = {
     return res.json();
   },
 
+  /* ─── Environments (book-sets) ─────────────────────────────────────────── */
+
+  async getEnvironments(): Promise<EnvironmentsListResponse> {
+    const res = await fetch('/api/admin/environments');
+    if (!res.ok) await throwEnvFor(res);
+    return res.json();
+  },
+
+  /** POST /api/admin/environments — 400 invalid name / 409 duplicate (case-insensitive). */
+  async createEnvironment(body: {
+    name: string;
+    type?: AdminEnvType;
+    template: AdminEnvTemplate;
+    description?: string;
+  }): Promise<{ status: string; env: AdminEnvironment }> {
+    const res = await fetch('/api/admin/environments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) await throwEnvFor(res);
+    return res.json();
+  },
+
+  /** PATCH .../:name — body carries `name` (rename) and/or `description`. */
+  async updateEnvironment(
+    name: string,
+    body: { name?: string; description?: string | null },
+  ): Promise<{ status: string; env: { name: string; meta: AdminEnvMeta | null; configPath: string } }> {
+    const res = await fetch(`/api/admin/environments/${encodeURIComponent(name)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) await throwEnvFor(res);
+    return res.json();
+  },
+
+  /** DELETE .../:name — the backend refuses without confirm:true (moves to envs/.trash). */
+  async deleteEnvironment(name: string): Promise<{ status: string; name: string; trashPath: string }> {
+    const res = await fetch(`/api/admin/environments/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm: true }),
+    });
+    if (!res.ok) await throwEnvFor(res);
+    return res.json();
+  },
+
+  /** POST .../:name/reset — sandbox environments only, never the running one. */
+  async resetEnvironment(name: string): Promise<{ status: string; name: string }> {
+    const res = await fetch(`/api/admin/environments/${encodeURIComponent(name)}/reset`, {
+      method: 'POST',
+    });
+    if (!res.ok) await throwEnvFor(res);
+    return res.json();
+  },
+
+  /**
+   * POST .../:name/switch — writes the next-boot pointer and hands over to a
+   * replacement process. `newPort` is present when the target env's config
+   * listens somewhere else than this gateway does.
+   */
+  async switchEnvironment(name: string): Promise<EnvSwitchResult> {
+    const res = await fetch(`/api/admin/environments/${encodeURIComponent(name)}/switch`, {
+      method: 'POST',
+    });
+    if (!res.ok) await throwEnvFor(res);
+    return res.json();
+  },
+
+  /**
+   * GET .../:name/export — returns the archive blob plus the server-chosen
+   * download filename (Content-Disposition), falling back to a client-built
+   * `<name>-<yyyymmdd>.orc_env.zip` when the header is absent (encrypted and
+   * plaintext archives share ONE suffix — encryption is a property of the
+   * bytes). `includePayload` selects a subset of the payload files
+   * (comma-joined `?include=`); absent = every payload file that exists.
+   * `encrypt` + `password` request a password-encrypted archive — the
+   * password travels ONLY in the x-ocr-archive-password header, never the
+   * query (access logs record URLs).
+   */
+  async exportEnvironment(
+    name: string,
+    opts: { includeSecrets: boolean; includePayload?: string[]; encrypt?: boolean; password?: string }
+  ): Promise<{ blob: Blob; filename: string }> {
+    const qs = new URLSearchParams({ secrets: opts.includeSecrets ? 'include' : 'redact' });
+    if (opts.includePayload && opts.includePayload.length > 0) qs.set('include', opts.includePayload.join(','));
+    if (opts.encrypt) qs.set('encrypt', '1');
+    const headers: Record<string, string> = {};
+    if (opts.encrypt && opts.password) headers['x-ocr-archive-password'] = opts.password;
+    const res = await fetch(`/api/admin/environments/${encodeURIComponent(name)}/export?${qs.toString()}`, { headers });
+    if (!res.ok) await throwEnvFor(res);
+    const cd = res.headers.get('Content-Disposition') || '';
+    const quoted = cd.match(/filename="?([^";]+)"?/i)?.[1];
+    const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    return {
+      blob: await res.blob(),
+      filename: quoted || `${name}-${stamp}${ENV_ARCHIVE_SUFFIX}`,
+    };
+  },
+
+  /**
+   * POST .../import?name=<name>&mode=create|replace — uploads the archive
+   * bytes BLIND: whether the body needs a password is decided by the backend,
+   * never sniffed client-side. An encrypted body without the
+   * x-ocr-archive-password header answers 400 "Archive is encrypted …", and
+   * only then the caller supplies `opts.password`. create (default) always
+   * makes a NEW environment (collision → 409 + `suggestion`); replace
+   * restores over an EXISTING env (old content moves to envs/.trash first —
+   * recoverable; the bootstrap default and the RUNNING env are refused
+   * server-side).
+   */
+  async importEnvironment(
+    file: File,
+    name: string,
+    opts: { password?: string; mode?: 'create' | 'replace' } = {}
+  ): Promise<{ status: string; env: AdminEnvironment }> {
+    const qs = new URLSearchParams({ name });
+    if (opts.mode === 'replace') qs.set('mode', 'replace');
+    const headers: Record<string, string> = { 'Content-Type': 'application/zip' };
+    if (opts.password) headers['x-ocr-archive-password'] = opts.password;
+    const res = await fetch(`/api/admin/environments/import?${qs.toString()}`, {
+      method: 'POST',
+      headers,
+      body: file,
+    });
+    if (!res.ok) await throwEnvFor(res);
+    return res.json();
+  },
+
   async getSessions(
     limit?: number,
     offset = 0,
@@ -910,6 +1162,23 @@ export const api = {
     const res = await fetch(`/api/admin/logs?${qs.toString()}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
+  },
+
+  /** POST /api/admin/logs/clear — back up + truncate ocr.log in place. */
+  async clearLogs(): Promise<{
+    status: string;
+    cleared: boolean;
+    exists: boolean;
+    size: number;
+    sizeBefore?: number;
+    backup: string | null;
+    warning?: string;
+    message?: string;
+  }> {
+    const res = await fetch('/api/admin/logs/clear', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.message || `HTTP ${res.status}`);
+    return data;
   },
 
   async getApiKeys(): Promise<{ status: string; keys: ApiKeyItem[] }> {

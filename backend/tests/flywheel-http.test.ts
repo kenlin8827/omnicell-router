@@ -213,7 +213,7 @@ describe('Flywheel lifecycle API (prune / batch delete / reset)', () => {
       lastSweepAt: null,
       lastRemoved: null,
     });
-    assert.strictEqual(body.total, 5, 'index counts records: the malformed line is skipped');
+    assert.strictEqual(body.total, 4, 'index counts records: the v1 line and the malformed line are skipped');
   });
 
   it('POST prune default is dry-run: counts reported, zero writes, mtime untouched', async () => {
@@ -227,7 +227,7 @@ describe('Flywheel lifecycle API (prune / batch delete / reset)', () => {
     assert.strictEqual(body.applied, false);
     assert.strictEqual(body.total, 6);
     assert.strictEqual(body.kept, 3);
-    assert.deepStrictEqual(body.dropped, { synthetic: 1, duplicate: 1, legacy: 0, malformed: 1 });
+    assert.deepStrictEqual(body.dropped, { synthetic: 1, duplicate: 1, malformed: 1 });
     assert.strictEqual(body.removedLabels, 0);
     assert.strictEqual(body.backupPath, null);
     assert.strictEqual(fs.statSync(datasetPath).mtimeMs, mtimeBefore);
@@ -235,7 +235,7 @@ describe('Flywheel lifecycle API (prune / batch delete / reset)', () => {
   });
 
   it('POST prune rejects present-but-non-boolean flags with 400', async () => {
-    for (const payload of [{ apply: 'yes' }, { dropSynthetic: 1 }, { dropDuplicates: null }, { dropLegacy: 'false' }]) {
+    for (const payload of [{ apply: 'yes' }, { dropSynthetic: 1 }, { dropDuplicates: null }, { apply: null }]) {
       const res = await app.inject({ method: 'POST', url: '/api/admin/flywheel/prune', payload });
       assert.strictEqual(res.statusCode, 400, `expected 400 for ${JSON.stringify(payload)}`);
       assert.match(JSON.parse(res.body).error, /must be a boolean/);
@@ -249,14 +249,16 @@ describe('Flywheel lifecycle API (prune / batch delete / reset)', () => {
     const body = JSON.parse(res.body);
     assert.strictEqual(body.applied, true);
     assert.strictEqual(body.kept, 3, 'preview↔apply count parity');
-    assert.deepStrictEqual(body.dropped, { synthetic: 1, duplicate: 1, legacy: 0, malformed: 1 });
+    assert.deepStrictEqual(body.dropped, { synthetic: 1, duplicate: 1, malformed: 1 });
     assert.ok(body.backupPath && fs.existsSync(body.backupPath));
     assert.strictEqual(fs.readFileSync(body.backupPath, 'utf8'), rawBefore);
     assert.strictEqual(fs.readFileSync(datasetPath, 'utf8'), [keepLine, legacyLine, deleteLine].join('\n') + '\n');
 
-    // Same-instance visibility: no re-start, no manual invalidate.
+    // Same-instance visibility: no re-start, no manual invalidate. The v1
+    // line survives the rewrite verbatim but never enters the index (no v1
+    // reader), so the index counts keep + delete only.
     const stats = await app.inject({ method: 'GET', url: '/api/admin/flywheel/stats' });
-    assert.strictEqual(JSON.parse(stats.body).total, 3);
+    assert.strictEqual(JSON.parse(stats.body).total, 2);
 
     // Second apply: nothing left to drop → applied:false, no second backup.
     const again = await app.inject({ method: 'POST', url: '/api/admin/flywheel/prune', payload: { apply: true } });
@@ -289,7 +291,7 @@ describe('Flywheel lifecycle API (prune / batch delete / reset)', () => {
     assert.strictEqual(JSON.parse(gone.body).total, 0, 'live index reflects the deletion');
     const stats = await app.inject({ method: 'GET', url: '/api/admin/flywheel/stats' });
     const st = JSON.parse(stats.body);
-    assert.strictEqual(st.total, 2);
+    assert.strictEqual(st.total, 1);
     assert.strictEqual(st.humanLabeled, 0);
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(labelsPath, 'utf8')), {});
   });
@@ -321,23 +323,22 @@ describe('Flywheel lifecycle API (prune / batch delete / reset)', () => {
     assert.strictEqual(JSON.parse(stale.body).total, 0, 'old offsets are gone, not half-live');
   });
 
-  // Flag mapping, in the opposite direction from the seed defaults:
-  // `dropSynthetic: body.dropSynthetic !== false` and
-  // `dropLegacy: body.dropLegacy === true` have INVERTED defaults — a preview
-  // with dropSynthetic:false + dropLegacy:true pins both mappings at once on a
-  // file whose only synthetic row is gone (already pruned) and whose legacy v1
-  // row survives every earlier step. Zero writes: later reset counts unaffected.
+  // Flag mapping: `dropSynthetic: body.dropSynthetic !== false` defaults ON —
+  // a preview with dropSynthetic:false pins that mapping explicitly on a file
+  // whose only synthetic row is gone (already pruned by an earlier step).
+  // Zero writes: later reset counts unaffected.
   it('POST prune maps body flags without inverting the split defaults (preview)', async () => {
     const raw = fs.readFileSync(datasetPath, 'utf8');
     const baksBefore = fs.readdirSync(tmpDir).filter((n) => n.includes('.bak-')).length;
 
-    const res = await app.inject({ method: 'POST', url: '/api/admin/flywheel/prune', payload: { dropSynthetic: false, dropLegacy: true } });
+    const res = await app.inject({ method: 'POST', url: '/api/admin/flywheel/prune', payload: { dropSynthetic: false, dropDuplicates: true } });
     assert.strictEqual(res.statusCode, 200);
     const body = JSON.parse(res.body);
     assert.strictEqual(body.applied, false);
+    // Two lines remain by now (keep + the pre-v2 line): nothing is droppable.
     assert.strictEqual(body.total, 2);
-    assert.strictEqual(body.kept, 1);
-    assert.deepStrictEqual(body.dropped, { synthetic: 0, duplicate: 0, legacy: 1, malformed: 0 });
+    assert.strictEqual(body.kept, 2);
+    assert.deepStrictEqual(body.dropped, { synthetic: 0, duplicate: 0, malformed: 0 });
     assert.strictEqual(fs.readFileSync(datasetPath, 'utf8'), raw, 'preview writes nothing');
     assert.strictEqual(fs.readdirSync(tmpDir).filter((n) => n.includes('.bak-')).length, baksBefore);
   });

@@ -1,10 +1,20 @@
 #!/usr/bin/env node
-import { startDaemon, stopDaemon, restartDaemon, getStatusOutput, launchWeb, launchDesktop } from './daemon.js';
-import { setupClient, teardownClient, getAllClientStatuses } from './clients/index.js';
+import { startDaemon, stopDaemon, restartDaemon, getStatusOutput, launchWeb, launchDesktop, getRunningPid, getDaemonInfo } from './daemon.js';
+import { setupClient, teardownClient } from './clients/index.js';
 import { defaultGatewayPort } from './clients/base.js';
 import { registerGlobalShims } from './shim.js';
 import { CliAction, SupportedClient } from './types.js';
 import { APP_VERSION } from '../version.js';
+import {
+  DEFAULT_ENV_NAME,
+  createEnv,
+  envExists,
+  listEnvs,
+  peekEnvName,
+  readPointer,
+  resetSandboxEnv,
+  writePointer,
+} from '../config/env.js';
 
 // ANSI color helpers
 const C = {
@@ -52,6 +62,12 @@ ${C.bold}CLIENT INTEGRATIONS (SETUP & TEARDOWN):${C.reset}
   ${C.yellow}ocr teardown claude${C.reset}     Unhook Claude and restore official direct connection
   ${C.yellow}ocr teardown codex${C.reset}      Unhook Codex and restore standard settings
 
+${C.bold}ENVIRONMENTS (book-sets under ~/.opencode-router/envs/):${C.reset}
+  ${C.cyan}ocr env list${C.reset}                List environments (current = next boot picks)
+  ${C.cyan}ocr env use <name>${C.reset}       Pin the active environment (or ${C.cyan}default${C.reset}); takes effect on restart
+  ${C.cyan}ocr env create <name>${C.reset}     New environment [--sandbox]
+  ${C.cyan}ocr env reset <name>${C.reset}      Reset a sandbox env (wipe data/traces/capture, keep config)
+
 ${C.bold}SYSTEM COMMANDS:${C.reset}
   ocr install-shims       Register global \`ocr\` and \`opencode-router\` commands to PATH
   ocr --version, -v       Show current OCR version
@@ -66,6 +82,7 @@ async function handleStatus(): Promise<void> {
   console.log(`${C.bold}Service State:${C.reset}`);
   if (st.running) {
     console.log(`  ● Gateway Status : ${C.green}${C.bold}ONLINE${C.reset} (PID: ${st.pid})`);
+    if (st.env) console.log(`  ● Active Env     : ${C.magenta}${st.env}${C.reset}`);
     console.log(`  ● Listening Port : ${C.cyan}http://127.0.0.1:${st.port}/v1${C.reset}`);
     console.log(`  ● Web Dashboard  : ${C.cyan}http://127.0.0.1:${st.port}/${C.reset}`);
     if (st.uptime) console.log(`  ● Active Uptime  : ${st.uptime}`);
@@ -86,6 +103,104 @@ async function handleStatus(): Promise<void> {
     console.log(`    ${C.dim}Config: ${c.configPath}${C.reset}`);
   }
   console.log('');
+}
+
+/**
+ * `ocr env <sub>` — list / use / create / reset. CLI v1 never restarts the
+ * gateway itself: pointer changes are informational against a live daemon,
+ * the console switch (POST /api/admin/environments/:name/switch) is the only
+ * path that performs the controlled restart handover.
+ */
+async function handleEnvCommand(args: string[]): Promise<void> {
+  const sub = (args[1] || 'list').toLowerCase();
+  const target = args[2];
+  const nextBoot = peekEnvName();
+
+  switch (sub) {
+    case 'list': {
+      printBanner();
+      const pid = getRunningPid();
+      console.log(`${C.bold}Environments${C.reset} ${C.dim}(pointer: ${readPointer() ?? '(none → default)'} · next boot: ${C.reset}${C.magenta}${nextBoot}${C.reset}${C.dim})${C.reset}\n`);
+      for (const e of listEnvs()) {
+        const marker = e.name === nextBoot ? `${C.green}●${C.reset}` : `${C.dim}○${C.reset}`;
+        const badges = [
+          e.name === DEFAULT_ENV_NAME ? `${C.yellow}bootstrap${C.reset}` : '',
+          e.type === 'sandbox' ? `${C.magenta}sandbox${C.reset}` : '',
+          pid && e.name === nextBoot ? ' (running)' : '',
+        ]
+          .filter(Boolean)
+          .join(' ');
+        console.log(`  ${marker} ${C.bold}${e.name.padEnd(24)}${C.reset} ${badges} ${C.dim}${e.createdAt ? `since ${e.createdAt.slice(0, 10)}` : ''}${C.reset}`);
+        console.log(`    ${C.dim}${e.configPath}${C.reset}`);
+      }
+      console.log('');
+      break;
+    }
+
+    case 'use': {
+      if (!target) {
+        console.error(`${C.red}✗ Usage:${C.reset} \`ocr env use <name | default>\``);
+        process.exit(1);
+      }
+      if (target !== DEFAULT_ENV_NAME && !envExists(target)) {
+        console.error(`${C.red}✗ Environment "${target}" does not exist.${C.reset} Create it with \`ocr env create ${target}\`.`);
+        process.exit(1);
+      }
+      writePointer(target);
+      const pid = getRunningPid();
+      console.log(`${C.green}✔${C.reset} Next gateway boot resolves environment ${C.magenta}${target}${C.reset}.`);
+      if (pid) {
+        console.log(
+          `${C.yellow}⚠ Gateway is RUNNING (PID ${pid}) on its boot-time environment — pointer changes take effect on restart:` +
+            `\n  • Console → Environments page switch (restarts into it, recommended), or` +
+            `\n  • \`ocr restart\`${C.reset}`
+        );
+      }
+      break;
+    }
+
+    case 'create': {
+      if (!target) {
+        console.error(`${C.red}✗ Usage:${C.reset} \`ocr env create <name> [--sandbox]\``);
+        process.exit(1);
+      }
+      try {
+        const info = await createEnv({ name: target, type: args.includes('--sandbox') ? 'sandbox' : 'regular' });
+        console.log(`${C.green}✔${C.reset} Created environment ${C.magenta}${target}${C.reset} (${info.type}) → ${C.dim}${info.dir}${C.reset}`);
+        console.log(`  Config: ${info.configPath}`);
+        console.log(`  Activate with ${C.cyan}\`ocr env use ${target}\`${C.reset} then restart the gateway.`);
+      } catch (err: any) {
+        console.error(`${C.red}✗ ${err?.message ?? err}${C.reset}`);
+        process.exit(1);
+      }
+      break;
+    }
+
+    case 'reset': {
+      if (!target) {
+        console.error(`${C.red}✗ Usage:${C.reset} \`ocr env reset <sandbox-name>\``);
+        process.exit(1);
+      }
+      try {
+        // Refuse to wipe the env a live daemon is running on (the API gates
+        // this via resolveEnvName; the CLI only sees the pid/info files).
+        const info = getRunningPid() ? getDaemonInfo() : null;
+        if (info?.env && info.env === target) {
+          throw new Error(`Environment "${target}" is the RUNNING env — switch to another env before resetting it`);
+        }
+        resetSandboxEnv(target);
+        console.log(`${C.green}✔${C.reset} Sandbox ${C.magenta}${target}${C.reset} wiped (data/traces/capture); config.yaml and env.json kept.`);
+      } catch (err: any) {
+        console.error(`${C.red}✗ ${err?.message ?? err}${C.reset}`);
+        process.exit(1);
+      }
+      break;
+    }
+
+    default:
+      console.error(`${C.red}✗ Unknown env subcommand: '${sub}'${C.reset}  (list | use | create | reset)`);
+      process.exit(2);
+  }
 }
 
 async function main(): Promise<void> {
@@ -109,11 +224,23 @@ async function main(): Promise<void> {
     port = parseInt(args[portIdx + 1], 10);
   }
 
+  // Parse optional --env flag (start/restart): runs the gateway on a named
+  // environment by injecting OCR_ENV into the daemon child.
+  let envName: string | undefined;
+  const envIdx = args.findIndex(a => a === '--env');
+  if (envIdx !== -1 && args[envIdx + 1]) {
+    envName = args[envIdx + 1];
+    if (envName !== DEFAULT_ENV_NAME && !envExists(envName)) {
+      console.error(`${C.red}✗ Environment "${envName}" does not exist.${C.reset} Create it with \`ocr env create ${envName}\`.`);
+      process.exit(1);
+    }
+  }
+
   switch (action) {
     case 'start': {
       printBanner();
       console.log('[OCR] Starting OpenCode Router gateway...');
-      const res = await startDaemon({ port });
+      const res = await startDaemon({ port, envName });
       if (res.success) {
         console.log(`${C.green}✔ ${res.message}${C.reset}`);
         console.log(`👉 Access Web Dashboard : ${C.cyan}http://127.0.0.1:${res.port}/${C.reset}`);
@@ -140,7 +267,7 @@ async function main(): Promise<void> {
     case 'restart': {
       printBanner();
       console.log('[OCR] Restarting OpenCode Router gateway...');
-      const res = await restartDaemon({ port });
+      const res = await restartDaemon({ port, envName });
       if (res.success) {
         console.log(`${C.green}✔ ${res.message}${C.reset}`);
       } else {
@@ -199,6 +326,11 @@ async function main(): Promise<void> {
         console.error(`${C.red}✗ ${res.message}${C.reset}`);
         process.exit(1);
       }
+      break;
+    }
+
+    case 'env': {
+      await handleEnvCommand(args);
       break;
     }
 

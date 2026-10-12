@@ -1,14 +1,11 @@
 node_modules/
 dist/
+# OCR reads no env file (dotenv removed, ADR-0018). This only guards against a
+# stray .env — which the Bun runtime would auto-load — ever getting committed.
 .env
 *.log
-config.yaml
-data/*.jsonl
-data/*.jsonl.*
-!data/.gitkeep
 
-# runtime artifacts
-backend/data/
-backend/models/
-# trainer pre-training backup (models/layer1-classifier.json is a tracked scaffold; trained weights stay local)
-models/*.previous
+# Runtime state never lives in the repository: every environment owns
+# ~/.opencode-router/envs/<name>/ (config.yaml, data/, models/, catalog/,
+# traces/, capture/, webauth-secret). If a rule for a repo-root state dir ever
+# reappears here, the layout has regressed — see docs/adr/0018.

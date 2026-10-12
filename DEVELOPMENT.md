@@ -77,7 +77,7 @@ OpenCode Router (OCR) replaces simplistic character length rules (e.g., `prompt.
 ## 2. Mathematical Principles & Deterministic Proofs
 
 ### 1. Base Model Scaffold & Softmax Fallthrough Proof
-To achieve cold-start operation without heuristic bypasses, OpenCode Router (OCR) auto-initializes `models/layer1-classifier.json` with zero-initialized weights and biases upon boot:
+To achieve cold-start operation without heuristic bypasses, OpenCode Router (OCR) auto-initializes the active environment's `models/layer1-classifier.json` (under `~/.opencode-router/envs/<env>/`) with zero-initialized weights and biases upon boot:
 $$W \in \mathbb{R}^{8 \times 3} = \mathbf{0}, \quad b \in \mathbb{R}^3 = \mathbf{0}$$
 
 **Forward Propagation Proof**:
@@ -176,7 +176,7 @@ opencode-router/
 Layer 2 Judge Decision / Layer 1 Schema Fallback Event
         │
         ▼
-Append to data/flywheel.jsonl (Ground truth tier + negative sample corrections)
+Append to the env's data/flywheel.jsonl (Ground truth tier + negative sample corrections)
         │
         ▼
 Run bun run train:layer1
@@ -185,7 +185,7 @@ Run bun run train:layer1
 Compute Softmax cross-entropy loss with L2 regularization
         │
         ▼
-Update models/layer1-classifier.json in place (isBaseModel: true -> false)
+Update <env>/models/layer1-classifier.json in place (isBaseModel: true -> false)
         │
         ▼
 Subsequent matching requests execute directly on CPU at <0.1ms with $0 cost

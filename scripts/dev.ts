@@ -1,14 +1,11 @@
 import { spawn } from 'node:child_process';
 
-const isWin = process.platform === 'win32';
-const bunCmd = isWin ? 'bun.exe' : 'bun';
-
 console.log('🚀 Starting OpenCode Router (OCR) Full-Stack Development Services...');
 console.log('   ├─ Backend API:  http://127.0.0.1:3000');
 console.log('   └─ Frontend App: http://127.0.0.1:5173\n');
 
 // 1. Start Backend in watch mode
-const backend = spawn('bun', ['--watch', 'backend/src/index.ts'], {
+const backend = spawn('bun', ['--no-env-file', '--watch', 'backend/src/index.ts'], {
   stdio: 'inherit',
   shell: true,
   env: { ...process.env, FORCE_COLOR: '1' },

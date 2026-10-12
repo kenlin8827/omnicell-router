@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { RequestCaptureConfig } from '../config/types.js';
-import { getOcrHomeDir } from '../cli/paths.js';
+import { getEnvPaths } from '../config/env.js';
 
 /**
  * One captured turn — a single JSONL line in the per-session archive file.
@@ -341,7 +341,7 @@ export class CaptureRecorder {
     // `new CaptureRecorder()` must not enforce looser limits than the config.
     this.maxTotalBytes = (config?.maxTotalMB ?? 512) * 1024 * 1024;
     this.maxBodyBytes = config?.maxBodyBytes ?? 65536;
-    this.rootDir = path.resolve(config?.dir || path.join(getOcrHomeDir(), 'capture'));
+    this.rootDir = path.resolve(config?.dir || getEnvPaths().captureDir);
 
     if (this.enabled) {
       this.ensureDir(this.rootDir);

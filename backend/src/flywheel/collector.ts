@@ -3,6 +3,7 @@ import path from 'node:path';
 import { RoutingDecision, TierLevel } from '../types/router.js';
 import { ChatCompletionRequest } from '../types/openai.js';
 import { FlywheelConfig } from '../config/types.js';
+import { getEnvRootDir } from '../config/env.js';
 import { Layer1Classifier } from '../router/layer1-classifier.js';
 import { applyRetention } from './prune.js';
 import {
@@ -64,7 +65,10 @@ export class FlywheelCollector {
     // orchestrator with a hand-rolled config object (no `flywheel` field) must
     // not silently start collecting into the production dataset path.
     this.config = config ?? { enabled: false, datasetPath: './data/flywheel.jsonl' };
-    this.datasetPath = path.resolve(process.cwd(), this.config.datasetPath || './data/flywheel.jsonl');
+    // Relative dataset paths resolve against the ACTIVE ENVIRONMENT's root
+    // (<home>/envs/<name>), so "./data/flywheel.jsonl" always lands inside the
+    // book-set that is running — never in the shell's cwd.
+    this.datasetPath = path.resolve(getEnvRootDir(), this.config.datasetPath || './data/flywheel.jsonl');
     this.ensureDirectory();
 
     // Retention sweep (design doc D4, exact CaptureRecorder pattern): only
@@ -135,8 +139,7 @@ export class FlywheelCollector {
    *
    * The feature vector is captured HERE, at request time, because the 8
    * features the trainer consumes are computed from the full request and
-   * cannot be reconstructed later from a truncated (or redacted) prompt —
-   * which is exactly why the legacy v1 rows are not trainable.
+   * cannot be reconstructed later from a truncated (or redacted) prompt.
    */
   public async record(params: {
     requestId: string;
@@ -210,7 +213,6 @@ export class FlywheelCollector {
         tierUsed: params.tierUsed,
         fallbackOccurred: params.fallbackOccurred,
       }),
-      trainable: true,
     };
 
     // Update memory stats

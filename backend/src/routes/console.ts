@@ -7,6 +7,7 @@ import { resolveTierMembers, matchingTiers, MEMBER_TIER_ORDER } from '../provide
 import { globMatchAny } from '../utils/glob.js';
 import { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import { getRawConfig, loadConfig, saveConfig, saveRawConfig, getRuntimeConfigRef } from '../config/index.js';
+import { getEnvPaths, resolveEnvName } from '../config/env.js';
 import { applyConfig as applyDecisionCaptureConfig } from '../flywheel/decision-capture.js';
 import { initProxyConfig } from '../utils/proxy.js';
 import { getOcrHomeDir } from '../cli/paths.js';
@@ -353,6 +354,12 @@ export function registerConsoleRoutes(
     return {
       status: 'ok',
       timestamp: new Date().toISOString(),
+      // Active environment (book-set) — name + resolved config path only;
+      // console env-switching UI lands in Phase 3.
+      env: {
+        name: resolveEnvName(),
+        configPath: getEnvPaths().configPath,
+      },
       // Actual listening port (config.yaml `port` is the single source of truth)
       // so the console header shows the real gateway port instead of a literal.
       port: config.port,
@@ -1643,7 +1650,10 @@ export function registerConsoleRoutes(
       if (readSize < stat.size && allLines.length > 0) allLines.shift();
 
       const parsed: ParsedLogLine[] = [];
-      for (const raw of allLines) {
+      for (const rawLine of allLines) {
+        // Strip NUL: after logs/clear, a Windows stale-offset writer leaves a
+        // sparse zero region between file start and its next write position.
+        const raw = rawLine.replace(/\0/g, '');
         if (!raw.trim()) continue;
         const entry = parseLogLine(raw);
         // Level filter only applies to parsed pino lines; banner text is
@@ -1659,6 +1669,51 @@ export function registerConsoleRoutes(
     }
   };
   app.get('/api/admin/logs', handleGetLogs);
+
+  // Clear the process log: back up the current file, then truncate it in
+  // place. Truncate (not delete/rename) is deliberate — on POSIX the daemon's
+  // O_APPEND fd keeps writing to the same inode, and on Windows the sparse
+  // NUL hole left behind the stale writer offset is filtered by the viewer.
+  const handleClearLogs = async () => {
+    const { getLogFilePath } = await import('../cli/paths.js');
+    const file = getLogFilePath();
+    if (!fs.existsSync(file)) {
+      return { status: 'ok', cleared: false, exists: false, size: 0, backup: null };
+    }
+    const sizeBefore = fs.statSync(file).size;
+    let backup: string | null = null;
+    let warning: string | undefined;
+    try {
+      // Timestamped sibling copy (local time, lexicographic = chronological),
+      // mirroring the `ocr.log.1..N` archive convention used at daemon start.
+      const d = new Date();
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+      fs.copyFileSync(file, `${file}.clear-${stamp}.bak`);
+      // Keep at most 3 clear-backups; prune the oldest by name order.
+      const dir = path.dirname(file);
+      const base = path.basename(file);
+      const clears = fs
+        .readdirSync(dir)
+        .filter((n) => n.startsWith(`${base}.clear-`) && n.endsWith('.bak'))
+        .sort();
+      for (const stale of clears.slice(0, Math.max(0, clears.length - 3))) {
+        try {
+          fs.unlinkSync(path.join(dir, stale));
+        } catch {
+          // best-effort prune
+        }
+      }
+      backup = clears.length ? path.join(dir, clears[clears.length - 1]) : null;
+    } catch (err: any) {
+      // A sharing violation (live Windows writer) or permission error must not
+      // block the clear itself — the user asked for a clean log, not a backup.
+      warning = `backup failed (${err?.code || err?.message || 'unknown'}); log truncated without backup`;
+    }
+    fs.truncateSync(file, 0);
+    return { status: 'ok', cleared: true, exists: true, size: 0, sizeBefore, backup, warning };
+  };
+  app.post('/api/admin/logs/clear', handleClearLogs);
 
   /* ---------------------------------------------------------------------- *
    * 12. Request-capture archive browser (CaptureRecorder; opt-in audit log)

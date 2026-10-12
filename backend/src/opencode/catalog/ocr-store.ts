@@ -1,10 +1,11 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import type { CatalogProviderRecord } from './types.js';
+import { getEnvPaths } from '../../config/env.js';
 
 /**
- * Static OCR catalog store (~/.opencode-router/catalog/ocr.json).
+ * Static OCR catalog store (<env.catalog>/ocr.json — default env binds to
+ * ~/.opencode-router/catalog/ocr.json).
  *
  * This is the LOCAL DATABASE of the catalog: the full aggregated view
  * (catalogRepository.list()) materialized to disk. The repository loads this
@@ -26,7 +27,7 @@ export interface OcrCatalogStore {
 export function getOcrStorePath(): string {
   const override = process.env.OCR_CATALOG_PATH;
   if (override) return override;
-  return path.join(os.homedir(), '.opencode-router', 'catalog', 'ocr.json');
+  return path.join(getEnvPaths().catalogDir, 'ocr.json');
 }
 
 export function readOcrStore(): OcrCatalogStore | null {

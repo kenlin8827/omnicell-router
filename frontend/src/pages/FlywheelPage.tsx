@@ -101,10 +101,9 @@ export const FlywheelPage: React.FC = () => {
   const [bulkDeleting, setBulkDeleting] = useState(false);
 
   const [pruneOpen, setPruneOpen] = useState(false);
-  // Defaults mirror the backend/CLI: drop test traffic + duplicates, keep legacy.
+  // Defaults mirror the backend/CLI: drop test traffic + duplicates.
   const [pruneSynthetic, setPruneSynthetic] = useState(true);
   const [pruneDuplicates, setPruneDuplicates] = useState(true);
-  const [pruneLegacy, setPruneLegacy] = useState(false);
   const [prunePreview, setPrunePreview] = useState<FlywheelPruneResult | null>(null);
   const [pruneBusy, setPruneBusy] = useState(false);
 
@@ -320,7 +319,6 @@ export const FlywheelPage: React.FC = () => {
   const pruneRequestBody = () => ({
     dropSynthetic: pruneSynthetic,
     dropDuplicates: pruneDuplicates,
-    dropLegacy: pruneLegacy,
   });
 
   // Dry-run default (FE-3): the preview performs zero writes server-side.
@@ -356,7 +354,6 @@ export const FlywheelPage: React.FC = () => {
           total: res.total,
           s: res.dropped.synthetic,
           d: res.dropped.duplicate,
-          l: res.dropped.legacy,
           m: res.dropped.malformed,
         }),
       ];
@@ -830,11 +827,6 @@ export const FlywheelPage: React.FC = () => {
                   {row.execution.isSynthetic && (
                     <span style={{ fontSize: 10, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{t('flywheel.syntheticBadge')}</span>
                   )}
-                  {!row.trainable && (
-                    <span style={{ fontSize: 10, color: 'var(--text-dim)', whiteSpace: 'nowrap' }} title={t('flywheel.legacyNoVector')}>
-                      {t('flywheel.legacyBadge')}
-                    </span>
-                  )}
                   {/* Full prompt opens in a modal — a 60 KB native title
                       tooltip is unreadable and uncopyable. */}
                   <span
@@ -1095,18 +1087,6 @@ export const FlywheelPage: React.FC = () => {
               />
               {t('flywheel.pruneOptDuplicates')}
             </label>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-muted)', cursor: 'pointer' }}>
-              <Switch
-                size="sm"
-                checked={pruneLegacy}
-                onChange={v => {
-                  setPruneLegacy(v);
-                  setPrunePreview(null);
-                }}
-                disabled={pruneBusy}
-              />
-              {t('flywheel.pruneOptLegacy')}
-            </label>
           </div>
 
           {prunePreview && (
@@ -1133,7 +1113,6 @@ export const FlywheelPage: React.FC = () => {
                     total: prunePreview.total,
                     s: prunePreview.dropped.synthetic,
                     d: prunePreview.dropped.duplicate,
-                    l: prunePreview.dropped.legacy,
                     m: prunePreview.dropped.malformed,
                   })}
                 </span>

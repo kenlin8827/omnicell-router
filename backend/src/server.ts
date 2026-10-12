@@ -3,6 +3,7 @@ import { isWebAuthActive, isAdminAuthEndpoint, parseSessionCookie, verifySession
 import { getModelAccessPolicy, isModelAllowed, isAutoEntryUsable } from './auth/model-access.js';
 import { registerRuntimeConfigRef } from './config/index.js';
 import { registerFlywheelRoutes } from './routes/flywheel.js';
+import { registerEnvironmentRoutes } from './routes/environments.js';
 import { SURFACES } from './surfaces/table.js';
 import { createFastifyTransport } from './surfaces/transport-fastify.js';
 import { dispatchSurface } from './surfaces/dispatch.js';
@@ -120,6 +121,10 @@ export function createServer(
 
   // Flywheel console: dataset browsing, operator relabelling, manual training
   registerFlywheelRoutes(app, orchestrator);
+
+  // Environment administration (book-sets): list/create/rename/trash/switch/
+  // reset/export/import. Under /api/admin/* → covered by the webAuth gate.
+  registerEnvironmentRoutes(app);
 
   // Authentication hook: validates adminApiKey (master) or client API keys (apiKeys)
   const resolveActiveAuthConfig = () => {

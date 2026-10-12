@@ -6,6 +6,7 @@
  */
 import path from 'node:path';
 import { loadConfig } from '../backend/src/config/index.js';
+import { getEnvRootDir } from '../backend/src/config/env.js';
 import { FlywheelDataset } from '../backend/src/flywheel/dataset.js';
 import { FLYWHEEL_TIERS } from '../backend/src/flywheel/schema.js';
 
@@ -15,7 +16,7 @@ function pct(n: number, total: number): string {
 
 function main() {
   const config = loadConfig();
-  const filePath = path.resolve(process.cwd(), config.flywheel?.datasetPath || './data/flywheel.jsonl');
+  const filePath = path.resolve(getEnvRootDir(), config.flywheel?.datasetPath || './data/flywheel.jsonl');
   const dataset = new FlywheelDataset(filePath);
   const s = dataset.summary();
 

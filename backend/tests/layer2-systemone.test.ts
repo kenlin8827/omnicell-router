@@ -28,8 +28,13 @@ const originalCwd = process.cwd();
 const sandboxRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-layer2-'));
 const sandbox = path.join(sandboxRoot, 'plain');
 fs.mkdirSync(sandbox);
-// getConfigPath() prefers cwd/config.yaml — isolate from the repo's real one.
-fs.writeFileSync(path.join(sandbox, 'config.yaml'), 'port: 3000\nhost: 127.0.0.1\napiKeys: []\nmodels: []\n');
+// Config + state resolve from OCR_HOME (never the cwd) — isolate a throwaway
+// home whose bootstrap `default` env holds the placeholder config.
+process.env.OCR_HOME = path.join(sandboxRoot, 'home');
+const ENV_DIR = path.join(process.env.OCR_HOME, 'envs', 'default');
+fs.mkdirSync(ENV_DIR, { recursive: true });
+fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'), 'port: 3000\nhost: 127.0.0.1\napiKeys: []\nmodels: []\n');
+fs.writeFileSync(path.join(ENV_DIR, 'env.json'), JSON.stringify({ name: 'default', type: 'regular', schemaVersion: 1 }));
 process.chdir(sandbox);
 
 afterAll(() => {
@@ -74,17 +79,17 @@ beforeEach(() => {
   resetDecisionCaptureConfig();
   // Capture tests assert file presence/absence — start each from clean disk.
   try {
-    fs.rmSync(path.join(sandbox, 'data'), { recursive: true, force: true });
+    fs.rmSync(path.join(ENV_DIR, 'data'), { recursive: true, force: true });
   } catch {
     /* best effort */
   }
 });
 
 describe('Layer 2 decision capture (dataset sink — single-key gate classifier.layer2.collectEnabled)', () => {
-  const capturePath = () => path.join(sandbox, 'data', 'layer2-decisions.jsonl');
+  const capturePath = () => path.join(ENV_DIR, 'data', 'layer2-decisions.jsonl');
 
   test('enabled: a judged decision lands as one parseable row', async () => {
-    fs.writeFileSync(path.join(sandbox, 'config.yaml'),
+    fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'),
       'port: 3000\nhost: 127.0.0.1\napiKeys: []\nmodels: []\nclassifier:\n  layer2:\n    collectEnabled: true\n');
     const upstream = serve({
       port: 0,
@@ -120,7 +125,7 @@ describe('Layer 2 decision capture (dataset sink — single-key gate classifier.
   });
 
   test('default off: zero writes', async () => {
-    fs.writeFileSync(path.join(sandbox, 'config.yaml'), 'port: 3000\nhost: 127.0.0.1\napiKeys: []\nmodels: []\n');
+    fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'), 'port: 3000\nhost: 127.0.0.1\napiKeys: []\nmodels: []\n');
     const upstream = serve({
       port: 0,
       async fetch() {
@@ -146,7 +151,7 @@ describe('Layer 2 decision capture (dataset sink — single-key gate classifier.
   });
 
   test('an abandoned late result never lands in the dataset', async () => {
-    fs.writeFileSync(path.join(sandbox, 'config.yaml'),
+    fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'),
       'port: 3000\nhost: 127.0.0.1\napiKeys: []\nmodels: []\nclassifier:\n  layer2:\n    collectEnabled: true\n');
     const upstream = serve({
       port: 0,

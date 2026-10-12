@@ -3,14 +3,15 @@
  *
  * WHY THIS EXISTS: running `bun test backend/tests` from the repo root in ONE
  * process produces ~26 phantom failures. Two independent causes:
- *   1. cwd contamination — getConfigPath() prefers <cwd>/config.yaml, and the
- *      repo's real (gitignored) config.yaml carries the operator's webAuth
- *      login gate, so /api/admin console endpoints 401 in trace/variants/...
+ *   1. config leakage — without OCR_HOME every child resolves the operator's
+ *      real ~/.opencode-router environment (its config.yaml carries the
+ *      webAuth login gate), so /api/admin console endpoints 401 in
+ *      trace/variants/... and test writes land on real data.
  *   2. describe-cascade — one process means one shared module registry; the
  *      chdir-based sandboxes some suites install leak into later files.
- * Running each file from a sandbox cwd holding a minimal placeholder config
- * (port/host/apiKeys/models only) fixes both — this is how the suite is
- * verified to reach 0 fail (553 pass as of 2026-10-11).
+ * Running each file as its own process against a sandbox OCR_HOME holding one
+ * placeholder environment (a minimal config.yaml: port/host/apiKeys/models)
+ * fixes both — this is how the suite is verified to reach 0 fail.
  *
  * Usage: bun scripts/test-isolated.ts [substring-filter ...]
  * A file runs only when its path contains one of the filter substrings
@@ -36,13 +37,24 @@ if (files.length === 0) {
   process.exit(2);
 }
 
-// Sandbox cwd for every child: a placeholder config.yaml so the operator's
-// real one (api keys, per-key policies, webAuth) can never leak into a run.
+// Sandbox OCR_HOME for every child, holding a placeholder env config so the
+// operator's real ~/.opencode-router (api keys, per-key policies, webAuth) can
+// never leak into a run — and never be written by one. Config resolution is
+// env-relative (<home>/envs/<env>/config.yaml), so the child's cwd is
+// irrelevant: OCR_HOME + OCR_ENV are the only levers that matter.
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-test-iso-'));
+const ocrHome = path.join(sandbox, 'home');
+const defaultEnvDir = path.join(ocrHome, 'envs', 'default');
+fs.mkdirSync(defaultEnvDir, { recursive: true });
 fs.writeFileSync(
-  path.join(sandbox, 'config.yaml'),
+  path.join(defaultEnvDir, 'config.yaml'),
   'port: 3000\nhost: 127.0.0.1\napiKeys: []\nmodels: []\n'
 );
+fs.writeFileSync(
+  path.join(defaultEnvDir, 'env.json'),
+  JSON.stringify({ name: 'default', type: 'regular', createdAt: new Date().toISOString(), schemaVersion: 1 })
+);
+const childEnv = { ...process.env, OCR_HOME: ocrHome, OCR_ENV: 'default' };
 
 let totalPass = 0;
 let totalFail = 0;
@@ -52,8 +64,9 @@ try {
   process.chdir(sandbox); // children inherit this cwd
   for (const file of files) {
     const name = path.basename(file, '.test.ts');
-    const proc = Bun.spawnSync(['bun', 'test', file], {
+    const proc = Bun.spawnSync(['bun', 'test', '--no-env-file', file], {
       cwd: sandbox,
+      env: childEnv,
       stdout: 'pipe',
       stderr: 'pipe',
     });

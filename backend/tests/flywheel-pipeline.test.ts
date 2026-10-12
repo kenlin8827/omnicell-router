@@ -64,37 +64,22 @@ describe('Flywheel dataset + training pipeline', () => {
     return new FlywheelDataset(datasetPath);
   };
 
-  it('migrates legacy v1 rows without inventing a feature vector', () => {
+  it('treats a pre-v2 line as malformed (no v1 reader)', () => {
     const legacy = {
       id: 'old-1',
-      timestamp: '2026-01-01T00:00:00.000Z',
       userPrompt: 'hi',
-      tokenCount: 1,
-      features: { hasCode: false, complexityScore: 5 },
-      routing: { targetTier: 'plus', confidence: 0.25, layerUsed: 'layer1' },
-      execution: {
-        tierUsed: 'lite', modelUsed: 'zhipu/glm-4.5',
-        fallbackOccurred: false, latencyMs: 892,
-      },
-      label: { groundTruthTier: 'plus', labelSource: 'layer1_confident', isNegativeSampleForLite: false },
+      routing: { targetTier: 'plus' },
+      label: { labelSource: 'layer1_confident' },
     };
-
-    const rec = migrateRecord(legacy);
-    assert.ok(rec);
-    assert.strictEqual(rec.v, FLYWHEEL_SCHEMA_VERSION);
-    // The 8 features come from the full request; v1 kept only a truncated
-    // prompt, so the row is inspectable but must not be treated as trainable.
-    assert.strictEqual(rec.trainable, false);
-    assert.strictEqual(rec.input.featureVector, null);
-    // v1 copied targetTier into the label while executing lite — the migration
-    // prefers what actually served.
-    assert.strictEqual(rec.label.tier, 'lite');
-    assert.strictEqual(rec.label.source, 'observed_execution');
-    assert.strictEqual(rec.label.overridden, true);
+    assert.strictEqual(migrateRecord(legacy), null);
   });
 
   it('survives malformed dataset lines', () => {
-    fs.writeFileSync(datasetPath, '{"id":"ok","v":2}\nnot json at all\n\n{"broken":\n', 'utf8');
+    fs.writeFileSync(
+      datasetPath,
+      '{"id":"ok","v":2,"input":{"userPrompt":"x"}}\nnot json at all\n\n{"broken":\n',
+      'utf8'
+    );
     const ds = new FlywheelDataset(datasetPath);
     assert.strictEqual(ds.summary().total, 1);
   });

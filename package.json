@@ -9,23 +9,23 @@
     "frontend"
   ],
   "scripts": {
-    "ocr": "bun backend/src/cli/index.ts",
+    "ocr": "bun --no-env-file backend/src/cli/index.ts",
     "setup": "bun install && bun run build",
-    "dev": "bun run scripts/dev.ts",
+    "dev": "bun --no-env-file scripts/dev.ts",
     "dev:backend": "bun --filter @opencode-router/backend dev",
     "dev:frontend": "bun --filter @opencode-router/frontend dev",
     "build": "tsc -p backend && vite build frontend",
     "build:backend": "tsc -p backend",
     "build:frontend": "vite build frontend",
     "start": "node backend/dist/index.js",
-    "start:bun": "bun backend/src/index.ts",
-    "test": "bun run scripts/test-isolated.ts",
+    "start:bun": "bun --no-env-file backend/src/index.ts",
+    "test": "bun --no-env-file scripts/test-isolated.ts",
     "test:node": "tsx --test backend/tests/**/*.test.ts",
-    "test:system": "bun run scripts/full-system-test.ts",
+    "test:system": "bun --no-env-file scripts/full-system-test.ts",
     "typecheck": "tsc -p backend --noEmit && tsc -p frontend --noEmit",
-    "train:layer1": "bun run scripts/train-layer1-classifier.ts",
-    "flywheel:stats": "bun run scripts/flywheel-stats.ts",
-    "flywheel:prune": "bun run scripts/flywheel-prune.ts"
+    "train:layer1": "bun --no-env-file scripts/train-layer1-classifier.ts",
+    "flywheel:stats": "bun --no-env-file scripts/flywheel-stats.ts",
+    "flywheel:prune": "bun --no-env-file scripts/flywheel-prune.ts"
   },
   "keywords": [
     "llm",

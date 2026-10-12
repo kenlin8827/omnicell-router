@@ -526,6 +526,13 @@ td, th {
   box-shadow: var(--focus-ring);
 }
 
+/* Edge injects native reveal/autofill glyphs into password inputs; they are
+   un-themeable, so hide them and let the browser icon layer stay invisible. */
+input::-ms-reveal,
+input::-ms-clear {
+  display: none;
+}
+
 /* Toggle switch (see components/Switch.tsx) — theme-aware via --accent / --accent-glow */
 .switch {
   appearance: none;

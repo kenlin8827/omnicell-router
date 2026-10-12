@@ -2,6 +2,9 @@
 
 Status: scope approved; §3 contracts are FROZEN so BE/FE build in parallel. @architect, 2026-10-12.
 Amends ADR-0004's append-only narrative (§7). This doc specifies; it implements nothing.
+**Amended 2026-10-13 (0.0.1 no-history policy): the `dropLegacy` prune option and the legacy-row
+classification are retired — every `dropped.legacy` field, the third Switch and the v1 migration
+branch are gone; a pre-v2 line parses as malformed. The §3 snippets below show the retired shape.**
 
 ## 1. Verified facts
 - Auth: `/api/admin/*` is whitelisted from client API-key auth (server.ts:182-194); when webAuth is

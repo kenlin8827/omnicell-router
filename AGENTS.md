@@ -11,9 +11,23 @@ OpenCode Router (OCR) — a local LLM gateway / cascaded router. Bun workspaces:
 - `bun run typecheck` — **run this after any code change** (typechecks both backend and frontend; exit 0 = clean).
 - `bun run build` — full build (`tsc -p backend && vite build frontend`).
 - `bun run build:frontend` — frontend only (writes to `frontend/dist/`).
-- `bun run test` — backend test suite (isolated runner: each file runs from a sandbox cwd with a placeholder config, so the operator's real config.yaml never leaks in; `bun test backend/tests` directly is NOT reliable — `bun test` is bun's built-in runner and a single-process whole-suite run produces ~26 phantom failures from cwd/webAuth contamination).
+- `bun run test` — backend test suite (isolated runner: each file runs as its own process with `OCR_HOME` pointed at a sandbox holding one placeholder `default` environment, so the operator's real `~/.opencode-router` config and state never leak in; `bun test backend/tests` directly is NOT reliable — `bun test` is bun's built-in runner and a single-process whole-suite run produces ~26 phantom failures from shared-module/config contamination).
 
 ## Code conventions
+
+### No `.env` — the two bootstrap levers come from the real environment
+
+`OCR_ENV` (which environment boots) and `OCR_HOME` (state root, default
+`~/.opencode-router`) are read from the **process environment only**. OCR has no env-file loader:
+`dotenv` was removed entirely (ADR-0018), and because the Bun runtime
+auto-loads a cwd `.env` by itself, every entry point passes `--no-env-file` (root and backend
+`package.json` scripts, `scripts/dev.ts`, `scripts/test-isolated.ts`, and the daemon's
+`resolveRuntimeBinary()`). Keep that flag on any new bun entry point.
+
+Resolution precedence: shell `OCR_ENV` > `envs/current` pointer (written by `ocr env use` /
+console switch) > bootstrap `default`. Never add a second file-based override, and never put
+`port`/`host`/`adminApiKey`/providers/tiers outside the environment's own
+`~/.opencode-router/envs/<name>/config.yaml`.
 
 ### All code comments must be English
 

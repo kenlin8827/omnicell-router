@@ -4,7 +4,11 @@ import fs from 'node:fs';
 
 export function getOcrHomeDir(): string {
   const home = os.homedir();
-  const dir = path.join(home, '.opencode-router');
+  // OCR_HOME override: the isolation substrate for named environments and
+  // sandboxed test runs (see config/env.ts). Empty/whitespace = unset.
+  // Creation semantics unchanged: ensure the resolved directory exists.
+  const override = process.env.OCR_HOME?.trim();
+  const dir = override ? path.resolve(override) : path.join(home, '.opencode-router');
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }

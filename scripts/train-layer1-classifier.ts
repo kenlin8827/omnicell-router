@@ -11,6 +11,7 @@
  */
 import path from 'node:path';
 import { loadConfig } from '../backend/src/config/index.js';
+import { getEnvRootDir } from '../backend/src/config/env.js';
 import { FlywheelDataset } from '../backend/src/flywheel/dataset.js';
 import { FlywheelTrainer } from '../backend/src/flywheel/trainer.js';
 import { FLYWHEEL_TIERS } from '../backend/src/flywheel/schema.js';
@@ -21,13 +22,15 @@ async function main() {
   console.log('============================================================\n');
 
   const config = loadConfig();
+  // Relative config paths resolve against the ACTIVE ENVIRONMENT's root — the
+  // same base the gateway/collector uses, so CLI and console runs cannot drift.
   const datasetPath = path.resolve(
-    process.cwd(),
+    getEnvRootDir(),
     config.flywheel?.datasetPath || './data/flywheel.jsonl'
   );
   const modelPath =
     config.classifier?.localModel?.modelPath ||
-    path.resolve(process.cwd(), 'models/layer1-classifier.json');
+    path.resolve(getEnvRootDir(), 'models/layer1-classifier.json');
 
   const dataset = new FlywheelDataset(datasetPath);
   const trainer = new FlywheelTrainer(dataset, modelPath);
@@ -44,9 +47,7 @@ async function main() {
   if (summary.trainable === 0) {
     console.log('\n⚠️ No trainable samples.');
     console.log('💡 Trainable rows need BOTH a feature vector and a label.');
-    console.log('   Legacy v1 rows kept only a truncated prompt, so their 8 features');
-    console.log('   cannot be reconstructed — they stay visible in the console but are');
-    console.log('   never trained on. Collect traffic under schema v2 to fill the pool.');
+    console.log('   Collect gateway traffic under schema v2 to fill the pool.');
     return;
   }
 

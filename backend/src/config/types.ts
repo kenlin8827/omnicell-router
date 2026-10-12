@@ -490,8 +490,7 @@ export interface RequestCaptureSystemoneConfig {
  * console /api/admin/* endpoints are auth-exempt — enable consciously.
  * Request headers are NEVER recorded.
  *
- * Renamed from the legacy `capture:` section; loadConfig() maps old keys onto
- * this tree and strips the legacy section from saved output.
+ * The requestCapture tree (audit-log capture config).
  */
 export interface RequestCaptureConfig {
   enabled?: boolean; // master switch; default false
@@ -554,7 +553,7 @@ export interface RouterConfig {
   proxy?: ProxyConfig;
   forwardProxy?: ForwardProxyConfig;
   compression?: CompressionConfig;
-  /** Request capture (audit log). Renamed from the legacy `capture:` section. */
+  /** Request capture (audit log). */
   requestCapture?: RequestCaptureConfig;
   tracePersist?: TracePersistConfig;
   logging?: LoggingConfig;

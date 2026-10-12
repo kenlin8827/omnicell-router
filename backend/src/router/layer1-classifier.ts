@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ChatCompletionRequest } from '../types/openai.js';
 import { TierLevel, ReasonParams } from '../types/router.js';
-import { Layer1ClassifierConfig, LocalModelConfig } from '../config/types.js';
+import { Layer1ClassifierConfig } from '../config/types.js';
+import { getEnvRootDir } from '../config/env.js';
 import { TokenEstimator } from '../utils/token-estimator.js';
 
 export interface Layer1Prediction {
@@ -97,7 +98,7 @@ export const DEFAULT_BASE_MODEL: Layer1ModelWeights = {
  */
 export class Layer1Classifier {
   private static loadedModel: Layer1ModelWeights = JSON.parse(JSON.stringify(DEFAULT_BASE_MODEL));
-  private static modelFilePath: string = './models/layer1-classifier.json';
+  private static modelFilePath: string | undefined;
   private static onnxRuntime: any = null;
   private static onnxSession: any = null;
   private static initialized = false;
@@ -107,7 +108,9 @@ export class Layer1Classifier {
    * If model file does NOT exist, automatically scaffolds the base model!
    */
   public static async init(config?: Layer1ClassifierConfig): Promise<void> {
-    const targetPath = config?.modelPath || path.resolve(process.cwd(), 'models/layer1-classifier.json');
+    // Default scaffold location: <home>/envs/<env>/models/layer1-classifier.json
+    // — every environment trains its own weights.
+    const targetPath = config?.modelPath || path.resolve(getEnvRootDir(), 'models/layer1-classifier.json');
     this.modelFilePath = targetPath;
 
     // 1. If path points to an ONNX model, attempt to load ONNX
@@ -414,6 +417,9 @@ export class Layer1Classifier {
    */
   public static saveModel(weights: Layer1ModelWeights, targetPath?: string): void {
     const savePath = targetPath || this.modelFilePath;
+    if (!savePath) {
+      throw new Error('[Layer1Classifier] saveModel before init(): no model path resolved — call Layer1Classifier.init() first.');
+    }
     const dir = path.dirname(savePath);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
@@ -428,6 +434,9 @@ export class Layer1Classifier {
    */
   public static reload(targetPath?: string): void {
     const loadPath = targetPath || this.modelFilePath;
+    if (!loadPath) {
+      throw new Error('[Layer1Classifier] reload() before init(): no model path resolved — call Layer1Classifier.init() first.');
+    }
     if (fs.existsSync(loadPath)) {
       const content = fs.readFileSync(loadPath, 'utf8');
       this.loadedModel = JSON.parse(content);

@@ -1,4 +1,3 @@
-import path from 'node:path';
 import { loadConfig, ensureDefaultConfigFile } from './config/index.js';
 import { createServer } from './server.js';
 import { ProviderRegistry } from './providers/registry.js';
@@ -12,7 +11,7 @@ import { catalogRepository } from './opencode/catalog/repository.js';
 import { initProxyConfig } from './utils/proxy.js';
 import { adoptRestartParent, writeDaemonFiles } from './cli/daemon.js';
 import { openFinOpsStore } from './trace/persist.js';
-import { getOcrHomeDir } from './cli/paths.js';
+import { getEnvPaths, resolveEnvName } from './config/env.js';
 import { getWarnThrottle } from './observability/warn-throttle.js';
 import { validateWebAuthStartup } from './auth/web-auth.js';
 import { startForwardProxy } from './forward-proxy/index.js';
@@ -22,6 +21,13 @@ async function main() {
   // If this process was spawned by the UI "Restart Gateway" button, wait for
   // the old gateway to die (and take over) before booting further.
   const isRestartChild = await adoptRestartParent();
+
+  // Active environment (book-set) — resolve FIRST: an unknown OCR_ENV /
+  // dangling pointer crashes the boot here with a clear message (fail-fast,
+  // never silently run on the wrong data set). Module-level path singletons
+  // cache this resolution; switching envs requires a restart by design.
+  const envName = resolveEnvName();
+  console.log(`[OCR] env: ${envName} (config: ${getEnvPaths().configPath})`);
 
   // First-boot template: a fresh install gets a self-documenting config.yaml
   // (annotated DEFAULT_CONFIG) instead of silent in-memory defaults + an empty
@@ -53,11 +59,12 @@ async function main() {
   console.log(`[OCR] Layer 1 classifier ready: ${Layer1Classifier.getModelStatus()}`);
 
   // 0.5 FinOps cumulative-totals persistence — shared SQLite file under
-  //     <ocrHome>/traces/traces.db (same file the trace store uses, but
-  //     an independent handle for fault isolation). On non-bun runtimes
-  //     `openFinOpsStore` returns null and the tracker silently falls back
-  //     to in-memory-only (legacy behavior).
-  const finopsStore = await openFinOpsStore(path.join(getOcrHomeDir(), 'traces'));
+  //     <env.traces>/traces.db (the active environment's traces dir — the
+  //     default env binds it to <ocrHome>/traces; same file the trace
+  //     store uses, but an independent handle for fault isolation). On
+  //     non-bun runtimes `openFinOpsStore` returns null and the tracker
+  //     silently falls back to in-memory-only.
+  const finopsStore = await openFinOpsStore(getEnvPaths().tracesDir);
   const tracker = new FinOpsTracker(finopsStore);
   tracker.hydrate();
   if (finopsStore) {

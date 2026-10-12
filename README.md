@@ -57,11 +57,16 @@ npm install
 ```
 
 ### 3. Configuration
-Copy the template configuration file:
+Each environment owns its own configuration — the default one lives at `~/.opencode-router/envs/default/config.yaml`. The first boot creates it automatically from a self-documenting template; to start from the annotated example instead, copy it there:
 ```bash
-cp config.example.yaml config.yaml
+mkdir -p ~/.opencode-router/envs/default
+cp config.example.yaml ~/.opencode-router/envs/default/config.yaml
 ```
 > 💡 **Tip**: Upstream models and credentials are automatically discovered from OpenCode. `config.yaml` works out of the box with zero manual API keys required!
+
+> 📦 **Environments**: keep separate book-sets (config, keys, sessions, captures, flywheel data) under `~/.opencode-router/envs/<name>/` — `ocr env create <name>` / `ocr env use <name>`, or the console `/environments` page. Switching restarts the gateway.
+
+> ⚙️ **Bootstrap levers**: `OCR_ENV` (which environment boots) and `OCR_HOME` (state root, default `~/.opencode-router`) are read from the **process environment only** — OCR has no `.env` file loader. To run a scratch instance: `OCR_HOME=/tmp/ocr-scratch bun run ocr start`. Selecting the environment day-to-day is `ocr env use <name>` (or the console page), which writes `~/.opencode-router/envs/current`.
 
 ### 4. Start the Gateway
 ```bash

@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { ScrollText, RefreshCw, ArrowDownToLine } from 'lucide-react';
+import { ScrollText, RefreshCw, ArrowDownToLine, Eraser } from 'lucide-react';
 import { api, type LogLine } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
+import { useConfirm } from '../components/ConfirmProvider';
+import { useToast } from '../components/ToastProvider';
 import { Combobox } from '../components/Combobox';
 
 const LEVEL_COLORS: Record<string, string> = {
@@ -17,6 +19,8 @@ const TAIL_OPTIONS = [100, 200, 500, 1000, 2000, 5000];
 
 export const LogsPage: React.FC = () => {
   const { t } = useI18n();
+  const toast = useToast();
+  const confirmDialog = useConfirm();
   const [lines, setLines] = useState<LogLine[]>([]);
   const [file, setFile] = useState('');
   const [exists, setExists] = useState(true);
@@ -58,6 +62,25 @@ export const LogsPage: React.FC = () => {
     }
   }, [lines, autoScroll]);
 
+  const handleClear = useCallback(async () => {
+    const ok = await confirmDialog({
+      title: t('logs.clearConfirmTitle'),
+      description: t('logs.clearConfirmDesc'),
+      danger: true,
+      confirmLabel: t('logs.clear'),
+    });
+    if (!ok) return;
+    try {
+      const res = await api.clearLogs();
+      if (res.warning) toast.error(t('logs.clearWarning') + ' ' + res.warning);
+      else if (!res.cleared) toast.info(t('logs.clearNothing'));
+      else toast.success(t('logs.clearDone'));
+      loadData();
+    } catch (err: any) {
+      toast.error(t('logs.clearFailed') + ' ' + (err?.message || err));
+    }
+  }, [confirmDialog, toast, t, loadData]);
+
   const sizeLabel = size > 1024 * 1024
     ? `${(size / 1024 / 1024).toFixed(2)} MB`
     : size > 1024
@@ -76,10 +99,16 @@ export const LogsPage: React.FC = () => {
             </span>
           )}
         </div>
-        <button className="btn btn-sm" onClick={loadData} disabled={loading}>
-          <RefreshCw size={12} />
-          <span>{t('logs.refresh')}</span>
-        </button>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <button className="btn btn-sm" onClick={handleClear} disabled={!exists || loading} title={t('logs.clear')}>
+            <Eraser size={12} />
+            <span>{t('logs.clear')}</span>
+          </button>
+          <button className="btn btn-sm" onClick={loadData} disabled={loading}>
+            <RefreshCw size={12} />
+            <span>{t('logs.refresh')}</span>
+          </button>
+        </div>
       </div>
 
       {/* Toolbar */}

@@ -55,6 +55,7 @@ export interface TranslationDict {
     captures: string;
     flywheel: string;
     settings: string;
+    environments: string;
     yaml: string;
     auto: string;
     combos: string;
@@ -534,6 +535,13 @@ hiddenBadge: string;
     autoScroll: string;
     empty: string;
     noFile: string;
+    clear: string;
+    clearConfirmTitle: string;
+    clearConfirmDesc: string;
+    clearDone: string;
+    clearNothing: string;
+    clearFailed: string;
+    clearWarning: string;
   };
   flywheel: {
     pageTitle: string;
@@ -608,8 +616,6 @@ hiddenBadge: string;
     decisionVsExecution: string;
     fallbackBadge: string;
     syntheticBadge: string;
-    legacyBadge: string;
-    legacyNoVector: string;
     noVector: string;
     fieldId: string;
     fieldModel: string;
@@ -633,7 +639,6 @@ hiddenBadge: string;
     pruneDesc: string;
     pruneOptSynthetic: string;
     pruneOptDuplicates: string;
-    pruneOptLegacy: string;
     prunePreview: string;
     pruneApply: string;
     pruneApplyConfirmTitle: string;
@@ -1180,5 +1185,157 @@ hiddenBadge: string;
     quickConnectPickerConfirm: string;
     quickConnectPickerCancel: string;
     quickConnectPickerNoKeysTitle: string;
+  };
+  /**
+   * Environments admin (ADR 0017 "book-sets"): one named, fully isolated
+   * config + data set the gateway boots with. `badge.*` keys are shared with
+   * the Layout top-bar env chip.
+   */
+  env: {
+    title: string;
+    subtitle: string;
+    running: string;
+    pointer: string;
+    pendingRestart: string;
+    switchHint: string;
+    trashNote: string;
+    nameInvalid: string;
+    nameReserved: string;
+    empty: string;
+    loadFailed: string;
+    createdOk: string;
+    savedOk: string;
+    deletedOk: string;
+    resetOk: string;
+    exportOk: string;
+    badge: {
+      running: string;
+      current: string;
+      bootstrap: string;
+      pendingRestart: string;
+    };
+    type: {
+      regular: string;
+      sandbox: string;
+    };
+    filter: {
+      all: string;
+    };
+    col: {
+      name: string;
+      type: string;
+      location: string;
+      size: string;
+      created: string;
+      actions: string;
+    };
+    loc: {
+      envs: string;
+    };
+    action: {
+      switch: string;
+      create: string;
+      import: string;
+      export: string;
+      rename: string;
+      delete: string;
+      reset: string;
+    };
+    create: {
+      title: string;
+      nameLabel: string;
+      namePlaceholder: string;
+      nameHint: string;
+      typeLabel: string;
+      templateLabel: string;
+      template: {
+        blank: string;
+        copyCurrent: string;
+        copyDefault: string;
+      };
+      descLabel: string;
+      descPlaceholder: string;
+      submit: string;
+    };
+    rename: {
+      title: string;
+      nameLabel: string;
+      descLabel: string;
+      hint: string;
+      submit: string;
+    };
+    switch: {
+      confirmTitle: string;
+      confirmBody: string;
+      reloginWarning: string;
+      portChangeNotice: string;
+      confirmLabel: string;
+      restarting: string;
+      alreadyRunning: string;
+      failed: string;
+    };
+    export: {
+      title: string;
+      includeSecrets: string;
+      secretsWarning: string;
+      formatNote: string;
+      payloadSection: string;
+      payloadClassifier: string;
+      payloadCustom: string;
+      payloadOverrides: string;
+      payloadFlywheel: string;
+      payloadDecisions: string;
+      payloadHint: string;
+      encrypt: string;
+      encryptHint: string;
+      password: string;
+      passwordConfirm: string;
+      passwordMismatch: string;
+      passwordRequired: string;
+      submit: string;
+    };
+    import: {
+      title: string;
+      pickFile: string;
+      summary: string;
+      source: string;
+      appVersion: string;
+      secrets: string;
+      secretsRedacted: string;
+      secretsIncluded: string;
+      redactedCount: string;
+      payloadFiles: string;
+      nameLabel: string;
+      nameConflict: string;
+      useSuggestion: string;
+      overwrite: string;
+      overwriteTitle: string;
+      overwriteBody: string;
+      submit: string;
+      success: string;
+      encrypted: string;
+      password: string;
+      decryptFailed: string;
+      tooLarge: string;
+    };
+    delete: {
+      confirmTitle: string;
+      confirmBody: string;
+      confirmLabel: string;
+    };
+    reset: {
+      confirmTitle: string;
+      confirmBody: string;
+      confirmLabel: string;
+    };
+    error: {
+      nameTaken: string;
+      nameInvalid: string;
+      cannotModifyDefault: string;
+      cannotModifyRunning: string;
+      switchInProgress: string;
+      versionUnsupported: string;
+      archiveInvalid: string;
+    };
   };
 }

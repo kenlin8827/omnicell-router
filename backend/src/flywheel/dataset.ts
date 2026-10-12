@@ -73,14 +73,12 @@ export interface SampleRow {
   decision: FlywheelRecord['decision'];
   execution: FlywheelRecord['execution'];
   label: FlywheelRecord['label'];
-  trainable: boolean;
 }
 
 // ---- index flag bits ------------------------------------------------------
 const F_SYNTHETIC = 1 << 0;
 const F_FALLBACK = 1 << 1;
-const F_HAS_VECTOR = 1 << 2; // row carried a usable 8-dim feature vector
-const F_TRAINABLE = 1 << 3; // v2 row (v1 rows can never be trained on)
+const F_TRAINABLE = 1 << 2; // row carried a usable 8-dim feature vector
 const TIER_NONE = 255;
 const SRC_UNLABELED = 3; // index of 'unlabeled' in SOURCE_ORDER
 
@@ -330,11 +328,10 @@ export class FlywheelDataset {
     let f = 0;
     if (rec.execution.isSynthetic) f |= F_SYNTHETIC;
     if (rec.execution.fallbackOccurred) f |= F_FALLBACK;
-    if (rec.trainable && rec.input.featureVector && rec.input.featureVector.length === VECTOR_DIMS) {
-      f |= F_HAS_VECTOR;
+    if (rec.input.featureVector && rec.input.featureVector.length === VECTOR_DIMS) {
+      f |= F_TRAINABLE;
       for (let d = 0; d < VECTOR_DIMS; d++) this.vectors[i * VECTOR_DIMS + d] = rec.input.featureVector[d];
     }
-    if (f & F_HAS_VECTOR) f |= F_TRAINABLE;
     this.flags[i] = f;
 
     const model = rec.execution.modelUsed;
@@ -618,7 +615,6 @@ export class FlywheelDataset {
         decision: rec.decision,
         execution: rec.execution,
         label: rec.label,
-        trainable: rec.trainable,
       });
     }
 
@@ -630,8 +626,8 @@ export class FlywheelDataset {
   /**
    * Materialize trainable samples straight from the index — no file I/O at
    * all, the feature vectors are columns. Synthetic rows, unlabelled rows and
-   * rows whose feature vector is missing (every legacy v1 row) are dropped
-   * here, so the console and the trainer always agree on the eligible pool.
+   * rows whose feature vector is missing are dropped here, so the console and
+   * the trainer always agree on the eligible pool.
    */
   public trainingSamples(options: { includeSynthetic?: boolean; minSource?: FlywheelLabelSource } = {}): {
     samples: Array<{ features: number[]; targetTier: TierLevel }>;
@@ -671,7 +667,7 @@ export class FlywheelDataset {
         skipped.weakSource++;
         continue;
       }
-      if (!(f & F_HAS_VECTOR)) {
+      if (!(f & F_TRAINABLE)) {
         skipped.missingVector++;
         continue;
       }

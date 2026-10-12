@@ -1,12 +1,28 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { getOcrHomeDir, getInfoFilePath, getLogFilePath, getPidFilePath, getRepoRootDir } from './paths.js';
+import { getInfoFilePath, getLogFilePath, getPidFilePath, getRepoRootDir } from './paths.js';
 import { DaemonInfo } from './types.js';
 import { APP_VERSION } from '../version.js';
 import { getAllClientStatuses } from './clients/index.js';
 import { defaultGatewayPort } from './clients/base.js';
 import { loadConfig } from '../config/index.js';
+import { resolveEnvName } from '../config/env.js';
+
+/**
+ * Env name for ocr.info.json: this CLI/gateway process resolves the same
+ * pointer/env the spawned child inherits. A failing resolution (unknown
+ * OCR_ENV) yields undefined — the CHILD fails fast loudly in its own
+ * process, which is where that error belongs; the wrapper must not duplicate
+ * the crash before even attempting the spawn.
+ */
+function resolveActiveEnvName(): string | undefined {
+  try {
+    return resolveEnvName();
+  } catch {
+    return undefined;
+  }
+}
 
 const IS_WINDOWS = process.platform === 'win32';
 const IS_MACOS = process.platform === 'darwin';
@@ -96,9 +112,10 @@ export function resolveRuntimeBinary(): { bin: string; args: string[] } {
   const entryTs = path.join(repoDir, 'backend', 'src', 'index.ts');
   const entryJs = path.join(repoDir, 'dist', 'index.js');
 
-  // Check bun availability
-  const bunPath = process.env.BUN_INSTALL ? path.join(process.env.BUN_INSTALL, 'bin', 'bun') : 'bun';
-  // Common paths on Windows: D:\dev\bun\bin\bun.exe or bun in PATH
+  // Candidate bun locations; PATH lookup first, then the common Windows homes.
+  // NOTE: BUN_INSTALL is deliberately NOT consulted here (an earlier `bunPath`
+  // computed it and no candidate list ever used it) — adding it is a behavior
+  // change to daemon spawn resolution, tracked separately.
   const candidates = [
     'bun',
     'D:\\dev\\bun\\bin\\bun.exe',
@@ -107,7 +124,7 @@ export function resolveRuntimeBinary(): { bin: string; args: string[] } {
 
   for (const c of candidates) {
     if (fs.existsSync(c)) {
-      return { bin: c, args: ['run', entryTs] };
+      return { bin: c, args: ['run', '--no-env-file', entryTs] };
     }
   }
 
@@ -122,8 +139,9 @@ export function resolveRuntimeBinary(): { bin: string; args: string[] } {
  * Write `ocr.pid` + `ocr.info.json` so `ocr status` / `ocr stop` / the UI can
  * track this gateway. Shared between `startDaemon` (wrapper pid) and the
  * UI-restart child (self-registers its own pid after adoption).
+ * `env` records the ACTIVE ENVIRONMENT name (book-set) for `ocr status`.
  */
-export function writeDaemonFiles(pid: number, port: number, host: string): void {
+export function writeDaemonFiles(pid: number, port: number, host: string, env?: string): void {
   const pidFile = getPidFilePath();
   const infoFile = getInfoFilePath();
   fs.writeFileSync(pidFile, String(pid), 'utf8');
@@ -134,6 +152,7 @@ export function writeDaemonFiles(pid: number, port: number, host: string): void 
         pid,
         port,
         host,
+        env: env ?? resolveActiveEnvName(),
         startTime: new Date().toISOString(),
         version: APP_VERSION,
       },
@@ -151,12 +170,53 @@ export function writeDaemonFiles(pid: number, port: number, host: string): void 
 export const RESTART_PARENT_ENV = 'OCR_RESTART_OF';
 
 /**
- * Spawn a detached copy of the gateway runtime pointed at the same entry, with
- * `OCR_RESTART_OF=<our pid>` in its env. The child waits for us to exit, then
- * boots and self-registers the pid/info files. Best-effort: returns false if
- * the spawn fails (caller then degrades to plain stop semantics).
+ * Shared guts of every detached replacement-gateway spawn. `extraEnv` carries
+ * the per-variant settings ON TOP of the adoption handshake; the parent's own
+ * environment is inherited by both branches (POSIX via `...process.env`,
+ * Windows via Start-Process environment inheritance + inline `set` lines).
+ * `omitPortHost` is the env-switch deviation (L3 P1-2): a child booting a
+ * DIFFERENT book-set must not inherit/keep PORT/HOST — the target env's own
+ * config.yaml decides where it listens (an inherited HOST=0.0.0.0 would force
+ * webAuth on in an env that never configured it, killing the child in
+ * validateWebAuthStartup AFTER the parent already exited = total outage).
+ * Best-effort: returns false if the spawn fails (caller keeps serving).
  */
-export function spawnDetachedRestartChild(opts: { port: number; host: string }): boolean {
+interface GatewayChildSpawnOpts {
+  extraEnv: Record<string, string>;
+  omitPortHost?: boolean;
+}
+
+function childSettings(extraEnv: Record<string, string>): Record<string, string> {
+  return {
+    [RESTART_PARENT_ENV]: String(process.pid),
+    ...extraEnv,
+    NODE_ENV: 'production',
+  };
+}
+
+/** Pure POSIX child-env builder — exported so spawn args are assertable without spawning. */
+export function buildGatewayChildEnv(opts: GatewayChildSpawnOpts): Record<string, string> {
+  const settings = childSettings(opts.extraEnv);
+  if (!opts.omitPortHost) return { ...process.env, ...settings } as Record<string, string>;
+  // Destructure-drops the inherited PORT/HOST before the settings spread.
+  const { PORT: _dropPort, HOST: _dropHost, ...rest } = process.env;
+  return { ...rest, ...settings } as Record<string, string>;
+}
+
+/**
+ * Windows inline `set` chain (PowerShell 5.1 has no -Environment).
+ * `set "NAME="` clears an inherited value for the whole cmd child chain —
+ * emitted ONLY in omitPortHost mode; the plain-restart string is unchanged.
+ */
+export function buildWindowsEnvSets(opts: GatewayChildSpawnOpts): string {
+  const clears = opts.omitPortHost ? 'set "PORT=" && set "HOST=" && ' : '';
+  const sets = Object.entries(childSettings(opts.extraEnv))
+    .map(([k, v]) => `set "${k}=${v}" && `)
+    .join('');
+  return clears + sets;
+}
+
+function spawnDetachedGatewayChild(opts: GatewayChildSpawnOpts): boolean {
   try {
     const { bin, args } = resolveRuntimeBinary();
     const repoDir = getRepoRootDir();
@@ -166,9 +226,7 @@ export function spawnDetachedRestartChild(opts: { port: number; host: string }):
       // Same Start-Process pattern as startDaemon: hidden cmd wrapper that
       // appends stdout/stderr to the daemon log. Env must be set inline since
       // Start-Process -Environment needs PowerShell 7 (we target 5.1).
-      const envSets =
-        `set "${RESTART_PARENT_ENV}=${process.pid}" && ` +
-        `set "PORT=${opts.port}" && set "HOST=${opts.host}" && set "NODE_ENV=production" && `;
+      const envSets = buildWindowsEnvSets(opts);
       const cmdLine = `/c "${envSets}"${bin}" ${args.map((a) => `"${a}"`).join(' ')} >> "${logFile}" 2>&1"`;
       const psCmd = `$p = Start-Process -FilePath 'cmd.exe' -ArgumentList '${cmdLine.replace(/'/g, "''")}' -WorkingDirectory '${repoDir.replace(/'/g, "''")}' -WindowStyle Hidden -PassThru; $p.Id`;
       const res = spawnSync('powershell', ['-NoProfile', '-Command', psCmd], {
@@ -183,13 +241,7 @@ export function spawnDetachedRestartChild(opts: { port: number; host: string }):
       cwd: repoDir,
       detached: true,
       stdio: ['ignore', logFd, logFd],
-      env: {
-        ...process.env,
-        [RESTART_PARENT_ENV]: String(process.pid),
-        PORT: String(opts.port),
-        HOST: opts.host,
-        NODE_ENV: 'production',
-      },
+      env: buildGatewayChildEnv(opts),
       shell: false,
     });
     child.unref();
@@ -197,6 +249,26 @@ export function spawnDetachedRestartChild(opts: { port: number; host: string }):
   } catch {
     return false;
   }
+}
+
+/**
+ * Spawn a detached copy of the gateway runtime pointed at the same entry, with
+ * `OCR_RESTART_OF=<our pid>` in its env. The child waits for us to exit, then
+ * boots and self-registers the pid/info files. Best-effort: returns false if
+ * the spawn fails (caller then degrades to plain stop semantics).
+ */
+export function spawnDetachedRestartChild(opts: { port: number; host: string }): boolean {
+  return spawnDetachedGatewayChild({ extraEnv: { PORT: String(opts.port), HOST: opts.host } });
+}
+
+/**
+ * Environment-switch variant of `spawnDetachedRestartChild`. CRITICAL
+ * difference: NO PORT/HOST is pinned NOR inherited (`omitPortHost`) — the
+ * target environment's own config.yaml decides where it listens; OCR_ENV is
+ * the only injection. OCR_HOME keeps flowing via parent-env inheritance.
+ */
+export function spawnDetachedEnvSwitchChild(opts: { envName: string }): boolean {
+  return spawnDetachedGatewayChild({ extraEnv: { OCR_ENV: opts.envName }, omitPortHost: true });
 }
 
 /**
@@ -233,7 +305,13 @@ export async function adoptRestartParent(): Promise<boolean> {
   return true;
 }
 
-export async function startDaemon(options: { port?: number; host?: string; daemon?: boolean } = {}): Promise<{
+export async function startDaemon(options: {
+  port?: number;
+  host?: string;
+  daemon?: boolean;
+  /** `--env` flag: run the gateway on this environment (OCR_ENV injected into the child). */
+  envName?: string;
+} = {}): Promise<{
   success: boolean;
   pid: number;
   port: number;
@@ -242,6 +320,7 @@ export async function startDaemon(options: { port?: number; host?: string; daemo
   const existingPid = getRunningPid();
   const port = options.port || defaultGatewayPort();
   const host = options.host || '127.0.0.1';
+  const envName = options.envName ?? resolveActiveEnvName();
 
   if (existingPid) {
     const health = await checkServerHealth(port, host);
@@ -275,7 +354,12 @@ export async function startDaemon(options: { port?: number; host?: string; daemo
     // Start-Process so stdout/stderr append to the daemon log file (the older
     // Win32_Process.Create approach dropped them entirely). The returned PID
     // is the cmd wrapper's; stopDaemon kills the whole tree via taskkill /T.
-    const cmdLine = `/c ""${bin}" ${args.map((a) => `"${a}"`).join(' ')} >> "${logFile}" 2>&1"`;
+    // --env: OCR_ENV set inline (PowerShell 5.1 has no -Environment support).
+    // Without --env the command line stays byte-identical to plain `ocr start`.
+    const envSet = options.envName ? `set "OCR_ENV=${options.envName}" && ` : '';
+    const cmdLine = envSet
+      ? `/c "${envSet}"${bin}" ${args.map((a) => `"${a}"`).join(' ')} >> "${logFile}" 2>&1"`
+      : `/c ""${bin}" ${args.map((a) => `"${a}"`).join(' ')} >> "${logFile}" 2>&1"`;
     const psCmd = `$p = Start-Process -FilePath 'cmd.exe' -ArgumentList '${cmdLine.replace(/'/g, "''")}' -WorkingDirectory '${repoDir.replace(/'/g, "''")}' -WindowStyle Hidden -PassThru; $p.Id`;
     const res = spawnSync('powershell', ['-NoProfile', '-Command', psCmd], {
       windowsHide: true,
@@ -289,6 +373,7 @@ export async function startDaemon(options: { port?: number; host?: string; daemo
       PORT: String(port),
       HOST: host,
       NODE_ENV: 'production',
+      ...(options.envName ? { OCR_ENV: options.envName } : {}),
     };
     const child = spawn(bin, args, {
       cwd: repoDir,
@@ -310,7 +395,7 @@ export async function startDaemon(options: { port?: number; host?: string; daemo
     };
   }
 
-  writeDaemonFiles(pid, port, host);
+  writeDaemonFiles(pid, port, host, envName);
 
   // Wait for health check up to 5 seconds
   let online = false;
@@ -387,7 +472,7 @@ export async function stopDaemon(): Promise<{ success: boolean; message: string 
   return { success: true, message: `OCR gateway (PID: ${pid}) has been stopped.` };
 }
 
-export async function restartDaemon(options: { port?: number; host?: string } = {}): Promise<{
+export async function restartDaemon(options: { port?: number; host?: string; envName?: string } = {}): Promise<{
   success: boolean;
   message: string;
 }> {
@@ -404,6 +489,7 @@ export async function getStatusOutput(): Promise<{
   running: boolean;
   pid: number | null;
   port: number;
+  env?: string;
   uptime?: string;
   health?: any;
   clients: any[];
@@ -436,6 +522,7 @@ export async function getStatusOutput(): Promise<{
     running: Boolean(pid),
     pid,
     port,
+    env: info?.env,
     uptime,
     health,
     clients,
