@@ -56,7 +56,9 @@ export const I18nProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (params) {
       let str = current;
       for (const [k, v] of Object.entries(params)) {
-        str = str.replace(new RegExp(`\\{${k}\\}`, 'g'), String(v));
+        // Regex-free interpolation: param keys may originate from disk rows
+        // (traces / flywheel), and a metacharacter key would throw in RegExp.
+        str = str.split(`{${k}}`).join(String(v));
       }
       return str;
     }

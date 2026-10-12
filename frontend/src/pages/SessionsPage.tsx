@@ -2,10 +2,12 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Users, RefreshCw, Archive, GitBranch, X, Search, Trash2 } from 'lucide-react';
 import { api, type SessionRecord, type TraceRecord } from '../lib/api';
+import { formatReason, type Translate } from '../lib/reason';
 import { copyToClipboard, formatSessionId } from '../lib/format';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
+import { Combobox } from '../components/Combobox';
 import { Pagination } from '../components/Pagination';
 
 const PAGE_SIZES = [10, 20, 50, 100, 200];
@@ -61,23 +63,29 @@ const SWITCH_LABEL: Record<SwitchKind, string> = {
  * Derive the model-switch timeline from a session's chronological traces:
  * a switch happens wherever the executed model differs from the previous
  * request. Failure-driven changes (fallback/failover) are tagged separately
- * from ratchet escalations.
+ * from ratchet escalations. Reasons are localized when the trace carries a
+ * known `reasonCode`; anything older shows the gateway's own wording.
  */
-const buildSwitchTimeline = (traces: TraceRecord[]): SwitchEvent[] => {
+const buildSwitchTimeline = (traces: TraceRecord[], t: Translate): SwitchEvent[] => {
   const events: SwitchEvent[] = [];
   let prev: string | null = null;
   for (const tr of traces) {
     const model = tr.execution.modelUsed;
+    const routingDetail = formatReason(tr.routing?.reasonCode, tr.routing?.reasonParams, tr.routing?.reason, t);
     if (prev === null) {
-      events.push({ at: tr.timestamp, from: null, to: model, kind: 'first', detail: tr.routing?.reason });
+      events.push({ at: tr.timestamp, from: null, to: model, kind: 'first', detail: routingDetail });
     } else if (model !== prev) {
+      const code = tr.routing?.reasonCode;
+      // Structured code is authoritative; sessionRatchetApplied covers rows written before codes existed.
+      const ratcheted =
+        code === 'session.escalated' || code === 'session.ratchet' || tr.routing?.sessionRatchetApplied === true;
       const kind: SwitchKind =
         tr.execution.fallbackOccurred || tr.execution.failoverOccurred
           ? 'fallback'
-          : /Session Escalated/.test(tr.routing?.reason || '')
+          : ratcheted
             ? 'ratchet'
             : 'switch';
-      const detail = tr.execution.fallbackReason || tr.execution.failoverPath?.join(' → ') || tr.routing?.reason;
+      const detail = tr.execution.fallbackReason || tr.execution.failoverPath?.join(' → ') || routingDetail;
       events.push({ at: tr.timestamp, from: prev, to: model, kind, detail });
     }
     prev = model;
@@ -103,6 +111,26 @@ export const SessionsPage: React.FC = () => {
   // Server-side filter (?q=), debounced from the search input; resets to page 1.
   const [filterInput, setFilterInput] = useState('');
   const [filter, setFilter] = useState('');
+  // Per-application selector (server-side ?apiKey=, same semantics as the
+  // captures page): '' = all apps, otherwise a client API-key id.
+  const [apiKeyFilter, setApiKeyFilter] = useState('');
+  const [apiKeyOptions, setApiKeyOptions] = useState<{ id: string; name: string }[]>([]);
+
+  // Combobox options: the configured client keys (id + application name).
+  // Best-effort — a console session without /api-keys visibility just shows
+  // the "all apps" entry.
+  useEffect(() => {
+    let alive = true;
+    api
+      .getApiKeys()
+      .then(r => {
+        if (alive) setApiKeyOptions((r.keys || []).map(k => ({ id: k.id, name: k.name })));
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -119,7 +147,7 @@ export const SessionsPage: React.FC = () => {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await api.getSessions(pageSize, (page - 1) * pageSize, filter || undefined);
+      const res = await api.getSessions(pageSize, (page - 1) * pageSize, filter || undefined, apiKeyFilter || undefined);
       setSessions(res.sessions);
       setTotal(res.total);
     } catch (err) {
@@ -127,7 +155,7 @@ export const SessionsPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [page, pageSize, filter]);
+  }, [page, pageSize, filter, apiKeyFilter]);
 
   useEffect(() => {
     loadData();
@@ -143,7 +171,7 @@ export const SessionsPage: React.FC = () => {
       setTimeline({ session: s, events: [] });
       try {
         const traces = await api.getSessionTraces(s.id);
-        setTimeline({ session: s, events: buildSwitchTimeline(traces) });
+        setTimeline({ session: s, events: buildSwitchTimeline(traces, t) });
       } catch (err) {
         console.error(err);
         setTimeline(null);
@@ -210,8 +238,20 @@ export const SessionsPage: React.FC = () => {
           <Users size={18} color="var(--accent-violet)" />
           <span>{t('sessions.sessionsTitle')}</span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div style={{ position: 'relative' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, justifyContent: 'flex-end' }}>
+          <Combobox
+            value={apiKeyFilter}
+            onChange={v => {
+              setApiKeyFilter(v);
+              setPage(1);
+            }}
+            options={[
+              { value: '', label: t('sessions.apiKeyAll') },
+              ...apiKeyOptions.map(k => ({ value: k.id, label: k.name })),
+            ]}
+            style={{ fontSize: '12px', padding: '5px 8px', width: 180 }}
+          />
+          <div style={{ position: 'relative', flex: '1 1 240px', minWidth: 180, maxWidth: 420 }}>
             <Search
               size={12}
               style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)', pointerEvents: 'none' }}
@@ -221,7 +261,7 @@ export const SessionsPage: React.FC = () => {
               value={filterInput}
               onChange={e => setFilterInput(e.target.value)}
               placeholder={t('sessions.filterPlaceholder')}
-              style={{ fontSize: '12px', padding: '5px 8px 5px 24px', width: 240 }}
+              style={{ fontSize: '12px', padding: '5px 8px 5px 24px', width: '100%' }}
             />
           </div>
           <button className="btn btn-sm" onClick={clearAll} disabled={loading || total === 0}>
@@ -279,6 +319,24 @@ export const SessionsPage: React.FC = () => {
                     >
                       {formatSessionId(s.id)}
                     </span>
+                    {s.apiKeys && s.apiKeys.length > 0 && (
+                      <div
+                        style={{
+                          fontSize: '11px',
+                          fontWeight: 400,
+                          color: 'var(--accent-emerald, var(--text-dim))',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                        title={s.apiKeys
+                          .map(k => t('captures.apiKeyTooltip', { name: k.name, id: k.id }))
+                          .join('\n')}
+                      >
+                        {s.apiKeys[0].name}
+                        {s.apiKeys.length > 1 ? ` +${s.apiKeys.length - 1}` : ''}
+                      </div>
+                    )}
                   </td>
                   <td style={{ padding: '10px 14px', fontWeight: 600 }}>{s.pinnedModel}</td>
                   <td style={{ padding: '10px 14px' }}>

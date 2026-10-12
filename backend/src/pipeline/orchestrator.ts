@@ -16,7 +16,7 @@ import { SessionManager, SessionResolveResult } from '../session/session-manager
 import { TraceTracker } from '../trace/tracker.js';
 import { CaptureRecorder } from '../capture/recorder.js';
 import type { UpstreamEventContext } from '../providers/base.js';
-import { emitClientRequest, setClientExchangeContext, type CaptureClientRequest, type ClientExchangeContext } from '../observability/http-exchange.js';
+import { emitClientRequest, captureKeyIdentity, setClientExchangeContext, type CaptureClientRequest, type ClientExchangeContext } from '../observability/http-exchange.js';
 import { resolveTraceId } from '../observability/trace-id.js';
 import { getWarnThrottle } from '../observability/warn-throttle.js';
 import { ActiveHealthProber, CircuitBreakerManager, ErrorClassifier } from '../resilience/index.js';
@@ -290,6 +290,10 @@ export class PipelineOrchestrator {
         sessionId: captureSessionId,
         traceId: captureOutTraceId,
         model: request.model || 'auto',
+        // Key attribution: the Fastify leg carries authInfo (attached by the
+        // auth preHandler); MITM / master-key legs resolve to undefined and
+        // their events simply omit the field — same as before this existed.
+        apiKey: captureKeyIdentity(context?.fastifyRequest),
       };
     }
 
@@ -490,7 +494,9 @@ export class PipelineOrchestrator {
       ? {
           targetTier: 'plus',
           confidence: 1.0,
-          reason: `Custom combo '${comboId}' — explicit candidate list, classifier bypassed`,
+          reason: `Using custom combo '${comboId}' — your chosen models, no automatic routing`,
+          reasonCode: 'combo',
+          reasonParams: { combo: comboId },
           layerUsed: 'layer0',
           needsSchemaValidation: false,
           features: {
@@ -999,6 +1005,9 @@ export class PipelineOrchestrator {
       sessionId,
       turnNumber: sessionTurnCount,
       timestamp: startTime,
+      // Key attribution on the lightweight session trajectory as well (works
+      // even with capture disabled): which application's key drove this turn.
+      apiKey: captureKeyIdentity(context?.fastifyRequest),
       request: {
         model: request.model || 'auto',
         userPromptSummary,
@@ -1012,6 +1021,8 @@ export class PipelineOrchestrator {
         targetTier: actualTier,
         confidence: decision.confidence,
         reason: decision.reason,
+        reasonCode: decision.reasonCode,
+        reasonParams: decision.reasonParams,
         sessionRatchetApplied: ratchetApplied,
         sessionLookupType: sessionResolve.lookupType,
       },

@@ -1,4 +1,4 @@
-import type { CaptureRecorder, HttpExchangeEvent } from '../capture/recorder.js';
+import type { CaptureKeyIdentity, CaptureRecorder, HttpExchangeEvent } from '../capture/recorder.js';
 import { emitUpstreamRequest, emitUpstreamResponse } from '../observability/http-exchange.js';
 
 /**
@@ -14,6 +14,13 @@ export interface UpstreamEventContext {
   traceId: string;
   model: string;
   recorder: CaptureRecorder;
+  /**
+   * Client API-key identity of the owning turn, forwarded onto every event
+   * emitted through this context so the upstream leg is attributable to the
+   * same application as the client leg. Undefined for key-less legs (MITM
+   * tunnel, master-key access) — events then simply omit the field.
+   */
+  apiKey?: CaptureKeyIdentity;
   /**
    * Non-default call label forwarded onto every event emitted through this
    * context. The Layer 2 judge's decision-model leg carries 'l2-judge' so
@@ -49,6 +56,7 @@ export function emitUpstreamRequestOnce(
     model: args.model ?? ctx.model,
     proxy: args.proxy,
     purpose: ctx.purpose,
+    apiKey: ctx.apiKey,
   });
 }
 
@@ -80,6 +88,7 @@ export function emitUpstreamResponseOnce(
     model: args.model ?? ctx.model,
     spanId: args.spanId,
     purpose: ctx.purpose,
+    apiKey: ctx.apiKey,
   });
 }
 
@@ -118,6 +127,7 @@ export function emitUpstreamFailureOnce(
     spanId: args.spanId,
     error: args.error,
     purpose: ctx.purpose,
+    apiKey: ctx.apiKey,
   });
 }
 

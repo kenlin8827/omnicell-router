@@ -15,6 +15,7 @@ import { ProviderRegistry } from './providers/registry.js';
 import { FinOpsTracker } from './metrics/finops-tracker.js';
 import { APP_VERSION } from './version.js';
 import { TraceTracker, type ExecutionTrace } from './trace/tracker.js';
+import type { CaptureKeyIdentity } from './capture/recorder.js';
 
 const TIER_RANK: Record<string, number> = { lite: 1, plus: 2, pro: 3, ultra: 4 };
 
@@ -32,6 +33,7 @@ function reconstructSessionFromTraces(traceTracker: TraceTracker, id: string) {
     (acc, t) => ((TIER_RANK[t.routing.targetTier] ?? 0) > (TIER_RANK[acc] ?? 0) ? t.routing.targetTier : acc),
     'lite'
   );
+  const keyList = distinctTraceKeys(traces);
   return {
     id,
     maxTier,
@@ -42,8 +44,21 @@ function reconstructSessionFromTraces(traceTracker: TraceTracker, id: string) {
     turnCount: traces.length,
     historyTiers: traces.map(t => t.routing.targetTier),
     firstUserMessage: first?.request.userPromptSummary,
+    // DISTINCT client API-key identities seen on this session's traces, in
+    // write order (first element = display anchor). Only appears once key
+    // attribution exists; a rotated-key session lists every contributor.
+    apiKeys: keyList.length ? keyList : undefined,
     ...traceTracker.getSessionAggregates(id),
   };
+}
+
+/** Distinct client API-key identities across a session's traces (write order). */
+function distinctTraceKeys(traces: ExecutionTrace[]): CaptureKeyIdentity[] {
+  const m = new Map<string, CaptureKeyIdentity>();
+  for (const t of traces) {
+    if (t.apiKey && !m.has(t.apiKey.id)) m.set(t.apiKey.id, t.apiKey);
+  }
+  return [...m.values()];
 }
 
 export function createServer(
@@ -435,31 +450,48 @@ export function createServer(
 
   // 3C. Active Conversation Sessions Inspection (optional limit/offset pagination)
   app.get('/api/admin/sessions', async (req) => {
-    const query = req.query as { limit?: string; offset?: string; q?: string };
+    const query = req.query as { limit?: string; offset?: string; q?: string; apiKey?: string };
     const limit = query.limit !== undefined ? parseInt(query.limit, 10) : undefined;
     const offset = query.offset ? parseInt(query.offset, 10) : 0;
-    const q = (query.q || '').trim().toLowerCase();
+    // Duplicate params (?q=a&?q=b / ?apiKey=a&apiKey=b) parse to an ARRAY
+    // (Fastify 5 behavior, verified) — take the first string instead of
+    // crashing on .trim(); mirrors the capture sessions route guard.
+    const firstStr = (v: unknown): string =>
+      typeof v === 'string' ? v : Array.isArray(v) && typeof v[0] === 'string' ? v[0] : '';
+    const q = firstStr(query.q).trim().toLowerCase();
+    // Per-application selector (same semantics as the capture sessions route):
+    // exact client API-key id OR case-insensitive name substring.
+    const ak = firstStr(query.apiKey).trim();
 
     const traceTracker = orchestrator.getTraceTracker();
     // Live sessions carry the authoritative routing state (pin/ratchet);
     // sessions that only exist in the persisted trace store (e.g. after a
     // gateway restart) are reconstructed from their traces so console
     // history survives. Live wins on id collision.
-    const live = (orchestrator.getSessionManager()?.getAllSessions() || []).map(s => ({
-      ...s,
-      ...traceTracker.getSessionAggregates(s.id),
-    }));
+    const live = (orchestrator.getSessionManager()?.getAllSessions() || []).map(s => {
+      const keyList = distinctTraceKeys(traceTracker.getTracesBySession(s.id));
+      return {
+        ...s,
+        // Application attribution from the session's traces — distinct key set
+        // in write order (first element = display anchor).
+        apiKeys: keyList.length ? keyList : undefined,
+        ...traceTracker.getSessionAggregates(s.id),
+      };
+    });
     const liveIds = new Set(live.map(s => s.id));
     const reconstructed = traceTracker
       .getSessionIds()
       .filter(id => !liveIds.has(id))
       .map(id => reconstructSessionFromTraces(traceTracker, id));
     // Most recently active first — stable ordering for pagination. `q`
-    // filters (case-insensitive substring) across session id, pinned model
-    // and first user message, applied BEFORE pagination.
+    // filters (case-insensitive substring) across session id, pinned model,
+    // first user message and every app name, applied BEFORE pagination.
+    // `apiKey` (ak) selects by membership in the session's distinct key set.
     const all = [...live, ...reconstructed]
-      .filter(
-        s =>
+      .filter(s => {
+        const keys = s.apiKeys ?? [];
+        if (ak && !keys.some(k => k.id === ak || k.name.toLowerCase().includes(ak.toLowerCase()))) return false;
+        return (
           !q ||
           s.id.toLowerCase().includes(q) ||
           String(s.pinnedModel || '')
@@ -467,8 +499,10 @@ export function createServer(
             .includes(q) ||
           String(s.firstUserMessage || '')
             .toLowerCase()
-            .includes(q)
-      )
+            .includes(q) ||
+          keys.some(k => k.name.toLowerCase().includes(q))
+        );
+      })
       .sort((a, b) => b.lastActiveAt - a.lastActiveAt);
     const data = limit === undefined ? all.slice(offset) : all.slice(offset, offset + limit);
 
@@ -523,9 +557,36 @@ export function createServer(
       });
     }
 
+    // Cascade: remove this session's request-capture archives (disk JSONL,
+    // possibly spread over several date dirs) so a deleted session leaves no
+    // orphan files until the retention sweep. Fails soft — a locked or
+    // vanished archive must not turn a successful delete into a 500; warn
+    // and let the daily sweep backstop the leftover. No enablement gate:
+    // findBySession is a name-only readdir scan that fails open ([] when
+    // capture is disabled and the archive dir is absent), and archives left
+    // from a since-disabled capture are exactly the orphans this cascade
+    // must remove.
+    let capturesDeleted = 0;
+    try {
+      const recorder = orchestrator.getCaptureRecorder();
+      for (const match of recorder.findBySession(id)) {
+        if (recorder.deleteSession(match.date, match.file)) {
+          capturesDeleted++;
+        } else {
+          req.log.warn(
+            { sessionId: id, date: match.date, file: match.file },
+            'capture archive not deleted (locked or vanished) — left to retention sweep'
+          );
+        }
+      }
+    } catch (err) {
+      req.log.warn(err, 'capture cascade delete errored — left to retention sweep');
+    }
+
     return {
       status: 'ok',
       message: `Session '${id}' and its traces have been successfully cleared`,
+      capturesDeleted,
     };
   });
 

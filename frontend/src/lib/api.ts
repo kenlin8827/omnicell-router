@@ -105,12 +105,21 @@ export interface GatewayStatusResponse {
   };
 }
 
+/**
+ * Structured arguments for a localized routing reason — the optional
+ * `reasonParams` the gateway emits beside `reason`. Values arrive ready to be
+ * substituted into `{key}` slots; `cached: true` marks a reused decision.
+ */
+export type ReasonParams = Record<string, string | number | boolean>;
+
 // Mirrors backend ExecutionTrace (backend/src/trace/tracker.ts) returned by /api/admin/traces
 export interface TraceRecord {
   traceId: string;
   sessionId: string;
   turnNumber: number;
   timestamp: number;
+  /** Client API-key identity (application) that drove this turn, when known. */
+  apiKey?: CaptureKeyIdentity;
   request: {
     model: string;
     userPromptSummary: string;
@@ -123,6 +132,9 @@ export interface TraceRecord {
     targetTier: 'lite' | 'plus' | 'pro' | 'ultra';
     confidence: number;
     reason: string;
+    /** Machine-readable reason vocabulary (see frontend/src/lib/reason.ts). Absent on legacy trace rows. */
+    reasonCode?: string;
+    reasonParams?: ReasonParams;
     sessionRatchetApplied: boolean;
   };
   execution: {
@@ -147,6 +159,16 @@ export interface TraceRecord {
 }
 
 // Mirrors backend capture types (backend/src/capture/recorder.ts)
+
+/**
+ * Stable identity of a client API key (mirrors backend CaptureKeyIdentity):
+ * id + application name only, never the token value.
+ */
+export interface CaptureKeyIdentity {
+  id: string;
+  name: string;
+}
+
 export interface CaptureStatus {
   enabled: boolean;
   dir: string;
@@ -173,11 +195,16 @@ export interface CaptureSessionRow {
   lastStatus?: 'ok' | 'error';
   /** First user-message text of the session (backend-extracted, capped) */
   preview?: string;
+  /** DISTINCT client API-key identities (applications) behind this archive,
+   *  in write order — first element is the display anchor; more than one
+   *  entry means the app rotated keys mid-session. */
+  apiKeys?: CaptureKeyIdentity[];
 }
 
-/** One archive hit for a session id, across all date directories */
-export interface CaptureSessionMatch extends CaptureSessionRow {
+/** One archive hit for a session id: coordinates only (date dir + file name) */
+export interface CaptureSessionMatch {
   date: string;
+  file: string;
 }
 
 /**
@@ -281,6 +308,8 @@ export interface HttpExchangeEvent {
     fallbackOccurred?: boolean;
     failoverPath?: string[];
   };
+  /** Client API-key identity of the owning turn (id + app name, never the token). */
+  apiKey?: CaptureKeyIdentity;
   error?: string;
   /** Redacted proxy origin when the upstream call went through a proxy (upstream events only). */
   proxy?: string;
@@ -320,6 +349,9 @@ export interface SessionRecord {
   savedCostUsd?: number;
   /** First user prompt of the session (backend-capped summary). */
   firstUserMessage?: string;
+  /** Distinct client API-key identities (applications) seen on this
+   *  session's traces, write order — first element is the display anchor. */
+  apiKeys?: CaptureKeyIdentity[];
 }
 
 // Mirrors backend CacheStatsSummary (backend/src/trace/tracker.ts getCacheStats)
@@ -486,6 +518,9 @@ export interface FlywheelSample {
     confidence: number;
     layerUsed: 'layer0' | 'layer1' | 'layer2';
     reason: string;
+    /** Machine-readable reason vocabulary; absent on samples recorded before the field existed. */
+    reasonCode?: string;
+    reasonParams?: ReasonParams;
   };
   execution: {
     tierUsed: TierName;
@@ -774,11 +809,17 @@ export const api = {
     return res.json();
   },
 
-  async getSessions(limit?: number, offset = 0, q?: string): Promise<{ sessions: SessionRecord[]; total: number }> {
+  async getSessions(
+    limit?: number,
+    offset = 0,
+    q?: string,
+    apiKey?: string
+  ): Promise<{ sessions: SessionRecord[]; total: number }> {
     const qs = new URLSearchParams();
     if (limit !== undefined) qs.set('limit', String(limit));
     qs.set('offset', String(offset));
     if (q) qs.set('q', q);
+    if (apiKey) qs.set('apiKey', apiKey);
     const res = await fetch(`/api/admin/sessions?${qs.toString()}`);
     if (!res.ok) return { sessions: [], total: 0 };
     const json = await res.json();
@@ -941,8 +982,9 @@ export const api = {
     return json.dates || [];
   },
 
-  async getCaptureSessions(date: string): Promise<CaptureSessionRow[]> {
-    const res = await fetch(`/api/admin/capture/${encodeURIComponent(date)}/sessions`);
+  async getCaptureSessions(date: string, apiKey?: string): Promise<CaptureSessionRow[]> {
+    const qs = apiKey ? `?apiKey=${encodeURIComponent(apiKey)}` : '';
+    const res = await fetch(`/api/admin/capture/${encodeURIComponent(date)}/sessions${qs}`);
     if (!res.ok) return [];
     const json = await res.json();
     return json.sessions || [];

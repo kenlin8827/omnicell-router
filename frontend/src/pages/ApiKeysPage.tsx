@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   KeyRound,
   Plus,
@@ -195,6 +195,13 @@ export const ApiKeysPage: React.FC = () => {
   const [keys, setKeys] = useState<ApiKeyItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  // Single 2s reset timer shared by the secret-copy button and the id
+  // sub-line (latest click wins; cleared on unmount).
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Row-hover tracker for the subtle copy affordance next to the record id
+  // (icon only surfaces while hovering the id, so the row keeps a single
+  // always-visible copy button — the secret one in Actions).
+  const [idHover, setIdHover] = useState<string | null>(null);
   const [showSecret, setShowSecret] = useState<Record<string, boolean>>({});
 
   // Create modal state
@@ -321,10 +328,22 @@ export const ApiKeysPage: React.FC = () => {
   }, []);
 
   const handleCopy = (text: string, id: string) => {
-    navigator.clipboard.writeText(text);
+    // Non-secure contexts / denied permissions reject the clipboard promise —
+    // surface it instead of swallowing the rejection silently.
+    navigator.clipboard.writeText(text).catch(() => toast.error(t('common.failed')));
+    // Single timer slot: a second click supersedes the first reset, so the
+    // 2s green feedback of the LATEST click is never truncated by an earlier
+    // timeout (id sub-line and secret button share this state).
+    if (copyTimer.current) clearTimeout(copyTimer.current);
     setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 2000);
+    copyTimer.current = setTimeout(() => setCopiedId(null), 2000);
   };
+  useEffect(
+    () => () => {
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+    },
+    []
+  );
 
   const handleToggleShowSecret = (id: string) => {
     setShowSecret((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -645,6 +664,34 @@ export const ApiKeysPage: React.FC = () => {
                           title={item.name}
                         >
                           {item.name}
+                        </div>
+                        {/* Stable record id (`key-<8hex>`) — the join key that
+                            capture/session-log attribution carries, so an
+                            archived request can be traced back to this row.
+                            Non-secret; click-to-copy (same discipline as the
+                            Sessions page id) with a hover-revealed copy icon
+                            for discoverability. */}
+                        <div
+                          title={t('apiKeys.idCopyHint')}
+                          onClick={() => handleCopy(item.id, `id:${item.id}`)}
+                          onMouseEnter={() => setIdHover(item.id)}
+                          onMouseLeave={() => setIdHover(cur => (cur === item.id ? null : cur))}
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            fontSize: '11px',
+                            fontFamily: 'JetBrains Mono, monospace',
+                            color:
+                              copiedId === `id:${item.id}` ? 'var(--accent-emerald)' : 'var(--text-dim)',
+                            cursor: 'copy',
+                            marginTop: '2px',
+                          }}
+                        >
+                          {item.id}
+                          {idHover === item.id || copiedId === `id:${item.id}` ? (
+                            copiedId === `id:${item.id}` ? <Check size={11} /> : <Copy size={11} />
+                          ) : null}
                         </div>
                         {item.description && (
                           <div

@@ -1692,7 +1692,18 @@ export function registerConsoleRoutes(
     if (!CAPTURE_DATE_RE.test(date)) {
       return reply.status(400).send({ status: 'error', message: 'date must be YYYY-MM-DD' });
     }
-    return { status: 'ok', date, sessions: captureRecorder.listSessions(date) };
+    // Optional per-application retrieval: `?apiKey=<id or name>` keeps only
+    // sessions whose events carry that client API-key identity (exact id
+    // match, case-insensitive substring on name — see listSessions).
+    // Duplicated params (?apiKey=a&apiKey=b) parse to an array — take the
+    // first value rather than silently dropping the filter.
+    const rawApiKey = (req.query as any)?.apiKey;
+    const apiKey = typeof rawApiKey === 'string'
+      ? rawApiKey
+      : Array.isArray(rawApiKey) && typeof rawApiKey[0] === 'string'
+        ? rawApiKey[0]
+        : '';
+    return { status: 'ok', date, sessions: captureRecorder.listSessions(date, apiKey.trim() || undefined) };
   });
 
   app.get('/api/admin/capture/:date/:file', async (req: any, reply: any) => {

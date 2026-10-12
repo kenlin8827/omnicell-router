@@ -1,7 +1,8 @@
 import path from 'node:path';
-import { TierLevel } from '../types/router.js';
+import { ReasonParams, TierLevel } from '../types/router.js';
 import { getOcrHomeDir } from '../cli/paths.js';
 import type { TracePersistConfig } from '../config/types.js';
+import type { CaptureKeyIdentity } from '../capture/recorder.js';
 import { openTraceStore, type TraceStore } from './persist.js';
 
 export interface ExecutionTrace {
@@ -9,6 +10,13 @@ export interface ExecutionTrace {
   sessionId: string;
   turnNumber: number;
   timestamp: number;
+  /**
+   * Client API-key identity (`config.apiKeys` entry) that authenticated this
+   * turn — id + application name only, never the token value. Undefined for
+   * master-key access, MITM-tunnel turns, and traces replayed from disk
+   * before this field existed.
+   */
+  apiKey?: CaptureKeyIdentity;
   request: {
     model: string;
     userPromptSummary: string;
@@ -38,6 +46,8 @@ export interface ExecutionTrace {
     targetTier: TierLevel;
     confidence: number;
     reason: string;
+    reasonCode?: string;
+    reasonParams?: ReasonParams;
     sessionRatchetApplied: boolean;
     sessionLookupType?: string;
   };

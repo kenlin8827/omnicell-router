@@ -1,11 +1,13 @@
 import crypto from 'node:crypto';
 import type { FastifyRequest } from 'fastify';
 import type {
+  CaptureKeyIdentity,
   CaptureRecorder,
   HttpExchangeEvent,
   RawWireCapture,
   WireBody,
 } from '../capture/recorder.js';
+import type { ApiKeyConfig } from '../config/types.js';
 import { redactProxyUrl } from '../utils/proxy.js';
 
 /**
@@ -233,6 +235,10 @@ export interface ClientExchangeContext {
   pending: {
     sessionId: string;
     model: string;
+    /** Client API-key identity resolved at request-emit time (undefined for
+     *  master-key / MITM legs) — reused by the gateway-response event so both
+     *  client-leg events carry the same attribution. */
+    apiKey?: CaptureKeyIdentity;
     /** Request-side wire (lines + headers + body) — fully known at handler entry. */
     requestWire: RawWireCapture;
     /**
@@ -284,6 +290,22 @@ export type CaptureClientRequest = {
   headers: Record<string, string | string[] | undefined>;
 };
 
+/**
+ * Read the client API-key identity off an auth-processed request. The auth
+ * preHandler (server.ts) attaches `validateApiKey()`'s result to
+ * `req.authInfo`; master-key access and MITM tunnels (`CaptureClientRequest`
+ * shape) carry no `authInfo` → undefined, leaving capture events without key
+ * attribution (exactly the pre-field behavior). Only `id` + `name` are read —
+ * the token value is never touched, mirroring the credential deny-list.
+ */
+export function captureKeyIdentity(
+  req: FastifyRequest | CaptureClientRequest | undefined
+): CaptureKeyIdentity | undefined {
+  const keyConfig = (req as { authInfo?: { keyConfig?: ApiKeyConfig } } | undefined)?.authInfo
+    ?.keyConfig;
+  return keyConfig ? { id: keyConfig.id, name: keyConfig.name } : undefined;
+}
+
 export function emitClientRequest(args: {
   recorder: CaptureRecorder;
   req?: FastifyRequest | CaptureClientRequest | undefined;
@@ -293,6 +315,7 @@ export function emitClientRequest(args: {
   model: string;
 }): ClientExchangeContext {
   const spanId = cryptoRandom();
+  const apiKey = captureKeyIdentity(args.req);
   const requestLine = args.req
     ? `${args.req.method} ${pathnameAndQuery(args.req.url ?? '')} HTTP/1.1`
     : '';
@@ -318,6 +341,7 @@ export function emitClientRequest(args: {
     model: args.model,
     status: 'ok',
     wire: requestWire,
+    ...(apiKey ? { apiKey } : {}),
   });
   return {
     recorder: args.recorder,
@@ -327,6 +351,7 @@ export function emitClientRequest(args: {
       sessionId: args.sessionId,
       model: args.model,
       requestWire,
+      apiKey,
     },
   };
 }
@@ -391,6 +416,7 @@ export function emitGatewayResponse(
     model: ctx.pending.model,
     status: reply.statusCode >= 200 && reply.statusCode < 400 ? 'ok' : 'error',
     wire: responseWire,
+    ...(ctx.pending.apiKey ? { apiKey: ctx.pending.apiKey } : {}),
   });
 }
 
@@ -425,6 +451,8 @@ export function emitUpstreamRequest(args: {
   proxy?: string;
   /** Non-default call label (e.g. 'l2-judge') so UI/log can tell the leg apart. */
   purpose?: HttpExchangeEvent['purpose'];
+  /** Client API-key identity of the owning turn (see HttpExchangeEvent.apiKey). */
+  apiKey?: CaptureKeyIdentity;
 }): string {
   const spanId = args.spanId ?? cryptoRandom();
   void args.recorder.recordEvent({
@@ -451,6 +479,7 @@ export function emitUpstreamRequest(args: {
     },
     ...(args.proxy ? { proxy: redactProxyUrl(args.proxy) } : {}),
     ...(args.purpose ? { purpose: args.purpose } : {}),
+    ...(args.apiKey ? { apiKey: args.apiKey } : {}),
   });
   return spanId;
 }
@@ -477,6 +506,8 @@ export function emitUpstreamResponse(args: {
   error?: string;
   /** Non-default call label (e.g. 'l2-judge') so UI/log can tell the leg apart. */
   purpose?: HttpExchangeEvent['purpose'];
+  /** Client API-key identity of the owning turn (see HttpExchangeEvent.apiKey). */
+  apiKey?: CaptureKeyIdentity;
 }): void {
   void args.recorder.recordEvent({
     eventType: 'http-exchange',
@@ -501,5 +532,6 @@ export function emitUpstreamResponse(args: {
     ...(args.routing ? { routing: args.routing } : {}),
     ...(args.error ? { error: args.error } : {}),
     ...(args.purpose ? { purpose: args.purpose } : {}),
+    ...(args.apiKey ? { apiKey: args.apiKey } : {}),
   });
 }

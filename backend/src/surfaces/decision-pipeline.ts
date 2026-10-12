@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { isModelAllowed, tierFromVirtualEntry } from '../auth/model-access.js';
 import { loadConfig } from '../config/index.js';
 import type { PipelineOrchestrator } from '../pipeline/orchestrator.js';
-import { emitClientRequest, setClientExchangeContext } from '../observability/http-exchange.js';
+import { emitClientRequest, captureKeyIdentity, setClientExchangeContext } from '../observability/http-exchange.js';
 import type { UpstreamEventContext } from '../observability/upstream-events.js';
 import { resolveTraceId } from '../observability/trace-id.js';
 import { runSystemoneDecision } from '../protocols/systemone/decide.js';
@@ -209,7 +209,7 @@ export async function runDecisionSurface(
     // Upstream leg shares the client-leg identity. Set only AFTER the client
     // event durably landed — a client-side failure keeps both legs silent
     // (consistent pairing, no orphan upstream events).
-    upstreamEventContext = { recorder, sessionId, traceId, model: effective };
+    upstreamEventContext = { recorder, sessionId, traceId, model: effective, apiKey: captureKeyIdentity(pctx.fastifyRequest) };
     } catch (captureErr) {
       // Non-fatal: decision proceeds unrecorded on any capture failure.
       t.logError(captureErr, 'systemone client-leg capture failed (non-fatal)');

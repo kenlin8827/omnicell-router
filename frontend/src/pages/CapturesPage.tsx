@@ -14,6 +14,7 @@ import { useI18n } from '../i18n/I18nContext';
 import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
 import { Switch } from '../components/Switch';
+import { Combobox } from '../components/Combobox';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import { copyToClipboard, shortId } from '../lib/format';
 import { useSplitterWidth, VSplitter } from '../components/Splitter';
@@ -187,6 +188,13 @@ const CaptureDrawer: React.FC<{
     ?? turn.gatewayResponse?.ts
     ?? turn.upstreamResponse?.ts;
   const hasError = turn.error || active.ev?.status === 'error';
+  // Application attribution: any event of the turn carries the same client
+  // API-key identity (id + name only) once it is attached at capture time.
+  const turnKey =
+    turn.clientRequest?.apiKey ??
+    turn.gatewayResponse?.apiKey ??
+    turn.upstreamRequest?.apiKey ??
+    turn.upstreamResponse?.apiKey;
 
   return createPortal(
     <div
@@ -238,6 +246,15 @@ const CaptureDrawer: React.FC<{
           >
             {hasError ? t('captures.statusError') : t('captures.statusOk')}
           </span>
+          {turnKey && (
+            <span
+              className="badge"
+              title={t('captures.apiKeyTooltip', { name: turnKey.name, id: turnKey.id })}
+              style={{ background: 'rgba(255,255,255,0.06)', color: 'var(--text-muted)' }}
+            >
+              {turnKey.name}
+            </span>
+          )}
           {headerTs !== undefined && (
             <span style={{ fontSize: '12px', color: 'var(--text-muted)', fontFamily: 'JetBrains Mono, monospace' }}>
               {new Date(headerTs).toLocaleString()}
@@ -607,6 +624,10 @@ export const CapturesPage: React.FC = () => {
   const [toggling, setToggling] = useState(false);
   const [exportTarget, setExportTarget] = useState<CaptureSessionRow | null>(null);
   const [query, setQuery] = useState('');
+  // Per-application retrieval: '' = all keys; otherwise a client API-key id
+  // passed to the backend as `?apiKey=` (server-side session filtering).
+  const [apiKeyFilter, setApiKeyFilter] = useState('');
+  const [apiKeyOptions, setApiKeyOptions] = useState<{ id: string; name: string }[]>([]);
   const [pendingFile, setPendingFile] = useState<string>('');
   const [searchParams] = useSearchParams();
   const sessionParam = searchParams.get('session') || '';
@@ -631,13 +652,13 @@ export const CapturesPage: React.FC = () => {
     }
   }, []);
 
-  const loadSessions = useCallback(async (date: string) => {
+  const loadSessions = useCallback(async (date: string, apiKey?: string) => {
     if (!date) {
       setSessions([]);
       return;
     }
     try {
-      const rows = await api.getCaptureSessions(date);
+      const rows = await api.getCaptureSessions(date, apiKey || undefined);
       setSessions(rows);
       setSelectedFile(prev => (prev && rows.some(r => r.file === prev) ? prev : ''));
     } catch (err) {
@@ -674,11 +695,27 @@ export const CapturesPage: React.FC = () => {
   }, [loadStatus]);
 
   useEffect(() => {
-    loadSessions(selectedDate);
+    loadSessions(selectedDate, apiKeyFilter);
     setSelectedFile('');
     setTurns([]);
     setEvents([]);
-  }, [selectedDate, loadSessions]);
+  }, [selectedDate, apiKeyFilter, loadSessions]);
+
+  // Combobox options: the configured client keys (id + application name).
+  // Best-effort — a console session without /api-keys visibility just shows
+  // the "all keys" entry.
+  useEffect(() => {
+    let alive = true;
+    api
+      .getApiKeys()
+      .then(r => {
+        if (alive) setApiKeyOptions((r.keys || []).map(k => ({ id: k.id, name: k.name })));
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   useEffect(() => {
     loadRecords(selectedDate, selectedFile);
@@ -821,7 +858,7 @@ export const CapturesPage: React.FC = () => {
           setEvents([]);
           setSelectedTurnIdx(null);
         }
-        await loadSessions(selectedDate);
+        await loadSessions(selectedDate, apiKeyFilter);
         await loadStatus();
       } else {
         toast.error(res.message || t('common.failed'));
@@ -831,10 +868,16 @@ export const CapturesPage: React.FC = () => {
     }
   };
 
-  // Session filter: id substring OR first-message preview, case-insensitive.
+  // Session filter: id substring OR first-message preview OR key name,
+  // case-insensitive. (`apiKeyFilter` above is the server-side per-app selector.)
   const q = query.trim().toLowerCase();
   const visibleSessions = q
-    ? sessions.filter(s => s.sessionId.toLowerCase().includes(q) || (s.preview || '').toLowerCase().includes(q))
+    ? sessions.filter(
+        s =>
+          s.sessionId.toLowerCase().includes(q) ||
+          (s.preview || '').toLowerCase().includes(q) ||
+          (s.apiKeys ?? []).some(k => k.name.toLowerCase().includes(q))
+      )
     : sessions;
 
   return (
@@ -970,13 +1013,33 @@ export const CapturesPage: React.FC = () => {
                       placeholder={t('captures.searchPlaceholder')}
                       style={{ width: '100%', fontSize: '12px', padding: '6px 10px' }}
                     />
+                    <Combobox
+                      value={apiKeyFilter}
+                      onChange={setApiKeyFilter}
+                      options={[
+                        { value: '', label: t('captures.apiKeyAll') },
+                        ...apiKeyOptions.map(k => ({ value: k.id, label: k.name })),
+                      ]}
+                      style={{ width: '100%', fontSize: '12px', padding: '6px 10px', marginTop: 6 }}
+                    />
                   </div>
                   <div style={{ overflowY: 'auto', padding: '0 4px 4px', flex: 1, minHeight: 0 }}>
                   {visibleSessions.map(s => (
                     <div
                       key={s.file}
                       onClick={() => setSelectedFile(s.file)}
-                      title={s.preview ? `${s.sessionId}\n${s.preview}\n${fmtBytes(s.bytes)}` : `${s.sessionId}\n${fmtBytes(s.bytes)}`}
+                      title={
+                        [
+                          s.sessionId,
+                          (s.apiKeys ?? [])
+                            .map(k => t('captures.apiKeyTooltip', { name: k.name, id: k.id }))
+                            .join('\n'),
+                          s.preview || '',
+                          fmtBytes(s.bytes),
+                        ]
+                          .filter(Boolean)
+                          .join('\n')
+                      }
                       style={{
                         display: 'flex',
                         alignItems: 'center',
@@ -1032,6 +1095,20 @@ export const CapturesPage: React.FC = () => {
                         >
                           {s.sessionId}
                         </div>
+                        {s.apiKeys && s.apiKeys.length > 0 && (
+                           <div
+                             style={{
+                               fontSize: '10.5px',
+                               color: 'var(--accent-emerald, var(--accent))',
+                               overflow: 'hidden',
+                               textOverflow: 'ellipsis',
+                               whiteSpace: 'nowrap',
+                             }}
+                           >
+                             {s.apiKeys[0].name}
+                             {s.apiKeys.length > 1 ? ` +${s.apiKeys.length - 1}` : ''}
+                           </div>
+                         )}
                         {s.preview && (
                           <div
                             style={{

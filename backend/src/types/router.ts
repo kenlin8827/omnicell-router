@@ -140,10 +140,21 @@ export type SessionLookupType =
   | 'root_anchor'       // deterministic first-user-message key
   | 'cold_start';       // fresh mint (random, collision-free by construction)
 
+/**
+ * Machine-readable routing-reason vocabulary carried alongside the English
+ * `reason` on every decision, trace and flywheel sample. Producers emit a
+ * code from the locked set ('forced', 'l1.*', 'l2.*', 'session.*') plus the
+ * params needed to render it; the console localizes from code+params and
+ * falls back to the raw `reason` for unknown or legacy values.
+ */
+export type ReasonParams = Record<string, string | number | boolean>;
+
 export interface RoutingDecision {
   targetTier: TierLevel;
   confidence: number;
   reason: string;
+  reasonCode?: string;
+  reasonParams?: ReasonParams;
   layerUsed?: 'layer0' | 'layer1' | 'layer2';
   needsSchemaValidation: boolean;
   sessionId?: string;

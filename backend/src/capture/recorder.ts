@@ -196,6 +196,19 @@ export interface HttpExchangeEvent {
     fallbackOccurred?: boolean;
     failoverPath?: string[];
   };
+  /**
+   * Client API-key identity (`sk-ocr-*` entry from `config.apiKeys`) that
+   * authenticated this turn. Attached to EVERY event of the turn (client
+   * request/response + upstream request/response) so a whole turn is
+   * attributable to one application. Only the stable `id` and the display
+   * `name` are persisted — the token value is never stored, consistent with
+   * the credential deny-list in `observability/http-exchange.ts` (the raw
+   * Authorization / x-api-key header values stay `[REDACTED]`).
+   * Absent (`undefined`) when the leg has no key identity: master-key
+   * (`adminApiKey`) access, MITM forward-proxy tunnels (CONNECT-authenticated),
+   * or requests archived before this field existed.
+   */
+  apiKey?: CaptureKeyIdentity;
   /** Error message if THIS phase errored (e.g. upstream request never got a response). */
   error?: string;
   /**
@@ -216,6 +229,16 @@ export interface HttpExchangeEvent {
 /** Label for capture events that carry a non-default call purpose. */
 export type ExchangePurpose = 'l2-judge';
 
+/**
+ * Stable identity of the client API key that authenticated a turn — the
+ * non-secret half of `ApiKeyConfig` (id + application name). Persisted onto
+ * capture events and session rows; NEVER the token value.
+ */
+export interface CaptureKeyIdentity {
+  id: string;
+  name: string;
+}
+
 interface CaptureDateRow {
   date: string; // YYYY-MM-DD (local time)
   sessions: number;
@@ -232,11 +255,26 @@ interface CaptureSessionRow {
   lastStatus?: 'ok' | 'error'; // status of the most recent turn (badge dot)
   /** First user-message text of the session (single line, capped) so the console list is human-identifiable. */
   preview?: string;
+  /**
+   * DISTINCT client API-key identities seen in this archive, in write order —
+   * normally a single entry (one archive, one application); more when the app
+   * rotated keys mid-session. The FIRST element doubles as the display anchor
+   * (no separate singular field — it would be derivable). Absent on legacy
+   * archives written before key attribution existed and on key-less legs
+   * (MITM, master-key access).
+   */
+  apiKeys?: CaptureKeyIdentity[];
 }
 
-/** One archive hit for a session id, across all date directories. */
-interface CaptureSessionMatch extends CaptureSessionRow {
+/**
+ * One archive-file hit for a session id, located by NAME across all date
+ * directories. Coordinates only (enough to read/delete the archive) — row
+ * metadata (turns/preview/apiKey) comes from listSessions, never from a
+ * name-only find.
+ */
+interface CaptureSessionMatch {
   date: string; // YYYY-MM-DD directory the archive lives in
+  file: string; // archive file name (safe id verbatim, or h_<hash>.jsonl)
 }
 
 interface CaptureStatus {
@@ -254,6 +292,13 @@ const DATE_DIR_RE = /^\d{4}-\d{2}-\d{2}$/;
 // browsability; anything else (path traversal, separators, excess length)
 // falls back to a stable content hash.
 const SAFE_SESSION_RE = /^[\w.@:-]{1,80}$/;
+// Reserves the hash output namespace: ids literally shaped like sessionFileName()'s
+// own digest output go through the hash branch (hash-of-hash), never verbatim —
+// closing the alias-collision vector where a crafted id `h_<16hex>` would name
+// the same archive as some unsafe id's hash. Case-insensitive because the
+// verbatim branch accepts uppercase hex, which aliases the lowercase digest
+// file on case-insensitive filesystems (Windows/macOS).
+const HASH_NAME_RE = /^h_[0-9a-f]{16}$/i;
 const JSONL_SUFFIX = '.jsonl';
 const TRUNCATION_SUFFIX = '...[TRUNCATED]';
 // Read cap for a single archive file — a turn is bounded by maxBodyBytes, so
@@ -545,9 +590,17 @@ export class CaptureRecorder {
     return rows.sort((a, b) => b.date.localeCompare(a.date));
   }
 
-  /** Session archive files inside one date directory, most recently written first. */
-  public listSessions(date: string): CaptureSessionRow[] {
+  /** Session archive files inside one date directory, most recently written first.
+   *  `apiKeyFilter` (optional) keeps sessions whose events carry the given key:
+   *  membership over the archive's DISTINCT key set (a session that rotated
+   *  keys mid-way is found under both old and new id — the row's `apiKey`
+   *  display anchor is only the first). Match: exact id OR case-insensitive
+   *  name substring — the console's per-application retrieval. */
+  public listSessions(date: string, apiKeyFilter?: string): CaptureSessionRow[] {
     if (!DATE_DIR_RE.test(date)) return [];
+    // Self-defensive trim: retrieval semantics must not depend on caller
+    // discipline (the routes trim, but the public API owns its contract).
+    apiKeyFilter = apiKeyFilter?.trim() || undefined;
     const dir = path.join(this.rootDir, date);
     let entries: fs.Dirent[];
     try {
@@ -572,6 +625,11 @@ export class CaptureRecorder {
         let failed = 0;
         let lastStatus: 'ok' | 'error' | undefined;
         let preview: string | undefined;
+        // Key attribution: collect the DISTINCT identities seen in the
+        // archive (write order). Single-key sessions → one entry; rotated /
+        // mixed-key sessions → the full set so per-app retrieval matches
+        // every app that contributed. Legacy lines carry no apiKey.
+        const seenKeys = new Map<string, CaptureKeyIdentity>();
         const streamEvents: HttpExchangeEvent[] = [];
         try {
           const content = fs.readFileSync(filePath, 'utf8');
@@ -581,6 +639,12 @@ export class CaptureRecorder {
               const rec = JSON.parse(line);
               if (rec.eventType === 'http-exchange') {
                 streamEvents.push(rec as HttpExchangeEvent);
+                if (rec.apiKey && rec.apiKey.id && !seenKeys.has(String(rec.apiKey.id))) {
+                  seenKeys.set(String(rec.apiKey.id), {
+                    id: String(rec.apiKey.id),
+                    name: String(rec.apiKey.name ?? ''),
+                  });
+                }
                 // First client request body = the session's opening turn.
                 // extractSessionPreview also accepts the raw string form
                 // (it strips a "...[TRUNCATED]" tail and repairs the cut
@@ -624,6 +688,7 @@ export class CaptureRecorder {
         } catch {
           // Read failed — return metadata without the tally.
         }
+        const keyList = [...seenKeys.values()];
         rows.push({
           file: f.name,
           sessionId: f.name.slice(0, -JSONL_SUFFIX.length),
@@ -633,12 +698,20 @@ export class CaptureRecorder {
           failed,
           lastStatus,
           preview,
+          ...(keyList.length ? { apiKeys: keyList } : {}),
         });
       } catch {
         // Vanished mid-listing — skip.
       }
     }
-    return rows.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    const filtered = !apiKeyFilter
+      ? rows
+      : rows.filter(r =>
+          // Membership over the distinct key set — a session that rotated
+          // keys stays findable under every key that contributed.
+          r.apiKeys?.some(k => k.id === apiKeyFilter || k.name.toLowerCase().includes(apiKeyFilter.toLowerCase()))
+        );
+    return filtered.sort((a, b) => b.mtimeMs - a.mtimeMs);
   }
 
   /**
@@ -926,18 +999,32 @@ export class CaptureRecorder {
 
   /**
    * Find archive files for one session id across ALL date directories.
-   * The raw client-supplied id is re-sanitized with sessionFileName() so
-   * hashed archives (h_<hash>.jsonl) match their original id. Name-only
-   * readdir scan — no body reads. Newest archive first.
+   * The raw id goes to sessionFileName() unmodified — the exact call the
+   * write path makes — so read and write names are equal by construction.
+   * Deliberately no trim/length cap here: the write side applies neither,
+   * and silently bailing on long ids used to blind the cascade to every
+   * hashed archive over 512 chars. Hashed names keep long ids path-safe.
+   * Boundary normalization (trim/require) stays in the route handlers that
+   * own the input (console find-session; session ids are already trimmed at
+   * resolveSessionId intake). Name-only readdir scan — zero body reads
+   * (listSessions would parse every archive just to match a file name).
+   * Exact name match: sessionFileName is deterministic, so case-insensitive
+   * FS variants cannot diverge. Newest archive first (listDates is newest-first).
    */
   public findBySession(sessionId: string): CaptureSessionMatch[] {
-    const id = typeof sessionId === 'string' ? sessionId.trim() : '';
-    if (!id || id.length > 512) return [];
-    const fileName = CaptureRecorder.sessionFileName(id);
+    if (typeof sessionId !== 'string' || sessionId === '') return [];
+    const fileName = CaptureRecorder.sessionFileName(sessionId);
     const matches: CaptureSessionMatch[] = [];
     for (const d of this.listDates()) {
-      const row = this.listSessions(d.date).find(s => s.file === fileName);
-      if (row) matches.push({ ...row, date: d.date });
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(path.join(this.rootDir, d.date), { withFileTypes: true });
+      } catch {
+        continue; // Date dir vanished mid-scan — fail open like listDates.
+      }
+      if (entries.some(e => e.isFile() && e.name === fileName)) {
+        matches.push({ date: d.date, file: fileName });
+      }
     }
     return matches;
   }
@@ -1049,9 +1136,20 @@ export class CaptureRecorder {
     }
   }
 
-  /** Filesystem-safe archive file name for a (client-controlled) session id. */
+  /**
+   * Filesystem-safe archive file name for a (client-controlled) session id.
+   * Single source of truth for write AND read naming (findBySession calls
+   * this verbatim) — names match by construction, no per-side normalization.
+   * HASH_NAME_RE (see definition) forces literal `h_<16hex>` ids through the
+   * hash branch so they can never alias another session's hashed archive.
+   * Migration: archives written before that guard for a literal `h_<16hex>`
+   * id keep their old verbatim name and become read-side orphans (findBySession
+   * now resolves that id to the hash-of-hash name). They stay visible and
+   * deletable through the captures directory browser, and the retention sweep
+   * backstops them — existing files are never rewritten or migrated.
+   */
   public static sessionFileName(sessionId: string): string {
-    if (SAFE_SESSION_RE.test(sessionId)) return sessionId + JSONL_SUFFIX;
+    if (SAFE_SESSION_RE.test(sessionId) && !HASH_NAME_RE.test(sessionId)) return sessionId + JSONL_SUFFIX;
     const hash = crypto.createHash('sha256').update(sessionId).digest('hex').slice(0, 16);
     return `h_${hash}${JSONL_SUFFIX}`;
   }
