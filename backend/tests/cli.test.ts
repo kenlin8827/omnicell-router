@@ -7,6 +7,7 @@ import { buildGatewayChildEnv, buildWindowsEnvSets, RESTART_PARENT_ENV } from '.
 import { OpenCodeClientAdapter } from '../src/cli/clients/opencode.js';
 import { ClaudeClientAdapter } from '../src/cli/clients/claude.js';
 import { CodexClientAdapter } from '../src/cli/clients/codex.js';
+import { PiClientAdapter } from '../src/cli/clients/pi.js';
 
 describe('CLI Client Setup & Teardown Adapters', () => {
   let tmpDir: string;
@@ -156,6 +157,108 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     const restored = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     expect(restored.baseUrl).toBe('https://api.openai.com/v1');
   });
+
+  it('Pi adapter should inject its provider, preserve user providers, and revert', async () => {
+    const configPath = path.join(tmpDir, 'models.json');
+    fs.writeFileSync(configPath, JSON.stringify({ providers: { ollama: { baseUrl: 'http://localhost:11434/v1', api: 'openai-completions', models: [{ id: 'llama3.1:8b' }] } } }, null, 2));
+
+    const adapter = new PiClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    let status = await adapter.getStatus();
+    expect(status.hooked).toBe(false);
+
+    const setupRes = await adapter.setup({ port: 4000, models: { main: 'auto-pro' }, apiKey: 'sk-test', extraModels: ['gpt-4o'] });
+    expect(setupRes.success).toBe(true);
+    expect(fs.existsSync(`${configPath}.bak.ocr`)).toBe(true);
+
+    status = await adapter.getStatus();
+    expect(status.hooked).toBe(true);
+    expect(status.modelSlots[0].value).toBe('auto-pro');
+    expect(status.extraModels).toEqual(['gpt-4o']);
+
+    const updated = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(updated.providers['opencode-router'].baseUrl).toBe('http://127.0.0.1:4000/v1');
+    expect(updated.providers['opencode-router'].api).toBe('openai-completions');
+    expect(updated.providers['opencode-router'].apiKey).toBe('sk-test');
+    // The user's own providers must survive the hook.
+    expect(updated.providers.ollama.baseUrl).toBe('http://localhost:11434/v1');
+
+    const teardownRes = await adapter.teardown();
+    expect(teardownRes.success).toBe(true);
+
+    status = await adapter.getStatus();
+    expect(status.hooked).toBe(false);
+
+    const restored = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(restored.providers['opencode-router']).toBeUndefined();
+    expect(restored.providers.ollama.models[0].id).toBe('llama3.1:8b');
+  });
+
+  it('Pi adapter teardown after double-setup must leave the client fully unhooked (restore-then-strip)', async () => {
+    const configPath = path.join(tmpDir, 'redouble.json');
+    fs.writeFileSync(configPath, JSON.stringify({ providers: { ollama: { baseUrl: 'http://localhost:11434/v1', api: 'openai-completions', models: [{ id: 'x' }] } } }, null, 2));
+
+    const adapter = new PiClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    await adapter.setup({ port: 4000, models: { main: 'auto' } });
+    await adapter.setup({ port: 8000, models: { main: 'auto' } }); // e.g. port-change re-apply → backup now contains a hooked file
+
+    const res = await adapter.teardown();
+    expect(res.success).toBe(true);
+
+    const status = await adapter.getStatus();
+    expect(status.hooked).toBe(false);
+    const restored = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(restored.providers['opencode-router']).toBeUndefined();
+    expect(restored.providers.ollama).toBeDefined();
+  });
+
+  it('Pi adapter should treat a LAN/manual hook entry as hooked (host-agnostic marker)', async () => {
+    const configPath = path.join(tmpDir, 'lan.json');
+    fs.writeFileSync(configPath, JSON.stringify({ providers: { 'opencode-router': { baseUrl: 'http://192.168.1.20:4000/v1', api: 'openai-completions', apiKey: 'sk-lan', models: [{ id: 'auto' }] } } }, null, 2));
+
+    const adapter = new PiClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    const status = await adapter.getStatus();
+    expect(status.hooked).toBe(true);
+    expect(status.modelSlots[0].value).toBe('auto');
+  });
+
+  it('Pi adapter teardown fallback should surgically remove only the OCR provider when no backup exists', async () => {
+    const configPath = path.join(tmpDir, 'nobackup.json');
+    fs.writeFileSync(configPath, JSON.stringify({ providers: { ollama: { baseUrl: 'http://localhost:11434/v1', api: 'openai-completions', models: [{ id: 'x' }] }, mine: { baseUrl: 'https://api.mine.dev/v1', api: 'openai-completions', apiKey: 'k', models: [{ id: 'm' }] } } }, null, 2));
+
+    const adapter = new PiClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    await adapter.setup({ port: 4000 });
+    fs.unlinkSync(`${configPath}.bak.ocr`); // simulate lost backup
+
+    const res = await adapter.teardown();
+    expect(res.success).toBe(true);
+
+    const data = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(data.providers['opencode-router']).toBeUndefined();
+    expect(data.providers.ollama).toBeDefined();
+    expect(data.providers.mine).toBeDefined();
+    expect(await adapter.getStatus()).toMatchObject({ hooked: false });
+  });
+
+  it('Pi adapter should refuse setup on an unparseable models.json (no data loss)', async () => {
+    const configPath = path.join(tmpDir, 'broken-models.json');
+    fs.writeFileSync(configPath, '{ not json !');
+
+    const adapter = new PiClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    const res = await adapter.setup({ port: 4000 });
+    expect(res.success).toBe(false);
+    // The unreadable file must be left byte-for-byte intact.
+    expect(fs.readFileSync(configPath, 'utf8')).toBe('{ not json !');
+  });
 });
 
 describe('Embedded UI & Management API Endpoints', () => {
@@ -199,7 +302,7 @@ describe('Embedded UI & Management API Endpoints', () => {
     expect(json.metrics).toBeDefined();
     expect(json.circuitBreakers).toBeDefined();
     expect(Array.isArray(json.clients)).toBe(true);
-    expect(json.clients.length).toBe(4);
+    expect(json.clients.length).toBe(5);
   });
 
   it('should support reading and validating raw YAML config on /api/admin/config/raw', async () => {

@@ -3,6 +3,7 @@ import { OpenCodeClientAdapter } from './opencode.js';
 import { OpenCodeProxyClientAdapter } from './opencode-proxy.js';
 import { ClaudeClientAdapter } from './claude.js';
 import { CodexClientAdapter } from './codex.js';
+import { PiClientAdapter } from './pi.js';
 import { ClientHookStatus, SupportedClient } from '../types.js';
 
 const adapters: Record<SupportedClient, ClientAdapter> = {
@@ -10,6 +11,7 @@ const adapters: Record<SupportedClient, ClientAdapter> = {
   'opencode-proxy': new OpenCodeProxyClientAdapter(),
   claude: new ClaudeClientAdapter(),
   codex: new CodexClientAdapter(),
+  pi: new PiClientAdapter(),
 };
 
 export function getClientAdapter(name: string): ClientAdapter | null {
