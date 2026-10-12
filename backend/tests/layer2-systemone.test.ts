@@ -222,8 +222,9 @@ describe('Layer 2 judge speaks the System One protocol', () => {
       expect(result!.targetTier).toBe('pro');
       expect(result!.confidence).toBeCloseTo(0.91, 10);
       expect(result!.model).toBe('l2-native/jev');
-      expect(result!.reason).toContain('System One (l2-native/jev)');
-      expect(result!.reason).not.toContain('uncalibrated');
+      expect(result!.reasonCode).toBe('l2.system_one');
+      expect(result!.reasonParams).toEqual({ model: 'l2-native/jev', tier: 'pro' });
+      expect(result!.reason).not.toContain('not yet calibrated');
 
       // The upstream saw a well-formed System One request, not a vendor wire.
       expect(received.state).toBe(`user: ${PROOF}`);
@@ -282,8 +283,10 @@ describe('Layer 2 judge speaks the System One protocol', () => {
       expect(result).not.toBeNull();
       expect(result!.targetTier).toBe('ultra');
       expect(result!.confidence).toBeCloseTo(0.62, 10);
-      // Fidelity is visible in the reason: a converted answer is a self-report.
-      expect(result!.reason).toContain('uncalibrated self-report');
+      // Fidelity is visible in the code/params: a converted answer is a self-report.
+      expect(result!.reasonCode).toBe('l2.system_one_uncalibrated');
+      expect(result!.reasonParams).toEqual({ model: 'l2-chat/model', tier: 'ultra' });
+      expect(result!.reason).toContain('not yet calibrated');
       expect(seen.length).toBe(1);
       expect(seen[0].response_format).toEqual({ type: 'json_object' });
       expect(String(seen[0].messages[0].content)).toContain('System One');
@@ -324,6 +327,11 @@ describe('Layer 2 judge speaks the System One protocol', () => {
       expect(first!.targetTier).toBe('plus');
       expect(second!.targetTier).toBe('plus');
       expect(second!.reason).toContain('[Decision Cache]');
+      // A hit propagates the cached code/params and only flags `cached` —
+      // no cache-specific code, and the stored entry stays unflagged.
+      expect(second!.reasonCode).toBe(first!.reasonCode);
+      expect(second!.reasonParams?.cached).toBe(true);
+      expect(first!.reasonParams?.cached).toBeUndefined();
       expect(calls).toBe(1);
     } finally {
       upstream.stop(true);

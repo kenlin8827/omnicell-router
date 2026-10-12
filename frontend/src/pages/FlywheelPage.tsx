@@ -17,6 +17,7 @@ import {
   type FlywheelTrainingState,
   type TierName,
 } from '../lib/api';
+import { formatReason } from '../lib/reason';
 
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
@@ -674,7 +675,9 @@ export const FlywheelPage: React.FC = () => {
                     </div>
                     <div style={{ gridColumn: '1 / -1' }}>
                       <div style={{ color: 'var(--text-dim)' }}>{t('flywheel.fieldReason')}</div>
-                      <div style={{ wordBreak: 'break-word' }}>{row.decision.reason || '—'}</div>
+                      <div style={{ wordBreak: 'break-word' }}>
+                        {formatReason(row.decision.reasonCode, row.decision.reasonParams, row.decision.reason, t) || '—'}
+                      </div>
                     </div>
                     {row.execution.fallbackReason && (
                       <div style={{ gridColumn: '1 / -1' }}>

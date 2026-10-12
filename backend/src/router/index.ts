@@ -42,7 +42,9 @@ export class RouterEngine {
       return {
         targetTier: forced,
         confidence: 1.0,
-        reason: `Explicitly forced to ${forced} by request options`,
+        reason: `Pinned to ${forced} by request settings`,
+        reasonCode: 'forced',
+        reasonParams: { tier: forced },
         layerUsed: 'layer0',
         needsSchemaValidation,
         features: {
@@ -63,6 +65,8 @@ export class RouterEngine {
       confidence: prediction.confidence,
       layerUsed: 'layer1',
       reason: prediction.reason,
+      reasonCode: prediction.reasonCode,
+      reasonParams: prediction.reasonParams,
       needsSchemaValidation: prediction.needsSchemaValidation,
       features: {
         tokenCountEstimate: metrics.tokenCount,
@@ -115,6 +119,8 @@ export class RouterEngine {
         confidence: prediction.confidence,
         layerUsed: 'layer1',
         reason: prediction.reason,
+        reasonCode: prediction.reasonCode,
+        reasonParams: prediction.reasonParams,
         needsSchemaValidation: prediction.needsSchemaValidation,
         features: {
           tokenCountEstimate: metrics.tokenCount,
@@ -142,6 +148,8 @@ export class RouterEngine {
           confidence: decisionResult.confidence,
           layerUsed: 'layer2',
           reason: decisionResult.reason,
+          reasonCode: decisionResult.reasonCode,
+          reasonParams: decisionResult.reasonParams,
           needsSchemaValidation,
           features: {
             tokenCountEstimate: metrics.tokenCount,
@@ -161,6 +169,8 @@ export class RouterEngine {
       confidence: prediction.confidence,
       layerUsed: 'layer1',
       reason: prediction.reason,
+      reasonCode: prediction.reasonCode,
+      reasonParams: prediction.reasonParams,
       needsSchemaValidation: prediction.needsSchemaValidation,
       features: {
         tokenCountEstimate: metrics.tokenCount,

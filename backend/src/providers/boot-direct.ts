@@ -1,10 +1,9 @@
-import { ModelRegistration, ModelVariant, ProviderConfig, TiersConfig } from '../config/types.js';
+import { ModelRegistration, ModelVariant, ProviderConfig } from '../config/types.js';
 import type { CatalogModel } from '../opencode/catalog/types.js';
 import { PoolMembership, TierLevel, EFFORT_LADDER, type ReasoningEffort } from '../types/router.js';
-import { loadConfig, saveConfig } from '../config/index.js';
+import { loadConfig } from '../config/index.js';
 import { resolveTierMatch, classifyTier } from './tier-match.js';
-import { resolveTierMembers, claimModel, generateMemberLists, MEMBER_TIER_ORDER, type ImportableModel } from './member-match.js';
-import { globMatchAny } from '../utils/glob.js';
+import { resolveTierMembers, claimModel } from './member-match.js';
 import { catalogRepository } from '../opencode/catalog/repository.js';
 import {
   getProviderNodeById,
@@ -185,10 +184,9 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
       // Explicit tier from the opencode.jsonc model definition wins; otherwise
       // the configurable smart match classifies (patterns → price band →
       // thinking-effort flag). Free models (input = 0) can hit the lite band;
-      // models without catalog pricing simply skip bands and now end up
-      // UNCLASSIFIED (no residual tier) unless something claims them.
-      // NOTE: this is only the first-boot migration seed — the committed
-      // member lists below (claimModel) are the sole membership source.
+      // models without catalog pricing simply skip bands. This pre-labeling is
+      // suggestion/display only — the member lists below (claimModel) are the
+      // sole membership source and overwrite it for every claimed model.
       const explicitTier = (v: unknown): TierLevel | undefined =>
         v === 'lite' || v === 'plus' || v === 'pro' || v === 'ultra' ? (v as TierLevel) : undefined;
       const rawInputPerM = catModel?.cost?.input;
@@ -258,78 +256,39 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
   }
 
   // ─── membership: explicit member lists are the ONLY source ──────
-  // Bootstrap: a brand-new install has no `members` anywhere (DEFAULT_CONFIG
-  // ships tiers: {}), so seed the first lists from the classifier
-  // (configTier > match) and persist them — otherwise every model would come
-  // out `unclassified` and all four pools would be empty. Afterwards list
-  // order IS the chain order (priority = rule index + 1) and the list leader
-  // is the tier representative.
-  let resolved = resolveTierMembers(loadConfig().tiers);
-  if (!resolved.configured) {
-    const tiersCfg = loadConfig().tiers || {};
-    // The tier leaders must land at list index 0 (cheapest lite / median plus
-    // / first-reasoning pro / priciest ultra) — at this point
-    // isDefaultInTier/priority are not yet assigned, so without this pass the
-    // seeded order would degenerate to registration insertion order and the
-    // seeded chain would pick a different primary.
-    const external = models.filter((m) => m.provider !== 'opencode');
-    const seedPool = external.length > 0 ? external : models;
-    const seedLeaders = new Set<string>();
-    const byInput = (a: ModelRegistration, b: ModelRegistration) => (a.pricing.input ?? 0) - (b.pricing.input ?? 0);
-    const tLite = seedPool.filter((m) => m.tier === 'lite').sort(byInput);
-    if (tLite[0]) seedLeaders.add(tLite[0].id);
-    let tPlus = seedPool.filter((m) => m.tier === 'plus').sort(byInput);
-    if (tPlus.length === 0) tPlus = seedPool.filter((m) => m.tier !== 'pro' && m.tier !== 'ultra');
-    if (tPlus.length > 0) seedLeaders.add(tPlus[Math.floor(tPlus.length / 2)].id);
-    const tPro = seedPool.filter((m) => m.tier === 'pro');
-    if (tPro.length > 0) seedLeaders.add((tPro.find((m) => (m.supportedReasoningEfforts?.length ?? 0) > 0) || tPro[0]).id);
-    const tUltra = seedPool.filter((m) => m.tier === 'ultra').sort((a, b) => -byInput(a, b));
-    if (tUltra[0]) seedLeaders.add(tUltra[0].id);
-    const inputs: ImportableModel[] = models.map((m) => {
-      const bareId = m.id.startsWith(m.provider + '/') ? m.id.slice(m.provider.length + 1) : m.id;
-      return {
-        id: m.id,
-        bareId,
-        inputPerM: m.tierMatch?.rawInputPerM,
-        reasoningFlag: m.tierMatch?.reasoningFlag ?? false,
-        configTier: m.configTier,
-        chainPriority: seedLeaders.has(m.id) ? 0 : 10,
-      };
-    });
-    const deny = tiersCfg.exclude ?? [];
-    const seeded = generateMemberLists(inputs, tierMatch, (id) => deny.length > 0 && globMatchAny(deny, id));
-    const mergedTiers: TiersConfig = { ...tiersCfg };
-    for (const t of MEMBER_TIER_ORDER) {
-      mergedTiers[t] = { ...(tiersCfg[t] ?? {}), members: seeded[t] };
-    }
-    // In-memory lists apply for THIS boot regardless (a persist failure must
-    // not strand the gateway on empty pools); persistence retries next boot.
-    resolved = { tiers: seeded, configured: true };
-    const saved = saveConfig({ tiers: mergedTiers });
-    if (saved.success) {
-      console.log(
-        `[OCR] seeded the first tier member lists from the built-in match ` +
-          `(lite ${seeded.lite.length} / plus ${seeded.plus.length} / pro ${seeded.pro.length} / ultra ${seeded.ultra.length}) ` +
-          `and saved to config.yaml — review/adjust on the /tiers page.`
-      );
-    } else {
-      console.warn(
-        `[OCR] member-list seed could not be persisted (${saved.error}) — ` +
-          `lists act in-memory for this boot only; they retry on the next start.`
-      );
-    }
-  }
+  // No runtime seeding: the first-boot defaults live in DEFAULT_CONFIG.tiers
+  // (one glob per tier: *haiku*/*sonnet*/*opus*/*fable) — defaultConfigYaml()
+  // bakes them into every brand-new config.yaml, and loadConfig() falls back
+  // to them when a file has no `tiers:` section. A config that carries no
+  // `members` anywhere (e.g. an explicit `tiers: {}`) gets EMPTY pools and
+  // the all-empty warning below; every model stays directly callable by id.
+  // List order IS chain order (priority = rule index + 1), list index 0 is
+  // the tier representative. Members are edited on the console /tiers page
+  // (hot-applied by the registry; no restart, no persistence from boot).
+  const resolved = resolveTierMembers(loadConfig().tiers);
+  let claimed = 0;
   for (const m of models) {
     const claim = claimModel(m.id, resolved.tiers);
     if (claim === 'unclassified') {
       m.unclassified = true;
       continue;
     }
+    claimed++;
     delete m.unclassified;
     m.tier = claim.tier;
     m.priority = claim.index + 1; // member-list order IS the chain order
     m.isDefaultInTier = claim.index === 0; // the list leader
     if (claim.rule.effortMap) m.effortMap = claim.rule.effortMap;
+  }
+  // Warn only when models exist but none is claimed — with zero registered
+  // models (no provider credentials yet) the actionable gap is "add models",
+  // not "add tier members", and the server already logs the empty registry.
+  if (claimed === 0 && models.length > 0) {
+    console.warn(
+      '[OCR] No model matches any tier member rule — all four routing pools (lite/plus/pro/ultra) are EMPTY and `auto` cannot route. ' +
+        'Add members on the console /tiers page (or in config.yaml under `tiers: <tier>: members:`). ' +
+        'Every other model remains directly callable by full id; nothing was seeded or written.'
+    );
   }
 
   return { instances, models, excluded };

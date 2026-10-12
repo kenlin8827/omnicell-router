@@ -406,7 +406,11 @@ export class SessionManager {
         finalDecision: {
           ...proposedDecision,
           targetTier: session.maxTier,
-          reason: `[Session Sticky Locked] Maintained at ${session.maxTier} (Model: ${session.pinnedModel})`,
+          reason: `[Session Sticky] Kept this conversation at ${session.maxTier} (model: ${session.pinnedModel})`,
+          // Session rewrites overwrite code+params so post-rewrite traces
+          // carry the session.* vocabulary, not the pre-rewrite layer code.
+          reasonCode: 'session.sticky',
+          reasonParams: { tier: session.maxTier, model: session.pinnedModel },
         },
         session,
         ratchetApplied: proposedDecision.targetTier !== session.maxTier,
@@ -428,7 +432,9 @@ export class SessionManager {
       return {
         finalDecision: {
           ...proposedDecision,
-          reason: `${proposedDecision.reason} [Session Escalated: ${oldTier} -> ${session.maxTier}]`,
+          reason: `[Session Escalated: ${oldTier} -> ${session.maxTier}] ${proposedDecision.reason}`,
+          reasonCode: 'session.escalated',
+          reasonParams: { from: oldTier, to: session.maxTier },
         },
         session,
         ratchetApplied: true,
@@ -445,14 +451,18 @@ export class SessionManager {
       }
 
       const ratchetReason = isDowngradeAttempt
-        ? `[Session Monotonic Ratchet] Downgrade intercepted, preserved peak ${session.maxTier} (Pinned model: ${session.pinnedModel}, KV cache preserved); Single turn proposed ${proposedDecision.targetTier} (${proposedDecision.reason})`
-        : `[Session Preserved] Maintained ${session.maxTier} (Pinned model: ${session.pinnedModel})`;
+        ? `[Session Monotonic Ratchet] Kept this conversation at its peak ${session.maxTier} (model: ${session.pinnedModel}); this turn asked for ${proposedDecision.targetTier}`
+        : `[Session Preserved] Kept this conversation at ${session.maxTier} (model: ${session.pinnedModel})`;
 
       return {
         finalDecision: {
           ...proposedDecision,
           targetTier: session.maxTier,
           reason: ratchetReason,
+          reasonCode: isDowngradeAttempt ? 'session.ratchet' : 'session.preserved',
+          reasonParams: isDowngradeAttempt
+            ? { from: session.maxTier, to: proposedDecision.targetTier }
+            : { tier: session.maxTier },
         },
         session,
         ratchetApplied: isDowngradeAttempt,

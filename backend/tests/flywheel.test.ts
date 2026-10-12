@@ -52,7 +52,7 @@ describe('Layer 1 & Layer 2 Routing and Data Flywheel', () => {
     assert.strictEqual(pred.isConfident, false, 'Untrained base model confidence must be insufficient');
     assert.ok(pred.confidence < 0.40, `Confidence ${pred.confidence} should be near uniform 0.33`);
     assert.strictEqual(pred.isBaseModel, true);
-    assert.ok(pred.reason.includes('scaffold'), 'Reason should identify base model scaffold');
+    assert.strictEqual(pred.reasonCode, 'l1.base_scaffold', 'Reason code should identify base model scaffold');
   });
 
   it('RouterEngine.routeAsync should cascade untrained base model to Layer 2, never short-circuiting', async () => {

@@ -1,5 +1,5 @@
 import { ChatCompletionRequest } from '../types/openai.js';
-import { TierLevel } from '../types/router.js';
+import { TierLevel, ReasonParams } from '../types/router.js';
 import { Layer2JudgeConfig } from '../config/types.js';
 import { RoutingDecisionCache, type RoutingCacheStats } from './decision-cache.js';
 import { ProviderRegistry } from '../providers/registry.js';
@@ -12,6 +12,8 @@ export interface Layer2JudgeResult {
   targetTier: TierLevel;
   confidence: number;
   reason: string;
+  reasonCode: string;
+  reasonParams?: ReasonParams;
   provider: string;
   model: string;
   rawResponse?: any;
@@ -178,10 +180,15 @@ export class Layer2Judge {
     const cacheKey = RoutingDecisionCache.buildCacheKey(this.CACHE_SOURCE, model.id, state);
     const cached = decisionCache.get(cacheKey);
     if (cached) {
+      // Propagate the cached decision's code+params untouched; the cache hit
+      // itself is only a flag in params (no separate cache-hit code). Copy the
+      // params — never mutate the stored entry.
       return {
         targetTier: cached.targetTier as TierLevel,
         confidence: cached.confidence,
         reason: `[Decision Cache] ${cached.reason}`,
+        reasonCode: cached.reasonCode,
+        reasonParams: { ...cached.reasonParams, cached: true },
         provider: model.provider,
         model: model.id,
       };
@@ -239,8 +246,10 @@ export class Layer2Judge {
           : 0.9;
         const reason =
           decision.upstreamKind === 'native'
-            ? `System One (${model.id}) classified as ${tier}`
-            : `System One conversion (${model.id}) classified as ${tier} — uncalibrated self-report`;
+            ? `System One model ${model.id} classified this as ${tier}`
+            : `System One model ${model.id} classified this as ${tier} (self-reported, not yet calibrated)`;
+        const reasonCode =
+          decision.upstreamKind === 'native' ? 'l2.system_one' : 'l2.system_one_uncalibrated';
         // Opt-in dataset sink (classifier.layer2.collectEnabled, gated inside
         // decision-capture): the judged pair is the raw material for distilling
         // a native decision model. Recorded ONLY on the race-winner path — an
@@ -261,6 +270,8 @@ export class Layer2Judge {
           targetTier: tier,
           confidence,
           reason,
+          reasonCode,
+          reasonParams: { model: model.id, tier },
           provider: model.provider,
           model: model.id,
           rawResponse: decision.response,
@@ -275,6 +286,8 @@ export class Layer2Judge {
         targetTier: outcome.targetTier,
         confidence: outcome.confidence,
         reason: outcome.reason,
+        reasonCode: outcome.reasonCode,
+        reasonParams: outcome.reasonParams,
       });
       return outcome;
     } finally {

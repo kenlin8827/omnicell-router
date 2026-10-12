@@ -66,29 +66,32 @@ opencode:
 #               unmapped levels pass through; capability clamps afterwards and
 #               the actual served level is reported via X-OCR-Thinking-* headers.
 # A model matching NO rule is 'unclassified' (joins no pool; still callable by
-# id / combo). On first boot, IF no tier defines `members`, explicit lists are
-# auto-seeded from the legacy match below (one-time migration). Edit on the
-# console /tiers page (takes effect on save, no restart).
-# tiers:
-#   lite:
-#     members:
-#       - pattern: "anthropic/claude-haiku-4.5"
-#         effortMap: { none: "high", low: "high" }
-#       - pattern: "*flash*"
-#     selection: priority
-#   plus:
-#     members:
-#       - pattern: "*sonnet*"
-#   pro:
-#     members:
-#       - pattern: "*opus*"
-#   ultra:
-#     members:
-#       - pattern: "*fable*"
+# id / combo). The block below IS the shipped default (DEFAULT_CONFIG.tiers,
+# written verbatim into a brand-new config.yaml on first run): ONE glob per
+# tier, mapping the four Claude model families lite → ultra. Nothing is seeded
+# at runtime — edit members on the console /tiers page (takes effect on save,
+# no restart); deleting the whole `tiers:` section restores these template
+# defaults on the next load.
+tiers:
+  lite:
+    members:
+      - pattern: "*haiku*"
+      # append your own rules below the template glob, e.g.
+      # - pattern: "anthropic/claude-haiku-4.5"   # full id = exactly one model
+      #   effortMap: { none: "high", low: "high" }
+  plus:
+    members:
+      - pattern: "*sonnet*"
+  pro:
+    members:
+      - pattern: "*opus*"
+  ultra:
+    members:
+      - pattern: "*fable*"
 
 # Legacy smart-match (DEPRECATED for routing) — kept ONLY as
-# the suggestion/import engine: catalog-page recommendations, the /tiers
-# one-click import and the first-boot seed still consult these rules
+# the suggestion engine: catalog-page recommendations and the /tiers
+# preview/save-time checks still consult these rules
 # (price bands over the raw catalog $/M input price; a model matching NO band
 # or with no price is 'unclassified'). Shown as the BUILT-IN defaults;
 # uncomment + edit to steer the suggestions.

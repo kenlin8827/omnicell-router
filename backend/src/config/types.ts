@@ -158,9 +158,9 @@ export interface TierPolicy {
   members?: TierMemberRule[];
   selection?: 'priority' | 'weighted' | 'round_robin'; // primary-pick strategy (see ProviderRegistry.pickPrimary)
   /**
-   * @deprecated never consulted by routing. The classifier
-   * survives as the suggestion/import engine (catalog suggestions, /tiers
-   * import, first-boot seed, save-time checks) and still reads this config.
+   * @deprecated never consulted by routing or boot seeding. The classifier
+   * survives as the suggestion engine (catalog suggestions, /tiers
+   * preview / save-time checks) and still reads this config.
    */
   match?: {
     patterns?: string[]; // wildcard patterns over model id (all tiers claim)

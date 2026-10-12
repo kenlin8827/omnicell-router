@@ -1,9 +1,12 @@
 import { createHash } from 'node:crypto';
+import { ReasonParams } from '../types/router.js';
 
 export interface RoutingDecisionCacheEntry {
   targetTier: string;
   confidence: number;
   reason: string;
+  reasonCode: string;
+  reasonParams?: ReasonParams;
   cachedAt: number;
   hits: number;
 }
@@ -72,7 +75,7 @@ export class RoutingDecisionCache {
     return entry;
   }
 
-  public set(key: string, value: { targetTier: string; confidence: number; reason: string }): void {
+  public set(key: string, value: { targetTier: string; confidence: number; reason: string; reasonCode: string; reasonParams?: ReasonParams }): void {
     if (!this.config.enabled) return;
     while (this.entries.size >= this.config.maxEntries) {
       const oldest = this.entries.keys().next().value;

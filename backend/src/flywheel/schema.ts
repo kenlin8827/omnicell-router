@@ -12,7 +12,7 @@
  * truncated (or redacted) prompt string. `migrateRecord` therefore marks such
  * records `trainable: false` instead of fabricating a vector.
  */
-import { TierLevel } from '../types/router.js';
+import { ReasonParams, TierLevel } from '../types/router.js';
 
 export const FLYWHEEL_SCHEMA_VERSION = 2;
 
@@ -58,6 +58,12 @@ export interface FlywheelRecord {
     layerUsed: 'layer0' | 'layer1' | 'layer2';
     /** Verbatim routing reason — the provenance signal that identifies the real mechanism. */
     reason: string;
+    /**
+     * Machine-readable reason vocabulary. Optional both ways: rows written
+     * before it existed parse with `undefined` — no data migration.
+     */
+    reasonCode?: string;
+    reasonParams?: ReasonParams;
   };
   execution: {
     tierUsed: TierLevel;
@@ -142,6 +148,20 @@ function normalizeLegacyTier(value: unknown): TierLevel | null {
 }
 
 /**
+ * Disk rows are external input: accept the params object only property by
+ * property, dropping values that are not primitives. Absent/invalid →
+ * undefined, so legacy rows without the field parse unchanged.
+ */
+function optReasonParams(value: unknown): ReasonParams | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const out: ReasonParams = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') out[k] = v;
+  }
+  return out;
+}
+
+/**
  * Bring any record — v2 native or v1 legacy — up to the current shape.
  * Never throws on malformed input: a dataset line that cannot be parsed is a
  * logging concern, not a reason to break the console.
@@ -179,6 +199,8 @@ export function migrateRecord(raw: any): FlywheelRecord | null {
         confidence: num(raw.decision?.confidence),
         layerUsed: ['layer0', 'layer1', 'layer2'].includes(raw.decision?.layerUsed) ? raw.decision.layerUsed : 'layer0',
         reason: str(raw.decision?.reason),
+        reasonCode: str(raw.decision?.reasonCode) || undefined,
+        reasonParams: optReasonParams(raw.decision?.reasonParams),
       },
       execution: {
         tierUsed: normalizeLegacyTier(exec.tierUsed) || normalizeLegacyTier(raw.decision?.targetTier) || 'plus',

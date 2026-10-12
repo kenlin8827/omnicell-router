@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ChatCompletionRequest } from '../types/openai.js';
-import { TierLevel } from '../types/router.js';
+import { TierLevel, ReasonParams } from '../types/router.js';
 import { Layer1ClassifierConfig, LocalModelConfig } from '../config/types.js';
 import { TokenEstimator } from '../utils/token-estimator.js';
 
@@ -17,6 +17,8 @@ export interface Layer1Prediction {
     ultra: number;
   };
   reason: string;
+  reasonCode: string;
+  reasonParams?: ReasonParams;
   isBaseModel?: boolean;
 }
 
@@ -294,7 +296,9 @@ export class Layer1Classifier {
         confidence: conf,
         needsSchemaValidation: true,
         probabilities: { lite: conf, plus: 0.05, pro: 0.02, ultra: 0.01 },
-        reason: 'Structured schema protocol requirement detected; deploying lite tier with cascading fallback assertion',
+        reason: 'Structured output required, routing to lite with fallback protection',
+        reasonCode: 'l1.schema_protocol',
+        reasonParams: {},
         isBaseModel: this.isBaseModel(),
       };
     }
@@ -308,7 +312,9 @@ export class Layer1Classifier {
           confidence: 0.90,
           needsSchemaValidation,
           probabilities: { lite: 0.04, plus: 0.88, pro: 0.06, ultra: 0.02 },
-          reason: 'Local ONNX model evaluated decision on CPU',
+          reason: 'Local ONNX model routed the request on CPU',
+          reasonCode: 'l1.onnx',
+          reasonParams: {},
           isBaseModel: false,
         };
       } catch (err: any) {
@@ -361,13 +367,28 @@ export class Layer1Classifier {
     // Check confidence threshold
     const isConfident = !isBase && (maxProb >= threshold);
 
+    // Percent scale (0-100) for reasonParams + the English copy, same rounding
+    // the old sentences used so console numbers stay stable
+    const confidencePct = Number((maxProb * 100).toFixed(1));
+    const thresholdPct = Number((threshold * 100).toFixed(0));
+
     let reason: string;
+    let reasonCode: string;
+    let reasonParams: ReasonParams;
     if (isBase) {
-      reason = `Local base model forward pass completed (untrained base scaffold, confidence ${(maxProb * 100).toFixed(1)}% < threshold ${(threshold * 100).toFixed(0)}%; guaranteed deterministic cascade to next layer)`;
+      reasonCode = 'l1.base_scaffold';
+      // No params: the scaffold's uniform 25% confidence is a mathematical
+      // artifact, not signal, and no locale template shows it.
+      reasonParams = {};
+      reason = 'Local model is still learning (no trained weights yet), handing the decision to the next layer';
     } else if (isConfident) {
-      reason = `Local empirical CPU model forward inference completed (samples: ${this.loadedModel.sampleCount}, confidence: ${(maxProb * 100).toFixed(1)}%)`;
+      reasonCode = 'l1.confident';
+      reasonParams = { samples: this.loadedModel.sampleCount, confidence: confidencePct };
+      reason = `Local model routed with ${confidencePct}% confidence (${this.loadedModel.sampleCount} samples learned)`;
     } else {
-      reason = `Local model confidence below threshold (${(maxProb * 100).toFixed(1)}% < threshold ${(threshold * 100).toFixed(0)}%); cascading to next layer`;
+      reasonCode = 'l1.low_confidence';
+      reasonParams = { confidence: confidencePct, threshold: thresholdPct };
+      reason = `Local model confidence ${confidencePct}% is below the ${thresholdPct}% bar, trying the next layer`;
     }
 
     return {
@@ -382,6 +403,8 @@ export class Layer1Classifier {
         ultra: pUltra,
       },
       reason,
+      reasonCode,
+      reasonParams,
       isBaseModel: isBase,
     };
   }

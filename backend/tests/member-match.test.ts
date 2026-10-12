@@ -4,9 +4,7 @@ import {
   claimModel,
   matchingTiers,
   applyEffortMap,
-  generateMemberLists,
 } from '../src/providers/member-match.js';
-import { resolveTierMatch } from '../src/providers/tier-match.js';
 import type { TierMemberRule } from '../src/config/types.js';
 import type { TierLevel } from '../src/types/router.js';
 
@@ -16,7 +14,9 @@ import type { TierLevel } from '../src/types/router.js';
  *   - claim order (tier lite→plus→pro→ultra, then list order; first hit wins)
  *   - glob semantics (no wildcard = substring over the FULL model id)
  *   - effortMap translation (`effortMap[requested] ?? requested`)
- *   - the import/seed generator (legacy classifier as the suggestion engine)
+ * No seed generator: first-boot members live in DEFAULT_CONFIG.tiers
+ * (template shape pinned in config-tiers-template.test.ts; end-to-end
+ * claiming in boot-direct-template-members.test.ts).
  */
 
 const tiers = (
@@ -88,43 +88,5 @@ describe('applyEffortMap — passthrough + translation', () => {
     expect(applyEffortMap(map, 'none')).toBe('high');
     expect(applyEffortMap(map, 'medium')).toBe('xhigh');
     expect(applyEffortMap(map, 'low')).toBe('low');
-  });
-});
-
-describe('generateMemberLists — the first-boot seed engine', () => {
-  const match = resolveTierMatch({}); // built-in baseline (price bands + default patterns)
-
-  it('buckets by the legacy classification and preserves the old chain order', () => {
-    const lists = generateMemberLists(
-      [
-        { id: 'p/cheap', bareId: 'cheap', inputPerM: 0.2, reasoningFlag: false, chainPriority: 2 },
-        { id: 'p/cheaper', bareId: 'cheaper', inputPerM: 0.1, reasoningFlag: false, chainPriority: 1 },
-        { id: 'p/mid', bareId: 'mid', inputPerM: 1.5, reasoningFlag: false, chainPriority: 0 },
-        { id: 'p/mystery', bareId: 'mystery', inputPerM: undefined, reasoningFlag: false, chainPriority: 0 },
-      ],
-      match,
-    );
-    expect(lists.lite.map((r) => r.pattern)).toEqual(['p/cheaper', 'p/cheap']);
-    expect(lists.plus.map((r) => r.pattern)).toEqual(['p/mid']);
-    expect(lists.pro).toHaveLength(0);
-    expect(lists.ultra).toHaveLength(0);
-    // unclassified (no price, no pattern) is not listed anywhere
-    const all = [...lists.lite, ...lists.plus, ...lists.pro, ...lists.ultra].map((r) => r.pattern);
-    expect(all.includes('p/mystery')).toBe(false);
-  });
-
-  it('honors configTier pins and skips denied ids', () => {
-    const lists = generateMemberLists(
-      [
-        { id: 'p/cheap-pinned-pro', bareId: 'cheap-pinned-pro', inputPerM: 0.2, reasoningFlag: false, configTier: 'pro', chainPriority: 0 },
-        { id: 'p/jsonc-ultra', bareId: 'jsonc-ultra', inputPerM: 0.2, reasoningFlag: false, configTier: 'ultra', chainPriority: 0 },
-        { id: 'p/denied', bareId: 'denied', inputPerM: 0.2, reasoningFlag: false, chainPriority: 0 },
-      ],
-      match,
-      (id) => id === 'p/denied',
-    );
-    expect(lists.pro.map((r) => r.pattern)).toEqual(['p/cheap-pinned-pro']);
-    expect(lists.ultra.map((r) => r.pattern)).toEqual(['p/jsonc-ultra']);
-    expect(lists.lite.map((r) => r.pattern)).toEqual([]);
   });
 });

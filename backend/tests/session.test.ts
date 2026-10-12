@@ -97,6 +97,9 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
     assert.strictEqual(r2.session.maxTier, 'plus');
     assert.strictEqual(r2.session.pinnedModel, 'mock-plus-model');
     assert.strictEqual(r2.ratchetApplied, true);
+    // Session rewrites overwrite code+params, not just the string
+    assert.strictEqual(r2.finalDecision.reasonCode, 'session.escalated');
+    assert.deepStrictEqual(r2.finalDecision.reasonParams, { from: 'lite', to: 'plus' });
 
     // Turn 3: User says short follow-up "OK thanks" -> classified in isolation as lite
     // Monotonic Ratchet must BLOCK downgrade to lite and keep plus with pinned model!
@@ -119,6 +122,7 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
     assert.strictEqual(r3.finalDecision.targetTier, 'plus', 'Downgrade must be blocked! Locked to plus quality');
     assert.strictEqual(r3.session.pinnedModel, 'mock-plus-model', 'Must reuse pinned model to guarantee 100% KV cache hit');
     assert.strictEqual(r3.ratchetApplied, true, 'Ratchet applied flag must be true');
+    assert.strictEqual(r3.finalDecision.reasonCode, 'session.ratchet', 'Downgrade interception carries the session.ratchet code');
     assert.ok(r3.finalDecision.reason.includes('Monotonic Ratchet'));
   });
 

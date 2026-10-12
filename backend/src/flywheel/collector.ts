@@ -114,6 +114,8 @@ export class FlywheelCollector {
         confidence: params.decision.confidence,
         layerUsed: params.decision.layerUsed || 'layer0',
         reason: params.decision.reason || '',
+        reasonCode: params.decision.reasonCode,
+        reasonParams: params.decision.reasonParams,
       },
       execution: {
         tierUsed: params.tierUsed,

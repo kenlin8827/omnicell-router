@@ -1,7 +1,6 @@
 import { globMatch } from '../utils/glob.js';
 import { EFFORT_LADDER, type EffortMap, type ReasoningEffort, type TierLevel } from '../types/router.js';
 import type { TiersConfig, TierMemberRule } from '../config/types.js';
-import { classifyTier, type ResolvedTierMatch } from './tier-match.js';
 
 /**
  * member-list membership + inline effort translation.
@@ -13,9 +12,10 @@ import { classifyTier, type ResolvedTierMatch } from './tier-match.js';
  * pool). List order IS priority: the first rule's models lead the tier's
  * failover chain.
  *
- * The classifier (tier-match.ts) stays alive as the SUGGESTION /
- * IMPORT engine — it feeds catalog-page recommendations, the /tiers import
- * endpoint, the first-boot seed and save-time checks, but NEVER routing.
+ * The classifier (tier-match.ts) stays alive as the SUGGESTION engine —
+ * it feeds catalog-page recommendations, the /tiers ephemeral preview and
+ * save-time checks, but NEVER routing and NEVER seeding (the first-boot
+ * member defaults live in DEFAULT_CONFIG.tiers, not in generated lists).
  */
 
 export const MEMBER_TIER_ORDER: TierLevel[] = ['lite', 'plus', 'pro', 'ultra'];
@@ -27,8 +27,10 @@ export interface ResolvedMembers {
   tiers: Record<TierLevel, TierMemberRule[]>;
   /**
    * True when ANY tier defines a `members` key (an explicit `members: []`
-   * counts). False = old config → first boot seeds explicit lists
-   * from the legacy classification ONCE (see boot-direct).
+   * counts). False = the config carries no member lists anywhere (e.g. an
+   * explicit `tiers: {}` or tiers without any members key) — there is no
+   * runtime seeding: boot-direct keeps the pools empty and warns; the
+   * template defaults live in DEFAULT_CONFIG.tiers (loadConfig fallback).
    */
   configured: boolean;
 }
@@ -107,54 +109,4 @@ export function matchingTiers(modelId: string, tiers: Record<TierLevel, TierMemb
 /** `effortMap[requested] ?? requested` — the single translation step. */
 export function applyEffortMap(map: EffortMap | undefined, requested: ReasoningEffort): ReasoningEffort {
   return map?.[requested] ?? requested;
-}
-
-// ─── First-boot seed generator (the only bootstrap for member lists) ───
-//
-// NOT dead legacy: DEFAULT_CONFIG.tiers is `{}`, so a brand-new install has
-// no members anywhere and every model would classify as `unclassified`
-// (all four pools empty → nothing routes). This runs exactly once per
-// install, on the first boot that finds no `members` key, and persists the
-// lists back to config.yaml.
-
-export interface ImportableModel {
-  /** Full id (`provider/model`) — becomes the seeded rule pattern. */
-  id: string;
-  /** Bare model id (no provider prefix) — the seed classifier's matcher input. */
-  bareId: string;
-  inputPerM?: number;
-  reasoningFlag: boolean;
-  configTier?: TierLevel;
-  /** Old chain sort key (isDefaultInTier ? 0 : priority ?? 10) — preserves order. */
-  chainPriority: number;
-}
-
-/**
- * Generate the FIRST member lists for an install that has none, from the
- * classification pipeline (configTier > patterns/band/flag). Order within a
- * tier follows the chain order so the seeded lists pick the same leaders the
- * pools would have picked. Ids matched by the global denylist are skipped
- * (they belong to no pool).
- */
-export function generateMemberLists(
-  models: ImportableModel[],
-  match: ResolvedTierMatch,
-  isDenied?: (fullId: string) => boolean
-): Record<TierLevel, TierMemberRule[]> {
-  const buckets: Record<TierLevel, ImportableModel[]> = { lite: [], plus: [], pro: [], ultra: [] };
-  for (const m of models) {
-    if (isDenied?.(m.id)) continue;
-    const membership =
-      m.configTier ??
-      classifyTier({ modelId: m.bareId, inputPerM: m.inputPerM, reasoningFlag: m.reasoningFlag }, match);
-    if (membership === 'unclassified') continue;
-    buckets[membership].push(m);
-  }
-  const out = { lite: [], plus: [], pro: [], ultra: [] } as Record<TierLevel, TierMemberRule[]>;
-  for (const tier of MEMBER_TIER_ORDER) {
-    out[tier] = [...buckets[tier]]
-      .sort((a, b) => a.chainPriority - b.chainPriority)
-      .map((m) => ({ pattern: m.id }));
-  }
-  return out;
 }
