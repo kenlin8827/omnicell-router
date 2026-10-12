@@ -17,9 +17,12 @@
  *   file, or after a prune/truncate) is the only expensive path; `warmup()`
  *   walks that down in event-loop-friendly slices.
  *
- * The dataset file itself stays append-only JSONL; relabelling writes a
- * sidecar overlay keyed by record id, so nothing here mutates recorded
- * history.
+ * The dataset file is append-only under NORMAL gateway operation. Lifecycle
+ * operations (prune / retention sweep / batch delete / reset, implemented in
+ * `flywheel/prune.ts`) discard whole records via atomic tmp+rename rewrites
+ * under the documented backup policy — they never mutate a record in place.
+ * Relabelling still writes a sidecar overlay keyed by record id: the read
+ * side here never edits recorded content, only discards it.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -111,7 +114,7 @@ export class FlywheelDataset {
   private promptPrefix: string[] = []; // first 48 chars, lowercased, for search
 
   private indexedBytes = 0; // bytes of the dataset file already reflected in the index
-  private fd: number | null = null;
+  private indexedIno: number | null = null; // inode of the file the index was built from (D5 guard)
   private indexVersion = 0; // bumped on every index change (summary cache key)
 
   private overrides: LabelOverrideMap = {};
@@ -147,13 +150,15 @@ export class FlywheelDataset {
     this.modelIdx = new Int32Array(0);
     this.promptPrefix = [];
     this.indexedBytes = 0;
+    this.indexedIno = null;
     this.indexVersion++;
     this.summaryCache = null;
     this.labelsLoaded = false;
-    if (this.fd !== null) {
-      try { fs.closeSync(this.fd); } catch { /* already closed */ }
-      this.fd = null;
-    }
+    // No fd to release: dataset.ts opens per indexing pass / per row read and
+    // never holds a handle open between calls — a long-lived read handle
+    // makes an atomic tmp+rename rewrite fail with EPERM on Windows, and the
+    // four sanctioned rewriters (prune, retention sweep, batch delete,
+    // reset, plus the offline CLI) must never be blocked by a reader.
   }
 
   /**
@@ -163,64 +168,90 @@ export class FlywheelDataset {
    */
   public ensureIndexed(): void {
     this.loadOverrides();
-    const size = this.fileSize();
-    if (size < this.indexedBytes) {
-      // File shrank (pruned / truncated / replaced) — start over.
+    // One statSync for both size and inode — the guard below needs both and
+    // the hot path (file unchanged) must not pay twice.
+    let st: fs.Stats | null;
+    try {
+      st = fs.statSync(this.datasetPath);
+    } catch {
+      st = null; // file absent/vanished — treated as empty below
+    }
+    const size = st ? st.size : 0;
+    // Inode guard (design doc D5): every sanctioned rewrite swaps the inode
+    // via tmp+rename, so an external rewrite (retention timer sweep, offline
+    // CLI) is detected even when the replacement file is equal-or-larger —
+    // a pure size comparison races a concurrent append restoring the byte
+    // count before the next pass and leaves stale byte offsets behind.
+    const inodeReplaced = st !== null && this.indexedIno !== null && st.ino !== this.indexedIno;
+    if (inodeReplaced || size < this.indexedBytes) {
+      // File rewritten / shrank (pruned / truncated / replaced) — start over.
       const keepLabels = this.labelsLoaded;
       this.invalidate();
       this.labelsLoaded = keepLabels;
       this.loadOverrides();
     }
+    this.indexedIno = st ? st.ino : null;
     if (size === this.indexedBytes) return;
 
-    if (this.fd === null) {
-      try {
-        this.fd = fs.openSync(this.datasetPath, 'r');
-      } catch {
-        return; // file vanished between stat and open
-      }
+    // Open per indexing pass and release on exit — never cache the handle.
+    // Windows refuses a tmp+rename over a file with an open read handle
+    // (EPERM), so a reader must not block the sanctioned rewriters (prune,
+    // retention sweep, batch delete, reset, offline CLI — see invalidate()).
+    let fd: number;
+    try {
+      fd = fs.openSync(this.datasetPath, 'r');
+    } catch {
+      return; // file vanished between stat and open
     }
 
-    const buf = Buffer.allocUnsafe(Math.min(READ_CHUNK, size - this.indexedBytes));
-    // All splitting below works in BYTES, never in string offsets. Prompts are
-    // multibyte UTF-8, so string positions drift apart from real file offsets
-    // and every recorded line start after non-ASCII text would be wrong — rows
-    // then fail to re-read in readRow() and silently vanish from the browser
-    // while `total` still counts them.
-    let carry: Buffer = Buffer.alloc(0); // undecoded tail bytes after the last newline
-    let readFrom = this.indexedBytes;
-    while (readFrom < size) {
-      const want = Math.min(buf.length, size - readFrom);
-      let got = 0;
-      try {
-        got = fs.readSync(this.fd, buf, 0, want, readFrom);
-      } catch {
-        break;
-      }
-      if (got <= 0) break;
-      readFrom += got;
+    try {
+      const buf = Buffer.allocUnsafe(Math.min(READ_CHUNK, size - this.indexedBytes));
+      // All splitting below works in BYTES, never in string offsets. Prompts are
+      // multibyte UTF-8, so string positions drift apart from real file offsets
+      // and every recorded line start after non-ASCII text would be wrong — rows
+      // then fail to re-read in readRow() and silently vanish from the browser
+      // while `total` still counts them.
+      let carry: Buffer = Buffer.alloc(0); // undecoded tail bytes after the last newline
+      let readFrom = this.indexedBytes;
+      while (readFrom < size) {
+        const want = Math.min(buf.length, size - readFrom);
+        let got = 0;
+        try {
+          got = fs.readSync(fd, buf, 0, want, readFrom);
+        } catch {
+          break;
+        }
+        if (got <= 0) break;
+        readFrom += got;
 
-      // Copy even when `carry` is empty: a chunk that ends without a newline
-      // becomes the next carry and must survive the following readSync into the
-      // reused `buf` — a subarray would alias it and be overwritten.
-      const chunk = carry.length === 0 ? Buffer.from(buf.subarray(0, got)) : Buffer.concat([carry, buf.subarray(0, got)]);
-      // Only complete lines are consumed; the tail (if any) waits for more
-      // bytes. JSONL never embeds raw newline bytes, so scanning for 0x0A is
-      // an exact line terminator even inside multibyte characters, and the
-      // per-line decode in indexLines() can't corrupt a character split at a
-      // chunk boundary.
-      const lastNewline = chunk.lastIndexOf(0x0a);
-      if (lastNewline === -1) {
-        carry = chunk;
-        continue;
+        // Copy even when `carry` is empty: a chunk that ends without a newline
+        // becomes the next carry and must survive the following readSync into the
+        // reused `buf` — a subarray would alias it and be overwritten.
+        const chunk = carry.length === 0 ? Buffer.from(buf.subarray(0, got)) : Buffer.concat([carry, buf.subarray(0, got)]);
+        // Only complete lines are consumed; the tail (if any) waits for more
+        // bytes. JSONL never embeds raw newline bytes, so scanning for 0x0A is
+        // an exact line terminator even inside multibyte characters, and the
+        // per-line decode in indexLines() can't corrupt a character split at a
+        // chunk boundary.
+        const lastNewline = chunk.lastIndexOf(0x0a);
+        if (lastNewline === -1) {
+          carry = chunk;
+          continue;
+        }
+        const complete = chunk.subarray(0, lastNewline + 1);
+        carry = chunk.subarray(lastNewline + 1);
+        // The block starts where the previous carry ended: file offset of the
+        // first line = current read position minus the whole chunk in bytes.
+        const blockFileStart = readFrom - chunk.length;
+        this.indexLines(complete, blockFileStart);
+        this.indexedBytes = readFrom - carry.length;
       }
-      const complete = chunk.subarray(0, lastNewline + 1);
-      carry = chunk.subarray(lastNewline + 1);
-      // The block starts where the previous carry ended: file offset of the
-      // first line = current read position minus the whole chunk in bytes.
-      const blockFileStart = readFrom - chunk.length;
-      this.indexLines(complete, blockFileStart);
-      this.indexedBytes = readFrom - carry.length;
+    } finally {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* already closed */
+      }
     }
     this.indexVersion++;
     this.summaryCache = null;
@@ -419,12 +450,16 @@ export class FlywheelDataset {
     const end = i + 1 < this.n ? this.offsets[i + 1] : this.indexedBytes;
     const len = Math.max(0, end - start);
     if (len === 0 || len > 4 * 1024 * 1024) return null;
-    if (this.fd === null) {
-      try { this.fd = fs.openSync(this.datasetPath, 'r'); } catch { return null; }
+    // Open-per-read: same Windows rename-share rule as ensureIndexed().
+    let fd: number;
+    try {
+      fd = fs.openSync(this.datasetPath, 'r');
+    } catch {
+      return null;
     }
     const buf = Buffer.allocUnsafe(len);
     try {
-      const got = fs.readSync(this.fd, buf, 0, len, start);
+      const got = fs.readSync(fd, buf, 0, len, start);
       // The range can contain more than one physical line when torn writes or
       // malformed rows sit between indexed records. Record i starts exactly at
       // `start`, so the first non-blank line IS record i — parse only that one
@@ -439,6 +474,12 @@ export class FlywheelDataset {
       return null;
     } catch {
       return null;
+    } finally {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* already closed */
+      }
     }
   }
 

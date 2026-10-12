@@ -218,12 +218,9 @@ describe('forward-proxy: LLM protocol interceptor', () => {
           tierUsed: 'lite',
           modelUsed: 'mock-1',
           fallbackOccurred: false,
-          costUsd: 0.0005,
           sessionId: 'sess-1',
           traceId: 'trace-1',
           latencyMs: 5,
-          baselineCostUsd: 0,
-          savedCostUsd: 0,
         };
       },
     } as any;
@@ -314,8 +311,7 @@ describe('forward-proxy: LLM protocol interceptor', () => {
             usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
           },
           tierUsed: 'lite', modelUsed: 'mock-1', fallbackOccurred: false,
-          costUsd: 0, sessionId: 'sess-1', traceId: 'trace-1', latencyMs: 1,
-          baselineCostUsd: 0, savedCostsUsd: 0, savedCostUsd: 0,
+          sessionId: 'sess-1', traceId: 'trace-1', latencyMs: 1,
         };
       },
     } as any;
@@ -481,8 +477,7 @@ describe('forward-proxy: LLM protocol interceptor', () => {
             usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
           },
           tierUsed: 'lite', modelUsed: 'mock-1', fallbackOccurred: false,
-          costUsd: 0, sessionId: 'sess-9', traceId: 'trace-9', latencyMs: 1,
-          baselineCostUsd: 0, savedCostsUsd: 0, savedCostUsd: 0,
+          sessionId: 'sess-9', traceId: 'trace-9', latencyMs: 1,
         };
       },
     } as any;
@@ -564,8 +559,7 @@ describe('forward-proxy: LLM protocol interceptor', () => {
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
     },
     tierUsed: 'lite', modelUsed: 'mock-1', fallbackOccurred: false,
-    costUsd: 0, sessionId: 'sess-h', traceId: 'trace-h', latencyMs: 1,
-    baselineCostUsd: 0, savedCostUsd: 0,
+    sessionId: 'sess-h', traceId: 'trace-h', latencyMs: 1,
   });
 
   it('MITM anthropic stream: full message_start…message_stop frame sequence', async () => {
@@ -674,12 +668,9 @@ describe('forward-proxy: over-the-wire routing (interceptor + MITM combined)', (
         tierUsed: 'plus',
         modelUsed: 'mock-2',
         fallbackOccurred: false,
-        costUsd: 0.002,
         sessionId: 'sess-2',
         traceId: 'trace-2',
         latencyMs: 9,
-        baselineCostUsd: 0,
-        savedCostUsd: 0,
       }),
     } as any;
 

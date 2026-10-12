@@ -17,7 +17,7 @@ import type { ExecutionResult } from '../types/router.js';
  */
 
 /**
- * The 15 base X-OCR headers plus conditionals for a chat-shaped execution
+ * The 13 base X-OCR headers plus conditionals for a chat-shaped execution
  * result (chat / anthropic / responses wires share this exact set).
  *
  * Conditional additions:
@@ -46,8 +46,6 @@ export function buildChatOcrHeaders(result: ExecutionResult, fallbackModel: stri
     'X-OCR-Session-Ratchet': result.sessionRatchetApplied ? 'true' : 'false',
     'X-OCR-Session-Lookup': result.sessionLookupType || '',
     'X-OCR-Trace-ID': result.traceId || '',
-    'X-OCR-Cost-USD': (result.costUsd ?? 0).toFixed(6),
-    'X-OCR-Saved-USD': (result.savedCostUsd ?? 0).toFixed(6),
     'X-OCR-Latency-MS': (result.latencyMs ?? 0).toString(),
   };
   if (result.requestedEffort && result.requestedEffort !== 'none') {

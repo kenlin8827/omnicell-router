@@ -8,10 +8,14 @@ import {
   Undo2,
   AlertTriangle,
   CheckCircle2,
+  Copy,
   XCircle,
+  Trash2,
+  Scissors,
 } from 'lucide-react';
 import {
   api,
+  type FlywheelPruneResult,
   type FlywheelSample,
   type FlywheelSummary,
   type FlywheelTrainingState,
@@ -23,6 +27,7 @@ import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
 import { Combobox } from '../components/Combobox';
+import { Dialog } from '../components/Dialog';
 import { Pagination } from '../components/Pagination';
 import { Switch } from '../components/Switch';
 
@@ -35,6 +40,15 @@ const SOURCE_COLOR: Record<string, string> = {
   runtime_fallback: 'var(--accent-emerald)',
   observed_execution: 'var(--text-dim)',
   unlabeled: 'var(--accent-red, #ef4444)',
+};
+
+// Raw enum values must not reach the UI (AGENTS.md: all user-facing text
+// goes through t()); these are the same keys the source filter uses.
+const SOURCE_LABEL_KEY: Record<string, string> = {
+  human: 'flywheel.sourceHuman',
+  runtime_fallback: 'flywheel.sourceFallback',
+  observed_execution: 'flywheel.sourceObserved',
+  unlabeled: 'flywheel.sourceUnlabeled',
 };
 
 function fmtBytes(n: number): string {
@@ -51,11 +65,14 @@ function fmtTime(iso: string | null | undefined): string {
 
 /**
  * Data flywheel console — browse the routing decision dataset, correct labels
- * by hand and trigger a Layer 1 training run.
+ * by hand, trigger a Layer 1 training run, and manage the dataset lifecycle
+ * (prune / batch delete / reset).
  *
  * Relabelling writes a sidecar overlay, so a correction never rewrites what
  * the router actually did; the original decision and execution stay visible
- * next to the operator's verdict for later review.
+ * next to the operator's verdict for later review. The destructive lifecycle
+ * ops discard whole records via the backend's atomic rewrite (with backups),
+ * never by mutating history in place.
  */
 export const FlywheelPage: React.FC = () => {
   const { t } = useI18n();
@@ -78,6 +95,26 @@ export const FlywheelPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  // Bulk selection is page-scoped: ids only exist for the visible rows.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+
+  const [pruneOpen, setPruneOpen] = useState(false);
+  // Defaults mirror the backend/CLI: drop test traffic + duplicates, keep legacy.
+  const [pruneSynthetic, setPruneSynthetic] = useState(true);
+  const [pruneDuplicates, setPruneDuplicates] = useState(true);
+  const [pruneLegacy, setPruneLegacy] = useState(false);
+  const [prunePreview, setPrunePreview] = useState<FlywheelPruneResult | null>(null);
+  const [pruneBusy, setPruneBusy] = useState(false);
+
+  const [resetOpen, setResetOpen] = useState(false);
+  const [resetWord, setResetWord] = useState('');
+  const [resetBusy, setResetBusy] = useState(false);
+
+  const selectAllRef = useRef<HTMLInputElement>(null);
+  // Row whose full prompt is shown in the modal; null = closed.
+  const [promptRow, setPromptRow] = useState<FlywheelSample | null>(null);
 
   const isTraining = training?.status === 'training';
 
@@ -143,6 +180,19 @@ export const FlywheelPage: React.FC = () => {
     const timer = setTimeout(() => setSearch(searchDraft.trim()), 300);
     return () => clearTimeout(timer);
   }, [searchDraft]);
+
+  // Page-scoped selection: any query change drops what is no longer visible.
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [page, pageSize, tierFilter, sourceFilter, includeSynthetic, trainableOnly, search]);
+
+  const allSelected = rows.length > 0 && rows.every(r => selectedIds.has(r.id));
+  const someSelected = rows.some(r => selectedIds.has(r.id));
+
+  // The header checkbox needs the imperative indeterminate flag (no CSS prop).
+  useEffect(() => {
+    if (selectAllRef.current) selectAllRef.current.indeterminate = someSelected && !allSelected;
+  }, [someSelected, allSelected, rows]);
 
   const handleLabel = async (row: FlywheelSample, tier: TierName | null) => {
     if (isTraining) {
@@ -226,6 +276,116 @@ export const FlywheelPage: React.FC = () => {
       await Promise.all([loadSummary(), loadSamples()]);
     } catch (err: any) {
       toast.error(t('flywheel.clearLabelsFailed') + ' ' + err.message);
+    }
+  };
+
+  const toggleAllOnPage = () => {
+    setSelectedIds(allSelected ? new Set() : new Set(rows.map(r => r.id)));
+  };
+
+  const toggleRow = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  // Partial-success contract (§3.2): unknown ids come back in notFound, they
+  // are never an error — report both halves of the outcome to the operator.
+  const handleDeleteSelected = async () => {
+    if (isTraining || selectedIds.size === 0) return;
+    const ids = [...selectedIds];
+    const ok = await confirmDialog({
+      title: t('flywheel.deleteConfirmTitle'),
+      description: t('flywheel.deleteConfirmDesc'),
+      confirmLabel: t('flywheel.deleteSelected', { n: ids.length }),
+      danger: true,
+    });
+    if (!ok) return;
+    setBulkDeleting(true);
+    try {
+      const res = await api.deleteFlywheelSamples(ids);
+      toast.success(t('flywheel.deleteDone', { deleted: res.deleted, notFound: res.notFound.length }));
+      setSelectedIds(new Set());
+      await Promise.all([loadSummary(), loadSamples()]);
+    } catch (err: any) {
+      toast.error(t('flywheel.deleteFailed') + ' ' + err.message);
+    } finally {
+      setBulkDeleting(false);
+    }
+  };
+
+  const pruneRequestBody = () => ({
+    dropSynthetic: pruneSynthetic,
+    dropDuplicates: pruneDuplicates,
+    dropLegacy: pruneLegacy,
+  });
+
+  // Dry-run default (FE-3): the preview performs zero writes server-side.
+  const handlePrunePreview = async () => {
+    if (pruneBusy || isTraining) return;
+    setPruneBusy(true);
+    try {
+      setPrunePreview(await api.pruneFlywheel({ apply: false, ...pruneRequestBody() }));
+    } catch (err: any) {
+      toast.error(t('flywheel.pruneFailed') + ' ' + err.message);
+    } finally {
+      setPruneBusy(false);
+    }
+  };
+
+  const handlePruneApply = async () => {
+    if (pruneBusy || isTraining) return;
+    const ok = await confirmDialog({
+      title: t('flywheel.pruneApplyConfirmTitle'),
+      description: t('flywheel.pruneApplyConfirmDesc'),
+      confirmLabel: t('flywheel.pruneApply'),
+      danger: true,
+    });
+    if (!ok) return;
+    setPruneBusy(true);
+    try {
+      const res = await api.pruneFlywheel({ apply: true, ...pruneRequestBody() });
+      setPrunePreview(res);
+      const parts = [
+        t('flywheel.pruneDone'),
+        t('flywheel.pruneResult', {
+          kept: res.kept,
+          total: res.total,
+          s: res.dropped.synthetic,
+          d: res.dropped.duplicate,
+          l: res.dropped.legacy,
+          m: res.dropped.malformed,
+        }),
+      ];
+      if (res.backupPath) parts.push(t('flywheel.pruneBackup', { path: res.backupPath }));
+      toast.success(parts.join(' · '));
+      setSelectedIds(new Set());
+      await Promise.all([loadSummary(), loadSamples()]);
+    } catch (err: any) {
+      toast.error(t('flywheel.pruneFailed') + ' ' + err.message);
+    } finally {
+      setPruneBusy(false);
+    }
+  };
+
+  // Typed confirmation is enforced on BOTH ends: the button gates on the exact
+  // word, and the backend re-validates it (§3.3). Model weights stay untouched.
+  const handleReset = async () => {
+    if (resetWord !== 'RESET' || resetBusy || isTraining) return;
+    setResetBusy(true);
+    try {
+      const res = await api.resetFlywheelDataset(resetWord);
+      toast.success(t('flywheel.resetDone', { records: res.removedRecords, labels: res.removedLabels }));
+      setSelectedIds(new Set());
+      setResetOpen(false);
+      await Promise.all([loadSummary(), loadSamples(), loadTraining()]);
+    } catch (err: any) {
+      toast.error(t('flywheel.resetFailed') + ' ' + err.message);
+    } finally {
+      setResetBusy(false);
     }
   };
 
@@ -352,20 +512,14 @@ export const FlywheelPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Router consumption gate — the difference between "weights updated"
-            and "routing actually changed" (classifier.localModel.enabled). */}
-        {training?.model && (
-          training.model.routingConsumesModel ? (
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, color: 'var(--accent-emerald)' }}>
-              <CheckCircle2 size={13} />
-              <span>{t('flywheel.routingActive')}</span>
-            </div>
-          ) : (
-            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 12, color: '#f59e0b' }}>
-              <AlertTriangle size={13} style={{ flexShrink: 0, marginTop: 1 }} />
-              <span>{t('flywheel.routingInactive')}</span>
-            </div>
-          )
+        {/* Router consumption gate: only the positive signal is shown. The
+            inactive warning was dropped on purpose — localModel.enabled=false
+            is the default install state and the banner was pure noise. */}
+        {training?.model?.routingConsumesModel && (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, color: 'var(--accent-emerald)' }}>
+            <CheckCircle2 size={13} />
+            <span>{t('flywheel.routingActive')}</span>
+          </div>
         )}
 
         {training?.status === 'failed' && training.error && (
@@ -406,18 +560,31 @@ export const FlywheelPage: React.FC = () => {
           <span style={{ fontSize: 11, color: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace' }}>
             {summary ? `${summary.total} ${t('flywheel.rows')} · ${fmtBytes(summary.fileBytes)}` : '—'}
           </span>
-          <button
-            className="btn btn-sm"
-            style={{ marginLeft: 'auto' }}
-            onClick={() => {
-              loadSummary();
-              loadSamples();
-            }}
-            disabled={loading}
-            title={t('flywheel.refresh')}
-          >
-            <RotateCcw size={12} />
-          </button>
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button
+              className="btn btn-sm"
+              onClick={() => {
+                setPrunePreview(null);
+                setPruneOpen(true);
+              }}
+              disabled={isTraining}
+              title={isTraining ? t('flywheel.trainingInProgress') : t('flywheel.prune')}
+            >
+              <Scissors size={12} />
+              {t('flywheel.prune')}
+            </button>
+            <button
+              className="btn btn-sm"
+              onClick={() => {
+                loadSummary();
+                loadSamples();
+              }}
+              disabled={loading}
+              title={t('flywheel.refresh')}
+            >
+              <RotateCcw size={12} />
+            </button>
+          </div>
         </div>
 
         <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
@@ -459,6 +626,23 @@ export const FlywheelPage: React.FC = () => {
             ))}
           </div>
         </div>
+
+        {/* Retention knobs (§3.4): only rendered when a sweep is actually armed. */}
+        {summary?.retention?.enabled && (
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', fontSize: 11, color: 'var(--text-dim)' }}>
+            <span style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {t('flywheel.retentionActive', { days: summary.retention.retentionDays, mb: summary.retention.maxFileSizeMB })}
+            </span>
+            {summary.retention.lastSweepAt && (
+              <span>
+                {t('flywheel.retentionLastSweep', {
+                  time: fmtTime(summary.retention.lastSweepAt),
+                  n: summary.retention.lastRemoved ?? 0,
+                })}
+              </span>
+            )}
+          </div>
+        )}
 
         {summary && summary.synthetic > 0 && (
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 11, color: 'var(--text-dim)' }}>
@@ -524,6 +708,14 @@ export const FlywheelPage: React.FC = () => {
             <Undo2 size={12} />
             {t('flywheel.clearLabels')}
           </button>
+          <button
+            className="btn btn-danger btn-sm"
+            onClick={handleDeleteSelected}
+            disabled={isTraining || bulkDeleting || selectedIds.size === 0}
+          >
+            {bulkDeleting ? <Loader2 size={12} style={spin} /> : <Trash2 size={12} />}
+            {t('flywheel.deleteSelected', { n: selectedIds.size })}
+          </button>
         </div>
 
         {isTraining && (
@@ -544,6 +736,36 @@ export const FlywheelPage: React.FC = () => {
             <div style={{ fontSize: 12, color: 'var(--text-dim)', padding: 16 }}>{t('flywheel.noSamples')}</div>
           )}
 
+          {/* Select-all-visible-page header; indeterminate set via ref above. */}
+          {rows.length > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '2px 2px' }}>
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 7,
+                  fontSize: 12,
+                  color: 'var(--text-muted)',
+                  cursor: isTraining ? 'not-allowed' : 'pointer',
+                }}
+              >
+                <input
+                  ref={selectAllRef}
+                  type="checkbox"
+                  checked={allSelected}
+                  onChange={toggleAllOnPage}
+                  disabled={isTraining}
+                />
+                {t('flywheel.selectAll')}
+              </label>
+              {selectedIds.size > 0 && (
+                <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                  {t('flywheel.selectedCount', { n: selectedIds.size })}
+                </span>
+              )}
+            </div>
+          )}
+
           {rows.map(row => {
             const expanded = expandedId === row.id;
             const saving = savingId === row.id;
@@ -562,18 +784,33 @@ export const FlywheelPage: React.FC = () => {
                 }}
               >
                 <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <span
-                    style={{
-                      fontSize: 10,
-                      padding: '2px 7px',
-                      borderRadius: 999,
-                      border: '1px solid var(--card-border)',
-                      color: SOURCE_COLOR[row.label.source] || 'var(--text-dim)',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {row.label.source}
-                  </span>
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(row.id)}
+                    onChange={() => toggleRow(row.id)}
+                    disabled={isTraining}
+                    aria-label={t('flywheel.selectRow')}
+                    style={{ flexShrink: 0 }}
+                  />
+                  {/* Source pills show exceptions only. The auto sources
+                      (runtime_fallback / observed_execution) are derived from
+                      fallbackOccurred at capture time and stay visible via
+                      the fallback badge, the source filter and the detail
+                      view; human / unlabeled carry unique info. */}
+                  {(row.label.source === 'human' || row.label.source === 'unlabeled') && (
+                    <span
+                      style={{
+                        fontSize: 10,
+                        padding: '2px 7px',
+                        borderRadius: 999,
+                        border: '1px solid var(--card-border)',
+                        color: SOURCE_COLOR[row.label.source] || 'var(--text-dim)',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {t(SOURCE_LABEL_KEY[row.label.source] ?? row.label.source)}
+                    </span>
+                  )}
                   <span
                     style={{
                       fontSize: 11,
@@ -598,6 +835,8 @@ export const FlywheelPage: React.FC = () => {
                       {t('flywheel.legacyBadge')}
                     </span>
                   )}
+                  {/* Full prompt opens in a modal — a 60 KB native title
+                      tooltip is unreadable and uncopyable. */}
                   <span
                     style={{
                       fontSize: 12,
@@ -608,8 +847,10 @@ export const FlywheelPage: React.FC = () => {
                       textOverflow: 'ellipsis',
                       whiteSpace: 'nowrap',
                       fontFamily: 'JetBrains Mono, monospace',
+                      cursor: 'pointer',
                     }}
-                    title={row.userPrompt}
+                    title={t('flywheel.promptHint')}
+                    onClick={() => setPromptRow(row)}
                   >
                     {row.userPrompt || '—'}
                   </span>
@@ -668,9 +909,9 @@ export const FlywheelPage: React.FC = () => {
                       </div>
                     </div>
                     <div>
-                      <div style={{ color: 'var(--text-dim)' }}>{t('flywheel.fieldCost')}</div>
+                      <div style={{ color: 'var(--text-dim)' }}>{t('flywheel.fieldLatency')}</div>
                       <div>
-                        ${row.execution.costUsd.toFixed(6)} · {row.execution.latencyMs}ms · {row.tokenCount}tok
+                        {row.execution.latencyMs}ms · {row.tokenCount}tok
                       </div>
                     </div>
                     <div style={{ gridColumn: '1 / -1' }}>
@@ -718,6 +959,240 @@ export const FlywheelPage: React.FC = () => {
           }}
         />
       </div>
+
+      {/* ---------- Danger zone: whole-dataset reset (typed confirmation) ---------- */}
+      <div
+        style={{
+          ...card,
+          border: '1px solid var(--accent-red, #ef4444)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 10,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <AlertTriangle size={16} color="var(--accent-red, #ef4444)" />
+          <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--accent-red, #ef4444)' }}>
+            {t('flywheel.resetZoneTitle')}
+          </span>
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+          {t('flywheel.resetZoneDesc')}
+        </div>
+        <div>
+          <button
+            className="btn btn-danger"
+            onClick={() => {
+              setResetWord('');
+              setResetOpen(true);
+            }}
+            disabled={isTraining}
+            title={isTraining ? t('flywheel.trainingInProgress') : t('flywheel.resetButton')}
+          >
+            <Trash2 size={13} />
+            {t('flywheel.resetButton')}
+          </button>
+        </div>
+      </div>
+
+      {promptRow && (
+        <Dialog
+          title={t('flywheel.promptTitle')}
+          subtitle={`${fmtTime(promptRow.timestamp)} · ${promptRow.execution.modelUsed || '—'} · ${promptRow.tokenCount} tok`}
+          width={860}
+          onClose={() => setPromptRow(null)}
+          closeLabel={t('flywheel.closePrompt')}
+          headerActions={
+            <button
+              className="btn btn-sm"
+              style={{ display: 'flex', alignItems: 'center', gap: 5, height: 24, padding: '0 8px' }}
+              title={t('flywheel.copyPrompt')}
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(promptRow.userPrompt || '');
+                  toast.success(t('flywheel.promptCopied'));
+                } catch {
+                  toast.error(t('flywheel.promptCopyFailed'));
+                }
+              }}
+            >
+              <Copy size={11} />
+              {t('flywheel.copyPrompt')}
+            </button>
+          }
+        >
+          <pre
+            style={{
+              margin: 0,
+              fontSize: 12,
+              lineHeight: 1.6,
+              fontFamily: 'JetBrains Mono, monospace',
+              color: 'var(--text-main)',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              background: 'var(--card-bg)',
+              border: '1px solid var(--card-border)',
+              borderRadius: 8,
+              padding: 12,
+            }}
+          >
+            {promptRow.userPrompt || '—'}
+          </pre>
+        </Dialog>
+      )}
+
+      {/* ---------- Prune modal: dry-run preview first, Apply rewrites ---------- */}
+      {pruneOpen && (
+        <Dialog
+          title={t('flywheel.pruneTitle')}
+          subtitle={t('flywheel.pruneDesc')}
+          width={560}
+          onClose={() => setPruneOpen(false)}
+          closeLabel={t('common.close')}
+          footerRight={
+            <>
+              <button className="btn" onClick={() => setPruneOpen(false)}>
+                {t('common.cancel')}
+              </button>
+              <button className="btn" onClick={handlePrunePreview} disabled={pruneBusy || isTraining}>
+                {pruneBusy ? <Loader2 size={13} style={spin} /> : <Scissors size={13} />}
+                {t('flywheel.prunePreview')}
+              </button>
+              {/* Apply needs a preview first: the operator must see exactly
+                  which whole records the rewrite will drop. */}
+              <button
+                className="btn btn-danger"
+                onClick={handlePruneApply}
+                disabled={pruneBusy || isTraining || !prunePreview}
+              >
+                {t('flywheel.pruneApply')}
+              </button>
+            </>
+          }
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-muted)', cursor: 'pointer' }}>
+              <Switch
+                size="sm"
+                checked={pruneSynthetic}
+                onChange={v => {
+                  setPruneSynthetic(v);
+                  setPrunePreview(null);
+                }}
+                disabled={pruneBusy}
+              />
+              {t('flywheel.pruneOptSynthetic')}
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-muted)', cursor: 'pointer' }}>
+              <Switch
+                size="sm"
+                checked={pruneDuplicates}
+                onChange={v => {
+                  setPruneDuplicates(v);
+                  setPrunePreview(null);
+                }}
+                disabled={pruneBusy}
+              />
+              {t('flywheel.pruneOptDuplicates')}
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-muted)', cursor: 'pointer' }}>
+              <Switch
+                size="sm"
+                checked={pruneLegacy}
+                onChange={v => {
+                  setPruneLegacy(v);
+                  setPrunePreview(null);
+                }}
+                disabled={pruneBusy}
+              />
+              {t('flywheel.pruneOptLegacy')}
+            </label>
+          </div>
+
+          {prunePreview && (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 6,
+                fontSize: 12,
+                fontFamily: 'JetBrains Mono, monospace',
+                color: 'var(--text-muted)',
+                padding: '10px 12px',
+                border: '1px solid var(--card-border)',
+                borderRadius: 8,
+                background: 'rgba(255,255,255,0.02)',
+              }}
+            >
+              {prunePreview.kept === prunePreview.total ? (
+                <span style={{ color: 'var(--text-dim)' }}>{t('flywheel.pruneNothing')}</span>
+              ) : (
+                <span style={{ wordBreak: 'break-word' }}>
+                  {t('flywheel.pruneResult', {
+                    kept: prunePreview.kept,
+                    total: prunePreview.total,
+                    s: prunePreview.dropped.synthetic,
+                    d: prunePreview.dropped.duplicate,
+                    l: prunePreview.dropped.legacy,
+                    m: prunePreview.dropped.malformed,
+                  })}
+                </span>
+              )}
+              {prunePreview.backupPath && (
+                <span style={{ color: 'var(--text-dim)', wordBreak: 'break-all' }}>
+                  {t('flywheel.pruneBackup', { path: prunePreview.backupPath })}
+                </span>
+              )}
+            </div>
+          )}
+        </Dialog>
+      )}
+
+      {/* ---------- Reset modal: typed confirmation, exact word 'RESET' ---------- */}
+      {resetOpen && (
+        <Dialog
+          title={t('flywheel.resetModalTitle')}
+          subtitle={t('flywheel.resetModalDesc')}
+          width={480}
+          onClose={() => setResetOpen(false)}
+          closeLabel={t('common.close')}
+          footerRight={
+            <>
+              <button className="btn" onClick={() => setResetOpen(false)}>
+                {t('common.cancel')}
+              </button>
+              <button
+                className="btn btn-danger"
+                onClick={handleReset}
+                disabled={resetBusy || isTraining || resetWord !== 'RESET'}
+              >
+                {resetBusy ? <Loader2 size={13} style={spin} /> : <Trash2 size={13} />}
+                {t('flywheel.resetButton')}
+              </button>
+            </>
+          }
+        >
+          <div>
+            <label
+              htmlFor="flywheel-reset-word"
+              style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 4, display: 'block' }}
+            >
+              {t('flywheel.resetWordLabel')}
+            </label>
+            {/* Placeholder is the protocol word itself (case-sensitive §3.3), not translated copy. */}
+            <input
+              id="flywheel-reset-word"
+              className="input"
+              type="text"
+              value={resetWord}
+              onChange={e => setResetWord(e.target.value)}
+              placeholder="RESET"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </div>
+        </Dialog>
+      )}
     </div>
   );
 };

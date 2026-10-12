@@ -6,7 +6,6 @@ import { ProviderRegistry } from '../providers/registry.js';
 import { resolveTierMembers, matchingTiers, MEMBER_TIER_ORDER } from '../providers/member-match.js';
 import { globMatchAny } from '../utils/glob.js';
 import { PipelineOrchestrator } from '../pipeline/orchestrator.js';
-import { Layer2Judge } from '../router/layer2-judge.js';
 import { getRawConfig, loadConfig, saveConfig, saveRawConfig, getRuntimeConfigRef } from '../config/index.js';
 import { applyConfig as applyDecisionCaptureConfig } from '../flywheel/decision-capture.js';
 import { initProxyConfig } from '../utils/proxy.js';
@@ -373,19 +372,18 @@ export function registerConsoleRoutes(
 
   app.get('/api/admin/status', handleStatus);
 
-  // 3B. Prompt-cache observability (provider-native caching, aggregated from traces).
-  // Optional `?since=<epoch-ms>` narrows the totals / per-model rows / hourly
-  // series to traces with `timestamp >= since`. Back-compat: when omitted the
-  // response is the legacy 24-hour window.
-  app.get('/api/admin/cache-stats', async (req) => {
+  // 3B. Token usage aggregation from the trace ring: windowed totals plus
+  // per-API-key rows (raw counts only — no cost accounting). Optional
+  // `?since=<epoch-ms>` narrows to traces with `timestamp >= since`;
+  // omitted covers the whole in-memory ring (bounded by trace retention).
+  app.get('/api/admin/usage', async (req) => {
     const query = req.query as { since?: string };
     const sinceRaw = query.since ? Number(query.since) : NaN;
     const sinceTs = Number.isFinite(sinceRaw) && sinceRaw > 0 ? sinceRaw : undefined;
-    return {
-      status: 'ok',
-      stats: orchestrator.getTraceTracker().getCacheStats(sinceTs !== undefined ? { sinceTs } : undefined),
-      routingCache: Layer2Judge.getDecisionCacheStats(),
-    };
+    const { totals, keys } = orchestrator.getTraceTracker().getUsageStats(
+      sinceTs !== undefined ? { sinceTs } : undefined
+    );
+    return { status: 'ok', totals, keys };
   });
 
   // 4. Client Interception Setup / Teardown

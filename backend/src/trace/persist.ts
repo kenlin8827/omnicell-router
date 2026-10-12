@@ -11,6 +11,32 @@ import type { ExecutionTrace } from './tracker.js';
  * time. Every method fails open — an observability write must never break
  * the inference hot path.
  */
+/**
+ * Normalize a legacy persisted trace (written before the 2026-10 observability
+ * rework) into the current ExecutionTrace shape: old prompt/completion field
+ * names map to input/output/cached, the derived `savedCostUsd` is dropped.
+ * `costUsd` (actual cost at request time) is KEPT — it is a historical fact
+ * that catalog price changes make impossible to recompute. Removable once
+ * every legacy row has aged past the trace retention window.
+ */
+function normalizeReplayedTrace(raw: any): ExecutionTrace | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const f = raw.finops;
+  if (f && typeof f === 'object') {
+    if (f.inputTokens === undefined && f.promptTokens !== undefined) {
+      f.inputTokens = Number(f.promptTokens) || 0;
+      f.outputTokens = Number(f.completionTokens) || 0;
+      f.cachedTokens = Number(f.cachedPromptTokens) || 0;
+      delete f.promptTokens;
+      delete f.completionTokens;
+      delete f.cachedPromptTokens;
+    }
+    delete f.savedCostUsd;
+    f.costUsd = Number(f.costUsd) || 0;
+  }
+  return raw as ExecutionTrace;
+}
+
 export interface TraceStore {
   insert(trace: ExecutionTrace): void;
   /** Most recent `limit` traces, oldest first (ready for ring replay). */
@@ -66,7 +92,7 @@ export async function openTraceStore(dir: string): Promise<TraceStore | null> {
           return rows
             .map(r => {
               try {
-                return JSON.parse(r.data) as ExecutionTrace;
+                return normalizeReplayedTrace(JSON.parse(r.data));
               } catch {
                 return null; // skip corrupted lines
               }

@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { Layout } from './components/Layout';
 import { OverviewPage } from './pages/OverviewPage';
-import { CachePage } from './pages/CachePage';
 import { RulesPage } from './pages/RulesPage';
 import { KeysPage } from './pages/KeysPage';
 import { ModelsPage } from './pages/ModelsPage';
@@ -13,6 +12,7 @@ import { TokenSaverPage } from './pages/TokenSaverPage';
 import { ApiKeysPage } from './pages/ApiKeysPage';
 import { GuardrailsPage } from './pages/GuardrailsPage';
 import { SessionsPage } from './pages/SessionsPage';
+import { UsagePage } from './pages/UsagePage';
 import { LogsPage } from './pages/LogsPage';
 import { CapturesPage } from './pages/CapturesPage';
 import { ClientsPage } from './pages/ClientsPage';
@@ -66,7 +66,6 @@ export const App: React.FC = () => {
         <Route path="tiers" element={<RulesPage />} />
         <Route path="auto" element={<AutoPage />} />
         <Route path="combos" element={<CombosPage />} />
-        <Route path="cache" element={<CachePage />} />
         <Route path="api-keys" element={<ApiKeysPage />} />
         <Route path="providers" element={<KeysPage />} />
         <Route path="models" element={<ModelsPage />} />
@@ -77,6 +76,7 @@ export const App: React.FC = () => {
         <Route path="proxy-access" element={<ProxyAccessPage />} />
         <Route path="guardrails" element={<GuardrailsPage />} />
         <Route path="sessions" element={<SessionsPage />} />
+        <Route path="usage" element={<UsagePage />} />
         <Route path="logs" element={<LogsPage />} />
         <Route path="captures" element={<CapturesPage />} />
         <Route path="flywheel" element={<FlywheelPage />} />

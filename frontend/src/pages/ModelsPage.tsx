@@ -74,7 +74,9 @@ const thStyle: React.CSSProperties = {
   whiteSpace: 'nowrap',
   position: 'sticky',
   top: 0,
-  background: 'var(--card-bg)',
+  // --card-bg is translucent (rgba .72) — flatten against --bg so the sticky
+  // header never lets scrolled rows bleed through the titles.
+  background: 'color-mix(in srgb, var(--card-bg), var(--bg))',
   zIndex: 1,
 };
 

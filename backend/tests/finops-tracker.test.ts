@@ -9,12 +9,10 @@ import { openFinOpsStore } from '../src/trace/persist.js';
 const recordArgs = (over: Partial<Parameters<FinOpsTracker['record']>[0]> = {}) => ({
   tier: 'lite' as const,
   fallbackOccurred: false,
-  promptTokens: 100,
-  cachedPromptTokens: 25,
-  completionTokens: 50,
+  inputTokens: 100,
+  cachedTokens: 25,
+  outputTokens: 50,
   reasoningTokens: 0,
-  actualCost: 0.001,
-  baselineCost: 0.002,
   latencyMs: 200,
   ...over,
 });
@@ -100,15 +98,14 @@ describe('FinOpsTracker cumulative persistence (only totalRequests + fallbackCou
       stores.push(store1);
       const t1 = new FinOpsTracker(store1);
       t1.hydrate();
-      t1.record(recordArgs({ tier: 'lite', latencyMs: 50, promptTokens: 10 }));
-      t1.record(recordArgs({ tier: 'plus', latencyMs: 150, promptTokens: 20, fallbackOccurred: true }));
-      t1.record(recordArgs({ tier: 'pro', promptTokens: 30 }));
+      t1.record(recordArgs({ tier: 'lite', latencyMs: 50, inputTokens: 10 }));
+      t1.record(recordArgs({ tier: 'plus', latencyMs: 150, inputTokens: 20, fallbackOccurred: true }));
+      t1.record(recordArgs({ tier: 'pro', inputTokens: 30 }));
       const beforeStats = t1.getStats();
       assert.equal(beforeStats.totalRequests, 3);
       assert.equal(beforeStats.fallbackCount, 1);
       // Process-local fields are populated for the live process.
-      assert.equal(beforeStats.tokens.totalPromptTokens, 60);
-      assert.equal(beforeStats.economics.actualCostUsd, 0.003);
+      assert.equal(beforeStats.tokens.totalInputTokens, 60);
 
       // Persist the writes before closing.
       store1.close();
@@ -129,11 +126,9 @@ describe('FinOpsTracker cumulative persistence (only totalRequests + fallbackCou
       assert.ok(afterStats.persistence.lastWriteTs, 'lastWriteTs preserved');
 
       // Process-local fields intentionally reset to zero on restart.
-      assert.equal(afterStats.tokens.totalPromptTokens, 0, 'process-local prompt tokens reset');
-      assert.equal(afterStats.tokens.totalCompletionTokens, 0);
-      assert.equal(afterStats.tokens.totalCachedPromptTokens, 0);
-      assert.equal(afterStats.economics.actualCostUsd, 0, 'process-local cost reset');
-      assert.equal(afterStats.economics.baselineCostUsd, 0);
+      assert.equal(afterStats.tokens.totalInputTokens, 0, 'process-local prompt tokens reset');
+      assert.equal(afterStats.tokens.totalOutputTokens, 0);
+      assert.equal(afterStats.tokens.totalCachedTokens, 0);
       assert.equal(afterStats.tierDistribution.lite.count, 0);
       assert.equal(afterStats.tierDistribution.plus.count, 0);
       assert.equal(afterStats.tierDistribution.pro.count, 0);
@@ -144,10 +139,10 @@ describe('FinOpsTracker cumulative persistence (only totalRequests + fallbackCou
       // A new record after hydration must ADD to the restored counters
       // (not overwrite them) and also start accumulating process-local
       // fields from zero — this is the contract.
-      t2.record(recordArgs({ tier: 'lite', latencyMs: 25, promptTokens: 5 }));
+      t2.record(recordArgs({ tier: 'lite', latencyMs: 25, inputTokens: 5 }));
       assert.equal(t2.getStats().totalRequests, 4, 'cumulative counter advances after restart');
       assert.equal(t2.getStats().fallbackCount, 1, 'fallbackCount unchanged for non-fallback record');
-      assert.equal(t2.getStats().tokens.totalPromptTokens, 5, 'process-local starts fresh');
+      assert.equal(t2.getStats().tokens.totalInputTokens, 5, 'process-local starts fresh');
     } finally {
       await cleanup(dir, stores);
     }

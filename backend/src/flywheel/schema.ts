@@ -70,7 +70,6 @@ export interface FlywheelRecord {
     modelUsed: string;
     fallbackOccurred: boolean;
     fallbackReason?: string;
-    costUsd: number;
     latencyMs: number;
     /** Bench/test traffic — excluded from training by default. */
     isSynthetic: boolean;
@@ -207,7 +206,6 @@ export function migrateRecord(raw: any): FlywheelRecord | null {
         modelUsed: str(exec.modelUsed),
         fallbackOccurred: exec.fallbackOccurred === true,
         fallbackReason: str(exec.fallbackReason) || undefined,
-        costUsd: num(exec.costUsd),
         latencyMs: num(exec.latencyMs),
         isSynthetic: exec.isSynthetic === true || detectSynthetic(str(raw.id), str(exec.modelUsed), exec.fallbackReason),
       },
@@ -277,7 +275,6 @@ export function migrateRecord(raw: any): FlywheelRecord | null {
       modelUsed,
       fallbackOccurred: exec.fallbackOccurred === true,
       fallbackReason,
-      costUsd: num(exec.costUsd),
       latencyMs: num(exec.latencyMs),
       isSynthetic: detectSynthetic(id, modelUsed, fallbackReason),
     },

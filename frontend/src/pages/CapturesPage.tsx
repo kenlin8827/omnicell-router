@@ -336,7 +336,7 @@ const CaptureDrawer: React.FC<{
               ↗ {turn.upstreamLatencyMs} ms
             </span>
           )}
-          <button className="btn btn-sm" style={{ marginLeft: 'auto' }} onClick={onClose} aria-label="Close">
+          <button className="btn btn-sm" style={{ marginLeft: 'auto' }} onClick={onClose} aria-label={t('common.close')}>
             <X size={14} />
           </button>
         </div>

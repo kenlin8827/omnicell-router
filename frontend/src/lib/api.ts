@@ -9,16 +9,10 @@ export interface GatewayMetrics {
     ultra: { count: number; pct: number };
   };
   tokens: {
-    totalPromptTokens: number;
-    totalCachedPromptTokens: number;
-    totalCompletionTokens: number;
+    totalInputTokens: number;
+    totalCachedTokens: number;
+    totalOutputTokens: number;
     totalReasoningTokens: number;
-  };
-  economics: {
-    actualCostUsd: number;
-    baselineCostUsd: number;
-    totalSavingsUsd: number;
-    savingsPct: number;
   };
   latency: {
     avgMs: number;
@@ -150,11 +144,11 @@ export interface TraceRecord {
     inplaceRetries?: number;
   };
   finops: {
-    promptTokens: number;
-    completionTokens: number;
-    cachedPromptTokens: number;
+    inputTokens: number;
+    outputTokens: number;
+    cachedTokens: number;
+    /** Actual cost (USD) recorded at request time; no cost UI yet. */
     costUsd: number;
-    savedCostUsd: number;
   };
 }
 
@@ -343,10 +337,14 @@ export interface SessionRecord {
   /** Requests whose model differs from the previous request (chronological).
    *  Optional: absent when the frontend is served by a pre-aggregates backend. */
   switchCount?: number;
-  /** Requests with a prompt-cache hit (cachedPromptTokens > 0). Optional as above. */
-  cacheHits?: number;
-  /** Cumulative saved cost across the session's traces (USD). Optional as above. */
-  savedCostUsd?: number;
+  /** Cumulative input tokens across the session's traces. Optional as above. */
+  inputTokens?: number;
+  /** Cumulative output tokens across the session's traces. Optional as above. */
+  outputTokens?: number;
+  /** Cumulative cache-read input tokens across the session's traces. Optional as above. */
+  cachedTokens?: number;
+  /** Cumulative recorded actual cost (USD) across the session's traces. Optional as above. */
+  costUsd?: number;
   /** First user prompt of the session (backend-capped summary). */
   firstUserMessage?: string;
   /** Distinct client API-key identities (applications) seen on this
@@ -354,55 +352,29 @@ export interface SessionRecord {
   apiKeys?: CaptureKeyIdentity[];
 }
 
-// Mirrors backend CacheStatsSummary (backend/src/trace/tracker.ts getCacheStats)
-export interface CacheStatsModelRow {
-  model: string;
-  provider: string;
+// Mirrors backend UsageStatsSummary (backend/src/trace/tracker.ts getUsageStats)
+export interface KeyUsageRow {
+  id: string;
+  name: string;
   requests: number;
-  cachedRequests: number;
-  promptTokens: number;
-  cachedPromptTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  latencyMsSum: number;
   costUsd: number;
-  savedCostUsd: number;
 }
 
-export interface CacheStatsHourBucket {
-  hourTs: number;
-  requests: number;
-  cachedRequests: number;
-  promptTokens: number;
-  cachedPromptTokens: number;
-}
-
-export interface CacheStatsSummary {
-  windowTraces: number;
-  totalRequests: number;
-  cachedRequests: number;
-  requestHitRatio: number;
-  promptTokens: number;
-  cachedPromptTokens: number;
-  tokenHitRatio: number;
-  costUsd: number;
-  savedCostUsd: number;
-  models: CacheStatsModelRow[];
-  hourly: CacheStatsHourBucket[];
-}
-
-// Mirrors backend RoutingCacheStats (backend/src/router/decision-cache.ts)
-export interface RoutingCacheStats {
-  enabled: boolean;
-  entries: number;
-  maxEntries: number;
-  ttlSeconds: number;
-  hits: number;
-  misses: number;
-  hitRatio: number;
-}
-
-export interface CacheStatsResponse {
+export interface UsageStatsResponse {
   status: string;
-  stats: CacheStatsSummary;
-  routingCache: RoutingCacheStats;
+  totals: {
+    requests: number;
+    inputTokens: number;
+    outputTokens: number;
+    cachedTokens: number;
+    avgLatencyMs: number;
+    costUsd: number;
+  };
+  keys: KeyUsageRow[];
 }
 
 export interface TierPoolModel {
@@ -505,6 +477,8 @@ export interface FlywheelSummary {
   firstTimestamp: string | null;
   lastTimestamp: string | null;
   tiers: TierName[];
+  /** Additive block (§3.4): effective retention knobs + last sweep outcome; absent on older backends. */
+  retention?: FlywheelRetentionState;
 }
 
 export interface FlywheelSample {
@@ -527,7 +501,6 @@ export interface FlywheelSample {
     modelUsed: string;
     fallbackOccurred: boolean;
     fallbackReason?: string;
-    costUsd: number;
     latencyMs: number;
     isSynthetic: boolean;
   };
@@ -575,6 +548,52 @@ export interface FlywheelTrainingState {
     previousModelPath: string;
     previousModelExists: boolean;
   };
+}
+
+/** §3.4 stats `retention` block — effective knobs + last sweep outcome. */
+export interface FlywheelRetentionState {
+  retentionDays: number;
+  maxFileSizeMB: number;
+  enabled: boolean;
+  lastSweepAt: string | null;
+  lastRemoved: number | null;
+}
+
+/** §3.1 prune body — all optional; defaults replicate the CLI (dry-run). */
+export interface FlywheelPruneRequest {
+  apply?: boolean;
+  dropSynthetic?: boolean;
+  dropDuplicates?: boolean;
+  dropLegacy?: boolean;
+}
+
+export interface FlywheelPruneResult {
+  ok: true;
+  applied: boolean;
+  total: number;
+  kept: number;
+  dropped: { synthetic: number; duplicate: number; legacy: number; malformed: number };
+  removedLabels: number;
+  backupPath: string | null;
+}
+
+/** §3.2 batch delete — partial-success + idempotent: unknown ids are reported, never an error. */
+export interface FlywheelDeleteResult {
+  ok: true;
+  deleted: number;
+  notFound: string[];
+  removedLabels: number;
+  sidecarPath: string;
+}
+
+/** §3.3 reset — dataset + labels overlay archived; model weights are contractually untouched. */
+export interface FlywheelResetResult {
+  ok: true;
+  removedRecords: number;
+  removedLabels: number;
+  backupPath: string | null;
+  labelsBackupPath: string | null;
+  modelUntouched: true;
 }
 
 async function throwFor(res: Response): Promise<never> {
@@ -654,6 +673,38 @@ export const api = {
     return res.json();
   },
 
+  // ---- dataset lifecycle (§3, frozen contract) ----
+
+  async pruneFlywheel(body: FlywheelPruneRequest): Promise<FlywheelPruneResult> {
+    const res = await fetch('/api/admin/flywheel/prune', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) await throwFor(res);
+    return res.json();
+  },
+
+  async deleteFlywheelSamples(ids: string[]): Promise<FlywheelDeleteResult> {
+    const res = await fetch('/api/admin/flywheel/samples/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    });
+    if (!res.ok) await throwFor(res);
+    return res.json();
+  },
+
+  async resetFlywheelDataset(confirm: string): Promise<FlywheelResetResult> {
+    const res = await fetch('/api/admin/flywheel/reset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm }),
+    });
+    if (!res.ok) await throwFor(res);
+    return res.json();
+  },
+
   async getConfig(): Promise<any> {
     const res = await fetch('/api/admin/config');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -718,13 +769,13 @@ export const api = {
   },
 
   /**
-   * Cache-page aggregate stats. Optional `sinceMs` (inclusive lower bound on
-   * `trace.timestamp`, epoch ms) narrows the totals / per-model / hourly
-   * series to a window; `undefined` requests the legacy 24-hour view.
+   * Token usage aggregates: windowed totals + per-API-key rows. Optional
+   * `sinceMs` (inclusive lower bound on `trace.timestamp`, epoch ms) narrows
+   * the window; `undefined` covers the whole in-memory trace ring.
    */
-  async getCacheStats(sinceMs?: number): Promise<CacheStatsResponse> {
+  async getUsageStats(sinceMs?: number): Promise<UsageStatsResponse> {
     const qs = sinceMs !== undefined ? `?since=${Math.floor(sinceMs)}` : '';
-    const res = await fetch(`/api/admin/cache-stats${qs}`);
+    const res = await fetch(`/api/admin/usage${qs}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },

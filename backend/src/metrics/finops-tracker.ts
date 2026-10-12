@@ -11,16 +11,10 @@ export interface FinOpsStats {
     ultra: { count: number; pct: number };
   };
   tokens: {
-    totalPromptTokens: number;
-    totalCachedPromptTokens: number;
-    totalCompletionTokens: number;
+    totalInputTokens: number;
+    totalCachedTokens: number;
+    totalOutputTokens: number;
     totalReasoningTokens: number;
-  };
-  economics: {
-    actualCostUsd: number;
-    baselineCostUsd: number;
-    totalSavingsUsd: number;
-    savingsPct: number;
   };
   latency: {
     avgMs: number;
@@ -41,7 +35,7 @@ export interface FinOpsStats {
    * "accumulated since X" banner and to detect silent write failure
    * (`now - lastWriteTs > N`).
    *
-   * All OTHER fields on this snapshot (tier distribution, tokens, cost,
+   * All OTHER fields on this snapshot (tier distribution, tokens,
    * latency) are process-local and reset to zero on restart. They are
    * the "current session" view; the persistent cumulative window is
    * represented by `totalRequests` + `fallbackCount` only.
@@ -82,13 +76,10 @@ export class FinOpsTracker {
     ultra: 0,
   };
 
-  private promptTokens = 0;
-  private cachedPromptTokens = 0;
-  private completionTokens = 0;
+  private inputTokens = 0;
+  private cachedTokens = 0;
+  private outputTokens = 0;
   private reasoningTokens = 0;
-
-  private actualCostUsd = 0;
-  private baselineCostUsd = 0;
 
   private readonly store: FinOpsStore | null;
   private persistenceSince = 0;
@@ -137,12 +128,10 @@ export class FinOpsTracker {
   public record(params: {
     tier: TierLevel;
     fallbackOccurred: boolean;
-    promptTokens: number;
-    cachedPromptTokens: number;
-    completionTokens: number;
+    inputTokens: number;
+    cachedTokens: number;
+    outputTokens: number;
     reasoningTokens?: number;
-    actualCost: number;
-    baselineCost: number;
     latencyMs: number;
   }): void {
     this.totalRequests++;
@@ -153,13 +142,10 @@ export class FinOpsTracker {
     this.tierCounts[params.tier]++;
     this.tierLatencySum[params.tier] += params.latencyMs;
 
-    this.promptTokens += params.promptTokens;
-    this.cachedPromptTokens += params.cachedPromptTokens;
-    this.completionTokens += params.completionTokens;
+    this.inputTokens += params.inputTokens;
+    this.cachedTokens += params.cachedTokens;
+    this.outputTokens += params.outputTokens;
     this.reasoningTokens += params.reasoningTokens || 0;
-
-    this.actualCostUsd += params.actualCost;
-    this.baselineCostUsd += params.baselineCost;
 
     // Persistence: persist only the two cumulative counters. The real
     // `openFinOpsStore` wraps its own writes in try/catch (fail-open),
@@ -187,9 +173,6 @@ export class FinOpsTracker {
     const proCount = this.tierCounts.pro;
     const ultraCount = this.tierCounts.ultra;
 
-    const totalSavings = Math.max(0, this.baselineCostUsd - this.actualCostUsd);
-    const savingsPct = this.baselineCostUsd > 0 ? (totalSavings / this.baselineCostUsd) * 100 : 0;
-
     const totalLatency =
       this.tierLatencySum.lite + this.tierLatencySum.plus + this.tierLatencySum.pro + this.tierLatencySum.ultra;
 
@@ -215,16 +198,10 @@ export class FinOpsTracker {
         },
       },
       tokens: {
-        totalPromptTokens: this.promptTokens,
-        totalCachedPromptTokens: this.cachedPromptTokens,
-        totalCompletionTokens: this.completionTokens,
+        totalInputTokens: this.inputTokens,
+        totalCachedTokens: this.cachedTokens,
+        totalOutputTokens: this.outputTokens,
         totalReasoningTokens: this.reasoningTokens,
-      },
-      economics: {
-        actualCostUsd: Number(this.actualCostUsd.toFixed(5)),
-        baselineCostUsd: Number(this.baselineCostUsd.toFixed(5)),
-        totalSavingsUsd: Number(totalSavings.toFixed(5)),
-        savingsPct: Number(savingsPct.toFixed(2)),
       },
       latency: {
         avgMs: this.totalRequests > 0 ? Math.round(totalLatency / this.totalRequests) : 0,
@@ -252,12 +229,10 @@ export class FinOpsTracker {
     this.fallbackCount = 0;
     this.tierCounts = { lite: 0, plus: 0, pro: 0, ultra: 0 };
     this.tierLatencySum = { lite: 0, plus: 0, pro: 0, ultra: 0 };
-    this.promptTokens = 0;
-    this.cachedPromptTokens = 0;
-    this.completionTokens = 0;
+    this.inputTokens = 0;
+    this.cachedTokens = 0;
+    this.outputTokens = 0;
     this.reasoningTokens = 0;
-    this.actualCostUsd = 0;
-    this.baselineCostUsd = 0;
     if (this.store) {
       this.persistenceSince = Date.now();
       this.lastWriteTs = null;

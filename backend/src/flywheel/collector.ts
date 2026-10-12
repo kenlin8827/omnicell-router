@@ -4,6 +4,7 @@ import { RoutingDecision, TierLevel } from '../types/router.js';
 import { ChatCompletionRequest } from '../types/openai.js';
 import { FlywheelConfig } from '../config/types.js';
 import { Layer1Classifier } from '../router/layer1-classifier.js';
+import { applyRetention } from './prune.js';
 import {
   FLYWHEEL_SCHEMA_VERSION,
   FlywheelRecord,
@@ -18,9 +19,39 @@ export interface FlywheelStats {
   fallbackCount: number;
 }
 
+/** Retention sweep bookkeeping surfaced on GET /api/admin/flywheel/stats. */
+export interface FlywheelRetentionState {
+  retentionDays: number;
+  maxFileSizeMB: number;
+  enabled: boolean;
+  lastSweepAt: string | null;
+  lastRemoved: number | null;
+}
+
+/**
+ * Clamp a retention knob: 0/undefined = disabled (backward compat); negative
+ * or otherwise unusable values clamp to 0 with one warn (design doc D4 — the
+ * knobs are restart-scoped, so construction is the single validation point).
+ */
+function clampRetentionKnob(key: string, value: number | undefined): number {
+  if (value === undefined) return 0;
+  if (!Number.isFinite(value) || value < 0) {
+    console.warn(`[Flywheel] Invalid flywheel.${key}=${String(value)} — clamped to 0 (disabled).`);
+    return 0;
+  }
+  return value;
+}
+
 export class FlywheelCollector {
   private config: FlywheelConfig;
   private datasetPath: string;
+  private retentionDays: number;
+  private maxFileSizeMB: number;
+  private retentionTimer?: ReturnType<typeof setInterval>;
+  private retentionState: { lastSweepAt: string | null; lastRemoved: number | null } = {
+    lastSweepAt: null,
+    lastRemoved: null,
+  };
   private stats: FlywheelStats = {
     totalSamples: 0,
     tierDistribution: {},
@@ -35,6 +66,56 @@ export class FlywheelCollector {
     this.config = config ?? { enabled: false, datasetPath: './data/flywheel.jsonl' };
     this.datasetPath = path.resolve(process.cwd(), this.config.datasetPath || './data/flywheel.jsonl');
     this.ensureDirectory();
+
+    // Retention sweep (design doc D4, exact CaptureRecorder pattern): only
+    // when collection is enabled AND a knob is set; disabled knobs mean zero
+    // fs writes, and disabling never deletes anything.
+    this.retentionDays = clampRetentionKnob('retentionDays', this.config.retentionDays);
+    this.maxFileSizeMB = clampRetentionKnob('maxFileSizeMB', this.config.maxFileSizeMB);
+    if (this.config.enabled && this.retentionActive()) {
+      this.runRetentionSweep();
+      this.startRetentionTimer();
+    }
+  }
+
+  private retentionActive(): boolean {
+    return this.retentionDays > 0 || this.maxFileSizeMB > 0;
+  }
+
+  /**
+   * Boot + hourly retention sweep body. Failures only warn — the timer must
+   * survive a bad pass (same posture as CaptureRecorder.sweep). The sweep
+   * never consults the trainer: sync fs means it cannot interleave with the
+   * training loop, and landing in a setImmediate gap merely re-indexes before
+   * trainingSamples() (design doc D5).
+   */
+  private runRetentionSweep(): void {
+    try {
+      const outcome = applyRetention(this.datasetPath, {
+        retentionDays: this.retentionDays,
+        maxFileSizeMB: this.maxFileSizeMB,
+      });
+      this.retentionState = { lastSweepAt: new Date().toISOString(), lastRemoved: outcome.removed };
+    } catch (err: any) {
+      console.warn(`[Flywheel] Retention sweep failed on ${this.datasetPath}: ${err?.message || String(err)}`);
+    }
+  }
+
+  /** Idempotent hourly retention sweep timer (unref'd, never blocks exit). */
+  private startRetentionTimer(): void {
+    if (this.retentionTimer) return;
+    this.retentionTimer = setInterval(() => this.runRetentionSweep(), 3_600_000);
+    this.retentionTimer.unref?.();
+  }
+
+  /** Effective knobs + last sweep outcome, for the stats endpoint. */
+  public getRetentionState(): FlywheelRetentionState {
+    return {
+      retentionDays: this.retentionDays,
+      maxFileSizeMB: this.maxFileSizeMB,
+      enabled: this.config.enabled === true && this.retentionActive(),
+      ...this.retentionState,
+    };
   }
 
   private ensureDirectory(): void {
@@ -65,7 +146,6 @@ export class FlywheelCollector {
     modelUsed: string;
     fallbackOccurred: boolean;
     fallbackReason?: string;
-    costUsd: number;
     latencyMs: number;
     /** Test-bench traffic marker; overrides the built-in fingerprint heuristic. */
     synthetic?: boolean;
@@ -122,7 +202,6 @@ export class FlywheelCollector {
         modelUsed: params.modelUsed,
         fallbackOccurred: params.fallbackOccurred,
         fallbackReason: params.fallbackReason,
-        costUsd: params.costUsd,
         latencyMs: params.latencyMs,
         isSynthetic,
       },

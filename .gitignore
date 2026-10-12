@@ -10,3 +10,5 @@ data/*.jsonl.*
 # runtime artifacts
 backend/data/
 backend/models/
+# trainer pre-training backup (models/layer1-classifier.json is a tracked scaffold; trained weights stay local)
+models/*.previous

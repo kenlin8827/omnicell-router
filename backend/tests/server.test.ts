@@ -87,7 +87,7 @@ describe('Fastify Gateway Server & OpenAI Endpoints', () => {
     assert.strictEqual(body.object, 'model');
   });
 
-  it('POST /v1/chat/completions with model="auto" should auto-route and attach FinOps headers', async () => {
+  it('POST /v1/chat/completions with model="auto" should auto-route and attach routing headers', async () => {
     const res = await app.inject({
       headers: authHeaders(),
       method: 'POST',
@@ -101,8 +101,10 @@ describe('Fastify Gateway Server & OpenAI Endpoints', () => {
     assert.strictEqual(res.statusCode, 200);
     assert.ok(['lite', 'plus'].includes(res.headers['x-ocr-tier'] as string));
     assert.ok(res.headers['x-ocr-session-id']);
-    assert.ok(res.headers['x-ocr-cost-usd']);
-    assert.ok(res.headers['x-ocr-saved-usd']);
+    // Cost headers were removed with the cost-reporting layer — their absence
+    // is now part of the contract.
+    assert.equal('x-ocr-cost-usd' in res.headers, false);
+    assert.equal('x-ocr-saved-usd' in res.headers, false);
 
     const body = JSON.parse(res.body);
     assert.strictEqual(body.object, 'chat.completion');
@@ -251,7 +253,7 @@ describe('Fastify Gateway Server & OpenAI Endpoints', () => {
     assert.strictEqual(body.error.type, 'invalid_request_error');
   });
 
-  it('GET /api/admin/metrics should expose FinOps economics summary', async () => {
+  it('GET /api/admin/metrics should expose FinOps token counters', async () => {
     const res = await app.inject({
       headers: authHeaders(),
       method: 'GET',
@@ -261,6 +263,8 @@ describe('Fastify Gateway Server & OpenAI Endpoints', () => {
     assert.strictEqual(res.statusCode, 200);
     const metrics = JSON.parse(res.body);
     assert.ok(metrics.totalRequests >= 2);
-    assert.ok(metrics.economics.totalSavingsUsd >= 0);
+    assert.ok(metrics.tokens.totalInputTokens >= 0);
+    // The economics block was removed with the cost-reporting layer.
+    assert.equal('economics' in metrics, false);
   });
 });

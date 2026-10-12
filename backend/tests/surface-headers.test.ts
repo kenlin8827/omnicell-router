@@ -29,7 +29,7 @@ import { createServer } from '../src/server.js';
 import { createProxyInterceptor } from '../src/forward-proxy/interceptor.js';
 
 const TEST_KEY = 'sk-ocr-surface-headers-test';
-const BASE15 = [
+const BASE13 = [
   'x-ocr-tier',
   'x-ocr-layer',
   'x-ocr-model',
@@ -42,12 +42,10 @@ const BASE15 = [
   'x-ocr-session-ratchet',
   'x-ocr-session-lookup',
   'x-ocr-trace-id',
-  'x-ocr-cost-usd',
-  'x-ocr-saved-usd',
   'x-ocr-latency-ms',
 ];
 const THINKING3 = ['x-ocr-thinking-requested', 'x-ocr-thinking-actual', 'x-ocr-thinking-degraded'];
-const sortedKeys = (...extra: string[]): string[] => [...BASE15, ...extra].sort();
+const sortedKeys = (...extra: string[]): string[] => [...BASE13, ...extra].sort();
 
 type Leg = 'fastify' | 'mitm';
 interface Row {
@@ -138,7 +136,6 @@ function stubResult(effortRow: boolean): unknown {
     tierUsed: 'lite',
     modelUsed: 'mock-1',
     fallbackOccurred: false,
-    costUsd: 0,
     latencyMs: 1,
     sessionId: 'sess-1',
     traceId: 'trace-1',
@@ -288,7 +285,7 @@ describe('surface-headers: X-OCR key-set golden matrix', () => {
 
   for (const row of HEADER_ROWS) {
     it(`${row.name}: exact x-ocr-* key set`, async () => {
-      currentStub = stubResult(row.expected.length > BASE15.length);
+      currentStub = stubResult(row.expected.length > BASE13.length);
       const keys = row.leg === 'fastify' ? await fastifyKeys(row) : await mitmKeys(row);
       assert.deepEqual(keys, row.expected, `${row.name}: golden key set`);
     });

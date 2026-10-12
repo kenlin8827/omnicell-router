@@ -163,7 +163,6 @@ describe('Layer 1 & Layer 2 Routing and Data Flywheel', () => {
       tierUsed: 'lite',
       modelUsed: 'mock-lite',
       fallbackOccurred: false,
-      costUsd: 0.0001,
       latencyMs: 120,
     });
 
@@ -190,7 +189,6 @@ describe('Layer 1 & Layer 2 Routing and Data Flywheel', () => {
       modelUsed: 'mock-plus',
       fallbackOccurred: true,
       fallbackReason: 'Missing field: invoiceNumber',
-      costUsd: 0.002,
       latencyMs: 850,
     });
 
@@ -246,7 +244,6 @@ describe('Layer 1 & Layer 2 Routing and Data Flywheel', () => {
       tierUsed: 'plus', // the session ratchet clamped it below the request
       modelUsed: 'anthropic/claude-sonnet',
       fallbackOccurred: false,
-      costUsd: 0.01,
       latencyMs: 1200,
     });
 

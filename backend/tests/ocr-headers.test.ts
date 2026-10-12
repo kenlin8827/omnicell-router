@@ -17,15 +17,12 @@ function chatResult(overrides: Partial<ExecutionResult> = {}): ExecutionResult {
     tierUsed: 'lite',
     modelUsed: 'mock-model',
     fallbackOccurred: false,
-    costUsd: 0.000123,
-    baselineCostUsd: 0.01,
-    savedCostUsd: 0.009877,
     latencyMs: 42,
     ...overrides,
   };
 }
 
-const BASE_15 = [
+const BASE_13 = [
   'X-OCR-Tier',
   'X-OCR-Layer',
   'X-OCR-Model',
@@ -38,15 +35,13 @@ const BASE_15 = [
   'X-OCR-Session-Ratchet',
   'X-OCR-Session-Lookup',
   'X-OCR-Trace-ID',
-  'X-OCR-Cost-USD',
-  'X-OCR-Saved-USD',
   'X-OCR-Latency-MS',
 ];
 
 describe('buildChatOcrHeaders — frozen base set', () => {
-  it('1. plain result emits exactly the 15 base headers, in contract order', () => {
+  it('1. plain result emits exactly the 13 base headers, in contract order', () => {
     const headers = buildChatOcrHeaders(chatResult(), 'auto');
-    assert.deepStrictEqual(Object.keys(headers), BASE_15);
+    assert.deepStrictEqual(Object.keys(headers), BASE_13);
   });
 
   it('2. base values follow the frozen formatting rules', () => {
@@ -78,8 +73,6 @@ describe('buildChatOcrHeaders — frozen base set', () => {
     assert.equal(headers['X-OCR-Session-Ratchet'], 'true');
     assert.equal(headers['X-OCR-Session-Lookup'], 'prefix_chain');
     assert.equal(headers['X-OCR-Trace-ID'], 'trace-7');
-    assert.equal(headers['X-OCR-Cost-USD'], '0.000123');
-    assert.equal(headers['X-OCR-Saved-USD'], '0.009877');
     assert.equal(headers['X-OCR-Latency-MS'], '42');
   });
 
@@ -114,7 +107,7 @@ describe('buildChatOcrHeaders — conditional Thinking-* / Variant', () => {
       chatResult({ requestedEffort: 'low', actualEffort: 'medium', reasoningDegraded: true }),
       'auto'
     );
-    assert.deepStrictEqual(Object.keys(headers).slice(BASE_15.length), [
+    assert.deepStrictEqual(Object.keys(headers).slice(BASE_13.length), [
       'X-OCR-Thinking-Requested',
       'X-OCR-Thinking-Actual',
       'X-OCR-Thinking-Degraded',
@@ -137,12 +130,12 @@ describe('buildChatOcrHeaders — conditional Thinking-* / Variant', () => {
     assert.equal('X-OCR-Variant' in buildChatOcrHeaders(chatResult(), 'auto'), false);
   });
 
-  it('8. thinking + variant combine: 19 keys total', () => {
+  it('8. thinking + variant combine: 17 keys total', () => {
     const headers = buildChatOcrHeaders(
       chatResult({ requestedEffort: 'low', actualEffort: 'low', variantUsed: 'quick' }),
       'auto'
     );
-    assert.equal(Object.keys(headers).length, 19);
+    assert.equal(Object.keys(headers).length, 17);
   });
 });
 
@@ -163,14 +156,12 @@ describe('buildChatOcrHeaders — stub tolerance (frozen ?? / || defaults)', () 
     assert.equal(headers['X-OCR-Session-Ratchet'], 'false');
     assert.equal(headers['X-OCR-Session-Lookup'], '');
     assert.equal(headers['X-OCR-Trace-ID'], '');
-    assert.equal(headers['X-OCR-Cost-USD'], '0.000000');
-    assert.equal(headers['X-OCR-Saved-USD'], '0.000000');
     assert.equal(headers['X-OCR-Latency-MS'], '0');
   });
 
-  it('10. nearly-empty object still produces the 15 base keys without throwing', () => {
+  it('10. nearly-empty object still produces the 13 base keys without throwing', () => {
     const headers = buildChatOcrHeaders({} as unknown as ExecutionResult, 'gate');
-    assert.deepStrictEqual(Object.keys(headers), BASE_15);
+    assert.deepStrictEqual(Object.keys(headers), BASE_13);
     assert.equal(headers['X-OCR-Model'], 'gate');
   });
 });

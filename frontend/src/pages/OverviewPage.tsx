@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useOutletContext, Link } from 'react-router-dom';
 import {
-  TrendingDown,
+  Activity,
   Zap,
   Cpu,
   Clock,
@@ -9,20 +9,19 @@ import {
   Terminal,
   ArrowRight,
 } from 'lucide-react';
-import { api, type GatewayStatusResponse, type CacheStatsResponse } from '../lib/api';
+import { api, type GatewayStatusResponse, type UsageStatsResponse } from '../lib/api';
 import { BrandIcon } from '../components/BrandIcons';
 import { Combobox } from '../components/Combobox';
 import { useI18n } from '../i18n/I18nContext';
 
 const REFRESH_INTERVAL_MS = 10_000;
 
-// Time-range presets for the Overview's trace-windowed cards. Matches the
-// CachePage vocabulary; '0' = backend default 24-hour window. Card labels
-// reuse the same `cachePage.range.*` i18n keys so wording stays consistent.
+// Time-range presets for the Overview's usage cards. '0' = the backend's
+// default whole-trace-ring window (no `since` param sent).
 const RANGE_OPTIONS: { value: string; labelKey: string; hours: number }[] = [
-  { value: '1', labelKey: 'cachePage.range.1h', hours: 1 },
-  { value: '24', labelKey: 'cachePage.range.24h', hours: 24 },
-  { value: '168', labelKey: 'cachePage.range.7d', hours: 168 },
+  { value: '1', labelKey: 'overview.range.1h', hours: 1 },
+  { value: '24', labelKey: 'overview.range.24h', hours: 24 },
+  { value: '168', labelKey: 'overview.range.7d', hours: 168 },
 ];
 
 export const OverviewPage: React.FC = () => {
@@ -30,22 +29,21 @@ export const OverviewPage: React.FC = () => {
   const { t } = useI18n();
   const metrics = status?.metrics;
 
-  // Two of the four Overview cards (cacheHit, tokensTotal) report
-  // TRACE-WINDOWED values from /api/admin/cache-stats. The other two
-  // (costSaved, avgLatency) keep their CUMULATIVE semantics from the
-  // FinOps tracker — "since install" — because turning those into
-  // windowed views would silently break the cumulative-savings
-  // dashboard contract.
+  // All four header cards report TRACE-WINDOWED raw counts from
+  // /api/admin/usage (requests / input tokens / output tokens / avg
+  // latency). Cost accounting was deliberately removed — these are counts,
+  // not dollars. Until the first window fetch completes we fall back to the
+  // cumulative FinOps token counters so the cards never look empty.
   const [rangeHours, setRangeHours] = useState<string>('24');
-  const [windowStats, setWindowStats] = useState<CacheStatsResponse | null>(null);
+  const [usage, setUsage] = useState<UsageStatsResponse | null>(null);
 
   const loadWindow = useCallback(async () => {
     const hours = Number(rangeHours);
     const sinceMs = hours > 0 ? Date.now() - hours * 3_600_000 : undefined;
     try {
-      setWindowStats(await api.getCacheStats(sinceMs));
+      setUsage(await api.getUsageStats(sinceMs));
     } catch (err) {
-      console.error('[Overview] cache-stats refresh failed:', err);
+      console.error('[Overview] usage refresh failed:', err);
     }
   }, [rangeHours]);
 
@@ -58,34 +56,14 @@ export const OverviewPage: React.FC = () => {
     return () => clearInterval(timer);
   }, [loadWindow]);
 
-  const costSaved = metrics?.economics.totalSavingsUsd || 0;
-  const savingsPct = metrics?.economics.savingsPct || 0;
-  // latency stays CUMULATIVE (FinOpsTracker) — see the comment above.
-  const latency = Math.round(metrics?.latency.avgMs || 0);
-
-  // windowStats holds the trace-windowed aggregates; only present when the
-  // initial fetch (or a refresh) has succeeded. We fall back to the
-  // cumulative FinOps values during the very first paint so the cards
-  // never look empty while the cache-stats request is in flight.
-  const ws = windowStats?.stats;
-  // When windowStats is present we adopt its prompt/cached split. While
-  // the very first cache-stats request is in flight we still render the
-  // cumulative FinOps numbers so the cards never look empty.
-  const totalPromptTokens = ws?.promptTokens ?? metrics?.tokens.totalPromptTokens ?? 0;
-  const cachedPromptTokens = ws?.cachedPromptTokens ?? metrics?.tokens.totalCachedPromptTokens ?? 0;
-  const cacheHitPct = totalPromptTokens > 0 ? ((cachedPromptTokens / totalPromptTokens) * 100).toFixed(1) : '0.0';
-  // `getCacheStats` only exposes prompt/cached tokens — completion and
-  // reasoning aren't split out. In windowed mode the "total tokens" card
-  // shows prompt totals (which dominate the volume anyway); in fallback
-  // mode it falls back to the full prompt+completion+reasoning sum.
-  const totalTokens = ws
-    ? ws.promptTokens.toLocaleString()
-    : (
-        totalPromptTokens +
-        (metrics?.tokens.totalCompletionTokens || 0) +
-        (metrics?.tokens.totalReasoningTokens || 0)
-      ).toLocaleString();
-  const savedTokens = cachedPromptTokens.toLocaleString();
+  const totals = usage?.totals;
+  const requests = totals?.requests ?? metrics?.totalRequests ?? 0;
+  const inputTokens = totals?.inputTokens ?? metrics?.tokens.totalInputTokens ?? 0;
+  const outputTokens = totals?.outputTokens ?? metrics?.tokens.totalOutputTokens ?? 0;
+  const cachedTokens = totals?.cachedTokens ?? metrics?.tokens.totalCachedTokens ?? 0;
+  // Latency stays windowed when available; the cumulative FinOps average is
+  // the in-flight fallback (semantics identical, just wider window).
+  const latency = totals ? totals.avgLatencyMs : Math.round(metrics?.latency.avgMs || 0);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
@@ -105,13 +83,13 @@ export const OverviewPage: React.FC = () => {
         </div>
       )}
 
-      {/* 4 Core FinOps Metrics */}
+      {/* 4 Core Usage Metrics */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
         <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
           {t('overview.windowScope')}
         </div>
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-          <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{t('cachePage.rangeLabel')}</span>
+          <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{t('overview.rangeLabel')}</span>
           <Combobox
             value={rangeHours}
             onChange={setRangeHours}
@@ -123,40 +101,40 @@ export const OverviewPage: React.FC = () => {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '16px' }}>
         <div className="card">
           <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', fontSize: '13px' }}>
-            <span>{t('overview.costSaved')}</span>
-            <TrendingDown size={16} color="var(--accent-emerald)" />
+            <span>{t('overview.requests')}</span>
+            <Activity size={16} color="var(--accent-emerald)" />
           </div>
           <div style={{ fontSize: '28px', fontWeight: 800, margin: '8px 0 4px 0', color: 'var(--accent-emerald)' }}>
-            ${costSaved.toFixed(4)}
+            {requests.toLocaleString()}
           </div>
           <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
-            {t('overview.costSavedSub', { pct: savingsPct.toFixed(1) })}
+            {t('overview.requestsSub', { fallbacks: (metrics?.fallbackCount ?? 0).toLocaleString() })}
           </div>
         </div>
 
         <div className="card">
           <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', fontSize: '13px' }}>
-            <span>{t('overview.cacheHit')}</span>
-            <Zap size={16} color="var(--accent)" />
-          </div>
-          <div style={{ fontSize: '28px', fontWeight: 800, margin: '8px 0 4px 0', color: 'var(--accent)' }}>
-            {cacheHitPct}%
-          </div>
-          <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
-            {t('overview.cacheHitSub', { cached: cachedPromptTokens.toLocaleString(), total: totalPromptTokens.toLocaleString() })}
-          </div>
-        </div>
-
-        <div className="card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', fontSize: '13px' }}>
-            <span>{t('overview.tokensTotal')}</span>
-            <Cpu size={16} color="var(--accent-violet)" />
+            <span>{t('overview.tokensIn')}</span>
+            <Cpu size={16} color="var(--accent)" />
           </div>
           <div style={{ fontSize: '28px', fontWeight: 800, margin: '8px 0 4px 0', color: 'var(--text-main)' }}>
-            {totalTokens}
+            {inputTokens.toLocaleString()}
           </div>
           <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
-            {t('overview.tokensSaved', { saved: savedTokens })}
+            {t('overview.tokensInSub', { cached: cachedTokens.toLocaleString() })}
+          </div>
+        </div>
+
+        <div className="card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', fontSize: '13px' }}>
+            <span>{t('overview.tokensOut')}</span>
+            <Zap size={16} color="var(--accent-violet)" />
+          </div>
+          <div style={{ fontSize: '28px', fontWeight: 800, margin: '8px 0 4px 0', color: 'var(--text-main)' }}>
+            {outputTokens.toLocaleString()}
+          </div>
+          <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+            {t('overview.tokensOutSub')}
           </div>
         </div>
 

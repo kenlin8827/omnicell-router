@@ -37,3 +37,12 @@ export const copyToClipboard = async (text: string): Promise<boolean> => {
     return false;
   }
 };
+
+/**
+ * Recorded-cost display: 2–6 fraction digits with trailing zeros trimmed
+ * ($0.000123 per-request precise, $2.50 aggregate-clean). en-US fixed so
+ * the grouping stays stable across locales (labels are translated, numbers
+ * are data).
+ */
+export const formatCost = (usd: number): string =>
+  '$' + usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 });

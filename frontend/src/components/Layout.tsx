@@ -3,7 +3,6 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import {
   LayoutGrid,
   Network,
-  Database,
   KeyRound,
   MonitorSmartphone,
   ShieldAlert,
@@ -29,6 +28,7 @@ import {
   LogOut,
   ShieldCheck,
   Waves,
+  BarChart3,
   Settings,
   ScrollText,
   Archive,
@@ -102,7 +102,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     icon: Waves,
     items: [
       { to: '/sessions', labelKey: 'nav.sessions', icon: Users },
-      { to: '/cache', labelKey: 'nav.cache', icon: Database },
+      { to: '/usage', labelKey: 'nav.usage', icon: BarChart3 },
       { to: '/captures', labelKey: 'nav.captures', icon: Archive },
       { to: '/flywheel', labelKey: 'nav.flywheel', icon: BrainCircuit },
       { to: '/logs', labelKey: 'nav.logs', icon: ScrollText },
@@ -142,7 +142,7 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/proxy-access': { groupKey: 'nav.grpAccess', titleKey: 'nav.proxyAccess' },
   '/guardrails': { groupKey: 'nav.grpSafety', titleKey: 'nav.guardrails' },
   '/sessions': { groupKey: 'nav.grpObservability', titleKey: 'nav.sessions' },
-  '/cache': { groupKey: 'nav.grpObservability', titleKey: 'nav.cache' },
+  '/usage': { groupKey: 'nav.grpObservability', titleKey: 'nav.usage' },
   '/logs': { groupKey: 'nav.grpObservability', titleKey: 'nav.logs' },
   '/captures': { groupKey: 'nav.grpObservability', titleKey: 'nav.captures' },
   '/flywheel': { groupKey: 'nav.grpObservability', titleKey: 'nav.flywheel' },

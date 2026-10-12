@@ -58,7 +58,6 @@ describe('Flywheel dataset + training pipeline', () => {
         modelUsed: r.model || 'anthropic/claude-sonnet',
         fallbackOccurred: r.fallback === true,
         fallbackReason: r.fallback ? 'upstream 500' : undefined,
-        costUsd: 0.002,
         latencyMs: 400,
       });
     }
@@ -75,7 +74,7 @@ describe('Flywheel dataset + training pipeline', () => {
       routing: { targetTier: 'plus', confidence: 0.25, layerUsed: 'layer1' },
       execution: {
         tierUsed: 'lite', modelUsed: 'zhipu/glm-4.5',
-        fallbackOccurred: false, costUsd: 0.00001, latencyMs: 892,
+        fallbackOccurred: false, latencyMs: 892,
       },
       label: { groundTruthTier: 'plus', labelSource: 'layer1_confident', isNegativeSampleForLite: false },
     };

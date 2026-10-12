@@ -12,7 +12,7 @@ describe('End-to-End Pipeline & FinOps Orchestration', () => {
   const tracker = new FinOpsTracker();
   const orchestrator = new PipelineOrchestrator(config, registry, tracker);
 
-  it('1. Simple chitchat should execute on Lite tier and record FinOps savings', async () => {
+  it('1. Simple chitchat should execute on Lite tier and record token usage', async () => {
     const req: ChatCompletionRequest = {
       model: 'auto-lite',
       messages: [{ role: 'user', content: 'hello there' }],
@@ -20,11 +20,12 @@ describe('End-to-End Pipeline & FinOps Orchestration', () => {
 
     const result = await orchestrator.process(req);
     assert.strictEqual(result.tierUsed, 'lite');
-    assert.ok(result.costUsd < result.baselineCostUsd, 'Lite tier cost must be lower than plus-tier baseline');
-    assert.ok(result.savedCostUsd > 0, 'Saved cost must be positive');
+    // Cost accounting was stripped from the execution contract; only routing
+    // facts remain on the result.
+    assert.ok(result.latencyMs >= 0);
   });
 
-  it('2. Structured schema task with passing lite tier output completes with ~90% cost savings', async () => {
+  it('2. Structured schema task with passing lite tier output completes without fallback', async () => {
     const req: ChatCompletionRequest = {
       model: 'auto',
       messages: [{ role: 'user', content: 'Extract entities in JSON format.' }],
@@ -34,7 +35,6 @@ describe('End-to-End Pipeline & FinOps Orchestration', () => {
     const result = await orchestrator.process(req);
     assert.strictEqual(result.tierUsed, 'lite');
     assert.strictEqual(result.fallbackOccurred, false);
-    assert.ok(result.savedCostUsd > 0);
   });
 
   it('3. Structured task with lite tier syntax error silently escalates to plus', async () => {
@@ -62,12 +62,12 @@ describe('End-to-End Pipeline & FinOps Orchestration', () => {
     assert.ok(result.fallbackReason?.includes('Missing required key'));
   });
 
-  it('4. FinOpsTracker correctly aggregates savings and metrics', () => {
+  it('4. FinOpsTracker correctly aggregates requests and token counters', () => {
     const stats = tracker.getStats();
     assert.ok(stats.totalRequests >= 3);
     assert.ok(stats.fallbackCount >= 1);
-    assert.ok(stats.economics.totalSavingsUsd > 0);
-    assert.ok(stats.economics.savingsPct > 0);
+    assert.ok(stats.tokens.totalInputTokens > 0);
+    assert.ok(stats.tokens.totalOutputTokens > 0);
   });
 });
 

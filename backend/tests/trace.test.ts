@@ -70,8 +70,9 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
     assert.ok(found.traceCount >= 1, 'Session should have traceCount >= 1');
     assert.ok(found.maxTier);
     assert.ok(typeof found.switchCount === 'number', 'switchCount must be reported');
-    assert.ok(typeof found.cacheHits === 'number', 'cacheHits must be reported');
-    assert.ok(typeof found.savedCostUsd === 'number', 'savedCostUsd must be reported');
+    assert.ok(typeof found.inputTokens === 'number', 'session inputTokens aggregate must be reported');
+    assert.ok(typeof found.outputTokens === 'number', 'session outputTokens aggregate must be reported');
+    assert.ok(typeof found.cachedTokens === 'number', 'session cachedTokens aggregate must be reported');
 
     // q filter: substring match over session id, applied before pagination
     const filtered = await app.inject({

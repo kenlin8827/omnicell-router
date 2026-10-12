@@ -588,6 +588,74 @@ td, th {
   transform: translateX(12px);
 }
 
+/* Native checkboxes (bulk-select rows, proxy bypass, modality picker) — the
+   UA default look clashes with the dark theme. Styled like .switch above:
+   native input kept for label/keyboard/form semantics, visuals via theme
+   vars. :not(.switch) guards the pill styles from these element rules. */
+input[type='checkbox']:not(.switch) {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  background: var(--btn-bg);
+  border: 1px solid var(--card-border);
+  position: relative;
+  cursor: pointer;
+  flex-shrink: 0;
+  margin: 0;
+  vertical-align: middle;
+  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+input[type='checkbox']:not(.switch):hover:not(:disabled) {
+  border-color: var(--card-border-hover);
+}
+input[type='checkbox']:not(.switch):checked {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 8px var(--accent-glow);
+}
+/* Check mark drawn as a rotated border corner — no icon asset needed. */
+input[type='checkbox']:not(.switch):checked::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 4px;
+  height: 8px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+/* Half-selected state (bulk-select header, set imperatively via ref). */
+input[type='checkbox']:not(.switch):indeterminate {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 8px var(--accent-glow);
+}
+input[type='checkbox']:not(.switch):indeterminate::after {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 6px;
+  width: 7px;
+  height: 2px;
+  border-radius: 1px;
+  background: #fff;
+}
+input[type='checkbox']:not(.switch):focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+input[type='checkbox']:not(.switch):checked:focus-visible,
+input[type='checkbox']:not(.switch):indeterminate:focus-visible {
+  box-shadow: var(--focus-ring), 0 0 8px var(--accent-glow);
+}
+input[type='checkbox']:not(.switch):disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .badge {
   font-size: 10px;
   font-weight: 600;

@@ -1,16 +1,16 @@
 import crypto from 'node:crypto';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
-import { ExecutionResult, ModelPricing, ReasoningEffort, EFFORT_LADDER, RoutingDecision, TIER_RANK, TierLevel, downgradeReasoning } from '../types/router.js';
+import { ExecutionResult, ReasoningEffort, EFFORT_LADDER, RoutingDecision, TIER_RANK, TierLevel, downgradeReasoning } from '../types/router.js';
 import { ClassifierConfig, FlywheelConfig, ModelRegistration, RouterConfig } from '../config/types.js';
 import { PromptOptimizer } from './prompt-optimizer.js';
 import { applyCompression } from '../compression/index.js';
 import { RouterEngine, routingModeForceTier } from '../router/index.js';
 import { SchemaAssertion } from '../validator/schema-assertion.js';
 import { FallbackContextBuilder } from '../validator/parser.js';
-import { BudgetManager } from '../budget/budget-manager.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { applyEffortMap } from '../providers/member-match.js';
 import { FinOpsTracker } from '../metrics/finops-tracker.js';
+import { computeRequestCost } from '../metrics/request-cost.js';
 import { FlywheelCollector } from '../flywheel/collector.js';
 import { SessionManager, SessionResolveResult } from '../session/session-manager.js';
 import { TraceTracker } from '../trace/tracker.js';
@@ -133,7 +133,6 @@ export class PipelineOrchestrator {
   private sessionManager: SessionManager;
   private traceTracker: TraceTracker;
   private captureRecorder: CaptureRecorder;
-  private baselinePricing: ModelPricing;
   private healthProber?: ActiveHealthProber;
 
   constructor(
@@ -149,10 +148,6 @@ export class PipelineOrchestrator {
     this.sessionManager = sessionManager || new SessionManager(config.session);
     this.traceTracker = new TraceTracker(5000, config.tracePersist);
     this.captureRecorder = new CaptureRecorder(config.requestCapture);
-
-    // Lookup baseline pricing for FinOps dollar calculation
-    const baselineModel = this.registry.getModel(config.baselineModel) || this.registry.getModelForTier('plus');
-    this.baselinePricing = baselineModel.pricing;
 
     if (config.circuitBreaker?.activeProbing?.enabled) {
       this.healthProber = new ActiveHealthProber(
@@ -903,11 +898,8 @@ export class PipelineOrchestrator {
       context?.clientIp
     );
 
-    // 7. FinOps Tracking & Economics Calculation
+    // 7. Post-turn observability
     const latencyMs = Date.now() - startTime;
-    const actualCost = BudgetManager.calculateCost(finalResponse!.usage, actualModel.pricing);
-    const baselineCost = BudgetManager.calculateBaselineCost(finalResponse!.usage, this.baselinePricing);
-    const savedCostUsd = Math.max(0, baselineCost - actualCost);
 
     // Thinking-level observability. Two cases that warrant a warn:
     //   1. Client asked for thinking but the actually-served model can't do
@@ -966,12 +958,10 @@ export class PipelineOrchestrator {
     this.tracker.record({
       tier: actualTier,
       fallbackOccurred,
-      promptTokens: finalResponse!.usage?.prompt_tokens || 0,
-      cachedPromptTokens: cachedTokens,
-      completionTokens: finalResponse!.usage?.completion_tokens || 0,
+      inputTokens: finalResponse!.usage?.prompt_tokens || 0,
+      cachedTokens: cachedTokens,
+      outputTokens: finalResponse!.usage?.completion_tokens || 0,
       reasoningTokens: finalResponse!.usage?.completion_tokens_details?.reasoning_tokens || 0,
-      actualCost,
-      baselineCost,
       latencyMs,
     });
 
@@ -984,7 +974,6 @@ export class PipelineOrchestrator {
       modelUsed: actualModel.id,
       fallbackOccurred,
       fallbackReason,
-      costUsd: actualCost,
       latencyMs,
     });
 
@@ -1039,11 +1028,10 @@ export class PipelineOrchestrator {
         inplaceRetries,
       },
       finops: {
-        promptTokens: finalResponse!.usage?.prompt_tokens || 0,
-        completionTokens: finalResponse!.usage?.completion_tokens || 0,
-        cachedPromptTokens: cachedTokens,
-        costUsd: actualCost,
-        savedCostUsd,
+        inputTokens: finalResponse!.usage?.prompt_tokens || 0,
+        outputTokens: finalResponse!.usage?.completion_tokens || 0,
+        cachedTokens: cachedTokens,
+        costUsd: computeRequestCost(finalResponse!.usage, actualModel.pricing),
       },
     });
 
@@ -1065,9 +1053,6 @@ export class PipelineOrchestrator {
       sessionRatchetApplied: ratchetApplied,
       sessionLookupType: sessionResolve.lookupType,
       traceId: sharedTraceId,
-      costUsd: actualCost,
-      baselineCostUsd: baselineCost,
-      savedCostUsd,
       latencyMs,
       // Reasoning-effort observability — server.ts reads these to set
       // X-OCR-Thinking-{Requested,Actual,Degraded} headers so the client

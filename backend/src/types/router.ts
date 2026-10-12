@@ -182,9 +182,6 @@ export interface ExecutionResult {
   sessionRatchetApplied?: boolean;
   sessionLookupType?: SessionLookupType;
   traceId?: string;
-  costUsd: number;
-  baselineCostUsd: number;
-  savedCostUsd: number;
   latencyMs: number;
   failoverOccurred?: boolean;
   failoverAttempts?: number;

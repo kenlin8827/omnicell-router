@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   KeyRound,
   Plus,
@@ -12,18 +13,20 @@ import {
   Terminal,
   Pencil,
   List,
+  BarChart3,
   Info,
 } from 'lucide-react';
 import { api, type ApiKeyItem, type ApiKeyModelAccess } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
-import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import { Combobox } from '../components/Combobox';
+import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import { Pagination } from '../components/Pagination';
 
 const KEY_PAGE_SIZE = 20;
 const KEY_PAGE_SIZES = [10, 20, 50, 100, 200];
+
 
 // Tier → i18n short-label key (rendered as "lite" / its localized short name in the tier column).
 const TIER_LABEL_KEYS: Record<string, string> = {
@@ -190,6 +193,7 @@ const ModelAccessPicker: React.FC<{
 
 export const ApiKeysPage: React.FC = () => {
   const { t } = useI18n();
+  const navigate = useNavigate();
   const confirmDialog = useConfirm();
   const toast = useToast();
   const [keys, setKeys] = useState<ApiKeyItem[]>([]);
@@ -738,7 +742,7 @@ export const ApiKeysPage: React.FC = () => {
                               alignItems: 'center',
                               padding: '2px',
                             }}
-                            title="Toggle visibility"
+                            title={t('apiKeys.toggleVisTooltip')}
                           >
                             {isVisible ? <EyeOff size={13} /> : <Eye size={13} />}
                           </button>
@@ -753,7 +757,7 @@ export const ApiKeysPage: React.FC = () => {
                               alignItems: 'center',
                               padding: '2px',
                             }}
-                            title="Copy Key"
+                            title={t('apiKeys.copyKeyTooltip')}
                           >
                             {copiedId === item.id ? <Check size={13} /> : <Copy size={13} />}
                           </button>
@@ -821,6 +825,14 @@ export const ApiKeysPage: React.FC = () => {
 
                       {/* Actions */}
                       <td style={{ padding: '14px 20px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                        <button
+                          onClick={() => navigate(`/usage?key=${encodeURIComponent(item.id)}`)}
+                          className="btn btn-sm"
+                          style={{ padding: '4px 8px', marginRight: '6px' }}
+                          title={t('apiKeys.viewUsageTooltip')}
+                        >
+                          <BarChart3 size={13} />
+                        </button>
                         <button
                           onClick={() => openViewModels(item)}
                           className="btn btn-sm"
@@ -1729,7 +1741,7 @@ curl http://127.0.0.1:3000/v1/systemone \\
                   setTimeout(() => setNewKeyCopied(false), 2000);
                 }}
                 className="btn btn-sm"
-                title="Copy Key"
+                title={t('apiKeys.copyKeyTooltip')}
               >
                 {newKeyCopied ? <Check size={14} color="var(--accent-emerald)" /> : <Copy size={14} />}
               </button>

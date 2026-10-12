@@ -73,8 +73,6 @@ async function main() {
   try {
     const boot = await buildDirectPool();
     config.models = boot.models;
-    const defaultPlus = boot.models.find((m) => m.tier === 'plus' && m.isDefaultInTier) || boot.models[0];
-    config.baselineModel = defaultPlus?.id || 'auto';
 
     registry = new ProviderRegistry(config, boot.models.length === 0);
     for (const inst of boot.instances) {

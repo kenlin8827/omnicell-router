@@ -305,6 +305,18 @@ export interface FlywheelConfig {
   datasetPath?: string; // default: './data/flywheel.jsonl'
   maxSamples?: number;
   logUserPrompt?: boolean;
+  /**
+   * Sample retention window in days (drop records older than N by `timestamp`).
+   * 0/unset = never auto-delete. Sweep runs at boot + hourly; deletions write
+   * NO backup. Restart-scoped (no hot applyConfig).
+   */
+  retentionDays?: number;
+  /**
+   * Dataset size cap in MB — after the age pass, trim oldest-first until the
+   * file fits. 0/unset = uncapped; deletions write NO backup. The `MB`
+   * suffix matches `requestCapture.maxTotalMB`. Restart-scoped.
+   */
+  maxFileSizeMB?: number;
 }
 
 export interface SessionConfig {
@@ -560,7 +572,6 @@ export interface RouterConfig {
   providers?: ProviderConfig[];
   models?: ModelRegistration[];
   combos?: ComboConfig[];
-  baselineModel: string; // Default plus-tier model id for calculating FinOps cost savings
 }
 
 export type { CircuitBreakerConfig, RetryConfig };

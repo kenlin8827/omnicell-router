@@ -64,45 +64,41 @@ export interface ExecutionTrace {
     inplaceRetries?: number;
   };
   finops: {
-    promptTokens: number;
-    completionTokens: number;
-    cachedPromptTokens: number;
+    inputTokens: number;
+    outputTokens: number;
+    cachedTokens: number;
+    /**
+     * Actual USD cost of this request, computed at request time with the
+     * catalog pricing that was current then. The only cost figure stored —
+     * derived comparisons (baseline/savings) are intentionally not recorded.
+     */
     costUsd: number;
-    savedCostUsd: number;
   };
 }
 
-export interface CacheStatsModelRow {
-  model: string;
-  provider: string;
+/** Per-API-key token usage row (also used for the anonymous bucket). */
+export interface KeyUsageRow {
+  id: string;
+  name: string;
   requests: number;
-  cachedRequests: number;
-  promptTokens: number;
-  cachedPromptTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  latencyMsSum: number;
+  /** Sum of the per-request actual costs (USD) — data-only, not rendered yet. */
   costUsd: number;
-  savedCostUsd: number;
 }
 
-export interface CacheStatsHourBucket {
-  hourTs: number; // epoch ms, hour-aligned
-  requests: number;
-  cachedRequests: number;
-  promptTokens: number;
-  cachedPromptTokens: number;
-}
-
-export interface CacheStatsSummary {
-  windowTraces: number;
-  totalRequests: number;
-  cachedRequests: number;
-  requestHitRatio: number;
-  promptTokens: number;
-  cachedPromptTokens: number;
-  tokenHitRatio: number;
-  costUsd: number;
-  savedCostUsd: number;
-  models: CacheStatsModelRow[];
-  hourly: CacheStatsHourBucket[];
+export interface UsageStatsSummary {
+  totals: {
+    requests: number;
+    inputTokens: number;
+    outputTokens: number;
+    cachedTokens: number;
+    avgLatencyMs: number;
+    costUsd: number;
+  };
+  keys: KeyUsageRow[];
 }
 
 export class TraceTracker {
@@ -247,130 +243,105 @@ export class TraceTracker {
   }
 
   /**
-   * Aggregate provider-native prompt-cache observability over the in-memory
-   * trace ring buffer: totals, per-model rows and an hourly series.
-   *
-   * `sinceTs` (epoch ms, inclusive lower bound on `trace.timestamp`) is
-   * optional:
-   *   - undefined (default) → 24-hour window (24 buckets ending at the
-   *     current hour). Back-compat: the legacy /api/ui/cache-stats payload
-   *     shape is preserved when the parameter is omitted.
-   *   - number             → hourly buckets cover `[sinceTs, now]` capped
-   *     at 24 buckets; totals / per-model rows / ratios are filtered to
-   *     the same window. The cap guards against an absurdly wide window
-   *     asking for hundreds of buckets (24 is already enough resolution
-   *     for the largest plausible UI range, e.g. 7d shown as daily bars).
-   *
-   * A request counts as "cached" when finops.cachedPromptTokens > 0.
+   * Aggregate raw token usage over the in-memory trace ring buffer, grouped
+   * by client API key (id + name; turns without key attribution share the
+   * anonymous bucket). `sinceTs` (epoch ms, inclusive lower bound on
+   * `trace.timestamp`) narrows the window; undefined covers the whole ring.
+   * Sums of recorded per-request values only — no derived metrics.
    */
-  public getCacheStats(options?: { sinceTs?: number }): CacheStatsSummary {
-    const HOUR = 3_600_000;
-    const now = Date.now();
-    const currentHour = Math.floor(now / HOUR);
+  public getUsageStats(options?: { sinceTs?: number }): UsageStatsSummary {
     const sinceTs = typeof options?.sinceTs === 'number' ? options.sinceTs : undefined;
-    // Number of hourly buckets covering [sinceTs, now], clamped to [1, 24].
-    const bucketCount = sinceTs === undefined
-      ? 24
-      : Math.min(24, Math.max(1, Math.floor((now - sinceTs) / HOUR) + 1));
-    const startHour = currentHour - bucketCount + 1;
-
-    const buckets = new Map<number, CacheStatsHourBucket>();
-    for (let h = startHour; h <= currentHour; h++) {
-      buckets.set(h, { hourTs: h * HOUR, requests: 0, cachedRequests: 0, promptTokens: 0, cachedPromptTokens: 0 });
-    }
-
-    const models = new Map<string, CacheStatsModelRow>();
-    let totalRequests = 0;
-    let cachedRequests = 0;
-    let promptTokens = 0;
-    let cachedPromptTokens = 0;
-    let costUsd = 0;
-    let savedCostUsd = 0;
+    const byKey = new Map<string, KeyUsageRow>();
+    let requests = 0;
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let cachedTokens = 0;
+    let latencyMsSum = 0;
+    let costUsdSum = 0;
 
     for (const t of this.traces.values()) {
-      // Window filter — applied first so all aggregates (totals, per-model
-      // rows, hourly buckets) are consistent.
       if (sinceTs !== undefined && t.timestamp < sinceTs) continue;
-
       const f = t.finops;
-      const cached = f.cachedPromptTokens > 0;
-      totalRequests++;
-      promptTokens += f.promptTokens;
-      cachedPromptTokens += f.cachedPromptTokens;
-      costUsd += f.costUsd;
-      savedCostUsd += f.savedCostUsd;
-      if (cached) cachedRequests++;
+      requests++;
+      inputTokens += f.inputTokens;
+      outputTokens += f.outputTokens;
+      cachedTokens += f.cachedTokens;
+      latencyMsSum += t.execution.latencyMs;
+      costUsdSum += f.costUsd;
 
-      const b = buckets.get(Math.floor(t.timestamp / HOUR));
-      if (b) {
-        b.requests++;
-        b.promptTokens += f.promptTokens;
-        b.cachedPromptTokens += f.cachedPromptTokens;
-        if (cached) b.cachedRequests++;
-      }
-
-      const key = `${t.execution.provider}::${t.execution.modelUsed}`;
-      let row = models.get(key);
+      const keyId = t.apiKey?.id ?? '';
+      let row = byKey.get(keyId);
       if (!row) {
         row = {
-          model: t.execution.modelUsed,
-          provider: t.execution.provider,
+          id: keyId,
+          name: t.apiKey?.name ?? 'Anonymous',
           requests: 0,
-          cachedRequests: 0,
-          promptTokens: 0,
-          cachedPromptTokens: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          cachedTokens: 0,
+          latencyMsSum: 0,
           costUsd: 0,
-          savedCostUsd: 0,
         };
-        models.set(key, row);
+        byKey.set(keyId, row);
       }
       row.requests++;
-      row.promptTokens += f.promptTokens;
-      row.cachedPromptTokens += f.cachedPromptTokens;
+      row.inputTokens += f.inputTokens;
+      row.outputTokens += f.outputTokens;
+      row.cachedTokens += f.cachedTokens;
+      row.latencyMsSum += t.execution.latencyMs;
       row.costUsd += f.costUsd;
-      row.savedCostUsd += f.savedCostUsd;
-      if (cached) row.cachedRequests++;
     }
 
     return {
-      windowTraces: this.traces.size,
-      totalRequests,
-      cachedRequests,
-      requestHitRatio: totalRequests > 0 ? cachedRequests / totalRequests : 0,
-      promptTokens,
-      cachedPromptTokens,
-      tokenHitRatio: promptTokens > 0 ? cachedPromptTokens / promptTokens : 0,
-      costUsd,
-      savedCostUsd,
-      models: [...models.values()].sort((a, b) => b.cachedPromptTokens - a.cachedPromptTokens),
-      hourly: [...buckets.values()].sort((a, b) => a.hourTs - b.hourTs),
+      totals: {
+        requests,
+        inputTokens,
+        outputTokens,
+        cachedTokens,
+        avgLatencyMs: requests > 0 ? Math.round(latencyMsSum / requests) : 0,
+        costUsd: Number(costUsdSum.toFixed(6)),
+      },
+      keys: [...byKey.values()].sort((a, b) => b.inputTokens - a.inputTokens),
     };
   }
 
   /**
    * Per-session aggregates for the console's session table, computed in one
    * pass over the session's chronological traces: request count, model
-   * switches (adjacent modelUsed changes), cache hits and cumulative saved
-   * cost.
+   * switches (adjacent modelUsed changes), cumulative token consumption
+   * (input / output / cached) and cumulative recorded cost.
    */
   public getSessionAggregates(sessionId: string): {
     traceCount: number;
     switchCount: number;
-    cacheHits: number;
-    savedCostUsd: number;
+    inputTokens: number;
+    outputTokens: number;
+    cachedTokens: number;
+    costUsd: number;
   } {
     const traces = this.getTracesBySession(sessionId);
     let switchCount = 0;
-    let cacheHits = 0;
-    let savedCostUsd = 0;
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let cachedTokens = 0;
+    let costUsd = 0;
     let prevModel: string | null = null;
     for (const t of traces) {
       if (prevModel !== null && t.execution.modelUsed !== prevModel) switchCount++;
       prevModel = t.execution.modelUsed;
-      if (t.finops.cachedPromptTokens > 0) cacheHits++;
-      savedCostUsd += t.finops.savedCostUsd;
+      inputTokens += t.finops.inputTokens;
+      outputTokens += t.finops.outputTokens;
+      cachedTokens += t.finops.cachedTokens;
+      costUsd += t.finops.costUsd;
     }
-    return { traceCount: traces.length, switchCount, cacheHits, savedCostUsd };
+    return {
+      traceCount: traces.length,
+      switchCount,
+      inputTokens,
+      outputTokens,
+      cachedTokens,
+      costUsd: Number(costUsd.toFixed(6)),
+    };
   }
 
   /**

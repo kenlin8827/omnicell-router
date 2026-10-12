@@ -241,6 +241,29 @@ export const SettingsPage: React.FC = () => {
                 className="input"
               />
             </div>
+            <div>
+              <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.flywheelRetentionDays')}</label>
+              <input
+                type="number"
+                min={0}
+                value={config.flywheel?.retentionDays ?? 0}
+                onChange={e => setConfig({ ...config, flywheel: { ...config.flywheel, retentionDays: parseInt(e.target.value) || 0 } })}
+                className="input"
+              />
+            </div>
+            <div>
+              <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.flywheelMaxFileSizeMB')}</label>
+              <input
+                type="number"
+                min={0}
+                value={config.flywheel?.maxFileSizeMB ?? 0}
+                onChange={e => setConfig({ ...config, flywheel: { ...config.flywheel, maxFileSizeMB: parseInt(e.target.value) || 0 } })}
+                className="input"
+              />
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
+              {t('settings.flywheelRestartHint')}
+            </div>
           </div>
 
           {/* Section 4: Request Capture (hot-applied — no restart needed) */}

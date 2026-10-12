@@ -11,7 +11,6 @@ const DEFAULT_CONFIG: RouterConfig = {
   port: parseInt(process.env.PORT || '3000', 10),
   host: process.env.HOST || '127.0.0.1',
   adminApiKey: process.env.ROUTER_API_KEY || undefined,
-  baselineModel: 'auto',
   // First-boot tier members live HERE, not in runtime seeding: defaultConfigYaml()
   // bakes them into every brand-new config.yaml and the loadConfig() fallback
   // below re-applies them when a file has no `tiers:` section at all. One glob
@@ -52,6 +51,12 @@ const DEFAULT_CONFIG: RouterConfig = {
     datasetPath: './data/flywheel.jsonl',
     maxSamples: 100000,
     logUserPrompt: true,
+    // Retention knobs default OFF (0 = disabled): a boot + hourly sweep that
+    // silently deletes training history with no backup must be an explicit
+    // operator decision (docs/design/flywheel-deletion.md D4). Backward
+    // compat: deployments without these keys keep never auto-deleting.
+    retentionDays: 0,
+    maxFileSizeMB: 0,
   },
   proxy: {
     enabled: false, // opt-in: proxying only when explicitly enabled
@@ -457,7 +462,6 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'webAuth.enabled': '控制台登录开关：true 需账号密码登录；绑定 0.0.0.0 / 局域网 IP 时必须为 true（否则网关拒绝启动），仅 127.0.0.1 绑定可关闭',
   'webAuth.username': '控制台登录用户名',
   'webAuth.passwordHash': '登录密码的 scrypt 哈希（格式 scrypt$<saltHex>$<hashHex>，绝不存明文；在控制台「系统设置」页修改，勿手写）',
-  baselineModel: '基线模型 id（FinOps 成本节省的对照基准）',
   tiers: '梯队成员策略：候选池唯一依据 = 各梯队显式 members 成员列表 + 全局排除名单；默认模板为每个梯队内置 1 条 glob 成员（haiku→lite / sonnet→plus / opus→pro / fable→ultra，运行时不再自动生成种子，删除整个 tiers 段会在下次加载时恢复这套模板默认）；无任何规则命中的模型=未分类，不进任何池；主选策略只影响池内用法（控制台 /tiers 页可视化编辑，保存即时生效）',
   'tiers.*.members': '成员列表（顺序=优先级/failover 链）：每项 { pattern, weight?, effortMap? } —— pattern 匹配完整模型 id（provider/model），glob 通配（* 任意 / ? 单字符，不区分大小写），不带通配符=子串匹配、写完整 id=单项；effortMap=思考级别翻译（如 { none: high, low: high }，未配置的级别原样透传）；同一模型只归属一个梯队（跨档重叠按 lite→plus→pro→ultra 先得，保存时提示）',
   'tiers.exclude': '全局排除名单（在原始 YAML 页编辑；/tiers 页保存时原样回传）：命中的模型不进入任何梯队候选池（无条件；仅可按 id 直连或经组合调用）',
@@ -485,6 +489,8 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'flywheel.datasetPath': '样本数据集路径（JSONL）',
   'flywheel.maxSamples': '样本条数上限',
   'flywheel.logUserPrompt': '是否记录用户提示词原文（隐私敏感）',
+  'flywheel.retentionDays': '样本保留天数（0 或不填=不自动清理；启用后启动时+每小时自动删除超龄样本；自动清理不生成备份、删除不可恢复，请谨慎设置）',
+  'flywheel.maxFileSizeMB': '数据集文件大小上限 MB（0 或不填=不限制；超出后从最旧样本开始裁剪；在保留天数清理之后执行；自动清理不生成备份）',
   circuitBreaker: '熔断器（按模型统计失败并自动摘除，见 /guardrails 页）',
   'circuitBreaker.failureThreshold': '窗口内失败次数阈值（达到即熔断）',
   'circuitBreaker.slidingWindowSize': '滑动窗口样本数',
