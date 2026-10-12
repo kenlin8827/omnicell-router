@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { isMap, parse, parseDocument, stringify } from 'yaml';
 import dotenv from 'dotenv';
-import { Layer2JudgeConfig, RouterConfig, WebAuthConfig } from './types.js';
+import { Layer2JudgeConfig, RequestCaptureConfig, RouterConfig, WebAuthConfig } from './types.js';
 import { DEFAULT_RETRIABLE_CAUSES } from '../resilience/types.js';
 
 dotenv.config();
@@ -30,6 +30,7 @@ const DEFAULT_CONFIG: RouterConfig = {
       // No model pinned by default — the judge then follows
       // `systemone.defaultModel`.
       timeoutMs: 1500,
+      collectEnabled: false, // dataset sampling: judged decisions → data/layer2-decisions.jsonl (single-key gate, opt-in)
     },
   },
   flywheel: {
@@ -58,11 +59,16 @@ const DEFAULT_CONFIG: RouterConfig = {
     headroom: { enabled: false, url: 'http://127.0.0.1:8787', timeoutMs: 3000 },
     caveman: { enabled: false, level: 'full' },
   },
-  capture: {
+  requestCapture: {
     enabled: false, // opt-in: full bodies may contain sensitive data
     retentionDays: 7,
     maxTotalMB: 512,
     maxBodyBytes: 65536,
+    // System One group: surface master + judge-leg sub-switch, both default
+    // ON — they only matter under the capture master, and a user who turns
+    // the master on asked for capture; silence BOTH legs by flipping the
+    // group master off, or exempt just the judge leg via the sub-switch.
+    systemone: { enabled: true, l2DecisionEnabled: true },
   },
   tracePersist: {
     enabled: true, // default on: console history survives restarts (pure observability data)
@@ -141,18 +147,60 @@ function sanitizeWebAuthInput(input: unknown): WebAuthConfig | undefined {
  * to a hand-configured vendor endpoint. The judge now addresses a REGISTERED
  * model through the gateway's own System One protocol, so those
  * keys are meaningless — and keeping them would re-persist dead settings on
- * every console save.
+ * every console save. `decisionCapture` joins the drop list after the
+ * dataset-sampling move to classifier.layer2.collectEnabled (old key ignored).
  */
 function sanitizeLayer2Input(input: unknown): Layer2JudgeConfig {
   const merged = { ...DEFAULT_CONFIG.classifier?.layer2, ...(input as Layer2JudgeConfig) } as Layer2JudgeConfig & {
     provider?: unknown;
     baseUrl?: unknown;
     apiKey?: unknown;
+    decisionCapture?: unknown;
   };
   delete merged.provider;
   delete merged.baseUrl;
   delete merged.apiKey;
+  delete merged.decisionCapture;
   return merged;
+}
+
+/**
+ * Resolve the `requestCapture:` tree from a raw parsed config, migrating the
+ * legacy `capture:` section (config restructure). Precedence: new section >
+ * legacy section > defaults. Legacy `capture.systemoneEnabled` maps onto
+ * `requestCapture.systemone.enabled` (the System One surface master). The
+ * intermediate name `clientEnabled` never shipped to any live config, but a
+ * parsed `requestCapture.systemone.clientEnabled` still maps onto `enabled`
+ * defensively (draft-tree tolerance).
+ * Dataset-semantics `l2DecisionEnabled` (flat on either section) is NOT
+ * mapped — it was never the HTTP-leg switch — and is warned separately.
+ * Only known fields are picked, so retired/junk keys never round-trip into a
+ * saved config.yaml. Raw YAML values pass through unchecked (parity with the
+ * pre-restructure spread — type enforcement is the consumers' nullish-merge).
+ */
+function resolveRequestCapture(parsed: any): RequestCaptureConfig {
+  const base = DEFAULT_CONFIG.requestCapture as RequestCaptureConfig;
+  const legacy = parsed?.capture as Record<string, unknown> | undefined;
+  const raw = (parsed?.requestCapture ?? {}) as Record<string, unknown>;
+  const legacyFlat = (legacy ?? {}) as Record<string, unknown>;
+  // `as` cast: raw YAML is untyped at this boundary; the old spread was too.
+  const pick = <K extends 'enabled' | 'retentionDays' | 'maxTotalMB' | 'maxBodyBytes' | 'dir'>(key: K) =>
+    (raw[key] ?? legacyFlat[key] ?? base[key]) as RequestCaptureConfig[K];
+  const sysRaw = raw.systemone as Record<string, unknown> | undefined;
+  return {
+    enabled: pick('enabled'),
+    retentionDays: pick('retentionDays'),
+    maxTotalMB: pick('maxTotalMB'),
+    maxBodyBytes: pick('maxBodyBytes'),
+    dir: pick('dir'),
+    systemone: {
+      // ?? (not ||) keeps an explicit FALSE from the legacy section.
+      // `clientEnabled`: never-shipped intermediate name, folded onto the
+      // surface master `enabled` defensively.
+      enabled: (sysRaw?.enabled ?? sysRaw?.clientEnabled ?? legacy?.systemoneEnabled ?? base.systemone?.enabled) as boolean,
+      l2DecisionEnabled: (sysRaw?.l2DecisionEnabled ?? base.systemone?.l2DecisionEnabled) as boolean,
+    },
+  };
 }
 
 export function loadConfig(configPath?: string): RouterConfig {
@@ -161,9 +209,45 @@ export function loadConfig(configPath?: string): RouterConfig {
     try {
       const raw = fs.readFileSync(resolvedPath, 'utf8');
       const parsed = parse(raw);
-      // Legacy `rules:` (removed prompt-override system) is stripped so stale
-      // keys don't get re-persisted on the next config save.
-      const { rules: _legacyRules, ...parsedRest } = parsed || {};
+      // Retired namespace (dataset sampling): the sink lived under
+      // classifier.layer2.decisionCapture before moving to a single-key
+      // classifier.layer2.collectEnabled. The old key is IGNORED — no
+      // dual-read, no compat shim — but one warn per load names it and points
+      // at the new home so hand-edited configs never silently lose the setting.
+      const legacyDecisionCapture = (parsed?.classifier?.layer2 as { decisionCapture?: unknown } | undefined)?.decisionCapture;
+      if (legacyDecisionCapture !== undefined) {
+        console.warn(
+          '[Config] Retired key "classifier.layer2.decisionCapture" is IGNORED: L2 decision dataset sampling moved to "classifier.layer2.collectEnabled" (single-key gate, data/layer2-decisions.jsonl). Remove the old key.'
+        );
+      }
+      // Section rename (config restructure): legacy `capture:` maps onto
+      // `requestCapture:` in-memory (resolveRequestCapture) and is STRIPPED
+      // from the parsed rest, so the next config save round-trips clean.
+      const legacyCaptureSection = parsed?.capture as Record<string, unknown> | undefined;
+      if (legacyCaptureSection !== undefined) {
+        console.warn('[Config] Retired section "capture:" migrated to "requestCapture:"');
+      }
+      // Dataset-semantics flag (born under the old `capture:` three-tier
+      // gate): flat `l2DecisionEnabled` on EITHER section is IGNORED. It
+      // sounds like `requestCapture.systemone.l2DecisionEnabled` but means
+      // dataset sampling — the ambiguity below is pinned by contract.
+      const legacyDatasetKeys = [
+        legacyCaptureSection?.l2DecisionEnabled !== undefined ? 'capture.l2DecisionEnabled' : undefined,
+        (parsed?.requestCapture as Record<string, unknown> | undefined)?.l2DecisionEnabled !== undefined
+          ? 'requestCapture.l2DecisionEnabled'
+          : undefined,
+      ].filter((k): k is string => k !== undefined);
+      if (legacyDatasetKeys.length > 0) {
+        console.warn(
+          `[Config] Retired key${legacyDatasetKeys.length > 1 ? 's' : ''} "${legacyDatasetKeys.join(
+            '" and "'
+          )}" is IGNORED: L2 decision dataset sampling lives in a different switch now — "classifier.layer2.collectEnabled" (single-key gate, data/layer2-decisions.jsonl). requestCapture.systemone.l2DecisionEnabled is a DIFFERENT switch (HTTP-leg capture of L2 judge calls). Remove the old key.`
+        );
+      }
+      // Legacy `rules:` (removed prompt-override system) and the renamed
+      // `capture:` section are stripped so stale keys don't get re-persisted
+      // on the next config save.
+      const { rules: _legacyRules, capture: _legacyCapture, ...parsedRest } = parsed || {};
       return applyTestEnvOverrides({
         ...DEFAULT_CONFIG,
         ...parsedRest,
@@ -191,7 +275,7 @@ export function loadConfig(configPath?: string): RouterConfig {
           headroom: { ...DEFAULT_CONFIG.compression?.headroom, ...parsed?.compression?.headroom },
           caveman: { ...DEFAULT_CONFIG.compression?.caveman, ...parsed?.compression?.caveman },
         },
-        capture: { ...DEFAULT_CONFIG.capture, ...parsed?.capture },
+        requestCapture: resolveRequestCapture(parsed),
         tracePersist: { ...DEFAULT_CONFIG.tracePersist, ...parsed?.tracePersist },
         circuitBreaker: { ...DEFAULT_CONFIG.circuitBreaker, ...parsed?.circuitBreaker },
         retry: {
@@ -382,7 +466,7 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'classifier.layer2.model': '判定模型 id（已注册的模型；留空则用 systemone.defaultModel）',
   'classifier.layer2.timeoutMs': '判定超时（毫秒，超时放行 Layer1 结果）',
   'classifier.layer2.decisionCache': '判定决策缓存（相同上下文复用判定结果）',
-  'classifier.layer2.decisionCapture': '判定采集（可选：落盘 state+答案，供蒸馏原生决策模型；默认关）',
+  'classifier.layer2.collectEnabled': 'L2 裁判决策样本采集开关（默认 false 关闭）：单键门控，落盘 data/layer2-decisions.jsonl（不进捕捉页），64MB 封顶后停写并告警一次；热生效',
   flywheel: '学习飞轮（路由决策样本沉淀，用于训练分类器；默认关闭）',
   'flywheel.datasetPath': '样本数据集路径（JSONL）',
   'flywheel.maxSamples': '样本条数上限',
@@ -430,6 +514,9 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'compression.headroom.compressUserMessages': '同时压缩 user 角色文本（会话模式下自动忽略）',
   'compression.caveman.enabled': 'caveman 输出压缩：向 system 幂等注入简洁风格提示词，显著压缩输出 token（代码/路径/命令逐字保留）',
   'compression.caveman.level': 'caveman 强度：lite / full / ultra / wenyan-lite / wenyan / wenyan-ultra（文言）',
+  requestCapture: '请求全量捕获（HTTP 交换审计日志；默认关闭）：请求/响应原文落盘 JSONL，捕获体可能含敏感数据且占用磁盘，按日期目录保留、到期或超容量自动清理',
+  'requestCapture.systemone.enabled': 'System One 决策面总闸（默认 true；仅当 requestCapture.enabled 为 true 时生效）：关闭时两腿同哑——/v1/systemone 全链路捕捉（客户端请求/响应 + 网关对上游的调用腿；路由指标仍不捕获）连同下方 L2 裁判 HTTP 腿捕捉一并静默；开启时该面全链路捕捉照常（决策体是客户端状态快照，注意隐私与磁盘占用）',
+  'requestCapture.systemone.l2DecisionEnabled': 'L2 裁判 HTTP 腿捕捉子开关（默认 true；仅当 requestCapture.enabled 与 requestCapture.systemone.enabled 均为 true 时生效）：L2 裁判内部发起的决策模型调用记为上游捕捉事件（挂外层会话/追踪），与客户端请求捕捉主语正交——只增记裁判自己的线路调用，不筛选客户端流量；注意与 classifier.layer2.collectEnabled（数据集采样落盘）是两个不同开关',
   catalog: '目录数据源：远程 catalog 源定义与本地锚定（控制台 /catalog 页可视化编辑，改后即时生效）',
   'catalog.syncIntervalMs': '目录自动同步周期（毫秒，默认 86400000 = 24h）',
   'catalog.lockedModels': '本地锚定的模型 id 列表：这些模型的本地定义值（含 0 价）不被任何远程源覆盖',

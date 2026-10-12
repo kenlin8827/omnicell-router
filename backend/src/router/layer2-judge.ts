@@ -3,6 +3,7 @@ import { TierLevel } from '../types/router.js';
 import { Layer2JudgeConfig } from '../config/types.js';
 import { RoutingDecisionCache, type RoutingCacheStats } from './decision-cache.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import type { UpstreamEventContext } from '../providers/base.js';
 import { runSystemoneDecision } from '../protocols/systemone/decide.js';
 import { SystemoneRequest } from '../protocols/systemone/types.js';
 import { captureDecision } from '../flywheel/decision-capture.js';
@@ -105,12 +106,22 @@ export class Layer2Judge {
    * protocol. Returns null on any miss — a disabled judge, an unresolvable
    * model, an upstream failure or a blown deadline all degrade gracefully to
    * the caller's Layer 1 decision rather than throwing.
+   *
+   * `judgeCapture` is the OUTER request's capture identity (the orchestrator
+   * hands it through routeAsync when the capture master is on; undefined
+   * otherwise). The JUDGE-CALL gate is checked HERE, at judge entry, via the
+   * recorder accessor — three-tier master/sub chain (requestCapture.enabled
+   * master × systemone.enabled surface master × systemone.l2DecisionEnabled
+   * sub):
+   * a false verdict passes undefined down the whole chain — today's silence,
+   * zero behavior change when the flags are off.
    */
   public static async evaluate(
     request: ChatCompletionRequest,
     config: Layer2JudgeConfig | undefined,
     registry: ProviderRegistry,
-    defaultModel?: string
+    defaultModel?: string,
+    judgeCapture?: UpstreamEventContext
   ): Promise<Layer2JudgeResult | null> {
     if (!config?.enabled) return null;
 
@@ -196,11 +207,23 @@ export class Layer2Judge {
         resolve(null);
       }, timeoutMs);
     });
+    // JUDGE-CALL CAPTURE gate (three-tier chain: requestCapture.enabled
+    // master × systemone.enabled surface master × systemone.l2DecisionEnabled
+    // sub — checked HERE via the recorder carried by the outer
+    // identity; master off means the orchestrator never even passes a ctx).
+    // ON: reuse the OUTER request's trace/session so the judge's wire call
+    // joins the routed turn's archive, labeled purpose 'l2-judge' to tell it
+    // from candidate-execution events. OFF: undefined = silence, the exact
+    // call shape as today.
+    const judgeCaptureCtx: UpstreamEventContext | undefined =
+      judgeCapture && judgeCapture.recorder.isSystemoneJudgeCaptureEnabled()
+        ? { ...judgeCapture, purpose: 'l2-judge' }
+        : undefined;
     const pending = runSystemoneDecision(
       registry,
       this.buildRequest(state, model.id),
       model,
-      { signal: controller.signal }
+      { signal: controller.signal, upstreamEventContext: judgeCaptureCtx }
     )
       .then((decision) => {
         const answer = (decision.response as any)?.answers?.tier;
@@ -218,10 +241,11 @@ export class Layer2Judge {
           decision.upstreamKind === 'native'
             ? `System One (${model.id}) classified as ${tier}`
             : `System One conversion (${model.id}) classified as ${tier} — uncalibrated self-report`;
-        // Opt-in sink (classifier.layer2.decisionCapture): the judged pair is
-        // the raw material for distilling a native decision model. Recorded
-        // ONLY on the race-winner path — an abandoned late result must not
-        // pollute the dataset with an answer nobody consumed.
+        // Opt-in dataset sink (classifier.layer2.collectEnabled, gated inside
+        // decision-capture): the judged pair is the raw material for distilling
+        // a native decision model. Recorded ONLY on the race-winner path — an
+        // abandoned late result must not pollute the dataset with an answer
+        // nobody consumed.
         if (!timedOut) {
           captureDecision({
             model: model.id,

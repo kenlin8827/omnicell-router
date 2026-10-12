@@ -282,15 +282,15 @@ export interface Layer2JudgeConfig {
     maxEntries?: number; // default 500
   };
   /**
-   * Opt-in sink for judged System One decisions (state + answer + tier) —
-   * the raw material for distilling a native decision model and for
-   * calibrating converted confidence. Default OFF: `state` carries
-   * user conversation content. Nothing consumes the file yet.
+   * L2 decision DATASET sampling — single-key gate: records judged decisions
+   * (state + answer + tier) to data/layer2-decisions.jsonl for flywheel
+   * distillation. Default OFF (state carries user conversation content);
+   * hot-applied on config save — no restart; writes pause once the file
+   * exceeds 64 MB. NOT to be confused with requestCapture.systemone.
+   * l2DecisionEnabled, which captures the judge's HTTP leg instead.
    */
-  decisionCapture?: {
-    enabled?: boolean; // default false
-    datasetPath?: string; // default './data/layer2-decisions.jsonl' (gitignored)
-  };
+  collectEnabled?: boolean;
+  // Retired keys `decisionCapture` (pre-collectEnabled) are stripped at load.
 }
 export type Layer2DecisionConfig = Layer2JudgeConfig;
 
@@ -444,6 +444,31 @@ export interface CompressionConfig {
 }
 
 /**
+ * System One group inside the request-capture section — master/sub chain.
+ * The whole group only matters under `requestCapture.enabled` (the privacy
+ * master). `enabled` is the System One SURFACE MASTER (off silences BOTH
+ * legs); `l2DecisionEnabled` is a SUB-switch beneath it (adds the judge-
+ * internal decision-call leg only). Both default TRUE, so enabling the
+ * capture master discloses the whole decision surface.
+ */
+export interface RequestCaptureSystemoneConfig {
+  /** System One surface MASTER — off silences BOTH legs: client-leg capture
+   *  of /v1/systemone decision traffic AND the judge-call sub-leg below.
+   *  When on, client-leg capture records the request that arrives at the
+   *  gateway + the gateway's answer. Default true. */
+  enabled?: boolean;
+  /** Judge-call capture SUB-switch (effective only when `enabled` is true):
+   *  adds capture of the decision-model HTTP leg the Layer 2 judge fires
+   *  INSIDE a routed chat turn, recorded as upstream-direction events
+   *  (attached to the outer request's trace/session, purpose 'l2-judge').
+   *  Default true. Subject-orthogonal to the client leg — it adds the
+   *  judge's own wire call, never re-filters client traffic. This is NOT
+   *  the dataset-sampling switch — that is the single-key
+   *  `classifier.layer2.collectEnabled` (data/layer2-decisions.jsonl). */
+  l2DecisionEnabled?: boolean;
+}
+
+/**
  * Request capture (full request/response body audit log). Every orchestrated
  * turn — successes AND failures — is appended as one JSONL line, archived by
  * local-date directory and session id:
@@ -452,13 +477,17 @@ export interface CompressionConfig {
  * OFF by default (opt-in): captured bodies may contain sensitive data, and the
  * console /api/admin/* endpoints are auth-exempt — enable consciously.
  * Request headers are NEVER recorded.
+ *
+ * Renamed from the legacy `capture:` section; loadConfig() maps old keys onto
+ * this tree and strips the legacy section from saved output.
  */
-export interface CaptureConfig {
+export interface RequestCaptureConfig {
   enabled?: boolean; // master switch; default false
   dir?: string; // default: ~/.opencode-router/capture
   retentionDays?: number; // default 7; date dirs older than today-N are swept (at boot + hourly)
-  maxTotalMB?: number; // default 2048; oldest date dirs are deleted first when exceeded
-  maxBodyBytes?: number; // default 524288 (512 KB); truncation budget applied to request and response separately
+  maxTotalMB?: number; // default 512; oldest date dirs are deleted first when exceeded
+  maxBodyBytes?: number; // default 65536 (64 KB); truncation budget applied to request and response separately
+  systemone?: RequestCaptureSystemoneConfig;
 }
 
 export interface TracePersistConfig {
@@ -513,7 +542,8 @@ export interface RouterConfig {
   proxy?: ProxyConfig;
   forwardProxy?: ForwardProxyConfig;
   compression?: CompressionConfig;
-  capture?: CaptureConfig;
+  /** Request capture (audit log). Renamed from the legacy `capture:` section. */
+  requestCapture?: RequestCaptureConfig;
   tracePersist?: TracePersistConfig;
   logging?: LoggingConfig;
   catalog?: CatalogConfig;

@@ -4,6 +4,7 @@ import { Layer1Classifier } from './layer1-classifier.js';
 import { Layer2Judge } from './layer2-judge.js';
 import { ClassifierConfig, RoutingMode } from '../config/types.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import type { UpstreamEventContext } from '../providers/base.js';
 
 /**
  * Global routing mode → forced tier for auto/default requests. Returns undefined
@@ -82,12 +83,17 @@ export class RouterEngine {
    * it resolves and calls a registered model over the gateway's own System One
    * protocol, so it needs the model pool and the default decision
    * model that backs an unset `classifier.layer2.model`.
+   *
+   * `judgeCapture` is the outer request's capture identity, threaded to the
+   * judge so its decision-model HTTP leg can be recorded on the SAME
+   * trace/session (the judge gates it; callers just hand over the identity).
    */
   public static async routeAsync(
     request: ChatCompletionRequest,
     classifierConfig?: ClassifierConfig,
     registry?: ProviderRegistry,
-    systemoneDefaultModel?: string
+    systemoneDefaultModel?: string,
+    judgeCapture?: UpstreamEventContext
   ): Promise<RoutingDecision> {
     const messages = request.messages || [];
     const extracted = Layer1Classifier.extractFeatures(request);
@@ -127,7 +133,8 @@ export class RouterEngine {
         request,
         classifierConfig.layer2,
         registry,
-        systemoneDefaultModel
+        systemoneDefaultModel,
+        judgeCapture
       );
       if (decisionResult) {
         return {

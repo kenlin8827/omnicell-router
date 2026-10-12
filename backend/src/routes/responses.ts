@@ -1,22 +1,18 @@
 import crypto from 'node:crypto';
-import { FastifyInstance } from 'fastify';
-import { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import {
-  ChatCompletionRequest,
   ChatCompletionResponse,
   ChatMessage,
   Tool,
 } from '../types/openai.js';
 import type { ReasoningEffort } from '../types/router.js';
-import { getModelAccessPolicy, makeModelAccessGuard } from '../auth/model-access.js';
-import { ChatMessageLite, RespNode, RespStore, newResponseId } from '../session/resp-store.js';
-import {
-  appendGatewayResponseChunk,
-  getClientExchangeContext,
-} from '../observability/http-exchange.js';
 
 /**
- * OpenAI Responses API compatibility layer (POST /v1/responses).
+ * OpenAI Responses API compatibility — wire protocol converters.
+ *
+ * Route registration lives in surfaces/responses.ts (refactor step 3b); this
+ * module is the shared converter library — the Fastify surface and the MITM
+ * forward-proxy interceptor both encode through it, and the wire tests import
+ * these functions from this path.
  *
  * Stateful mode (`previous_response_id`) is implemented as GATEWAY-OWNED
  * stateful emulation: the client sends only the delta, the RespStore rebuilds
@@ -110,14 +106,6 @@ export interface ResponsesRequest {
 // can carry it through the downgrade pipeline; the openai-compatible
 // provider builder collapses it before this wire is touched.
 reasoning?: { effort?: Exclude<ReasoningEffort, 'max'>; max_tokens?: number };
-}
-
-// ---------------------------------------------------------------------------
-// Errors (OpenAI error envelope)
-// ---------------------------------------------------------------------------
-
-function errorReply(message: string, code?: string): { error: { message: string; type: string; code?: string } } {
-  return { error: { message, type: 'invalid_request_error', code } };
 }
 
 // ---------------------------------------------------------------------------
@@ -281,155 +269,3 @@ export function chatToStreamEvents(
   return events;
 }
 
-// ---------------------------------------------------------------------------
-// Route registration
-// ---------------------------------------------------------------------------
-
-export function registerResponsesRoutes(app: FastifyInstance, orchestrator: PipelineOrchestrator): void {
-  const store = new RespStore();
-
-  app.post('/v1/responses', async (req, reply) => {
-    const body = req.body as ResponsesRequest;
-
-    if (!body || body.input === undefined || body.input === null) {
-      return reply.status(400).send(errorReply('Invalid request: "input" is required.'));
-    }
-
-    // This turn's NEW messages only (never includes rebuilt history — the
-    // parent chain in the store already holds it).
-    let delta: ChatMessage[];
-    try {
-      delta = inputItemsToMessages(body.input);
-    } catch (e: any) {
-      return reply.status(400).send(errorReply(e?.message || 'Invalid input items.'));
-    }
-    if (delta.length === 0) {
-      return reply.status(400).send(errorReply('Invalid request: "input" resolved to an empty message list.'));
-    }
-
-    // Full request messages = [instructions?] + [rebuilt history?] + delta.
-    // `instructions` is request-scoped (like a system prompt for THIS turn),
-    // so it is prepended at send time and never baked into stored deltas.
-    let messages: ChatMessage[];
-    let sessionIdBind: string | undefined;
-    if (body.previous_response_id) {
-      const built = store.buildMessages(body.previous_response_id);
-      if (!built) {
-        return reply.status(400).send(
-          errorReply(
-            `Unknown previous_response_id "${body.previous_response_id}" (expired, evicted, or from before a gateway restart). Resend the full conversation input.`,
-            'previous_response_not_found'
-          )
-        );
-      }
-      messages = [...built.messages, ...delta];
-      if (body.instructions?.trim()) {
-        messages = [{ role: 'system', content: body.instructions }, ...messages];
-      }
-      sessionIdBind = built.sessionId;
-    } else {
-      messages = [...delta];
-      if (body.instructions?.trim()) {
-        messages = [{ role: 'system', content: body.instructions }, ...messages];
-      }
-    }
-
-    const request: ChatCompletionRequest = {
-      model: body.model?.trim() || 'auto',
-      messages,
-    };
-    if (body.temperature !== undefined) request.temperature = body.temperature;
-    if (body.top_p !== undefined) request.top_p = body.top_p;
-    if (body.max_output_tokens !== undefined) request.max_tokens = body.max_output_tokens;
-    if (body.tools?.length) request.tools = body.tools;
-    if (body.reasoning?.effort) request.reasoning_effort = body.reasoning.effort;
-    // Responses-native reasoning.max_tokens maps to router's max_thinking_tokens,
-    // which provider payload builders translate per-upstream (see anthropic.ts,
-    // google.ts, responses.ts buildResponsesPayload).
-    if (body.reasoning?.max_tokens != null) request.max_thinking_tokens = body.reasoning.max_tokens;
-    if (body.user) request.user = body.user;
-    // Exact session binding for stateful turns: the parent node remembers the
-    // routing session; router_options.session_id resolves via the explicit
-    // layer — zero ambiguity, no content heuristics involved.
-    if (sessionIdBind) request.router_options = { ...request.router_options, session_id: sessionIdBind };
-
-    // Per-key model access gate (403 when the key's policy denies this model)
-    const enforceModelAccess = makeModelAccessGuard(orchestrator.getRegistry());
-    if (!enforceModelAccess(req, reply, body.model?.trim() || 'auto')) {
-      return reply;
-    }
-
-    try {
-      const result = await orchestrator.process(request, {
-        clientIp: req.ip,
-        headers: req.headers,
-        wire: 'responses',
-        fastifyRequest: req,
-        modelAccess: getModelAccessPolicy((req as any).authInfo?.keyConfig),
-      });
-
-      const tierHeader = result.tierUsed + (result.fallbackOccurred ? '-escalated' : '');
-      reply.header('X-OCR-Tier', tierHeader);
-      reply.header('X-OCR-Model', result.modelUsed);
-      reply.header('X-OCR-Session-ID', result.sessionId || '');
-      reply.header('X-OCR-Session-Lookup', result.sessionLookupType || '');
-      reply.header('X-OCR-Session-Ratchet', result.sessionRatchetApplied ? 'true' : 'false');
-      reply.header('X-OCR-Trace-ID', result.traceId || '');
-      // Reasoning-effort observability — see server.ts for full description.
-      if (result.requestedEffort && result.requestedEffort !== 'none') {
-        reply.header('X-OCR-Thinking-Requested', result.requestedEffort);
-        reply.header('X-OCR-Thinking-Actual', result.actualEffort ?? result.requestedEffort);
-        reply.header('X-OCR-Thinking-Degraded', result.reasoningDegraded ? 'true' : 'false');
-      }
-      // Variant observability — sibling / `#variant` id resolved for this request.
-      if (result.variantUsed) reply.header('X-OCR-Variant', result.variantUsed);
-
-      const respId = newResponseId();
-      const assistant = result.response.choices[0]?.message;
-      const node: RespNode = {
-        id: respId,
-        parent: body.previous_response_id || null,
-        sessionId: result.sessionId || sessionIdBind || '',
-        model: result.modelUsed,
-        input: delta as ChatMessageLite[],
-        assistant: {
-          role: 'assistant',
-          content: typeof assistant?.content === 'string' ? assistant.content : '',
-          tool_calls: assistant?.tool_calls,
-        },
-        createdAt: Date.now(),
-      };
-
-      if (body.stream) {
-        // Register BEFORE streaming so the id is resolvable the moment the
-        // client sees response.created.
-        store.append(node);
-        reply.raw.writeHead(200, {
-          'Content-Type': 'text/event-stream; charset=utf-8',
-          'Cache-Control': 'no-cache, no-transform',
-          Connection: 'keep-alive',
-          'Access-Control-Allow-Origin': '*',
-          'X-OCR-Session-ID': result.sessionId || '',
-        });
-        const sseCtx = getClientExchangeContext(req);
-        for (const evt of chatToStreamEvents(result.response, respId, result.modelUsed)) {
-          if (sseCtx) appendGatewayResponseChunk(sseCtx, evt);
-          reply.raw.write(evt);
-        }
-        reply.raw.end();
-        return reply;
-      }
-
-      store.append(node);
-      return reply.status(200).send(chatToResponseObject(result.response, respId, result.modelUsed));
-    } catch (err: any) {
-      req.log?.error?.(err);
-      // Explicitly tagged 4xx errors (e.g. variant resolution) keep their
-      // status; everything else stays the route's upstream_error 502.
-      if (Number.isInteger(err?.statusCode) && err.statusCode >= 400 && err.statusCode < 500) {
-        return reply.status(err.statusCode).send(errorReply(err.message, 'invalid_request_error'));
-      }
-      return reply.status(502).send(errorReply(err?.message || 'Upstream execution failed.', 'upstream_error'));
-    }
-  });
-}

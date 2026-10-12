@@ -16,7 +16,7 @@ const config = loadConfig();
 // Pin auth keys so the e2e check works regardless of the user's disk config.
 config.adminApiKey = 'e2e-admin-key';
 config.apiKeys = [{ key: 'e2e-client-key', name: 'e2e' } as any];
-config.capture = {
+config.requestCapture = {
   enabled: true,
   dir: path.join(process.env.OCR_HOME, 'capture'),
   retentionDays: 1,
@@ -39,7 +39,7 @@ console.log('HTTP', res.statusCode);
 await new Promise(r => setTimeout(r, 300));
 await app.close();
 
-const dir = config.capture.dir!;
+const dir = config.requestCapture.dir!;
 const dateDir = fs.readdirSync(dir)[0];
 const file = path.join(dir, dateDir, fs.readdirSync(path.join(dir, dateDir))[0]);
 const lines = fs.readFileSync(file, 'utf8').split('\n').filter(l => l.trim());

@@ -736,13 +736,15 @@ export const CapturesPage: React.FC = () => {
     setToggling(true);
     try {
       const cfg = await api.getConfig();
+      // Whole-section rebuild: save shallow-merges top-level sections, so the
+      // untouched requestCapture fields must be re-sent or they are dropped.
       const res: any = await api.saveConfig({
         ...cfg,
-        capture: {
+        requestCapture: {
           retentionDays: 7,
           maxTotalMB: 512,
           maxBodyBytes: 65536,
-          ...(cfg.capture || {}),
+          ...(cfg.requestCapture || {}),
           enabled: next,
         },
       });

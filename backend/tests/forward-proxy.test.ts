@@ -12,6 +12,10 @@ import { isLoopbackHost, matchBypass } from '../src/forward-proxy/bypass.js';
 import { ensureCa, CertMinter } from '../src/forward-proxy/ca.js';
 import { createForwardProxyServer } from '../src/forward-proxy/server.js';
 import { createProxyInterceptor } from '../src/forward-proxy/interceptor.js';
+import { loadConfig } from '../src/config/index.js';
+import { ProviderRegistry } from '../src/providers/registry.js';
+import { FinOpsTracker } from '../src/metrics/finops-tracker.js';
+import { PipelineOrchestrator } from '../src/pipeline/orchestrator.js';
 
 /**
  * Forward-proxy suite. NOTE: run per-file (`bun test tests/forward-proxy.test.ts`)
@@ -278,6 +282,380 @@ describe('forward-proxy: LLM protocol interceptor', () => {
     assert.equal(body4.content[0].text, 'hi');
 
     srv.close();
+  });
+
+  it('MITM leg records the ORIGINAL request line/headers into the capture exchange', async () => {
+    const calls: any[] = [];
+    const finalized: any[] = [];
+    const stub = {
+      process: async (request: any, ctx: any) => {
+        calls.push(ctx);
+        // Mirror the real orchestrator's capture branch: hand the exchange
+        // context back through onClientExchange so the interceptor wires the
+        // response finalization.
+        ctx.onClientExchange?.({
+          recorder: {
+            recordEvent: (ev: any) => finalized.push(ev),
+            isEnabled: () => true,
+          },
+          spanId: 'span-1',
+          traceId: 'trace-1',
+          pending: {
+            sessionId: 'sess-1',
+            model: 'auto',
+            requestWire: { requestLine: 'POST /v1/chat/completions HTTP/1.1' },
+            responded: false,
+          },
+        });
+        return {
+          response: {
+            id: 'm', object: 'chat.completion', created: 1, model: 'mock-1',
+            choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          },
+          tierUsed: 'lite', modelUsed: 'mock-1', fallbackOccurred: false,
+          costUsd: 0, sessionId: 'sess-1', traceId: 'trace-1', latencyMs: 1,
+          baselineCostUsd: 0, savedCostsUsd: 0, savedCostUsd: 0,
+        };
+      },
+    } as any;
+
+    const intercept = createProxyInterceptor(stub);
+    const srv = http.createServer((req, res) => {
+      void intercept(req, res).then((handled) => {
+        if (!handled) {
+          res.writeHead(404, { 'content-type': 'text/plain' });
+          res.end('passthrough');
+        }
+      });
+    });
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()));
+    const port = (srv.address() as net.AddressInfo).port;
+
+    const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'user-agent': 'opencode/2.0.15/cli' },
+      body: JSON.stringify({ model: 'auto', messages: [{ role: 'user', content: 'hi' }] }),
+    });
+    assert.equal(res.status, 200);
+    await res.text();
+    // Let the 'finish' event fire on the server response.
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Request side: the ORIGINAL line + headers reach the capture context.
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].clientRequest.method, 'POST');
+    assert.ok(calls[0].clientRequest.url.includes('/v1/chat/completions'));
+    assert.equal(calls[0].clientRequest.headers['user-agent'], 'opencode/2.0.15/cli');
+
+    // Response side: the 'finish' finalization emitted a paired response event.
+    assert.ok(finalized.length >= 1);
+    const responseEvent = finalized.find((e) => e.phase === 'response');
+    assert.ok(responseEvent, 'gateway-response event emitted');
+    assert.equal(responseEvent.wire.status, 200);
+    assert.equal(responseEvent.wire.requestLine, 'POST /v1/chat/completions HTTP/1.1');
+    assert.ok(responseEvent.wire.responseBody.includes('ok'));
+    // Normal completion must NOT synthesize the client-abort 499 (writableEnded).
+    assert.ok(!finalized.some((e) => e.phase === 'response' && e.wire.status === 499));
+
+    srv.close();
+  });
+
+  it('chat-intercept disk capture REDACTS authorization + bare-key headers end-to-end', async () => {
+    // F1 (security P2-1/P2-3): the MITM leg's ORIGINAL request headers reach
+    // the capture through the REAL orchestrator's sanitizer — header NAMES
+    // survive, credential-shaped VALUES must persist as [REDACTED] on disk.
+    // `key:` (no hyphen, no prefix) pins the DENY_HEADER_SUBSTRINGS
+    // additions; `authorization` pins the pre-existing rule on this e2e path.
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-fp-redact-'));
+    const config = loadConfig();
+    config.requestCapture = {
+      enabled: true,
+      dir: tmp,
+      retentionDays: 7,
+      maxTotalMB: 64,
+      maxBodyBytes: 65536,
+    };
+    const registry = new ProviderRegistry(config, true); // mockMode — no real upstream dial
+    const orchestrator = new PipelineOrchestrator(config, registry, new FinOpsTracker());
+
+    const intercept = createProxyInterceptor(orchestrator);
+    const srv = http.createServer((req, res) => {
+      void intercept(req, res).then((handled) => {
+        if (!handled) {
+          res.writeHead(404, { 'content-type': 'text/plain' });
+          res.end('passthrough');
+        }
+      });
+    });
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()));
+    const port = (srv.address() as net.AddressInfo).port;
+
+    const marker = `FP-REDACT-${Date.now()}`;
+    const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: 'Bearer sk-real-upstream-secret',
+        key: 'bare-key-secret',
+      },
+      body: JSON.stringify({ model: 'auto', messages: [{ role: 'user', content: marker }] }),
+    });
+    assert.equal(res.status, 200);
+    await res.text();
+
+    // Poll the JSONL archive (<dir>/<date>/<session>.jsonl) for this turn's
+    // client REQUEST event — writes are async-persisted by the recorder.
+    const readAllEvents = (): any[] => {
+      const out: any[] = [];
+      if (!fs.existsSync(tmp)) return out;
+      for (const day of fs.readdirSync(tmp)) {
+        const dayDir = path.join(tmp, day);
+        if (!fs.statSync(dayDir).isDirectory()) continue;
+        for (const f of fs.readdirSync(dayDir)) {
+          for (const line of fs.readFileSync(path.join(dayDir, f), 'utf8').split('\n').filter(Boolean)) {
+            out.push(JSON.parse(line));
+          }
+        }
+      }
+      return out;
+    };
+    let requestEvent: any;
+    const deadline = Date.now() + 2500;
+    while (!requestEvent && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 25));
+      requestEvent = readAllEvents().find(
+        (ev) =>
+          ev.eventType === 'http-exchange' &&
+          ev.direction === 'client' &&
+          ev.phase === 'request' &&
+          String(ev.wire?.requestBody ?? '').includes(marker)
+      );
+    }
+    assert.ok(requestEvent, 'client request event landed on disk');
+
+    const h = requestEvent.wire.requestHeaders;
+    assert.equal(h.authorization, '[REDACTED]', 'authorization value redacted in the MITM capture');
+    assert.equal(h.key, '[REDACTED]', 'bare `key` header redacted (A1 deny-list addition)');
+    assert.equal(h['content-type'], 'application/json', 'non-credential header passes through untouched');
+    // Raw secrets must be nowhere in the archive (any event, any file).
+    const all = readAllEvents().map((ev) => JSON.stringify(ev)).join('\n');
+    assert.ok(!all.includes('sk-real-upstream-secret'), 'upstream secret never persists');
+    assert.ok(!all.includes('bare-key-secret'), 'bare-key value never persists');
+
+    srv.close();
+    await new Promise((r) => setTimeout(r, 50));
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('MITM leg synthesizes a 499 capture when the socket died before the response', async () => {
+    // NOTE on fidelity: a real client abort AFTER the body was fully received
+    // is UNDETECTABLE on Bun — no req 'aborted' / socket 'close' fires and
+    // socket.destroyed stays false (verified with a minimal repro). The 499
+    // branch is therefore exercised by explicitly destroying the socket (the
+    // state Node's runtime produces on abort), which is the same code path
+    // finalizeCapture evaluates. `req.on('aborted')` remains wired for Node
+    // runtimes where the event is reliable.
+    const finalized: any[] = [];
+    let heldRes: http.ServerResponse | null = null;
+    let releaseProcess: (() => void) | undefined;
+    const stub = {
+      process: async (request: any, ctx: any) => {
+        ctx.onClientExchange?.({
+          recorder: { recordEvent: (ev: any) => finalized.push(ev), isEnabled: () => true },
+          spanId: 'span-9',
+          traceId: 'trace-9',
+          pending: {
+            sessionId: 'sess-9',
+            model: 'auto',
+            requestWire: { requestLine: 'POST /v1/chat/completions HTTP/1.1' },
+            responded: false,
+          },
+        });
+        // Hold the handler open; the test kills the socket mid-flight.
+        await new Promise<void>((r) => (releaseProcess = r));
+        return {
+          response: {
+            id: 'm', object: 'chat.completion', created: 1, model: 'mock-1',
+            choices: [{ index: 0, message: { role: 'assistant', content: 'never' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          },
+          tierUsed: 'lite', modelUsed: 'mock-1', fallbackOccurred: false,
+          costUsd: 0, sessionId: 'sess-9', traceId: 'trace-9', latencyMs: 1,
+          baselineCostUsd: 0, savedCostsUsd: 0, savedCostUsd: 0,
+        };
+      },
+    } as any;
+
+    const intercept = createProxyInterceptor(stub);
+    const srv = http.createServer((req, res) => {
+      heldRes = res;
+      void intercept(req, res).then((handled) => {
+        if (!handled) {
+          res.writeHead(404, { 'content-type': 'text/plain' });
+          res.end('passthrough');
+        }
+      });
+    });
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()));
+    const port = (srv.address() as net.AddressInfo).port;
+
+    const pending = fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'auto', messages: [{ role: 'user', content: 'hi' }] }),
+    }).catch(() => {});
+    // Wait until the handler is holding, then kill the socket mid-flight —
+    // the state a real client abort produces under Node.
+    await new Promise((r) => setTimeout(r, 30));
+    heldRes?.socket?.destroy();
+    releaseProcess?.();
+    await new Promise((r) => setTimeout(r, 20));
+
+    const abortEvent = finalized.find((e) => e.phase === 'response' && e.wire.status === 499);
+    assert.ok(abortEvent, 'synthetic 499 response event emitted when socket destroyed');
+    assert.equal(abortEvent.wire.requestLine, 'POST /v1/chat/completions HTTP/1.1');
+    // Exactly ONE response event — the dead-socket finalize must not
+    // double-emit after the 499 synthesis.
+    assert.equal(finalized.filter((e) => e.phase === 'response').length, 1);
+
+    srv.close();
+  });
+
+  // ===== step-3c ADDITIVE cells (the four cases above are frozen) =====
+  // The MITM leg now dispatches through the SAME surfaces pipeline as the
+  // Fastify routes, which brings the approved convergences (contract §4 C-1
+  // / C-2) and the per-wire encodings that only land via dispatchSurface.
+
+  interface MitmHarness {
+    port: number;
+    close: () => void;
+    calls: Array<{ request: any; ctx: any }>;
+  }
+
+  async function mitmHarness(
+    processImpl: (request: any, ctx: any) => Promise<any>
+  ): Promise<MitmHarness> {
+    const calls: Array<{ request: any; ctx: any }> = [];
+    const stub = {
+      process: async (request: any, ctx: any) => {
+        calls.push({ request, ctx });
+        return processImpl(request, ctx);
+      },
+    } as any;
+    const intercept = createProxyInterceptor(stub);
+    const srv = http.createServer((req, res) => {
+      void intercept(req, res).then((handled) => {
+        if (!handled) {
+          res.writeHead(404, { 'content-type': 'text/plain' });
+          res.end('passthrough');
+        }
+      });
+    });
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()));
+    const port = (srv.address() as net.AddressInfo).port;
+    return { port, close: () => srv.close(), calls };
+  }
+
+  const mitmChatCompletion = (content: string) => ({
+    response: {
+      id: 'mock-cmpl', object: 'chat.completion', created: 1, model: 'mock-1',
+      choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    },
+    tierUsed: 'lite', modelUsed: 'mock-1', fallbackOccurred: false,
+    costUsd: 0, sessionId: 'sess-h', traceId: 'trace-h', latencyMs: 1,
+    baselineCostUsd: 0, savedCostUsd: 0,
+  });
+
+  it('MITM anthropic stream: full message_start…message_stop frame sequence', async () => {
+    const h = await mitmHarness(async () => mitmChatCompletion('hi'));
+    const res = await fetch(`http://127.0.0.1:${h.port}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'auto', max_tokens: 16, stream: true, messages: [{ role: 'user', content: 'hi' }] }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('content-type'), 'text/event-stream; charset=utf-8');
+    const text = await res.text();
+    for (const frame of [
+      'event: message_start',
+      'event: content_block_start',
+      'event: content_block_delta',
+      'event: content_block_stop',
+      'event: message_delta',
+      'event: message_stop',
+    ]) {
+      assert.ok(text.includes(frame), `missing ${frame} in ${text.slice(0, 200)}`);
+    }
+    // R-5 frozen posture: no CORS/Connection headers on the MITM SSE wire.
+    assert.equal(res.headers.get('access-control-allow-origin'), null);
+    h.close();
+  });
+
+  it('MITM responses wire: create → previous_response_id roundtrip + stream (C-2)', async () => {
+    const stamp = Date.now();
+    const h = await mitmHarness(async () => mitmChatCompletion('ok'));
+
+    const t1 = await fetch(`http://127.0.0.1:${h.port}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'auto', input: `RESP-FIRST-${stamp}` }),
+    });
+    assert.equal(t1.status, 200);
+    const j1: any = await t1.json();
+    assert.match(j1.id, /^resp_/);
+    assert.equal(j1.object, 'response');
+    assert.equal(j1.output[0].content[0].text, 'ok');
+
+    // The RespStore append ran on the MITM leg (surface.afterResult) — the
+    // continuation resolves instead of the old "Invalid request: input is
+    // required"-style rejection the pre-pipeline interceptor produced.
+    const t2 = await fetch(`http://127.0.0.1:${h.port}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'auto', previous_response_id: j1.id, input: `RESP-SECOND-${stamp}` }),
+    });
+    assert.equal(t2.status, 200, 'previous_response_id resolves — shared RespStore on MITM too');
+    const history: any[] = h.calls[1].request.messages;
+    assert.ok(
+      history.some((m) => String(m.content || '').includes(`RESP-FIRST-${stamp}`)),
+      'rebuilt history carries turn 1'
+    );
+    assert.ok(
+      history.some((m) => String(m.content || '').includes(`RESP-SECOND-${stamp}`)),
+      'delta carries turn 2'
+    );
+
+    const t3 = await fetch(`http://127.0.0.1:${h.port}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'auto', stream: true, input: `RESP-STREAM-${stamp}` }),
+    });
+    assert.equal(t3.status, 200);
+    const text = await t3.text();
+    assert.ok(text.includes('response.created'));
+    assert.ok(text.includes('response.output_text.delta'));
+    assert.ok(text.includes('response.completed'));
+    h.close();
+  });
+
+  it('MITM execution error maps per-surface: bad variant id → 404 OpenAI envelope (C-1)', async () => {
+    const h = await mitmHarness(async () => {
+      throw Object.assign(new Error("Model 'nonexistent#badvariant' not found."), { statusCode: 404 });
+    });
+    const res = await fetch(`http://127.0.0.1:${h.port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'nonexistent#badvariant', messages: [{ role: 'user', content: 'hi' }] }),
+    });
+    // Pre-flip MITM always answered 500/api_error; the pipeline maps the
+    // tagged status through the chat surface (400,600) → pass-through.
+    assert.equal(res.status, 404);
+    const j: any = await res.json();
+    assert.equal(j.error.type, 'invalid_request_error');
+    assert.match(j.error.message, /not found/);
+    h.close();
   });
 });
 

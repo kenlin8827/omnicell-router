@@ -9,6 +9,7 @@ import { ModelRegistration, RouterConfig } from '../src/config/types.js';
 import { Layer2Judge } from '../src/router/layer2-judge.js';
 import { RouterEngine } from '../src/router/index.js';
 import { SystemoneProvider } from '../src/providers/systemone.js';
+import { CaptureRecorder } from '../src/capture/recorder.js';
 import { resetDecisionCaptureConfig } from '../src/flywheel/decision-capture.js';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../src/types/openai.js';
 
@@ -17,6 +18,11 @@ import { ChatCompletionRequest, ChatCompletionResponse } from '../src/types/open
 // SDK. These tests pin the contract: the judge speaks a well-formed System One
 // request to a registered model, reads the tier out of the typed answer, and
 // degrades to null (→ caller falls back to Layer 1) on every failure mode.
+// Plus: judge-call CAPTURE (three-tier chain: requestCapture.enabled ×
+// systemone.enabled surface master × systemone.l2DecisionEnabled sub
+// → upstream-direction event pair with purpose 'l2-judge' on the OUTER
+// request's trace/session) and the dataset sink's single-key gate
+// (classifier.layer2.collectEnabled).
 // ---------------------------------------------------------------------------
 const originalCwd = process.cwd();
 const sandboxRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-layer2-'));
@@ -44,7 +50,7 @@ function makeConfig(providers: any[], models: any[], systemone?: any): RouterCon
     models,
     ...(systemone ? { systemone } : {}),
     classifier: { ...base.classifier, layer2: { ...base.classifier?.layer2, enabled: false } },
-    capture: { ...base.capture, enabled: false },
+    requestCapture: { ...base.requestCapture, enabled: false },
     flywheel: { ...base.flywheel, enabled: false },
     session: { ...base.session, enabled: false },
     tracePersist: { ...base.tracePersist, enabled: false },
@@ -74,12 +80,12 @@ beforeEach(() => {
   }
 });
 
-describe('Layer 2 decision capture (opt-in sink)', () => {
+describe('Layer 2 decision capture (dataset sink — single-key gate classifier.layer2.collectEnabled)', () => {
   const capturePath = () => path.join(sandbox, 'data', 'layer2-decisions.jsonl');
 
   test('enabled: a judged decision lands as one parseable row', async () => {
     fs.writeFileSync(path.join(sandbox, 'config.yaml'),
-      'port: 3000\nhost: 127.0.0.1\napiKeys: []\nmodels: []\nclassifier:\n  layer2:\n    decisionCapture:\n      enabled: true\n');
+      'port: 3000\nhost: 127.0.0.1\napiKeys: []\nmodels: []\nclassifier:\n  layer2:\n    collectEnabled: true\n');
     const upstream = serve({
       port: 0,
       async fetch() {
@@ -141,7 +147,7 @@ describe('Layer 2 decision capture (opt-in sink)', () => {
 
   test('an abandoned late result never lands in the dataset', async () => {
     fs.writeFileSync(path.join(sandbox, 'config.yaml'),
-      'port: 3000\nhost: 127.0.0.1\napiKeys: []\nmodels: []\nclassifier:\n  layer2:\n    decisionCapture:\n      enabled: true\n');
+      'port: 3000\nhost: 127.0.0.1\napiKeys: []\nmodels: []\nclassifier:\n  layer2:\n    collectEnabled: true\n');
     const upstream = serve({
       port: 0,
       async fetch() {
@@ -670,5 +676,199 @@ describe('routeAsync wires the Layer 2 judge', () => {
     } finally {
       upstream.stop(true);
     }
+  });
+});
+// ---------------------------------------------------------------------------
+// JUDGE-CALL CAPTURE (new feature): when a routed chat turn cascades into the
+// Layer 2 judge, the decision-model HTTP leg is recorded as an upstream-
+// direction http-exchange PAIR attached to the OUTER request's trace/session,
+// labeled purpose 'l2-judge'. Gate: three-tier chain requestCapture.enabled ×
+// systemone.enabled (surface master) × systemone.l2DecisionEnabled (sub),
+// checked inside the judge — when off, the whole chain
+// stays silent (the exact pre-feature call shape) while the turn's own client
+// and candidate-execution events continue unchanged. Both upstream classes
+// are covered: the CONVERTED path (registry.execute plumbing) and the NATIVE
+// SystemoneProvider path (fetch wrapped directly).
+// ---------------------------------------------------------------------------
+describe('judge-call capture (systemone.enabled × systemone.l2DecisionEnabled, capture master above them)', () => {
+  interface Evt {
+    eventType: string;
+    direction: 'client' | 'upstream';
+    phase: 'request' | 'response';
+    spanId: string;
+    traceId: string;
+    sessionId: string;
+    purpose?: string;
+    wire: {
+      requestLine: string;
+      requestHeaders: Record<string, string>;
+      requestBody: string;
+      status: number;
+    };
+  }
+
+  function readEvents(dir: string): Evt[] {
+    const day = path.join(dir, CaptureRecorder.localDateDir(new Date()));
+    if (!fs.existsSync(day)) return [];
+    const out: Evt[] = [];
+    for (const f of fs.readdirSync(day)) {
+      for (const line of fs.readFileSync(path.join(day, f), 'utf8').split('\n').filter(Boolean)) {
+        out.push(JSON.parse(line));
+      }
+    }
+    return out;
+  }
+
+  async function waitUntil(pred: () => boolean, timeoutMs = 3000): Promise<void> {
+    const start = Date.now();
+    while (!pred()) {
+      if (Date.now() - start > timeoutMs) throw new Error('capture events did not settle within timeout');
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  }
+
+  /** Route one real /v1/chat/completions turn whose Layer-2 judge dials the
+   *  given provider kind; returns every http-exchange event written. */
+  async function routedTurn(opts: {
+    judgeKind: 'native' | 'converted';
+    l2DecisionEnabled: boolean;
+  }): Promise<{ events: Evt[]; marker: string }> {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-judge-cap-'));
+    const marker = `JUDGECAP-${opts.judgeKind}-${Date.now()}`;
+    // Judge upstream: answers the System One question — natively as a
+    // decision body, or as a JSON-constrained chat completion when converted.
+    const judgeUpstream = serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      async fetch() {
+        if (opts.judgeKind === 'native') {
+          return Response.json({ answers: { tier: { type: 'choice', choice: 'plus', confidence: 0.82 } } });
+        }
+        return Response.json(
+          fakeChat(JSON.stringify({ answers: { tier: { choice: 'plus', confidence: 0.8, probabilities: { lite: 0, plus: 0.8, pro: 0.2, ultra: 0 } } } }))
+        );
+      },
+    });
+    // Execution upstream: serves the outer turn after the judge picks plus.
+    const execUpstream = serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      async fetch() {
+        return Response.json(fakeChat('executed after judge'));
+      },
+    });
+    try {
+      const judgeProvider =
+        opts.judgeKind === 'native'
+          ? { name: 'jc-native', type: 'systemone', baseUrl: `http://127.0.0.1:${judgeUpstream.port}`, apiKey: 'sk-jc-secret-1', timeoutMs: 5000 }
+          : { name: 'jc-conv', type: 'openai-compatible', baseUrl: `http://127.0.0.1:${judgeUpstream.port}`, apiKey: 'sk-jc-secret-1', timeoutMs: 5000 };
+      const judgeModel = {
+        id: `${judgeProvider.name}/judge`,
+        provider: judgeProvider.name,
+        upstreamModel: 'judge-upstream',
+        // ULTRA tier keeps the judge model OUT of the plus pool the judge
+        // itself selects — the outer execution then demonstrably runs a
+        // different (purpose-less) call.
+        tier: 'ultra',
+        pricing: { input: 1, output: 1, cacheRead: 0 },
+      };
+      const config = makeConfig(
+        [judgeProvider, { name: 'jc-exec', type: 'openai-compatible', baseUrl: `http://127.0.0.1:${execUpstream.port}`, apiKey: 'sk-exec-secret', timeoutMs: 5000 }],
+        [
+          judgeModel,
+          { id: 'jc-exec/chat', provider: 'jc-exec', upstreamModel: 'exec-upstream', tier: 'plus', pricing: { input: 1, output: 1, cacheRead: 0 } },
+        ]
+      );
+      config.requestCapture = {
+        ...config.requestCapture,
+        enabled: true,
+        dir: tmp,
+        retentionDays: 7,
+        maxTotalMB: 64,
+        maxBodyBytes: 65536,
+        systemone: { enabled: true, l2DecisionEnabled: opts.l2DecisionEnabled },
+      };
+      config.classifier = {
+        ...config.classifier,
+        layer2: { enabled: true, model: judgeModel.id, timeoutMs: 5000 },
+      };
+      const { app } = createServer(config);
+      try {
+        const res = await app.inject({
+          method: 'POST',
+          url: '/v1/chat/completions',
+          headers: { 'content-type': 'application/json' },
+          payload: { model: 'auto', messages: [{ role: 'user', content: `${PROOF} ${marker}` }] },
+        });
+        expect(res.statusCode).toBe(200);
+        // Settle: outer client pair + execution pair, plus the judge pair when
+        // the feature is ON (2 vs 3 response events — the count is part of
+        // what the OFF/ON pair pins).
+        const expectedResponses = opts.l2DecisionEnabled ? 3 : 2;
+        await waitUntil(() => readEvents(tmp).filter((e) => e.phase === 'response').length >= expectedResponses);
+        // OFF runs must also give the (absent) judge leg time to show up if
+        // the plumbing leaked — a purpose event would land within the inject
+        // await already; 250ms settle mirrors the guard suite's window.
+        if (!opts.l2DecisionEnabled) await new Promise((r) => setTimeout(r, 250));
+        return { events: readEvents(tmp), marker };
+      } finally {
+        await app.close();
+      }
+    } finally {
+      judgeUpstream.stop(true);
+      execUpstream.stop(true);
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+
+  function assertJudgePair(events: Evt[], marker: string): void {
+    const judge = events.filter((e) => e.purpose === 'l2-judge');
+    expect(judge.length).toBe(2);
+    const req = judge.find((e) => e.phase === 'request')!;
+    const resp = judge.find((e) => e.phase === 'response')!;
+    expect(req.direction).toBe('upstream');
+    expect(resp.direction).toBe('upstream');
+    expect(resp.spanId).toBe(req.spanId); // one exchange, two events
+    // ATTACHED TO THE OUTER REQUEST'S IDENTITY: same trace/session as the
+    // outer client-request event.
+    const outer = events.find((e) => e.direction === 'client' && e.phase === 'request')!;
+    expect(req.traceId).toBe(outer.traceId);
+    expect(req.sessionId).toBe(outer.sessionId);
+    // The judge's decision wire carried the conversation state (marker) and
+    // the credential header reached disk ONLY redacted.
+    expect(req.wire.requestBody).toContain(marker);
+    expect(req.wire.requestHeaders.authorization).toBe('[REDACTED]');
+    expect(resp.wire.status).toBe(200);
+    // The candidate-execution leg exists as a SEPARATE purpose-less pair —
+    // the purpose marker is what tells them apart.
+    const exec = events.filter((e) => e.direction === 'upstream' && e.phase === 'request' && e.purpose === undefined);
+    expect(exec.length).toBeGreaterThanOrEqual(1);
+  }
+
+  test('converted judge ON: outer turn archives a purpose l2-judge upstream pair on the outer trace', async () => {
+    const { events, marker } = await routedTurn({ judgeKind: 'converted', l2DecisionEnabled: true });
+    assertJudgePair(events, marker);
+  });
+
+  test('converted judge OFF (l2DecisionEnabled false): zero purpose events, turn still captured', async () => {
+    const { events } = await routedTurn({ judgeKind: 'converted', l2DecisionEnabled: false });
+    expect(events.filter((e) => e.purpose === 'l2-judge').length).toBe(0);
+    // The turn itself is still captured (master ON): client pair + purpose-less
+    // execution pair — only the judge leg went silent.
+    expect(events.filter((e) => e.direction === 'client' && e.phase === 'request').length).toBe(1);
+    expect(events.filter((e) => e.direction === 'upstream' && e.phase === 'request').length).toBe(1);
+  });
+
+  test('native SystemoneProvider judge ON: fetch wrapped emits the purpose pair too', async () => {
+    const { events, marker } = await routedTurn({ judgeKind: 'native', l2DecisionEnabled: true });
+    assertJudgePair(events, marker);
+    const req = events.filter((e) => e.purpose === 'l2-judge' && e.phase === 'request')[0]!;
+    // Absolute-form request line dialed the native decision wire.
+    expect(req.wire.requestLine).toMatch(/^POST http:\/\/127\.0\.0\.1:\d+\/systemone HTTP\/1\.1$/);
+  });
+
+  test('native SystemoneProvider judge OFF: silent — HTTP-surface semantics byte-identical', async () => {
+    const { events } = await routedTurn({ judgeKind: 'native', l2DecisionEnabled: false });
+    expect(events.filter((e) => e.purpose === 'l2-judge').length).toBe(0);
   });
 });

@@ -1,20 +1,18 @@
-import { FastifyInstance } from 'fastify';
-import { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import {
   ChatCompletionRequest,
   ChatCompletionResponse,
   ChatMessage,
   ChatMessageContentPart,
 } from '../types/openai.js';
-import {
-  appendGatewayResponseChunk,
-  getClientExchangeContext,
-} from '../observability/http-exchange.js';
 import { EFFORT_LADDER, type ReasoningEffort } from '../types/router.js';
-import { getModelAccessPolicy, makeModelAccessGuard } from '../auth/model-access.js';
 
 /**
- * Anthropic Messages API compatibility layer (POST /v1/messages).
+ * Anthropic Messages API compatibility — wire protocol converters.
+ *
+ * Route registration lives in surfaces/anthropic.ts (refactor step 3a);
+ * this module is the shared converter library: the Fastify surface and the
+ * MITM forward-proxy interceptor both encode through it, and the wire tests
+ * import these functions from this path.
  *
  * Lets Anthropic-protocol clients (Claude Code, Anthropic SDKs, any
  * ANTHROPIC_BASE_URL-aware tool) hit the same routing pipeline as
@@ -350,117 +348,4 @@ export function chatToAnthropicStreamEvents(
   );
   events.push(sseEvent('message_stop', { type: 'message_stop' }));
   return events;
-}
-
-/**
- * Register the Anthropic-protocol endpoint on the gateway.
- * Model routing (auto / auto-lite / auto-plus / auto-pro / auto-ultra /
- * concrete model ids) is resolved inside orchestrator.process, exactly
- * like the OpenAI /v1/chat/completions path.
- */
-export function registerAnthropicRoutes(
-  app: FastifyInstance,
-  orchestrator: PipelineOrchestrator
-): void {
-  app.post('/v1/messages', async (req, reply) => {
-    const body = req.body as AnthropicMessagesRequest;
-
-    const { request, error } = anthropicToOpenAI(body || {});
-    if (!request || error) {
-      return reply.status(400).send({
-        type: 'error',
-        error: {
-          type: 'invalid_request_error',
-          message: error || 'Invalid request.',
-        },
-      });
-    }
-
-    // Per-key model access gate (403 when the key's policy denies this model)
-    const enforceModelAccess = makeModelAccessGuard(orchestrator.getRegistry());
-    if (!enforceModelAccess(req, reply, request.model?.trim() || 'auto')) {
-      return reply;
-    }
-
-    try {
-      const result = await orchestrator.process(request, {
-        clientIp: req.ip,
-        headers: req.headers,
-        wire: 'anthropic',
-        fastifyRequest: req,
-        modelAccess: getModelAccessPolicy((req as any).authInfo?.keyConfig),
-      });
-
-      const tierHeader = result.tierUsed + (result.fallbackOccurred ? '-escalated' : '');
-      const ocrHeaders: Record<string, string> = {
-        'X-OCR-Tier': tierHeader,
-        'X-OCR-Layer': result.layerUsed || 'layer0',
-        'X-OCR-Model': result.modelUsed,
-        'X-OCR-Failover': result.failoverOccurred ? 'true' : 'false',
-        'X-OCR-Failover-Attempts': (result.failoverAttempts || 1).toString(),
-        'X-OCR-Failover-Path': result.failoverPath?.join(' -> ') || '',
-        'X-OCR-InPlace-Retries': (result.inplaceRetries || 0).toString(),
-        'X-OCR-Breaker-State': result.breakerState || 'CLOSED',
-        'X-OCR-Session-ID': result.sessionId || '',
-        'X-OCR-Session-Ratchet': result.sessionRatchetApplied ? 'true' : 'false',
-        'X-OCR-Session-Lookup': result.sessionLookupType || '',
-        'X-OCR-Trace-ID': result.traceId || '',
-        'X-OCR-Cost-USD': result.costUsd.toFixed(6),
-        'X-OCR-Saved-USD': result.savedCostUsd.toFixed(6),
-        'X-OCR-Latency-MS': result.latencyMs.toString(),
-      };
-      // Reasoning-effort observability — only set when the client asked for
-      // thinking. See server.ts for full description.
-      if (result.requestedEffort && result.requestedEffort !== 'none') {
-        reply.header('X-OCR-Thinking-Requested', result.requestedEffort);
-        reply.header('X-OCR-Thinking-Actual', result.actualEffort ?? result.requestedEffort);
-        reply.header('X-OCR-Thinking-Degraded', result.reasoningDegraded ? 'true' : 'false');
-      }
-      // Variant observability — sibling / `#variant` id resolved for this request.
-      if (result.variantUsed) ocrHeaders['X-OCR-Variant'] = result.variantUsed;
-      for (const [k, v] of Object.entries(ocrHeaders)) {
-        reply.header(k, v);
-      }
-
-      const id = result.response.id || `msg_${Date.now()}`;
-      const model = result.modelUsed;
-
-      // -------------------------------------------------------------
-      // Anthropic SSE Streaming (stream: true)
-      // -------------------------------------------------------------
-      if (request.stream) {
-        reply.raw.writeHead(200, {
-          'Content-Type': 'text/event-stream; charset=utf-8',
-          'Cache-Control': 'no-cache, no-transform',
-          Connection: 'keep-alive',
-          'Access-Control-Allow-Origin': '*',
-          ...ocrHeaders,
-        });
-
-        const sseCtx = getClientExchangeContext(req);
-        for (const evt of chatToAnthropicStreamEvents(result.response, model)) {
-          if (sseCtx) appendGatewayResponseChunk(sseCtx, evt);
-          reply.raw.write(evt);
-        }
-        reply.raw.end();
-        return reply;
-      }
-
-      // Non-streaming standard Anthropic message JSON
-      return reply.send(openAIToAnthropic(result.response, model));
-    } catch (err: any) {
-      req.log.error(err, 'Anthropic messages execution failed');
-      const status =
-        Number.isInteger(err?.statusCode) && err.statusCode >= 400 && err.statusCode < 600
-          ? err.statusCode
-          : 500;
-      return reply.status(status).send({
-        type: 'error',
-        error: {
-          type: status >= 500 ? 'api_error' : 'invalid_request_error',
-          message: err.message || 'Internal Router Error',
-        },
-      });
-    }
-  });
 }

@@ -16,7 +16,7 @@ import { SessionManager, SessionResolveResult } from '../session/session-manager
 import { TraceTracker } from '../trace/tracker.js';
 import { CaptureRecorder } from '../capture/recorder.js';
 import type { UpstreamEventContext } from '../providers/base.js';
-import { emitClientRequest, setClientExchangeContext } from '../observability/http-exchange.js';
+import { emitClientRequest, setClientExchangeContext, type CaptureClientRequest, type ClientExchangeContext } from '../observability/http-exchange.js';
 import { resolveTraceId } from '../observability/trace-id.js';
 import { getWarnThrottle } from '../observability/warn-throttle.js';
 import { ActiveHealthProber, CircuitBreakerManager, ErrorClassifier } from '../resilience/index.js';
@@ -41,6 +41,21 @@ export interface ProcessContext {
    * callers and unit tests can pass plain headers without a request object.
    */
   fastifyRequest?: import('fastify').FastifyRequest;
+  /**
+   * Transport observation for non-Fastify entry points (the MITM
+   * forward-proxy interceptor): the ORIGINAL client request line + headers.
+   * Ignored when `fastifyRequest` is present; recorded into the capture's
+   * inbound http-exchange exactly like the Fastify leg.
+   */
+  clientRequest?: CaptureClientRequest;
+  /**
+   * Hands the client-exchange context to entry points with no Fastify
+   * response lifecycle (the MITM interceptor), so THEY can finalize the
+   * capture's gateway-response event when the raw response finishes.
+   * Fastify paths finalize inside the Fastify transport adapter's terminal
+   * sends instead and never provide this callback.
+   */
+  onClientExchange?: (ctx: ClientExchangeContext) => void;
 }
 
 /** Deep-enough message copy for capture snapshots (content parts cloned). */
@@ -64,6 +79,26 @@ function snapshotMessages(messages: any[]): any[] {
  * trace stays compact for the common no-headers path.
  */
 const REQUEST_ID_KEYS = ['x-request-id', 'x-trace-id', 'x-correlation-id', 'request-id', 'traceparent'];
+
+/**
+ * Pull the upstream target host from an inbound header map. On the MITM
+ * forward-proxy path this is the ORIGINAL destination (the API host the
+ * client dialed — `clientRequest.headers.host` survives TLS termination),
+ * which pins bare-name model resolution to the right provider. The native
+ * /v1 leg is deliberately excluded from this call: there `headers.host` is
+ * whatever the client SENT, so a forged Host must not steer resolution.
+ * Handles Fastify's `string | string[] | undefined` header surface and case
+ * variants.
+ */
+function pickHeaderHost(
+  headers?: Record<string, string | string[] | undefined>
+): string | undefined {
+  if (!headers) return undefined;
+  const raw = headers.host ?? headers.Host;
+  if (typeof raw === 'string') return raw;
+  if (Array.isArray(raw)) return raw[0];
+  return undefined;
+}
 
 function extractClientHeaders(
   headers?: Record<string, string | string[] | undefined>
@@ -113,7 +148,7 @@ export class PipelineOrchestrator {
     this.flywheel = new FlywheelCollector(config.flywheel);
     this.sessionManager = sessionManager || new SessionManager(config.session);
     this.traceTracker = new TraceTracker(5000, config.tracePersist);
-    this.captureRecorder = new CaptureRecorder(config.capture);
+    this.captureRecorder = new CaptureRecorder(config.requestCapture);
 
     // Lookup baseline pricing for FinOps dollar calculation
     const baselineModel = this.registry.getModel(config.baselineModel) || this.registry.getModelForTier('plus');
@@ -188,7 +223,9 @@ export class PipelineOrchestrator {
    * functions (PromptOptimizer.normalizeMessages / resolveSessionId) — both
    * are deterministic and run in the same synchronous segment, so the wrapper
    * snapshot is byte-identical to what processInternal sees before
-   * applyCompression mutates the request. Request headers are never captured.
+   * applyCompression mutates the request. Request headers are captured in
+   * SANITIZED form (credential values masked per the deny-list in
+   * observability/http-exchange.ts), never raw.
    */
   public async process(
     request: ChatCompletionRequest,
@@ -200,12 +237,16 @@ export class PipelineOrchestrator {
     // Capture pipeline state — see observability/http-exchange.ts and
     // observability/upstream-events.ts for the wire emit contract. The
     // `traceId` shared across all four events is sourced from the inbound
-    // request when the client supplied one (W3C `traceparent`,
-    // `x-request-id`) so the gateway stays transparent in distributed
-    // traces; when nothing is supplied, we mint a fresh 32-hex id
+    // request on BOTH legs (W3C `traceparent`, `x-request-id`, ...) so the
+    // gateway stays transparent in distributed traces: the Fastify leg reads
+    // its own request headers, the MITM leg the original clientRequest
+    // headers, then plain `headers` (legacy/test callers). Only when NO
+    // header source exists at all do we mint a fresh 32-hex id
     // (OpenTelemetry compliant).
-    const traceResolution = context?.fastifyRequest
-      ? resolveTraceId(context.fastifyRequest, 'client-or-mint')
+    const traceHeaders =
+      context?.fastifyRequest?.headers ?? context?.clientRequest?.headers ?? context?.headers;
+    const traceResolution = traceHeaders
+      ? resolveTraceId({ headers: traceHeaders }, 'client-or-mint')
       : { traceId: crypto.randomUUID().replace(/-/g, '').slice(0, 32), source: 'minted' as const };
     const captureOutTraceId = traceResolution.traceId;
 
@@ -227,11 +268,13 @@ export class PipelineOrchestrator {
       // CLIENT REQUEST event fires synchronously here — independent of any
       // response. Even if the upstream call hangs / times out / the handler
       // throws, the client request event is already on disk.
-      // (GATEWAY RESPONSE event is emitted by the Fastify onResponse hook
-      // after the handler returns, using the ctx attached back onto req.)
+      // (GATEWAY RESPONSE event is emitted by the transport adapter that
+      // owns this leg: the Fastify transport finalizes at its terminal send
+      // using the ctx attached back onto req; the MITM interceptor uses the
+      // ctx handed to it via onClientExchange.)
       const clientExchangeCtx = emitClientRequest({
         recorder: this.captureRecorder,
-        req: context?.fastifyRequest,
+        req: context?.fastifyRequest ?? context?.clientRequest,
         body: snapshotRequest,
         sessionId: captureSessionId,
         traceId: captureOutTraceId,
@@ -239,6 +282,8 @@ export class PipelineOrchestrator {
       });
       if (context?.fastifyRequest) {
         setClientExchangeContext(context.fastifyRequest, clientExchangeCtx);
+      } else if (context?.onClientExchange) {
+        context.onClientExchange(clientExchangeCtx);
       }
       upstreamEventContext = {
         recorder: this.captureRecorder,
@@ -280,16 +325,22 @@ export class PipelineOrchestrator {
 
     let explicitModel: ModelRegistration | undefined;
     let variantUsed: string | undefined;
-    if (request.model === 'auto-lite') {
+    // Routing-name matching trims once. `request.model` itself stays verbatim
+    // end-to-end (surface contract: wire/capture bytes and the forwarded copy
+    // are never rewritten) — this restores the trim tolerance the old inline
+    // /v1/chat handler had before dispatch, and gives both legs (Fastify +
+    // MITM, which historically never trimmed) identical matching semantics.
+    const modelName = (request.model ?? '').trim();
+    if (modelName === 'auto-lite') {
       normalizedRequest.router_options = { ...normalizedRequest.router_options, force_tier: 'lite' };
-    } else if (request.model === 'auto-plus') {
+    } else if (modelName === 'auto-plus') {
       normalizedRequest.router_options = { ...normalizedRequest.router_options, force_tier: 'plus' };
-    } else if (request.model === 'auto-pro') {
+    } else if (modelName === 'auto-pro') {
       normalizedRequest.router_options = { ...normalizedRequest.router_options, force_tier: 'pro' };
-    } else if (request.model === 'auto-ultra') {
+    } else if (modelName === 'auto-ultra') {
       normalizedRequest.router_options = { ...normalizedRequest.router_options, force_tier: 'ultra' };
-    } else if (request.model && request.model !== 'auto') {
-      const specific = this.registry.getModel(request.model);
+    } else if (modelName && modelName !== 'auto') {
+      const specific = this.registry.getModel(modelName);
       if (specific) {
         // Exact-model pass-through: the client named a REGISTERED model id
         // (e.g. pinned via the Client Hub model slots). Route to exactly
@@ -299,7 +350,7 @@ export class PipelineOrchestrator {
         explicitModel = specific;
         normalizedRequest.router_options = { ...normalizedRequest.router_options, force_tier: specific.tier };
       } else {
-        const variantRef = this.registry.resolveVariantRef(request.model);
+        const variantRef = this.registry.resolveVariantRef(modelName);
         if (variantRef) {
           // Variant request (sibling id `base-variant` or `base#variant`):
           // route to the BASE model exactly and pin the variant's effort as
@@ -312,17 +363,44 @@ export class PipelineOrchestrator {
           normalizedRequest.reasoning_effort = variantRef.variant.reasoningEffort;
           normalizedRequest.model = variantRef.base.id;
           normalizedRequest.router_options = { ...normalizedRequest.router_options, force_tier: variantRef.base.tier };
-        } else if (request.model.includes('#')) {
+        } else if (modelName.includes('#')) {
           // `#variant` is explicit syntax — a typo must fail loud instead of
           // silently classifier-routing (invisible model drift is exactly
           // the failure mode variant ids exist to prevent).
-          const hash = request.model.indexOf('#');
+          const hash = modelName.indexOf('#');
           throw Object.assign(
             new Error(
-              `Variant '${request.model.slice(hash + 1)}' not found for model '${request.model.slice(0, hash)}'`
+              `Variant '${modelName.slice(hash + 1)}' not found for model '${modelName.slice(0, hash)}'`
             ),
             { statusCode: 404 }
           );
+        } else {
+          // Bare upstream name (no provider prefix — clients that address a
+          // model the way its own catalog names it, e.g. `qwen3.8-flash`).
+          // The full-id lookup above missed, but a registered model may still
+          // carry this exact name as its upstreamModel: resolve to it so the
+          // client's explicit choice is honored instead of silently
+          // classifier-routing. Provider pinning reads ONLY the MITM leg's
+          // clientRequest headers — after TLS termination its `host` is the
+          // ORIGINAL host the client dialed (the design intent of the pin).
+          // The native /v1 leg never pins: its `headers.host` is client-
+          // controlled (a forged Host could steer resolution to a same-named
+          // sibling provider) and the gateway's own host matches no provider
+          // baseUrl anyway. Cheapest-hit-first ordering picks the primary
+          // otherwise. Same-name siblings stay reachable via the tier's
+          // failover pool. Unresolved names keep the classifier contract
+          // (intelligent-routing product behavior).
+          const bareHits = this.registry.getModelsByUpstreamName(
+            modelName,
+            pickHeaderHost(context?.clientRequest?.headers)
+          );
+          if (bareHits.length > 0) {
+            explicitModel = bareHits[0];
+            normalizedRequest.router_options = {
+              ...normalizedRequest.router_options,
+              force_tier: explicitModel.tier,
+            };
+          }
         }
         // Other unregistered names (e.g. native `claude-opus-*` after a /model
         // switch inside Claude Code) are left untouched — the classifier
@@ -336,8 +414,8 @@ export class PipelineOrchestrator {
     // (explicit user composition wins, mirroring the exact-model
     // pass-through above).
     const comboByName =
-      !explicitModel && request.model && this.registry.isCombo(request.model)
-        ? request.model
+      !explicitModel && modelName && this.registry.isCombo(modelName)
+        ? modelName
         : undefined;
     if (comboByName && this.registry.resolveCombo(comboByName).length === 0) {
       // Fail fast instead of silently degrading to classifier routing: the
@@ -351,8 +429,15 @@ export class PipelineOrchestrator {
 
     // Defense in depth: an explicitly named model outside the key's model
     // policy fails loud here (HTTP routes entry-check this too; direct
-    // orchestrator callers might not).
-    if (explicitModel && context?.modelAccess && !isModelAllowed(explicitModel.id, context.modelAccess)) {
+    // orchestrator callers might not). `tier` is passed so TIER-level deny
+    // entries (auto-lite/auto-plus/...) match here exactly as they do in the
+    // execution pool filter (executeCandidatePool) — a tier-denied explicit
+    // model must not slip through the bare-name/variant resolution paths.
+    if (
+      explicitModel &&
+      context?.modelAccess &&
+      !isModelAllowed(explicitModel.id, context.modelAccess, explicitModel.tier)
+    ) {
       throw Object.assign(
         new Error(`API key model policy denies model '${explicitModel.id}'`),
         { statusCode: 403 }
@@ -421,7 +506,13 @@ export class PipelineOrchestrator {
           normalizedRequest,
           this.config.classifier,
           this.registry,
-          this.config.systemone?.defaultModel
+          this.config.systemone?.defaultModel,
+          // Judge-call capture identity: the outer turn's trace/session (only
+          // exists while the capture master is on). The LAYER 2 JUDGE applies
+          // the surface-master chain (systemone.enabled master × l2Decision-
+          // Enabled sub) — when off it
+          // passes nothing further, so this arg alone changes nothing today.
+          upstreamEventContext
         );
 
     // 4. Apply Monotonic Session Ratchet — three session-interaction modes,

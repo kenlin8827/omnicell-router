@@ -256,6 +256,75 @@ describe('CaptureRecorder', () => {
     }
   });
 
+  it('isSystemoneEnabled / isSystemoneJudgeCaptureEnabled: master/sub truth tables', () => {
+    const dir5 = makeTmpDir();
+    type Sys = { enabled?: boolean; l2DecisionEnabled?: boolean };
+    const mk = (enabled?: boolean, systemone?: Sys): CaptureRecorder =>
+      new CaptureRecorder({ dir: dir5, retentionDays: 7, maxTotalMB: 512, maxBodyBytes: 1024, enabled, systemone });
+    try {
+      // CLIENT-leg truth table — 4-combo over (requestCapture.enabled ×
+      // systemone.enabled). Neither flag alone turns capture on (the privacy
+      // master wins); under capture-master=true an ABSENT surface master
+      // defaults ON (master/sub contract: the privacy posture is held by
+      // requestCapture.enabled alone).
+      const clientCases: Array<[boolean | undefined, boolean | undefined, boolean]> = [
+        [undefined, undefined, false], // capture master absent → OFF
+        [false, true, false], // capture master OFF silences the surface too
+        [true, undefined, true], // absent surface master = default ON
+        [true, false, false], // surface master explicitly OFF
+      ];
+      // JUDGE-leg truth table — full 8-combo over (requestCapture.enabled ×
+      // systemone.enabled × systemone.l2DecisionEnabled). THE MASTER-SEMANTICS
+      // PIN: systemone.enabled=false silences the judge leg even when
+      // l2DecisionEnabled=true — the sub-switch only ever ADDS beneath the
+      // surface master, it can never override it.
+      const judgeCases: Array<[boolean, boolean, boolean, boolean]> = [
+        [true, true, true, true], // the only ON cell
+        [true, true, false, false], // sub OFF exempts the judge leg only
+        [true, false, true, false], // surface master OFF → judge SILENCED despite sub=true
+        [true, false, false, false],
+        [false, true, true, false], // capture master OFF wins everywhere
+        [false, true, false, false],
+        [false, false, true, false],
+        [false, false, false, false],
+      ];
+      for (const [enabled, sysEnabled, expected] of clientCases) {
+        const r = mk(enabled, sysEnabled === undefined ? undefined : { enabled: sysEnabled });
+        assert.equal(r.isSystemoneEnabled(), expected, `client: enabled=${String(enabled)} sysEnabled=${String(sysEnabled)}`);
+        r.stop();
+      }
+      for (const [enabled, sysEnabled, sub, expected] of judgeCases) {
+        const r = mk(enabled, { enabled: sysEnabled, l2DecisionEnabled: sub });
+        assert.equal(r.isSystemoneJudgeCaptureEnabled(), expected, `judge: enabled=${String(enabled)} sysEnabled=${String(sysEnabled)} sub=${String(sub)}`);
+        r.stop();
+      }
+
+      // applyConfig hot-swap: ON ↔ OFF both ways, and absent keeps the
+      // current value (nullish-merge, like every other field — a partial
+      // systemone node must not stomp the sibling flag).
+      const hot = mk(true);
+      assert.equal(hot.isSystemoneEnabled(), true); // surface master default ON under the capture master
+      assert.equal(hot.isSystemoneJudgeCaptureEnabled(), true); // sub default ON too
+      hot.applyConfig({ systemone: { enabled: false } });
+      assert.equal(hot.isSystemoneEnabled(), false);
+      assert.equal(hot.isSystemoneJudgeCaptureEnabled(), false); // master OFF silences BOTH legs, hot
+      hot.applyConfig({}); // absent → retains
+      assert.equal(hot.isSystemoneEnabled(), false);
+      hot.applyConfig({ systemone: { enabled: true } });
+      assert.equal(hot.isSystemoneEnabled(), true);
+      assert.equal(hot.isSystemoneJudgeCaptureEnabled(), true);
+      hot.applyConfig({ systemone: { l2DecisionEnabled: false } }); // sub exempt; client leg untouched
+      assert.equal(hot.isSystemoneEnabled(), true);
+      assert.equal(hot.isSystemoneJudgeCaptureEnabled(), false);
+      hot.applyConfig({ enabled: false }); // capture master off wins
+      assert.equal(hot.isSystemoneEnabled(), false);
+      assert.equal(hot.isSystemoneJudgeCaptureEnabled(), false);
+      hot.stop();
+    } finally {
+      rmrf(dir5);
+    }
+  });
+
   it('applyConfig picks up a new retention window and sweeps by it', () => {
     const dir4 = makeTmpDir();
     try {
@@ -726,8 +795,75 @@ describe('CaptureRecorder hardening (code-review findings)', () => {
     // Query-string auth redacted; non-auth params preserved.
     assert.ok(!ev.wire.requestLine.includes('AIzaSySecretKey'), 'raw query key must never persist');
     assert.ok(ev.wire.requestLine.includes('foo=bar'));
+    // Upstream request line is absolute-form: the provider HOST is visible
+    // so the archive shows which endpoint was dialed.
+    assert.ok(ev.wire.requestLine.startsWith('POST https://'), ev.wire.requestLine);
+    assert.ok(ev.wire.requestLine.includes('api.example'), ev.wire.requestLine);
     // No raw credential anywhere in the whole line.
     assert.ok(!content.includes('sk-real-secret') && !content.includes('real-api-key') && !content.includes('real-azure-key'));
+  });
+
+  it('redacts apikey/apiKey/auth/sig query params in BOTH url forms', async () => {
+    // F2 (security P2-2): word-boundary matching cannot see through the
+    // compound `apikey` (the 'i' before 'key' is a letter) nor the bare
+    // `auth`/`sig` params — all four must redact in the request line, on
+    // absolute-form (emitUpstreamRequest) AND origin-form (emitClientRequest).
+    // `signature` was already covered (longer alternation wins); `monkey`,
+    // `keywords`, `foo` must stay byte-identical (no mangling).
+    const { emitUpstreamRequest, emitClientRequest } = await import(
+      '../src/observability/http-exchange.js'
+    );
+    const sessionId = 'sess_redact_query';
+    emitUpstreamRequest({
+      recorder,
+      url:
+        'https://api.example/v1/chat?apikey=sk-abs-1&apiKey=sk-abs-2&auth=xyzabs&sig=abcabs&' +
+        'foo=bar&monkey=see&keywords=seo&signature=sigrabs&token=tkabs&secret=scabs',
+      method: 'POST',
+      requestHeaders: {},
+      requestBody: '{}',
+      sessionId,
+      traceId: 'trace_redact_query',
+      model: 'auto',
+    });
+    emitClientRequest({
+      recorder,
+      req: {
+        method: 'POST',
+        url: '/v1/chat?apikey=sk-rel-1&auth=xyzrel&sig=abcrel&foo=bar',
+        headers: {},
+      },
+      body: { marker: 'origin-form' },
+      sessionId,
+      traceId: 'trace_redact_query',
+      model: 'auto',
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    const dateDir = CaptureRecorder.localDateDir(new Date());
+    const content = fs.readFileSync(path.join(tmp, dateDir, `${sessionId}.jsonl`), 'utf8');
+    const lines = content.split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
+    const absEv = lines.find((ev) => String(ev.wire.requestLine).startsWith('POST https://api.example'));
+    assert.ok(absEv, 'absolute-form upstream request event written');
+    const originEv = lines.find((ev) => String(ev.wire.requestLine).startsWith('POST /v1/chat?'));
+    assert.ok(originEv, 'origin-form client request event written');
+    const absLine = absEv.wire.requestLine;
+    const originLine = originEv.wire.requestLine;
+
+    // Absolute form: every credential-shaped param value is gone…
+    for (const secret of ['sk-abs-1', 'sk-abs-2', 'xyzabs', 'abcabs', 'sigrabs', 'tkabs', 'scabs']) {
+      assert.ok(!absLine.includes(secret), `${secret} must never persist in the absolute-form line`);
+    }
+    // …while benign params keep their exact bytes.
+    assert.ok(absLine.includes('foo=bar') && absLine.includes('monkey=see') && absLine.includes('keywords=seo'),
+      'benign query params must not be mangled');
+    assert.ok(absLine.includes('apikey=%5BREDACTED%5D') || absLine.includes('apikey=[REDACTED]'),
+      'apikey param present but value-redacted (name kept)');
+
+    // Origin form (pathname+query path used by the client-side capture).
+    for (const secret of ['sk-rel-1', 'xyzrel', 'abcrel']) {
+      assert.ok(!originLine.includes(secret), `${secret} must never persist in the origin-form line`);
+    }
+    assert.ok(originLine.includes('foo=bar'), 'origin-form benign param preserved');
   });
 
   it('groupEventsIntoTurns keeps turns separate when a client reuses one traceId', () => {

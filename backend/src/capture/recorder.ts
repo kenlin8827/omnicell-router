@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { CaptureConfig } from '../config/types.js';
+import { RequestCaptureConfig } from '../config/types.js';
 import { getOcrHomeDir } from '../cli/paths.js';
 
 /**
@@ -10,7 +10,9 @@ import { getOcrHomeDir } from '../cli/paths.js';
  * `response` is the full upstream payload. Either becomes a plain string with
  * `truncated: true` when it exceeds the per-body byte budget (a truncated
  * JSON document is no longer valid JSON, so it is stored as a string).
- * Request headers are NEVER captured (they carry API keys).
+ * Request headers are captured in SANITIZED form only: every header name is
+ * kept, credential-shaped values are replaced with `[REDACTED]` (deny-list:
+ * `DENY_HEADER_SUBSTRINGS` in `observability/http-exchange.ts`).
  *
  * `upstreamRequest` is the REAL outbound wire body the provider actually
  * sent — translated through the wire (OpenAI / Anthropic / Google / Responses
@@ -24,20 +26,8 @@ import { getOcrHomeDir } from '../cli/paths.js';
  * (retry-after / request-id / content-type / ratelimit trio), TTFB, total
  * duration, and the wire kind. Header capture excludes all credential-
  * bearing fields.
- *
- * `inboundHttp` is the symmetric inbound leg: the Fastify-observed method,
- * URL, client IP, the final response status the gateway returned, total
- * gateway-side latency, a SAFE subset of response headers (content-type +
- * X-OCR-* diagnostics — never Authorization / cookies / API keys), and a
- * SAFE whitelist of inbound request headers (user-agent / accept-language /
- * request-id / anthropic-version / openai-organization). All credential-
- * bearing fields are dropped.
- *
- * `outboundHttp` is the gateway → client response observation: status,
- * total request lifecycle latency (the user's perceived response time),
- * and content-type. Pairs with `inboundHttp` to bookend the whole request.
  */
-export interface UpstreamHttpRecord {
+interface UpstreamHttpRecord {
   url: string;
   method: string;
   status: number;
@@ -59,52 +49,6 @@ export interface UpstreamHttpRecord {
   /** 1-based index of the successful attempt inside the candidate chain. */
   attemptIndex: number;
   wireKind: 'openai' | 'anthropic' | 'google' | 'responses' | 'opencode-proxy';
-}
-
-/**
- * Inbound HTTP transport observation: what the gateway received from the
- * client and what HTTP status / latency it ended up returning. Symmetric to
- * UpstreamHttpRecord but for the inbound leg. Header capture is a SAFE
- * whitelist only — credential-bearing fields are dropped by the deny-list
- * at runtime as a defense-in-depth over the whitelist review. Filled by the
- * Fastify `onSend` hook so it reflects the FINAL response status (after all
- * error paths in the handler).
- */
-export interface InboundHttpRecord {
-  method: string;
-  /** Request URL path with query string (e.g. `/v1/chat/completions?x=1`). */
-  url: string;
-  /** Source IP as seen by Fastify (honors `trustProxy` if configured). */
-  clientIp?: string;
-  /** HTTP status the gateway returned to the client (final, after error paths). */
-  status: number;
-  /** Total gateway-side latency from request start to response ready (ms). */
-  durationMs: number;
-  /** Safe subset of inbound request headers — protocol-fingerprint whitelist only. */
-  inboundHeaders?: {
-    userAgent?: string;
-    acceptLanguage?: string;
-    requestId?: string;
-    anthropicVersion?: string;
-    openaiOrganization?: string;
-  };
-}
-
-/**
- * Outbound (gateway → client) HTTP transport observation. Pairs with
- * `inboundHttp` to bookend the whole request. Latency here is the full
- * request lifecycle (inbound start to outbound ready) — i.e. the user's
- * perceived response time. Carries the content-type and the X-OCR-*
- * diagnostic surface the gateway itself emitted (never credentials).
- */
-export interface OutboundHttpRecord {
-  status: number;
-  /** Total round-trip latency (ms): request start to response body ready. */
-  durationMs: number;
-  /** Content-Type of the outbound response (e.g. `application/json`). */
-  contentType?: string;
-  /** X-OCR-* diagnostic headers the gateway emitted (tier / model / session / trace / cost). */
-  ocrDiagnostics?: Record<string, string>;
 }
 
 /**
@@ -143,7 +87,7 @@ export interface RawWireCapture {
  * longer writes them — every field is best-effort, last-write-wins
  * semantics that no longer match how capture actually works.
  */
-export interface CaptureRecord {
+interface CaptureRecord {
   id: string; // cap_<hex>
   ts: number; // epoch ms
   sessionId: string; // raw (unsanitized) session id
@@ -166,10 +110,6 @@ export interface CaptureRecord {
   upstreamWire?: RawWireCapture;
   /** @deprecated see HttpExchangeEvent.wire. */
   inboundWire?: RawWireCapture;
-  /** @deprecated unused — outbound HTTP timing is in upstream-response events. */
-  inboundHttp?: InboundHttpRecord;
-  /** @deprecated unused — gateway response is captured as inbound-response event. */
-  outboundHttp?: OutboundHttpRecord;
   /** @deprecated see outbound-failure events with status + body. */
   upstreamError?: unknown;
   response?: unknown;
@@ -264,15 +204,25 @@ export interface HttpExchangeEvent {
    * on `direction='upstream'` events. Userinfo is never persisted.
    */
   proxy?: string;
+  /**
+   * Why this exchange happened when it is NOT the turn's ordinary client or
+   * candidate-execution traffic. `l2-judge` marks the HTTP leg the Layer 2
+   * judge fires inside a routed turn (upstream direction, attached to the
+   * outer request's trace/session). Absent = ordinary traffic.
+   */
+  purpose?: ExchangePurpose;
 }
 
-export interface CaptureDateRow {
+/** Label for capture events that carry a non-default call purpose. */
+export type ExchangePurpose = 'l2-judge';
+
+interface CaptureDateRow {
   date: string; // YYYY-MM-DD (local time)
   sessions: number;
   bytes: number;
 }
 
-export interface CaptureSessionRow {
+interface CaptureSessionRow {
   file: string; // safe file name (already sanitized at write time)
   sessionId: string; // same as file minus the .jsonl suffix
   bytes: number;
@@ -285,11 +235,11 @@ export interface CaptureSessionRow {
 }
 
 /** One archive hit for a session id, across all date directories. */
-export interface CaptureSessionMatch extends CaptureSessionRow {
+interface CaptureSessionMatch extends CaptureSessionRow {
   date: string; // YYYY-MM-DD directory the archive lives in
 }
 
-export interface CaptureStatus {
+interface CaptureStatus {
   enabled: boolean;
   dir: string;
   retentionDays: number;
@@ -325,17 +275,27 @@ const MAX_READ_BYTES = 8 * 1024 * 1024;
  */
 export class CaptureRecorder {
   private enabled: boolean;
+  // System One group (config tree mirrors requestCapture.systemone.{enabled,
+  // l2DecisionEnabled}; both default true — the surface master silences BOTH
+  // legs, the sub-switch only ever adds the judge leg beneath it).
+  private systemoneEnabled: boolean;
+  private systemoneJudgeEnabled: boolean;
   private retentionDays: number;
   private maxTotalBytes: number;
   private maxBodyBytes: number;
   private rootDir: string;
   private sweepTimer?: ReturnType<typeof setInterval>;
 
-  constructor(config?: CaptureConfig) {
+  constructor(config?: RequestCaptureConfig) {
     this.enabled = config?.enabled ?? false;
+    // Master/sub sub-tree defaults TRUE — it only matters under the master.
+    this.systemoneEnabled = config?.systemone?.enabled ?? true;
+    this.systemoneJudgeEnabled = config?.systemone?.l2DecisionEnabled ?? true;
     this.retentionDays = config?.retentionDays ?? 7;
-    this.maxTotalBytes = (config?.maxTotalMB ?? 2048) * 1024 * 1024;
-    this.maxBodyBytes = config?.maxBodyBytes ?? 524288;
+    // Fallbacks mirror DEFAULT_CONFIG / ADR-0016 (512 MB / 64 KB) — a bare
+    // `new CaptureRecorder()` must not enforce looser limits than the config.
+    this.maxTotalBytes = (config?.maxTotalMB ?? 512) * 1024 * 1024;
+    this.maxBodyBytes = config?.maxBodyBytes ?? 65536;
     this.rootDir = path.resolve(config?.dir || path.join(getOcrHomeDir(), 'capture'));
 
     if (this.enabled) {
@@ -347,6 +307,30 @@ export class CaptureRecorder {
 
   public isEnabled(): boolean {
     return this.enabled;
+  }
+
+  /**
+   * System One surface gate for the CLIENT leg: requestCapture.enabled
+   * master × requestCapture.systemone.enabled surface master (default true,
+   * so the capture master alone brings the decision surface in; flipping the
+   * surface master off silences BOTH legs). Both must be literally true.
+   * Hot-applied like every other field: this reads whatever applyConfig last
+   * swapped in.
+   */
+  public isSystemoneEnabled(): boolean {
+    return this.enabled === true && this.systemoneEnabled === true;
+  }
+
+  /**
+   * Judge-call gate — three-tier chain: requestCapture.enabled master ×
+   * requestCapture.systemone.enabled surface master ×
+   * requestCapture.systemone.l2DecisionEnabled sub-switch (default true).
+   * The sub-switch only ever ADDS the decision-model HTTP leg the Layer 2
+   * judge fires inside a routed turn (upstream-direction events on the OUTER
+   * request's capture identity); it cannot override the surface master.
+   */
+  public isSystemoneJudgeCaptureEnabled(): boolean {
+    return this.enabled === true && this.systemoneEnabled === true && this.systemoneJudgeEnabled === true;
   }
 
   public getDir(): string {
@@ -364,8 +348,10 @@ export class CaptureRecorder {
    * immediate retention sweep; disabling stops accepting new records and the
    * sweep timer. Existing archive files are never deleted by disabling.
    */
-  public applyConfig(cfg?: CaptureConfig): void {
+  public applyConfig(cfg?: RequestCaptureConfig): void {
     this.enabled = cfg?.enabled ?? this.enabled;
+    this.systemoneEnabled = cfg?.systemone?.enabled ?? this.systemoneEnabled;
+    this.systemoneJudgeEnabled = cfg?.systemone?.l2DecisionEnabled ?? this.systemoneJudgeEnabled;
     this.retentionDays = cfg?.retentionDays ?? this.retentionDays;
     this.maxTotalBytes = (cfg?.maxTotalMB ?? this.maxTotalBytes / (1024 * 1024)) * 1024 * 1024;
     this.maxBodyBytes = cfg?.maxBodyBytes ?? this.maxBodyBytes;

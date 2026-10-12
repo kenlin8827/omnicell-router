@@ -14,6 +14,7 @@
  */
 import { ProviderRegistry } from '../../providers/registry.js';
 import { SystemoneProvider } from '../../providers/systemone.js';
+import type { UpstreamEventContext } from '../../providers/base.js';
 import { ModelRegistration } from '../../config/types.js';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../../types/openai.js';
 import { EFFORT_LADDER, ReasoningEffort } from '../../types/router.js';
@@ -80,18 +81,24 @@ function plannedEffort(model: ModelRegistration): ReasoningEffort | 'omit' {
  * when the message doesn't enumerate, the conservative chain applies
  * ('none' → 'low' → omit). Hard-bounded to 3 total attempts; the accepted
  * preference is memoized per model so later calls go straight to it.
+ *
+ * `upstreamEventContext` is the capture identity for the call (judge
+ * plumbing or the surface pipeline itself), or undefined:
+ * every attempt — including the effort-repair re-pin — is a real wire call,
+ * so each gets its own event pair through the registry's normal mechanism.
  */
 async function executeDecision(
   registry: ProviderRegistry,
   model: ModelRegistration,
   request: ChatCompletionRequest,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  upstreamEventContext?: UpstreamEventContext
 ): Promise<ChatCompletionResponse> {
   let attemptRequest = request;
   let rejections = 0;
   for (;;) {
     try {
-      return await registry.execute(attemptRequest, model);
+      return await registry.execute(attemptRequest, model, upstreamEventContext);
     } catch (err: any) {
       const attempted = attemptRequest.reasoning_effort as ReasoningEffort | undefined;
       if (!attempted || !isEffortRejection(err)) throw err;
@@ -133,7 +140,8 @@ async function convertViaChatModel(
   registry: ProviderRegistry,
   body: SystemoneRequest,
   model: ModelRegistration,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  upstreamEventContext?: UpstreamEventContext
 ): Promise<SystemoneResponse> {
   // System One = fast structured decisions: pin the decision call's reasoning
   // effort on the initial AND repair requests (memoized preference + runtime
@@ -145,7 +153,7 @@ async function convertViaChatModel(
     return request;
   };
 
-  let chat = await executeDecision(registry, model, build(), signal);
+  let chat = await executeDecision(registry, model, build(), signal, upstreamEventContext);
   let synth = synthesizeSystemoneResponse(chat, body, model.id);
   for (let attempt = 0; attempt < CONVERSION_REPAIR_ATTEMPTS && !synth.ok; attempt++) {
     // Never start a repair the caller has already walked away from: the first
@@ -157,7 +165,8 @@ async function convertViaChatModel(
       registry,
       model,
       build({ previousOutput: chatText(chat), reason: synth.reason }),
-      signal
+      signal,
+      upstreamEventContext
     );
     synth = synthesizeSystemoneResponse(chat, body, model.id);
   }
@@ -182,6 +191,16 @@ export interface SystemoneDecisionOptions {
    * would otherwise fire a second full chat call after the caller gave up.
    */
   signal?: AbortSignal;
+  /**
+   * Upstream capture context for JUDGE-CALL capture (Layer 2): the caller
+   * has already checked the three-tier chain requestCapture.enabled ×
+   * systemone.enabled (surface master) × systemone.l2DecisionEnabled (sub)
+   * and passes the OUTER request's identity with purpose 'l2-judge' — or
+   * undefined, which keeps both paths silent exactly as before. The
+   * /v1/systemone HTTP surface never passes it (its client leg is gated by
+   * systemone.enabled (surface master) in the surface pipeline).
+   */
+  upstreamEventContext?: UpstreamEventContext;
 }
 
 /**
@@ -198,9 +217,20 @@ export async function runSystemoneDecision(
 ): Promise<SystemoneDecision> {
   const providerConfig = registry.getProviderConfig(model.provider);
   if (providerConfig?.type === 'systemone') {
-    const response = await new SystemoneProvider(providerConfig).createDecision(body, model, options?.signal);
+    const response = await new SystemoneProvider(providerConfig).createDecision(
+      body,
+      model,
+      options?.signal,
+      options?.upstreamEventContext
+    );
     return { response, upstreamKind: 'native' };
   }
-  const response = await convertViaChatModel(registry, body, model, options?.signal);
+  const response = await convertViaChatModel(
+    registry,
+    body,
+    model,
+    options?.signal,
+    options?.upstreamEventContext
+  );
   return { response, upstreamKind: 'converted' };
 }

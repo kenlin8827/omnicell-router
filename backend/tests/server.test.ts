@@ -109,6 +109,26 @@ describe('Fastify Gateway Server & OpenAI Endpoints', () => {
     assert.ok(body.choices.length > 0);
   });
 
+  it('POST /v1/chat/completions with a padded " auto-lite " model still force-tiers to lite', async () => {
+    // 'P=NP?' is classifier-plus content (see router.test.ts default-baseline
+    // case): landing on lite proves the routing fork trimmed the padded
+    // auto-alias — the trim tolerance the pre-dispatch server.ts handler had.
+    // The surface must still pass `model` into process verbatim
+    // (surface-chat.test.ts pins that half of the contract).
+    const res = await app.inject({
+      headers: authHeaders(),
+      method: 'POST',
+      url: '/v1/chat/completions',
+      payload: {
+        model: ' auto-lite ',
+        messages: [{ role: 'user', content: 'P=NP?' }],
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.headers['x-ocr-tier'], 'lite', 'padded auto-lite must match the force-tier alias');
+  });
+
   it('POST /v1/chat/completions with reasoning_effort emits the X-OCR-Thinking-* headers', async () => {
     const res = await app.inject({
       headers: authHeaders(),

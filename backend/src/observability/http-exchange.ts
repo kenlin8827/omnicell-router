@@ -41,6 +41,13 @@ const DENY_HEADER_SUBSTRINGS = [
   'credential',
   'x-auth',
   'proxy-auth',
+  // Bare substrings (security review P2-1): credential-shaped names without
+  // hyphens or known prefixes — `Key:`, `AccessKey`, custom provider
+  // config.headers — must redact too. Over-matching is deliberate: a header
+  // NAME containing "key"/"auth" is credential-shaped in practice, and
+  // masking a rare false positive harms nothing (the name stays visible).
+  'key',
+  'auth',
 ];
 
 /** Sentinel value written in place of a credential-bearing header value. */
@@ -53,7 +60,7 @@ export const REDACTED = '[REDACTED]';
  * Fastify request/reply headers, the caller should pre-flatten them via
  * `Object.fromEntries(Object.entries(raw))` so the iteration is uniform.
  */
-export function sanitizeHeadersForCapture(raw: Headers | undefined): Record<string, string> {
+function sanitizeHeadersForCapture(raw: Headers | undefined): Record<string, string> {
   const out: Record<string, string> = {};
   if (!raw) return out;
   raw.forEach((value, key) => {
@@ -68,7 +75,7 @@ export function sanitizeHeadersForCapture(raw: Headers | undefined): Record<stri
 }
 
 /** Plain-object variant for Fastify header maps (already lowercased). */
-export function sanitizePlainHeadersForCapture(
+function sanitizePlainHeadersForCapture(
   raw: Record<string, string | string[] | undefined> | undefined
 ): Record<string, string> {
   const out: Record<string, string> = {};
@@ -93,7 +100,7 @@ export function sanitizePlainHeadersForCapture(
  * become an empty string — the wire has a `\r\n\r\n` separator but no body
  * bytes when Content-Length is 0.
  */
-export function encodeWireBody(body: string | Uint8Array | undefined | null): WireBody {
+function encodeWireBody(body: string | Uint8Array | undefined | null): WireBody {
   if (body === undefined || body === null || body === '') return '';
   if (typeof body === 'string') return body;
   // Binary: try UTF-8 decode first; only fall back to hex if it isn't valid.
@@ -105,24 +112,50 @@ export function encodeWireBody(body: string | Uint8Array | undefined | null): Wi
   }
 }
 
-/** Query params whose VALUES carry credentials (?key=, ?token=, ...).
- *  Word-boundary-ish match so `monkey=` / `keywords=` / `tokenize=`
- *  don't get redacted (their values are harmless, but mangling them
- *  would corrupt the recorded request line). */
-const QUERY_AUTH_PARAM_RE = /(^|[^a-z])(key|token|secret|signature|credential|password)([^a-z]|$)/i;
+/** Query params whose VALUES carry credentials (?key=, ?token=, ?auth=,
+ *  ?sig=, ...). Word-boundary-ish match so `monkey=` / `keywords=` /
+ *  `tokenize=` don't get redacted (their values are harmless, but mangling
+ *  them would corrupt the recorded request line). `apikey` is listed
+ *  explicitly: the boundary trick cannot see through the compound — the 'i'
+ *  before 'key' is a letter, so `(^|[^a-z])key` misses it (security review
+ *  P2-2; /i also covers `apiKey`). `signature` stays covered by its own
+ *  alternation, listed ahead of the added bare `sig` (verified — no double
+ *  add needed). */
+const QUERY_AUTH_PARAM_RE = /(^|[^a-z])(key|apikey|token|secret|signature|credential|password|auth|sig)([^a-z]|$)/i;
+
+function redactQueryAuth(u: URL): void {
+  // Defense-in-depth: auth-by-query (Google-style `?key=AIza...`) must
+  // never persist raw — redact the value, keep the param name.
+  for (const name of [...new Set(u.searchParams.keys())]) {
+    if (QUERY_AUTH_PARAM_RE.test(name)) u.searchParams.set(name, REDACTED);
+  }
+}
 
 function pathnameAndQuery(url: string): string {
   // req.url is `/path?query`. proxiedFetch sees absolute URLs. Both should
   // produce the path-with-query form for the request line.
   try {
     const u = new URL(url, 'http://ocr.local');
-    // Defense-in-depth: auth-by-query (Google-style `?key=AIza...`) must
-    // never persist raw — redact the value, keep the param name.
-    for (const name of [...new Set(u.searchParams.keys())]) {
-      if (QUERY_AUTH_PARAM_RE.test(name)) u.searchParams.set(name, REDACTED);
-    }
+    redactQueryAuth(u);
     return u.pathname + (u.search || '');
   } catch {
+    // Near-unreachable: WHATWG URL with a base accepts any `/path?query` —
+    // raw pass-through is the inherited pre-refactor shape, kept for parity.
+    return url;
+  }
+}
+
+/** Absolute-form URL for the upstream request line: the origin (host) stays
+ *  visible so the archive shows which provider endpoint was dialed, with
+ *  auth-by-query params redacted exactly like the origin-form line. */
+function absoluteFormUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    redactQueryAuth(u);
+    return u.origin + u.pathname + (u.search || '');
+  } catch {
+    // Near-unreachable: callers pass fetch()-valid absolute URLs and WHATWG
+    // URL is tolerant; raw pass-through is the inherited pre-refactor shape.
     return url;
   }
 }
@@ -187,7 +220,9 @@ export function setClientExchangeContext(req: FastifyRequest, ctx: ClientExchang
   (req as any)[CLIENT_EXCHANGE_CTX] = ctx;
 }
 
-/** Opaque context carried from handler to the Fastify onResponse hook. */
+/** Opaque context carried from the handler to the transport adapter's
+ *  gateway-response finalization (Fastify: terminal sends; MITM: the
+ *  onClientExchange callback). */
 export interface ClientExchangeContext {
   recorder: CaptureRecorder;
   /** Stable id shared by the request event AND its matching response event. */
@@ -201,26 +236,27 @@ export interface ClientExchangeContext {
     /** Request-side wire (lines + headers + body) — fully known at handler entry. */
     requestWire: RawWireCapture;
     /**
-     * Response body stash, filled by the Fastify `onSend` hook (JSON
-     * responses) or by the SSE streaming branches (accumulated chunks)
-     * before `emitGatewayResponse` runs in `onResponse`. Capped at
+     * Response body stash, filled by the transport adapters' terminal sends
+     * (whole-JSON payload in `sendJson`, accumulated chunks in the SSE
+     * branches) before `emitGatewayResponse` runs at finalize. Capped at
      * GATEWAY_RESPONSE_BODY_CAP chars so a runaway stream can't exhaust
      * memory — the recorder truncates further down to maxBodyBytes.
      */
     responseBody?: string;
     /** Set once the response event has been emitted — guards against a
-     *  double-emit when both `onResponse` and `onClose` fire. */
+     *  double-emit when both the terminal send and the abort listener try
+     *  to finalize. */
     responded?: boolean;
   };
 }
 
 /** Cap for the accumulated gateway response body (chars). */
-export const GATEWAY_RESPONSE_BODY_CAP = 1024 * 1024;
+const GATEWAY_RESPONSE_BODY_CAP = 1024 * 1024;
 
 /**
  * Append a response-body chunk to the pending gateway response. Used by the
- * `onSend` hook (whole JSON payload) and the SSE streaming branches
- * (per-chunk). No-op once the cap is reached.
+ * transport adapters (whole-JSON payload in `sendJson`, per-chunk in the SSE
+ * branches). No-op once the cap is reached.
  */
 export function appendGatewayResponseChunk(ctx: ClientExchangeContext, chunk: string): void {
   const cur = ctx.pending.responseBody ?? '';
@@ -233,11 +269,24 @@ export function appendGatewayResponseChunk(ctx: ClientExchangeContext, chunk: st
  * by the inference handler at process() entry — at this point the
  * request side is fully known and can be emitted IMMEDIATELY (no wait
  * for the response). The returned context is attached to the Fastify
- * request so the onResponse hook can finalize the response event later.
+ * request (or handed to the MITM adapter via onClientExchange) so the
+ * transport adapter can finalize the response event at its terminal send.
  */
+/**
+ * Minimal transport surface needed to record the request line + headers.
+ * `FastifyRequest` satisfies it structurally; the MITM forward-proxy
+ * interceptor passes an `http.IncomingMessage`-shaped object (its
+ * `req.headers` carries the ORIGINAL target host — see `interceptor.ts`).
+ */
+export type CaptureClientRequest = {
+  method: string;
+  url?: string;
+  headers: Record<string, string | string[] | undefined>;
+};
+
 export function emitClientRequest(args: {
   recorder: CaptureRecorder;
-  req?: FastifyRequest | undefined;
+  req?: FastifyRequest | CaptureClientRequest | undefined;
   body: unknown;
   sessionId: string;
   traceId: string;
@@ -245,7 +294,7 @@ export function emitClientRequest(args: {
 }): ClientExchangeContext {
   const spanId = cryptoRandom();
   const requestLine = args.req
-    ? `${args.req.method} ${pathnameAndQuery(args.req.url)} HTTP/1.1`
+    ? `${args.req.method} ${pathnameAndQuery(args.req.url ?? '')} HTTP/1.1`
     : '';
   const requestHeaders = args.req
     ? sanitizePlainHeadersForCapture(args.req.headers as any)
@@ -283,9 +332,10 @@ export function emitClientRequest(args: {
 }
 
 /**
- * Finalize the client exchange when the Fastify response is sent. Called
- * from the onResponse hook — at this point the response side is fully
- * known and emitted as an independent event. The request event was
+ * Finalize the client exchange when the gateway response is sent. Called
+ * by the transport adapters (Fastify: at its terminal send; MITM: from the
+ * interceptor's finalize callback) — at this point the response side is
+ * fully known and emitted as an independent event. The request event was
  * already emitted synchronously at handler entry.
  */
 export function emitGatewayResponse(
@@ -298,7 +348,7 @@ export function emitGatewayResponse(
     getHeaders?(): Record<string, unknown>;
   }
 ): void {
-  if (ctx.pending.responded) return; // onResponse + onClose both fired — first wins
+  if (ctx.pending.responded) return; // both finalize paths raced — first wins
   ctx.pending.responded = true;
   // Full response header map when available (Fastify reply.getHeaders());
   // SSE branches write via reply.raw.writeHead which bypasses Fastify's
@@ -327,8 +377,8 @@ export function emitGatewayResponse(
     responseLine: `HTTP/1.1 ${reply.statusCode} ${statusText}`,
     status: reply.statusCode,
     responseHeaders: sanitizePlainHeadersForCapture(headersMap),
-    // Stashed by the onSend hook / SSE branch — '' when the reply went out
-    // through a path that bypasses both (e.g. raw socket errors).
+    // Stashed by the transport adapters' terminal sends — '' when the reply
+    // went out through a path that bypasses them (e.g. raw socket errors).
     responseBody: encodeWireBody(ctx.pending.responseBody ?? ''),
   };
   void ctx.recorder.recordEvent({
@@ -373,6 +423,8 @@ export function emitUpstreamRequest(args: {
   spanId?: string;
   /** Raw proxy URL when routed via proxy; redacted to origin before persisting. */
   proxy?: string;
+  /** Non-default call label (e.g. 'l2-judge') so UI/log can tell the leg apart. */
+  purpose?: HttpExchangeEvent['purpose'];
 }): string {
   const spanId = args.spanId ?? cryptoRandom();
   void args.recorder.recordEvent({
@@ -385,7 +437,11 @@ export function emitUpstreamRequest(args: {
     model: args.model,
     status: 'ok',
     wire: {
-      requestLine: `${args.method.toUpperCase()} ${pathnameAndQuery(args.url)} HTTP/1.1`,
+      // Absolute-form request line (RFC 7230 §5.3.2 — the legal wire form for
+      // a proxy's outbound hop): the upstream HOST is part of the captured
+      // line, so the archive shows which provider endpoint was dialed without
+      // cross-referencing the headers. Query-auth params redacted in place.
+      requestLine: `${args.method.toUpperCase()} ${absoluteFormUrl(args.url)} HTTP/1.1`,
       requestHeaders: sanitizePlainHeadersForCapture(args.requestHeaders),
       requestBody: encodeWireBody(args.requestBody),
       responseLine: '',
@@ -394,6 +450,7 @@ export function emitUpstreamRequest(args: {
       responseBody: '',
     },
     ...(args.proxy ? { proxy: redactProxyUrl(args.proxy) } : {}),
+    ...(args.purpose ? { purpose: args.purpose } : {}),
   });
   return spanId;
 }
@@ -418,6 +475,8 @@ export function emitUpstreamResponse(args: {
   spanId: string;
   routing?: HttpExchangeEvent['routing'];
   error?: string;
+  /** Non-default call label (e.g. 'l2-judge') so UI/log can tell the leg apart. */
+  purpose?: HttpExchangeEvent['purpose'];
 }): void {
   void args.recorder.recordEvent({
     eventType: 'http-exchange',
@@ -429,7 +488,9 @@ export function emitUpstreamResponse(args: {
     model: args.model,
     status: args.status >= 200 && args.status < 400 ? 'ok' : 'error',
     wire: {
-      requestLine: `${args.method.toUpperCase()} ${pathnameAndQuery(args.url)} HTTP/1.1`,
+      // Absolute-form — mirrors emitUpstreamRequest; host stays visible here
+      // even when the response event is inspected on its own.
+      requestLine: `${args.method.toUpperCase()} ${absoluteFormUrl(args.url)} HTTP/1.1`,
       requestHeaders: {},
       requestBody: '',
       responseLine: `HTTP/1.1 ${args.status} ${args.statusText || statusTextFor(args.status)}`,
@@ -439,5 +500,6 @@ export function emitUpstreamResponse(args: {
     },
     ...(args.routing ? { routing: args.routing } : {}),
     ...(args.error ? { error: args.error } : {}),
+    ...(args.purpose ? { purpose: args.purpose } : {}),
   });
 }

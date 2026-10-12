@@ -103,6 +103,40 @@ export const SettingsPage: React.FC = () => {
     return <div style={{ color: 'var(--text-dim)' }}>Loading...</div>;
   }
 
+  // requestCapture master gates the whole System One sub-group; the System
+  // One surface master (`enabled`) additionally gates the L2 decision
+  // sub-switch. Dim (never disable) so the operator can pre-set in one save.
+  const captureOn = config.requestCapture?.enabled ?? false;
+  const systemoneOn = config.requestCapture?.systemone?.enabled ?? true;
+
+  // saveConfig posts the whole config and the backend shallow-merges each
+  // top-level section, so every write rebuilds the COMPLETE requestCapture
+  // node: defaults first, current section next, changed key LAST. Anything
+  // left out of the object literal is dropped server-side.
+  // (config is untyped `any` page-wide — api.getConfig returns the raw
+  // RouterConfig envelope; see frontend/src/lib/api.ts.)
+  const patchRequestCapture = (patch: Record<string, unknown>) => setConfig({
+    ...config,
+    requestCapture: {
+      retentionDays: 7,
+      maxTotalMB: 512,
+      maxBodyBytes: 65536,
+      ...(config.requestCapture || {}),
+      ...patch,
+    },
+  });
+  // Same rule one level down: `systemone` is a nested node, so replace it
+  // whole (both keys default to on, matching the backend defaults; anything
+  // omitted from the literal is dropped server-side).
+  const patchSystemone = (patch: Record<string, unknown>) => patchRequestCapture({
+    systemone: {
+      enabled: true,
+      l2DecisionEnabled: true,
+      ...(config.requestCapture?.systemone || {}),
+      ...patch,
+    },
+  });
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <div className="card">
@@ -218,26 +252,52 @@ export const SettingsPage: React.FC = () => {
             <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
               <span>{t('settings.capEnable')}</span>
               <Switch
-                checked={config.capture?.enabled ?? false}
-                onChange={v => setConfig({
-                  ...config,
-                  capture: {
-                    retentionDays: 7,
-                    maxTotalMB: 512,
-                    maxBodyBytes: 65536,
-                    ...(config.capture || {}),
-                    enabled: v,
-                  },
-                })}
+                checked={config.requestCapture?.enabled ?? false}
+                onChange={v => patchRequestCapture({ enabled: v })}
               />
             </label>
+
+            {/* System One sub-group: `enabled` is the surface master — off
+                silences both capture legs. The L2 decision sub-switch is
+                effective only while it is on. Inactive rows render dimmed,
+                still clickable (pre-set pattern). */}
+            <div style={{ borderTop: '1px solid var(--card-border)', paddingTop: '12px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <div style={{ fontWeight: 700, fontSize: '12px', color: 'var(--text-main)' }}>
+                {t('settings.capSystemoneGroup')}
+              </div>
+              <div>
+                <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer', color: captureOn ? undefined : 'var(--text-dim)' }}>
+                  <span>{t('settings.capSystemoneEnable')}</span>
+                  <Switch
+                    checked={systemoneOn}
+                    onChange={v => patchSystemone({ enabled: v })}
+                  />
+                </label>
+                <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '6px' }}>
+                  {t('settings.capSystemoneHint')}
+                </div>
+              </div>
+              <div>
+                <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer', color: (captureOn && systemoneOn) ? undefined : 'var(--text-dim)' }}>
+                  <span>{t('settings.capL2DecisionEnable')}</span>
+                  <Switch
+                    checked={config.requestCapture?.systemone?.l2DecisionEnabled ?? true}
+                    onChange={v => patchSystemone({ l2DecisionEnabled: v })}
+                  />
+                </label>
+                <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '6px' }}>
+                  {t('settings.capL2DecisionHint')}
+                </div>
+              </div>
+            </div>
+
             <div>
               <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.capRetention')}</label>
               <input
                 type="number"
                 min="1"
-                value={config.capture?.retentionDays ?? 7}
-                onChange={e => setConfig({ ...config, capture: { ...(config.capture || {}), retentionDays: parseInt(e.target.value) || 7 } })}
+                value={config.requestCapture?.retentionDays ?? 7}
+                onChange={e => patchRequestCapture({ retentionDays: parseInt(e.target.value) || 7 })}
                 className="input"
               />
             </div>
@@ -246,8 +306,8 @@ export const SettingsPage: React.FC = () => {
               <input
                 type="number"
                 min="1"
-                value={config.capture?.maxTotalMB ?? 512}
-                onChange={e => setConfig({ ...config, capture: { ...(config.capture || {}), maxTotalMB: parseInt(e.target.value) || 512 } })}
+                value={config.requestCapture?.maxTotalMB ?? 512}
+                onChange={e => patchRequestCapture({ maxTotalMB: parseInt(e.target.value) || 512 })}
                 className="input"
               />
             </div>
@@ -257,8 +317,8 @@ export const SettingsPage: React.FC = () => {
                 type="number"
                 min="1024"
                 step="1024"
-                value={config.capture?.maxBodyBytes ?? 65536}
-                onChange={e => setConfig({ ...config, capture: { ...(config.capture || {}), maxBodyBytes: parseInt(e.target.value) || 65536 } })}
+                value={config.requestCapture?.maxBodyBytes ?? 65536}
+                onChange={e => patchRequestCapture({ maxBodyBytes: parseInt(e.target.value) || 65536 })}
                 className="input"
               />
             </div>

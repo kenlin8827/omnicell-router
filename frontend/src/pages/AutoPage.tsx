@@ -157,6 +157,23 @@ export const AutoPage: React.FC = () => {
                 onChange={v => setLayer2({ enabled: v })}
               />
             </label>
+            {/* Distillation dataset — NOT the request-capture leg (that moved to
+                requestCapture.systemone.l2DecisionEnabled on the Settings page).
+                Opt-in: the recorded state carries user conversation content.
+                setLayer2 spreads the full layer2 node, so model / timeoutMs /
+                decisionCache survive this write (save shallow-merges nodes). */}
+            <div>
+              <label style={rowStyle}>
+                <span>{t('auto.l2CollectEnable')}</span>
+                <Switch
+                  checked={layer2.collectEnabled ?? false}
+                  onChange={v => setLayer2({ collectEnabled: v })}
+                />
+              </label>
+              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '6px' }}>
+                {t('auto.l2CollectHint')}
+              </div>
+            </div>
             <div style={{ borderTop: '1px solid var(--card-border)', paddingTop: '10px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <label style={rowStyle}>
                 <span>{t('auto.cacheEnable')}</span>

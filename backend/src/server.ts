@@ -1,12 +1,11 @@
 import { registerConsoleRoutes, validateApiKey } from './routes/console.js';
 import { isWebAuthActive, isAdminAuthEndpoint, parseSessionCookie, verifySessionToken } from './auth/web-auth.js';
-import { getModelAccessPolicy, isModelAllowed, isAutoEntryUsable, makeModelAccessGuard, tierFromVirtualEntry, ModelAccessConfig } from './auth/model-access.js';
+import { getModelAccessPolicy, isModelAllowed, isAutoEntryUsable } from './auth/model-access.js';
 import { registerRuntimeConfigRef } from './config/index.js';
-import { registerAnthropicRoutes } from './routes/anthropic.js';
-import { registerResponsesRoutes } from './routes/responses.js';
-import { registerSystemoneRoutes } from './routes/systemone.js';
 import { registerFlywheelRoutes } from './routes/flywheel.js';
-import { buildChatStreamChunks } from './utils/chat-sse.js';
+import { SURFACES } from './surfaces/table.js';
+import { createFastifyTransport } from './surfaces/transport-fastify.js';
+import { dispatchSurface } from './surfaces/dispatch.js';
 import fastify, { FastifyInstance, LogController } from 'fastify';
 import cors from '@fastify/cors';
 import { RouterConfig } from './config/types.js';
@@ -14,10 +13,8 @@ import { loadConfig } from './config/index.js';
 import { PipelineOrchestrator } from './pipeline/orchestrator.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { FinOpsTracker } from './metrics/finops-tracker.js';
-import { ChatCompletionRequest } from './types/openai.js';
 import { APP_VERSION } from './version.js';
 import { TraceTracker, type ExecutionTrace } from './trace/tracker.js';
-import { appendGatewayResponseChunk, emitGatewayResponse, getClientExchangeContext } from './observability/http-exchange.js';
 
 const TIER_RANK: Record<string, number> = { lite: 1, plus: 2, pro: 3, ultra: 4 };
 
@@ -89,79 +86,22 @@ export function createServer(
   // Register CORS to allow any web frontend (Chatbox, NextChat, OpenWebUI)
   app.register(cors, { origin: true });
 
-  // Event-stream client-side hooks: the orchestrator attaches the client
-  // exchange ctx onto req via Symbol key (see CLIENT_EXCHANGE_CTX in
-  // observability/http-exchange.ts) the moment it emits the client REQUEST
-  // event. The onResponse hook reads it back via `getClientExchangeContext`
-  // and emits the gateway RESPONSE event. Both events are independent — the
-  // request event is durable even if the response never arrives (timeout /
-  // cancel / etc.).
-  //
-  // Caveat: if capture is disabled mid-flight via console toggle, the
-  // REQUEST event may be on disk while the RESPONSE event won't be.
-  // That's acceptable — the REQUEST event is the source of truth for
-  // "we received this client traffic"; the RESPONSE event is best-effort.
-  // The onSend hook fires right BEFORE the payload goes to the socket and
-  // is the only lifecycle point where the serialized response body is
-  // available (onResponse only sees status/headers). We stash the body on
-  // the exchange ctx; the onResponse hook below then emits the client
-  // RESPONSE event with the complete wire. SSE branches bypass onSend
-  // (reply.raw), so they stash their accumulated chunks manually.
-  app.addHook('onSend', (req, _reply, payload, done) => {
-    const ctx = getClientExchangeContext(req);
-    if (ctx) {
-      if (typeof payload === 'string') {
-        appendGatewayResponseChunk(ctx, payload);
-      } else if (Buffer.isBuffer(payload)) {
-        appendGatewayResponseChunk(ctx, payload.toString('utf8'));
-      }
-      // stream payloads: not captured here (inference SSE goes via reply.raw
-      // and is accumulated in the route handler instead).
-    }
-    done(null, payload);
-  });
-
-  app.addHook('onResponse', async (req, reply) => {
-    const ctx = getClientExchangeContext(req);
-    if (ctx && orchestrator.getCaptureRecorder().isEnabled()) {
-      emitGatewayResponse(ctx, reply as any);
-    }
-    return reply;
-  });
-
-  // Client-abort capture: when the socket closes before the response
-  // finishes, the onResponse hook never fires and the client-request event
-  // would dangle. Watch the raw response's 'close' (fires after 'finish'
-  // on the normal path, or on premature termination): if no response event
-  // was emitted by then, record a synthetic 499 (nginx convention for
-  // client-closed connection) so every request event stays paired.
-  // NB: Fastify's `onClose` application hook is server-shutdown, NOT this.
-  app.addHook('onRequest', (req, reply, done) => {
-    reply.raw.on('close', () => {
-      // writableEnded = response fully written — a later socket close (e.g.
-      // keep-alive teardown) must not synthesize a 499 for a completed 200.
-      if (reply.raw.writableEnded) return;
-      const ctx = getClientExchangeContext(req);
-      if (ctx && !ctx.pending.responded && orchestrator.getCaptureRecorder().isEnabled()) {
-        emitGatewayResponse(ctx, {
-          statusCode: 499,
-          statusMessage: 'Client Closed Request',
-          getHeader: () => undefined,
-        } as any);
-      }
-    });
-    done();
-  });
+  // Client-exchange capture lives in the two transport adapters: the Fastify
+  // transport stashes + finalizes inside sendJson/beginSse/endSse and owns
+  // the close→499 abort listener per request; the node-http (MITM) transport
+  // finalizes synchronously after its terminal send. The pre-refactor
+  // server-level capture hooks are gone — finalization follows the
+  // terminal-send discipline, not a global lifecycle event. (Caveat kept
+  // from back then: if capture is toggled off mid-flight, the REQUEST event
+  // may be on disk while the RESPONSE event never is — the request event is
+  // the source of truth; the response event is best-effort.)
 
   // Register console dashboard and management routes
   registerConsoleRoutes(app, registry, orchestrator);
 
-  // Register Anthropic-protocol compatibility endpoint (POST /v1/messages)
-  registerAnthropicRoutes(app, orchestrator);
-  registerResponsesRoutes(app, orchestrator);
-
-  // Register System One decision-protocol endpoint (POST /v1/systemone)
-  registerSystemoneRoutes(app, orchestrator);
+  // All protocol endpoints — chat, anthropic, responses, systemone — register
+  // through the SURFACES table loop below; there is no per-wire route code
+  // left in this file.
 
   // Flywheel console: dataset browsing, operator relabelling, manual training
   registerFlywheelRoutes(app, orchestrator);
@@ -180,14 +120,6 @@ export function createServer(
   /** /v1/models + /v1/models/:model — the anonymous-tolerant models surface. */
   const isModelsSurface = (rawUrl: string): boolean =>
     rawUrl === '/v1/models' || rawUrl.startsWith('/v1/models/');
-
-  /**
-   * Entry-point model-access gate for the inference routes — shared factory
-   * from auth/model-access.ts (also used by the Anthropic and Responses
-   * routes). Returns true when the request may proceed; otherwise a 403 was
-   * sent.
-   */
-  const enforceModelAccess = makeModelAccessGuard(registry);
 
   app.addHook('preHandler', async (req, reply) => {
     const { activeKeys, adminKey } = resolveActiveAuthConfig();
@@ -660,140 +592,21 @@ export function createServer(
     };
   });
 
-  // 4. OpenAI-compatible Chat Completions
-  app.post('/v1/chat/completions', async (req, reply) => {
-    const body = req.body as ChatCompletionRequest;
-
-    if (!body || !body.messages || !Array.isArray(body.messages)) {
-      return reply.status(400).send({
-        error: {
-          message: 'Invalid request: "messages" array is required.',
-          type: 'invalid_request_error',
-        },
-      });
-    }
-
-    const requestedModel = body.model?.trim() || 'auto';
-
-    // Per-key model access gate (403 when the key's policy denies this model)
-    if (!enforceModelAccess(req, reply, requestedModel)) {
+  // 4. Table-registered protocol surfaces (backend/src/surfaces/). ALL FOUR
+  //    wires — chat / anthropic / responses / systemone — live in SURFACES:
+  //    this loop registers the Fastify leg and the MITM interceptor detects
+  //    + dispatches through the same table. Capture finalization is owned by
+  //    the two transport adapters under the terminal-send discipline (the
+  //    former server-level capture hooks are deleted). `return reply` mirrors
+  //    the old handler's terminal pattern — the Fastify transport has already
+  //    sent via reply / reply.raw.
+  for (const surface of SURFACES) {
+    app.post(surface.routePath, async (req, reply) => {
+      const t = createFastifyTransport(req, reply, orchestrator);
+      await dispatchSurface(t, surface, orchestrator, req.body);
       return reply;
-    }
-
-    // Model name routing resolution:
-    // 'auto', 'default' or unconfigured third-party defaults -> full 4-step cascading auto router!
-    if (requestedModel === 'auto-lite') {
-      body.router_options = { ...body.router_options, force_tier: 'lite' };
-    } else if (requestedModel === 'auto-plus') {
-      body.router_options = { ...body.router_options, force_tier: 'plus' };
-    } else if (requestedModel === 'auto-pro') {
-      body.router_options = { ...body.router_options, force_tier: 'pro' };
-    } else if (requestedModel === 'auto-ultra') {
-      body.router_options = { ...body.router_options, force_tier: 'ultra' };
-    } else if (requestedModel === 'auto' || requestedModel === 'default') {
-      // Intentionally standard: let RouterEngine 4-step pipeline handle intelligent tier selection
-    } else {
-      // Check if user specified a concrete physical model registered in the system
-      const specificModel = registry.getModel(requestedModel);
-      if (specificModel) {
-        body.router_options = { ...body.router_options, force_tier: specificModel.tier };
-      }
-      // If client sent common client default like 'gpt-3.5-turbo' or 'gpt-4', default to 'auto'
-    }
-
-    try {
-      const result = await orchestrator.process(body, {
-        clientIp: req.ip,
-        headers: req.headers,
-        wire: 'chat',
-        fastifyRequest: req,
-        modelAccess: getModelAccessPolicy((req as any).authInfo?.keyConfig),
-      });
-
-      const tierHeader = result.tierUsed + (result.fallbackOccurred ? '-escalated' : '');
-
-      // Primary OCR Headers
-      reply.header('X-OCR-Tier', tierHeader);
-      reply.header('X-OCR-Layer', result.layerUsed || 'layer0');
-      reply.header('X-OCR-Model', result.modelUsed);
-      reply.header('X-OCR-Failover', result.failoverOccurred ? 'true' : 'false');
-      reply.header('X-OCR-Failover-Attempts', (result.failoverAttempts || 1).toString());
-      reply.header('X-OCR-Failover-Path', result.failoverPath?.join(' -> ') || '');
-      reply.header('X-OCR-InPlace-Retries', (result.inplaceRetries || 0).toString());
-      reply.header('X-OCR-Breaker-State', result.breakerState || 'CLOSED');
-      reply.header('X-OCR-Session-ID', result.sessionId || '');
-      reply.header('X-OCR-Session-Ratchet', result.sessionRatchetApplied ? 'true' : 'false');
-      reply.header('X-OCR-Session-Lookup', result.sessionLookupType || '');
-      reply.header('X-OCR-Trace-ID', result.traceId || '');
-      reply.header('X-OCR-Cost-USD', result.costUsd.toFixed(6));
-      reply.header('X-OCR-Saved-USD', result.savedCostUsd.toFixed(6));
-      reply.header('X-OCR-Latency-MS', result.latencyMs.toString());
-      // Reasoning-effort observability: only set when the client asked for
-      // thinking. Lets the caller verify whether they got the level they
-      // requested or were silently downgraded to a model that can serve
-      // less. Two values: the actual level served + a boolean degraded flag.
-      if (result.requestedEffort && result.requestedEffort !== 'none') {
-        reply.header('X-OCR-Thinking-Requested', result.requestedEffort);
-        reply.header('X-OCR-Thinking-Actual', result.actualEffort ?? result.requestedEffort);
-        reply.header('X-OCR-Thinking-Degraded', result.reasoningDegraded ? 'true' : 'false');
-      }
-      // Variant observability: the variant id resolved from sibling /
-      // `#variant` model syntax (set only when one was resolved).
-      if (result.variantUsed) {
-        reply.header('X-OCR-Variant', result.variantUsed);
-      }
-
-      // -------------------------------------------------------------
-      // SSE Streaming Mode (stream: true)
-      // -------------------------------------------------------------
-      if (body.stream) {
-        reply.raw.writeHead(200, {
-          'Content-Type': 'text/event-stream; charset=utf-8',
-          'Cache-Control': 'no-cache, no-transform',
-          Connection: 'keep-alive',
-          'Access-Control-Allow-Origin': '*',
-          'X-OCR-Tier': tierHeader,
-          'X-OCR-Layer': result.layerUsed || 'layer0',
-          'X-OCR-Model': result.modelUsed,
-          'X-OCR-Failover': result.failoverOccurred ? 'true' : 'false',
-          'X-OCR-Failover-Attempts': (result.failoverAttempts || 1).toString(),
-          'X-OCR-Failover-Path': result.failoverPath?.join(' -> ') || '',
-          'X-OCR-InPlace-Retries': (result.inplaceRetries || 0).toString(),
-          'X-OCR-Breaker-State': result.breakerState || 'CLOSED',
-          'X-OCR-Session-ID': result.sessionId || '',
-          'X-OCR-Session-Ratchet': result.sessionRatchetApplied ? 'true' : 'false',
-          'X-OCR-Session-Lookup': result.sessionLookupType || '',
-          'X-OCR-Trace-ID': result.traceId || '',
-          'X-OCR-Cost-USD': result.costUsd.toFixed(6),
-          'X-OCR-Saved-USD': result.savedCostUsd.toFixed(6),
-          'X-OCR-Latency-MS': result.latencyMs.toString(),
-          ...(result.variantUsed ? { 'X-OCR-Variant': result.variantUsed } : {}),
-        });
-
-        const sseCtx = getClientExchangeContext(req);
-        for (const chunk of buildChatStreamChunks(result.response, result.modelUsed)) {
-          if (sseCtx) appendGatewayResponseChunk(sseCtx, chunk);
-          reply.raw.write(chunk);
-        }
-        if (sseCtx) appendGatewayResponseChunk(sseCtx, 'data: [DONE]\n\n');
-        reply.raw.write('data: [DONE]\n\n');
-        reply.raw.end();
-        return reply;
-      }
-
-      // Non-streaming standard JSON response
-      return reply.send(result.response);
-    } catch (err: any) {
-      req.log.error(err, 'Chat completion execution failed');
-      const status = Number.isInteger(err?.statusCode) && err.statusCode >= 400 && err.statusCode < 600 ? err.statusCode : 500;
-      return reply.status(status).send({
-        error: {
-          message: err.message || 'Internal Router Error',
-          type: status >= 500 ? 'api_error' : 'invalid_request_error',
-        },
-      });
-    }
-  });
+    });
+  }
 
   return { app, orchestrator, registry, tracker };
 }

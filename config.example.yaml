@@ -170,6 +170,11 @@ classifier:
     enabled: false                  # Enable Layer 2 dedicated judge model
     model: "auto"                   # Registered model id; 'auto' = systemone.defaultModel
     timeoutMs: 1500                 # Decision timeout in ms (graceful fallback to Layer 0 on timeout)
+    collectEnabled: false           # Dataset sampling: judged decisions -> data/layer2-decisions.jsonl for
+                                    # flywheel distillation. SINGLE-key gate (no capture master involved),
+                                    # hot-applied on save. 64MB cap then writes pause with one warning.
+                                    # state carries user conversation content — off by default.
+                                    # (Moved from the retired classifier.layer2.decisionCapture — old key ignored.)
 
 # Active Learning Data Flywheel
 flywheel:
@@ -186,12 +191,26 @@ flywheel:
 # at boot + hourly. Request headers are NEVER recorded.
 # WARNING: captured bodies may contain sensitive data; the console /api/ui/*
 # endpoints are auth-exempt. Enable consciously.
-capture:
-  enabled: false                    # Master switch — off by default
+# NOTE: renamed from the legacy `capture:` section — an old file still loads
+# (fields map onto requestCapture: automatically, with a startup warning).
+requestCapture:
+  enabled: false                    # Master switch — off by default; the sub-switches below only matter when on
   # dir: "~/.opencode-router/capture"   # Archive root directory
   retentionDays: 7                  # Date dirs older than today-N are deleted
   maxTotalMB: 512                   # Oldest date dirs deleted first when exceeded
   maxBodyBytes: 65536               # Per-body truncation budget (request & response separately)
+  systemone:
+    enabled: true                   # System One surface MASTER — off silences BOTH legs at once:
+                                    # the surface's own FULL-CHAIN capture below (client pair +
+                                    # upstream pair) AND the judge-call capture
+                                    # (sub). Needs requestCapture.enabled.
+    l2DecisionEnabled: true         # JUDGE-CALL capture sub-switch — effective only when systemone.enabled is
+                                    # true: the decision-model HTTP leg the Layer 2 judge
+                                    # fires inside a routed chat turn, recorded as upstream-direction
+                                    # events on the OUTER request's session/trace (purpose 'l2-judge').
+                                    # Adds the judge's own wire call; never re-filters client traffic.
+                                    # NOT the dataset-sampling switch —
+                                    # that is classifier.layer2.collectEnabled (a different setting).
 
 # ==============================================================================
 # Multi-Turn Monotonic Session Ratchet & KV Cache Protection 

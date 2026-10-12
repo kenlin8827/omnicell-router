@@ -11,6 +11,35 @@ import { globMatchAny } from '../utils/glob.js';
 import { loadConfig } from '../config/index.js';
 import { resolveTierMembers, claimModel, applyEffortMap, MEMBER_TIER_ORDER, TIER_DESCENDING_ORDER, type MemberClaim } from './member-match.js';
 
+/**
+ * Normalize a client-supplied upstream host for provider matching: lowercase,
+ * strip IPv6 brackets and a trailing :port. Returns undefined for empty or
+ * non-string input so callers can treat "no host" uniformly.
+ */
+function normalizeHostHeader(host: unknown): string | undefined {
+  if (typeof host !== 'string') return undefined;
+  let h = host.trim().toLowerCase();
+  if (!h) return undefined;
+  if (h.startsWith('[')) {
+    const end = h.indexOf(']');
+    if (end > 0) h = h.slice(1, end);
+  } else if (h.includes(':')) {
+    h = h.split(':')[0];
+  }
+  return h || undefined;
+}
+
+/** Hostname of a provider baseUrl, or undefined when it is absent/malformed
+ *  (WHATWG URL already lowercases the hostname). */
+function hostOfBaseUrl(baseUrl: unknown): string | undefined {
+  if (typeof baseUrl !== 'string' || !baseUrl.trim()) return undefined;
+  try {
+    return new URL(baseUrl).hostname || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export class ProviderRegistry {
   private providers = new Map<string, LLMProvider>();
   private models = new Map<string, ModelRegistration>();
@@ -24,6 +53,10 @@ export class ProviderRegistry {
    *  /v1/systemone route detect native System One upstreams and reach their
    *  baseUrl/apiKey (systemone providers build no chat executor). */
   private providerConfigs = new Map<string, ProviderConfig>();
+  /** Pre-resolved baseUrl hostname per provider (constructor-time; the
+   *  configs themselves are constructor-populated and never mutate) — keeps
+   *  bare-name host disambiguation off the URL parser in the hot path. */
+  private providerHosts = new Map<string, string | undefined>();
   /** Sibling-id index for model variants: `<baseId>-<variantId>` → base + variant. */
   private variantIndex = new Map<string, { baseId: string; variant: ModelVariant }>();
   private mockMode = false;
@@ -38,6 +71,7 @@ export class ProviderRegistry {
     // Initialize providers
     for (const pConfig of config.providers || []) {
       this.providerConfigs.set(pConfig.name, pConfig);
+      this.providerHosts.set(pConfig.name, hostOfBaseUrl(pConfig.baseUrl));
       if (pConfig.type === 'systemone') {
         // Native System One upstreams are NOT chat executors — the shared
         // decision executor calls them directly (protocols/systemone/decide.ts).
@@ -139,6 +173,41 @@ export class ProviderRegistry {
 
   public getModel(modelId: string): ModelRegistration | undefined {
     return this.models.get(modelId);
+  }
+
+  /**
+   * Resolve a BARE upstream name (no `provider/` prefix — how clients name a
+   * model the way its own catalog does, e.g. `qwen3.8-flash`) to registered
+   * models whose `upstreamModel` equals it. This is the second exact-match
+   * tier after full-id lookup: several providers commonly expose the same
+   * upstream name, so ALL hits are returned, ordered deterministically
+   * (cheapest input price first, then id) — the first entry is the primary,
+   * the rest are reachable through the same-tier failover pool. Names
+   * containing `/` are rejected (those are full-id lookups, not bare names).
+   *
+   * `upstreamHost` (the proxy-interception target host, when the request
+   * arrived through the MITM forward proxy) disambiguates same-name models:
+   * candidates whose provider baseUrl hostname matches the host win; when
+   * nothing matches (hooked clients hit the gateway itself, unknown hosts)
+   * the full hit list applies. Empty result = no registered model carries
+   * that upstream name; the caller keeps its existing contract for that case.
+   */
+  public getModelsByUpstreamName(bareName: string, upstreamHost?: string): ModelRegistration[] {
+    if (!bareName || bareName.includes('/')) return [];
+    const hits: ModelRegistration[] = [];
+    for (const m of this.models.values()) {
+      if (m.upstreamModel === bareName) hits.push(m);
+    }
+    // Locale-independent tiebreak: strict code-unit order, not localeCompare.
+    const byPrice = (a: ModelRegistration, b: ModelRegistration) =>
+      (a.pricing.input ?? Infinity) - (b.pricing.input ?? Infinity) ||
+      (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    const host = normalizeHostHeader(upstreamHost);
+    if (host) {
+      const scoped = hits.filter((m) => this.providerHosts.get(m.provider) === host);
+      if (scoped.length > 0) return scoped.sort(byPrice);
+    }
+    return hits.sort(byPrice);
   }
 
   /** Raw provider config (any type) — the /v1/systemone route uses it to

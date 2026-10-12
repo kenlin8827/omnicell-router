@@ -1,4 +1,4 @@
-import type { CaptureRecorder } from '../capture/recorder.js';
+import type { CaptureRecorder, HttpExchangeEvent } from '../capture/recorder.js';
 import { emitUpstreamRequest, emitUpstreamResponse } from '../observability/http-exchange.js';
 
 /**
@@ -14,6 +14,13 @@ export interface UpstreamEventContext {
   traceId: string;
   model: string;
   recorder: CaptureRecorder;
+  /**
+   * Non-default call label forwarded onto every event emitted through this
+   * context. The Layer 2 judge's decision-model leg carries 'l2-judge' so
+   * the archive can tell it apart from candidate-execution events sharing the
+   * SAME trace/session (the outer request's identity).
+   */
+  purpose?: HttpExchangeEvent['purpose'];
 }
 
 /** Returns the spanId minted by `emitUpstreamRequest`, or undefined when the context is absent (capture off / mock mode / tests). */
@@ -41,6 +48,7 @@ export function emitUpstreamRequestOnce(
     traceId: ctx.traceId,
     model: args.model ?? ctx.model,
     proxy: args.proxy,
+    purpose: ctx.purpose,
   });
 }
 
@@ -71,6 +79,7 @@ export function emitUpstreamResponseOnce(
     traceId: ctx.traceId,
     model: args.model ?? ctx.model,
     spanId: args.spanId,
+    purpose: ctx.purpose,
   });
 }
 
@@ -108,6 +117,7 @@ export function emitUpstreamFailureOnce(
     model: args.model ?? ctx.model,
     spanId: args.spanId,
     error: args.error,
+    purpose: ctx.purpose,
   });
 }
 

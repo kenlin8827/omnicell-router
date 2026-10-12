@@ -8,6 +8,7 @@ import { globMatchAny } from '../utils/glob.js';
 import { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import { Layer2Judge } from '../router/layer2-judge.js';
 import { getRawConfig, loadConfig, saveConfig, saveRawConfig, getRuntimeConfigRef } from '../config/index.js';
+import { applyConfig as applyDecisionCaptureConfig } from '../flywheel/decision-capture.js';
 import { initProxyConfig } from '../utils/proxy.js';
 import { getOcrHomeDir } from '../cli/paths.js';
 import { ensureCa } from '../forward-proxy/ca.js';
@@ -552,7 +553,8 @@ export function registerConsoleRoutes(
     // gateway restart needed) and custom model combos (registry re-reads the
     // combo map per request). Everything else still requires a restart.
     initProxyConfig(loadConfig().proxy);
-    orchestrator.getCaptureRecorder().applyConfig(loadConfig().capture);
+    orchestrator.getCaptureRecorder().applyConfig(loadConfig().requestCapture);
+    applyDecisionCaptureConfig(loadConfig().classifier?.layer2); // L2 dataset sampling: single-key gate classifier.layer2.collectEnabled, hot too
     orchestrator.getRegistry().applyCombos(loadConfig().combos);
     orchestrator.getRegistry().applyTierConfigNow(); // tier member lists commit immediately (no restart)
     warnOnEmptyTierPools(); // no residual tier → an empty pool is now possible
@@ -571,7 +573,8 @@ export function registerConsoleRoutes(
     const result = saveRawConfig(body.yaml);
     if (!result.success) return reply.status(400).send(result);
     initProxyConfig(loadConfig().proxy); // hot-apply proxy policy (see handleSaveConfig)
-    orchestrator.getCaptureRecorder().applyConfig(loadConfig().capture); // hot-apply capture too
+    orchestrator.getCaptureRecorder().applyConfig(loadConfig().requestCapture); // hot-apply capture too
+    applyDecisionCaptureConfig(loadConfig().classifier?.layer2); // hot-apply the L2 dataset-sampling gate too (classifier.layer2.collectEnabled)
     orchestrator.getRegistry().applyCombos(loadConfig().combos); // hot-apply combos too
     orchestrator.getRegistry().applyTierConfigNow(); // hot-commit tier member lists too
     warnOnEmptyTierPools(); // no residual tier → an empty pool is now possible
