@@ -79,7 +79,7 @@ export const Pagination: React.FC<PaginationProps> = ({
     padding: '0 10px',
     fontSize: 12,
     justifyContent: 'center',
-    fontFamily: 'JetBrains Mono, monospace',
+    fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
   };
 
   return (

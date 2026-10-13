@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { ShieldAlert, RefreshCw, Search, RotateCcw, Ban, Zap, Loader2 } from 'lucide-react';
-import { api, type GatewayStatusResponse, type BreakerInfo } from '../lib/api';
+import { api, opencodeApi, type GatewayStatusResponse, type BreakerInfo, type BreakerTripScope, type AccountHealth } from '../lib/api';
 import { useModelTest, type ModelTestTarget } from '../lib/useModelTest';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
+import { Combobox } from '../components/Combobox';
 import { Pagination } from '../components/Pagination';
 
 const BREAKER_PAGE_SIZE = 20;
@@ -24,6 +25,14 @@ const TRIP_PRESETS: { label: string; ms: number }[] = [
   { label: '7d', ms: 7 * 24 * 3600 * 1000 },
 ];
 
+/** Trip scopes in panel order — 'model' first = today's default flow. */
+const TRIP_SCOPES: BreakerTripScope[] = ['model', 'account', 'pair'];
+const SCOPE_LABEL_KEY: Record<BreakerTripScope, string> = {
+  model: 'guardrails.scopeModel',
+  account: 'guardrails.scopeAccount',
+  pair: 'guardrails.scopePair',
+};
+
 export const GuardrailsPage: React.FC = () => {
   const { status } = useOutletContext<{ status: GatewayStatusResponse | null }>();
   const { t } = useI18n();
@@ -37,6 +46,78 @@ export const GuardrailsPage: React.FC = () => {
   const [tripPanelModel, setTripPanelModel] = useState<string | null>(null);
   const [tripReason, setTripReason] = useState('');
   const [trippingModel, setTrippingModel] = useState<string | null>(null);
+  // ADR-0019 P3 scope-aware trip/reset. 'model' is the legacy whole-model flow and
+  // keeps calling the legacy client method, so its request body stays as today.
+  const [tripScope, setTripScope] = useState<BreakerTripScope>('model');
+  const [tripAccount, setTripAccount] = useState('');
+  const [tripModelId, setTripModelId] = useState('');
+  const [resettingScope, setResettingScope] = useState(false);
+  // Credential picker source: the bound store's masked accounts, fetched once
+  // per page for the first scoped panel open. null = not tried, [] = none.
+  const [storeAccounts, setStoreAccounts] = useState<AccountHealth[] | null>(null);
+  const [storeAccountsFailed, setStoreAccountsFailed] = useState(false);
+
+  // Localized option rows are rebuilt per language; the code→key table is static.
+  const scopeOptions = useMemo(
+    () => TRIP_SCOPES.map((s) => ({ value: s, label: t(SCOPE_LABEL_KEY[s]) })),
+    [t]
+  );
+  // Only prefixed accounts can own pair breakers (Decision 5 identity is the keyHash).
+  const accountOptions = useMemo(
+    () =>
+      (storeAccounts ?? []).flatMap((a) => {
+        const prefix = a.keyHashPrefix;
+        if (!prefix) return [];
+        return [{ value: prefix, label: `${a.label?.trim() || a.id} #${prefix}`, meta: a.providerId }];
+      }),
+    [storeAccounts]
+  );
+
+  const loadStoreAccounts = async () => {
+    if (storeAccounts !== null) return;
+    try {
+      const res = await opencodeApi.getCredentialStore();
+      setStoreAccounts(res.store.accounts.flatMap((a) => a.accounts ?? []));
+    } catch {
+      setStoreAccounts([]);
+      setStoreAccountsFailed(true);
+    }
+  };
+
+  const openTripPanel = (modelId: string) => {
+    setTripPanelModel(modelId);
+    setTripReason('');
+    setTripScope('model');
+    setTripAccount('');
+    setTripModelId(modelId);
+    loadStoreAccounts();
+  };
+
+  const closeTripPanel = () => {
+    setTripPanelModel(null);
+    setTripReason('');
+    setTripScope('model');
+    setTripAccount('');
+    setTripModelId('');
+  };
+
+  /** Target guard for the non-legacy scopes (backend 400s a missing account/model). */
+  const scopedTarget = (): { model?: string; account: string } | null => {
+    if (!tripAccount) {
+      toast.error(t('guardrails.tripNeedAccount'));
+      return null;
+    }
+    if (tripScope === 'pair') {
+      const model = tripModelId.trim();
+      if (!model) {
+        toast.error(t('guardrails.tripNeedModel'));
+        return null;
+      }
+      return { model, account: tripAccount };
+    }
+    return { account: tripAccount };
+  };
+
   const { testingIds, testResults, testOne, isBusy } = useModelTest();
 
   const breakers: BreakerInfo[] = status?.circuitBreakers?.breakers || [];
@@ -82,18 +163,48 @@ export const GuardrailsPage: React.FC = () => {
   };
 
   const handleTrip = async (modelId: string, cooldownMs: number) => {
+    const scope = tripScope;
+    // 'model' addresses the row's own model; the finer scopes need a credential
+    // (and a model for 'pair'), validated client-side before the request.
+    const target = scope === 'model' ? { model: modelId } : scopedTarget();
+    if (!target) return;
     setTrippingModel(modelId);
+    const opts = { reason: tripReason.trim() || undefined, cooldownMs };
     try {
-      await api.tripBreaker(modelId, { reason: tripReason.trim() || undefined, cooldownMs });
-      toast.success(t('guardrails.tripSuccess', { model: modelId }));
-      setTripPanelModel(null);
-      setTripReason('');
+      if (scope === 'model') {
+        await api.tripBreaker(modelId, opts);
+        toast.success(t('guardrails.tripSuccess', { model: modelId }));
+      } else {
+        const res = await api.tripBreakersScoped(scope, { ...target, ...opts });
+        toast.success(t('guardrails.tripScopeSuccess', { scope: t(SCOPE_LABEL_KEY[scope]), n: res.affected ?? 0 }));
+      }
+      closeTripPanel();
     } catch (err: any) {
       toast.error(t('guardrails.tripFailed') + err.message);
     } finally {
       setTrippingModel(null);
     }
   };
+
+  /** Scoped reset — the undo door for an account/pair trip made here. */
+  const handleResetScope = async () => {
+    const scope = tripScope;
+    if (scope === 'model') return;
+    const target = scopedTarget();
+    if (!target) return;
+    setResettingScope(true);
+    try {
+      const res = await api.resetBreakersScoped(scope, target);
+      const n = res.resetCount ?? 0;
+      if (n > 0) toast.success(t('guardrails.resetScopeSuccess', { n }));
+      else toast.info(t('guardrails.resetScopeNone'));
+    } catch (err: any) {
+      toast.error(t('guardrails.resetOneFailed') + err.message);
+    } finally {
+      setResettingScope(false);
+    }
+  };
+
 
   const categoryLabel = (cat?: string) => {
     switch (cat) {
@@ -203,7 +314,7 @@ export const GuardrailsPage: React.FC = () => {
               onClick={() => { setStateFilter(sf.key); setBreakerPage(1); }}
               style={
                 stateFilter === sf.key
-                  ? { background: 'var(--accent)', color: 'var(--btn-primary-text)', borderColor: 'var(--accent)' }
+                  ? { background: 'var(--btn-primary-bg)', color: 'var(--btn-primary-text)', borderColor: 'var(--btn-primary-bg)' }
                   : undefined
               }
             >
@@ -231,7 +342,7 @@ export const GuardrailsPage: React.FC = () => {
                   style={{
                     padding: '12px 14px',
                     borderRadius: '8px',
-                    background: 'rgba(255, 255, 255, 0.02)',
+                    background: 'var(--bg-elev)',
                     border: `1px solid ${borderColor}`,
                     display: 'flex',
                     flexDirection: 'column',
@@ -240,13 +351,13 @@ export const GuardrailsPage: React.FC = () => {
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
-                      <span style={{ fontWeight: 600, fontSize: '13px', fontFamily: 'JetBrains Mono, monospace', overflowWrap: 'anywhere' }}>
+                      <span style={{ fontWeight: 600, fontSize: '13px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", overflowWrap: 'anywhere' }}>
                         {b.modelId}
                       </span>
                       {res && (
                         <span
                           style={{
-                            fontFamily: 'JetBrains Mono, monospace',
+                            fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                             fontSize: '10px',
                             whiteSpace: 'nowrap',
                             color: res.ok ? 'var(--accent-emerald)' : 'var(--accent-rose)',
@@ -292,9 +403,49 @@ export const GuardrailsPage: React.FC = () => {
 
                   {tripPanelModel === b.modelId ? (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', paddingTop: '8px', borderTop: '1px dashed var(--card-border)' }}>
+                      {/* ADR-0019 P3 — scope selector; 'model' keeps today's legacy flow. */}
+                      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
+                        <span style={{ display: 'inline-flex' }} title={t('guardrails.tripScopeTip')}>
+                          <Combobox
+                            value={tripScope}
+                            onChange={(v) => setTripScope(v === 'account' || v === 'pair' ? v : 'model')}
+                            options={scopeOptions}
+                            style={{ fontSize: '11px', padding: '4px 8px', width: '160px' }}
+                            panelMinWidth={210}
+                          />
+                        </span>
+                        {tripScope !== 'model' &&
+                          (accountOptions.length > 0 ? (
+                            <Combobox
+                              value={tripAccount}
+                              onChange={setTripAccount}
+                              options={accountOptions}
+                              placeholder={t('guardrails.accountPick')}
+                              clearable
+                              style={{ fontSize: '11px', padding: '4px 8px', flex: 1, minWidth: 150 }}
+                              panelMinWidth={260}
+                            />
+                          ) : (
+                            <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+                              {storeAccountsFailed ? t('guardrails.accountStoreFailed') : t('guardrails.accountNone')}
+                            </span>
+                          ))}
+                        {tripScope === 'pair' && (
+                          <input
+                            type="text"
+                            className="input"
+                            aria-label={t('guardrails.tripModelPlaceholder')}
+                            style={{ fontSize: '11px', padding: '4px 8px', flex: 1, minWidth: 130 }}
+                            placeholder={t('guardrails.tripModelPlaceholder')}
+                            value={tripModelId}
+                            onChange={(e) => setTripModelId(e.target.value)}
+                          />
+                        )}
+                      </div>
                       <input
                         type="text"
                         className="input"
+                        aria-label={t('guardrails.tripReasonPlaceholder')}
                         style={{ fontSize: '12px', padding: '6px 10px' }}
                         placeholder={t('guardrails.tripReasonPlaceholder')}
                         value={tripReason}
@@ -307,15 +458,27 @@ export const GuardrailsPage: React.FC = () => {
                             className="btn btn-sm"
                             disabled={trippingModel === b.modelId}
                             onClick={() => handleTrip(b.modelId, p.ms)}
-                            style={{ fontSize: '11px', padding: '3px 8px', background: 'var(--accent)', color: 'var(--btn-primary-text)', borderColor: 'var(--accent)' }}
+                            style={{ fontSize: '11px', padding: '3px 8px', background: 'var(--btn-primary-bg)', color: 'var(--btn-primary-text)', borderColor: 'var(--btn-primary-bg)' }}
                           >
                             {p.label}
                           </button>
                         ))}
+                        {tripScope !== 'model' && (
+                          <button
+                            className="btn btn-sm"
+                            disabled={resettingScope || trippingModel === b.modelId}
+                            onClick={handleResetScope}
+                            title={t('guardrails.tripScopeTip')}
+                            style={{ fontSize: '11px', padding: '3px 8px', display: 'flex', alignItems: 'center', gap: 4 }}
+                          >
+                            <RotateCcw size={11} />
+                            <span>{resettingScope ? t('guardrails.resetting') : t('guardrails.resetScope')}</span>
+                          </button>
+                        )}
                         <button
                           className="btn btn-sm"
                           style={{ fontSize: '11px', padding: '3px 8px' }}
-                          onClick={() => { setTripPanelModel(null); setTripReason(''); }}
+                          onClick={closeTripPanel}
                         >
                           {t('guardrails.tripCancel')}
                         </button>
@@ -356,7 +519,7 @@ export const GuardrailsPage: React.FC = () => {
                       ) : (
                         <button
                           className="btn btn-sm"
-                          onClick={() => { setTripPanelModel(b.modelId); setTripReason(''); }}
+                          onClick={() => openTripPanel(b.modelId)}
                           style={{ display: 'flex', alignItems: 'center', gap: '5px' }}
                         >
                           <Ban size={12} />

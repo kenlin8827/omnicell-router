@@ -160,7 +160,7 @@ export const SettingsPage: React.FC = () => {
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '20px' }}>
           {/* Section 1: Server & Network */}
-          <div style={{ background: 'rgba(255,255,255,0.02)', padding: '16px', borderRadius: '10px', border: '1px solid var(--card-border)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Globe size={14} />
               {t('settings.netTitle')}
@@ -186,7 +186,7 @@ export const SettingsPage: React.FC = () => {
           </div>
 
           {/* Section 2: Semantic Cache */}
-          <div style={{ background: 'rgba(255,255,255,0.02)', padding: '16px', borderRadius: '10px', border: '1px solid var(--card-border)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent-emerald)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <HardDrive size={14} />
               {t('settings.cacheTitle')}
@@ -220,7 +220,7 @@ export const SettingsPage: React.FC = () => {
           </div>
 
           {/* Section 3: Data Flywheel */}
-          <div style={{ background: 'rgba(255,255,255,0.02)', padding: '16px', borderRadius: '10px', border: '1px solid var(--card-border)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent-violet)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Orbit size={14} />
               {t('settings.flywheelTitle')}
@@ -267,7 +267,7 @@ export const SettingsPage: React.FC = () => {
           </div>
 
           {/* Section 4: Request Capture (hot-applied — no restart needed) */}
-          <div style={{ background: 'rgba(255,255,255,0.02)', padding: '16px', borderRadius: '10px', border: '1px solid var(--card-border)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Archive size={14} />
               {t('settings.capTitle')}
@@ -284,7 +284,7 @@ export const SettingsPage: React.FC = () => {
                 silences both capture legs. The L2 decision sub-switch is
                 effective only while it is on. Inactive rows render dimmed,
                 still clickable (pre-set pattern). */}
-            <div style={{ borderTop: '1px solid var(--card-border)', paddingTop: '12px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ borderTop: '1px solid var(--divider)', paddingTop: '12px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <div style={{ fontWeight: 700, fontSize: '12px', color: 'var(--text-main)' }}>
                 {t('settings.capSystemoneGroup')}
               </div>

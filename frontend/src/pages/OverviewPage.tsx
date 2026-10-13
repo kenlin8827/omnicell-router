@@ -165,22 +165,22 @@ export const OverviewPage: React.FC = () => {
           </Link>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '14px' }}>
-          <div style={{ background: 'rgba(255,255,255,0.02)', padding: '14px', borderRadius: '10px', border: '1px solid var(--card-border)' }}>
+          <div className="sub-card" style={{ padding: 14 }}>
             <div style={{ fontSize: '11px', color: 'var(--accent)', fontWeight: 700 }}>STAGE 1</div>
             <div style={{ fontSize: '14px', fontWeight: 600, margin: '4px 0' }}>{t('overview.stage1')}</div>
             <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('overview.stage1Desc')}</div>
           </div>
-          <div style={{ background: 'rgba(255,255,255,0.02)', padding: '14px', borderRadius: '10px', border: '1px solid var(--card-border)' }}>
+          <div className="sub-card" style={{ padding: 14 }}>
             <div style={{ fontSize: '11px', color: 'var(--accent-emerald)', fontWeight: 700 }}>STAGE 2</div>
             <div style={{ fontSize: '14px', fontWeight: 600, margin: '4px 0' }}>{t('overview.stage2')}</div>
             <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('overview.stage2Desc')}</div>
           </div>
-          <div style={{ background: 'rgba(255,255,255,0.02)', padding: '14px', borderRadius: '10px', border: '1px solid var(--card-border)' }}>
+          <div className="sub-card" style={{ padding: 14 }}>
             <div style={{ fontSize: '11px', color: 'var(--accent-violet)', fontWeight: 700 }}>STAGE 3</div>
             <div style={{ fontSize: '14px', fontWeight: 600, margin: '4px 0' }}>{t('overview.stage3')}</div>
             <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('overview.stage3Desc')}</div>
           </div>
-          <div style={{ background: 'rgba(255,255,255,0.02)', padding: '14px', borderRadius: '10px', border: '1px solid var(--card-border)' }}>
+          <div className="sub-card" style={{ padding: 14 }}>
             <div style={{ fontSize: '11px', color: 'var(--accent-rose)', fontWeight: 700 }}>STAGE 4</div>
             <div style={{ fontSize: '14px', fontWeight: 600, margin: '4px 0' }}>{t('overview.stage4')}</div>
             <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('overview.stage4Desc')}</div>
@@ -209,7 +209,7 @@ export const OverviewPage: React.FC = () => {
                   justifyContent: 'space-between',
                   padding: '10px 14px',
                   borderRadius: '8px',
-                  background: 'rgba(255, 255, 255, 0.03)',
+                  background: 'var(--well-bg)',
                   border: '1px solid var(--card-border)',
                 }}
               >
@@ -217,7 +217,7 @@ export const OverviewPage: React.FC = () => {
                   <BrandIcon name={c.name === 'opencode-proxy' ? 'opencode' : c.name} size={18} />
                   <div>
                     <div style={{ fontWeight: 600, fontSize: '13px' }}>{c.name === 'opencode-proxy' ? t('clients.nameOpencodeProxy') : c.displayName}</div>
-                    <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace' }}>
+                    <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
                       {c.configPath}
                     </div>
                   </div>
@@ -226,7 +226,7 @@ export const OverviewPage: React.FC = () => {
                   {c.hooked ? (
                     <span className="badge badge-success">{t('overview.hooked')}</span>
                   ) : (
-                    <span className="badge" style={{ background: 'rgba(255,255,255,0.06)', color: 'var(--text-dim)' }}>
+                    <span className="badge" style={{ background: 'var(--chip-bg)', color: 'var(--text-dim)' }}>
                       {t('overview.notHooked')}
                     </span>
                   )}
@@ -246,11 +246,11 @@ export const OverviewPage: React.FC = () => {
             <Link to="/guardrails" className="btn btn-sm">{t('overview.viewAll')}</Link>
           </div>
           <div style={{ display: 'flex', gap: '16px', marginBottom: '14px' }}>
-            <div style={{ flex: 1, padding: '12px', background: 'rgba(255,255,255,0.02)', borderRadius: '8px' }}>
+            <div style={{ flex: 1, padding: '12px', background: 'var(--bg-elev)', borderRadius: '8px' }}>
               <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('overview.totalBreakers')}</div>
               <div style={{ fontSize: '20px', fontWeight: 700 }}>{status?.circuitBreakers?.total || 0}</div>
             </div>
-            <div style={{ flex: 1, padding: '12px', background: 'rgba(255,255,255,0.02)', borderRadius: '8px' }}>
+            <div style={{ flex: 1, padding: '12px', background: 'var(--bg-elev)', borderRadius: '8px' }}>
               <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('overview.openBreakers')}</div>
               <div style={{ fontSize: '20px', fontWeight: 700, color: status?.circuitBreakers?.tripped ? 'var(--accent-rose)' : 'var(--accent-emerald)' }}>
                 {status?.circuitBreakers?.tripped || 0}

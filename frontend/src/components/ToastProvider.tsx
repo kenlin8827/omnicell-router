@@ -21,7 +21,7 @@ const ToastContext = createContext<ToastApi | null>(null);
 const TYPE_STYLE: Record<ToastType, { color: string; bg: string; Icon: typeof Info }> = {
   success: { color: 'var(--accent-emerald)', bg: 'rgba(16, 185, 129, 0.15)', Icon: CheckCircle },
   error: { color: 'var(--accent-rose)', bg: 'rgba(244, 63, 94, 0.15)', Icon: AlertTriangle },
-  info: { color: 'var(--accent)', bg: 'rgba(6, 182, 212, 0.12)', Icon: Info },
+  info: { color: 'var(--accent)', bg: 'var(--accent-bg)', Icon: Info },
 };
 
 const TOAST_MS = 3500;

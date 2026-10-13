@@ -61,7 +61,26 @@ const ARCHIVE_PAYLOAD_OPTIONS: Array<{ key: string; i18nKey: string; defaultOn: 
 const defaultExportInclude = (): Record<string, boolean> =>
   Object.fromEntries(ARCHIVE_PAYLOAD_OPTIONS.map((o) => [o.key, o.defaultOn]));
 
-const MONO = "'JetBrains Mono', Consolas, monospace";
+// Legacy imports (pre-structured provenance) store the generated English
+// sentence in description — match it back so old book-sets localize too.
+// Any other description is operator text and renders verbatim.
+const LEGACY_IMPORTED_DESC_RE = /^imported from "(.+)" \(OCR (.+)\)$/;
+
+/** The provenance line under the env name: operator description wins, else localized import stamp. */
+function envProvenance(
+  e: AdminEnvironment,
+  t: (path: string, params?: Record<string, string | number>) => string
+): string | null {
+  if (e.description) {
+    const m = LEGACY_IMPORTED_DESC_RE.exec(e.description);
+    return m ? t('env.importedFrom', { name: m[1], version: m[2] }) : e.description;
+  }
+  return e.importedFrom
+    ? t('env.importedFrom', { name: e.importedFrom.name, version: e.importedFrom.appVersion })
+    : null;
+}
+
+const MONO = "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace";
 const SPIN: React.CSSProperties = { animation: 'ocr-spin 0.8s linear infinite' };
 
 const TH_STYLE: React.CSSProperties = {
@@ -82,7 +101,7 @@ const TD_STYLE: React.CSSProperties = {
   // Name cells can grow a second line (description) — keep the other cells
   // centered against the tallest one instead of pinned to the top.
   verticalAlign: 'middle',
-  borderBottom: '1px solid var(--card-border)',
+  borderBottom: '1px solid var(--divider)',
 };
 
 /** Parsed archive fields the import panel shows before anything is POSTed. */
@@ -738,7 +757,7 @@ export const EnvironmentsPage: React.FC = () => {
                 <col style={{ width: '29%' }} />
               </colgroup>
               <thead>
-                <tr style={{ borderBottom: '1px solid var(--card-border)' }}>
+                <tr style={{ borderBottom: '1px solid var(--divider)' }}>
                   <th scope="col" style={TH_STYLE}>{t('env.col.name')}</th>
                   <th scope="col" style={TH_STYLE}>{t('env.col.type')}</th>
                   <th scope="col" style={TH_STYLE}>{t('env.col.location')}</th>
@@ -753,6 +772,7 @@ export const EnvironmentsPage: React.FC = () => {
                   const lock = lockReason(e);
                   const isSwitching = switching === e.name;
                   const isBusy = busy === e.name;
+                  const provenance = envProvenance(e, t);
                   return (
                     <tr
                       key={e.name}
@@ -771,9 +791,9 @@ export const EnvironmentsPage: React.FC = () => {
                             <span className="badge badge-info">{t('env.badge.bootstrap')}</span>
                           )}
                         </div>
-                        {e.description && (
+                        {provenance && (
                           <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 4, lineHeight: 1.5 }}>
-                            {e.description}
+                            {provenance}
                           </div>
                         )}
                       </td>
@@ -1097,7 +1117,7 @@ export const EnvironmentsPage: React.FC = () => {
                   padding: '10px 12px',
                   borderRadius: 8,
                   border: '1px solid var(--card-border)',
-                  background: 'rgba(255, 255, 255, 0.02)',
+                  background: 'var(--bg-elev)',
                   color: 'var(--text-dim)',
                   fontSize: 12,
                   lineHeight: 1.6,
@@ -1231,13 +1251,17 @@ export const EnvironmentsPage: React.FC = () => {
                 hint={t('env.import.encrypted')}
               >
                 <input
-                  type="password"
-                  className="input"
+                  type="text"
+                  className="input secret-mask"
                   value={iPassword}
-                  // "off" is ignored by Edge for password fields — its password
-                  // manager then injects a green key glyph that clashes with the
-                  // dark theme; "new-password" (same as the export dialog) suppresses it.
-                  autoComplete="new-password"
+                  // Existing-secret prompt, like the copy-key re-auth gate: any
+                  // type="password" makes Chrome pop the credential dropdown
+                  // (fill saved login / generate / save prompt) and Edge inject
+                  // its green key glyph — no autocomplete value suppresses
+                  // either. Masking via .secret-mask (styles/index.css) keeps
+                  // password managers away entirely.
+                  autoComplete="off"
+                  spellCheck={false}
                   aria-label={t('env.import.password')}
                   onChange={(e) => {
                     setIPassword(e.target.value);
@@ -1257,7 +1281,7 @@ export const EnvironmentsPage: React.FC = () => {
                   padding: '12px',
                   borderRadius: 8,
                   border: '1px solid var(--card-border)',
-                  background: 'rgba(255, 255, 255, 0.02)',
+                  background: 'var(--bg-elev)',
                 }}
               >
                 <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-dim)', marginBottom: 6 }}>

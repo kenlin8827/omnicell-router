@@ -18,6 +18,14 @@ import '@fontsource/noto-sans-sc/600.css';
 import '@fontsource/noto-sans-sc/700.css';
 import './styles/index.css';
 
+// Apply the persisted theme before first paint: the auth gate renders
+// LoginPage without mounting Layout (which owns the theme picker), so
+// otherwise the pre-login views always show the default obsidian.
+document.documentElement.setAttribute(
+  'data-theme',
+  localStorage.getItem('ocr_theme') || 'obsidian',
+);
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <I18nProvider>

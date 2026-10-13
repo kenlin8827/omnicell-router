@@ -70,9 +70,19 @@ export interface TranslationDict {
     grpObservability: string;
     grpSystem: string;
     searchPlaceholder: string;
+    consoleTag: string;
+    /** Sidebar footer label; interpolates the runtime gateway version. */
+    version: string;
+    /** Sidebar footer dot tooltip while the gateway status poll succeeds. */
+    footerOnline: string;
+    /** Sidebar footer dot tooltip / fallback line when the gateway is unreachable. */
+    footerOffline: string;
+    /** Sidebar footer port chip tooltip; interpolates the copyable base URL. */
+    footerCopyUrl: string;
+    /** Sidebar footer toast after the gateway base URL is copied. */
+    footerUrlCopied: string;
   };
   header: {
-    livePort: string;
     restart: string;
     resetBreakers: string;
     restarting: string;
@@ -231,6 +241,12 @@ export interface TranslationDict {
     updateKey: string;
     updateKeyPrompt: string;
     keyUpdated: string;
+    addKeyAccount: string;
+    addKeyAccountTip: string;
+    addKeyPrompt: string;
+    keyAdded: string;
+    updateKeyTip: string;
+    keyAlreadyExists: string;
     oauthExpires: string;
     oauthExpired: string;
     deleteBtn: string;
@@ -241,6 +257,9 @@ export interface TranslationDict {
     connectDesc: string;
     searchCatalog: string;
     refreshCatalog: string;
+    refreshConnected: string;
+    refreshDone: string;
+    refreshFailed: string;
     connectBtn: string;
     connecting: string;
     connectOk: string;
@@ -265,10 +284,16 @@ export interface TranslationDict {
     fBaseUrl: string;
     fKey: string;
     fKeyInline: string;
+    fNpmLabel: string;
     fNpm: string;
     fNpmCustom: string;
+    phId: string;
+    phName: string;
+    phBaseUrl: string;
+    phKey: string;
     priceFrom: string;
     tabConnected: string;
+    alreadyConnected: string;
     tabCatalog: string;
     tabCustom: string;
     hideConnected: string;
@@ -278,9 +303,8 @@ export interface TranslationDict {
     emptyConnected: string;
     staticTitle: string;
     staticDesc: string;
-    viewAllModels: string;
-    viewBtn: string;
     pmManage: string;
+    pmView: string;
     pmNotInCatalog: string;
     pmTitle: string;
     pmEmpty: string;
@@ -338,6 +362,129 @@ export interface TranslationDict {
     pmAutofillNoId: string;
     pmFilterPlaceholder: string;
     pmNoMatch: string;
+    /** Bound credential store (ADR-0019 P2) — status badge kind labels. */
+    storeKindOpencodeV2: string;
+    storeKindOpencodeV2Readonly: string;
+    storeKindOcr: string;
+    /** WARNING badge copy, keyed by the backend's machine-readable degraded code. */
+    storeDegradedDb: string;
+    /** opencode v1 detected: unsupported, credentials live in the OCR store. */
+    storeDegradedV1: string;
+    storeDegradedCli: string;
+    /** Fallback for degraded codes this build does not know (loud raw-code display is the last resort). */
+    storeDegradedGeneric: string;
+    storeCredentialFile: string;
+    /** Tooltip for credential-write affordances disabled on a read-only binding. */
+    storeReadOnlyTip: string;
+    /** Boot/reconcile exclusion list rendered under the status badge. */
+    excludedTitle: string;
+    exclDbUnreadable: string;
+    exclNoRoutable: string;
+    exclReconcilePushFailed: string;
+    /** Decision 8 honest disconnect double-confirmation (opencode-v2-family bindings only). */
+    deletePurgeV2: string;
+    deleteV2Title: string;
+    deleteV2Desc: string;
+    deleteV2Btn: string;
+    /** One-shot Push-to-opencode convergence (ocr binding with local-only accounts). */
+    pushBtn: string;
+    pushTip: string;
+    pushOk: string;
+    pushPartial: string;
+    pushNone: string;
+    /** Honest error notice when a purgeAuth delete left credentials behind (Decision 8). */
+    purgeFailed: string;
+    /** Fallback detail when the store reports a failed purge without per-account entries. */
+    purgeFailedUnknown: string;
+    /** Localized push precondition failures (400 machine reasonCode). */
+    pushNotOcrBound: string;
+    pushOpencodeV2Unreachable: string;
+    pushOpencodeV2DbUnreadable: string;
+    /** gap #8 tail: 'bind_failed' badge (degraded status + exclusion row). */
+    storeDegradedBind: string;
+    exclBindFailed: string;
+    /** Per-account write route reasonCodes (activate / rename / disconnect). */
+    reasonAccountNotFound: string;
+    reasonCapabilityUnsupported: string;
+    /** opencode v2 service does not recognize the provider's integration id (409). */
+    reasonIntegrationUnmatched: string;
+    /** Pre-write gate tooltip: the sink has no integration for this provider id. */
+    integrationMissingTip: string;
+    reasonInvalidLabel: string;
+    /** Takedown refused: a row without a key hash has no Decision 5 identity. */
+    reasonNoKeyIdentity: string;
+    reasonInvalidReason: string;
+    reasonStoreReadonly: string;
+    reasonStoreUnreadable: string;
+    reasonWriteFailed: string;
+    /** ADR-0019 P3 per-account drill-down (KeysPage provider cards). */
+    accountSoleServingTip: string;
+    /** Chain head = opencode's own key + failover priority head, not the only serving row. */
+    accountChainHeadTip: string;
+    /** Refusal reason: activating a non-routable credential cannot affect gateway routing. */
+    accountActivateNotRoutableTip: string;
+    /** Under-list line: several credentials DO serve at once (per-session spread). */
+    accountsSpreadHint: string;
+    /** Operator takedown (OCR account state; reversible, never destructive). */
+    accountDisabled: string;
+    accountDisabledTip: string;
+    accountDisable: string;
+    accountDisableTip: string;
+    accountEnable: string;
+    accountEnableTip: string;
+    accountDisabledOk: string;
+    accountEnabled: string;
+    accountsAllDisabled: string;
+    accountsAllDisabledTip: string;
+    /** Full explanation behind the ⊘ icon (the two-word badge answered nothing). */
+    accountNotRoutableTip: string;
+    accountSuspectTip: string;
+    accountOpenPairs: string;
+    accountPrefixTip: string;
+    accountActivate: string;
+    accountActivated: string;
+    /** Per-account connectivity probe (multi-account: the provider-level Test only ever hits the head row). */
+    accountTest: string;
+    accountTestTip: string;
+    accountRename: string;
+    accountLabelPlaceholder: string;
+    accountRenamed: string;
+    /** Neutral stand-in for an unlabeled credential (OCR never invents a name). */
+    accountUnnamed: string;
+    /** Confirm button tooltip when the draft is empty = remove the name. */
+    accountClearLabel: string;
+    accountLabelCleared: string;
+    /** Fallback sink name when the bound store is unknown (status endpoint failed). */
+    credentialStoreNeutral: string;
+    /** Adding a key must not steal the chain head (opencode's own active credential). */
+    headPreserved: string;
+    accountDisconnect: string;
+    accountDisconnected: string;
+    /** Decision 8 step 1 on a non-opencode v2 binding — store-neutral wording. */
+    accountDisconnectPurge: string;
+    /** Decision 8 step 1 — same shape as the provider delete confirm. */
+    accountDisconnectConfirm: string;
+    /** Decision 8 step 2 (opencode-v2-family bindings only) — the unrecoverable copy. */
+    accountDisconnectV2Title: string;
+    accountDisconnectV2Desc: string;
+    accountClearSuspect: string;
+    accountSuspectCleared: string;
+    accountSuspectNone: string;
+    reasonGeneric: string;
+    reasonGenericCode: string;
+    /** ADR-0019 Decision 10 — password-gated raw-key copy (row action + dialog). */
+    accountCopyKey: string;
+    accountCopyNeedsAuthTip: string;
+    copyKeyTitle: string;
+    copyKeyDesc: string;
+    copyKeyPassword: string;
+    copyKeyConfirm: string;
+    copyKeyCopying: string;
+    accountKeyCopied: string;
+    accountKeyCopiedUnlocked: string;
+    reasonWebauthRequired: string;
+    reasonInvalidPassword: string;
+    reasonTooManyAttempts: string;
   };
   models: {
     title: string;
@@ -438,6 +585,21 @@ hiddenBadge: string;
     catClient: string;
     catManual: string;
     catUnknown: string;
+    /** ADR-0019 P3 scope-aware manual trip / reset. */
+    scopeModel: string;
+    scopeAccount: string;
+    scopePair: string;
+    tripScopeTip: string;
+    accountPick: string;
+    accountNone: string;
+    accountStoreFailed: string;
+    tripModelPlaceholder: string;
+    tripNeedAccount: string;
+    tripNeedModel: string;
+    tripScopeSuccess: string;
+    resetScope: string;
+    resetScopeSuccess: string;
+    resetScopeNone: string;
   };
   usage: {
     sessionTitle: string;
@@ -451,6 +613,8 @@ hiddenBadge: string;
   sessions: {
     sessionsTitle: string;
     sessionsDesc: string;
+    /** Tooltip for the account-affinity chip (Decision 7 binding). */
+    boundAccountTip: string;
     refresh: string;
     thTokensIn: string;
     thTokensOut: string;
@@ -815,6 +979,7 @@ hiddenBadge: string;
     subtitle: string;
     username: string;
     password: string;
+    remember: string;
     submit: string;
     submitting: string;
     failed: string;
@@ -1232,6 +1397,7 @@ hiddenBadge: string;
     loc: {
       envs: string;
     };
+    importedFrom: string;
     action: {
       switch: string;
       create: string;

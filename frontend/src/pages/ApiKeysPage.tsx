@@ -130,7 +130,7 @@ const ModelAccessPicker: React.FC<{
                 }
               }}
               placeholder={t('apiKeys.accessPatternPlaceholder')}
-              style={{ flex: 1, fontSize: '12px', fontFamily: "'JetBrains Mono', Consolas, monospace" }}
+              style={{ flex: 1, fontSize: '12px', fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
             />
             <button type="button" onClick={addPattern} className="btn btn-sm" disabled={!patternDraft.trim()}>
               {t('apiKeys.accessPatternAdd')}
@@ -163,7 +163,7 @@ const ModelAccessPicker: React.FC<{
                     background: id.includes('*') ? 'rgba(139, 92, 246, 0.12)' : 'var(--input-bg)',
                     border: id.includes('*') ? '1px solid rgba(139, 92, 246, 0.3)' : '1px solid var(--card-border)',
                     color: id.includes('*') ? 'var(--accent-violet)' : 'var(--text-main)',
-                    fontFamily: "'JetBrains Mono', Consolas, monospace",
+                    fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace",
                     fontSize: '11px',
                     // Override .badge uppercase: model ids / patterns are
                     // case-SENSITIVE — displaying them uppercased misleads.
@@ -503,8 +503,8 @@ export const ApiKeysPage: React.FC = () => {
               width: '42px',
               height: '42px',
               borderRadius: '10px',
-              background: 'rgba(6, 182, 212, 0.12)',
-              border: '1px solid rgba(6, 182, 212, 0.3)',
+              background: 'var(--accent-bg)',
+              border: '1px solid var(--accent-border)',
               color: 'var(--accent)',
               display: 'flex',
               alignItems: 'center',
@@ -593,7 +593,7 @@ export const ApiKeysPage: React.FC = () => {
                 width: '48px',
                 height: '48px',
                 borderRadius: '50%',
-                background: 'rgba(255, 255, 255, 0.05)',
+                background: 'var(--chip-bg)',
                 color: 'var(--text-dim)',
                 display: 'flex',
                 alignItems: 'center',
@@ -620,8 +620,8 @@ export const ApiKeysPage: React.FC = () => {
               <thead>
                 <tr
                   style={{
-                    background: 'rgba(255, 255, 255, 0.02)',
-                    borderBottom: '1px solid var(--card-border)',
+                    background: 'var(--bg-elev)',
+                    borderBottom: '1px solid var(--divider)',
                     fontSize: '11px',
                     fontWeight: 700,
                     color: 'var(--text-dim)',
@@ -648,7 +648,7 @@ export const ApiKeysPage: React.FC = () => {
                     <tr
                       key={item.id}
                       style={{
-                        borderBottom: '1px solid var(--card-border)',
+                        borderBottom: '1px solid var(--divider)',
                         transition: 'background 0.15s ease',
                       }}
                     >
@@ -685,7 +685,7 @@ export const ApiKeysPage: React.FC = () => {
                             alignItems: 'center',
                             gap: '4px',
                             fontSize: '11px',
-                            fontFamily: 'JetBrains Mono, monospace',
+                            fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                             color:
                               copiedId === `id:${item.id}` ? 'var(--accent-emerald)' : 'var(--text-dim)',
                             cursor: 'copy',
@@ -716,13 +716,13 @@ export const ApiKeysPage: React.FC = () => {
                       </td>
 
                       {/* Secret Key Display */}
-                      <td style={{ padding: '14px 20px', fontFamily: 'JetBrains Mono, Consolas, monospace' }}>
+                      <td style={{ padding: '14px 20px', fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
                         <div
                           style={{
                             display: 'inline-flex',
                             alignItems: 'center',
                             gap: '8px',
-                            background: 'var(--input-bg)',
+                            background: 'var(--well-bg)',
                             border: '1px solid var(--card-border)',
                             padding: '4px 10px',
                             borderRadius: '6px',
@@ -773,7 +773,7 @@ export const ApiKeysPage: React.FC = () => {
                               ? item.modelAccess.mode === 'allow'
                                 ? 'rgba(16, 185, 129, 0.12)'
                                 : 'rgba(245, 158, 11, 0.12)'
-                              : 'rgba(255, 255, 255, 0.05)',
+                              : 'var(--chip-bg)',
                             color: item.modelAccess
                               ? item.modelAccess.mode === 'allow'
                                 ? 'var(--accent-emerald)'
@@ -799,7 +799,7 @@ export const ApiKeysPage: React.FC = () => {
                             cursor: 'pointer',
                             border: '1px solid',
                             borderColor: item.enabled ? 'rgba(16, 185, 129, 0.3)' : 'var(--card-border)',
-                            background: item.enabled ? 'rgba(16, 185, 129, 0.15)' : 'rgba(255, 255, 255, 0.04)',
+                            background: item.enabled ? 'rgba(16, 185, 129, 0.15)' : 'var(--surface-hover)',
                             color: item.enabled ? 'var(--accent-emerald)' : 'var(--text-dim)',
                           }}
                           title={item.enabled ? t('apiKeys.enableTooltip') : t('apiKeys.disableTooltip')}
@@ -985,11 +985,11 @@ export const ApiKeysPage: React.FC = () => {
 
         <pre
           style={{
-            background: 'var(--input-bg)',
+            background: 'var(--well-bg)',
             border: '1px solid var(--card-border)',
             borderRadius: '8px',
             padding: '16px',
-            fontFamily: 'JetBrains Mono, Consolas, monospace',
+            fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace",
             fontSize: '12px',
             color: 'var(--text-main)',
             overflowX: 'auto',
@@ -1111,7 +1111,7 @@ curl http://127.0.0.1:3000/v1/systemone \\
           style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(0, 0, 0, 0.7)',
+            background: 'var(--scrim)',
             zIndex: 110,
             display: 'flex',
             alignItems: 'center',
@@ -1136,7 +1136,7 @@ curl http://127.0.0.1:3000/v1/systemone \\
                 justifyContent: 'space-between',
                 alignItems: 'center',
                 padding: '18px 22px',
-                borderBottom: '1px solid var(--card-border)',
+                borderBottom: '1px solid var(--divider)',
               }}
             >
               <h3 style={{ fontSize: '15px', fontWeight: 800, color: 'var(--text-main)' }}>
@@ -1199,7 +1199,7 @@ curl http://127.0.0.1:3000/v1/systemone \\
                   style={{
                     padding: '10px 14px',
                     borderRadius: '8px',
-                    background: 'var(--input-bg)',
+                    background: 'var(--well-bg)',
                     border: '1px solid var(--card-border)',
                     fontSize: '12px',
                     color: 'var(--text-muted)',
@@ -1211,7 +1211,7 @@ curl http://127.0.0.1:3000/v1/systemone \\
                   </div>
                   <div
                     style={{
-                      fontFamily: 'JetBrains Mono, Consolas, monospace',
+                      fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace",
                       fontSize: '11px',
                       color: 'var(--text-dim)',
                       wordBreak: 'break-all',
@@ -1229,7 +1229,7 @@ curl http://127.0.0.1:3000/v1/systemone \\
                 justifyContent: 'space-between',
                 alignItems: 'center',
                 padding: '14px 22px',
-                borderTop: '1px solid var(--card-border)',
+                borderTop: '1px solid var(--divider)',
                 gap: '10px',
                 flexWrap: 'wrap',
               }}
@@ -1268,7 +1268,7 @@ curl http://127.0.0.1:3000/v1/systemone \\
           style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(0, 0, 0, 0.85)',
+            background: 'var(--scrim)',
             zIndex: 100,
             display: 'flex',
             alignItems: 'center',
@@ -1383,7 +1383,7 @@ curl http://127.0.0.1:3000/v1/systemone \\
           style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(0, 0, 0, 0.85)',
+            background: 'var(--scrim)',
             zIndex: 100,
             display: 'flex',
             alignItems: 'center',
@@ -1428,8 +1428,8 @@ curl http://127.0.0.1:3000/v1/systemone \\
                       ? 'rgba(16, 185, 129, 0.12)'
                       : viewModels.mode === 'deny'
                         ? 'rgba(245, 158, 11, 0.12)'
-                        : 'rgba(255, 255, 255, 0.05)'
-                    : 'rgba(255, 255, 255, 0.05)',
+                        : 'var(--chip-bg)'
+                    : 'var(--chip-bg)',
                   color: 'var(--text-muted)',
                   border: '1px solid var(--card-border)',
                 }}
@@ -1469,7 +1469,7 @@ curl http://127.0.0.1:3000/v1/systemone \\
                   gap: '8px',
                   alignItems: 'center',
                   padding: '5px 8px',
-                  borderBottom: '1px solid var(--card-border)',
+                  borderBottom: '1px solid var(--divider)',
                 };
                 const renderRow = (m: { id: string; provider: string; tier: string; virtual: boolean }) => {
                   const st = testState[m.id];
@@ -1481,7 +1481,7 @@ curl http://127.0.0.1:3000/v1/systemone \\
                           overflow: 'hidden',
                           textOverflow: 'ellipsis',
                           whiteSpace: 'nowrap',
-                          fontFamily: "'JetBrains Mono', Consolas, monospace",
+                          fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace",
                           fontSize: '12px',
                           color: 'var(--text-main)',
                         }}
@@ -1585,7 +1585,7 @@ curl http://127.0.0.1:3000/v1/systemone \\
           style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(0, 0, 0, 0.85)',
+            background: 'var(--scrim)',
             zIndex: 100,
             display: 'flex',
             alignItems: 'center',
@@ -1673,7 +1673,7 @@ curl http://127.0.0.1:3000/v1/systemone \\
           style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(0, 0, 0, 0.85)',
+            background: 'var(--scrim)',
             zIndex: 100,
             display: 'flex',
             alignItems: 'center',
@@ -1723,11 +1723,11 @@ curl http://127.0.0.1:3000/v1/systemone \\
                 alignItems: 'center',
                 justifyContent: 'space-between',
                 gap: '8px',
-                background: 'var(--input-bg)',
+                background: 'var(--well-bg)',
                 border: '1px solid rgba(16, 185, 129, 0.3)',
                 padding: '10px 14px',
                 borderRadius: '8px',
-                fontFamily: 'JetBrains Mono, Consolas, monospace',
+                fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace",
                 fontSize: '12px',
                 color: 'var(--accent-emerald)',
                 wordBreak: 'break-all',

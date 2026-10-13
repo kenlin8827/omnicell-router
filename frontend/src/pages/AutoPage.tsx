@@ -45,11 +45,8 @@ export const AutoPage: React.FC = () => {
   const decisionCache = layer2.decisionCache || {};
   const setDecisionCache = (patch: any) => setLayer2({ decisionCache: { ...decisionCache, ...patch } });
 
+  // Surface = global .sub-card; only the flex layout stays local.
   const cardStyle: React.CSSProperties = {
-    background: 'rgba(255,255,255,0.02)',
-    padding: '16px',
-    borderRadius: '10px',
-    border: '1px solid var(--card-border)',
     display: 'flex',
     flexDirection: 'column',
     gap: '12px',
@@ -96,7 +93,7 @@ export const AutoPage: React.FC = () => {
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '20px' }}>
           {/* Card A: Routing mode */}
-          <div style={cardStyle}>
+          <div className="sub-card" style={cardStyle}>
             <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Network size={14} />
               {t('auto.modeTitle')}
@@ -118,7 +115,7 @@ export const AutoPage: React.FC = () => {
           </div>
 
           {/* Card B: Layer 1 classifier */}
-          <div style={cardStyle}>
+          <div className="sub-card" style={cardStyle}>
             <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent-amber)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Cpu size={14} />
               {t('auto.layer1Title')}
@@ -145,7 +142,7 @@ export const AutoPage: React.FC = () => {
           </div>
 
           {/* Card C: Layer 2 Judge + decision cache */}
-          <div style={cardStyle}>
+          <div className="sub-card" style={cardStyle}>
             <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent-violet)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Scale size={14} />
               {t('auto.layer2Title')}
@@ -174,7 +171,7 @@ export const AutoPage: React.FC = () => {
                 {t('auto.l2CollectHint')}
               </div>
             </div>
-            <div style={{ borderTop: '1px solid var(--card-border)', paddingTop: '10px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ borderTop: '1px solid var(--divider)', paddingTop: '10px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <label style={rowStyle}>
                 <span>{t('auto.cacheEnable')}</span>
                 <Switch
@@ -206,7 +203,7 @@ export const AutoPage: React.FC = () => {
           </div>
 
           {/* Card D: quick links along the chain */}
-          <div style={cardStyle}>
+          <div className="sub-card" style={cardStyle}>
             <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent-emerald)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Database size={14} />
               {t('auto.linksTitle')}

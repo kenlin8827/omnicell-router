@@ -14,6 +14,8 @@ export interface ModelTestTarget {
   key: string;
   providerId: string;
   modelId?: string;
+  /** Pin the probe to ONE credential row (KeysPage account list); default = provider head. */
+  accountId?: string;
 }
 
 /** Probe outcome — the ok:false shape also covers HTTP-level failures. */
@@ -54,10 +56,10 @@ export const useModelTest = () => {
   const runTest = async (target: ModelTestTarget): Promise<ModelTestOutcome> => {
     setTestingIds((prev) => new Set(prev).add(target.key));
     try {
-      const r = await opencodeApi.testProvider(
-        target.providerId,
-        target.modelId ? { modelId: target.modelId } : undefined
-      );
+      const payload: { modelId?: string; accountId?: string } = {};
+      if (target.modelId) payload.modelId = target.modelId;
+      if (target.accountId) payload.accountId = target.accountId;
+      const r = await opencodeApi.testProvider(target.providerId, Object.keys(payload).length ? payload : undefined);
       setTestResults((prev) => ({ ...prev, [target.key]: r }));
       return r;
     } catch (err: any) {

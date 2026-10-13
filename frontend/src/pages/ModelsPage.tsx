@@ -18,14 +18,14 @@ const PAGE_SIZES = [10, 20, 50, 100, 200];
 
 /** 200000 → "200K", 1000000 → "1M" */
 const SOURCE_BADGE: Record<string, { color: string; bg: string; labelKey: string }> = {
-  opencode: { color: 'var(--accent)', bg: 'rgba(6,182,212,0.12)', labelKey: 'models.srcOpencode' },
-  'models-dev': { color: '#60a5fa', bg: 'rgba(96,165,250,0.12)', labelKey: 'models.srcModelsDev' },
-  openrouter: { color: '#a78bfa', bg: 'rgba(167,139,250,0.12)', labelKey: 'models.srcOpenrouter' },
+  opencode: { color: 'var(--accent)', bg: 'var(--accent-bg)', labelKey: 'models.srcOpencode' },
+  'models-dev': { color: 'var(--hue-blue)', bg: 'var(--hue-blue-soft)', labelKey: 'models.srcModelsDev' },
+  openrouter: { color: 'var(--hue-violet)', bg: 'var(--hue-violet-soft)', labelKey: 'models.srcOpenrouter' },
   config: { color: '#f59e0b', bg: 'rgba(245,158,11,0.12)', labelKey: 'models.srcConfig' },
-  custom: { color: '#34d399', bg: 'rgba(52,211,153,0.12)', labelKey: 'models.srcCustom' },
+  custom: { color: 'var(--hue-emerald)', bg: 'var(--hue-emerald-soft)', labelKey: 'models.srcCustom' },
   mapped: { color: '#c084fc', bg: 'rgba(192,132,252,0.12)', labelKey: 'models.srcMapped' },
-  'openai-compatible': { color: 'var(--text-dim)', bg: 'rgba(255,255,255,0.06)', labelKey: 'models.srcOpenaiCompatible' },
-  service: { color: 'var(--text-dim)', bg: 'rgba(255,255,255,0.06)', labelKey: 'models.srcService' },
+  'openai-compatible': { color: 'var(--text-dim)', bg: 'var(--chip-bg)', labelKey: 'models.srcOpenaiCompatible' },
+  service: { color: 'var(--text-dim)', bg: 'var(--chip-bg)', labelKey: 'models.srcService' },
 };
 
 const fmtContext = (n?: number): string => {
@@ -50,14 +50,16 @@ const hasCapability = (m: OpenCodeModelView): boolean =>
       m.modalities?.input?.includes('video')
   );
 
-const badgeStyle = (color: string, bg: string): React.CSSProperties => ({
-  background: bg,
+// Outline badges: transparent fill, border derived from the text hue (the
+// bg param is legacy at call sites — kept for signature stability).
+const badgeStyle = (color: string, _bg: string): React.CSSProperties => ({
+  background: 'transparent',
   color,
   fontSize: '10px',
   fontWeight: 600,
   padding: '2px 8px',
   borderRadius: '99px',
-  border: `1px solid ${bg}`,
+  border: `1px solid color-mix(in srgb, ${color} 45%, transparent)`,
   display: 'inline-flex',
   alignItems: 'center',
   gap: 4,
@@ -70,7 +72,7 @@ const thStyle: React.CSSProperties = {
   color: 'var(--text-dim)',
   textTransform: 'uppercase',
   letterSpacing: '0.04em',
-  borderBottom: '1px solid var(--card-border)',
+  borderBottom: '1px solid var(--divider)',
   whiteSpace: 'nowrap',
   position: 'sticky',
   top: 0,
@@ -82,7 +84,7 @@ const thStyle: React.CSSProperties = {
 
 const tdStyle: React.CSSProperties = {
   padding: '9px 14px',
-  borderBottom: '1px solid rgba(255,255,255,0.04)',
+  borderBottom: '1px solid var(--divider)',
   verticalAlign: 'top',
 };
 
@@ -331,7 +333,12 @@ const toggleHidden = async (m: OpenCodeModelView) => {
         <div style={{ overflow: 'auto', flex: 1, minHeight: 0 }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '12px' }}>
             <thead>
-              <tr>
+              {/* Integer, multiple-of-4 row heights: at Windows 125%/150%
+                  scaling fractional row boundaries make some 1px hairlines
+                  land on device-pixel edges (crisp) and some straddle them
+                  (blurry) — the alternating sharp/blurry rows reported here. 4 CSS px
+                  x 1 / 1.25 / 1.5 are all integers, so every border snaps. */}
+              <tr style={{ height: 40 }}>
                 <th style={thStyle}>{t('models.thModel')}</th>
                 <th style={thStyle}>{t('models.thProvider')}</th>
                 <th style={thStyle}>{t('models.thContext')}</th>
@@ -346,14 +353,14 @@ const toggleHidden = async (m: OpenCodeModelView) => {
                 const rowKey = `${m.providerId}/${m.id}`;
                 const res = testResults[rowKey];
                 return (
-                <tr key={rowKey} style={m.disabled === true ? { opacity: 0.5 } : undefined}>
+                <tr key={rowKey} style={m.disabled === true ? { opacity: 0.5, height: 56 } : { height: 56 }}>
                   <td style={tdStyle}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                      <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, wordBreak: 'break-all' }}>{m.id}</span>
+                      <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontWeight: 600, wordBreak: 'break-all' }}>{m.id}</span>
                       {res && (
                         <span
                           style={{
-                            fontFamily: 'JetBrains Mono, monospace',
+                            fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                             fontSize: 10,
                             whiteSpace: 'nowrap',
                             color: res.ok ? 'var(--accent-emerald)' : 'var(--accent-rose)',
@@ -425,31 +432,31 @@ const toggleHidden = async (m: OpenCodeModelView) => {
                       ) : null;
                     })()}
                   </td>
-                  <td style={{ ...tdStyle, fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
+                  <td style={{ ...tdStyle, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
                     {m.providerId}
                     {!m.connected && (
                       <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--text-dim)' }} title={t('models.notConnected')}>○</span>
                     )}
                   </td>
-                  <td style={{ ...tdStyle, fontFamily: 'JetBrains Mono, monospace', whiteSpace: 'nowrap' }}>{fmtContext(m.limit?.context)}</td>
-                  <td style={{ ...tdStyle, fontFamily: 'JetBrains Mono, monospace', color: m.cost?.input !== undefined && m.cost.input < 1 ? 'var(--accent-emerald)' : undefined, whiteSpace: 'nowrap' }}>
+                  <td style={{ ...tdStyle, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", whiteSpace: 'nowrap' }}>{fmtContext(m.limit?.context)}</td>
+                  <td style={{ ...tdStyle, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: m.cost?.input !== undefined && m.cost.input < 1 ? 'var(--accent-emerald)' : undefined, whiteSpace: 'nowrap' }}>
                     {fmtPrice(m.cost?.input)}
                   </td>
-                  <td style={{ ...tdStyle, fontFamily: 'JetBrains Mono, monospace', whiteSpace: 'nowrap' }}>{fmtPrice(m.cost?.output)}</td>
+                  <td style={{ ...tdStyle, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", whiteSpace: 'nowrap' }}>{fmtPrice(m.cost?.output)}</td>
                   <td style={tdStyle}>
                     <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                      {m.reasoning && <span style={badgeStyle('#a78bfa', 'rgba(167,139,250,0.12)')}><Brain size={10} />{t('models.badgeReasoning')}</span>}
-                      {m.tool_call && <span style={badgeStyle('var(--accent)', 'rgba(6,182,212,0.12)')}><Wrench size={10} />{t('models.badgeToolCall')}</span>}
-                      {(m.attachment || m.modalities?.input?.includes('image')) && <span style={badgeStyle('#34d399', 'rgba(52,211,153,0.12)')}><Eye size={10} />{t('models.badgeVision')}</span>}
-                      {m.modalities?.input?.includes('audio') && <span style={badgeStyle('#f472b6', 'rgba(244,114,182,0.12)')}><AudioLines size={10} />{t('models.badgeAudio')}</span>}
-                      {m.modalities?.input?.includes('video') && <span style={badgeStyle('#60a5fa', 'rgba(96,165,250,0.12)')}><Video size={10} />{t('models.badgeVideo')}</span>}
-                      {m.temperature && <span style={badgeStyle('#fb923c', 'rgba(251,146,60,0.12)')}><Thermometer size={10} />{t('models.badgeTemperature')}</span>}
+                      {m.reasoning && <span style={badgeStyle('var(--hue-violet)', 'var(--hue-violet-soft)')}><Brain size={10} />{t('models.badgeReasoning')}</span>}
+                      {m.tool_call && <span style={badgeStyle('var(--accent)', 'var(--accent-bg)')}><Wrench size={10} />{t('models.badgeToolCall')}</span>}
+                      {(m.attachment || m.modalities?.input?.includes('image')) && <span style={badgeStyle('var(--hue-emerald)', 'var(--hue-emerald-soft)')}><Eye size={10} />{t('models.badgeVision')}</span>}
+                      {m.modalities?.input?.includes('audio') && <span style={badgeStyle('var(--hue-pink)', 'var(--hue-pink-soft)')}><AudioLines size={10} />{t('models.badgeAudio')}</span>}
+                      {m.modalities?.input?.includes('video') && <span style={badgeStyle('var(--hue-blue)', 'var(--hue-blue-soft)')}><Video size={10} />{t('models.badgeVideo')}</span>}
+                      {m.temperature && <span style={badgeStyle('var(--hue-orange)', 'var(--hue-orange-soft)')}><Thermometer size={10} />{t('models.badgeTemperature')}</span>}
                       {!hasCapability(m) && <span style={{ color: 'var(--text-dim)' }}>—</span>}
-                      {m.disabled === true && <span style={badgeStyle('var(--text-dim)', 'rgba(255,255,255,0.06)')}>{t('models.hiddenBadge')}</span>}
+                      {m.disabled === true && <span style={badgeStyle('var(--text-dim)', 'var(--chip-bg)')}>{t('models.hiddenBadge')}</span>}
                     </div>
                   </td>
                   <td style={tdStyle}>
-                    <span style={badgeStyle(SOURCE_BADGE[m.source]?.color ?? 'var(--text-dim)', SOURCE_BADGE[m.source]?.bg ?? 'rgba(255,255,255,0.06)')}>
+                    <span style={badgeStyle(SOURCE_BADGE[m.source]?.color ?? 'var(--text-dim)', SOURCE_BADGE[m.source]?.bg ?? 'var(--chip-bg)')}>
                       {t(SOURCE_BADGE[m.source]?.labelKey ?? 'models.srcBuiltin')}
                     </span>
                   </td>

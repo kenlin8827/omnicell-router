@@ -779,7 +779,7 @@ export const RulesPage: React.FC = () => {
                               minWidth: '22px',
                               flexShrink: 0,
                               fontSize: '10px',
-                              fontFamily: 'JetBrains Mono, monospace',
+                              fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                               color: 'var(--text-dim)',
                               textAlign: 'right',
                             }}
@@ -795,7 +795,7 @@ export const RulesPage: React.FC = () => {
                             overflow: 'hidden',
                             textOverflow: 'ellipsis',
                             whiteSpace: 'nowrap',
-                            fontFamily: 'JetBrains Mono, monospace',
+                            fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                             fontSize: '12px',
                             fontWeight: 600,
                           }}
@@ -873,7 +873,7 @@ export const RulesPage: React.FC = () => {
                   <input
                     type="text"
                     className="input"
-                    style={{ flex: 1, fontFamily: 'JetBrains Mono, monospace', fontSize: '11px', padding: '4px 8px' }}
+                    style={{ flex: 1, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: '11px', padding: '4px 8px' }}
                     placeholder={t('tierPolicy.addMemberPlaceholder')}
                     value={memberDrafts[tier]}
                     onChange={(e) => setMemberDrafts((prev) => ({ ...prev, [tier]: e.target.value }))}
@@ -920,7 +920,7 @@ export const RulesPage: React.FC = () => {
                   all four tier cards align regardless of member-list length. */}
               <div
                 style={{
-                  borderTop: '1px solid var(--card-border)',
+                  borderTop: '1px solid var(--divider)',
                   paddingTop: '12px',
                   marginTop: 'auto',
                   display: 'flex',
@@ -965,7 +965,7 @@ export const RulesPage: React.FC = () => {
               style={{
                 position: 'fixed',
                 inset: 0,
-                background: 'rgba(0, 0, 0, 0.85)',
+                background: 'var(--scrim)',
               zIndex: 100,
               display: 'flex',
               alignItems: 'center',
@@ -1022,7 +1022,7 @@ export const RulesPage: React.FC = () => {
                   {(() => {
                     const at = poolMode === 'live' ? poolsLiveAt : poolsAt;
                     return at ? (
-                      <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace' }}>
+                      <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
                         {t('tierPolicy.refreshedAt')} {new Date(at).toLocaleTimeString()}
                       </span>
                     ) : null;
@@ -1033,7 +1033,7 @@ export const RulesPage: React.FC = () => {
                       style={{
                         fontSize: '10px',
                         color: 'var(--text-dim)',
-                        fontFamily: 'JetBrains Mono, monospace',
+                        fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                         padding: '2px 8px',
                         borderRadius: 4,
                         background: 'var(--card-border)',
@@ -1125,7 +1125,7 @@ export const RulesPage: React.FC = () => {
                       alignItems: 'center',
                       gap: '10px',
                       padding: '4px 8px',
-                      borderBottom: '1px solid var(--card-border)',
+                      borderBottom: '1px solid var(--divider)',
                       fontSize: '10px',
                       fontWeight: 700,
                       color: 'var(--text-dim)',
@@ -1134,7 +1134,7 @@ export const RulesPage: React.FC = () => {
                   >
                     <span style={{ width: 7, flexShrink: 0 }} />
                     <span style={{ flex: 1, minWidth: 0 }}>{t('tierPolicy.colModel')}</span>
-                    <span style={{ flexShrink: 0, fontFamily: 'JetBrains Mono, monospace' }}>
+                    <span style={{ flexShrink: 0, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
                       {t('tierPolicy.colInput')} / {t('tierPolicy.colOutput')} · {t('tierPolicy.colWeight')}
                       {modalStrategy !== 'priority' ? ` · ${t('tierPolicy.colShare')}` : ''}
                     </span>
@@ -1172,7 +1172,7 @@ export const RulesPage: React.FC = () => {
                                 alignItems: 'center',
                                 gap: '10px',
                                 padding: '6px 8px',
-                                borderBottom: '1px solid var(--card-border)',
+                                borderBottom: '1px solid var(--divider)',
                                 fontSize: '12px',
                                 height: ROW_H,
                                 boxSizing: 'border-box',
@@ -1197,7 +1197,7 @@ export const RulesPage: React.FC = () => {
                                   overflow: 'hidden',
                                   textOverflow: 'ellipsis',
                                   whiteSpace: 'nowrap',
-                                  fontFamily: 'JetBrains Mono, monospace',
+                                  fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                                   fontWeight: 600,
                                 }}
                               >
@@ -1217,7 +1217,7 @@ export const RulesPage: React.FC = () => {
                                   {t('tierPolicy.preferredBadge')}
                                 </span>
                               )}
-                              <span style={{ flexShrink: 0, fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-muted)' }}>
+                              <span style={{ flexShrink: 0, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-muted)' }}>
                                 {segs}
                               </span>
                               <span style={{ width: 172, flexShrink: 0, display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
@@ -1252,9 +1252,9 @@ export const RulesPage: React.FC = () => {
                       alignItems: 'center',
                       padding: '4px 10px',
                       fontSize: '10px',
-                      fontFamily: 'JetBrains Mono, monospace',
+                      fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                       color: 'var(--text-dim)',
-                      borderTop: '1px solid var(--card-border)',
+                      borderTop: '1px solid var(--divider)',
                       flexShrink: 0,
                       minHeight: 26,
                       boxSizing: 'border-box',
@@ -1314,7 +1314,7 @@ export const RulesPage: React.FC = () => {
                               background: 'rgba(244, 63, 94, 0.12)',
                               border: '1px solid rgba(244, 63, 94, 0.3)',
                               color: 'var(--accent-rose)',
-                              fontFamily: 'JetBrains Mono, monospace',
+                              fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                               cursor: 'pointer',
                               display: 'inline-flex',
                               alignItems: 'center',
@@ -1354,7 +1354,7 @@ export const RulesPage: React.FC = () => {
             style={{
               position: 'fixed',
               inset: 0,
-              background: 'rgba(0, 0, 0, 0.85)',
+              background: 'var(--scrim)',
               zIndex: 100,
               display: 'flex',
               alignItems: 'center',
@@ -1438,7 +1438,7 @@ export const RulesPage: React.FC = () => {
                           color: already ? 'var(--text-dim)' : 'var(--text-main)',
                           cursor: already ? 'default' : 'pointer',
                           textAlign: 'left',
-                          fontFamily: "'JetBrains Mono', monospace",
+                          fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                           fontSize: '12px',
                           opacity: already ? 0.55 : 1,
                         }}
@@ -1486,7 +1486,7 @@ export const RulesPage: React.FC = () => {
               style={{
                 position: 'fixed',
                 inset: 0,
-                background: 'rgba(0, 0, 0, 0.85)',
+                background: 'var(--scrim)',
                 zIndex: 100,
                 display: 'flex',
                 alignItems: 'center',
@@ -1531,7 +1531,7 @@ export const RulesPage: React.FC = () => {
                       columnGap: '10px',
                       alignItems: 'center',
                       paddingBottom: '6px',
-                      borderBottom: '1px solid var(--card-border)',
+                      borderBottom: '1px solid var(--divider)',
                     }}
                   >
                     <span
@@ -1554,7 +1554,7 @@ export const RulesPage: React.FC = () => {
                     <span
                       title={row.pattern}
                       style={{
-                        fontFamily: 'JetBrains Mono, monospace',
+                        fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                         fontSize: '11px',
                         color: 'var(--text-muted)',
                         overflow: 'hidden',
@@ -1574,7 +1574,7 @@ export const RulesPage: React.FC = () => {
                         title={t(`op.${EFFORT_I18N_KEY[lvl]}`)}
                         style={{ width: '78px', flexShrink: 0, display: 'flex', alignItems: 'baseline', gap: '4px', overflow: 'hidden' }}
                       >
-                        <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '12px', color: 'var(--text-muted)', flexShrink: 0 }}>
+                        <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: '12px', color: 'var(--text-muted)', flexShrink: 0 }}>
                           {lvl}
                         </span>
                         <span
@@ -1629,7 +1629,7 @@ export const RulesPage: React.FC = () => {
             style={{
               position: 'fixed',
               inset: 0,
-              background: 'rgba(0, 0, 0, 0.85)',
+              background: 'var(--scrim)',
               zIndex: 100,
               display: 'flex',
               alignItems: 'center',

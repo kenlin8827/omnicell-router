@@ -59,6 +59,22 @@ export interface BreakerInfo {
   halfOpenProbes: number;
 }
 
+/**
+ * ADR-0019 P3 manual trip/reset granularity — mirrors backend TripScope.
+ * 'model' is the legacy whole-model breaker; 'account' is one credential across the
+ * models it can reach; 'pair' is one (model, credential) pair.
+ */
+export type BreakerTripScope = 'model' | 'account' | 'pair';
+
+export interface BreakerScopeResponse {
+  status: string;
+  scope?: BreakerTripScope;
+  /** Breakers taken down (trip) / reset (reset). */
+  affected?: number;
+  resetCount?: number;
+  message?: string;
+}
+
 // Masked provider entry from /api/admin/status (ProviderConfig with apiKey masked)
 export interface MaskedProviderStatus {
   name: string;
@@ -74,6 +90,8 @@ export interface MaskedProviderStatus {
 // Mirrors backend /api/admin/status payload exactly (backend/src/routes/console.ts handleStatus)
 export interface GatewayStatusResponse {
   status: string;
+  /** Runtime gateway version (backend/src/version.ts). Optional: older gateways omit it. */
+  version?: string;
   timestamp: string;
   /** Actual gateway listening port (config.yaml `port`). */
   port: number;
@@ -339,6 +357,14 @@ export interface SessionRecord {
   turnCount: number;
   historyTiers: string[];
   traceCount: number;
+  /**
+   * ADR-0019 Decision 7 — credential this session is pinned to, as its
+   * display-safe sha256 prefix. Live sessions only (a trace-reconstructed
+   * session has no routing state to report), absent when never bound.
+   */
+  boundKeyHashPrefix?: string;
+  /** Epoch ms of the bind/rebind. */
+  boundAt?: number;
   /** Requests whose model differs from the previous request (chronological).
    *  Optional: absent when the frontend is served by a pre-aggregates backend. */
   switchCount?: number;
@@ -615,6 +641,8 @@ export interface AdminEnvironment {
   configPath: string;
   createdAt: string | null;
   description?: string;
+  /** Import provenance stamped by the backend import route (structured, locale-free). */
+  importedFrom?: { name: string; appVersion: string };
   /** Backend's active flag (== current pointer resolves to this env). */
   active: boolean;
   /** Next boot resolves to this env (pointer / OCR_ENV). */
@@ -639,6 +667,7 @@ export interface AdminEnvMeta {
   type: AdminEnvType;
   createdAt?: string;
   description?: string;
+  importedFrom?: { name: string; appVersion: string };
 }
 
 /** POST .../switch — the three legal success-path shapes (failures throw). */
@@ -720,6 +749,18 @@ async function throwEnvFor(res: Response): Promise<never> {
     suggestion: typeof body?.suggestion === 'string' ? body.suggestion : undefined,
     hasErrorBody,
   });
+}
+
+/** Shared POST for the P3 scope-aware trip/reset routes (both 400 with {message}). */
+async function postBreakerScope(path: string, body: Record<string, unknown>): Promise<BreakerScopeResponse> {
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const json: any = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json?.message || json?.error || `HTTP ${res.status}`);
+  return json;
 }
 
 export const api = {
@@ -973,6 +1014,49 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model, ...options }),
     });
+    return res.json();
+  },
+
+  /**
+   * ADR-0019 P3 scope-aware trip for 'account' / 'pair'. Deliberately NOT
+   * routed through tripBreaker(): the legacy 'model' scope keeps its exact
+   * body and its legacy non-throwing reply handling. Unlike the model scope,
+   * an account/pair trip with nothing to take down answers 400 — thrown here
+   * so the console reports it as a failure instead of a fake success.
+   */
+  async tripBreakersScoped(
+    scope: Exclude<BreakerTripScope, 'model'>,
+    target: { model?: string; account?: string; reason?: string; cooldownMs?: number }
+  ): Promise<BreakerScopeResponse> {
+    return postBreakerScope('/api/admin/health/circuit-breakers/trip', { scope, ...target });
+  },
+
+  /**
+   * ADR-0019 P3 account/pair reset. Resetting a credential never lifts its
+   * SUSPECT flag (administrative state — see clearSuspectAccount below).
+   */
+  async resetBreakersScoped(
+    scope: Exclude<BreakerTripScope, 'model'>,
+    target: { model?: string; account?: string }
+  ): Promise<BreakerScopeResponse> {
+    return postBreakerScope('/api/admin/health/circuit-breakers/reset', { scope, ...target });
+  },
+
+  /**
+   * ADR-0019 Decision 6 explicit admin door for a SUSPECT credential (body
+   * {provider, account}; `account` is the keyHash prefix). `cleared:false`
+   * means the flag was already absent — a no-op, not an error.
+   */
+  async clearSuspectAccount(providerId: string, account: string): Promise<SuspectAccountClearResponse> {
+    const res = await fetch('/api/admin/health/suspect-accounts/clear', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: providerId, account }),
+    });
+    if (!res.ok) {
+      const e: any = await res.json().catch(() => ({}));
+      throw new Error(e?.message || e?.error || `HTTP ${res.status}`);
+    }
     return res.json();
   },
 
@@ -1575,16 +1659,252 @@ export interface OpenCodeModelView {
   source: string;
 }
 
+// -- Bound credential store (ADR-0019) — mirrors backend credentials/types.ts + factory.ts.
+// Backend serves machine-readable codes ONLY; all user-visible copy lives in i18n.
+
+/** Bound store kinds (credentials/types.ts StoreKind). opencode v1 is unsupported:
+ *  a v1 machine binds `ocr`, badged `unsupported_version`. */
+export type CredentialStoreKind = 'opencode-v2' | 'opencode-v2-readonly' | 'ocr';
+
+// 'bind_failed' is a real wire value (factory.ts StoreDegradedCode): an unexpected
+// crash during the bind lands on OcrStore and badges itself with this code.
+// 'unsupported_version' = opencode v1 detected, so credentials live in the OCR store.
+export type CredentialStoreDegradedCode =
+  | 'db_unreadable'
+  | 'unsupported_version'
+  | 'cli_absent_db_present'
+  | 'bind_failed';
+
+export type CredentialExcludedReasonCode =
+  | 'db_unreadable'
+  | 'no_routable_credential'
+  | 'reconcile_push_failed'
+  | 'bind_failed';
+
+export interface CredentialStoreCapabilities {
+  multiAccount: boolean;
+  activate: boolean;
+  rename: boolean;
+  oauth: boolean;
+  envVisible: boolean;
+  /** Sink addresses credentials by a registered upstream integration id. */
+  integrationScoped: boolean;
+}
+
+/** Masked, management-safe account metadata — never raw key material. */
+export interface AccountMeta {
+  id: string;
+  providerId: string;
+  label?: string;
+  type: 'api' | 'oauth' | 'wellknown' | 'unknown';
+  active: boolean;
+  routable: boolean;
+  keyHashPrefix?: string;
+  maskedKey?: string;
+}
+
+export interface AccountOverview {
+  providerId: string;
+  total: number;
+  routable: number;
+  activeAccountId: string | null;
+  /** Per-provider masked detail joined in by the B2 console handler. */
+  accounts?: AccountHealth[];
+}
+
+/**
+ * ADR-0019 P3 step 3 — the health overlay every console account list carries
+ * (GET credential-store + all three per-account write routes answer the same
+ * shape, mirrors backend `AccountHealth` in console.ts). Additive keys only:
+ * masked `AccountMeta` fields ride through untouched.
+ */
+export type AccountHealth = AccountMeta & {
+  /** Administrative auth-failure flag; survives breaker resets (Decision 6). */
+  suspect: boolean;
+  /**
+   * Operator takedown. Stronger than `suspect`: never set or lifted by runtime
+   * evidence, survives cooldown/reconnect/Push, and excludes the credential from
+   * selection, probing and model availability until the matching enable.
+   */
+  disabled: boolean;
+  /** The operator's note attached at takedown time — present only when disabled. */
+  disabledReason?: string;
+  /** This credential's pair breakers currently OPEN (any model). */
+  openPairs: number;
+  /** Latest OPEN pair breaker's cooldown end (epoch ms) — only present when openPairs > 0. */
+  cooldownUntilMs?: number;
+};
+
+/**
+ * reasonCodes of every credential-store write surface (console.ts
+ * `capabilityRefusalBody` / `accountNotFoundBody` / `mapStoreWriteFailure`,
+ * shared by the per-account routes and the provider connect/key/create ones).
+ * `schema_mismatch` is deliberately absent: it exists only as a backend
+ * StoreUnreadableError *reason*, and reaches the wire as `store_unreadable`.
+ */
+export type CredentialWriteReasonCode =
+  | 'account_not_found'
+  | 'capability_unsupported'
+  | 'integration_unmatched'
+  | 'invalid_label'
+  | 'invalid_reason'
+  | 'no_key_identity'
+  | 'store_readonly'
+  | 'store_unreadable'
+  | 'write_failed';
+
+/**
+ * reasonCodes of the ADR-0019 Decision 10 reveal route (console.ts
+ * `accountReveal`). The route ALSO surfaces the write table's codes through the
+ * shared failure mapper (account_not_found / capability_unsupported /
+ * store_unreadable) — these three are its own pre-login vocabulary.
+ */
+export type CredentialRevealReasonCode = 'webauth_required' | 'invalid_password' | 'too_many_attempts';
+
+/** 200 reply of activate / rename — `accounts` is the refreshed store truth. */
+export interface AccountWriteResponse {
+  status: string;
+  success: boolean;
+  account: AccountHealth;
+  accounts: AccountHealth[];
+}
+
+/** 200 reply of disconnect (Decision 8: the credential itself is gone). */
+export interface AccountDisconnectResponse {
+  status: string;
+  success: boolean;
+  disconnected: string;
+  accounts: AccountHealth[];
+}
+
+/** POST /api/admin/health/suspect-accounts/clear — `cleared:false` = nothing to lift. */
+export interface SuspectAccountClearResponse {
+  status: string;
+  provider: string;
+  account: string;
+  cleared: boolean;
+}
+
+export interface CredentialVersionEvidence {
+  cli: string | null;
+  file: string | null;
+  used: 'cli' | 'installed.version' | 'last-known-good' | 'db-present' | 'none';
+  lastKnownGood: string | null;
+}
+
+export interface CredentialProbeResult {
+  ok: boolean;
+  kind: CredentialStoreKind;
+  state: 'ready' | 'empty' | 'unreadable';
+  degradedCode?: CredentialStoreDegradedCode;
+  detail?: string;
+  accountCount: number;
+}
+
+export interface CredentialExcluded {
+  provider: string;
+  reasonCode: CredentialExcludedReasonCode;
+  detail: string;
+}
+
+export interface CredentialStoreStatus {
+  kind: CredentialStoreKind;
+  capabilities: CredentialStoreCapabilities;
+  /** null = bound cleanly (incl. the unbadged standalone 'ocr' landing). */
+  degradedCode: CredentialStoreDegradedCode | null;
+  evidence: CredentialVersionEvidence;
+  excluded: CredentialExcluded[];
+  accounts: AccountOverview[];
+  probeResult: CredentialProbeResult | null;
+  credentialFile: string;
+  boundAt: number;
+  /**
+   * Integration-scoped sinks only: the provider ids that accept credential
+   * writes. ABSENT when not integration-scoped OR when the registry was
+   * unreadable — consumers must treat absent as "unknown", never as "nothing
+   * writable", so no affordance may be disabled on it.
+   */
+  integrations?: string[];
+  detail?: string;
+}
+
+export interface CredentialReconcileEntry {
+  provider: string;
+  action: 'pushed' | 'deduped' | 'failed';
+  reason?: string;
+}
+
+export interface CredentialReconcileSummary {
+  doneAt: number;
+  authWriteDisabled: boolean;
+  entries: CredentialReconcileEntry[];
+}
+
+export interface CredentialStoreStatusResponse {
+  status: string;
+  store: CredentialStoreStatus;
+  reconcile: CredentialReconcileSummary | null;
+}
+
+/** B4 contract: POST /api/admin/credential-store/push { provider }. */
+export interface CredentialPushResponse {
+  status: string;
+  pushed: string[];
+  failed: { provider: string; reason: string }[];
+}
+
+/** 400 precondition codes of the push route — mirrors backend PUSH_PRECONDITION_ERROR keys. */
+export type CredentialPushReasonCode = 'not_ocr_bound' | 'opencode_v2_service_unreachable' | 'opencode_v2_db_unreadable';
+
+/** ADR-0019 Decision 8: one per-account purge failure in the honest DELETE reply. */
+export interface ProviderPurgeFailure {
+  accountId: string;
+  reason: string;
+}
+
+/**
+ * purgeAuth=1 detail. The route answers success=false whenever
+ * attempted>0 && removed<attempted — partial purges never claim full deletion.
+ */
+export interface ProviderPurgeResult {
+  attempted: number;
+  removed: number;
+  failed: ProviderPurgeFailure[];
+}
+
+/**
+ * ocJson failure with the backend's machine-readable `reasonCode` attached
+ * when the error body carries one (push 400 preconditions). Purely additive:
+ * the message contract is unchanged and message-only callers are unaffected.
+ */
+export class OcApiError extends Error {
+  readonly reasonCode?: string;
+
+  constructor(message: string, reasonCode?: string) {
+    super(message);
+    this.name = 'OcApiError';
+    this.reasonCode = reasonCode;
+  }
+}
+
 function ocJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
     return res
       .json()
       .catch(() => ({}))
       .then((e: any) => {
-        throw new Error(e?.error || e?.message || `HTTP ${res.status}`);
+        throw new OcApiError(
+          e?.error || e?.message || `HTTP ${res.status}`,
+          typeof e?.reasonCode === 'string' ? e.reasonCode : undefined
+        );
       }) as Promise<T>;
   }
   return res.json();
+}
+
+/** ADR-0019 P3 per-account write path (activate / rename / disconnect share it). */
+function accountPath(providerId: string, accountId: string): string {
+  return `/api/admin/opencode/providers/${encodeURIComponent(providerId)}/accounts/${encodeURIComponent(accountId)}`;
 }
 
 export const opencodeApi = {
@@ -1595,6 +1915,101 @@ export const opencodeApi = {
     providers: OpenCodeProviderView[];
   }> {
     return ocJson(await fetch('/api/admin/opencode/providers'));
+  },
+
+  /** ADR-0019 P2: bound credential-store status (kind, capabilities, exclusions, masked accounts). */
+  async getCredentialStore(): Promise<CredentialStoreStatusResponse> {
+    return ocJson(await fetch('/api/admin/credential-store'));
+  },
+
+  /** One-shot Push-to-opencode convergence (ADR-0019 Decision 2/5; route arrives in B4). */
+  async pushCredentialStore(provider: string): Promise<CredentialPushResponse> {
+    return ocJson(
+      await fetch('/api/admin/credential-store/push', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider }),
+      })
+    );
+  },
+
+  /** ADR-0019 P3 — make one account the active credential of its provider. */
+  async activateProviderAccount(
+    providerId: string,
+    accountId: string
+  ): Promise<AccountWriteResponse> {
+    return ocJson(await fetch(accountPath(providerId, accountId) + '/activate', { method: 'POST' }));
+  },
+
+  /**
+   * Take one credential out of routing / put it back. The flag lives in OCR's own
+   * account state, so unlike the store writes these work on a read-only binding
+   * too. `reason` is an operator note (max 200 chars), display only.
+   */
+  async disableProviderAccount(
+    providerId: string,
+    accountId: string,
+    reason?: string
+  ): Promise<AccountWriteResponse> {
+    return ocJson(
+      await fetch(accountPath(providerId, accountId) + '/disable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(reason ? { reason } : {}),
+      })
+    );
+  },
+
+  /** Lift the takedown (the only path that does — cooldown never will). */
+  async enableProviderAccount(providerId: string, accountId: string): Promise<AccountWriteResponse> {
+    return ocJson(await fetch(accountPath(providerId, accountId) + '/enable', { method: 'POST' }));
+  },
+
+  /** ADR-0019 P3 — set an account's user-editable label (backend trims, max 80). */
+  async renameProviderAccount(
+    providerId: string,
+    accountId: string,
+    label: string
+  ): Promise<AccountWriteResponse> {
+    return ocJson(
+      await fetch(accountPath(providerId, accountId), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label }),
+      })
+    );
+  },
+
+  /**
+   * ADR-0019 P3 / Decision 8 — disconnect one account: the store holds the
+   * only copy of the key, so the caller must have run the double confirmation
+   * (see KeysPage's Decision 8 arbiter) before calling this.
+   */
+  async disconnectProviderAccount(
+    providerId: string,
+    accountId: string
+  ): Promise<AccountDisconnectResponse> {
+    return ocJson(await fetch(accountPath(providerId, accountId), { method: 'DELETE' }));
+  },
+
+  /**
+   * ADR-0019 Decision 10 — controlled reveal: re-enter the console LOGIN
+   * password to export one raw api key. The returned `key` must pass straight
+   * from this call's scope into the clipboard — never into component state,
+   * the DOM, or any persisted surface.
+   */
+  async revealProviderKey(
+    providerId: string,
+    accountId: string,
+    password: string
+  ): Promise<{ status: string; key: string }> {
+    return ocJson(
+      await fetch(accountPath(providerId, accountId) + '/reveal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password }),
+      })
+    );
   },
 
   async catalog(refresh = false): Promise<{ status: string; source: string; providers: OpenCodeCatalogProvider[] }> {
@@ -1733,7 +2148,27 @@ export const opencodeApi = {
     );
   },
 
-  async connectProvider(id: string, apiKey: string, baseURL?: string): Promise<{ status: string; success: boolean; message?: string }> {
+  /**
+   * Connect hands a key to the BOUND store. `deduped:true` = the store already
+   * held this exact key for the provider, so NO second account was created
+   * (idempotent success — `account` names the row that survived).
+   * `headPreserved` = the sink auto-activated the new key and this surface handed
+   * the chain head back to the credential that was serving (opencode's `active`
+   * is ALSO the key its own CLI uses, so adding an account must not repoint it).
+   * The reply mirrors backend console.ts `connect` inline.
+   */
+  async connectProvider(
+    id: string,
+    apiKey: string,
+    baseURL?: string
+  ): Promise<{
+    status: string;
+    success: boolean;
+    deduped?: boolean;
+    account?: AccountMeta;
+    headPreserved?: AccountMeta;
+    message?: string;
+  }> {
     return ocJson(
       await fetch(`/api/admin/opencode/providers/${encodeURIComponent(id)}/connect`, {
         method: 'POST',
@@ -1743,10 +2178,10 @@ export const opencodeApi = {
     );
   },
 
-  /** One-shot upstream connectivity probe — optional overrides enable test-before-save. */
+  /** One-shot upstream connectivity probe — optional overrides enable test-before-save; `accountId` pins the probe to ONE credential row (per-account test). */
   async testProvider(
     id: string,
-    payload?: { modelId?: string; apiKey?: string; baseURL?: string }
+    payload?: { modelId?: string; apiKey?: string; baseURL?: string; accountId?: string }
   ): Promise<TestProviderResult> {
     return ocJson(
       await fetch(`/api/admin/opencode/providers/${encodeURIComponent(id)}/test`, {
@@ -1757,7 +2192,14 @@ export const opencodeApi = {
     );
   },
 
-  async deleteProvider(id: string, purgeAuth = false): Promise<{ status: string; success: boolean; message?: string }> {
+  /**
+   * purgeAuth=1 deletes the config node AND loops per-account disconnects
+   * through the bound store; the reply carries the honest `purge` detail.
+   */
+  async deleteProvider(
+    id: string,
+    purgeAuth = false
+  ): Promise<{ status: string; success: boolean; message?: string; purge?: ProviderPurgeResult }> {
     return ocJson(
       await fetch(`/api/admin/opencode/providers/${encodeURIComponent(id)}${purgeAuth ? '?purgeAuth=1' : ''}`, {
         method: 'DELETE',

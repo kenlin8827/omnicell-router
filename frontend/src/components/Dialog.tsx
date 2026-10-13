@@ -67,7 +67,7 @@ export const Dialog: React.FC<DialogProps> = ({
         position: 'fixed',
         inset: 0,
         zIndex: 210,
-        background: 'rgba(0, 0, 0, 0.85)',
+        background: 'var(--scrim)',
         backdropFilter: blur ? 'blur(8px)' : undefined,
         display: 'flex',
         alignItems: 'center',
@@ -117,7 +117,7 @@ export const Dialog: React.FC<DialogProps> = ({
           {children}
         </div>
         {footerLeft || footerRight ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingTop: 10, borderTop: '1px solid var(--card-border)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingTop: 10, borderTop: '1px solid var(--divider)' }}>
             {footerLeft ? <div style={{ marginRight: 'auto' }}>{footerLeft}</div> : null}
             {footerRight}
           </div>

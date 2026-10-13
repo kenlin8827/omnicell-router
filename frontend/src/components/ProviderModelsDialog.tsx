@@ -18,7 +18,7 @@ const overlayStyle = (blur: boolean): React.CSSProperties => ({
   position: 'fixed',
   inset: 0,
   zIndex: 200,
-  background: 'rgba(0, 0, 0, 0.75)',
+  background: 'var(--scrim)',
   backdropFilter: blur ? 'blur(8px)' : undefined,
   display: 'flex',
   overflowY: 'auto',
@@ -62,7 +62,7 @@ const formFooterStyle: React.CSSProperties = {
   justifyContent: 'flex-end',
   gap: 10,
   paddingTop: 10,
-  borderTop: '1px solid var(--card-border)',
+  borderTop: '1px solid var(--divider)',
 };
 
 const rowStyle: React.CSSProperties = {
@@ -70,16 +70,18 @@ const rowStyle: React.CSSProperties = {
   alignItems: 'center',
   gap: 8,
   padding: '6px 8px',
-  borderRadius: '6px',
-  background: 'rgba(255,255,255,0.03)',
+  // Transparent rows + hairline separators (list-group): gray pill-per-row
+  // stacked on the white dialog read as heavy blocks ("abrupt").
   fontSize: 11.5,
   cursor: 'default',
 };
 
-const badge = (color: string, bg: string): React.CSSProperties => ({
+// Outline badges: transparent fill, border derived from the text hue (the
+// bg param is legacy at call sites — kept for signature stability).
+const badge = (color: string, _bg: string): React.CSSProperties => ({
   color,
-  background: bg,
-  border: `1px solid ${bg}`,
+  background: 'transparent',
+  border: `1px solid color-mix(in srgb, ${color} 45%, transparent)`,
   fontSize: 9.5,
   fontWeight: 600,
   padding: '1px 6px',
@@ -99,14 +101,14 @@ const fieldLabelStyle: React.CSSProperties = {
 };
 
 const SOURCE_BADGE: Record<string, { color: string; bg: string; labelKey: string }> = {
-  opencode: { color: 'var(--accent)', bg: 'rgba(6,182,212,0.12)', labelKey: 'models.srcOpencode' },
-  'models-dev': { color: '#60a5fa', bg: 'rgba(96,165,250,0.12)', labelKey: 'models.srcModelsDev' },
-  openrouter: { color: '#a78bfa', bg: 'rgba(167,139,250,0.12)', labelKey: 'models.srcOpenrouter' },
+  opencode: { color: 'var(--accent)', bg: 'var(--accent-bg)', labelKey: 'models.srcOpencode' },
+  'models-dev': { color: 'var(--hue-blue)', bg: 'var(--hue-blue-soft)', labelKey: 'models.srcModelsDev' },
+  openrouter: { color: 'var(--hue-violet)', bg: 'var(--hue-violet-soft)', labelKey: 'models.srcOpenrouter' },
   config: { color: '#f59e0b', bg: 'rgba(245,158,11,0.12)', labelKey: 'models.srcConfig' },
-  custom: { color: '#34d399', bg: 'rgba(52,211,153,0.12)', labelKey: 'models.srcCustom' },
+  custom: { color: 'var(--hue-emerald)', bg: 'var(--hue-emerald-soft)', labelKey: 'models.srcCustom' },
   mapped: { color: '#c084fc', bg: 'rgba(192,132,252,0.12)', labelKey: 'models.srcMapped' },
-  'openai-compatible': { color: 'var(--text-dim)', bg: 'rgba(255,255,255,0.06)', labelKey: 'models.srcOpenaiCompatible' },
-  service: { color: 'var(--text-dim)', bg: 'rgba(255,255,255,0.06)', labelKey: 'models.srcService' },
+  'openai-compatible': { color: 'var(--text-dim)', bg: 'var(--chip-bg)', labelKey: 'models.srcOpenaiCompatible' },
+  service: { color: 'var(--text-dim)', bg: 'var(--chip-bg)', labelKey: 'models.srcService' },
 };
 
 const MODALITY_OPTIONS = ['text', 'image', 'audio', 'video', 'pdf'] as const;
@@ -519,7 +521,7 @@ export const ProviderModelsDialog: React.FC<{
   ) => (
     <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
       {MODALITY_OPTIONS.map((m) => (
-        <label key={m} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11.5, color: 'var(--text-muted)', cursor: 'pointer', fontFamily: 'JetBrains Mono, monospace' }}>
+        <label key={m} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11.5, color: 'var(--text-muted)', cursor: 'pointer', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
           <input
             type="checkbox"
             checked={form!.data[key].includes(m)}
@@ -553,8 +555,8 @@ export const ProviderModelsDialog: React.FC<{
       <div className="card" onClick={(e) => e.stopPropagation()} style={dialogStyle}>
         {/* ---- Header ---- */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 14, fontWeight: 700 }}>{t('op.pmTitle')}</span>
-          <span style={{ fontSize: 12, fontFamily: 'JetBrains Mono, monospace', color: 'var(--accent)' }}>{providerName || providerId}</span>
+          <span style={{ fontSize: 14, fontWeight: 700 }}>{t(readOnly ? 'op.pmView' : 'op.pmTitle')}</span>
+          <span style={{ fontSize: 12, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--accent)' }}>{providerName || providerId}</span>
           <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
             {filterText
               ? `${filteredRows.length} / ${rows.length}`
@@ -628,7 +630,8 @@ export const ProviderModelsDialog: React.FC<{
           </div>
         ) : (
           <div
-            style={{ flex: 1, minHeight: 120, display: 'flex', flexDirection: 'column', gap: 4, overflowY: 'auto', opacity: loading ? 0.55 : 1, transition: 'opacity 0.15s ease' }}
+            className="list-group"
+            style={{ flex: 1, minHeight: 120, display: 'flex', flexDirection: 'column', overflowY: 'auto', opacity: loading ? 0.55 : 1, transition: 'opacity 0.15s ease' }}
             onScroll={() => setHover(null)}
           >
             {filteredRows.map((row) => {
@@ -637,29 +640,30 @@ export const ProviderModelsDialog: React.FC<{
               return (
                 <div
                   key={row.id}
+                  className="list-row"
                   style={{ ...rowStyle, opacity: d.disabled === true ? 0.45 : 1 }}
                   onMouseEnter={(e) => showHoverCard(row, e)}
                   onMouseLeave={() => setHover(null)}
                 >
-                  <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, wordBreak: 'break-all' }}>{row.id}</span>
-                  {d.modelID && d.modelID !== row.id && <span style={{ color: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace', fontSize: 10 }}>→ {d.modelID}</span>}
+                  <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontWeight: 600, wordBreak: 'break-all' }}>{row.id}</span>
+                  {d.modelID && d.modelID !== row.id && <span style={{ color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: 10 }}>→ {d.modelID}</span>}
                   {(d.name || row.id.split('/').pop()) && <span style={{ color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name || row.id.split('/').pop()}</span>}
-                  {defThinking(d) && <span style={badge('#a78bfa', 'rgba(167,139,250,0.12)')} title={t('models.badgeReasoning')}>{effort ? `R·${effort}` : 'R'}</span>}
-                  {defTools(d) && <span style={badge('var(--accent)', 'rgba(6,182,212,0.12)')} title={t('models.badgeToolCall')}>T</span>}
-                  {defVision(d) && <span style={badge('#34d399', 'rgba(52,211,153,0.12)')} title={t('models.badgeVision')}><Eye size={9} /></span>}
-                  {defAudio(d) && <span style={badge('#f472b6', 'rgba(244,114,182,0.12)')} title={t('models.badgeAudio')}><AudioLines size={9} /></span>}
-                  {defVideo(d) && <span style={badge('#60a5fa', 'rgba(96,165,250,0.12)')} title={t('models.badgeVideo')}><Video size={9} /></span>}
-                  {d.temperature === true && <span style={badge('#fb923c', 'rgba(251,146,60,0.12)')} title={t('models.badgeTemperature')}><Thermometer size={9} /></span>}
+                  {defThinking(d) && <span style={badge('var(--hue-violet)', 'var(--hue-violet-soft)')} title={t('models.badgeReasoning')}>{effort ? `R·${effort}` : 'R'}</span>}
+                  {defTools(d) && <span style={badge('var(--accent)', 'var(--accent-bg)')} title={t('models.badgeToolCall')}>T</span>}
+                  {defVision(d) && <span style={badge('var(--hue-emerald)', 'var(--hue-emerald-soft)')} title={t('models.badgeVision')}><Eye size={9} /></span>}
+                  {defAudio(d) && <span style={badge('var(--hue-pink)', 'var(--hue-pink-soft)')} title={t('models.badgeAudio')}><AudioLines size={9} /></span>}
+                  {defVideo(d) && <span style={badge('var(--hue-blue)', 'var(--hue-blue-soft)')} title={t('models.badgeVideo')}><Video size={9} /></span>}
+                  {d.temperature === true && <span style={badge('var(--hue-orange)', 'var(--hue-orange-soft)')} title={t('models.badgeTemperature')}><Thermometer size={9} /></span>}
                   {Array.isArray(d.variants) && d.variants.length > 0 && (
                     <span style={badge('#e879f9', 'rgba(232,121,249,0.12)')} title={t('op.pmVariants')}>#{d.variants.length}</span>
                   )}
-                  {d.disabled === true && <span style={badge('var(--text-dim)', 'rgba(255,255,255,0.06)')}>{t('models.hiddenBadge')}</span>}
-                  {row.source && <span style={badge(SOURCE_BADGE[row.source]?.color ?? 'var(--text-dim)', SOURCE_BADGE[row.source]?.bg ?? 'rgba(255,255,255,0.06)')}>{sourceLabel(row.source)}</span>}
-                  {d.limit?.context ? <span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-dim)', marginLeft: 'auto' }}>{fmtContext(d.limit.context)}</span> : null}
+                  {d.disabled === true && <span style={badge('var(--text-dim)', 'var(--chip-bg)')}>{t('models.hiddenBadge')}</span>}
+                  {row.source && <span style={badge(SOURCE_BADGE[row.source]?.color ?? 'var(--text-dim)', SOURCE_BADGE[row.source]?.bg ?? 'var(--chip-bg)')}>{sourceLabel(row.source)}</span>}
+                  {d.limit?.context ? <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-dim)', marginLeft: 'auto' }}>{fmtContext(d.limit.context)}</span> : null}
                   {testResults[row.id] && (
                     <span
                       style={{
-                        fontFamily: 'JetBrains Mono, monospace',
+                        fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                         fontSize: 10,
                         whiteSpace: 'nowrap',
                         color: testResults[row.id].ok ? 'var(--accent-emerald)' : 'var(--accent-rose)',
@@ -729,13 +733,13 @@ export const ProviderModelsDialog: React.FC<{
           </div>
 
           {preview && (
-            <div style={{ fontSize: 11, color: 'var(--text-dim)', padding: '6px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.04)' }}>
+            <div style={{ fontSize: 11, color: 'var(--text-dim)', padding: '6px 8px', borderRadius: 6, background: 'var(--well-bg)' }}>
               <div style={{ marginBottom: 4 }}>
                 {t('op.pmMatched', { matched: preview.matched, pullable: preview.pullable })}
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, maxHeight: 90, overflowY: 'auto' }}>
                 {preview.models.slice(0, 40).map((m) => (
-                  <span key={m.id} style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10, padding: '1px 6px', borderRadius: 4, background: 'rgba(255,255,255,0.06)' }}>
+                  <span key={m.id} style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: 10, padding: '1px 6px', borderRadius: 4, background: 'var(--chip-bg)' }}>
                     {m.id}
                   </span>
                 ))}
@@ -773,46 +777,46 @@ export const ProviderModelsDialog: React.FC<{
             const d = hover.row.def || {};
             return (
               <>
-                <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 11.5, wordBreak: 'break-all', marginBottom: 2 }}>
+                <div style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontWeight: 700, fontSize: 11.5, wordBreak: 'break-all', marginBottom: 2 }}>
                   {hover.row.id}
                   {d.disabled === true && <span style={{ color: 'var(--text-dim)', fontWeight: 400 }}> (disabled)</span>}
                 </div>
                 {(d.name || hover.row.id.split('/').pop()) && <div style={{ color: 'var(--text-dim)', marginBottom: 4 }}>{d.name || hover.row.id.split('/').pop()}</div>}
                 {d.modelID && (
-                  <div style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-dim)', fontSize: 10.5, marginBottom: 6 }}>
+                  <div style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-dim)', fontSize: 10.5, marginBottom: 6 }}>
                     modelID → {d.modelID}
                   </div>
                 )}
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6 }}>
-                  {defThinking(d) && <span style={badge('#a78bfa', 'rgba(167,139,250,0.12)')}>{t('models.badgeReasoning')}{d.settings?.reasoningEffort ? `·${d.settings.reasoningEffort}` : ''}</span>}
-                  {defTools(d) && <span style={badge('var(--accent)', 'rgba(6,182,212,0.12)')}>{t('models.badgeToolCall')}</span>}
-                  {defVision(d) && <span style={badge('#34d399', 'rgba(52,211,153,0.12)')}>{t('models.badgeVision')}</span>}
-                  {defAudio(d) && <span style={badge('#f472b6', 'rgba(244,114,182,0.12)')}>{t('models.badgeAudio')}</span>}
-                  {defVideo(d) && <span style={badge('#60a5fa', 'rgba(96,165,250,0.12)')}>{t('models.badgeVideo')}</span>}
-                  {d.temperature === true && <span style={badge('#fb923c', 'rgba(251,146,60,0.12)')}>{t('models.badgeTemperature')}</span>}
-                  {hover.row.source && <span style={badge(SOURCE_BADGE[hover.row.source]?.color ?? 'var(--text-dim)', SOURCE_BADGE[hover.row.source]?.bg ?? 'rgba(255,255,255,0.06)')}>{sourceLabel(hover.row.source)}</span>}
+                  {defThinking(d) && <span style={badge('var(--hue-violet)', 'var(--hue-violet-soft)')}>{t('models.badgeReasoning')}{d.settings?.reasoningEffort ? `·${d.settings.reasoningEffort}` : ''}</span>}
+                  {defTools(d) && <span style={badge('var(--accent)', 'var(--accent-bg)')}>{t('models.badgeToolCall')}</span>}
+                  {defVision(d) && <span style={badge('var(--hue-emerald)', 'var(--hue-emerald-soft)')}>{t('models.badgeVision')}</span>}
+                  {defAudio(d) && <span style={badge('var(--hue-pink)', 'var(--hue-pink-soft)')}>{t('models.badgeAudio')}</span>}
+                  {defVideo(d) && <span style={badge('var(--hue-blue)', 'var(--hue-blue-soft)')}>{t('models.badgeVideo')}</span>}
+                  {d.temperature === true && <span style={badge('var(--hue-orange)', 'var(--hue-orange-soft)')}>{t('models.badgeTemperature')}</span>}
+                  {hover.row.source && <span style={badge(SOURCE_BADGE[hover.row.source]?.color ?? 'var(--text-dim)', SOURCE_BADGE[hover.row.source]?.bg ?? 'var(--chip-bg)')}>{sourceLabel(hover.row.source)}</span>}
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '3px 12px', color: 'var(--text-dim)' }}>
                   <span>{t('models.thContext')}</span>
-                  <span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-main)' }}>{d.limit?.context ? fmtContext(d.limit.context) : '—'}</span>
+                  <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-main)' }}>{d.limit?.context ? fmtContext(d.limit.context) : '—'}</span>
                   <span>{t('op.pmEditOutput')}</span>
-                  <span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-main)' }}>{d.limit?.output ? fmtContext(d.limit.output) : '—'}</span>
+                  <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-main)' }}>{d.limit?.output ? fmtContext(d.limit.output) : '—'}</span>
                   <span>{t('models.thInput')}</span>
-                  <span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-main)' }}>{fmtPrice(d.cost?.input)}</span>
+                  <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-main)' }}>{fmtPrice(d.cost?.input)}</span>
                   <span>{t('models.thOutput')}</span>
-                  <span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-main)' }}>{fmtPrice(d.cost?.output)}</span>
-                  {typeof d.cost?.cache_read === 'number' && (<><span>{t('models.costCacheRead')}</span><span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-main)' }}>{fmtPrice(d.cost.cache_read)}</span></>)}
-                  {typeof d.cost?.cache_write === 'number' && (<><span>{t('models.costCacheWrite')}</span><span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-main)' }}>{fmtPrice(d.cost.cache_write)}</span></>)}
-                  {defInput(d).length > 0 && (<><span>{t('models.modalitiesInput')}</span><span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-main)' }}>{defInput(d).map((m) => modalityLabel(t, m)).join(', ')}</span></>)}
-                  {defOutput(d).length > 0 && (<><span>{t('models.modalitiesOutput')}</span><span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-main)' }}>{defOutput(d).map((m) => modalityLabel(t, m)).join(', ')}</span></>)}
-                  {d.settings?.reasoningEffort && (<><span>{t('op.pmSettingsReasoning')}</span><span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-main)' }}>{d.settings.reasoningEffort}</span></>)}
-                  {d.compatibility?.reasoningField && (<><span>{t('op.pmReasoningField')}</span><span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-main)' }}>{d.compatibility.reasoningField}</span></>)}
-                  {Object.keys(d.headers || {}).length > 0 && (<><span>{t('op.pmHeaders')}</span><span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-main)', wordBreak: 'break-all' }}>{Object.entries(d.headers).map(([k, v]) => `${k}: ${v}`).join(' · ')}</span></>)}
-                  {d.body && Object.keys(d.body).length > 0 && (<><span>{t('op.pmBody')}</span><span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-main)', wordBreak: 'break-all' }}>{JSON.stringify(d.body)}</span></>)}
+                  <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-main)' }}>{fmtPrice(d.cost?.output)}</span>
+                  {typeof d.cost?.cache_read === 'number' && (<><span>{t('models.costCacheRead')}</span><span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-main)' }}>{fmtPrice(d.cost.cache_read)}</span></>)}
+                  {typeof d.cost?.cache_write === 'number' && (<><span>{t('models.costCacheWrite')}</span><span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-main)' }}>{fmtPrice(d.cost.cache_write)}</span></>)}
+                  {defInput(d).length > 0 && (<><span>{t('models.modalitiesInput')}</span><span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-main)' }}>{defInput(d).map((m) => modalityLabel(t, m)).join(', ')}</span></>)}
+                  {defOutput(d).length > 0 && (<><span>{t('models.modalitiesOutput')}</span><span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-main)' }}>{defOutput(d).map((m) => modalityLabel(t, m)).join(', ')}</span></>)}
+                  {d.settings?.reasoningEffort && (<><span>{t('op.pmSettingsReasoning')}</span><span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-main)' }}>{d.settings.reasoningEffort}</span></>)}
+                  {d.compatibility?.reasoningField && (<><span>{t('op.pmReasoningField')}</span><span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-main)' }}>{d.compatibility.reasoningField}</span></>)}
+                  {Object.keys(d.headers || {}).length > 0 && (<><span>{t('op.pmHeaders')}</span><span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-main)', wordBreak: 'break-all' }}>{Object.entries(d.headers).map(([k, v]) => `${k}: ${v}`).join(' · ')}</span></>)}
+                  {d.body && Object.keys(d.body).length > 0 && (<><span>{t('op.pmBody')}</span><span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-main)', wordBreak: 'break-all' }}>{JSON.stringify(d.body)}</span></>)}
                   {Array.isArray(d.variants) && d.variants.length > 0 && (
                     <>
                       <span>{t('op.pmVariants')}</span>
-                      <span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-main)' }}>
+                      <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-main)' }}>
                         {d.variants.map((v: any) => `${v.id}${v.settings?.reasoningEffort ? `(${v.settings.reasoningEffort})` : ''}`).join(', ')}
                       </span>
                     </>
@@ -856,7 +860,7 @@ export const ProviderModelsDialog: React.FC<{
                 <label style={fieldLabelStyle}>{t('op.pmAddId')}</label>
                 <input
                   className="input"
-                  style={{ fontSize: 12, fontFamily: 'JetBrains Mono, monospace', width: '100%', opacity: form.mode === 'edit' ? 0.6 : 1 }}
+                  style={{ fontSize: 12, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", width: '100%', opacity: form.mode === 'edit' ? 0.6 : 1 }}
                   value={form.data.id}
                   disabled={form.mode === 'edit'}
                   onChange={(e) => setForm({ ...form, data: { ...form.data, id: e.target.value } })}
@@ -867,7 +871,7 @@ export const ProviderModelsDialog: React.FC<{
                 <label style={fieldLabelStyle}>{t('op.pmModelID')}</label>
                 <input
                   className="input"
-                  style={{ fontSize: 12, fontFamily: 'JetBrains Mono, monospace', width: '100%' }}
+                  style={{ fontSize: 12, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", width: '100%' }}
                   placeholder="gpt-5.2"
                   value={form.data.modelID}
                   onChange={(e) => setForm({ ...form, data: { ...form.data, modelID: e.target.value } })}
@@ -955,7 +959,7 @@ export const ProviderModelsDialog: React.FC<{
                   <div key={i} style={{ display: 'flex', gap: 6 }}>
                     <input
                       className="input"
-                      style={{ fontSize: 11.5, flex: 1, fontFamily: 'JetBrains Mono, monospace' }}
+                      style={{ fontSize: 11.5, flex: 1, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
                       placeholder="variant-id"
                       value={v.id}
                       onChange={(e) => {
@@ -995,7 +999,7 @@ export const ProviderModelsDialog: React.FC<{
               <label style={fieldLabelStyle}>{t('op.pmReasoningField')}</label>
               <input
                 className="input"
-                style={{ fontSize: 12, width: '100%', fontFamily: 'JetBrains Mono, monospace' }}
+                style={{ fontSize: 12, width: '100%', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
                 placeholder="reasoning_content"
                 list="ocr-thinking-fields"
                 value={form.data.reasoningField}
@@ -1011,7 +1015,7 @@ export const ProviderModelsDialog: React.FC<{
               <label style={fieldLabelStyle}>{t('op.pmHeaders')}</label>
               <textarea
                 className="input"
-                style={{ fontSize: 11.5, width: '100%', minHeight: 44, fontFamily: 'JetBrains Mono, monospace', resize: 'vertical' }}
+                style={{ fontSize: 11.5, width: '100%', minHeight: 44, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", resize: 'vertical' }}
                 placeholder={'X-Team: platform'}
                 value={form.data.headersText}
                 onChange={(e) => setForm({ ...form, data: { ...form.data, headersText: e.target.value } })}
@@ -1021,7 +1025,7 @@ export const ProviderModelsDialog: React.FC<{
               <label style={fieldLabelStyle}>{t('op.pmBody')}</label>
               <textarea
                 className="input"
-                style={{ fontSize: 11.5, width: '100%', minHeight: 44, fontFamily: 'JetBrains Mono, monospace', resize: 'vertical' }}
+                style={{ fontSize: 11.5, width: '100%', minHeight: 44, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", resize: 'vertical' }}
                 placeholder={'{ "store": false }'}
                 value={form.data.bodyText}
                 onChange={(e) => setForm({ ...form, data: { ...form.data, bodyText: e.target.value } })}

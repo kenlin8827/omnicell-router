@@ -94,7 +94,7 @@ export const LogsPage: React.FC = () => {
           <ScrollText size={18} color="var(--accent)" />
           <span>{t('logs.title')}</span>
           {exists && (
-            <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace', marginLeft: '8px' }}>
+            <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", marginLeft: '8px' }}>
               {file} · {sizeLabel}
             </span>
           )}
@@ -152,7 +152,7 @@ export const LogsPage: React.FC = () => {
       {!exists ? (
         <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '32px 14px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '13px' }}>
           <div style={{ marginBottom: '6px' }}>{t('logs.noFile')}</div>
-          <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '11px' }}>{file}</div>
+          <div style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: '11px' }}>{file}</div>
         </div>
       ) : (
         <div
@@ -162,7 +162,7 @@ export const LogsPage: React.FC = () => {
             minHeight: 0,
             overflowY: 'auto',
             background: 'rgba(0,0,0,0.2)',
-            borderTop: '1px solid var(--card-border)',
+            borderTop: '1px solid var(--divider)',
             padding: '8px 0',
           }}
         >
@@ -178,10 +178,10 @@ export const LogsPage: React.FC = () => {
                   display: 'flex',
                   gap: '10px',
                   padding: '2px 14px',
-                  fontFamily: 'JetBrains Mono, monospace',
+                  fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                   fontSize: '12px',
                   lineHeight: 1.6,
-                  borderBottom: '1px solid rgba(255,255,255,0.02)',
+                  borderBottom: '1px solid var(--divider)',
                 }}
               >
                 {line.time !== undefined && (

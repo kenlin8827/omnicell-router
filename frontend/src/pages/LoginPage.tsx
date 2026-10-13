@@ -8,9 +8,14 @@ import { useI18n } from '../i18n/I18nContext';
  * GET /api/admin/auth/session reports webAuth active + unauthenticated.
  * The session itself is an HttpOnly cookie set by POST /api/admin/auth/login.
  */
+// Username-only persistence — the password is never stored anywhere but memory.
+const REMEMBER_KEY = 'ocr_login_username';
+
 export const LoginPage: React.FC<{ onSuccess: () => void }> = ({ onSuccess }) => {
   const { t } = useI18n();
-  const [username, setUsername] = useState('');
+  // Default to checked — un-checking is an explicit, per-visit choice.
+  const [remember, setRemember] = useState(true);
+  const [username, setUsername] = useState(() => localStorage.getItem(REMEMBER_KEY) || '');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -22,6 +27,7 @@ export const LoginPage: React.FC<{ onSuccess: () => void }> = ({ onSuccess }) =>
     setError('');
     try {
       await api.login(username.trim(), password);
+      if (remember) localStorage.setItem(REMEMBER_KEY, username.trim());
       onSuccess();
     } catch (err: any) {
       // Backend API messages are English by convention — localize at the UI
@@ -47,7 +53,13 @@ export const LoginPage: React.FC<{ onSuccess: () => void }> = ({ onSuccess }) =>
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        background: 'var(--bg, #0b0e14)',
+        // Transparent on purpose: the body's themed --bg-gradient (noise +
+        // corner glows) shows through, same backdrop as the console itself.
+        // Login-only backdrop: a soft accent glow centered behind the card.
+        // The shared --bg-gradient alone is near-invisible on light themes
+        // (5-6% corner tints), leaving the pre-login page a flat white field.
+        backgroundImage:
+          'radial-gradient(560px 420px at 50% 40%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 70%)',
         padding: '20px',
       }}
     >
@@ -90,6 +102,20 @@ export const LoginPage: React.FC<{ onSuccess: () => void }> = ({ onSuccess }) =>
             className="input"
           />
         </div>
+
+        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'var(--text-dim)', cursor: 'pointer', userSelect: 'none' }}>
+          <input
+            type="checkbox"
+            checked={remember}
+            onChange={(e) => {
+              setRemember(e.target.checked);
+              // Un-checking clears the stored name right away, not on next submit.
+              if (!e.target.checked) localStorage.removeItem(REMEMBER_KEY);
+            }}
+            style={{ accentColor: 'var(--accent)', width: '14px', height: '14px' }}
+          />
+          <span>{t('authLogin.remember')}</span>
+        </label>
 
         {error && (
           <div

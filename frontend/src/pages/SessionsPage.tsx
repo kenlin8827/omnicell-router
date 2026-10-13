@@ -272,7 +272,9 @@ export const SessionsPage: React.FC = () => {
   // Tier badge is a single short word (Lite/Plus/Pro/Ultra) — 7 units so it
   // clears the badge padding without bleeding into the Switches column;
   // Switches gets 5.5 (icon + ×N ≈ 36px content) so no cell overflows.
-  const colWeights = [17, 10, 10, 7, 5.5, 4.5, 5, 6, 6, 6, 6.5, 7, 5, 5, ...(captureOn ? [4] : [])];
+  // Detail holds two side-by-side icons — 7 units keeps them on one line
+  // (flex nowrap below also guarantees rows never grow a second line here).
+  const colWeights = [17, 10, 10, 7, 5.5, 4.5, 5, 6, 6, 6, 6.5, 7, 7, 5, ...(captureOn ? [4] : [])];
   const colSum = colWeights.reduce((a, b) => a + b, 0);
   const colWidths = colWeights.map(w => `${((w / colSum) * 100).toFixed(3)}%`);
 
@@ -332,7 +334,7 @@ export const SessionsPage: React.FC = () => {
           <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '12px', tableLayout: 'fixed' }}>
             <colgroup>{colWidths.map((w, i) => <col key={i} style={{ width: w }} />)}</colgroup>
             <thead>
-              <tr style={{ borderBottom: '1px solid var(--card-border)', color: 'var(--text-dim)' }}>
+              <tr style={{ borderBottom: '1px solid var(--divider)', color: 'var(--text-dim)' }}>
                 <th style={TH_STYLE}>{t('sessions.thSessionId')}</th>
                 <th style={TH_STYLE}>{t('sessions.thApps')}</th>
                 <th style={TH_STYLE}>{t('sessions.thPinned')}</th>
@@ -358,11 +360,11 @@ export const SessionsPage: React.FC = () => {
             <tbody>
             {sessions.length > 0 ? (
               sessions.map(s => (
-                <tr key={s.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
+                <tr key={s.id} style={{ borderBottom: '1px solid var(--divider)' }}>
                   <td
                     style={{
                       padding: '10px 14px',
-                      fontFamily: 'JetBrains Mono, monospace',
+                      fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                       color: 'var(--text-main)',
                       wordBreak: 'break-all',
                     }}
@@ -408,7 +410,37 @@ export const SessionsPage: React.FC = () => {
                       <span style={{ color: 'var(--text-dim)' }}>—</span>
                     )}
                   </td>
-                  <td style={{ padding: '10px 14px', fontWeight: 600 }}>{s.pinnedModel}</td>
+                  <td style={{ padding: '10px 14px', fontWeight: 600 }}>
+                    {s.pinnedModel}
+                    {/* ADR-0019 Decision 7 — account affinity (display-safe keyHash). */}
+                    {s.boundKeyHashPrefix && (
+                      <span
+                        title={t('sessions.boundAccountTip', {
+                          prefix: s.boundKeyHashPrefix,
+                          time: s.boundAt ? new Date(s.boundAt).toLocaleString() : '—',
+                        })}
+                        style={{
+                          display: 'block',
+                          marginTop: '3px',
+                          fontSize: '10px',
+                          fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                          lineHeight: '14px',
+                          padding: '1px 6px',
+                          borderRadius: '4px',
+                          background: 'var(--chip-bg)',
+                          border: '1px solid var(--card-border)',
+                          color: 'var(--text-dim)',
+                          fontWeight: 500,
+                          maxWidth: '100%',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        #{s.boundKeyHashPrefix}
+                      </span>
+                    )}
+                  </td>
                   <td style={{ padding: '10px 14px' }}>
                     <span className={`badge ${TIER_BADGE[s.maxTier]}`} title={t(TIER_FULL_LABEL[s.maxTier])}>
                       {t(TIER_LABEL[s.maxTier])}
@@ -424,7 +456,7 @@ export const SessionsPage: React.FC = () => {
                         display: 'inline-flex',
                         alignItems: 'center',
                         gap: 4,
-                        fontFamily: 'JetBrains Mono, monospace',
+                        fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                         fontWeight: 600,
                         // Color = signal: blue only when switches actually
                         // happened; a zero row stays quiet gray.
@@ -438,20 +470,20 @@ export const SessionsPage: React.FC = () => {
                     </span>
                   </td>
                   <td style={{ padding: '10px 14px' }}>{s.turnCount}</td>
-                  <td style={{ padding: '10px 14px', fontFamily: 'JetBrains Mono, monospace' }}>
+                  <td style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
                     {s.traceCount.toLocaleString()}
                   </td>
-                  <td style={{ padding: '10px 14px', fontFamily: 'JetBrains Mono, monospace' }}>
+                  <td style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
                     {(s.inputTokens ?? 0).toLocaleString()}
                   </td>
-                  <td style={{ padding: '10px 14px', fontFamily: 'JetBrains Mono, monospace' }}>
+                  <td style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
                     {(s.outputTokens ?? 0).toLocaleString()}
                   </td>
                   <td
                     style={{
                       padding: '10px 14px',
                       color: (s.cachedTokens ?? 0) > 0 ? 'var(--accent-emerald)' : 'var(--text-dim)',
-                      fontFamily: 'JetBrains Mono, monospace',
+                      fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                     }}
                   >
                     {(s.cachedTokens ?? 0).toLocaleString()}
@@ -461,7 +493,7 @@ export const SessionsPage: React.FC = () => {
                       padding: '10px 14px',
                       // Amber = money, consistent with the /usage table & cards.
                       color: 'var(--accent-amber)',
-                      fontFamily: 'JetBrains Mono, monospace',
+                      fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                     }}
                   >
                     {formatCost(s.costUsd ?? 0)}
@@ -470,6 +502,9 @@ export const SessionsPage: React.FC = () => {
                     {new Date(s.lastActiveAt).toLocaleTimeString()}
                   </td>
                   <td style={{ padding: '10px 14px' }}>
+                    {/* Flex row: the two icons must never wrap — a wrapped pair
+                        doubles every row's height. */}
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                     <span
                       role="button"
                       aria-label={t('sessions.viewDetail')}
@@ -496,12 +531,12 @@ export const SessionsPage: React.FC = () => {
                         display: 'inline-flex',
                         alignItems: 'center',
                         cursor: 'pointer',
-                        marginLeft: '12px',
                       }}
                       onMouseEnter={e => (e.currentTarget.style.color = 'var(--accent)')}
                       onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-dim)')}
                     >
                       <BarChart3 size={13} />
+                    </span>
                     </span>
                   </td>
                   <td style={{ padding: '10px 14px' }}>
@@ -575,7 +610,7 @@ export const SessionsPage: React.FC = () => {
           style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(0,0,0,0.6)',
+            background: 'var(--scrim)',
             zIndex: 100,
             display: 'flex',
             alignItems: 'center',
@@ -599,7 +634,7 @@ export const SessionsPage: React.FC = () => {
             </div>
             <div
               style={{
-                fontFamily: 'JetBrains Mono, monospace',
+                fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                 fontSize: '11px',
                 color: 'var(--text-dim)',
                 margin: '0 0 14px 0',
@@ -626,13 +661,13 @@ export const SessionsPage: React.FC = () => {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                 {timeline.events.map((ev, i) => (
                   <div key={i} style={{ display: 'flex', alignItems: 'baseline', gap: '10px', fontSize: '12px', flexWrap: 'wrap' }}>
-                    <span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-dim)', minWidth: 68 }}>
+                    <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-dim)', minWidth: 68 }}>
                       {new Date(ev.at).toLocaleTimeString()}
                     </span>
                     <span className={'badge' + (SWITCH_BADGE[ev.kind] ? ` ${SWITCH_BADGE[ev.kind]}` : '')}>
                       {t(SWITCH_LABEL[ev.kind])}
                     </span>
-                    <span style={{ fontWeight: 600, fontFamily: 'JetBrains Mono, monospace' }}>
+                    <span style={{ fontWeight: 600, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
                       {ev.from ? <><span style={{ color: 'var(--text-dim)' }}>{ev.from}</span>{' → '}</> : null}
                       {ev.to}
                     </span>
@@ -650,7 +685,7 @@ export const SessionsPage: React.FC = () => {
             )}
             {/* Per-request detail: every turn's recorded token counts + actual cost */}
             {timeline.traces.length > 0 && (
-              <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: '1px solid var(--card-border)' }}>
+              <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: '1px solid var(--divider)' }}>
                 <div
                   role="button"
                   aria-expanded={timeline.detailOpen}
@@ -680,7 +715,7 @@ export const SessionsPage: React.FC = () => {
                     columnGap: '8px',
                     rowGap: '6px',
                     fontSize: '11px',
-                    fontFamily: 'JetBrains Mono, monospace',
+                    fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                   }}
                 >
                   {[

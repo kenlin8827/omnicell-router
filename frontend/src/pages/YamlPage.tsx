@@ -18,7 +18,7 @@ const useAppTheme = (): string => {
   return theme;
 };
 
-const editorFont = "'JetBrains Mono', Consolas, Monaco, monospace";
+const editorFont = "'JetBrains Mono', Consolas, Monaco, 'Noto Sans SC', 'Microsoft YaHei', monospace";
 
 /** Editor chrome (bg / gutters / selection / caret) driven by the app's CSS variables. */
 const appChrome = EditorView.theme({

@@ -8,7 +8,24 @@ export interface ComboboxOption {
   label: string;
   /** Right-aligned auxiliary text (e.g. model count, "not connected" marker). */
   meta?: string;
+  /** Leading color dot (e.g. theme preview swatch) — rendered in trigger and panel. */
+  swatch?: string;
 }
+
+/** 10px color dot for `swatch` options — a real preview beats an emoji label. */
+const SwatchDot: React.FC<{ color: string }> = ({ color }) => (
+  <span
+    aria-hidden
+    style={{
+      width: 10,
+      height: 10,
+      borderRadius: '50%',
+      background: color,
+      border: '1px solid rgba(128,128,128,0.35)',
+      flexShrink: 0,
+    }}
+  />
+);
 
 type ComboboxBaseProps = {
   options: ComboboxOption[];
@@ -71,7 +88,10 @@ const optionStyle: React.CSSProperties = {
   fontSize: 12,
   cursor: 'pointer',
   color: 'var(--text-main)',
-  fontFamily: "'JetBrains Mono', Consolas, monospace",
+  // Mono for model ids, but JetBrains Mono/Consolas have no CJK glyphs — without
+  // these fallbacks Chinese labels render in the OS default monospace (SimSun on
+  // Windows), which looks unlike the rest of the UI. Same stack as the .input rule.
+  fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace",
 };
 
 export const Combobox: React.FC<ComboboxProps> = (props) => {
@@ -256,6 +276,7 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
         onKeyDown={onTriggerKeyDown}
         style={{ ...style, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', textAlign: 'left' }}
       >
+        {selected?.swatch && <SwatchDot color={selected.swatch} />}
         <span
           style={{
             flex: 1,
@@ -401,9 +422,10 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
                     onClick={() => pick(o)}
                     style={{
                       ...optionStyle,
-                      background: isActive ? 'rgba(6,182,212,0.1)' : 'transparent',
+                      background: isActive ? 'var(--accent-bg)' : 'transparent',
                     }}
                   >
+                    {o.swatch && <SwatchDot color={o.swatch} />}
                     <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {o.label}
                     </span>

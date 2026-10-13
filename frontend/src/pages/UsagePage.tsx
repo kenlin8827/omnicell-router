@@ -220,7 +220,7 @@ export const UsagePage: React.FC = () => {
                   columnGap: '8px',
                   rowGap: '6px',
                   fontSize: '11px',
-                  fontFamily: 'JetBrains Mono, monospace',
+                  fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                 }}
               >
                 {[
@@ -271,8 +271,8 @@ export const UsagePage: React.FC = () => {
               <thead>
                 <tr
                   style={{
-                    background: 'rgba(255, 255, 255, 0.02)',
-                    borderBottom: '1px solid var(--card-border)',
+                    background: 'var(--bg-elev)',
+                    borderBottom: '1px solid var(--divider)',
                     fontSize: '11px',
                     fontWeight: 700,
                     color: 'var(--text-dim)',
@@ -293,28 +293,28 @@ export const UsagePage: React.FC = () => {
                 {rows.map(r => (
                   <tr
                     key={r.id || 'anonymous'}
-                    style={{ borderBottom: '1px solid rgba(255,255,255,0.03)', cursor: 'pointer' }}
+                    style={{ borderBottom: '1px solid var(--divider)', cursor: 'pointer' }}
                     // Click a row to jump to that application's sessions view.
                     onClick={() => (r.id ? navigate(`/sessions?apiKey=${encodeURIComponent(r.id)}`) : undefined)}
                   >
                     <td style={{ padding: '10px 14px' }}>
                       <div style={{ fontWeight: 600 }}>{r.id ? r.name : t('usage.anonymous')}</div>
                       {r.id && (
-                        <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace' }}>
+                        <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
                           {shortId(r.id)}
                         </div>
                       )}
                     </td>
-                    <td style={{ padding: '10px 14px', fontFamily: 'JetBrains Mono, monospace' }}>{r.requests.toLocaleString()}</td>
-                    <td style={{ padding: '10px 14px', fontFamily: 'JetBrains Mono, monospace' }}>{r.inputTokens.toLocaleString()}</td>
-                    <td style={{ padding: '10px 14px', fontFamily: 'JetBrains Mono, monospace' }}>{r.outputTokens.toLocaleString()}</td>
-                    <td style={{ padding: '10px 14px', fontFamily: 'JetBrains Mono, monospace', color: 'var(--accent-emerald)' }}>
+                    <td style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>{r.requests.toLocaleString()}</td>
+                    <td style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>{r.inputTokens.toLocaleString()}</td>
+                    <td style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>{r.outputTokens.toLocaleString()}</td>
+                    <td style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--accent-emerald)' }}>
                       {r.cachedTokens.toLocaleString()}
                     </td>
-                    <td style={{ padding: '10px 14px', fontFamily: 'JetBrains Mono, monospace', color: 'var(--accent-amber)' }}>
+                    <td style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--accent-amber)' }}>
                       {formatCost(r.costUsd)}
                     </td>
-                    <td style={{ padding: '10px 14px', fontFamily: 'JetBrains Mono, monospace' }}>
+                    <td style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
                       {r.requests > 0 ? Math.round(r.latencyMsSum / r.requests) : 0} ms
                     </td>
                   </tr>

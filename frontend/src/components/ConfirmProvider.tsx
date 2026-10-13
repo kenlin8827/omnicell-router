@@ -76,7 +76,7 @@ export const ConfirmProvider: React.FC<{ children: React.ReactNode }> = ({ child
             inset: 0,
             // Above ALL feature dialogs (page modals 100 / dialogs 200 / nested 210)
             zIndex: 300,
-            background: 'rgba(0, 0, 0, 0.85)',
+            background: 'var(--scrim)',
             backdropFilter: o?.blur ? 'blur(8px)' : undefined,
             display: 'flex',
             alignItems: 'center',
@@ -109,7 +109,7 @@ export const ConfirmProvider: React.FC<{ children: React.ReactNode }> = ({ child
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  background: danger ? 'rgba(244, 63, 94, 0.15)' : 'rgba(6, 182, 212, 0.12)',
+                  background: danger ? 'rgba(244, 63, 94, 0.15)' : 'var(--accent-bg)',
                   color: danger ? 'var(--accent-rose)' : 'var(--accent)',
                 }}
               >

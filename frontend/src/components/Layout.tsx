@@ -62,7 +62,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     headingKey: 'nav.grpOverview',
     icon: Activity,
     items: [
-      { to: '/', labelKey: 'nav.overview', icon: LayoutGrid, end: true, badge: 'Live' },
+      { to: '/', labelKey: 'nav.overview', icon: LayoutGrid, end: true },
     ],
   },
   {
@@ -129,10 +129,6 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
   },
 ];
 
-// Backend DEFAULT_ENV_NAME — the bootstrap environment every resolution falls
-// back to when neither OCR_ENV nor the pointer names an env.
-const BOOTSTRAP_DEFAULT_ENV = 'default';
-
 const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = {
   '/': { groupKey: 'nav.grpOverview', titleKey: 'nav.overview' },
   '/tiers': { groupKey: 'nav.grpTraffic', titleKey: 'nav.rules' },
@@ -182,6 +178,18 @@ export const Layout: React.FC = () => {
       .then(s => setWebAuthActive(Boolean(s.webAuth?.active)))
       .catch(() => setWebAuthActive(false));
   }, []);
+
+  // Footer port chip — copying the gateway base URL is the console's most
+  // frequent manual step (pasting it into a client config), so the port is a
+  // one-click copy. 127.0.0.1 matches the snippets on the Clients/ApiKeys pages.
+  const copyGatewayUrl = () => {
+    if (!status) return;
+    const url = `http://127.0.0.1:${status.port}`;
+    navigator.clipboard
+      .writeText(url)
+      .then(() => toast.success(t('nav.footerUrlCopied')))
+      .catch(() => toast.error(t('common.failed') + url));
+  };
 
   // Load gateway status periodically
   useEffect(() => {
@@ -305,8 +313,8 @@ export const Layout: React.FC = () => {
           </div>
           <div>
             <div style={{ fontSize: '15px', fontWeight: 800, letterSpacing: '-0.02em' }}>OpenCode Router</div>
-            <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace' }}>
-              v{__APP_VERSION__} • Gateway Console
+            <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
+              {t('nav.consoleTag')}
             </div>
           </div>
         </div>
@@ -352,7 +360,9 @@ export const Layout: React.FC = () => {
                     fontWeight: 700,
                     textTransform: 'uppercase',
                     letterSpacing: '0.05em',
-                    color: 'var(--text-dim)',
+                    // Group headers are navigation labels, not tertiary meta:
+                    // muted, so they hold up at 11px on paper themes.
+                    color: 'var(--text-muted)',
                     padding: '6px 12px',
                     display: 'flex',
                     alignItems: 'center',
@@ -394,7 +404,7 @@ export const Layout: React.FC = () => {
                             fontSize: '13px',
                             fontWeight: isActive ? 600 : 500,
                             color: isActive ? 'var(--accent)' : 'var(--text-muted)',
-                            background: isActive ? 'rgba(255, 255, 255, 0.08)' : 'transparent',
+                            background: isActive ? 'var(--surface-hover)' : 'transparent',
                             border: isActive ? '1px solid var(--card-border)' : '1px solid transparent',
                             textDecoration: 'none',
                             transition: 'all 0.15s ease',
@@ -410,7 +420,7 @@ export const Layout: React.FC = () => {
                                 fontSize: '10px',
                                 padding: '1px 6px',
                                 borderRadius: '999px',
-                                background: 'rgba(255, 255, 255, 0.08)',
+                                background: 'var(--surface-hover)',
                                 color: 'var(--text-dim)',
                                 fontWeight: 600,
                               }}
@@ -428,18 +438,106 @@ export const Layout: React.FC = () => {
           })}
         </div>
 
-        {/* Sidebar Footer */}
-        <div
-          style={{
-            padding: '14px',
-            borderTop: '1px solid var(--card-border)',
-            fontSize: '11px',
-            color: 'var(--text-dim)',
-            textAlign: 'center',
-          }}
-        >
-          OpenCode Router Gateway Console
-        </div>
+        {/* Sidebar Footer — one line, left-aligned with the menu grid: the dot
+            sits flush at the icon column's left edge (padding 22px) and the
+            port trails it 4px, so the lamp reads attached to its endpoint.
+            Segment order: ● + listening port (the dot
+            binds to the live endpoint, VS Code / Docker convention — the port
+            copies the gateway base URL), then the active env (book-set) tag
+            (navigates to the Environments page; its icon carries the menu
+            label color, not the accent), and the static runtime version
+            trails at the far right — the weakest slot, since it never
+            changes while running. The two clickable segments stay paired
+            up front; "default:3000" would misread as a host:port address,
+            so they are separate targets. Version still
+            comes live from /api/admin/status (a stale cached bundle can't
+            misreport); the build-time constant is the fallback until status
+            arrives or while the gateway is unreachable, and the dot color makes
+            that fallback visible. Replaces the old hardcoded "OpenCode Router
+            Gateway Console" tagline, which duplicated the brand header and
+            skipped i18n. */}
+        {(() => {
+          const gatewayOnline = Boolean(status) && !statusError;
+          const chipStyle = {
+            background: 'none',
+            border: 'none',
+            padding: 0,
+            font: 'inherit',
+            color: 'inherit',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '4px',
+            whiteSpace: 'nowrap' as const,
+            cursor: 'pointer',
+          };
+          const sepStyle = { color: 'var(--divider)' };
+          return (
+            <div
+              style={{
+                padding: '14px 14px 14px 22px',
+                borderTop: '1px solid var(--divider)',
+                fontSize: '11px',
+                color: 'var(--text-dim)',
+                fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'flex-start',
+                gap: '10px',
+                whiteSpace: 'nowrap',
+                minWidth: 0,
+              }}
+            >
+              {/* Dot + port are one tight unit — the lamp belongs to the
+                  endpoint (4px apart). The dot sits flush at the icon column's
+                  left edge (padding 22px = same x as the menu icons); the port
+                  trails at 32px. Lamp-to-edge proximity wins over the old
+                  48px label-column alignment — a floating status light reads
+                  as detached. */}
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}>
+                <span
+                  title={gatewayOnline ? t('nav.footerOnline') : t('nav.footerOffline')}
+                  className={gatewayOnline ? 'dot-pulse' : undefined}
+                  style={{
+                    width: '6px',
+                    height: '6px',
+                    borderRadius: '50%',
+                    flexShrink: 0,
+                    background: gatewayOnline ? 'var(--accent-emerald)' : 'var(--text-dim)',
+                    boxShadow: gatewayOnline ? '0 0 6px var(--accent-emerald)' : 'none',
+                  }}
+                />
+                {status ? (
+                  <button
+                    type="button"
+                    onClick={copyGatewayUrl}
+                    title={t('nav.footerCopyUrl', { url: `http://127.0.0.1:${status.port}` })}
+                    style={chipStyle}
+                  >
+                    :{status.port}
+                  </button>
+                ) : (
+                  <span>{t('nav.footerOffline')}</span>
+                )}
+              </span>
+              {status && (
+                <>
+                  <span style={sepStyle}>·</span>
+                  <button
+                    type="button"
+                    onClick={() => navigate('/environments')}
+                    title={status.env?.configPath}
+                    style={{ ...chipStyle, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}
+                  >
+                    <FolderCog size={11} color="var(--text-muted)" style={{ flexShrink: 0 }} />
+                    {status.env?.name ?? '—'}
+                  </button>
+                </>
+              )}
+              <span style={sepStyle}>·</span>
+              {t('nav.version', { version: status?.version ?? __APP_VERSION__ })}
+            </div>
+          );
+        })()}
       </aside>
 
       {/* Main Content Area */}
@@ -468,69 +566,10 @@ export const Layout: React.FC = () => {
             <span style={{ color: 'var(--text-main)', fontWeight: 600 }}>{t(currentRouteMeta.titleKey)}</span>
           </div>
 
-          {/* Right Action Tools */}
+          {/* Right Action Tools — the env (book-set) chip and the Live-port pill
+              used to live here; both moved to the always-visible sidebar footer
+              (version + status dot + env:port) to avoid triple duplication. */}
           <div className="hdr-actions" style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', rowGap: 8, justifyContent: 'flex-end' }}>
-            {/* Current environment (book-set) chip — answers "which config is
-                live" at a glance; the pointer / next-boot view and all env
-                actions live on the Environments page. */}
-            {status?.env?.name && (
-              <button
-                className="btn"
-                onClick={() => navigate('/environments')}
-                title={`${t('env.badge.running')} · ${status.env.name}\n${status.env.configPath}`}
-                style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, maxWidth: 210, flexShrink: 1 }}
-              >
-                <FolderCog size={13} color="var(--accent)" style={{ flexShrink: 0 }} />
-                <span
-                  style={{
-                    fontFamily: 'JetBrains Mono, monospace',
-                    fontSize: 12,
-                    fontWeight: 700,
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  {status.env.name}
-                </span>
-                {status.env.name === BOOTSTRAP_DEFAULT_ENV && (
-                  <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
-                    {t('env.badge.bootstrap')}
-                  </span>
-                )}
-              </button>
-            )}
-
-            {/* Live Status Badge */}
-            <div
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '7px',
-                padding: '5px 12px',
-                borderRadius: '9999px',
-                flexShrink: 0,
-                whiteSpace: 'nowrap',
-                fontSize: '12px',
-                fontWeight: 600,
-                background: 'rgba(16, 185, 129, 0.12)',
-                border: '1px solid rgba(16, 185, 129, 0.3)',
-                color: 'var(--accent-emerald)',
-              }}
-            >
-              <div
-                className="dot-pulse"
-                style={{
-                  width: '7px',
-                  height: '7px',
-                  borderRadius: '50%',
-                  background: 'var(--accent-emerald)',
-                  boxShadow: '0 0 8px var(--accent-emerald)',
-                }}
-              />
-              <span>{t('header.livePort', { port: status?.port || window.location.port || '—' })}</span>
-            </div>
-
             {/* Language Switcher (i18n) */}
             <button
               className="btn"
@@ -568,13 +607,13 @@ export const Layout: React.FC = () => {
               value={theme}
               onChange={setTheme}
               options={[
-                { value: 'obsidian', label: t('header.themes.obsidian') },
-                { value: 'indigo', label: t('header.themes.indigo') },
-                { value: 'cyber', label: t('header.themes.cyber') },
-                { value: 'violet', label: t('header.themes.violet') },
-                { value: 'sunset', label: t('header.themes.sunset') },
-                { value: 'light', label: t('header.themes.light') },
-                { value: 'amber', label: t('header.themes.amber') },
+                { value: 'obsidian', label: t('header.themes.obsidian'), swatch: '#06b6d4' },
+                { value: 'indigo', label: t('header.themes.indigo'), swatch: '#6366f1' },
+                { value: 'cyber', label: t('header.themes.cyber'), swatch: '#10b981' },
+                { value: 'violet', label: t('header.themes.violet'), swatch: '#8b5cf6' },
+                { value: 'sunset', label: t('header.themes.sunset'), swatch: '#f43f5e' },
+                { value: 'light', label: t('header.themes.light'), swatch: '#0284c7' },
+                { value: 'amber', label: t('header.themes.amber'), swatch: '#d97706' },
               ]}
             />
 

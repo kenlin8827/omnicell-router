@@ -171,7 +171,7 @@ const ComboDialog: React.FC<{
         position: 'fixed',
         inset: 0,
         zIndex: 210,
-        background: 'rgba(0, 0, 0, 0.75)',
+        background: 'var(--scrim)',
         display: 'flex',
         overflowY: 'auto',
         padding: '16px',
@@ -206,7 +206,7 @@ const ComboDialog: React.FC<{
             alignItems: 'center',
             gap: '10px',
             padding: '14px 16px',
-            borderBottom: '1px solid var(--card-border)',
+            borderBottom: '1px solid var(--divider)',
           }}
         >
           <Layers size={16} color="var(--accent)" />
@@ -230,7 +230,7 @@ const ComboDialog: React.FC<{
               value={work.id}
               onChange={e => patch({ id: e.target.value })}
               className="input"
-              style={{ fontFamily: 'monospace' }}
+              style={{ fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
             />
           </div>
 
@@ -370,7 +370,7 @@ const ComboDialog: React.FC<{
               <div style={{ display: 'flex', gap: '6px' }}>
                 <input
                   className="input"
-                  style={{ flex: 1, fontSize: '12px', fontFamily: 'monospace' }}
+                  style={{ flex: 1, fontSize: '12px', fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
                   placeholder={t('combos.patternPlaceholder')}
                   value={pattern}
                   onChange={e => setPattern(e.target.value)}
@@ -431,7 +431,7 @@ const ComboDialog: React.FC<{
             justifyContent: 'flex-end',
             gap: '10px',
             padding: '12px 16px',
-            borderTop: '1px solid var(--card-border)',
+            borderTop: '1px solid var(--divider)',
           }}
         >
           <button className="btn" onClick={onClose}>
@@ -607,7 +607,7 @@ export const CombosPage: React.FC = () => {
               >
                 {/* Card head: id + strategy badge */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span style={{ fontFamily: 'monospace', fontSize: '13px', fontWeight: 600, wordBreak: 'break-all' }}>
+                  <span style={{ fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: '13px', fontWeight: 600, wordBreak: 'break-all' }}>
                     {combo.id.trim() || <span style={{ color: 'var(--accent-rose)' }}>—</span>}
                   </span>
                   {inactive && (
@@ -657,13 +657,13 @@ export const CombosPage: React.FC = () => {
                           fontSize: '12px',
                           padding: '5px 8px',
                           borderRadius: '6px',
-                          background: 'var(--bg-elev, rgba(255,255,255,0.03))',
+                          background: 'var(--bg-elev)',
                           border: unregistered ? '1px dashed var(--accent-rose)' : '1px solid transparent',
                         }}
                       >
                         <span style={{ color: 'var(--text-dim)', fontSize: '10px', width: '14px' }}>{mIdx + 1}</span>
                         <HealthDot member={mm} />
-                        <span title={m.id} style={{ fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        <span title={m.id} style={{ fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace", overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {m.id || <span style={{ color: 'var(--accent-rose)' }}>{t('combos.warnEmptyMember')}</span>}
                         </span>
                         {combo.selection !== 'priority' && (m.weight ?? 1) > 1 && (

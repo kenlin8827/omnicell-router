@@ -462,7 +462,7 @@ export const FlywheelPage: React.FC = () => {
             <span style={{ fontSize: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
               {t('flywheel.lastTrained')}
             </span>
-            <span style={{ fontSize: 13, fontWeight: 600, fontFamily: 'JetBrains Mono, monospace' }}>
+            <span style={{ fontSize: 13, fontWeight: 600, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
               {fmtTime(training?.lastTrainedAt ?? training?.model.lastTrainedAt)}
             </span>
           </div>
@@ -478,7 +478,7 @@ export const FlywheelPage: React.FC = () => {
             <span style={{ fontSize: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
               {t('flywheel.trainablePool')}
             </span>
-            <span style={{ fontSize: 13, fontWeight: 600, fontFamily: 'JetBrains Mono, monospace' }}>
+            <span style={{ fontSize: 13, fontWeight: 600, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
               {summary?.trainable ?? 0}
             </span>
           </div>
@@ -486,7 +486,7 @@ export const FlywheelPage: React.FC = () => {
             <span style={{ fontSize: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
               {t('flywheel.features')}
             </span>
-            <span style={{ fontSize: 13, fontWeight: 600, fontFamily: 'JetBrains Mono, monospace' }}>
+            <span style={{ fontSize: 13, fontWeight: 600, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
               {training?.model.featureDimensions ?? '—'} × {training?.model.classes.length ?? 4}
             </span>
           </div>
@@ -554,7 +554,7 @@ export const FlywheelPage: React.FC = () => {
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <Database size={16} color="var(--accent)" />
           <span style={{ fontSize: 14, fontWeight: 700 }}>{t('flywheel.datasetTitle')}</span>
-          <span style={{ fontSize: 11, color: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace' }}>
+          <span style={{ fontSize: 11, color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
             {summary ? `${summary.total} ${t('flywheel.rows')} · ${fmtBytes(summary.fileBytes)}` : '—'}
           </span>
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -611,7 +611,7 @@ export const FlywheelPage: React.FC = () => {
                 key={tier}
                 style={{
                   fontSize: 11,
-                  fontFamily: 'JetBrains Mono, monospace',
+                  fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                   padding: '3px 9px',
                   borderRadius: 6,
                   border: '1px solid var(--card-border)',
@@ -627,7 +627,7 @@ export const FlywheelPage: React.FC = () => {
         {/* Retention knobs (§3.4): only rendered when a sweep is actually armed. */}
         {summary?.retention?.enabled && (
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', fontSize: 11, color: 'var(--text-dim)' }}>
-            <span style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
               {t('flywheel.retentionActive', { days: summary.retention.retentionDays, mb: summary.retention.maxFileSizeMB })}
             </span>
             {summary.retention.lastSweepAt && (
@@ -766,7 +766,7 @@ export const FlywheelPage: React.FC = () => {
           {rows.map(row => {
             const expanded = expandedId === row.id;
             const saving = savingId === row.id;
-            const rowBg = expanded ? 'rgba(255,255,255,0.04)' : 'transparent';
+            const rowBg = expanded ? 'var(--surface-hover)' : 'transparent';
             return (
               <div
                 key={row.id}
@@ -811,7 +811,7 @@ export const FlywheelPage: React.FC = () => {
                   <span
                     style={{
                       fontSize: 11,
-                      fontFamily: 'JetBrains Mono, monospace',
+                      fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                       color: row.decision.targetTier !== row.execution.tierUsed ? 'var(--accent-emerald)' : 'var(--text-dim)',
                       whiteSpace: 'nowrap',
                     }}
@@ -838,7 +838,7 @@ export const FlywheelPage: React.FC = () => {
                       overflow: 'hidden',
                       textOverflow: 'ellipsis',
                       whiteSpace: 'nowrap',
-                      fontFamily: 'JetBrains Mono, monospace',
+                      fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                       cursor: 'pointer',
                     }}
                     title={t('flywheel.promptHint')}
@@ -880,7 +880,7 @@ export const FlywheelPage: React.FC = () => {
                       gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
                       gap: 10,
                       fontSize: 11,
-                      fontFamily: 'JetBrains Mono, monospace',
+                      fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                       color: 'var(--text-muted)',
                       paddingTop: 4,
                       borderTop: '1px dashed var(--card-border)',
@@ -1018,7 +1018,7 @@ export const FlywheelPage: React.FC = () => {
               margin: 0,
               fontSize: 12,
               lineHeight: 1.6,
-              fontFamily: 'JetBrains Mono, monospace',
+              fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
               color: 'var(--text-main)',
               whiteSpace: 'pre-wrap',
               wordBreak: 'break-word',
@@ -1096,12 +1096,12 @@ export const FlywheelPage: React.FC = () => {
                 flexDirection: 'column',
                 gap: 6,
                 fontSize: 12,
-                fontFamily: 'JetBrains Mono, monospace',
+                fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                 color: 'var(--text-muted)',
                 padding: '10px 12px',
                 border: '1px solid var(--card-border)',
                 borderRadius: 8,
-                background: 'rgba(255,255,255,0.02)',
+                background: 'var(--bg-elev)',
               }}
             >
               {prunePreview.kept === prunePreview.total ? (

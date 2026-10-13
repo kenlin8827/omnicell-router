@@ -119,11 +119,11 @@ const fmtSize = (n: number): string => (n >= 1_048_576 ? (n / 1_048_576).toFixed
 
 /** Shared raw-JSON view style for the catalog viewer modals. */
 const JSON_PRE: React.CSSProperties = {
-  fontFamily: "'JetBrains Mono', monospace",
+  fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
   fontSize: '10px',
   lineHeight: 1.55,
   color: 'var(--text-main)',
-  background: 'rgba(255,255,255,0.03)',
+  background: 'var(--well-bg)',
   border: '1px solid var(--card-border)',
   borderRadius: '6px',
   padding: '10px 12px',
@@ -157,8 +157,12 @@ const ModelTable: React.FC<{
     color: 'var(--text-dim)',
     padding: '2px 6px 4px 0',
     textAlign: 'left',
+    borderBottom: '1px solid var(--divider)',
   };
-  const cell: React.CSSProperties = { fontSize: '11px', color: 'var(--text-main)', padding: '3px 6px 3px 0' };
+  // Grid cells tile the row: the divider goes on EVERY cell to form one
+  // continuous line. lineHeight pinned to an integer (22+6 padding = 28px,
+  // multiple of 4) so hairlines snap to device pixels at 125%/150% scaling.
+  const cell: React.CSSProperties = { fontSize: '11px', color: 'var(--text-main)', padding: '3px 6px 3px 0', lineHeight: '22px', borderBottom: '1px solid var(--divider)' };
   const iconBtn = (color: string, title: string, onClick: () => void, node: React.ReactNode, marginLeft: number): React.ReactElement => (
     <button
       onClick={onClick}
@@ -182,7 +186,7 @@ const ModelTable: React.FC<{
         const rcell: React.CSSProperties = hidden ? { ...cell, opacity: 0.55 } : cell;
         return (
         <React.Fragment key={m.id}>
-          <div style={{ ...rcell, fontFamily: "'JetBrains Mono', monospace", fontSize: '10px' }}>
+          <div style={{ ...rcell, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: '10px' }}>
             {m.id}
             {hidden && (
               <span style={{ marginLeft: 6, fontSize: 9, color: 'var(--text-dim)', border: '1px solid var(--card-border)', borderRadius: 999, padding: '0 5px' }}>
@@ -323,7 +327,7 @@ const DataViewerModal: React.FC<{ source: CatalogSourceView; onClose: () => void
       style={{
         position: 'fixed',
         inset: 0,
-        background: 'rgba(0, 0, 0, 0.85)',
+        background: 'var(--scrim)',
         zIndex: 100,
         display: 'flex',
         alignItems: 'center',
@@ -400,7 +404,7 @@ const DataViewerModal: React.FC<{ source: CatalogSourceView; onClose: () => void
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
-            <div style={{ overflowY: 'auto', flex: 1, minHeight: 0, borderTop: '1px solid var(--card-border)', paddingTop: '8px' }}>
+            <div style={{ overflowY: 'auto', flex: 1, minHeight: 0, borderTop: '1px solid var(--divider)', paddingTop: '8px' }}>
               {isProviderSource ? (
                 providers.length === 0 ? (
                   <div style={{ ...fieldLabel, padding: '24px 0', textAlign: 'center' }}>{t('catalogPage.dataEmpty')}</div>
@@ -409,7 +413,7 @@ const DataViewerModal: React.FC<{ source: CatalogSourceView; onClose: () => void
                     const open = expanded.has(p.id);
                     const ms = p.models ?? [];
                     return (
-                      <div key={p.id} style={{ borderBottom: '1px solid var(--card-border)' }}>
+                      <div key={p.id} style={{ borderBottom: '1px solid var(--divider)' }}>
                         <div
                           onClick={() => toggle(p.id)}
                           style={{ display: 'flex', alignItems: 'center', gap: '7px', padding: '7px 4px', cursor: 'pointer', userSelect: 'none' }}
@@ -599,7 +603,7 @@ const OcrCatalogModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
       style={{
         position: 'fixed',
         inset: 0,
-        background: 'rgba(0, 0, 0, 0.85)',
+        background: 'var(--scrim)',
         zIndex: 100,
         display: 'flex',
         alignItems: 'center',
@@ -693,7 +697,7 @@ const OcrCatalogModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
-            <div style={{ overflowY: 'auto', flex: 1, minHeight: 0, borderTop: '1px solid var(--card-border)', paddingTop: '8px' }}>
+            <div style={{ overflowY: 'auto', flex: 1, minHeight: 0, borderTop: '1px solid var(--divider)', paddingTop: '8px' }}>
               {providers.length === 0 ? (
                 <div style={{ ...dim, padding: '24px 0', textAlign: 'center' }}>
                   {onlyLocked
@@ -706,7 +710,7 @@ const OcrCatalogModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                 providers.slice(0, MAX_RENDER).map((p) => {
                   const open = expanded.has(p.id);
                   return (
-                    <div key={p.id} style={{ borderBottom: '1px solid var(--card-border)' }}>
+                    <div key={p.id} style={{ borderBottom: '1px solid var(--divider)' }}>
                       <div
                         onClick={() => toggle(p.id)}
                         style={{ display: 'flex', alignItems: 'center', gap: '7px', padding: '7px 4px', cursor: 'pointer', userSelect: 'none' }}
@@ -960,7 +964,7 @@ const OcrEditModal: React.FC<{
       subtitle={
         <>
           <span>{t('catalogPage.ocrEditHint')}</span>
-          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: 'var(--accent)' }}>
+          <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: 12, color: 'var(--accent)' }}>
             {target.providerId}/{target.modelId}
           </span>
         </>
@@ -1191,7 +1195,7 @@ const AddSourceModal: React.FC<{
       style={{
         position: 'fixed',
         inset: 0,
-        background: 'rgba(0, 0, 0, 0.85)',
+        background: 'var(--scrim)',
         zIndex: 100,
         display: 'flex',
         alignItems: 'center',
@@ -1282,7 +1286,7 @@ const AddSourceModal: React.FC<{
                 placeholder={t('catalogPage.mapPlaceholder')}
                 className="input"
                 rows={6}
-                style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', resize: 'vertical' }}
+                style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: '11px', resize: 'vertical' }}
               />
               <div style={{ fontSize: '10px', color: 'var(--text-dim)', marginTop: '4px' }}>{t('catalogPage.mapHint')}</div>
             </div>

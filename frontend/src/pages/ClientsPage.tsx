@@ -237,7 +237,7 @@ export const ClientsPage: React.FC = () => {
               <div
                 key={c.name}
                 style={{
-                  background: 'rgba(255, 255, 255, 0.02)',
+                  background: 'var(--bg-elev)',
                   border: '1px solid var(--card-border)',
                   borderRadius: '10px',
                   overflow: 'hidden',
@@ -267,14 +267,14 @@ export const ClientsPage: React.FC = () => {
                   </span>
                   <span
                     title={c.configPath}
-                    style={{ flex: 1, fontFamily: 'JetBrains Mono, monospace', fontSize: '11px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                    style={{ flex: 1, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: '11px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
                   >
                     {c.configPath}
                   </span>
                   {c.hooked ? (
                     <span className="badge badge-success">{t('overview.hooked')}</span>
                   ) : (
-                    <span className="badge" style={{ background: 'rgba(255,255,255,0.06)', color: 'var(--text-dim)' }}>
+                    <span className="badge" style={{ background: 'var(--chip-bg)', color: 'var(--text-dim)' }}>
                       {t('overview.notHooked')}
                     </span>
                   )}
@@ -282,10 +282,10 @@ export const ClientsPage: React.FC = () => {
                 </div>
 
                 {open && (
-                  <div style={{ padding: '16px 18px', borderTop: '1px solid var(--card-border)', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                  <div style={{ padding: '16px 18px', borderTop: '1px solid var(--divider)', display: 'flex', flexDirection: 'column', gap: '14px' }}>
                     <div style={{ fontSize: '12px', color: 'var(--text-dim)' }}>
                       {t('clients.configPath')}
-                      <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '11px', color: 'var(--text-muted)', wordBreak: 'break-all', marginTop: '3px' }}>
+                      <div style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: '11px', color: 'var(--text-muted)', wordBreak: 'break-all', marginTop: '3px' }}>
                         {c.configPath}
                       </div>
                     </div>
@@ -355,7 +355,7 @@ export const ClientsPage: React.FC = () => {
                           {(extraSel[c.name] || []).length > 0 && (
                             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '6px' }}>
                               {(extraSel[c.name] || []).map(id => (
-                                <span key={id} style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '3px 10px', borderRadius: '999px', border: '1px solid var(--card-border)', fontSize: '11px', fontFamily: 'JetBrains Mono, monospace' }}>
+                                <span key={id} style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '3px 10px', borderRadius: '999px', border: '1px solid var(--card-border)', fontSize: '11px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
                                   {id}
                                   <button onClick={() => removeExtraModel(c.name, id)} style={{ display: 'inline-flex', cursor: 'pointer', color: 'var(--text-dim)', background: 'none', border: 'none', padding: 0 }}>
                                     <X size={10} />
@@ -395,7 +395,7 @@ export const ClientsPage: React.FC = () => {
               no backend adapter, no status, no action buttons. */}
           <div
             style={{
-              background: 'rgba(255, 255, 255, 0.02)',
+              background: 'var(--bg-elev)',
               border: '1px solid var(--card-border)',
               borderRadius: '10px',
               overflow: 'hidden',
@@ -426,13 +426,13 @@ export const ClientsPage: React.FC = () => {
               <span style={{ flex: 1, fontSize: '11px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {t('clients.otherHint')}
               </span>
-              <span className="badge" style={{ background: 'rgba(255,255,255,0.06)', color: 'var(--text-dim)' }}>
+              <span className="badge" style={{ background: 'var(--chip-bg)', color: 'var(--text-dim)' }}>
                 {t('clients.otherBadge')}
               </span>
             </div>
 
             {otherOpen && (
-              <div style={{ padding: '16px 18px', borderTop: '1px solid var(--card-border)', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <div style={{ padding: '16px 18px', borderTop: '1px solid var(--divider)', display: 'flex', flexDirection: 'column', gap: '14px' }}>
                 <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.7 }}>
                   {t('clients.otherIntro')}
                 </p>
@@ -443,22 +443,22 @@ export const ClientsPage: React.FC = () => {
                 </div>
 
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '12px' }}>
-                  <div style={{ background: 'var(--input-bg)', border: '1px solid var(--card-border)', borderRadius: '8px', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <div style={{ background: 'var(--well-bg)', border: '1px solid var(--card-border)', borderRadius: '8px', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                     <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('clients.otherProtoOpenai')}</div>
-                    <code style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '12px', color: 'var(--text-main)', wordBreak: 'break-all' }}>
+                    <code style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: '12px', color: 'var(--text-main)', wordBreak: 'break-all' }}>
                       {`http://127.0.0.1:${gwPort}/v1`}
                     </code>
-                    <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '11px', color: 'var(--text-dim)' }}>
+                    <div style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: '11px', color: 'var(--text-dim)' }}>
                       POST /v1/chat/completions · /v1/responses · /v1/models
                     </div>
                     <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('clients.otherOpenaiAuth')}</div>
                   </div>
-                  <div style={{ background: 'var(--input-bg)', border: '1px solid var(--card-border)', borderRadius: '8px', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <div style={{ background: 'var(--well-bg)', border: '1px solid var(--card-border)', borderRadius: '8px', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                     <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('clients.otherProtoAnthropic')}</div>
-                    <code style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '12px', color: 'var(--text-main)', wordBreak: 'break-all' }}>
+                    <code style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: '12px', color: 'var(--text-main)', wordBreak: 'break-all' }}>
                       {`http://127.0.0.1:${gwPort}`}
                     </code>
-                    <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '11px', color: 'var(--text-dim)' }}>
+                    <div style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: '11px', color: 'var(--text-dim)' }}>
                       POST /v1/messages
                     </div>
                     <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('clients.otherAnthropicAuth')}</div>

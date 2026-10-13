@@ -30,9 +30,9 @@ const preStyle: React.CSSProperties = {
   margin: '6px 0 0 0',
   padding: '10px 12px',
   borderRadius: '8px',
-  background: 'rgba(255, 255, 255, 0.04)',
+  background: 'var(--well-bg)',
   border: '1px solid var(--card-border)',
-  fontFamily: 'JetBrains Mono, monospace',
+  fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
   fontSize: '11px',
   lineHeight: 1.6,
   whiteSpace: 'pre-wrap',
@@ -44,8 +44,8 @@ const stepCircle = (active: boolean): React.CSSProperties => ({
   width: '24px',
   height: '24px',
   borderRadius: '50%',
-  background: active ? 'var(--accent)' : 'rgba(255, 255, 255, 0.08)',
-  color: active ? '#000' : 'var(--text-dim)',
+  background: active ? 'var(--btn-primary-bg)' : 'var(--surface-hover)',
+  color: active ? 'var(--btn-primary-text)' : 'var(--text-dim)',
   fontSize: '12px',
   fontWeight: 700,
   display: 'inline-flex',
@@ -333,7 +333,7 @@ export const ProxyAccessPage: React.FC = () => {
                     padding: '6px 12px 6px 6px',
                     borderRadius: '999px',
                     cursor: 'pointer',
-                    background: isActive ? 'rgba(255, 255, 255, 0.06)' : 'transparent',
+                    background: isActive ? 'var(--chip-bg)' : 'transparent',
                     border: isActive ? '1px solid var(--card-border)' : '1px solid transparent',
                     color: isActive ? 'var(--text-main)' : 'var(--text-muted)',
                     fontSize: '12px',
@@ -356,7 +356,7 @@ export const ProxyAccessPage: React.FC = () => {
         </div>
 
         {/* Wizard navigation */}
-        <div style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', gap: '20px', marginTop: '20px', paddingTop: '14px', borderTop: '1px solid var(--card-border)' }}>
+        <div style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', gap: '20px', marginTop: '20px', paddingTop: '14px', borderTop: '1px solid var(--divider)' }}>
           <button
             className="btn btn-sm"
             disabled={stepIndex <= 0}

@@ -7,8 +7,13 @@
   --sidebar-bg: rgba(16, 16, 20, 0.92);
   --header-bg: rgba(10, 10, 12, 0.7);
   --card-bg: rgba(22, 22, 26, 0.72);
+  /* Inset surface nested inside a card (sub-cards, panels, code wells). */
+  --bg-elev: rgba(255, 255, 255, 0.02);
   --card-border: rgba(255, 255, 255, 0.07);
   --card-border-hover: rgba(255, 255, 255, 0.14);
+  /* Table/list row separators — the lightest line tier: frame (card-border)
+     > header rule > divider (rows). Never reuse card-border for row rules. */
+  --divider: rgba(255, 255, 255, 0.05);
   --input-bg: rgba(0, 0, 0, 0.4);
   --accent: #06b6d4;
   --accent-glow: rgba(6, 182, 212, 0.35);
@@ -23,7 +28,11 @@
   --card-shadow-hover: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
   --btn-bg: rgba(255, 255, 255, 0.04);
   --btn-bg-hover: rgba(255, 255, 255, 0.08);
-  --btn-primary-text: #001418;
+  /* Primary-button fill is a darkened step of the accent: white label needs
+     >=4.5:1, which the bright brand accent (#06b6d4, 2.4:1) cannot provide.
+     --accent itself stays vivid for glows, focus rings, dots and switches. */
+  --btn-primary-text: #ffffff;
+  --btn-primary-bg: #0e7490;
   --btn-primary-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 1px 3px rgba(0, 0, 0, 0.4);
   --btn-primary-shadow-hover: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 2px 8px rgba(0, 0, 0, 0.45);
   --focus-ring: 0 0 0 1px rgba(6, 182, 212, 0.45), 0 0 0 4px rgba(6, 182, 212, 0.12);
@@ -39,8 +48,10 @@
   --sidebar-bg: rgba(15, 23, 42, 0.95);
   --header-bg: rgba(15, 23, 42, 0.7);
   --card-bg: rgba(30, 41, 59, 0.72);
+  --bg-elev: rgba(255, 255, 255, 0.02);
   --card-border: rgba(255, 255, 255, 0.07);
   --card-border-hover: rgba(99, 102, 241, 0.35);
+  --divider: rgba(255, 255, 255, 0.05);
   --input-bg: rgba(15, 23, 42, 0.6);
   --accent: #6366f1;
   --accent-glow: rgba(99, 102, 241, 0.35);
@@ -55,9 +66,10 @@
   --card-shadow-hover: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
   --btn-bg: rgba(255, 255, 255, 0.04);
   --btn-bg-hover: rgba(255, 255, 255, 0.08);
-  --btn-primary-text: #0e0e2c;
+  --btn-primary-text: #ffffff;
   --btn-primary-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 1px 3px rgba(0, 0, 0, 0.4);
   --btn-primary-shadow-hover: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 2px 8px rgba(0, 0, 0, 0.45);
+  --btn-primary-bg: #4f46e5;
   --focus-ring: 0 0 0 1px rgba(99, 102, 241, 0.45), 0 0 0 4px rgba(99, 102, 241, 0.12);
   --scrollbar-thumb: rgba(255, 255, 255, 0.08);
   --scrollbar-thumb-hover: rgba(255, 255, 255, 0.16);
@@ -71,8 +83,10 @@
   --sidebar-bg: rgba(6, 20, 13, 0.96);
   --header-bg: rgba(6, 20, 13, 0.7);
   --card-bg: rgba(8, 26, 17, 0.75);
+  --bg-elev: rgba(255, 255, 255, 0.02);
   --card-border: rgba(16, 185, 129, 0.14);
   --card-border-hover: rgba(16, 185, 129, 0.4);
+  --divider: rgba(255, 255, 255, 0.05);
   --input-bg: rgba(2, 10, 6, 0.7);
   --accent: #10b981;
   --accent-glow: rgba(16, 185, 129, 0.4);
@@ -87,9 +101,10 @@
   --card-shadow-hover: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
   --btn-bg: rgba(255, 255, 255, 0.04);
   --btn-bg-hover: rgba(255, 255, 255, 0.08);
-  --btn-primary-text: #02150c;
+  --btn-primary-text: #ffffff;
   --btn-primary-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 1px 3px rgba(0, 0, 0, 0.4);
   --btn-primary-shadow-hover: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 2px 8px rgba(0, 0, 0, 0.45);
+  --btn-primary-bg: #047857;
   --focus-ring: 0 0 0 1px rgba(16, 185, 129, 0.45), 0 0 0 4px rgba(16, 185, 129, 0.12);
   --scrollbar-thumb: rgba(255, 255, 255, 0.08);
   --scrollbar-thumb-hover: rgba(255, 255, 255, 0.16);
@@ -103,8 +118,10 @@
   --sidebar-bg: rgba(30, 14, 20, 0.96);
   --header-bg: rgba(26, 11, 17, 0.7);
   --card-bg: rgba(40, 18, 26, 0.72);
+  --bg-elev: rgba(255, 255, 255, 0.02);
   --card-border: rgba(244, 63, 94, 0.14);
   --card-border-hover: rgba(244, 63, 94, 0.38);
+  --divider: rgba(255, 255, 255, 0.05);
   --input-bg: rgba(20, 9, 14, 0.7);
   --accent: #f43f5e;
   --accent-glow: rgba(244, 63, 94, 0.4);
@@ -119,9 +136,10 @@
   --card-shadow-hover: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
   --btn-bg: rgba(255, 255, 255, 0.04);
   --btn-bg-hover: rgba(255, 255, 255, 0.08);
-  --btn-primary-text: #2a0812;
+  --btn-primary-text: #ffffff;
   --btn-primary-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 1px 3px rgba(0, 0, 0, 0.4);
   --btn-primary-shadow-hover: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 2px 8px rgba(0, 0, 0, 0.45);
+  --btn-primary-bg: #e11d48;
   --focus-ring: 0 0 0 1px rgba(244, 63, 94, 0.45), 0 0 0 4px rgba(244, 63, 94, 0.12);
   --scrollbar-thumb: rgba(255, 255, 255, 0.08);
   --scrollbar-thumb-hover: rgba(255, 255, 255, 0.16);
@@ -135,18 +153,28 @@
   --sidebar-bg: rgba(255, 255, 255, 0.96);
   --header-bg: rgba(255, 255, 255, 0.8);
   --card-bg: rgba(255, 255, 255, 0.95);
-  --card-border: rgba(15, 23, 42, 0.08);
+  --bg-elev: rgba(15, 23, 42, 0.03);
+  /* 8% read as a barely-there blur on paper; 15% slate matches the crispness
+     of the amber theme's warm hairline. */
+  --card-border: rgba(15, 23, 42, 0.15);
   --card-border-hover: rgba(2, 132, 199, 0.35);
+  --divider: rgba(15, 23, 42, 0.12);
   --input-bg: #ffffff;
   --accent: #0284c7;
   --accent-glow: rgba(2, 132, 199, 0.25);
-  --accent-emerald: #059669;
-  --accent-amber: #d97706;
+  /* Semantic accents must clear AA as *text* on paper (they are used for
+     cost figures, badges, tier labels): 500-series fails, 600/700 passes.
+     Same rule the hue tokens follow. */
+  --accent-emerald: #047857;
+  --accent-amber: #b45309;
   --accent-rose: #e11d48;
   --accent-violet: #7c3aed;
   --text-main: #0f172a;
   --text-muted: #475569;
-  --text-dim: #94a3b8;
+  /* Dim gray must keep the same ~4.5:1 secondary-text weight the dark themes
+     have; the Tailwind-400 slate was tuned for dark backgrounds and reads
+     ~2.4:1 on paper. */
+  --text-dim: #576173;
   --card-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
   --card-shadow-hover: 0 8px 24px -12px rgba(15, 23, 42, 0.18);
   --btn-bg: rgba(15, 23, 42, 0.04);
@@ -154,6 +182,7 @@
   --btn-primary-text: #ffffff;
   --btn-primary-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 1px 2px rgba(15, 23, 42, 0.25);
   --btn-primary-shadow-hover: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 2px 8px rgba(15, 23, 42, 0.3);
+  --btn-primary-bg: #0369a1;
   --focus-ring: 0 0 0 1px rgba(2, 132, 199, 0.45), 0 0 0 4px rgba(2, 132, 199, 0.12);
   --scrollbar-thumb: rgba(15, 23, 42, 0.15);
   --scrollbar-thumb-hover: rgba(15, 23, 42, 0.3);
@@ -167,25 +196,32 @@
   --sidebar-bg: rgba(255, 255, 255, 0.96);
   --header-bg: rgba(255, 255, 255, 0.8);
   --card-bg: rgba(255, 255, 255, 0.95);
-  --card-border: rgba(28, 25, 23, 0.08);
+  /* Nested cards need a warm paper fill — a white overlay is invisible on the
+     white card surface, leaving only a borderless gray outline. */
+  --bg-elev: rgba(217, 119, 6, 0.03); /* 3% not 6%: amber-600 is fully saturated — same alpha reads far heavier than light's 3% slate (provider grid looked like tan blocks) */
+  /* Accent-tinted hairline like every other chromatic theme (cyber/sunset/
+     violet); a neutral 8% gray reads as muddy blur on warm paper. */
+  --card-border: rgba(146, 94, 40, 0.22);
   --card-border-hover: rgba(217, 119, 6, 0.35);
+  --divider: rgba(146, 94, 40, 0.18);
   --input-bg: #ffffff;
   --accent: #d97706;
   --accent-glow: rgba(217, 119, 6, 0.25);
-  --accent-emerald: #059669;
+  --accent-emerald: #047857;
   --accent-amber: #b45309;
   --accent-rose: #e11d48;
   --accent-violet: #7c3aed;
   --text-main: #292524;
   --text-muted: #57534e;
-  --text-dim: #a8a29e;
-  --card-shadow: 0 1px 2px rgba(28, 25, 23, 0.06);
+  --text-dim: #6d6660;
+  --card-shadow: 0 1px 2px rgba(120, 72, 20, 0.08);
   --card-shadow-hover: 0 8px 24px -12px rgba(28, 25, 23, 0.18);
   --btn-bg: rgba(28, 25, 23, 0.04);
   --btn-bg-hover: rgba(28, 25, 23, 0.08);
   --btn-primary-text: #ffffff;
   --btn-primary-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 1px 2px rgba(28, 25, 23, 0.25);
   --btn-primary-shadow-hover: inset 0 1px 0 rgba(255, 255, 255, 0.3), 0 2px 8px rgba(28, 25, 23, 0.3);
+  --btn-primary-bg: #b45309;
   --focus-ring: 0 0 0 1px rgba(217, 119, 6, 0.45), 0 0 0 4px rgba(217, 119, 6, 0.12);
   --scrollbar-thumb: rgba(28, 25, 23, 0.15);
   --scrollbar-thumb-hover: rgba(28, 25, 23, 0.3);
@@ -199,8 +235,10 @@
   --sidebar-bg: rgba(22, 14, 36, 0.96);
   --header-bg: rgba(18, 10, 30, 0.7);
   --card-bg: rgba(30, 20, 48, 0.72);
+  --bg-elev: rgba(255, 255, 255, 0.02);
   --card-border: rgba(139, 92, 246, 0.14);
   --card-border-hover: rgba(139, 92, 246, 0.38);
+  --divider: rgba(255, 255, 255, 0.05);
   --input-bg: rgba(14, 8, 24, 0.7);
   --accent: #8b5cf6;
   --accent-glow: rgba(139, 92, 246, 0.4);
@@ -215,18 +253,94 @@
   --card-shadow-hover: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
   --btn-bg: rgba(255, 255, 255, 0.04);
   --btn-bg-hover: rgba(255, 255, 255, 0.08);
-  --btn-primary-text: #170829;
+  --btn-primary-text: #ffffff;
   --btn-primary-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 1px 3px rgba(0, 0, 0, 0.4);
   --btn-primary-shadow-hover: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 2px 8px rgba(0, 0, 0, 0.45);
+  --btn-primary-bg: #7c3aed;
   --focus-ring: 0 0 0 1px rgba(139, 92, 246, 0.45), 0 0 0 4px rgba(139, 92, 246, 0.12);
   --scrollbar-thumb: rgba(255, 255, 255, 0.08);
   --scrollbar-thumb-hover: rgba(255, 255, 255, 0.16);
+}
+
+/* Derived tokens — ONE definition, follows whichever theme block wins above
+   (custom properties resolve against the element's final cascaded values).
+   On obsidian these render pixel-identical to the old hardcoded
+   rgba(255,255,255,0.0X) surfaces and rgba(6,182,212,0.XX) accent tints;
+   on light themes they flip to dark-tinted equivalents automatically.
+   NEVER hardcode white-overlay/accent alphas in pages — use these tokens. */
+:root {
+  --well-bg: color-mix(in srgb, var(--text-main) 5%, transparent);      /* code/JSON wells — recessed fill distinct from the card */
+  --chip-bg: color-mix(in srgb, var(--text-main) 6%, transparent);      /* badges, pills, row highlight */
+  --surface-hover: color-mix(in srgb, var(--text-main) 8%, transparent); /* active tabs, hover, selected */
+  --accent-bg: color-mix(in srgb, var(--accent) 12%, transparent);      /* accent-tinted fills */
+  --accent-border: color-mix(in srgb, var(--accent) 30%, transparent);  /* accent-tinted borders */
+  /* Form-control outline. Dark themes: the recessed --input-bg fill already
+     separates the field, so the card hairline suffices. Light themes: the
+     field is white-on-white, the BORDER must carry the whole edge — override
+     stronger per theme below. */
+  --input-border: var(--card-border);
+  /* Modal scrim — ONE token for every dialog overlay (was 0.6~0.85 black
+     scattered across 20+ files). Dark themes keep the 0.75 weight; light-class
+     themes use a lighter slate so the 95%-alpha card reads near-white instead
+     of gray-cast (the "list rows too heavy" complaint — rows stack on the card). */
+  --scrim: rgba(0, 0, 0, 0.75);
+}
+[data-theme="light"], [data-theme="amber"] {
+  --scrim: rgba(15, 23, 42, 0.4);
+}
+[data-theme="light"] {
+  --input-border: rgba(15, 23, 42, 0.30);
+}
+[data-theme="amber"] {
+  --input-border: rgba(146, 94, 40, 0.38);
+}
+/* Light-class themes: the neutral fills above are alphas calibrated on DARK
+   surfaces (5% white on near-black reads subtle); the same percentages of
+   near-black on paper read as heavy gray blocks — dense list rows (--well-bg)
+   especially. Cut the weight ~40% so the recessed cue stays without the gray. */
+[data-theme="light"], [data-theme="amber"] {
+  --well-bg: color-mix(in srgb, var(--text-main) 3%, transparent);
+  --chip-bg: color-mix(in srgb, var(--text-main) 4%, transparent);
+  --surface-hover: color-mix(in srgb, var(--text-main) 5%, transparent);
+}
+
+/* Capability/source badge hues — semantic identity is fixed (reasoning=violet,
+   vision=emerald, audio=pink, video=blue, temperature=orange) but lightness
+   follows the theme's lightness class: dark themes keep the Tailwind-400
+   shades (bright glyph on dark), light themes override to 600/700 so the same
+   hue stays readable on paper. The -soft fills are derived from the hue, so
+   one override flips text + fill + border together. */
+:root {
+  --hue-violet: #a78bfa;
+  --hue-emerald: #34d399;
+  --hue-pink: #f472b6;
+  --hue-blue: #60a5fa;
+  --hue-orange: #fb923c;
+  --hue-violet-soft: color-mix(in srgb, var(--hue-violet) 12%, transparent);
+  --hue-emerald-soft: color-mix(in srgb, var(--hue-emerald) 12%, transparent);
+  --hue-pink-soft: color-mix(in srgb, var(--hue-pink) 12%, transparent);
+  --hue-blue-soft: color-mix(in srgb, var(--hue-blue) 12%, transparent);
+  --hue-orange-soft: color-mix(in srgb, var(--hue-orange) 12%, transparent);
+}
+[data-theme="light"], [data-theme="amber"] {
+  --hue-violet: #7c3aed;
+  --hue-emerald: #047857;
+  --hue-pink: #db2777;
+  --hue-blue: #2563eb;
+  --hue-orange: #c2410c;
 }
 
 * {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+}
+
+/* Native form controls are pinned to the OS UI font by the UA stylesheet and do
+   NOT inherit body's font — without this, every button/textarea renders in a
+   different face than the surrounding text. Class rules (.input) still override. */
+button, input, select, textarea {
+  font-family: inherit;
 }
 
 body {
@@ -240,7 +354,9 @@ body {
   height: 100vh;
   display: flex;
   overflow: hidden;
-  -webkit-font-smoothing: antialiased;
+  /* No `-webkit-font-smoothing: antialiased`: on Windows it disables ClearType
+     subpixel AA and makes small text fuzzy at 100% zoom; macOS has rendered with
+     grayscale AA system-wide since Mojave, so the default is fine everywhere. */
 }
 
 #root {
@@ -283,6 +399,35 @@ td, th {
 .card:hover {
   border-color: var(--card-border-hover);
   box-shadow: var(--card-shadow-hover);
+}
+
+/* Nested card inside a .card panel (provider cards, settings blocks).
+   The old inline pattern used a white overlay invisible on the white card
+   surface of light themes; --bg-elev carries the theme tint. Pages must use
+   this class (or var(--bg-elev)) instead of duplicating the 4-property style. */
+.sub-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  padding: 16px;
+}
+
+/* List-group: rows nested inside a card share ONE frame + hairline separators
+   (Ant/Bootstrap pattern). Per-row borders inside an already-bordered card
+   read as box-in-box noise — the boxy credential-list complaint. */
+.list-group {
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.list-group > * + * {
+  border-top: 1px solid var(--divider);
+}
+.list-row {
+  transition: background 0.15s ease;
+}
+.list-row:hover {
+  background: var(--surface-hover);
 }
 
 .card-header {
@@ -328,17 +473,40 @@ td, th {
 .btn:active {
   transform: scale(0.98);
 }
+/* Industry baseline (Ant/Material/shadcn): a disabled control must read as
+   inert, not merely dimmer-on-hover. */
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+  filter: none;
+}
+.btn:disabled:hover {
+  background: var(--btn-bg);
+  border-color: var(--card-border);
+}
 
+/* Primary fill is the darkened accent step (--btn-primary-bg), never the raw
+   brand accent: white labels need >=4.5:1. Hover lifts one shade, press
+   drops below the resting tone (Ant hover-5 / active-7 rhythm). */
 .btn-primary {
-  background: var(--accent);
+  background: var(--btn-primary-bg);
   color: var(--btn-primary-text);
-  border-color: var(--accent);
+  border-color: var(--btn-primary-bg);
   box-shadow: var(--btn-primary-shadow);
 }
 .btn-primary:hover {
-  background: var(--accent);
-  filter: brightness(1.1);
+  background: var(--btn-primary-bg);
+  border-color: var(--btn-primary-bg);
+  filter: brightness(1.15);
   box-shadow: var(--btn-primary-shadow-hover);
+}
+.btn-primary:active {
+  filter: brightness(0.92);
+}
+.btn-primary:disabled:hover {
+  background: var(--btn-primary-bg);
+  border-color: var(--btn-primary-bg);
 }
 
 .btn-danger {
@@ -444,7 +612,9 @@ td, th {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-family: 'JetBrains Mono', Consolas, monospace;
+  /* CJK fallbacks required: JetBrains Mono/Consolas have no Chinese glyphs, and
+     the bare `monospace` tail falls back to SimSun on Windows (see .input rule). */
+  font-family: 'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace;
   font-size: 11px;
   line-height: 1.5;
   padding: 4px 12px;
@@ -469,8 +639,8 @@ td, th {
   transform: scale(0.97);
 }
 .chip[aria-pressed='true'] {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--btn-primary-bg);
+  border-color: var(--btn-primary-bg);
   color: var(--btn-primary-text);
   font-weight: 600;
 }
@@ -512,7 +682,7 @@ td, th {
 .input {
   width: 100%;
   background: var(--input-bg);
-  border: 1px solid var(--card-border);
+  border: 1px solid var(--input-border);
   color: var(--text-main);
   padding: 9px 12px;
   border-radius: 8px;
@@ -531,6 +701,15 @@ td, th {
 input::-ms-reveal,
 input::-ms-clear {
   display: none;
+}
+
+/* Masking for "type=text fields that must look like passwords" (re-auth gates:
+   copy-key dialog, environment import passphrase). Chrome/Edge/Safari and
+   Firefox 118+ support -webkit-text-security; password managers only target
+   type=password, so these fields get no autofill dropdown or save prompt. */
+.secret-mask {
+  -webkit-text-security: disc;
+  text-security: disc;
 }
 
 /* Toggle switch (see components/Switch.tsx) — theme-aware via --accent / --accent-glow */
@@ -677,30 +856,33 @@ input[type='checkbox']:not(.switch):disabled {
      badge narrower and the label breaks into one char per line. */
   white-space: nowrap;
 }
+/* Outline badges (industry default on paper): transparent fill, border
+   derived from the text hue itself. Colored 12% blocks read as noise patches
+   against the theme surface and were the recurring complaint. */
 .badge-success {
-  background: rgba(16, 185, 129, 0.12);
+  background: transparent;
   color: var(--accent-emerald);
-  border: 1px solid rgba(16, 185, 129, 0.3);
+  border: 1px solid color-mix(in srgb, var(--accent-emerald) 45%, transparent);
 }
 .badge-warning {
-  background: rgba(245, 158, 11, 0.12);
+  background: transparent;
   color: var(--accent-amber);
-  border: 1px solid rgba(245, 158, 11, 0.3);
+  border: 1px solid color-mix(in srgb, var(--accent-amber) 45%, transparent);
 }
 .badge-danger {
-  background: rgba(244, 63, 94, 0.12);
+  background: transparent;
   color: var(--accent-rose);
-  border: 1px solid rgba(244, 63, 94, 0.3);
+  border: 1px solid color-mix(in srgb, var(--accent-rose) 45%, transparent);
 }
 .badge-info {
-  background: rgba(6, 182, 212, 0.12);
+  background: transparent;
   color: var(--accent);
-  border: 1px solid rgba(6, 182, 212, 0.3);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
 }
 .badge-amber {
-  background: rgba(217, 119, 6, 0.14);
+  background: transparent;
   color: var(--accent-amber);
-  border: 1px solid rgba(217, 119, 6, 0.35);
+  border: 1px solid color-mix(in srgb, var(--accent-amber) 45%, transparent);
 }
 
 /* Animations */
