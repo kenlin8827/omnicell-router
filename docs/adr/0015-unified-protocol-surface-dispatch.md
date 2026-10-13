@@ -4,6 +4,7 @@
 
 Proposed — 2026-10-12. Layer: system. Scope: global. Domain: routing.
 Amends the surface-location and MITM-leg scope of ADR-0014; its §4 capture exclusion remains binding (see Decision Outcome).
+**Amended 2026-10-13** — adds the optional on-disk recovery log for the shared RespStore (see Decision Outcome §RespStore recovery log). Default OFF: the in-memory-only posture of step 3b remains the shipped default; the amendment only adds a config-gated durability option.
 
 ## Context and Problem Statement
 
@@ -155,6 +156,10 @@ The decision ships as `backend/src/surfaces/`:
 - The shared RespStore is visible across legs (sessions can continue leg-to-leg).
   - Mitigation: bounded FIFO (20k nodes + age sweep); unguessable 96-bit ids.
   - Cross-leg reach is a capability, not an exposure.
+  - Because BOTH legs share the singleton, the optional recovery log
+    (amendment below) mirrors intercepted MITM-leg chains to disk too —
+    one more reason its default is OFF and enabling it is a conscious
+    disk-privacy choice, same content class as `requestCapture`.
 - The broad `/systemone` suffix intercepts any local POST ending `/systemone`.
   - Tolerated under the loopback-trust model documented in the proxy code.
   - Failures return a loud gateway envelope, never silence.
@@ -163,3 +168,53 @@ The decision ships as `backend/src/surfaces/`:
   - `backend/tests/capture-abort.test.ts` pins the per-runtime truth.
 - The capture flip (step 3c) concentrated risk in one change.
   - Mitigation: red/green capture + abort tests written against the OLD code first.
+
+---
+
+## Amendment (2026-10-13): Optional RespStore Recovery Log
+
+**Problem the amendment answers.** The in-memory-only store makes every gateway
+restart amnesiac: mid-conversation `previous_response_id` turns hit the
+fail-visible 400, and clients without full-resend logic lose the conversation.
+For long agent sessions that outlive config edits and upgrades, the degradation
+path was not good enough.
+
+**Decision.** The store may mirror its node tree to an append-only JSONL
+recovery log (`responses.persist`, **default false**). Semantics:
+
+- L1 (the Map) stays the sole authority; the log is a restart-survival
+  optimization. Appends queue best-effort at `afterResult`; a disk failure
+  warns at most once and NEVER fails or slows the request path.
+- Boot replays the log synchronously before the first parse can resolve an
+  id: TTL filter (same 24h), skip-and-warn on malformed/torn lines, insert in
+  `createdAt` order (FIFO eviction keys on insertion order — out-of-order
+  replay would evict live conversations), ONE sweep after the bulk load
+  (per-append sweeps at the 20k cap would be O(n²)).
+- Compaction is an atomic rewrite from live L1 state (temp + rename): TTL
+  drops, per-node cap (256 KiB default — oversized turns stay in L1 only),
+  total byte budget (64 MiB default, oldest-first trim). Cadence: boot + every
+  1000 appends. `clear()` purges the log so deleted conversations never
+  resurrect.
+- The file lives under the environment's own data dir (ADR-0017 book-set
+  isolation — a cross-env log would replay the wrong book-set's chains),
+  mode 0600.
+
+**Default-off posture.** The log carries raw conversation text — the same
+content class as `requestCapture` (ADR-0016), so the repo's disk-privacy
+opt-in applies verbatim. Off, the step-3b in-memory behavior is byte-for-byte
+unchanged. The switch self-advertises: the first request bearing
+`previous_response_id` under persist=off emits one warn per process naming
+`responses.persist`; under persist=on, boot logs the replay counts.
+
+**Ceilings (deliberate, not oversights).**
+
+- SessionManager (ratchet tier, pinned model, account affinity) stays
+  in-memory. Post-restart continuation is functionally intact but routes
+  cold. Per ADR-0019 D7 an account change on a stateful thread is a hard
+  functional break — the recovery log does NOT prevent that on restart; it
+  only removes the message-chain loss. Persisting the session layer was
+  considered and deferred: no measured evidence the cold-route re-bill
+  outweighs its consistency cost. Upgrade path if evidence appears: a tiny
+  per-session `{account, tier, model}` sidecar, not full session persistence.
+- The last unflushed turn (crash between response and disk) still falls into
+  the 400 path. Fail-visible contract and its frozen text are unchanged.

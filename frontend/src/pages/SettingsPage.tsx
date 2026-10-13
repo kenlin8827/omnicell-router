@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Sliders, Save, Check, Globe, HardDrive, Orbit, Archive, ShieldCheck, LogOut } from 'lucide-react';
+import { Sliders, Save, Check, Globe, HardDrive, Orbit, Archive, Database, ShieldCheck, LogOut, ChevronDown, ChevronRight } from 'lucide-react';
 import { api } from '../lib/api';
 import type { WebAuthConfigView } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
@@ -14,6 +14,8 @@ export const SettingsPage: React.FC = () => {
   const [config, setConfig] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [savedNotice, setSavedNotice] = useState(false);
+  // Archive-policy collapsible — set-once values, collapsed by default
+  const [policyOpen, setPolicyOpen] = useState(false);
 
   // Console webAuth (dedicated endpoints, NOT part of the whole-config save —
   // the password is hashed server-side and never round-trips through the UI)
@@ -136,14 +138,57 @@ export const SettingsPage: React.FC = () => {
       ...patch,
     },
   });
+  // Same whole-node discipline for `responses` (ADR-0015 amendment): the
+  // section is one flat boolean today, spread-preserve it so future keys
+  // survive a save round-trip. Restart-scoped — the surface reads it lazily
+  // once per process.
+  const patchResponses = (patch: Record<string, unknown>) => setConfig({
+    ...config,
+    responses: { ...(config.responses || {}), ...patch },
+  });
+
+  // In-page nav — same pattern as /tiers (RulesPage): chips sit in the header
+  // card and the content below is its own scroll region, so the chips stay
+  // visible without any sticky/fixed hacks.
+  const NAV = [
+    { key: 'net', label: t('settings.navNet'), icon: Globe, color: 'var(--accent)' },
+    { key: 'cache', label: t('settings.navCache'), icon: HardDrive, color: 'var(--accent-emerald)' },
+    { key: 'flywheel', label: t('settings.navFlywheel'), icon: Orbit, color: 'var(--accent-violet)' },
+    { key: 'capture', label: t('settings.navCapture'), icon: Archive, color: 'var(--accent)' },
+    { key: 'responses', label: t('settings.navResponses'), icon: Database, color: 'var(--accent-emerald)' },
+    { key: 'webauth', label: t('settings.navWebAuth'), icon: ShieldCheck, color: 'var(--accent)' },
+  ];
+  const jumpTo = (key: string) => {
+    const el = document.getElementById(`settings-${key}`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // Grid siblings share a row top, so the scroll may move 0px — the flash
+    // guarantees every chip click has visible feedback.
+    el.classList.remove('settings-jump-flash');
+    void el.offsetWidth; // restart the CSS animation
+    el.classList.add('settings-jump-flash');
+  };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-      <div className="card">
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', height: '100%' }}>
+      <div className="card" style={{ flexShrink: 0 }}>
         <div className="card-header">
           <div className="card-title">
             <Sliders size={18} color="var(--accent)" />
             <span>{t('settings.title')}</span>
+          </div>
+          <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+            {NAV.map(({ key, label, icon: NavIcon, color }) => (
+              <button
+                key={key}
+                className="btn"
+                style={{ padding: '4px 10px', fontSize: '11px', color }}
+                onClick={() => jumpTo(key)}
+              >
+                <NavIcon size={12} />
+                <span>{label}</span>
+              </button>
+            ))}
           </div>
           <button className="btn btn-primary" onClick={handleSave}>
             <Save size={14} />
@@ -157,10 +202,13 @@ export const SettingsPage: React.FC = () => {
             <span>{t('settings.savedNotice')}</span>
           </div>
         )}
+      </div>
 
+      {/* Internal scroll region (RulesPage pattern): only the cards scroll. */}
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '20px' }}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '20px' }}>
           {/* Section 1: Server & Network */}
-          <div className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div id="settings-net" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Globe size={14} />
               {t('settings.netTitle')}
@@ -182,11 +230,21 @@ export const SettingsPage: React.FC = () => {
                 onChange={e => setConfig({ ...config, host: e.target.value })}
                 className="input"
               />
+              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '6px' }}>
+                {t('settings.hostAuthHint')}{' '}
+                <button
+                  type="button"
+                  onClick={() => jumpTo('webauth')}
+                  style={{ background: 'none', border: 'none', padding: 0, fontSize: '11px', color: 'var(--accent)', cursor: 'pointer', textDecoration: 'underline' }}
+                >
+                  {t('settings.hostAuthJump')}
+                </button>
+              </div>
             </div>
           </div>
 
           {/* Section 2: Semantic Cache */}
-          <div className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div id="settings-cache" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent-emerald)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <HardDrive size={14} />
               {t('settings.cacheTitle')}
@@ -220,7 +278,7 @@ export const SettingsPage: React.FC = () => {
           </div>
 
           {/* Section 3: Data Flywheel */}
-          <div className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div id="settings-flywheel" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent-violet)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Orbit size={14} />
               {t('settings.flywheelTitle')}
@@ -267,7 +325,7 @@ export const SettingsPage: React.FC = () => {
           </div>
 
           {/* Section 4: Request Capture (hot-applied — no restart needed) */}
-          <div className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div id="settings-capture" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Archive size={14} />
               {t('settings.capTitle')}
@@ -314,36 +372,62 @@ export const SettingsPage: React.FC = () => {
               </div>
             </div>
 
-            <div>
-              <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.capRetention')}</label>
-              <input
-                type="number"
-                min="1"
-                value={config.requestCapture?.retentionDays ?? 7}
-                onChange={e => patchRequestCapture({ retentionDays: parseInt(e.target.value) || 7 })}
-                className="input"
-              />
-            </div>
-            <div>
-              <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.capMaxTotal')}</label>
-              <input
-                type="number"
-                min="1"
-                value={config.requestCapture?.maxTotalMB ?? 512}
-                onChange={e => patchRequestCapture({ maxTotalMB: parseInt(e.target.value) || 512 })}
-                className="input"
-              />
-            </div>
-            <div>
-              <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.capMaxBody')}</label>
-              <input
-                type="number"
-                min="1024"
-                step="1024"
-                value={config.requestCapture?.maxBodyBytes ?? 65536}
-                onChange={e => patchRequestCapture({ maxBodyBytes: parseInt(e.target.value) || 65536 })}
-                className="input"
-              />
+            {/* Archive policy: set-once values — collapsed by default so the
+                capture switches stay the focus. The header summarizes current
+                values; the privacy warning below stays always visible. */}
+            <div style={{ borderTop: '1px solid var(--divider)', paddingTop: '12px' }}>
+              <button
+                type="button"
+                onClick={() => setPolicyOpen(v => !v)}
+                style={{ display: 'flex', alignItems: 'center', gap: '6px', width: '100%', background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontSize: '12px', fontWeight: 700, color: 'var(--text-main)', fontFamily: 'inherit', textAlign: 'left' }}
+              >
+                {policyOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                <span>{t('settings.capPolicyGroup')}</span>
+                {!policyOpen && (
+                  <span style={{ marginLeft: 'auto', fontWeight: 400, fontSize: '11px', color: 'var(--text-dim)' }}>
+                    {t('settings.capPolicySummary', {
+                      days: config.requestCapture?.retentionDays ?? 7,
+                      mb: config.requestCapture?.maxTotalMB ?? 512,
+                      bytes: config.requestCapture?.maxBodyBytes ?? 65536,
+                    })}
+                  </span>
+                )}
+              </button>
+              {policyOpen && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '12px' }}>
+                  <div>
+                    <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.capRetention')}</label>
+                    <input
+                      type="number"
+                      min="1"
+                      value={config.requestCapture?.retentionDays ?? 7}
+                      onChange={e => patchRequestCapture({ retentionDays: parseInt(e.target.value) || 7 })}
+                      className="input"
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.capMaxTotal')}</label>
+                    <input
+                      type="number"
+                      min="1"
+                      value={config.requestCapture?.maxTotalMB ?? 512}
+                      onChange={e => patchRequestCapture({ maxTotalMB: parseInt(e.target.value) || 512 })}
+                      className="input"
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.capMaxBody')}</label>
+                    <input
+                      type="number"
+                      min="1024"
+                      step="1024"
+                      value={config.requestCapture?.maxBodyBytes ?? 65536}
+                      onChange={e => patchRequestCapture({ maxBodyBytes: parseInt(e.target.value) || 65536 })}
+                      className="input"
+                    />
+                  </div>
+                </div>
+              )}
             </div>
             <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
               {t('settings.capPrivacyHint')}
@@ -351,11 +435,30 @@ export const SettingsPage: React.FC = () => {
               {t('settings.capHotHint')}
             </div>
           </div>
-        </div>
-      </div>
 
-      {/* Console Access (webAuth) — dedicated save flow, see handleWebAuthSave */}
-      <div className="card">
+          {/* Section 5: Responses wire stateful chain (ADR-0015 amendment) */}
+          <div id="settings-responses" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent-emerald)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <Database size={14} />
+              {t('settings.respTitle')}
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
+              <span>{t('settings.respPersistEnable')}</span>
+              <Switch
+                checked={config.responses?.persist ?? false}
+                onChange={v => patchResponses({ persist: v })}
+              />
+            </label>
+            <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
+              {t('settings.respPersistHint')}
+              <br />
+              {t('settings.respRestartHint')}
+            </div>
+          </div>
+        </div>
+
+        {/* Console Access (webAuth) — dedicated save flow, see handleWebAuthSave */}
+        <div id="settings-webauth" className="card">
         <div className="card-header">
           <div className="card-title">
             <ShieldCheck size={18} color="var(--accent)" />
@@ -440,6 +543,7 @@ export const SettingsPage: React.FC = () => {
             </div>
           </div>
         )}
+      </div>
       </div>
     </div>
   );

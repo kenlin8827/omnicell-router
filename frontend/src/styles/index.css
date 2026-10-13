@@ -437,6 +437,16 @@ td, th {
   margin-bottom: 12px;
 }
 
+/* In-page nav feedback: brief accent ring on the jumped-to card (see
+   SettingsPage jumpTo) — visible even when the scroll distance is zero. */
+@keyframes settings-jump-flash {
+  0% { box-shadow: 0 0 0 2px var(--accent); }
+  100% { box-shadow: 0 0 0 2px transparent; }
+}
+.settings-jump-flash {
+  animation: settings-jump-flash 1.2s ease-out;
+}
+
 .card-title {
   font-size: 14px;
   font-weight: 700;

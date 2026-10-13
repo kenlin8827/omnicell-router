@@ -1,3 +1,4 @@
+import path from 'node:path';
 import {
   chatToResponseObject,
   chatToStreamEvents,
@@ -6,7 +7,10 @@ import {
 } from '../routes/responses.js';
 import type { ChatCompletionRequest, ChatMessage } from '../types/openai.js';
 import type { ExecutionResult } from '../types/router.js';
+import { loadConfig } from '../config/index.js';
+import { getEnvPaths } from '../config/env.js';
 import { ChatMessageLite, RespNode, RespStore, newResponseId } from '../session/resp-store.js';
+import { WarnThrottle } from '../observability/warn-throttle.js';
 import type { ChatSurface, SurfaceParseResult } from './types.js';
 
 /**
@@ -23,12 +27,64 @@ import type { ChatSurface, SurfaceParseResult } from './types.js';
  * frozen step-3b decision (R-6 — the bounded FIFO/age sweep inside RespStore
  * is unchanged, and cross-leg Fastify↔MITM visibility is intended stateful
  * behavior — both legs now route the responses wire through this surface).
+ *
+ * 2026-10-13 amendment (ADR-0015): the singleton optionally mirrors to an
+ * on-disk recovery log (`responses.persist`, default OFF → byte-identical
+ * in-memory posture). Configuration is read lazily on the first parse of the
+ * process (env switch = restart, so boot-time freshness is guaranteed); when
+ * a client starts relying on the chain while persistence is off, one warn
+ * per process points at the switch.
  */
 
 // Single store for every consumer in-process: parse reads it (buildMessages),
 // afterResult writes it (append). Tests construct their own RespStore
 // instances directly (session/resp-store.js), so nothing imports this one.
 const respStore = new RespStore();
+
+let storeConfigured = false;
+let persistActive = false;
+let surfaceWarns = new WarnThrottle();
+
+/**
+ * One-shot lazy wiring: read `responses.persist`, and when on, replay the
+ * recovery log BEFORE any parse can resolve a previous_response_id.
+ * Everything off the happy path degrades to memory-only with a loud warn —
+ * the log is a restart-survival optimization, never a request dependency.
+ */
+function ensureStoreConfigured(): void {
+  if (storeConfigured) return;
+  storeConfigured = true;
+  let wantPersist = false;
+  try {
+    wantPersist = loadConfig().responses?.persist === true;
+  } catch (err) {
+    surfaceWarns.warn('resp-store-config-unreadable',
+      `[responses] config unreadable (${(err as Error).message}) — responses chain defaults to memory-only.`);
+  }
+  if (!wantPersist) return;
+  persistActive = true;
+  try {
+    const stats = respStore.enablePersistence({
+      filePath: path.join(getEnvPaths().dataDir, 'responses-chain.jsonl'),
+    });
+    console.log(
+      `[responses] recovery log active: replayed ${stats.loaded} nodes ` +
+        `(${stats.expired} expired, ${stats.malformed} malformed skipped) from responses-chain.jsonl.`
+    );
+  } catch (err) {
+    console.warn(
+      `[responses] recovery log failed to initialize (${(err as Error).message}) — continuing memory-only.`
+    );
+  }
+}
+
+/** Test seam (precedent: env.__resetEnvResolutionForTests): redo lazy wiring + warn dedup. */
+export function __resetResponsesSurfaceForTests(): void {
+  storeConfigured = false;
+  persistActive = false;
+  surfaceWarns = new WarnThrottle();
+  respStore.clear();
+}
 
 /**
  * Per-request state, opaque through SurfaceParseResult.state. Beyond the
@@ -60,6 +116,7 @@ export const responsesSurface: ChatSurface = {
   detectSuffix: '/v1/responses',
 
   parse(body: unknown): SurfaceParseResult {
+    ensureStoreConfigured();
     const req = body as ResponsesRequest | undefined | null;
 
     if (!req || req.input === undefined || req.input === null) {
@@ -84,6 +141,15 @@ export const responsesSurface: ChatSurface = {
     let messages: ChatMessage[];
     let sessionIdBind: string | undefined;
     if (req.previous_response_id) {
+      // Live client proven to rely on gateway-held state while persist=off:
+      // one warn per process pointing at the exact switch (warn-once = the
+      // dedup-by-key semantics of WarnThrottle over a constant key).
+      if (!persistActive) {
+        surfaceWarns.warn('resp-chain-not-persisted',
+          '[responses] previous_response_id in use but responses.persist=false — the conversation chain ' +
+            'is memory-only and a gateway restart will break continuation (clients then must resend the ' +
+            'full input). Set responses.persist: true in config.yaml to survive restarts.');
+      }
       const built = respStore.buildMessages(req.previous_response_id);
       if (!built) {
         // Fail-visible: never silently open a new session.

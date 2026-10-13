@@ -4,6 +4,7 @@
 
 Proposed — 2026-10-12。Layer: system。Scope: global。Domain: routing。
 本记录修订 ADR-0014 的接入面位置与 MITM 腿范围；其 §4 的 capture 豁免继续有效（见 Decision Outcome）。
+**2026-10-13 修订**——为共享 RespStore 增加可选磁盘恢复日志（见文末修订小节）。默认关闭：step 3b 的纯内存姿态仍是出厂默认，本次修订只新增一个配置开关门控的持久化选项。
 
 ## Context and Problem Statement
 
@@ -152,6 +153,9 @@ Proposed — 2026-10-12。Layer: system。Scope: global。Domain: routing。
 - 共享 RespStore 跨腿可见（一腿创建的会话可在另一腿续用）。
   - 缓解：有界 FIFO（2 万节点 + 老化清扫）；96 位不可猜测响应 id。
   - 跨腿触达是能力（capability），不是暴露。
+  - 两腿共用同一单例，因此可选恢复日志（文末修订）同样会把 MITM 腿的
+    会话链落盘——这正是它默认关闭、开启即须是自觉的磁盘隐私决策的又一理由，
+    内容类别与 `requestCapture` 相同。
 - 宽后缀 `/systemone` 会拦截任何以 `/systemone` 结尾的本地 POST。
   - 在代理代码已文档化的 loopback 信任模型下接受。
   - 失败一律返回响亮的网关信封，绝不静默。
@@ -160,3 +164,43 @@ Proposed — 2026-10-12。Layer: system。Scope: global。Domain: routing。
   - `backend/tests/capture-abort.test.ts` 逐 runtime 钉住真实行为。
 - capture 翻转（step 3c）把风险集中到一次变更。
   - 缓解：红/绿 capture 与中断测试先对【旧代码】写好，再翻转适配器。
+
+---
+
+## 修订（2026-10-13）：可选的 RespStore 恢复日志
+
+**本修订回答的问题。** 纯内存存储让每次网关重启都失去全部记忆：进行中的
+`previous_response_id` 续接会撞上 fail-visible 400，不会全量重发的客户端就此
+丢会话。对跨越配置修改与升级重启的长 agent 会话而言，这条降级路径不够好。
+
+**决策。** 存储可选地把节点树镜像为仅追加 JSONL 恢复日志
+（`responses.persist`，**默认 false**）。语义：
+
+- L1（内存 Map）仍是唯一权威；日志只是重启存续优化。追加在 `afterResult`
+  排队尽力而为地执行；磁盘失败最多警告一次，绝不失败或拖慢请求路径。
+- 启动时在第一个 id 被解析之前同步重放：TTL 过滤（同一 24 小时），坏行/撕裂
+  行跳过并警告，按 `createdAt` 升序插入（FIFO 驱逐以插入序为准——乱序重放会
+  错杀活跃会话），批量装载后只做【一次】清扫（2 万上限下逐条清扫是 O(n²)）。
+- 压实（compaction）是从 L1 活状态出发的原子重写（temp + rename）：TTL 清理、
+  单节点上限（默认 256 KiB，超限轮次只留内存）、总字节预算（默认 64 MiB，
+  从最旧裁剪）。节奏：启动时 + 每 1000 次追加。`clear()` 会清空日志，
+  已删会话绝不复活。
+- 文件位于本环境自己的数据目录（ADR-0017 书套隔离——跨环境日志会把错书套的
+  会话链重放进存储），权限 0600。
+
+**默认关闭的姿态。** 日志携带对话原文——与 `requestCapture`（ADR-0016）同一
+内容类别，故仓库的磁盘隐私 opt-in 姿态逐字适用。关闭时 step 3b 的内存行为
+逐字节不变。开关会自我提示：persist=off 下第一个携带 `previous_response_id`
+的请求触发每进程一次的警告，点名 `responses.persist`；persist=on 下启动日志
+报告重放计数。
+
+**天花板（有意为之，非疏漏）。**
+
+- SessionManager（棘轮 tier、钉住模型、账号亲和）仍是纯内存。重启后续接
+  功能完好但路由冷启动。按 ADR-0019 D7，有状态线程换账号是硬性功能断裂——
+  恢复日志并不能在重启时阻止这一点，它只消除消息链丢失。持久化整个会话层
+  经考虑后缓做：冷路由重计费的代价，尚无实测证据能压过其一致性成本。
+  若证据出现，升级路径是每会话 `{account, tier, model}` 三元组 sidecar，
+  而非全量会话持久化。
+- 崩溃发生在响应与落盘之间时，最后一轮仍未刷盘，照旧落入 400 路径。
+  fail-visible 契约及其冻结文案不变。

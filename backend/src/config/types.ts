@@ -327,6 +327,24 @@ export interface SessionConfig {
 }
 
 /**
+ * OpenAI Responses wire (POST /v1/responses) surface settings.
+ */
+export interface ResponsesSurfaceConfig {
+  /**
+   * Mirror the gateway-owned `previous_response_id` conversation tree to an
+   * append-only JSONL recovery log (ADR-0015 amendment 2026-10-13).
+   * Default FALSE — off means the in-memory-only posture of ADR-0015 step 3b
+   * byte-for-byte (a restart breaks continuation, fail-visible 400 → the
+   * client resends the full input). On: nodes are replayed at boot (24h TTL,
+   * FIFO + byte budgets), file mode 0600, per-environment path. The log holds
+   * raw conversation text — enabling is a conscious disk-privacy choice, same
+   * content class as requestCapture. Disk failure NEVER fails a request.
+   * Restart-scoped (no hot applyConfig).
+   */
+  persist?: boolean;
+}
+
+/**
  * Per-key model access policy. ABSENT = unrestricted (see & use every model —
  * the backward-compatible default for existing keys).
  * - mode 'allow' (whitelist): ONLY the listed model ids are visible/routable.
@@ -564,6 +582,8 @@ export interface RouterConfig {
   classifier?: ClassifierConfig;
   /** System One protocol surface (POST /v1/systemone). */
   systemone?: SystemoneSurfaceConfig;
+  /** OpenAI Responses protocol surface (POST /v1/responses). */
+  responses?: ResponsesSurfaceConfig;
   flywheel?: FlywheelConfig;
   session?: SessionConfig;
   circuitBreaker?: CircuitBreakerConfig;
