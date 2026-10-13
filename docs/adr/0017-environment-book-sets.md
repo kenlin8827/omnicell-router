@@ -57,7 +57,7 @@ Chosen option: "C-lite runtime layout with the B export boundary, restart-based 
 │   ├── default/                   # bootstrap env — a scaffolded directory (ADR-0018)
 │   │   └── …                      #   same shape as `work/` below
 │   ├── work/
-│   │   ├── env.json               # { name, type: regular|sandbox, createdAt, schemaVersion, description? }
+│   │   ├── env.json               # { name, type: regular|sandbox, createdAt, schemaVersion, description?, importedFrom? }
 │   │   ├── config.yaml
 │   │   ├── data/                  # flywheel.jsonl, layer2-decisions.jsonl
 │   │   ├── models/                # layer1-classifier.json

@@ -8,6 +8,8 @@ import { OpenCodeClientAdapter } from '../src/cli/clients/opencode.js';
 import { ClaudeClientAdapter } from '../src/cli/clients/claude.js';
 import { CodexClientAdapter } from '../src/cli/clients/codex.js';
 import { PiClientAdapter } from '../src/cli/clients/pi.js';
+import { DshClientAdapter } from '../src/cli/clients/dsh.js';
+import { parse as parseYaml } from 'yaml';
 
 describe('CLI Client Setup & Teardown Adapters', () => {
   let tmpDir: string;
@@ -28,7 +30,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     const configPath = path.join(tmpDir, 'opencode.json');
     fs.writeFileSync(
       configPath,
-      JSON.stringify({ $schema: 'https://opencode.ai/config.json', provider: {}, model: 'anthropic/claude-sonnet-4' }, null, 2)
+      JSON.stringify({ $schema: 'https://opencode.ai/config.json', providers: {}, model: 'anthropic/claude-sonnet-4' }, null, 2)
     );
 
     const adapter = new OpenCodeClientAdapter();
@@ -48,8 +50,10 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(status.hooked).toBe(true);
 
     const updated = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    // Correct OpenCode v2 schema: singular `provider` node + top-level `model`
-    expect(updated.provider['opencode-router'].options.baseURL).toBe('http://127.0.0.1:4000/v1');
+    // opencode v2's native slot + shape: plural `providers`, `package`/`settings`
+    expect(updated.providers['opencode-router'].settings.baseURL).toBe('http://127.0.0.1:4000/v1');
+    expect(updated.providers['opencode-router'].package).toBe('@opencode/ai/providers/openai-compatible');
+    expect(updated.provider).toBeUndefined(); // no legacy-slot twin is ever created
     expect(updated.model).toBe('opencode-router/auto');
 
     // Teardown
@@ -61,7 +65,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
 
     const restored = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     expect(restored.model).toBe('anthropic/claude-sonnet-4');
-    expect(restored.provider['opencode-router']).toBeUndefined();
+    expect(restored.providers['opencode-router']).toBeUndefined();
   });
 
   it('OpenCode adapter must preserve JSONC comments on setup', async () => {
@@ -92,8 +96,12 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(raw).toContain('// self-hosted gateway');
 
     const parsed = JSON.parse(raw.replace(/^\s*\/\/.*$/gm, ''));
+    // The user's own legacy-slot node survives untouched — OCR never rewrites content
+    // it did not author, and opencode v2 still migrates it on read.
     expect(parsed.provider['home-lab'].options.baseURL).toBe('http://192.168.1.10/v1');
-    expect(parsed.provider['opencode-router'].options.baseURL).toBe('http://127.0.0.1:4000/v1');
+    // The router node itself goes to the native slot.
+    expect(parsed.providers['opencode-router'].settings.baseURL).toBe('http://127.0.0.1:4000/v1');
+    expect(parsed.provider['opencode-router']).toBeUndefined();
   });
 
   it('Claude adapter should safely inject ANTHROPIC_BASE_URL and restore', async () => {
@@ -259,6 +267,148 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     // The unreadable file must be left byte-for-byte intact.
     expect(fs.readFileSync(configPath, 'utf8')).toBe('{ not json !');
   });
+  it('Dsh adapter should create the web profile patch, hook, and remove cleanly on teardown', async () => {
+    const profilesRoot = path.join(tmpDir, 'profiles'); // does not exist yet
+    const webFile = path.join(profilesRoot, 'web', 'cordis.patch.yml');
+    const adapter = new DshClientAdapter();
+    adapter.getConfigPath = () => profilesRoot;
+
+    let status = await adapter.getStatus();
+    expect(status.exists).toBe(false);
+    expect(status.hooked).toBe(false);
+
+    const setupRes = await adapter.setup({ port: 4000, models: { main: 'auto-pro' }, apiKey: 'sk-test', extraModels: ['deepseek-v4-pro'] });
+    expect(setupRes.success).toBe(true);
+    expect(fs.existsSync(webFile)).toBe(true);
+
+    status = await adapter.getStatus();
+    expect(status.hooked).toBe(true);
+    expect(status.modelSlots[0].value).toBe('auto-pro');
+    expect(status.extraModels).toEqual(['deepseek-v4-pro']);
+
+    const data = parseYaml(fs.readFileSync(webFile, 'utf8'));
+    expect(Array.isArray(data)).toBe(true);
+    const route = data[0].config.providers['opencode-router'];
+    expect(route.baseURL).toBe('http://127.0.0.1:4000/v1');
+    expect(route.api).toBe('openai-completions');
+    expect(route.headers.Authorization).toBe('Bearer sk-test');
+    expect(route.models.map((m: any) => m.id)).toEqual(['auto-pro', 'deepseek-v4-pro']);
+
+    const teardownRes = await adapter.teardown();
+    expect(teardownRes.success).toBe(true);
+    expect((await adapter.getStatus()).hooked).toBe(false);
+  });
+
+  it('Dsh adapter should hook EVERY existing profile and preserve user entries in each', async () => {
+    const profilesRoot = path.join(tmpDir, 'profiles');
+    const desktopFile = path.join(profilesRoot, 'desktop', 'cordis.patch.yml');
+    const webFile = path.join(profilesRoot, 'web', 'cordis.patch.yml');
+    fs.mkdirSync(path.dirname(desktopFile), { recursive: true });
+    fs.mkdirSync(path.dirname(webFile), { recursive: true });
+    fs.writeFileSync(desktopFile, [
+      '- id: ui-theme',
+      '  config:',
+      '    preference: dark',
+      '- id: llm-pi-ai',
+      '  config:',
+      '    providers:',
+      '      my-gateway:',
+      '        api: openai-completions',
+      '        baseURL: https://gw.example.com/v1',
+      '        models:',
+      '          - id: m1',
+      '',
+    ].join('\n'));
+    fs.writeFileSync(webFile, '[]\n');
+
+    const adapter = new DshClientAdapter();
+    adapter.getConfigPath = () => profilesRoot;
+
+    const res = await adapter.setup({ port: 4000, models: { main: 'auto' }, apiKey: 'sk-real' });
+    expect(res.success).toBe(true);
+    expect(res.message).toContain('desktop');
+    expect(res.message).toContain('web');
+    expect(fs.existsSync(`${desktopFile}.bak.ocr`)).toBe(true);
+
+    const status = await adapter.getStatus();
+    expect(status.hooked).toBe(true);
+    expect(status.details).toContain('desktop');
+
+    const desktop = parseYaml(fs.readFileSync(desktopFile, 'utf8'));
+    const theme = desktop.find((e: any) => e.id === 'ui-theme');
+    expect(theme.config.preference).toBe('dark'); // untouched user entry
+    const entry = desktop.find((e: any) => e.id === 'llm-pi-ai');
+    expect(Object.keys(entry.config.providers)).toContain('my-gateway'); // user provider preserved
+    expect(entry.config.providers['opencode-router'].baseURL).toBe('http://127.0.0.1:4000/v1');
+    expect(entry.config.providers['opencode-router'].headers.Authorization).toBe('Bearer sk-real');
+
+    const web = parseYaml(fs.readFileSync(webFile, 'utf8'));
+    expect(web[0].config.providers['opencode-router']).toBeDefined();
+
+    const teardownRes = await adapter.teardown();
+    expect(teardownRes.success).toBe(true);
+    expect((await adapter.getStatus()).hooked).toBe(false);
+    const desktopAfter = parseYaml(fs.readFileSync(desktopFile, 'utf8'));
+    const entryAfter = desktopAfter.find((e: any) => e.id === 'llm-pi-ai');
+    expect(entryAfter.config.providers['opencode-router']).toBeUndefined();
+    expect(entryAfter.config.providers['my-gateway']).toBeDefined();
+    expect(desktopAfter.find((e: any) => e.id === 'ui-theme')).toBeDefined();
+  });
+
+  it('Dsh adapter teardown after double-setup must leave the client fully unhooked (restore-then-strip)', async () => {
+    const profilesRoot = path.join(tmpDir, 'profiles-double');
+    const webFile = path.join(profilesRoot, 'web', 'cordis.patch.yml');
+    const adapter = new DshClientAdapter();
+    adapter.getConfigPath = () => profilesRoot;
+
+    await adapter.setup({ port: 4000, models: { main: 'auto' } });
+    await adapter.setup({ port: 8000, models: { main: 'auto' } }); // port-change re-apply → backup now contains a hooked file
+
+    const res = await adapter.teardown();
+    expect(res.success).toBe(true);
+    expect((await adapter.getStatus()).hooked).toBe(false);
+    const data = parseYaml(fs.readFileSync(webFile, 'utf8'));
+    expect(data.find((e: any) => e?.config?.providers?.['opencode-router'])).toBeUndefined();
+  });
+
+  it('Dsh adapter should treat a LAN/name-selector manual hook entry as hooked (host-agnostic marker)', async () => {
+    const profilesRoot = path.join(tmpDir, 'profiles-lan');
+    const webFile = path.join(profilesRoot, 'web', 'cordis.patch.yml');
+    fs.mkdirSync(path.dirname(webFile), { recursive: true });
+    fs.writeFileSync(webFile, [
+      `- name: '@deepseek-ai/dsh-llm-pi-ai'`,
+      '  config:',
+      '    providers:',
+      '      opencode-router:',
+      '        api: openai-completions',
+      '        baseURL: http://192.168.1.20:4000/v1',
+      '        models:',
+      '          - id: auto',
+      '',
+    ].join('\n'));
+
+    const adapter = new DshClientAdapter();
+    adapter.getConfigPath = () => profilesRoot;
+
+    const status = await adapter.getStatus();
+    expect(status.hooked).toBe(true);
+    expect(status.modelSlots[0].value).toBe('auto');
+  });
+
+  it('Dsh adapter should refuse setup on a non-array patch file (no data loss)', async () => {
+    const profilesRoot = path.join(tmpDir, 'profiles-broken');
+    const webFile = path.join(profilesRoot, 'web', 'cordis.patch.yml');
+    fs.mkdirSync(path.dirname(webFile), { recursive: true });
+    fs.writeFileSync(webFile, 'providers: not-an-array\n');
+
+    const adapter = new DshClientAdapter();
+    adapter.getConfigPath = () => profilesRoot;
+
+    const res = await adapter.setup({ port: 4000 });
+    expect(res.success).toBe(false);
+    // The unreadable file must be left byte-for-byte intact.
+    expect(fs.readFileSync(webFile, 'utf8')).toBe('providers: not-an-array\n');
+  });
 });
 
 describe('Embedded UI & Management API Endpoints', () => {
@@ -302,7 +452,7 @@ describe('Embedded UI & Management API Endpoints', () => {
     expect(json.metrics).toBeDefined();
     expect(json.circuitBreakers).toBeDefined();
     expect(Array.isArray(json.clients)).toBe(true);
-    expect(json.clients.length).toBe(5);
+    expect(json.clients.length).toBe(6);
   });
 
   it('should support reading and validating raw YAML config on /api/admin/config/raw', async () => {

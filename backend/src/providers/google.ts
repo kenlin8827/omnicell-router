@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { LLMProvider, type UpstreamEventContext } from './base.js';
+import { LLMProvider, type UpstreamEventContext, type CallCredential } from './base.js';
 import { ModelRegistration, ProviderConfig } from '../config/types.js';
 import { ChatCompletionRequest, ChatCompletionResponse, ToolCall } from '../types/openai.js';
 import type { ReasoningEffort } from '../types/router.js';
@@ -225,7 +225,8 @@ export class GoogleProvider implements LLMProvider {
   public async createCompletion(
     request: ChatCompletionRequest,
     model: ModelRegistration,
-    upstreamEventContext?: UpstreamEventContext
+    upstreamEventContext?: UpstreamEventContext,
+    credential?: CallCredential
   ): Promise<ChatCompletionResponse> {
     const url = `${this.config.baseUrl.replace(/\/+$/, '')}/models/${encodeURIComponent(model.upstreamModel)}:generateContent`;
 
@@ -233,7 +234,8 @@ export class GoogleProvider implements LLMProvider {
 
     const outboundHeaders: Record<string, string> = {
       'Content-Type': 'application/json',
-      'x-goog-api-key': this.config.apiKey,
+      // Per-call credential (ADR-0019 P3 step 1) outranks the boot-baked key.
+      'x-goog-api-key': credential?.key ?? this.config.apiKey,
       ...this.config.headers,
     };
 

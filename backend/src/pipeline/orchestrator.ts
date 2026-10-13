@@ -21,6 +21,11 @@ import { resolveTraceId } from '../observability/trace-id.js';
 import { getWarnThrottle } from '../observability/warn-throttle.js';
 import { ActiveHealthProber, CircuitBreakerManager, ErrorClassifier } from '../resilience/index.js';
 import { ModelAccessConfig, isModelAllowed } from '../auth/model-access.js';
+import {
+  DEFAULT_ACCOUNT_AFFINITY_CACHE_TTL_MS,
+  selectAccount,
+  type AccountSelection,
+} from './account-selection.js';
 
 export interface ProcessContext {
   clientIp?: string;
@@ -577,13 +582,28 @@ export class PipelineOrchestrator {
     if (sessionMode === 'ratchet') {
       const pinnedModel = this.sessionManager.getSession(sessionId)?.pinnedModel;
       preferredModel = pinnedModel ? this.registry.getModel(pinnedModel) ?? null : null;
-      if (preferredModel && !cbManager.isAvailable(preferredModel.id)) {
+      // Decision 6 aggregate: a pinned model is "down" when its model breaker is down
+      // OR every credential pair of it is out — the pre-P3 model-only read kept
+      // sessions pinned to models that had nothing left to serve them.
+      if (preferredModel && !this.registry.modelAvailable(preferredModel).available) {
         const healthyReplacement = this.registry.getModelForTier(actualTier, true);
         // Guard: getModelForTier falls back to unhealthy candidates when the
         // whole tier is down — never repin onto a known-tripped model.
-        if (healthyReplacement && healthyReplacement.id !== preferredModel.id && cbManager.isAvailable(healthyReplacement.id)) {
+        if (
+          healthyReplacement &&
+          healthyReplacement.id !== preferredModel.id &&
+          this.registry.modelAvailable(healthyReplacement).available
+        ) {
           this.sessionManager.repinModel(sessionId, healthyReplacement);
           preferredModel = healthyReplacement;
+          // Account continuity rides here rather than mutating the binding:
+          // the repinned model flows into executeCandidatePool, whose per-
+          // candidate selection KEEPS the session binding when the bound
+          // prefix exists in the new provider's chain (prefer continuity —
+          // same key material, same cache economics), and otherwise treats it
+          // as stale and re-spreads with a FORCED rebind persisted after the
+          // first success. Explicitly rebinding here to the new chain head
+          // would pick an account the model was never verified against.
         }
       }
     }
@@ -666,6 +686,9 @@ export class PipelineOrchestrator {
     let failoverAttempts = 1;
     let failoverPath: string[] = [];
     let inplaceRetries = 0;
+    // ADR-0019 P3 step 3 — the account (keyHash prefix) that actually served;
+    // undefined = legacy no-prefix path (chain-less provider or single key).
+    let servedAccountPrefix: string | undefined = undefined;
 
     // 5. Execution with Cascading Fallback & Schema Assertion
     // (lite-lead cascade is skipped for explicit model choices and combos —
@@ -687,6 +710,7 @@ export class PipelineOrchestrator {
           attemptCap: maxFailoverCandidates,
           modelAccess: context?.modelAccess,
           requestedEffort,
+          sessionId,
         },
         upstreamEventContext
       );
@@ -718,6 +742,7 @@ export class PipelineOrchestrator {
           failoverAttempts = liteResult.failoverAttempts;
           failoverPath = liteResult.failoverPath;
           inplaceRetries += liteResult.inplaceRetries;
+          servedAccountPrefix = liteResult.servedAccountPrefix;
         } else {
           assertionError = validation.error || 'Schema validation assertion failed';
         }
@@ -748,6 +773,7 @@ export class PipelineOrchestrator {
             attemptCap: maxFailoverCandidates,
             modelAccess: context?.modelAccess,
             requestedEffort,
+            sessionId,
           },
           upstreamEventContext
         );
@@ -776,6 +802,7 @@ export class PipelineOrchestrator {
         failoverAttempts = plusResult.failoverAttempts;
         failoverPath = plusResult.failoverPath;
         inplaceRetries += plusResult.inplaceRetries;
+        servedAccountPrefix = plusResult.servedAccountPrefix;
       }
     } else {
       // Unified candidate-chain resolution for the direct path. One shape for
@@ -838,7 +865,7 @@ export class PipelineOrchestrator {
       // Standard Direct Model Execution with Multi-Model Failover & Circuit Breaker
       const execResult = await this.executeCandidatePool(
         normalizedRequest,
-        { chain, tier: actualTier, allowEscalate, attemptCap, label: poolLabel, modelAccess: context?.modelAccess, requestedEffort },
+        { chain, tier: actualTier, allowEscalate, attemptCap, label: poolLabel, modelAccess: context?.modelAccess, requestedEffort, sessionId },
         upstreamEventContext
       );
 
@@ -870,6 +897,7 @@ export class PipelineOrchestrator {
       failoverAttempts = execResult.failoverAttempts;
       failoverPath = execResult.failoverPath;
       inplaceRetries = execResult.inplaceRetries;
+      servedAccountPrefix = execResult.servedAccountPrefix;
 
       // Explicit-mode pin write-back: when the explicitly named model itself
       // served the request at the session's current ceiling tier, migrate the
@@ -890,6 +918,10 @@ export class PipelineOrchestrator {
     // 6. Post-Turn Registration: Register completed turn prefix fingerprint for zero-header tracking
     // Uses the PRE-compression snapshot (see 2B): clients always resend
     // uncompressed bytes, so the chain must be indexed on original content.
+    // Account affinity needs nothing here: executeCandidatePool already
+    // persisted the bind/rebind right after the successful call (:894 would
+    // only ever see a still-unbound session when no multi-account chain was
+    // in play — nothing to bind).
     const assistantContent = finalResponse!.choices[0]?.message?.content || '';
     this.sessionManager.registerCompletedTurn(
       sessionId,
@@ -1036,6 +1068,11 @@ export class PipelineOrchestrator {
     });
 
     const breakerState = cbManager.getBreaker(actualModel.id)?.getState() || 'CLOSED';
+    // ADR-0019 P3 step 3 (additive keys only — pre-P3 readers keep reading
+    // breakerState alone): when the turn ran in pair mode, expose the serving
+    // credential's pair snapshot and the model's availability aggregate.
+    const scopedBreakerSnap = servedAccountPrefix ? cbManager.getPairBreaker(actualModel.id, servedAccountPrefix)?.getSnapshot() : undefined;
+    const modelAvailability = servedAccountPrefix ? this.registry.modelAvailable(actualModel) : undefined;
 
     return {
       response: finalResponse!,
@@ -1049,6 +1086,9 @@ export class PipelineOrchestrator {
       failoverPath,
       inplaceRetries,
       breakerState,
+      servedAccountPrefix,
+      scopedBreakerSnap,
+      modelAvailability,
       sessionId,
       sessionRatchetApplied: ratchetApplied,
       sessionLookupType: sessionResolve.lookupType,
@@ -1113,9 +1153,16 @@ export class PipelineOrchestrator {
    *    configured retry.failover.maxAttempts for auto routing, the full chain
    *    length for explicit/combo chains.
    *
-   * Breaker gate: canExecute() here is the ONLY probe-consuming check in the
-   * request path — every selection/filtering site uses the non-consuming
-   * peek, so HALF_OPEN canary quota is never starved by lookups.
+   * Breaker gate: canExecuteScoped() here is the ONLY probe-consuming check in
+   * the request path — every selection/filtering site uses the non-consuming
+   * peek, so HALF_OPEN canary quota is never starved by lookups. Without a
+   * selected credential the gate degenerates to the old model-level canExecute.
+   *
+   * ADR-0019 Decision 7 (account dimension): each candidate is served through
+   * the session's bound credential (keep while healthy), a FORCED failover
+   * move (rebind persisted only after the new account serves), or the
+   * deterministic new-session spread. Chain-less / single-credential
+   * providers run the exact pre-P3 no-prefix path.
    */
   private async executeCandidatePool(
     request: ChatCompletionRequest,
@@ -1134,6 +1181,12 @@ export class PipelineOrchestrator {
        * executed per candidate carries exactly what gets sent upstream.
        */
       requestedEffort?: ReasoningEffort;
+      /**
+       * ADR-0019 P3 step 3 — conversation session for account affinity. Every
+       * orchestrator request path passes it; absent = no selection at all (the
+       * pre-P3 execution path, kept for non-conversational callers).
+       */
+      sessionId?: string;
     },
     upstreamEventContext?: UpstreamEventContext
   ): Promise<{
@@ -1148,6 +1201,8 @@ export class PipelineOrchestrator {
     lastError?: any;
     /** True when the key's model policy left zero admissible candidates. */
     policyDenied?: boolean;
+    /** Display-safe keyHash prefix of the account that served (undefined = baked-key path). */
+    servedAccountPrefix?: string;
   }> {
     const { tier, allowEscalate, attemptCap, label } = opts;
     const cbManager = this.registry.getCircuitBreakerManager();
@@ -1192,6 +1247,13 @@ export class PipelineOrchestrator {
     let totalInplaceRetries = 0;
     const failoverPath: string[] = [];
 
+    // ADR-0019 Decision 7 — the affinity session is resolved once (live map
+    // object; a bind persisted by THIS call only happens right before the
+    // success return, so candidates never read a mid-turn move).
+    const affinitySession = opts.sessionId ? this.sessionManager.getSession(opts.sessionId) : undefined;
+    const affinityWindowMs =
+      this.config.circuitBreaker?.accountAffinity?.cacheTtlMs ?? DEFAULT_ACCOUNT_AFFINITY_CACHE_TTL_MS;
+
     for (let ci = 0; ci < candidateList.length; ci++) {
       const candidate = candidateList[ci];
 
@@ -1199,11 +1261,47 @@ export class PipelineOrchestrator {
         break;
       }
 
+      // Per-candidate account selection (Decision 7). The chain belongs to the
+      // CANDIDATE's provider — a model failover that crosses providers
+      // re-spreads on the new chain (a binding the new provider does not know
+      // counts as stale and is force-rebound after the new account serves).
+      // No session / no chain / single credential => the prefix stays
+      // undefined and every call below degenerates to the pre-P3 model path.
+      // The registry's unknown-selector throw is unreachable from here: the
+      // resolver only ever returns entries of the live chain (stale-binding
+      // recovery happens at this boundary, never as a 500).
+      const selection: AccountSelection = opts.sessionId
+        ? selectAccount(
+            affinitySession,
+            candidate,
+            this.registry.getCredentialChain(candidate.provider),
+            cbManager,
+            { sessionId: opts.sessionId, affinityWindowMs }
+          )
+        : { forcedMove: false, reason: 'no-chain' };
+      const accountPrefix = selection.credential?.keyHashPrefix;
+
+      // Operator takedown is absolute — an ADMINISTRATIVE refusal, not a health
+      // guess, so it suppresses even the last-candidate force (that force exists
+      // to retry through uncertain breaker state; there is nothing uncertain
+      // here). Without this the undefined prefix would fall through to the
+      // boot-baked key of a credential the operator just parked.
+      if (selection.reason === 'all-disabled') {
+        lastError = new Error(
+          `Every credential of provider '${candidate.provider}' is disabled — taking one down requires re-enabling it in the console`
+        );
+        continue;
+      }
+
       // Execution gate — position-based skip: drop an unavailable candidate
       // while an untried one remains AFTER it; the last candidate is always
       // attempted (the pool builder already exhausted healthy-only options,
-      // and a rejected upstream call is free).
-      const check = cbManager.canExecute(candidate.id);
+      // and a rejected upstream call is free). With a selected account this is
+      // the scoped gate (model peek + pair canary consume); without one (single
+      // chain, chain-less, or 'all-unhealthy') it is exactly the old
+      // model-level canExecute — the last-candidate force semantics are
+      // preserved for every reason the selector returned undefined.
+      const check = cbManager.canExecuteScoped(candidate.id, accountPrefix);
       if (!check.allowed && ci < candidateList.length - 1) {
         continue;
       }
@@ -1238,9 +1336,12 @@ export class PipelineOrchestrator {
           candidateResponse = await this.registry.execute(
             candidateReq,
             candidate,
-            upstreamEventContext
+            upstreamEventContext,
+            accountPrefix
           );
-          cbManager.recordSuccess(candidate.id);
+          // Scope-aware success: undefined prefix degenerates to the exact
+          // model recordSuccess of the pre-P3 path.
+          cbManager.recordSuccessScoped(candidate.id, accountPrefix, candidate.provider);
           candidateSucceeded = true;
           break; // successfully executed on this candidate!
         } catch (err: any) {
@@ -1252,7 +1353,11 @@ export class PipelineOrchestrator {
             this.config.circuitBreaker,
             this.config.retry
           );
-          cbManager.recordFailure(candidate.id, diagnosis, candidate.provider);
+          // The classifier already read the registry-stamped usedCredentialKeyHashPrefix
+          // (tripScope + accountSuspect); this call expands the verdict over the
+          // diagnosed blast radius when a prefix attributes it, and routes the
+          // bare model breaker when not (today's semantics).
+          cbManager.recordFailureScoped(candidate.id, diagnosis, candidate.provider, accountPrefix);
 
           // 1. Client error (400 Bad Request, context length exceeded) -> NEVER retriable, fail immediately
           if (!diagnosis.isRetriable) {
@@ -1284,6 +1389,19 @@ export class PipelineOrchestrator {
       }
 
       if (candidateSucceeded && candidateResponse) {
+        // Decision 7 persistence point — the affinity mutation is written ONLY
+        // after the chosen account actually served (a speculative bind/rebind
+        // would strand the session on an account that never answered):
+        //   forced=false -> first-write-wins bind of a fresh session
+        //   forced=true  -> rebind after a FORCED failover move (bound pair breaker
+        //                   OPEN/SUSPECT, expired window, or stale prefix).
+        if (opts.sessionId && selection.bind) {
+          if (selection.bind.forced) {
+            this.sessionManager.rebindAccount(opts.sessionId, selection.bind.keyHashPrefix);
+          } else {
+            this.sessionManager.bindAccount(opts.sessionId, selection.bind.keyHashPrefix);
+          }
+        }
         // The provider published its real wire body through the capture sink
         // before returning — captureOut.upstreamRequest holds the SUCCESSFUL
         // attempt's payload (last write wins across retries).
@@ -1296,6 +1414,7 @@ export class PipelineOrchestrator {
           failoverAttempts,
           failoverPath,
           inplaceRetries: totalInplaceRetries,
+          servedAccountPrefix: accountPrefix,
         };
       }
     }

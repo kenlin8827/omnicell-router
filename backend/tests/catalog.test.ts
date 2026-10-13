@@ -541,10 +541,10 @@ describe('auto-pull sweep end-to-end (regression: TDZ in Phase-1)', () => {
     fs.writeFileSync(
       path.join(process.env.XDG_CONFIG_HOME, 'opencode', 'opencode.jsonc'),
       JSON.stringify({
-        provider: {
+        providers: {
           'home-lab': {
-            npm: '@ai-sdk/openai-compatible',
-            options: { baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-test' },
+            package: '@opencode/ai/providers/openai-compatible',
+            settings: { baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-test' },
           },
         },
       }),

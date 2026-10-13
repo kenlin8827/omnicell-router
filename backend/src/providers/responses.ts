@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { LLMProvider, type UpstreamEventContext } from './base.js';
+import { LLMProvider, type UpstreamEventContext, type CallCredential } from './base.js';
 import { ModelRegistration, ProviderConfig } from '../config/types.js';
 import {
   emitUpstreamRequestOnce,
@@ -176,12 +176,14 @@ export class ResponsesProvider implements LLMProvider {
   public async createCompletion(
     request: ChatCompletionRequest,
     model: ModelRegistration,
-    upstreamEventContext?: UpstreamEventContext
+    upstreamEventContext?: UpstreamEventContext,
+    credential?: CallCredential
   ): Promise<ChatCompletionResponse> {
     const url = `${this.config.baseUrl.replace(/\/+$/, '')}/responses`;
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${this.config.apiKey}`,
+      // Per-call credential (ADR-0019 P3 step 1) outranks the boot-baked key.
+      Authorization: `Bearer ${credential?.key ?? this.config.apiKey}`,
       ...this.config.headers,
     };
 

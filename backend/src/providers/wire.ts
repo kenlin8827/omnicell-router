@@ -27,9 +27,53 @@ function isUnroutable(npm: string): boolean {
   );
 }
 
+/**
+ * opencode v2 SDK package form (ADR-0019 Decision 9): `@opencode/ai/providers/<segment>`
+ * replaces the opencode v1 `@ai-sdk/<x>` npm strings. Known segments map to the SAME
+ * wire kinds as their opencode v1 counterparts; an unknown segment is 'unroutable' —
+ * never fire a guessed wire at an unprobed SDK. probe.ts probeKindFor
+ * delegates here, so the console probe inherits both shapes automatically.
+ */
+const OPENCODE_V2_PACKAGE_RE = /@opencode\/ai\/providers\/([a-z0-9._-]+)/;
+const OPENCODE_V2_SEGMENT_WIRES: Record<string, WireKind> = {
+  openai: 'responses', // @ai-sdk/openai (NOT -compatible) = Responses API wire
+  'openai-compatible': 'openai',
+  anthropic: 'anthropic',
+  google: 'google',
+  azure: 'unroutable', // SDK-side URL construction — parity with '@ai-sdk/azure'
+  vertex: 'unroutable', // rawPredict + project/location signing
+  'google-vertex': 'unroutable',
+  bedrock: 'unroutable', // SigV4
+  'amazon-bedrock': 'unroutable',
+};
+
+/** opencode v2 package segment of an npm string, or null when it is not opencode-v2 shaped. */
+function opencodeV2Segment(npm: string): string | null {
+  const m = OPENCODE_V2_PACKAGE_RE.exec(npm);
+  return m ? m[1] : null;
+}
+
+/**
+ * True when the string is already in opencode v2 `@opencode/ai/providers/<segment>` shape.
+ * Exported for the ADR-0019 P4 WRITE side (user-config opencodeV2PackageFor) so the
+ * package vocabulary has exactly ONE regex owner.
+ */
+export function isOpencodeV2Package(npm: string): boolean {
+  return OPENCODE_V2_PACKAGE_RE.test(npm || '');
+}
+
 export function wireFor(npm?: string, baseHint?: string): WireKind {
   const n = (npm || '').toLowerCase();
   if (n) {
+    const seg = opencodeV2Segment(n);
+    if (seg !== null) {
+      // opencode v2 packages are matched by segment EXACTLY — a fuzzy fallback here
+      // would silently route an unprobed provider package onto a guessed wire.
+      // Security P3-1: Object.hasOwn — prototype members ('constructor',
+      // 'toString') must never masquerade as a known wire kind.
+      const known: WireKind | undefined = Object.hasOwn(OPENCODE_V2_SEGMENT_WIRES, seg) ? OPENCODE_V2_SEGMENT_WIRES[seg] : undefined;
+      return known ?? 'unroutable';
+    }
     if (isUnroutable(n)) return 'unroutable';
     if (n.includes('anthropic')) return 'anthropic';
     if (n.includes('google')) return 'google';
@@ -45,6 +89,16 @@ export function wireFor(npm?: string, baseHint?: string): WireKind {
 
 /** Human-readable exclusion reason for console/logs when a wire is unroutable. */
 export function unroutableReason(npm?: string): string {
+  const n = (npm || '').toLowerCase();
+  const seg = opencodeV2Segment(n);
+  if (seg !== null) {
+    // P3-1: Object.hasOwn parity with wireFor (prototype-member segments are
+    // unknown, never a wire kind).
+    const known: WireKind | undefined = Object.hasOwn(OPENCODE_V2_SEGMENT_WIRES, seg) ? OPENCODE_V2_SEGMENT_WIRES[seg] : undefined;
+    if (known === undefined) {
+      return `无法识别的 opencode v2 SDK 包名（${npm || '未知 package'}），网关直连暂不支持（显式不可路由）`;
+    }
+  }
   return `该 provider 的 SDK 包需要专用端点构造/签名（${npm || '未知 npm'}），网关直连暂不支持（显式不可路由）`;
 }
 

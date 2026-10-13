@@ -8,14 +8,22 @@ import {
   upsertCustomProvider,
   deleteCustomProvider,
   getProviderNodeById,
-  setAuthApiKey,
-  removeAuthEntry,
   readAuthEntries,
   maskSecret,
   expandEnvTemplate,
   getOpenCodeConfigPath,
   getOpenCodeAuthPath,
 } from '../src/opencode/user-config.js';
+
+/**
+ * Test fixture only: OCR never writes auth.json (ADR-0019 Decision 11), so a case
+ * that needs a snapshot on disk stages it directly instead of through a product API.
+ */
+function stageAuth(entries: Record<string, unknown>): void {
+  const p = getOpenCodeAuthPath();
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify(entries), 'utf8');
+}
 
 describe('OpenCode user-config (opencode.jsonc provider node + auth.json)', () => {
   let tmpDir: string;
@@ -42,12 +50,23 @@ describe('OpenCode user-config (opencode.jsonc provider node + auth.json)', () =
     }
   });
 
-  it('should create config file with provider node when missing', () => {
+  it('creates the native slot; a non-inline key is refused by the writer (the store owns it)', () => {
+    // The route pushes such a key through store.connectKey first and passes no apiKey.
+    const refused = upsertCustomProvider({
+      id: 'home-lab',
+      name: 'Home Lab',
+      baseURL: 'http://192.168.1.10:20180/v1',
+      apiKey: 'sk-test-1234567890',
+    });
+    expect(refused.success).toBe(false);
+    expect(fs.existsSync(getOpenCodeConfigPath())).toBe(false);
+
     const result = upsertCustomProvider({
       id: 'home-lab',
       name: 'Home Lab',
       baseURL: 'http://192.168.1.10:20180/v1',
       apiKey: 'sk-test-1234567890',
+      apiKeyInline: true,
     });
     expect(result.success).toBe(true);
 
@@ -55,13 +74,11 @@ describe('OpenCode user-config (opencode.jsonc provider node + auth.json)', () =
     expect(fs.existsSync(configPath)).toBe(true);
 
     const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    expect(parsed.provider['home-lab'].npm).toBe('@ai-sdk/openai-compatible');
-    expect(parsed.provider['home-lab'].options.baseURL).toBe('http://192.168.1.10:20180/v1');
-
-    // Key went to auth.json, NOT into the jsonc
-    expect(parsed.provider['home-lab'].options.apiKey).toBeUndefined();
-    const auth = JSON.parse(fs.readFileSync(getOpenCodeAuthPath(), 'utf8'));
-    expect(auth['home-lab']).toEqual({ type: 'api', key: 'sk-test-1234567890' });
+    expect(parsed.providers['home-lab'].package).toBe('@opencode/ai/providers/openai-compatible');
+    expect(parsed.providers['home-lab'].settings.baseURL).toBe('http://192.168.1.10:20180/v1');
+    expect(parsed.providers['home-lab'].npm).toBeUndefined();
+    // auth.json is never a sink on any binding.
+    expect(fs.existsSync(getOpenCodeAuthPath())).toBe(false);
   });
 
   it('must preserve JSONC comments when upserting and deleting providers', () => {
@@ -73,7 +90,7 @@ describe('OpenCode user-config (opencode.jsonc provider node + auth.json)', () =
         '{',
         '  // Top comment: keep me!',
         '  "model": "zhipuai-coding-plan/glm-5.3-flash",',
-        '  "provider": {',
+        '  "providers": {',
         '    // headroom proxy, tuned by hand',
         '    "headroom": {',
         '      "npm": "@ai-sdk/openai-compatible",',
@@ -94,8 +111,10 @@ describe('OpenCode user-config (opencode.jsonc provider node + auth.json)', () =
     expect(raw).toContain('{env:VOLC_CODING_KEY}');
 
     let parsed = JSON.parse(raw.replace(/^\s*\/\/.*$/gm, ''));
-    expect(parsed.provider.headroom.options.baseURL).toBe('http://127.0.0.1:8787/v1');
-    expect(parsed.provider.maisuitx.options.baseURL).toBe('http://192.168.18.10:20180/v1');
+    expect(parsed.providers.headroom.options.baseURL).toBe('http://127.0.0.1:8787/v1');
+    // OCR writes the native slot in the v2 shape: settings, not options.
+    expect(parsed.providers.maisuitx.settings.baseURL).toBe('http://192.168.18.10:20180/v1');
+    expect(parsed.providers.maisuitx.npm).toBeUndefined();
     expect(parsed.model).toBe('zhipuai-coding-plan/glm-5.3-flash');
 
     // Delete keeps comments and siblings intact
@@ -104,11 +123,11 @@ describe('OpenCode user-config (opencode.jsonc provider node + auth.json)', () =
     raw = fs.readFileSync(configPath, 'utf8');
     expect(raw).toContain('// headroom proxy, tuned by hand');
     parsed = JSON.parse(raw.replace(/^\s*\/\/.*$/gm, ''));
-    expect(parsed.provider.maisuitx).toBeUndefined();
-    expect(parsed.provider.headroom).toBeDefined();
+    expect(parsed.providers.maisuitx).toBeUndefined();
+    expect(parsed.providers.headroom).toBeDefined();
   });
 
-  it('should support inline api key with {env:VAR} templates', () => {
+  it('inline {env:VAR} lands as the v2 `env` name list and still resolves for routing', () => {
     process.env['OCR_TEST_PROVIDER_KEY'] = 'sk-from-env-9876543210';
     const result = upsertCustomProvider({
       id: 'inline',
@@ -119,10 +138,14 @@ describe('OpenCode user-config (opencode.jsonc provider node + auth.json)', () =
     expect(result.success).toBe(true);
 
     const parsed = JSON.parse(fs.readFileSync(getOpenCodeConfigPath(), 'utf8'));
-    expect(parsed.provider.inline.options.apiKey).toBe('{env:OCR_TEST_PROVIDER_KEY}');
+    // opencode v2 has no inline template concept — the NAME is what gets stored.
+    expect(parsed.providers.inline.env).toEqual(['OCR_TEST_PROVIDER_KEY']);
+    expect(parsed.providers.inline.settings?.apiKey).toBeUndefined();
+    expect(JSON.stringify(parsed)).not.toContain('sk-from-env-9876543210');
     const auth = readAuthEntries();
     expect(auth['inline']).toBeUndefined();
 
+    // OCR's reader materializes the named var back into the template the pool expands.
     const view = listConfigProviders().find((p) => p.id === 'inline');
     expect(view?.auth.connected).toBe(true);
     expect(view?.auth.keyMasked).toBe('sk-f••••3210');
@@ -133,11 +156,13 @@ describe('OpenCode user-config (opencode.jsonc provider node + auth.json)', () =
     fs.mkdirSync(path.dirname(getOpenCodeConfigPath()), { recursive: true });
     fs.writeFileSync(
       getOpenCodeConfigPath(),
-      JSON.stringify({ provider: { deepseek: { npm: '@ai-sdk/openai-compatible', options: { baseURL: 'https://api.deepseek.com/v1' } } } }),
+      JSON.stringify({ providers: { deepseek: { package: '@opencode/ai/providers/openai-compatible', settings: { baseURL: 'https://api.deepseek.com/v1' } } } }),
       'utf8'
     );
-    setAuthApiKey('deepseek', 'sk-fake-deepseek-0000000042');
-    setAuthApiKey('kimi-for-coding', 'sk-fake-kimi-00000000xyz');
+    stageAuth({
+      deepseek: { type: 'api', key: 'sk-fake-deepseek-0000000042' },
+      'kimi-for-coding': { type: 'api', key: 'sk-fake-kimi-00000000xyz' },
+    });
 
     const providers = listOpenCodeProviders();
     const deepseek = providers.find((p) => p.id === 'deepseek');
@@ -154,14 +179,12 @@ describe('OpenCode user-config (opencode.jsonc provider node + auth.json)', () =
     expect(JSON.stringify(providers)).not.toContain('sk-fake-kimi-00000000');
   });
 
-  it('should reject invalid provider ids and remove auth entries', () => {
+  it('rejects invalid provider ids and unknown deletes', () => {
     const bad = upsertCustomProvider({ id: '../evil', baseURL: 'http://x/v1' });
     expect(bad.success).toBe(false);
 
-    setAuthApiKey('temp', 'sk-temp-1234567890abc');
+    stageAuth({ temp: { type: 'api', key: 'sk-temp-1234567890abc' } });
     expect(readAuthEntries()['temp']).toBeDefined();
-    removeAuthEntry('temp');
-    expect(readAuthEntries()['temp']).toBeUndefined();
 
     const missing = deleteCustomProvider('does-not-exist');
     expect(missing.success).toBe(false);

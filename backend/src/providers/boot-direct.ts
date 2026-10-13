@@ -9,15 +9,19 @@ import {
   getProviderNodeById,
   getProviderModelDefs,
   expandEnvTemplate,
-  readAuthEntries,
+  legacyShapedSlotEntries,
 } from '../opencode/user-config.js';
+import { getCredentialStore, getCredentialStoreStatus } from '../opencode/credentials/index.js';
+import { keyHashPrefix } from '../opencode/credentials/types.js';
+import type { AccountMeta, CallCredential, RawCred, ResolvedCredential } from '../opencode/credentials/types.js';
 import { WireKind, wireFor, unroutableReason, baseForWire } from './wire.js';
 
 /**
  * build the direct execution pool WITHOUT the opencode daemon.
- * Truth sources are files only:
+ * Truth sources:
  *   - opencode.jsonc provider nodes (baseURL/headers/npm/model defs)   [user-config.ts]
- *   - auth.json credentials                                            [user-config.ts]
+ *   - the bound CredentialStore (ADR-0019 Decision 1 + 11: opencode v2 db, the v2
+ *     read-only fallback, or the OCR file — whichever the factory bound at boot) [credentials/]
  *   - models.dev catalog (pricing/capabilities/provider+model npm)     [catalogRepository]
  * Wire per model = wireFor(model npm > config npm > provider npm, base hint).
  * OAuth providers are excluded explicitly; token refresh is owned elsewhere.
@@ -25,9 +29,30 @@ import { WireKind, wireFor, unroutableReason, baseForWire } from './wire.js';
 
 export interface DirectBootResult {
   /** logical provider name → resolved wire set (one DispatchingProvider per entry) */
-  instances: { name: string; config: ProviderConfig; wires: WireKind[]; wireBases: Partial<Record<WireKind, string>> }[];
+  instances: {
+    name: string;
+    config: ProviderConfig;
+    wires: WireKind[];
+    wireBases: Partial<Record<WireKind, string>>;
+    /**
+     * ADR-0019 P3 step 1 — the provider's ordered credentials for per-call
+     * selection (active head first). INVARIANT: `credentialChain[0].key ===
+     * config.apiKey` — the inline credential is prepended as head when it
+     * outranks the store (Decision 1), so the baked default always equals the
+     * chain head. RAW KEYS IN MEMORY ONLY: this payload goes to
+     * `registry.registerProvider` and nothing else — never serialize it into
+     * a console/API surface (masked views keep using `AccountMeta`).
+     */
+    credentialChain: CallCredential[];
+  }[];
   models: ModelRegistration[];
-  excluded: { provider: string; model?: string; reason: string }[];
+  /** reasonCode present on store-level entries merged from the binding (machine-readable; the reason text stays human-readable). */
+  excluded: { provider: string; model?: string; reason: string; reasonCode?: string }[];
+}
+
+/** Raw key + display identity → the per-call selectable credential (P3 step 1). */
+function toCallCredential(key: string, label: string): CallCredential {
+  return { key, keyHashPrefix: keyHashPrefix(key), label };
 }
 
 /**
@@ -89,30 +114,88 @@ export function effortLadderFor(
   return [];
 }
 
+/** One shared line for a node the reader refuses to route (Decision 11). */
+function retiredShapeReason(paths: string[]): string {
+  return `opencode.jsonc 节点为已废弃形状（${paths.join(', ')}）：opencode 会丢弃整个 provider 节点，OCR 同样拒绝路由 —— 请改用 package/settings 的 v2 形状`;
+}
+
 export async function buildDirectPool(): Promise<DirectBootResult> {
   const catalog = await catalogRepository.list();
   // Boot-time smart match (config `tiers[t].match` over the built-in
   // baseline). The registry replays it live on every config-save event
   // (applyTierConfigNow) — no gateway restart required for tier edits.
   const tierMatch = resolveTierMatch(loadConfig().tiers);
-  const authEntries = readAuthEntries();
+  // ADR-0019 B3 — credentials come from the BOOT-BOUND CredentialStore, not
+  // from auth.json directly. buildDirectPool is the boot/pool-rebuild path,
+  // the ONLY sanctioned caller class for the raw `resolveKey`/`resolveKeyChain`
+  // (ADR-0011 risk limb); the head key is baked once into instances[].config
+  // and the full chain rides on the instance payload (registry-only).
+  const store = await getCredentialStore();
+  const storeStatus = await getCredentialStoreStatus();
   const instances: DirectBootResult['instances'] = [];
   const models: ModelRegistration[] = [];
   const excluded: DirectBootResult['excluded'] = [];
 
-  for (const rec of catalog) {
-    const def = getProviderNodeById(rec.id);
-    const auth = authEntries[rec.id];
+  // Decision 11: a retired-shape node is dropped by the reader (opencode's own v2
+  // decoder discards the whole node), so the drop is reported here rather than
+  // leaving the operator to wonder where their provider went.
+  const retiredShapes = new Map(legacyShapedSlotEntries().map((e) => [e.id, e.paths]));
 
-    const apiKey = expandEnvTemplate(def?.options?.apiKey) || auth?.key || auth?.access;
+  for (const rec of catalog) {
+    const retired = retiredShapes.get(rec.id);
+    if (retired) {
+      retiredShapes.delete(rec.id);
+      excluded.push({ provider: rec.id, reasonCode: 'legacy_shaped_node', reason: retiredShapeReason(retired) });
+      continue;
+    }
+    const def = getProviderNodeById(rec.id);
+
+    // Decision 1 last bullet: inline `{env:VAR}` / `options.apiKey` stay
+    // ABOVE the store; the store supplies only the "store segment" the old
+    // `auth.key || auth.access` lookup covered.
+    const inlineKey = expandEnvTemplate(def?.options?.apiKey);
+    // P2-9: a per-provider store read that THROWS (mid-loop schema drift,
+    // db handle failure) must not kill the whole pool rebuild — the affected
+    // provider lands as an excluded entry (reasonCode db_unreadable) and the
+    // loop continues with the others.
+    let resolved: ResolvedCredential | null;
+    let metas: AccountMeta[];
+    // ADR-0019 P3 step 1 — the same try-guarded read also fetches the
+    // ordered chain (active head first); key-type rows only, oauth never
+    // enters a chain (store contract).
+    let storeCreds: RawCred[];
+    try {
+      resolved = store.resolveKey(rec.id);
+      metas = store.listAccounts(rec.id);
+      storeCreds = store.resolveKeyChain(rec.id);
+    } catch (e) {
+      excluded.push({
+        provider: rec.id,
+        reason: `store read failed: ${e instanceof Error ? e.message : String(e)}`,
+        reasonCode: 'db_unreadable',
+      });
+      continue;
+    }
+    // Bake the chain head (P3 step 1); `resolved?.key` stays the defensive
+    // fallback for a store whose chain read came back empty while resolveKey
+    // answered — head === baked key is an invariant the registry relies on.
+    const apiKey = inlineKey || storeCreds[0]?.key || resolved?.key;
+
+    // OAuth exclusion (old `auth?.type === 'oauth'` check) now derives from
+    // masked AccountMeta — raw oauth tokens never leave resolveKey. A
+    // routable store credential outranks a coexisting oauth account (opencode v2
+    // multi-account reality; a single-account store can hold only one of the two,
+    // so those bindings behave exactly as before).
+    if (!resolved && metas.some((a) => a.type === 'oauth')) {
+      excluded.push({ provider: rec.id, reason: 'OAuth 凭证（网关自持刷新前显式排除）' });
+      continue;
+    }
     if (!apiKey) {
       // catalog-universe providers without credentials are structural noise —
       // only surface when the user actually defined a config node for them.
-      if (def) excluded.push({ provider: rec.id, reason: '无凭证（auth.json/内联均缺失）' });
-      continue;
-    }
-    if (auth?.type === 'oauth') {
-      excluded.push({ provider: rec.id, reason: 'OAuth 凭证（网关自持刷新前显式排除）' });
+      // ADR-0019 Decision 11 wording: the credential candidates are the inline def and
+      // the BOUND store (auth.json is no longer named here — it is not a sink).
+      if (def) excluded.push({ provider: rec.id, reasonCode: 'no_credential', reason: '无凭证（内联或凭证库均缺失）' });
       continue;
     }
     // models.dev `api` (canonical) beats the daemon's runtime hint; per-wire
@@ -241,18 +324,70 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
       excluded.push({ provider: rec.id, reason: '该 provider 全部模型不可直连路由' });
       continue;
     }
+    // ADR-0019 P3 step 1 — per-call selection chain. One instance per provider
+    // even with N credentials: the head is baked as the default, the full
+    // ordered chain rides on the payload (registry-only, raw keys in memory).
+    // Single-credential providers get a length-1 chain — behavior byte-identical.
+    const credentialChain: CallCredential[] = storeCreds.map((c) =>
+      toCallCredential(c.key, c.label ?? c.accountId)
+    );
+    // Defensive fallback consistency: if the chain read was empty but resolveKey
+    // supplied the baked key, represent it so head === config.apiKey always holds.
+    if (credentialChain.length === 0 && resolved) {
+      credentialChain.push(toCallCredential(resolved.key, resolved.account.label ?? resolved.account.id));
+    }
+    // Inline {env}/options.apiKey outranks the store for the baked default
+    // (Decision 1) — it becomes the chain HEAD too, keeping the invariant
+    // head === config.apiKey; store accounts stay selectable below it.
+    if (inlineKey) credentialChain.unshift(toCallCredential(inlineKey, 'inline'));
     instances.push({
       name: rec.id,
       config: {
         name: rec.id,
         type: 'dispatch',
         baseUrl: baseURL,
+        // Boot-baked credential (ADR-0011 risk limb): the active-chain head —
+        // the same key resolveKey picks when a provider holds exactly one
+        // credential. Per-call selection reads the chain below; the baked key
+        // remains the no-selector default.
         apiKey,
         headers: def?.options?.headers,
       },
       wires: [...wires],
       wireBases: Object.fromEntries(wireBases) as Partial<Record<WireKind, string>>,
+      credentialChain,
     });
+  }
+
+  // A retired node for an id the catalog universe doesn't carry would otherwise be
+  // invisible — the config side of the pool is exactly where such providers live.
+  for (const [id, paths] of retiredShapes) {
+    excluded.push({ provider: id, reasonCode: 'legacy_shaped_node', reason: retiredShapeReason(paths) });
+  }
+
+  // ─── store-binding exclusions merge (ADR-0019 B3) ────────────────
+  // Degraded-binding exclusions from the factory (excludedWithReason — the
+  // boot hook used to console.log them only) surface in the same excluded[]
+  // array, carrying their machine-readable reasonCode. Merge policy:
+  //  - 'no_routable_credential' is skipped when the provider loop already
+  //    produced a provider-level entry (its OAuth / no-credential reason is
+  //    more specific than the overview-derived generic one);
+  //  - 'no_routable_credential' is ALSO skipped when the provider ended up with
+  //    an instance anyway — an inline `{env:VAR}`/settings key or an imported
+  //    account can make it routable after the binding snapshot was taken, and
+  //    reporting "no routable credential" for a provider that is serving traffic
+  //    is a false exclusion (the binding's account overview is store-scoped and
+  //    cannot see the config-side credential);
+  //  - every other store-level code REPLACES a provider-level loop entry
+  //    (stranded-key diagnostics, e.g. "db unreadable, key present in the
+  //    auth.json snapshot", explain the absence better than the generic
+  //    no-credential line can).
+  for (const ex of storeStatus.excluded) {
+    const dupIndex = excluded.findIndex((e) => e.provider === ex.provider && !e.model);
+    if (ex.reasonCode === 'no_routable_credential' && dupIndex !== -1) continue;
+    if (ex.reasonCode === 'no_routable_credential' && instances.some((i) => i.name === ex.provider)) continue;
+    if (dupIndex !== -1) excluded.splice(dupIndex, 1);
+    excluded.push({ provider: ex.provider, reason: `${ex.reasonCode}: ${ex.detail}`, reasonCode: ex.reasonCode });
   }
 
   // ─── membership: explicit member lists are the ONLY source ──────

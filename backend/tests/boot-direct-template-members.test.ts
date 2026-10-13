@@ -45,9 +45,33 @@ const savedPatches: unknown[] = [];
 mock.module('../src/opencode/user-config.js', () => ({
   getProviderNodeById: () => node,
   getProviderModelDefs: () => ({}),
+  // boot-direct asks the reader which native-slot nodes it refused (Decision 11);
+  // these fixtures hand it normalized nodes directly, so nothing is refused.
+  legacyShapedSlotEntries: () => [],
   expandEnvTemplate: (v: unknown) => v,
-  readAuthEntries: () => ({ [PROVIDER]: { key: 'sk-test', connected: true } }),
   getOpenCodeConfigPath: () => '<memory>/opencode.jsonc',
+}));
+
+/**
+ * ADR-0019 B3 seam — boot-direct resolves credentials through the bound
+ * CredentialStore (NOT readAuthEntries anymore). In-memory single-account store
+ * double: one key per provider, no activate/rename, which is what the OCR file
+ * store also gives a one-key provider.
+ */
+const fakeStore = {
+  kind: 'ocr' as const,
+  capabilities: { multiAccount: false, activate: false, rename: false, oauth: false, envVisible: true },
+  resolveKey: (id: string) =>
+    id === PROVIDER
+      ? { key: 'sk-test', account: { id, providerId: id, type: 'api' as const, active: true, routable: true } }
+      : null,
+  listAccounts: (id: string) =>
+    id === PROVIDER ? [{ id, providerId: id, type: 'api' as const, active: true, routable: true }] : [],
+  resolveKeyChain: () => [],
+};
+mock.module('../src/opencode/credentials/index.js', () => ({
+  getCredentialStore: async () => fakeStore,
+  getCredentialStoreStatus: async () => ({ excluded: [] }),
 }));
 
 mock.module('../src/opencode/catalog/repository.js', () => ({

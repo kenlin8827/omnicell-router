@@ -5,6 +5,7 @@ import {
   NetworkFailureCause,
   RetriableCauseConfig,
   RetryConfig,
+  TripScope,
   DEFAULT_RETRIABLE_CAUSES,
 } from './types.js';
 
@@ -14,6 +15,13 @@ export class UpstreamError extends Error {
   public provider?: string;
   public modelId?: string;
   public retryAfterSeconds?: number;
+  /**
+   * ADR-0019 P3 step 1 — display-safe sha256 prefix of the credential that was
+   * actually used when this failure happened. Stamped centrally by
+   * `ProviderRegistry.execute` (attribution seam for the P3 pair-scoped breaker);
+   * executors never set it, constructors never receive it.
+   */
+  public usedCredentialKeyHashPrefix?: string;
 
   constructor(options: {
     message: string;
@@ -33,6 +41,24 @@ export class UpstreamError extends Error {
   }
 }
 
+/**
+ * ADR-0019 Decision 6 — 429 wording that means "this ACCOUNT burned its
+ * budget" instead of "this MODEL/KEY hit its RPM window". Only consulted when
+ * the diagnosis is attributable to one credential; anything goes
+ * `pair` (under-cool rather than over-cool).
+ */
+const ACCOUNT_LIMIT_MARKERS = [
+  'daily limit',
+  'weekly limit',
+  'monthly limit',
+  'per day',
+  'per week',
+  'per month',
+  'daily_quota',
+  'weekly_quota',
+  'usage allocation',
+];
+
 export class ErrorClassifier {
   /**
    * Industrial-grade LLM upstream error classification & diagnosis engine.
@@ -42,6 +68,11 @@ export class ErrorClassifier {
    * - In-place retriable check to preserve upstream KV cache
    * - Transient backoff (429 Rate limit burst)
    * - Non-penalizing pass-through (400 Client error / context length exceeded)
+   *
+   * ADR-0019 P3 step 2 adds a blast-radius annotation (`tripScope`) to every
+   * diagnosis that is attributable to ONE credential of a provider chain. A
+   * diagnosis without attribution carries no `tripScope` at all, so chain-less
+   * providers keep the model-level trip semantics they have always had.
    */
   public static classify(
     error: any,
@@ -53,6 +84,21 @@ export class ErrorClassifier {
     const quotaCooldown = circuitConfig?.quotaCooldownMs || 12 * 3600 * 1000; // default: 12 hours
     const defaultInitialCooldown = circuitConfig?.initialCooldownMs || 30 * 1000; // default: 30s
     const maxRateLimitWaitMs = retryConfig?.inplace?.maxRateLimitWaitMs ?? 2000; // default: 2s
+
+    // ADR-0019 P3 step 2 — attribution seam. `ProviderRegistry.execute` stamps
+    // the credential actually used onto the thrown error. No stamp means the
+    // provider has no credential chain, so there is no pair space to scope a
+    // trip into: the diagnosis stays exactly as it was before P3 (model-level).
+    const usedAttribution: string | undefined =
+      typeof error?.usedCredentialKeyHashPrefix === 'string' ? error.usedCredentialKeyHashPrefix : undefined;
+    // Blast radius only travels with attribution (`cp-failfast`: silently
+    // scoping a chain-less trip would cool accounts nobody asked about).
+    const scoped = (tripScope: TripScope, accountSuspect = false): Partial<ErrorDiagnosis> =>
+      usedAttribution === undefined
+        ? {}
+        : accountSuspect
+          ? { tripScope, accountSuspect: true }
+          : { tripScope };
 
     // Helper: checks if this failure cause is whitelisted for in-place retry
     const isCauseInPlaceRetriable = (cause: RetriableCauseConfig): boolean => {
@@ -129,6 +175,9 @@ export class ErrorClassifier {
         hardTrip: true, // Immediate circuit trip!
         suggestedCooldownMs: quotaCooldown,
         reason: `Quota or balance exhausted for model '${modelId}' (Provider: ${provider})`,
+        // Account-wide burn: every model this credential can reach is out of
+        // budget. No SUSPECT mark — quota resets, a dead key does not.
+        ...scoped('account'),
         rawError: error,
       };
     }
@@ -154,6 +203,9 @@ export class ErrorClassifier {
         hardTrip: true, // Immediate circuit trip!
         suggestedCooldownMs: quotaCooldown,
         reason: `Invalid API key or unauthorized for model '${modelId}' (Provider: ${provider})`,
+        // A rejected key is administrative, not a cooldown: the account goes
+        // SUSPECT (never auto-returns) and every model it can reach is out.
+        ...scoped('account', true),
         rawError: error,
       };
     }
@@ -187,6 +239,10 @@ export class ErrorClassifier {
       // of re-discovering the limit through the 3-strike threshold. 429
       // without Retry-After stays a soft statistical failure.
       const hardTrip = Boolean(retryAfterSeconds && !isShortBurst);
+      // "per day / weekly limit / usage allocation" wording = the ACCOUNT's
+      // budget, not this model's RPM window -> account. Plain 429/RPM/TPM stays
+      // pair; uncertain stays pair (Decision 6: under-cool over over-cool).
+      const isAccountLimit = ACCOUNT_LIMIT_MARKERS.some((m) => combinedText.includes(m));
 
       return {
         category: 'RATE_LIMITED',
@@ -199,6 +255,7 @@ export class ErrorClassifier {
         suggestedCooldownMs: cooldownMs,
         retryAfterSeconds,
         reason: `Rate limit (429) on model '${modelId}' (Retry-After: ${retryAfterSeconds ?? 'unknown'}s, InPlace: ${inPlaceAllowed}, HardTrip: ${hardTrip})`,
+        ...scoped(isAccountLimit ? 'account' : 'pair'),
         rawError: error,
       };
     }
@@ -308,6 +365,9 @@ export class ErrorClassifier {
         hardTrip: false,
         suggestedCooldownMs: defaultInitialCooldown,
         reason: `Upstream network jitter [${networkCause}, status ${statusCode || 'N/A'}]: ${rawMessage.slice(0, 150)}`,
+        // Key-independent: the upstream itself is failing, so the whole model
+        // (this model, every credential) goes.
+        ...scoped('model'),
         rawError: error,
       };
     }
@@ -325,6 +385,11 @@ export class ErrorClassifier {
       hardTrip: false,
       suggestedCooldownMs: defaultInitialCooldown,
       reason: `Unknown upstream error: ${rawMessage.slice(0, 150)}`,
+      // Decision 6 last bullet: an UNCLASSIFIED failure cools only its own
+      // pair ("under-cool rather than over-cool; retry naturally validates
+      // siblings"). A real outage still reaches the model breaker through
+      // SERVICE_UNAVAILABLE above, which is where network causes land.
+      ...scoped('pair'),
       rawError: error,
     };
   }

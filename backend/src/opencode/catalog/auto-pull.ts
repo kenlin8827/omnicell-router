@@ -39,7 +39,7 @@ export interface PullResult {
 }
 
 export async function pullLiveModels(id: string, opts: { pattern?: string; dryRun?: boolean }): Promise<PullResult> {
-  const { getProviderNodeById, getProviderModelDefs, upsertProviderModel, matchesGlobPattern, expandEnvTemplate, readAuthEntries } =
+  const { getProviderNodeById, getProviderModelDefs, upsertProviderModel, matchesGlobPattern, expandEnvTemplate } =
     await import('../user-config.js');
   const def = getProviderNodeById(id);
   if (!def) {
@@ -49,15 +49,20 @@ export async function pullLiveModels(id: string, opts: { pattern?: string; dryRu
   if (!baseURL) {
     return { httpStatus: 400, body: { success: false, error: `Provider '${id}' has no baseURL configured` } };
   }
+  // ADR-0019 B4: raw key from the BOUND store (opencode v2 db / v1 auth.json / ocr
+  // file) — direct auth.json reads would miss v2-managed and standalone
+  // credentials.json keys. Inline precedence above the store kept (Decision 1).
+  const { getCredentialStore } = await import('../credentials/index.js');
+  const store = await getCredentialStore();
   const inlineKey = expandEnvTemplate(def?.options?.apiKey);
-  const key = inlineKey || readAuthEntries()[id]?.key;
+  const key = inlineKey || store.resolveKey(id)?.key;
   if (!key) {
     return {
       httpStatus: 400,
       body: {
         success: false,
         authHint: true,
-        error: `No API key for '${id}' (auth.json or inline) — cannot authenticate against ${baseURL}`,
+        error: `No API key for '${id}' (credential store or inline) — cannot authenticate against ${baseURL}`,
       },
     };
   }
@@ -250,7 +255,12 @@ async function enrichFromCatalog(models: CatalogModel[], excludeProviderId: stri
  */
 export async function autoPullProviderModels(): Promise<AutoPullEntry[]> {
   if (loadConfig().catalog?.autoPullModels === false) return [];
-  const { listOpenCodeProviders, expandEnvTemplate, readAuthEntries, getProviderNodeById } = await import('../user-config.js');
+  const { listOpenCodeProviders, expandEnvTemplate, getProviderNodeById } = await import('../user-config.js');
+  // ADR-0019 B4: keys from the BOUND store (same rule as pullLiveModels —
+  // inline above the store; the auth.json-direct read missed opencode v2 db and
+  // standalone credentials.json keys).
+  const { getCredentialStore } = await import('../credentials/index.js');
+  const credStore = await getCredentialStore();
 
   // Phase 1 — concurrent FETCH (network only, no writes): resolve each
   // provider's candidate model list from its own /v1/models or the catalog.
@@ -260,7 +270,7 @@ export async function autoPullProviderModels(): Promise<AutoPullEntry[]> {
       if (!def) return { id: v.id, mode: 'skipped', models: [] };
       const baseURL = def?.options?.baseURL;
       const inlineKey = expandEnvTemplate(def?.options?.apiKey);
-      const key = inlineKey || readAuthEntries()[v.id]?.key;
+      const key = inlineKey || credStore.resolveKey(v.id)?.key;
       if (baseURL && key) {
         try {
           const res = await fetch(`${String(baseURL).replace(/\/+$/, '')}/models`, {
@@ -319,4 +329,24 @@ export async function autoPullProviderModels(): Promise<AutoPullEntry[]> {
     out.push({ providerId: job.id, mode: job.mode, pulled, skipped: job.models.length - pulled });
   }
   return out;
+}
+
+/**
+ * Pull one provider's models with the automatic live/catalog choice — the SAME
+ * dispatch the console pull route and the periodic scheduler use. Shared so the
+ * create route can opportunistically top up a brand-new provider in one gesture.
+ */
+export async function autoPullProvider(id: string, opts: { pattern?: string; dryRun?: boolean } = {}): Promise<PullResult> {
+  const { getProviderNodeById, expandEnvTemplate } = await import('../user-config.js');
+  const { getCredentialStore } = await import('../credentials/index.js');
+  // Credential-only providers (no jsonc node) are pullable too — they land in
+  // catalog/custom.json (the 'custom' aggregation source).
+  const def = getProviderNodeById(id);
+  // B4: live capability keyed on the BOUND store (pullLiveModels resolves the
+  // same way — one source, no live/catalog branch mismatch). P3-5: capability
+  // only — listAccounts is masked, no raw key ever enters here.
+  const store = await getCredentialStore();
+  const inlineKey = expandEnvTemplate(def?.options?.apiKey);
+  const liveCapable = Boolean(def?.options?.baseURL && (inlineKey || store.listAccounts(id).some((a) => a.routable)));
+  return liveCapable ? pullLiveModels(id, opts) : pullCatalogModels(id, opts);
 }

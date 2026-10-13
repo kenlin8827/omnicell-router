@@ -20,6 +20,18 @@ export interface ConversationSession {
   };
   /** First ~200 chars of the first user message (UI identification aid). */
   firstUserMessage?: string;
+  /**
+   * ADR-0019 Decision 7 — session↔account affinity binding (sha256 key-hash
+   * prefix, Decision 5 identity; display-safe, never key material). Written
+   * once by the first successful routed turn, overwritten only by a FORCED
+   * failover (bound pair breaker OPEN / account SUSPECT / stale prefix). A binding
+   * older than the affinity window (circuitBreaker.accountAffinity.cacheTtlMs,
+   * read against lastActiveAt) is treated ABSENT at selection — lazy expiry,
+   * no timer, and independent of the session ttlSeconds machinery.
+   */
+  boundKeyHashPrefix?: string;
+  /** Epoch ms of the bind/rebind (observability; expiry reads lastActiveAt). */
+  boundAt?: number;
 }
 
 export interface SessionResolveResult {
@@ -551,6 +563,35 @@ export class SessionManager {
     if (firstUserMessage && !session.firstUserMessage) {
       session.firstUserMessage = firstUserMessage.slice(0, 200);
     }
+  }
+
+  /**
+   * ADR-0019 Decision 7 — bind a session to one credential account.
+   * First-write-wins (like attachOrigin): selection NEVER re-balances a live
+   * binding; only `rebindAccount` (forced failover) may overwrite it. Expired
+   * bindings are overwritten by a forced rebind too (the stale value must not
+   * outlive the account it names).
+   * @returns true when this call created the binding.
+   */
+  public bindAccount(sessionId: string, keyHashPrefix: string): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.boundKeyHashPrefix) return false;
+    session.boundKeyHashPrefix = keyHashPrefix;
+    session.boundAt = Date.now();
+    return true;
+  }
+
+  /**
+   * FORCED account move (bound pair breaker OPEN / account SUSPECT / stale prefix).
+   * Never called for balancing — the caller only rebinds after the new
+   * account actually served (Decision 7 "switching is forced failover").
+   */
+  public rebindAccount(sessionId: string, keyHashPrefix: string): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+    session.boundKeyHashPrefix = keyHashPrefix;
+    session.boundAt = Date.now();
+    return true;
   }
 
   public getSession(sessionId: string): ConversationSession | undefined {

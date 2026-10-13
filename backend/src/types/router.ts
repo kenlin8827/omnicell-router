@@ -1,4 +1,8 @@
 import { ChatCompletionResponse } from './openai.js';
+// Type-only imports: erased at runtime, so the resilience -> types/router
+// value-direction import cycle can never exist.
+import type { CircuitBreakerSnapshot } from '../resilience/types.js';
+import type { ModelAvailability } from '../resilience/circuit-breaker-manager.js';
 
 export type TierLevel = 'lite' | 'plus' | 'pro' | 'ultra';
 
@@ -188,6 +192,15 @@ export interface ExecutionResult {
   failoverPath?: string[];
   inplaceRetries?: number;
   breakerState?: string;
+  /**
+   * ADR-0019 P3 step 3 (additive — old readers never see these): the account
+   * that served the turn (display-safe keyHash prefix; undefined = the legacy
+   * no-prefix/baked-key path), that pair's breaker snapshot, and the model
+   * aggregate summary for the served model.
+   */
+  servedAccountPrefix?: string;
+  scopedBreakerSnap?: CircuitBreakerSnapshot;
+  modelAvailability?: ModelAvailability;
   /**
    * Variant id resolved from a sibling `base-variant` / `base#variant` model
    * request (undefined when the client named a plain model).

@@ -483,7 +483,8 @@ describe('POST /api/admin/environments/import', () => {
       fs.readFileSync(path.join(HOME, 'envs', 'imported1', 'catalog', 'overrides.json'), 'utf8')
     );
     expect(landed.models['p||m'].disabled).toBe(true);
-    expect(getEnvMeta('imported1')?.description).toMatch(/imported from "alpha"/);
+    expect(getEnvMeta('imported1')?.description).toBeUndefined(); // provenance is structured, not prose
+    expect(getEnvMeta('imported1')?.importedFrom).toEqual({ name: 'alpha', appVersion: '9.9.9' });
   });
 
   it('collision with an existing env → 409 + suggestion, existing env untouched', async () => {

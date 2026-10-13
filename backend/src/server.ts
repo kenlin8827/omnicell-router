@@ -16,6 +16,7 @@ import { ProviderRegistry } from './providers/registry.js';
 import { FinOpsTracker } from './metrics/finops-tracker.js';
 import { APP_VERSION } from './version.js';
 import { TraceTracker, type ExecutionTrace } from './trace/tracker.js';
+import type { TripScope } from './resilience/types.js';
 import type { CaptureKeyIdentity } from './capture/recorder.js';
 
 const TIER_RANK: Record<string, number> = { lite: 1, plus: 2, pro: 3, ultra: 4 };
@@ -60,6 +61,82 @@ function distinctTraceKeys(traces: ExecutionTrace[]): CaptureKeyIdentity[] {
     if (t.apiKey && !m.has(t.apiKey.id)) m.set(t.apiKey.id, t.apiKey);
   }
   return [...m.values()];
+}
+
+/**
+ * Security P2-3 — drive-by CSRF verdict for state-changing /api/admin/* calls
+ * while webAuth is INACTIVE (cors origin:true + no session gate means any web
+ * page could POST/XHR at the admin surface):
+ *   - NO Origin/Referer (CLI, curl, local processes) -> untouched (null).
+ *   - Origin hostname loopback, or equal to the request Host -> allowed.
+ *   - Anything else -> blocked with a machine-readable reason.
+ * Residual risk (accepted, narrow fix): a page served from another loopback
+ * port can still target this gateway — the full story is the webAuth gate.
+ */
+// Strict loopback test for ATTACKER-CONTROLLED hostnames (Origin/Referer).
+// Deliberately NOT web-auth.ts's isLoopbackHost(): that helper classifies BIND
+// hosts, where its startsWith('127.') prefix is harmless; here the attacker owns
+// the whole '127.0.0.1.evil.test' domain and a prefix match lets the drive-by
+// through. WHATWG URL parsing (new URL, below) already canonicalizes IPv4
+// shorthands — 'http://127.1' and 'http://0x7f000001' both yield hostname
+// '127.0.0.1' — so any surviving multi-label hostname is a DNS name, never
+// loopback. Allowed: 'localhost', the '::1' literal (brackets stripped by the
+// caller), and a fully-valid dotted quad inside 127.0.0.0/8.
+const LOOPBACK_V4 = /^127\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){2}$/;
+function isExactLoopbackHost(host: string): boolean {
+  const h = host.toLowerCase();
+  return h === 'localhost' || h === '::1' || LOOPBACK_V4.test(h);
+}
+
+function crossOriginAdminVerdict(origin: string, requestHost: string | undefined): 'cross_origin_admin_request' | 'malformed_origin' | null {
+  let host = '';
+  try {
+    host = new URL(origin).hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  } catch {
+    // Unparsable Origin on a state-changing admin call — fail loud, fail closed.
+    return 'malformed_origin';
+  }
+  if (isExactLoopbackHost(host)) return null;
+  const reqHost = (requestHost || '').split(',')[0].split(':')[0].toLowerCase().trim();
+  if (reqHost && host === reqHost) return null;
+  return 'cross_origin_admin_request';
+}
+
+/**
+ * Router-canonical PATH for every gate in the preHandler below. find-my-way
+ * decodeURI's the request target ONCE (path portion only — it splits on the
+ * first '?'/'#', and encoded reserved sequences like %2f/%23 survive, see
+ * node_modules/find-my-way/lib/url-sanitizer.js safeDecodeURI) BEFORE matching,
+ * so a raw req.url prefix check is bypassable: '/%61pi/admin/…' routes to the
+ * real admin handler while rawUrl.startsWith('/api/admin/') misses it. find-my-
+ * way also accepts proxy-form absolute targets ('http://host/a/b') and routes
+ * their post-authority path (index.js getPathFromAbsoluteUrl) — mirrored below.
+ * A malformed encoding ('%ZZ') throws URIError; fastify rejects such targets
+ * with 400 FST_ERR_BAD_URL before any hook runs (probe-verified), so the null
+ * branch is defense-in-depth: the gate cannot PROVE the target is not
+ * admin-shaped, so it returns null and callers treat null as ADMIN /
+ * non-models / non-whitelisted — fail closed at every site.
+ * Chosen over req.routeOptions.url: that is only meaningful for MATCHED routes
+ * (four-oh-four context would leak through), and today's gates intentionally
+ * cover admin-shaped paths that never route (deny-before-404, e.g. the webAuth
+ * gate on /api/admin/<unknown>). Decoding with the router's exact semantics
+ * keeps the string predicate provably in step with what find-my-way matched.
+ */
+// Exported for tests (server-admin-csrf.test.ts): this mirrors find-my-way's
+// pre-route URL handling, and its edge cases (proxy-form targets, bad URIs)
+// deserve direct pinning, not only via HTTP injection.
+export function canonicalPath(rawUrl: string): string | null {
+  let bare = rawUrl.split('#')[0].split('?')[0];
+  if (!bare.startsWith('/')) {
+    const absolute = /^https?:\/\/[^/?#]+(\/.*)?$/i.exec(bare);
+    if (!absolute) return null; // proxy-form junk, '*', unparseable → fail closed
+    bare = absolute[1] ?? '/'; // authority-only target routes as '/'
+  }
+  try {
+    return decodeURI(bare);
+  } catch {
+    return null;
+  }
 }
 
 export function createServer(
@@ -138,19 +215,52 @@ export function createServer(
   };
 
   /** /v1/models + /v1/models/:model — the anonymous-tolerant models surface. */
-  const isModelsSurface = (rawUrl: string): boolean =>
-    rawUrl === '/v1/models' || rawUrl.startsWith('/v1/models/');
+  const isModelsSurface = (path: string | null): boolean =>
+    path !== null && (path === '/v1/models' || path.startsWith('/v1/models/'));
 
   app.addHook('preHandler', async (req, reply) => {
     const { activeKeys, adminKey } = resolveActiveAuthConfig();
-    const rawUrl = req.url.split('?')[0];
+    // Canonical router view of req.url (see canonicalPath): EVERY gate below
+    // tests this, never the raw string — '%61pi'-style encodings and proxy-
+    // form targets route normally but hide from raw prefix checks.
+    const path = canonicalPath(req.url);
+    // null (URIError / unparseable target) fails closed AS admin: it can never
+    // reach a handler either way (find-my-way 404s it), so admin-shaped
+    // treatment is the strictest choice at every gate below.
+    const isAdminSurface = path === null || path.startsWith('/api/admin/');
+
+    // Security P2-3: webAuth-inactive admin writes must be same-host or
+    // loopback-origin (keyless CLI/curl/local carry no Origin and pass).
+    // When webAuth is ACTIVE the session gate below already refuses
+    // cookie-less cross-origin writes (401) — nothing to add there.
+    if (req.method !== 'GET' && isAdminSurface && !isWebAuthActive(config)) {
+      const originHeader = (req.headers.origin as string | undefined) || (req.headers.referer as string | undefined);
+      if (originHeader) {
+        const verdict = crossOriginAdminVerdict(originHeader, req.headers.host);
+        if (verdict) {
+          // Deterministic abort via hijack (same precedent as the webAuth
+          // gate below): a plain reply.send() finalizes a tick later and the
+          // route lifecycle races it under inject ("Reply was already sent").
+          reply.hijack();
+          reply.raw.writeHead(403, { 'content-type': 'application/json; charset=utf-8' });
+          reply.raw.end(
+            JSON.stringify({
+              error: 'cross_origin_admin_request',
+              reasonCode: verdict,
+              message: `State-changing /api/admin/* requests must carry no Origin, a loopback Origin, or an Origin matching this host (got '${originHeader}').`,
+            })
+          );
+          return;
+        }
+      }
+    }
 
     // Console webAuth gate — independent of the inference-surface API-key
     // auth below. When active, /api/admin/* (except the auth endpoints
     // themselves) requires a login session cookie OR the master adminApiKey
     // as Bearer/x-api-key (programmatic access). The SPA HTML + hashed
     // assets under /admin* stay open — the login view lives client-side.
-    if (rawUrl.startsWith('/api/admin/') && !isAdminAuthEndpoint(rawUrl) && isWebAuthActive(config)) {
+    if (isAdminSurface && !(path !== null && isAdminAuthEndpoint(path)) && isWebAuthActive(config)) {
       const cookieToken = parseSessionCookie(req.headers.cookie);
       let consoleAuthed = verifySessionToken(cookieToken);
       if (!consoleAuthed) {
@@ -197,11 +307,13 @@ export function createServer(
     // Inference endpoints (/v1/chat/completions, /v1/messages) stay
     // auth-protected: /v1 is the client protocol surface.
     if (
-      rawUrl === '/' ||
-      rawUrl === '/admin' ||
-      rawUrl.startsWith('/admin/') ||
-      rawUrl.startsWith('/api/admin/') ||
-      rawUrl === '/health'
+      path !== null && (
+        path === '/' ||
+        path === '/admin' ||
+        path === '/health' ||
+        path.startsWith('/admin/') ||
+        path.startsWith('/api/admin/')
+      )
       // NOTE: /v1/models is NOT whitelisted — the preHandler enforces its
       // three-tier auth itself (anonymous → full listing, invalid key → 401,
       // valid key → policy-filtered view) and the handlers read the policy
@@ -219,7 +331,7 @@ export function createServer(
       // Models surface: anonymous catalog browsing stays open from ANY source
       // (low-sensitivity metadata; the money is behind the inference gateways,
       // which still require a key). A PRESENTED key must still be valid.
-      if (isModelsSurface(rawUrl)) return;
+      if (isModelsSurface(path)) return;
       return reply.status(401).send({
         error: {
           message: 'Missing API Key. Please provide Authorization: Bearer <key> or x-api-key header.',
@@ -271,30 +383,114 @@ export function createServer(
   });
 
   // 1C. Reset Tripped Circuit Breakers (Admin recovery after quota top-up)
-  app.post('/api/admin/health/circuit-breakers/reset', async (req) => {
-    const query = req.query as { model?: string };
-    const body = req.body as { model?: string } | undefined;
+  // ADR-0019 P3 step 2 — optional `scope` (default 'model' = legacy behavior):
+  //   model   -> the model breaker (bare modelId); no model = reset everything
+  //   account -> every pair breaker of one credential (keyHash prefix)
+  //   pair    -> one (model, credential) breaker
+  // Resetting an account never lifts its SUSPECT flag — that is administrative
+  // state and needs 1E (or a console reconnect / Push).
+  app.post('/api/admin/health/circuit-breakers/reset', async (req, reply) => {
+    const query = req.query as { model?: string; account?: string; scope?: string };
+    const body = (req.body || {}) as { model?: string; account?: string; scope?: string };
     const targetModel = query?.model || body?.model;
-    const result = registry.getCircuitBreakerManager().reset(targetModel);
-    return {
-      status: 'ok',
-      ...result,
-    };
+    const account = query?.account || body?.account;
+    const scopeRaw = body?.scope || query?.scope || 'model';
+    const cbManager = registry.getCircuitBreakerManager();
+
+    if (scopeRaw !== 'model' && scopeRaw !== 'account' && scopeRaw !== 'pair') {
+      return reply.status(400).send({
+        status: 'error',
+        message: `Unknown scope '${scopeRaw}' (expected 'model', 'account' or 'pair')`,
+      });
+    }
+    if (scopeRaw !== 'model' && !account) {
+      return reply.status(400).send({
+        status: 'error',
+        message: `scope '${scopeRaw}' requires an account (keyHash prefix)`,
+      });
+    }
+    if (scopeRaw === 'pair' && !targetModel) {
+      return reply.status(400).send({ status: 'error', message: "scope 'pair' requires a model" });
+    }
+
+    const scope = scopeRaw as TripScope;
+    const result = cbManager.resetByScope(scope, {
+      modelId: targetModel,
+      keyHashPrefix: account,
+      providerId: targetModel ? registry.getModel(targetModel)?.provider : undefined,
+    });
+    return { status: 'ok', scope, model: targetModel, account, ...result };
   });
 
-  // 1D. Manually trip a model's circuit breaker (admin takes a model out of rotation from the console)
+  // 1D. Manually trip a circuit breaker (admin takes a model, one credential,
+  // or one (model, credential) pair out of rotation from the console).
+  // Legacy body {model, reason?, cooldownMs?} is scope 'model' = today's trip.
   app.post('/api/admin/health/circuit-breakers/trip', async (req, reply) => {
-    const query = req.query as { model?: string };
-    const body = (req.body || {}) as { model?: string; reason?: string; cooldownMs?: number };
+    const query = req.query as { model?: string; account?: string; scope?: string };
+    const body = (req.body || {}) as {
+      model?: string;
+      reason?: string;
+      cooldownMs?: number;
+      scope?: string;
+      account?: string;
+    };
     const targetModel = query?.model || body?.model;
-    if (!targetModel) {
+    const account = query?.account || body?.account;
+    const scopeRaw = body?.scope || query?.scope || 'model';
+    const cbManager = registry.getCircuitBreakerManager();
+
+    if (scopeRaw !== 'model' && scopeRaw !== 'account' && scopeRaw !== 'pair') {
+      return reply.status(400).send({
+        status: 'error',
+        message: `Unknown scope '${scopeRaw}' (expected 'model', 'account' or 'pair')`,
+      });
+    }
+    if (scopeRaw === 'model' && !targetModel) {
       return reply.status(400).send({ status: 'error', message: 'Model id is required (?model= or body.model)' });
     }
-    const result = registry.getCircuitBreakerManager().trip(targetModel, {
-      reason: body.reason,
-      cooldownMs: typeof body.cooldownMs === 'number' ? body.cooldownMs : undefined,
-    });
-    return { status: 'ok', model: targetModel, ...result };
+    if (scopeRaw !== 'model' && !account) {
+      return reply.status(400).send({
+        status: 'error',
+        message: `scope '${scopeRaw}' requires an account (keyHash prefix)`,
+      });
+    }
+    if (scopeRaw === 'pair' && !targetModel) {
+      return reply.status(400).send({ status: 'error', message: "scope 'pair' requires a model" });
+    }
+
+    const scope = scopeRaw as TripScope;
+    // A manual trip is a temporary takedown with a cooldown; it NEVER marks
+    // SUSPECT (that is the administrative state an auth failure earns).
+    const result = cbManager.tripByScope(
+      scope,
+      {
+        modelId: targetModel,
+        keyHashPrefix: account,
+        providerId: targetModel ? registry.getModel(targetModel)?.provider : undefined,
+      },
+      { reason: body.reason, cooldownMs: typeof body.cooldownMs === 'number' ? body.cooldownMs : undefined }
+    );
+    if (result.affected === 0) {
+      return reply.status(400).send({ status: 'error', scope, model: targetModel, account, message: result.message });
+    }
+    return { status: 'ok', scope, model: targetModel, account, ...result };
+  });
+
+  // 1E. Clear an account's SUSPECT flag (ADR-0019 Decision 6). The flag is set
+  // by a confirmed-bad credential and never decays on its own; the console's
+  // reconnect/Push paths clear it implicitly, this is the explicit admin door.
+  app.post('/api/admin/health/suspect-accounts/clear', async (req, reply) => {
+    const query = req.query as { provider?: string; account?: string };
+    const body = (req.body || {}) as { provider?: string; account?: string };
+    const providerId = body.provider || query.provider;
+    const account = body.account || query.account;
+    if (!providerId || !account) {
+      return reply
+        .status(400)
+        .send({ status: 'error', message: 'Both provider and account (keyHash prefix) are required' });
+    }
+    const cleared = registry.getCircuitBreakerManager().getAccountStateStore().clear(providerId, account);
+    return { status: 'ok', provider: providerId, account, cleared };
   });
 
   // 2. OpenAI-compatible Models list

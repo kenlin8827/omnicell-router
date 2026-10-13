@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { LLMProvider, type UpstreamEventContext } from './base.js';
+import { LLMProvider, type UpstreamEventContext, type CallCredential } from './base.js';
 import { ModelRegistration, ProviderConfig } from '../config/types.js';
 import { ChatCompletionRequest, ChatCompletionResponse, ToolCall } from '../types/openai.js';
 import type { ReasoningEffort } from '../types/router.js';
@@ -234,12 +234,14 @@ export class AnthropicProvider implements LLMProvider {
   public async createCompletion(
     request: ChatCompletionRequest,
     model: ModelRegistration,
-    upstreamEventContext?: UpstreamEventContext
+    upstreamEventContext?: UpstreamEventContext,
+    credential?: CallCredential
   ): Promise<ChatCompletionResponse> {
     const url = anthropicMessagesUrl(this.config.baseUrl);
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      'x-api-key': this.config.apiKey,
+      // Per-call credential (ADR-0019 P3 step 1) outranks the boot-baked key.
+      'x-api-key': credential?.key ?? this.config.apiKey,
       'anthropic-version': '2023-06-01',
       'anthropic-beta': 'prompt-caching-2024-07-31',
       ...this.config.headers,

@@ -69,6 +69,12 @@ export interface EnvMeta {
   createdAt: string;
   schemaVersion: number;
   description?: string;
+  /**
+   * Import provenance — structured data, never generated prose: the console
+   * renders it localized from the viewer's UI locale. Written only by the
+   * import route (archive manifest's source stamp).
+   */
+  importedFrom?: { name: string; appVersion: string };
 }
 
 /** Where every state file of an environment lives. */
@@ -90,6 +96,8 @@ export interface EnvInfo {
   configPath: string;
   createdAt: string | null;
   description?: string;
+  /** Import provenance (see EnvMeta.importedFrom). */
+  importedFrom?: { name: string; appVersion: string };
   /** True for the env the next boot resolves (OCR_ENV/pointer, lenient). */
   active: boolean;
 }
@@ -371,7 +379,12 @@ export function ensureEnvScaffold(name: string): EnvPaths {
  * default template) config.yaml. Does NOT touch the pointer — switching is a
  * separate, restart-requiring step.
  */
-export async function createEnv(opts: { name: string; type?: EnvType; description?: string }): Promise<EnvInfo> {
+export async function createEnv(opts: {
+  name: string;
+  type?: EnvType;
+  description?: string;
+  importedFrom?: EnvMeta['importedFrom'];
+}): Promise<EnvInfo> {
   const { name } = opts;
   assertValidNewName(name, 'new environment name');
   if (findExistingEnvNameCi(name)) {
@@ -385,6 +398,7 @@ export async function createEnv(opts: { name: string; type?: EnvType; descriptio
     createdAt: new Date().toISOString(),
     schemaVersion: ENV_SCHEMA_VERSION,
     ...(opts.description ? { description: opts.description } : {}),
+    ...(opts.importedFrom ? { importedFrom: opts.importedFrom } : {}),
   };
   writeEnvMeta(meta);
   // Blank config = the same annotated DEFAULT_CONFIG template a fresh install
@@ -406,7 +420,12 @@ export async function createEnv(opts: { name: string; type?: EnvType; descriptio
  * right after by the import pipeline. Type defaults to regular; a sandbox
  * archive restoring into a non-default env keeps its type.
  */
-export async function recreateEnv(opts: { name: string; type?: EnvType; description?: string }): Promise<EnvInfo> {
+export async function recreateEnv(opts: {
+  name: string;
+  type?: EnvType;
+  description?: string;
+  importedFrom?: EnvMeta['importedFrom'];
+}): Promise<EnvInfo> {
   ensureEnvScaffold(opts.name);
   writeEnvMeta({
     name: opts.name,
@@ -414,6 +433,7 @@ export async function recreateEnv(opts: { name: string; type?: EnvType; descript
     createdAt: new Date().toISOString(),
     schemaVersion: ENV_SCHEMA_VERSION,
     ...(opts.description ? { description: opts.description } : {}),
+    ...(opts.importedFrom ? { importedFrom: opts.importedFrom } : {}),
   });
   return toEnvInfo(opts.name);
 }
@@ -526,6 +546,7 @@ function toEnvInfo(name: string): EnvInfo {
     configPath: paths.configPath,
     createdAt: meta?.createdAt ?? null,
     ...(meta?.description ? { description: meta.description } : {}),
+    ...(meta?.importedFrom ? { importedFrom: meta.importedFrom } : {}),
     // Lenient "what the next boot resolves" flag (peekEnvName) — listing a
     // broken OCR_ENV must not throw; the boot fail-fast lives in
     // resolveEnvName and the running gate's booted env comes via the

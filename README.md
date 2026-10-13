@@ -40,7 +40,7 @@ By combining **hierarchical 3-layer model-driven routing**, **monotonic session 
 ## Quick Start
 
 ### 1. Requirements
-* **OpenCode v2**: Local OpenCode daemon running (default port `49374`).
+* **OpenCode v2** — required. OCR targets opencode v2 (provider config in the `providers` node, credentials in `opencode.db` + its HTTP service). **opencode v1 is not supported**: on a v1 install OCR keeps working but degrades — providers and keys are managed in OCR's own store (`~/.opencode-router/credentials.json`), which opencode v1 cannot read, so they serve OCR's gateway only. The console badges this with an explicit warning. Upgrade opencode to v2 to share one credential truth.
 * **Bun** (Recommended for peak performance): `>= 1.0`, or **Node.js**: `>= 18`.
 
 ### 2. Installation

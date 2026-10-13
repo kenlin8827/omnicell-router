@@ -18,9 +18,10 @@ import {
  * OpenCode client adapter.
  *
  * OpenCode v2 config schema notes:
- *  - Custom/static providers live under the *singular* `provider` node
- *    (NOT `providers`), each entry being an AI SDK provider package binding:
- *      "provider": { "<id>": { "npm": "@ai-sdk/openai-compatible", "options": { "baseURL": ... }, "models": {...} } }
+ *  - Custom/static providers live under the *plural* `providers` node — opencode v2's
+ *    native slot, decoded against the v2 schema (the singular `provider` node is the
+ *    retired v1 slot: same name, wrong decoder, silent whole-node drops):
+ *      "providers": { "<id>": { "package": "@opencode/ai/providers/openai-compatible", "settings": { "baseURL": ... }, "models": {...} } }
  *  - The file is JSONC (comments allowed) — every write must be a
  *    comment-preserving text-level edit (see opencode/user-config.ts).
  *  - The default model is selected via the top-level `model` key ("provider/model-id").
@@ -69,9 +70,9 @@ function buildRouterProviderNode(port: number, model?: string, extraModels?: str
     if (id && !models[id]) models[id] = modelEntry(id);
   }
   return {
-    npm: '@ai-sdk/openai-compatible',
     name: 'OpenCode Router',
-    options: {
+    package: '@opencode/ai/providers/openai-compatible',
+    settings: {
       baseURL: targetUrl,
       // Gateway-issued key when the user picks one; the placeholder works
       // only if config.apiKeys contains it.
@@ -100,10 +101,10 @@ export class OpenCodeClientAdapter implements ClientAdapter {
       // Tolerant read: JSONC first (comments-safe), plain-JSON fallback.
       const data = readJsonc(configPath) ?? safeReadJson(configPath);
       if (data) {
-        const routerEntry = data.provider?.[ROUTER_PROVIDER_ID];
-        if (routerEntry?.options?.baseURL) {
+        const routerEntry = data.providers?.[ROUTER_PROVIDER_ID];
+        if (routerEntry?.settings?.baseURL) {
           hooked = true;
-          details = `Routed to OpenCode Router gateway (${routerEntry.options.baseURL})`;
+          details = `Routed to OpenCode Router gateway (${routerEntry.settings.baseURL})`;
         } else {
           details = 'Active with native providers';
         }
@@ -124,7 +125,7 @@ export class OpenCodeClientAdapter implements ClientAdapter {
     // Extra concrete models exposed in the provider's switcher (non-virtual entries)
     const mainId = stripPrefix(hookedData?.model);
     const AUTO_MODEL_KEYS = new Set(['auto', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra']);
-    const providerModels = hookedData?.provider?.[ROUTER_PROVIDER_ID]?.models;
+    const providerModels = hookedData?.providers?.[ROUTER_PROVIDER_ID]?.models;
     const extraModels =
       providerModels && typeof providerModels === 'object'
         ? Object.keys(providerModels).filter(k => !AUTO_MODEL_KEYS.has(k) && k !== mainId)
@@ -158,9 +159,13 @@ export class OpenCodeClientAdapter implements ClientAdapter {
       createBackup(configPath);
     }
 
-    // 2. Inject the router provider under the correct singular `provider` node
-    //    using a comment-preserving JSONC edit.
-    patchJsonc(configPath, ['provider', ROUTER_PROVIDER_ID], buildRouterProviderNode(port, main, extraModels, apiKey));
+    // 2. Inject the router provider under opencode v2's native `providers` node
+    //    using a comment-preserving JSONC edit, and retire a legacy-slot twin left
+    //    by an older build (opencode reads both, but only one may exist).
+    patchJsonc(configPath, ['providers', ROUTER_PROVIDER_ID], buildRouterProviderNode(port, main, extraModels, apiKey));
+    if (readJsonc(configPath)?.provider?.[ROUTER_PROVIDER_ID]) {
+      patchJsonc(configPath, ['provider', ROUTER_PROVIDER_ID], undefined);
+    }
 
     // 3. Point the default model at the router (record previous for teardown)
     const current = readJsonc(configPath) || {};
@@ -209,6 +214,11 @@ export class OpenCodeClientAdapter implements ClientAdapter {
       return { success: false, message: `Could not parse OpenCode config at ${configPath}` };
     }
 
+    if (data.providers?.[ROUTER_PROVIDER_ID]) {
+      patchJsonc(configPath, ['providers', ROUTER_PROVIDER_ID], undefined);
+    }
+    // A legacy-slot twin from an older build is removed too — teardown must not
+    // leave a router node behind in either slot.
     if (data.provider?.[ROUTER_PROVIDER_ID]) {
       patchJsonc(configPath, ['provider', ROUTER_PROVIDER_ID], undefined);
     }

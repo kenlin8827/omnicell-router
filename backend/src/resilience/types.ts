@@ -21,6 +21,17 @@ export type NetworkFailureCause =
   | 'HARD_FAILURE'           // 402 unpaid, 401 dead key, 400 bad params (never retry in place)
   | 'UNKNOWN';
 
+/**
+ * ADR-0019 Decision 6 — blast radius of a trip once the failure is attributed
+ * to one credential of a multi-credential provider.
+ *  pair    = (model × credential) only — per-model rate limit, uncertain errors
+ *  account = this credential everywhere — account quota / dead key
+ *  model   = this model for every credential — outage / 5xx / network
+ * Absent on a diagnosis means "model", today's pre-P3 semantics. The same
+ * vocabulary serves manual (console/REST) trips: 'model' is the legacy scope.
+ */
+export type TripScope = 'pair' | 'account' | 'model';
+
 export interface ErrorDiagnosis {
   category: ErrorCategory;
   networkCause?: NetworkFailureCause; // fine-grained network jitter vs. hard failure reason
@@ -33,6 +44,15 @@ export interface ErrorDiagnosis {
   reason: string;
   retryAfterSeconds?: number;
   rawError?: any;
+  /**
+   * ADR-0019 P3 step 2 — set ONLY when the failure carried a credential
+   * attribution (`UpstreamError.usedCredentialKeyHashPrefix`), i.e. the request ran
+   * through a provider credential chain. Without it the breaker keeps the
+   * model-level semantics it has always had (single-credential degeneracy).
+   */
+  tripScope?: TripScope;
+  /** Account-scope failures that mean "this account is administratively bad" (dead key) — SUSPECT flag. */
+  accountSuspect?: boolean;
 }
 
 export interface CircuitBreakerConfig {
@@ -49,6 +69,15 @@ export interface CircuitBreakerConfig {
     enabled?: boolean;
     intervalMs?: number; // background liveness sweep interval (default: 60000 = 1min)
   };
+  /**
+   * ADR-0019 Decision 7 — session↔account affinity window. A session idle
+   * past this window is re-selected as if new (the upstream prompt cache is
+   * gone anyway, so the switch is free). Default 300000 = the Anthropic
+   * cache TTL (5 min, 2026-03-06); OpenAI caches are load-dependent.
+   */
+  accountAffinity?: {
+    cacheTtlMs?: number;
+  };
 }
 
 export interface CircuitBreakerSnapshot {
@@ -56,6 +85,12 @@ export interface CircuitBreakerSnapshot {
   provider: string;
   tier?: TierLevel;
   state: CircuitBreakerState;
+  /**
+   * ADR-0019 P3 step 2 — present only on a PAIR breaker snapshot (model × this
+   * credential's display-safe keyHash prefix). Absent = the model breaker,
+   * which is what every pre-P3 consumer already reads.
+   */
+  keyHashPrefix?: string;
   reason?: string;
   category?: ErrorCategory;
   consecutiveFailures: number;

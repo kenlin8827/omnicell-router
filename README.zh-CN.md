@@ -38,7 +38,7 @@
 ## 快速上手
 
 ### 1. 环境依赖
-* **OpenCode v2**：本地运行的 OpenCode 守护进程（默认端口 `49374`）。
+* **OpenCode v2**：必需。OCR 面向 opencode v2（provider 配置写在 `providers` 节点，凭证存放在 `opencode.db` 及其 HTTP 服务）。**不支持 opencode v1**：在 v1 机器上 OCR 仍可运行，但会降级——provider 与密钥由 OCR 自有凭证库（`~/.opencode-router/credentials.json`）管理，而 opencode v1 读不到它，因此这些配置只服务于 OCR 网关。控制台会显示明确的告警徽章。升级到 opencode v2 即可共享同一份凭证真相。
 * **Bun**（推荐，极致速度）：`>= 1.0`，或 **Node.js**：`>= 18`。
 
 ### 2. 安装

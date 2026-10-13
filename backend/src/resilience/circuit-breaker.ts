@@ -21,6 +21,11 @@ export const DEFAULT_CIRCUIT_BREAKER_CONFIG: Required<CircuitBreakerConfig> = {
     enabled: false,
     intervalMs: 60 * 1000,
   },
+  // Carried like activeProbing (the breaker itself never probes): the
+  // affinity window is read by the selection layer from RouterConfig.
+  accountAffinity: {
+    cacheTtlMs: 300_000,
+  },
 };
 
 export class CircuitBreaker {
@@ -73,6 +78,10 @@ export class CircuitBreaker {
       activeProbing: {
         enabled: config?.activeProbing?.enabled ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.activeProbing.enabled,
         intervalMs: config?.activeProbing?.intervalMs ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.activeProbing.intervalMs,
+      },
+      accountAffinity: {
+        cacheTtlMs:
+          config?.accountAffinity?.cacheTtlMs ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.accountAffinity.cacheTtlMs,
       },
     };
     this.currentCooldownMs = this.config.initialCooldownMs;

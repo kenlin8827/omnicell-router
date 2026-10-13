@@ -106,6 +106,12 @@ const DEFAULT_CONFIG: RouterConfig = {
       enabled: false,
       intervalMs: 60000,
     },
+    accountAffinity: {
+      // ADR-0019 Decision 7 — a session keeps its account while its pair breaker is up;
+      // idle past this window it re-spreads like a new session (the upstream
+      // prompt cache is gone by then anyway). 300000 = Anthropic cache TTL.
+      cacheTtlMs: 300000,
+    },
   },
   retry: {
     enabled: true,
@@ -458,6 +464,8 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'circuitBreaker.halfOpenMaxProbes': '半开状态最大并发探测数',
   'circuitBreaker.activeProbing': '主动探测（冷却期内定时试探是否恢复）',
   'circuitBreaker.activeProbing.intervalMs': '探测间隔（毫秒）',
+  'circuitBreaker.accountAffinity': '会话账号亲和（多账号供应商：会话绑定一个账号，仅故障转移时切换，绝不负载均衡）',
+  'circuitBreaker.accountAffinity.cacheTtlMs': '亲和窗口（毫秒，默认 300000 = Anthropic 提示缓存 5 分钟）；空闲超过此窗口的会话按新会话重新分散选号',
   retry: '重试策略',
   'retry.inplace': '原地重试（同一模型）',
   'retry.inplace.maxAttempts': '额外重试次数',

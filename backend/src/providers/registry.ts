@@ -1,4 +1,4 @@
-import { LLMProvider, type UpstreamEventContext } from './base.js';
+import { LLMProvider, type UpstreamEventContext, type CallCredential } from './base.js';
 import { OpenAICompatibleProvider } from './openai-compatible.js';
 import { AnthropicProvider } from './anthropic.js';
 import { ResponsesProvider } from './responses.js';
@@ -6,7 +6,7 @@ import { GoogleProvider } from './google.js';
 import { ModelRegistration, ModelVariant, ProviderConfig, RouterConfig, TiersConfig, TierMemberRule, ComboConfig, ComboModelRef } from '../config/types.js';
 import { PoolMembership, ReasoningEffort, TierLevel, EFFORT_LADDER, downgradeReasoning, modelSupportsEfforts } from '../types/router.js';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
-import { CircuitBreakerManager, UpstreamError } from '../resilience/index.js';
+import { CircuitBreakerManager, UpstreamError, type ModelAvailability } from '../resilience/index.js';
 import { globMatchAny } from '../utils/glob.js';
 import { loadConfig } from '../config/index.js';
 import { resolveTierMembers, claimModel, applyEffortMap, MEMBER_TIER_ORDER, TIER_DESCENDING_ORDER, type MemberClaim } from './member-match.js';
@@ -59,6 +59,15 @@ export class ProviderRegistry {
   private providerHosts = new Map<string, string | undefined>();
   /** Sibling-id index for model variants: `<baseId>-<variantId>` → base + variant. */
   private variantIndex = new Map<string, { baseId: string; variant: ModelVariant }>();
+  /**
+   * ADR-0019 P3 step 1 — per-provider credential chains for per-call selection,
+   * populated ONLY through `registerProvider` (the boot path hands raw keys from
+   * `buildDirectPool` here and nowhere else). NEVER serialize: masked account
+   * views keep going through the credential store's `AccountMeta`. Chain order =
+   * selection priority (active head first); chain head = the boot-baked
+   * `config.apiKey` (inline-precedence case included — boot prepends it).
+   */
+  private credentialChains = new Map<string, CallCredential[]>();
   private mockMode = false;
   private autoRefreshTierMatch = true;
   private lastMatchRefreshAt = 0;
@@ -140,8 +149,9 @@ export class ProviderRegistry {
     }
   }
 
-  public registerProvider(name: string, provider: LLMProvider): void {
+  public registerProvider(name: string, provider: LLMProvider, credentialChain?: CallCredential[]): void {
     this.providers.set(name, provider);
+    if (credentialChain?.length) this.credentialChains.set(name, credentialChain);
   }
 
   public registerModel(model: ModelRegistration, isDefault = false): void {
@@ -162,6 +172,20 @@ export class ProviderRegistry {
 
   public getCircuitBreakerManager(): CircuitBreakerManager {
     return this.circuitBreakerManager;
+  }
+
+  /**
+   * ADR-0019 Decision 6 — aggregate model availability across its credential chain:
+   * the chain's credential prefixes feed `modelAvailability`, so a model whose
+   * credentials are ALL pair-OPEN/SUSPECT reads as unavailable even while its
+   * model breaker is CLOSED, and a model trip marks every prefix open.
+   * Chain-less providers (config.yaml boot) pass an empty prefix list and the
+   * aggregate degenerates to the plain model check.
+   */
+  public modelAvailable(model: ModelRegistration): ModelAvailability {
+    const chain = this.credentialChains.get(model.provider);
+    const prefixes = chain?.map((c) => c.keyHashPrefix) ?? [];
+    return this.circuitBreakerManager.modelAvailability(model.id, prefixes);
   }
 
   public setDefaultTierModel(tier: TierLevel, model: ModelRegistration): void {
@@ -214,6 +238,25 @@ export class ProviderRegistry {
    *  detect native System One upstreams and reach their baseUrl/apiKey. */
   public getProviderConfig(name: string): ProviderConfig | undefined {
     return this.providerConfigs.get(name);
+  }
+
+  /**
+   * ADR-0019 P3 step 1 — the provider's ordered credential chain (selection
+   * priority order), or undefined when no chain was registered (config.yaml
+   * providers, mock/stub call sites) — callers then use the baked config key.
+   * Raw keys: in-process consumers only, never serialize.
+   */
+  public getCredentialChain(name: string): CallCredential[] | undefined {
+    return this.credentialChains.get(name);
+  }
+
+  /**
+   * Active credential (chain head = the boot-baked key). Providers without a
+   * registered chain return undefined — behavior identical to reading
+   * `getProviderConfig(name).apiKey` directly (single-key degeneracy).
+   */
+  public getActiveCredential(name: string): CallCredential | undefined {
+    return this.credentialChains.get(name)?.[0];
   }
 
   /**
@@ -415,7 +458,11 @@ export class ProviderRegistry {
     list = this.sortForChain(list, tier, this.tierPolicies);
 
     if (healthyOnly) {
-      return list.filter(m => this.circuitBreakerManager.isAvailable(m.id));
+      // Decision 6 aggregate — a model is healthy iff at least one of its
+      // credentials still serves (pair breaker not OPEN, account not SUSPECT) and the
+      // model itself is not down. Single-chain/chain-less providers behave
+      // exactly like the old isAvailable read (no pair breakers exist to be open).
+      return list.filter((m) => this.modelAvailable(m).available);
     }
     return list;
   }
@@ -700,7 +747,9 @@ export class ProviderRegistry {
   public pickComboLeader(comboId: string, members: ModelRegistration[]): ModelRegistration {
     if (members.length <= 1) return members[0];
     const strategy = this.combos.get(comboId)?.selection ?? 'priority';
-    const healthy = members.filter(m => this.circuitBreakerManager.isAvailable(m.id));
+    // Decision 6 aggregate (same rule as the tier pools): a member whose every
+    // account is out must not lead a combo.
+    const healthy = members.filter((m) => this.modelAvailable(m).available);
     const pool = healthy.length > 0 ? healthy : members;
     const weights = new Map<string, number>();
     for (const entry of this.combos.get(comboId)?.models || []) {
@@ -788,10 +837,20 @@ export class ProviderRegistry {
     };
   }
 
+  /**
+   * Execute one completion. `credentialKeyHashPrefix` (ADR-0019 P3 step 1)
+   * selects one credential of the provider's registered chain by its Decision 5
+   * identity; omitted = the boot-baked default (executor `config.apiKey`).
+   * On failure the thrown error is re-raised UNCHANGED in class/shape with the
+   * used credential's display-safe prefix stamped on `usedCredentialKeyHashPrefix`
+   * when a chain is registered — the attribution seam for the P3 pair-level
+   * breaker work (no classification changes here).
+   */
   public async execute(
     request: ChatCompletionRequest,
     model: ModelRegistration,
-    upstreamEventContext?: UpstreamEventContext
+    upstreamEventContext?: UpstreamEventContext,
+    credentialKeyHashPrefix?: string
   ): Promise<ChatCompletionResponse> {
     if (this.mockMode) {
       return this.mockExecute(request, model);
@@ -802,7 +861,32 @@ export class ProviderRegistry {
       throw new Error(`Provider '${model.provider}' not found for model '${model.id}'`);
     }
 
-    return provider.createCompletion(request, model, upstreamEventContext);
+    const chain = this.credentialChains.get(model.provider);
+    let credential: CallCredential | undefined;
+    if (credentialKeyHashPrefix !== undefined) {
+      credential = chain?.find((c) => c.keyHashPrefix === credentialKeyHashPrefix);
+      if (!credential) {
+        // Loud fail (cp-failfast): a selector matching no chain entry means the
+        // caller routes on account state that is stale w.r.t. this boot's pool
+        // — silently serving the baked key would hide exactly the drift the
+        // keyHash anchor exists to catch.
+        throw new Error(
+          `Unknown credential selector '${credentialKeyHashPrefix}' for provider '${model.provider}'`
+        );
+      }
+    }
+
+    try {
+      return await provider.createCompletion(request, model, upstreamEventContext, credential);
+    } catch (err) {
+      // Attribution stamp: selector hit → that account; no selector → the chain
+      // head, which IS the baked key boot executed with (registry invariant).
+      const used = credential ?? chain?.[0];
+      if (used && err && (typeof err === 'object' || typeof err === 'function')) {
+        (err as { usedCredentialKeyHashPrefix?: string }).usedCredentialKeyHashPrefix = used.keyHashPrefix;
+      }
+      throw err;
+    }
   }
 
   /**

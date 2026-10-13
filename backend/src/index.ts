@@ -76,6 +76,28 @@ async function main() {
     console.log('[OCR] FinOps persistence: in-memory only (no bun:sqlite)');
   }
 
+  // 0.6 ADR-0019 B2: bind the credential store (Decision 2) and run the
+  //     one-shot reconcile gate (Decision 4) BEFORE the direct pool builds —
+  //     auth.json-only keys are pushed into opencode v2 and the auth.json
+  //     write path gets disabled before the B3/B4 consumer flip makes store
+  //     reads matter. Never crashes boot: failures land as excluded entries
+  //     on StoreStatus and the bind stands. B3: the excluded entries are no
+  //     longer printed here — buildDirectPool merges them into its own
+  //     excluded[] (reasonCode-carrying) and the pool log below prints all.
+  try {
+    const { getCredentialStore, getCredentialStoreStatus, ensureReconciled } = await import(
+      './opencode/credentials/index.js'
+    );
+    const credStore = await getCredentialStore();
+    const credStatus = await getCredentialStoreStatus();
+    const reconcileResult = await ensureReconciled(credStore, credStatus);
+    if (reconcileResult.ran) {
+      console.log(`[OCR]   credential reconcile: ${reconcileResult.entries.length} entries processed (auth.json write path disabled)`);
+    }
+  } catch (err: any) {
+    console.warn(`[OCR] credential store bind/reconcile failed (boot continues): ${err?.message ?? err}`);
+  }
+
   let registry: ProviderRegistry;
   try {
     const boot = await buildDirectPool();
@@ -83,7 +105,13 @@ async function main() {
 
     registry = new ProviderRegistry(config, boot.models.length === 0);
     for (const inst of boot.instances) {
-      registry.registerProvider(inst.name, new DispatchingProvider(inst.config, inst.wireBases));
+      // ADR-0019 P3 step 1 — the credential chain rides straight into the
+      // registry (raw keys stay in-process; no console/API serialization).
+      registry.registerProvider(
+        inst.name,
+        new DispatchingProvider(inst.config, inst.wireBases),
+        inst.credentialChain
+      );
     }
     console.log(
       `[OCR] Direct pool: ${boot.instances.length} providers / ${boot.models.length} models (no daemon)`

@@ -1,4 +1,4 @@
-import { LLMProvider, type UpstreamEventContext } from './base.js';
+import { LLMProvider, type UpstreamEventContext, type CallCredential } from './base.js';
 import { ModelRegistration, ProviderConfig } from '../config/types.js';
 import { ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
 import { UpstreamError } from '../resilience/error-classifier.js';
@@ -22,12 +22,15 @@ export class OpenAICompatibleProvider implements LLMProvider {
   public async createCompletion(
     request: ChatCompletionRequest,
     model: ModelRegistration,
-    upstreamEventContext?: UpstreamEventContext
+    upstreamEventContext?: UpstreamEventContext,
+    credential?: CallCredential
   ): Promise<ChatCompletionResponse> {
     const url = `${this.config.baseUrl.replace(/\/+$/, '')}/chat/completions`;
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${this.config.apiKey}`,
+      // Per-call credential (ADR-0019 P3 step 1) outranks the boot-baked key;
+      // absent = baked key, byte-identical to every pre-P3 request.
+      Authorization: `Bearer ${credential?.key ?? this.config.apiKey}`,
       ...this.config.headers,
     };
 
@@ -169,12 +172,14 @@ export class OpenAICompatibleProvider implements LLMProvider {
 
   public async createStream(
     request: ChatCompletionRequest,
-    model: ModelRegistration
+    model: ModelRegistration,
+    credential?: CallCredential
   ): Promise<AsyncIterable<ChatCompletionChunk>> {
     const url = `${this.config.baseUrl.replace(/\/+$/, '')}/chat/completions`;
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${this.config.apiKey}`,
+      // Same per-call credential rule as createCompletion above.
+      Authorization: `Bearer ${credential?.key ?? this.config.apiKey}`,
       ...this.config.headers,
     };
 

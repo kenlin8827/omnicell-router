@@ -1,4 +1,4 @@
-import { LLMProvider, type UpstreamEventContext } from './base.js';
+import { LLMProvider, type UpstreamEventContext, type CallCredential } from './base.js';
 import { ModelRegistration, ProviderConfig } from '../config/types.js';
 import { ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
 import { WireKind } from './wire.js';
@@ -43,19 +43,21 @@ export class DispatchingProvider implements LLMProvider {
   public async createCompletion(
     request: ChatCompletionRequest,
     model: ModelRegistration,
-    upstreamEventContext?: UpstreamEventContext
+    upstreamEventContext?: UpstreamEventContext,
+    credential?: CallCredential
   ): Promise<ChatCompletionResponse> {
-    return this.exec(model).createCompletion(request, model, upstreamEventContext);
+    return this.exec(model).createCompletion(request, model, upstreamEventContext, credential);
   }
 
   public async createStream(
     request: ChatCompletionRequest,
-    model: ModelRegistration
+    model: ModelRegistration,
+    credential?: CallCredential
   ): Promise<AsyncIterable<ChatCompletionChunk>> {
     const exec = this.exec(model);
     if (!exec.createStream) {
       throw new Error(`线型 ${model.wire ?? 'openai'} 暂不支持原生流式`);
     }
-    return exec.createStream(request, model);
+    return exec.createStream(request, model, credential);
   }
 }

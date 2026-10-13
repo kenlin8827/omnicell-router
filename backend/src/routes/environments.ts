@@ -297,6 +297,10 @@ export function registerEnvironmentRoutes(app: FastifyInstance, deps: Environmen
 
       let info;
       try {
+        // Provenance is structured data, not generated prose: the console
+        // renders it localized from the viewer's locale (a baked-in English
+        // sentence would freeze wrong for non-English users).
+        const importedFrom = { name: v.source?.name ?? v.name, appVersion: v.source?.appVersion ?? 'unknown' };
         if (mode === 'replace') {
           // createEnv refuses reserved names — the restore path scaffolds
           // instead (bootstrap `default` included), writing NO blank config:
@@ -304,13 +308,13 @@ export function registerEnvironmentRoutes(app: FastifyInstance, deps: Environmen
           info = await recreateEnv({
             name: v.name,
             type: v.type,
-            description: `imported from "${v.source?.name ?? v.name}" (OCR ${v.source?.appVersion ?? 'unknown'})`,
+            importedFrom,
           });
         } else {
           info = await createEnv({
             name: v.name,
             type: v.type,
-            description: `imported from "${v.source?.name ?? v.name}" (OCR ${v.source?.appVersion ?? 'unknown'})`,
+            importedFrom,
           });
         }
       } catch (err) {

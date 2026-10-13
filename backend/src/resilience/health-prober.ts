@@ -2,12 +2,48 @@ import { CircuitBreakerManager } from './circuit-breaker-manager.js';
 import { ErrorClassifier } from './error-classifier.js';
 import { ModelRegistration } from '../config/types.js';
 import { ChatCompletionRequest } from '../types/openai.js';
+import type { CircuitBreakerSnapshot } from './types.js';
+
+/** One selectable credential of a provider chain (the registry's key material stays out). */
+export interface ProberCredential {
+  keyHashPrefix: string;
+}
 
 export interface ProberTargetResolver {
   getModel(modelId: string): ModelRegistration | undefined;
-  execute(request: ChatCompletionRequest, model: ModelRegistration): Promise<any>;
+  execute(
+    request: ChatCompletionRequest,
+    model: ModelRegistration,
+    upstreamEventContext?: unknown,
+    credentialKeyHashPrefix?: string
+  ): Promise<any>;
+  /**
+   * ADR-0019 P3 step 2 — the provider's credential chain in selection order.
+   * Absent (stub resolver) or empty (chain-less provider) => the prober probes
+   * the model with the boot-baked key, exactly as before P3.
+   */
+  getCredentialChain?(name: string): readonly ProberCredential[] | undefined;
 }
 
+/** One model's probe plan for a cycle: prefixes to try, in order. */
+export interface ProbePlan {
+  modelId: string;
+  prefixes: (string | undefined)[];
+}
+
+/**
+ * Active liveness sweep over tripped breakers (ADR-0008), scope-aware since
+ * ADR-0019 Decision 6:
+ *
+ *   model breaker down     -> probe the model through ONE representative credential
+ *   pair breaker down      -> probe the pairs that are due, within the per-model budget
+ *
+ * The budget is `circuitBreaker.halfOpenMaxProbes` reused, so one model never
+ * issues more than that many trial calls per cycle however many of its
+ * credentials are tripped. Selection inside a model is deliberately dumb — first
+ * chain entry that is neither OPEN nor SUSPECT. The prober validates; routing
+ * decisions belong to the selection layer.
+ */
 export class ActiveHealthProber {
   private manager: CircuitBreakerManager;
   private resolver: ProberTargetResolver;
@@ -41,40 +77,106 @@ export class ActiveHealthProber {
     }
   }
 
+  /** Trial-eligible: HALF_OPEN already, or OPEN whose cooldown has elapsed. */
+  private static isDue(s: CircuitBreakerSnapshot): boolean {
+    return s.state === 'HALF_OPEN' || (s.state === 'OPEN' && s.remainingCooldownMs <= 0);
+  }
+
+  /**
+   * Decide this cycle's calls WITHOUT executing them — separated so the budget
+   * and the representative pick are directly assertable. Returns one entry per
+   * model with something to validate; `prefixes` is capped by the budget.
+   */
+  public planProbes(): ProbePlan[] {
+    const byModel = new Map<string, { model?: CircuitBreakerSnapshot; pairs: CircuitBreakerSnapshot[] }>();
+    for (const s of this.manager.snapshotsWithPairs()) {
+      const entry = byModel.get(s.modelId) ?? { pairs: [] as CircuitBreakerSnapshot[] };
+      if (s.keyHashPrefix) entry.pairs.push(s);
+      else entry.model = s;
+      byModel.set(s.modelId, entry);
+    }
+
+    const plan: ProbePlan[] = [];
+    for (const [modelId, group] of byModel) {
+      const model = this.resolver.getModel(modelId);
+      if (!model) continue;
+
+      const chain = (this.resolver.getCredentialChain?.(model.provider) ?? []).map((c) => c.keyHashPrefix);
+      // Pair mode = a chain is registered AND this model has per-credential state
+      // (or more than one account to choose from). No chain => single-account
+      // degeneracy => the bare model probe today's prober performs; that also
+      // keeps a stale pair (chain removed after a disconnect) from starving the
+      // model probe, since the representative pick needs a live chain entry.
+      const multiAccountMode = chain.length > 1 || (chain.length > 0 && group.pairs.length > 0);
+      let budget = this.manager.getProbeBudget();
+      const prefixes: (string | undefined)[] = [];
+
+      if (group.model && ActiveHealthProber.isDue(group.model)) {
+        if (!multiAccountMode) {
+          prefixes.push(undefined);
+          budget--;
+        } else {
+          const representative = chain.find((prefix) => !this.manager.isPairOut(modelId, prefix));
+          // A down model breaker whose every credential is out has nothing to try this
+          // cycle — the pair breakers report their own cooldowns.
+          if (representative === undefined) continue;
+          prefixes.push(representative);
+          budget--;
+        }
+      }
+
+      for (const pair of group.pairs) {
+        if (budget <= 0) break;
+        if (!pair.keyHashPrefix || !ActiveHealthProber.isDue(pair)) continue;
+        // Never auto-return a SUSPECT account: it must be reconnected, not probed.
+        if (this.manager.isSuspect(modelId, pair.keyHashPrefix)) continue;
+        if (prefixes.includes(pair.keyHashPrefix)) continue;
+        prefixes.push(pair.keyHashPrefix);
+        budget--;
+      }
+
+      if (prefixes.length > 0) plan.push({ modelId, prefixes });
+    }
+    return plan;
+  }
+
   public async probeTrippedModels(): Promise<void> {
     if (this.isProbing) return;
     this.isProbing = true;
 
     try {
-      const snapshots = this.manager.getAllSnapshots();
-      // Target models that are in OPEN (and cooldown has elapsed) or in HALF_OPEN
-      const candidates = snapshots.filter(s => {
-        if (s.state === 'HALF_OPEN') return true;
-        if (s.state === 'OPEN' && s.remainingCooldownMs <= 0) return true;
-        return false;
-      });
-
-      for (const candidate of candidates) {
-        const model = this.resolver.getModel(candidate.modelId);
+      for (const probe of this.planProbes()) {
+        const model = this.resolver.getModel(probe.modelId);
         if (!model) continue;
-
-        const probeReq: ChatCompletionRequest = {
-          model: model.upstreamModel,
-          messages: [{ role: 'user', content: 'health_check_ping' }],
-          max_tokens: 1,
-        };
-
-        try {
-          await this.resolver.execute(probeReq, model);
-          // If successful, record success and close breaker!
-          this.manager.recordSuccess(model.id);
-        } catch (err: any) {
-          const diagnosis = ErrorClassifier.classify(err, model.id, model.provider);
-          this.manager.recordFailure(model.id, diagnosis, model.provider);
+        for (const prefix of probe.prefixes) {
+          await this.probeOne(model, prefix);
         }
       }
     } finally {
       this.isProbing = false;
+    }
+  }
+
+  /**
+   * One trial call. `credentialKeyHashPrefix` undefined = the boot-baked key.
+   * Outcomes go through the scoped API, so a pair/account verdict cannot cool
+   * the model for its healthy siblings; `registry.execute` re-stamps the used
+   * credential onto the error, which is what gives the diagnosis its scope.
+   */
+  private async probeOne(model: ModelRegistration, credentialKeyHashPrefix?: string): Promise<void> {
+    const probeRequest: ChatCompletionRequest = {
+      model: model.upstreamModel,
+      messages: [{ role: 'user', content: 'health_check_ping' }],
+      max_tokens: 1,
+    };
+
+    try {
+      await this.resolver.execute(probeRequest, model, undefined, credentialKeyHashPrefix);
+      // If successful, record success and close the breaker(s)!
+      this.manager.recordSuccessScoped(model.id, credentialKeyHashPrefix, model.provider);
+    } catch (err: any) {
+      const diagnosis = ErrorClassifier.classify(err, model.id, model.provider);
+      this.manager.recordFailureScoped(model.id, diagnosis, model.provider, credentialKeyHashPrefix);
     }
   }
 }

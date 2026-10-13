@@ -54,7 +54,30 @@ fs.writeFileSync(
   path.join(defaultEnvDir, 'env.json'),
   JSON.stringify({ name: 'default', type: 'regular', createdAt: new Date().toISOString(), schemaVersion: 1 })
 );
-const childEnv = { ...process.env, OCR_HOME: ocrHome, OCR_ENV: 'default' };
+// ADR-0018 spirit / ADR-0019 B4 workstream 4 — opencode paths are sandboxed
+// too: user-config.ts (auth.json/opencode.jsonc) and credentials/paths.ts
+// (auth.json, opencode.db, installed.version) resolve from XDG_CONFIG_HOME /
+// XDG_DATA_HOME, falling back to os.homedir(). Without these a test reads —
+// and worse, can WRITE — the OPERATOR's real opencode files. A test that
+// starts failing here was accidentally consuming operator state: that is a
+// bug; fix it with injection/fixtures (per-file XDG overrides still work —
+// this is only the default).
+const xdgConfig = path.join(sandbox, 'xdg-config');
+const xdgData = path.join(sandbox, 'xdg-data');
+fs.mkdirSync(xdgConfig, { recursive: true });
+fs.mkdirSync(xdgData, { recursive: true });
+const childEnv = {
+  ...process.env,
+  OCR_HOME: ocrHome,
+  OCR_ENV: 'default',
+  XDG_CONFIG_HOME: xdgConfig,
+  XDG_DATA_HOME: xdgData,
+};
+// opencode v2 service discovery (connector/OpencodeV2Store) must be inert in the sandbox:
+// DELIBERATELY UNSET (not ''), or a test hitting the connector would talk to
+// the operator's live opencode service.
+delete childEnv.OPENCODE_SERVER_URL;
+delete childEnv.OPENCODE_SERVER_PASSWORD;
 
 let totalPass = 0;
 let totalFail = 0;

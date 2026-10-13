@@ -1,0 +1,278 @@
+import { describe, expect, it } from 'bun:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { loadConfig } from '../src/config/index.js';
+import { createServer } from '../src/server.js';
+import { CredentialPaths } from '../src/opencode/credentials/paths.js';
+import { keyHashPrefix } from '../src/opencode/credentials/index.js';
+import { resetCredentialStoreForTests } from '../src/opencode/credentials/factory.js';
+import { OcrStore } from '../src/opencode/credentials/ocr-store.js';
+import { DbOpener } from '../src/opencode/credentials/opencode-v2-store.js';
+
+/**
+ * ADR-0019 Decision 2 recovery — POST /api/admin/credential-store/push.
+ * Convergence is push-ONLY: local OcrStore entries flow into opencode's opencode v2
+ * credential db; a local entry is removed ONLY after confirmed convergence
+ * (push accepted, or keyHash already present in the db). Preconditions:
+ * bound store is the OCR-owned file AND an opencode v2 service is reachable NOW —
+ * otherwise a 400 with a machine-readable reason code.
+ * Frontend contract: {status:'ok', pushed: string[], failed:[{provider, reason}]}.
+ */
+
+const baseConfig = loadConfig();
+baseConfig.host = '127.0.0.1';
+baseConfig.webAuth = { enabled: false };
+// registry too: P3 step 3 asserts the push route clears SUSPECT via its breaker layer.
+const { app, registry } = createServer(baseConfig, true);
+
+const ALL_COLS = ['id', 'integration_id', 'label', 'value', 'active', 'time_created', 'time_updated'];
+
+function sandboxPaths(withServiceJson = true): CredentialPaths {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-push-'));
+  const paths: CredentialPaths = {
+    configDir: path.join(dir, 'config', 'opencode'),
+    dataDir: path.join(dir, 'data', 'opencode'),
+    authJsonPath: path.join(dir, 'data', 'opencode', 'auth.json'),
+    opencodeDbPath: path.join(dir, 'data', 'opencode', 'opencode.db'),
+    installedVersionPath: path.join(dir, 'config', 'opencode', 'installed.version'),
+    ocrHome: path.join(dir, 'ocr-home'),
+    serviceJsonCandidates: [path.join(dir, 'config', 'opencode', 'service.json')],
+  };
+  fs.mkdirSync(paths.configDir, { recursive: true });
+  fs.mkdirSync(paths.dataDir, { recursive: true });
+  if (withServiceJson) {
+    fs.writeFileSync(paths.serviceJsonCandidates![0]!, JSON.stringify({ password: 'pw', port: 4100 }));
+  }
+  return paths;
+}
+
+function fakeDb(rows: unknown[]): DbOpener {
+  return async () => ({
+    query(sql: string) {
+      return {
+        all: () => (sql.includes('table_info') ? ALL_COLS.map((c) => ({ name: c })) : rows),
+      };
+    },
+    close() {
+      // no-op
+    },
+  });
+}
+
+const throwingOpener: DbOpener = async () => {
+  throw new Error('SQLITE_CANTOPEN: unable to open database file');
+};
+
+const keyRow = (id: string, integration: string, key: string) => ({
+  id,
+  integration_id: integration,
+  label: null,
+  value: JSON.stringify({ type: 'key', key }),
+  active: 1,
+  time_created: 1,
+  time_updated: 1,
+});
+
+interface FetchCall {
+  url: string;
+  method: string;
+  body?: any;
+}
+
+function makeFetch(onPost: (url: string) => { status: number; json?: unknown }) {
+  const calls: FetchCall[] = [];
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const url = String(input);
+    const method = String(init?.method ?? 'GET');
+    calls.push({ url, method, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+    if (method === 'GET') {
+      const ids = ['anthropic', 'openai', 'failing'];
+      return new Response(JSON.stringify({ data: ids.map((id) => ({ id, connections: [] })) }), { status: 200 });
+    }
+    const res = onPost(url);
+    return new Response(JSON.stringify(res.json ?? {}), { status: res.status });
+  };
+  return { calls, fetchImpl };
+}
+
+/** Seed LOCAL leftovers through the real OcrStore (same file the route reads). */
+async function seedLocal(paths: CredentialPaths, entries: [string, string][]): Promise<void> {
+  const store = new OcrStore({ paths, now: () => 1 });
+  for (const [provider, key] of entries) await store.connectKey(provider, key);
+}
+
+function readLocalFile(paths: CredentialPaths): any {
+  const file = path.join(paths.ocrHome, 'credentials.json');
+  if (!fs.existsSync(file)) return null;
+  return JSON.parse(fs.readFileSync(file, 'utf8'));
+}
+
+function bindOcr(paths: CredentialPaths, fetchImpl: typeof fetch, openDatabase: DbOpener) {
+  resetCredentialStoreForTests(paths, async () => null, fetchImpl, { env: {}, now: () => 1, openDatabase });
+}
+
+describe('POST /api/admin/credential-store/push', () => {
+  it('happy + dedup + failure: pushed converges (local removed), failed keeps its local copy', async () => {
+    const paths = sandboxPaths();
+    await seedLocal(paths, [
+      ['anthropic', 'sk-push-brand-new'],
+      ['openai', 'sk-dup-in-opencode-v2-db'], // already in the db → dedup, still converged
+      ['failing', 'sk-push-fails'], // service 500 → keep local
+    ]);
+    const v2Rows = [keyRow('d1', 'openai', 'sk-dup-in-opencode-v2-db')];
+    const { calls, fetchImpl } = makeFetch((url) =>
+      url.includes('/api/integration/failing/connect/key') ? { status: 500, json: { error: 'nope' } } : { status: 200, json: { credential: { id: 'c1' } } }
+    );
+    bindOcr(paths, fetchImpl, fakeDb(v2Rows));
+
+    const res = await app.inject({ method: 'POST', url: '/api/admin/credential-store/push', payload: {} });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.status).toBe('ok');
+    expect(body.pushed.sort()).toEqual(['anthropic', 'openai']);
+    expect(body.failed).toHaveLength(1);
+    expect(body.failed[0].provider).toBe('failing');
+    expect(typeof body.failed[0].reason).toBe('string');
+
+    // HTTP: anthropic pushed once (success first try), openai NOT pushed (dedup), failing attempted twice (retry)
+    const posts = calls.filter((c) => c.method === 'POST');
+    expect(posts.filter((c) => c.url.includes('/api/integration/anthropic/connect/key'))).toHaveLength(1);
+    expect(posts.some((c) => c.url.includes('/api/integration/openai'))).toBe(false);
+    expect(posts.filter((c) => c.url.includes('/api/integration/failing/connect/key'))).toHaveLength(2);
+    expect(posts.find((c) => c.url.includes('anthropic'))?.body?.key).toBe('sk-push-brand-new');
+
+    // local removal ONLY on confirmed convergence
+    const local = readLocalFile(paths);
+    expect(local.providers.anthropic).toBeUndefined();
+    expect(local.providers.openai).toBeUndefined();
+    expect(local.providers.failing).toHaveLength(1); // kept — never blind-deleted
+    expect(res.body).not.toContain('sk-push-brand-new'); // no raw key material in the response
+  });
+
+  it('provider filter: only the named provider converges', async () => {
+    const paths = sandboxPaths();
+    await seedLocal(paths, [
+      ['anthropic', 'sk-filter-one'],
+      ['openai', 'sk-filter-two'],
+    ]);
+    // id-bearing 201 → connectKey fast path; the no-id landing path is covered
+    // by credentials-opencode-v2-writes (with the instant `sleep` seam).
+    const { calls, fetchImpl } = makeFetch(() => ({ status: 200, json: { credential: { id: 'c1' } } }));
+    bindOcr(paths, fetchImpl, fakeDb([]));
+    const res = await app.inject({ method: 'POST', url: '/api/admin/credential-store/push', payload: { provider: 'anthropic' } });
+    expect(res.json().pushed).toEqual(['anthropic']);
+    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1);
+    const local = readLocalFile(paths);
+    expect(local.providers.anthropic).toBeUndefined();
+    expect(local.providers.openai).toHaveLength(1); // untouched by a filtered push
+  });
+
+  it('re-push after convergence is a no-op (idempotent)', async () => {
+    const paths = sandboxPaths();
+    await seedLocal(paths, [['anthropic', 'sk-once-only']]);
+    const { calls, fetchImpl } = makeFetch(() => ({ status: 200, json: { credential: { id: 'c1' } } }));
+    bindOcr(paths, fetchImpl, fakeDb([]));
+    await app.inject({ method: 'POST', url: '/api/admin/credential-store/push', payload: {} });
+    const postsBefore = calls.filter((c) => c.method === 'POST').length;
+    const res = await app.inject({ method: 'POST', url: '/api/admin/credential-store/push', payload: {} });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: 'ok', pushed: [], failed: [] });
+    expect(calls.filter((c) => c.method === 'POST').length).toBe(postsBefore);
+  });
+
+  it('no opencode v2 service (no service.json, no env): 400 opencode_v2_service_unreachable, locals untouched', async () => {
+    const paths = sandboxPaths(false);
+    await seedLocal(paths, [['anthropic', 'sk-orphan-key']]);
+    const { calls, fetchImpl } = makeFetch(() => ({ status: 200 }));
+    bindOcr(paths, fetchImpl, fakeDb([]));
+    const res = await app.inject({ method: 'POST', url: '/api/admin/credential-store/push', payload: {} });
+    expect(res.statusCode).toBe(400);
+    const body = res.json();
+    expect(body.reasonCode).toBe('opencode_v2_service_unreachable');
+    expect(body.status).toBe('error');
+    expect(body.pushed).toEqual([]);
+    expect(body.failed).toEqual([]);
+    expect(calls).toHaveLength(0);
+    expect(readLocalFile(paths).providers.anthropic).toHaveLength(1);
+  });
+
+  it('bound store is not the OCR file: 400 not_ocr_bound (opencode v2 owns the truth there)', async () => {
+    const paths = sandboxPaths();
+    await seedLocal(paths, [['anthropic', 'sk-stray']]); // file exists but the binding is opencode v2
+    const { calls, fetchImpl } = makeFetch(() => ({ status: 200 }));
+    resetCredentialStoreForTests(paths, async () => 'v2.0.15', fetchImpl, { env: {}, now: () => 1, openDatabase: fakeDb([]) });
+    const res = await app.inject({ method: 'POST', url: '/api/admin/credential-store/push', payload: {} });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().reasonCode).toBe('not_ocr_bound');
+    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(0);
+  });
+
+  it('opencode v2 db unreadable (service up, db down): 400 opencode_v2_db_unreadable before any push', async () => {
+    const paths = sandboxPaths();
+    await seedLocal(paths, [['anthropic', 'sk-not-yet']]);
+    const { calls, fetchImpl } = makeFetch(() => ({ status: 200 }));
+    bindOcr(paths, fetchImpl, throwingOpener);
+    const res = await app.inject({ method: 'POST', url: '/api/admin/credential-store/push', payload: {} });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().reasonCode).toBe('opencode_v2_db_unreadable');
+    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(0);
+    expect(readLocalFile(paths).providers.anthropic).toHaveLength(1);
+  });
+
+  it('empty local store: plain 200 ok with nothing pushed', async () => {
+    const paths = sandboxPaths(false); // not even a service needed — no work
+    bindOcr(paths, async () => new Response('{}', { status: 200 }), fakeDb([]));
+    const res = await app.inject({ method: 'POST', url: '/api/admin/credential-store/push', payload: {} });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: 'ok', pushed: [], failed: [] });
+  });
+});
+
+describe('SUSPECT lifecycle — Push clears converged accounts (ADR-0019 Decision 6)', () => {
+  it('pushed (and deduped) accounts get their flag lifted, anchored on the key hash', async () => {
+    const paths = sandboxPaths();
+    const freshKey = 'sk-push-clears-suspect';
+    const dupKey = 'sk-dup-in-opencode-v2-db';
+    await seedLocal(paths, [
+      ['anthropic', freshKey],
+      ['openai', dupKey], // deduped against the db — still a converged Push gesture
+    ]);
+    const v2Rows = [keyRow('d1', 'openai', dupKey)];
+    const { fetchImpl } = makeFetch(() => ({ status: 200, json: { credential: { id: 'c1' } } }));
+    bindOcr(paths, fetchImpl, fakeDb(v2Rows));
+
+    const state = registry.getCircuitBreakerManager().getAccountStateStore();
+    state.mark('anthropic', keyHashPrefix(freshKey), 'confirmed-bad key (test)');
+    state.mark('openai', keyHashPrefix(dupKey), 'confirmed-bad key (test)');
+
+    const res = await app.inject({ method: 'POST', url: '/api/admin/credential-store/push', payload: {} });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().pushed.sort()).toEqual(['anthropic', 'openai']);
+
+    // Decision 6: SUSPECT is cleared ONLY by manual reconnect or Push — both
+    // converged accounts lift here; the clear keys on (provider, keyHashPrefix).
+    expect(state.isSuspect('anthropic', keyHashPrefix(freshKey))).toBe(false);
+    expect(state.isSuspect('openai', keyHashPrefix(dupKey))).toBe(false);
+  });
+
+  it('a FAILED push keeps the flag (no convergence, no clear)', async () => {
+    const paths = sandboxPaths();
+    const failingKey = 'sk-push-fails-keeps';
+    await seedLocal(paths, [['failing', failingKey]]);
+    const { fetchImpl } = makeFetch((url) =>
+      url.includes('/api/integration/failing/connect/key') ? { status: 500, json: { error: 'nope' } } : { status: 200, json: {} }
+    );
+    bindOcr(paths, fetchImpl, fakeDb([]));
+    const state = registry.getCircuitBreakerManager().getAccountStateStore();
+    state.mark('failing', keyHashPrefix(failingKey), 'confirmed-bad key (test)');
+    try {
+      const res = await app.inject({ method: 'POST', url: '/api/admin/credential-store/push', payload: {} });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().failed[0].provider).toBe('failing');
+      expect(state.isSuspect('failing', keyHashPrefix(failingKey))).toBe(true);
+    } finally {
+      state.clear('failing', keyHashPrefix(failingKey));
+    }
+  });
+});
