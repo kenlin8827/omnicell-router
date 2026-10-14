@@ -74,6 +74,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     items: [
       { to: '/api-keys', labelKey: 'nav.apiKeys', icon: KeyRound },
       { to: '/clients', labelKey: 'nav.clients', icon: MonitorSmartphone, badge: '3' },
+      { to: '/model-profiles', labelKey: 'nav.modelProfiles', icon: ClipboardList },
       { to: '/proxy-access', labelKey: 'nav.proxyAccess', icon: ShieldCheck },
     ],
   },
@@ -84,7 +85,6 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     items: [
       { to: '/tiers', labelKey: 'nav.rules', icon: Network },
       { to: '/combos', labelKey: 'nav.combos', icon: Layers },
-      { to: '/model-profiles', labelKey: 'nav.modelProfiles', icon: ClipboardList },
       { to: '/auto', labelKey: 'nav.auto', icon: BrainCircuit },
     ],
   },
@@ -138,7 +138,7 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/tiers': { groupKey: 'nav.grpTraffic', titleKey: 'nav.rules' },
   '/auto': { groupKey: 'nav.grpTraffic', titleKey: 'nav.auto' },
   '/combos': { groupKey: 'nav.grpTraffic', titleKey: 'nav.combos' },
-  '/model-profiles': { groupKey: 'nav.grpTraffic', titleKey: 'nav.modelProfiles' },
+  '/model-profiles': { groupKey: 'nav.grpAccess', titleKey: 'nav.modelProfiles' },
   '/api-keys': { groupKey: 'nav.grpAccess', titleKey: 'nav.apiKeys' },
   '/providers': { groupKey: 'nav.grpUpstream', titleKey: 'nav.providers' },
   '/models': { groupKey: 'nav.grpUpstream', titleKey: 'nav.models' },
@@ -278,7 +278,7 @@ export const Layout: React.FC = () => {
       {/* Sidebar Navigation */}
       <aside
         style={{
-          width: '270px',
+          width: '240px',
           background: 'var(--sidebar-bg)',
           backdropFilter: 'blur(24px)',
           borderRight: '1px solid var(--card-border)',
@@ -480,7 +480,7 @@ export const Layout: React.FC = () => {
           return (
             <div
               style={{
-                padding: '14px 14px 14px 22px',
+                padding: '14px 12px 14px 22px',
                 borderTop: '1px solid var(--divider)',
                 fontSize: '11px',
                 color: 'var(--text-dim)',
@@ -488,7 +488,7 @@ export const Layout: React.FC = () => {
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'flex-start',
-                gap: '10px',
+                gap: '6px',
                 whiteSpace: 'nowrap',
                 minWidth: 0,
               }}

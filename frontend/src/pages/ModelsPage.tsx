@@ -85,7 +85,8 @@ const thStyle: React.CSSProperties = {
 const tdStyle: React.CSSProperties = {
   padding: '9px 14px',
   borderBottom: '1px solid var(--divider)',
-  verticalAlign: 'top',
+  // Center against two-line model cells (id + display name) instead of hugging the first line.
+  verticalAlign: 'middle',
 };
 
 export const ModelsPage: React.FC = () => {

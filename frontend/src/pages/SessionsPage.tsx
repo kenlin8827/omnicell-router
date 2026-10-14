@@ -46,6 +46,48 @@ const TIER_FULL_LABEL: Record<SessionRecord['maxTier'], string> = {
   ultra: 'tierPolicy.tierUltra',
 };
 
+/**
+ * Pinned-model cell: split `provider/model` into two stacked, non-wrapping
+ * lines — model name on top (inherits the cell's bold weight), provider below
+ * in dim gray. Overflowing lines ellipsis; hover shows the full value.
+ * Models without a `/` render as-is.
+ */
+const PINNED_LINE_STYLE: React.CSSProperties = {
+  display: 'block',
+  whiteSpace: 'nowrap',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+};
+const PinnedModelCell: React.FC<{ model: string }> = ({ model }) => {
+  const slash = model.indexOf('/');
+  if (slash < 0) {
+    return (
+      <span title={model} style={PINNED_LINE_STYLE}>
+        {model}
+      </span>
+    );
+  }
+  return (
+    <>
+      <span title={model} style={PINNED_LINE_STYLE}>
+        {model.slice(slash + 1)}
+      </span>
+      <span
+        title={model}
+        style={{
+          ...PINNED_LINE_STYLE,
+          marginTop: '1px',
+          fontSize: '10px',
+          fontWeight: 500,
+          color: 'var(--text-dim)',
+        }}
+      >
+        {model.slice(0, slash)}
+      </span>
+    </>
+  );
+};
+
 type SwitchKind = 'first' | 'ratchet' | 'fallback' | 'switch';
 
 interface SwitchEvent {
@@ -269,12 +311,15 @@ export const SessionsPage: React.FC = () => {
   // makes the <colgroup> authoritative — both tables render the identical
   // colgroup so columns line up pixel-perfect. Weights are normalized to
   // percentages; the capture column joins only when the archive is enabled.
+  // Pinned model gets 13.5 so its two non-wrapping lines (model + provider,
+  // e.g. "alibaba-token-plan-cn") fit without ellipsis; apps shrinks to 7.5
+  // (short badges only) and session id to 16 (long ids wrap by design).
   // Tier badge is a single short word (Lite/Plus/Pro/Ultra) — 7 units so it
   // clears the badge padding without bleeding into the Switches column;
   // Switches gets 5.5 (icon + ×N ≈ 36px content) so no cell overflows.
   // Detail holds two side-by-side icons — 7 units keeps them on one line
   // (flex nowrap below also guarantees rows never grow a second line here).
-  const colWeights = [17, 10, 10, 7, 5.5, 4.5, 5, 6, 6, 6, 6.5, 7, 7, 5, ...(captureOn ? [4] : [])];
+  const colWeights = [16, 7.5, 13.5, 7, 5.5, 4.5, 5, 6, 6, 6, 6.5, 7, 7, 5, ...(captureOn ? [4] : [])];
   const colSum = colWeights.reduce((a, b) => a + b, 0);
   const colWidths = colWeights.map(w => `${((w / colSum) * 100).toFixed(3)}%`);
 
@@ -411,7 +456,7 @@ export const SessionsPage: React.FC = () => {
                     )}
                   </td>
                   <td style={{ padding: '10px 14px', fontWeight: 600 }}>
-                    {s.pinnedModel}
+                    <PinnedModelCell model={s.pinnedModel} />
                     {/* ADR-0019 Decision 7 — account affinity (display-safe keyHash). */}
                     {s.boundKeyHashPrefix && (
                       <span

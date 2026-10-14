@@ -161,7 +161,7 @@ export const LogsPage: React.FC = () => {
             flex: 1,
             minHeight: 0,
             overflowY: 'auto',
-            background: 'rgba(0,0,0,0.2)',
+            background: 'var(--bg-elev)',
             borderTop: '1px solid var(--divider)',
             padding: '8px 0',
           }}
