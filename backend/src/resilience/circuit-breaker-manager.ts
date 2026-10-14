@@ -1,12 +1,23 @@
-import { CircuitBreaker, DEFAULT_CIRCUIT_BREAKER_CONFIG } from './circuit-breaker.js';
+import {
+  CircuitBreaker,
+  DEFAULT_CIRCUIT_BREAKER_CONFIG,
+  resolveBreakerRules,
+} from './circuit-breaker.js';
 import { BreakerStateStore } from './breaker-state.js';
 import { AccountStateStore, defaultAccountStateStore } from './account-state.js';
 import {
+  AutomaticTrippingStatus,
+  BreakerReasonCode,
+  BreakerRecord,
+  BreakerRulesStatus,
+  BreakerScopeOverride,
   BreakerStateFile,
   CircuitBreakerConfig,
   CircuitBreakerSnapshot,
   CircuitBreakerState,
   ErrorDiagnosis,
+  ResolvedBreakerRules,
+  RetryConfig,
   TripScope,
 } from './types.js';
 import { ModelRegistration } from '../config/types.js';
@@ -66,6 +77,17 @@ interface PairRecord {
   breaker: CircuitBreaker;
 }
 
+/**
+ * The rule-gate's per-diagnosis decision (resolved ONCE by the manager gate,
+ * applied to every target breaker): drop the class, hard-trip with a final
+ * duration, count an adjusted copy, or pass the diagnosis through untouched.
+ */
+type BreakerFailureDispatch =
+  | { kind: 'drop' }
+  | { kind: 'hard'; cooldownMs: number }
+  | { kind: 'count'; diagnosis: ErrorDiagnosis }
+  | { kind: 'as-is' };
+
 function pairKey(modelId: string, keyHashPrefix: string): string {
   return `${modelId}::${keyHashPrefix}`;
 }
@@ -92,6 +114,15 @@ export class CircuitBreakerManager {
   // account owner even for pair breakers created lazily on a failure path.
   private modelProviders = new Map<string, string>();
   private config: CircuitBreakerConfig;
+  /**
+   * The effective ruleset, resolved once at construction (spec invariant 5/6:
+   * startup resolution + restart-apply; breakers snapshot it alongside their
+   * config). The manager gate consults it for EVERY failure decision, so the
+   * rule toggles hold for both the orchestrator and the ActiveHealthProber —
+   * the prober classifies WITHOUT circuit config, which is exactly why the
+   * gating lives here and never in the classifier (invariant 1).
+   */
+  private rules: ResolvedBreakerRules;
   private nowFn: () => number;
   private accountState: AccountStateStore;
   // ADR-0008 amendment (2026-10-14) — optional on-disk breaker memory.
@@ -102,9 +133,14 @@ export class CircuitBreakerManager {
   constructor(
     config?: CircuitBreakerConfig,
     nowFn: () => number = Date.now,
-    accountState?: AccountStateStore
+    accountState?: AccountStateStore,
+    // Only consulted for trip.rateLimit.hardTripAboveMs's default
+    // (retry.inplace.maxRateLimitWaitMs); the breaker side never rewrites the
+    // retry-side in-place-retry decision.
+    retryConfig?: RetryConfig
   ) {
     this.config = config || {};
+    this.rules = resolveBreakerRules(this.config, retryConfig);
     this.nowFn = nowFn;
     this.accountState = accountState ?? defaultAccountStateStore();
   }
@@ -118,7 +154,8 @@ export class CircuitBreakerManager {
         model.provider,
         model.tier,
         this.config,
-        this.nowFn
+        this.nowFn,
+        this.rules
       );
       this.breakers.set(model.id, breaker);
     }
@@ -137,7 +174,7 @@ export class CircuitBreakerManager {
     if (!this.modelProviders.has(modelId)) this.modelProviders.set(modelId, provider);
     let breaker = this.breakers.get(modelId);
     if (!breaker) {
-      breaker = new CircuitBreaker(modelId, provider, tier, this.config, this.nowFn);
+      breaker = new CircuitBreaker(modelId, provider, tier, this.config, this.nowFn, this.rules);
       this.breakers.set(modelId, breaker);
     }
     return breaker;
@@ -175,11 +212,12 @@ export class CircuitBreakerManager {
   }
 
   /**
-   * Trial-call budget per model per prober cycle (Decision 6 reuses
-   * halfOpenMaxProbes, so pair fan-out cannot multiply background load).
+   * Trial-call budget per model per prober cycle (Decision 6 reuses the
+   * HALF_OPEN trial budget, so pair fan-out cannot multiply background load).
+   * = rules.recovery.halfOpen.maxProbes, defaulting to halfOpenMaxProbes.
    */
   public getProbeBudget(): number {
-    return this.config.halfOpenMaxProbes ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.halfOpenMaxProbes;
+    return this.rules.recovery.halfOpen.maxProbes;
   }
 
   private getOrCreatePair(modelId: string, keyHashPrefix: string, provider?: string): PairRecord {
@@ -196,7 +234,8 @@ export class CircuitBreakerManager {
           owner,
           this.breakers.get(modelId)?.tier,
           this.config,
-          this.nowFn
+          this.nowFn,
+          this.rules
         ),
       };
       this.pairs.set(key, pair);
@@ -225,9 +264,9 @@ export class CircuitBreakerManager {
    * verdict deliberately never reaches the model breaker, so a HALF_OPEN model
    * whose slot was spent on a request that came back 429-on-one-account would
    * sit with an exhausted quota while every account stayed healthy. Pair scope
-   * therefore bounds background traffic by (accounts x halfOpenMaxProbes)
-   * instead, and the model breaker closes on the first pair success
-   * (see `recordSuccessScoped`).
+   * therefore bounds background traffic by (accounts x the HALF_OPEN trial
+   * budget) instead, and a pair success counts as a model trial success
+   * (see `recordSuccessScoped` — closes only at recovery.halfOpen.successThreshold).
    */
   public canExecuteScoped(modelId: string, keyHashPrefix?: string): BreakerGate {
     if (!keyHashPrefix) {
@@ -356,14 +395,21 @@ export class CircuitBreakerManager {
    * Rehydrate breakers from disk. Records for models the registry no longer
    * knows (config removed/renamed them over the restart) are DROPPED, so the
    * file self-cleans and removed models never ghost through snapshots or
-   * account-wide trip expansion. Returns the applied counts.
+   * account-wide trip expansion. OPEN records whose reasonCode belongs to a
+   * now-disabled trip rule are skipped too — the startup reconciliation of
+   * spec invariant 2: closing a rule must not resurrect a cooldown nobody
+   * asked for (a restart is the only apply point, invariant 6). Returns the
+   * applied counts.
    */
   public restoreState(): { models: number; pairs: number } {
     const file = this.stateStore?.load();
     if (!file) return { models: 0, pairs: 0 };
+    const disabled = CircuitBreakerManager.disabledTripReasonCodes(this.rules);
+    const revived = (rec: BreakerRecord): boolean =>
+      rec.state === 'OPEN' && rec.reasonCode !== undefined && disabled.has(rec.reasonCode);
     let models = 0;
     for (const rec of file.models) {
-      if (!this.modelProviders.has(rec.modelId)) continue;
+      if (!this.modelProviders.has(rec.modelId) || revived(rec)) continue;
       // Identity (provider/tier) comes from the CURRENT config, not the file.
       const breaker = this.getOrCreateBreaker(rec.modelId, this.modelProviders.get(rec.modelId));
       breaker.applyRecord(rec);
@@ -371,13 +417,29 @@ export class CircuitBreakerManager {
     }
     let pairs = 0;
     for (const rec of file.pairs) {
-      if (!rec.keyHashPrefix || !this.modelProviders.has(rec.modelId)) continue;
+      if (!rec.keyHashPrefix || !this.modelProviders.has(rec.modelId) || revived(rec)) continue;
       // getOrCreatePair resolves the owner from the registry (resolveProvider).
       const pair = this.getOrCreatePair(rec.modelId, rec.keyHashPrefix);
       pair.breaker.applyRecord(rec);
       pairs++;
     }
     return { models, pairs };
+  }
+
+  /** Trip reasonCodes whose owning rule is disabled — those records/breakers reconcile away (invariant 2). */
+  private static disabledTripReasonCodes(rules: ResolvedBreakerRules): Set<BreakerReasonCode> {
+    const out = new Set<BreakerReasonCode>();
+    const t = rules.trip;
+    if (!t.quota.enabled) out.add('breaker.quota');
+    if (!t.auth.enabled) out.add('breaker.auth');
+    // rateLimit OFF downgrades new 429s to counted failures; an existing hard
+    // 429 block belongs to the disabled rule just the same.
+    if (!t.rateLimit.enabled) out.add('breaker.rate_limit');
+    if (!t.consecutiveFailures.enabled) out.add('breaker.consecutive');
+    if (!t.failureRate.enabled) out.add('breaker.rate_window');
+    // breaker.canary wraps whatever cause tripped it (never a rule's direct
+    // record), breaker.manual is operator intent — neither reconciles.
+    return out;
   }
 
   /** The live full-state file (called by the debounced store, never hot-path). */
@@ -421,10 +483,12 @@ export class CircuitBreakerManager {
   /**
    * ADR-0019 Decision 6 — success for one (model, credential). Without a
    * prefix this is today's `recordSuccess(modelId)`. With one, the pair breaker
-   * closes and a HALF_OPEN model breaker is closed by the same verdict: the
-   * scoped gate peeks the model breaker instead of consuming its slot, so a
+   * recovers and a HALF_OPEN model breaker gets a TRIAL SUCCESS: the scoped
+   * gate peeks the model breaker instead of consuming its slot, so a
    * recovering model needs an explicit closer and any credential that answers
-   * proves the upstream is back.
+   * proves the upstream is back. With successThreshold > 1 this counts toward
+   * the model's trial batch (the batch closes at the threshold), it does NOT
+   * force-close (spec rule #10 interaction note).
    */
   public recordSuccessScoped(modelId: string, keyHashPrefix?: string, provider?: string): void {
     this.schedulePersist();
@@ -449,19 +513,23 @@ export class CircuitBreakerManager {
 
   public recordFailure(modelId: string, diagnosis: ErrorDiagnosis, provider = 'unknown'): void {
     this.schedulePersist();
-    const breaker = this.getOrCreateBreaker(modelId, provider);
-    breaker.recordFailure(diagnosis);
+    this.applyFailure(modelId, diagnosis, provider, undefined);
   }
 
   /**
    * ADR-0019 Decision 6 — record a failure and EXPAND it over the blast radius
-   * the classifier diagnosed. Without a prefix (or without a `tripScope`, which
+   * the rule gate resolved. Without a prefix (or without a `tripScope`, which
    * only ever exists under credential attribution) the diagnosis goes to the
    * bare-modelId breaker, exactly as before P3.
    *
    *   'pair'    -> this (model, credential) only
    *   'account' -> every model this credential can reach; SUSPECT if diagnosed
    *   'model'   -> the bare-modelId breaker (aggregation takes the model down)
+   *
+   * A rule `scope` override replaces the classifier's blast radius here —
+   * AFTER credential attribution (invariant 4): with no prefix there is no
+   * pair space to expand into, so chain-less providers keep degenerating to
+   * the model breaker no matter what an override says.
    *
    * Pair and account verdicts deliberately do NOT touch the model breaker:
    * credential-scoped failures are not evidence about the model, and cooling a
@@ -476,34 +544,194 @@ export class CircuitBreakerManager {
   ): void {
     this.schedulePersist();
     if (!keyHashPrefix) {
-      this.recordFailure(modelId, diagnosis, provider ?? 'unknown');
+      this.applyFailure(modelId, diagnosis, provider ?? 'unknown', undefined);
       return;
     }
+    this.applyFailure(modelId, diagnosis, provider, keyHashPrefix);
+  }
 
+  /**
+   * The manager-side rule gate (spec invariant 1) — the single join point for
+   * the orchestrator AND the ActiveHealthProber (which classifies WITHOUT any
+   * circuit config; that gap is closed HERE, never by feeding config to the
+   * classifier). Everything rule-shaped is resolved against the diagnosis:
+   *
+   *   - a counting / trip rule OFF drops the class (a consumed HALF_OPEN probe slot
+   *     still releases — non-penalty outcomes must never strand the trial);
+   *   - hard-trip durations come from trip.quota/auth.cooldownMs, or from
+   *     retryAfterSeconds clamped by trip.rateLimit params — NEVER from
+   *     diagnosis.minCooldownMs (that is a statistical-path floor only);
+   *   - the 429 hard/counted boundary re-derives from hardTripAboveMs, and
+   *     trip.rateLimit OFF downgrades long-Retry-After 429s to counted
+   *     statistical failures whose Retry-After-derived floor still flows
+   *     through max(min, computed) (rule #3);
+   *   - the effective `scope` override picks the blast radius (account
+   *     expansion needs the attribution this call site already has).
+   *
+   * Never rewrites category/isRetriable (invariant 3): adjustments ride on a
+   * copy, the caller's diagnosis object stays untouched.
+   */
+  private applyFailure(
+    modelId: string,
+    diagnosis: ErrorDiagnosis,
+    provider?: string,
+    keyHashPrefix?: string
+  ): void {
+    const r = this.rules;
     const owner = this.resolveProvider(modelId, provider);
-    const scope: TripScope = diagnosis.tripScope ?? 'model';
-    if (scope === 'model') {
-      this.recordFailure(modelId, diagnosis, owner);
+    const dispatch = this.dispatchFailure(diagnosis);
+    const deliver = (breaker: CircuitBreaker): void => {
+      switch (dispatch.kind) {
+        case 'drop':
+          breaker.releaseProbeSlot();
+          return;
+        case 'hard':
+          breaker.recordHardTrip(diagnosis, dispatch.cooldownMs);
+          return;
+        case 'count':
+          breaker.recordFailure(dispatch.diagnosis);
+          return;
+        default:
+          breaker.recordFailure(diagnosis);
+      }
+    };
+
+    const scope = this.effectiveScope(diagnosis);
+    if (scope === 'model' || !keyHashPrefix) {
+      deliver(this.getOrCreateBreaker(modelId, owner));
       return;
     }
-
     if (scope === 'pair') {
-      this.getOrCreatePair(modelId, keyHashPrefix, owner).breaker.recordFailure(diagnosis);
+      deliver(this.getOrCreatePair(modelId, keyHashPrefix, owner).breaker);
       return;
     }
-
     // account-wide: the credential is the problem, on every model it can serve.
     if (!this.modelProviders.has(modelId)) this.modelProviders.set(modelId, owner);
     const rowTargets = new Set(this.accountModelIds(owner, keyHashPrefix));
     rowTargets.add(modelId);
-    for (const target of rowTargets) {
-      this.getOrCreatePair(target, keyHashPrefix, owner).breaker.recordFailure(diagnosis);
+    for (const targetId of rowTargets) {
+      deliver(this.getOrCreatePair(targetId, keyHashPrefix, owner).breaker);
     }
     // SUSPECT is administrative and auth-only: quota recovers by itself, a
-    // dead key does not (Decision 6). Manual trips never set it.
-    if (diagnosis.accountSuspect) {
+    // dead key does not (Decision 6). The flag rides on the trip (spec: mark
+    // SUSPECT "on trip"): with the auth rule OFF the 401 is "ignore" (rule
+    // semantics #2 — neither trips nor counts), so nothing is flagged. Manual
+    // trips never set it, and trip.auth.markSuspect:false stops NEW flags
+    // only — existing suspect-accounts.json entries keep gating selection
+    // until operator clear (invariant 2: toggles never clear existing flags).
+    if (diagnosis.accountSuspect && r.trip.auth.enabled && r.trip.auth.markSuspect) {
       this.accountState.mark(owner, keyHashPrefix, diagnosis.reason);
     }
+  }
+
+  /** How a diagnosis enters a breaker, fully resolved by the rules (never by the breaker guessing). */
+  private dispatchFailure(diagnosis: ErrorDiagnosis): BreakerFailureDispatch {
+    const r = this.rules;
+    switch (diagnosis.category) {
+      case 'QUOTA_EXHAUSTED':
+        if (!r.trip.quota.enabled) return { kind: 'drop' };
+        return { kind: 'hard', cooldownMs: r.trip.quota.cooldownMs };
+      case 'AUTHENTICATION_ERROR':
+        if (!r.trip.auth.enabled) return { kind: 'drop' };
+        return { kind: 'hard', cooldownMs: r.trip.auth.cooldownMs };
+      case 'RATE_LIMITED': {
+        // Re-derive the hard/counted boundary from the rule param — the
+        // classifier's copy (retry.inplace.maxRateLimitWaitMs by default) only
+        // steers the in-place retry decision, never the breaker.
+        const raMs = diagnosis.retryAfterSeconds !== undefined ? diagnosis.retryAfterSeconds * 1000 : undefined;
+        const hard = raMs !== undefined && raMs > r.trip.rateLimit.hardTripAboveMs;
+        if (r.trip.rateLimit.enabled && hard) {
+          return { kind: 'hard', cooldownMs: this.rateLimitCooldownMs(raMs) };
+        }
+        // Counted (short burst, no Retry-After, or the OFF-downgrade of a long
+        // RA): the RA-derived floor still flows through max(min, computed).
+        const floor = raMs !== undefined ? this.rateLimitCooldownMs(raMs) : r.counting.rateLimitErrors.minCooldownMs;
+        return { kind: 'count', diagnosis: { ...diagnosis, hardTrip: false, minCooldownMs: floor } };
+      }
+      case 'SERVICE_UNAVAILABLE':
+        if (!r.counting.serverErrors.enabled) return { kind: 'drop' };
+        return {
+          kind: 'count',
+          diagnosis: { ...diagnosis, hardTrip: false, minCooldownMs: r.counting.serverErrors.minCooldownMs },
+        };
+      case 'UNKNOWN':
+        if (!r.counting.unknownErrors.enabled) return { kind: 'drop' };
+        return {
+          kind: 'count',
+          diagnosis: { ...diagnosis, hardTrip: false, minCooldownMs: r.counting.unknownErrors.minCooldownMs },
+        };
+      case 'CLIENT_ERROR':
+        if (!r.counting.clientErrors.enabled) {
+          // Untouched pass-through: today's non-penalty path (releases a probe
+          // slot, counts nothing).
+          return { kind: 'as-is' };
+        }
+        // Counted as a failure — the tripping rule's own ladder applies (no
+        // cooldown floor param on this row).
+        return { kind: 'count', diagnosis: { ...diagnosis, shouldTripBreaker: true, hardTrip: false } };
+      default:
+        // MANUAL and anything without a rule owner: pass through as recorded.
+        return { kind: 'as-is' };
+    }
+  }
+
+  /** Retry-After 429 cooldown: rule `minCooldownMs` floor, GLOBAL maxCooldownMs ceiling (the clamp cap stays global). */
+  private rateLimitCooldownMs(raMs: number): number {
+    const ceiling = this.config.maxCooldownMs ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.maxCooldownMs;
+    return Math.max(this.rules.trip.rateLimit.minCooldownMs, Math.min(raMs, ceiling));
+  }
+
+  /**
+   * Blast radius for this diagnosis: the owning rule's `scope` override wins
+   * over the classifier's diagnosed scope ('auto' keeps today's). Counted
+   * classes feed the two B detectors from one recording path; the first
+   * non-auto detector row owns their blast (consecutiveFailures before
+   * failureRate — a documented resolution of the spec, which gives both rows
+   * a scope cell but one recording decision point).
+   */
+  private effectiveScope(diagnosis: ErrorDiagnosis): TripScope {
+    const t = this.rules.trip;
+    let override: BreakerScopeOverride = 'auto';
+    switch (diagnosis.category) {
+      case 'QUOTA_EXHAUSTED':
+        override = t.quota.scope;
+        break;
+      case 'AUTHENTICATION_ERROR':
+        override = t.auth.scope;
+        break;
+      case 'RATE_LIMITED':
+        override = t.rateLimit.scope;
+        break;
+      case 'SERVICE_UNAVAILABLE':
+      case 'UNKNOWN':
+      case 'CLIENT_ERROR':
+        override = t.consecutiveFailures.scope !== 'auto' ? t.consecutiveFailures.scope : t.failureRate.scope;
+        break;
+      default:
+        break;
+    }
+    return override !== 'auto' ? override : (diagnosis.tripScope ?? 'model');
+  }
+
+  /**
+   * Effective-ruleset view for the guardrails banner (spec UX rule 6) — the
+   * five-switch predicate: automatic tripping is off iff ALL five trip
+   * switches are off (counting-off is NOT a route to zero: counted 429 still
+   * feeds the detectors). The full resolved ruleset rides along so the UI can
+   * render each `auto` cell's live value.
+   */
+  public getRulesStatus(): BreakerRulesStatus {
+    const t = this.rules.trip;
+    const switches = [
+      t.quota.enabled,
+      t.auth.enabled,
+      t.rateLimit.enabled,
+      t.consecutiveFailures.enabled,
+      t.failureRate.enabled,
+    ];
+    const on = switches.filter(Boolean).length;
+    const automatic: AutomaticTrippingStatus = on === switches.length ? 'on' : on === 0 ? 'all_off' : 'partly_off';
+    return { automatic, shadow: this.rules.shadow, rules: this.rules };
   }
 
   /**

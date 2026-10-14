@@ -75,7 +75,10 @@ export class ProviderRegistry {
   constructor(config: RouterConfig, mockMode = false) {
     this.mockMode = mockMode;
     this.tierPolicies = config.tiers || {};
-    this.circuitBreakerManager = new CircuitBreakerManager(config.circuitBreaker);
+    // The breaker rules resolver borrows trip.rateLimit.hardTripAboveMs's
+    // default from retry.inplace.maxRateLimitWaitMs (spec: the breaker-side
+    // copy never rewrites the retry-side in-place-retry decision).
+    this.circuitBreakerManager = new CircuitBreakerManager(config.circuitBreaker, Date.now, undefined, config.retry);
 
     // Initialize providers
     for (const pConfig of config.providers || []) {

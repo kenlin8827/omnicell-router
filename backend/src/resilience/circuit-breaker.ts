@@ -1,15 +1,19 @@
 import {
   BreakerReasonCode,
   BreakerRecord,
+  BreakerScopeOverride,
   CircuitBreakerConfig,
   CircuitBreakerSnapshot,
   CircuitBreakerState,
   ErrorCategory,
   ErrorDiagnosis,
+  OnCanaryFailureMode,
+  ResolvedBreakerRules,
+  RetryConfig,
 } from './types.js';
 import { ReasonParams, TierLevel } from '../types/router.js';
 
-export const DEFAULT_CIRCUIT_BREAKER_CONFIG: Required<CircuitBreakerConfig> = {
+export const DEFAULT_CIRCUIT_BREAKER_CONFIG: Required<Omit<CircuitBreakerConfig, 'rules' | 'shadow' | 'persistence'>> = {
   enabled: true,
   failureThreshold: 3,
   slidingWindowSize: 20,
@@ -30,12 +34,125 @@ export const DEFAULT_CIRCUIT_BREAKER_CONFIG: Required<CircuitBreakerConfig> = {
   },
 };
 
+/**
+ * Startup resolution of the `circuitBreaker.rules` tree into one effective,
+ * fully-populated `ResolvedBreakerRules` (spec invariant 5). Unset per-rule
+ * params fall back to the global knob; enabled toggles default to today's
+ * behavior (everything on, clientErrors off), so a legacy config without
+ * `rules` resolves to exactly what the hardcoded pipeline did before.
+ *
+ * `retry` is consulted ONLY for `hardTripAboveMs`'s default (today's 429
+ * boundary is borrowed from retry.inplace.maxRateLimitWaitMs) — the breaker
+ * side never rewrites the retry-side in-place-retry decision.
+ *
+ * Clamps enforced here (and mirrored by the config sanitizer for saved YAML):
+ *   maxProbes >= 1 (0 would starve the prober budget and pin HALF_OPEN),
+ *   successThreshold <= maxProbes (an unsatisfiable threshold pins HALF_OPEN),
+ *   minCalls <= windowSize (otherwise the rate rule can never evaluate).
+ */
+export function resolveBreakerRules(
+  circuit?: CircuitBreakerConfig,
+  retry?: RetryConfig
+): ResolvedBreakerRules {
+  const d = DEFAULT_CIRCUIT_BREAKER_CONFIG;
+  // Boundary values keep today's hardcoded numbers where no knob existed.
+  const ms = (v: unknown, fallback: number): number =>
+    typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : fallback;
+  const int = (v: unknown, fallback: number): number => Math.floor(ms(v, fallback));
+  const ratio = (v: unknown, fallback: number): number =>
+    typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1 ? v : fallback;
+  const bool = (v: unknown, fallback: boolean): boolean => (typeof v === 'boolean' ? v : fallback);
+  const scope = (v: unknown): BreakerScopeOverride =>
+    v === 'auto' || v === 'pair' || v === 'account' || v === 'model' ? (v as BreakerScopeOverride) : 'auto';
+  const mode = (v: unknown): OnCanaryFailureMode =>
+    v === 'initial' || v === 'close' || v === 'backoff' ? (v as OnCanaryFailureMode) : 'backoff';
+
+  const initial = ms(circuit?.initialCooldownMs, d.initialCooldownMs);
+  const maxCooldown = ms(circuit?.maxCooldownMs, d.maxCooldownMs);
+  const quota = ms(circuit?.quotaCooldownMs, d.quotaCooldownMs);
+  const globalMultiplier = ms(circuit?.cooldownMultiplier, d.cooldownMultiplier);
+  const globalWindow = Math.max(1, int(circuit?.slidingWindowSize, d.slidingWindowSize));
+
+  const rules = circuit?.rules;
+  const counting = rules?.counting;
+  const trip = rules?.trip;
+  const halfOpen = rules?.recovery?.halfOpen;
+
+  const maxProbes = Math.max(1, int(halfOpen?.maxProbes, int(circuit?.halfOpenMaxProbes, d.halfOpenMaxProbes)));
+  const successThreshold = Math.min(Math.max(1, int(halfOpen?.successThreshold, 1)), maxProbes);
+  const windowSize = Math.max(1, int(trip?.failureRate?.windowSize, globalWindow));
+  const minCalls = Math.min(Math.max(0, int(trip?.failureRate?.minCalls, windowSize)), windowSize);
+
+  return {
+    shadow: bool(circuit?.shadow, false),
+    counting: {
+      serverErrors: {
+        enabled: bool(counting?.serverErrors?.enabled, true),
+        minCooldownMs: ms(counting?.serverErrors?.minCooldownMs, initial),
+      },
+      unknownErrors: {
+        enabled: bool(counting?.unknownErrors?.enabled, true),
+        minCooldownMs: ms(counting?.unknownErrors?.minCooldownMs, initial),
+      },
+      // No toggle (the classifier counts every 429); floor default = today's
+      // hardcoded min(60s, initial) for the no-Retry-After case.
+      rateLimitErrors: {
+        minCooldownMs: ms(counting?.rateLimitErrors?.minCooldownMs, Math.min(60 * 1000, initial)),
+      },
+      clientErrors: { enabled: bool(counting?.clientErrors?.enabled, false) },
+    },
+    trip: {
+      quota: {
+        enabled: bool(trip?.quota?.enabled, true),
+        cooldownMs: ms(trip?.quota?.cooldownMs, quota),
+        scope: scope(trip?.quota?.scope),
+      },
+      auth: {
+        enabled: bool(trip?.auth?.enabled, true),
+        cooldownMs: ms(trip?.auth?.cooldownMs, quota),
+        markSuspect: bool(trip?.auth?.markSuspect, true),
+        scope: scope(trip?.auth?.scope),
+      },
+      rateLimit: {
+        enabled: bool(trip?.rateLimit?.enabled, true),
+        hardTripAboveMs: ms(trip?.rateLimit?.hardTripAboveMs, retry?.inplace?.maxRateLimitWaitMs ?? 2000),
+        minCooldownMs: ms(trip?.rateLimit?.minCooldownMs, 1000), // today's hardcoded floor
+        scope: scope(trip?.rateLimit?.scope),
+      },
+      consecutiveFailures: {
+        enabled: bool(trip?.consecutiveFailures?.enabled, true),
+        threshold: Math.max(1, int(trip?.consecutiveFailures?.threshold, ms(circuit?.failureThreshold, d.failureThreshold))),
+        initialCooldownMs: ms(trip?.consecutiveFailures?.initialCooldownMs, initial),
+        cooldownMultiplier: ms(trip?.consecutiveFailures?.cooldownMultiplier, globalMultiplier),
+        maxCooldownMs: ms(trip?.consecutiveFailures?.maxCooldownMs, maxCooldown),
+        scope: scope(trip?.consecutiveFailures?.scope),
+      },
+      failureRate: {
+        enabled: bool(trip?.failureRate?.enabled, true),
+        windowSize,
+        failureRate: ratio(trip?.failureRate?.failureRate, circuit?.failureRateThreshold ?? d.failureRateThreshold),
+        minCalls,
+        cooldownMs: ms(trip?.failureRate?.cooldownMs, initial),
+        scope: scope(trip?.failureRate?.scope),
+      },
+    },
+    recovery: {
+      onCanaryFailure: mode(rules?.recovery?.onCanaryFailure),
+      cooldownMultiplier: ms(rules?.recovery?.cooldownMultiplier, globalMultiplier),
+      halfOpen: { maxProbes, successThreshold, maxWaitMs: ms(halfOpen?.maxWaitMs, 0) },
+    },
+  };
+}
+
 export class CircuitBreaker {
   public readonly modelId: string;
   public readonly provider: string;
   public readonly tier?: TierLevel;
 
-  private config: Required<CircuitBreakerConfig>;
+  private config: Required<Omit<CircuitBreakerConfig, 'rules' | 'shadow' | 'persistence'>>;
+  // Effective ruleset (startup-resolved; breakers snapshot it with the config —
+  // restart-apply semantics, spec invariant 5/6).
+  private rules: ResolvedBreakerRules;
   private state: CircuitBreakerState = 'CLOSED';
   private consecutiveFailures = 0;
   private totalRequests = 0;
@@ -47,6 +164,10 @@ export class CircuitBreaker {
   private cooldownUntil = 0;
   private currentCooldownMs = 0;
   private halfOpenProbes = 0;
+  // HALF_OPEN trial batch (spec rule #10): successes counted and the episode
+  // start for the maxWaitMs clock.
+  private halfOpenSuccesses = 0;
+  private halfOpenEnteredAt = 0;
   private reason?: string;
   private reasonCode?: BreakerReasonCode;
   private reasonParams?: ReasonParams;
@@ -63,12 +184,16 @@ export class CircuitBreaker {
     provider: string,
     tier?: TierLevel,
     config?: CircuitBreakerConfig,
-    nowFn: () => number = Date.now
+    nowFn: () => number = Date.now,
+    rules?: ResolvedBreakerRules
   ) {
     this.modelId = modelId;
     this.provider = provider;
     this.tier = tier;
     this.nowFn = nowFn;
+    // Direct constructions (tests, harnesses) that skip the manager get the
+    // defaults, which resolve to exactly today's hardcoded behavior.
+    this.rules = rules ?? resolveBreakerRules(config);
     this.config = {
       enabled: config?.enabled ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.enabled,
       failureThreshold: config?.failureThreshold ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.failureThreshold,
@@ -88,7 +213,7 @@ export class CircuitBreaker {
           config?.accountAffinity?.cacheTtlMs ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.accountAffinity.cacheTtlMs,
       },
     };
-    this.currentCooldownMs = this.config.initialCooldownMs;
+    this.currentCooldownMs = this.rules.trip.consecutiveFailures.initialCooldownMs;
   }
 
   public getState(): CircuitBreakerState {
@@ -100,7 +225,9 @@ export class CircuitBreaker {
    * Check if requests are allowed to proceed through this model.
    * - CLOSED: Always allowed.
    * - OPEN: Blocked until cooldown expires. Once expired, transitions to HALF_OPEN.
-   * - HALF_OPEN: Allows limited canary probe requests.
+   * - HALF_OPEN: Allows limited canary probe requests (up to recovery.halfOpen.maxProbes concurrently).
+   * Shadow mode never denies an AUTOMATIC trip (accounting keeps running fully);
+   * MANUAL trips are operator intent and always enforce.
    */
   public canExecute(): { allowed: boolean; reason?: string } {
     if (!this.config.enabled) {
@@ -114,14 +241,15 @@ export class CircuitBreaker {
     }
 
     if (this.state === 'HALF_OPEN') {
-      if (this.halfOpenProbes < this.config.halfOpenMaxProbes) {
+      const maxProbes = this.rules.recovery.halfOpen.maxProbes;
+      if (this.halfOpenProbes < maxProbes) {
         this.halfOpenProbes++;
-        return { allowed: true };
+        return this.verdict({ allowed: true });
       }
-      return {
+      return this.verdict({
         allowed: false,
-        reason: `Model '${this.modelId}' is in HALF_OPEN trial probe state; probe quota (${this.config.halfOpenMaxProbes}) reached.`,
-      };
+        reason: `Model '${this.modelId}' is in HALF_OPEN trial probe state; probe quota (${maxProbes}) reached.`,
+      });
     }
 
     // OPEN state: calculate remaining cooldown
@@ -130,10 +258,10 @@ export class CircuitBreaker {
     const remainingSec = Math.ceil(remainingMs / 1000);
     const remainingHours = (remainingMs / (3600 * 1000)).toFixed(1);
 
-    return {
+    return this.verdict({
       allowed: false,
       reason: `Model '${this.modelId}' is OPEN (Tripped). Reason: ${this.reason || 'Service degradation'}. Cooldown remaining: ${remainingMs > 3600000 ? remainingHours + 'h' : remainingSec + 's'}.`,
-    };
+    });
   }
 
   /**
@@ -156,13 +284,14 @@ export class CircuitBreaker {
     }
 
     if (this.state === 'HALF_OPEN') {
-      if (this.halfOpenProbes < this.config.halfOpenMaxProbes) {
-        return { allowed: true };
+      const maxProbes = this.rules.recovery.halfOpen.maxProbes;
+      if (this.halfOpenProbes < maxProbes) {
+        return this.verdict({ allowed: true });
       }
-      return {
+      return this.verdict({
         allowed: false,
-        reason: `Model '${this.modelId}' is in HALF_OPEN trial probe state; probe quota (${this.config.halfOpenMaxProbes}) reached.`,
-      };
+        reason: `Model '${this.modelId}' is in HALF_OPEN trial probe state; probe quota (${maxProbes}) reached.`,
+      });
     }
 
     const now = this.nowFn();
@@ -170,15 +299,30 @@ export class CircuitBreaker {
     const remainingSec = Math.ceil(remainingMs / 1000);
     const remainingHours = (remainingMs / (3600 * 1000)).toFixed(1);
 
-    return {
+    return this.verdict({
       allowed: false,
       reason: `Model '${this.modelId}' is OPEN (Tripped). Reason: ${this.reason || 'Service degradation'}. Cooldown remaining: ${remainingMs > 3600000 ? remainingHours + 'h' : remainingSec + 's'}.`,
-    };
+    });
+  }
+
+  /**
+   * Shadow mode (circuitBreaker.shadow): the state machine ran its full
+   * accounting above (slots consumed, ladders advanced, windows filled) — only
+   * the verdict flips. MANUAL trips are operator intent, never shadowed
+   * (DISABLED/SUSPECT gating lives in the manager and is likewise exempt).
+   */
+  private verdict(check: { allowed: boolean; reason?: string }): { allowed: boolean; reason?: string } {
+    if (this.rules.shadow && this.category !== 'MANUAL') {
+      return { allowed: true };
+    }
+    return check;
   }
 
   /**
    * Record a successful response.
-   * If in HALF_OPEN state, this confirms upstream recovery and closes the circuit!
+   * In HALF_OPEN a success counts toward the trial batch; the circuit closes
+   * only once recovery.halfOpen.successThreshold successes are in (default 1 =
+   * today's canary-closes-on-first-success).
    */
   public recordSuccess(): void {
     const now = this.nowFn();
@@ -188,64 +332,219 @@ export class CircuitBreaker {
     this.recordOutcome(true);
 
     if (this.state === 'HALF_OPEN') {
-      // Canary succeeded! Restore full operational status
-      this.state = 'CLOSED';
-      this.consecutiveFailures = 0;
-      this.halfOpenProbes = 0;
-      this.currentCooldownMs = this.config.initialCooldownMs;
-      this.reason = undefined;
-      this.reasonCode = undefined;
-      this.reasonParams = undefined;
-      this.category = undefined;
-      this.cooldownUntil = 0;
-      this.trippedAt = 0;
-      // Re-arm the sliding window EMPTY (same as manual reset): stale failures
-      // from the outage would otherwise let one transient blip push the rate
-      // back over the threshold right after recovery ("fixed, then instantly
-      // broken again"). The canary's own success needs no slot — it is proven.
-      this.outcomeWindow = [];
+      this.halfOpenSuccesses++;
+      if (this.halfOpenSuccesses >= this.rules.recovery.halfOpen.successThreshold) {
+        this.closeAfterRecovery();
+      } else {
+        // Below the threshold the trial completed: release its CONCURRENT slot
+        // so the batch can continue dispatching up to maxProbes in flight.
+        // (With the default successThreshold=1 this branch is unreachable —
+        // the first success closes, exactly today's canary semantics.)
+        this.halfOpenProbes = Math.max(0, this.halfOpenProbes - 1);
+      }
     } else if (this.state === 'CLOSED') {
       this.consecutiveFailures = 0;
     }
   }
 
+  /** Full-recovery close: ladder + window re-armed empty, as today. */
+  private closeAfterRecovery(): void {
+    this.state = 'CLOSED';
+    this.consecutiveFailures = 0;
+    this.halfOpenProbes = 0;
+    this.halfOpenSuccesses = 0;
+    this.halfOpenEnteredAt = 0;
+    this.currentCooldownMs = this.rules.trip.consecutiveFailures.initialCooldownMs;
+    this.reason = undefined;
+    this.reasonCode = undefined;
+    this.reasonParams = undefined;
+    this.category = undefined;
+    this.cooldownUntil = 0;
+    this.trippedAt = 0;
+    // Re-arm the sliding window EMPTY (same as manual reset): stale failures
+    // from the outage would otherwise let one transient blip push the rate
+    // back over the threshold right after recovery ("fixed, then instantly
+    // broken again"). The canary's own success needs no slot — it is proven.
+    this.outcomeWindow = [];
+  }
+
+  /**
+   * Release a consumed HALF_OPEN probe slot for a NON-PENALTY outcome: the
+   * probe request COMPLETED but is not evidence about upstream health
+   * (disabled counting class / CLIENT_ERROR). Without the release the quota
+   * stays exhausted and the breaker sticks in HALF_OPEN forever.
+   */
+  public releaseProbeSlot(): void {
+    if (this.state === 'HALF_OPEN' && this.halfOpenProbes > 0) {
+      this.halfOpenProbes--;
+    }
+  }
+
   /**
    * Record a failed response and decide whether to trip the breaker.
+   * Rule gating (counting/toggles/hard durations) lives in the manager gate —
+   * what reaches this method is an effective diagnosis plus, for hard trips,
+   * a resolved duration via recordHardTrip(); the diagnosis NEVER steers a
+   * hard-trip length through minCooldownMs.
    */
   public recordFailure(diagnosis: ErrorDiagnosis): void {
     if (!this.config.enabled) return;
 
     // Client errors (400, context length exceeded, content filter) are NOT upstream failures
     if (!diagnosis.shouldTripBreaker) {
-      // A consumed HALF_OPEN canary slot must be released here: the probe
-      // request COMPLETED (with a non-penalty outcome), otherwise the quota
-      // stays exhausted and the breaker sticks in HALF_OPEN forever.
-      if (this.state === 'HALF_OPEN' && this.halfOpenProbes > 0) {
-        this.halfOpenProbes--;
-      }
+      this.releaseProbeSlot();
       return;
     }
 
+    this.countFailure();
+
+    // 1. Hard Trip (direct-construction path; the production manager gate
+    //    calls recordHardTrip with the rule-resolved duration instead).
+    if (diagnosis.hardTrip) {
+      this.trip(
+        diagnosis.reason,
+        diagnosis.category,
+        this.hardTripCooldownMs(diagnosis),
+        diagnosis.reasonCode,
+        diagnosis.reasonParams
+      );
+      return;
+    }
+
+    // 2. Failure during HALF_OPEN canary trial: resolve through recovery.onCanaryFailure.
+    if (this.state === 'HALF_OPEN') {
+      this.resolveHalfOpenFailure('probe_failure', diagnosis);
+      return;
+    }
+
+    // 3. Consecutive failure threshold check (trip.consecutiveFailures)
+    const cf = this.rules.trip.consecutiveFailures;
+    if (cf.enabled && this.consecutiveFailures >= cf.threshold) {
+      const multiplierFactor = Math.max(0, this.consecutiveFailures - cf.threshold);
+      const computedCooldown = Math.min(
+        cf.initialCooldownMs * Math.pow(cf.cooldownMultiplier, multiplierFactor),
+        cf.maxCooldownMs
+      );
+      this.currentCooldownMs = Math.max(diagnosis.minCooldownMs || 0, computedCooldown);
+      this.trip(
+        `Consecutive failure threshold reached (${this.consecutiveFailures}/${cf.threshold}): ${diagnosis.reason}`,
+        diagnosis.category,
+        this.currentCooldownMs,
+        'breaker.consecutive',
+        CircuitBreaker.wrappedParams(diagnosis, {
+          count: this.consecutiveFailures,
+          threshold: cf.threshold,
+        })
+      );
+      return;
+    }
+
+    // 4. Sliding window failure rate check (trip.failureRate). The rate is
+    //    evaluated only once minCalls recorded outcomes fill the shared window
+    //    (default = windowSize, i.e. today's full-window-only behavior).
+    const fr = this.rules.trip.failureRate;
+    if (fr.enabled && this.outcomeWindow.length >= fr.minCalls) {
+      const failedCount = this.outcomeWindow.filter(v => !v).length;
+      const failureRate = failedCount / this.outcomeWindow.length;
+      if (failureRate >= fr.failureRate) {
+        this.currentCooldownMs = Math.max(diagnosis.minCooldownMs || 0, fr.cooldownMs);
+        this.trip(
+          `Sliding window failure rate exceeded (${(failureRate * 100).toFixed(0)}% >= ${(fr.failureRate * 100).toFixed(0)}%): ${diagnosis.reason}`,
+          diagnosis.category,
+          this.currentCooldownMs,
+          'breaker.rate_window',
+          CircuitBreaker.wrappedParams(diagnosis, {
+            rate: Math.round(failureRate * 100),
+            threshold: Math.round(fr.failureRate * 100),
+          })
+        );
+      }
+    }
+  }
+
+  /**
+   * Count a failure as upstream evidence and hard-trip immediately for the
+   * RULE-RESOLVED duration (trip.quota/auth.cooldownMs or the clamped
+   * Retry-After) — resolved by the manager gate, never by the diagnosis.
+   */
+  public recordHardTrip(diagnosis: ErrorDiagnosis, cooldownMs: number): void {
+    if (!this.config.enabled) return;
+    if (!diagnosis.shouldTripBreaker) {
+      this.releaseProbeSlot();
+      return;
+    }
+    this.countFailure();
+    this.trip(diagnosis.reason, diagnosis.category, cooldownMs, diagnosis.reasonCode, diagnosis.reasonParams);
+  }
+
+  private countFailure(): void {
     const now = this.nowFn();
     this.totalRequests++;
     this.totalFailures++;
     this.consecutiveFailures++;
     this.lastFailureTime = now;
     this.recordOutcome(false);
+  }
 
-    // 1. Hard Trip: Quota exhausted (402) or Auth failure (401)
-    if (diagnosis.hardTrip) {
-      const cooldownMs = diagnosis.suggestedCooldownMs || this.config.quotaCooldownMs;
-      this.trip(diagnosis.reason, diagnosis.category, cooldownMs, diagnosis.reasonCode, diagnosis.reasonParams);
+  /**
+   * Hard-trip length for the direct-caller branch above, from the resolved
+   * rules by category. The global maxCooldownMs stays the Retry-After clamp
+   * ceiling (spec: it caps any derived cooldown, not a per-rule knob); the
+   * quota rule's resolved duration is the generic fallback for hard
+   * diagnoses without a dedicated rule (the classifier never emits those).
+   */
+  private hardTripCooldownMs(diagnosis: ErrorDiagnosis): number {
+    const t = this.rules.trip;
+    switch (diagnosis.category) {
+      case 'QUOTA_EXHAUSTED':
+        return t.quota.cooldownMs;
+      case 'AUTHENTICATION_ERROR':
+        return t.auth.cooldownMs;
+      case 'RATE_LIMITED': {
+        const raMs = diagnosis.retryAfterSeconds !== undefined ? diagnosis.retryAfterSeconds * 1000 : 0;
+        return Math.max(t.rateLimit.minCooldownMs, Math.min(raMs, this.config.maxCooldownMs));
+      }
+      default:
+        return t.quota.cooldownMs;
+    }
+  }
+
+  /**
+   * Resolve a HALF_OPEN trial that did not reach successThreshold: a probe
+   * failure, a trial batch exhausted with successes below the threshold, or
+   * the maxWaitMs wait cap expiring. All three go through recovery.onCanaryFailure.
+   */
+  private resolveHalfOpenFailure(
+    kind: 'probe_failure' | 'batch_short' | 'max_wait',
+    diagnosis?: ErrorDiagnosis
+  ): void {
+    const rec = this.rules.recovery;
+    let mode = rec.onCanaryFailure;
+    // Never defeat an operator takedown: MANUAL breakers ignore 'close'.
+    if (mode === 'close' && this.category === 'MANUAL') {
+      mode = 'backoff';
+    }
+    if (mode === 'close') {
+      // Optimistic close — keep consecutiveFailures and currentCooldownMs so
+      // the very next counted failure re-trips with the escalated ladder.
+      this.state = 'CLOSED';
+      this.halfOpenProbes = 0;
+      this.halfOpenSuccesses = 0;
+      this.halfOpenEnteredAt = 0;
+      this.cooldownUntil = 0;
+      this.trippedAt = 0;
+      this.reason = undefined;
+      this.reasonCode = undefined;
+      this.reasonParams = undefined;
+      this.category = undefined;
       return;
     }
+    this.currentCooldownMs =
+      mode === 'initial'
+        ? this.rules.trip.consecutiveFailures.initialCooldownMs // re-OPEN at the initial ladder rung
+        : Math.min(this.currentCooldownMs * rec.cooldownMultiplier, this.config.maxCooldownMs);
 
-    // 2. Failure during HALF_OPEN canary trial: immediately trip again with escalated cooldown
-    if (this.state === 'HALF_OPEN') {
-      this.currentCooldownMs = Math.min(
-        this.currentCooldownMs * this.config.cooldownMultiplier,
-        this.config.maxCooldownMs
-      );
+    if (diagnosis) {
       this.trip(
         `Canary probe failed: ${diagnosis.reason}`,
         diagnosis.category,
@@ -255,46 +554,14 @@ export class CircuitBreaker {
       );
       return;
     }
-
-    // 3. Consecutive failure threshold check
-    if (this.consecutiveFailures >= this.config.failureThreshold) {
-      const multiplierFactor = Math.max(0, this.consecutiveFailures - this.config.failureThreshold);
-      const computedCooldown = Math.min(
-        this.config.initialCooldownMs * Math.pow(this.config.cooldownMultiplier, multiplierFactor),
-        this.config.maxCooldownMs
-      );
-      this.currentCooldownMs = Math.max(diagnosis.suggestedCooldownMs || 0, computedCooldown);
-      this.trip(
-        `Consecutive failure threshold reached (${this.consecutiveFailures}/${this.config.failureThreshold}): ${diagnosis.reason}`,
-        diagnosis.category,
-        this.currentCooldownMs,
-        'breaker.consecutive',
-        CircuitBreaker.wrappedParams(diagnosis, {
-          count: this.consecutiveFailures,
-          threshold: this.config.failureThreshold,
-        })
-      );
-      return;
-    }
-
-    // 4. Sliding window failure rate check
-    if (this.outcomeWindow.length >= this.config.slidingWindowSize) {
-      const failedCount = this.outcomeWindow.filter(v => !v).length;
-      const failureRate = failedCount / this.outcomeWindow.length;
-      if (failureRate >= this.config.failureRateThreshold) {
-        this.currentCooldownMs = Math.max(diagnosis.suggestedCooldownMs || 0, this.config.initialCooldownMs);
-        this.trip(
-          `Sliding window failure rate exceeded (${(failureRate * 100).toFixed(0)}% >= ${(this.config.failureRateThreshold * 100).toFixed(0)}%): ${diagnosis.reason}`,
-          diagnosis.category,
-          this.currentCooldownMs,
-          'breaker.rate_window',
-          CircuitBreaker.wrappedParams(diagnosis, {
-            rate: Math.round(failureRate * 100),
-            threshold: Math.round(this.config.failureRateThreshold * 100),
-          })
-        );
-      }
-    }
+    const reason =
+      kind === 'max_wait'
+        ? `Half-open wait limit exceeded (${rec.halfOpen.maxWaitMs}ms in HALF_OPEN, ${this.halfOpenSuccesses}/${rec.halfOpen.successThreshold} successes)`
+        : `Half-open trial batch exhausted (${this.halfOpenSuccesses}/${rec.halfOpen.successThreshold} successes)`;
+    this.trip(reason, this.category, this.currentCooldownMs, 'breaker.canary', {
+      cause_code: this.reasonCode ?? '',
+      detail: reason,
+    });
   }
 
   /**
@@ -317,6 +584,8 @@ export class CircuitBreaker {
     this.reasonParams = reasonParams;
     this.category = category;
     this.halfOpenProbes = 0;
+    this.halfOpenSuccesses = 0;
+    this.halfOpenEnteredAt = 0;
   }
 
   /**
@@ -340,7 +609,7 @@ export class CircuitBreaker {
   public reset(): void {
     this.state = 'CLOSED';
     this.consecutiveFailures = 0;
-    this.currentCooldownMs = this.config.initialCooldownMs;
+    this.currentCooldownMs = this.rules.trip.consecutiveFailures.initialCooldownMs;
     this.cooldownUntil = 0;
     this.trippedAt = 0;
     this.reason = undefined;
@@ -348,6 +617,8 @@ export class CircuitBreaker {
     this.reasonParams = undefined;
     this.category = undefined;
     this.halfOpenProbes = 0;
+    this.halfOpenSuccesses = 0;
+    this.halfOpenEnteredAt = 0;
     this.outcomeWindow = [];
   }
 
@@ -377,6 +648,8 @@ export class CircuitBreaker {
       remainingCooldownMs: Math.max(0, this.cooldownUntil - now),
       currentCooldownMs: this.currentCooldownMs,
       halfOpenProbes: this.halfOpenProbes,
+      halfOpenSuccesses: this.halfOpenSuccesses,
+      halfOpenEnteredAt: this.halfOpenEnteredAt || undefined,
     };
   }
 
@@ -401,6 +674,8 @@ export class CircuitBreaker {
       cooldownUntil: this.cooldownUntil,
       currentCooldownMs: this.currentCooldownMs,
       halfOpenProbes: this.halfOpenProbes,
+      halfOpenSuccesses: this.halfOpenSuccesses,
+      halfOpenEnteredAt: this.halfOpenEnteredAt,
       outcomeWindow: [...this.outcomeWindow],
     };
     if (this.tier) rec.tier = this.tier;
@@ -437,9 +712,14 @@ export class CircuitBreaker {
     // shutdown flush landing between probe dispatch and its result), which would
     // restore HALF_OPEN with an exhausted quota — and the only exits from
     // HALF_OPEN are recordSuccess/recordFailure, which the gate would never let
-    // happen. Refresh the probe quota on restore: worst case one extra canary.
+    // happen. Refresh the whole trial batch on restore (probes AND successes,
+    // spec rule #10): worst case one extra canary round. The maxWaitMs clock
+    // re-arms from now too — the downtime must not consume the wait budget.
     this.halfOpenProbes = rec.state === 'HALF_OPEN' ? 0 : rec.halfOpenProbes;
-    this.outcomeWindow = rec.outcomeWindow.slice(-this.config.slidingWindowSize);
+    this.halfOpenSuccesses = rec.state === 'HALF_OPEN' ? 0 : rec.halfOpenSuccesses;
+    this.halfOpenEnteredAt = rec.state === 'HALF_OPEN' ? this.nowFn() : rec.halfOpenEnteredAt;
+    // Config windowSize change: the persisted slice re-fits the ring (invariant 5 note).
+    this.outcomeWindow = rec.outcomeWindow.slice(-this.rules.trip.failureRate.windowSize);
     this.reason = rec.reason;
     this.reasonCode = rec.reasonCode;
     this.reasonParams = rec.reasonParams;
@@ -447,18 +727,43 @@ export class CircuitBreaker {
   }
 
   private checkCooldownTransition(): void {
+    const now = this.nowFn();
     if (this.state === 'OPEN') {
-      const now = this.nowFn();
       if (now >= this.cooldownUntil) {
         this.state = 'HALF_OPEN';
         this.halfOpenProbes = 0;
+        this.halfOpenSuccesses = 0;
+        this.halfOpenEnteredAt = now;
+      }
+      return;
+    }
+    if (this.state === 'HALF_OPEN') {
+      const ho = this.rules.recovery.halfOpen;
+      // maxWaitMs (0 = wait forever, today's shape): a trial that may not
+      // resolve on traffic resolves through onCanaryFailure instead.
+      if (ho.maxWaitMs > 0 && now - this.halfOpenEnteredAt >= ho.maxWaitMs) {
+        this.resolveHalfOpenFailure('max_wait');
+        return;
+      }
+      // Spec rule #10 "short batch": with a multi-probe trial (threshold > 1),
+      // every concurrent slot consumed while recorded successes are below the
+      // threshold resolves through onCanaryFailure. With the default
+      // threshold=1 this never fires — a stuck single canary lingers as today
+      // (bounded by maxWaitMs when configured), never re-tripping an
+      // in-flight probe's model prematurely.
+      if (
+        ho.successThreshold > 1 &&
+        this.halfOpenProbes >= ho.maxProbes &&
+        this.halfOpenSuccesses < ho.successThreshold
+      ) {
+        this.resolveHalfOpenFailure('batch_short');
       }
     }
   }
 
   private recordOutcome(success: boolean): void {
     this.outcomeWindow.push(success);
-    if (this.outcomeWindow.length > this.config.slidingWindowSize) {
+    if (this.outcomeWindow.length > this.rules.trip.failureRate.windowSize) {
       this.outcomeWindow.shift();
     }
   }

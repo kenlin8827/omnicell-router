@@ -99,11 +99,183 @@ export interface BreakerInfo {
   remainingCooldownMs: number;
   currentCooldownMs: number;
   halfOpenProbes: number;
+  /** HALF_OPEN trial batch (spec rule #10): successes counted this episode. */
+  halfOpenSuccesses: number;
+  /** When this HALF_OPEN episode began (0 = not in one); recovery.halfOpen.maxWaitMs expires from here. */
+  halfOpenEnteredAt?: number;
   /**
    * Present only on pair breakers (model × credential, ADR-0019 P3). Model
    * rows never carry it — readers split the two layers on `undefined`.
    */
   keyHashPrefix?: string;
+}
+
+/* ─── circuitBreaker.rules — mirrors backend/src/resilience/types.ts 1:1 by
+ * contract name (spec docs/design/circuit-breaker-rules-config.md, re-exported
+ * via backend/src/config/types.ts). Every per-rule param is optional: an
+ * ABSENT numeric key means "auto" (inherit the global knob); booleans/enums
+ * are materialized by the backend sanitizer on config load. */
+
+/** Blast-radius override for one trip rule ('auto' = keep the diagnosed scope). */
+export type BreakerScopeOverride = 'auto' | 'pair' | 'account' | 'model';
+
+/** HALF_OPEN re-trip policy (spec rule #9). */
+export type OnCanaryFailureMode = 'backoff' | 'initial' | 'close';
+
+/** A counted error class: whether it is recorded at all, and the floor its trips inherit. */
+export interface BreakerCountingClassRule {
+  enabled?: boolean;
+  minCooldownMs?: number;
+}
+
+export interface BreakerCountingConfig {
+  serverErrors?: BreakerCountingClassRule;
+  unknownErrors?: BreakerCountingClassRule;
+  /** Countedness of 429 has NO toggle (the classifier always counts it); this owns only the no-Retry-After floor. */
+  rateLimitErrors?: { minCooldownMs?: number };
+  /** 400/422: default OFF = today's non-penalizing CLIENT_ERROR. No cooldown param — the tripping rule's ladder applies. */
+  clientErrors?: { enabled?: boolean };
+}
+
+export interface BreakerQuotaTripRule {
+  enabled?: boolean;
+  cooldownMs?: number; // default: quotaCooldownMs
+  scope?: BreakerScopeOverride;
+}
+
+export interface BreakerAuthTripRule {
+  enabled?: boolean;
+  cooldownMs?: number; // default: quotaCooldownMs
+  markSuspect?: boolean; // default true; false stops NEW SUSPECT flags only
+  scope?: BreakerScopeOverride;
+}
+
+export interface BreakerRateLimitTripRule {
+  enabled?: boolean; // OFF = long-Retry-After 429 downgrades to a counted statistical failure (NOT ignored)
+  hardTripAboveMs?: number; // hard/counted boundary; default: retry.inplace.maxRateLimitWaitMs
+  minCooldownMs?: number; // floor of the Retry-After-derived cooldown; default today's hardcoded 1000
+  scope?: BreakerScopeOverride;
+}
+
+export interface BreakerConsecutiveFailuresTripRule {
+  enabled?: boolean;
+  threshold?: number; // default: failureThreshold
+  initialCooldownMs?: number; // default: initialCooldownMs
+  cooldownMultiplier?: number; // default: cooldownMultiplier
+  maxCooldownMs?: number; // default: maxCooldownMs
+  scope?: BreakerScopeOverride;
+}
+
+export interface BreakerFailureRateTripRule {
+  enabled?: boolean;
+  windowSize?: number; // sizes the shared outcome ring buffer; default: slidingWindowSize
+  failureRate?: number; // ratio 0..1; default: failureRateThreshold
+  minCalls?: number; // rate evaluated only with >= this many recorded calls; default: windowSize, clamp <= windowSize
+  cooldownMs?: number; // default: initialCooldownMs
+  scope?: BreakerScopeOverride;
+}
+
+export interface BreakerTripConfig {
+  quota?: BreakerQuotaTripRule;
+  auth?: BreakerAuthTripRule;
+  rateLimit?: BreakerRateLimitTripRule;
+  consecutiveFailures?: BreakerConsecutiveFailuresTripRule;
+  failureRate?: BreakerFailureRateTripRule;
+}
+
+export interface BreakerHalfOpenRecoveryConfig {
+  maxProbes?: number; // trial budget AND the active-prober per-cycle budget; default: halfOpenMaxProbes, clamp >= 1
+  successThreshold?: number; // successes required to CLOSE; default 1, clamp <= maxProbes
+  maxWaitMs?: number; // cap on lingering in HALF_OPEN; default 0 = wait forever
+}
+
+export interface BreakerRecoveryConfig {
+  onCanaryFailure?: OnCanaryFailureMode; // 'close' never applies to MANUAL breakers
+  cooldownMultiplier?: number; // ladder factor for 'backoff'; default: cooldownMultiplier
+  halfOpen?: BreakerHalfOpenRecoveryConfig;
+}
+
+export interface BreakerRulesConfig {
+  counting?: BreakerCountingConfig;
+  trip?: BreakerTripConfig;
+  recovery?: BreakerRecoveryConfig;
+}
+
+/** Fully-resolved effective ruleset (startup resolution, spec invariant 5): every parameter carries a concrete value. */
+export interface ResolvedBreakerRules {
+  shadow: boolean;
+  counting: {
+    serverErrors: { enabled: boolean; minCooldownMs: number };
+    unknownErrors: { enabled: boolean; minCooldownMs: number };
+    rateLimitErrors: { minCooldownMs: number };
+    clientErrors: { enabled: boolean };
+  };
+  trip: {
+    quota: { enabled: boolean; cooldownMs: number; scope: BreakerScopeOverride };
+    auth: { enabled: boolean; cooldownMs: number; markSuspect: boolean; scope: BreakerScopeOverride };
+    rateLimit: { enabled: boolean; hardTripAboveMs: number; minCooldownMs: number; scope: BreakerScopeOverride };
+    consecutiveFailures: {
+      enabled: boolean;
+      threshold: number;
+      initialCooldownMs: number;
+      cooldownMultiplier: number;
+      maxCooldownMs: number;
+      scope: BreakerScopeOverride;
+    };
+    failureRate: {
+      enabled: boolean;
+      windowSize: number;
+      failureRate: number;
+      minCalls: number;
+      cooldownMs: number;
+      scope: BreakerScopeOverride;
+    };
+  };
+  recovery: {
+    onCanaryFailure: OnCanaryFailureMode;
+    cooldownMultiplier: number;
+    halfOpen: { maxProbes: number; successThreshold: number; maxWaitMs: number };
+  };
+}
+
+/** Banner state of automatic tripping (five-switch predicate, spec "Zero-rule state"). */
+export type AutomaticTrippingStatus = 'on' | 'partly_off' | 'all_off';
+
+/** Guardrails-snapshot view of the effective ruleset for the UI banner. */
+export interface BreakerRulesStatus {
+  automatic: AutomaticTrippingStatus;
+  shadow: boolean;
+  rules: ResolvedBreakerRules;
+}
+
+export interface CircuitBreakerPersistenceConfig {
+  debounceMs?: number; // breaker-state file flush debounce; default 1000
+}
+
+/** Full circuitBreaker config mirror (backend CircuitBreakerConfig) — the saved-config draft shape on /breaker-rules. */
+export interface CircuitBreakerConfig {
+  enabled?: boolean;
+  failureThreshold?: number;
+  slidingWindowSize?: number;
+  failureRateThreshold?: number;
+  initialCooldownMs?: number;
+  maxCooldownMs?: number;
+  cooldownMultiplier?: number;
+  quotaCooldownMs?: number;
+  halfOpenMaxProbes?: number;
+  activeProbing?: {
+    enabled?: boolean;
+    intervalMs?: number;
+  };
+  accountAffinity?: {
+    cacheTtlMs?: number;
+  };
+  /** Per-rule toggles/params; absent = today's behavior byte-for-byte. */
+  rules?: BreakerRulesConfig;
+  /** Shadow mode: rules evaluate and record fully, the gate verdict never denies. */
+  shadow?: boolean;
+  /** Breaker-memory flush policy. */
+  persistence?: CircuitBreakerPersistenceConfig;
 }
 
 /**
@@ -166,6 +338,12 @@ export interface GatewayStatusResponse {
       halfOpen: number;
       breakers: BreakerInfo[];
     };
+    /**
+     * EFFECTIVE (startup-resolved) ruleset + five-switch banner state (breaker
+     * rules spec; backend console.ts handleStatus). Additive: older gateways
+     * omit it — the UI then derives live values from the saved config.
+     */
+    rules?: BreakerRulesStatus;
   };
   clients: ClientStatus[];
   providers: MaskedProviderStatus[];

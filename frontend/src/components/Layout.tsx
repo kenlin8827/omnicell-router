@@ -34,6 +34,7 @@ import {
   ScrollText,
   Archive,
   FolderCog,
+  Settings2,
   type LucideIcon,
 } from 'lucide-react';
 import { api, type GatewayStatusResponse } from '../lib/api';
@@ -105,6 +106,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     icon: ShieldCheck,
     items: [
       { to: '/guardrails', labelKey: 'nav.guardrails', icon: ShieldAlert },
+      { to: '/breaker-rules', labelKey: 'nav.breakerRules', icon: Settings2 },
     ],
   },
   {
@@ -146,6 +148,7 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/clients': { groupKey: 'nav.grpAccess', titleKey: 'nav.clients' },
   '/proxy-access': { groupKey: 'nav.grpAccess', titleKey: 'nav.proxyAccess' },
   '/guardrails': { groupKey: 'nav.grpSafety', titleKey: 'nav.guardrails' },
+  '/breaker-rules': { groupKey: 'nav.grpSafety', titleKey: 'nav.breakerRules' },
   '/sessions': { groupKey: 'nav.grpObservability', titleKey: 'nav.sessions' },
   '/usage': { groupKey: 'nav.grpObservability', titleKey: 'nav.usage' },
   '/logs': { groupKey: 'nav.grpObservability', titleKey: 'nav.logs' },

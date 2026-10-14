@@ -263,7 +263,9 @@ describe('BreakerStateStore — restart continuity', () => {
   it('pair breakers (account-scope fan-out) restore with their keyHashPrefix attribution', () => {
     const paths = sandboxPaths('pairs');
     const clock = makeClock();
-    const accountDiag = quotaDiag({ tripScope: 'account', suggestedCooldownMs: 10_000 });
+    // Hard-trip length resolves from trip.quota.cooldownMs (default = CFG
+    // quotaCooldownMs 60_000); minCooldownMs is only a statistical-path floor.
+    const accountDiag = quotaDiag({ tripScope: 'account', minCooldownMs: 10_000 });
     const first = bootManager(clock, paths, [model(X), model(Y)]);
     first.manager.recordFailureScoped(X, accountDiag, 'anthropic', 'k1');
     expect(first.manager.isPairOut(X, 'k1')).toBe(true);

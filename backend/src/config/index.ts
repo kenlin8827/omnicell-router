@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { isMap, parse, parseDocument, stringify } from 'yaml';
-import { Layer2JudgeConfig, RequestCaptureConfig, RouterConfig, WebAuthConfig } from './types.js';
+import { Layer2JudgeConfig, RequestCaptureConfig, RouterConfig, WebAuthConfig, CircuitBreakerConfig } from './types.js';
 import { DEFAULT_RETRIABLE_CAUSES } from '../resilience/types.js';
 import { ensureEnvScaffold, getEnvPaths, resolveEnvName } from './env.js';
 
@@ -112,6 +112,36 @@ const DEFAULT_CONFIG: RouterConfig = {
       // prompt cache is gone by then anyway). 300000 = Anthropic cache TTL.
       cacheTtlMs: 300000,
     },
+    // Shadow mode (spec docs/design/circuit-breaker-rules-config.md): rules
+    // evaluate and record fully but the gate never denies; manual trips,
+    // DISABLED and SUSPECT stay enforced.
+    shadow: false,
+    persistence: {
+      debounceMs: 1000,
+    },
+    // The rule tree. Only today's BEHAVIOR defaults are materialized here
+    // (enabled toggles, scopes, enums); per-rule numeric params stay UNSET —
+    // the startup resolver falls them back to the global knobs above, so a
+    // later global-knob change keeps propagating ("auto" semantics).
+    rules: {
+      counting: {
+        serverErrors: { enabled: true },
+        unknownErrors: { enabled: true },
+        rateLimitErrors: {},
+        clientErrors: { enabled: false },
+      },
+      trip: {
+        quota: { enabled: true, scope: 'auto' },
+        auth: { enabled: true, markSuspect: true, scope: 'auto' },
+        rateLimit: { enabled: true, scope: 'auto' },
+        consecutiveFailures: { enabled: true, scope: 'auto' },
+        failureRate: { enabled: true, scope: 'auto' },
+      },
+      recovery: {
+        onCanaryFailure: 'backoff',
+        halfOpen: {},
+      },
+    },
   },
   retry: {
     enabled: true,
@@ -204,6 +234,150 @@ function resolveRequestCapture(parsed: any): RequestCaptureConfig {
   };
 }
 
+/**
+ * Resolve the `circuitBreaker:` tree from a raw parsed config. Top-level knobs
+ * merge shallow (unchanged from the old spread); the NEW `rules` tree merges
+ * KEY-BY-KEY at every level (family maps and each rule object), so a partially
+ * written rule block can never silently drop its sibling defaults against the
+ * shallow merge (spec invariant 5). Numeric per-rule params stay UNSET when
+ * absent — the startup resolver (resolveBreakerRules) falls them back to the
+ * global knobs; materializing them here would freeze inherited values into the
+ * saved YAML. Booleans/enums DO materialize (they encode "today's behavior"
+ * without shadowing any knob). Clamps applied at the value level; the
+ * cross-field clamps resolve against the effective global fallbacks:
+ * maxProbes >= 1, successThreshold <= maxProbes, minCalls <= windowSize.
+ * Unknown keys inside the rules tree are dropped (round-trip hygiene, same
+ * doctrine as resolveRequestCapture).
+ */
+function resolveCircuitBreaker(parsed: any): CircuitBreakerConfig {
+  const base = DEFAULT_CONFIG.circuitBreaker as CircuitBreakerConfig;
+  // `as` cast: raw YAML is untyped at this boundary; same tolerance the old
+  // spread-merge had (type enforcement is the consumers' nullish-merge).
+  const raw = (parsed?.circuitBreaker ?? {}) as Record<string, any>;
+  const merged: CircuitBreakerConfig = { ...base, ...raw };
+
+  // ── value cleaners (trust-boundary validation: junk → unset → fallback) ──
+  const ms = (v: unknown): number | undefined =>
+    typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined;
+  const flag = (v: unknown, fallback: boolean): boolean => (typeof v === 'boolean' ? v : fallback);
+  const scope = (v: unknown): 'auto' | 'pair' | 'account' | 'model' =>
+    v === 'pair' || v === 'account' || v === 'model' ? v : 'auto';
+  const canaryMode = (v: unknown): 'backoff' | 'initial' | 'close' =>
+    v === 'initial' || v === 'close' ? v : 'backoff';
+
+  // Merge one rule object over an explicit key list (unknown keys dropped —
+  // round-trip hygiene): raw value wins per key, null/absent falls to base.
+  const obj = (baseObj: object | undefined, rawObj: unknown, keys: readonly string[]): Record<string, unknown> => {
+    const src = (rawObj && typeof rawObj === 'object' && !Array.isArray(rawObj) ? rawObj : {}) as Record<string, unknown>;
+    const baseRec = (baseObj ?? {}) as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const key of keys) {
+      const raw = src[key];
+      out[key] = raw !== undefined && raw !== null ? raw : baseRec[key];
+    }
+    return out;
+  };
+
+  const rawRules = (raw.rules ?? {}) as Record<string, unknown>;
+  const c = obj(base.rules?.counting, rawRules.counting, ['serverErrors', 'unknownErrors', 'rateLimitErrors', 'clientErrors']);
+  const t = obj(base.rules?.trip, rawRules.trip, ['quota', 'auth', 'rateLimit', 'consecutiveFailures', 'failureRate']);
+  const rec = obj(base.rules?.recovery, rawRules.recovery, ['onCanaryFailure', 'cooldownMultiplier', 'halfOpen']);
+
+  const server = obj(base.rules?.counting?.serverErrors, c.serverErrors, ['enabled', 'minCooldownMs']);
+  const unknown = obj(base.rules?.counting?.unknownErrors, c.unknownErrors, ['enabled', 'minCooldownMs']);
+  const rateCounted = obj(base.rules?.counting?.rateLimitErrors, c.rateLimitErrors, ['minCooldownMs']);
+  const client = obj(base.rules?.counting?.clientErrors, c.clientErrors, ['enabled']);
+  const quota = obj(base.rules?.trip?.quota, t.quota, ['enabled', 'cooldownMs', 'scope']);
+  const auth = obj(base.rules?.trip?.auth, t.auth, ['enabled', 'cooldownMs', 'markSuspect', 'scope']);
+  const rate = obj(base.rules?.trip?.rateLimit, t.rateLimit, ['enabled', 'hardTripAboveMs', 'minCooldownMs', 'scope']);
+  const consec = obj(base.rules?.trip?.consecutiveFailures, t.consecutiveFailures, [
+    'enabled', 'threshold', 'initialCooldownMs', 'cooldownMultiplier', 'maxCooldownMs', 'scope',
+  ]);
+  const rateRule = obj(base.rules?.trip?.failureRate, t.failureRate, [
+    'enabled', 'windowSize', 'failureRate', 'minCalls', 'cooldownMs', 'scope',
+  ]);
+  const halfOpen = obj(base.rules?.recovery?.halfOpen, rec.halfOpen, ['maxProbes', 'successThreshold', 'maxWaitMs']);
+
+  // Effective global fallbacks the cross-field clamps resolve against.
+  const globalProbes = Math.max(1, Math.floor(ms(merged.halfOpenMaxProbes) ?? 1));
+  const maxProbes = halfOpen.maxProbes !== undefined ? Math.max(1, Math.floor(ms(halfOpen.maxProbes) ?? 1)) : undefined;
+  const effProbes = maxProbes ?? globalProbes;
+  const successThreshold =
+    halfOpen.successThreshold !== undefined
+      ? Math.min(Math.max(1, Math.floor(ms(halfOpen.successThreshold) ?? 1)), effProbes)
+      : undefined;
+  const globalWindow = Math.max(1, Math.floor(ms(merged.slidingWindowSize) ?? 20));
+  const windowSize = rateRule.windowSize !== undefined ? Math.max(1, Math.floor(ms(rateRule.windowSize) ?? 1)) : undefined;
+  const effWindow = windowSize ?? globalWindow;
+  const minCalls =
+    rateRule.minCalls !== undefined ? Math.min(Math.max(0, Math.floor(ms(rateRule.minCalls) ?? 0)), effWindow) : undefined;
+
+  merged.rules = {
+    counting: {
+      serverErrors: {
+        enabled: flag(server.enabled, true),
+        minCooldownMs: ms(server.minCooldownMs),
+      },
+      unknownErrors: {
+        enabled: flag(unknown.enabled, true),
+        minCooldownMs: ms(unknown.minCooldownMs),
+      },
+      // Countedness of 429 has NO toggle; only the no-Retry-After floor is settable.
+      rateLimitErrors: { minCooldownMs: ms(rateCounted.minCooldownMs) },
+      clientErrors: { enabled: flag(client.enabled, false) },
+    },
+    trip: {
+      quota: { enabled: flag(quota.enabled, true), cooldownMs: ms(quota.cooldownMs), scope: scope(quota.scope) },
+      auth: {
+        enabled: flag(auth.enabled, true),
+        cooldownMs: ms(auth.cooldownMs),
+        markSuspect: flag(auth.markSuspect, true),
+        scope: scope(auth.scope),
+      },
+      rateLimit: {
+        enabled: flag(rate.enabled, true),
+        hardTripAboveMs: ms(rate.hardTripAboveMs),
+        minCooldownMs: ms(rate.minCooldownMs),
+        scope: scope(rate.scope),
+      },
+      consecutiveFailures: {
+        enabled: flag(consec.enabled, true),
+        threshold: consec.threshold !== undefined ? Math.max(1, Math.floor(ms(consec.threshold) ?? 1)) : undefined,
+        initialCooldownMs: ms(consec.initialCooldownMs),
+        cooldownMultiplier: ms(consec.cooldownMultiplier),
+        maxCooldownMs: ms(consec.maxCooldownMs),
+        scope: scope(consec.scope),
+      },
+      failureRate: {
+        enabled: flag(rateRule.enabled, true),
+        windowSize,
+        failureRate:
+          typeof rateRule.failureRate === 'number' && rateRule.failureRate >= 0 && rateRule.failureRate <= 1
+            ? rateRule.failureRate
+            : undefined,
+        minCalls,
+        cooldownMs: ms(rateRule.cooldownMs),
+        scope: scope(rateRule.scope),
+      },
+    },
+    recovery: {
+      onCanaryFailure: canaryMode(rec.onCanaryFailure),
+      cooldownMultiplier: ms(rec.cooldownMultiplier),
+      halfOpen: {
+        maxProbes,
+        successThreshold,
+        maxWaitMs: ms(halfOpen.maxWaitMs),
+      },
+    },
+  };
+
+  merged.shadow = flag(raw.shadow, false);
+  const rawPersistence = (raw.persistence ?? {}) as Record<string, unknown>;
+  merged.persistence = { debounceMs: ms(rawPersistence.debounceMs) ?? 1000 };
+
+  return merged;
+}
+
 export function loadConfig(configPath?: string): RouterConfig {
   const resolvedPath = getConfigPath(configPath);
   if (fs.existsSync(resolvedPath)) {
@@ -252,7 +426,7 @@ export function loadConfig(configPath?: string): RouterConfig {
         },
         requestCapture: resolveRequestCapture(parsed),
         tracePersist: { ...DEFAULT_CONFIG.tracePersist, ...parsed?.tracePersist },
-        circuitBreaker: { ...DEFAULT_CONFIG.circuitBreaker, ...parsed?.circuitBreaker },
+        circuitBreaker: resolveCircuitBreaker(parsed),
         retry: {
           enabled: parsed?.retry?.enabled ?? DEFAULT_CONFIG.retry?.enabled,
           inplace: { ...DEFAULT_CONFIG.retry?.inplace, ...parsed?.retry?.inplace },
@@ -455,19 +629,70 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'flywheel.logUserPrompt': '是否记录用户提示词原文（隐私敏感）',
   'flywheel.retentionDays': '样本保留天数（0 或不填=不自动清理；启用后启动时+每小时自动删除超龄样本；自动清理不生成备份、删除不可恢复，请谨慎设置）',
   'flywheel.maxFileSizeMB': '数据集文件大小上限 MB（0 或不填=不限制；超出后从最旧样本开始裁剪；在保留天数清理之后执行；自动清理不生成备份）',
-  circuitBreaker: '熔断器（按模型统计失败并自动摘除，见 /guardrails 页）',
-  'circuitBreaker.failureThreshold': '窗口内失败次数阈值（达到即熔断）',
-  'circuitBreaker.slidingWindowSize': '滑动窗口样本数',
-  'circuitBreaker.failureRateThreshold': '失败率阈值（0-1）',
-  'circuitBreaker.initialCooldownMs': '首次熔断冷却时长（毫秒）',
-  'circuitBreaker.maxCooldownMs': '冷却时长上限（毫秒）',
-  'circuitBreaker.cooldownMultiplier': '连续熔断的冷却指数退避倍数',
-  'circuitBreaker.quotaCooldownMs': '配额/余额耗尽专用冷却时长（毫秒）',
-  'circuitBreaker.halfOpenMaxProbes': '半开状态最大并发探测数',
+  'circuitBreaker': '熔断器（按模型统计失败并自动摘除，见 /guardrails 页）；规则组 rules 可逐条开关并覆写参数，修改均需重启生效',
+  'circuitBreaker.failureThreshold': '窗口内失败次数阈值（达到即熔断）；rules.trip.consecutiveFailures.threshold 未设置时的全局默认值',
+  'circuitBreaker.slidingWindowSize': '滑动窗口样本数；rules.trip.failureRate.windowSize 未设置时的全局默认值',
+  'circuitBreaker.failureRateThreshold': '失败率阈值（0-1）；rules.trip.failureRate.failureRate 未设置时的全局默认值',
+  'circuitBreaker.initialCooldownMs': '首次熔断冷却时长（毫秒）；各规则冷却参数未设置时的全局默认值',
+  'circuitBreaker.maxCooldownMs': '冷却时长上限（毫秒），任何推导冷却（含 429 Retry-After 钳制）的总封顶',
+  'circuitBreaker.cooldownMultiplier': '连续熔断的冷却指数退避倍数；rules.trip.consecutiveFailures.cooldownMultiplier 与 rules.recovery.cooldownMultiplier 未设置时的默认值',
+  'circuitBreaker.quotaCooldownMs': '配额/余额耗尽专用冷却时长（毫秒）；rules.trip.quota/auth.cooldownMs 未设置时的默认值',
+  'circuitBreaker.halfOpenMaxProbes': '半开状态最大并发探测数；rules.recovery.halfOpen.maxProbes 未设置时的默认值（同时是主动探测每模型每周期的预算，下限 1）',
   'circuitBreaker.activeProbing': '主动探测（冷却期内定时试探是否恢复）',
   'circuitBreaker.activeProbing.intervalMs': '探测间隔（毫秒）',
   'circuitBreaker.accountAffinity': '会话账号亲和（多账号供应商：会话绑定一个账号，仅故障转移时切换，绝不负载均衡）',
   'circuitBreaker.accountAffinity.cacheTtlMs': '亲和窗口（毫秒，默认 300000 = Anthropic 提示缓存 5 分钟）；空闲超过此窗口的会话按新会话重新分散选号',
+  'circuitBreaker.rules': '熔断规则组，阅读顺序=因果链：counting 计不计入失败 → trip 何时熔断 → recovery 如何恢复；每项缺省=沿用上方全局旋钮/当前行为；整段缺省与旧版行为逐字节一致；修改需重启生效',
+  'circuitBreaker.rules.counting': 'A 区：哪些错误算失败（计入 trip 规则），各自熔断的最短时长（minCooldownMs 下限，经 max(下限, 计算值) 生效）',
+  'circuitBreaker.rules.counting.serverErrors': '5xx/网络抖动（SERVICE_UNAVAILABLE）计入开关+冷却下限；关闭=既不熔断也不计数（默认开，下限默认=initialCooldownMs）',
+  'circuitBreaker.rules.counting.serverErrors.enabled': '关闭后 5xx/抖动不再计入熔断统计',
+  'circuitBreaker.rules.counting.serverErrors.minCooldownMs': '此类失败触发的熔断不短于该毫秒数（默认=initialCooldownMs）',
+  'circuitBreaker.rules.counting.unknownErrors': '未分类上游错误计入开关+冷却下限（默认开，下限默认=initialCooldownMs）',
+  'circuitBreaker.rules.counting.unknownErrors.enabled': '关闭后未分类错误不再计入熔断统计',
+  'circuitBreaker.rules.counting.unknownErrors.minCooldownMs': '此类失败触发的熔断不短于该毫秒数（默认=initialCooldownMs）',
+  'circuitBreaker.rules.counting.rateLimitErrors': '429 的计入性无开关（分类器始终计数）；本键只拥有“无 Retry-After 时”的冷却下限（默认 min(60000, initialCooldownMs)）',
+  'circuitBreaker.rules.counting.rateLimitErrors.minCooldownMs': '无 Retry-After 的 429 计入后的熔断冷却下限（毫秒）；带 Retry-After 的沿用其推导值',
+  'circuitBreaker.rules.counting.clientErrors': '400/422 客户端错误是否计入失败（默认关=现行为不惩罚；开启后按 trip 规则自身阶梯计）',
+  'circuitBreaker.rules.counting.clientErrors.enabled': '开启后 400/422 计入熔断统计（不建议：客户端问题不应惩罚上游）',
+  'circuitBreaker.rules.trip': 'B 区：计数到的失败何时打开熔断；scope=blast 半径覆写 auto|pair|account|model（仅在有凭据归属时生效，无链供应商自然退化为模型级）；五个开关全部关闭=自动熔断彻底关闭（手动熔断不受影响）',
+  'circuitBreaker.rules.trip.quota': '402/配额措辞 → 立即熔断（默认开）；关闭=402 既不熔断也不计数，并会释放存量 breaker.quota 熔断记录（重启恢复时丢弃）',
+  'circuitBreaker.rules.trip.quota.enabled': '关闭后 402 不再自动熔断',
+  'circuitBreaker.rules.trip.quota.cooldownMs': '402 硬熔断时长（毫秒，默认=quotaCooldownMs 12h）',
+  'circuitBreaker.rules.trip.quota.scope': 'blast 半径覆写：auto=按错误类型（402 默认 account=该凭据全部模型）/ pair=仅模型×该凭据 / account=该凭据全部模型 / model=该模型全部凭据',
+  'circuitBreaker.rules.trip.auth': '401 → 立即熔断（默认开）；关闭=401 既不熔断也不计数，并释放存量 breaker.auth 记录',
+  'circuitBreaker.rules.trip.auth.enabled': '关闭后 401 不再自动熔断',
+  'circuitBreaker.rules.trip.auth.cooldownMs': '401 硬熔断时长（毫秒，默认=quotaCooldownMs 12h）',
+  'circuitBreaker.rules.trip.auth.markSuspect': '熔断时把该账号标记为 SUSPECT（默认开）；关闭只停止新标记——已存在的标记仍拦截选路，直到手动清除',
+  'circuitBreaker.rules.trip.auth.scope': 'blast 半径覆写（401 默认 account）；见 rules.trip 说明',
+  'circuitBreaker.rules.trip.rateLimit': '429 带 Retry-After 且超过 hardTripAboveMs → 硬熔断；关闭=此类 429 降级为“计入统计的失败”（不是忽略），其 Retry-After 推导下限照常流入 max(下限, 计算值)',
+  'circuitBreaker.rules.trip.rateLimit.enabled': '关闭后长 Retry-After 的 429 不再硬熔断，只计入统计失败',
+  'circuitBreaker.rules.trip.rateLimit.hardTripAboveMs': '硬/软分界（毫秒）：Retry-After 超过它才硬熔断；默认=retry.inplace.maxRateLimitWaitMs（覆写后与重试侧分界脱钩，属有意分歧）',
+  'circuitBreaker.rules.trip.rateLimit.minCooldownMs': 'Retry-After 推导冷却的下限（毫秒，默认 1000；总封顶仍是全局 maxCooldownMs）',
+  'circuitBreaker.rules.trip.rateLimit.scope': 'blast 半径覆写（429 默认 pair；“每日/每周额度”措辞默认 account）；见 rules.trip 说明',
+  'circuitBreaker.rules.trip.consecutiveFailures': '连续失败达阈值 → 熔断（默认开）；关闭=连续阈值不再检查；阶梯：initialCooldownMs×cooldownMultiplier^n，封顶 maxCooldownMs',
+  'circuitBreaker.rules.trip.consecutiveFailures.enabled': '关闭后不再按“连续失败次数”自动熔断',
+  'circuitBreaker.rules.trip.consecutiveFailures.threshold': '连续失败次数阈值（默认=failureThreshold 3）',
+  'circuitBreaker.rules.trip.consecutiveFailures.initialCooldownMs': '阶梯首档冷却（毫秒，默认=initialCooldownMs）',
+  'circuitBreaker.rules.trip.consecutiveFailures.cooldownMultiplier': '阶梯倍数（默认=cooldownMultiplier 2.0）',
+  'circuitBreaker.rules.trip.consecutiveFailures.maxCooldownMs': '阶梯封顶（毫秒，默认=maxCooldownMs 5h）',
+  'circuitBreaker.rules.trip.consecutiveFailures.scope': 'blast 半径覆写（计入统计类失败默认按分类器 scope：5xx=account、未分类=pair）；见 rules.trip 说明',
+  'circuitBreaker.rules.trip.failureRate': '滑动窗口失败率 → 熔断（默认开）；关闭=窗口速率不再检查；速率仅在已记录调用数 >= minCalls 时评估',
+  'circuitBreaker.rules.trip.failureRate.enabled': '关闭后不再按“窗口失败率”自动熔断',
+  'circuitBreaker.rules.trip.failureRate.windowSize': '共享结果环形缓冲大小（默认=slidingWindowSize 20；是熔断器构造参数，改变会影响持久化窗口切片）',
+  'circuitBreaker.rules.trip.failureRate.failureRate': '失败率阈值（0-1 小数，默认=failureRateThreshold 0.5）',
+  'circuitBreaker.rules.trip.failureRate.minCalls': '评估速率所需的最少已记录调用数（默认=windowSize 即旧版“满窗才判”，下限 0，封顶 windowSize；调低可在稀疏流量上更快熔断）',
+  'circuitBreaker.rules.trip.failureRate.cooldownMs': '速率熔断时长（毫秒，默认=initialCooldownMs）',
+  'circuitBreaker.rules.trip.failureRate.scope': 'blast 半径覆写；见 rules.trip 说明（与 consecutiveFailures 同时覆写时，前者优先——两条规则共用一次记录）',
+  'circuitBreaker.rules.recovery': 'C 区：已熔断模型如何恢复；半开试航=最多 maxProbes 个并发探测，成功累计到 successThreshold 才完全恢复（CLOSED）',
+  'circuitBreaker.rules.recovery.onCanaryFailure': '探测失败/试航批次未达标/半开超时后的去向：backoff=阶梯加倍再熔（现行）/ initial=按阶梯首档重新熔 / close=乐观恢复（保留 consecutiveFailures 与当前阶梯，下次失败即以更高档重熔；手动熔断无视 close，必定重新打开）',
+  'circuitBreaker.rules.recovery.cooldownMultiplier': 'backoff 去向的阶梯倍数（默认=cooldownMultiplier 2.0）',
+  'circuitBreaker.rules.recovery.halfOpen': '半开试航参数；maxProbes 同时是主动探测每模型每周期预算',
+  'circuitBreaker.rules.recovery.halfOpen.maxProbes': '半开并发探测预算（默认=halfOpenMaxProbes 1；下限 1——0 会饿死恢复通道）',
+  'circuitBreaker.rules.recovery.halfOpen.successThreshold': '半开恢复所需成功探测数（默认 1=首成即闭；封顶 maxProbes）',
+  'circuitBreaker.rules.recovery.halfOpen.maxWaitMs': '半开最长停留时间（毫秒，默认 0=永久等待，现行）；超时按 onCanaryFailure 去向处理',
+  'circuitBreaker.shadow': '影子模式：规则照常评估、照常熔断记录/快照/事件（试航槽、阶梯、窗口全部真实推进），但 canExecute/peek 绝不拦流量；手动 OPEN、DISABLED、SUSPECT 不受影子豁免；用于上线前验证规则',
+  'circuitBreaker.persistence': '熔断状态落盘策略',
+  'circuitBreaker.persistence.debounceMs': 'breaker-state 文件写入去抖间隔（毫秒，默认 1000；崩溃丢失窗口即此去抖时长）',
   retry: '重试策略',
   'retry.inplace': '原地重试（同一模型）',
   'retry.inplace.maxAttempts': '额外重试次数',

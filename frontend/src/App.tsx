@@ -11,6 +11,7 @@ import { ProxyAccessPage } from './pages/ProxyAccessPage';
 import { TokenSaverPage } from './pages/TokenSaverPage';
 import { ApiKeysPage } from './pages/ApiKeysPage';
 import { GuardrailsPage } from './pages/GuardrailsPage';
+import { BreakerRulesPage } from './pages/BreakerRulesPage';
 import { SessionsPage } from './pages/SessionsPage';
 import { UsagePage } from './pages/UsagePage';
 import { LogsPage } from './pages/LogsPage';
@@ -78,6 +79,7 @@ export const App: React.FC = () => {
         <Route path="clients" element={<ClientsPage />} />
         <Route path="proxy-access" element={<ProxyAccessPage />} />
         <Route path="guardrails" element={<GuardrailsPage />} />
+        <Route path="breaker-rules" element={<BreakerRulesPage />} />
         <Route path="sessions" element={<SessionsPage />} />
         <Route path="usage" element={<UsagePage />} />
         <Route path="logs" element={<LogsPage />} />

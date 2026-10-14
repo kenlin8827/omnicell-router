@@ -131,9 +131,13 @@ async function main() {
   // store and resume last lifetime's cooldowns / backoff / manual trips.
   // Attached AFTER every config model is registered, so the restore can
   // drop records for models the current config no longer knows (self-clean,
-  // no ghost breakers). A store failure never blocks boot: the gateway
-  // falls back to the pre-amendment in-memory behavior.
-  const breakerStore = defaultBreakerStateStore();
+  // no ghost breakers) and skip OPEN records whose trip rule is now disabled
+  // (rules-config invariant 2). The flush debounce is config-driven
+  // (circuitBreaker.persistence.debounceMs). A store failure never blocks
+  // boot: the gateway falls back to the pre-amendment in-memory behavior.
+  const breakerStore = defaultBreakerStateStore({
+    debounceMs: config.circuitBreaker?.persistence?.debounceMs,
+  });
   const cbManager = registry.getCircuitBreakerManager();
   cbManager.attachStateStore(breakerStore);
   try {

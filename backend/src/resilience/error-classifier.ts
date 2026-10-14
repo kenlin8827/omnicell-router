@@ -173,7 +173,10 @@ export class ErrorClassifier {
         isInPlaceRetriable: false, // 402 will NEVER succeed on the same model
         shouldTripBreaker: true,
         hardTrip: true, // Immediate circuit trip!
-        suggestedCooldownMs: quotaCooldown,
+        // Hard-trip LENGTH is resolved by the manager gate from trip.quota.cooldownMs
+        // (default: the quotaCooldownMs knob echoed here); this field is only the
+        // statistical-path floor and is not consulted on the hard path.
+        minCooldownMs: quotaCooldown,
         reason: `Quota or balance exhausted for model '${modelId}' (Provider: ${provider})`,
         reasonCode: 'breaker.quota',
         reasonParams: { model: modelId, provider },
@@ -203,7 +206,9 @@ export class ErrorClassifier {
         isInPlaceRetriable: false,
         shouldTripBreaker: true,
         hardTrip: true, // Immediate circuit trip!
-        suggestedCooldownMs: quotaCooldown,
+        // Echoes the global knob; the manager gate resolves the hard-trip length
+        // from trip.auth.cooldownMs — this field never steers it.
+        minCooldownMs: quotaCooldown,
         reason: `Invalid API key or unauthorized for model '${modelId}' (Provider: ${provider})`,
         reasonCode: 'breaker.auth',
         reasonParams: { model: modelId, provider },
@@ -227,6 +232,10 @@ export class ErrorClassifier {
       combinedText.includes('rpm');
 
     if (isRateLimitPattern) {
+      // Rule-agnostic defaults: the manager gate RE-DERIVES the hard/counted
+      // boundary and the cooldown floor from trip.rateLimit params (invariant 1
+      // — the prober calls classify() without config, so gating lives there).
+      // The floors here mirror today's hardcoded values exactly.
       const maxCooldownMs = circuitConfig?.maxCooldownMs || 5 * 3600 * 1000;
       const cooldownMs = retryAfterSeconds
         ? Math.max(1000, Math.min(retryAfterSeconds * 1000, maxCooldownMs))
@@ -241,7 +250,8 @@ export class ErrorClassifier {
       // The upstream gave an explicit wait LONGER than we would ever retry
       // in place — trust it and hard-trip for exactly that duration instead
       // of re-discovering the limit through the 3-strike threshold. 429
-      // without Retry-After stays a soft statistical failure.
+      // without Retry-After stays a soft statistical failure. shouldTripBreaker
+      // stays unconditional: every 429 counts (countedness has no toggle).
       const hardTrip = Boolean(retryAfterSeconds && !isShortBurst);
       // "per day / weekly limit / usage allocation" wording = the ACCOUNT's
       // budget, not this model's RPM window -> account. Plain 429/RPM/TPM stays
@@ -256,7 +266,7 @@ export class ErrorClassifier {
         isInPlaceRetriable: inPlaceAllowed,
         shouldTripBreaker: true,
         hardTrip,
-        suggestedCooldownMs: cooldownMs,
+        minCooldownMs: cooldownMs,
         retryAfterSeconds,
         reason: `Rate limit (429) on model '${modelId}' (Retry-After: ${retryAfterSeconds ?? 'unknown'}s, InPlace: ${inPlaceAllowed}, HardTrip: ${hardTrip})`,
         reasonCode: 'breaker.rate_limit',
@@ -369,7 +379,7 @@ export class ErrorClassifier {
         isInPlaceRetriable: inPlaceAllowed,
         shouldTripBreaker: true,
         hardTrip: false,
-        suggestedCooldownMs: defaultInitialCooldown,
+        minCooldownMs: defaultInitialCooldown,
         reason: `Upstream network jitter [${networkCause}, status ${statusCode || 'N/A'}]: ${rawMessage.slice(0, 150)}`,
         reasonCode: 'breaker.network',
         reasonParams: { cause: networkCause, status: statusCode || 'N/A', message: rawMessage.slice(0, 150) },
@@ -391,7 +401,7 @@ export class ErrorClassifier {
       isInPlaceRetriable: false,
       shouldTripBreaker: true,
       hardTrip: false,
-      suggestedCooldownMs: defaultInitialCooldown,
+      minCooldownMs: defaultInitialCooldown,
       reason: `Unknown upstream error: ${rawMessage.slice(0, 150)}`,
       reasonCode: 'breaker.unknown',
       reasonParams: { message: rawMessage.slice(0, 150) },

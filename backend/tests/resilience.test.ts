@@ -41,7 +41,7 @@ describe('Resilience: Error Taxonomy & Diagnostic Classification', () => {
     assert.equal(diagnosis.hardTrip, true);
     assert.equal(diagnosis.shouldTripBreaker, true);
     assert.equal(diagnosis.isRetriable, true);
-    assert.equal(diagnosis.suggestedCooldownMs, 12 * 3600 * 1000); // 12 hours
+    assert.equal(diagnosis.minCooldownMs, 12 * 3600 * 1000); // 12 hours
   });
 
   it('should detect Chinese or natural language balance exhaustion phrases', () => {
@@ -73,7 +73,7 @@ describe('Resilience: Error Taxonomy & Diagnostic Classification', () => {
     // Explicit Retry-After longer than the in-place wait budget: trust the
     // upstream and hard-trip for exactly that duration.
     assert.equal(diagnosis.hardTrip, true);
-    assert.equal(diagnosis.suggestedCooldownMs, 45000);
+    assert.equal(diagnosis.minCooldownMs, 45000);
     assert.equal(diagnosis.retryAfterSeconds, 45);
   });
 
@@ -140,7 +140,9 @@ describe('Resilience: Circuit Breaker State Machine & Cooldown Transitions', () 
       hardTrip: true,
       shouldTripBreaker: true,
       isRetriable: true,
-      suggestedCooldownMs: 12 * 3600 * 1000,
+      // Echo of the global knob — the hard-trip length is resolved from
+      // trip.quota.cooldownMs (default quotaCooldownMs = 12h), not from this.
+      minCooldownMs: 12 * 3600 * 1000,
       reason: 'Balance exhausted on Anthropic account',
       reasonCode: 'breaker.quota',
       reasonParams: { model: 'claude-3-5-sonnet', provider: 'anthropic' },

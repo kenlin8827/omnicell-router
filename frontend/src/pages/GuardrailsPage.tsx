@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { useOutletContext } from 'react-router-dom';
+import { Link, useOutletContext } from 'react-router-dom';
 import { ShieldAlert, RefreshCw, RotateCcw, Ban, Zap, Loader2, AlertTriangle } from 'lucide-react';
 import { api, opencodeApi, type GatewayStatusResponse, type BreakerInfo, type BreakerTripScope, type AccountHealth } from '../lib/api';
 import { useModelTest, type ModelTestTarget } from '../lib/useModelTest';
@@ -686,7 +686,7 @@ export const GuardrailsPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Circuit Breaker Matrix */}
+      {/* Circuit Breaker Matrix — observation only; rule editing lives on /breaker-rules. */}
       <div className="card" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
         <div className="card-header">
           <div className="card-title">
@@ -694,6 +694,14 @@ export const GuardrailsPage: React.FC = () => {
             <span>{t('guardrails.title')}</span>
           </div>
           <div style={{ display: 'flex', gap: '10px' }}>
+            <Link
+              className="btn btn-sm"
+              to="/breaker-rules"
+              title={t('guardrails.editRulesLink')}
+              style={{ display: 'flex', alignItems: 'center', whiteSpace: 'nowrap' }}
+            >
+              <span>{t('guardrails.editRulesLink')}</span>
+            </Link>
             <button className="btn btn-primary" onClick={handleResetAll} disabled={isResetting}>
               <RefreshCw size={13} />
               <span>{isResetting ? t('guardrails.resetting') : t('guardrails.resetAll')}</span>

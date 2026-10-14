@@ -747,7 +747,16 @@ export function registerConsoleRoutes(
     // `pairs` is additive (ADR-0019 P3 display side): the model-only counts above
     // stay exactly as every existing consumer reads them; the guardrails view
     // renders the credential-scoped layer from this block.
-    const cbSummary = { ...cbManager.getSummary(), pairs: cbManager.getPairSummary() };
+    // `rules` is additive too (circuit-breaker rules spec): the EFFECTIVE
+    // (startup-resolved) ruleset + the five-switch banner state the /guardrails
+    // page renders ("automatic tripping: on / partly off / all off / shadow").
+    // Saved rule edits apply on restart (invariant 6) — handleSaveConfig hot-
+    // applies proxy/capture/layer2/combos/tiers only, never breaker rules.
+    const cbSummary = {
+      ...cbManager.getSummary(),
+      pairs: cbManager.getPairSummary(),
+      rules: cbManager.getRulesStatus(),
+    };
     const metrics = orchestrator.getTracker().getStats();
     const clients = await getAllClientStatuses();
     const config = loadConfig();

@@ -71,7 +71,12 @@ const diagnosis = (over: Partial<ErrorDiagnosis> = {}): ErrorDiagnosis => ({
   isInPlaceRetriable: false,
   shouldTripBreaker: true,
   hardTrip: true,
-  suggestedCooldownMs: 60_000,
+  // Realistic hard-429 shape: the manager gate re-derives hard/counted from
+  // retryAfterSeconds vs trip.rateLimit.hardTripAboveMs (2000ms default), and
+  // the hard-trip length from Retry-After — minCooldownMs is only a
+  // statistical-path floor, never a hard-trip duration anymore.
+  retryAfterSeconds: 60,
+  minCooldownMs: 60_000,
   reason: 'test diagnosis',
   ...over,
 });
@@ -105,7 +110,7 @@ describe('(a) classifier tripScope + accountSuspect table', () => {
     const d = ErrorClassifier.classify(stamped(429, 'requests per minute exceeded', K, { retryAfterSeconds: 3600 }), 'p/m1', 'p');
     expect(d.category).toBe('RATE_LIMITED');
     expect(d.tripScope).toBe('pair');
-    expect(d.suggestedCooldownMs).toBe(3_600_000);
+    expect(d.minCooldownMs).toBe(3_600_000);
     expect(d.accountSuspect).toBeUndefined();
   });
 
@@ -254,9 +259,13 @@ describe('(d) model trip takes every credential out', () => {
   it('an outage trips the bare breaker and the aggregate reports no live prefix', () => {
     const { manager } = makeManager();
     manager.registerModel(model('p/x', 'p'));
-    const outage = diagnosis({ category: 'SERVICE_UNAVAILABLE', tripScope: 'model', hardTrip: true });
+    // Realistic shape: SERVICE_UNAVAILABLE counts toward the statistical
+    // detectors (threshold 3 in CELL_CFG); no hard-trip hatch exists for 5xx.
+    const outage = diagnosis({ category: 'SERVICE_UNAVAILABLE', tripScope: 'model', hardTrip: false });
 
     manager.recordFailureScoped('p/x', outage, 'p', 'K1');
+    manager.recordFailureScoped('p/x', outage, 'p', 'K1');
+    manager.recordFailureScoped('p/x', outage, 'p', 'K1'); // 3rd reaches the threshold
 
     expect(manager.getBreaker('p/x')?.getState()).toBe('OPEN');
     expect(manager.getPairBreaker('p/x', 'K1')).toBeUndefined();
@@ -421,7 +430,7 @@ describe('(f) prober probes one representative pair per model', () => {
     // model breaker down with a SHORT cooldown, two pairs down with a LONG one,
     // a third account administratively suspect: only K4 is live when due.
     manager.recordFailureScoped('p/x', diagnosis({ tripScope: 'model', hardTrip: true }), 'p', 'K0');
-    const stillCooling = diagnosis({ tripScope: 'pair', suggestedCooldownMs: 600_000 });
+    const stillCooling = diagnosis({ tripScope: 'pair', retryAfterSeconds: 600 }); // hard 429, 600_000ms cooldown
     manager.recordFailureScoped('p/x', stillCooling, 'p', 'K1');
     manager.recordFailureScoped('p/x', stillCooling, 'p', 'K2');
     store.mark('p', 'K3', 'dead key');

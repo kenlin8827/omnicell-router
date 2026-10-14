@@ -38,7 +38,8 @@ export interface ProbePlan {
  *   model breaker down     -> probe the model through ONE representative credential
  *   pair breaker down      -> probe the pairs that are due, within the per-model budget
  *
- * The budget is `circuitBreaker.halfOpenMaxProbes` reused, so one model never
+ * The budget is the HALF_OPEN trial budget (`rules.recovery.halfOpen.maxProbes`,
+ * defaulting to `circuitBreaker.halfOpenMaxProbes`), so one model never
  * issues more than that many trial calls per cycle however many of its
  * credentials are tripped. Selection inside a model is deliberately dumb — first
  * chain entry that is neither OPEN nor SUSPECT. The prober validates; routing

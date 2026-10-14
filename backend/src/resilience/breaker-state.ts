@@ -31,16 +31,20 @@ import {
  * aside on the first write instead of being overwritten (cp-dataloss — the
  * file may be the only record of why an account was parked).
  *
- * Writes are DEBOUNCED (default 1s): mutations are rare but a failure storm
- * can produce many in a second, and the loss window of a crash is bounded by
- * the debounce (same doctrine as the governance overlay: a brief loss is
- * under-shaping, the next failure re-trips). A `process.on('exit')` hook
- * calls `flush()` on every cooperative exit path — including `process.exit`
- * (the console's restart route), which never runs signal handlers. Hard
- * kills (taskkill /F, power loss) have no handler at all: there the debounce
- * window is the honest loss bound.
+ * Writes are DEBOUNCED: mutations are rare but a failure storm can produce
+ * many in a second, and the loss window of a crash is bounded by the debounce
+ * (same doctrine as the governance overlay: a brief loss is under-shaping, the
+ * next failure re-trips). The production value is config-driven
+ * (`circuitBreaker.persistence.debounceMs`, resolved default 1000ms — the boot
+ * path passes it to `defaultBreakerStateStore`); the constant below is only the
+ * fallback for stores constructed without config (tests, harnesses). A
+ * `process.on('exit')` hook calls `flush()` on every cooperative exit path —
+ * including `process.exit` (the console's restart route), which never runs
+ * signal handlers. Hard kills (taskkill /F, power loss) have no handler at
+ * all: there the debounce window is the honest loss bound.
  */
 
+/** Fallback flush debounce for stores built without config (the boot path always passes `persistence.debounceMs`). */
 export const DEFAULT_BREAKER_PERSIST_DEBOUNCE_MS = 1000;
 
 export interface BreakerStateStoreDeps {
@@ -78,6 +82,8 @@ function sanitizeRecord(raw: unknown): BreakerRecord | null {
     cooldownUntil: num(r.cooldownUntil),
     currentCooldownMs: num(r.currentCooldownMs),
     halfOpenProbes: num(r.halfOpenProbes),
+    halfOpenSuccesses: num(r.halfOpenSuccesses),
+    halfOpenEnteredAt: num(r.halfOpenEnteredAt),
     outcomeWindow: Array.isArray(r.outcomeWindow) ? r.outcomeWindow.filter(v => v === true || v === false) : [],
   };
   if (typeof r.keyHashPrefix === 'string' && r.keyHashPrefix) rec.keyHashPrefix = r.keyHashPrefix;
@@ -273,11 +279,13 @@ let defaultStore: BreakerStateStore | null = null;
 
 /**
  * The process-wide store the boot path attaches (paths resolved from the real
- * environment at first touch). Anything with an injected `CredentialPaths` —
- * every test — constructs its own `BreakerStateStore` instead.
+ * environment at first touch; the production debounce comes from
+ * `circuitBreaker.persistence.debounceMs`, passed here by the boot path).
+ * Anything with an injected `CredentialPaths` — every test — constructs its
+ * own `BreakerStateStore` instead.
  */
-export function defaultBreakerStateStore(): BreakerStateStore {
-  if (!defaultStore) defaultStore = new BreakerStateStore();
+export function defaultBreakerStateStore(deps: BreakerStateStoreDeps = {}): BreakerStateStore {
+  if (!defaultStore) defaultStore = new BreakerStateStore(deps);
   return defaultStore;
 }
 
