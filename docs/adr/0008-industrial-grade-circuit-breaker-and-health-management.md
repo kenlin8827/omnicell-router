@@ -2,6 +2,7 @@
 
 ## Status
 Accepted & Implemented - 2026-09-30
+**Amended 2026-10-14** — breaker state is persisted to disk (see §Amendment). The original in-memory-only posture is superseded: cooldowns, backoff position, sliding windows and manual trips now survive a gateway restart.
 
 ## Context
 In large-scale production-grade AI gateway and model-routing gateway practice, upstream LLM services are strongly heterogeneous, cross-vendor and highly volatile, facing many unavoidable availability challenges:
@@ -51,3 +52,24 @@ Upstream anomalies are strictly decomposed into 6 classes, each governed differe
   - Ends for good the fragility of "a model falling into arrears or being down for 5 hours taking the whole service with it", achieving true 99.99% enterprise-grade high availability;
   - Zero-configuration transparent disaster recovery: clients use the gateway like a standard OpenAI API, while multi-vendor seamless switching happens automatically underneath;
   - Precisely protects upstream billing and connection-pool resources, eliminating sustained avalanche traffic toward dead upstreams.
+
+## Amendment (2026-10-14) — Breaker Memory Survives Restart
+
+**Problem.** The state machine lived only in process memory, so every restart wiped all cooldowns: a 402 quota trip (12h) or an operator manual trip (up to 7d) was silently undone, and a freshly booted gateway re-hammered accounts still inside their cooldown window. The registry's own docstring delegated persistent exclusion to `config.tiers` — a workaround for the gap, not the intent.
+
+**Decision.**
+
+- `<OCR_HOME>/breaker-state.<env>.json` (version 1, **per environment** — unlike the suspect flags, which stay GLOBAL because an account is suspect wherever it is used, breaker memory keys on model ids that belong to the ACTIVE env's config; restoring under env B prunes env A's records and the first save would rewrite the file, so one shared file would make an env switch destroy the other book-set's memory). It carries the full mutable state of every model and pair breaker: state, consecutive counts, totals, sliding window, `cooldownUntil`, the backoff position (`currentCooldownMs`), probe counters and the trip reason triple. Same file doctrine as `suspect-accounts.json` (atomic temp+rename, mode 0600, load-once, a corrupt file starts with empty memory and is renamed `.corrupt.<ts>` aside on the first write).
+- **Write timing**: every public mutation entry point arms a ~1s debounced snapshot; a `process.on('exit')` hook flushes synchronously — signal handlers never run for `process.exit()` (the console's restart route exits exactly that way), and 'exit' also covers SIGINT/SIGTERM/SIGBREAK paths plus natural termination. Hard kills (`taskkill /F`, power loss) have no handler: the debounce window is the honest loss bound there (the governance-overlay doctrine: a brief loss is under-shaping, not a lie). A failed save keeps the snapshot for the next mutation or the exit retry — one transient write error (AV holding the rename target, momentary ENOSPC) does not silently drop a trip.
+- **Restore ordering**: the boot path attaches the store AFTER all config models are registered and drops records for models the current config no longer knows (self-cleaning, no ghost breakers). Identity (provider/tier) always comes from the CURRENT config; the file's copy is display-only. The restored `cooldownUntil` is clamped to `now + currentCooldownMs` so a wall-clock **rewind** while the gateway was off cannot stretch a cooldown past its ladder position; a clock **forward jump** shortens it — fail-open, the same pre-amendment behavior a live process would show, noted rather than fixed.
+- **Trust boundary**: illegal state values, reason codes/categories outside the closed vocabulary, non-primitive `reasonParams` entries and non-numeric scalars are sanitized at load; a malformed record is dropped, never fatal, and a save failure degrades to a warning — the gateway keeps running on in-memory breakers. A file that EXISTS but cannot be READ (EACCES, transient AV lock) starts empty **loudly** and is preserved aside on the first write, never silently overwritten.
+- **No config flag, default-on** — consistent with `suspect-accounts.json`, which was always persisted. The payload stays display-safe (model ids, provider, keyHash prefixes, classifier reason text; never key material) — with the honest caveat that classifier `reason` strings embed up to ~150 chars of upstream response body, the same text already exposed in console snapshots; mode 0600 is best-effort (a no-op on Windows, real ACLs would need icacls).
+- The consuming gate (`canExecute` probe-slot consumption) and the lazy OPEN→HALF_OPEN transition do NOT schedule writes on their own; a consumed canary slot normally ends in `recordSuccess`/`recordFailure`, which does. A debounced save or the shutdown flush can still land mid-canary and persist an exhausted HALF_OPEN quota, so `applyRecord` refreshes the probe quota when restoring a HALF_OPEN record — a restart can never strand a breaker in HALF_OPEN (worst case: one extra canary after the restart).
+- A successful canary recovery (HALF_OPEN→CLOSED) also re-arms the sliding window EMPTY: stale failures from the outage must not let one transient blip re-trip the model the moment it recovers (the consecutive-failure count resets as before; the fresh window earns its rate threshold back from zero).
+
+**Consequences.**
+
+- (+) Quota/rate cooldowns, the escalation ladder and manual trips survive restarts; recovery probing resumes exactly where the previous lifetime left off.
+- (+) CLOSED-state failure accumulation survives too (consecutive counts and the sliding window are no longer reset by a restart).
+- (−) The file lives under the GLOBAL state root and is raced by concurrent gateway instances sharing one `OCR_HOME` — the same accepted stance as the suspect flags (single-process is the product form).
+- (−) A manual trip is no longer "cleared on gateway restart": a forgotten trip cools until its own cooldown expires; permanent exclusion still means `config.tiers` exclude lists.

@@ -148,7 +148,7 @@ accounts:
 | State | Answer | Placement |
 |---|---|---|
 | policy (alias, limits entries) | person's decision, persists | `accounts:`/`apiKeys:` config; alias in `account-state.json` §meta |
-| minute/hour windows | ≤1 min loss = under-shaping, breaker catches | memory only (same doctrine as breaker state: *"In-memory only: cleared on gateway restart"*) |
+| minute/hour windows | ≤1 min loss = under-shaping, breaker catches | memory only (breaker state itself became durable 2026-10-14 — ADR-0008 amendment; these rate windows stay ephemeral under the same loss doctrine) |
 | day windows / budget | spent money is a physical fact — **but the ledger already owns it** | **rehydrate at boot from traces/finops daily data** (`Limiter.rehydrate`), then memory-increment. No fourth truth source |
 | SUSPECT / affinity | administrative | already persisted (unchanged) |
 | multi-instance shared store | single-process is the product form | NOT a goal (factory comment: *"two OCR processes racing … uncoordinated by design"*) |

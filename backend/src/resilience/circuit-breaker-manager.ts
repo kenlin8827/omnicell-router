@@ -1,6 +1,8 @@
 import { CircuitBreaker, DEFAULT_CIRCUIT_BREAKER_CONFIG } from './circuit-breaker.js';
+import { BreakerStateStore } from './breaker-state.js';
 import { AccountStateStore, defaultAccountStateStore } from './account-state.js';
 import {
+  BreakerStateFile,
   CircuitBreakerConfig,
   CircuitBreakerSnapshot,
   CircuitBreakerState,
@@ -8,6 +10,7 @@ import {
   TripScope,
 } from './types.js';
 import { ModelRegistration } from '../config/types.js';
+import { ReasonParams } from '../types/router.js';
 
 export interface CircuitBreakerSummary {
   object: 'circuit_breaker_summary';
@@ -77,6 +80,10 @@ function pairKey(modelId: string, keyHashPrefix: string): string {
  * A provider whose chain has a single credential never gets pair breakers: the caller
  * omits `keyHashPrefix` and every path degenerates to the bare-modelId breaker
  * — byte-identical to pre-P3 (the ADR's single-credential degeneracy guarantee).
+ *
+ * With a `BreakerStateStore` attached (boot path only) the whole registry also has
+ * an on-disk memory (ADR-0008 amendment): cooldowns, backoff position and manual
+ * trips survive a gateway restart. Without one it stays purely in-memory.
  */
 export class CircuitBreakerManager {
   private breakers = new Map<string, CircuitBreaker>();
@@ -87,6 +94,10 @@ export class CircuitBreakerManager {
   private config: CircuitBreakerConfig;
   private nowFn: () => number;
   private accountState: AccountStateStore;
+  // ADR-0008 amendment (2026-10-14) — optional on-disk breaker memory.
+  // Undefined = pure in-memory (every test harness and any registry the boot
+  // path never attaches a store to; behavior is byte-identical to pre-P3).
+  private stateStore: BreakerStateStore | undefined;
 
   constructor(
     config?: CircuitBreakerConfig,
@@ -329,7 +340,72 @@ export class CircuitBreakerManager {
     return this.accountState;
   }
 
+  // -- Breaker memory persistence (ADR-0008 amendment, 2026-10-14) ---------
+
+  /**
+   * Attach the on-disk breaker memory. NOT done by the constructor: the boot
+   * path attaches only after every config model is registered, and test /
+   * harness registries never attach at all — their breakers stay exactly as
+   * in-memory as they always were.
+   */
+  public attachStateStore(store: BreakerStateStore): void {
+    this.stateStore = store;
+  }
+
+  /**
+   * Rehydrate breakers from disk. Records for models the registry no longer
+   * knows (config removed/renamed them over the restart) are DROPPED, so the
+   * file self-cleans and removed models never ghost through snapshots or
+   * account-wide trip expansion. Returns the applied counts.
+   */
+  public restoreState(): { models: number; pairs: number } {
+    const file = this.stateStore?.load();
+    if (!file) return { models: 0, pairs: 0 };
+    let models = 0;
+    for (const rec of file.models) {
+      if (!this.modelProviders.has(rec.modelId)) continue;
+      // Identity (provider/tier) comes from the CURRENT config, not the file.
+      const breaker = this.getOrCreateBreaker(rec.modelId, this.modelProviders.get(rec.modelId));
+      breaker.applyRecord(rec);
+      models++;
+    }
+    let pairs = 0;
+    for (const rec of file.pairs) {
+      if (!rec.keyHashPrefix || !this.modelProviders.has(rec.modelId)) continue;
+      // getOrCreatePair resolves the owner from the registry (resolveProvider).
+      const pair = this.getOrCreatePair(rec.modelId, rec.keyHashPrefix);
+      pair.breaker.applyRecord(rec);
+      pairs++;
+    }
+    return { models, pairs };
+  }
+
+  /** The live full-state file (called by the debounced store, never hot-path). */
+  private buildStateFile(): BreakerStateFile {
+    return {
+      version: 1,
+      savedAt: this.nowFn(),
+      models: Array.from(this.breakers.values(), b => b.toRecord()),
+      pairs: Array.from(this.pairs.values(), p => ({
+        ...p.breaker.toRecord(),
+        keyHashPrefix: p.keyHashPrefix,
+      })),
+    };
+  }
+
+  /**
+   * Arm a debounced snapshot at every public mutation entry point. Lazy
+   * internal transitions (OPEN->HALF_OPEN on a gate check, canary-slot
+   * accounting) need no hook of their own: a request that consumes a probe
+   * slot always ends in recordSuccess/recordFailure, which schedules here.
+   */
+  private schedulePersist(): void {
+    if (!this.stateStore) return;
+    this.stateStore.requestSave(() => this.buildStateFile());
+  }
+
   public recordSuccess(modelId: string): void {
+    this.schedulePersist();
     const breaker = this.breakers.get(modelId);
     if (breaker) {
       breaker.recordSuccess();
@@ -351,6 +427,7 @@ export class CircuitBreakerManager {
    * proves the upstream is back.
    */
   public recordSuccessScoped(modelId: string, keyHashPrefix?: string, provider?: string): void {
+    this.schedulePersist();
     if (!keyHashPrefix) {
       this.recordSuccess(modelId);
       return;
@@ -371,6 +448,7 @@ export class CircuitBreakerManager {
   }
 
   public recordFailure(modelId: string, diagnosis: ErrorDiagnosis, provider = 'unknown'): void {
+    this.schedulePersist();
     const breaker = this.getOrCreateBreaker(modelId, provider);
     breaker.recordFailure(diagnosis);
   }
@@ -396,6 +474,7 @@ export class CircuitBreakerManager {
     provider?: string,
     keyHashPrefix?: string
   ): void {
+    this.schedulePersist();
     if (!keyHashPrefix) {
       this.recordFailure(modelId, diagnosis, provider ?? 'unknown');
       return;
@@ -436,6 +515,7 @@ export class CircuitBreakerManager {
    * No argument resets every model breaker and every pair breaker.
    */
   public reset(modelId?: string): { resetCount: number; message: string } {
+    this.schedulePersist();
     if (modelId) {
       const breaker = this.breakers.get(modelId);
       let count = 0;
@@ -469,6 +549,7 @@ export class CircuitBreakerManager {
   /** Reset one (model, credential) pair; no prefix degenerates to `reset(modelId)`. */
   public resetScoped(modelId: string, keyHashPrefix?: string): { resetCount: number; message: string } {
     if (!keyHashPrefix) return this.reset(modelId);
+    this.schedulePersist();
     const pair = this.pairs.get(pairKey(modelId, keyHashPrefix));
     if (!pair) {
       return { resetCount: 0, message: `No pair breaker for model '${modelId}' on account '${keyHashPrefix}'.` };
@@ -496,6 +577,9 @@ export class CircuitBreakerManager {
     if (!target.keyHashPrefix) {
       return { resetCount: 0, message: "scope 'account' requires an account (keyHashPrefix)." };
     }
+    // Direct breaker.reset() calls bypass the hooked reset/resetScoped
+    // entry points, so arm the debounced snapshot here.
+    this.schedulePersist();
     let count = 0;
     for (const pair of this.pairs.values()) {
       if (pair.keyHashPrefix !== target.keyHashPrefix) continue;
@@ -513,13 +597,16 @@ export class CircuitBreakerManager {
 
   /**
    * Manually trip a model's breaker into OPEN (admin takes it out of
-   * rotation from the console). In-memory only: cleared on gateway restart;
-   * use the exclude lists (config.tiers) for a persistent exclusion.
+   * rotation from the console). Persisted with the rest of the breaker
+   * memory (ADR-0008 amendment): the trip survives a restart until its
+   * cooldown expires; for a permanent exclusion still use the exclude
+   * lists (config.tiers).
    */
   public trip(modelId: string, options?: ManualTripOptions, provider = 'unknown'): TripResult {
+    this.schedulePersist();
     const breaker = this.getOrCreateBreaker(modelId, provider);
     const cooldownMs = this.manualCooldownMs(options);
-    breaker.trip(`Manual trip: ${this.manualReason(options)}`, 'MANUAL', cooldownMs);
+    breaker.trip(`Manual trip: ${this.manualReason(options)}`, 'MANUAL', cooldownMs, 'breaker.manual', this.manualTripParams(options));
     return {
       tripped: true,
       affected: 1,
@@ -540,6 +627,11 @@ export class CircuitBreakerManager {
     return options?.reason?.trim() || 'Manual trip via console';
   }
 
+  /** Empty `detail` = console default (the console renders a dedicated label). */
+  private manualTripParams(options?: ManualTripOptions): ReasonParams {
+    return { detail: options?.reason?.trim() ?? '' };
+  }
+
   /** Human cooldown label shared by the manual trip messages. */
   private static minutes(cooldownMs: number): string {
     return `~${Math.round(cooldownMs / 60000)} min`;
@@ -552,9 +644,10 @@ export class CircuitBreakerManager {
     options?: ManualTripOptions,
     provider?: string
   ): TripResult {
+    this.schedulePersist();
     const pair = this.getOrCreatePair(modelId, keyHashPrefix, provider);
     const cooldownMs = this.manualCooldownMs(options);
-    pair.breaker.trip(`Manual trip: ${this.manualReason(options)}`, 'MANUAL', cooldownMs);
+    pair.breaker.trip(`Manual trip: ${this.manualReason(options)}`, 'MANUAL', cooldownMs, 'breaker.manual', this.manualTripParams(options));
     return {
       tripped: true,
       affected: 1,
@@ -574,6 +667,7 @@ export class CircuitBreakerManager {
     options?: ManualTripOptions,
     providerId?: string
   ): TripResult {
+    this.schedulePersist();
     const cooldownMs = this.manualCooldownMs(options);
     const reason = `Manual trip: ${this.manualReason(options)}`;
     // Without an explicit provider the account's owner(s) are whatever the
@@ -594,7 +688,13 @@ export class CircuitBreakerManager {
       for (const modelId of this.accountModelIds(owner, keyHashPrefix)) targets.add(modelId);
     }
     for (const modelId of targets) {
-      this.getOrCreatePair(modelId, keyHashPrefix, providerId).breaker.trip(reason, 'MANUAL', cooldownMs);
+      this.getOrCreatePair(modelId, keyHashPrefix, providerId).breaker.trip(
+        reason,
+        'MANUAL',
+        cooldownMs,
+        'breaker.manual',
+        this.manualTripParams(options)
+      );
     }
     const label = CircuitBreakerManager.minutes(cooldownMs);
     return {

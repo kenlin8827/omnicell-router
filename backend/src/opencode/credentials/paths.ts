@@ -87,6 +87,26 @@ export function suspectAccountsFile(paths: CredentialPaths = resolveDefaultPaths
   return path.join(paths.ocrHome, 'suspect-accounts.json');
 }
 
+/**
+ * ADR-0008 amendment (2026-10-14) — breaker memory: the full state machine of
+ * every model and pair breaker, so cooldowns and manual trips survive a
+ * gateway restart. Display-safe metadata only (model ids, provider, keyHash
+ * prefixes, classifier reasons — never key material). PER-ENV by filename:
+ * records are pruned against the ACTIVE env's model set, so one shared file
+ * would let an env switch destroy the other env's memory (the first save
+ * after restore rewrites the whole file). Unlike the suspect flags — which
+ * stay GLOBAL because an account is suspect wherever it is used — breaker
+ * memory is about model rotation, and that is per book-set.
+ * `envName` is injected by the caller (BreakerStateStore resolves it from
+ * peekEnvName) so this registry keeps reading no process env itself.
+ */
+export function breakerStateFile(
+  paths: CredentialPaths = resolveDefaultPaths(),
+  envName = 'default',
+): string {
+  return path.join(paths.ocrHome, `breaker-state.${envName}.json`);
+}
+
 export function serviceJsonCandidates(paths: CredentialPaths = resolveDefaultPaths()): string[] {
   // An injected CredentialPaths without candidates still resolves inside the
   // injected configDir only — never operator home.

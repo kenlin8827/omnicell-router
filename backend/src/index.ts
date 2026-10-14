@@ -16,6 +16,7 @@ import { getWarnThrottle } from './observability/warn-throttle.js';
 import { validateWebAuthStartup } from './auth/web-auth.js';
 import { startForwardProxy } from './forward-proxy/index.js';
 import { setForwardProxyStatus } from './forward-proxy/status.js';
+import { defaultBreakerStateStore } from './resilience/breaker-state.js';
 
 async function main() {
   // If this process was spawned by the UI "Restart Gateway" button, wait for
@@ -126,6 +127,27 @@ async function main() {
     registry = new ProviderRegistry(config, true);
   }
 
+  // ADR-0008 amendment (2026-10-14) — breaker memory: attach the on-disk
+  // store and resume last lifetime's cooldowns / backoff / manual trips.
+  // Attached AFTER every config model is registered, so the restore can
+  // drop records for models the current config no longer knows (self-clean,
+  // no ghost breakers). A store failure never blocks boot: the gateway
+  // falls back to the pre-amendment in-memory behavior.
+  const breakerStore = defaultBreakerStateStore();
+  const cbManager = registry.getCircuitBreakerManager();
+  cbManager.attachStateStore(breakerStore);
+  try {
+    const restored = cbManager.restoreState();
+    if (restored.models || restored.pairs) {
+      console.log(
+        `[OCR] Breaker memory restored (${breakerStore.filePath}): ` +
+          `${restored.models} model + ${restored.pairs} pair breaker(s)`
+      );
+    }
+  } catch (err: any) {
+    console.warn(`[OCR] breaker memory restore failed (boot continues in-memory): ${err?.message ?? err}`);
+  }
+
   const orchestrator = new PipelineOrchestrator(config, registry, tracker);
   const { app } = createServer(config, false, registry, orchestrator);
 
@@ -170,16 +192,28 @@ async function main() {
     process.exit(1);
   }
 
-  // Graceful-shutdown observability: print a one-line summary for every
-  // deduped warn key when the process is asked to exit. Operators get a
-  // final view of "what was failing during this lifetime" without the
-  // noise of every single suppressed repeat during the run.
   const shutdown = () => {
+    // Flush FIRST: a throwing summary must never cost the snapshot its last
+    // chance to reach the disk (breaker memory is durability-critical).
+    breakerStore.flush();
+    // Graceful-shutdown observability: print a one-line summary for every
+    // deduped warn key when the process is asked to exit. Operators get a
+    // final view of "what was failing during this lifetime" without the
+    // noise of every single suppressed repeat during the run.
     getWarnThrottle().summary();
     process.exit(0);
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+  // Windows Ctrl+Break — without this the console sits in silence.
+  process.on('SIGBREAK', shutdown);
+  // Signal handlers never run for process.exit() — the console's restart
+  // route (console.ts handleRestart) exits exactly that way. 'exit' fires
+  // on every cooperative termination; Node allows only sync code there,
+  // and flush() is synchronous and self-contained. Hard kills (taskkill
+  // /F, power loss) have no handler anywhere: the debounce window is the
+  // honest loss bound for those (ADR-0008 amendment).
+  process.on('exit', () => breakerStore.flush());
 }
 
 main();

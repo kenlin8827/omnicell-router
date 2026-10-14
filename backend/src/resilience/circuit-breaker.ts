@@ -1,11 +1,13 @@
 import {
+  BreakerReasonCode,
+  BreakerRecord,
   CircuitBreakerConfig,
   CircuitBreakerSnapshot,
   CircuitBreakerState,
   ErrorCategory,
   ErrorDiagnosis,
 } from './types.js';
-import { TierLevel } from '../types/router.js';
+import { ReasonParams, TierLevel } from '../types/router.js';
 
 export const DEFAULT_CIRCUIT_BREAKER_CONFIG: Required<CircuitBreakerConfig> = {
   enabled: true,
@@ -46,6 +48,8 @@ export class CircuitBreaker {
   private currentCooldownMs = 0;
   private halfOpenProbes = 0;
   private reason?: string;
+  private reasonCode?: BreakerReasonCode;
+  private reasonParams?: ReasonParams;
   private category?: ErrorCategory;
 
   // Sliding window ring buffer (true = success, false = failure)
@@ -190,9 +194,16 @@ export class CircuitBreaker {
       this.halfOpenProbes = 0;
       this.currentCooldownMs = this.config.initialCooldownMs;
       this.reason = undefined;
+      this.reasonCode = undefined;
+      this.reasonParams = undefined;
       this.category = undefined;
       this.cooldownUntil = 0;
       this.trippedAt = 0;
+      // Re-arm the sliding window EMPTY (same as manual reset): stale failures
+      // from the outage would otherwise let one transient blip push the rate
+      // back over the threshold right after recovery ("fixed, then instantly
+      // broken again"). The canary's own success needs no slot — it is proven.
+      this.outcomeWindow = [];
     } else if (this.state === 'CLOSED') {
       this.consecutiveFailures = 0;
     }
@@ -225,7 +236,7 @@ export class CircuitBreaker {
     // 1. Hard Trip: Quota exhausted (402) or Auth failure (401)
     if (diagnosis.hardTrip) {
       const cooldownMs = diagnosis.suggestedCooldownMs || this.config.quotaCooldownMs;
-      this.trip(diagnosis.reason, diagnosis.category, cooldownMs);
+      this.trip(diagnosis.reason, diagnosis.category, cooldownMs, diagnosis.reasonCode, diagnosis.reasonParams);
       return;
     }
 
@@ -238,7 +249,9 @@ export class CircuitBreaker {
       this.trip(
         `Canary probe failed: ${diagnosis.reason}`,
         diagnosis.category,
-        this.currentCooldownMs
+        this.currentCooldownMs,
+        'breaker.canary',
+        CircuitBreaker.wrappedParams(diagnosis, {})
       );
       return;
     }
@@ -254,7 +267,12 @@ export class CircuitBreaker {
       this.trip(
         `Consecutive failure threshold reached (${this.consecutiveFailures}/${this.config.failureThreshold}): ${diagnosis.reason}`,
         diagnosis.category,
-        this.currentCooldownMs
+        this.currentCooldownMs,
+        'breaker.consecutive',
+        CircuitBreaker.wrappedParams(diagnosis, {
+          count: this.consecutiveFailures,
+          threshold: this.config.failureThreshold,
+        })
       );
       return;
     }
@@ -268,7 +286,12 @@ export class CircuitBreaker {
         this.trip(
           `Sliding window failure rate exceeded (${(failureRate * 100).toFixed(0)}% >= ${(this.config.failureRateThreshold * 100).toFixed(0)}%): ${diagnosis.reason}`,
           diagnosis.category,
-          this.currentCooldownMs
+          this.currentCooldownMs,
+          'breaker.rate_window',
+          CircuitBreaker.wrappedParams(diagnosis, {
+            rate: Math.round(failureRate * 100),
+            threshold: Math.round(this.config.failureRateThreshold * 100),
+          })
         );
       }
     }
@@ -277,15 +300,38 @@ export class CircuitBreaker {
   /**
    * Immediately trip the circuit breaker into OPEN state
    */
-  public trip(reason: string, category: ErrorCategory = 'SERVICE_UNAVAILABLE', cooldownMs: number): void {
+  public trip(
+    reason: string,
+    category: ErrorCategory = 'SERVICE_UNAVAILABLE',
+    cooldownMs: number,
+    reasonCode?: BreakerReasonCode,
+    reasonParams?: ReasonParams
+  ): void {
     const now = this.nowFn();
     this.state = 'OPEN';
     this.trippedAt = now;
     this.cooldownUntil = now + cooldownMs;
     this.currentCooldownMs = cooldownMs;
     this.reason = reason;
+    this.reasonCode = reasonCode;
+    this.reasonParams = reasonParams;
     this.category = category;
     this.halfOpenProbes = 0;
+  }
+
+  /**
+   * Params for a wrapped trigger (canary/consecutive/rate_window): the inner
+   * cause rides along as `cause_code` with its params flattened into the same
+   * map, and `detail` keeps the verbatim English for unresolvable codes.
+   */
+  private static wrappedParams(diagnosis: ErrorDiagnosis, extra: ReasonParams): ReasonParams {
+    const params: ReasonParams = {
+      ...diagnosis.reasonParams,
+      cause_code: diagnosis.reasonCode ?? '',
+      detail: diagnosis.reason,
+      ...extra,
+    };
+    return params;
   }
 
   /**
@@ -298,6 +344,8 @@ export class CircuitBreaker {
     this.cooldownUntil = 0;
     this.trippedAt = 0;
     this.reason = undefined;
+    this.reasonCode = undefined;
+    this.reasonParams = undefined;
     this.category = undefined;
     this.halfOpenProbes = 0;
     this.outcomeWindow = [];
@@ -315,6 +363,8 @@ export class CircuitBreaker {
       tier: this.tier,
       state: this.state,
       reason: this.reason,
+      reasonCode: this.reasonCode,
+      reasonParams: this.reasonParams,
       category: this.category,
       consecutiveFailures: this.consecutiveFailures,
       totalRequests: this.totalRequests,
@@ -328,6 +378,72 @@ export class CircuitBreaker {
       currentCooldownMs: this.currentCooldownMs,
       halfOpenProbes: this.halfOpenProbes,
     };
+  }
+
+  /**
+   * ADR-0008 amendment (2026-10-14) — the full mutable state for disk. Unlike
+   * `getSnapshot()` this never transitions the machine and never derives
+   * display values; it copies the raw fields verbatim so a restart resumes the
+   * exact same cooldown/backoff/window position.
+   */
+  public toRecord(): BreakerRecord {
+    const rec: BreakerRecord = {
+      modelId: this.modelId,
+      provider: this.provider,
+      state: this.state,
+      consecutiveFailures: this.consecutiveFailures,
+      totalRequests: this.totalRequests,
+      totalSuccesses: this.totalSuccesses,
+      totalFailures: this.totalFailures,
+      lastFailureTime: this.lastFailureTime,
+      lastSuccessTime: this.lastSuccessTime,
+      trippedAt: this.trippedAt,
+      cooldownUntil: this.cooldownUntil,
+      currentCooldownMs: this.currentCooldownMs,
+      halfOpenProbes: this.halfOpenProbes,
+      outcomeWindow: [...this.outcomeWindow],
+    };
+    if (this.tier) rec.tier = this.tier;
+    if (this.reason !== undefined) rec.reason = this.reason;
+    if (this.reasonCode !== undefined) rec.reasonCode = this.reasonCode;
+    if (this.reasonParams !== undefined) rec.reasonParams = this.reasonParams;
+    if (this.category !== undefined) rec.category = this.category;
+    return rec;
+  }
+
+  /**
+   * Hydrate mutable state from a persisted record (identity stays the
+   * registry's — provider/tier come from the current config, not the file).
+   * A record with an expired cooldown restores as OPEN and flips to HALF_OPEN
+   * on the first gate check, exactly like a long-lived process would have.
+   */
+  public applyRecord(rec: BreakerRecord): void {
+    this.state = rec.state;
+    this.consecutiveFailures = rec.consecutiveFailures;
+    this.totalRequests = rec.totalRequests;
+    this.totalSuccesses = rec.totalSuccesses;
+    this.totalFailures = rec.totalFailures;
+    this.lastFailureTime = rec.lastFailureTime;
+    this.lastSuccessTime = rec.lastSuccessTime;
+    this.trippedAt = rec.trippedAt;
+    // Wall-clock guard: the liveness invariant is remaining <= ladder
+    // position. A clock jump BACKWARD while the gateway was off would
+    // otherwise stretch the cooldown (12h quota + 24h rewind = 36h block).
+    // A forward jump shortens it — fail-open, no persistence made that
+    // better; noted in ADR-0008.
+    this.cooldownUntil = Math.min(rec.cooldownUntil, this.nowFn() + rec.currentCooldownMs);
+    this.currentCooldownMs = rec.currentCooldownMs;
+    // A snapshot can be flushed while a canary is in flight (debounce timer or
+    // shutdown flush landing between probe dispatch and its result), which would
+    // restore HALF_OPEN with an exhausted quota — and the only exits from
+    // HALF_OPEN are recordSuccess/recordFailure, which the gate would never let
+    // happen. Refresh the probe quota on restore: worst case one extra canary.
+    this.halfOpenProbes = rec.state === 'HALF_OPEN' ? 0 : rec.halfOpenProbes;
+    this.outcomeWindow = rec.outcomeWindow.slice(-this.config.slidingWindowSize);
+    this.reason = rec.reason;
+    this.reasonCode = rec.reasonCode;
+    this.reasonParams = rec.reasonParams;
+    this.category = rec.category;
   }
 
   private checkCooldownTransition(): void {

@@ -142,11 +142,16 @@ describe('Resilience: Circuit Breaker State Machine & Cooldown Transitions', () 
       isRetriable: true,
       suggestedCooldownMs: 12 * 3600 * 1000,
       reason: 'Balance exhausted on Anthropic account',
+      reasonCode: 'breaker.quota',
+      reasonParams: { model: 'claude-3-5-sonnet', provider: 'anthropic' },
     });
 
     assert.equal(breaker.getState(), 'OPEN');
     assert.equal(breaker.canExecute().allowed, false);
     assert.match(breaker.canExecute().reason || '', /Balance exhausted/);
+    // Hard trip passes the cause code/params straight through to the snapshot.
+    assert.equal(breaker.getSnapshot().reasonCode, 'breaker.quota');
+    assert.equal(breaker.getSnapshot().reasonParams?.model, 'claude-3-5-sonnet');
 
     // Fast-forward 6 hours: still in cooldown
     mockTime += 6 * 3600 * 1000;
@@ -235,6 +240,110 @@ describe('Resilience: Circuit Breaker State Machine & Cooldown Transitions', () 
     });
     assert.equal(breaker.getState(), 'OPEN');
     assert.equal(breaker.getSnapshot().currentCooldownMs, 60000);
+  });
+
+  it('rate-window trip, then canary recovery clears the stale window so one blip cannot re-trip', () => {
+    let mockTime = 1_000_000;
+    // failureThreshold 5 > slidingWindowSize 4: the 4th failure fills the window
+    // at 100% rate and trips via the rate path BEFORE the consecutive path can.
+    const breaker = new CircuitBreaker('win-model', 'openai', 'plus', {
+      failureThreshold: 5, slidingWindowSize: 4, failureRateThreshold: 0.5,
+      initialCooldownMs: 30000, maxCooldownMs: 3_600_000, cooldownMultiplier: 2,
+    }, () => mockTime);
+
+    const net = {
+      category: 'SERVICE_UNAVAILABLE' as const,
+      statusCode: 503,
+      hardTrip: false,
+      shouldTripBreaker: true,
+      isRetriable: true,
+      isInPlaceRetriable: false,
+      reason: 'Upstream network jitter [GATEWAY_ERROR, status 503]: bad gateway',
+      reasonCode: 'breaker.network' as const,
+      reasonParams: { cause: 'GATEWAY_ERROR', status: 503, message: 'bad gateway' },
+    };
+
+    // 3 failures: window not yet full, no trip
+    breaker.recordFailure(net);
+    breaker.recordFailure(net);
+    breaker.recordFailure(net);
+    assert.equal(breaker.getState(), 'CLOSED');
+
+    // 4th fills the window at 100% >= 50% -> rate_window trip wrapping the cause
+    breaker.recordFailure(net);
+    assert.equal(breaker.getState(), 'OPEN');
+    const trip = breaker.getSnapshot();
+    assert.equal(trip.reasonCode, 'breaker.rate_window');
+    assert.equal(trip.reasonParams?.rate, 100);
+    assert.equal(trip.reasonParams?.threshold, 50);
+    assert.equal(trip.reasonParams?.cause_code, 'breaker.network');
+
+    // Recover via canary: one ms short of the boundary still OPEN, exact
+    // cooldownUntil (>=) flips to HALF_OPEN.
+    mockTime += 29999;
+    assert.equal(breaker.getState(), 'OPEN');
+    mockTime += 1;
+    assert.equal(breaker.getState(), 'HALF_OPEN');
+    breaker.recordSuccess();
+    assert.equal(breaker.getState(), 'CLOSED');
+
+    // Regression: a single blip right after recovery must NOT re-trip. Without
+    // clearing the window, the 3 surviving stale failures + 1 fresh = 100% again.
+    breaker.recordFailure(net);
+    assert.equal(breaker.getState(), 'CLOSED');
+
+    // Re-arming holds: it takes a FULL fresh window to trip again.
+    breaker.recordFailure(net);
+    breaker.recordFailure(net);
+    assert.equal(breaker.getState(), 'CLOSED');
+    breaker.recordFailure(net);
+    assert.equal(breaker.getState(), 'OPEN');
+    assert.equal(breaker.getSnapshot().reasonCode, 'breaker.rate_window');
+  });
+
+  it('canary failure escalates the cooldown by the multiplier, caps at max, and wraps cause_code', () => {
+    let mockTime = 0;
+    const breaker = new CircuitBreaker('ladder-model', 'openai', 'plus', {
+      failureThreshold: 3, initialCooldownMs: 30000, maxCooldownMs: 80000, cooldownMultiplier: 2,
+    }, () => mockTime);
+
+    const jitter = {
+      category: 'SERVICE_UNAVAILABLE' as const,
+      statusCode: 504,
+      hardTrip: false,
+      shouldTripBreaker: true,
+      isRetriable: true,
+      isInPlaceRetriable: false,
+      reason: 'Upstream network jitter [NETWORK_TIMEOUT, status 504]: etimedout',
+      reasonCode: 'breaker.network' as const,
+      reasonParams: { cause: 'NETWORK_TIMEOUT', status: 504, message: 'etimedout' },
+    };
+
+    // Trip on the consecutive threshold.
+    breaker.recordFailure(jitter);
+    breaker.recordFailure(jitter);
+    breaker.recordFailure(jitter);
+    assert.equal(breaker.getState(), 'OPEN');
+    assert.equal(breaker.getSnapshot().currentCooldownMs, 30000);
+
+    // Canary #1 fails -> 30s * 2 = 60s, wrapped as breaker.canary over the cause.
+    // getState() drives the cooldown-expiry transition (OPEN -> HALF_OPEN) —
+    // recordFailure alone does not poll the clock.
+    mockTime += 30001;
+    assert.equal(breaker.getState(), 'HALF_OPEN');
+    breaker.recordFailure(jitter);
+    assert.equal(breaker.getState(), 'OPEN');
+    const c1 = breaker.getSnapshot();
+    assert.equal(c1.currentCooldownMs, 60000);
+    assert.equal(c1.reasonCode, 'breaker.canary');
+    assert.equal(c1.reasonParams?.cause_code, 'breaker.network');
+    assert.equal(c1.reasonParams?.message, 'etimedout');
+
+    // Canary #2 fails -> 60s * 2 = 120s clamped to max 80s (cap actually bites).
+    mockTime += 60001;
+    assert.equal(breaker.getState(), 'HALF_OPEN');
+    breaker.recordFailure(jitter);
+    assert.equal(breaker.getSnapshot().currentCooldownMs, 80000);
   });
 
   it('should support manual administrative reset for instant recovery', () => {
@@ -422,6 +531,48 @@ describe('Resilience: REST Observability & Administrative API Endpoints', () => 
     const jsonTripped = resTripped.json();
     assert.equal(jsonTripped.status, 'outage');
     assert.equal(jsonTripped.circuitBreakers.tripped, 1);
+  });
+
+  it('manual trip exposes breaker.manual with the operator detail (or empty for console default)', () => {
+    const { registry } = createServer(testConfig, true);
+    const mgr = registry.getCircuitBreakerManager();
+
+    mgr.trip('plus-1', { reason: 'provider billing issue' });
+    const noted = mgr.getBreaker('plus-1')?.getSnapshot();
+    assert.equal(noted?.reasonCode, 'breaker.manual');
+    assert.equal(noted?.reasonParams?.detail, 'provider billing issue');
+
+    // No note -> empty detail so the console renders its "via console" label.
+    mgr.reset('plus-1');
+    mgr.trip('plus-1', {});
+    const bare = mgr.getBreaker('plus-1')?.getSnapshot();
+    assert.equal(bare?.reasonCode, 'breaker.manual');
+    assert.equal(bare?.reasonParams?.detail, '');
+  });
+
+  it('consecutive-failure trip wraps the cause code into reasonParams', () => {
+    const breaker = new CircuitBreaker('wrapped-model', 'anthropic', 'plus');
+    const jitter = {
+      category: 'SERVICE_UNAVAILABLE' as const,
+      statusCode: 503,
+      hardTrip: false,
+      shouldTripBreaker: true,
+      isRetriable: true,
+      isInPlaceRetriable: true,
+      reason: 'Upstream network jitter [GATEWAY_ERROR, status 503]: bad gateway',
+      reasonCode: 'breaker.network' as const,
+      reasonParams: { cause: 'GATEWAY_ERROR', status: 503, message: 'bad gateway' },
+    };
+    breaker.recordFailure(jitter);
+    breaker.recordFailure(jitter);
+    breaker.recordFailure(jitter);
+
+    const snap = breaker.getSnapshot();
+    assert.equal(snap.state, 'OPEN');
+    assert.equal(snap.reasonCode, 'breaker.consecutive');
+    assert.equal(snap.reasonParams?.count, 3);
+    assert.equal(snap.reasonParams?.cause_code, 'breaker.network');
+    assert.equal(snap.reasonParams?.message, 'bad gateway');
   });
 
   it('GET /api/admin/health/circuit-breakers should expose detailed snapshot metrics', async () => {

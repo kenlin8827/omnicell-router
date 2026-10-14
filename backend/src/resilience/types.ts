@@ -1,15 +1,20 @@
-import { TierLevel } from '../types/router.js';
+import { ReasonParams, TierLevel } from '../types/router.js';
 
 export type CircuitBreakerState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
 
-export type ErrorCategory =
-  | 'QUOTA_EXHAUSTED'      // out of balance / quota burned down / suspended for non-payment (HTTP 402, insufficient_quota)
-  | 'AUTHENTICATION_ERROR' // API Key invalid or unauthorized (HTTP 401)
-  | 'RATE_LIMITED'         // rate limit, TPM/RPM exceeded (HTTP 429)
-  | 'SERVICE_UNAVAILABLE'  // upstream down, gateway timeout, connection refused (HTTP 500/502/503/504, ETIMEDOUT, ECONNREFUSED)
-  | 'CLIENT_ERROR'         // bad client input, context length exceeded (HTTP 400, context length exceeded)
-  | 'MANUAL'               // operator tripped the breaker from the console (deliberate takedown, not an auto-detected failure)
-  | 'UNKNOWN';
+// Runtime array + derived union: the sanitizer needs a membership list, and
+// a const tuple keeps vocabulary and type from drifting apart.
+export const ERROR_CATEGORIES = [
+  'QUOTA_EXHAUSTED',      // out of balance / quota burned down / suspended for non-payment (HTTP 402, insufficient_quota)
+  'AUTHENTICATION_ERROR', // API Key invalid or unauthorized (HTTP 401)
+  'RATE_LIMITED',         // rate limit, TPM/RPM exceeded (HTTP 429)
+  'SERVICE_UNAVAILABLE',  // upstream down, gateway timeout, connection refused (HTTP 500/502/503/504, ETIMEDOUT, ECONNREFUSED)
+  'CLIENT_ERROR',         // bad client input, context length exceeded (HTTP 400, context length exceeded)
+  'MANUAL',               // operator tripped the breaker from the console (deliberate takedown, not an auto-detected failure)
+  'UNKNOWN',
+] as const;
+
+export type ErrorCategory = typeof ERROR_CATEGORIES[number];
 
 export type NetworkFailureCause =
   | 'CONNECTION_RESET'       // connection reset/aborted: ECONNRESET, ECONNABORTED, socket hang up, EPIPE
@@ -32,6 +37,29 @@ export type NetworkFailureCause =
  */
 export type TripScope = 'pair' | 'account' | 'model';
 
+/**
+ * Machine-readable trip-reason vocabulary (the routing reasonCode convention).
+ * Cause codes come from the error classifier; on a hard trip the snapshot
+ * carries the cause code directly. Trigger codes (canary/consecutive/
+ * rate_window) wrap a cause: its code rides along as `reasonParams.cause_code`
+ * and its params are flattened into the same map, so the console renders the
+ * inner template from the same vars. `detail` always carries the verbatim
+ * English for unresolvable codes / free-form operator text.
+ */
+export const BREAKER_REASON_CODES = [
+  'breaker.quota',        // 402 / insufficient_quota — cause
+  'breaker.auth',         // 401 / invalid key — cause
+  'breaker.rate_limit',   // 429 — cause
+  'breaker.network',      // 5xx / timeout / jitter — cause
+  'breaker.unknown',      // unclassified upstream error — cause
+  'breaker.canary',       // HALF_OPEN probe failure — trigger
+  'breaker.consecutive',  // consecutive-failure threshold — trigger
+  'breaker.rate_window',  // sliding-window failure rate — trigger
+  'breaker.manual',       // console/REST operator trip — trigger
+] as const;
+
+export type BreakerReasonCode = typeof BREAKER_REASON_CODES[number];
+
 export interface ErrorDiagnosis {
   category: ErrorCategory;
   networkCause?: NetworkFailureCause; // fine-grained network jitter vs. hard failure reason
@@ -42,6 +70,11 @@ export interface ErrorDiagnosis {
   hardTrip: boolean; // trip the breaker immediately, no need to accumulate failures (e.g. 402 unpaid)
   suggestedCooldownMs?: number;
   reason: string;
+  /** Machine-readable companion of `reason` (BreakerReasonCode cause codes) —
+   *  the console localizes from it; `reason` stays the verbatim English for
+   *  logs, gateway errors, and unknown-code fallback. */
+  reasonCode?: BreakerReasonCode;
+  reasonParams?: ReasonParams;
   retryAfterSeconds?: number;
   rawError?: any;
   /**
@@ -92,6 +125,9 @@ export interface CircuitBreakerSnapshot {
    */
   keyHashPrefix?: string;
   reason?: string;
+  /** Trip trigger/cause code/params (BreakerReasonCode); absent = pre-code trip. */
+  reasonCode?: BreakerReasonCode;
+  reasonParams?: ReasonParams;
   category?: ErrorCategory;
   consecutiveFailures: number;
   totalRequests: number;
@@ -104,6 +140,49 @@ export interface CircuitBreakerSnapshot {
   remainingCooldownMs: number;
   currentCooldownMs: number;
   halfOpenProbes: number;
+}
+
+/**
+ * ADR-0008 amendment (2026-10-14) — the persistence unit of one breaker:
+ * every mutable field of the state machine (contrast the wire-contract
+ * `CircuitBreakerSnapshot`, which derives display values and never carries
+ * the sliding window). Identity fields (`modelId`/`provider`/`tier`/
+ * `keyHashPrefix`) are self-description for the file only — on restore the
+ * registry keeps the identity it resolved from the current config.
+ */
+export interface BreakerRecord {
+  modelId: string;
+  provider: string;
+  tier?: TierLevel;
+  /** Present only on a PAIR record (same convention as the snapshot). */
+  keyHashPrefix?: string;
+  state: CircuitBreakerState;
+  consecutiveFailures: number;
+  totalRequests: number;
+  totalSuccesses: number;
+  totalFailures: number;
+  lastFailureTime: number;
+  lastSuccessTime: number;
+  trippedAt: number;
+  cooldownUntil: number;
+  currentCooldownMs: number;
+  halfOpenProbes: number;
+  /** Sliding-window ring buffer (true = success) — what makes rate trips survive. */
+  outcomeWindow: boolean[];
+  reason?: string;
+  reasonCode?: BreakerReasonCode;
+  reasonParams?: ReasonParams;
+  category?: ErrorCategory;
+}
+
+/** `<OCR_HOME>/breaker-state.<env>.json` payload shape (version 1). */
+export interface BreakerStateFile {
+  version: 1;
+  savedAt: number;
+  /** Model-scope breakers (bare modelId), never carrying `keyHashPrefix`. */
+  models: BreakerRecord[];
+  /** Pair-scope breakers, every record carrying `keyHashPrefix`. */
+  pairs: BreakerRecord[];
 }
 
 export type TierCrossPolicy = 'same_tier_only' | 'allow_escalate';

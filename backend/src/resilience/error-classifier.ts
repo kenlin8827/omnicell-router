@@ -175,6 +175,8 @@ export class ErrorClassifier {
         hardTrip: true, // Immediate circuit trip!
         suggestedCooldownMs: quotaCooldown,
         reason: `Quota or balance exhausted for model '${modelId}' (Provider: ${provider})`,
+        reasonCode: 'breaker.quota',
+        reasonParams: { model: modelId, provider },
         // Account-wide burn: every model this credential can reach is out of
         // budget. No SUSPECT mark — quota resets, a dead key does not.
         ...scoped('account'),
@@ -203,6 +205,8 @@ export class ErrorClassifier {
         hardTrip: true, // Immediate circuit trip!
         suggestedCooldownMs: quotaCooldown,
         reason: `Invalid API key or unauthorized for model '${modelId}' (Provider: ${provider})`,
+        reasonCode: 'breaker.auth',
+        reasonParams: { model: modelId, provider },
         // A rejected key is administrative, not a cooldown: the account goes
         // SUSPECT (never auto-returns) and every model it can reach is out.
         ...scoped('account', true),
@@ -255,6 +259,8 @@ export class ErrorClassifier {
         suggestedCooldownMs: cooldownMs,
         retryAfterSeconds,
         reason: `Rate limit (429) on model '${modelId}' (Retry-After: ${retryAfterSeconds ?? 'unknown'}s, InPlace: ${inPlaceAllowed}, HardTrip: ${hardTrip})`,
+        reasonCode: 'breaker.rate_limit',
+        reasonParams: { model: modelId, retry_after: retryAfterSeconds ?? 'unknown' },
         ...scoped(isAccountLimit ? 'account' : 'pair'),
         rawError: error,
       };
@@ -365,6 +371,8 @@ export class ErrorClassifier {
         hardTrip: false,
         suggestedCooldownMs: defaultInitialCooldown,
         reason: `Upstream network jitter [${networkCause}, status ${statusCode || 'N/A'}]: ${rawMessage.slice(0, 150)}`,
+        reasonCode: 'breaker.network',
+        reasonParams: { cause: networkCause, status: statusCode || 'N/A', message: rawMessage.slice(0, 150) },
         // Key-independent: the upstream itself is failing, so the whole model
         // (this model, every credential) goes.
         ...scoped('model'),
@@ -385,6 +393,8 @@ export class ErrorClassifier {
       hardTrip: false,
       suggestedCooldownMs: defaultInitialCooldown,
       reason: `Unknown upstream error: ${rawMessage.slice(0, 150)}`,
+      reasonCode: 'breaker.unknown',
+      reasonParams: { message: rawMessage.slice(0, 150) },
       // Decision 6 last bullet: an UNCLASSIFIED failure cools only its own
       // pair ("under-cool rather than over-cool; retry naturally validates
       // siblings"). A real outage still reaches the model breaker through

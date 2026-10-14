@@ -331,6 +331,24 @@ describe('(e) SUSPECT flag: auth account-scope marks it, it survives recreation,
     expect(fs.readFileSync(file, 'utf8')).toContain('K1');
   });
 
+  it('a well-formed flags file with an unknown version is preserved too', () => {
+    const paths = sandboxPaths();
+    fs.mkdirSync(paths.ocrHome, { recursive: true });
+    const file = path.join(paths.ocrHome, 'suspect-accounts.json');
+    // Parses cleanly but no reader here understands it: the preserveCorrupt
+    // path must fire on the shape branch, not only on the JSON-error branch.
+    fs.writeFileSync(file, '{"version":2,"accounts":{}}', 'utf8');
+
+    const store = new AccountStateStore({ paths });
+    expect(store.isSuspect('p', 'K1')).toBe(false); // read as empty, not fatal
+    store.mark('p', 'K1', 'dead key');
+
+    const survivors = fs.readdirSync(paths.ocrHome).filter((f) => f.includes('.corrupt.'));
+    expect(survivors).toHaveLength(1);
+    expect(fs.readFileSync(path.join(paths.ocrHome, survivors[0]), 'utf8')).toContain('"version":2');
+    expect(fs.readFileSync(file, 'utf8')).toContain('K1');
+  });
+
   it('a manual account trip never implies a suspect mark', () => {
     const { manager, accountState } = makeManager();
     manager.registerModel(model('p/x', 'p'));
