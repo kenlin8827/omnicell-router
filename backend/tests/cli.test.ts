@@ -5,6 +5,7 @@ import os from 'node:os';
 import { createServer } from '../src/server.js';
 import { buildGatewayChildEnv, buildWindowsEnvSets, RESTART_PARENT_ENV } from '../src/cli/daemon.js';
 import { OpenCodeClientAdapter } from '../src/cli/clients/opencode.js';
+import { listOpenCodeAgents, listOpenCodeAgentsLive } from '../src/opencode/agents.js';
 import { ClaudeClientAdapter } from '../src/cli/clients/claude.js';
 import { CodexClientAdapter } from '../src/cli/clients/codex.js';
 import { PiClientAdapter } from '../src/cli/clients/pi.js';
@@ -102,6 +103,238 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     // The router node itself goes to the native slot.
     expect(parsed.providers['opencode-router'].settings.baseURL).toBe('http://127.0.0.1:4000/v1');
     expect(parsed.provider['opencode-router']).toBeUndefined();
+  });
+
+  it('OpenCode adapter applies a model profile: per-agent overrides, exposed refs, sidecar echo, un-apply sweep', async () => {
+    const configPath = path.join(tmpDir, 'opencode.json');
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ $schema: 'https://opencode.ai/config.json', model: 'anthropic/claude-sonnet-4' }, null, 2)
+    );
+
+    const adapter = new OpenCodeClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    const setupRes = await adapter.setup({
+      port: 4000,
+      models: { main: 'auto' },
+      agentModels: { general: 'auto-lite', explore: 'deepseek-v4-flash', build: 'auto', 'bad name': 'auto-lite' },
+      profile: { id: 'prof1', bindings: { general: 'flash', explore: 'max', build: 'flash' } },
+    });
+    expect(setupRes.success).toBe(true);
+    expect(setupRes.message).toContain('profile: prof1');
+
+    // Fresh file (no agent node) → v2-native PLURAL `agents` home.
+    const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(cfg.agents.general.model).toBe('opencode-router/auto-lite');
+    expect(cfg.agents.explore.model).toBe('opencode-router/deepseek-v4-flash');
+    // 'auto' refs inherit the default model (no override); invalid names are skipped.
+    expect(cfg.agents.build?.model).toBeUndefined();
+    expect(cfg.agents['bad name']).toBeUndefined();
+    // Profile refs must be exposed in the provider model map — opencode validates
+    // agent.<name>.model against it.
+    expect(cfg.providers['opencode-router'].models['deepseek-v4-flash']).toBeDefined();
+
+    let status = await adapter.getStatus();
+    expect(status.profile?.id).toBe('prof1');
+    expect(status.profile?.bindings.explore).toBe('max');
+
+    // Un-apply (id ''): sweep router-owned overrides + clear the sidecar echo.
+    const unapplyRes = await adapter.setup({
+      port: 4000,
+      models: { main: 'auto' },
+      agentModels: {},
+      profile: { id: '', bindings: {} },
+    });
+    expect(unapplyRes.success).toBe(true);
+
+    const after = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(after.agents.general.model).toBeUndefined();
+    expect(after.agents.explore.model).toBeUndefined();
+    expect(after.providers['opencode-router']).toBeDefined(); // still hooked
+
+    status = await adapter.getStatus();
+    expect(status.profile).toBeUndefined();
+  });
+
+  it('OpenCode profile writes land in the existing agent home and sweep the legacy twin', async () => {
+    const configPath = path.join(tmpDir, 'opencode.json');
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          model: 'anthropic/claude-sonnet-4',
+          // v2 file: plural home exists and wins…
+          agents: { scout: { mode: 'subagent', model: 'anthropic/claude-haiku' } },
+          // …while the retired singular node keeps a router-owned ghost (an older
+          // build wrote it) plus the user's own non-router entry.
+          agent: {
+            general: { model: 'opencode-router/auto-lite' },
+            keeper: { model: 'zhipuai/glm-5.3' },
+          },
+        },
+        null,
+        2
+      )
+    );
+
+    const adapter = new OpenCodeClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    const res = await adapter.setup({
+      port: 4000,
+      models: { main: 'auto' },
+      agentModels: { scout: 'auto-lite' },
+      profile: { id: 'p', bindings: { scout: 'flash' } },
+    });
+    expect(res.success).toBe(true);
+
+    const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    // New binding goes to the plural home…
+    expect(cfg.agents.scout.model).toBe('opencode-router/auto-lite');
+    // …the legacy ghost is swept, and user-owned non-router values survive.
+    expect(cfg.agent.general.model).toBeUndefined();
+    expect(cfg.agent.keeper.model).toBe('zhipuai/glm-5.3');
+  });
+
+  it('OpenCode teardown sweeps every profile binding (no-backup surgical path) and clears the sidecar', async () => {
+    const configPath = path.join(tmpDir, 'opencode.json');
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ $schema: 'https://opencode.ai/config.json', model: 'anthropic/claude-sonnet-4' }, null, 2)
+    );
+
+    const adapter = new OpenCodeClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    await adapter.setup({
+      port: 4000,
+      models: { main: 'auto' },
+      agentModels: { general: 'auto-lite', explore: 'glm-5.3' },
+      profile: { id: 'prof1', bindings: { general: 'flash', explore: 'max' } },
+    });
+    // Force the surgical fallback path: drop the rolling backup.
+    fs.rmSync(`${configPath}.bak.ocr`, { force: true });
+
+    const teardownRes = await adapter.teardown();
+    expect(teardownRes.success).toBe(true);
+
+    const restored = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(restored.providers['opencode-router']).toBeUndefined();
+    expect(restored.agents?.general?.model).toBeUndefined();
+    expect(restored.agents?.explore?.model).toBeUndefined();
+    expect(restored.model).toBe('anthropic/claude-sonnet-4');
+
+    const status = await adapter.getStatus();
+    expect(status.profile).toBeUndefined();
+  });
+
+  it('profile payload owns the agent node: the subagent slot write is skipped while a profile is applied', async () => {
+    const configPath = path.join(tmpDir, 'opencode.json');
+    fs.writeFileSync(configPath, JSON.stringify({ model: 'anthropic/claude-sonnet-4' }, null, 2));
+    const adapter = new OpenCodeClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    // With a profile payload present (even an un-apply), step 4 must NOT write
+    // the slot value — the profile owns 'general' exclusively (sweep would
+    // erase the slot write anyway).
+    const withProfile = await adapter.setup({
+      port: 4000,
+      models: { main: 'auto', subagent: 'auto-pro' },
+      agentModels: {},
+      profile: { id: '', bindings: {} },
+    });
+    expect(withProfile.success).toBe(true);
+    expect(withProfile.message).not.toContain('subagent');
+    let cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(cfg.agents?.general?.model).toBeUndefined();
+
+    // Without a profile payload, the legacy slot behavior is untouched.
+    await adapter.setup({ port: 4000, models: { main: 'auto', subagent: 'auto-pro' } });
+    cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(cfg.agents.general.model).toBe('opencode-router/auto-pro');
+  });
+
+  it('teardown restores the ORIGINAL model even after re-setup with a different main', async () => {
+    const configPath = path.join(tmpDir, 'opencode.json');
+    fs.writeFileSync(configPath, JSON.stringify({ model: 'anthropic/claude-sonnet-4' }, null, 2));
+    const adapter = new OpenCodeClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    await adapter.setup({ port: 4000, models: { main: 'auto' } });
+    await adapter.setup({ port: 4000, models: { main: 'auto-pro' } }); // router value must not poison previousModel
+    fs.rmSync(`${configPath}.bak.ocr`, { force: true }); // force the surgical path
+
+    const res = await adapter.teardown();
+    expect(res.success).toBe(true);
+    const restored = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(restored.model).toBe('anthropic/claude-sonnet-4'); // not router/auto-pro, not a zombie
+  });
+
+  it('listOpenCodeAgents merges built-ins, agent/*.md and the config node (config wins)', async () => {
+    const configPath = path.join(tmpDir, 'opencode.json');
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          agent: {
+            scout: { mode: 'subagent', model: 'opencode-router/auto-lite' },
+            build: { mode: 'primary' },
+          },
+        },
+        null,
+        2
+      )
+    );
+    const agentDir = path.join(tmpDir, 'agent');
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(agentDir, 'reviewer.md'),
+      ['---', 'description: deep review', 'mode: subagent', 'model: anthropic/claude-opus', '---', '# body'].join('\n'),
+      'utf8'
+    );
+
+    const agents = listOpenCodeAgents({ configPath, agentDir });
+    const byName = Object.fromEntries(agents.map(a => [a.name, a]));
+
+    expect(byName.general).toMatchObject({ mode: 'subagent', source: 'builtin' });
+    expect(byName.reviewer).toMatchObject({ mode: 'subagent', source: 'file', model: 'anthropic/claude-opus' });
+    expect(byName.scout).toMatchObject({ mode: 'subagent', source: 'config', model: 'auto-lite' }); // router prefix stripped
+    expect(byName.build).toMatchObject({ mode: 'primary', source: 'config' });
+  });
+
+  it('listOpenCodeAgentsLive prefers the service roster and filters hidden internals', async () => {
+    const stub = {
+      isAvailable: () => true,
+      getAgents: async () => [
+        { id: 'build', name: 'Build', mode: 'primary', model: { providerID: 'alibaba', id: 'x' } }, // display name must NOT leak into the write key
+        { id: 'explore', name: 'explore', mode: 'subagent', model: { providerID: 'opencode-router', id: 'auto-lite' } },
+        { id: 'tech-writer', mode: 'subagent', model: { providerID: 'anthropic', id: 'claude-x' } },
+        { id: 'compaction', mode: 'primary', hidden: true },
+      ],
+    };
+    const agents = await listOpenCodeAgentsLive({ connector: stub as any, agentDir: path.join(tmpDir, 'missing'), configPath: path.join(tmpDir, 'missing.json') });
+    expect(agents.map(a => a.name)).toEqual(['build', 'explore', 'tech-writer']);
+    expect(agents[0]).toMatchObject({ mode: 'primary', source: 'service', model: 'alibaba/x' });
+    expect(agents[1]).toMatchObject({ mode: 'subagent', source: 'service', model: 'auto-lite' }); // router prefix stripped
+    expect(agents[2]!.model).toBe('anthropic/claude-x'); // native id reported verbatim
+  });
+
+  it('listOpenCodeAgentsLive falls back to the file scan when the service errors', async () => {
+    const configPath = path.join(tmpDir, 'opencode.json');
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ agents: { scout2: { mode: 'subagent', model: 'opencode-router/auto-pro' } } }, null, 2)
+    );
+    const stub = {
+      isAvailable: () => true,
+      getAgents: async () => {
+        throw new Error('OpenCode agent fetch failed [401]');
+      },
+    };
+    const agents = await listOpenCodeAgentsLive({ connector: stub as any, configPath, agentDir: path.join(tmpDir, 'missing') });
+    expect(agents.find(a => a.name === 'scout2')).toMatchObject({ mode: 'subagent', source: 'config', model: 'auto-pro' });
+    expect(agents.find(a => a.name === 'general')).toMatchObject({ source: 'builtin' });
   });
 
   it('Claude adapter should safely inject ANTHROPIC_BASE_URL and restore', async () => {

@@ -1,9 +1,82 @@
 import { useState } from 'react';
-import { opencodeApi } from './api';
+import { opencodeApi, OcApiError, type ProbeHintCode, type TestProviderResult } from './api';
 import { runPool } from './runPool';
 import { useI18n } from '../i18n/I18nContext';
 import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
+
+type TFn = (key: string, params?: Record<string, string | number>) => string;
+
+/** Probe hint codes → i18n keys (mirrors backend ProbeHintCode, api.ts). */
+const PROBE_HINT_KEY: Record<ProbeHintCode, string> = {
+  regionBlocked: 'op.probeHintRegion',
+  authFailed: 'op.probeHintAuth',
+  protocolMismatch: 'op.probeHintProtocol',
+  urlModelMismatch: 'op.probeHintUrlModel',
+  rateLimited: 'op.probeHintRate',
+  upstreamError: 'op.probeHintUpstream',
+  businessRejected: 'op.probeHintBusiness',
+  endpointNotFound: 'op.probeHintNotFound',
+};
+
+/** Test-route 400 precondition reasonCodes → i18n keys (console.ts). */
+const TEST_REASON_KEY: Record<string, string> = {
+  no_testable_model: 'op.reasonNoTestableModel',
+  no_base_url: 'op.reasonNoBaseUrl',
+  account_not_testable: 'op.reasonAccountNotTestable',
+};
+
+/**
+ * Compose the localized display string from a failed probe's machine limbs:
+ * `HTTP <status> —— <category label> | <upstream body>`. The label is a short
+ * CLASSIFICATION only (product rule 2026-10-14: classify, never speculate or
+ * instruct) — the provider's own error body stays the detail. Transport/
+ * unroutable failures are single localized limbs. Unknown codes stay raw +
+ * loud (gap #8 rule).
+ */
+export const composeProbeError = (r: TestProviderResult, t: TFn): string => {
+  // Skew passthrough: a backend predating the machine-limb contract still
+  // sends a composed `error` string — show it raw rather than swallow the
+  // diagnosis down to the bare fallback.
+  if (
+    r.httpStatus === undefined && !r.transportCode && !r.unroutableCode &&
+    !r.hintCode && !r.upstreamBody && r.error
+  )
+    return r.error;
+  if (r.transportCode === 'timeout') return t('op.probeTimeout', { ms: r.timeoutMs ?? 0 });
+  if (r.transportCode === 'unreachable')
+    return t('op.probeUnreachable', { url: r.transportUrl ?? '?', cause: r.transportCause ?? '?' });
+  if (r.unroutableCode)
+    return t(
+      r.unroutableCode === 'unknownPackage' ? 'op.probeUnroutableUnknownPkg' : 'op.probeUnroutableDedicated',
+      { npm: r.unroutableNpm || '—' }
+    );
+  let s = r.httpStatus !== undefined ? `HTTP ${r.httpStatus}` : t('op.testFailMsg');
+  if (r.hintCode) s += ` —— ${t(PROBE_HINT_KEY[r.hintCode] ?? r.hintCode)}`;
+  if (r.upstreamBody) s += ` | ${r.upstreamBody}`;
+  if (r.triedModels && r.triedModels.length > 1)
+    s += ` (${t('op.testRotated', { n: r.triedModels.length, models: r.triedModels.join(', ') })})`;
+  return s;
+};
+
+/** Compose the localized message for a thrown pull/test OcApiError. Unknown
+ * reasonCodes fall through to the raw server message. */
+export const apiErrorText = (err: unknown, providerId: string, t: TFn): string => {
+  const e = err as OcApiError;
+  const code = e?.reasonCode;
+  if (code && TEST_REASON_KEY[code])
+    return t(TEST_REASON_KEY[code], { provider: providerId, account: (e.body as any)?.accountId ?? '' });
+  if (code === 'pull_unreachable')
+    return t('op.probeUnreachable', { url: (e.body as any)?.url ?? '?', cause: (e.body as any)?.cause ?? '?' });
+  if (code === 'pull_non_json') return t('op.pullNonJson', { url: (e.body as any)?.url ?? '?' });
+  if (code === 'pull_http') {
+    const b = (e.body ?? {}) as { url?: string; httpStatus?: number; upstreamBody?: string };
+    let s = t('op.pullHttp', { url: b.url ?? '?', status: b.httpStatus ?? 0 });
+    if (b.upstreamBody) s += ` | ${b.upstreamBody}`;
+    return s;
+  }
+  return e?.message ?? String(err);
+};
 
 /**
  * One probe target: provider + optional concrete model. `key` identifies the
@@ -60,10 +133,13 @@ export const useModelTest = () => {
       if (target.modelId) payload.modelId = target.modelId;
       if (target.accountId) payload.accountId = target.accountId;
       const r = await opencodeApi.testProvider(target.providerId, Object.keys(payload).length ? payload : undefined);
-      setTestResults((prev) => ({ ...prev, [target.key]: r }));
-      return r;
+      // The wire carries machine limbs only — compose the localized display
+      // ONCE here so every outcome surface (card/badge/toast/title) stays raw.
+      const outcome: ModelTestOutcome = { ...r, error: r.ok ? undefined : composeProbeError(r, t) };
+      setTestResults((prev) => ({ ...prev, [target.key]: outcome }));
+      return outcome;
     } catch (err: any) {
-      const failed: ModelTestOutcome = { ok: false, error: err.message };
+      const failed: ModelTestOutcome = { ok: false, error: apiErrorText(err, target.providerId, t) };
       setTestResults((prev) => ({ ...prev, [target.key]: failed }));
       return failed;
     } finally {

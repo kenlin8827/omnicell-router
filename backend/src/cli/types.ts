@@ -48,6 +48,17 @@ export interface ClientHookStatus {
   modelSlots: ClientModelSlot[];
   /** Extra concrete models exposed in the client's model switcher (opencode provider models list) */
   extraModels?: string[];
+  /**
+   * Applied model profile (opencode only), echoed from the OCR sidecar meta:
+   * profile id + agent-name → slot-key bindings ('' id = no profile applied).
+   */
+  profile?: ModelProfileBinding;
+}
+
+/** Sidecar echo of the applied model profile: which profile and which agent got which slot. */
+export interface ModelProfileBinding {
+  id: string;
+  bindings: Record<string, string>;
 }
 
 export interface ClientModelSlot {

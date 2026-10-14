@@ -20,6 +20,7 @@ import type { CatalogModel } from '../opencode/catalog/types.js';
 import type { AccountMeta, CredentialStore, RawCred } from '../opencode/credentials/types.js';
 import type { CircuitBreakerManager } from '../resilience/index.js';
 import type { OpenCodeProviderView } from '../opencode/user-config.js';
+import { listOpenCodeAgentsLive } from '../opencode/agents.js';
 import {
   listApiKeys,
   createApiKey,
@@ -825,11 +826,12 @@ export function registerConsoleRoutes(
   // 4. Client Interception Setup / Teardown
   const handleSetup = async (req: any, reply: any) => {
     const { client } = req.params as { client: string };
-    const { models, apiKey, contextWindow, extraModels } = (req.body || {}) as {
+    const { models, apiKey, contextWindow, extraModels, profile } = (req.body || {}) as {
       models?: Record<string, string>;
       apiKey?: string;
       contextWindow?: number;
       extraModels?: string[];
+      profile?: { id?: string; bindings?: Record<string, string> };
     };
     const cleaned = models && typeof models === 'object'
       ? Object.fromEntries(Object.entries(models).map(([k, v]) => [k, String(v ?? 'auto').trim() || 'auto']))
@@ -838,11 +840,73 @@ export function registerConsoleRoutes(
       ? extraModels.map(s => String(s || '').trim()).filter(Boolean)
       : undefined;
     const cw = Number(contextWindow);
+
+    // Model profile resolution (opencode hook): profile id + agent→slot bindings
+    // resolve to agent→modelRef through the saved config. Slot keys missing
+    // from the selected profile leave the agent unbound; a slot whose modelRef
+    // is not routable fails the request cp-failfast (a wrong write to
+    // opencode.jsonc is harder to undo than a refused setup).
+    let agentModels: Record<string, string> | undefined;
+    let profileEcho: { id: string; bindings: Record<string, string> } | undefined;
+    if (profile !== undefined) {
+      const profileId = (profile.id || '').trim();
+      if (!profileId) {
+        // Empty id = explicit un-apply: sweep router-owned agent overrides + clear echo
+        agentModels = {};
+        profileEcho = { id: '', bindings: {} };
+      } else {
+        const p = (loadConfig().modelProfiles || []).find(x => x.id === profileId);
+        if (!p) {
+          return reply.status(400).send({ success: false, message: `Model profile '${profileId}' not found in config` });
+        }
+        const allowedRefs = new Set<string>([
+          'auto', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra',
+          ...registry.getAllModels().map(m => m.id),
+          ...registry.getCombos().map(c => c.id),
+          ...registry.getVariantExposures().map(v => v.id),
+        ]);
+        const resolved: Record<string, string> = {};
+        const bindings: Record<string, string> = {};
+        const invalid: string[] = [];
+        // The admin surface is still a trust boundary: shape-check before
+        // iterating (Object.entries over a string would iterate per character).
+        const bindingsIn = profile.bindings;
+        if (bindingsIn && (typeof bindingsIn !== 'object' || Array.isArray(bindingsIn))) {
+          return reply.status(400).send({ success: false, message: 'profile.bindings must be an object of agent name → slot key' });
+        }
+        const bindingEntries = Object.entries(bindingsIn || {});
+        if (bindingEntries.length > 100) {
+          return reply.status(400).send({ success: false, message: 'profile.bindings exceeds 100 entries' });
+        }
+        for (const [agentName, slotRaw] of bindingEntries) {
+          const slotKey = String(slotRaw || '').trim();
+          if (!slotKey) continue; // unbound
+          const ref = (p.slots || {})[slotKey];
+          if (!ref) continue; // slot not defined in this profile — stays unbound
+          if (!allowedRefs.has(ref)) invalid.push(`${agentName}→${slotKey} (${ref})`);
+          else {
+            resolved[agentName] = ref;
+            bindings[agentName] = slotKey;
+          }
+        }
+        if (invalid.length > 0) {
+          return reply.status(400).send({
+            success: false,
+            message: `Model profile '${profileId}' has unresolvable refs: ${invalid.join(', ')} — register the model / combo first`,
+          });
+        }
+        agentModels = resolved;
+        profileEcho = { id: profileId, bindings };
+      }
+    }
+
     const result = await setupClient(client, {
       ...(cleaned ? { models: cleaned } : {}),
       ...(apiKey?.trim() ? { apiKey: apiKey.trim() } : {}),
       ...(Number.isFinite(cw) && cw > 0 ? { contextWindow: Math.floor(cw) } : {}),
       ...(cleanedExtra ? { extraModels: cleanedExtra } : {}),
+      ...(agentModels ? { agentModels } : {}),
+      ...(profileEcho ? { profile: profileEcho } : {}),
     });
     if (!result.success) return reply.status(400).send(result);
     return result;
@@ -857,6 +921,11 @@ export function registerConsoleRoutes(
 
   app.post('/api/admin/client/:client/setup', handleSetup);
   app.post('/api/admin/client/:client/teardown', handleTeardown);
+
+  // 4a. OpenCode agent inventory (model-profile binding UI): live v2 service
+  //     roster (`GET /api/agent`, plugins included) with the file scan
+  //     (built-ins + agent(s)/*.md + config nodes) as offline fallback.
+  app.get('/api/admin/opencode/agents', async () => ({ status: 'ok', agents: await listOpenCodeAgentsLive() }));
 
   // 4b. Console webAuth — login/logout/session probes + credential management.
   // login/logout/session stay reachable pre-login (server.ts gate whitelist);
@@ -1824,14 +1893,20 @@ export function registerConsoleRoutes(
           return reply.status(400).send({
             success: false,
             reasonCode: 'account_not_testable',
-            error: `no testable credential row '${body.accountId}' under '${id}' (unknown id, or an oauth/non-routable row)`,
+            provider: id,
+            accountId: body.accountId,
           });
         }
       }
       const { catalogRepository } = await import('../opencode/catalog/repository.js');
       const cat = (await catalogRepository.list()).find((p) => p.id === id);
-      // model: explicit override (config key or upstream id) → first enabled
-      // config def → first catalog model (auth-only providers)
+      // model: explicit override (config key or upstream id) → up to
+      // PROBE_CANDIDATE_CAP enabled config defs → up to CAP catalog text
+      // models. Provider-level tests get a CANDIDATE LIST because catalog order
+      // is upstream-given and the head model may simply be one the account has
+      // not opened (Ark answers that as a model-scoped 404); the probe loop
+      // below rotates on model-scoped failures only. An explicit modelId is
+      // NEVER substituted — "test this model" reports exactly that model.
       const defs = getProviderModelDefs(id);
       const upstreamId = (mid: string): string => {
         const d = defs?.[mid];
@@ -1851,19 +1926,27 @@ export function registerConsoleRoutes(
         const ok = (a?: string[]) => !Array.isArray(a) || a.length === 0 || a.includes('text');
         return ok(mods?.input) && ok(mods?.output);
       };
-      const modelId = body.modelId
-        ? upstreamId(body.modelId)
+      const PROBE_CANDIDATE_CAP = 3;
+      const modelCandidates: string[] = body.modelId
+        ? [upstreamId(body.modelId)]
         : enabledDefIds.length > 0
-          ? upstreamId(
-              enabledDefIds.find((k) => {
+          ? (() => {
+              const textDefs = enabledDefIds.filter((k) => {
                 const cm = cat?.models.find((mm) => mm.id === upstreamId(k));
                 return !cm || isTextPair(cm.modalities);
-              }) ?? enabledDefIds[0]
-            )
-          : cat?.models.find((mm) => mm.disabled !== true && isTextPair(mm.modalities))?.id ??
-            cat?.models[0]?.id;
-      if (!modelId) {
-        return reply.status(400).send({ success: false, error: `'${id}' 没有可用于测试的模型 —— 请先添加模型` });
+              });
+              const list = textDefs.length > 0 ? textDefs : [enabledDefIds[0]];
+              return list.slice(0, PROBE_CANDIDATE_CAP).map(upstreamId);
+            })()
+          : (() => {
+              const text = (cat?.models ?? [])
+                .filter((mm) => mm.disabled !== true && isTextPair(mm.modalities))
+                .map((mm) => mm.id);
+              const list = text.length > 0 ? text : (cat?.models ?? []).slice(0, 1).map((mm) => mm.id);
+              return list.slice(0, PROBE_CANDIDATE_CAP);
+            })();
+      if (modelCandidates.length === 0) {
+        return reply.status(400).send({ success: false, reasonCode: 'no_testable_model', provider: id });
       }
 
       // probes run DIRECT against the provider on the same wire the
@@ -1884,28 +1967,45 @@ export function registerConsoleRoutes(
       // before the daemon runtime hint) — test must hit what inference hits.
       const baseURL = body.baseURL || def?.options?.baseURL || cat?.api || cat?.baseURL;
       if (!baseURL) {
-        return reply
-          .status(400)
-          .send({ success: false, error: `无法确定 '${id}' 的 baseURL —— 请先配置带 baseURL 的自定义 provider` });
+        return reply.status(400).send({ success: false, reasonCode: 'no_base_url', provider: id });
       }
       const { probeProvider, probeKindFor } = await import('../opencode/probe.js');
       const { baseForWire } = await import('../providers/wire.js');
-      // Model-level npm override (e.g. Zen gpt-6-luna → @ai-sdk/openai =
-      // Responses API) beats provider-level npm when picking the wire shape.
-      const modelNpm = cat?.models.find((mm) => mm.id === modelId)?.npm;
-      const kind = probeKindFor(cat?.api, modelNpm || def?.npm || cat?.npm);
-      const result = await probeProvider({
-        baseURL: baseForWire(kind, baseURL),
-        apiKey,
-        model: modelId,
-        provider: id,
-        kind,
-        headers: def?.options?.headers,
-      });
+      // Rotation loop: a model-scoped failure (upstream ANSWERED and rejected
+      // only that model) advances to the next candidate; one green proves the
+      // provider works. Connection-level failures (auth, network, gateway 404)
+      // are provider-wide — rotating would only repeat the same error.
+      let result: Awaited<ReturnType<typeof probeProvider>> | undefined;
+      const tried: string[] = [];
+      for (const modelId of modelCandidates) {
+        tried.push(modelId);
+        // Model-level npm override (e.g. Zen gpt-6-luna → @ai-sdk/openai =
+        // Responses API) beats provider-level npm when picking the wire shape.
+        const modelNpm = cat?.models.find((mm) => mm.id === modelId)?.npm;
+        const kind = probeKindFor(cat?.api, modelNpm || def?.npm || cat?.npm);
+        result = await probeProvider({
+          baseURL: baseForWire(kind, baseURL),
+          apiKey,
+          model: modelId,
+          provider: id,
+          kind,
+          headers: def?.options?.headers,
+        });
+        if (result.ok || !result.modelScoped) break;
+      }
       // Masked echo of the addressed row (never raw material): the UI can
       // confirm WHICH credential answered, not just that the provider did.
       const accountMeta = addressed ? store.listAccounts(id).find((a) => a.id === addressed.accountId) : undefined;
-      return { status: 'ok', provider: id, model: modelId, ...(accountMeta ? { account: accountMeta } : {}), ...result };
+      return {
+        status: 'ok',
+        provider: id,
+        model: result?.model,
+        // Rotation evidence (machine data, localized by the console): which
+        // candidates were tried, in order. Only meaningful when > 1.
+        ...(tried.length > 1 ? { triedModels: tried } : {}),
+        ...(accountMeta ? { account: accountMeta } : {}),
+        ...result,
+      };
     },
 
     setKey: async (req: any, reply: any) => {

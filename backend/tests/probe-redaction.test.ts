@@ -42,26 +42,26 @@ describe('probe error-body echo containment (security P3-5)', () => {
   it('openai wire: 400 echo of the submitted key never reaches the probe result', async () => {
     const res = await probeProvider({ baseURL: url, apiKey: KEY, model: 'm1', kind: 'openai' });
     expect(res.ok).toBe(false);
-    expect(res.error).toContain('HTTP 400'); // diagnostic limb survives
-    expect(containsKeyWindow(res.error ?? '')).toBe(false);
+    expect(res.httpStatus).toBe(400); // diagnostic limb survives
+    expect(containsKeyWindow(res.upstreamBody ?? '')).toBe(false);
     expect(JSON.stringify(res)).not.toContain(KEY);
   });
 
   it('the redacted marker is present — containment actually happened, not accidental absence', async () => {
     const res = await probeProvider({ baseURL: url, apiKey: KEY, model: 'm1', kind: 'openai' });
-    expect(res.error).toContain('[redacted]');
+    expect(res.upstreamBody).toContain('[redacted]');
   });
 
   it('short non-secret echoes (< REDACT_MIN_LEN) keep the diagnostic text intact', async () => {
     const res = await probeProvider({ baseURL: url, apiKey: 'k', model: 'm1', kind: 'openai' });
     // 'k' cannot be meaningfully redacted (not a secret floor) — body stays readable
-    expect(res.error).toContain('HTTP 400');
-    expect(res.error).toContain('-tail-padding-xxxx-yyyy-zzzz');
+    expect(res.httpStatus).toBe(400);
+    expect(res.upstreamBody).toContain('-tail-padding-xxxx-yyyy-zzzz');
   });
 });
 
-describe('probe url-error hint (DashScope model↔endpoint mismatch)', () => {
-  it('400 "url error, please check url" carries the model-type hint, not a baseURL guess', async () => {
+describe('probe url-error body (DashScope model↔endpoint mismatch)', () => {
+  it('400 "url error, please check url" echoes the raw body with no diagnosis sentence', async () => {
     const s = Bun.serve({
       hostname: '127.0.0.1',
       port: 0,
@@ -76,9 +76,11 @@ describe('probe url-error hint (DashScope model↔endpoint mismatch)', () => {
     try {
       const res = await probeProvider({ baseURL: `http://127.0.0.1:${s.port}/v1`, apiKey: 'k', model: 'vid-1', kind: 'openai' });
       expect(res.ok).toBe(false);
-      expect(res.error).toContain('端点与模型类型不匹配');
-      // raw upstream echo still rides along for diagnosis
-      expect(res.error).toContain('url error');
+      expect(res.httpStatus).toBe(400);
+      expect(res.hintCode).toBe('urlModelMismatch');
+      // raw upstream echo is the whole diagnosis (modelScoped still drives rotation)
+      expect(res.upstreamBody).toContain('url error');
+      expect(res.modelScoped).toBe(true);
     } finally {
       s.stop();
     }

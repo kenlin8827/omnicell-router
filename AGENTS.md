@@ -6,7 +6,7 @@ Guidance for AI coding agents. Repo conventions only — architecture decisions 
 
 OpenCode Router (OCR) — a local LLM gateway / cascaded router. Bun workspaces: `backend/` (Fastify + pino) and `frontend/` (React + Vite).
 
-Before touching environments/bootstrap, credentials, or `opencode.jsonc` provider defs, query the current ADRs (`adr_context`, or `docs/adr/`): ADR-0017/0018 (environment book-sets, bootstrap levers) and ADR-0019 (CredentialStore adapter, provider shape/slot).
+Before touching environments/bootstrap, credentials, or `opencode.jsonc` provider defs, query the current ADRs (`adr_context`, or `docs/adr/`): ADR-0017/0018 (environment book-sets, bootstrap levers) and ADR-0019 (CredentialStore adapter, provider shape/slot). Before touching model-addressing vocabulary — `ModelRef`/`ModelIdentity`, candidate/policy types, or the request `model` field resolution — query ADR-0020 (model-reference glossary: `Ref` suffix = unresolved handle, `Identity` = resolved physical fact).
 
 ## Common commands
 

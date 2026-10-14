@@ -73,28 +73,26 @@ export async function pullLiveModels(id: string, opts: { pattern?: string; dryRu
     res = await fetch(url, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(15000) });
   } catch (err: any) {
     const cause = err?.cause?.code || err?.cause?.message || err?.message;
-    return { httpStatus: 502, body: { success: false, error: `无法访问 ${url}: ${cause}` } };
+    return { httpStatus: 502, body: { success: false, reasonCode: 'pull_unreachable', url, cause: cause ? String(cause) : undefined } };
   }
   if (!res.ok) {
-    const text = (await res.text().catch(() => '')).slice(0, 200);
-    const hint =
-      res.status === 401 || res.status === 403
-        ? ' —— 鉴权失败，请检查 API Key'
-        : res.status === 404
-          ? ' —— 端点不存在，baseURL 可能缺少 /v1 后缀'
-          : '';
+    const raw = await res.text().catch(() => '');
+    const text = raw.replace(/\s+/g, ' ').slice(0, 600);
     return {
       httpStatus: res.status === 401 || res.status === 403 ? 401 : 502,
       body: {
         success: false,
+        reasonCode: 'pull_http',
         authHint: res.status === 401 || res.status === 403,
-        error: `${url} → HTTP ${res.status}${hint}${text ? ` | ${text}` : ''}`,
+        url,
+        httpStatus: res.status,
+        upstreamBody: text || undefined,
       },
     };
   }
   const raw = await res.json().catch(() => null);
   if (!raw) {
-    return { httpStatus: 502, body: { success: false, error: `${url} 返回了非 JSON 内容` } };
+    return { httpStatus: 502, body: { success: false, reasonCode: 'pull_non_json', url } };
   }
   const { normalizeOpenAICompatible } = await import('./sources/registry.js');
   const models = normalizeOpenAICompatible(raw);

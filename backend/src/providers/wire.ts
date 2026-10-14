@@ -87,19 +87,30 @@ export function wireFor(npm?: string, baseHint?: string): WireKind {
   return 'openai';
 }
 
-/** Human-readable exclusion reason for console/logs when a wire is unroutable. */
-export function unroutableReason(npm?: string): string {
+/** Machine classification of an unroutable wire — the console localizes the
+ * code; the human sentence never rides the wire (i18n contract). */
+export type UnroutableCode = 'unknownPackage' | 'dedicatedTransport';
+export function unroutableInfo(npm?: string): { code: UnroutableCode; npm: string } {
   const n = (npm || '').toLowerCase();
   const seg = opencodeV2Segment(n);
   if (seg !== null) {
     // P3-1: Object.hasOwn parity with wireFor (prototype-member segments are
     // unknown, never a wire kind).
     const known: WireKind | undefined = Object.hasOwn(OPENCODE_V2_SEGMENT_WIRES, seg) ? OPENCODE_V2_SEGMENT_WIRES[seg] : undefined;
-    if (known === undefined) {
-      return `无法识别的 opencode v2 SDK 包名（${npm || '未知 package'}），网关直连暂不支持（显式不可路由）`;
-    }
+    if (known === undefined) return { code: 'unknownPackage', npm: npm || '' };
   }
-  return `该 provider 的 SDK 包需要专用端点构造/签名（${npm || '未知 npm'}），网关直连暂不支持（显式不可路由）`;
+  return { code: 'dedicatedTransport', npm: npm || '' };
+}
+
+/** Human-readable exclusion reason for console/logs when a wire is unroutable.
+ * @deprecated i18n residue — the boot-direct exclusion surface still renders
+ * this Chinese text on /tiers. Migrate to unroutableInfo codes + t() there,
+ * then delete. */
+export function unroutableReason(npm?: string): string {
+  const { code, npm: n } = unroutableInfo(npm);
+  return code === 'unknownPackage'
+    ? `无法识别的 opencode v2 SDK 包名（${n || '未知 package'}），网关直连暂不支持（显式不可路由）`
+    : `该 provider 的 SDK 包需要专用端点构造/签名（${n || '未知 npm'}），网关直连暂不支持（显式不可路由）`;
 }
 
 /**

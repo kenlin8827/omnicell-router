@@ -76,4 +76,22 @@ export class OpenCodeConnector {
     return json.data || [];
   }
 
+  /**
+   * Effective agent roster from the running v2 service (`GET /api/agent`).
+   * This is the runtime source of truth the model-profile binding UI prefers
+   * over static file scanning: config nodes, `agent(s)/*.md` files, built-ins
+   * and plugin-registered agents all arrive already merged by opencode itself.
+   * Raw shape: `{ location, data: [{ id, name, mode, hidden, model: { providerID, id }, … }] }`.
+   */
+  public async getAgents(): Promise<any[]> {
+    if (!this.serviceConfig) throw new Error('OpenCode v2 service credentials not found');
+    const res = await fetch(`${this.serviceConfig.baseUrl}/api/agent`, {
+      headers: { Authorization: this.serviceConfig.authHeader },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) throw new Error(`OpenCode agent fetch failed [${res.status}]`);
+    const json = (await res.json()) as any;
+    return json.data || [];
+  }
+
   }

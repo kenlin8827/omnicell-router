@@ -44,6 +44,8 @@ type ComboboxBaseProps = {
    * the option count (e.g. Quick Connect key picker).
    */
   forceFilter?: boolean;
+  /** Non-interactive trigger (e.g. a slot owned by another control). */
+  disabled?: boolean;
 };
 
 /**
@@ -95,7 +97,7 @@ const optionStyle: React.CSSProperties = {
 };
 
 export const Combobox: React.FC<ComboboxProps> = (props) => {
-  const { options, placeholder, style, clearable, panelMinWidth, forceFilter, multiple } = props;
+  const { options, placeholder, style, clearable, panelMinWidth, forceFilter, multiple, disabled } = props;
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -271,10 +273,11 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
         role="combobox"
         aria-expanded={open}
         aria-haspopup="listbox"
+        disabled={disabled}
         title={selected ? `${selected.label}${selected.meta ? ` · ${selected.meta}` : ''}` : undefined}
-        onClick={() => (open ? close() : openPanel())}
+        onClick={() => { if (disabled) return; (open ? close() : openPanel()); }}
         onKeyDown={onTriggerKeyDown}
-        style={{ ...style, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', textAlign: 'left' }}
+        style={{ ...style, display: 'flex', alignItems: 'center', gap: 8, cursor: disabled ? 'not-allowed' : 'pointer', textAlign: 'left', opacity: disabled ? 0.5 : 1 }}
       >
         {selected?.swatch && <SwatchDot color={selected.swatch} />}
         <span

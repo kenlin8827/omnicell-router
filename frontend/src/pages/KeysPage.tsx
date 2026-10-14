@@ -1621,7 +1621,7 @@ export const KeysPage: React.FC = () => {
                 >
                   {testResults[p.id].ok
                     ? `✓ ${testResults[p.id].model} · ${testResults[p.id].latencyMs} ms`
-                    : `✗ ${testResults[p.id].error?.slice(0, 120) || t('op.testFailMsg')}`}
+                    : `✗ ${testResults[p.id].error || t('op.testFailMsg')}`}
                 </div>
               )}
 

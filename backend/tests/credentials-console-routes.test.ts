@@ -61,11 +61,14 @@ mock.module('../src/opencode/catalog/repository.js', () => ({
 
 const actualProbe = await import('../src/opencode/probe.js');
 let probeCalls: any[] = [];
+// Programmable probe seam — default keeps the historic always-green behavior;
+// rotation tests replace it per-case (opts.model decides which candidate answers).
+let probeImpl: (opts: any) => Promise<any> = async () => ({ ok: true, kind: 'openai', latencyMs: 5 });
 mock.module('../src/opencode/probe.js', () => ({
   ...actualProbe,
   probeProvider: async (opts: any) => {
     probeCalls.push(opts);
-    return { ok: true, kind: 'openai', latencyMs: 5 };
+    return probeImpl(opts);
   },
 }));
 
@@ -127,6 +130,7 @@ beforeEach(() => {
   postHandler = () => ({ status: 200, json: { credential: { id: 'c-new' } } });
   deleteHandler = () => 200;
   probeCalls = [];
+  probeImpl = async () => ({ ok: true, kind: 'openai', latencyMs: 5 });
   pullMode = null;
 });
 
@@ -891,6 +895,72 @@ describe('POST /opencode/providers/:id/test — store-resolved probe key', () =>
     });
     expect(res2.statusCode).toBe(200);
     expect(probeCalls[0].model).toBe('vid-1');
+  });
+});
+
+describe('POST /opencode/providers/:id/test — model-scoped candidate rotation', () => {
+  const arkCatalog = {
+    id: 'arkprov',
+    api: 'https://ark.test/api/v3',
+    npm: '@ai-sdk/openai-compatible',
+    models: [
+      { id: 'head-not-open', modalities: { input: ['text'], output: ['text'] } },
+      { id: 'second-not-open', modalities: { input: ['text'], output: ['text'] } },
+      { id: 'third-open', modalities: { input: ['text'], output: ['text'] } },
+      { id: 'fourth', modalities: { input: ['text'], output: ['text'] } },
+    ],
+  };
+
+  it('provider-level test rotates past model-scoped 404s and goes green on a reachable model', async () => {
+    const p = credPaths();
+    catalogRecs = [arkCatalog];
+    bindV2(p, [keyRow('c1', 'arkprov', 'sk-live')]);
+    probeImpl = async (opts: any) =>
+      opts.model === 'third-open'
+        ? { ok: true, kind: 'openai', model: opts.model, latencyMs: 7 }
+        : { ok: false, kind: 'openai', model: opts.model, latencyMs: 5, modelScoped: true, httpStatus: 404, upstreamBody: 'ModelNotOpen' };
+    const res = await app.inject({ method: 'POST', url: '/api/admin/opencode/providers/arkprov/test', payload: {} });
+    expect(res.statusCode).toBe(200);
+    expect(probeCalls.map((c) => c.model)).toEqual(['head-not-open', 'second-not-open', 'third-open']);
+    const json = res.json();
+    expect(json.ok).toBe(true);
+    expect(json.model).toBe('third-open'); // the UI shows WHICH model answered green
+  });
+
+  it('connection-level failure (auth) does NOT rotate — one probe only', async () => {
+    const p = credPaths();
+    catalogRecs = [arkCatalog];
+    bindV2(p, [keyRow('c1', 'arkprov', 'sk-live')]);
+    probeImpl = async (opts: any) => ({ ok: false, kind: 'openai', model: opts.model, authHint: true, httpStatus: 401, hintCode: 'authFailed' });
+    const res = await app.inject({ method: 'POST', url: '/api/admin/opencode/providers/arkprov/test', payload: {} });
+    expect(res.json().ok).toBe(false);
+    expect(probeCalls).toHaveLength(1);
+  });
+
+  it('explicit modelId is never substituted — a model-scoped failure reports as-is', async () => {
+    const p = credPaths();
+    catalogRecs = [arkCatalog];
+    bindV2(p, [keyRow('c1', 'arkprov', 'sk-live')]);
+    probeImpl = async (opts: any) => ({ ok: false, kind: 'openai', model: opts.model, modelScoped: true, httpStatus: 404, upstreamBody: 'ModelNotOpen' });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/opencode/providers/arkprov/test',
+      payload: { modelId: 'head-not-open' },
+    });
+    expect(res.json().ok).toBe(false);
+    expect(probeCalls).toHaveLength(1);
+    expect(res.json().triedModels).toBeUndefined(); // single explicit probe = no rotation evidence
+  });
+
+  it('all candidates model-scoped: capped at 3, response carries triedModels', async () => {
+    const p = credPaths();
+    catalogRecs = [arkCatalog];
+    bindV2(p, [keyRow('c1', 'arkprov', 'sk-live')]);
+    probeImpl = async (opts: any) => ({ ok: false, kind: 'openai', model: opts.model, modelScoped: true, httpStatus: 404, upstreamBody: 'UnsupportedModel' });
+    const res = await app.inject({ method: 'POST', url: '/api/admin/opencode/providers/arkprov/test', payload: {} });
+    expect(res.json().ok).toBe(false);
+    expect(probeCalls).toHaveLength(3); // PROBE_CANDIDATE_CAP — 'fourth' never tried
+    expect(res.json().triedModels).toEqual(['head-not-open', 'second-not-open', 'third-open']);
   });
 });
 

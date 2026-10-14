@@ -15,10 +15,28 @@
  */
 
 import { proxiedFetch } from '../utils/proxy.js';
-import { wireFor, unroutableReason, anthropicMessagesUrl } from '../providers/wire.js';
+import { wireFor, unroutableInfo, anthropicMessagesUrl } from '../providers/wire.js';
 import { redactBodySecrets } from './credentials/opencode-v2-store.js';
 
 export type ProbeKind = 'openai' | 'anthropic' | 'google' | 'responses' | 'unroutable';
+
+/** Machine codes of the status/body-derived CLASSIFICATION — short category
+ * labels only (i18n contract). Product rule 2026-10-14: classify, never
+ * speculate or instruct. The old hints failed by guessing causes ("/v1 suffix
+ * missing") and giving advice ("check the API Key") that was wrong often
+ * enough to mislead; the upstream's echoed body carries the real story. */
+export type ProbeHintCode =
+  | 'regionBlocked'
+  | 'authFailed'
+  | 'protocolMismatch'
+  | 'urlModelMismatch'
+  | 'rateLimited'
+  | 'upstreamError'
+  /** 404 with a provider-shaped JSON body: the API answered, rejected at business level. */
+  | 'businessRejected'
+  /** 404 with a gateway-shaped body (HTML/empty): the mount itself is absent. */
+  | 'endpointNotFound';
+export type ProbeTransportCode = 'timeout' | 'unreachable';
 
 export interface ProbeOptions {
   baseURL: string;
@@ -38,8 +56,32 @@ export interface ProbeResult {
   kind: ProbeKind;
   model?: string;
   latencyMs?: number;
-  error?: string;
   authHint?: boolean;
+  /** Failure is scoped to the PROBED MODEL, not the connection: the upstream
+   * API answered but rejected this one model (structured 404 like Ark's
+   * ModelNotOpen/UnsupportedModel, 400 protocol mismatch, 400 url↔model
+   * mismatch). Key + mount are proven alive, so a provider-level test may
+   * rotate to the next candidate model. */
+  modelScoped?: boolean;
+  /** --- machine limbs of a failed probe (the console composes the display) --- */
+  /** Upstream HTTP status, present iff the request reached an HTTP server. */
+  httpStatus?: number;
+  /** Category classification of the failure (see ProbeHintCode) — a label,
+   * not a sentence; the echoed upstream body stays the detail. */
+  hintCode?: ProbeHintCode;
+  /** Transport-level failure (fetch threw before/without an HTTP response). */
+  transportCode?: ProbeTransportCode;
+  transportUrl?: string;
+  /** Raw fetch-cause detail (English technical string, passed through verbatim). */
+  transportCause?: string;
+  timeoutMs?: number;
+  /** Wire cannot be spoken by the gateway at all (kind === 'unroutable'). */
+  unroutableCode?: 'unknownPackage' | 'dedicatedTransport';
+  unroutableNpm?: string;
+  /** Redacted, whitespace-flattened, 600-char-capped upstream error body.
+   * Security P3-5: redaction happens BEFORE truncation (upstreams echo the
+   * submitted key; slicing first could re-expose chars at the boundary). */
+  upstreamBody?: string;
 }
 
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -53,20 +95,42 @@ export function probeKindFor(api?: string, npm?: string): ProbeKind {
   return wireFor(npm, api);
 }
 
-function statusHint(status: number, body = ''): { authHint?: boolean; hint?: string } {
-  if (/unsupported_country_region|Country, region, or territory/i.test(body))
-    return { hint: '上游按出口 IP 区域封锁（OpenAI 政策）——需走允许的代理出口，或改用其它供给该模型的 provider' };
-  if (status === 401 || status === 403) return { authHint: true, hint: '鉴权失败，请检查 API Key' };
+/**
+ * Detect a provider-shaped JSON error body — `{"error":{...}}` (OpenAI / Ark),
+ * `{"type":"error",...}` (Anthropic), or top-level `code`+`message`. A structured
+ * body proves the API endpoint itself ANSWERED: a genuinely wrong URL yields an
+ * HTML/empty gateway 404, never provider-format JSON. 404s with such a body are
+ * business-level failures (model not opened / not in the plan / bad model id —
+ * Ark reports all three as 404), so they must not read as "baseURL is wrong".
+ */
+export function structuredApiError(body: string): { code?: string } | null {
+  const t = body.trim();
+  if (!t.startsWith('{')) return null;
+  let j: any;
+  try {
+    j = JSON.parse(t);
+  } catch {
+    return null;
+  }
+  if (!j || typeof j !== 'object') return null;
+  const hasShape = j.error !== undefined || j.type === 'error' || (j.code !== undefined && j.message !== undefined);
+  if (!hasShape) return null;
+  const e = j.error && typeof j.error === 'object' ? j.error : j;
+  const code = e.code ?? j.code;
+  return { code: code !== undefined ? String(code) : undefined };
+}
+
+function hintForStatus(status: number, body = ''): { authHint?: boolean; hintCode?: ProbeHintCode } {
+  if (/unsupported_country_region|Country, region, or territory/i.test(body)) return { hintCode: 'regionBlocked' };
+  if (status === 401 || status === 403) return { authHint: true, hintCode: 'authFailed' };
   if (status === 400 && /ModelProtocolUnsupported|does not support this protocol/i.test(body))
-    return { hint: '该模型不支持本次探测使用的协议线格式（Anthropic/OpenAI 二选一不匹配，或模型不在套餐协议白名单内，如图像/语音类模型不能走文本接口）' };
-  // DashScope-family gateways report a model↔endpoint mismatch (chat URL + a
-  // video/image/ASR model) as a *URL* error — do not let it read as "baseURL is
-  // wrong"; key and baseURL were fine, the probed model type was not.
-  if (status === 400 && /url error, please check url/i.test(body))
-    return { hint: '端点与模型类型不匹配：该 baseURL 上没有所选模型的对话接口（常见于目录把图像/视频/语音模型排在首位）—— 请改用对话（chat）模型测试' };
-  if (status === 404) return { hint: '端点不存在（baseURL 可能缺少 /v1 后缀，或 API 类型不匹配）' };
-  if (status === 429) return { hint: '被限流 / 额度不足' };
-  if (status >= 500) return { hint: '上游服务错误' };
+    return { hintCode: 'protocolMismatch' };
+  // DashScope-family gateways report a model↔endpoint mismatch as a *URL*
+  // error — classify it so it does not read as "baseURL broken".
+  if (status === 400 && /url error, please check url/i.test(body)) return { hintCode: 'urlModelMismatch' };
+  if (status === 404) return { hintCode: structuredApiError(body) ? 'businessRejected' : 'endpointNotFound' };
+  if (status === 429) return { hintCode: 'rateLimited' };
+  if (status >= 500) return { hintCode: 'upstreamError' };
   return {};
 }
 
@@ -74,7 +138,8 @@ export async function probeProvider(opts: ProbeOptions): Promise<ProbeResult> {
   const kind = opts.kind ?? 'openai';
   if (kind === 'unroutable') {
     // never fire a guessed wire at a package we cannot speak.
-    return { ok: false, kind, model: opts.model, error: unroutableReason() };
+    const info = unroutableInfo();
+    return { ok: false, kind, model: opts.model, unroutableCode: info.code, unroutableNpm: info.npm };
   }
   const base = opts.baseURL.replace(/\/+$/, '');
   let url: string;
@@ -131,15 +196,26 @@ export async function probeProvider(opts: ProbeOptions): Promise<ProbeResult> {
       // repeating the offending value). Redact the submitted apiKey BEFORE
       // truncation — the error string flows into the console response and
       // logs; truncating first could re-expose key chars at the boundary.
-      const text = redactBodySecrets(raw.replace(/\s+/g, ' '), { key: opts.apiKey }).slice(0, 300);
-      const { authHint, hint } = statusHint(res.status, raw);
+      // 600 chars: enough for a full provider business-error (Ark's
+      // ModelNotOpen sentence + request id) — the console card shows the
+      // error inline and copyable, so the cap is the user-visible truth.
+      const text = redactBodySecrets(raw.replace(/\s+/g, ' '), { key: opts.apiKey }).slice(0, 600);
+      const { authHint, hintCode } = hintForStatus(res.status, raw);
+      const modelScoped =
+        (res.status === 404 && !!structuredApiError(raw)) ||
+        (res.status === 400 &&
+          (/ModelProtocolUnsupported|does not support this protocol/i.test(raw) ||
+            /url error, please check url/i.test(raw)));
       return {
         ok: false,
         kind,
         model: opts.model,
         latencyMs,
         authHint,
-        error: `HTTP ${res.status}${hint ? ` —— ${hint}` : ''}${text ? ` | ${text}` : ''}`,
+        modelScoped,
+        httpStatus: res.status,
+        hintCode,
+        upstreamBody: text || undefined,
       };
     }
     return { ok: true, kind, model: opts.model, latencyMs };
@@ -152,9 +228,10 @@ export async function probeProvider(opts: ProbeOptions): Promise<ProbeResult> {
       kind,
       model: opts.model,
       latencyMs,
-      error: aborted
-        ? `请求超时（${opts.timeoutMs ?? DEFAULT_TIMEOUT_MS}ms）`
-        : `无法访问 ${url}: ${cause}`,
+      transportCode: aborted ? 'timeout' : 'unreachable',
+      transportUrl: url,
+      transportCause: cause ? String(cause) : undefined,
+      timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     };
   }
 }

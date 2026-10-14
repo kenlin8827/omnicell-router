@@ -23,6 +23,7 @@ import {
   Shuffle,
   BrainCircuit,
   Layers,
+  ClipboardList,
   Server,
   LogIn,
   LogOut,
@@ -82,6 +83,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     items: [
       { to: '/tiers', labelKey: 'nav.rules', icon: Network },
       { to: '/combos', labelKey: 'nav.combos', icon: Layers },
+      { to: '/model-profiles', labelKey: 'nav.modelProfiles', icon: ClipboardList },
       { to: '/auto', labelKey: 'nav.auto', icon: BrainCircuit },
     ],
   },
@@ -134,6 +136,7 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/tiers': { groupKey: 'nav.grpTraffic', titleKey: 'nav.rules' },
   '/auto': { groupKey: 'nav.grpTraffic', titleKey: 'nav.auto' },
   '/combos': { groupKey: 'nav.grpTraffic', titleKey: 'nav.combos' },
+  '/model-profiles': { groupKey: 'nav.grpTraffic', titleKey: 'nav.modelProfiles' },
   '/api-keys': { groupKey: 'nav.grpAccess', titleKey: 'nav.apiKeys' },
   '/providers': { groupKey: 'nav.grpUpstream', titleKey: 'nav.providers' },
   '/models': { groupKey: 'nav.grpUpstream', titleKey: 'nav.models' },

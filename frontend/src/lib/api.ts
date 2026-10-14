@@ -36,6 +36,44 @@ export interface ClientStatus {
   /** This client's model slots; value undefined = auto (intelligent routing).
    *  Optional: legacy backend responses (pre-modelSlots) omit the field entirely. */
   modelSlots?: { key: string; value?: string; default?: string }[];
+  /** Applied model profile (opencode): profile id + agent→slot-key bindings. */
+  profile?: ModelProfileBinding;
+}
+
+/** Mirrors backend ModelProfileBinding (applied model-profile echo from the OCR sidecar meta). */
+export interface ModelProfileBinding {
+  id: string;
+  bindings: Record<string, string>;
+}
+
+/** Mirrors backend ModelProfileConfig (config.yaml `modelProfiles` entry). */
+export interface ModelProfileView {
+  id: string;
+  name?: string;
+  /** slot key → modelRef (model id | combo id | auto*) */
+  slots: Record<string, string>;
+  note?: string;
+}
+
+/** Mirrors backend OpenCodeAgentView (agent inventory for model-profile binding). */
+export interface OpenCodeAgentView {
+  name: string;
+  mode: 'primary' | 'subagent' | 'all';
+  /** 'service' = live opencode v2 service roster (preferred); others = file-scan fallback. */
+  source: 'builtin' | 'file' | 'config' | 'service';
+  model?: string;
+}
+
+/** Mirrors backend ClientProfileMemoryEntry — per-client console form memory
+ *  (config.yaml `clientProfileMemory`): last profile + agent→slot selections.
+ *  UI-only: never consulted by routing or by the hook itself. */
+export interface ClientProfileMemoryEntry {
+  profile: string;
+  bindings: Record<string, string>;
+  /** Model-list source: 'none' (default) = no concrete models exposed,
+   *  'follow' = mirror the selected API key's effective model access,
+   *  'custom' = manual picker. Mirrors backend. */
+  modelMode?: 'none' | 'custom' | 'follow';
 }
 
 // Mirrors backend CircuitBreakerSnapshot (backend/src/resilience/types.ts)
@@ -957,6 +995,36 @@ export const api = {
     return res.json();
   },
 
+  /** Model profiles (config.yaml `modelProfiles`) — raw section round-trip, no
+   *  resolution view needed (refs are resolved by the client hook at apply). */
+  async getModelProfiles(): Promise<ModelProfileView[]> {
+    const cfg = await this.getConfig();
+    return cfg.modelProfiles || [];
+  },
+
+  async saveModelProfiles(profiles: ModelProfileView[]): Promise<{ status: string; message: string }> {
+    return this.saveConfig({ modelProfiles: profiles });
+  },
+
+  /** OpenCode agent inventory (built-ins + agent/*.md + global config node). */
+  async listOpencodeAgents(): Promise<OpenCodeAgentView[]> {
+    const res = await fetch('/api/admin/opencode/agents');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    return json.agents || [];
+  },
+
+  /** Per-client form memory (profile + slot mapping) saved in the ACTIVE
+   *  environment's config — survives reloads, restarts and teardown. */
+  async getClientProfileMemory(): Promise<Record<string, ClientProfileMemoryEntry>> {
+    const cfg = await this.getConfig();
+    return cfg.clientProfileMemory || {};
+  },
+
+  async saveClientProfileMemory(memory: Record<string, ClientProfileMemoryEntry>): Promise<{ status: string; message: string }> {
+    return this.saveConfig({ clientProfileMemory: memory });
+  },
+
   /**
    * Token usage aggregates: windowed totals + per-API-key rows. Optional
    * `sinceMs` (inclusive lower bound on `trace.timestamp`, epoch ms) narrows
@@ -996,6 +1064,8 @@ export const api = {
       apiKey?: string;
       contextWindow?: number;
       extraModels?: string[];
+      /** Model profile application (opencode): id + agent→slot bindings; id '' un-applies (sweep). */
+      profile?: { id: string; bindings: Record<string, string> };
     }
   ): Promise<{ status: string; message: string }> {
     const res = await fetch(`/api/admin/client/${client}/${action}`, {
@@ -1655,15 +1725,47 @@ export interface CustomProviderPayload {
   options?: Record<string, any>;
 }
 
-/** Result of the one-shot provider/model connectivity probe (POST .../test). */
+/** Mirror of backend ProbeHintCode (opencode/probe.ts) — category labels,
+ * never cause guesses or instructions (product rule 2026-10-14). */
+export type ProbeHintCode =
+  | 'regionBlocked'
+  | 'authFailed'
+  | 'protocolMismatch'
+  | 'urlModelMismatch'
+  | 'rateLimited'
+  | 'upstreamError'
+  | 'businessRejected'
+  | 'endpointNotFound';
+
+/** Result of the one-shot provider/model connectivity probe (POST .../test).
+ * Mirror of backend ProbeResult (opencode/probe.ts) — machine limbs only;
+ * the console composes the localized display via composeProbeError().
+ * HTTP failures carry no diagnosis text by design (product decision
+ * 2026-10-14): status + echoed upstream body only. */
 export interface TestProviderResult {
   status: string;
   ok: boolean;
   kind?: 'openai' | 'anthropic' | 'google' | 'responses' | 'unroutable';
   model?: string;
   latencyMs?: number;
-  error?: string;
   authHint?: boolean;
+  modelScoped?: boolean;
+  httpStatus?: number;
+  hintCode?: ProbeHintCode;
+  transportCode?: 'timeout' | 'unreachable';
+  transportUrl?: string;
+  transportCause?: string;
+  timeoutMs?: number;
+  unroutableCode?: 'unknownPackage' | 'dedicatedTransport';
+  unroutableNpm?: string;
+  upstreamBody?: string;
+  /** @deprecated pre-i18n backend limb (composed human string). Read ONLY by
+   * the composeProbeError legacy passthrough during frontend/backend skew. */
+  error?: string;
+  /** Provider-level rotation: candidates tried, in order (only when > 1). */
+  triedModels?: string[];
+  account?: AccountMeta;
+  provider?: string;
 }
 
 export interface OpenCodeModelView {
@@ -1906,11 +2008,15 @@ export interface ProviderPurgeResult {
  */
 export class OcApiError extends Error {
   readonly reasonCode?: string;
+  /** Parsed non-2xx body — carries the machine params (url/cause/httpStatus)
+   * a reasonCode needs for client-side i18n composition. */
+  readonly body?: unknown;
 
-  constructor(message: string, reasonCode?: string) {
+  constructor(message: string, reasonCode?: string, body?: unknown) {
     super(message);
     this.name = 'OcApiError';
     this.reasonCode = reasonCode;
+    this.body = body;
   }
 }
 
@@ -1922,7 +2028,8 @@ function ocJson<T>(res: Response): Promise<T> {
       .then((e: any) => {
         throw new OcApiError(
           e?.error || e?.message || `HTTP ${res.status}`,
-          typeof e?.reasonCode === 'string' ? e.reasonCode : undefined
+          typeof e?.reasonCode === 'string' ? e.reasonCode : undefined,
+          e
         );
       }) as Promise<T>;
   }
@@ -2329,6 +2436,8 @@ export const opencodeApi = {
     hint?: string;
     models: OpenCodeModelView[] | string[];
   }> {
+    // Failure bodies (pull_* reasonCodes + machine params) arrive on the
+    // thrown OcApiError.body — localized by apiErrorText() in useModelTest.
     return ocJson(
       await fetch(`/api/admin/opencode/providers/${encodeURIComponent(id)}/models/pull`, {
         method: 'POST',

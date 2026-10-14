@@ -9,7 +9,7 @@ import { useI18n } from '../i18n/I18nContext';
 import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
-import { useModelTest } from '../lib/useModelTest';
+import { useModelTest, apiErrorText } from '../lib/useModelTest';
 import { Combobox } from '../components/Combobox';
 import { Switch } from './Switch';
 
@@ -276,7 +276,9 @@ export const ProviderModelsDialog: React.FC<{
       try {
         await fn();
       } catch (err: any) {
-        toast.error(`Failed: ${err.message}`);
+        // Pull/test failures ride as machine reasonCodes — localize known
+        // codes, unknown ones stay raw + loud (gap #8 rule).
+        toast.error(apiErrorText(err, providerId, t));
       } finally {
         setPending(null);
       }

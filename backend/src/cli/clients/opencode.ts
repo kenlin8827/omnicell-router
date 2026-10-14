@@ -6,7 +6,7 @@ import {
   safeReadJson,
   defaultGatewayPort,
 } from './base.js';
-import { ClientHookStatus } from '../types.js';
+import { ClientHookStatus, ModelProfileBinding } from '../types.js';
 import {
   ROUTER_PROVIDER_ID,
   getOpenCodeConfigPath,
@@ -27,12 +27,13 @@ import {
  *  - The default model is selected via the top-level `model` key ("provider/model-id").
  */
 
-/** Sidecar that remembers the user's previous default model across setup/teardown. */
+/** Sidecar that remembers the user's previous default model across setup/teardown
+ *  and echoes the applied model profile (id + agent→slot bindings) for the console. */
 function metaPathFor(configPath: string): string {
   return `${configPath}.ocr-meta.json`;
 }
 
-function readMeta(configPath: string): { previousModel?: string } {
+function readMeta(configPath: string): { previousModel?: string; profile?: ModelProfileBinding } {
   try {
     const p = metaPathFor(configPath);
     if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'));
@@ -42,11 +43,47 @@ function readMeta(configPath: string): { previousModel?: string } {
   return {};
 }
 
-function writeMeta(configPath: string, meta: { previousModel?: string }): void {
+function writeMeta(configPath: string, meta: { previousModel?: string; profile?: ModelProfileBinding }): void {
   try {
     fs.writeFileSync(metaPathFor(configPath), JSON.stringify(meta, null, 2), 'utf8');
   } catch {
     // best effort
+  }
+}
+
+/** Valid agent name usable as an opencode.jsonc agent-node key. */
+function isValidAgentName(name: string): boolean {
+  return Boolean(name) && /^[A-Za-z0-9][A-Za-z0-9._\-]*$/.test(name);
+}
+
+/**
+ * The agent node a config actually uses — same slot doctrine as ADR-0019's
+ * provider/providers decision (opencode v2's native spelling is PLURAL
+ * `agents`; singular `agent` is the retired v1 home). Reads/writes must land
+ * in the home the user's install uses, or opencode never sees the override.
+ * Fresh files get the v2 home; a legacy-only file keeps its singular home
+ * (never silently fork definitions into a second node).
+ */
+const AGENT_SLOT_NATIVE = 'agents';
+const AGENT_SLOT_LEGACY = 'agent';
+
+function existingAgentSlot(data: any): string {
+  if (data?.[AGENT_SLOT_NATIVE] && typeof data[AGENT_SLOT_NATIVE] === 'object') return AGENT_SLOT_NATIVE;
+  if (data?.[AGENT_SLOT_LEGACY] && typeof data[AGENT_SLOT_LEGACY] === 'object') return AGENT_SLOT_LEGACY;
+  return AGENT_SLOT_NATIVE;
+}
+
+/** Drop every router-owned `agent(s).<name>.model` override in BOTH nodes. */
+function sweepRouterAgentModels(configPath: string): void {
+  for (const slot of [AGENT_SLOT_NATIVE, AGENT_SLOT_LEGACY]) {
+    const node = (readJsonc(configPath) as any)?.[slot];
+    if (!node || typeof node !== 'object') continue;
+    for (const [name, def] of Object.entries(node as Record<string, unknown>)) {
+      const model = (def as any)?.model;
+      if (typeof model === 'string' && model.startsWith(`${ROUTER_PROVIDER_ID}/`)) {
+        patchJsonc(configPath, [slot, name, 'model'], undefined);
+      }
+    }
   }
 }
 
@@ -122,6 +159,9 @@ export class OpenCodeClientAdapter implements ClientAdapter {
         ? v.slice(ROUTER_PROVIDER_ID.length + 1)
         : undefined;
 
+    // v2 `agents` wins, legacy `agent` as fallback (same home rule as writes)
+    const generalModel = hookedData?.[existingAgentSlot(hookedData)]?.general?.model;
+
     // Extra concrete models exposed in the provider's switcher (non-virtual entries)
     const mainId = stripPrefix(hookedData?.model);
     const AUTO_MODEL_KEYS = new Set(['auto', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra']);
@@ -141,18 +181,29 @@ export class OpenCodeClientAdapter implements ClientAdapter {
       details,
       modelSlots: [
         { key: 'main', value: mainId, default: 'auto' },
-        { key: 'subagent', value: stripPrefix(hookedData?.agent?.general?.model), default: 'auto-lite' },
+        { key: 'subagent', value: stripPrefix(generalModel), default: 'auto-lite' },
       ],
       extraModels,
+      profile: hooked ? readMeta(configPath).profile : undefined,
     };
   }
 
-  async setup(options?: { port?: number; models?: Record<string, string>; extraModels?: string[]; apiKey?: string }): Promise<{ success: boolean; message: string }> {
+  async setup(options?: {
+    port?: number;
+    models?: Record<string, string>;
+    extraModels?: string[];
+    apiKey?: string;
+    /** Model profile application: agent name → modelRef ('auto'/'' = inherit default model). */
+    agentModels?: Record<string, string>;
+    /** Profile echo for the sidecar meta; id '' applies an empty profile (sweep router-owned overrides). */
+    profile?: ModelProfileBinding;
+  }): Promise<{ success: boolean; message: string }> {
     const configPath = this.getConfigPath();
     const port = options?.port || defaultGatewayPort();
     const main = options?.models?.main?.trim() || 'auto';
     const extraModels = (options?.extraModels || []).map(s => (s || '').trim()).filter(Boolean);
     const apiKey = options?.apiKey?.trim() || undefined;
+    const agentModels = options?.agentModels || {};
 
     // 1. Safety backup (single rolling .bak.ocr, restorable via teardown)
     if (fs.existsSync(configPath)) {
@@ -162,7 +213,11 @@ export class OpenCodeClientAdapter implements ClientAdapter {
     // 2. Inject the router provider under opencode v2's native `providers` node
     //    using a comment-preserving JSONC edit, and retire a legacy-slot twin left
     //    by an older build (opencode reads both, but only one may exist).
-    patchJsonc(configPath, ['providers', ROUTER_PROVIDER_ID], buildRouterProviderNode(port, main, extraModels, apiKey));
+    //    Model-profile refs are part of the exposed model set — opencode validates
+    //    `agent.<name>.model` against this provider's `models` map.
+    const profileRefs = Object.values(agentModels).map(r => (r || '').trim()).filter(r => r && r !== 'auto');
+    const exposedExtras = [...extraModels, ...profileRefs];
+    patchJsonc(configPath, ['providers', ROUTER_PROVIDER_ID], buildRouterProviderNode(port, main, exposedExtras, apiKey));
     if (readJsonc(configPath)?.provider?.[ROUTER_PROVIDER_ID]) {
       patchJsonc(configPath, ['provider', ROUTER_PROVIDER_ID], undefined);
     }
@@ -171,25 +226,63 @@ export class OpenCodeClientAdapter implements ClientAdapter {
     const current = readJsonc(configPath) || {};
     const previousModel = current?.model;
     const targetModel = `${ROUTER_PROVIDER_ID}/${main}`;
-    if (previousModel && previousModel !== targetModel) {
-      writeMeta(configPath, { previousModel });
+    const meta = readMeta(configPath);
+    // Record the user's ORIGINAL model only — a router-prefixed value is an
+    // intermediate from a previous takeover (e.g. re-setup with a different
+    // main) and must never become the teardown restore target.
+    if (previousModel && previousModel !== targetModel && !String(previousModel).startsWith(`${ROUTER_PROVIDER_ID}/`)) {
+      meta.previousModel = previousModel;
     }
     patchJsonc(configPath, ['model'], targetModel);
 
-    // 4. Subagent slot (OpenCode's default subagent is "general"); 'auto' removes the override
+    // 4. Subagent slot (OpenCode's default subagent is "general"); 'auto' removes the override.
+    //    Written into the config's existing agent HOME (v2 `agents` / v1 `agent`).
+    //    SKIPPED when a profile payload is present: the profile owns the agent
+    //    node exclusively (its sweep would erase this write anyway — silently
+    //    dropping the slot choice when 'general' stays unmapped). The console
+    //    disables the slot in that mode; "general" then binds via the table.
+    let profileNote = '';
+    const profileIn = options?.profile;
     const subagent = options?.models?.subagent?.trim();
-    if (subagent !== undefined) {
-      const agentModel = (readJsonc(configPath) as any)?.agent?.general?.model;
+    const subagentApplied = Boolean(subagent && subagent !== 'auto' && profileIn === undefined);
+    if (subagent !== undefined && profileIn === undefined) {
+      const slot = existingAgentSlot(readJsonc(configPath));
+      const agentModel = (readJsonc(configPath) as any)?.[slot]?.general?.model;
       if (subagent && subagent !== 'auto') {
-        patchJsonc(configPath, ['agent', 'general', 'model'], `${ROUTER_PROVIDER_ID}/${subagent}`);
+        patchJsonc(configPath, [slot, 'general', 'model'], `${ROUTER_PROVIDER_ID}/${subagent}`);
       } else if (agentModel) {
-        patchJsonc(configPath, ['agent', 'general', 'model'], undefined);
+        patchJsonc(configPath, [slot, 'general', 'model'], undefined);
       }
     }
 
+    // 5. Model profile application — ONLY when a profile payload is present (a
+    //    bare `ocr setup opencode` never touches agent bindings). Sweep first
+    //    (both node spellings, so a profile swap leaves no ghosts), then write
+    //    each binding into the agent home: the config node overrides same-name
+    //    agents defined in agent(s)/*.md, which is what makes profiles work for
+    //    every agent.
+    if (profileIn !== undefined) {
+      sweepRouterAgentModels(configPath);
+      const slot = existingAgentSlot(readJsonc(configPath));
+      let applied = 0;
+      for (const [name, ref] of Object.entries(agentModels)) {
+        const r = (ref || '').trim();
+        if (!isValidAgentName(name) || !r || r === 'auto') continue; // 'auto' = inherit the default model
+        patchJsonc(configPath, [slot, name, 'model'], `${ROUTER_PROVIDER_ID}/${r}`);
+        applied++;
+      }
+      if (profileIn.id) {
+        meta.profile = { id: profileIn.id, bindings: profileIn.bindings || {} };
+        profileNote = `, profile: ${profileIn.id} (${applied} agents)`;
+      } else {
+        delete meta.profile;
+      }
+    }
+    writeMeta(configPath, meta);
+
     return {
       success: true,
-      message: `OpenCode routed to OCR gateway (http://127.0.0.1:${port}/v1, main: ${targetModel}${subagent && subagent !== 'auto' ? `, subagent: ${subagent}` : ''}). Backup at ${configPath}.bak.ocr`,
+      message: `OpenCode routed to OCR gateway (http://127.0.0.1:${port}/v1, main: ${targetModel}${subagentApplied ? `, subagent: ${subagent}` : ''}${profileNote}). Backup at ${configPath}.bak.ocr`,
     };
   }
 
@@ -202,6 +295,11 @@ export class OpenCodeClientAdapter implements ClientAdapter {
 
     // If backup exists, restore it directly (full revert, comments included)
     if (restoreBackup(configPath)) {
+      const meta = readMeta(configPath);
+      if (meta.profile) {
+        delete meta.profile;
+        writeMeta(configPath, meta);
+      }
       return {
         success: true,
         message: `OpenCode configuration restored from backup (${configPath}.bak.ocr)`,
@@ -223,7 +321,10 @@ export class OpenCodeClientAdapter implements ClientAdapter {
       patchJsonc(configPath, ['provider', ROUTER_PROVIDER_ID], undefined);
     }
 
-    if (data.model === `${ROUTER_PROVIDER_ID}/auto`) {
+    // Restore the user's original default whenever the current one is any
+    // router ref (not just router/auto — re-setups may leave router/auto-pro,
+    // router/<pinned model> etc.).
+    if (typeof data.model === 'string' && data.model.startsWith(`${ROUTER_PROVIDER_ID}/`)) {
       const { previousModel } = readMeta(configPath);
       if (previousModel) {
         patchJsonc(configPath, ['model'], previousModel);
@@ -232,10 +333,14 @@ export class OpenCodeClientAdapter implements ClientAdapter {
       }
     }
 
-    // Remove subagent model override if it points at the router
-    const subagentModel = (data as any)?.agent?.general?.model;
-    if (typeof subagentModel === 'string' && subagentModel.startsWith(`${ROUTER_PROVIDER_ID}/`)) {
-      patchJsonc(configPath, ['agent', 'general', 'model'], undefined);
+    // Remove every agent model override that points at the router — both node
+    // spellings (v2 `agents` / v1 `agent`), covering the legacy subagent slot
+    // ('general') and all model-profile bindings.
+    sweepRouterAgentModels(configPath);
+    const meta = readMeta(configPath);
+    if (meta.profile) {
+      delete meta.profile;
+      writeMeta(configPath, meta);
     }
 
     return {

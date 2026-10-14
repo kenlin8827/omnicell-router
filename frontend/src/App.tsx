@@ -20,6 +20,7 @@ import { EnvironmentsPage } from './pages/EnvironmentsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { AutoPage } from './pages/AutoPage';
 import { CombosPage } from './pages/CombosPage';
+import { ModelProfilesPage } from './pages/ModelProfilesPage';
 import { FlywheelPage } from './pages/FlywheelPage';
 import { YamlPage } from './pages/YamlPage';
 import { ConfirmProvider } from './components/ConfirmProvider';
@@ -68,6 +69,7 @@ export const App: React.FC = () => {
         <Route path="tiers" element={<RulesPage />} />
         <Route path="auto" element={<AutoPage />} />
         <Route path="combos" element={<CombosPage />} />
+        <Route path="model-profiles" element={<ModelProfilesPage />} />
         <Route path="api-keys" element={<ApiKeysPage />} />
         <Route path="providers" element={<KeysPage />} />
         <Route path="models" element={<ModelsPage />} />

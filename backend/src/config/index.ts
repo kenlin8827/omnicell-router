@@ -261,6 +261,8 @@ export function loadConfig(configPath?: string): RouterConfig {
         providers: parsed?.providers || DEFAULT_CONFIG.providers,
         models: parsed?.models || DEFAULT_CONFIG.models,
         combos: parsed?.combos || [],
+        modelProfiles: parsed?.modelProfiles || [],
+        clientProfileMemory: parsed?.clientProfileMemory || {},
         catalog: parsed?.catalog,
       });
     } catch (err) {
@@ -509,6 +511,12 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'combos.*.selection': '主选策略：priority 配置顺序（默认）/ weighted 加权随机 / round_robin 轮询',
   'combos.*.models': '成员列表（顺序即故障转移链序）：成员可写 \'model-id\' 或 { id, weight }（weight 用于 weighted/round_robin，默认 1）',
   'combos.*.note': '备注：仅控制台展示的自由文本，不参与路由',
+  modelProfiles: '模型方案：一张「槽位 → 模型引用（modelRef）」命名表，与具体客户端无关。客户端挂接（应用）时选择方案，把各 agent/subagent 绑定到槽位，一次写入全部模型（控制台 /model-profiles 页可视化编辑；方案本身不参与路由，仅在应用时把 modelRef 写进客户端自身配置）',
+  'modelProfiles.*.id': '方案 id（唯一，供客户端挂接引用）',
+  'modelProfiles.*.name': '方案显示名',
+  'modelProfiles.*.slots': '槽位表：槽位名 → modelRef（注册模型 id / 组合 id / auto / auto-lite / auto-plus / auto-pro / auto-ultra）',
+  'modelProfiles.*.note': '备注：仅控制台展示的自由文本，不参与路由',
+  clientProfileMemory: '控制台表单记忆（按环境保存）：各客户端挂接表单上次选择的模型方案、槽位映射与模型列表模式（none=不设置（默认）/ custom=自定义 / follow=跟随所选 API Key 的权限），仅用于页面回填，不参与路由、也不影响实际接管配置',
   session: '会话粘性（棘轮：会话内模型不漂移）',
   'session.strategy': '会话策略：monotonic 单调棘轮 / sticky 粘性 / stateless 无状态',
   'session.ttlSeconds': '会话保持时长（秒）',
@@ -529,6 +537,10 @@ function lookupYamlComment(path: string): string | undefined {
   // Dynamic map level: combos.<comboId>.<field…> → combos.*.<field…>
   if (segs[0] === 'combos' && segs.length >= 3) {
     return YAML_FIELD_COMMENTS[`combos.*.${segs.slice(2).join('.')}`];
+  }
+  // Dynamic array level: modelProfiles.<index>.<field…> → modelProfiles.*.<field…>
+  if (segs[0] === 'modelProfiles' && segs.length >= 3) {
+    return YAML_FIELD_COMMENTS[`modelProfiles.*.${segs.slice(2).join('.')}`];
   }
   return undefined;
 }
