@@ -45,6 +45,10 @@ export interface BreakerInfo {
   tier?: string;
   state: 'CLOSED' | 'OPEN' | 'HALF_OPEN';
   reason?: string;
+  /** Machine-readable trip reason (backend BreakerReasonCode): trigger code on
+   *  wrapped/manual trips, cause code on a hard trip. Absent = pre-code trip. */
+  reasonCode?: string;
+  reasonParams?: ReasonParams;
   category?: string;
   consecutiveFailures: number;
   totalRequests: number;

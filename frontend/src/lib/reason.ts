@@ -25,6 +25,18 @@ const REASON_KEY: Record<string, string> = {
   'session.preserved': 'routing.reason.sessionPreserved',
   'session.sticky': 'routing.reason.sessionSticky',
   combo: 'routing.reason.combo',
+  // Circuit-breaker trip reasons (backend BreakerReasonCode): cause codes render
+  // alone on a hard trip; trigger codes wrap a cause whose code rides along as
+  // params.cause_code with its params flattened into the same map.
+  'breaker.quota': 'guardrails.reasonQuota',
+  'breaker.auth': 'guardrails.reasonAuth',
+  'breaker.rate_limit': 'guardrails.reasonRateLimit',
+  'breaker.network': 'guardrails.reasonNetwork',
+  'breaker.unknown': 'guardrails.reasonUnknown',
+  'breaker.canary': 'guardrails.reasonCanary',
+  'breaker.consecutive': 'guardrails.reasonConsecutive',
+  'breaker.rate_window': 'guardrails.reasonRateWindow',
+  'breaker.manual': 'guardrails.reasonManual',
 };
 
 /**
@@ -40,11 +52,21 @@ export const formatReason = (
   rawReason: string | undefined,
   t: Translate,
 ): string => {
+  // Manual trip without an operator note: the console default is a label, not free text.
+  if (code === 'breaker.manual' && !String(params?.detail ?? '')) return t('guardrails.reasonManualConsole');
+
   const key = code ? REASON_KEY[code] : undefined;
   if (!key) return rawReason ?? '';
 
   const vars: Record<string, string | number> = {};
   for (const [k, v] of Object.entries(params ?? {})) vars[k] = String(v);
+
+  // Trigger templates render the wrapped cause into {detail} from the same flat
+  // vars; an unknown cause_code keeps the raw English detail the backend sent.
+  if (vars.cause_code) {
+    const innerKey = REASON_KEY[vars.cause_code];
+    if (innerKey) vars.detail = t(innerKey, vars);
+  }
 
   const text = t(key, vars);
   // t() returns the key itself when no locale carries it — keep the gateway wording.

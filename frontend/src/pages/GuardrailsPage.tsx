@@ -4,8 +4,10 @@ import { ShieldAlert, RefreshCw, RotateCcw, Ban, Zap, Loader2, AlertTriangle } f
 import { api, opencodeApi, type GatewayStatusResponse, type BreakerInfo, type BreakerTripScope, type AccountHealth } from '../lib/api';
 import { useModelTest, type ModelTestTarget } from '../lib/useModelTest';
 import { buildPairCards, effectiveState, effectiveCooldown, type PairCard } from '../lib/guardrails-matrix';
+import { formatReason } from '../lib/reason';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
+import { useConfirm } from '../components/ConfirmProvider';
 import { Combobox } from '../components/Combobox';
 import { Pagination } from '../components/Pagination';
 
@@ -38,6 +40,7 @@ export const GuardrailsPage: React.FC = () => {
   const { status } = useOutletContext<{ status: GatewayStatusResponse | null }>();
   const { t } = useI18n();
   const toast = useToast();
+  const confirmDialog = useConfirm();
   // Exact-scope drill-downs (each Combobox carries its own filter input):
   // provider narrows the grid to one provider, model to one modelId;
   // credential narrows to one account's pair cards.
@@ -235,6 +238,19 @@ export const GuardrailsPage: React.FC = () => {
   );
 
   const handleResetAll = async () => {
+    // Blast radius = every model AND every pair breaker, manual trips included.
+    // The counts mirror what `reset()` iterates server-side (manager.reset).
+    const ok = await confirmDialog({
+      title: t('guardrails.resetAllConfirmTitle'),
+      description: t('guardrails.resetAllConfirmDesc', {
+        total: totalBreakers + pairTotal,
+        open: openCount + pairOpen,
+        half: halfOpenCount + pairHalf,
+      }),
+      danger: true,
+      confirmLabel: t('guardrails.resetAll'),
+    });
+    if (!ok) return;
     setIsResetting(true);
     try {
       await api.resetBreakers();
@@ -285,6 +301,25 @@ export const GuardrailsPage: React.FC = () => {
   const handleResetScope = async (c: PairCard) => {
     const scope = tripScope;
     if (scope === 'model') return;
+    // A credential-wide reset clears every pair breaker of this key for the
+    // active provider (manager.resetByScope 'account' skips other providers'
+    // pairs sharing the same prefix) — count from the same predicate it walks.
+    if (scope === 'account') {
+      const mine = pairBreakers.filter(
+        (p) => p.keyHashPrefix === c.prefix && p.provider === c.provider,
+      );
+      const ok = await confirmDialog({
+        title: t('guardrails.resetAccountConfirmTitle', { account: c.prefix }),
+        description: t('guardrails.resetAccountConfirmDesc', {
+          total: mine.length,
+          open: mine.filter((p) => p.state === 'OPEN').length,
+          half: mine.filter((p) => p.state === 'HALF_OPEN').length,
+        }),
+        danger: true,
+        confirmLabel: t('guardrails.resetScope'),
+      });
+      if (!ok) return;
+    }
     setResettingScope(true);
     try {
       const res = await api.resetBreakersScoped(scope, { model: c.modelId, account: c.prefix });
@@ -448,7 +483,11 @@ export const GuardrailsPage: React.FC = () => {
           ) : (
             // Hover reveals the MASKED key only — the raw key never leaves
             // the password-gated reveal route (ADR-0019 Decision 10).
-            <span style={hashBadgeStyle} title={c.maskedKey ? `keyHash ${c.prefix} · ${c.maskedKey}` : `keyHash ${c.prefix}`}>
+            <span
+              style={hashBadgeStyle}
+              // maskedKey is display-safe data — appended outside the translated template.
+              title={t('guardrails.keyHashBadge', { prefix: c.prefix }) + (c.maskedKey ? ` · ${c.maskedKey}` : '')}
+            >
               #{c.prefix}
             </span>
           )}
@@ -478,7 +517,7 @@ export const GuardrailsPage: React.FC = () => {
               lineHeight: 1.5,
             }}
           >
-            {t('guardrails.reasonLabel')}: {c.snap.reason}
+            {t('guardrails.reasonLabel')}: {formatReason(c.snap.reasonCode, c.snap.reasonParams, c.snap.reason, t)}
           </div>
         )}
         {modelTripped && c.modelSnap?.reason && (
@@ -494,7 +533,7 @@ export const GuardrailsPage: React.FC = () => {
               lineHeight: 1.5,
             }}
           >
-            {t('guardrails.modelLevel')}: {c.modelSnap.reason}
+            {t('guardrails.modelLevel')}: {formatReason(c.modelSnap.reasonCode, c.modelSnap.reasonParams, c.modelSnap.reason, t)}
           </div>
         )}
 
