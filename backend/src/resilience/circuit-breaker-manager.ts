@@ -115,12 +115,13 @@ export class CircuitBreakerManager {
   private modelProviders = new Map<string, string>();
   private config: CircuitBreakerConfig;
   /**
-   * The effective ruleset, resolved once at construction (spec invariant 5/6:
-   * startup resolution + restart-apply; breakers snapshot it alongside their
-   * config). The manager gate consults it for EVERY failure decision, so the
-   * rule toggles hold for both the orchestrator and the ActiveHealthProber —
-   * the prober classifies WITHOUT circuit config, which is exactly why the
-   * gating lives here and never in the classifier (invariant 1).
+   * The effective ruleset, resolved at construction and re-resolved on every
+   * `applyConfig` (spec invariant 5/6: startup resolution + hot-apply; every
+   * breaker receives the swap via its own `applyConfig`). The manager gate
+   * consults it for EVERY failure decision, so the rule toggles hold for both
+   * the orchestrator and the ActiveHealthProber — the prober classifies WITHOUT
+   * circuit config, which is exactly why the gating lives here and never in
+   * the classifier (invariant 1).
    */
   private rules: ResolvedBreakerRules;
   private nowFn: () => number;
@@ -143,6 +144,39 @@ export class CircuitBreakerManager {
     this.rules = resolveBreakerRules(this.config, retryConfig);
     this.nowFn = nowFn;
     this.accountState = accountState ?? defaultAccountStateStore();
+  }
+
+  /**
+   * Hot-apply a new circuitBreaker config (spec invariant 6, hot-apply):
+   * re-resolve the effective ruleset, swap it into the gate, and push config
+   * + the new rules into every live breaker (model AND pair). Breaker STATE is
+   * never touched by the swap — the new rules govern from the next decision
+   * point — except the invariant-2 reconciliation below. `retryConfig` is
+   * consulted only for `hardTripAboveMs`'s default, exactly like boot.
+   * Deliberately NOT hot-applied here: `persistence.debounceMs` (the
+   * BreakerStateStore binds its debounce at construction, boot path).
+   */
+  public applyConfig(config?: CircuitBreakerConfig, retryConfig?: RetryConfig): void {
+    this.config = config || {};
+    this.rules = resolveBreakerRules(this.config, retryConfig);
+    // Invariant-2 reconciliation, the live twin of restoreState()'s startup
+    // filter (a restart is no longer the only apply point): an OPEN breaker
+    // whose reasonCode belongs to a rule this save disables is reset NOW —
+    // otherwise the block nobody asked for would outlive the toggle.
+    // breaker.canary / breaker.manual never reconcile (same predicate as
+    // restore). Read via toRecord(), NOT getSnapshot(): the read must not
+    // transition the machine, so an expired OPEN reconciles exactly like its
+    // restored twin instead of slipping into HALF_OPEN first.
+    const disabled = CircuitBreakerManager.disabledTripReasonCodes(this.rules);
+    const settle = (breaker: CircuitBreaker): void => {
+      breaker.applyConfig(this.config, this.rules);
+      const rec = breaker.toRecord();
+      if (rec.state === 'OPEN' && rec.reasonCode !== undefined && disabled.has(rec.reasonCode)) {
+        breaker.reset();
+      }
+    };
+    for (const breaker of this.breakers.values()) settle(breaker);
+    for (const pair of this.pairs.values()) settle(pair.breaker);
   }
 
   public registerModel(model: ModelRegistration): CircuitBreaker {
@@ -398,8 +432,8 @@ export class CircuitBreakerManager {
    * account-wide trip expansion. OPEN records whose reasonCode belongs to a
    * now-disabled trip rule are skipped too — the startup reconciliation of
    * spec invariant 2: closing a rule must not resurrect a cooldown nobody
-   * asked for (a restart is the only apply point, invariant 6). Returns the
-   * applied counts.
+   * asked for (the same filter runs live in `applyConfig` at every hot-apply,
+   * invariant 6). Returns the applied counts.
    */
   public restoreState(): { models: number; pairs: number } {
     const file = this.stateStore?.load();

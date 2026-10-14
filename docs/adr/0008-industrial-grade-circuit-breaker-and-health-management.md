@@ -6,6 +6,8 @@ Accepted & Implemented - 2026-09-30
 
 **Amended 2026-10-14 (rules)** — every automatic trip rule of §1/§2 became individually enable-able with its own parameters under `circuitBreaker.rules`, HALF_OPEN became a configurable trial batch, and `circuitBreaker.shadow` added rules-validate-without-blocking. Nothing about the defaults changed: an absent `rules` tree reproduces the pre-amendment behavior byte-for-byte (see §Amendment (2026-10-14, rules)).
 
+**Amended 2026-10-14 (hot-apply)** — breaker rules apply live on every config save; the restart-apply posture of the rules amendment is superseded (see §Amendment (2026-10-14, hot-apply)).
+
 ## Context
 In large-scale production-grade AI gateway and model-routing gateway practice, upstream LLM services are strongly heterogeneous, cross-vendor and highly volatile, facing many unavoidable availability challenges:
 
@@ -89,12 +91,12 @@ Spec: [docs/design/circuit-breaker-rules-config.md](../design/circuit-breaker-ru
 - **Hard-trip durations are resolved by the gate, not proposed by the classifier.** `trip.quota.cooldownMs` / `trip.auth.cooldownMs` give the 402/401 block length (default `quotaCooldownMs`, the 12h of §1); a hard 429 gets `max(trip.rateLimit.minCooldownMs, min(Retry-After, global maxCooldownMs))` — the clamp ceiling stays global because it caps *any* derived cooldown. The `trip.rateLimit.hardTripAboveMs` boundary re-derives at the gate (default borrowed from `retry.inplace.maxRateLimitWaitMs`; overriding it deliberately decouples the breaker-side boundary from the in-place-retry decision, which the breaker never rewrites). Accordingly `ErrorDiagnosis.suggestedCooldownMs` was renamed **`minCooldownMs`** and is now a floor for the **statistical path only** (`max(minCooldownMs, computed ladder/rate cooldown)`); it can no longer steer a hard trip.
 - **OFF means different things per family, and that difference is the contract.** Counting-off = the class is never recorded (no window entry, no consecutive count); a dropped class still releases any HALF_OPEN probe slot it consumed, so a non-penalty outcome can never strand a trial. Detector-off = recording continues unchanged, the check is simply never evaluated (documented, and pinned by tests). `trip.rateLimit` OFF **downgrades** a long-`Retry-After` 429 to a counted statistical failure rather than ignoring it, and the `Retry-After`-derived floor still flows through `max(min, computed)`. `counting.clientErrors` ON is the only inversion: 400/422 become counted failures (`shouldTripBreaker: true`) on the tripping rule's own ladder.
 - **Zero automatic tripping is a five-switch predicate.** Automatic tripping is off if and only if all five `trip.*` switches are off — counting-off is NOT a route to zero, because counted 429 has no toggle and still feeds the detectors. `getRulesStatus()` computes `on | partly_off | all_off` (+ `shadow`) from exactly those five switches and the whole effective ruleset rides the `/api/admin/status` payload the console reads, so the UI banner and the rules page can never disagree with the gate. Caveat recorded honestly: this predicate counts rules that *fire*; a breaker already OPEN keeps walking its own recovery ladder (a `maxWaitMs` or short-batch re-OPEN is that state machine's edge), and manual trips are operator intent outside the predicate.
-- **Closing a rule reconciles live and persisted state.** `restoreState()` skips OPEN records whose `reasonCode` belongs to a disabled rule (`breaker.quota`, `breaker.auth`, `breaker.rate_limit`, `breaker.consecutive`, `breaker.rate_window`) — otherwise a restart would resurrect a 12h quota block nobody asked for, since restart is the only apply point. `breaker.canary` (a trigger wrapping whatever cause rode along) and `breaker.manual` (operator intent) deliberately never reconcile: such a record expires on its own cooldown or is cleared by a manual reset. Existing SUSPECT flags likewise **survive** every toggle (see below).
+- **Closing a rule reconciles live and persisted state.** `restoreState()` skips OPEN records whose `reasonCode` belongs to a disabled rule (`breaker.quota`, `breaker.auth`, `breaker.rate_limit`, `breaker.consecutive`, `breaker.rate_window`) — otherwise a restart would resurrect a 12h quota block nobody asked for. The hot-apply amendment (below) runs the same filter against live breakers at every save. `breaker.canary` (a trigger wrapping whatever cause rode along) and `breaker.manual` (operator intent) deliberately never reconcile: such a record expires on its own cooldown or is cleared by a manual reset. Existing SUSPECT flags likewise **survive** every toggle (see below).
 - **HALF_OPEN is a trial batch.** `recovery.halfOpen.maxProbes` is the concurrent trial budget (default `halfOpenMaxProbes`, and now also the prober's per-model per-cycle budget via `getProbeBudget()`); `successThreshold` is how many successes the batch needs before the breaker closes — the close still re-arms ladder + window empty as before. A success below the threshold releases its own slot so the batch keeps dispatching. Under credential attribution a pair success **counts as a model trial success** instead of force-closing the model breaker. `BreakerRecord` and the snapshot gained `halfOpenSuccesses` and `halfOpenEnteredAt` (no half-open entry timestamp existed before); `applyRecord` refreshes probes, successes **and** the entry clock for a restored HALF_OPEN — downtime never consumes the wait budget and a restart can never strand a trial.
 - **Both HALF_OPEN exits are configurable.** `recovery.onCanaryFailure` is tri-state: `backoff` (today: ladder × `recovery.cooldownMultiplier`, capped by global `maxCooldownMs`), `initial` (re-OPEN at the first ladder rung) or `close` (optimistic CLOSED, **retaining** `consecutiveFailures` and `currentCooldownMs` so the next counted failure re-trips escalated). `close` never applies to a `MANUAL` breaker — category `MANUAL` falls back to `backoff`, because a rule must not defeat an operator takedown. Three conditions resolve through this one policy: a probe failure, `maxWaitMs` expiry (`recovery.halfOpen.maxWaitMs`, default `0` = wait forever, today's shape; checked on the next gate call), and a **short batch**: all `maxProbes` slots consumed with `halfOpenSuccesses < successThreshold`. The short-batch check is gated on `successThreshold > 1`, so the default 1/1 shape is untouched — a stuck single canary lingers as it always did instead of being re-tripped while its probe is still in flight. A short batch counts **no new failure** (nothing failed; the trial simply cannot reach the bar) and re-OPENs with `breaker.canary`.
 - **Shadow mode flips the verdict only.** `circuitBreaker.shadow: true` keeps the machine running at full fidelity — probe slots consumed, ladders advanced, windows filled, trips recorded, snapshotted and emitted — while `canExecute`/`peekExecute` return `allowed: true`. The exemption is structural, not a special case: the flip lives in the breaker's verdict and refuses to apply to category `MANUAL`, while the DISABLED operator takedown and the SUSPECT refusal are answered by the manager before any verdict is consulted. Accepted observation skew: shadowed models keep serving full traffic, so statistical history diverges from an enforcing run.
 - **SUSPECT is set on trip and never lifted by a toggle.** `markSuspect` rides the trip itself: an auth rule OFF is "ignore" (no trip, no count) and therefore sets **no new flag** — an ignored 401 must not administratively eject an account; gating `accountSuspect && trip.auth.enabled && trip.auth.markSuspect` is the shipped contract. `markSuspect: false` keeps the trip and stops only NEW flags; entries already in `suspect-accounts.json` keep gating selection until the operator clears them. The invariant across the whole rule tree: **a toggle neither sets nor clears an existing flag.** The mark lives on the account-expansion path, so a `scope` override that routes a 401 to a pair or model breaker trips without flagging (ADR-0019 Decision 6).
-- **Apply semantics stay restart-based.** The effective ruleset is resolved at construction and snapshotted into every breaker; `handleSaveConfig` hot-applies proxy/capture/layer2/combos/tiers only, never breaker rules. Rule editing lives on the dedicated `/breaker-rules` page; `/guardrails` keeps live observation and the manual trip/reset cards with a link to it.
+- **Apply semantics are hot-apply.** Rules apply live on every config save — the original restart-based posture (a v1 scope cut: "no new hot-apply channel in this change") was reversed the same day; see §Amendment (2026-10-14, hot-apply). Rule editing lives on the dedicated `/breaker-rules` page; `/guardrails` keeps live observation and the manual trip/reset cards with a link to it.
 
 **Consequences.**
 
@@ -102,5 +104,43 @@ Spec: [docs/design/circuit-breaker-rules-config.md](../design/circuit-breaker-ru
 - (+) A ruleset can be validated against production traffic before it blocks anything, and its inherited values are visible in the same snapshot the gate uses.
 - (+) Recovery scales with the credential matrix (multi-probe, N-of-M) while the default configuration stays byte-for-byte the old single-canary behavior.
 - (−) Two vocabularies now describe one machine: the machine of §2 (edges) and the ruleset of the config page (dispositions). The mapping is one edge ↔ exactly one rule owner, and the code keeps the gate as the single decision point so the two cannot drift into different answers.
-- (−) Rule changes need a restart (as `circuitBreaker.*` always did), so a reconciliation of live state is deferred to the next boot; a disabled rule's already-OPEN breaker is dropped at restore, not at save time.
+- (−) Rule changes apply at the next decision point (hot-apply, see the amendment below) rather than needing a restart — but a cooldown already in progress keeps its original length instead of being recomputed, and the live-state reconciliation now runs at every save, not only at boot.
 - (−) `minCalls`, `successThreshold` and `maxWaitMs` add operator-controlled ways to stall recovery; the clamps bound the unsatisfiable combinations, not the slow-but-legal ones.
+
+## Amendment (2026-10-14, hot-apply) — Breaker Rules Apply Live
+
+Same-day follow-up to the rules amendment: its restart-apply posture was a v1 scope cut ("no new
+hot-apply channel in this change"), not a terminal stance, and it is reversed here. Benchmark:
+Envoy ships **all** circuit-breaking settings runtime-configurable and xDS treats a restart as the
+rare exception; every other editable section of this console (proxy/capture/layer2/combos/tiers)
+already applies live, making the breaker page the sole "save then reboot" outlier. Tuning rules is
+most urgent mid-incident — exactly when a restart is most destructive: in-flight LLM streams die
+and in-memory windows/cooldown timers reset to their persisted snapshots.
+
+**Decision.**
+
+- `CircuitBreakerManager.applyConfig(config, retry)` re-runs `resolveBreakerRules`, swaps the
+  gate's ruleset and pushes config + the new resolved rules into every live breaker (model AND
+  pair) via `CircuitBreaker.applyConfig`. Both save paths (`/api/admin/config` and the raw YAML
+  endpoint) call it right after a successful write. `retry` is consulted only for
+  `hardTripAboveMs`'s default, exactly like boot.
+- **Next-decision-point semantics, no retroactive re-evaluation.** The swap touches no state
+  machine fields: OPEN cooldown timers keep running at their original length, ladder positions,
+  consecutive counts, HALF_OPEN trials and the sliding window are preserved. A live `windowSize`
+  change clamps only as new outcomes push (restore re-fits the persisted slice; live windows
+  drain naturally). Lowering a threshold trips nobody retroactively — the next failure evaluates
+  under the new rules.
+- **Invariant-2 reconciliation moves to save time.** A rule the save disables has its OPEN
+  breakers (`reasonCode`-owned; `breaker.canary`/`breaker.manual` never) reset immediately — the
+  live twin of `restoreState()`'s startup filter. Reconciliation reads `toRecord()`, not
+  `getSnapshot()`, so the check never transitions the machine: an expired OPEN reconciles exactly
+  like its restored twin instead of slipping into HALF_OPEN first.
+- **Out of scope:** `persistence.debounceMs` stays restart-applied (the `BreakerStateStore` binds
+  its debounce at construction); SUSPECT flags survive toggles unchanged (the rules amendment's
+  invariant).
+
+**Consequences.**
+
+- (+) Shadow-mode tuning loops close without restarts, and rule edits land mid-incident without killing streams or resetting observation.
+- (+) Console UX is consistent: every editable section now applies live on save.
+- (−) The ruleset is no longer a boot-only constant: comments and tests that assumed "snapshot at construction" were swept (cleanup contract), and the reconciliation edge (a rule toggled off→on→off within one process lifetime) reconciles at every save — intended.

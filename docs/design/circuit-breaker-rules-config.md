@@ -1,9 +1,11 @@
-# Circuit-Breaker Rules — Full Configurable / Visual Coverage (spec v3.1)
+# Circuit-Breaker Rules — Full Configurable / Visual Coverage (spec v3.2)
 
-Status: implemented — v3.1 (2026-10-14, post-v3): rules moved to the dedicated `/breaker-rules` page
-(user decision); QA findings F1 (SUSPECT suppression) and F2 (short-batch reading) adjudicated into
-the rule semantics below; hard-trip duration resolution and the `minCooldownMs` rename settled per
-shipped behavior. Governing records: ADR-0008 (§Amendment (2026-10-14, rules)) and ADR-0019
+Status: implemented — v3.2 (2026-10-14): apply semantics flipped from restart-required to
+**hot-apply** (invariant 6); v3.1 (2026-10-14, post-v3): rules moved to the dedicated
+`/breaker-rules` page (user decision); QA findings F1 (SUSPECT suppression) and F2 (short-batch
+reading) adjudicated into the rule semantics below; hard-trip duration resolution and the
+`minCooldownMs` rename settled per shipped behavior. Governing records: ADR-0008
+(§Amendment (2026-10-14, rules) + §Amendment (2026-10-14, hot-apply)) and ADR-0019
 (Decision 6). Implementation owner: `@build`.
 
 ## Goal
@@ -198,8 +200,8 @@ causality hidden by prose, and fragile bilingual templates.
 (`frontend/src/pages/BreakerRulesPage.tsx`, nav group "Safety"). `/guardrails` keeps what it always
 was — the observation matrix (live snapshots, cooldowns, reason codes) and the manual trip/reset
 cards — with a single entry link to the rules page; it no longer hosts rule editing. The split is
-cosmetic for the contract: the block A/B/C layout, the `auto | custom` inputs and the summary card
-below are unchanged, they just render one route over.
+cosmetic for the contract: the block A/B/C layout, the `auto | custom` inputs and the
+automatic-tripping header badge are unchanged, they just render one route over.
 
 Three blocks, fixed reading order **A when an error like this happens -> B when counted
 failures trip -> C how a tripped model comes back**. The wireframe is canonical EN (the zh-CN
@@ -229,9 +231,12 @@ rendering lives in `locales/zh-CN.ts` — translated copy never in docs or code)
 |       ("optimistic close" does not apply to manual trips)                 |
 |   active probing [off]   interval [auto: 60s]                             |
 |                                                                          |
-| > shared defaults (each auto's live value + knob name)   ! restart required |
-|                                        [discard]   [save]                 |
+| > shared defaults (each auto's live value + knob name)     applies live        |
 +---------------------------------------------------------------------------+
+   Save/discard are header-pinned (SettingsPage pattern): they sit in the
+   section card's header row next to the shadow switch; the card body is its
+   own scroll region, so they stay reachable from every block. No separate
+   summary card — the header badge carries the state.
 ```
 
 Binding rules:
@@ -259,7 +264,9 @@ Binding rules:
    cards, not rules).
    Every dropdown here — disposition and scope alike — uses `components/Combobox.tsx`, never a
    native `<select>` (AGENTS.md).
-6. Top summary card phrase instead of fractions: **automatic tripping: on / partly off / all off (!) / shadow**.
+6. Automatic-tripping state is a header badge phrase instead of fractions: **automatic tripping:
+   on / partly off / all off (!) / shadow** (no separate summary card — the badge sits in the
+   section card's header row, rule 9).
    Saving a zero-effective-ruleset (the five-switch predicate from Rule semantics) requires a
    confirm dialog naming the consequence ("broken accounts keep receiving traffic").
 7. en-US uses the same table structure (column headers + short labels, not prose templates); all
@@ -269,6 +276,11 @@ Binding rules:
    Each summary row carries a live state badge — block A: non-ignored classes n/6, block B:
    detectors on n/2, block C: the `onCanaryFailure` mode. Save/discard stays outside the
    disclosures.
+9. **Header-pinned save/discard.** The buttons live in the section card's header row (next to
+   the shadow switch); the card body is its own scroll region
+   (SettingsPage/RulesPage pattern), so they stay reachable while editing any block. The page
+   has no separate summary card — the automatic-tripping badge in the same header row carries
+   the five-switch state (rule 6).
 
 ## Rule semantics
 
@@ -292,7 +304,7 @@ Zero-rule state — precise predicate (advisor round 2): **automatic tripping is
 all five `trip.*` switches are off** (quota, auth, rateLimit-hard, consecutiveFailures,
 failureRate). Counting-off is NOT a route to zero: counted 429 failures have no toggle (see UX
 binding rule 2) and still feed the B detectors, so four-off-plus-429 can still trip. The page
-banner and the summary card "all off" both use this five-switch predicate — never "empty input
+banner and the header badge "all off" both use this five-switch predicate — never "empty input
 set" — and name the consequence ("broken accounts keep receiving traffic").
 
 ## Hard invariants (from code review — do not violate)
@@ -305,9 +317,11 @@ set" — and name the consequence ("broken accounts keep receiving traffic").
    `diagnosis.retryAfterSeconds` + `hardTripAboveMs`) are likewise applied at the manager gate — the
    classifier stays rule-agnostic, which is exactly why the prober gap must not be closed by
    feeding it config.
-2. **Closing a rule reconciles state**: reset live breakers matching that rule, and on
-   `restoreState()` (`breaker-state.ts`) drop/skip OPEN records whose `reasonCode` belongs to a
-   disabled rule — otherwise a restart resurrects a 12h quota block nobody asked for.
+2. **Closing a rule reconciles state**: reset live breakers matching that rule at the apply
+   point itself (`applyConfig` — the live twin), and on `restoreState()` (`breaker-state.ts`)
+   drop/skip OPEN records whose `reasonCode` belongs to a disabled rule — otherwise a restart
+   resurrects a 12h quota block nobody asked for. `breaker.canary` / `breaker.manual` never
+   reconcile on either path.
 3. **Never rewrite `category` or `isRetriable`** in any gate. Failover depends on `isRetriable`
    (`orchestrator.ts`), snapshots and L2 capture key off `category`. Rule toggles must not change
    failover behavior — only trip/count decisions.
@@ -322,13 +336,25 @@ set" — and name the consequence ("broken accounts keep receiving traffic").
    threshold would pin the breaker in HALF_OPEN), and `trip.failureRate.minCalls <= windowSize`
    (otherwise the rate rule can never evaluate and dies silently).
    **Effective-config resolution**: per-rule params resolve into one effective
-   `CircuitBreakerConfig` + `rules` set at startup, passed to each `CircuitBreaker` (they snapshot
-   config at construction — this stays consistent with the restart-apply semantics, invariant 6).
+   `CircuitBreakerConfig` + `rules` set, resolved at startup and re-resolved on every hot-apply,
+   passed to each `CircuitBreaker` via `applyConfig` (breaker and gate always share one ruleset
+   reference — invariant 6).
    Note `trip.failureRate.windowSize` sizes the shared `outcomeWindow` ring buffer (also affects the
    `breaker-state.ts` persistence slice) — it is a breaker-config input, not a check-time constant.
-6. Apply semantics: **restart-required**, same as `circuitBreaker.*` today (`handleSaveConfig` only
-   hot-applies proxy/capture/layer2/combos/tiers). UI states "takes effect after restart". No new
-   hot-apply channel in this change.
+   A live `windowSize` change clamps only as new outcomes push (no retroactive re-fit); restore
+   re-fits the persisted slice.
+6. Apply semantics: **hot-apply** (v3.2 — supersedes the original restart-required decision,
+   which was a v1 scope cut, not a terminal stance). Both save paths (`handleSaveConfig` and
+   `handleSaveRawYaml`) call `CircuitBreakerManager.applyConfig(config, retry)`: re-resolve the
+   ruleset, swap it into the gate, push config + rules into every live breaker (model + pair),
+   and reconcile newly disabled rules' OPEN breakers (invariant 2). **Next-decision-point
+   semantics, no retroactive re-evaluation**: OPEN cooldown timers keep running at their
+   original length, ladders, consecutive counts, HALF_OPEN trials and windows are preserved;
+   lowering a threshold trips nobody retroactively — the next failure evaluates under the new
+   rules. Deliberately out of scope: `persistence.debounceMs` stays restart-applied (the state
+   store binds its debounce at boot). Benchmark: Envoy ships all circuit-breaking settings
+   runtime-configurable; xDS treats a restart as the rare exception — a gateway console that
+   edits rules mid-incident must not have to restart.
 
 ## Internal vocabulary refactor (authorized)
 
@@ -389,8 +415,9 @@ and **Envoy outlier detection** (`config.cluster.v3.OutlierDetection`):
   observation page by user decision 2026-10-14 = v3.1) — the rules page implements the
   **Configuration UX contract** verbatim: block A disposition table (error class x disposition
   dropdown x per-disposition parameters), block B two detector rows, block C recovery lines,
-  `auto | custom` input toggles, shadow switch, zero-rules confirm dialog, restart note, human
-  blast-radius Comboboxes, and the automatic-tripping summary card. `/guardrails` keeps observation
+  `auto | custom` input toggles, shadow switch, zero-rules confirm dialog, applies-immediately
+  saved toast (v3.2: the restart note is gone), human
+  blast-radius Comboboxes, and the header automatic-tripping badge. `/guardrails` keeps observation
   (live breaker snapshots) plus the manual trip/reset cards, with an entry link to the rules page.
   `lib/api.ts` mirrors the backend contract by name (`ResolvedBreakerRules`, `BreakerRulesStatus`,
   `AutomaticTrippingStatus`); i18n `en-US` + `zh-CN` carry every label via `t()` (never hardcoded).

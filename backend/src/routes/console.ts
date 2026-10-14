@@ -1062,14 +1062,21 @@ export function registerConsoleRoutes(
     if (!result.success) return reply.status(400).send(result);
     // Hot-applied config sections: proxy policy (module singleton per call),
     // the capture recorder (enabled/toggles take effect immediately, no
-    // gateway restart needed) and custom model combos (registry re-reads the
-    // combo map per request). Everything else still requires a restart.
+    // gateway restart needed), custom model combos (registry re-reads the
+    // combo map per request), tier member lists, and the breaker rules
+    // (manager applyConfig: ruleset swap + invariant-2 reconciliation, spec
+    // invariant 6). Within circuitBreaker only persistence.debounceMs still
+    // needs a restart — the state store binds its debounce at boot.
     initProxyConfig(loadConfig().proxy);
     orchestrator.getCaptureRecorder().applyConfig(loadConfig().requestCapture);
     applyDecisionCaptureConfig(loadConfig().classifier?.layer2); // L2 dataset sampling: single-key gate classifier.layer2.collectEnabled, hot too
     orchestrator.getRegistry().applyCombos(loadConfig().combos);
     orchestrator.getRegistry().applyTierConfigNow(); // tier member lists commit immediately (no restart)
     warnOnEmptyTierPools(); // no residual tier → an empty pool is now possible
+    orchestrator
+      .getRegistry()
+      .getCircuitBreakerManager()
+      .applyConfig(loadConfig().circuitBreaker, loadConfig().retry); // breaker rules hot-apply (next-decision-point semantics)
     return result;
   };
   app.post('/api/admin/config', handleSaveConfig);
@@ -1090,6 +1097,10 @@ export function registerConsoleRoutes(
     orchestrator.getRegistry().applyCombos(loadConfig().combos); // hot-apply combos too
     orchestrator.getRegistry().applyTierConfigNow(); // hot-commit tier member lists too
     warnOnEmptyTierPools(); // no residual tier → an empty pool is now possible
+    orchestrator
+      .getRegistry()
+      .getCircuitBreakerManager()
+      .applyConfig(loadConfig().circuitBreaker, loadConfig().retry); // hot-apply breaker rules too (see handleSaveConfig)
     return result;
   };
   app.post('/api/admin/config/raw', handleSaveRawYaml);

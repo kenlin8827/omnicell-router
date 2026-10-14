@@ -144,14 +144,43 @@ export function resolveBreakerRules(
   };
 }
 
+/**
+ * Resolve the raw `CircuitBreakerConfig` into the breaker's flat, fully-defaulted
+ * config snapshot (constructor + `applyConfig` share this one shape).
+ */
+function resolveBreakerConfig(
+  config?: CircuitBreakerConfig
+): Required<Omit<CircuitBreakerConfig, 'rules' | 'shadow' | 'persistence'>> {
+  return {
+    enabled: config?.enabled ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.enabled,
+    failureThreshold: config?.failureThreshold ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.failureThreshold,
+    slidingWindowSize: config?.slidingWindowSize ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.slidingWindowSize,
+    failureRateThreshold: config?.failureRateThreshold ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.failureRateThreshold,
+    initialCooldownMs: config?.initialCooldownMs ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.initialCooldownMs,
+    maxCooldownMs: config?.maxCooldownMs ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.maxCooldownMs,
+    cooldownMultiplier: config?.cooldownMultiplier ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.cooldownMultiplier,
+    quotaCooldownMs: config?.quotaCooldownMs ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.quotaCooldownMs,
+    halfOpenMaxProbes: config?.halfOpenMaxProbes ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.halfOpenMaxProbes,
+    activeProbing: {
+      enabled: config?.activeProbing?.enabled ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.activeProbing.enabled,
+      intervalMs: config?.activeProbing?.intervalMs ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.activeProbing.intervalMs,
+    },
+    accountAffinity: {
+      cacheTtlMs:
+        config?.accountAffinity?.cacheTtlMs ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.accountAffinity.cacheTtlMs,
+    },
+  };
+}
+
 export class CircuitBreaker {
   public readonly modelId: string;
   public readonly provider: string;
   public readonly tier?: TierLevel;
 
   private config: Required<Omit<CircuitBreakerConfig, 'rules' | 'shadow' | 'persistence'>>;
-  // Effective ruleset (startup-resolved; breakers snapshot it with the config —
-  // restart-apply semantics, spec invariant 5/6).
+  // Effective ruleset (resolved at construction; `applyConfig` swaps it — the
+  // manager's hot-apply hands every breaker its own freshly-resolved object so
+  // breaker and gate can never disagree, spec invariant 5/6).
   private rules: ResolvedBreakerRules;
   private state: CircuitBreakerState = 'CLOSED';
   private consecutiveFailures = 0;
@@ -194,26 +223,26 @@ export class CircuitBreaker {
     // Direct constructions (tests, harnesses) that skip the manager get the
     // defaults, which resolve to exactly today's hardcoded behavior.
     this.rules = rules ?? resolveBreakerRules(config);
-    this.config = {
-      enabled: config?.enabled ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.enabled,
-      failureThreshold: config?.failureThreshold ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.failureThreshold,
-      slidingWindowSize: config?.slidingWindowSize ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.slidingWindowSize,
-      failureRateThreshold: config?.failureRateThreshold ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.failureRateThreshold,
-      initialCooldownMs: config?.initialCooldownMs ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.initialCooldownMs,
-      maxCooldownMs: config?.maxCooldownMs ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.maxCooldownMs,
-      cooldownMultiplier: config?.cooldownMultiplier ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.cooldownMultiplier,
-      quotaCooldownMs: config?.quotaCooldownMs ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.quotaCooldownMs,
-      halfOpenMaxProbes: config?.halfOpenMaxProbes ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.halfOpenMaxProbes,
-      activeProbing: {
-        enabled: config?.activeProbing?.enabled ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.activeProbing.enabled,
-        intervalMs: config?.activeProbing?.intervalMs ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.activeProbing.intervalMs,
-      },
-      accountAffinity: {
-        cacheTtlMs:
-          config?.accountAffinity?.cacheTtlMs ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.accountAffinity.cacheTtlMs,
-      },
-    };
+    this.config = resolveBreakerConfig(config);
     this.currentCooldownMs = this.rules.trip.consecutiveFailures.initialCooldownMs;
+  }
+
+  /**
+   * Hot-apply a new config + resolved ruleset (spec invariant 6, hot-apply).
+   * The swap touches NO state machine fields: the new rules govern from the
+   * next decision point — OPEN cooldown timers keep running at their original
+   * length, ladder positions, consecutive counts, HALF_OPEN trials and the
+   * sliding window are all preserved (a smaller `windowSize` clamps only as
+   * new outcomes push through `recordOutcome`, so nothing is re-evaluated
+   * retroactively). `rules` must be the manager's freshly-resolved object so
+   * breaker and gate share one ruleset reference.
+   */
+  public applyConfig(
+    config: CircuitBreakerConfig | undefined,
+    rules: ResolvedBreakerRules
+  ): void {
+    this.config = resolveBreakerConfig(config);
+    this.rules = rules;
   }
 
   public getState(): CircuitBreakerState {
