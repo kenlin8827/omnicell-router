@@ -56,8 +56,7 @@ export const App: React.FC = () => {
     return <div style={{ minHeight: '100vh' }} />;
   }
   if (authState === 'locked') {
-    // TEMP-SCREENSHOT-PROBE: login gate bypassed for headless visual check — revert.
-    if (!new URLSearchParams(location.search).has('__probe')) return <LoginPage onSuccess={() => setAuthState('ok')} />;
+    return <LoginPage onSuccess={() => setAuthState('ok')} />;
   }
 
   return (
