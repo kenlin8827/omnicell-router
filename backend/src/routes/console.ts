@@ -12,6 +12,7 @@ import { applyConfig as applyDecisionCaptureConfig } from '../flywheel/decision-
 import { initProxyConfig } from '../utils/proxy.js';
 import { getOcrHomeDir } from '../cli/paths.js';
 import { APP_VERSION } from '../version.js';
+import { keyHashPrefix } from '../opencode/credentials/types.js';
 import { ensureCa } from '../forward-proxy/ca.js';
 import { getForwardProxyStatus } from '../forward-proxy/status.js';
 import { RouterConfig } from '../config/types.js';
@@ -741,7 +742,11 @@ export function registerConsoleRoutes(
 
   // 3. Status Aggregation API for Console
   const handleStatus = async () => {
-    const cbSummary = registry.getCircuitBreakerManager().getSummary();
+    const cbManager = registry.getCircuitBreakerManager();
+    // `pairs` is additive (ADR-0019 P3 display side): the model-only counts above
+    // stay exactly as every existing consumer reads them; the guardrails view
+    // renders the credential-scoped layer from this block.
+    const cbSummary = { ...cbManager.getSummary(), pairs: cbManager.getPairSummary() };
     const metrics = orchestrator.getTracker().getStats();
     const clients = await getAllClientStatuses();
     const config = loadConfig();
@@ -751,6 +756,25 @@ export function registerConsoleRoutes(
       apiKey: p.apiKey ? `${p.apiKey.slice(0, 4)}••••${p.apiKey.slice(-4)}` : '',
       rawKeyConfigured: Boolean(p.apiKey),
     }));
+
+    // Runtime credential directory (hash prefixes ONLY — the same display-safe
+    // form pair snapshots already carry): lets the guardrails view name an
+    // orphan breaker's owner (e.g. the inline config-baked chain head, which
+    // lives outside the store roster) instead of a bare #hash.
+    const credentialHashes: { provider: string; keyHashPrefix: string }[] = [];
+    const seenHashes = new Set<string>();
+    const pushHash = (provider: string, keyHashPrefix: string) => {
+      const id = `${provider}#${keyHashPrefix}`;
+      if (seenHashes.has(id)) return;
+      seenHashes.add(id);
+      credentialHashes.push({ provider, keyHashPrefix });
+    };
+    for (const p of config.providers || []) {
+      if (p.apiKey) pushHash(p.name, keyHashPrefix(p.apiKey));
+    }
+    for (const m of registry.getAllModels()) {
+      for (const c of registry.getCredentialChain(m.provider) ?? []) pushHash(m.provider, c.keyHashPrefix);
+    }
 
     return {
       status: 'ok',
@@ -771,6 +795,7 @@ export function registerConsoleRoutes(
       circuitBreakers: cbSummary,
       clients,
       providers: maskedProviders,
+      credentialHashes,
       registeredModelsCount: registry.getAllModels().length,
       // Inbound forward-proxy runtime status (see forward-proxy/status.ts) —
       // the Proxy Access page polls this to show running / failed / pending.

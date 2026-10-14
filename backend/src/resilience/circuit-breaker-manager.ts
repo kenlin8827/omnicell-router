@@ -653,6 +653,25 @@ export class CircuitBreakerManager {
     return out;
   }
 
+  /**
+   * Pair-only summary (every snapshot here carries `keyHashPrefix`). Additive
+   * companion to `getSummary()` — the model-only contract pinned by
+   * resilience-pairs tests stays untouched; the console status payload ships
+   * this as `circuitBreakers.pairs` so the guardrails view can render the
+   * credential-scoped layer without changing any existing consumer's numbers.
+   */
+  public getPairSummary(): CircuitBreakerSummary {
+    const snapshots = this.snapshotsWithPairs().filter(s => s.keyHashPrefix !== undefined);
+    return {
+      object: 'circuit_breaker_summary',
+      total: snapshots.length,
+      healthy: snapshots.filter(s => s.state === 'CLOSED').length,
+      tripped: snapshots.filter(s => s.state === 'OPEN').length,
+      halfOpen: snapshots.filter(s => s.state === 'HALF_OPEN').length,
+      breakers: snapshots,
+    };
+  }
+
   public getSummary(): CircuitBreakerSummary {
     const snapshots = this.getAllSnapshots();
     const healthy = snapshots.filter(s => s.state === 'CLOSED').length;

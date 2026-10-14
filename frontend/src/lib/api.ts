@@ -57,6 +57,11 @@ export interface BreakerInfo {
   remainingCooldownMs: number;
   currentCooldownMs: number;
   halfOpenProbes: number;
+  /**
+   * Present only on pair breakers (model × credential, ADR-0019 P3). Model
+   * rows never carry it — readers split the two layers on `undefined`.
+   */
+  keyHashPrefix?: string;
 }
 
 /**
@@ -107,9 +112,27 @@ export interface GatewayStatusResponse {
     tripped: number;
     halfOpen: number;
     breakers: BreakerInfo[];
+    /**
+     * Pair-only summary (model × credential, ADR-0019 P3 display side).
+     * Additive: older gateways omit it; the model counts above never include
+     * pair breakers.
+     */
+    pairs?: {
+      total: number;
+      healthy: number;
+      tripped: number;
+      halfOpen: number;
+      breakers: BreakerInfo[];
+    };
   };
   clients: ClientStatus[];
   providers: MaskedProviderStatus[];
+  /**
+   * Runtime credential directory (provider + keyHash prefix only). Additive:
+   * older gateways omit it. Lets the guardrails matrix name an orphan breaker
+   * as the inline config-baked chain head instead of a bare #hash.
+   */
+  credentialHashes?: { provider: string; keyHashPrefix: string }[];
   registeredModelsCount: number;
   /** Inbound forward-proxy runtime status (backend forward-proxy/status.ts). */
   forwardProxy?: {

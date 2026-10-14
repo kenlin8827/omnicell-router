@@ -508,6 +508,27 @@ describe('Extras: single-pair degeneracy and snapshot surfaces', () => {
     expect(manager.snapshotsWithPairs().filter((s) => s.keyHashPrefix).map((s) => s.keyHashPrefix).sort()).toEqual(['K1', 'K2']);
   });
 
+  it('getPairSummary reports ONLY pair breakers — the console status `pairs` block', () => {
+    const { manager } = makeManager();
+    manager.registerModel(model('p/x', 'p'));
+    manager.registerModel(model('p/y', 'p'));
+    manager.recordFailureScoped('p/x', diagnosis({ tripScope: 'pair' }), 'p', 'K1');
+    manager.recordFailureScoped('p/y', diagnosis({ tripScope: 'pair' }), 'p', 'K2');
+    manager.recordFailureScoped('p/y', diagnosis({ tripScope: 'pair' }), 'p', 'K3');
+    manager.resetScoped('p/y', 'K2'); // one pair back to CLOSED → split the counts
+
+    const pairs = manager.getPairSummary();
+    expect(pairs.total).toBe(3);
+    expect(pairs.tripped).toBe(2);
+    expect(pairs.healthy).toBe(1);
+    expect(pairs.halfOpen).toBe(0);
+    // Every row carries the credential identity — readers never mix layers.
+    expect(pairs.breakers.every((s) => s.keyHashPrefix !== undefined)).toBe(true);
+    // The model-only summary is untouched by all of this (additive contract).
+    expect(manager.getSummary().total).toBe(2);
+    expect(manager.getSummary().tripped).toBe(0);
+  });
+
   it('reset(modelId) clears the model AND its pairs; resetScoped clears one', () => {
     const { manager } = makeManager();
     manager.registerModel(model('p/x', 'p'));

@@ -20,6 +20,7 @@
     "start": "node backend/dist/index.js",
     "start:bun": "bun --no-env-file backend/src/index.ts",
     "test": "bun --no-env-file scripts/test-isolated.ts",
+    "check:matrix": "bun scripts/check-guardrails-matrix.ts",
     "test:node": "tsx --test backend/tests/**/*.test.ts",
     "test:system": "bun --no-env-file scripts/full-system-test.ts",
     "typecheck": "tsc -p backend --noEmit && tsc -p frontend --noEmit",

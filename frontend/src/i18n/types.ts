@@ -590,16 +590,22 @@ hiddenBadge: string;
     scopeAccount: string;
     scopePair: string;
     tripScopeTip: string;
-    accountPick: string;
-    accountNone: string;
-    accountStoreFailed: string;
-    tripModelPlaceholder: string;
-    tripNeedAccount: string;
-    tripNeedModel: string;
     tripScopeSuccess: string;
     resetScope: string;
     resetScopeSuccess: string;
     resetScopeNone: string;
+    /** ADR-0019 P3 display side: the (model × credential) matrix grid. */
+    singlePoint: string;
+    resetPairSuccess: string;
+    pairSplit: string;
+    pairTrippedSub: string;
+    accountFilter: string;
+    noPairRecords: string;
+    unmatchedHint: string;
+    configKey: string;
+    modelLevel: string;
+    resetModelLevel: string;
+    singleCredHint: string;
   };
   usage: {
     sessionTitle: string;

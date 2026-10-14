@@ -1,8 +1,9 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useOutletContext } from 'react-router-dom';
-import { ShieldAlert, RefreshCw, Search, RotateCcw, Ban, Zap, Loader2 } from 'lucide-react';
+import { ShieldAlert, RefreshCw, Search, RotateCcw, Ban, Zap, Loader2, AlertTriangle } from 'lucide-react';
 import { api, opencodeApi, type GatewayStatusResponse, type BreakerInfo, type BreakerTripScope, type AccountHealth } from '../lib/api';
 import { useModelTest, type ModelTestTarget } from '../lib/useModelTest';
+import { buildPairCards, effectiveState, effectiveCooldown, type PairCard } from '../lib/guardrails-matrix';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { Combobox } from '../components/Combobox';
@@ -38,39 +39,29 @@ export const GuardrailsPage: React.FC = () => {
   const { t } = useI18n();
   const toast = useToast();
   const [modelFilter, setModelFilter] = useState('');
+  // Credential drill-down: narrows the grid to one account's pair cards.
+  const [accountFilter, setAccountFilter] = useState('');
   const [stateFilter, setStateFilter] = useState<StateFilter>('ALL');
   const [breakerPage, setBreakerPage] = useState(1);
   const [breakerPageSize, setBreakerPageSize] = useState(BREAKER_PAGE_SIZE);
   const [isResetting, setIsResetting] = useState(false);
   const [resettingModel, setResettingModel] = useState<string | null>(null);
-  const [tripPanelModel, setTripPanelModel] = useState<string | null>(null);
+  // Trip/reset panel — keyed by the card's own key.
+  const [tripPanelKey, setTripPanelKey] = useState<string | null>(null);
   const [tripReason, setTripReason] = useState('');
-  const [trippingModel, setTrippingModel] = useState<string | null>(null);
-  // ADR-0019 P3 scope-aware trip/reset. 'model' is the legacy whole-model flow and
-  // keeps calling the legacy client method, so its request body stays as today.
+  const [trippingKey, setTrippingKey] = useState<string | null>(null);
+  // Panel scope — 'model' keeps the legacy whole-model request shape.
   const [tripScope, setTripScope] = useState<BreakerTripScope>('model');
-  const [tripAccount, setTripAccount] = useState('');
-  const [tripModelId, setTripModelId] = useState('');
   const [resettingScope, setResettingScope] = useState(false);
-  // Credential picker source: the bound store's masked accounts, fetched once
-  // per page for the first scoped panel open. null = not tried, [] = none.
+  const [resettingPair, setResettingPair] = useState<string | null>(null);
+  // Credential roster source: the bound store's masked accounts, fetched once
+  // per page. null = not tried, [] = none/unreadable.
   const [storeAccounts, setStoreAccounts] = useState<AccountHealth[] | null>(null);
-  const [storeAccountsFailed, setStoreAccountsFailed] = useState(false);
 
   // Localized option rows are rebuilt per language; the code→key table is static.
   const scopeOptions = useMemo(
     () => TRIP_SCOPES.map((s) => ({ value: s, label: t(SCOPE_LABEL_KEY[s]) })),
     [t]
-  );
-  // Only prefixed accounts can own pair breakers (Decision 5 identity is the keyHash).
-  const accountOptions = useMemo(
-    () =>
-      (storeAccounts ?? []).flatMap((a) => {
-        const prefix = a.keyHashPrefix;
-        if (!prefix) return [];
-        return [{ value: prefix, label: `${a.label?.trim() || a.id} #${prefix}`, meta: a.providerId }];
-      }),
-    [storeAccounts]
   );
 
   const loadStoreAccounts = async () => {
@@ -80,60 +71,114 @@ export const GuardrailsPage: React.FC = () => {
       setStoreAccounts(res.store.accounts.flatMap((a) => a.accounts ?? []));
     } catch {
       setStoreAccounts([]);
-      setStoreAccountsFailed(true);
     }
   };
 
-  const openTripPanel = (modelId: string) => {
-    setTripPanelModel(modelId);
+  // The grid is roster-driven (every model × every credential), so the account
+  // list must be present at first paint — fetch on mount (self-guarded).
+  useEffect(() => {
+    loadStoreAccounts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const openTripPanel = (c: PairCard) => {
+    setTripPanelKey(c.key);
     setTripReason('');
-    setTripScope('model');
-    setTripAccount('');
-    setTripModelId(modelId);
+    // Single-credential columns (store chain of 1, or the config-baked key)
+    // route through the no-prefix path — only the model breaker gates them.
+    setTripScope(c.chainLen >= 2 ? 'pair' : 'model');
     loadStoreAccounts();
   };
 
   const closeTripPanel = () => {
-    setTripPanelModel(null);
+    setTripPanelKey(null);
     setTripReason('');
     setTripScope('model');
-    setTripAccount('');
-    setTripModelId('');
-  };
-
-  /** Target guard for the non-legacy scopes (backend 400s a missing account/model). */
-  const scopedTarget = (): { model?: string; account: string } | null => {
-    if (!tripAccount) {
-      toast.error(t('guardrails.tripNeedAccount'));
-      return null;
-    }
-    if (tripScope === 'pair') {
-      const model = tripModelId.trim();
-      if (!model) {
-        toast.error(t('guardrails.tripNeedModel'));
-        return null;
-      }
-      return { model, account: tripAccount };
-    }
-    return { account: tripAccount };
   };
 
   const { testingIds, testResults, testOne, isBusy } = useModelTest();
 
-  const breakers: BreakerInfo[] = status?.circuitBreakers?.breakers || [];
+  // Model layer (every registered model carries a boot-created breaker) plus
+  // the additive pair layer (ADR-0019 P3 display side). Older gateways omit
+  // `pairs` — cards then resolve through the model-mirror/no-record rules.
+  const modelBreakers: BreakerInfo[] = status?.circuitBreakers?.breakers || [];
+  const pairBreakers: BreakerInfo[] = status?.circuitBreakers?.pairs?.breakers || [];
   const openCount = status?.circuitBreakers?.tripped || 0;
   const halfOpenCount = status?.circuitBreakers?.halfOpen || 0;
   const totalBreakers = status?.circuitBreakers?.total || 0;
+  const pairOpen = status?.circuitBreakers?.pairs?.tripped || 0;
+  const pairHalf = status?.circuitBreakers?.pairs?.halfOpen || 0;
+  const pairTotal = status?.circuitBreakers?.pairs?.total || 0;
 
-  const filteredBreakers = breakers
-    .filter(b => stateFilter === 'ALL' || b.state === stateFilter)
-    .filter(b => b.modelId.toLowerCase().includes(modelFilter.toLowerCase()))
-    .sort((a, b) =>
-      STATE_ORDER[a.state] !== STATE_ORDER[b.state]
-        ? STATE_ORDER[a.state] - STATE_ORDER[b.state]
-        : b.remainingCooldownMs - a.remainingCooldownMs
-    );
-  const pagedBreakers = filteredBreakers.slice(
+  // OPEN pair count per model — the "N pairs OPEN" corner badge and the
+  // single-point guard (model still serving on exactly one credential).
+  const openPairsByModel = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const p of pairBreakers) {
+      if (p.state !== 'OPEN') continue;
+      m.set(p.modelId, (m.get(p.modelId) ?? 0) + 1);
+    }
+    return m;
+  }, [pairBreakers]);
+
+  // Masked config keys for the synthetic single-credential column (status
+  // providers are already key-masked server-side).
+  const maskedKeyByProvider = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const p of status?.providers ?? []) if (p.apiKey) m.set(p.name, p.apiKey);
+    return m;
+  }, [status]);
+
+  // The full matrix: models × credentials (join/fold semantics live in the
+  // pure guardrails-matrix module, pinned by scripts/check-guardrails-matrix).
+  const allItems = useMemo<PairCard[]>(
+    () =>
+      buildPairCards(
+        modelBreakers,
+        pairBreakers,
+        storeAccounts ?? [],
+        maskedKeyByProvider,
+        status?.credentialHashes ?? [],
+        { unnamed: t('op.accountUnnamed'), configKey: t('guardrails.configKey') }
+      ),
+    [modelBreakers, pairBreakers, storeAccounts, maskedKeyByProvider, status, t]
+  );
+
+  // Drill-down selector: every store credential that has at least one card.
+  const accountFilterOptions = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const c of allItems) {
+      if (!c.synthetic && c.prefix && !seen.has(c.prefix)) seen.set(c.prefix, `${c.label} #${c.prefix}`);
+    }
+    return [...seen].sort().map(([value, label]) => ({ value, label }));
+  }, [allItems]);
+
+  const filteredItems = useMemo<PairCard[]>(() => {
+    const q = modelFilter.trim().toLowerCase();
+    return allItems
+      .filter((c) => {
+        if (accountFilter !== '' && c.prefix !== accountFilter) return false;
+        if (stateFilter !== 'ALL' && effectiveState(c) !== stateFilter) return false;
+        if (!q) return true;
+        return (
+          c.modelId.toLowerCase().includes(q) ||
+          c.label.toLowerCase().includes(q) ||
+          c.prefix.toLowerCase().includes(q) ||
+          c.provider.toLowerCase().includes(q) ||
+          // Masked fragment only ('sk-t••••abcd') — the raw key never reaches
+          // the browser, so it cannot be a search term by design.
+          (c.maskedKey?.toLowerCase().includes(q) ?? false)
+        );
+      })
+      .sort((a, b) => {
+        const sa = effectiveState(a);
+        const sb = effectiveState(b);
+        return STATE_ORDER[sa] !== STATE_ORDER[sb]
+          ? STATE_ORDER[sa] - STATE_ORDER[sb]
+          : effectiveCooldown(b) - effectiveCooldown(a);
+      });
+  }, [allItems, modelFilter, stateFilter, accountFilter]);
+  const pagedItems = filteredItems.slice(
     (breakerPage - 1) * breakerPageSize,
     breakerPage * breakerPageSize
   );
@@ -150,6 +195,7 @@ export const GuardrailsPage: React.FC = () => {
     }
   };
 
+  /** Model-level reset (also clears the model's pair breakers — today's `reset(modelId)` semantics). */
   const handleResetOne = async (modelId: string) => {
     setResettingModel(modelId);
     try {
@@ -162,39 +208,35 @@ export const GuardrailsPage: React.FC = () => {
     }
   };
 
-  const handleTrip = async (modelId: string, cooldownMs: number) => {
+  /** Trip from a pair card at the panel's chosen scope. The card supplies the
+   *  model and credential targets — the panel only picks the blast radius. */
+  const handleTrip = async (c: PairCard, cooldownMs: number) => {
     const scope = tripScope;
-    // 'model' addresses the row's own model; the finer scopes need a credential
-    // (and a model for 'pair'), validated client-side before the request.
-    const target = scope === 'model' ? { model: modelId } : scopedTarget();
-    if (!target) return;
-    setTrippingModel(modelId);
+    setTrippingKey(c.key);
     const opts = { reason: tripReason.trim() || undefined, cooldownMs };
     try {
       if (scope === 'model') {
-        await api.tripBreaker(modelId, opts);
-        toast.success(t('guardrails.tripSuccess', { model: modelId }));
+        await api.tripBreaker(c.modelId, opts);
+        toast.success(t('guardrails.tripSuccess', { model: c.modelId }));
       } else {
-        const res = await api.tripBreakersScoped(scope, { ...target, ...opts });
+        const res = await api.tripBreakersScoped(scope, { model: c.modelId, account: c.prefix, ...opts });
         toast.success(t('guardrails.tripScopeSuccess', { scope: t(SCOPE_LABEL_KEY[scope]), n: res.affected ?? 0 }));
       }
       closeTripPanel();
     } catch (err: any) {
       toast.error(t('guardrails.tripFailed') + err.message);
     } finally {
-      setTrippingModel(null);
+      setTrippingKey(null);
     }
   };
 
-  /** Scoped reset — the undo door for an account/pair trip made here. */
-  const handleResetScope = async () => {
+  /** Scoped reset from an open panel — the undo door for an account/pair trip. */
+  const handleResetScope = async (c: PairCard) => {
     const scope = tripScope;
     if (scope === 'model') return;
-    const target = scopedTarget();
-    if (!target) return;
     setResettingScope(true);
     try {
-      const res = await api.resetBreakersScoped(scope, target);
+      const res = await api.resetBreakersScoped(scope, { model: c.modelId, account: c.prefix });
       const n = res.resetCount ?? 0;
       if (n > 0) toast.success(t('guardrails.resetScopeSuccess', { n }));
       else toast.info(t('guardrails.resetScopeNone'));
@@ -205,6 +247,28 @@ export const GuardrailsPage: React.FC = () => {
     }
   };
 
+  /**
+   * Recover a pair card. A model-mirror card's truth IS the model breaker
+   * (single-credential chain), so its recover clears that; a pair-sourced
+   * card resets exactly its own (model × credential) breaker.
+   */
+  const handleRecoverPair = async (c: PairCard) => {
+    setResettingPair(c.key);
+    try {
+      if (c.snapSource === 'model-mirror') {
+        await api.resetBreakers(c.modelId);
+        toast.success(t('guardrails.resetOneSuccess', { model: c.modelId }));
+      } else {
+        const res = await api.resetBreakersScoped('pair', { model: c.modelId, account: c.prefix });
+        if ((res.resetCount ?? 0) > 0) toast.success(t('guardrails.resetPairSuccess', { model: c.modelId, account: c.prefix }));
+        else toast.info(t('guardrails.resetScopeNone'));
+      }
+    } catch (err: any) {
+      toast.error(t('guardrails.resetOneFailed') + err.message);
+    } finally {
+      setResettingPair(null);
+    }
+  };
 
   const categoryLabel = (cat?: string) => {
     switch (cat) {
@@ -231,25 +295,273 @@ export const GuardrailsPage: React.FC = () => {
       : t('guardrails.cooldown', { sec: Math.round(ms / 1000) });
 
   /**
-   * Probe target for a breaker row. Registered model ids are qualified
-   * (`providerId/modelId` — both boot-direct and catalog sync build them that
-   * way) while the probe endpoint takes the bare config/catalog model key, so
-   * strip the provider prefix. Rows whose id is not prefixed (hand-written
-   * config models) cannot be mapped to a provider and get no test button.
+   * Probe pinned to THIS card's credential (KeysPage's per-account channel):
+   * accountId selects the store row, the bare model id the pairing. The
+   * synthetic config-key column has no store row to pin — the provider probe
+   * IS that key (there is no chain). An orphan prefix (account gone) gets no
+   * probe: the chain head would answer for a credential nobody selected.
    */
-  const testTargetFor = (b: BreakerInfo): ModelTestTarget | null => {
-    const prefix = `${b.provider}/`;
-    return b.modelId.startsWith(prefix)
-      ? { key: b.modelId, providerId: b.provider, modelId: b.modelId.slice(prefix.length) }
-      : null;
+  const pairTestTarget = (c: PairCard): ModelTestTarget | null => {
+    const provPrefix = `${c.provider}/`;
+    const bare = c.modelId.startsWith(provPrefix) ? c.modelId.slice(provPrefix.length) : c.modelId;
+    if (c.synthetic) return { key: c.key, providerId: c.provider, modelId: bare };
+    if (!c.accountId) return null;
+    return { key: c.key, providerId: c.provider, modelId: bare, accountId: c.accountId };
   };
 
   const stateFilters: { key: StateFilter; label: string }[] = [
-    { key: 'ALL', label: `${t('guardrails.stateAll')} (${breakers.length})` },
-    { key: 'OPEN', label: `${t('guardrails.stateTripped')} (${openCount})` },
-    { key: 'HALF_OPEN', label: `${t('guardrails.stateHalfOpen')} (${halfOpenCount})` },
+    { key: 'ALL', label: `${t('guardrails.stateAll')} (${allItems.length})` },
+    { key: 'OPEN', label: `${t('guardrails.stateTripped')} (${allItems.filter((c) => effectiveState(c) === 'OPEN').length})` },
+    { key: 'HALF_OPEN', label: `${t('guardrails.stateHalfOpen')} (${allItems.filter((c) => effectiveState(c) === 'HALF_OPEN').length})` },
     { key: 'CLOSED', label: t('guardrails.stateHealthy') },
   ];
+
+  const hashBadgeStyle: React.CSSProperties = {
+    fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+    fontSize: '10px',
+    padding: '1px 6px',
+    borderRadius: '8px',
+    background: 'rgba(59, 130, 246, 0.14)',
+    color: '#8fb8f5',
+    border: '1px solid rgba(59, 130, 246, 0.35)',
+    whiteSpace: 'nowrap',
+  };
+
+  /** The one card shape: a (model × credential) pairing, label up front. */
+  const renderPairCard = (c: PairCard) => {
+    const state = effectiveState(c);
+    const isClosed = state === 'CLOSED';
+    const isOpen = state === 'OPEN';
+    const noRecord = !c.snap && !c.modelSnap;
+    const borderColor = isOpen
+      ? 'var(--accent-rose)'
+      : state === 'HALF_OPEN'
+        ? 'var(--accent-amber)'
+        : 'var(--card-border)';
+    const res = testResults[c.key];
+    const pTest = pairTestTarget(c);
+    const testing = pTest && testingIds.has(pTest.key);
+    const pairTripped = !!c.snap && c.snap.state !== 'CLOSED';
+    const modelTripped = !!c.modelSnap && c.modelSnap.state !== 'CLOSED';
+    const openPairs = openPairsByModel.get(c.modelId) ?? 0;
+    const singlePoint = openPairs > 0 && c.chainLen >= 2 && c.chainLen - openPairs <= 1;
+    const statSnap = c.snap ?? c.modelSnap;
+    const cooldown = effectiveCooldown(c);
+    return (
+      <div
+        key={c.key}
+        style={{
+          padding: '12px 14px',
+          borderRadius: '8px',
+          background: 'var(--bg-elev)',
+          border: `1px solid ${borderColor}`,
+          borderLeft: `3px solid ${borderColor}`,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '6px',
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, flexWrap: 'wrap' }}>
+            <span style={{ fontWeight: 600, fontSize: '13px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", overflowWrap: 'anywhere' }}>
+              {c.modelId}
+            </span>
+            {singlePoint && (
+              <span className="badge badge-warning" style={{ whiteSpace: 'nowrap' }}>
+                {t('guardrails.singlePoint')}
+              </span>
+            )}
+            {res && (
+              <span
+                style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '10px', whiteSpace: 'nowrap', color: res.ok ? 'var(--accent-emerald)' : 'var(--accent-rose)' }}
+                title={res.ok ? `${res.latencyMs} ms` : res.error}
+              >
+                {res.ok ? `✓${res.latencyMs}ms` : '✗'}
+              </span>
+            )}
+          </div>
+          <span
+            className={`badge ${isClosed ? 'badge-success' : isOpen ? 'badge-danger' : 'badge-warning'}`}
+            style={{ whiteSpace: 'nowrap', flexShrink: 0 }}
+            title={noRecord ? t('guardrails.noPairRecords') : undefined}
+          >
+            {stateLabel(state)}
+          </span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-dim)', flexWrap: 'wrap' }}>
+          <span style={{ fontWeight: 600, color: 'var(--text)' }} title={c.unmatched ? t('guardrails.unmatchedHint') : undefined}>
+            {c.label}
+          </span>
+          {c.synthetic ? (
+            c.maskedKey ? <span style={hashBadgeStyle}>{c.maskedKey}</span> : null
+          ) : (
+            // Hover reveals the MASKED key only — the raw key never leaves
+            // the password-gated reveal route (ADR-0019 Decision 10).
+            <span style={hashBadgeStyle} title={c.maskedKey ? `keyHash ${c.prefix} · ${c.maskedKey}` : `keyHash ${c.prefix}`}>
+              #{c.prefix}
+            </span>
+          )}
+          {c.suspect && (
+            <span style={{ display: 'inline-flex', color: 'var(--accent-rose)' }} title={t('op.accountSuspectTip')}>
+              <AlertTriangle size={12} />
+            </span>
+          )}
+          {c.disabled && (
+            <span style={{ display: 'inline-flex', color: 'var(--accent-rose)' }} title={c.disabledReason || t('op.accountDisabledTip')}>
+              <Ban size={12} />
+            </span>
+          )}
+          <span>· {c.provider}</span>
+        </div>
+
+        {pairTripped && c.snap?.reason && (
+          <div
+            title={c.snap.reason}
+            style={{
+              fontSize: '11px',
+              color: c.snap.state === 'OPEN' ? 'var(--accent-rose)' : 'var(--accent-amber)',
+              display: '-webkit-box',
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: 'vertical',
+              overflow: 'hidden',
+              lineHeight: 1.5,
+            }}
+          >
+            {t('guardrails.reasonLabel')}: {c.snap.reason}
+          </div>
+        )}
+        {modelTripped && c.modelSnap?.reason && (
+          <div
+            title={c.modelSnap.reason}
+            style={{
+              fontSize: '11px',
+              color: c.modelSnap.state === 'OPEN' ? 'var(--accent-rose)' : 'var(--accent-amber)',
+              display: '-webkit-box',
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: 'vertical',
+              overflow: 'hidden',
+              lineHeight: 1.5,
+            }}
+          >
+            {t('guardrails.modelLevel')}: {c.modelSnap.reason}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-dim)' }}>
+          <span>{t('guardrails.failures', { count: statSnap?.consecutiveFailures ?? 0 })}</span>
+          {cooldown > 0 && <span style={{ color: 'var(--accent-amber)' }}>{formatCooldown(cooldown)}</span>}
+        </div>
+
+        {tripPanelKey === c.key ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', paddingTop: '8px', borderTop: '1px dashed var(--card-border)' }}>
+            {c.chainLen >= 2 ? (
+              <span style={{ display: 'inline-flex' }} title={t('guardrails.tripScopeTip')}>
+                <Combobox
+                  value={tripScope}
+                  onChange={(v) => setTripScope(v === 'account' || v === 'pair' ? v : 'model')}
+                  options={scopeOptions}
+                  style={{ fontSize: '11px', padding: '4px 8px', width: '160px' }}
+                  panelMinWidth={210}
+                />
+              </span>
+            ) : (
+              <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+                {t(SCOPE_LABEL_KEY.model)} · {t('guardrails.singleCredHint')}
+              </div>
+            )}
+            <input
+              type="text"
+              className="input"
+              aria-label={t('guardrails.tripReasonPlaceholder')}
+              style={{ fontSize: '12px', padding: '6px 10px' }}
+              placeholder={t('guardrails.tripReasonPlaceholder')}
+              value={tripReason}
+              onChange={(e) => setTripReason(e.target.value)}
+            />
+            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
+              {TRIP_PRESETS.map((p) => (
+                <button
+                  key={p.label}
+                  className="btn btn-sm"
+                  disabled={trippingKey === c.key}
+                  onClick={() => handleTrip(c, p.ms)}
+                  style={{ fontSize: '11px', padding: '3px 8px', background: 'var(--btn-primary-bg)', color: 'var(--btn-primary-text)', borderColor: 'var(--btn-primary-bg)' }}
+                >
+                  {p.label}
+                </button>
+              ))}
+              {tripScope !== 'model' && (
+                <button
+                  className="btn btn-sm"
+                  disabled={resettingScope || trippingKey === c.key}
+                  onClick={() => handleResetScope(c)}
+                  title={t('guardrails.tripScopeTip')}
+                  style={{ fontSize: '11px', padding: '3px 8px', display: 'flex', alignItems: 'center', gap: 4 }}
+                >
+                  <RotateCcw size={11} />
+                  <span>{resettingScope ? t('guardrails.resetting') : t('guardrails.resetScope')}</span>
+                </button>
+              )}
+              <button className="btn btn-sm" style={{ fontSize: '11px', padding: '3px 8px' }} onClick={closeTripPanel}>
+                {t('guardrails.tripCancel')}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '6px', minHeight: '26px', flexWrap: 'wrap' }}>
+            {!isClosed && statSnap && (
+              <span style={{ fontSize: '11px', color: 'var(--text-dim)', marginRight: 'auto' }}>
+                {categoryLabel((pairTripped ? c.snap : c.modelSnap)?.category)}
+              </span>
+            )}
+            {pTest && (
+              <button
+                className="btn btn-sm"
+                style={{ display: 'flex', alignItems: 'center', gap: '5px', whiteSpace: 'nowrap' }}
+                disabled={isBusy}
+                onClick={() => testOne(pTest)}
+                title={c.synthetic ? undefined : t('op.accountTestTip')}
+              >
+                {testing ? <Loader2 size={12} style={{ animation: 'ocr-spin 0.8s linear infinite' }} /> : <Zap size={12} />}
+                <span>{testing ? t('op.testing') : t('op.testBtn')}</span>
+              </button>
+            )}
+            {pairTripped ? (
+              <button
+                className="btn btn-sm"
+                disabled={resettingPair === c.key}
+                onClick={() => handleRecoverPair(c)}
+                style={{ display: 'flex', alignItems: 'center', gap: '5px' }}
+              >
+                <RotateCcw size={12} />
+                <span>{resettingPair === c.key ? t('guardrails.resetting') : t('guardrails.resetOne')}</span>
+              </button>
+            ) : modelTripped ? (
+              <button
+                className="btn btn-sm"
+                disabled={resettingModel === c.modelId}
+                onClick={() => handleResetOne(c.modelId)}
+                title={t('guardrails.modelLevel')}
+                style={{ display: 'flex', alignItems: 'center', gap: '5px' }}
+              >
+                <RotateCcw size={12} />
+                <span>{resettingModel === c.modelId ? t('guardrails.resetting') : t('guardrails.resetModelLevel')}</span>
+              </button>
+            ) : (
+              <button
+                className="btn btn-sm"
+                onClick={() => openTripPanel(c)}
+                style={{ display: 'flex', alignItems: 'center', gap: '5px' }}
+              >
+                <Ban size={12} />
+                <span>{t('guardrails.tripOne')}</span>
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', height: '100%' }}>
@@ -257,21 +569,28 @@ export const GuardrailsPage: React.FC = () => {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '16px' }}>
         <div className="card">
           <div style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '8px' }}>{t('guardrails.totalBreakers')}</div>
-          <div style={{ fontSize: '28px', fontWeight: 800 }}>{totalBreakers}</div>
-          <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginTop: '4px' }}>{t('guardrails.totalBreakersSub')}</div>
+          <div style={{ fontSize: '28px', fontWeight: 800 }}>{totalBreakers + pairTotal}</div>
+          <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginTop: '4px' }}>
+            {pairTotal > 0 ? t('guardrails.pairSplit', { m: totalBreakers, p: pairTotal }) : t('guardrails.totalBreakersSub')}
+          </div>
         </div>
 
         <div className="card">
           <div style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '8px' }}>{t('guardrails.openBreakers')}</div>
-          <div style={{ fontSize: '28px', fontWeight: 800, color: openCount > 0 ? 'var(--accent-rose)' : 'var(--accent-emerald)' }}>
-            {openCount}
+          <div style={{ fontSize: '28px', fontWeight: 800, color: openCount + pairOpen > 0 ? 'var(--accent-rose)' : 'var(--accent-emerald)' }}>
+            {openCount + pairOpen}
           </div>
           <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginTop: '4px' }}>
-            {openCount > 0 ? t('guardrails.openSubTripped') : t('guardrails.openSubSafe')}
+            {openCount + pairOpen > 0 ? t('guardrails.openSubTripped') : t('guardrails.openSubSafe')}
           </div>
-          {halfOpenCount > 0 && (
+          {pairOpen > 0 && (
+            <div style={{ fontSize: '11px', color: 'var(--accent-rose)', marginTop: '2px' }}>
+              {t('guardrails.pairTrippedSub', { n: pairOpen })}
+            </div>
+          )}
+          {halfOpenCount + pairHalf > 0 && (
             <div style={{ fontSize: '11px', color: 'var(--accent-amber)', marginTop: '2px' }}>
-              {t('guardrails.stateHalfOpen')}: {halfOpenCount}
+              {t('guardrails.stateHalfOpen')}: {halfOpenCount + pairHalf}
             </div>
           )}
         </div>
@@ -292,17 +611,30 @@ export const GuardrailsPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Filter Input */}
-        <div style={{ marginBottom: '12px', position: 'relative' }}>
-          <Search size={14} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)' }} />
-          <input
-            type="text"
-            value={modelFilter}
-            onChange={e => { setModelFilter(e.target.value); setBreakerPage(1); }}
-            placeholder={t('guardrails.searchFilter')}
-            className="input"
-            style={{ paddingLeft: '34px' }}
-          />
+        {/* Filter Input + credential drill-down */}
+        <div style={{ marginBottom: '12px', display: 'flex', gap: '10px', alignItems: 'center' }}>
+          <div style={{ position: 'relative', flex: 1, maxWidth: 420 }}>
+            <Search size={14} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)' }} />
+            <input
+              type="text"
+              value={modelFilter}
+              onChange={e => { setModelFilter(e.target.value); setBreakerPage(1); }}
+              placeholder={t('guardrails.searchFilter')}
+              className="input"
+              style={{ paddingLeft: '34px' }}
+            />
+          </div>
+          {accountFilterOptions.length > 0 && (
+            <Combobox
+              value={accountFilter}
+              onChange={(v) => { setAccountFilter(v); setBreakerPage(1); }}
+              options={accountFilterOptions}
+              placeholder={t('guardrails.accountFilter')}
+              clearable
+              style={{ fontSize: '12px', padding: '7px 12px', minWidth: 190 }}
+              panelMinWidth={280}
+            />
+          )}
         </div>
 
         {/* State Filter Chips */}
@@ -323,214 +655,10 @@ export const GuardrailsPage: React.FC = () => {
           ))}
         </div>
 
-        {/* Matrix Grid */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '12px', flex: 1, minHeight: 0, overflowY: 'auto', alignContent: 'start' }}>
-          {pagedBreakers.length > 0 ? (
-            pagedBreakers.map(b => {
-              const isClosed = b.state === 'CLOSED';
-              const isOpen = b.state === 'OPEN';
-              const testTarget = testTargetFor(b);
-              const res = testResults[b.modelId];
-              const borderColor = isOpen
-                ? 'var(--accent-rose)'
-                : b.state === 'HALF_OPEN'
-                  ? 'var(--accent-amber)'
-                  : 'var(--card-border)';
-              return (
-                <div
-                  key={b.modelId}
-                  style={{
-                    padding: '12px 14px',
-                    borderRadius: '8px',
-                    background: 'var(--bg-elev)',
-                    border: `1px solid ${borderColor}`,
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '6px',
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
-                      <span style={{ fontWeight: 600, fontSize: '13px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", overflowWrap: 'anywhere' }}>
-                        {b.modelId}
-                      </span>
-                      {res && (
-                        <span
-                          style={{
-                            fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
-                            fontSize: '10px',
-                            whiteSpace: 'nowrap',
-                            color: res.ok ? 'var(--accent-emerald)' : 'var(--accent-rose)',
-                          }}
-                          title={res.ok ? `${res.latencyMs} ms` : res.error}
-                        >
-                          {res.ok ? `✓${res.latencyMs}ms` : '✗'}
-                        </span>
-                      )}
-                    </div>
-                    <span
-                      className={`badge ${isClosed ? 'badge-success' : isOpen ? 'badge-danger' : 'badge-warning'}`}
-                      style={{ whiteSpace: 'nowrap', flexShrink: 0 }}
-                    >
-                      {stateLabel(b.state)}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{b.provider}</div>
-
-                  {!isClosed && b.reason && (
-                    <div
-                      title={b.reason}
-                      style={{
-                        fontSize: '11px',
-                        color: isOpen ? 'var(--accent-rose)' : 'var(--accent-amber)',
-                        display: '-webkit-box',
-                        WebkitLineClamp: 2,
-                        WebkitBoxOrient: 'vertical',
-                        overflow: 'hidden',
-                        lineHeight: 1.5,
-                      }}
-                    >
-                      {t('guardrails.reasonLabel')}: {b.reason}
-                    </div>
-                  )}
-
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-dim)' }}>
-                    <span>{t('guardrails.failures', { count: b.consecutiveFailures })}</span>
-                    {b.remainingCooldownMs > 0 && (
-                      <span style={{ color: 'var(--accent-amber)' }}>{formatCooldown(b.remainingCooldownMs)}</span>
-                    )}
-                  </div>
-
-                  {tripPanelModel === b.modelId ? (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', paddingTop: '8px', borderTop: '1px dashed var(--card-border)' }}>
-                      {/* ADR-0019 P3 — scope selector; 'model' keeps today's legacy flow. */}
-                      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
-                        <span style={{ display: 'inline-flex' }} title={t('guardrails.tripScopeTip')}>
-                          <Combobox
-                            value={tripScope}
-                            onChange={(v) => setTripScope(v === 'account' || v === 'pair' ? v : 'model')}
-                            options={scopeOptions}
-                            style={{ fontSize: '11px', padding: '4px 8px', width: '160px' }}
-                            panelMinWidth={210}
-                          />
-                        </span>
-                        {tripScope !== 'model' &&
-                          (accountOptions.length > 0 ? (
-                            <Combobox
-                              value={tripAccount}
-                              onChange={setTripAccount}
-                              options={accountOptions}
-                              placeholder={t('guardrails.accountPick')}
-                              clearable
-                              style={{ fontSize: '11px', padding: '4px 8px', flex: 1, minWidth: 150 }}
-                              panelMinWidth={260}
-                            />
-                          ) : (
-                            <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
-                              {storeAccountsFailed ? t('guardrails.accountStoreFailed') : t('guardrails.accountNone')}
-                            </span>
-                          ))}
-                        {tripScope === 'pair' && (
-                          <input
-                            type="text"
-                            className="input"
-                            aria-label={t('guardrails.tripModelPlaceholder')}
-                            style={{ fontSize: '11px', padding: '4px 8px', flex: 1, minWidth: 130 }}
-                            placeholder={t('guardrails.tripModelPlaceholder')}
-                            value={tripModelId}
-                            onChange={(e) => setTripModelId(e.target.value)}
-                          />
-                        )}
-                      </div>
-                      <input
-                        type="text"
-                        className="input"
-                        aria-label={t('guardrails.tripReasonPlaceholder')}
-                        style={{ fontSize: '12px', padding: '6px 10px' }}
-                        placeholder={t('guardrails.tripReasonPlaceholder')}
-                        value={tripReason}
-                        onChange={e => setTripReason(e.target.value)}
-                      />
-                      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
-                        {TRIP_PRESETS.map(p => (
-                          <button
-                            key={p.label}
-                            className="btn btn-sm"
-                            disabled={trippingModel === b.modelId}
-                            onClick={() => handleTrip(b.modelId, p.ms)}
-                            style={{ fontSize: '11px', padding: '3px 8px', background: 'var(--btn-primary-bg)', color: 'var(--btn-primary-text)', borderColor: 'var(--btn-primary-bg)' }}
-                          >
-                            {p.label}
-                          </button>
-                        ))}
-                        {tripScope !== 'model' && (
-                          <button
-                            className="btn btn-sm"
-                            disabled={resettingScope || trippingModel === b.modelId}
-                            onClick={handleResetScope}
-                            title={t('guardrails.tripScopeTip')}
-                            style={{ fontSize: '11px', padding: '3px 8px', display: 'flex', alignItems: 'center', gap: 4 }}
-                          >
-                            <RotateCcw size={11} />
-                            <span>{resettingScope ? t('guardrails.resetting') : t('guardrails.resetScope')}</span>
-                          </button>
-                        )}
-                        <button
-                          className="btn btn-sm"
-                          style={{ fontSize: '11px', padding: '3px 8px' }}
-                          onClick={closeTripPanel}
-                        >
-                          {t('guardrails.tripCancel')}
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '6px', minHeight: '26px', flexWrap: 'wrap' }}>
-                      {!isClosed && (
-                        <span style={{ fontSize: '11px', color: 'var(--text-dim)', marginRight: 'auto' }}>
-                          {categoryLabel(b.category)}
-                        </span>
-                      )}
-                      {testTarget && (
-                        <button
-                          className="btn btn-sm"
-                          style={{ display: 'flex', alignItems: 'center', gap: '5px', whiteSpace: 'nowrap', flexShrink: 0 }}
-                          disabled={isBusy}
-                          onClick={() => testOne(testTarget)}
-                        >
-                          {testingIds.has(b.modelId) ? (
-                            <Loader2 size={12} style={{ animation: 'ocr-spin 0.8s linear infinite' }} />
-                          ) : (
-                            <Zap size={12} />
-                          )}
-                          <span>{testingIds.has(b.modelId) ? t('op.testing') : t('op.testBtn')}</span>
-                        </button>
-                      )}
-                      {!isClosed ? (
-                        <button
-                          className="btn btn-sm"
-                          disabled={resettingModel === b.modelId}
-                          onClick={() => handleResetOne(b.modelId)}
-                          style={{ display: 'flex', alignItems: 'center', gap: '5px' }}
-                        >
-                          <RotateCcw size={12} />
-                          <span>{resettingModel === b.modelId ? t('guardrails.resetting') : t('guardrails.resetOne')}</span>
-                        </button>
-                      ) : (
-                        <button
-                          className="btn btn-sm"
-                          onClick={() => openTripPanel(b.modelId)}
-                          style={{ display: 'flex', alignItems: 'center', gap: '5px' }}
-                        >
-                          <Ban size={12} />
-                          <span>{t('guardrails.tripOne')}</span>
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })
+        {/* Matrix Grid — every card is one (model × credential) pairing */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '12px', flex: 1, minHeight: 0, overflowY: 'auto', alignContent: 'start' }}>
+          {pagedItems.length > 0 ? (
+            pagedItems.map(renderPairCard)
           ) : (
             <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-dim)', gridColumn: '1 / -1' }}>
               {t('guardrails.noMatch')}
@@ -540,7 +668,7 @@ export const GuardrailsPage: React.FC = () => {
         <Pagination
           page={breakerPage}
           pageSize={breakerPageSize}
-          total={filteredBreakers.length}
+          total={filteredItems.length}
           onChange={setBreakerPage}
           pageSizeOptions={BREAKER_PAGE_SIZES}
           onPageSizeChange={(s) => { setBreakerPageSize(s); setBreakerPage(1); }}
