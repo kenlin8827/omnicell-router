@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useOutletContext } from 'react-router-dom';
-import { ShieldAlert, RefreshCw, Search, RotateCcw, Ban, Zap, Loader2, AlertTriangle } from 'lucide-react';
+import { ShieldAlert, RefreshCw, RotateCcw, Ban, Zap, Loader2, AlertTriangle } from 'lucide-react';
 import { api, opencodeApi, type GatewayStatusResponse, type BreakerInfo, type BreakerTripScope, type AccountHealth } from '../lib/api';
 import { useModelTest, type ModelTestTarget } from '../lib/useModelTest';
 import { buildPairCards, effectiveState, effectiveCooldown, type PairCard } from '../lib/guardrails-matrix';
@@ -38,8 +38,11 @@ export const GuardrailsPage: React.FC = () => {
   const { status } = useOutletContext<{ status: GatewayStatusResponse | null }>();
   const { t } = useI18n();
   const toast = useToast();
-  const [modelFilter, setModelFilter] = useState('');
-  // Credential drill-down: narrows the grid to one account's pair cards.
+  // Exact-scope drill-downs (each Combobox carries its own filter input):
+  // provider narrows the grid to one provider, model to one modelId;
+  // credential narrows to one account's pair cards.
+  const [providerFilter, setProviderFilter] = useState('');
+  const [modelIdFilter, setModelIdFilter] = useState('');
   const [accountFilter, setAccountFilter] = useState('');
   const [stateFilter, setStateFilter] = useState<StateFilter>('ALL');
   const [breakerPage, setBreakerPage] = useState(1);
@@ -144,31 +147,79 @@ export const GuardrailsPage: React.FC = () => {
     [modelBreakers, pairBreakers, storeAccounts, maskedKeyByProvider, status, t]
   );
 
-  // Drill-down selector: every store credential that has at least one card.
-  const accountFilterOptions = useMemo(() => {
-    const seen = new Map<string, string>();
-    for (const c of allItems) {
-      if (!c.synthetic && c.prefix && !seen.has(c.prefix)) seen.set(c.prefix, `${c.label} #${c.prefix}`);
-    }
-    return [...seen].sort().map(([value, label]) => ({ value, label }));
+  // Drill-down selectors: distinct providers / model ids present in the grid.
+  // modelId is globally unique (provider-prefixed), so meta shows card count
+  // for providers and the owning provider for models.
+  const providerFilterOptions = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const c of allItems) counts.set(c.provider, (counts.get(c.provider) ?? 0) + 1);
+    return [...counts]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([value, n]) => ({ value, label: value, meta: String(n) }));
   }, [allItems]);
 
+  const modelFilterOptions = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const c of allItems) {
+      if (providerFilter !== '' && c.provider !== providerFilter) continue;
+      if (!seen.has(c.modelId)) seen.set(c.modelId, c.provider);
+    }
+    return [...seen]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([value, provider]) => ({ value, label: value, meta: provider }));
+  }, [allItems, providerFilter]);
+
+  // Drill-down selector: every store credential that has at least one card,
+  // cascaded by the provider pick. Owners and the masked key ride in `meta` —
+  // Combobox filtering matches meta too, so a 'sk-…abcd' fragment search
+  // still works here. The raw key never reaches the browser, so it cannot be
+  // a search term by design.
+  const accountFilterOptions = useMemo(() => {
+    const seen = new Map<string, { label: string; providers: Set<string>; maskedKey?: string }>();
+    for (const c of allItems) {
+      if (c.synthetic || !c.prefix) continue;
+      let e = seen.get(c.prefix);
+      if (!e) {
+        e = { label: `${c.label} #${c.prefix}`, providers: new Set(), maskedKey: c.maskedKey };
+        seen.set(c.prefix, e);
+      }
+      e.providers.add(c.provider);
+    }
+    return [...seen]
+      .filter(([, v]) => providerFilter === '' || v.providers.has(providerFilter))
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([value, v]) => ({
+        value,
+        label: v.label,
+        meta: [[...v.providers].sort().join('/'), v.maskedKey].filter(Boolean).join(' · '),
+      }));
+  }, [allItems, providerFilter]);
+
+  // Reconcile drill-downs against live data (status re-polls every ~3s): a
+  // vanished provider/model/credential must not linger as an invisible active
+  // filter. Downstream lists are already cascaded by providerFilter, so
+  // clearing staleness upstream re-settles the whole chain on next render.
+  useEffect(() => {
+    if (providerFilter && !providerFilterOptions.some((o) => o.value === providerFilter)) {
+      setProviderFilter('');
+    } else if (modelIdFilter && !modelFilterOptions.some((o) => o.value === modelIdFilter)) {
+      setModelIdFilter('');
+    } else if (accountFilter && !accountFilterOptions.some((o) => o.value === accountFilter)) {
+      setAccountFilter('');
+    } else {
+      return;
+    }
+    setBreakerPage(1);
+  }, [providerFilter, providerFilterOptions, modelIdFilter, modelFilterOptions, accountFilter, accountFilterOptions]);
+
   const filteredItems = useMemo<PairCard[]>(() => {
-    const q = modelFilter.trim().toLowerCase();
     return allItems
       .filter((c) => {
+        if (providerFilter !== '' && c.provider !== providerFilter) return false;
+        if (modelIdFilter !== '' && c.modelId !== modelIdFilter) return false;
         if (accountFilter !== '' && c.prefix !== accountFilter) return false;
         if (stateFilter !== 'ALL' && effectiveState(c) !== stateFilter) return false;
-        if (!q) return true;
-        return (
-          c.modelId.toLowerCase().includes(q) ||
-          c.label.toLowerCase().includes(q) ||
-          c.prefix.toLowerCase().includes(q) ||
-          c.provider.toLowerCase().includes(q) ||
-          // Masked fragment only ('sk-t••••abcd') — the raw key never reaches
-          // the browser, so it cannot be a search term by design.
-          (c.maskedKey?.toLowerCase().includes(q) ?? false)
-        );
+        return true;
       })
       .sort((a, b) => {
         const sa = effectiveState(a);
@@ -177,7 +228,7 @@ export const GuardrailsPage: React.FC = () => {
           ? STATE_ORDER[sa] - STATE_ORDER[sb]
           : effectiveCooldown(b) - effectiveCooldown(a);
       });
-  }, [allItems, modelFilter, stateFilter, accountFilter]);
+  }, [allItems, stateFilter, providerFilter, modelIdFilter, accountFilter]);
   const pagedItems = filteredItems.slice(
     (breakerPage - 1) * breakerPageSize,
     breakerPage * breakerPageSize
@@ -611,19 +662,32 @@ export const GuardrailsPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Filter Input + credential drill-down */}
-        <div style={{ marginBottom: '12px', display: 'flex', gap: '10px', alignItems: 'center' }}>
-          <div style={{ position: 'relative', flex: 1, maxWidth: 420 }}>
-            <Search size={14} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)' }} />
-            <input
-              type="text"
-              value={modelFilter}
-              onChange={e => { setModelFilter(e.target.value); setBreakerPage(1); }}
-              placeholder={t('guardrails.searchFilter')}
-              className="input"
-              style={{ paddingLeft: '34px' }}
+        {/* Filter bar — provider / model / credential drill-downs (filterable Comboboxes) */}
+        <div style={{ marginBottom: '12px', display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+          {providerFilterOptions.length > 0 && (
+            <Combobox
+              value={providerFilter}
+              onChange={(v) => { setProviderFilter(v); setBreakerPage(1); }}
+              options={providerFilterOptions}
+              placeholder={t('guardrails.providerFilter')}
+              clearable
+              forceFilter
+              style={{ fontSize: '12px', padding: '7px 12px', minWidth: 160, width: 'auto', flexShrink: 0 }}
+              panelMinWidth={260}
             />
-          </div>
+          )}
+          {modelFilterOptions.length > 0 && (
+            <Combobox
+              value={modelIdFilter}
+              onChange={(v) => { setModelIdFilter(v); setBreakerPage(1); }}
+              options={modelFilterOptions}
+              placeholder={t('guardrails.modelFilter')}
+              clearable
+              forceFilter
+              style={{ fontSize: '12px', padding: '7px 12px', minWidth: 260, flex: '1 1 260px' }}
+              panelMinWidth={320}
+            />
+          )}
           {accountFilterOptions.length > 0 && (
             <Combobox
               value={accountFilter}
@@ -631,7 +695,8 @@ export const GuardrailsPage: React.FC = () => {
               options={accountFilterOptions}
               placeholder={t('guardrails.accountFilter')}
               clearable
-              style={{ fontSize: '12px', padding: '7px 12px', minWidth: 190 }}
+              forceFilter
+              style={{ fontSize: '12px', padding: '7px 12px', minWidth: 260, flex: '1 1 260px' }}
               panelMinWidth={280}
             />
           )}
