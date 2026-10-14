@@ -51,7 +51,7 @@ export interface CredentialHash {
 
 /** Injected display strings — the module stays i18n-free to stay testable. */
 export interface MatrixLabels {
-  /** Stand-in for an unlabeled store row (KeysPage: 未命名). */
+  /** Stand-in for an unlabeled store row (i18n key: accountUnnamed). */
   unnamed: string;
   /** Display name for the provider's config-baked key. */
   configKey: string;
@@ -121,8 +121,9 @@ export function buildPairCards(
         provider: b.provider,
         prefix,
         accountId: a.id,
-        // KeysPage convention (accountName): unlabeled rows read 未命名 —
-        // never the raw internal accountId, never an invented name.
+        // KeysPage convention (accountName): unlabeled rows read the
+        // accountUnnamed stand-in — never the raw internal accountId,
+        // never an invented name.
         label: a.label?.trim() || labels.unnamed,
         synthetic: false,
         maskedKey: a.maskedKey,
