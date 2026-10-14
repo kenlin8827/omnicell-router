@@ -65,9 +65,12 @@ null when the overlay was empty/absent.
 
 `MB` capitalized to match `requestCapture.maxTotalMB`. `FlywheelConfig` (types.ts:303-308) gains both
 as optional fields; `DEFAULT_CONFIG.flywheel` (config/index.ts:46-55) gains explicit zeros.
-`YAML_FIELD_COMMENTS` additions (Chinese is correct here — user-facing config.yaml docs):
-- `flywheel.retentionDays`: 样本保留天数（0 或不填=不自动清理；启用后启动时+每小时自动删除超龄样本；自动清理不生成备份、删除不可恢复，请谨慎设置）
-- `flywheel.maxFileSizeMB`: 数据集文件大小上限 MB（0 或不填=不限制；超出后从最旧样本开始裁剪；在保留天数清理之后执行；自动清理不生成备份）
+`YAML_FIELD_COMMENTS` additions (English gloss; the Chinese strings themselves live in
+`config/index.ts`, which is the sanctioned location for user-facing config.yaml docs):
+- `flywheel.retentionDays`: sample retention in days (0/unset = no age cleanup; once set, stale
+  samples are deleted at startup and hourly; automatic cleanup makes no backup and is irreversible)
+- `flywheel.maxFileSizeMB`: dataset size cap in MB (0/unset = uncapped; over the cap, oldest
+  samples are trimmed first; runs after the age pass; automatic cleanup makes no backup)
 
 SettingsPage Section 3 (flywheel): two number inputs (pattern of `cache.ttlSeconds`,
 SettingsPage.tsx:212-218) + a "restart required" hint line.

@@ -18,7 +18,7 @@ Before touching environments/bootstrap, credentials, or `opencode.jsonc` provide
 
 Source comments (`//`, `/* */`, JSDoc), identifiers, log messages: English only. Chinese is correct **only** in product content:
 
-- `frontend/src/i18n/locales/zh-CN.ts` (translation table), `docs/adr/zh-CN/**` / `*.zh-CN.md` mirrors. The English doc tree (`docs/adr/*.md`, `README.md`, `DEVELOPMENT.md`) is English-only, including comments inside fenced code blocks.
+- `frontend/src/i18n/locales/zh-CN.ts` (translation table), `docs/adr/zh-CN/**` / `*.zh-CN.md` mirrors. The English doc tree (`docs/adr/*.md`, `docs/design/*.md`, `docs/reviews/*.md`, `README.md`, `DEVELOPMENT.md`) is English-only, including comments inside fenced code blocks — quoted product strings (e.g. `YAML_FIELD_COMMENTS` values) get an English gloss in docs; the CJK originals live only in their sanctioned source files.
 - `backend/src/config/index.ts` `YAML_FIELD_COMMENTS` / `YAML_FILE_HEADER` (Chinese docs written into the user's `config.yaml`).
 - `backend/src/compression/caveman-prompts.ts` (the Chinese prompts are the feature).
 - Copy-paste console snippets (e.g. cURL samples in `pages/ApiKeysPage.tsx`) and test fixture strings.
@@ -29,7 +29,7 @@ Verify (expected hits: `config/index.ts` `*` globs and `ApiKeysPage.tsx` snippet
 
 ```bash
 rg -n '//.*[\x{4e00}-\x{9fff}]|\*.*[\x{4e00}-\x{9fff}]' backend/src frontend/src -g '!zh-CN.ts'
-rg -n '[\x{4e00}-\x{9fff}]' docs/adr/*.md README.md DEVELOPMENT.md AGENTS.md
+rg -n '[\x{4e00}-\x{9fff}]' docs/adr/*.md docs/design/*.md docs/reviews/*.md README.md DEVELOPMENT.md AGENTS.md
 ```
 
 ## Frontend conventions
