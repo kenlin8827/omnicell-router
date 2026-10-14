@@ -402,14 +402,17 @@ export const GuardrailsPage: React.FC = () => {
     { key: 'CLOSED', label: t('guardrails.stateHealthy') },
   ];
 
+  // Key-hash chip follows the outline-badge convention (index.css .badge-*):
+  // transparent fill + theme-accent text/border. Hardcoded dark-theme blues
+  // (rgba fill + #8fb8f5 text) failed contrast on light themes.
   const hashBadgeStyle: React.CSSProperties = {
     fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
     fontSize: '10px',
     padding: '1px 6px',
     borderRadius: '8px',
-    background: 'rgba(59, 130, 246, 0.14)',
-    color: '#8fb8f5',
-    border: '1px solid rgba(59, 130, 246, 0.35)',
+    background: 'transparent',
+    color: 'var(--accent)',
+    border: '1px solid color-mix(in srgb, var(--accent) 45%, transparent)',
     whiteSpace: 'nowrap',
   };
 
@@ -441,7 +444,6 @@ export const GuardrailsPage: React.FC = () => {
           borderRadius: '8px',
           background: 'var(--bg-elev)',
           border: `1px solid ${borderColor}`,
-          borderLeft: `3px solid ${borderColor}`,
           display: 'flex',
           flexDirection: 'column',
           gap: '6px',

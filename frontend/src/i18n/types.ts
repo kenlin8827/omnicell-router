@@ -9,6 +9,13 @@ export interface TranslationDict {
     /** Multi-select panel header × button that closes the panel. */
     close: string;
   };
+  /** Unit labels for the shared DurationInput (components/DurationInput.tsx). */
+  duration: {
+    ms: string;
+    s: string;
+    min: string;
+    h: string;
+  };
   /** Section titles shared by the configuration dialogs (model editor, OCR
    * source editor) so both forms group their fields the same way. */
   form: {
@@ -675,9 +682,9 @@ hiddenBadge: string;
     dispCountIt: string;
     pDuration: string;
     pAbove: string;
-    pTripFloor: string;
-    pCountedFloor: string;
+    pRateHardMid: string;
     pMinDuration: string;
+    countedTip: string;
     pBlast: string;
     rScopeAuto: string;
     rScopePair: string;
@@ -690,30 +697,30 @@ hiddenBadge: string;
     authIgnoreHint: string;
     notRecommended: string;
     clientParamsNote: string;
-    auto: string;
-    custom: string;
-    autoValue: string;
+    editHint: string;
+    revertHint: string;
     never: string;
     bConsecutive: string;
     bFailureRate: string;
-    pThreshold: string;
-    pStart: string;
-    pStep: string;
-    pCap: string;
-    pWindow: string;
-    pMinCalls: string;
-    pRate: string;
-    pTripCooldown: string;
+    bConsAfterCount: string;
+    bConsAfterInitial: string;
+    bConsAfterMult: string;
+    bRateLead: string;
+    bRateAfterWindow: string;
+    bRateAfterRate: string;
+    bRateAfterMin: string;
     minCallsHelp: string;
     cIntro: string;
     cProbes: string;
     cSuccess: string;
     cFailIntro: string;
     cOnFail: string;
+    cFailAfterWait: string;
     canaryBackoff: string;
     canaryInitial: string;
     canaryClose: string;
     canaryManualNote: string;
+    cMultLead: string;
     pRecoveryMult: string;
     cProbing: string;
     pInterval: string;
@@ -729,7 +736,6 @@ hiddenBadge: string;
     zeroTitle: string;
     zeroDesc: string;
     zeroConfirm: string;
-    restartNotice: string;
     defaultsToggle: string;
     defaultsHint: string;
     save: string;

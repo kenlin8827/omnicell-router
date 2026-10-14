@@ -109,7 +109,7 @@ export const ConfirmProvider: React.FC<{ children: React.ReactNode }> = ({ child
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  background: danger ? 'rgba(244, 63, 94, 0.15)' : 'var(--accent-bg)',
+                  background: danger ? 'color-mix(in srgb, var(--accent-rose) 15%, transparent)' : 'var(--accent-bg)',
                   color: danger ? 'var(--accent-rose)' : 'var(--accent)',
                 }}
               >

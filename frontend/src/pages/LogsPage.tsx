@@ -10,7 +10,7 @@ const LEVEL_COLORS: Record<string, string> = {
   trace: 'var(--text-dim)',
   debug: 'var(--text-dim)',
   info: 'var(--accent)',
-  warn: '#f59e0b',
+  warn: 'var(--accent-amber)',
   error: '#ef4444',
   fatal: '#dc2626',
 };

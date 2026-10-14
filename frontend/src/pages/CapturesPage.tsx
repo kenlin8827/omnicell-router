@@ -241,7 +241,7 @@ const CaptureDrawer: React.FC<{
             style={
               hasError
                 ? { background: 'rgba(239,68,68,0.12)', color: '#ef4444' }
-                : { background: 'rgba(16,185,129,0.12)', color: 'var(--accent-emerald)' }
+                : { background: 'color-mix(in srgb, var(--accent-emerald) 12%, transparent)', color: 'var(--accent-emerald)' }
             }
           >
             {hasError ? t('captures.statusError') : t('captures.statusOk')}
@@ -415,9 +415,9 @@ const CaptureDrawer: React.FC<{
                     marginTop: 12,
                     padding: '8px 10px',
                     borderRadius: '6px',
-                    background: 'rgba(245,158,11,0.08)',
-                    border: '1px solid rgba(245,158,11,0.3)',
-                    color: '#f59e0b',
+                    background: 'color-mix(in srgb, var(--accent-amber) 8%, transparent)',
+                    border: '1px solid color-mix(in srgb, var(--accent-amber) 30%, transparent)',
+                    color: 'var(--accent-amber)',
                     fontSize: '11px',
                   }}
                 >
@@ -1080,7 +1080,7 @@ export const CapturesPage: React.FC = () => {
                             s.lastStatus === 'error'
                               ? '0 0 6px rgba(239,68,68,0.5)'
                               : s.lastStatus === 'ok'
-                                ? '0 0 6px rgba(16,185,129,0.4)'
+                                ? '0 0 6px color-mix(in srgb, var(--accent-emerald) 40%, transparent)'
                                 : 'none',
                         }}
                       />
@@ -1223,7 +1223,7 @@ export const CapturesPage: React.FC = () => {
                               alignItems: 'center',
                               gap: '6px',
                               fontSize: '11px',
-                              color: '#f59e0b',
+                              color: 'var(--accent-amber)',
                               padding: '4px 0 8px',
                             }}
                           >
@@ -1295,7 +1295,7 @@ export const CapturesPage: React.FC = () => {
                                   style={
                                     errEvent
                                       ? { background: 'rgba(239,68,68,0.12)', color: '#ef4444' }
-                                      : { background: 'rgba(16,185,129,0.12)', color: 'var(--accent-emerald)' }
+                                      : { background: 'color-mix(in srgb, var(--accent-emerald) 12%, transparent)', color: 'var(--accent-emerald)' }
                                   }
                                 >
                                   {errEvent ? t('captures.statusError') : t('captures.statusOk')}

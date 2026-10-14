@@ -92,8 +92,8 @@ export const YamlPage: React.FC = () => {
             style={{
               padding: '10px 14px',
               borderRadius: '8px',
-              background: notice.type === 'success' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(244, 63, 94, 0.15)',
-              border: `1px solid ${notice.type === 'success' ? 'rgba(16, 185, 129, 0.3)' : 'rgba(244, 63, 94, 0.3)'}`,
+              background: notice.type === 'success' ? 'color-mix(in srgb, var(--accent-emerald) 15%, transparent)' : 'color-mix(in srgb, var(--accent-rose) 15%, transparent)',
+              border: `1px solid ${notice.type === 'success' ? 'color-mix(in srgb, var(--accent-emerald) 30%, transparent)' : 'color-mix(in srgb, var(--accent-rose) 30%, transparent)'}`,
               color: notice.type === 'success' ? 'var(--accent-emerald)' : 'var(--accent-rose)',
               fontSize: '13px',
               display: 'flex',

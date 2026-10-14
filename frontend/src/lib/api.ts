@@ -201,7 +201,7 @@ export interface BreakerRulesConfig {
   recovery?: BreakerRecoveryConfig;
 }
 
-/** Fully-resolved effective ruleset (startup resolution, spec invariant 5): every parameter carries a concrete value. */
+/** Fully-resolved effective ruleset (resolved at startup + on every hot-apply, spec invariant 5): every parameter carries a concrete value. */
 export interface ResolvedBreakerRules {
   shadow: boolean;
   counting: {

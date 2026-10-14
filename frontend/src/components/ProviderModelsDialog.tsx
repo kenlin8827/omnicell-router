@@ -104,7 +104,7 @@ const SOURCE_BADGE: Record<string, { color: string; bg: string; labelKey: string
   opencode: { color: 'var(--accent)', bg: 'var(--accent-bg)', labelKey: 'models.srcOpencode' },
   'models-dev': { color: 'var(--hue-blue)', bg: 'var(--hue-blue-soft)', labelKey: 'models.srcModelsDev' },
   openrouter: { color: 'var(--hue-violet)', bg: 'var(--hue-violet-soft)', labelKey: 'models.srcOpenrouter' },
-  config: { color: '#f59e0b', bg: 'rgba(245,158,11,0.12)', labelKey: 'models.srcConfig' },
+  config: { color: 'var(--accent-amber)', bg: 'color-mix(in srgb, var(--accent-amber) 12%, transparent)', labelKey: 'models.srcConfig' },
   custom: { color: 'var(--hue-emerald)', bg: 'var(--hue-emerald-soft)', labelKey: 'models.srcCustom' },
   mapped: { color: '#c084fc', bg: 'rgba(192,132,252,0.12)', labelKey: 'models.srcMapped' },
   'openai-compatible': { color: 'var(--text-dim)', bg: 'var(--chip-bg)', labelKey: 'models.srcOpenaiCompatible' },

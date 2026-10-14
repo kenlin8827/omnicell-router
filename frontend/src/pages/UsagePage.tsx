@@ -165,7 +165,7 @@ export const UsagePage: React.FC = () => {
                 alignItems: 'center',
                 gap: '6px',
                 padding: '3px 8px',
-                background: 'rgba(59, 130, 246, 0.12)',
+                background: 'transparent',
                 border: '1px solid var(--accent)',
                 color: 'var(--accent)',
                 borderRadius: '6px',

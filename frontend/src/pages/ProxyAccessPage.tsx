@@ -133,7 +133,7 @@ export const ProxyAccessPage: React.FC = () => {
     dotColor = '#f87171';
     statusText = t('forwardProxy.statusError', { error: fpStatus.error });
   } else if (fpStatus?.enabled ?? (fp.enabled ?? false)) {
-    dotColor = '#f59e0b';
+    dotColor = 'var(--accent-amber)';
     statusText = t('forwardProxy.statusRestartPending');
   }
 

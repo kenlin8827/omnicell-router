@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useOutletContext } from 'react-router-dom';
-import { Settings2, AlertTriangle } from 'lucide-react';
+import { Settings2, AlertTriangle, RotateCcw } from 'lucide-react';
 import {
   api,
   type GatewayStatusResponse,
@@ -14,6 +14,8 @@ import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
 import { Combobox } from '../components/Combobox';
+import { DurationInput } from '../components/DurationInput';
+import { InfoTip } from '../components/InfoTip';
 import { Switch } from '../components/Switch';
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -21,7 +23,8 @@ import { Switch } from '../components/Switch';
  * docs/design/circuit-breaker-rules-config.md): three collapsible blocks A/B/C
  * (native <details>, default expanded, live state badge per summary), one
  * disposition table, `auto | custom` on every numeric input, human
- * blast-radius Comboboxes, shadow switch, five-switch summary, restart note.
+ * blast-radius Comboboxes, shadow switch, five-switch header badge, restart
+ * note. No separate summary card — the section header carries it all.
  * Wire truth: `circuitBreaker.rules` carries materialized booleans/enums;
  * an ABSENT numeric key = "auto" (inherit the global knob) — the toggle maps
  * to key presence/absence exactly (undefined → dropped by JSON.stringify).
@@ -44,9 +47,15 @@ const CB_KNOB_DEFAULTS = {
 
 const fmtPlain = (n: number): string => (Number.isInteger(n) ? String(n) : String(parseFloat(n.toFixed(4))));
 
-/** 12h / 5h / 60s / 2s — hours from 1h up, seconds below (wireframe units). */
-const fmtMs = (ms: number): string =>
-  ms >= 3_600_000 ? `${fmtPlain(ms / 3_600_000)}h` : `${fmtPlain(ms / 1000)}s`;
+/** Localized wireframe units (12h / 60s) — hours from 1h up, seconds below. */
+const fmtMs = (ms: number, u: { h: string; s: string }): string =>
+  ms >= 3_600_000 ? `${fmtPlain(ms / 3_600_000)}${u.h}` : `${fmtPlain(ms / 1000)}${u.s}`;
+
+/** Localized short unit labels for fmtMs, from the duration.* i18n namespace. */
+const durationLabels = (t: (path: string, params?: Record<string, string | number>) => string) => ({
+  h: t('duration.h'),
+  s: t('duration.s'),
+});
 
 const asScope = (v: string): BreakerScopeOverride =>
   v === 'pair' || v === 'account' || v === 'model' ? v : 'auto';
@@ -203,90 +212,131 @@ function autoTrippingView(
 type FieldUnit = 'ms' | 'msNever' | 'int' | 'mult' | 'percent';
 
 interface AutoFieldProps {
-  label: string;
-  /** Draft value: undefined = "auto" (absent key on save). */
+  /** Sentence text before the value chip (natural reading order). */
+  label?: string;
+  /** Sentence text after the chip — post-positioned measure words (probes-count, multiplier). */
+  suffix?: string;
+  /** Draft value: undefined = inherited (absent key on save). */
   value: number | undefined;
-  /** Live inherited value shown in "auto" mode (from ResolvedBreakerRules). */
+  /** Live inherited value shown while no override exists (from ResolvedBreakerRules). */
   live: number;
   unit: FieldUnit;
-  /** auto mode tooltip — the inherited global knob's config key. */
+  /** Inherit-state tooltip — the inherited global knob's config key. */
   autoKnob: string;
-  /** custom mode tooltip — this param's own yaml key (raw keys live in tooltips only). */
+  /** Custom-state tooltip — this param's own yaml key (raw keys live in tooltips only). */
   keyName: string;
   onChange: (v: number | undefined) => void;
 }
 
-/** UX binding rule 3: `auto | custom` toggle on every numeric input — auto is
- *  gray text with the live inherited value (knob name in tooltip); custom opens
- *  an input. auto ⇔ absent key. */
-const AutoField: React.FC<AutoFieldProps> = ({ label, value, live, unit, autoKnob, keyName, onChange }) => {
+/** UX binding rule 3: numeric fields render as a fill-in-the-blank sentence — the
+ *  value chip sits in natural word order (label before / measure word after);
+ *  click it to edit inline (Enter/blur commits, Esc exits), and a revert button
+ *  appears while customized. inherited ⇔ absent key. */
+const AutoField: React.FC<AutoFieldProps> = ({ label, suffix, value, live, unit, autoKnob, keyName, onChange }) => {
   const { t } = useI18n();
+  const durLabels = durationLabels(t);
   const custom = value !== undefined;
+  const [editing, setEditing] = useState(false);
   const fmt = (n: number): string => {
-    if (unit === 'ms') return fmtMs(n);
-    if (unit === 'msNever') return n === 0 ? t('breakerRules.never') : fmtMs(n);
+    if (unit === 'ms') return fmtMs(n, durLabels);
+    if (unit === 'msNever') return n === 0 ? t('breakerRules.never') : fmtMs(n, durLabels);
     if (unit === 'percent') return `${fmtPlain(n * 100)}%`;
     return fmtPlain(n);
   };
-  const suffix = unit === 'ms' || unit === 'msNever' ? 'ms' : unit === 'percent' ? '%' : '';
-  const shown = custom ? (unit === 'percent' ? value * 100 : value) : 0;
-  const seg: React.CSSProperties = { fontSize: 12, padding: '6px 12px', borderRadius: 0, border: 'none' };
+
+  if (editing) {
+    const seed = custom ? value : live;
+    const done = () => setEditing(false);
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)' }}>
+        {label ? <span>{label}</span> : null}
+        {unit === 'ms' || unit === 'msNever' ? (
+          /* Shared duration control — canonical ms; the unit dropdown is a typing aid. */
+          <DurationInput
+            value={seed}
+            autoFocus
+            onDone={done}
+            onChange={onChange}
+            ariaLabel={`${label || suffix || unit} (${keyName})`}
+            title={keyName}
+          />
+        ) : (
+          <>
+            <input
+              autoFocus
+              type="number"
+              className="input"
+              min={0}
+              step={unit === 'int' ? 1 : 'any'}
+              aria-label={`${label || suffix || unit} (${keyName})`}
+              title={keyName}
+              defaultValue={String(unit === 'percent' ? seed * 100 : seed)}
+              onBlur={(e) => {
+                const n = Number(e.target.value);
+                if (Number.isFinite(n) && n >= 0) onChange(unit === 'percent' ? Math.min(n, 100) / 100 : n);
+                done();
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') e.currentTarget.blur();
+                else if (e.key === 'Escape') done();
+              }}
+              style={{ width: 96, padding: '6px 10px', fontSize: 13 }}
+            />
+            {unit === 'percent' && <span style={{ color: 'var(--text-dim)' }}>%</span>}
+          </>
+        )}
+        {suffix ? <span>{suffix}</span> : null}
+      </span>
+    );
+  }
+
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)' }}>
-      <span>{label}</span>
-      <span style={{ display: 'inline-flex', border: '1px solid var(--card-border)', borderRadius: 7, overflow: 'hidden' }}>
+      {label ? <span>{label}</span> : null}
+      <button
+        type="button"
+        onClick={() => setEditing(true)}
+        title={
+          custom
+            ? `${keyName} = ${fmt(value)}\n${t('breakerRules.editHint')}`
+            : `${autoKnob} = ${fmt(live)}\n${t('breakerRules.editHint')}`
+        }
+        style={{
+          fontSize: 12,
+          padding: '4px 10px',
+          borderRadius: 7,
+          cursor: 'pointer',
+          fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace",
+          border: custom ? '1px solid var(--accent)' : '1px dashed var(--card-border)',
+          background: custom ? 'var(--btn-primary-bg)' : 'transparent',
+          color: custom ? 'var(--btn-primary-text)' : 'var(--text-muted)',
+        }}
+      >
+        {fmt(custom ? value : live)}
+      </button>
+      {suffix ? <span>{suffix}</span> : null}
+      {custom && (
         <button
           type="button"
-          aria-pressed={!custom}
-          title={autoKnob}
+          title={t('breakerRules.revertHint')}
+          aria-label={t('breakerRules.revertHint')}
           onClick={() => onChange(undefined)}
-          style={{ ...seg, background: custom ? 'transparent' : 'var(--btn-primary-bg)', color: custom ? 'var(--text-dim)' : 'var(--btn-primary-text)' }}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            padding: 2,
+            border: 'none',
+            background: 'transparent',
+            cursor: 'pointer',
+            color: 'var(--text-dim)',
+          }}
         >
-          {t('breakerRules.auto')}
+          <RotateCcw size={11} />
         </button>
-        <button
-          type="button"
-          aria-pressed={custom}
-          title={keyName}
-          onClick={() => onChange(custom ? value : live)}
-          style={{ ...seg, background: custom ? 'var(--btn-primary-bg)' : 'transparent', color: custom ? 'var(--btn-primary-text)' : 'var(--text-dim)' }}
-        >
-          {t('breakerRules.custom')}
-        </button>
-      </span>
-      {custom ? (
-        <>
-          <input
-            type="number"
-            className="input"
-            min={0}
-            step={unit === 'int' ? 1 : 'any'}
-            aria-label={`${label} (${keyName})`}
-            title={keyName}
-            value={String(shown)}
-            onChange={(e) => {
-              const n = Number(e.target.value);
-              if (Number.isFinite(n) && n >= 0) onChange(unit === 'percent' ? Math.min(n, 100) / 100 : n);
-            }}
-            style={{ width: 96, padding: '6px 10px', fontSize: 13 }}
-          />
-          {suffix && <span style={{ color: 'var(--text-dim)' }}>{suffix}</span>}
-        </>
-      ) : (
-        <span style={{ color: 'var(--text-dim)' }} title={autoKnob}>
-          {t('breakerRules.autoValue', { v: fmt(live) })}
-        </span>
       )}
     </span>
   );
 };
-
-/** UX binding rule 4: unavailable parameter cells render "--" (disabled), never an empty box. */
-const Dash: React.FC<{ title?: string }> = ({ title }) => (
-  <span style={{ color: 'var(--text-dim)' }} title={title}>
-    --
-  </span>
-);
 
 const Params: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px 12px' }}>{children}</div>
@@ -320,11 +370,17 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
   const [saving, setSaving] = useState(false);
   // Collapsible A/B/C blocks — default expanded (spec: first-time reading
   // order stays visible); the open flags only drive summary chevron rotation.
-  const [openBlocks, setOpenBlocks] = useState({ a: true, b: true, c: true });
+  const [openBlocks, setOpenBlocks] = useState({ a: true, b: true, c: true, d: true });
   const toggleBlock =
-    (k: 'a' | 'b' | 'c') =>
-    (e: React.SyntheticEvent<HTMLDetailsElement>) =>
-      setOpenBlocks((prev) => ({ ...prev, [k]: e.currentTarget.open }));
+    (k: 'a' | 'b' | 'c' | 'd') =>
+    (e: React.SyntheticEvent<HTMLDetailsElement>) => {
+      // React nulls SyntheticEvent.currentTarget after dispatch, and the
+      // setState updater runs later (batched render) — reading
+      // e.currentTarget inside the updater crashes with null.open.
+      // Capture the flag synchronously here instead.
+      const open = e.currentTarget.open;
+      setOpenBlocks((prev) => ({ ...prev, [k]: open }));
+    };
 
   const applyConfig = (cfg: any) => {
     // api.getConfig is the untyped RouterConfig round-trip (SettingsPage pattern).
@@ -478,14 +534,24 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
   const detectorsOn = (consOn ? 1 : 0) + (rateDetOn ? 1 : 0);
 
   const blast = (family: 'trip', ruleName: string, value: BreakerScopeOverride | undefined) => (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-      <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{t('breakerRules.pBlast')}</span>
+    <span className="input-group">
+      <span style={{ padding: '6px 8px 6px 10px', fontSize: 12, color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center' }}>
+        {t('breakerRules.pBlast')}
+      </span>
       <Combobox
         value={value ?? 'auto'}
         onChange={(v) => rulePatch(family, ruleName, { scope: asScope(v) })}
         options={blastOptions}
         panelMinWidth={230}
-        style={{ fontSize: 12, padding: '6px 10px', width: 170 }}
+        style={{
+          fontSize: 12,
+          padding: '6px 10px',
+          width: 170,
+          border: 'none',
+          background: 'transparent',
+          borderRadius: 0,
+          borderLeft: '1px solid var(--input-border)',
+        }}
       />
     </span>
   );
@@ -519,9 +585,10 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
     fontSize: 12,
   };
 
-  // Collapsible block headers (native <details>/<summary>, RulesPage pattern):
-  // marker hidden, manual chevron rotates right when closed. Badge shows the
-  // block's live state so a collapsed block still answers "what's in here?".
+  // Collapsible block headers (native <details>/<summary>): each block sits in
+  // a .sub-card frame so the A/B/C partition reads at a glance, and the
+  // summary row doubles as that frame's mini card-header (underline divider,
+  // manual chevron rotating right when closed).
   const blockSummary: React.CSSProperties = {
     display: 'flex',
     alignItems: 'center',
@@ -529,7 +596,9 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
     fontSize: 12,
     fontWeight: 700,
     color: 'var(--text-muted)',
-    margin: '16px 0 8px',
+    margin: 0,
+    paddingBottom: 8,
+    borderBottom: '1px solid var(--card-border)',
     cursor: 'pointer',
     userSelect: 'none',
     listStyle: 'none',
@@ -548,60 +617,90 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
     whiteSpace: 'nowrap',
   };
 
+  const durLabels = durationLabels(t);
   const defaultRows: { label: string; value: string; key: string; note?: string }[] = [
     { label: t('breakerRules.kEnabled'), value: cb.enabled === false ? t('breakerRules.stateOff') : t('breakerRules.stateOn'), key: 'circuitBreaker.enabled' },
     { label: t('breakerRules.kFailureThreshold'), value: fmtPlain(cb.failureThreshold ?? CB_KNOB_DEFAULTS.failureThreshold), key: 'circuitBreaker.failureThreshold' },
     { label: t('breakerRules.kWindow'), value: fmtPlain(cb.slidingWindowSize ?? CB_KNOB_DEFAULTS.slidingWindowSize), key: 'circuitBreaker.slidingWindowSize' },
     { label: t('breakerRules.kRate'), value: `${fmtPlain((cb.failureRateThreshold ?? CB_KNOB_DEFAULTS.failureRateThreshold) * 100)}%`, key: 'circuitBreaker.failureRateThreshold' },
-    { label: t('breakerRules.kInitial'), value: fmtMs(cb.initialCooldownMs ?? CB_KNOB_DEFAULTS.initialCooldownMs), key: 'circuitBreaker.initialCooldownMs' },
-    { label: t('breakerRules.kMax'), value: fmtMs(cb.maxCooldownMs ?? CB_KNOB_DEFAULTS.maxCooldownMs), key: 'circuitBreaker.maxCooldownMs' },
+    { label: t('breakerRules.kInitial'), value: fmtMs(cb.initialCooldownMs ?? CB_KNOB_DEFAULTS.initialCooldownMs, durLabels), key: 'circuitBreaker.initialCooldownMs' },
+    { label: t('breakerRules.kMax'), value: fmtMs(cb.maxCooldownMs ?? CB_KNOB_DEFAULTS.maxCooldownMs, durLabels), key: 'circuitBreaker.maxCooldownMs' },
     { label: t('breakerRules.kMult'), value: `x${fmtPlain(cb.cooldownMultiplier ?? CB_KNOB_DEFAULTS.cooldownMultiplier)}`, key: 'circuitBreaker.cooldownMultiplier' },
-    { label: t('breakerRules.kQuota'), value: fmtMs(cb.quotaCooldownMs ?? CB_KNOB_DEFAULTS.quotaCooldownMs), key: 'circuitBreaker.quotaCooldownMs' },
+    { label: t('breakerRules.kQuota'), value: fmtMs(cb.quotaCooldownMs ?? CB_KNOB_DEFAULTS.quotaCooldownMs, durLabels), key: 'circuitBreaker.quotaCooldownMs' },
     { label: t('breakerRules.kProbes'), value: fmtPlain(cb.halfOpenMaxProbes ?? CB_KNOB_DEFAULTS.halfOpenMaxProbes), key: 'circuitBreaker.halfOpenMaxProbes' },
     { label: t('breakerRules.kProbing'), value: cb.activeProbing?.enabled ? t('breakerRules.stateOn') : t('breakerRules.stateOff'), key: 'circuitBreaker.activeProbing.enabled' },
-    { label: t('breakerRules.kInterval'), value: fmtMs(cb.activeProbing?.intervalMs ?? 60_000), key: 'circuitBreaker.activeProbing.intervalMs' },
-    { label: t('breakerRules.kAffinity'), value: fmtMs(cb.accountAffinity?.cacheTtlMs ?? 300_000), key: 'circuitBreaker.accountAffinity.cacheTtlMs' },
-    { label: t('breakerRules.kDebounce'), value: fmtMs(cb.persistence?.debounceMs ?? 1000), key: 'circuitBreaker.persistence.debounceMs' },
-    { label: t('breakerRules.kHardBoundary'), value: fmtMs(retryBoundary ?? 2000), key: 'retry.inplace.maxRateLimitWaitMs', note: t('breakerRules.kHardBoundaryNote') },
+    { label: t('breakerRules.kInterval'), value: fmtMs(cb.activeProbing?.intervalMs ?? 60_000, durLabels), key: 'circuitBreaker.activeProbing.intervalMs' },
+    { label: t('breakerRules.kAffinity'), value: fmtMs(cb.accountAffinity?.cacheTtlMs ?? 300_000, durLabels), key: 'circuitBreaker.accountAffinity.cacheTtlMs' },
+    { label: t('breakerRules.kDebounce'), value: fmtMs(cb.persistence?.debounceMs ?? 1000, durLabels), key: 'circuitBreaker.persistence.debounceMs' },
+    { label: t('breakerRules.kHardBoundary'), value: fmtMs(retryBoundary ?? 2000, durLabels), key: 'retry.inplace.maxRateLimitWaitMs', note: t('breakerRules.kHardBoundaryNote') },
   ];
 
   return (
-    <div className="card">
-      <div className="card-header">
+    /* SettingsPage/RulesPage pattern: the header stays pinned (flexShrink 0)
+       and the body is the card's own scroll region, so save/discard are
+       reachable while editing ANY block. .card padding is zeroed and
+       re-applied per region (header / scroll body). */
+    <div
+      className="card"
+      style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', padding: 0 }}
+    >
+      <div
+        className="card-header"
+        style={{
+          flexShrink: 0,
+          flexWrap: 'wrap',
+          gap: 10,
+          marginBottom: 0,
+          padding: '14px 20px',
+          borderBottom: '1px solid var(--card-border)',
+        }}
+      >
         <div className="card-title">
           <Settings2 size={18} color="var(--accent)" />
           <span>{t('breakerRules.sectionTitle')}</span>
           <span
             className="badge"
-            style={{ color: view.color, borderColor: 'var(--card-border)', whiteSpace: 'nowrap' }}
+            style={{ color: view.color, borderColor: 'var(--card-border)', whiteSpace: 'nowrap', fontSize: 12, padding: '3px 10px' }}
             title={t('breakerRules.autoTripping')}
           >
             {t('breakerRules.autoTripping')}: {view.text}
           </span>
         </div>
-        {/* Shadow switch — top-right of the section (UX contract). */}
-        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: 'pointer' }}>
-          <span>{t('breakerRules.shadowLabel')}</span>
-          <Switch
-            checked={cb.shadow ?? false}
-            onChange={(v) => patch((prev) => ({ ...prev, shadow: v }))}
-            ariaLabel={t('breakerRules.shadowLabel')}
-          />
-        </label>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          {/* Shadow switch — top-right of the section (UX contract). */}
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: 'pointer' }}>
+            <span>{t('breakerRules.shadowLabel')}</span>
+            <Switch
+              checked={cb.shadow ?? false}
+              onChange={(v) => patch((prev) => ({ ...prev, shadow: v }))}
+              ariaLabel={t('breakerRules.shadowLabel')}
+            />
+          </label>
+          <InfoTip text={t('breakerRules.shadowFoot')} />
+          {/* Save/discard — header-pinned (SettingsPage pattern); the zero-rules
+              confirm dialog still guards the save. Rules hot-apply on save
+              (spec invariant 6), so no restart note — the savedToast says so. */}
+          <span style={{ display: 'flex', gap: 8 }}>
+            <button className="btn" onClick={handleDiscard} disabled={saving}>
+              {t('breakerRules.discard')}
+            </button>
+            <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
+              {saving ? t('breakerRules.saving') : t('breakerRules.save')}
+            </button>
+          </span>
+        </span>
       </div>
 
-      <div style={{ fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.5, marginBottom: 6 }}>
-        {t('breakerRules.shadowFoot')}
-      </div>
-
-      {/* ── Block A: disposition table — collapsible, default expanded ── */}
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '8px 20px 20px' }}>
+      {/* ── Block A: disposition table — .sub-card frame + collapsible ── */}
+      <div className="sub-card" style={{ marginBottom: 12 }}>
       <details open={openBlocks.a} onToggle={toggleBlock('a')}>
         <summary style={blockSummary}>
           <span aria-hidden style={{ ...blockChev, transform: openBlocks.a ? undefined : 'rotate(-90deg)' }}>▼</span>
           {t('breakerRules.blockA')}
           <span className="badge" style={blockBadge}>{t('breakerRules.badgeHandled', { n: handled })}</span>
         </summary>
-        <div style={{ overflowX: 'auto' }}>
+        <div style={{ overflowX: 'auto', marginTop: 10 }}>
         <table style={{ width: '100%', minWidth: 680, borderCollapse: 'collapse', tableLayout: 'fixed' }}>
           <colgroup>
             <col span={1} style={{ width: 170 }} />
@@ -637,9 +736,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
                     />
                     {blast('trip', 'quota', trip.quota?.scope)}
                   </Params>
-                ) : (
-                  <Dash />
-                )}
+                ) : null}
               </td>
             </tr>
             <tr>
@@ -697,39 +794,43 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
                 <Params>
                   {/* "count only" never evaluates the hard/counted boundary — not consumed (UX rule 1). */}
                   {rateHard ? (
-                    <AutoField
-                      label={t('breakerRules.pAbove')}
-                      value={trip.rateLimit?.hardTripAboveMs}
-                      live={resolved.trip.rateLimit.hardTripAboveMs}
-                      unit="ms"
-                      autoKnob="retry.inplace.maxRateLimitWaitMs"
-                      keyName="circuitBreaker.rules.trip.rateLimit.hardTripAboveMs"
-                      onChange={(v) => rulePatch('trip', 'rateLimit', { hardTripAboveMs: v })}
-                    />
+                    <>
+                      <AutoField
+                        label={t('breakerRules.pAbove')}
+                        suffix={t('breakerRules.pRateHardMid')}
+                        value={trip.rateLimit?.hardTripAboveMs}
+                        live={resolved.trip.rateLimit.hardTripAboveMs}
+                        unit="ms"
+                        autoKnob="retry.inplace.maxRateLimitWaitMs"
+                        keyName="circuitBreaker.rules.trip.rateLimit.hardTripAboveMs"
+                        onChange={(v) => rulePatch('trip', 'rateLimit', { hardTripAboveMs: v })}
+                      />
+                      <AutoField
+                        value={trip.rateLimit?.minCooldownMs}
+                        live={resolved.trip.rateLimit.minCooldownMs}
+                        unit="ms"
+                        autoKnob="circuitBreaker.rules.trip.rateLimit.minCooldownMs (default 1000)"
+                        keyName="circuitBreaker.rules.trip.rateLimit.minCooldownMs"
+                        onChange={(v) => rulePatch('trip', 'rateLimit', { minCooldownMs: v })}
+                      />
+                    </>
                   ) : (
-                    <Dash title={t('breakerRules.pAbove')} />
+                    <>
+                      <AutoField
+                        label={t('breakerRules.pMinDuration')}
+                        value={counting.rateLimitErrors?.minCooldownMs}
+                        live={resolved.counting.rateLimitErrors.minCooldownMs}
+                        unit="ms"
+                        autoKnob="min(60s, circuitBreaker.initialCooldownMs)"
+                        keyName="circuitBreaker.rules.counting.rateLimitErrors.minCooldownMs"
+                        onChange={(v) => rulePatch('counting', 'rateLimitErrors', { minCooldownMs: v })}
+                      />
+                      <InfoTip text={t('breakerRules.countedTip')} />
+                    </>
                   )}
-                  <AutoField
-                    label={t('breakerRules.pTripFloor')}
-                    value={trip.rateLimit?.minCooldownMs}
-                    live={resolved.trip.rateLimit.minCooldownMs}
-                    unit="ms"
-                    autoKnob="circuitBreaker.rules.trip.rateLimit.minCooldownMs (default 1000)"
-                    keyName="circuitBreaker.rules.trip.rateLimit.minCooldownMs"
-                    onChange={(v) => rulePatch('trip', 'rateLimit', { minCooldownMs: v })}
-                  />
-                  <AutoField
-                    label={t('breakerRules.pCountedFloor')}
-                    value={counting.rateLimitErrors?.minCooldownMs}
-                    live={resolved.counting.rateLimitErrors.minCooldownMs}
-                    unit="ms"
-                    autoKnob="min(60s, circuitBreaker.initialCooldownMs)"
-                    keyName="circuitBreaker.rules.counting.rateLimitErrors.minCooldownMs"
-                    onChange={(v) => rulePatch('counting', 'rateLimitErrors', { minCooldownMs: v })}
-                  />
                   {/* The hard-trip scope is consumed only by the hard disposition; counted
                       429s ride the block-B detectors' scopes. */}
-                  {rateHard ? blast('trip', 'rateLimit', trip.rateLimit?.scope) : <Dash title={t('breakerRules.pBlast')} />}
+                  {rateHard ? blast('trip', 'rateLimit', trip.rateLimit?.scope) : null}
                 </Params>
               </td>
             </tr>
@@ -752,10 +853,9 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
                       keyName="circuitBreaker.rules.counting.serverErrors.minCooldownMs"
                       onChange={(v) => rulePatch('counting', 'serverErrors', { minCooldownMs: v })}
                     />
+                    <InfoTip text={t('breakerRules.countedTip')} />
                   </Params>
-                ) : (
-                  <Dash />
-                )}
+                ) : null}
               </td>
             </tr>
             <tr>
@@ -777,10 +877,9 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
                       keyName="circuitBreaker.rules.counting.unknownErrors.minCooldownMs"
                       onChange={(v) => rulePatch('counting', 'unknownErrors', { minCooldownMs: v })}
                     />
+                    <InfoTip text={t('breakerRules.countedTip')} />
                   </Params>
-                ) : (
-                  <Dash />
-                )}
+                ) : null}
               </td>
             </tr>
             <tr>
@@ -799,24 +898,24 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
                       {t('breakerRules.notRecommended')}
                     </span>
                   </Params>
-                ) : (
-                  <Dash />
-                )}
+                ) : null}
               </td>
             </tr>
           </tbody>
         </table>
       </div>
       </details>
+      </div>
 
-      {/* ── Block B: two independent statistical detectors — collapsible ── */}
+      {/* ── Block B: two independent statistical detectors — .sub-card frame ── */}
+      <div className="sub-card" style={{ marginBottom: 12 }}>
       <details open={openBlocks.b} onToggle={toggleBlock('b')}>
         <summary style={blockSummary}>
           <span aria-hidden style={{ ...blockChev, transform: openBlocks.b ? undefined : 'rotate(-90deg)' }}>▼</span>
           {t('breakerRules.blockB')}
           <span className="badge" style={blockBadge}>{t('breakerRules.badgeDetectors', { n: detectorsOn })}</span>
         </summary>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px 12px' }}>
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', fontWeight: 600 }}>
             <input
@@ -830,7 +929,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
           {consOn ? (
             <Params>
               <AutoField
-                label={t('breakerRules.pThreshold')}
+                suffix={t('breakerRules.bConsAfterCount')}
                 value={trip.consecutiveFailures?.threshold}
                 live={resolved.trip.consecutiveFailures.threshold}
                 unit="int"
@@ -839,7 +938,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
                 onChange={(v) => rulePatch('trip', 'consecutiveFailures', { threshold: v })}
               />
               <AutoField
-                label={t('breakerRules.pStart')}
+                suffix={t('breakerRules.bConsAfterInitial')}
                 value={trip.consecutiveFailures?.initialCooldownMs}
                 live={resolved.trip.consecutiveFailures.initialCooldownMs}
                 unit="ms"
@@ -848,7 +947,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
                 onChange={(v) => rulePatch('trip', 'consecutiveFailures', { initialCooldownMs: v })}
               />
               <AutoField
-                label={t('breakerRules.pStep')}
+                suffix={t('breakerRules.bConsAfterMult')}
                 value={trip.consecutiveFailures?.cooldownMultiplier}
                 live={resolved.trip.consecutiveFailures.cooldownMultiplier}
                 unit="mult"
@@ -857,7 +956,6 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
                 onChange={(v) => rulePatch('trip', 'consecutiveFailures', { cooldownMultiplier: v })}
               />
               <AutoField
-                label={t('breakerRules.pCap')}
                 value={trip.consecutiveFailures?.maxCooldownMs}
                 live={resolved.trip.consecutiveFailures.maxCooldownMs}
                 unit="ms"
@@ -867,9 +965,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
               />
               {blast('trip', 'consecutiveFailures', trip.consecutiveFailures?.scope)}
             </Params>
-          ) : (
-            <Dash />
-          )}
+          ) : null}
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px 12px' }}>
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', fontWeight: 600 }}>
@@ -884,7 +980,8 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
           {rateDetOn ? (
             <Params>
               <AutoField
-                label={t('breakerRules.pWindow')}
+                label={t('breakerRules.bRateLead')}
+                suffix={t('breakerRules.bRateAfterWindow')}
                 value={trip.failureRate?.windowSize}
                 live={resolved.trip.failureRate.windowSize}
                 unit="int"
@@ -893,16 +990,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
                 onChange={(v) => rulePatch('trip', 'failureRate', { windowSize: v })}
               />
               <AutoField
-                label={t('breakerRules.pMinCalls')}
-                value={trip.failureRate?.minCalls}
-                live={resolved.trip.failureRate.minCalls}
-                unit="int"
-                autoKnob="circuitBreaker.rules.trip.failureRate.windowSize (default = window)"
-                keyName="circuitBreaker.rules.trip.failureRate.minCalls"
-                onChange={(v) => rulePatch('trip', 'failureRate', { minCalls: v })}
-              />
-              <AutoField
-                label={t('breakerRules.pRate')}
+                suffix={t('breakerRules.bRateAfterRate')}
                 value={trip.failureRate?.failureRate}
                 live={resolved.trip.failureRate.failureRate}
                 unit="percent"
@@ -911,7 +999,15 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
                 onChange={(v) => rulePatch('trip', 'failureRate', { failureRate: v })}
               />
               <AutoField
-                label={t('breakerRules.pTripCooldown')}
+                suffix={t('breakerRules.bRateAfterMin')}
+                value={trip.failureRate?.minCalls}
+                live={resolved.trip.failureRate.minCalls}
+                unit="int"
+                autoKnob="circuitBreaker.rules.trip.failureRate.windowSize (default = window)"
+                keyName="circuitBreaker.rules.trip.failureRate.minCalls"
+                onChange={(v) => rulePatch('trip', 'failureRate', { minCalls: v })}
+              />
+              <AutoField
                 value={trip.failureRate?.cooldownMs}
                 live={resolved.trip.failureRate.cooldownMs}
                 unit="ms"
@@ -920,16 +1016,16 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
                 onChange={(v) => rulePatch('trip', 'failureRate', { cooldownMs: v })}
               />
               {blast('trip', 'failureRate', trip.failureRate?.scope)}
-              <span style={{ fontSize: 10.5, color: 'var(--text-dim)' }}>{t('breakerRules.minCallsHelp')}</span>
+              <InfoTip text={t('breakerRules.minCallsHelp')} />
             </Params>
-          ) : (
-            <Dash />
-          )}
+          ) : null}
         </div>
       </div>
       </details>
+      </div>
 
-      {/* ── Block C: recovery — collapsible ── */}
+      {/* ── Block C: recovery — .sub-card frame ── */}
+      <div className="sub-card" style={{ marginBottom: 12 }}>
       <details open={openBlocks.c} onToggle={toggleBlock('c')}>
         <summary style={blockSummary}>
           <span aria-hidden style={{ ...blockChev, transform: openBlocks.c ? undefined : 'rotate(-90deg)' }}>▼</span>
@@ -938,11 +1034,11 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
             {t('breakerRules.cOnFail')} · {t(CANARY_R_KEY[rec.onCanaryFailure ?? 'backoff'])}
           </span>
         </summary>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px 12px', fontSize: 12, color: 'var(--text-muted)' }}>
           <span>{t('breakerRules.cIntro')}</span>
           <AutoField
-            label={t('breakerRules.cProbes')}
+            suffix={t('breakerRules.cProbes')}
             value={halfOpen.maxProbes}
             live={resolved.recovery.halfOpen.maxProbes}
             unit="int"
@@ -951,7 +1047,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
             onChange={(v) => rulePatch('recovery', 'halfOpen', { maxProbes: v })}
           />
           <AutoField
-            label={t('breakerRules.cSuccess')}
+            suffix={t('breakerRules.cSuccess')}
             value={halfOpen.successThreshold}
             live={resolved.recovery.halfOpen.successThreshold}
             unit="int"
@@ -963,7 +1059,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px 12px', fontSize: 12, color: 'var(--text-muted)' }}>
           <span>{t('breakerRules.cFailIntro')}</span>
           <AutoField
-            label=""
+            suffix={t('breakerRules.cFailAfterWait')}
             value={halfOpen.maxWaitMs}
             live={resolved.recovery.halfOpen.maxWaitMs}
             unit="msNever"
@@ -971,7 +1067,6 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
             keyName="circuitBreaker.rules.recovery.halfOpen.maxWaitMs"
             onChange={(v) => rulePatch('recovery', 'halfOpen', { maxWaitMs: v })}
           />
-          <span>{t('breakerRules.cOnFail')}</span>
           <Combobox
             value={rec.onCanaryFailure ?? 'backoff'}
             onChange={(v) =>
@@ -988,7 +1083,8 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
           />
           {rec.onCanaryFailure === 'backoff' ? (
             <AutoField
-              label={t('breakerRules.pRecoveryMult')}
+              label={t('breakerRules.cMultLead')}
+              suffix={t('breakerRules.pRecoveryMult')}
               value={rec.cooldownMultiplier}
               live={resolved.recovery.cooldownMultiplier}
               unit="mult"
@@ -1003,10 +1099,9 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
                 )
               }
             />
-          ) : (
-            <Dash />
-          )}
-          <span style={{ fontSize: 10.5, color: 'var(--text-dim)' }}>{t('breakerRules.canaryManualNote')}</span>
+          ) : rec.onCanaryFailure === 'close' ? (
+            <InfoTip text={t('breakerRules.canaryManualNote')} />
+          ) : null}
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px 12px', fontSize: 12 }}>
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
@@ -1029,10 +1124,23 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
         </div>
       </div>
       </details>
+      </div>
 
-      {/* ── shared defaults + restart note + save row ── */}
-      <details style={{ marginTop: 16 }}>
-        <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--text-muted)', userSelect: 'none' }}>
+      {/* ── shared defaults (open by default, collapsible) — same sub-card frame ── */}
+      <div className="sub-card">
+      <details open={openBlocks.d} onToggle={toggleBlock('d')}>
+        <summary
+          style={{
+            cursor: 'pointer',
+            fontSize: 12,
+            color: 'var(--text-muted)',
+            userSelect: 'none',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+          }}
+        >
+          <span aria-hidden style={{ ...blockChev, transform: openBlocks.d ? undefined : 'rotate(-90deg)' }}>▼</span>
           {t('breakerRules.defaultsToggle')}
         </summary>
         <div style={{ fontSize: 11, color: 'var(--text-dim)', margin: '6px 0' }}>{t('breakerRules.defaultsHint')}</div>
@@ -1058,20 +1166,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
           ))}
         </div>
       </details>
-
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginTop: 14, flexWrap: 'wrap' }}>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--accent-amber)' }}>
-          <AlertTriangle size={12} />
-          {t('breakerRules.restartNotice')}
-        </span>
-        <span style={{ display: 'flex', gap: 8 }}>
-          <button className="btn" onClick={handleDiscard} disabled={saving}>
-            {t('breakerRules.discard')}
-          </button>
-          <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
-            {saving ? t('breakerRules.saving') : t('breakerRules.save')}
-          </button>
-        </span>
+      </div>
       </div>
     </div>
   );
@@ -1079,26 +1174,13 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
 
 export const BreakerRulesPage: React.FC = () => {
   // Effective ruleset + banner state arrive on the Layout's 3s status poll.
+  // No separate summary card: the section card's header badge carries the
+  // automatic-tripping state (UX rule 6); saves hot-apply, no restart note.
   const { status } = useOutletContext<{ status: GatewayStatusResponse | null }>();
-  const { t } = useI18n();
   const live = status?.circuitBreakers?.rules;
-  const view = autoTrippingView(t, live);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', height: '100%' }}>
-      {/* Automatic-tripping summary (UX rule 6 — backend five-switch state). */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '16px' }}>
-        <div className="card">
-          <div style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '8px' }}>
-            {t('breakerRules.autoTripping')}
-          </div>
-          <div style={{ fontSize: '28px', fontWeight: 800, color: view.color }}>{view.text}</div>
-          <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginTop: '4px' }}>
-            {t('breakerRules.restartNotice')}
-          </div>
-        </div>
-      </div>
-
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       <BreakerRulesSection live={live} />
     </div>
   );

@@ -479,7 +479,7 @@ const AccountRow: React.FC<AccountRowProps> = ({
           <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
             {account.disabled && (
               <span
-                style={{ ...badgeStyle('var(--accent-rose)', 'rgba(244,63,94,0.12)'), display: 'inline-flex', alignItems: 'center', gap: 3 }}
+                style={{ ...badgeStyle('var(--accent-rose)', 'color-mix(in srgb, var(--accent-rose) 12%, transparent)'), display: 'inline-flex', alignItems: 'center', gap: 3 }}
                 title={account.disabledReason ? `${t('op.accountDisabledTip')} · ${account.disabledReason}` : t('op.accountDisabledTip')}
               >
                 <PowerOff size={9} />
@@ -498,7 +498,7 @@ const AccountRow: React.FC<AccountRowProps> = ({
             )}
             {remaining > 0 && (
               <span
-                style={{ ...badgeStyle('var(--accent-amber)', 'rgba(245,158,11,0.12)'), display: 'inline-flex', alignItems: 'center', gap: 3 }}
+                style={{ ...badgeStyle('var(--accent-amber)', 'color-mix(in srgb, var(--accent-amber) 12%, transparent)'), display: 'inline-flex', alignItems: 'center', gap: 3 }}
                 title={t('op.accountOpenPairs', { n: account.openPairs })}
               >
                 <Clock size={9} />
@@ -1365,13 +1365,13 @@ export const KeysPage: React.FC = () => {
         <p style={{ color: 'var(--text-muted)', fontSize: 12, margin: '0 0 16px' }}>{t('op.desc', { sink: sinkLabel })}</p>
 
         {notice && (
-          <div style={{ padding: '10px 14px', borderRadius: '8px', background: noticeTone === 'err' ? 'rgba(244,63,94,0.12)' : 'rgba(16, 185, 129, 0.15)', border: `1px solid ${noticeTone === 'err' ? 'rgba(244,63,94,0.3)' : 'rgba(16, 185, 129, 0.3)'}`, color: noticeTone === 'err' ? 'var(--accent-rose)' : 'var(--accent-emerald)', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+          <div style={{ padding: '10px 14px', borderRadius: '8px', background: noticeTone === 'err' ? 'color-mix(in srgb, var(--accent-rose) 12%, transparent)' : 'color-mix(in srgb, var(--accent-emerald) 15%, transparent)', border: `1px solid ${noticeTone === 'err' ? 'color-mix(in srgb, var(--accent-rose) 30%, transparent)' : 'color-mix(in srgb, var(--accent-emerald) 30%, transparent)'}`, color: noticeTone === 'err' ? 'var(--accent-rose)' : 'var(--accent-emerald)', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
             {noticeTone === 'err' ? <AlertTriangle size={16} /> : <Check size={16} />}
             <span>{notice}</span>
           </div>
         )}
         {ocError && (
-          <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'rgba(244,63,94,0.12)', border: '1px solid rgba(244,63,94,0.3)', color: 'var(--accent-rose)', fontSize: '13px', marginBottom: '16px' }}>
+          <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'color-mix(in srgb, var(--accent-rose) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-rose) 30%, transparent)', color: 'var(--accent-rose)', fontSize: '13px', marginBottom: '16px' }}>
             {ocError}
           </div>
         )}
@@ -1404,7 +1404,7 @@ export const KeysPage: React.FC = () => {
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               {storeStatus.degradedCode ? (
                 <span
-                  style={{ ...badgeStyle('var(--accent-amber)', 'rgba(245,158,11,0.12)'), display: 'inline-flex', alignItems: 'center', gap: 3 }}
+                  style={{ ...badgeStyle('var(--accent-amber)', 'color-mix(in srgb, var(--accent-amber) 12%, transparent)'), display: 'inline-flex', alignItems: 'center', gap: 3 }}
                   title={storeStatus.detail}
                 >
                   <AlertTriangle size={9} />
@@ -1505,7 +1505,7 @@ export const KeysPage: React.FC = () => {
                 <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                   {p.custom && <span style={badgeStyle('var(--accent)', 'var(--accent-bg)')}>{t('op.badgeCustom')}</span>}
                   {p.auth.inline && (
-                    <span style={{ ...badgeStyle('#f59e0b', 'rgba(245,158,11,0.12)'), display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                    <span style={{ ...badgeStyle('var(--accent-amber)', 'color-mix(in srgb, var(--accent-amber) 12%, transparent)'), display: 'inline-flex', alignItems: 'center', gap: 3 }}>
                       <Key size={9} />
                       {t('op.badgeInline')}
                     </span>

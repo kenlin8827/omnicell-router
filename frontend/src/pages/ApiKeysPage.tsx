@@ -14,8 +14,8 @@ import {
   Pencil,
   List,
   BarChart3,
-  Info,
 } from 'lucide-react';
+import { InfoTip } from '../components/InfoTip';
 import { api, type ApiKeyItem, type ApiKeyModelAccess } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useConfirm } from '../components/ConfirmProvider';
@@ -160,8 +160,8 @@ const ModelAccessPicker: React.FC<{
                     display: 'inline-flex',
                     alignItems: 'center',
                     gap: '5px',
-                    background: id.includes('*') ? 'rgba(139, 92, 246, 0.12)' : 'var(--input-bg)',
-                    border: id.includes('*') ? '1px solid rgba(139, 92, 246, 0.3)' : '1px solid var(--card-border)',
+                    background: id.includes('*') ? 'color-mix(in srgb, var(--accent-violet) 12%, transparent)' : 'var(--input-bg)',
+                    border: id.includes('*') ? '1px solid color-mix(in srgb, var(--accent-violet) 30%, transparent)' : '1px solid var(--card-border)',
                     color: id.includes('*') ? 'var(--accent-violet)' : 'var(--text-main)',
                     fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace",
                     fontSize: '11px',
@@ -771,8 +771,8 @@ export const ApiKeysPage: React.FC = () => {
                           style={{
                             background: item.modelAccess
                               ? item.modelAccess.mode === 'allow'
-                                ? 'rgba(16, 185, 129, 0.12)'
-                                : 'rgba(245, 158, 11, 0.12)'
+                                ? 'color-mix(in srgb, var(--accent-emerald) 12%, transparent)'
+                                : 'color-mix(in srgb, var(--accent-amber) 12%, transparent)'
                               : 'var(--chip-bg)',
                             color: item.modelAccess
                               ? item.modelAccess.mode === 'allow'
@@ -798,8 +798,8 @@ export const ApiKeysPage: React.FC = () => {
                           style={{
                             cursor: 'pointer',
                             border: '1px solid',
-                            borderColor: item.enabled ? 'rgba(16, 185, 129, 0.3)' : 'var(--card-border)',
-                            background: item.enabled ? 'rgba(16, 185, 129, 0.15)' : 'var(--surface-hover)',
+                            borderColor: item.enabled ? 'color-mix(in srgb, var(--accent-emerald) 30%, transparent)' : 'var(--card-border)',
+                            background: item.enabled ? 'color-mix(in srgb, var(--accent-emerald) 15%, transparent)' : 'var(--surface-hover)',
                             color: item.enabled ? 'var(--accent-emerald)' : 'var(--text-dim)',
                           }}
                           title={item.enabled ? t('apiKeys.enableTooltip') : t('apiKeys.disableTooltip')}
@@ -960,8 +960,8 @@ export const ApiKeysPage: React.FC = () => {
               color: 'var(--text-dim)',
               padding: '8px 12px',
               borderRadius: '6px',
-              background: 'rgba(245, 158, 11, 0.08)',
-              border: '1px solid rgba(245, 158, 11, 0.25)',
+              background: 'color-mix(in srgb, var(--accent-amber) 8%, transparent)',
+              border: '1px solid color-mix(in srgb, var(--accent-amber) 25%, transparent)',
               lineHeight: 1.5,
             }}
           >
@@ -1303,7 +1303,7 @@ curl http://127.0.0.1:3000/v1/systemone \\
             </div>
 
             {errorMessage && (
-              <div style={{ padding: '8px 12px', borderRadius: '6px', background: 'rgba(244, 63, 94, 0.15)', border: '1px solid rgba(244, 63, 94, 0.3)', color: 'var(--accent-rose)', fontSize: '12px' }}>
+              <div style={{ padding: '8px 12px', borderRadius: '6px', background: 'color-mix(in srgb, var(--accent-rose) 15%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-rose) 30%, transparent)', color: 'var(--accent-rose)', fontSize: '12px' }}>
                 {errorMessage}
               </div>
             )}
@@ -1425,9 +1425,9 @@ curl http://127.0.0.1:3000/v1/systemone \\
                   marginLeft: '8px',
                   background: viewModels
                     ? viewModels.mode === 'allow'
-                      ? 'rgba(16, 185, 129, 0.12)'
+                      ? 'color-mix(in srgb, var(--accent-emerald) 12%, transparent)'
                       : viewModels.mode === 'deny'
-                        ? 'rgba(245, 158, 11, 0.12)'
+                        ? 'color-mix(in srgb, var(--accent-amber) 12%, transparent)'
                         : 'var(--chip-bg)'
                     : 'var(--chip-bg)',
                   color: 'var(--text-muted)',
@@ -1441,9 +1441,7 @@ curl http://127.0.0.1:3000/v1/systemone \\
                     : t('apiKeys.accessDenyBadge', { n: viewModels.policyModels.length })}
               </span>
               {/* Test-call hint lives on hover only — zero floor space. */}
-              <span title={t('apiKeys.modelsTestHint')} style={{ flexShrink: 0, cursor: 'help', display: 'inline-flex', verticalAlign: '-2px' }}>
-                <Info size={13} color="var(--text-dim)" />
-              </span>
+              <InfoTip text={t('apiKeys.modelsTestHint')} />
             </p>
 
             {viewLoading || !viewModels ? (
@@ -1699,7 +1697,7 @@ curl http://127.0.0.1:3000/v1/systemone \\
                   width: '32px',
                   height: '32px',
                   borderRadius: '8px',
-                  background: 'rgba(16, 185, 129, 0.15)',
+                  background: 'color-mix(in srgb, var(--accent-emerald) 15%, transparent)',
                   color: 'var(--accent-emerald)',
                   display: 'flex',
                   alignItems: 'center',
@@ -1724,7 +1722,7 @@ curl http://127.0.0.1:3000/v1/systemone \\
                 justifyContent: 'space-between',
                 gap: '8px',
                 background: 'var(--well-bg)',
-                border: '1px solid rgba(16, 185, 129, 0.3)',
+                border: '1px solid color-mix(in srgb, var(--accent-emerald) 30%, transparent)',
                 padding: '10px 14px',
                 borderRadius: '8px',
                 fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace",

@@ -446,9 +446,9 @@ export const FlywheelPage: React.FC = () => {
                 fontWeight: 700,
                 padding: '2px 9px',
                 borderRadius: 999,
-                background: 'rgba(245,158,11,0.14)',
-                border: '1px solid rgba(245,158,11,0.35)',
-                color: '#f59e0b',
+                background: 'color-mix(in srgb, var(--accent-amber) 14%, transparent)',
+                border: '1px solid color-mix(in srgb, var(--accent-amber) 35%, transparent)',
+                color: 'var(--accent-amber)',
               }}
             >
               <Loader2 size={11} style={spin} />
@@ -716,7 +716,7 @@ export const FlywheelPage: React.FC = () => {
         </div>
 
         {isTraining && (
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, color: '#f59e0b' }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, color: 'var(--accent-amber)' }}>
             <Loader2 size={13} style={spin} />
             {t('flywheel.lockedWhileTraining')}
           </div>
@@ -820,7 +820,7 @@ export const FlywheelPage: React.FC = () => {
                     {row.decision.targetTier} → {row.execution.tierUsed}
                   </span>
                   {row.execution.fallbackOccurred && (
-                    <span style={{ fontSize: 10, color: '#f59e0b', whiteSpace: 'nowrap' }} title={row.execution.fallbackReason || ''}>
+                    <span style={{ fontSize: 10, color: 'var(--accent-amber)', whiteSpace: 'nowrap' }} title={row.execution.fallbackReason || ''}>
                       {t('flywheel.fallbackBadge')}
                     </span>
                   )}
@@ -915,7 +915,7 @@ export const FlywheelPage: React.FC = () => {
                     {row.execution.fallbackReason && (
                       <div style={{ gridColumn: '1 / -1' }}>
                         <div style={{ color: 'var(--text-dim)' }}>{t('flywheel.fieldFallbackReason')}</div>
-                        <div style={{ wordBreak: 'break-word', color: '#f59e0b' }}>{row.execution.fallbackReason}</div>
+                        <div style={{ wordBreak: 'break-word', color: 'var(--accent-amber)' }}>{row.execution.fallbackReason}</div>
                       </div>
                     )}
                     <div style={{ gridColumn: '1 / -1' }}>

@@ -776,7 +776,7 @@ export const EnvironmentsPage: React.FC = () => {
                   return (
                     <tr
                       key={e.name}
-                      style={{ background: e.running ? 'rgba(16, 185, 129, 0.06)' : undefined }}
+                      style={{ background: e.running ? 'color-mix(in srgb, var(--accent-emerald) 6%, transparent)' : undefined }}
                     >
                       <td style={TD_STYLE}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', rowGap: 4 }}>
@@ -1074,7 +1074,7 @@ export const EnvironmentsPage: React.FC = () => {
                 padding: '10px 12px',
                 borderRadius: 8,
                 border: '1px solid var(--accent-rose)',
-                background: 'rgba(244, 63, 94, 0.10)',
+                background: 'color-mix(in srgb, var(--accent-rose) 10%, transparent)',
                 color: 'var(--accent-rose)',
                 fontSize: 12,
                 lineHeight: 1.6,

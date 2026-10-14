@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { CloudDownload, Plus, RefreshCw, Trash2, Lock, LockOpen, Globe, Eye, EyeOff, ChevronDown, ChevronRight, Database, Info, Braces, Copy, Pencil, Check, Loader2 } from 'lucide-react';
+import { CloudDownload, Plus, RefreshCw, Trash2, Lock, LockOpen, Globe, Eye, EyeOff, ChevronDown, ChevronRight, Database, Braces, Copy, Pencil, Check, Loader2 } from 'lucide-react';
+import { InfoTip } from '../components/InfoTip';
 import {
   opencodeApi,
   type CatalogSourceView,
@@ -1453,13 +1454,10 @@ export const CatalogSourcesPage: React.FC = () => {
         {t('catalogPage.subtitleMerge')}
       </div>
 
-      <div
-        style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px', fontSize: '12px', flexWrap: 'wrap' }}
-        title={t('catalogPage.syncIntervalHint')}
-      >
-        <span style={{ color: 'var(--text-dim)', display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'help' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px', fontSize: '12px', flexWrap: 'wrap' }}>
+        <span style={{ color: 'var(--text-dim)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
           {t('catalogPage.syncIntervalLabel')}
-          <Info size={12} color="var(--text-dim)" />
+          <InfoTip text={t('catalogPage.syncIntervalHint')} />
         </span>
         <Combobox
           value={String(syncIntervalMs)}

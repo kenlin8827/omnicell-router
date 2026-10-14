@@ -19,8 +19,8 @@ export interface ToastApi {
 const ToastContext = createContext<ToastApi | null>(null);
 
 const TYPE_STYLE: Record<ToastType, { color: string; bg: string; Icon: typeof Info }> = {
-  success: { color: 'var(--accent-emerald)', bg: 'rgba(16, 185, 129, 0.15)', Icon: CheckCircle },
-  error: { color: 'var(--accent-rose)', bg: 'rgba(244, 63, 94, 0.15)', Icon: AlertTriangle },
+  success: { color: 'var(--accent-emerald)', bg: 'color-mix(in srgb, var(--accent-emerald) 15%, transparent)', Icon: CheckCircle },
+  error: { color: 'var(--accent-rose)', bg: 'color-mix(in srgb, var(--accent-rose) 15%, transparent)', Icon: AlertTriangle },
   info: { color: 'var(--accent)', bg: 'var(--accent-bg)', Icon: Info },
 };
 

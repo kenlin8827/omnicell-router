@@ -706,11 +706,65 @@ td, th {
   box-shadow: var(--focus-ring);
 }
 
+/* Framed input-group (components/DurationInput.tsx + BreakerRulesPage blast()):
+   a label and one control share a single frame, which carries focus. */
+.input-group {
+  display: inline-flex;
+  align-items: stretch;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: all 0.15s ease;
+}
+.input-group:focus-within {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+/* Inner fields must not raise their own focus rings — the group frame speaks
+   for both. */
+.input-group .input:focus {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+/* InfoTip (components/InfoTip.tsx): hover / focus / click shows the portaled
+   tooltip bubble — replaces native `title` attribute hints. */
+.info-tip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: help;
+  border-radius: 5px;
+  vertical-align: -2px;
+}
+.info-tip:hover,
+.info-tip:focus-visible {
+  color: var(--accent);
+  outline: none;
+}
+
 /* Edge injects native reveal/autofill glyphs into password inputs; they are
    un-themeable, so hide them and let the browser icon layer stay invisible. */
 input::-ms-reveal,
 input::-ms-clear {
   display: none;
+}
+
+/* Native number spinners are cramped platform glyphs that break the input's
+   rounded styling (worst on Windows/Edge); values are typed or arrow-keyed
+   anyway, so hide the buttons globally. */
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type='number'] {
+  -moz-appearance: textfield;
+  appearance: textfield;
 }
 
 /* Masking for "type=text fields that must look like passwords" (re-auth gates:

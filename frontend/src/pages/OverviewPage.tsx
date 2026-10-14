@@ -74,7 +74,7 @@ export const OverviewPage: React.FC = () => {
             padding: '10px 16px',
             borderRadius: '8px',
             border: '1px solid var(--accent-rose)',
-            background: 'rgba(244, 63, 94, 0.08)',
+            background: 'color-mix(in srgb, var(--accent-rose) 8%, transparent)',
             color: 'var(--accent-rose)',
             fontSize: '13px',
           }}

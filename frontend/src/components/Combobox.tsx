@@ -334,6 +334,7 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
         createPortal(
           <div
             ref={panelRef}
+            data-combobox-panel=""
             onKeyDown={onPanelKeyDown}
             style={{
               position: 'fixed',

@@ -1088,8 +1088,8 @@ export const RulesPage: React.FC = () => {
                   style={{
                     padding: '12px',
                     borderRadius: '8px',
-                    background: 'rgba(244, 63, 94, 0.12)',
-                    border: '1px solid rgba(244, 63, 94, 0.3)',
+                    background: 'color-mix(in srgb, var(--accent-rose) 12%, transparent)',
+                    border: '1px solid color-mix(in srgb, var(--accent-rose) 30%, transparent)',
                     color: 'var(--accent-rose)',
                     fontSize: '12px',
                     display: 'flex',
@@ -1290,7 +1290,7 @@ export const RulesPage: React.FC = () => {
                           userSelect: 'none',
                           padding: '6px 10px',
                           borderRadius: 6,
-                          background: 'rgba(244, 63, 94, 0.06)',
+                          background: 'color-mix(in srgb, var(--accent-rose) 6%, transparent)',
                           display: 'flex',
                           alignItems: 'center',
                           gap: 6,
@@ -1311,8 +1311,8 @@ export const RulesPage: React.FC = () => {
                               fontSize: '10px',
                               padding: '2px 4px 2px 7px',
                               borderRadius: 6,
-                              background: 'rgba(244, 63, 94, 0.12)',
-                              border: '1px solid rgba(244, 63, 94, 0.3)',
+                              background: 'color-mix(in srgb, var(--accent-rose) 12%, transparent)',
+                              border: '1px solid color-mix(in srgb, var(--accent-rose) 30%, transparent)',
                               color: 'var(--accent-rose)',
                               fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                               cursor: 'pointer',
@@ -1329,7 +1329,7 @@ export const RulesPage: React.FC = () => {
                                 lineHeight: 1,
                                 padding: '0 3px',
                                 borderRadius: 4,
-                                background: 'rgba(244, 63, 94, 0.25)',
+                                background: 'color-mix(in srgb, var(--accent-rose) 25%, transparent)',
                               }}
                             >
                               ×

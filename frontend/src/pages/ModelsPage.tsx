@@ -21,7 +21,7 @@ const SOURCE_BADGE: Record<string, { color: string; bg: string; labelKey: string
   opencode: { color: 'var(--accent)', bg: 'var(--accent-bg)', labelKey: 'models.srcOpencode' },
   'models-dev': { color: 'var(--hue-blue)', bg: 'var(--hue-blue-soft)', labelKey: 'models.srcModelsDev' },
   openrouter: { color: 'var(--hue-violet)', bg: 'var(--hue-violet-soft)', labelKey: 'models.srcOpenrouter' },
-  config: { color: '#f59e0b', bg: 'rgba(245,158,11,0.12)', labelKey: 'models.srcConfig' },
+  config: { color: 'var(--accent-amber)', bg: 'color-mix(in srgb, var(--accent-amber) 12%, transparent)', labelKey: 'models.srcConfig' },
   custom: { color: 'var(--hue-emerald)', bg: 'var(--hue-emerald-soft)', labelKey: 'models.srcCustom' },
   mapped: { color: '#c084fc', bg: 'rgba(192,132,252,0.12)', labelKey: 'models.srcMapped' },
   'openai-compatible': { color: 'var(--text-dim)', bg: 'var(--chip-bg)', labelKey: 'models.srcOpenaiCompatible' },
@@ -249,7 +249,7 @@ const toggleHidden = async (m: OpenCodeModelView) => {
         </p>
 
         {error && (
-          <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'rgba(244,63,94,0.12)', border: '1px solid rgba(244,63,94,0.3)', color: 'var(--accent-rose)', fontSize: '13px', marginBottom: '16px' }}>
+          <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'color-mix(in srgb, var(--accent-rose) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-rose) 30%, transparent)', color: 'var(--accent-rose)', fontSize: '13px', marginBottom: '16px' }}>
             {error}
           </div>
         )}
