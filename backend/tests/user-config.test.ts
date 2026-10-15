@@ -16,7 +16,7 @@ import {
 } from '../src/opencode/user-config.js';
 
 /**
- * Test fixture only: OCR never writes auth.json (ADR-0019 Decision 11), so a case
+ * Test fixture only: OCR never writes auth.json, so a case
  * that needs a snapshot on disk stages it directly instead of through a product API.
  */
 function stageAuth(entries: Record<string, unknown>): void {

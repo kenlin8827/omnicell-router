@@ -1,5 +1,5 @@
 /**
- * canonical wire-shape decision, ONE source of truth shared by the
+ * Canonical wire-shape decision, ONE source of truth shared by the
  * execution dispatchers and the console probe. Rationale: protocol truth lives
  * in DATA (models.dev `provider.npm`, provider-level and model-level), not in
  * daemon behavior; any place that maps npm → wire must call this function so
@@ -13,7 +13,7 @@
 export type WireKind = 'openai' | 'anthropic' | 'google' | 'responses' | 'unroutable';
 
 /**
- * npm packages that need SDK-side URL construction or request signing beyond a
+ * Npm packages that need SDK-side URL construction or request signing beyond a
  * plain HTTPS POST (Azure deployment paths + api-version, Vertex rawPredict +
  * project/location, Bedrock SigV4) → explicitly unroutable —
  * never fire a guessed wire that later blames a 400 on the upstream.
@@ -28,7 +28,7 @@ function isUnroutable(npm: string): boolean {
 }
 
 /**
- * opencode v2 SDK package form (ADR-0019 Decision 9): `@opencode/ai/providers/<segment>`
+ * Opencode v2 SDK package form: `@opencode/ai/providers/<segment>`
  * replaces the opencode v1 `@ai-sdk/<x>` npm strings. Known segments map to the SAME
  * wire kinds as their opencode v1 counterparts; an unknown segment is 'unroutable' —
  * never fire a guessed wire at an unprobed SDK. probe.ts probeKindFor
@@ -55,7 +55,7 @@ function opencodeV2Segment(npm: string): string | null {
 
 /**
  * True when the string is already in opencode v2 `@opencode/ai/providers/<segment>` shape.
- * Exported for the ADR-0019 P4 WRITE side (user-config opencodeV2PackageFor) so the
+ * Exported for the provider-def WRITE side (user-config opencodeV2PackageFor) so the
  * package vocabulary has exactly ONE regex owner.
  */
 export function isOpencodeV2Package(npm: string): boolean {

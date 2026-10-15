@@ -16,7 +16,7 @@ export class UpstreamError extends Error {
   public modelId?: string;
   public retryAfterSeconds?: number;
   /**
-   * ADR-0019 P3 step 1 — display-safe sha256 prefix of the credential that was
+   * Display-safe sha256 prefix of the credential that was
    * actually used when this failure happened. Stamped centrally by
    * `ProviderRegistry.execute` (attribution seam for the P3 pair-scoped breaker);
    * executors never set it, constructors never receive it.
@@ -42,7 +42,7 @@ export class UpstreamError extends Error {
 }
 
 /**
- * ADR-0019 Decision 6 — 429 wording that means "this ACCOUNT burned its
+ * 429 wording that means "this ACCOUNT burned its
  * budget" instead of "this MODEL/KEY hit its RPM window". Only consulted when
  * the diagnosis is attributable to one credential; anything goes
  * `pair` (under-cool rather than over-cool).
@@ -69,7 +69,7 @@ export class ErrorClassifier {
    * - Transient backoff (429 Rate limit burst)
    * - Non-penalizing pass-through (400 Client error / context length exceeded)
    *
-   * ADR-0019 P3 step 2 adds a blast-radius annotation (`tripScope`) to every
+   * The attribution layer adds a blast-radius annotation (`tripScope`) to every
    * diagnosis that is attributable to ONE credential of a provider chain. A
    * diagnosis without attribution carries no `tripScope` at all, so chain-less
    * providers keep the model-level trip semantics they have always had.
@@ -85,7 +85,7 @@ export class ErrorClassifier {
     const defaultInitialCooldown = circuitConfig?.initialCooldownMs || 30 * 1000; // default: 30s
     const maxRateLimitWaitMs = retryConfig?.inplace?.maxRateLimitWaitMs ?? 2000; // default: 2s
 
-    // ADR-0019 P3 step 2 — attribution seam. `ProviderRegistry.execute` stamps
+    // attribution seam. `ProviderRegistry.execute` stamps
     // the credential actually used onto the thrown error. No stamp means the
     // provider has no credential chain, so there is no pair space to scope a
     // trip into: the diagnosis stays exactly as it was before P3 (model-level).

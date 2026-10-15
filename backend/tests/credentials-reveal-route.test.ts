@@ -16,7 +16,7 @@ import { resetCredentialStoreForTests } from '../src/opencode/credentials/factor
 import { DbOpener } from '../src/opencode/credentials/opencode-v2-store.js';
 
 /**
- * ADR-0019 Decision 10 — controlled credential reveal.
+ * Controlled credential reveal.
  * Covers the four contract gates: webAuth-active precondition (409), login-bucket
  * throttle sharing (wrong reveal password counts as a login failure, lockout
  * answers 429), password-before-store ordering (401 carries NO account signal —

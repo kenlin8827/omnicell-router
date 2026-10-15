@@ -13,7 +13,7 @@ import type { CallCredential } from '../src/opencode/credentials/types.js';
 import type { CircuitBreakerConfig, ErrorDiagnosis } from '../src/resilience/types.js';
 
 /**
- * ADR-0019 P3 step 2 — the resilience CORE: pair breakers keyed
+ * The resilience CORE: pair breakers keyed
  * (modelId x credentialKeyHashPrefix), classifier tripScope, SUSPECT account
  * flags, model aggregation, prober per-model budget.
  *

@@ -24,7 +24,7 @@ export const SURFACES: readonly ProtocolSurface[] = [
 
 /**
  * Suffix match against the table. Lowercased, query stripped. detectSuffix
- * is intentionally WIDER than routePath on the decision leg (ADR-0014 §2) —
+ * is intentionally WIDER than routePath on the decision leg —
  * callers pass path+query from raw transports where the prefix is not
  * guaranteed to be the gateway mount.
  */

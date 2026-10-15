@@ -18,7 +18,7 @@ import { ensureReconciled } from '../src/opencode/credentials/reconcile.js';
 import { WriteFailedError, keyHashPrefix } from '../src/opencode/credentials/types.js';
 
 /**
- * ADR-0019 P1+P2 leak-surface sweep — every serialization boundary a WRITE
+ * Leak-surface sweep — every serialization boundary a WRITE
  * path touches, asserted against a seeded raw key:
  *   - AccountMeta / StoreStatus / provider-list merge (masked-only contract,
  *     Decision 1 risk limb: no management route ever receives raw secrets),
@@ -175,7 +175,7 @@ describe('masked-surface contract (Decision 1 risk limb)', () => {
       openDatabase: fakeDb([oauthRow('c-o', 'zen')]),
       fetchImpl: okFetch,
     });
-    // active=1 alone must NOT make the oauth row routable (ADR-0011 boundary)
+    // active=1 alone must NOT make the oauth row routable 
     expect(store.resolveKey('zen')).toBeNull();
     expect(store.resolveKeyChain('zen')).toEqual([]);
     expect(store.listAccounts('zen')[0]).toMatchObject({ type: 'oauth', active: true, routable: false });
@@ -292,7 +292,7 @@ describe('error-message ECHO containment (write-path leak hunt)', () => {
 
     const res = await ensureReconciled(store, status, { paths, log, now: () => 4242 });
     expect(res.entries).toEqual([{ provider: 'anthropic', action: 'failed', reason: expect.any(String) }]);
-    // the excluded detail is the ADR's constant string — no error echo at all
+    // the excluded detail is a fixed constant string — no error echo at all
     expect(status.excluded).toContainEqual({
       provider: 'anthropic',
       reasonCode: 'reconcile_push_failed',

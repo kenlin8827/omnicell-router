@@ -60,7 +60,7 @@ export class ProviderRegistry {
   /** Sibling-id index for model variants: `<baseId>-<variantId>` → base + variant. */
   private variantIndex = new Map<string, { baseId: string; variant: ModelVariant }>();
   /**
-   * ADR-0019 P3 step 1 — per-provider credential chains for per-call selection,
+   * Per-provider credential chains for per-call selection,
    * populated ONLY through `registerProvider` (the boot path hands raw keys from
    * `buildDirectPool` here and nowhere else). NEVER serialize: masked account
    * views keep going through the credential store's `AccountMeta`. Chain order =
@@ -178,7 +178,7 @@ export class ProviderRegistry {
   }
 
   /**
-   * ADR-0019 Decision 6 — aggregate model availability across its credential chain:
+   * Aggregate model availability across its credential chain:
    * the chain's credential prefixes feed `modelAvailability`, so a model whose
    * credentials are ALL pair-OPEN/SUSPECT reads as unavailable even while its
    * model breaker is CLOSED, and a model trip marks every prefix open.
@@ -244,7 +244,7 @@ export class ProviderRegistry {
   }
 
   /**
-   * ADR-0019 P3 step 1 — the provider's ordered credential chain (selection
+   * The provider's ordered credential chain (selection
    * priority order), or undefined when no chain was registered (config.yaml
    * providers, mock/stub call sites) — callers then use the baked config key.
    * Raw keys: in-process consumers only, never serialize.
@@ -841,7 +841,7 @@ export class ProviderRegistry {
   }
 
   /**
-   * Execute one completion. `credentialKeyHashPrefix` (ADR-0019 P3 step 1)
+   * Execute one completion. `credentialKeyHashPrefix` 
    * selects one credential of the provider's registered chain by its Decision 5
    * identity; omitted = the boot-baked default (executor `config.apiKey`).
    * On failure the thrown error is re-raised UNCHANGED in class/shape with the

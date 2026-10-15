@@ -4,7 +4,7 @@ import { CredentialPaths } from './paths.js';
 import { StoreUnreadableError } from './types.js';
 
 /**
- * READ-ONLY view of opencode's legacy `auth.json` (ADR-0019 Decision 4 source).
+ * READ-ONLY view of opencode's legacy `auth.json`.
  *
  * opencode v2 imports this file once during its own db migration and never writes it
  * back, and opencode v1 is not supported — so auth.json is never a credential SINK
@@ -19,7 +19,7 @@ export interface AuthSnapshot {
 /**
  * Snapshot accessor bound to an injected path. Byte-identical parse semantics to
  * user-config's readAuthEntries, but never falling back to the operator's real home
- * (ADR-0018: OCR_HOME alone does not sandbox opencode paths).
+ * (OCR_HOME alone does not sandbox opencode paths).
  */
 export function authSnapshot(paths: CredentialPaths): AuthSnapshot {
   return {

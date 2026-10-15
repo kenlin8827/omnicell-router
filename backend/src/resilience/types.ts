@@ -27,7 +27,7 @@ export type NetworkFailureCause =
   | 'UNKNOWN';
 
 /**
- * ADR-0019 Decision 6 — blast radius of a trip once the failure is attributed
+ * Blast radius of a trip once the failure is attributed
  * to one credential of a multi-credential provider.
  *  pair    = (model × credential) only — per-model rate limit, uncertain errors
  *  account = this credential everywhere — account quota / dead key
@@ -84,7 +84,7 @@ export interface ErrorDiagnosis {
   retryAfterSeconds?: number;
   rawError?: any;
   /**
-   * ADR-0019 P3 step 2 — set ONLY when the failure carried a credential
+   * Set ONLY when the failure carried a credential
    * attribution (`UpstreamError.usedCredentialKeyHashPrefix`), i.e. the request ran
    * through a provider credential chain. Without it the breaker keeps the
    * model-level semantics it has always had (single-credential degeneracy).
@@ -252,7 +252,7 @@ export interface CircuitBreakerConfig {
     intervalMs?: number; // background liveness sweep interval (default: 60000 = 1min)
   };
   /**
-   * ADR-0019 Decision 7 — session↔account affinity window. A session idle
+   * Session↔account affinity window. A session idle
    * past this window is re-selected as if new (the upstream prompt cache is
    * gone anyway, so the switch is free). Default 300000 = the Anthropic
    * cache TTL (5 min, 2026-03-06); OpenAI caches are load-dependent.
@@ -274,7 +274,7 @@ export interface CircuitBreakerSnapshot {
   tier?: TierLevel;
   state: CircuitBreakerState;
   /**
-   * ADR-0019 P3 step 2 — present only on a PAIR breaker snapshot (model × this
+   * Present only on a PAIR breaker snapshot (model × this
    * credential's display-safe keyHash prefix). Absent = the model breaker,
    * which is what every pre-P3 consumer already reads.
    */
@@ -302,7 +302,7 @@ export interface CircuitBreakerSnapshot {
 }
 
 /**
- * ADR-0008 amendment (2026-10-14) — the persistence unit of one breaker:
+ * The persistence unit of one breaker:
  * every mutable field of the state machine (contrast the wire-contract
  * `CircuitBreakerSnapshot`, which derives display values and never carries
  * the sliding window). Identity fields (`modelId`/`provider`/`tier`/

@@ -7,7 +7,7 @@ import { WarnThrottle } from '../observability/warn-throttle.js';
  * Response Tree Store — server-side conversation state for the Responses API
  * (POST /v1/responses, stateful `previous_response_id` mode).
  *
- * Design (gateway-owned stateful emulation, ADR-0015 + its 2026-10-13 amendment):
+ * Design (gateway-owned stateful emulation):
  * - State belongs to the GATEWAY, not to any upstream provider. Clients send
  *   only a delta plus `previous_response_id`; the store walks the parent chain
  *   and rebuilds the full chat-completions message array. This keeps model
@@ -25,8 +25,8 @@ import { WarnThrottle } from '../observability/warn-throttle.js';
  *
  * Bounds: global FIFO cap + age-based sweep on append. Memory bounds are
  * constants (not product behavior); the ONLY config surface is whether the
- * tree also survives restarts via `enablePersistence` (ADR-0015 amendment,
- * wired from `responses.persist` — default OFF).
+ * tree also survives restarts via `enablePersistence` (wired from
+ * `responses.persist` — default OFF).
  *
  * L2 recovery log (optional): append-only JSONL mirror of the node tree.
  *   afterResult ──> Map.set (L1, authoritative)
@@ -179,7 +179,7 @@ export class RespStore {
    * the newest inserts, so eviction only ever touches dead conversations.
    * Insertion order == createdAt order as long as nodes enter chronologically
    * (true in-process; replay therefore inserts in createdAt order — red-team
-   * R-2 of ADR-0015 amendment: out-of-order replay would evict LIVE nodes).
+   * R-2: out-of-order replay would evict LIVE nodes).
    */
   private sweep(): void {
     const now = Date.now();

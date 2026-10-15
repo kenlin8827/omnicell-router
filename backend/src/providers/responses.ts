@@ -182,7 +182,7 @@ export class ResponsesProvider implements LLMProvider {
     const url = `${this.config.baseUrl.replace(/\/+$/, '')}/responses`;
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      // Per-call credential (ADR-0019 P3 step 1) outranks the boot-baked key.
+      // Per-call credential outranks the boot-baked key.
       Authorization: `Bearer ${credential?.key ?? this.config.apiKey}`,
       ...this.config.headers,
     };

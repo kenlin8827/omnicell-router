@@ -7,7 +7,7 @@ import {
 } from '../opencode/credentials/paths.js';
 
 /**
- * ADR-0019 P3 step 2 — the SUSPECT account flag store (Decision 6).
+ * The SUSPECT account flag store.
  *
  * SUSPECT is ADMINISTRATIVE state, not breaker state: a confirmed-bad
  * credential (401 after refresh attempts) is marked suspect and NEVER

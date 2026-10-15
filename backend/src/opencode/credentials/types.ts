@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 /**
- * ADR-0019 Decision 1 (amended for v0.0.1) — the single CredentialStore interface
+ * The single CredentialStore interface
  * with two adapters (OpencodeV2Store / OcrStore). opencode v1 is not supported:
  * auth.json is a migration source that OCR reads once and never writes, so the
  * third auth.json-backed store, its capability set and its degraded code are gone.
@@ -10,13 +10,13 @@ import { createHash } from 'node:crypto';
  *  - Callers branch on `capabilities`, NEVER on `kind` (kind is a diagnostic
  *    label for logs/badges only).
  *  - Masked metadata leaves the interface via listAccounts/accountsOverview;
- *    raw keys exit ONLY through resolveKey/resolveKeyChain, which per the ADR
- *    are callable only by boot/pool-rebuild code (ADR-0011 risk limb), and
- *    through revealKey — the single controlled exception, bound to the
- *    password-gated console reveal route (ADR-0019 Decision 10).
+ *    raw keys exit ONLY through resolveKey/resolveKeyChain —
+ *    callable only by boot/pool-rebuild code — and through revealKey, the
+ *    single controlled exception bound to the password-gated console reveal
+ *    route.
  *  - beginOAuth/completeOAuth exist on the surface but throw
- *    CapabilityUnsupportedError on ALL stores in P1+P2 (ADR-0019 P2 write list
- *    excludes OAuth; ADR-0011 OAuth boundary intact).
+ *    CapabilityUnsupportedError on ALL stores
+ *    (OAuth is excluded from every store; the OAuth boundary stays intact).
  */
 
 /** Diagnostic label. Branch on capabilities instead. */
@@ -38,8 +38,8 @@ export interface StoreCapabilities {
   oauth: boolean;
   /**
    * The store coexists with opencode's provider config, where inline
-   * `{env:VAR}` / `options.apiKey` keep priority ABOVE the store
-   * (ADR-0019 Decision 1). False for the OCR-only store, which has no
+   * `{env:VAR}` / `options.apiKey` keep priority ABOVE the store.
+   * False for the OCR-only store, which has no
    * env-templated sibling surface.
    */
   envVisible: boolean;
@@ -77,9 +77,9 @@ export interface AccountMeta {
   label?: string;
   type: CredentialType;
   active: boolean;
-  /** False for oauth/wellknown/unknown — listed and badged, never routed (ADR-0011 P2 boundary). */
+  /** False for oauth/wellknown/unknown — listed and badged, never routed. */
   routable: boolean;
-  /** Display-safe sha256 prefix (ADR-0019 Decision 5). */
+  /** Display-safe sha256 prefix. */
   keyHashPrefix?: string;
   /** maskSecret() output — existing masking rule. */
   maskedKey?: string;
@@ -91,7 +91,7 @@ export interface ResolvedCredential {
 }
 
 /**
- * ADR-0019 P3 step 1 — one credential attached to a boot-built provider
+ * One credential attached to a boot-built provider
  * instance, selectable per call by its `keyHashPrefix` (Decision 5 identity).
  *
  * SECURITY: `key` is RAW material. Values of this type exist ONLY in process
@@ -109,9 +109,9 @@ export interface CallCredential {
 }
 
 /**
- * Raw credential for the failover pool. ADR-0019 P1 consumers keep using
- * resolveKey (single-key degeneracy = today's behavior); the chain interface
- * is complete now and consumers arrive in P3 — that is expected.
+ * Raw credential for the failover pool. Single-key consumers keep using
+ * resolveKey (single-key degeneracy = legacy behavior); the chain interface
+ * is complete now — later consumers arriving is expected.
  */
 export interface RawCred {
   accountId: string;
@@ -142,7 +142,7 @@ export interface AccountOverview {
 }
 
 /**
- * Which evidence the factory used to bind (ADR-0019 Decision 2).
+ * Which evidence the factory used to bind.
  * 'last-known-good' marks hysteresis landings (PATH jitter must not ping-pong);
  * 'db-present' binds OpencodeV2Store-readonly from the db file alone without CLI/file evidence.
  */
@@ -168,7 +168,7 @@ export interface CredentialStore {
 
   /**
    * Health snapshot. OpencodeV2Store throws EmptyCredentialTableError (a distinct
-   * operational precondition consumers must handle, ADR Decision 3) when the
+   * operational precondition consumers must handle) when the
    * credential table exists but has zero rows; unreadability is reported as a
    * state here instead of throwing (a health check must not throw).
    */
@@ -184,7 +184,7 @@ export interface CredentialStore {
   resolveKeyChain(providerId: string): RawCred[];
 
   /**
-   * ADR-0019 Decision 10 — raw key of ONE addressed account, for the
+   * Raw key of ONE addressed account, for the
    * password-gated console reveal route. Unlike `resolveKey` there is no
    * selection: it takes the accountId the operator pointed at and returns
    * exactly that row's key. Throws AccountNotFoundError for an absent row and
@@ -219,7 +219,7 @@ export interface CredentialStore {
 }
 
 // ---------------------------------------------------------------------------
-// Error vocabulary (ADR-0019 Decision 3: distinct states, distinct handling)
+// Error vocabulary: distinct states, distinct handling
 // ---------------------------------------------------------------------------
 
 /** The backing store cannot be opened/parsed at all. Distinct from EmptyCredentialTableError. */
@@ -253,7 +253,7 @@ export class CapabilityUnsupportedError extends Error {
 /**
  * An opencode v2 HTTP write failed after the re-read-service.json retry.
  * NEVER falls back to OcrStore — read-side degradation is allowed with a
- * badge; write-side proliferation is not (ADR-0019 Decision 3).
+ * badge; write-side proliferation is not.
  */
 export class WriteFailedError extends Error {
   constructor(readonly method: string, detail: string, readonly cause?: unknown) {
@@ -281,7 +281,7 @@ export class AccountNotFoundError extends Error {
 }
 
 // ---------------------------------------------------------------------------
-// Key identity (ADR-0019 Decision 5)
+// Key identity 
 // ---------------------------------------------------------------------------
 
 /** sha256 hex of the raw key — durable identity for breakers/affinity across id/label churn. */

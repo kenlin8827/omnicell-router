@@ -128,7 +128,7 @@ function fmtDate(iso: string | null): string {
 }
 
 /**
- * Environment admin (ADR 0017 Phase 3): list / create / rename / trash /
+ * Environment admin: list / create / rename / trash /
  * sandbox-reset / export / import, plus the pointer-switch flow that hands the
  * gateway over to a replacement process bound to another book-set.
  *

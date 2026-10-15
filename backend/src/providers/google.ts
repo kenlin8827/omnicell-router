@@ -234,7 +234,7 @@ export class GoogleProvider implements LLMProvider {
 
     const outboundHeaders: Record<string, string> = {
       'Content-Type': 'application/json',
-      // Per-call credential (ADR-0019 P3 step 1) outranks the boot-baked key.
+      // Per-call credential outranks the boot-baked key.
       'x-goog-api-key': credential?.key ?? this.config.apiKey,
       ...this.config.headers,
     };

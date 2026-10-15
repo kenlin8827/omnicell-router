@@ -54,7 +54,7 @@ fs.writeFileSync(
   path.join(defaultEnvDir, 'env.json'),
   JSON.stringify({ name: 'default', type: 'regular', createdAt: new Date().toISOString(), schemaVersion: 1 })
 );
-// ADR-0018 spirit / ADR-0019 B4 workstream 4 — opencode paths are sandboxed
+// opencode paths are sandboxed
 // too: user-config.ts (auth.json/opencode.jsonc) and credentials/paths.ts
 // (auth.json, opencode.db, installed.version) resolve from XDG_CONFIG_HOME /
 // XDG_DATA_HOME, falling back to os.homedir(). Without these a test reads —

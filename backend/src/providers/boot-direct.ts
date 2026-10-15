@@ -17,10 +17,10 @@ import type { AccountMeta, CallCredential, RawCred, ResolvedCredential } from '.
 import { WireKind, wireFor, unroutableReason, baseForWire } from './wire.js';
 
 /**
- * build the direct execution pool WITHOUT the opencode daemon.
+ * Build the direct execution pool WITHOUT the opencode daemon.
  * Truth sources:
  *   - opencode.jsonc provider nodes (baseURL/headers/npm/model defs)   [user-config.ts]
- *   - the bound CredentialStore (ADR-0019 Decision 1 + 11: opencode v2 db, the v2
+ *   - the bound CredentialStore (opencode v2 db, the v2
  *     read-only fallback, or the OCR file — whichever the factory bound at boot) [credentials/]
  *   - models.dev catalog (pricing/capabilities/provider+model npm)     [catalogRepository]
  * Wire per model = wireFor(model npm > config npm > provider npm, base hint).
@@ -35,7 +35,7 @@ export interface DirectBootResult {
     wires: WireKind[];
     wireBases: Partial<Record<WireKind, string>>;
     /**
-     * ADR-0019 P3 step 1 — the provider's ordered credentials for per-call
+     * The provider's ordered credentials for per-call
      * selection (active head first). INVARIANT: `credentialChain[0].key ===
      * config.apiKey` — the inline credential is prepended as head when it
      * outranks the store (Decision 1), so the baked default always equals the
@@ -125,10 +125,10 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
   // baseline). The registry replays it live on every config-save event
   // (applyTierConfigNow) — no gateway restart required for tier edits.
   const tierMatch = resolveTierMatch(loadConfig().tiers);
-  // ADR-0019 B3 — credentials come from the BOOT-BOUND CredentialStore, not
+  // credentials come from the BOOT-BOUND CredentialStore, not
   // from auth.json directly. buildDirectPool is the boot/pool-rebuild path,
   // the ONLY sanctioned caller class for the raw `resolveKey`/`resolveKeyChain`
-  // (ADR-0011 risk limb); the head key is baked once into instances[].config
+  //; the head key is baked once into instances[].config
   // and the full chain rides on the instance payload (registry-only).
   const store = await getCredentialStore();
   const storeStatus = await getCredentialStoreStatus();
@@ -160,7 +160,7 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
     // loop continues with the others.
     let resolved: ResolvedCredential | null;
     let metas: AccountMeta[];
-    // ADR-0019 P3 step 1 — the same try-guarded read also fetches the
+    // the same try-guarded read also fetches the
     // ordered chain (active head first); key-type rows only, oauth never
     // enters a chain (store contract).
     let storeCreds: RawCred[];
@@ -193,7 +193,7 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
     if (!apiKey) {
       // catalog-universe providers without credentials are structural noise —
       // only surface when the user actually defined a config node for them.
-      // ADR-0019 Decision 11 wording: the credential candidates are the inline def and
+      // the credential candidates are the inline def and
       // the BOUND store (auth.json is no longer named here — it is not a sink).
       if (def) excluded.push({ provider: rec.id, reasonCode: 'no_credential', reason: '无凭证（内联或凭证库均缺失）' });
       continue;
@@ -324,7 +324,7 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
       excluded.push({ provider: rec.id, reason: '该 provider 全部模型不可直连路由' });
       continue;
     }
-    // ADR-0019 P3 step 1 — per-call selection chain. One instance per provider
+    // per-call selection chain. One instance per provider
     // even with N credentials: the head is baked as the default, the full
     // ordered chain rides on the payload (registry-only, raw keys in memory).
     // Single-credential providers get a length-1 chain — behavior byte-identical.
@@ -346,7 +346,7 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
         name: rec.id,
         type: 'dispatch',
         baseUrl: baseURL,
-        // Boot-baked credential (ADR-0011 risk limb): the active-chain head —
+        // Boot-baked credential: the active-chain head —
         // the same key resolveKey picks when a provider holds exactly one
         // credential. Per-call selection reads the chain below; the baked key
         // remains the no-selector default.
@@ -365,7 +365,7 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
     excluded.push({ provider: id, reasonCode: 'legacy_shaped_node', reason: retiredShapeReason(paths) });
   }
 
-  // ─── store-binding exclusions merge (ADR-0019 B3) ────────────────
+  // ─── store-binding exclusions merge ────────────────
   // Degraded-binding exclusions from the factory (excludedWithReason — the
   // boot hook used to console.log them only) surface in the same excluded[]
   // array, carrying their machine-readable reasonCode. Merge policy:

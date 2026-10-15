@@ -93,7 +93,7 @@ function pairKey(modelId: string, keyHashPrefix: string): string {
 }
 
 /**
- * Circuit breaker registry with ADR-0019 Decision 6 scoped breakers.
+ * Circuit breaker registry with scoped breakers.
  *
  *   bare-modelId breaker          == model scope   (this model, every credential)
  *   `${modelId}::${keyHashPrefix}` == pair scope    (this model, this credential)
@@ -101,10 +101,10 @@ function pairKey(modelId: string, keyHashPrefix: string): string {
  *
  * A provider whose chain has a single credential never gets pair breakers: the caller
  * omits `keyHashPrefix` and every path degenerates to the bare-modelId breaker
- * — byte-identical to pre-P3 (the ADR's single-credential degeneracy guarantee).
+ * — byte-identical to the legacy single-credential behavior.
  *
  * With a `BreakerStateStore` attached (boot path only) the whole registry also has
- * an on-disk memory (ADR-0008 amendment): cooldowns, backoff position and manual
+ * an on-disk memory: cooldowns, backoff position and manual
  * trips survive a gateway restart. Without one it stays purely in-memory.
  */
 export class CircuitBreakerManager {
@@ -126,7 +126,7 @@ export class CircuitBreakerManager {
   private rules: ResolvedBreakerRules;
   private nowFn: () => number;
   private accountState: AccountStateStore;
-  // ADR-0008 amendment (2026-10-14) — optional on-disk breaker memory.
+  // optional on-disk breaker memory.
   // Undefined = pure in-memory (every test harness and any registry the boot
   // path never attaches a store to; behavior is byte-identical to pre-P3).
   private stateStore: BreakerStateStore | undefined;
@@ -291,7 +291,7 @@ export class CircuitBreakerManager {
   }
 
   /**
-   * ADR-0019 Decision 6 — CONSUMING gate at the finest attributed scope.
+   * CONSUMING gate at the finest attributed scope.
    * No `keyHashPrefix` (single-credential provider) is exactly `canExecute(modelId)`.
    * With a prefix the model breaker is only PEEKED and the pair breaker consumes
    * the canary slot. Consuming the model slot here would strand it: a pair-scope
@@ -347,7 +347,7 @@ export class CircuitBreakerManager {
   }
 
   /**
-   * ADR-0019 Decision 6 — the derived aggregate the pool builders will read:
+   * The derived aggregate the pool builders will read:
    * a model is available iff its model breaker is CLOSED/HALF_OPEN-capable AND
    * at least one candidate credential serves (its pair breaker not OPEN, its
    * account not SUSPECT). A down model breaker reports every candidate unusable
@@ -392,7 +392,7 @@ export class CircuitBreakerManager {
   }
 
   /**
-   * ADR-0019 Decision 6 — the single NON-CONSUMING "out of service" predicate
+   * The single NON-CONSUMING "out of service" predicate
    * for one (model, credential) pair: account SUSPECT, or its pair breaker
    * currently not peek-allowed. NEVER takes a HALF_OPEN probe slot — the
    * consuming gate is `canExecuteScoped()` at the execution site only.
@@ -413,7 +413,7 @@ export class CircuitBreakerManager {
     return this.accountState;
   }
 
-  // -- Breaker memory persistence (ADR-0008 amendment, 2026-10-14) ---------
+  // -- Breaker memory persistence ---------
 
   /**
    * Attach the on-disk breaker memory. NOT done by the constructor: the boot
@@ -515,7 +515,7 @@ export class CircuitBreakerManager {
   }
 
   /**
-   * ADR-0019 Decision 6 — success for one (model, credential). Without a
+   * Success for one (model, credential). Without a
    * prefix this is today's `recordSuccess(modelId)`. With one, the pair breaker
    * recovers and a HALF_OPEN model breaker gets a TRIAL SUCCESS: the scoped
    * gate peeks the model breaker instead of consuming its slot, so a
@@ -551,7 +551,7 @@ export class CircuitBreakerManager {
   }
 
   /**
-   * ADR-0019 Decision 6 — record a failure and EXPAND it over the blast radius
+   * Record a failure and EXPAND it over the blast radius
    * the rule gate resolved. Without a prefix (or without a `tripScope`, which
    * only ever exists under credential attribution) the diagnosis goes to the
    * bare-modelId breaker, exactly as before P3.
@@ -860,7 +860,7 @@ export class CircuitBreakerManager {
   /**
    * Manually trip a model's breaker into OPEN (admin takes it out of
    * rotation from the console). Persisted with the rest of the breaker
-   * memory (ADR-0008 amendment): the trip survives a restart until its
+   * memory: the trip survives a restart until its
    * cooldown expires; for a permanent exclusion still use the exclude
    * lists (config.tiers).
    */
@@ -969,7 +969,7 @@ export class CircuitBreakerManager {
   }
 
   /**
-   * Manual (console/REST) trip with ADR-0019 scope. `model` is the legacy
+   * Manual (console/REST) trip with explicit scope. `model` is the legacy
    * scope and stays the default; `account` and `pair` address the finer grain.
    * `affected` counts the breakers actually taken down, so a caller can tell a
    * no-op (unknown account) from a real trip without parsing prose.

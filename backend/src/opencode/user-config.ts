@@ -119,8 +119,8 @@ export function patchJsonc(
 
 // ---------------------------------------------------------------------------
 // auth.json — READ-ONLY legacy snapshot (migration source, never a sink).
-// OCR writes credentials exclusively through the bound CredentialStore
-// (ADR-0019 Decision 11); the writers that used to live here are gone.
+// OCR writes credentials exclusively through the bound CredentialStore —
+// the writers that used to live here are gone.
 // ---------------------------------------------------------------------------
 
 export interface OpenCodeAuthEntry {
@@ -160,7 +160,7 @@ export const ROUTER_PROVIDER_ID = 'opencode-router';
 const DEFAULT_NPM = '@ai-sdk/openai-compatible';
 
 /**
- * ADR-0019 Decision 9 (amended, v0.0.1 — no legacy compatibility): opencode.jsonc
+ * No legacy compatibility: opencode.jsonc
  * provider defs have ONE shape and ONE home, the v2 node (`package`/`settings`/
  * `headers`/`env`/`canonical`/`body`) in the native `providers` slot. opencode v1
  * installs are not supported, so there is no v1 emit path and no legacy
@@ -214,11 +214,11 @@ function isValidProviderId(id: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// opencode v2 provider-shape READ normalization (ADR-0019 Decision 9, phase B3)
+// opencode v2 provider-shape READ normalization 
 // ---------------------------------------------------------------------------
 
 /**
- * opencode v2 provider defs replace opencode v1 `npm`/`options` with
+ * Opencode v2 provider defs replace opencode v1 `npm`/`options` with
  * `name`/`env`/`package`/`canonical`/`settings`/`headers`/`body`. Only
  * markers an opencode v1 def can never carry count as evidence — `env`, top-level
  * `headers` and `name` are ambiguous across the two shapes and are
@@ -296,11 +296,11 @@ function normalizeModelDef(raw: unknown): any {
 }
 
 // ---------------------------------------------------------------------------
-// opencode v2 provider-shape WRITE construction (ADR-0019 Decision 9, phase P4)
+// opencode v2 provider-shape WRITE construction 
 // ---------------------------------------------------------------------------
 
 /**
- * opencode v1 npm → opencode v2 package table (write side of Decision 9). Every segment is one
+ * Opencode v1 npm → opencode v2 package table (write side of Decision 9). Every segment is one
  * wire.ts's OPENCODE_V2_SEGMENT_WIRES already recognizes on the READ side — the write
  * side adds NO second vocabulary: `wireFor(opencode v1) === wireFor(mapped-v2)` holds
  * for each pair (pinned by user-config-v2-write.test.ts).
@@ -432,8 +432,7 @@ function buildV2ProviderNode(def: CustomProviderDef): { node?: Record<string, an
   );
 
   // Credential slot. On opencode v2 the BOUND store owns secrets — this writer NEVER
-  // touches auth.json (that write is dead on an opencode v2 , ADR-0019 Context
-  // drift #1). Rules:
+  // touches auth.json (that write is dead on an opencode v2 install). Rules:
   //  - full `{env:X}` value → translate to env:["X"], drop the fake inline key
   //    (a literal '{env:X}' string in settings.apiKey is not an opencode v2 concept);
   //  - literal secret → settings.apiKey ONLY when the caller explicitly asked

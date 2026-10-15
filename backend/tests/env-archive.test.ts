@@ -413,7 +413,7 @@ describe('dangerous keys (__proto__/constructor/prototype)', () => {
   });
 });
 
-/* ─── Zip transport (ADR-0017 D5 amended): codec + guards ────────────────── */
+/* ─── Zip transport : codec + guards ────────────────── */
 
 describe('zip transport — buildZipArchive / parseZipArchiveAsync', () => {
   it('build → parse round-trips through the SAME envelope validation', async () => {
@@ -512,7 +512,7 @@ describe('zip transport — buildZipArchive / parseZipArchiveAsync', () => {
   });
 });
 
-/* ─── Encrypted archive (WinZip AE-2 via zip.js, ADR-0017 D5 amended) ────── */
+/* ─── Encrypted archive (WinZip AE-2 via zip.js) ────── */
 
 describe('encrypted archive — buildEncryptedZipArchive / parseZipArchiveAsync', () => {
   it('is a STANDARD zip (PK magic) whose entries are flagged encrypted — 360 Zip/7-Zip territory', async () => {

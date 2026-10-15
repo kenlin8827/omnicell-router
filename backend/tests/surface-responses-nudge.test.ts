@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { responsesSurface, __resetResponsesSurfaceForTests } from '../src/surfaces/responses.js';
 
 /**
- * The persist=off nudge (ADR-0015 amendment): the first request that proves a
+ * The persist=off nudge: the first request that proves a
  * live client relies on gateway-held state (previous_response_id) while the
  * recovery log is off must produce exactly ONE warn per process pointing at
  * the switch — and the 400 fail-visible contract must stay untouched.

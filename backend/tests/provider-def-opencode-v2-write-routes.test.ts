@@ -8,7 +8,7 @@ import { resetCredentialStoreForTests } from '../src/opencode/credentials/factor
 import { DbOpener } from '../src/opencode/credentials/opencode-v2-store.js';
 
 /**
- * ADR-0019 P4 — opencode-v2 shaped provider-definition WRITES at the route + boot level.
+ * Opencode-v2 shaped provider-definition WRITES at the route + boot level.
  *
  * Layer 1 (routes): console provider create/update/connect pick the emitted
  *  opencode.jsonc shape from the BOUND credential store's version evidence
@@ -607,7 +607,7 @@ describe('boot-direct — opencode v2-written def routes identically to the open
     expect(i2.config.apiKey).toBe(i1.config.apiKey);
     expect(i2.wires.sort()).toEqual(i1.wires.sort());
     expect(i2.wires.sort()).toEqual(['anthropic', 'openai']); // model-level provider.npm → package → same wire
-    // ADR-0019 P3-step-1 baked invariant (read-only check against boot-direct):
+    // Boot-baked credential invariant (read-only check against boot-direct):
     // the chain head is the config.apiKey the executors default to — holds for
     // the opencode v1 and the P4-written opencode v2 shape alike (single store credential each).
     for (const inst of [i1, i2]) {

@@ -192,7 +192,7 @@ const ProfileDialog: React.FC<{
   );
 };
 
-/** The auto* virtual ids exactly (ADR-0020 vocabulary; mirrors the backend's
+/** The auto* virtual ids exactly (mirrors the backend's
  *  auto list in routes/console.ts) — a prefix test would misclassify real
  *  models like autoglm-* as virtual. */
 const AUTO_MODEL_IDS = new Set(['auto', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra']);

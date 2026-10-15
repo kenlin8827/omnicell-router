@@ -57,7 +57,7 @@ function isValidAgentName(name: string): boolean {
 }
 
 /**
- * The agent node a config actually uses — same slot doctrine as ADR-0019's
+ * The agent node a config actually uses — same slot doctrine as the
  * provider/providers decision (opencode v2's native spelling is PLURAL
  * `agents`; singular `agent` is the retired v1 home). Reads/writes must land
  * in the home the user's install uses, or opencode never sees the override.

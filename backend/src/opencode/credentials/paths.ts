@@ -2,17 +2,17 @@ import os from 'node:os';
 import path from 'node:path';
 
 /**
- * ADR-0019 path registry for the credential adapter layer.
+ * Path registry for the credential adapter layer.
  *
  * This module is the ONLY place under credentials/ that reads process env or
  * the OS home directory (via resolveDefaultPaths' default parameters).
  * Everything else takes an injected CredentialPaths so that tests run fully
- * sandboxed (ADR-0018 spirit; ADR-0019 Decision 1/2 depend on it).
+ * sandboxed.
  *
  * Path precedents:
  *  - configDir / dataDir / auth.json  -> user-config.ts:30-33, 48-50 (XDG-aware)
  *  - ocrHome                          -> cli/paths.ts:5-16 (without its mkdir side effect)
- *  - opencode.db / installed.version  -> new here (ADR-0019 Context: opencode v2 storage)
+ *  - opencode.db / installed.version  -> new here (opencode v2 storage)
  */
 
 export interface CredentialPaths {
@@ -29,7 +29,7 @@ export interface CredentialPaths {
   /** OCR state root — OCR_HOME || ~/.opencode-router. */
   ocrHome: string;
   /**
-   * service.json locations for opencode v2 -path Basic auth. Ordered: XDG-aware
+   * Service.json locations for opencode v2 -path Basic auth. Ordered: XDG-aware
    * configDir first, then the legacy home fallback — superset of
    * connector.ts:27-28 (which ignores XDG_CONFIG_HOME; touchpoint gap #5).
    */
@@ -79,7 +79,7 @@ export function credentialStoreStateFile(paths: CredentialPaths = resolveDefault
 }
 
 /**
- * ADR-0019 P3 — SUSPECT account flags (Decision 6). Same GLOBAL root as the
+ * SUSPECT account flags (Decision 6). Same GLOBAL root as the
  * OCR credentials file: an account is suspect wherever it is used, not per
  * environment. Display-safe metadata only (keyHash prefixes, no key material).
  */
@@ -88,7 +88,7 @@ export function suspectAccountsFile(paths: CredentialPaths = resolveDefaultPaths
 }
 
 /**
- * ADR-0008 amendment (2026-10-14) — breaker memory: the full state machine of
+ * Breaker memory: the full state machine of
  * every model and pair breaker, so cooldowns and manual trips survive a
  * gateway restart. Display-safe metadata only (model ids, provider, keyHash
  * prefixes, classifier reasons — never key material). PER-ENV by filename:

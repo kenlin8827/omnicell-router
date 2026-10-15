@@ -2,7 +2,7 @@ import type { BreakerInfo, AccountHealth } from './api';
 
 /**
  * Pure (model × credential) matrix builder for the guardrails grid
- * (ADR-0019 P3 display side). Lives apart from the page so the join/fold
+ * Lives apart from the page so the join/fold
  * semantics — the load-bearing rules of the view — carry a runnable check
  * (scripts/check-guardrails-matrix.ts) without a browser.
  */

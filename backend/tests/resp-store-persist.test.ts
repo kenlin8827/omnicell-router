@@ -6,7 +6,7 @@ import path from 'node:path';
 import { RespNode, RespStore } from '../src/session/resp-store.js';
 
 /**
- * L2 recovery-log tests for RespStore (ADR-0015 amendment 2026-10-13):
+ * L2 recovery-log tests for RespStore:
  * restart round-trip, TTL/malformed/oversized replay filters, fail-soft
  * writes, compaction budgets, clear non-resurrection. Every store here is a
  * standalone instance — the surface singleton is untouched.

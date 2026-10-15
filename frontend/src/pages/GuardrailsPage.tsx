@@ -105,7 +105,7 @@ export const GuardrailsPage: React.FC = () => {
   const { testingIds, testResults, testOne, isBusy } = useModelTest();
 
   // Model layer (every registered model carries a boot-created breaker) plus
-  // the additive pair layer (ADR-0019 P3 display side). Older gateways omit
+  // the additive pair layer. Older gateways omit
   // `pairs` — cards then resolve through the model-mirror/no-record rules.
   const modelBreakers: BreakerInfo[] = status?.circuitBreakers?.breakers || [];
   const pairBreakers: BreakerInfo[] = status?.circuitBreakers?.pairs?.breakers || [];
@@ -484,7 +484,7 @@ export const GuardrailsPage: React.FC = () => {
             c.maskedKey ? <span style={hashBadgeStyle}>{c.maskedKey}</span> : null
           ) : (
             // Hover reveals the MASKED key only — the raw key never leaves
-            // the password-gated reveal route (ADR-0019 Decision 10).
+            // the password-gated reveal route.
             <span
               style={hashBadgeStyle}
               // maskedKey is display-safe data — appended outside the translated template.

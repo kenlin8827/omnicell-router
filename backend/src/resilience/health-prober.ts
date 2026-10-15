@@ -18,7 +18,7 @@ export interface ProberTargetResolver {
     credentialKeyHashPrefix?: string
   ): Promise<any>;
   /**
-   * ADR-0019 P3 step 2 — the provider's credential chain in selection order.
+   * The provider's credential chain in selection order.
    * Absent (stub resolver) or empty (chain-less provider) => the prober probes
    * the model with the boot-baked key, exactly as before P3.
    */
@@ -32,8 +32,7 @@ export interface ProbePlan {
 }
 
 /**
- * Active liveness sweep over tripped breakers (ADR-0008), scope-aware since
- * ADR-0019 Decision 6:
+ * Active liveness sweep over tripped breakers, scope-aware:
  *
  *   model breaker down     -> probe the model through ONE representative credential
  *   pair breaker down      -> probe the pairs that are due, within the per-model budget

@@ -117,7 +117,7 @@ export interface ChatSurface {
  * every gate. A captured surface request is FULL-CHAIN: client exchange
  * plus the upstream leg (native passthrough / synthesized conversion call,
  * no purpose tag — unambiguous within its own turn). FinOps/trace stay
- * excluded per the ADR-0014 §4 remainder; the default-off path is
+ * excluded; the default-off path is
  * pinned zero-event by forward-proxy-systemone.test.ts.
  */
 export interface DecisionSurface {
@@ -125,7 +125,7 @@ export interface DecisionSurface {
   readonly exec: 'decision-pipeline';
   readonly capture: 'configurable';
   readonly routePath: '/v1/systemone';
-  /** Wider than routePath on purpose — ADR-0014 §2 keeps MITM path detection tiered. */
+  /** Wider than routePath on purpose — MITM path detection stays tiered. */
   readonly detectSuffix: '/systemone';
   errorBody(status: number, message: string, code?: string): unknown;
 }

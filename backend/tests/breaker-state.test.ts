@@ -11,7 +11,7 @@ import type { ModelRegistration } from '../src/config/types.js';
 import type { BreakerStateFile, CircuitBreakerConfig, ErrorDiagnosis } from '../src/resilience/types.js';
 
 /**
- * ADR-0008 amendment (2026-10-14) — breaker memory on disk.
+ * Breaker memory on disk.
  *
  * The failure this exists to prevent: a restart used to wipe every cooldown,
  * letting the gateway re-hammer a 402 account still inside its quota

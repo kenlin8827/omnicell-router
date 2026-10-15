@@ -4,13 +4,13 @@ import os from 'node:os';
 import path from 'node:path';
 
 /**
- * ADR-0019 B3 — boot-direct consumes the BOUND CredentialStore.
+ * Boot-direct consumes the BOUND CredentialStore.
  *
  * The provider-def side is stubbed in memory (user-config mocked with the
  * real module spread, so the stores' own readJsonc/patchJsonc/maskSecret
  * imports keep working); the CREDENTIAL side runs against REAL stores bound
  * via resetCredentialStoreForTests with injected sandbox CredentialPaths —
- * no global env mutation, no operator home (ADR-0018 spirit).
+ * no global env mutation, no operator home.
  *
  * Coverage:
  *  (a) OpencodeV2Store over a fake sqlite db — multi-account rows bake the
@@ -259,7 +259,7 @@ describe('(b)+(c) opencode v1 machine boot: lands on the OCR store after the one
     expect(v1Chain?.[0]?.key).toBe(byName.get('v1-api')?.config.apiKey);
 
     // An OCR store holds raw api keys only, so an auth.json oauth/wellknown entry
-    // cannot be imported: both surface as NO CREDENTIAL (ADR-0011 — never silent),
+    // cannot be imported: both surface as NO CREDENTIAL (never silent),
     // which is a different reason string from the OAuth-account exclusion the v1
     // store produced. Neither routes.
     expect(res.excluded).toContainEqual({ provider: 'v1-oauth', reasonCode: 'no_credential', reason: '无凭证（内联或凭证库均缺失）' });

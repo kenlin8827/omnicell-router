@@ -7,7 +7,7 @@ import type { ModelAvailability } from '../resilience/circuit-breaker-manager.js
 export type TierLevel = 'lite' | 'plus' | 'pro' | 'ultra';
 
 /**
- * what a model's smart-match classification yields. `TierLevel`
+ * What a model's smart-match classification yields. `TierLevel`
  * is the REQUEST-side four-state vocabulary (targetTier, TIER_RANK,
  * escalateTier, flywheel labels, session ratchet); `'unclassified'` is a
  * MODEL-side pool-membership outcome only. Kept as a separate type so the
@@ -70,7 +70,7 @@ export function downgradeReasoning(
 }
 
 /**
- * per-model thinking-level TRANSLATION table (client-requested →
+ * Per-model thinking-level TRANSLATION table (client-requested →
  * upstream value), inline on a tier member rule. `effortMap[requested] ??
  * requested` — a missing key means passthrough. Applied per candidate at
  * selection AND at execution (it is a model property, not a routing policy).
@@ -193,7 +193,7 @@ export interface ExecutionResult {
   inplaceRetries?: number;
   breakerState?: string;
   /**
-   * ADR-0019 P3 step 3 (additive — old readers never see these): the account
+   * Additive — older readers never see these: the account
    * that served the turn (display-safe keyHash prefix; undefined = the legacy
    * no-prefix/baked-key path), that pair's breaker snapshot, and the model
    * aggregate summary for the served model.

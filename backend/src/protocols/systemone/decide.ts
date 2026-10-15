@@ -217,7 +217,7 @@ export async function runSystemoneDecision(
 ): Promise<SystemoneDecision> {
   const providerConfig = registry.getProviderConfig(model.provider);
   if (providerConfig?.type === 'systemone') {
-    // ADR-0019 P3 step 1 — active credential resolved through the registry
+    // active credential resolved through the registry
     // (chain head) instead of trusting only the baked config key. A
     // config.yaml-registered systemone provider has no credential chain →
     // head undefined → providerConfig.apiKey exactly as before (identical for

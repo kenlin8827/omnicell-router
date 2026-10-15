@@ -1,5 +1,5 @@
 /**
- * ADR-0019 P1 — public surface of the credential adapter layer.
+ * Public surface of the credential adapter layer.
  * Console/boot code should import from here, not from the individual files.
  */
 export * from './types.js';

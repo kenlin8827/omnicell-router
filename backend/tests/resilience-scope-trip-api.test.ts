@@ -8,7 +8,7 @@ import { ErrorClassifier } from '../src/resilience/error-classifier.js';
 import type { RouterConfig } from '../src/config/types.js';
 
 /**
- * ADR-0019 P3 step 2 — manual-trip scope on the admin REST surface.
+ * Manual-trip scope on the admin REST surface.
  *
  *   scope 'model'   (default, legacy body)  -> model trip, today's behavior
  *   scope 'account' (keyHashPrefix)         -> every pair breaker of one credential

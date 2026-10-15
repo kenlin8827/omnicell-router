@@ -14,7 +14,7 @@ import {
 import { wireFor } from '../src/providers/wire.js';
 
 /**
- * ADR-0019 P4 + Decision 11 — provider-definition WRITES.
+ * Provider-definition WRITES.
  * upsertCustomProvider emits exactly one shape: the v2 node (package/settings/headers/
  * env/canonical/body) into opencode's native `providers` slot. There is no second
  * generation to select and no legacy npm/options emission left; requests that carry a

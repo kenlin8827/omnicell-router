@@ -28,7 +28,7 @@ import type { ChatSurface, SurfaceParseResult } from './types.js';
  * is unchanged, and cross-leg Fastify↔MITM visibility is intended stateful
  * behavior — both legs now route the responses wire through this surface).
  *
- * 2026-10-13 amendment (ADR-0015): the singleton optionally mirrors to an
+ * Persistence: the singleton optionally mirrors to an
  * on-disk recovery log (`responses.persist`, default OFF → byte-identical
  * in-memory posture). Configuration is read lazily on the first parse of the
  * process (env switch = restart, so boot-time freshness is guaranteed); when

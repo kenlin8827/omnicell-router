@@ -7,7 +7,7 @@ import type { ModelRegistration, RouterConfig } from '../src/config/types.js';
 import type { ChatCompletionRequest, ChatCompletionResponse } from '../src/types/openai.js';
 
 /**
- * ADR-0019 P3 step 1 — registry-level credential selection + error attribution.
+ * Registry-level credential selection + error attribution.
  *
  * Coverage:
  *  (d) usedCredentialKeyHashPrefix is stamped centrally on failures with the USED

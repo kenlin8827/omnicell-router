@@ -683,7 +683,7 @@ export class CircuitBreaker {
   }
 
   /**
-   * ADR-0008 amendment (2026-10-14) — the full mutable state for disk. Unlike
+   * The full mutable state for disk. Unlike
    * `getSnapshot()` this never transitions the machine and never derives
    * display values; it copies the raw fields verbatim so a restart resumes the
    * exact same cooldown/backoff/window position.
@@ -734,7 +734,7 @@ export class CircuitBreaker {
     // position. A clock jump BACKWARD while the gateway was off would
     // otherwise stretch the cooldown (12h quota + 24h rewind = 36h block).
     // A forward jump shortens it — fail-open, no persistence made that
-    // better; noted in ADR-0008.
+    // better; known trade-off.
     this.cooldownUntil = Math.min(rec.cooldownUntil, this.nowFn() + rec.currentCooldownMs);
     this.currentCooldownMs = rec.currentCooldownMs;
     // A snapshot can be flushed while a canary is in flight (debounce timer or

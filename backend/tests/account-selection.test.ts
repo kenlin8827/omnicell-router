@@ -16,7 +16,7 @@ import type { ModelRegistration } from '../src/config/types.js';
 import type { ConversationSession } from '../src/session/session-manager.js';
 
 /**
- * ADR-0019 P3 step 3 — Decision 7 selection-rule table (unit, no net).
+ * Decision 7 selection-rule table (unit, no net).
  * Every case pins ONE rule of the resolver; the orchestrator test file covers
  * the wiring (persist-on-success, self-heal continuity, gate passthrough).
  */

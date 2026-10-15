@@ -49,7 +49,7 @@ export async function pullLiveModels(id: string, opts: { pattern?: string; dryRu
   if (!baseURL) {
     return { httpStatus: 400, body: { success: false, error: `Provider '${id}' has no baseURL configured` } };
   }
-  // ADR-0019 B4: raw key from the BOUND store (opencode v2 db / v1 auth.json / ocr
+  // raw key from the BOUND store (opencode v2 db / v1 auth.json / ocr
   // file) — direct auth.json reads would miss v2-managed and standalone
   // credentials.json keys. Inline precedence above the store kept (Decision 1).
   const { getCredentialStore } = await import('../credentials/index.js');
@@ -254,7 +254,7 @@ async function enrichFromCatalog(models: CatalogModel[], excludeProviderId: stri
 export async function autoPullProviderModels(): Promise<AutoPullEntry[]> {
   if (loadConfig().catalog?.autoPullModels === false) return [];
   const { listOpenCodeProviders, expandEnvTemplate, getProviderNodeById } = await import('../user-config.js');
-  // ADR-0019 B4: keys from the BOUND store (same rule as pullLiveModels —
+  // keys from the BOUND store (same rule as pullLiveModels —
   // inline above the store; the auth.json-direct read missed opencode v2 db and
   // standalone credentials.json keys).
   const { getCredentialStore } = await import('../credentials/index.js');

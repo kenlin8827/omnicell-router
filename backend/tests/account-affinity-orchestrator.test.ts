@@ -10,7 +10,7 @@ import type { ChatCompletionRequest, ChatCompletionResponse } from '../src/types
 import type { ModelRegistration, RouterConfig } from '../src/config/types.js';
 
 /**
- * ADR-0019 P3 step 3 — session affinity through the REAL orchestrator pipeline
+ * Session affinity through the REAL orchestrator pipeline
  * (no net: stub providers record the credential each call was served with; the
  * pair state is driven through the public breaker API, not injected errors).
  * Harness mirrors registry-credential-selection.test.ts (stub LLMProvider +

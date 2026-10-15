@@ -28,7 +28,7 @@ export interface LLMProvider {
      */
     upstreamEventContext?: UpstreamEventContext,
     /**
-     * ADR-0019 P3 step 1 — per-call credential. When present the executor
+     * Per-call credential. When present the executor
      * authenticates with `credential.key` INSTEAD of the boot-baked
      * `config.apiKey`; when absent the baked key is used (100% backward
      * compatible — the registry only passes this for explicitly selected

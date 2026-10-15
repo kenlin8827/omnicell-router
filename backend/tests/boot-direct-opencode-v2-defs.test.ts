@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 /**
- * ADR-0019 B3, Decision 9 — opencode v2 provider-definition READ normalization.
+ * Opencode v2 provider-definition READ normalization.
  *
  * Two layers:
  *  1. wireFor/probeKindFor units: `@opencode/ai/providers/<segment>` opencode v2

@@ -21,7 +21,7 @@ export interface ConversationSession {
   /** First ~200 chars of the first user message (UI identification aid). */
   firstUserMessage?: string;
   /**
-   * ADR-0019 Decision 7 — session↔account affinity binding (sha256 key-hash
+   * Session↔account affinity binding (sha256 key-hash
    * prefix, Decision 5 identity; display-safe, never key material). Written
    * once by the first successful routed turn, overwritten only by a FORCED
    * failover (bound pair breaker OPEN / account SUSPECT / stale prefix). A binding
@@ -566,7 +566,7 @@ export class SessionManager {
   }
 
   /**
-   * ADR-0019 Decision 7 — bind a session to one credential account.
+   * Bind a session to one credential account.
    * First-write-wins (like attachOrigin): selection NEVER re-balances a live
    * binding; only `rebindAccount` (forced failover) may overwrite it. Expired
    * bindings are overwritten by a forced rebind too (the stale value must not

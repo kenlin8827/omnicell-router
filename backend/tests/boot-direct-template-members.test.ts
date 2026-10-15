@@ -53,7 +53,7 @@ mock.module('../src/opencode/user-config.js', () => ({
 }));
 
 /**
- * ADR-0019 B3 seam — boot-direct resolves credentials through the bound
+ * Boot-direct resolves credentials through the bound
  * CredentialStore (NOT readAuthEntries anymore). In-memory single-account store
  * double: one key per provider, no activate/rename, which is what the OCR file
  * store also gives a one-key provider.

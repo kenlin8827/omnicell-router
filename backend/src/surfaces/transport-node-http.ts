@@ -86,7 +86,7 @@ function logWriteError(err: unknown, message: string): void {
 /**
  * Build the MITM-leg transport. `captureEnabled` is the SURFACE capture
  * policy threaded in by the caller: `true` (chat family) and `'configurable'`
- * (decision family, ADR-0016) both wire the captureProcessContext() trio —
+ * (decision family) both wire the captureProcessContext() trio —
  * who actually emits is the pipeline's decision. `false` answers {} and so
  * structurally disables client events on that leg.
  */

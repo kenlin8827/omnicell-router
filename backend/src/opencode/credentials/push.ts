@@ -5,16 +5,16 @@ import { DbOpener, OpencodeV2Store, OpencodeV2StoreDeps, resolveServiceConfigFor
 import { indexStoreKeyHashes, ReconcileLogSink } from './reconcile.js';
 
 /**
- * ADR-0019 Decision 2 recovery — the one-shot **Push to opencode**.
+ * The one-shot **Push to opencode**.
  *
  * When OCR lands on OcrStore (standalone, or the badged db_unreadable
  * degraded binding) it accumulates local entries that opencode never saw.
  * On recovery (opencode v2 service reachable NOW), converge them toward opencode —
- * push-ONLY, the ADR-0002 single-truth direction. Per local entry:
- *  1. dedup against the current opencode v2 db via the shared Decision 4 rule
+ * push-ONLY, the single-truth direction. Per local entry:
+ *  1. dedup against the current opencode v2 db via the shared dedup rule
  *     (integration/provider + label advisory + keyHash primary);
  *  2. push what's missing through a FRESH writable OpencodeV2Store (HTTP connect/key
- *     sink — never raw sqlite writes, Decision 3);
+ *     sink — never raw sqlite writes);
  *  3. on CONFIRMED convergence (pushed, or already present by keyHash) remove
  *     the local OcrStore entry — the key has now converged INTO opencode and
  *     the single truth is restored. A failed push keeps the local copy (never
@@ -42,8 +42,8 @@ export interface PushOutcome {
   /** provider ids fully converged (pushed or deduped AND local entry removed). */
   pushed: string[];
   /**
-   * Converged (provider, keyHashPrefix) pairs — ADR-0019 P3 step 3 needs the
-   * Decision 5 identity per KEY (a push of a new key is a reconnect and lifts
+   * Converged (provider, keyHashPrefix) pairs — consumers need the
+   * key identity per KEY (a push of a new key is a reconnect and lifts
    * that account's SUSPECT flag; provider ids alone cannot name the account).
    */
   pushedKeys: { provider: string; keyHashPrefix: string }[];

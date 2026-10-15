@@ -10,7 +10,7 @@ import type { CallCredential } from '../src/opencode/credentials/types.js';
 import type { ModelRegistration, ProviderConfig } from '../src/config/types.js';
 
 /**
- * ADR-0019 P3 step 1 — per-call credential threading through the executor
+ * Per-call credential threading through the executor
  * layer. A global-fetch capture records the EXACT outbound header object each
  * executor builds (proxiedFetch with an uninitialized proxy config always
  * reaches global fetch — utils/proxy.ts rule 5).

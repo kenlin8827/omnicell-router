@@ -10,7 +10,7 @@ import type { BreakerRulesConfig, CircuitBreakerConfig, ErrorDiagnosis } from '.
 
 /**
  * Circuit-breaker rules hot-apply — spec docs/design/circuit-breaker-rules-config.md
- * invariant 6 (v3.2) + ADR-0008 §Amendment (2026-10-14, hot-apply).
+ * invariant 6 (v3.2, hot-apply).
  * `CircuitBreakerManager.applyConfig` swaps the resolved ruleset into the gate
  * and every live breaker; semantics: next-decision-point, no retroactive
  * re-evaluation, plus the invariant-2 reconciliation of a disabled rule's

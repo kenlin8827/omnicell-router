@@ -337,7 +337,7 @@ export class CaptureRecorder {
     this.systemoneEnabled = config?.systemone?.enabled ?? true;
     this.systemoneJudgeEnabled = config?.systemone?.l2DecisionEnabled ?? true;
     this.retentionDays = config?.retentionDays ?? 7;
-    // Fallbacks mirror DEFAULT_CONFIG / ADR-0016 (512 MB / 64 KB) — a bare
+    // Fallbacks mirror DEFAULT_CONFIG (512 MB / 64 KB) — a bare
     // `new CaptureRecorder()` must not enforce looser limits than the config.
     this.maxTotalBytes = (config?.maxTotalMB ?? 512) * 1024 * 1024;
     this.maxBodyBytes = config?.maxBodyBytes ?? 65536;

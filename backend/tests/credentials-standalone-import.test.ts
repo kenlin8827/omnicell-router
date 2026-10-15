@@ -13,7 +13,7 @@ import {
 } from '../src/opencode/credentials/reconcile.js';
 
 /**
- * ADR-0019 B4 — standalone one-shot import (fixes the B3-flagged standalone
+ * Standalone one-shot import (fixes the previously flagged standalone
  * regression: the console wrote auth.json while the store-backed boot read
  * credentials.json). At bind time on the 'no opencode at all' landing with
  * auth.json entries present: type:'api' keys import into credentials.json

@@ -16,7 +16,7 @@ import {
 } from './types.js';
 
 /**
- * ADR-0008 amendment (2026-10-14) — breaker memory on disk.
+ * Breaker memory on disk.
  *
  * Before this the whole circuit-breaker state machine lived only in process
  * memory: a restart cleared every cooldown, so a gateway could re-hammer an
@@ -231,7 +231,7 @@ export class BreakerStateStore {
       // Atomic write (temp + rename), best-effort 0600 — OcrStore.save precedent.
       // NOTE: the mode bits are effectively a no-op on Windows (they map to
       // the read-only attribute only); real ACLs would need icacls. Accepted
-      // because the payload is display-safe (see ADR-0008 amendment).
+      // because the payload is display-safe.
       tmpPath = `${this.filePath}.tmp.${process.pid}.${Date.now()}`;
       fs.writeFileSync(tmpPath, content, { encoding: 'utf8', mode: 0o600 });
       try {

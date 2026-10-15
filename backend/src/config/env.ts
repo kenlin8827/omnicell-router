@@ -12,14 +12,14 @@ import { getOcrHomeDir } from '../cli/paths.js';
  *   3. the "default" bootstrap environment
  *
  * Environment levers: OCR_ENV / OCR_HOME come from the REAL process environment
- * only — OCR ships no .env loader (dotenv was removed entirely, ADR-0018).
+ * only — OCR ships no .env loader (dotenv was removed entirely).
  * Because the Bun runtime auto-loads a cwd `.env` by itself, every
  * entry point (package.json scripts, the daemon's spawned child, the isolated
  * test runner) passes `--no-env-file`: a stray file in a checkout can never
  * outrank the pointer file and decide which book-set boots.
  *
  * EVERY environment is a directory, `default` included — there is no legacy
- * path mode (supersedes ADR-0017 Decision 1). The pre-environments locations
+ * path mode. The pre-environments locations
  * (cwd/repo-root config.yaml, <cwd>/{data,models}, <home>/{catalog,traces,
  * capture,webauth-secret}) are NOT read by any code path: an install coming
  * from that layout starts empty, which is a deliberate operator choice.
@@ -468,7 +468,7 @@ export function renameEnv(from: string, to: string): EnvInfo {
  * to, and a delete leaves it GONE. The import-replace path passes
  * `allowBootstrap` because its end state keeps `default` in existence
  * (trash → scaffold → archive content) — a recoverable overwrite, not a
- * removal (ADR-0017 D5).
+ * removal.
  */
 export function trashEnv(name: string, opts: { allowBootstrap?: boolean } = {}): string {
   if (name.toLowerCase() === DEFAULT_ENV_NAME && !opts.allowBootstrap) {

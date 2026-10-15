@@ -27,7 +27,7 @@ export const systemoneSurface: DecisionSurface = {
   routePath: '/v1/systemone',
 
   /**
-   * Intentionally WIDER than routePath — ADR-0014 §2, by design. The MITM
+   * Intentionally WIDER than routePath — by design. The MITM
    * forward-proxy leg must also claim native System One upstream traffic:
    * TypeSafe Jev (api.typesafe.ai/v1/systemone) and the Alibaba Bailian
    * compatible-mode decision endpoint both terminate in `/systemone`, and

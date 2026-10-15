@@ -37,7 +37,7 @@ export const ENVELOPE_VERSION = 1;
 export const REDACTION_SENTINEL = '__REDACTED__';
 export const ARCHIVE_SUFFIX = '.orc_env.zip';
 
-/** Zip transport layout (ADR-0017 Decision 5, amended 2026-10-12): the v1
+/** Zip transport layout: the v1
  * envelope splits into a manifest + real-path entries, so zip is a pure
  * codec and parseAndValidateEnvelope stays the single validation site. */
 export const ZIP_MANIFEST_ENTRY = 'manifest.json';
@@ -330,12 +330,12 @@ export async function parseZipArchiveAsync(
 /* ─── Encrypted archive (WinZip AE-2 via zip.js) ─────────────────────────── */
 
 /**
- * Build the password-encrypted archive (ADR-0017 D5, amended 2026-10-12):
+ * Build the password-encrypted archive:
  * a STANDARD zip whose entries are AES-256 encrypted in WinZip AE-2 format,
  * so 360 Zip / 7-Zip / WinRAR / WinZip can open it with the password alone.
  * Chosen over the custom OCRENC1 container after the user hit the wall of
  * generic unzip tools failing on a self-describing-but-nonstandard format.
- * Trade-offs recorded in the ADR: AE-2 keys derive via PBKDF2-HMAC-SHA1
+ * Trade-offs: AE-2 keys derive via PBKDF2-HMAC-SHA1
  * (fixed 1000 iterations — zip.js pins the WinZip value), so the console
  * advises a 12+ char password; the CRC-32 is stored as 0 (AE-2), so the
  * archive leaks nothing about the content; and our manifest checksums

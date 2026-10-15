@@ -231,7 +231,7 @@ export function registerEnvironmentRoutes(app: FastifyInstance, deps: Environmen
     '/api/admin/environments/import',
     { bodyLimit: IMPORT_BODY_LIMIT_BYTES },
     async (req, reply) => {
-      // Archive-only (ADR-0017 D5): the JSON envelope never shipped. The body
+      // Archive-only: the JSON envelope never shipped. The body
       // is a standard zip — plain or AES-encrypted (AE-2); whether a password
       // is needed is decided HERE (server-driven prompt), not sniffed by the
       // client. Content-Type is never trusted.

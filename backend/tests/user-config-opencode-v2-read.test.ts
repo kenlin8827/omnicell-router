@@ -13,7 +13,7 @@ import {
 } from '../src/opencode/user-config.js';
 
 /**
- * ADR-0019 Decision 9 + 11 — provider-shape READ normalization in user-config.ts.
+ * Provider-shape READ normalization in user-config.ts.
  * The v2 shape `package`/`settings`/`headers`/`env`/`canonical`/`body` normalizes to the
  * internal view (`npm`/`options`); a retired-shape node is REFUSED rather than passed
  * through, using the same guard the writer refuses with — reader and writer accept one shape.
