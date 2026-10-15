@@ -20,8 +20,7 @@
 - [3. Core Module Responsibilities & Directory Structure](#3-core-module-responsibilities--directory-structure)
 - [4. Active Learning Data Flywheel & Distillation](#4-active-learning-data-flywheel--distillation)
 - [5. Test Matrix & Verification Suites](#5-test-matrix--verification-suites)
-- [6. Architecture Decision Records (ADR)](#6-architecture-decision-records-adr)
-- [7. Code Conventions & Zero Cruft Policy](#7-code-conventions--zero-cruft-policy)
+- [6. Code Conventions & Zero Cruft Policy](#6-code-conventions--zero-cruft-policy)
 
 ---
 
@@ -226,21 +225,7 @@ Launches a live gateway instance and executes 10 end-to-end integration tests ag
 
 ---
 
-## 6. Architecture Decision Records (ADR)
-
-| ID | Title | Status | Summary |
-| :--- | :--- | :--- | :--- |
-| [ADR-0001](docs/adr/0001-purge-fuzzy-semantic-cache.md) | Purge Local Fuzzy Semantic Caching | **Accepted** | Removes local vector cache to eliminate prompt weight collapse and protect native upstream KV cache |
-| [ADR-0002](docs/adr/0002-dynamic-model-discovery-via-opencode.md) | 100% Dynamic Model Discovery via OpenCode | **Accepted** | Eliminates static model hardcoding in favor of dynamic discovery via local OpenCode v2 |
-| [ADR-0003](docs/adr/0003-language-neutral-routing-engine.md) | Language-Neutral Multi-Dimensional Complexity Engine | **Accepted** | Replaces keyword dictionaries with syntax density, LaTeX math, and universal acronyms |
-| [ADR-0004](docs/adr/0004-hierarchical-classification-and-data-flywheel.md) | Hierarchical Classification & Data Flywheel | **Implemented** | Establishes Layer 0 structural rules -> Layer 1 local CPU model -> Layer 2 dedicated judge |
-| [ADR-0005](docs/adr/0005-auto-initializing-base-model-scaffold.md) | Auto-Initializing Base Model Scaffold & Deterministic Cascade | **Implemented** | Initializes micro-tensor base scaffold (W=0, b=0) with guaranteed low confidence to cascade |
-| [ADR-0006](docs/adr/0006-monotonic-session-ratchet-and-prefix-fingerprinting.md) | Monotonic Session Ratchet & Zero-Header Prefix Fingerprinting | **Implemented** | Enforces escalate-only ratchet to prevent conversational degradation and protect KV cache |
-| [ADR-0007](docs/adr/0007-symmetrical-pipeline-naming-classifier-and-judge.md) | Symmetrical Pipeline Naming: Layer 1 Classifier & Layer 2 Judge | **Implemented** | Standardizes symmetrical architecture (layer1-classifier / layer2-judge) and enforces physical cleanup |
-
----
-
-## 7. Code Conventions & Zero Cruft Policy
+## 6. Code Conventions & Zero Cruft Policy
 
 1. **Zero Cruft Policy**:
    - Refactorings must physically delete legacy files rather than retaining re-export forwarding stubs (`export * from ...`).
