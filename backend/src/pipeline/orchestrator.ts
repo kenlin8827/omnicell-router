@@ -11,6 +11,24 @@ import { ProviderRegistry } from '../providers/registry.js';
 import { applyEffortMap } from '../providers/member-match.js';
 import { FinOpsTracker } from '../metrics/finops-tracker.js';
 import { computeRequestCost } from '../metrics/request-cost.js';
+import { getRateLimiter, accountSubject, apiKeySubject, type Countable } from '../ratelimit/rate-limiter.js';
+
+/**
+ * A cap-override decision pending ledger emission (orchestrator pool gate):
+ * recorded only AFTER the breaker gate confirms the call actually proceeds.
+ */
+interface ForcedPassRecord {
+  subject: string;
+  rule: string;
+  limitedBy: Countable;
+  retryAfterMs: number;
+  /** Always present at construction (limitSubject existing implies limitPrefix) —
+   *  optional only because TS cannot see that derivation link. */
+  keyHashPrefix?: string;
+  note: string;
+  noteCode: RateLimitNoteCode;
+}
+import { recordRateLimitEvent, type RateLimitNoteCode } from '../ratelimit/event-log.js';
 import { FlywheelCollector } from '../flywheel/collector.js';
 import { SessionManager, SessionResolveResult } from '../session/session-manager.js';
 import { TraceTracker } from '../trace/tracker.js';
@@ -686,7 +704,7 @@ export class PipelineOrchestrator {
     let failoverAttempts = 1;
     let failoverPath: string[] = [];
     let inplaceRetries = 0;
-    // ADR-0019 P3 step 3 — the account (keyHash prefix) that actually served;
+    // the account (keyHash prefix) that actually served;
     // undefined = legacy no-prefix path (chain-less provider or single key).
     let servedAccountPrefix: string | undefined = undefined;
 
@@ -997,6 +1015,28 @@ export class PipelineOrchestrator {
       latencyMs,
     });
 
+    // 7b. Sliding-window accounting (ratelimit engine). A completed
+    // generation is ONE terminal fact recorded exactly here — success is the
+    // only path that produces usage, and the request slots were already
+    // consumed at the gates (inbound: auth preHandler, outbound: dispatch
+    // above), so failed turns carry usage: 0 without a second ledger write.
+    // Tokens = prompt + completion (cached ⊂ prompt, reasoning ⊂ completion);
+    // cost = the same request-time pricing snapshot the trace row records.
+    const rlUsage = {
+      tokens: (finalResponse!.usage?.prompt_tokens || 0) + (finalResponse!.usage?.completion_tokens || 0),
+      costUsd: computeRequestCost(finalResponse!.usage, actualModel.pricing),
+    };
+    {
+      const rl = getRateLimiter();
+      const clientKeyId = captureKeyIdentity(context?.fastifyRequest)?.id;
+      if (clientKeyId) rl.recordUsage(apiKeySubject(clientKeyId), rlUsage);
+      // The account that SERVED (same chain-head degeneracy as the pool gate,
+      // so single-credential providers carry usage too).
+      const rlAccountPrefix =
+        servedAccountPrefix ?? this.registry.getCredentialChain(actualModel.provider)?.[0]?.keyHashPrefix;
+      if (rlAccountPrefix) rl.recordUsage(accountSubject(actualModel.provider, rlAccountPrefix), rlUsage);
+    }
+
     // 8. Active Learning Data Flywheel Collection
     await this.flywheel.record({
       requestId: finalResponse!.id || `req_${Date.now()}`,
@@ -1063,13 +1103,13 @@ export class PipelineOrchestrator {
         inputTokens: finalResponse!.usage?.prompt_tokens || 0,
         outputTokens: finalResponse!.usage?.completion_tokens || 0,
         cachedTokens: cachedTokens,
-        costUsd: computeRequestCost(finalResponse!.usage, actualModel.pricing),
+        costUsd: rlUsage.costUsd,
       },
     });
 
     const breakerState = cbManager.getBreaker(actualModel.id)?.getState() || 'CLOSED';
-    // ADR-0019 P3 step 3 (additive keys only — pre-P3 readers keep reading
-    // breakerState alone): when the turn ran in pair mode, expose the serving
+    // additive keys only — older readers keep reading
+    // breakerState alone: when the turn ran in pair mode, expose the serving
     // credential's pair snapshot and the model's availability aggregate.
     const scopedBreakerSnap = servedAccountPrefix ? cbManager.getPairBreaker(actualModel.id, servedAccountPrefix)?.getSnapshot() : undefined;
     const modelAvailability = servedAccountPrefix ? this.registry.modelAvailable(actualModel) : undefined;
@@ -1107,7 +1147,7 @@ export class PipelineOrchestrator {
   }
 
   /**
-   * post-execution contract: translate the client ask through the
+   * Post-execution contract: translate the client ask through the
    * SERVED model's effortMap (`none` included), clamp to its declared
    * capability, and mirror the client exactly when nothing is in play.
    * `degraded` compares the final value against what the client asked
@@ -1158,7 +1198,7 @@ export class PipelineOrchestrator {
    * peek, so HALF_OPEN canary quota is never starved by lookups. Without a
    * selected credential the gate degenerates to the old model-level canExecute.
    *
-   * ADR-0019 Decision 7 (account dimension): each candidate is served through
+   * each candidate is served through
    * the session's bound credential (keep while healthy), a FORCED failover
    * move (rebind persisted only after the new account serves), or the
    * deterministic new-session spread. Chain-less / single-credential
@@ -1175,14 +1215,14 @@ export class PipelineOrchestrator {
       /** Per-key model access policy — candidates outside it are dropped before the loop. */
       modelAccess?: ModelAccessConfig;
       /**
-       * the client's ORIGINAL effort ask (undefined = omitted).
+       * The client's ORIGINAL effort ask (undefined = omitted).
        * Each candidate serves through its own effortMap translated from this
        * value and clamped by its declared capability — the request copy
        * executed per candidate carries exactly what gets sent upstream.
        */
       requestedEffort?: ReasoningEffort;
       /**
-       * ADR-0019 P3 step 3 — conversation session for account affinity. Every
+       * Conversation session for account affinity. Every
        * orchestrator request path passes it; absent = no selection at all (the
        * pre-P3 execution path, kept for non-conversational callers).
        */
@@ -1247,7 +1287,7 @@ export class PipelineOrchestrator {
     let totalInplaceRetries = 0;
     const failoverPath: string[] = [];
 
-    // ADR-0019 Decision 7 — the affinity session is resolved once (live map
+    // the affinity session is resolved once (live map
     // object; a bind persisted by THIS call only happens right before the
     // success return, so candidates never read a mid-turn move).
     const affinitySession = opts.sessionId ? this.sessionManager.getSession(opts.sessionId) : undefined;
@@ -1276,7 +1316,35 @@ export class PipelineOrchestrator {
             candidate,
             this.registry.getCredentialChain(candidate.provider),
             cbManager,
-            { sessionId: opts.sessionId, affinityWindowMs }
+            {
+              sessionId: opts.sessionId,
+              affinityWindowMs,
+              // Rate-limit shaping input (see AccountSelectionCtx.spreadCapped):
+              // a peek per chain member, map lookups only — no state consumed.
+              spreadCapped: (prefix) =>
+                !getRateLimiter().peek(accountSubject(candidate.provider, prefix)).allowed,
+              // A capped member the slack filter actually excluded from the
+              // landing is a TRIGGERED outbound cap — record it where the
+              // shaping lands (never for a kept binding, never on the
+              // all-capped re-open).
+              onSpreadCapped: (prefix) => {
+                const subject = accountSubject(candidate.provider, prefix);
+                const verdict = getRateLimiter().peek(subject);
+                if (verdict.allowed) return; // defensive — the filter just said capped
+                recordRateLimitEvent({
+                  direction: 'outbound',
+                  kind: 'shaped',
+                  subject,
+                  rule: verdict.rule,
+                  limitedBy: verdict.limitedBy,
+                  retryAfterMs: verdict.retryAfterMs,
+                  provider: candidate.provider,
+                  keyHashPrefix: prefix,
+                  note: 'spread selection',
+                  noteCode: 'spread',
+                });
+              },
+            }
           )
         : { forcedMove: false, reason: 'no-chain' };
       const accountPrefix = selection.credential?.keyHashPrefix;
@@ -1291,6 +1359,67 @@ export class PipelineOrchestrator {
           `Every credential of provider '${candidate.provider}' is disabled — taking one down requires re-enabling it in the console`
         );
         continue;
+      }
+
+      // Outbound sliding-window gate (`accounts:` overlay) — evaluated BEFORE the
+      // breaker gate so an at-cap credential never burns a half-open canary.
+      // The chain head stands in when the selector degenerated (single-credential
+      // / sessionless paths — the head IS the boot-baked credential registry.execute
+      // serves with, registry invariant), so caps fire on one-key providers too.
+      // NON-CONSUMING peek: the request slot is taken below only when the call
+      // actually proceeds.
+      const limitPrefix =
+        accountPrefix ?? this.registry.getCredentialChain(candidate.provider)?.[0]?.keyHashPrefix;
+      const limitSubject = limitPrefix ? accountSubject(candidate.provider, limitPrefix) : undefined;
+      // Deferred cap-override ledger entry for THIS candidate — set at the
+      // rate gate, emitted only after the breaker gate confirms the call
+      // proceeds (MINOR-3: no "forced" for a call that never went out).
+      let forcedPass: ForcedPassRecord | undefined;
+      if (limitSubject) {
+        const cap = getRateLimiter().peek(limitSubject);
+        // KEEP-BOUND IRON LAW: a conversation already bound to this account is
+        // never moved off it by a local cap (selection.credential set with no
+        // pending bind = the keep branch). Rebinding burns the upstream prompt
+        // cache over a shaping hint; cap ≠ failure — the provider's own 429 is
+        // the real signal and still flows through the breaker chain unchanged.
+        const keepBound = selection.credential !== undefined && selection.bind === undefined;
+        if (!cap.allowed && !keepBound && ci < candidateList.length - 1) {
+          recordRateLimitEvent({
+            direction: 'outbound',
+            kind: 'skipped',
+            subject: limitSubject,
+            rule: cap.rule,
+            limitedBy: cap.limitedBy,
+            retryAfterMs: cap.retryAfterMs,
+            provider: candidate.provider,
+            keyHashPrefix: limitPrefix,
+            model: candidate.id,
+            note: 'failover to next candidate',
+            noteCode: 'failover',
+          });
+          lastError = new Error(
+            `Account '${limitPrefix}' rate-limited (${cap.rule}, retry in ${Math.ceil(cap.retryAfterMs / 1000)}s)`
+          );
+          continue;
+        }
+        if (!cap.allowed) {
+          // At cap but the gate would let the call through anyway — the two
+          // policy force-overs (keep-bound session / last candidate). The
+          // event is DEFERRED (recorded only once the breaker gate also lets
+          // the call proceed): a cap-forced candidate that the breaker then
+          // skips must not show a "forced through" in the ledger for a call
+          // that never went out (review MINOR-3 — dispatch() below is already
+          // post-gate, the window stays honest).
+          forcedPass = {
+            subject: limitSubject,
+            rule: cap.rule,
+            limitedBy: cap.limitedBy,
+            retryAfterMs: cap.retryAfterMs,
+            keyHashPrefix: limitPrefix,
+            note: keepBound ? 'keep-bound session' : 'last candidate',
+            noteCode: keepBound ? 'keep-bound' : 'last-candidate',
+          };
+        }
       }
 
       // Execution gate — position-based skip: drop an unavailable candidate
@@ -1308,6 +1437,26 @@ export class PipelineOrchestrator {
 
       failoverAttempts++;
       failoverPath.push(candidate.id);
+
+      // Consume the outbound request slot now that the call proceeds —
+      // forced passes (last candidate / keep-bound at cap) included: the window
+      // must reflect what was actually dispatched upstream.
+      if (limitSubject) getRateLimiter().dispatch(limitSubject);
+      if (forcedPass) {
+        recordRateLimitEvent({
+          direction: 'outbound',
+          kind: 'forced',
+          subject: forcedPass.subject,
+          rule: forcedPass.rule,
+          limitedBy: forcedPass.limitedBy,
+          retryAfterMs: forcedPass.retryAfterMs,
+          provider: candidate.provider,
+          keyHashPrefix: forcedPass.keyHashPrefix,
+          model: candidate.id,
+          note: forcedPass.note,
+          noteCode: forcedPass.noteCode,
+        });
+      }
 
       // per-candidate effort translation. Each chain member serves
       // through ITS OWN effortMap (`none` included), clamped by its declared

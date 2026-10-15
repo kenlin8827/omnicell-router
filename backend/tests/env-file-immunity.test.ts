@@ -4,7 +4,7 @@ import path from 'node:path';
 import { resolveRuntimeBinary } from '../src/cli/daemon.js';
 
 /**
- * ADR-0018 removed the dotenv/.env loader, but the Bun runtime auto-loads a cwd
+ * OCR ships no dotenv/.env loader, but the Bun runtime auto-loads a cwd
  * `.env` on its own — so immunity is a CONVENTION (`--no-env-file` on every bun
  * entry point) rather than something the code can enforce from the inside. A
  * convention that nobody checks is re-decided at every new call site, so this
@@ -26,7 +26,7 @@ function bunCodeEntryPoints(scripts: Record<string, string>): string[] {
     .map(([name]) => name);
 }
 
-describe('no env-file mechanism (ADR-0018)', () => {
+describe('no env-file mechanism', () => {
   it('root package.json: every bun entry point that runs repo code passes --no-env-file', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
     const entries = bunCodeEntryPoints(pkg.scripts as Record<string, string>);

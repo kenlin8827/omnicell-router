@@ -128,7 +128,7 @@ async function bindV2(paths: CredentialPaths, fetchImpl: typeof fetch, loads?: {
   });
 }
 
-describe('reconcile gate (ADR-0019 Decision 4)', () => {
+describe('reconcile gate', () => {
   it('pushes auth.json-only keys, dedups by keyHash, skips oauth/wellknown, never touches auth.json, completes idempotently', async () => {
     const paths = sandboxPaths();
     seedAuthJson(paths);
@@ -157,7 +157,7 @@ describe('reconcile gate (ADR-0019 Decision 4)', () => {
     expect(posts.filter((c) => c.url.includes('/wky/'))).toHaveLength(0);
     expect((posts.find((c) => c.url.includes('/anthropic/'))!.body as Record<string, unknown>).key).toBe('sk-auth-only-111222');
 
-    // push failure → loud excluded entry with the ADR detail, remaining entries kept going
+    // push failure → loud excluded entry with the fixed detail, remaining entries kept going
     expect(binding.status.excluded).toContainEqual({
       provider: 'failing',
       reasonCode: 'reconcile_push_failed',

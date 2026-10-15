@@ -86,7 +86,7 @@ function base(overrides: BindOverrides): BindOverrides {
   return { env: {}, now: () => 555_000, ...overrides };
 }
 
-describe('credential store factory (ADR-0019 Decision 2 binding table)', () => {
+describe('credential store factory', () => {
   it('opencode v2  with readable db -> OpencodeV2Store; providers with no routable row are excluded', async () => {
     const paths = sandboxPaths();
     const binding = await bindCredentialStore(

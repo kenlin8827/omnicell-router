@@ -297,7 +297,7 @@ describe('OpencodeV2Store writes (HTTP mock against the opencode v2 service)', (
     expect(calls).toHaveLength(0); // no HTTP write attempts at all
   });
 
-  it('OAuth is capability-refused on the opencode v2 store too (ADR-0019 P2 list excludes it)', async () => {
+  it('OAuth is capability-refused on the opencode v2 store too', async () => {
     const paths = sandboxPaths();
     const { fetchImpl } = makeFetch(() => ({ status: 200 }));
     const store = await makeStore({ paths, fetchImpl });

@@ -66,14 +66,14 @@ export interface ModelRegistration {
   /** Explicit tier from the opencode.jsonc model definition (catalog overrides are read live) */
   configTier?: TierLevel;
   /**
-   * fourth state: the model matched no tier's positive conditions
+   * Fourth state: the model matched no tier's positive conditions
    * (no residual fallback any more). It joins NO candidate pool. Kept as a
    * flag rather than widening `tier` so TIER_RANK / failover chains / session
    * ratchet keep operating on the strict four-state TierLevel.
    */
   unclassified?: boolean;
   /**
-   * the effective thinking-level translation inherited from the
+   * The effective thinking-level translation inherited from the
    * claiming member rule (re-applied on every reclassify). Undefined = no
    * translation (passthrough).
    */
@@ -154,7 +154,7 @@ export interface FallbackConfig {
  */
 
 /**
- * tier member rule — the ONLY source of pool membership (routing).
+ * Tier member rule — the ONLY source of pool membership (routing).
  * `pattern` is a glob over the FULL model id (`provider/model`): `*`/`?`
  * wildcards, case-insensitive; NO wildcard = substring match (a full id
  * therefore pins a single model). The list order IS priority: within a tier
@@ -167,7 +167,7 @@ export interface TierMemberRule {
   /** >= 1, default 1 — reserved for weighted / round_robin selection (v1 UI does not expose). */
   weight?: number;
   /**
-   * inline thinking-level translation (client-requested → upstream
+   * Inline thinking-level translation (client-requested → upstream
    * value), e.g. `{ none: 'high', low: 'high' }`. Missing key = passthrough.
    * Applied per candidate at selection AND at execution; capability clamps
    * afterwards (downgradeReasoning) keep the honesty contract.
@@ -190,7 +190,7 @@ export interface TierPolicy {
     maxInputPerM?: number; // price-band ceiling; a band with no ceiling is a WEAK condition (consulted last)
     exclude?: string[]; // vetoes this tier's auto-claim (explicit pins bypass it)
     /**
-     * anchor-exclude: a model matching ANY condition (patterns / price
+     * Anchor-exclude: a model matching ANY condition (patterns / price
      * band / thinking-effort flag) of one of these tiers may not be AUTO-claimed by
      * THIS tier. Runtime filter derived from the other tiers' own conditions.
      */
@@ -354,8 +354,8 @@ export interface SessionConfig {
 export interface ResponsesSurfaceConfig {
   /**
    * Mirror the gateway-owned `previous_response_id` conversation tree to an
-   * append-only JSONL recovery log (ADR-0015 amendment 2026-10-13).
-   * Default FALSE — off means the in-memory-only posture of ADR-0015 step 3b
+   * append-only JSONL recovery log.
+   * Default FALSE — off means the in-memory-only posture holds
    * byte-for-byte (a restart breaks continuation, fail-visible 400 → the
    * client resends the full input). On: nodes are replayed at boot (24h TTL,
    * FIFO + byte budgets), file mode 0600, per-environment path. The log holds
@@ -380,6 +380,33 @@ export interface ModelAccessConfig {
   models: string[];
 }
 
+/**
+ * One sliding-window rate-limit rule. `window` is a Go/Prometheus duration
+ * string (`30s` / `5m` / `1h` / `1d`). At least one countable is set; more
+ * than one is legal — each becomes an INDEPENDENT constraint sharing the
+ * window (`{ window: 1m, requests: 10, tokens: 50000 }` = two constraints).
+ * Deny = ANY constraint of the subject full. See ratelimit/rate-limiter.ts.
+ */
+export interface RateLimitRule {
+  window: string;
+  /** admitted requests per window */
+  requests?: number;
+  /** consumed tokens (prompt + completion) per window — recorded on completion */
+  tokens?: number;
+  /** USD budget per window (recorded on completion) */
+  costUsd?: number;
+}
+
+/**
+ * Governance overlay for ONE upstream credential (identity:
+ * `keyHashPrefix`). The credential itself lives in the
+ * CredentialStore; this entry only attaches outbound limit rules to it.
+ */
+export interface AccountLimitConfig {
+  keyHashPrefix: string;
+  limits: RateLimitRule[];
+}
+
 export interface ApiKeyConfig {
   id: string; // Unique identifier, e.g. 'key-xxxxxx'
   name: string; // Client / application name, e.g. 'Cursor IDE', 'NextChat'
@@ -389,6 +416,8 @@ export interface ApiKeyConfig {
   expiresAt?: string;
   description?: string;
   modelAccess?: ModelAccessConfig;
+  /** Inbound sliding-window limits enforced at the auth gate (429 + Retry-After). */
+  limits?: RateLimitRule[];
 }
 
 /**
@@ -405,7 +434,7 @@ export interface CatalogSourceConfig {
   enabled?: boolean;
   priority?: number;
   /**
-   * type: 'custom' ONLY — declarative field mapping from the source payload to
+   * Type: 'custom' ONLY — declarative field mapping from the source payload to
    * OCR standard fields (CatalogModel). Lets a NEW response shape be onboarded
    * with pure configuration, no normalizer code.
    */
@@ -600,6 +629,39 @@ export interface ClientProfileMemoryEntry {
   modelMode?: 'none' | 'custom' | 'follow';
 }
 
+/**
+ * Rate-limit policy knobs (the caller-side policy of the engine —
+ * ratelimit/rate-limiter.ts stays verdict-not-action and holds no policy).
+ * The windows themselves are data: `apiKeys[].limits` (inbound) and the
+ * `accounts:` overlay (outbound), never config-tree members.
+ */
+export interface RateLimitPersistConfig {
+  /**
+   * Persist the triggered-event ledger (ratelimit/event-log.ts) to the
+   * shared SQLite file so a restart no longer wipes "what fired before the
+   * restart". Default on; the store is fail-open — an observability write
+   * never breaks the request path, and a non-bun runtime degrades to
+   * memory-only.
+   */
+  enabled?: boolean;
+}
+
+export interface RateLimitConfig {
+  /**
+   * Bounded grace wait in ms: when an inbound denial reopens its window
+   * within this budget, the auth preHandler sleeps the exact `retryAfterMs`
+   * out and re-checks the window ONCE (no loop) instead of answering 429 —
+   * absorbing sub-second bursts so a coding agent never sees a user-visible
+   * error for a blip shorter than its own retry would cost. Denials beyond
+   * the budget keep fast-failing: the per-key limits stay a contract, and
+   * long waits must not turn the gateway into a hidden queue. 0 disables
+   * grace entirely. Clamped to MAX_INBOUND_GRACE_MS at load.
+   */
+  inboundGraceMs?: number;
+  /** Event-ledger persistence (see RateLimitPersistConfig). */
+  persist?: RateLimitPersistConfig;
+}
+
 export interface RouterConfig {
   port: number;
   host: string;
@@ -627,11 +689,20 @@ export interface RouterConfig {
   session?: SessionConfig;
   circuitBreaker?: CircuitBreakerConfig;
   retry?: RetryConfig;
+  /** Rate-limit policy (see RateLimitConfig); the windows themselves live in `apiKeys[].limits` / `accounts:`. */
+  rateLimit?: RateLimitConfig;
   providers?: ProviderConfig[];
   models?: ModelRegistration[];
   combos?: ComboConfig[];
   /** Named slot→modelRef tables for mass-assigning client agent models (see ModelProfileConfig). */
   modelProfiles?: ModelProfileConfig[];
+  /**
+   * Outbound rate-limit overlay for upstream credentials: provider id → list
+   * of per-account rules keyed by the credential identity
+   * (`keyHashPrefix`). The credentials themselves live in the CredentialStore;
+   * this section only attaches window caps to them (see ratelimit/rate-limiter.ts).
+   */
+  accounts?: Record<string, AccountLimitConfig[]>;
   /** Per-client console form memory (see ClientProfileMemoryEntry) — UI-only, never routed. */
   clientProfileMemory?: Record<string, ClientProfileMemoryEntry>;
 }

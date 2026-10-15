@@ -1,7 +1,7 @@
 /**
  * Step-4 MITM-leg suite for the System One decision surface.
  *
- * Pins (ADR-0014 §2/§4, ADR-0016):
+ * Pins:
  *  a) the MITM leg serves /v1/systemone end-to-end — fake NATIVE upstream on
  *     a real 127.0.0.1 listener, typed answers passthrough verbatim, exactly
  *     the 3 X-OCR decision keys on the wire;
@@ -272,7 +272,7 @@ describe('systemone over the MITM leg', () => {
   });
 });
 
-describe('systemone capture explicit-OFF guard (requestCapture.systemone.enabled: false keeps ADR-0014 §4 zero events)', () => {
+describe('systemone capture explicit-OFF guard (requestCapture.systemone.enabled: false keeps the zero-event exemption)', () => {
   interface ExchangeEvent {
     eventType: string;
     direction: string;
@@ -314,7 +314,7 @@ describe('systemone capture explicit-OFF guard (requestCapture.systemone.enabled
   // The master/sub tree made the System One surface MASTER default ON under
   // the capture master, and it silences BOTH legs when off. This block pins
   // the SILENCED path: the config below sets
-  // systemone.enabled false explicitly, keeping the ADR-0014 §4
+  // systemone.enabled false explicitly, keeping the
   // zero-events outcome on both legs. Assertions here are frozen by contract
   // — the opt-in path gets its own suite below (client-leg pair,
   // sanitization, gate ordering).
@@ -480,7 +480,7 @@ describe('systemone full-chain capture opt-in (requestCapture.systemone.enabled)
   // Full-chain capture: one paired client exchange AND one paired upstream
   // exchange (the native passthrough call), sharing the turn's trace/session.
   // (The upstream-leg exclusion was lifted by the chain-completeness mandate
-  // — ADR-0014 §4 now reads: client+upstream legs captured; FinOps/trace/
+  // — the capture contract now reads: client+upstream legs captured; FinOps/trace/
   // breaker-outcome/caching limbs still excluded.)
   function assertClientExchangePair(events: EventRow[], marker: string): { req: EventRow; resp: EventRow } {
     const exchange = events.filter((e) => e.eventType === 'http-exchange');
@@ -636,7 +636,7 @@ describe('systemone full-chain capture opt-in (requestCapture.systemone.enabled)
         await waitUntil(() => readAllEvents(tmp).filter((e) => e.phase === 'response').length >= 2);
 
         // Gate-denied: missing "questions" → validateSystemoneRequest 400,
-        // which returns BEFORE the ADR-0016 emit block.
+        // which returns BEFORE the capture emit block.
         const bad = await app.inject({
           method: 'POST',
           url: '/v1/systemone',

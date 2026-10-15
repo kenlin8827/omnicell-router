@@ -60,6 +60,7 @@ export interface TranslationDict {
     sessions: string;
     usage: string;
     logs: string;
+    rateLimit: string;
     captures: string;
     flywheel: string;
     settings: string;
@@ -392,7 +393,7 @@ export interface TranslationDict {
     pmAutofillNoId: string;
     pmFilterPlaceholder: string;
     pmNoMatch: string;
-    /** Bound credential store (ADR-0019 P2) — status badge kind labels. */
+    /** Bound credential store — status badge kind labels. */
     storeKindOpencodeV2: string;
     storeKindOpencodeV2Readonly: string;
     storeKindOcr: string;
@@ -447,7 +448,7 @@ export interface TranslationDict {
     reasonStoreReadonly: string;
     reasonStoreUnreadable: string;
     reasonWriteFailed: string;
-    /** ADR-0019 P3 per-account drill-down (KeysPage provider cards). */
+    /** Per-account drill-down (KeysPage provider cards). */
     accountSoleServingTip: string;
     /** Chain head = opencode's own key + failover priority head, not the only serving row. */
     accountChainHeadTip: string;
@@ -498,11 +499,19 @@ export interface TranslationDict {
     accountDisconnectV2Title: string;
     accountDisconnectV2Desc: string;
     accountClearSuspect: string;
+    accountLimits: string;
+    accountLimitsTip: string;
+    accountLimitsTitle: string;
+    accountLimitsDesc: string;
+    accountLimitsSaved: string;
+    accountLimitsCleared: string;
+    accountLimitsWindows: string;
+    accountLimitsRetryIn: string;
     accountSuspectCleared: string;
     accountSuspectNone: string;
     reasonGeneric: string;
     reasonGenericCode: string;
-    /** ADR-0019 Decision 10 — password-gated raw-key copy (row action + dialog). */
+    /** Password-gated raw-key copy (row action + dialog). */
     accountCopyKey: string;
     accountCopyNeedsAuthTip: string;
     copyKeyTitle: string;
@@ -616,7 +625,7 @@ hiddenBadge: string;
     catClient: string;
     catManual: string;
     catUnknown: string;
-    /** ADR-0019 P3 scope-aware manual trip / reset. */
+    /** Scope-aware manual trip / reset. */
     scopeModel: string;
     scopeAccount: string;
     scopePair: string;
@@ -627,7 +636,7 @@ hiddenBadge: string;
     resetScopeNone: string;
     resetAccountConfirmTitle: string;
     resetAccountConfirmDesc: string;
-    /** ADR-0019 P3 display side: the (model × credential) matrix grid. */
+    /** The (model × credential) matrix grid. */
     singlePoint: string;
     resetPairSuccess: string;
     pairSplit: string;
@@ -766,6 +775,8 @@ hiddenBadge: string;
     sessionTitle: string;
     thApp: string;
     thAvgMs: string;
+    thToks: string;
+    toksTip: string;
     anonymous: string;
     empty: string;
     windowHint: string;
@@ -867,6 +878,56 @@ hiddenBadge: string;
     clearNothing: string;
     clearFailed: string;
     clearWarning: string;
+  };
+  /** Rate-limit observability page: triggered-cap event ledger + live windows. */
+  rateLimitPage: {
+    eventsTitle: string;
+    windowsTitle: string;
+    shownOf: string;
+    auto: string;
+    autoHint: string;
+    refresh: string;
+    clear: string;
+    clearConfirmTitle: string;
+    clearConfirmDesc: string;
+    clearDone: string;
+    clearFailed: string;
+    timeAll: string;
+    time5m: string;
+    time1h: string;
+    time24h: string;
+    time7d: string;
+    dirAll: string;
+    inbound: string;
+    outbound: string;
+    kindAll: string;
+    kindDenied: string;
+    kindGrace: string;
+    kindSkipped: string;
+    kindForced: string;
+    kindShaped: string;
+    searchPlaceholder: string;
+    ledgerHint: string;
+    eventsEmpty: string;
+    filterEmpty: string;
+    windowsEmpty: string;
+    atCap: string;
+    colTime: string;
+    colDirection: string;
+    colKind: string;
+    colSubject: string;
+    colRule: string;
+    colRetry: string;
+    colDetail: string;
+    colUsed: string;
+    colFill: string;
+    fmtKey: string;
+    noteGraceExhausted: string;
+    noteGraceWait: string;
+    noteKeepBound: string;
+    noteLastCandidate: string;
+    noteSpread: string;
+    noteFailover: string;
   };
   flywheel: {
     pageTitle: string;
@@ -1499,6 +1560,7 @@ hiddenBadge: string;
     save: string;
     desc: string;
     savedNotice: string;
+    filterPlaceholder: string;
   };
   apiKeys: {
     title: string;
@@ -1516,6 +1578,17 @@ hiddenBadge: string;
     customKeyPlaceholder: string;
     descLabel: string;
     descPlaceholder: string;
+    limitsLabel: string;
+    limitsHint: string;
+    limitsTh_window: string;
+    limitsTh_requests: string;
+    limitsTh_tokens: string;
+    limitsTh_costUsd: string;
+    limitsAddBtn: string;
+    limitsBadge: string;
+    limitsErrWindow: string;
+    limitsErrNumber: string;
+    limitsErrNoCountable: string;
     cancelBtn: string;
     createBtn: string;
     createdNoticeTitle: string;
@@ -1591,7 +1664,7 @@ hiddenBadge: string;
     quickConnectPickerNoKeysTitle: string;
   };
   /**
-   * Environments admin (ADR 0017 "book-sets"): one named, fully isolated
+   * Environments admin ("book-sets"): one named, fully isolated
    * config + data set the gateway boots with. `badge.*` keys are shared with
    * the Layout top-bar env chip.
    */

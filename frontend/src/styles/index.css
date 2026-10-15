@@ -343,6 +343,13 @@ button, input, select, textarea {
   font-family: inherit;
 }
 
+/* Same UA pinning applies to monospace elements: bare `code`/`pre` fall back to
+   the browser default monospace (Courier New on Windows — thin serif face).
+   Pin them to the repo's standard chain; inline fontFamily still overrides. */
+code, pre, kbd, samp {
+  font-family: 'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace;
+}
+
 body {
   background-color: var(--bg);
   background-image: var(--bg-gradient);

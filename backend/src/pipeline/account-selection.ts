@@ -5,7 +5,7 @@ import type { ModelRegistration } from '../config/types.js';
 import type { ConversationSession } from '../session/session-manager.js';
 
 /**
- * ADR-0019 Decision 7 — per-request account selection with session affinity.
+ * Per-request account selection with session affinity.
  *
  *   switching is FORCED FAILOVER, never balancing
  *
@@ -72,6 +72,27 @@ export interface AccountSelectionCtx {
   affinityWindowMs?: number;
   /** Clock seam for tests. */
   now?: () => number;
+  /**
+   * Rate-limit shaping predicate: true = this credential is currently at a
+   * local window cap (`accounts:` overlay). Applied ONLY to the new-session
+   * spread and the forced-failover landing — NEVER to a kept binding, which a
+   * local cap must not move (iron law: rebinding burns the prompt cache; the
+   * provider's own 429, not a local hint, is what a bound session should
+   * react to). When EVERY healthy account is capped the filter opens again —
+   * shaping never starves a provider that has no slack.
+   * PURE READ: call sites peek without consuming; use `onSpreadCapped` (not a
+   * side effect in this predicate) to observe a cap that actually shaped a
+   * placement — the filter is consulted before the keep branch and must not
+   * report a kept binding as steered-around.
+   */
+  spreadCapped?: (keyHashPrefix: string) => boolean;
+  /**
+   * Notifier for the shape that LANDED: called once per capped member that the
+   * slack filter actually excluded from the spread pool (new-session spread and
+   * forced-failover landing only; never when the all-capped filter re-opens,
+   * never for a kept binding). Purely observational.
+   */
+  onSpreadCapped?: (keyHashPrefix: string) => void;
 }
 
 /**
@@ -107,6 +128,25 @@ export function selectAccount(
 
   const healthy = chain.filter((c) => !cb.isPairOut(model.id, c.keyHashPrefix));
 
+  // Rate-limit shaping: when a predicate exists, NEW placements (spread and
+  // the forced-failover landing) prefer accounts with window slack; a kept
+  // binding below never consults it (iron law). All-capped chain = filter
+  // opens again — local shaping must never starve a provider of its own key.
+  const spreadCapped = ctx.spreadCapped;
+  const cappedSet = spreadCapped
+    ? new Set(healthy.filter((c) => spreadCapped(c.keyHashPrefix)).map((c) => c.keyHashPrefix))
+    : undefined;
+  const withSlack = cappedSet
+    ? healthy.filter((c) => !cappedSet.has(c.keyHashPrefix))
+    : healthy;
+  const spreadPool = withSlack.length > 0 ? withSlack : healthy;
+  // The slack filter only SHAPED the landing when it actually excluded someone
+  // (withSlack non-empty); the all-capped re-open is a no-op for the ledger.
+  const notifyShaped = () => {
+    if (!cappedSet || cappedSet.size === 0 || withSlack.length === 0) return;
+    for (const c of healthy) if (cappedSet.has(c.keyHashPrefix)) ctx.onSpreadCapped?.(c.keyHashPrefix);
+  };
+
   const bound = session?.boundKeyHashPrefix;
   const now = (ctx.now ?? Date.now)();
   const windowMs = ctx.affinityWindowMs ?? DEFAULT_ACCOUNT_AFFINITY_CACHE_TTL_MS;
@@ -120,7 +160,8 @@ export function selectAccount(
     if (chain.some((c) => c.keyHashPrefix === bound)) {
       // FORCED failover — the bound account is known-bad for this model.
       if (healthy.length === 0) return { forcedMove: false, reason: 'all-unhealthy' };
-      const next = healthy[0]; // chain order = selection priority (active head first)
+      const next = spreadPool[0]; // chain order = selection priority (active head first)
+      notifyShaped();
       return {
         credential: next,
         bind: { keyHashPrefix: next.keyHashPrefix, forced: true },
@@ -134,7 +175,8 @@ export function selectAccount(
 
   // New-session spread — also the landing for expired and stale bindings.
   if (healthy.length === 0) return { forcedMove: false, reason: 'all-unhealthy' };
-  const pick = healthy[accountSpreadIndex(ctx.sessionId, healthy.length)];
+  const pick = spreadPool[accountSpreadIndex(ctx.sessionId, spreadPool.length)];
+  notifyShaped();
   return {
     credential: pick,
     forcedMove: false,

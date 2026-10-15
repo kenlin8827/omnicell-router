@@ -27,7 +27,7 @@ import { authSnapshot } from './auth-snapshot.js';
 import { OpencodeV2Store, DbOpener, resolveServiceConfigForPaths } from './opencode-v2-store.js';
 
 /**
- * ADR-0019 Decision 2 — the factory binds ONE store per boot, gated by
+ * The factory binds ONE store per boot, gated by
  * version evidence. Primary: `opencode --version` (CLI). Fallback:
  * installed.version FILE, only when the CLI is not on PATH — file existence
  * NEVER selects a store alone. Binding is sticky for the process lifetime;
@@ -75,7 +75,7 @@ export interface ReconcileEntryRecord {
   reason?: string;
 }
 
-/** Completion marker + audit trail inside credential-store.json (ADR-0019 Decision 4). */
+/** Completion marker + audit trail inside credential-store.json. */
 export interface CredentialStoreStateReconcile {
   doneAt: number;
   /** true = the auth.json write path is permanently disabled on this machine (B4 gates on it). */
@@ -83,14 +83,14 @@ export interface CredentialStoreStateReconcile {
   entries: ReconcileEntryRecord[];
 }
 
-/** One auth.json entry processed by the B4 standalone one-shot import. */
+/** One auth.json entry processed by the standalone one-shot import. */
 export interface StandaloneImportEntryRecord {
   provider: string;
   /**
    * 'imported'   — type:'api' key copied into <ocrHome>/credentials.json
    * 'deduped'    — same keyHash already present locally (idempotent rerun)
    * 'skipped_oauth'/'skipped_wellknown' — listed and badged, NEVER imported
-   *   as a key (ADR-0011 OAuth boundary; a token is not an api key).
+   * as a key (a token is not an api key).
    * 'failed'     — local write failed; the key stays in auth.json, loudly.
    */
   action: 'imported' | 'deduped' | 'skipped_oauth' | 'skipped_wellknown' | 'failed';
@@ -98,8 +98,8 @@ export interface StandaloneImportEntryRecord {
 }
 
 /**
- * B4 completion marker for the STANDALONE landing (ADR-0019 Decision 2 last
- * edge: no opencode at all → OcrStore). Fixes the B3-flagged regression where
+ * Completion marker for the STANDALONE landing (last
+ * edge: no opencode at all → OcrStore). Fixes the regression where
  * the console kept writing auth.json while the store-backed boot read
  * credentials.json — after the one-shot import the console writes go to
  * OcrStore and auth.json is superseded on this machine (see
@@ -339,15 +339,15 @@ interface StandaloneImportOutcome {
 }
 
 /**
- * B4 standalone one-shot import (ADR-0019 Decision 2, 'no opencode at all'
- * landing + the fix for the B3-flagged console-write regression):
+ * Standalone one-shot import ('no opencode at all'
+ * landing + the fix for the console-write regression):
  * the machine's credentials.json is the truth, but an operator who used OCR
  * before the store flip may hold keys ONLY in auth.json. At bind time, when
  * no completion marker exists and auth.json has entries:
  *  - type:'api' entries are imported into <ocrHome>/credentials.json
  *    (keyHash dedup against existing accounts — idempotent by construction),
  *  - oauth/wellknown entries are listed and badged, never imported as keys
- *    (ADR-0011 OAuth boundary — a token is not an api key),
+ *    (OAuth boundary — a token is not an api key),
  *  - auth.json stays on disk BYTE-IDENTICAL (never delete an upstream
  *    artifact; cp-dataloss), the marker in credential-store.json records that
  *    it is superseded, and every later console credential write lands on
@@ -383,7 +383,7 @@ async function runStandaloneImport(
       excluded.push({
         provider: providerId,
         reasonCode: 'no_routable_credential',
-        detail: `auth.json '${type}' entry listed, never imported as a key (OAuth boundary ADR-0011)`,
+        detail: `auth.json '${type}' entry listed, never imported as a key (OAuth boundary)`,
       });
       continue;
     }
@@ -581,7 +581,7 @@ async function bindCredentialStoreOnce(overrides: BindOverrides = {}): Promise<S
       }
     } catch (e) {
       if (!(e instanceof StoreUnreadableError)) throw e;
-      // ADR-0019 Decision 2 + 11: falling back from an opencode v2 machine to the
+      // falling back from an opencode v2 machine to the
       // auth.json snapshot as a live store is FORBIDDEN. On such a machine
       // auth.json is by definition a stale one-time migration snapshot — serving
       // keys from it would silently route old credentials. Land loudly on
@@ -599,10 +599,10 @@ async function bindCredentialStoreOnce(overrides: BindOverrides = {}): Promise<S
         }));
     }
   } else if (major !== null) {
-    // opencode v1 detected — NOT SUPPORTED (ADR-0019 amendment, v0.0.1). auth.json on
+    // opencode v1 detected — NOT SUPPORTED. auth.json on
     // such a machine is not a truth OCR may read on every request. Land on OcrStore
     // with a loud badge, and import the snapshot ONCE so keys that were routing
-    // before do not go silent without a visible reason (ADR-0011).
+    // before do not go silent without a visible reason.
     const unsupported = new OcrStore({ paths, now });
     store = unsupported;
     degradedCode = 'unsupported_version';

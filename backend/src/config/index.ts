@@ -1,13 +1,25 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { isMap, parse, parseDocument, stringify } from 'yaml';
-import { Layer2JudgeConfig, RequestCaptureConfig, RouterConfig, WebAuthConfig, CircuitBreakerConfig } from './types.js';
+import { Layer2JudgeConfig, RequestCaptureConfig, RouterConfig, WebAuthConfig, CircuitBreakerConfig, RateLimitConfig } from './types.js';
 import { DEFAULT_RETRIABLE_CAUSES } from '../resilience/types.js';
 import { ensureEnvScaffold, getEnvPaths, resolveEnvName } from './env.js';
+import { getRateLimiter } from '../ratelimit/rate-limiter.js';
 
 // Bootstrap levers (OCR_ENV / OCR_HOME) come from the REAL process environment
 // only — there is no .env loader. A file-based override would be a second,
-// cwd-dependent source of truth next to the envs/current pointer (ADR-0018).
+// cwd-dependent source of truth next to the envs/current pointer.
+
+/**
+ * Inbound grace defaults: on by default (a sub-second blip should not become
+ * a user-visible 429 for a coding agent) but hard-capped — beyond a couple of
+ * seconds the wait belongs to the client's own retry loop, not our sockets.
+ * Mirrors the outbound side's `retry.inplace.maxRateLimitWaitMs` (2000ms)
+ * precedent: short upstream caps are already slept in place; this is the same
+ * policy at the inbound gate.
+ */
+export const DEFAULT_INBOUND_GRACE_MS = 1000;
+export const MAX_INBOUND_GRACE_MS = 2000;
 
 const DEFAULT_CONFIG: RouterConfig = {
   port: parseInt(process.env.PORT || '3000', 10),
@@ -44,22 +56,6 @@ const DEFAULT_CONFIG: RouterConfig = {
       collectEnabled: false, // dataset sampling: judged decisions → data/layer2-decisions.jsonl (single-key gate, opt-in)
     },
   },
-  flywheel: {
-    // Opt-in: writing user prompts to disk is not a sensible default, and with
-    // it on, every `bun test` run appends its fixtures to the production
-    // dataset. Existing deployments that set `flywheel.enabled: true` in
-    // config.yaml keep collecting — only the implicit default changes.
-    enabled: false,
-    datasetPath: './data/flywheel.jsonl',
-    maxSamples: 100000,
-    logUserPrompt: true,
-    // Retention knobs default OFF (0 = disabled): a boot + hourly sweep that
-    // silently deletes training history with no backup must be an explicit
-    // operator decision (docs/design/flywheel-deletion.md D4). Backward
-    // compat: deployments without these keys keep never auto-deleting.
-    retentionDays: 0,
-    maxFileSizeMB: 0,
-  },
   proxy: {
     enabled: false, // opt-in: proxying only when explicitly enabled
     url: 'http://127.0.0.1:7890',
@@ -92,6 +88,22 @@ const DEFAULT_CONFIG: RouterConfig = {
     retentionDays: 7,
     maxTotalMB: 100,
   },
+  flywheel: {
+    // Opt-in: writing user prompts to disk is not a sensible default, and with
+    // it on, every `bun test` run appends its fixtures to the production
+    // dataset. Existing deployments that set `flywheel.enabled: true` in
+    // config.yaml keep collecting — only the implicit default changes.
+    enabled: false,
+    datasetPath: './data/flywheel.jsonl',
+    maxSamples: 100000,
+    logUserPrompt: true,
+    // Retention knobs default OFF (0 = disabled): a boot + hourly sweep that
+    // silently deletes training history with no backup must be an explicit
+    // operator decision (docs/design/flywheel-deletion.md D4). Backward
+    // compat: deployments without these keys keep never auto-deleting.
+    retentionDays: 0,
+    maxFileSizeMB: 0,
+  },
   circuitBreaker: {
     enabled: true,
     failureThreshold: 3,
@@ -107,7 +119,7 @@ const DEFAULT_CONFIG: RouterConfig = {
       intervalMs: 60000,
     },
     accountAffinity: {
-      // ADR-0019 Decision 7 — a session keeps its account while its pair breaker is up;
+      // a session keeps its account while its pair breaker is up;
       // idle past this window it re-spreads like a new session (the upstream
       // prompt cache is gone by then anyway). 300000 = Anthropic cache TTL.
       cacheTtlMs: 300000,
@@ -159,6 +171,10 @@ const DEFAULT_CONFIG: RouterConfig = {
       tierCrossPolicy: 'allow_escalate',
     },
   },
+  rateLimit: {
+    inboundGraceMs: DEFAULT_INBOUND_GRACE_MS,
+    persist: { enabled: true },
+  },
   apiKeys: [],
   providers: [],
   models: [],
@@ -173,7 +189,7 @@ export function getConfigPath(customPath?: string): string {
 }
 
 /**
- * webAuth sanitizer: shallow-copies and strips anything that must never
+ * WebAuth sanitizer: shallow-copies and strips anything that must never
  * persist — a hand-written plaintext `password` key (hashes only), so a
  * round-tripped config can't leak or overwrite the stored hash format.
  * (Exported for the environment-archive import path — config/env-archive.ts.)
@@ -378,6 +394,27 @@ function resolveCircuitBreaker(parsed: any): CircuitBreakerConfig {
   return merged;
 }
 
+/**
+ * Resolve the `rateLimit:` tree (policy knobs only — the windows themselves
+ * are `apiKeys[].limits` / the `accounts:` overlay). Junk falls back to the
+ * default, values are floored at 0 (disable) and hard-capped at
+ * MAX_INBOUND_GRACE_MS; unknown keys are dropped (round-trip hygiene, same
+ * doctrine as resolveRequestCapture). `persist.enabled` defaults to true —
+ * only an explicit `false` disables the ledger store. Exported for tests.
+ */
+export function resolveRateLimit(parsed: any): RateLimitConfig {
+  const raw = (parsed?.rateLimit ?? {}) as Record<string, unknown>;
+  const v = raw.inboundGraceMs;
+  // Same trust-boundary cleaner as resolveCircuitBreaker's `ms()`: non-number
+  // (e.g. a quoted string in YAML) is junk → default, not coercion.
+  const graceMs =
+    typeof v === 'number' && Number.isFinite(v) && v >= 0
+      ? Math.min(Math.floor(v), MAX_INBOUND_GRACE_MS)
+      : DEFAULT_INBOUND_GRACE_MS;
+  const persistRaw = (raw.persist ?? {}) as Record<string, unknown>;
+  return { inboundGraceMs: graceMs, persist: { enabled: persistRaw.enabled !== false } };
+}
+
 export function loadConfig(configPath?: string): RouterConfig {
   const resolvedPath = getConfigPath(configPath);
   if (fs.existsSync(resolvedPath)) {
@@ -427,6 +464,7 @@ export function loadConfig(configPath?: string): RouterConfig {
         requestCapture: resolveRequestCapture(parsed),
         tracePersist: { ...DEFAULT_CONFIG.tracePersist, ...parsed?.tracePersist },
         circuitBreaker: resolveCircuitBreaker(parsed),
+        rateLimit: resolveRateLimit(parsed),
         retry: {
           enabled: parsed?.retry?.enabled ?? DEFAULT_CONFIG.retry?.enabled,
           inplace: { ...DEFAULT_CONFIG.retry?.inplace, ...parsed?.retry?.inplace },
@@ -515,10 +553,23 @@ export function saveRawConfig(yamlContent: string): { success: boolean; error?: 
   const configPath = getConfigPath();
   try {
     const parsed = parse(yamlContent);
-    if (!parsed || typeof parsed !== 'object') {
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       return { success: false, error: 'YAML must define an object configuration' };
     }
+    // config.yaml.bak snapshot BEFORE overwriting — the raw page's own copy
+    // (yaml.desc / savedNotice) promises this backup; keeping the promise true
+    // gives hand-edits a manual rollback path (loadConfig itself never
+    // rejects: a semantically wrong but syntactically valid file loads
+    // leniently, so the .bak is the only undo a raw save ever has).
+    if (fs.existsSync(configPath)) {
+      fs.copyFileSync(configPath, `${configPath}.bak`);
+    }
     fs.writeFileSync(configPath, yamlContent, 'utf8');
+    // The raw save is a config save too: refresh the auth snapshot view, the
+    // accounts overlay AND the limiter rule table through the SAME routine as
+    // saveConfig (the pre-fix here left runtimeConfigRef stale — the YAML
+    // editor violated the module's own hot-apply promise).
+    syncRuntimeAuthView(loadConfig());
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err.message };
@@ -549,6 +600,29 @@ export function getRuntimeConfigRef(): RouterConfig | undefined {
   return runtimeConfigRef;
 }
 
+/**
+ * Single sync routine for BOTH writers (saveConfig / saveRawConfig): the
+ * module docstring above registerRuntimeConfigRef promises "a key edited via
+ * the UI OR THE YAML EDITOR" follows immediately — refreshing apiKeys/webAuth
+ * (the auth views), the accounts rate-limit overlay (withAccountHealth badge),
+ * the rateLimit grace knob (read boot-snapshot-first per request) and the
+ * limiter rule table together is what makes that promise true for every save
+ * path, not just the visual one.
+ */
+function syncRuntimeAuthView(fresh: RouterConfig): void {
+  if (runtimeConfigRef) {
+    runtimeConfigRef.apiKeys = fresh.apiKeys;
+    runtimeConfigRef.webAuth = fresh.webAuth;
+    runtimeConfigRef.accounts = fresh.accounts;
+    // rateLimit (inbound grace) too: resolveActiveAuthConfig reads the boot
+    // snapshot FIRST (`config.rateLimit?.inboundGraceMs ?? disk…` — the disk
+    // arm never fires because loadConfig always resolves the section), so
+    // without this line the grace knob would silently ignore every save.
+    runtimeConfigRef.rateLimit = fresh.rateLimit;
+  }
+  getRateLimiter().reload(fresh);
+}
+
 export function saveConfig(newConfig: Partial<RouterConfig>): { success: boolean; error?: string } {
   const configPath = getConfigPath();
   try {
@@ -563,12 +637,11 @@ export function saveConfig(newConfig: Partial<RouterConfig>): { success: boolean
     merged.webAuth = sanitizeWebAuthInput(merged.webAuth);
     const yamlContent = annotateYamlComments(stringify(merged));
     fs.writeFileSync(configPath, yamlContent, 'utf8');
-    // Single sync point: whichever path saved the config (key CRUD, visual
-    // editor, ...), the running gateway's key snapshot follows immediately.
-    if (runtimeConfigRef) runtimeConfigRef.apiKeys = merged.apiKeys;
-    // Same for webAuth — the console-auth gate reads it per request and the
-    // runtime ref IS the createServer snapshot object, so this is hot.
-    if (runtimeConfigRef) runtimeConfigRef.webAuth = merged.webAuth;
+    // Single sync routine for both writers (see syncRuntimeAuthRef doc): the
+    // running gateway's key snapshot, the accounts overlay and the limiter
+    // rule table follow every save (key CRUD, visual editor, raw YAML — all
+    // writers pass through here); windows survive unchanged constraints.
+    syncRuntimeAuthView(merged);
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err.message };
@@ -585,7 +658,7 @@ export function saveConfig(newConfig: Partial<RouterConfig>): { success: boolean
 const YAML_FILE_HEADER = [
   'OpenCode Router 网关配置（config.yaml）',
   '可视化编辑：控制台「可视化配置」页；手写编辑：「配置文件」页（原文保存，注释保留）',
-  '注意：配置无热加载，保存/修改后需重启网关才生效；价格单位均为 美元/百万 tokens',
+  '注意：大部分配置保存即时生效（代理/捕捉/梯队/组合/熔断/限流等，逐项见注释）；标注「重启网关生效」的段落需重启；价格单位均为 美元/百万 tokens',
 ].join('\n');
 
 /** yaml pkg renders commentBefore verbatim after '#', so pad one space per line ourselves. */
@@ -703,7 +776,13 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'retry.failover': '故障转移（切换候选模型重试）',
   'retry.failover.maxAttempts': '故障转移尝试次数',
   'retry.failover.tierCrossPolicy': '跨梯队策略：allow_escalate 允许向上升级',
-  apiKeys: '客户端接入密钥（sk-ocr-*，见 /keys 页）',
+  rateLimit: '限流策略开关（窗口本身在 apiKeys[].limits 与 accounts: 叠加层）',
+  'rateLimit.persist': '已触发限流事件账本的持久化：写入 traces.db（与 trace/FinOps 共库独立句柄），重启后 /rate-limit 页仍可回看上一次的触发历史；观测性写入 fail-open，永不阻塞请求路径',
+  'rateLimit.persist.enabled': '账本持久化开关（默认开）；关闭=仅内存环（重启清零）',
+  'rateLimit.inboundGraceMs': '宽限等待（毫秒，默认 1000，上限 2000，0=关闭）：客户端密钥窗口满、但重开等待不超过该值时，网关原地等待窗口重开后复查一次（不循环），复查仍满或等待超限才回 429 + Retry-After——吸收亚秒级突发，避免短限流变成用户可见错误；长窗口维持快速失败：限流契约不变，等待归属客户端自己的退避',
+  apiKeys: '客户端接入密钥（sk-ocr-*，见 /keys 页）；每个密钥可配 limits=入站滑动窗口限流，规则项 { window, requests | tokens | costUsd }（window 用时长语法 30s/5m/1h/1d；同一项可写多个维度=各自独立计数；任一窗口满即拒——宽限等待内（rateLimit.inboundGraceMs）先原地等满复查一次，否则 429 + Retry-After；被拒请求不计入窗口；保存即时生效）；requests 维度覆盖全部四条推理线（前向代理 MITM 腿不经该入口、不入站计量）；tokens/costUsd 在 chat 形态线（chat/messages/responses）与 systemone 决策线均于完成时记账（决策线以协议 usage 为准，上游未带 usage 的 native 应答只计 requests）',
+  accounts: '模型账户限流叠加层（原始 YAML 页编辑，保存即时生效）：按 provider id 分组，每项 { keyHashPrefix, limits } —— keyHashPrefix 是该凭据 sha256 的前 12 位（控制台凭据卡片可见，与账号增删改名无关；大小写不敏感——编译/匹配时归一，磁盘保留原文）；limits 规则语法同 apiKeys（滑动窗口；requests=请求数、tokens=消耗 token 数、costUsd=费用美元，按完成时刻记账）；出站限流只做整形：超限账号在 NEW 会话选号时跳过、绝不改动已绑定会话（重绑会烧上游提示缓存）、候选耗尽时末位强制放行，真正的上游 429 仍由熔断器处理决策线例外：/v1/systemone 不经候选池——不做本地跳过/拒绝、也不经熔断，上游错误逐字透传；但该线的出站 dispatch 与完成记账照常计入，账户窗口会被它填充。内部腿（L2 裁判、健康探测）的上游调用不经任何记账，不会填充窗口',
+  'accounts.*': '该 provider 的账号规则列表（键=provider id，如 anthropic）；条目 { keyHashPrefix, limits }',
   opencode: 'OpenCode 本地服务连接',
   proxy: '出站代理策略（保存后即时生效，无需重启；作用于上游模型调用 / Layer2 判定 / 目录与 logo 同步；localhost/127.0.0.1 永不走代理）',
   'proxy.enabled': '出站代理总开关（默认 false 不启用；true 时按 url 与包含/排除规则出站）',
@@ -762,6 +841,10 @@ function lookupYamlComment(path: string): string | undefined {
   // Dynamic map level: combos.<comboId>.<field…> → combos.*.<field…>
   if (segs[0] === 'combos' && segs.length >= 3) {
     return YAML_FIELD_COMMENTS[`combos.*.${segs.slice(2).join('.')}`];
+  }
+  // Dynamic map level: accounts.<providerId> → accounts.*
+  if (segs[0] === 'accounts' && segs.length >= 2) {
+    return YAML_FIELD_COMMENTS['accounts.*'];
   }
   // Dynamic array level: modelProfiles.<index>.<field…> → modelProfiles.*.<field…>
   if (segs[0] === 'modelProfiles' && segs.length >= 3) {

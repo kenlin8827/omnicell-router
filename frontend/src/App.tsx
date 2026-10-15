@@ -14,6 +14,7 @@ import { GuardrailsPage } from './pages/GuardrailsPage';
 import { BreakerRulesPage } from './pages/BreakerRulesPage';
 import { SessionsPage } from './pages/SessionsPage';
 import { UsagePage } from './pages/UsagePage';
+import { RateLimitPage } from './pages/RateLimitPage';
 import { LogsPage } from './pages/LogsPage';
 import { CapturesPage } from './pages/CapturesPage';
 import { ClientsPage } from './pages/ClientsPage';
@@ -82,6 +83,7 @@ export const App: React.FC = () => {
         <Route path="breaker-rules" element={<BreakerRulesPage />} />
         <Route path="sessions" element={<SessionsPage />} />
         <Route path="usage" element={<UsagePage />} />
+        <Route path="rate-limit" element={<RateLimitPage />} />
         <Route path="logs" element={<LogsPage />} />
         <Route path="captures" element={<CapturesPage />} />
         <Route path="flywheel" element={<FlywheelPage />} />

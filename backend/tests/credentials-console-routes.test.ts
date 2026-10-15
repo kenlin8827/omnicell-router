@@ -13,7 +13,7 @@ import {
 import { DbOpener } from '../src/opencode/credentials/opencode-v2-store.js';
 
 /**
- * ADR-0019 B4 — console credential routes through the BOUND store.
+ * Console credential routes through the BOUND store.
  * Each route switched gets a test per bound-store shape that matters:
  *  opencode v2: happy HTTP write + WriteFailedError 5xx with NO OcrStore fallback,
  *      readonly refusal, integration-unmatched refusal, invalidate-on-
@@ -376,7 +376,7 @@ describe('POST /opencode/providers/:id/key — same store routing', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Idempotent connect (ADR-0019 Decision 5 identity at the write seam): handing
+// Idempotent connect (identity at the write seam): handing
 // a store a key it already holds for that provider must NOT create a second
 // account — the chain is counted by member, so a duplicated row would double the
 // key's weight in the new-session spread and render two indistinguishable rows.
@@ -594,7 +594,7 @@ describe('POST/PATCH /opencode/providers — implicit auth.json side-write suppr
     expect(res.statusCode).toBe(200);
     expect(fetchCalls.some((c) => c.method === 'POST' && c.url.includes('/api/integration/myprov/connect/key'))).toBe(true);
     const jsonc = JSON.parse(fs.readFileSync(path.join(p.configDir, 'opencode.jsonc'), 'utf8'));
-    // ADR-0019 P4: on an opencode v2-bound machine the console writes the opencode v2 SHAPED node
+    // on an opencode v2-bound machine the console writes the opencode v2 SHAPED node
     // (settings/baseURL, no npm/options) — the credential suppression rules
     // below are unchanged, only the def shape follows the bound store version.
     expect(jsonc.providers.myprov.settings.baseURL).toBe('https://x.test/v1');
@@ -1020,7 +1020,7 @@ describe('GET /opencode/providers — masked store views', () => {
 });
 
 // ---------------------------------------------------------------------------
-// ADR-0019 P3 step 3 — pair-health overlay on the credential-store status and
+// pair-health overlay on the credential-store status and
 // the SUSPECT lifecycle (reconnect / Push clear it; nothing else does).
 // ---------------------------------------------------------------------------
 
@@ -1087,7 +1087,7 @@ describe('GET /api/admin/credential-store — pair-health overlay (additive)', (
   });
 });
 
-describe('SUSPECT lifecycle — reconnect clears (ADR-0019 Decision 6)', () => {
+describe('SUSPECT lifecycle — reconnect clears', () => {
   it('opencode v2 connect of the SAME key material lifts the flag (anchor = keyHashPrefix, not id/label)', async () => {
     const p = credPaths();
     bindV2(p);
@@ -1144,7 +1144,7 @@ describe('SUSPECT lifecycle — reconnect clears (ADR-0019 Decision 6)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// ADR-0019 P2 per-account write surface — the store methods (activate/rename/
+// Per-account write surface — the store methods (activate/rename/
 // disconnect) that previously had NO routes. Coverage: capability gate
 // (Decision 1 flags only), label contract, cross-check guard (404
 // account_not_found, no blind passthrough), Decision 6 suspect clear on

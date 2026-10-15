@@ -162,7 +162,7 @@ export const ClientsPage: React.FC = () => {
   }, [clients, mem, profilesReady, profiles]);
 
   /** Write-through form memory into the ACTIVE environment's config.yaml
-   *  (book-set scoped per ADR-0017 — switching envs switches the memory too). */
+   *  (book-set scoped — switching envs switches the memory too). */
   const persistMem = (clientName: string, profile: string, bindings: Record<string, string>, modelMode?: 'none' | 'custom' | 'follow') => {
     const mode = modelMode ?? modeSel[clientName] ?? 'none';
     // Pure updater required: computing `next` (and firing the POST) inside the
@@ -594,6 +594,10 @@ export const ClientsPage: React.FC = () => {
                   const profile = profiles.find(p => p.id === selProfileId);
                   const slotKeys = profile ? Object.keys(profile.slots || {}) : [];
                   const bindings = bindSel[c.name] || {};
+                  // Already-applied bindings (server echo) — used only for row
+                  // ordering. Draft `bindings` must NEVER drive the sort: a row
+                  // would jump to the top the instant it is picked mid-edit.
+                  const appliedBindings = c.profile?.bindings || {};
                   // Switching profiles keeps the agent→slot-name selections; same-name
                   // slots carry over silently (the point of stable slot naming), stale
                   // references are surfaced here and SKIPPED by the backend at apply.
@@ -654,8 +658,9 @@ export const ClientsPage: React.FC = () => {
                             const q = agentFilter.trim().toLowerCase();
                             const visible = agents.filter(a => !q || a.name.toLowerCase().includes(q));
                             // Primary first — few agents, biggest blast radius; subagents next;
-                            // 'all' last. Inside a group bound rows lead, so the eye lands on
-                            // decisions already made (amber stale bindings lead too).
+                            // 'all' last. Inside a group already-applied bound rows lead, so the
+                            // eye lands on decisions already made; in-page picks keep the order
+                            // stable and only reshuffle after the next apply refresh.
                             const groups: [OpenCodeAgentView['mode'], string][] = [
                               ['primary', t('clients.profileGroupPrimary')],
                               ['subagent', t('clients.profileGroupSubagent')],
@@ -669,7 +674,7 @@ export const ClientsPage: React.FC = () => {
                               {groups.map(([mode, label]) => {
                                 const rows = visible
                                   .filter(a => a.mode === mode)
-                                  .sort((x, y) => (bindings[y.name] ? 1 : 0) - (bindings[x.name] ? 1 : 0) || x.name.localeCompare(y.name));
+                                  .sort((x, y) => (appliedBindings[y.name] ? 1 : 0) - (appliedBindings[x.name] ? 1 : 0) || x.name.localeCompare(y.name));
                                 if (rows.length === 0) return null;
                                 const boundN = rows.filter(a => !!bindings[a.name]).length;
                                 return (

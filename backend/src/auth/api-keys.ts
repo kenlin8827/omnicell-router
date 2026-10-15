@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { ApiKeyConfig, ModelAccessConfig, RouterConfig } from '../config/types.js';
+import { ApiKeyConfig, ModelAccessConfig, RateLimitRule, RouterConfig } from '../config/types.js';
 import { loadConfig, saveConfig } from '../config/index.js';
 import { ENTRY_PATTERN } from './model-access.js';
 
@@ -121,6 +121,7 @@ export function createApiKey(payload: {
   expiresAt?: string;
   description?: string;
   modelAccess?: ModelAccessConfig;
+  limits?: RateLimitRule[];
 }): { success: boolean; data?: ApiKeyConfig; error?: string } {
   const config = loadConfig();
   const keys = [...(config.apiKeys || [])];
@@ -146,6 +147,7 @@ export function createApiKey(payload: {
     expiresAt: payload.expiresAt || undefined,
     description: payload.description?.trim() || undefined,
     modelAccess: payload.modelAccess,
+    limits: payload.limits,
   };
 
   keys.unshift(newKey);
@@ -159,13 +161,15 @@ export function createApiKey(payload: {
 
 /**
  * Update an existing API Key (e.g. toggle enabled, update name/description).
- * `modelAccess` follows PUT semantics: undefined = leave unchanged, null =
- * clear the policy (back to unrestricted), object = replace.
+ * `modelAccess` and `limits` follow PUT semantics: undefined = leave
+ * unchanged, null = clear the policy (back to unrestricted / no caps),
+ * value = replace.
  */
 export function updateApiKey(
   id: string,
   updates: Partial<Pick<ApiKeyConfig, 'name' | 'enabled' | 'expiresAt' | 'description'>> & {
     modelAccess?: ModelAccessConfig | null;
+    limits?: RateLimitRule[] | null;
   }
 ): { success: boolean; data?: ApiKeyConfig; error?: string } {
   const config = loadConfig();
@@ -184,6 +188,7 @@ export function updateApiKey(
     ...(updates.expiresAt !== undefined && { expiresAt: updates.expiresAt }),
     ...(updates.description !== undefined && { description: updates.description.trim() }),
     ...(updates.modelAccess !== undefined && { modelAccess: updates.modelAccess ?? undefined }),
+    ...(updates.limits !== undefined && { limits: updates.limits ?? undefined }),
   };
 
   keys[idx] = updated;

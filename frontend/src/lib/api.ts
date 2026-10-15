@@ -104,7 +104,7 @@ export interface BreakerInfo {
   /** When this HALF_OPEN episode began (0 = not in one); recovery.halfOpen.maxWaitMs expires from here. */
   halfOpenEnteredAt?: number;
   /**
-   * Present only on pair breakers (model × credential, ADR-0019 P3). Model
+   * Present only on pair breakers (model × credential). Model
    * rows never carry it — readers split the two layers on `undefined`.
    */
   keyHashPrefix?: string;
@@ -279,7 +279,7 @@ export interface CircuitBreakerConfig {
 }
 
 /**
- * ADR-0019 P3 manual trip/reset granularity — mirrors backend TripScope.
+ * Manual trip/reset granularity — mirrors backend TripScope.
  * 'model' is the legacy whole-model breaker; 'account' is one credential across the
  * models it can reach; 'pair' is one (model, credential) pair.
  */
@@ -327,7 +327,7 @@ export interface GatewayStatusResponse {
     halfOpen: number;
     breakers: BreakerInfo[];
     /**
-     * Pair-only summary (model × credential, ADR-0019 P3 display side).
+     * Pair-only summary (model × credential).
      * Additive: older gateways omit it; the model counts above never include
      * pair breakers.
      */
@@ -601,7 +601,7 @@ export interface SessionRecord {
   historyTiers: string[];
   traceCount: number;
   /**
-   * ADR-0019 Decision 7 — credential this session is pinned to, as its
+   * Credential this session is pinned to, as its
    * display-safe sha256 prefix. Live sessions only (a trace-reconstructed
    * session has no routing state to report), absent when never bound.
    */
@@ -869,7 +869,7 @@ export interface FlywheelResetResult {
   modelUntouched: true;
 }
 
-/* ─── Environments ("book-sets", ADR 0017 — admin API client) ────────────── */
+/* ─── Environments ("book-sets" — admin API client) ────────────── */
 
 export type AdminEnvType = 'regular' | 'sandbox';
 
@@ -1293,7 +1293,7 @@ export const api = {
   },
 
   /**
-   * ADR-0019 P3 scope-aware trip for 'account' / 'pair'. Deliberately NOT
+   * Scope-aware trip for 'account' / 'pair'. Deliberately NOT
    * routed through tripBreaker(): the legacy 'model' scope keeps its exact
    * body and its legacy non-throwing reply handling. Unlike the model scope,
    * an account/pair trip with nothing to take down answers 400 — thrown here
@@ -1307,7 +1307,7 @@ export const api = {
   },
 
   /**
-   * ADR-0019 P3 account/pair reset. Resetting a credential never lifts its
+   * Account/pair reset. Resetting a credential never lifts its
    * SUSPECT flag (administrative state — see clearSuspectAccount below).
    */
   async resetBreakersScoped(
@@ -1318,7 +1318,7 @@ export const api = {
   },
 
   /**
-   * ADR-0019 Decision 6 explicit admin door for a SUSPECT credential (body
+   * Explicit admin door for a SUSPECT credential (body
    * {provider, account}; `account` is the keyHash prefix). `cleared:false`
    * means the flag was already absent — a no-op, not an error.
    */
@@ -1552,6 +1552,7 @@ export const api = {
     expiresAt?: string;
     description?: string;
     modelAccess?: ApiKeyModelAccess;
+    limits?: RateLimitRule[];
   }): Promise<{ success: boolean; data?: ApiKeyItem; error?: string }> {
     const res = await fetch('/api/admin/api-keys', {
       method: 'POST',
@@ -1563,7 +1564,10 @@ export const api = {
 
   async updateApiKey(
     id: string,
-    updates: Partial<Omit<ApiKeyItem, 'modelAccess'>> & { modelAccess?: ApiKeyModelAccess | null }
+    updates: Partial<Omit<ApiKeyItem, 'modelAccess' | 'limits'>> & {
+      modelAccess?: ApiKeyModelAccess | null;
+      limits?: RateLimitRule[] | null;
+    }
   ): Promise<{ success: boolean; data?: ApiKeyItem; error?: string }> {
     const res = await fetch(`/api/admin/api-keys/${id}`, {
       method: 'PUT',
@@ -1575,6 +1579,54 @@ export const api = {
 
   async deleteApiKey(id: string): Promise<{ success: boolean; error?: string }> {
     const res = await fetch(`/api/admin/api-keys/${id}`, { method: 'DELETE' });
+    return res.json();
+  },
+
+  /** Rate-limiter snapshot — live windows for every armed subject. */
+  async getRateLimitWindows(): Promise<{ status: string; windows: RateLimitSnapshotEntry[] }> {
+    const res = await fetch('/api/admin/ratelimit');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /**
+   * Rate-limiter event log — triggered decisions from both directions,
+   * newest first (bounded in-memory ring, repeats coalesce).
+   */
+  async getRateLimitEvents(): Promise<{ status: string; events: RateLimitEvent[] }> {
+    const res = await fetch('/api/admin/ratelimit/events');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /** Wipe the event ledger (ring + durable mirror). Windows and rules untouched. */
+  async clearRateLimitEvents(): Promise<{ status: string; cleared: boolean }> {
+    const res = await fetch('/api/admin/ratelimit/events/clear', { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /**
+   * Arm / clear ONE credential's outbound caps (config `accounts:` overlay
+   * write — the credential itself is not touched). `limits: []` or `null`
+   * clears the entry. Hot: the gateway reloads the rule table on save.
+   */
+  async setAccountLimits(payload: {
+    provider: string;
+    keyHashPrefix: string;
+    limits: RateLimitRule[] | null;
+  }): Promise<{
+    status: string;
+    success: boolean;
+    limits?: RateLimitRule[];
+    windows?: RateLimitSnapshotEntry[];
+    error?: string;
+  }> {
+    const res = await fetch('/api/admin/accounts/limits', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
     return res.json();
   },
 
@@ -1737,6 +1789,19 @@ export interface ApiKeyModelAccess {
   models: string[];
 }
 
+/**
+ * Mirrors backend config/types.ts `RateLimitRule` (contract name kept 1:1):
+ * one sliding-window rule. `window` is a duration string (30s / 5m / 1h / 1d);
+ * each countable set (requests / tokens / costUsd) is an INDEPENDENT
+ * constraint; any full window denies (inbound: 429 + Retry-After).
+ */
+export interface RateLimitRule {
+  window: string;
+  requests?: number;
+  tokens?: number;
+  costUsd?: number;
+}
+
 export interface ApiKeyItem {
   id: string;
   name: string;
@@ -1746,6 +1811,7 @@ export interface ApiKeyItem {
   expiresAt?: string;
   description?: string;
   modelAccess?: ApiKeyModelAccess;
+  limits?: RateLimitRule[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1966,7 +2032,7 @@ export interface OpenCodeModelView {
   source: string;
 }
 
-// -- Bound credential store (ADR-0019) — mirrors backend credentials/types.ts + factory.ts.
+// -- Bound credential store — mirrors backend credentials/types.ts + factory.ts.
 // Backend serves machine-readable codes ONLY; all user-visible copy lives in i18n.
 
 /** Bound store kinds (credentials/types.ts StoreKind). opencode v1 is unsupported:
@@ -2020,7 +2086,7 @@ export interface AccountOverview {
 }
 
 /**
- * ADR-0019 P3 step 3 — the health overlay every console account list carries
+ * The health overlay every console account list carries
  * (GET credential-store + all three per-account write routes answer the same
  * shape, mirrors backend `AccountHealth` in console.ts). Additive keys only:
  * masked `AccountMeta` fields ride through untouched.
@@ -2040,10 +2106,71 @@ export type AccountHealth = AccountMeta & {
   openPairs: number;
   /** Latest OPEN pair breaker's cooldown end (epoch ms) — only present when openPairs > 0. */
   cooldownUntilMs?: number;
+  /** Outbound rate-limit rules armed for THIS credential (config `accounts:` overlay). */
+  limits?: RateLimitRule[];
 };
 
 /**
- * reasonCodes of every credential-store write surface (console.ts
+ * One live sliding-window constraint — mirrors backend `RateLimitSnapshotEntry`
+ * (GET /api/admin/ratelimit). `subject` is the engine identity:
+ * `apikey:<id>` or `account:<provider>:<keyHashPrefix>`.
+ */
+export interface RateLimitSnapshotEntry {
+  subject: string;
+  /** "1m/requests" style label echoing the YAML rule. */
+  rule: string;
+  windowMs: number;
+  countable: 'requests' | 'tokens' | 'costUsd';
+  limit: number;
+  used: number;
+  /** ms until this constraint has slack (0 when below the cap). */
+  retryAfterMs: number;
+}
+
+/**
+ * One TRIGGERED rate-limit decision — mirrors backend `RateLimitEvent`
+ * (GET /api/admin/ratelimit/events). `direction`/`kind` classify it:
+ * inbound = client key hit a cap (denied / grace-admitted), outbound =
+ * a credential window was capped (skipped / forced / shaped). Repeats of
+ * the same subject+kind+rule fold into one entry (`count`, `lastTs`).
+ */
+export type RateLimitEventDirection = 'inbound' | 'outbound';
+
+export type RateLimitEventKind = 'denied' | 'grace-admitted' | 'skipped' | 'forced' | 'shaped';
+
+/** Mirrors backend `RateLimitNoteCode` — machine-readable discriminator for
+ *  `note`; rendered via the code→t('rateLimitPage.note*') table. */
+export type RateLimitNoteCode =
+  | 'grace-wait'
+  | 'grace-exhausted'
+  | 'keep-bound'
+  | 'last-candidate'
+  | 'spread'
+  | 'failover';
+
+export interface RateLimitEvent {
+  /** Stable row key (the durable mirror's UPSERT target) — display ignores it. */
+  id: string;
+  ts: number;
+  lastTs: number;
+  count: number;
+  direction: RateLimitEventDirection;
+  kind: RateLimitEventKind;
+  subject: string;
+  rule: string;
+  limitedBy: 'requests' | 'tokens' | 'costUsd';
+  retryAfterMs: number;
+  apiKeyName?: string;
+  provider?: string;
+  keyHashPrefix?: string;
+  model?: string;
+  note?: string;
+  noteCode?: RateLimitNoteCode;
+  noteParams?: { ms?: number };
+}
+
+/**
+ * ReasonCodes of every credential-store write surface (console.ts
  * `capabilityRefusalBody` / `accountNotFoundBody` / `mapStoreWriteFailure`,
  * shared by the per-account routes and the provider connect/key/create ones).
  * `schema_mismatch` is deliberately absent: it exists only as a backend
@@ -2061,7 +2188,7 @@ export type CredentialWriteReasonCode =
   | 'write_failed';
 
 /**
- * reasonCodes of the ADR-0019 Decision 10 reveal route (console.ts
+ * ReasonCodes of the reveal route (console.ts
  * `accountReveal`). The route ALSO surfaces the write table's codes through the
  * shared failure mapper (account_not_found / capability_unsupported /
  * store_unreadable) — these three are its own pre-login vocabulary.
@@ -2163,14 +2290,14 @@ export interface CredentialPushResponse {
 /** 400 precondition codes of the push route — mirrors backend PUSH_PRECONDITION_ERROR keys. */
 export type CredentialPushReasonCode = 'not_ocr_bound' | 'opencode_v2_service_unreachable' | 'opencode_v2_db_unreadable';
 
-/** ADR-0019 Decision 8: one per-account purge failure in the honest DELETE reply. */
+/** One per-account purge failure in the honest DELETE reply. */
 export interface ProviderPurgeFailure {
   accountId: string;
   reason: string;
 }
 
 /**
- * purgeAuth=1 detail. The route answers success=false whenever
+ * PurgeAuth=1 detail. The route answers success=false whenever
  * attempted>0 && removed<attempted — partial purges never claim full deletion.
  */
 export interface ProviderPurgeResult {
@@ -2180,7 +2307,7 @@ export interface ProviderPurgeResult {
 }
 
 /**
- * ocJson failure with the backend's machine-readable `reasonCode` attached
+ * OcJson failure with the backend's machine-readable `reasonCode` attached
  * when the error body carries one (push 400 preconditions). Purely additive:
  * the message contract is unchanged and message-only callers are unaffected.
  */
@@ -2214,7 +2341,7 @@ function ocJson<T>(res: Response): Promise<T> {
   return res.json();
 }
 
-/** ADR-0019 P3 per-account write path (activate / rename / disconnect share it). */
+/** Per-account write path (activate / rename / disconnect share it). */
 function accountPath(providerId: string, accountId: string): string {
   return `/api/admin/opencode/providers/${encodeURIComponent(providerId)}/accounts/${encodeURIComponent(accountId)}`;
 }
@@ -2229,12 +2356,12 @@ export const opencodeApi = {
     return ocJson(await fetch('/api/admin/opencode/providers'));
   },
 
-  /** ADR-0019 P2: bound credential-store status (kind, capabilities, exclusions, masked accounts). */
+  /** Bound credential-store status (kind, capabilities, exclusions, masked accounts). */
   async getCredentialStore(): Promise<CredentialStoreStatusResponse> {
     return ocJson(await fetch('/api/admin/credential-store'));
   },
 
-  /** One-shot Push-to-opencode convergence (ADR-0019 Decision 2/5; route arrives in B4). */
+  /** One-shot Push-to-opencode convergence. */
   async pushCredentialStore(provider: string): Promise<CredentialPushResponse> {
     return ocJson(
       await fetch('/api/admin/credential-store/push', {
@@ -2245,7 +2372,7 @@ export const opencodeApi = {
     );
   },
 
-  /** ADR-0019 P3 — make one account the active credential of its provider. */
+  /** Make one account the active credential of its provider. */
   async activateProviderAccount(
     providerId: string,
     accountId: string
@@ -2277,7 +2404,7 @@ export const opencodeApi = {
     return ocJson(await fetch(accountPath(providerId, accountId) + '/enable', { method: 'POST' }));
   },
 
-  /** ADR-0019 P3 — set an account's user-editable label (backend trims, max 80). */
+  /** Set an account's user-editable label (backend trims, max 80). */
   async renameProviderAccount(
     providerId: string,
     accountId: string,
@@ -2293,7 +2420,7 @@ export const opencodeApi = {
   },
 
   /**
-   * ADR-0019 P3 / Decision 8 — disconnect one account: the store holds the
+   * Disconnect one account: the store holds the
    * only copy of the key, so the caller must have run the double confirmation
    * (see KeysPage's Decision 8 arbiter) before calling this.
    */
@@ -2305,7 +2432,7 @@ export const opencodeApi = {
   },
 
   /**
-   * ADR-0019 Decision 10 — controlled reveal: re-enter the console LOGIN
+   * Controlled reveal: re-enter the console LOGIN
    * password to export one raw api key. The returned `key` must pass straight
    * from this call's scope into the clipboard — never into component state,
    * the DOM, or any persisted surface.
@@ -2505,7 +2632,7 @@ export const opencodeApi = {
   },
 
   /**
-   * purgeAuth=1 deletes the config node AND loops per-account disconnects
+   * PurgeAuth=1 deletes the config node AND loops per-account disconnects
    * through the bound store; the reply carries the honest `purge` detail.
    */
   async deleteProvider(

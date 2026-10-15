@@ -16,8 +16,40 @@ import { useToast } from '../components/ToastProvider';
 import { Switch } from '../components/Switch';
 import { Combobox } from '../components/Combobox';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
-import { copyToClipboard, shortId } from '../lib/format';
+import { copyToClipboard, shortId, outputRate, formatRate } from '../lib/format';
 import { useSplitterWidth, VSplitter } from '../components/Splitter';
+
+/**
+ * Best-effort completion-token extraction from a captured response wire body.
+ * Non-streaming JSON carries usage once; streaming SSE repeats it, and the
+ * LAST occurrence is the cumulative total for both Anthropic (message_delta)
+ * and OpenAI (final usage chunk). Hex-encoded non-UTF-8 bodies are skipped.
+ */
+const COMPLETION_TOKENS_RE = /"(?:completion_tokens|output_tokens)"\s*:\s*(\d+)/g;
+const completionTokensFrom = (event?: HttpExchangeEvent): number | null => {
+  const body = event?.wire?.responseBody;
+  if (typeof body !== 'string') return null;
+  let last: string | null = null;
+  for (const m of body.matchAll(COMPLETION_TOKENS_RE)) last = m[1];
+  return last ? Number(last) : null;
+};
+
+/**
+ * Per-turn effective output throughput. Prefers the upstream exchange
+ * (excludes gateway overhead); falls back to the client leg. The `side`
+ * marks which latency chip the rate belongs to.
+ */
+const turnToksRate = (turn: CaptureTurn): { rate: number; side: 'upstream' | 'gateway' } | null => {
+  if (turn.upstreamLatencyMs !== undefined) {
+    const r = outputRate(completionTokensFrom(turn.upstreamResponse) ?? 0, turn.upstreamLatencyMs);
+    if (r !== null) return { rate: r, side: 'upstream' };
+  }
+  if (turn.gatewayLatencyMs !== undefined) {
+    const r = outputRate(completionTokensFrom(turn.gatewayResponse) ?? 0, turn.gatewayLatencyMs);
+    if (r !== null) return { rate: r, side: 'gateway' };
+  }
+  return null;
+};
 
 // Left-rail splitter bounds + persistence (captures page session list).
 const RAIL_MIN = 240;
@@ -123,6 +155,9 @@ function JsonBlock({ value }: { value: unknown }) {
           borderRadius: '6px',
           fontSize: '11px',
           lineHeight: 1.55,
+          // Without this the UA default monospace (Courier New on Windows)
+          // renders the JSON — match the standard chain used elsewhere here.
+          fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace",
           overflow: 'auto',
           whiteSpace: 'pre-wrap',
           wordBreak: 'break-word',
@@ -326,6 +361,10 @@ const CaptureDrawer: React.FC<{
               style={{ fontSize: '12px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
             >
               ↳ {turn.gatewayLatencyMs} ms
+              {(() => {
+                const tr = turnToksRate(turn);
+                return tr?.side === 'gateway' ? ` · ${formatRate(tr.rate)} tok/s` : '';
+              })()}
             </span>
           )}
           {turn.upstreamLatencyMs !== undefined && (
@@ -334,6 +373,10 @@ const CaptureDrawer: React.FC<{
               style={{ fontSize: '12px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
             >
               ↗ {turn.upstreamLatencyMs} ms
+              {(() => {
+                const tr = turnToksRate(turn);
+                return tr?.side === 'upstream' ? ` · ${formatRate(tr.rate)} tok/s` : '';
+              })()}
             </span>
           )}
           <button className="btn btn-sm" style={{ marginLeft: 'auto' }} onClick={onClose} aria-label={t('common.close')}>
@@ -1023,7 +1066,7 @@ export const CapturesPage: React.FC = () => {
                       style={{ width: '100%', fontSize: '12px', padding: '6px 10px', marginTop: 6 }}
                     />
                   </div>
-                  <div style={{ overflowY: 'auto', padding: '0 4px 4px', flex: 1, minHeight: 0 }}>
+                  <div style={{ overflowY: 'auto', padding: '2px 10px 10px', flex: 1, minHeight: 0 }}>
                   {visibleSessions.map(s => (
                     <div
                       key={s.file}
@@ -1294,8 +1337,8 @@ export const CapturesPage: React.FC = () => {
                                   className="badge"
                                   style={
                                     errEvent
-                                      ? { background: 'rgba(239,68,68,0.12)', color: '#ef4444' }
-                                      : { background: 'color-mix(in srgb, var(--accent-emerald) 12%, transparent)', color: 'var(--accent-emerald)' }
+                                      ? { background: 'rgba(239,68,68,0.12)', color: '#ef4444', flexShrink: 0 }
+                                      : { background: 'color-mix(in srgb, var(--accent-emerald) 12%, transparent)', color: 'var(--accent-emerald)', flexShrink: 0 }
                                   }
                                 >
                                   {errEvent ? t('captures.statusError') : t('captures.statusOk')}
@@ -1321,6 +1364,7 @@ export const CapturesPage: React.FC = () => {
                                       color: 'var(--hue-blue)',
                                       fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                                       fontSize: '10px',
+                                      flexShrink: 0,
                                     }}
                                   >
                                     ⇢ proxy
@@ -1341,18 +1385,27 @@ export const CapturesPage: React.FC = () => {
                                     padding: '2px 6px',
                                     borderRadius: '4px',
                                     cursor: 'copy',
+                                    flexShrink: 0,
                                   }}
                                 >
                                   trace:{shortId(turn.traceId)}
                                 </span>
                                 {turn.gatewayLatencyMs !== undefined && (
-                                  <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
+                                  <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", flexShrink: 0 }}>
                                     ↳ {turn.gatewayLatencyMs} ms
+                                    {(() => {
+                                      const tr = turnToksRate(turn);
+                                      return tr?.side === 'gateway' ? ` · ${formatRate(tr.rate)} tok/s` : '';
+                                    })()}
                                   </span>
                                 )}
                                 {turn.upstreamLatencyMs !== undefined && (
-                                  <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
+                                  <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", flexShrink: 0 }}>
                                     ↗ {turn.upstreamLatencyMs} ms
+                                    {(() => {
+                                      const tr = turnToksRate(turn);
+                                      return tr?.side === 'upstream' ? ` · ${formatRate(tr.rate)} tok/s` : '';
+                                    })()}
                                   </span>
                                 )}
                               </div>

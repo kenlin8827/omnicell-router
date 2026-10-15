@@ -11,6 +11,7 @@ import { catalogRepository } from './opencode/catalog/repository.js';
 import { initProxyConfig } from './utils/proxy.js';
 import { adoptRestartParent, writeDaemonFiles } from './cli/daemon.js';
 import { openFinOpsStore } from './trace/persist.js';
+import { openRateLimitEventStore, getRateLimitEventLog } from './ratelimit/event-log.js';
 import { getEnvPaths, resolveEnvName } from './config/env.js';
 import { getWarnThrottle } from './observability/warn-throttle.js';
 import { validateWebAuthStartup } from './auth/web-auth.js';
@@ -77,10 +78,29 @@ async function main() {
     console.log('[OCR] FinOps persistence: in-memory only (no bun:sqlite)');
   }
 
-  // 0.6 ADR-0019 B2: bind the credential store (Decision 2) and run the
-  //     one-shot reconcile gate (Decision 4) BEFORE the direct pool builds —
+  // 0.5b Rate-limit event ledger persistence — attach the durable mirror of
+  //     the triggered-cap ledger (same traces.db, independent handle) and
+  //     replay last lifetime's events into the ring BEFORE the server
+  //     serves traffic, so the /rate-limit page survives a restart — the
+  //     moment operators actually want the history. Memory-only when the
+  //     knob is off, the runtime lacks bun:sqlite, or the store fails to
+  //     open: the ledger is observability, never a boot dependency.
+  if (config.rateLimit?.persist?.enabled !== false) {
+    const rlStore = await openRateLimitEventStore(getEnvPaths().tracesDir);
+    if (rlStore) {
+      const replayed = getRateLimitEventLog().attachStore(rlStore);
+      console.log(`[OCR] Rate-limit ledger: SQLite mirror active (${replayed} event(s) replayed)`);
+    } else {
+      console.log('[OCR] Rate-limit ledger: in-memory only (no bun:sqlite)');
+    }
+  } else {
+    console.log('[OCR] Rate-limit ledger: persistence disabled (rateLimit.persist.enabled=false)');
+  }
+
+  // 0.6 Bind the credential store and run the one-shot reconcile gate
+  //     BEFORE the direct pool builds —
   //     auth.json-only keys are pushed into opencode v2 and the auth.json
-  //     write path gets disabled before the B3/B4 consumer flip makes store
+  //     write path gets disabled before the store-backed consumer flip makes store
   //     reads matter. Never crashes boot: failures land as excluded entries
   //     on StoreStatus and the bind stands. B3: the excluded entries are no
   //     longer printed here — buildDirectPool merges them into its own
@@ -106,7 +126,7 @@ async function main() {
 
     registry = new ProviderRegistry(config, boot.models.length === 0);
     for (const inst of boot.instances) {
-      // ADR-0019 P3 step 1 — the credential chain rides straight into the
+      // the credential chain rides straight into the
       // registry (raw keys stay in-process; no console/API serialization).
       registry.registerProvider(
         inst.name,
@@ -127,7 +147,7 @@ async function main() {
     registry = new ProviderRegistry(config, true);
   }
 
-  // ADR-0008 amendment (2026-10-14) — breaker memory: attach the on-disk
+  // breaker memory: attach the on-disk
   // store and resume last lifetime's cooldowns / backoff / manual trips.
   // Attached AFTER every config model is registered, so the restore can
   // drop records for models the current config no longer knows (self-clean,
@@ -216,7 +236,7 @@ async function main() {
   // on every cooperative termination; Node allows only sync code there,
   // and flush() is synchronous and self-contained. Hard kills (taskkill
   // /F, power loss) have no handler anywhere: the debounce window is the
-  // honest loss bound for those (ADR-0008 amendment).
+  // honest loss bound for those.
   process.on('exit', () => breakerStore.flush());
 }
 

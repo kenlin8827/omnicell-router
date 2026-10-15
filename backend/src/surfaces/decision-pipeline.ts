@@ -8,8 +8,10 @@ import { resolveTraceId } from '../observability/trace-id.js';
 import { runSystemoneDecision } from '../protocols/systemone/decide.js';
 import { validateSystemoneRequest } from '../protocols/systemone/convert.js';
 import type { ProviderRegistry } from '../providers/registry.js';
+import { computeRequestCost } from '../metrics/request-cost.js';
+import { getRateLimiter, accountSubject, apiKeySubject } from '../ratelimit/rate-limiter.js';
 import { UpstreamError } from '../resilience/error-classifier.js';
-import type { ChatCompletionRequest } from '../types/openai.js';
+import type { ChatCompletionRequest, Usage } from '../types/openai.js';
 import { buildSystemoneOcrHeaders } from './ocr-headers.js';
 import { systemoneSurface } from './systemone.js';
 import type { TransportContext } from './types.js';
@@ -24,16 +26,17 @@ import type { TransportContext } from './types.js';
  * 404/503 return and BEFORE execution — mirroring the chat leg, where
  * orchestrator.process emits only past its own gates. `recorder.isSystemone-
  * Enabled()` is the config gate (requestCapture.enabled master — default OFF,
- * the privacy opt-in per ADR-0016 — × requestCapture.systemone.enabled
+ * the privacy opt-in — × requestCapture.systemone.enabled
  * surface master — default ON, since the whole group only matters once the
  * master is on; the surface master silences BOTH systemone legs); when it is
- * false this function never calls captureProcessContext(),
- * so the OFF path is byte-identical to the ADR-0014 §4 structural
- * exemption (the default-off guard test pins zero events on BOTH legs).
+ * false this function never EMITS a capture event — the only accessor call
+ * outside the gate is the pure `captureProcessContext()` read the rate-limit
+ * key-identity lookup makes (returns the request handle, records nothing),
+ * so the OFF path still produces zero events, byte-identical to the
+ * structural capture exemption.
  * The FULL CHAIN is emitted: the client exchange AND — through the ctx passed
  * to the executor — the upstream leg (native passthrough or synthesized
- * conversion call). FinOps rows and trace records stay excluded
- * (ADR-0014 §4 remaining limbs).
+ * conversion call). FinOps rows and trace records stay excluded.
  */
 export async function runDecisionSurface(
   t: TransportContext,
@@ -61,7 +64,7 @@ export async function runDecisionSurface(
     // Pool projection per the transport gate: 'key' → the key's policy;
     // 'exempt' → policy is undefined, so isModelAllowed admits everything
     // (same as today's keyless Fastify deploys). 404/403/503 stay EXPLICIT —
-    // never a silent cross-tier fallback (ADR-0014 §1 frozen;
+    // never a silent cross-tier fallback (frozen rule;
     // registry.getModelForTier would cross tiers, deliberately unused).
     const policy = t.access.policy;
     // The health-agnostic pool separates "tier not configured" (404) from
@@ -216,11 +219,53 @@ export async function runDecisionSurface(
     }
   }
 
+  // Outbound rate-limit accounting for this pool-free wire. The decision
+  // executor bypasses executeCandidatePool (and the breaker) by contract, so
+  // the limiter hooks live HERE — at the SURFACE, never in decide.ts (that
+  // executor is shared with the L2 judge, and internal legs stay unmetered
+  // by policy). Serving identity: the chain head is the credential
+  // registry.execute serves with when no selector is passed (registry
+  // invariant), so no chain = nothing addressable = pure no-op degeneracy.
+  // ONE dispatch per admitted decision: the executor's effort/conversion
+  // repairs re-call the SAME candidate and must not re-consume the slot
+  // ("counts dispatch decisions, not HTTP attempts" — rate-limiter.ts).
+  const rlPrefix = registry.getCredentialChain(model.provider)?.[0]?.keyHashPrefix;
+  const rlSubject = rlPrefix ? accountSubject(model.provider, rlPrefix) : undefined;
+  if (rlSubject) getRateLimiter().dispatch(rlSubject);
+
   const startedAt = Date.now();
   try {
     const decision = await runSystemoneDecision(registry, sysBody, model, {
       upstreamEventContext,
     });
+
+    // Terminal usage facts on BOTH subjects (mirrors the chat wire's block).
+    // Protocol usage: the converted path always maps prompt/completion into
+    // input/output_tokens (convert.ts); a native upstream carries it only
+    // when it publishes one — absent usage records tokens/cost NOTHING for
+    // this decision (the request slot was already consumed; same honesty as
+    // failed chat turns). costUsd approximation: this wire has no cached/
+    // reasoning split, so input bills at FULL input price — a deliberate
+    // conservative over-count for budgets.
+    const rlUsage = decision.response.usage
+      ? {
+          tokens:
+            (decision.response.usage.input_tokens ?? 0) + (decision.response.usage.output_tokens ?? 0),
+          costUsd: computeRequestCost(
+            {
+              prompt_tokens: decision.response.usage.input_tokens ?? 0,
+              completion_tokens: decision.response.usage.output_tokens ?? 0,
+            } as Usage,
+            model.pricing
+          ),
+        }
+      : undefined;
+    if (rlUsage) {
+      const rl = getRateLimiter();
+      if (rlSubject) rl.recordUsage(rlSubject, rlUsage);
+      const clientKeyId = captureKeyIdentity(t.captureProcessContext().fastifyRequest)?.id;
+      if (clientKeyId) rl.recordUsage(apiKeySubject(clientKeyId), rlUsage);
+    }
 
     // Unified X-OCR decision-surface header set (surfaces/ocr-headers.ts) —
     // exactly 3 keys; the latency is measured up to the moment the response

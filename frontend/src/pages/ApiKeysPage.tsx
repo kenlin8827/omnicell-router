@@ -17,6 +17,13 @@ import {
 } from 'lucide-react';
 import { InfoTip } from '../components/InfoTip';
 import { api, type ApiKeyItem, type ApiKeyModelAccess } from '../lib/api';
+import {
+  LimitsEditor,
+  compileLimitDrafts,
+  draftFromRule,
+  ruleLabel,
+  type LimitDraft,
+} from '../components/RateLimitEditor';
 import { useI18n } from '../i18n/I18nContext';
 import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
@@ -215,6 +222,7 @@ export const ApiKeysPage: React.FC = () => {
   const [formDesc, setFormDesc] = useState('');
   const [formAccessMode, setFormAccessMode] = useState<AccessMode>('none');
   const [formAccessModels, setFormAccessModels] = useState<string[]>([]);
+  const [formLimits, setFormLimits] = useState<LimitDraft[]>([]);
   const [creating, setCreating] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
 
@@ -224,6 +232,7 @@ export const ApiKeysPage: React.FC = () => {
   const [editDesc, setEditDesc] = useState('');
   const [editAccessMode, setEditAccessMode] = useState<AccessMode>('none');
   const [editAccessModels, setEditAccessModels] = useState<string[]>([]);
+  const [editLimits, setEditLimits] = useState<LimitDraft[]>([]);
   const [savingAccess, setSavingAccess] = useState(false);
 
   // View-effective-models modal state + per-model live call test
@@ -394,6 +403,11 @@ export const ApiKeysPage: React.FC = () => {
       setErrorMessage(t('apiKeys.accessEmptyError'));
       return;
     }
+    const compiledLimits = compileLimitDrafts(formLimits, t);
+    if (compiledLimits.error) {
+      setErrorMessage(compiledLimits.error);
+      return;
+    }
 
     try {
       setCreating(true);
@@ -405,6 +419,7 @@ export const ApiKeysPage: React.FC = () => {
         key: formKey.trim() || undefined,
         description: formDesc.trim() || undefined,
         modelAccess,
+        limits: compiledLimits.rules,
       });
 
       if (res.success && res.data) {
@@ -415,6 +430,7 @@ export const ApiKeysPage: React.FC = () => {
         setFormDesc('');
         setFormAccessMode('none');
         setFormAccessModels([]);
+        setFormLimits([]);
         fetchKeys();
       } else {
         setErrorMessage(res.error || t('common.saveFailed'));
@@ -432,6 +448,7 @@ export const ApiKeysPage: React.FC = () => {
     setEditDesc(item.description ?? '');
     setEditAccessMode(item.modelAccess?.mode ?? 'none');
     setEditAccessModels(item.modelAccess?.models ?? []);
+    setEditLimits((item.limits ?? []).map(draftFromRule));
   };
 
   const handleSaveEdit = async () => {
@@ -444,6 +461,11 @@ export const ApiKeysPage: React.FC = () => {
       toast.error(t('apiKeys.accessEmptyError'));
       return;
     }
+    const compiledLimits = compileLimitDrafts(editLimits, t);
+    if (compiledLimits.error) {
+      toast.error(compiledLimits.error);
+      return;
+    }
 
     try {
       setSavingAccess(true);
@@ -454,6 +476,8 @@ export const ApiKeysPage: React.FC = () => {
         // empty string clears the description (PUT semantics: '' = set empty)
         description: editDesc.trim(),
         modelAccess,
+        // PUT semantics: null clears every cap (back to unrestricted)
+        limits: compiledLimits.rules ?? null,
       });
       if (res.success && res.data) {
         setKeys((prev) => prev.map((k) => (k.id === editingKey.id ? res.data! : k)));
@@ -766,28 +790,44 @@ export const ApiKeysPage: React.FC = () => {
 
                       {/* Model Access */}
                       <td style={{ padding: '14px 20px' }}>
-                        <span
-                          className="badge"
-                          style={{
-                            background: item.modelAccess
-                              ? item.modelAccess.mode === 'allow'
-                                ? 'color-mix(in srgb, var(--accent-emerald) 12%, transparent)'
-                                : 'color-mix(in srgb, var(--accent-amber) 12%, transparent)'
-                              : 'var(--chip-bg)',
-                            color: item.modelAccess
-                              ? item.modelAccess.mode === 'allow'
-                                ? 'var(--accent-emerald)'
-                                : 'var(--accent-amber)'
-                              : 'var(--text-muted)',
-                            border: '1px solid var(--card-border)',
-                          }}
-                        >
-                          {!item.modelAccess
-                            ? t('apiKeys.accessAllBadge')
-                            : item.modelAccess.mode === 'allow'
-                              ? t('apiKeys.accessAllowBadge', { n: item.modelAccess.models.length })
-                              : t('apiKeys.accessDenyBadge', { n: item.modelAccess.models.length })}
-                        </span>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'flex-start' }}>
+                          <span
+                            className="badge"
+                            style={{
+                              background: item.modelAccess
+                                ? item.modelAccess.mode === 'allow'
+                                  ? 'color-mix(in srgb, var(--accent-emerald) 12%, transparent)'
+                                  : 'color-mix(in srgb, var(--accent-amber) 12%, transparent)'
+                                : 'var(--chip-bg)',
+                              color: item.modelAccess
+                                ? item.modelAccess.mode === 'allow'
+                                  ? 'var(--accent-emerald)'
+                                  : 'var(--accent-amber)'
+                                : 'var(--text-muted)',
+                              border: '1px solid var(--card-border)',
+                            }}
+                          >
+                            {!item.modelAccess
+                              ? t('apiKeys.accessAllBadge')
+                              : item.modelAccess.mode === 'allow'
+                                ? t('apiKeys.accessAllowBadge', { n: item.modelAccess.models.length })
+                                : t('apiKeys.accessDenyBadge', { n: item.modelAccess.models.length })}
+                          </span>
+                          {/* Rate-limit caps chip — one per armed rule, echoes the YAML shape. */}
+                          {(item.limits ?? []).length > 0 && (
+                            <span
+                              className="badge"
+                              style={{
+                                background: 'color-mix(in srgb, var(--accent) 12%, transparent)',
+                                color: 'var(--accent)',
+                                border: '1px solid var(--card-border)',
+                              }}
+                              title={(item.limits ?? []).map(ruleLabel).join('\n')}
+                            >
+                              {t('apiKeys.limitsBadge', { n: (item.limits ?? []).length })}
+                            </span>
+                          )}
+                        </div>
                       </td>
 
                       {/* Status switch */}
@@ -1344,6 +1384,8 @@ curl http://127.0.0.1:3000/v1/systemone \\
                 onModelsChange={setFormAccessModels}
               />
 
+              <LimitsEditor value={formLimits} onChange={setFormLimits} />
+
               <div>
                 <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', display: 'block', marginBottom: '6px' }}>
                   {t('apiKeys.descLabel')}
@@ -1638,6 +1680,8 @@ curl http://127.0.0.1:3000/v1/systemone \\
               onModeChange={setEditAccessMode}
               onModelsChange={setEditAccessModels}
             />
+
+            <LimitsEditor value={editLimits} onChange={setEditLimits} />
 
             <div>
               <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', display: 'block', marginBottom: '6px' }}>

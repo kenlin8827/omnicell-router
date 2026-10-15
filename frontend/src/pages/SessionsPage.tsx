@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Users, RefreshCw, Archive, BarChart3, ChevronDown, ChevronRight, Eye, GitBranch, X, Search, Trash2 } from 'lucide-react';
 import { api, type SessionRecord, type TraceRecord } from '../lib/api';
 import { formatReason, type Translate } from '../lib/reason';
-import { copyToClipboard, formatCost, formatSessionId } from '../lib/format';
+import { copyToClipboard, formatCost, formatSessionId, outputRate, formatRate } from '../lib/format';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
@@ -457,7 +457,7 @@ export const SessionsPage: React.FC = () => {
                   </td>
                   <td style={{ padding: '10px 14px', fontWeight: 600 }}>
                     <PinnedModelCell model={s.pinnedModel} />
-                    {/* ADR-0019 Decision 7 — account affinity (display-safe keyHash). */}
+                    {/* Account affinity (display-safe keyHash). */}
                     {s.boundKeyHashPrefix && (
                       <span
                         title={t('sessions.boundAccountTip', {
@@ -756,7 +756,7 @@ export const SessionsPage: React.FC = () => {
                 <div
                   style={{
                     display: 'grid',
-                    gridTemplateColumns: '64px 64px 30px minmax(90px, 1fr) 56px 56px 60px 86px 52px',
+                    gridTemplateColumns: '64px 64px 30px minmax(90px, 1fr) 56px 56px 60px 86px 52px 44px',
                     columnGap: '8px',
                     rowGap: '6px',
                     fontSize: '11px',
@@ -773,6 +773,7 @@ export const SessionsPage: React.FC = () => {
                     t('sessions.colCached'),
                     t('sessions.colCost'),
                     t('sessions.colMs'),
+                    t('usage.thToks'),
                   ].map((label, i) => (
                     <span
                       key={i}
@@ -796,6 +797,7 @@ export const SessionsPage: React.FC = () => {
                       </span>
                       <span style={{ color: 'var(--accent-amber)' }}>{formatCost(tr.finops.costUsd)}</span>
                       <span>{tr.execution.latencyMs}ms</span>
+                      <span title={t('usage.toksTip')}>{formatRate(outputRate(tr.finops.outputTokens, tr.execution.latencyMs))}</span>
                     </React.Fragment>
                   ))}
                 </div>

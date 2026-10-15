@@ -27,7 +27,7 @@ import {
  * This store is a second local truth ONLY when opencode is absent (normal
  * standalone) or as a LOUD fallback (badged db_unreadable/unsupported_version by
  * the factory). An opencode v2 NEVER falls back here — read-side degradation is
- * allowed with a badge, write-side proliferation is not (ADR-0019 Decision 3).
+ * allowed with a badge, write-side proliferation is not.
  *
  * Schema: { version: 1, providers: Record<providerId, [{ accountId, label?,
  * key, timeCreated, timeUpdated, active }]> }
@@ -86,7 +86,7 @@ function toRaw(providerId: string, account: OcrAccount): RawCred {
   };
 }
 
-/** active first, sole row next, newest timeUpdated last — shared selection (ADR Decision 3 order). */
+/** active first, sole row next, newest timeUpdated last — shared selection. */
 function selectKey<T extends { active: boolean; timeUpdated: number }>(rows: T[]): T | null {
   if (rows.length === 0) return null;
   const active = rows.find((r) => r.active);
@@ -218,11 +218,11 @@ export class OcrStore implements CredentialStore {
   }
 
   async beginOAuth(): Promise<unknown> {
-    throw new CapabilityUnsupportedError('beginOAuth', 'ADR-0019 P2 write list excludes OAuth (all stores)');
+    throw new CapabilityUnsupportedError('beginOAuth', 'OAuth is excluded from every credential store');
   }
 
   async completeOAuth(): Promise<AccountMeta> {
-    throw new CapabilityUnsupportedError('completeOAuth', 'ADR-0019 P2 write list excludes OAuth (all stores)');
+    throw new CapabilityUnsupportedError('completeOAuth', 'OAuth is excluded from every credential store');
   }
 
   invalidate(): void {
@@ -309,7 +309,7 @@ export class OcrStore implements CredentialStore {
     fs.writeFileSync(tmpPath, content, { encoding: 'utf8', mode: 0o600 });
     try {
       // Best-effort restrictive mode; Windows chmod semantics differ and can
-      // fail — acceptable, the ADR calls this "best-effort 0600".
+      // fail — acceptable, this is the documented "best-effort 0600".
       fs.chmodSync(tmpPath, 0o600);
     } catch {
       // best effort

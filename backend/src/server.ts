@@ -1,7 +1,9 @@
 import { registerConsoleRoutes, validateApiKey } from './routes/console.js';
 import { isWebAuthActive, isAdminAuthEndpoint, parseSessionCookie, verifySessionToken } from './auth/web-auth.js';
 import { getModelAccessPolicy, isModelAllowed, isAutoEntryUsable } from './auth/model-access.js';
-import { registerRuntimeConfigRef } from './config/index.js';
+import { registerRuntimeConfigRef, loadConfig, DEFAULT_INBOUND_GRACE_MS, MAX_INBOUND_GRACE_MS } from './config/index.js';
+import { getRateLimiter, apiKeySubject } from './ratelimit/rate-limiter.js';
+import { getRateLimitEventLog, recordRateLimitEvent } from './ratelimit/event-log.js';
 import { registerFlywheelRoutes } from './routes/flywheel.js';
 import { registerEnvironmentRoutes } from './routes/environments.js';
 import { SURFACES } from './surfaces/table.js';
@@ -10,7 +12,6 @@ import { dispatchSurface } from './surfaces/dispatch.js';
 import fastify, { FastifyInstance, LogController } from 'fastify';
 import cors from '@fastify/cors';
 import { RouterConfig } from './config/types.js';
-import { loadConfig } from './config/index.js';
 import { PipelineOrchestrator } from './pipeline/orchestrator.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { FinOpsTracker } from './metrics/finops-tracker.js';
@@ -211,15 +212,41 @@ export function createServer(
         ? config.apiKeys
         : diskConfig.apiKeys || config.apiKeys || [];
     const adminKey = config.adminApiKey !== undefined ? config.adminApiKey : diskConfig.adminApiKey;
-    return { activeKeys, adminKey };
+    // Inbound grace budget, same boot-snapshot-first doctrine as the keys:
+    // a programmatically-supplied config wins; otherwise the disk view (which
+    // loadConfig has already resolved + clamped). Re-defensive-clamped here so
+    // hand-built configs (tests) cannot smuggle junk into the sleep math.
+    const grace = config.rateLimit?.inboundGraceMs ?? diskConfig.rateLimit?.inboundGraceMs;
+    const inboundGraceMs =
+      typeof grace === 'number' && Number.isFinite(grace)
+        ? Math.min(Math.max(0, Math.floor(grace)), MAX_INBOUND_GRACE_MS)
+        : DEFAULT_INBOUND_GRACE_MS;
+    return { activeKeys, adminKey, inboundGraceMs };
   };
 
   /** /v1/models + /v1/models/:model — the anonymous-tolerant models surface. */
   const isModelsSurface = (path: string | null): boolean =>
     path !== null && (path === '/v1/models' || path.startsWith('/v1/models/'));
 
+  /**
+   * Inbound limits meter exactly the protocol surfaces — the routePath set of
+   * the SURFACES table (chat, anthropic, responses, systemone), so a new wire
+   * joins the metered set by the same single-table registration. The models
+   * listing and the admin plane are NOT metered.
+   */
+  const INFERENCE_ROUTE_PATHS: ReadonlySet<string> = new Set(SURFACES.map((s) => s.routePath));
+
+  // Load the rate-limit rule table from the same auth view the preHandler
+  // uses (boot snapshot with the disk fallback resolveActiveAuthConfig does).
+  // Thereafter every config save re-syncs it in-place (config/index.ts
+  // saveConfig / saveRawConfig — the single choke points for all writers).
+  {
+    const bootAuth = resolveActiveAuthConfig();
+    getRateLimiter().reload({ ...config, apiKeys: bootAuth.activeKeys });
+  }
+
   app.addHook('preHandler', async (req, reply) => {
-    const { activeKeys, adminKey } = resolveActiveAuthConfig();
+    const { activeKeys, adminKey, inboundGraceMs } = resolveActiveAuthConfig();
     // Canonical router view of req.url (see canonicalPath): EVERY gate below
     // tests this, never the raw string — '%61pi'-style encodings and proxy-
     // form targets route normally but hide from raw prefix checks.
@@ -357,6 +384,141 @@ export function createServer(
 
     // Attach client identity onto request for tracing and logging
     (req as any).authInfo = validation;
+
+    // ── Inbound sliding-window enforcement (apiKeys[].limits) ───────────────
+    // The client key's window caps are a CONTRACT with the caller, enforced at
+    // the gate: an over-limit request never enters the pipeline and never
+    // consumes a request slot (a counted denial would let a retry storm push
+    // its own lockout past the window). Only the four inference wires are
+    // metered — /v1/models browsing and the admin plane answer freely. The
+    // master adminApiKey has no keyConfig → no subject → never metered.
+    // A denial is answered 429 + `Retry-After` (requests/tokens/cost budget
+    // alike — a cost window re-opens by time too, and 402 tells client SDKs
+    // "don't retry", which is the wrong contract for a sliding budget), with
+    // ONE exception, the bounded grace wait (rateLimit.inboundGraceMs): when
+    // the denial's retryAfterMs fits the grace budget the gate sleeps it out
+    // and re-checks the window exactly ONCE, absorbing sub-second bursts
+    // (mirror of the outbound in-place retry for short upstream caps —
+    // RATE_LIMIT_BURST in the orchestrator). Invariants: admission count per
+    // window is UNCHANGED (the wait only defers the request; the slot it
+    // consumes is one that just expired); never a loop (a still-full window
+    // after the re-check fast-fails like any denial, so a retry storm cannot
+    // park sockets); the window still answers with fresh numbers (a slept
+    // request may have lost the freed slot to a peer — Retry-After comes from
+    // the POST-GRACE verdict, never the pre-sleep one); and an aborted client
+    // is never re-checked (it would burn the freed slot for a dead request).
+    if (validation.keyConfig && path !== null && INFERENCE_ROUTE_PATHS.has(path)) {
+      const subject = apiKeySubject(validation.keyConfig.id);
+      const rl = getRateLimiter();
+      let verdict = rl.tryDispatch(subject);
+      if (!verdict.allowed) {
+        let sleptMs = 0;
+        // Client-liveness for the grace wait. NEVER `req.raw.destroyed`: in
+        // Bun an IncomingMessage auto-destroys shortly after the body reaches
+        // EOF, so a perfectly LIVE request reads as destroyed once the grace
+        // sleep crosses a macrotask — the woken gate hijacked the reply and
+        // hung the live client (inject tests can't see it: mock req.raw never
+        // destroys; the abort test can't see it: a gone client is also
+        // "destroyed"). `aborted`/`socket.destroyed` are not dependable
+        // cross-runtime either. The RESPONSE stream is the honest signal: it
+        // only closes before `writableEnded` when the connection truly died.
+        let clientGone = false;
+        reply.raw.once('close', () => {
+          if (!reply.raw.writableEnded) clientGone = true;
+        });
+        if (inboundGraceMs > 0 && verdict.retryAfterMs <= inboundGraceMs && !clientGone) {
+          // setTimeout can fire a hair BEFORE the log entry expires
+          // (msUntilBelow prunes at ts <= now-windowMs), so the re-check needs
+          // slack — without it a correctly-timed grace sleep can still wake
+          // into a still-full window. The jitter also de-synchronizes sleepers
+          // racing one freed slot, but correctness only needs the floor.
+          sleptMs = verdict.retryAfterMs + 5 + Math.floor(Math.random() * 25);
+          await new Promise((resolve) => setTimeout(resolve, sleptMs));
+          if (!clientGone) {
+            const recheck = rl.tryDispatch(subject);
+            if (recheck.allowed) {
+              req.log.info(
+                `[ratelimit] key '${validation.keyConfig!.name}' grace-admitted after ${sleptMs}ms wait (${verdict.rule})`
+              );
+              recordRateLimitEvent({
+                direction: 'inbound',
+                kind: 'grace-admitted',
+                subject,
+                rule: verdict.rule,
+                limitedBy: verdict.limitedBy,
+                retryAfterMs: 0, // waited out — the window reopened within grace
+                apiKeyName: validation.keyConfig.name,
+                note: `grace wait ${sleptMs}ms`,
+                noteCode: 'grace-wait',
+                noteParams: { ms: sleptMs },
+              });
+            }
+            verdict = recheck;
+          }
+        }
+        if (!verdict.allowed) {
+          if (sleptMs > 0 && clientGone) {
+            // Client walked away during the grace wait: the verdict stands as
+            // a denial (the request must NOT fall through to the handler),
+            // but there is no socket to deliver it to — hijack without
+            // writing beats writing into a dead stream.
+            reply.hijack();
+            return reply;
+          }
+          // Retry-After from THIS verdict — post-grace when a sleep happened
+          // (the slot may have gone to a peer), first-pass otherwise.
+          const retryAfterSec = Math.max(1, Math.ceil(verdict.retryAfterMs / 1000));
+          recordRateLimitEvent({
+            direction: 'inbound',
+            kind: 'denied',
+            subject,
+            rule: verdict.rule,
+            limitedBy: verdict.limitedBy,
+            retryAfterMs: verdict.retryAfterMs,
+            apiKeyName: validation.keyConfig.name,
+            note: sleptMs > 0 ? `grace wait ${sleptMs}ms exhausted` : undefined,
+            noteCode: sleptMs > 0 ? 'grace-exhausted' : undefined,
+            noteParams: sleptMs > 0 ? { ms: sleptMs } : undefined,
+          });
+          req.log.info(
+            `[ratelimit] key '${validation.keyConfig!.name}' denied by ${verdict.rule} — retry after ${retryAfterSec}s${sleptMs > 0 ? ` (grace wait ${sleptMs}ms exhausted)` : ''}`
+          );
+          if (sleptMs > 0) {
+            // Deterministic abort — a plain reply.send() finalizes a tick later
+            // and the route lifecycle races it after an awaited hook ("Reply was
+            // already sent" + ERR_HTTP_HEADERS_SENT from the handler). Same
+            // precedent as the cross-origin/webAuth gates above; the fast-fail
+            // (no-await) path below keeps the hook-returns-reply form it always
+            // used successfully.
+            reply.hijack();
+            reply.raw.writeHead(429, {
+              'content-type': 'application/json; charset=utf-8',
+              'retry-after': String(retryAfterSec),
+            });
+            reply.raw.end(
+              JSON.stringify({
+                error: {
+                  message: `Rate limit exceeded (${verdict.rule}); retry after ${retryAfterSec}s`,
+                  type: 'rate_limit_error',
+                  code: 'rate_limit_exceeded',
+                  param: verdict.limitedBy,
+                },
+              })
+            );
+            return;
+          }
+          reply.header('Retry-After', String(retryAfterSec));
+          return reply.status(429).send({
+            error: {
+              message: `Rate limit exceeded (${verdict.rule}); retry after ${retryAfterSec}s`,
+              type: 'rate_limit_error',
+              code: 'rate_limit_exceeded',
+              param: verdict.limitedBy,
+            },
+          });
+        }
+      }
+    }
   });
 
   // 1. Health check (Enriched with Circuit Breaker status)
@@ -382,8 +544,33 @@ export function createServer(
     return registry.getCircuitBreakerManager().getSummary();
   });
 
+  // 1B'. Rate-Limiter Snapshot — every armed window with its live sum, so an
+  // operator can verify a cap is armed (and see headroom) without reading
+  // code. Subjects carry only key ids / sha256 prefixes (display-safe
+  // identities), never key material.
+  app.get('/api/admin/ratelimit', async () => {
+    return { status: 'ok', windows: getRateLimiter().snapshot() };
+  });
+
+  // 1B''. Rate-Limiter Event Log — every triggered cap from both directions
+  // (inbound deny/grace, outbound skip/force/shape), newest first, coalesced
+  // repeats, bounded ring. Same display-safe identities as the snapshot; the
+  // ledger survives restarts via its SQLite mirror (rateLimit.persist),
+  // unlike the windows themselves which stay memory-only by design.
+  app.get('/api/admin/ratelimit/events', async () => {
+    return { status: 'ok', events: getRateLimitEventLog().list() };
+  });
+
+  // 1B'''. Wipe the event ledger — ring AND its durable mirror (history
+  // cleanup only: windows, armed rules and breaker state are untouched).
+  // Same contract as POST /api/admin/logs/clear.
+  app.post('/api/admin/ratelimit/events/clear', async () => {
+    getRateLimitEventLog().clear();
+    return { status: 'ok', cleared: true };
+  });
+
   // 1C. Reset Tripped Circuit Breakers (Admin recovery after quota top-up)
-  // ADR-0019 P3 step 2 — optional `scope` (default 'model' = legacy behavior):
+  // optional `scope` (default 'model' = legacy behavior):
   //   model   -> the model breaker (bare modelId); no model = reset everything
   //   account -> every pair breaker of one credential (keyHash prefix)
   //   pair    -> one (model, credential) breaker
@@ -476,7 +663,7 @@ export function createServer(
     return { status: 'ok', scope, model: targetModel, account, ...result };
   });
 
-  // 1E. Clear an account's SUSPECT flag (ADR-0019 Decision 6). The flag is set
+  // 1E. Clear an account's SUSPECT flag. The flag is set
   // by a confirmed-bad credential and never decays on its own; the console's
   // reconnect/Push paths clear it implicitly, this is the explicit admin door.
   app.post('/api/admin/health/suspect-accounts/clear', async (req, reply) => {

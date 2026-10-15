@@ -39,6 +39,19 @@ export const copyToClipboard = async (text: string): Promise<boolean> => {
 };
 
 /**
+ * Effective output throughput: completion tokens per second of end-to-end
+ * latency. Null when either side is unusable (missing or non-positive) —
+ * callers render '—'. The denominator includes queueing, routing and
+ * retries, so this is an *effective* rate, not the streaming speed.
+ */
+export const outputRate = (outputTokens: number, latencyMs: number): number | null =>
+  outputTokens > 0 && latencyMs > 0 ? (outputTokens / latencyMs) * 1000 : null;
+
+/** Compact tok/s label: whole number at ≥ 10, one decimal below; null → '—'. */
+export const formatRate = (rate: number | null): string =>
+  rate === null ? '—' : rate >= 10 ? String(Math.round(rate)) : rate.toFixed(1);
+
+/**
  * Recorded-cost display: 2–6 fraction digits with trailing zeros trimmed
  * ($0.000123 per-request precise, $2.50 aggregate-clean). en-US fixed so
  * the grouping stays stable across locales (labels are translated, numbers

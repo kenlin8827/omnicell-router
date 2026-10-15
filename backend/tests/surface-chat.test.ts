@@ -258,7 +258,7 @@ describe('surface table (step 4 contents)', () => {
     assert.equal(detectSurface('/v1/messages'), anthropicSurface, 'anthropic joined in step 3a');
     assert.equal(detectSurface('/v1/responses'), responsesSurface, 'responses joined in step 3b');
     assert.equal(detectSurface('/v1/systemone'), systemoneSurface, 'decision surface joined in step 4');
-    assert.equal(detectSurface('/systemone'), systemoneSurface, 'ADR-0014 §2: the wide suffix claims native upstream paths');
+    assert.equal(detectSurface('/systemone'), systemoneSurface, 'the wide suffix claims native upstream paths');
   });
 
   it('chat surface metadata matches the contract', () => {

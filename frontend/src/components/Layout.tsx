@@ -24,8 +24,8 @@ import {
   BrainCircuit,
   Layers,
   ClipboardList,
-  Server,
-  LogIn,
+  ArrowDownLeft,
+  ArrowUpRight,
   LogOut,
   ShieldCheck,
   Waves,
@@ -35,6 +35,7 @@ import {
   Archive,
   FolderCog,
   Settings2,
+  Gauge,
   type LucideIcon,
 } from 'lucide-react';
 import { api, type GatewayStatusResponse } from '../lib/api';
@@ -70,7 +71,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
   {
     id: 'grp-access',
     headingKey: 'nav.grpAccess',
-    icon: LogIn,
+    icon: ArrowDownLeft,
     items: [
       { to: '/api-keys', labelKey: 'nav.apiKeys', icon: KeyRound },
       { to: '/clients', labelKey: 'nav.clients', icon: MonitorSmartphone, badge: '3' },
@@ -91,7 +92,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
   {
     id: 'grp-upstream',
     headingKey: 'nav.grpUpstream',
-    icon: Server,
+    icon: ArrowUpRight,
     items: [
       { to: '/providers', labelKey: 'nav.providers', icon: Plug },
       { to: '/models', labelKey: 'nav.models', icon: Cpu },
@@ -116,6 +117,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     items: [
       { to: '/sessions', labelKey: 'nav.sessions', icon: Users },
       { to: '/usage', labelKey: 'nav.usage', icon: BarChart3 },
+      { to: '/rate-limit', labelKey: 'nav.rateLimit', icon: Gauge },
       { to: '/captures', labelKey: 'nav.captures', icon: Archive },
       { to: '/flywheel', labelKey: 'nav.flywheel', icon: BrainCircuit },
       { to: '/logs', labelKey: 'nav.logs', icon: ScrollText },
@@ -151,6 +153,7 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/breaker-rules': { groupKey: 'nav.grpSafety', titleKey: 'nav.breakerRules' },
   '/sessions': { groupKey: 'nav.grpObservability', titleKey: 'nav.sessions' },
   '/usage': { groupKey: 'nav.grpObservability', titleKey: 'nav.usage' },
+  '/rate-limit': { groupKey: 'nav.grpObservability', titleKey: 'nav.rateLimit' },
   '/logs': { groupKey: 'nav.grpObservability', titleKey: 'nav.logs' },
   '/captures': { groupKey: 'nav.grpObservability', titleKey: 'nav.captures' },
   '/flywheel': { groupKey: 'nav.grpObservability', titleKey: 'nav.flywheel' },
@@ -273,6 +276,24 @@ export const Layout: React.FC = () => {
     titleKey: 'Dashboard',
   };
 
+  // Theme picker: trigger sized to the longest option label + fixed chrome
+  // (24 padding + 10 swatch + 2×8 gaps + 13 chevron = 63px, +6px slack).
+  // JetBrains Mono @12px ≈ 7.2px per latin char; CJK falls back to Noto Sans
+  // SC at 12px per char. Width stays stable across selection and language.
+  const themeOptions = [
+    { value: 'obsidian', label: t('header.themes.obsidian'), swatch: '#06b6d4' },
+    { value: 'indigo', label: t('header.themes.indigo'), swatch: '#6366f1' },
+    { value: 'cyber', label: t('header.themes.cyber'), swatch: '#10b981' },
+    { value: 'violet', label: t('header.themes.violet'), swatch: '#8b5cf6' },
+    { value: 'sunset', label: t('header.themes.sunset'), swatch: '#f43f5e' },
+    { value: 'light', label: t('header.themes.light'), swatch: '#0284c7' },
+    { value: 'amber', label: t('header.themes.amber'), swatch: '#d97706' },
+  ];
+  const themePickerWidth =
+    Math.ceil(Math.max(...themeOptions.map((o) =>
+      [...o.label].reduce((w, c) => w + ((c.codePointAt(0) ?? 0) > 0x2e80 ? 12 : 7.2), 0)
+    ))) + 69;
+
   return (
     <div style={{ display: 'flex', width: '100%', height: '100%', minHeight: 0 }}>
       {/* Sidebar Navigation */}
@@ -347,7 +368,7 @@ export const Layout: React.FC = () => {
         </div>
 
         {/* Grouped Multi-Menu Tree — the ONLY scrolling region in the sidebar */}
-        <div style={{ padding: '12px 10px', display: 'flex', flexDirection: 'column', gap: '14px', flex: 1, overflowY: 'auto', minHeight: 0 }}>
+        <div style={{ padding: '12px 10px', display: 'flex', flexDirection: 'column', gap: '18px', flex: 1, overflowY: 'auto', minHeight: 0 }}>
           {NAV_GROUP_DEFS.map(group => {
             const filteredItems = group.items.filter(item => {
               const label = t(item.labelKey);
@@ -362,13 +383,14 @@ export const Layout: React.FC = () => {
                 <div
                   onClick={() => toggleGroup(group.id)}
                   style={{
-                    fontSize: '11px',
+                    fontSize: '12px',
                     fontWeight: 700,
                     textTransform: 'uppercase',
                     letterSpacing: '0.05em',
-                    // Group headers are navigation labels, not tertiary meta:
-                    // muted, so they hold up at 11px on paper themes.
-                    color: 'var(--text-muted)',
+                    // Group headers sit in the quietest tier (dim) so the
+                    // content rows below read as the primary layer; bold 12px
+                    // keeps them AA-legible even on paper themes.
+                    color: 'var(--text-dim)',
                     padding: '6px 12px',
                     display: 'flex',
                     alignItems: 'center',
@@ -379,7 +401,7 @@ export const Layout: React.FC = () => {
                   }}
                 >
                   <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <group.icon size={12} strokeWidth={2.5} />
+                    <group.icon size={14} strokeWidth={2} />
                     {t(group.headingKey)}
                   </span>
                   <ChevronDown
@@ -409,7 +431,7 @@ export const Layout: React.FC = () => {
                             borderRadius: '8px',
                             fontSize: '13px',
                             fontWeight: isActive ? 600 : 500,
-                            color: isActive ? 'var(--accent)' : 'var(--text-muted)',
+                            color: isActive ? 'var(--accent)' : 'var(--text-main)',
                             background: isActive ? 'var(--surface-hover)' : 'transparent',
                             border: isActive ? '1px solid var(--card-border)' : '1px solid transparent',
                             textDecoration: 'none',
@@ -609,18 +631,10 @@ export const Layout: React.FC = () => {
 
             {/* Theme Picker */}
             <Combobox
-              style={{ width: 'clamp(120px, 13vw, 168px)', flexShrink: 0, padding: '6px 12px', fontSize: '12px', cursor: 'pointer' }}
+              style={{ width: themePickerWidth, flexShrink: 0, padding: '6px 12px', fontSize: '12px', cursor: 'pointer' }}
               value={theme}
               onChange={setTheme}
-              options={[
-                { value: 'obsidian', label: t('header.themes.obsidian'), swatch: '#06b6d4' },
-                { value: 'indigo', label: t('header.themes.indigo'), swatch: '#6366f1' },
-                { value: 'cyber', label: t('header.themes.cyber'), swatch: '#10b981' },
-                { value: 'violet', label: t('header.themes.violet'), swatch: '#8b5cf6' },
-                { value: 'sunset', label: t('header.themes.sunset'), swatch: '#f43f5e' },
-                { value: 'light', label: t('header.themes.light'), swatch: '#0284c7' },
-                { value: 'amber', label: t('header.themes.amber'), swatch: '#d97706' },
-              ]}
+              options={themeOptions}
             />
 
             {/* Quick Actions */}

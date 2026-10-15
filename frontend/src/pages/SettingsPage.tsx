@@ -138,7 +138,7 @@ export const SettingsPage: React.FC = () => {
       ...patch,
     },
   });
-  // Same whole-node discipline for `responses` (ADR-0015 amendment): the
+  // Same whole-node discipline for `responses`: the
   // section is one flat boolean today, spread-preserve it so future keys
   // survive a save round-trip. Restart-scoped — the surface reads it lazily
   // once per process.
@@ -436,7 +436,7 @@ export const SettingsPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Section 5: Responses wire stateful chain (ADR-0015 amendment) */}
+          {/* Section 5: Responses wire stateful chain */}
           <div id="settings-responses" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent-emerald)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Database size={14} />

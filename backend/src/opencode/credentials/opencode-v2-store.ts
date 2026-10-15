@@ -24,7 +24,7 @@ import {
 } from './types.js';
 
 /**
- * OpencodeV2Store (ADR-0019 Decision 1 + 3) — reads the v2 credential table via
+ * OpencodeV2Store — reads the v2 credential table via
  * bun:sqlite READONLY (bounded busy retry), writes ONLY through the v2
  * managed-service HTTP API (raw keys are not exportable over HTTP by design;
  * the official rule "do not edit the database to manage credentials" is
@@ -64,16 +64,16 @@ export const defaultOpenDatabase: DbOpener = async (file) => {
   return db as unknown as OpencodeV2Database;
 };
 
-/** ADR-0019 Decision 3 — expected v2 schema; a missing/renamed column is a loud bind failure, never a partial read. */
+/** Expected v2 schema; a missing/renamed column is a loud bind failure, never a partial read. */
 const REQUIRED_COLUMNS = ['id', 'integration_id', 'label', 'value', 'active', 'time_created', 'time_updated'] as const;
 
 // P3-13: deterministic row order (active first, newest updated first) — the
-// in-memory selection still applies its own ADR Decision 3 order, but a
+// in-memory selection still applies its own order, but a
 // stable SQL order makes ties + TTL reloads reproducible.
 const SELECT_CREDENTIALS = `SELECT ${REQUIRED_COLUMNS.join(', ')} FROM credential ORDER BY active DESC, time_updated DESC`;
 
 // ---------------------------------------------------------------------------
-// WIRE ADAPTER — v2 HTTP surface (live-probed on 2.0.15; ADR Context).
+// WIRE ADAPTER — v2 HTTP surface (live-probed on 2.0.15).
 //
 // Every assumption about the opencode v2 service wire lives in THIS section: routes,
 // request bodies, response field extraction, service.json fields. A
@@ -110,8 +110,8 @@ const REDACT_MIN_LEN = 8;
  * validation errors repeating the offending value). The submitted secret
  * must never re-surface through error messages: those flow into management
  * route bodies (502 error), reconcile push-failure reasons persisted to the
- * state file, push failed[].reason and log lines (ADR-0019 Decision 1 risk
- * limb: no management surface ever carries raw keys).
+ * state file, push failed[].reason and log lines (risk rule:
+ * no management surface ever carries raw keys).
  * Exported: probe.ts reuses the same containment for upstream echo bodies.
  */
 export function redactBodySecrets(text: string, body: unknown): string {
@@ -197,7 +197,7 @@ function classifyServiceTarget(baseUrl: string): ServiceTargetPolicy {
 }
 
 /**
- * opencode v2 service discovery over INJECTED paths/env (connector.ts semantics, but
+ * Opencode v2 service discovery over INJECTED paths/env (connector.ts semantics, but
  * the password resolves from the injected candidate paths so the homedir-only
  * fallback connector.ts:27-28 is never reached — touchpoint gap #5).
  * Module-level so the Decision 2 push endpoint can re-probe reachability
@@ -378,7 +378,7 @@ export class OpencodeV2Store implements CredentialStore {
       multiAccount: true,
       activate: writable,
       rename: writable,
-      oauth: false, // ADR-0019 P2 write list excludes OAuth on every store
+      oauth: false, // OAuth is excluded on every store
       envVisible: true,
       integrationScoped: true, // writes address a registered integration by id
     };
@@ -453,7 +453,7 @@ export class OpencodeV2Store implements CredentialStore {
     let total = 0;
     for (const rows of view.values()) total += rows.length;
     if (total === 0) {
-      // Distinct from "unreadable" per ADR Decision 3 — consumers (reconcile,
+      // Distinct from "unreadable" by design — consumers (reconcile,
       // badge logic) must handle it separately, so it is a typed throw.
       throw new EmptyCredentialTableError(this.dbFile);
     }
@@ -467,7 +467,7 @@ export class OpencodeV2Store implements CredentialStore {
   resolveKey(providerId: string): ResolvedCredential | null {
     const rows = this.routableRows(providerId);
     if (rows.length === 0) return null;
-    // ADR Decision 3 order: active=1 first, sole row next, newest time_updated last.
+    // active=1 first, sole row next, newest time_updated last.
     const picked =
       rows.find((r) => r.active) ??
       (rows.length === 1 ? rows[0] : [...rows].sort((a, b) => (b.timeUpdated ?? 0) - (a.timeUpdated ?? 0))[0]);
@@ -482,9 +482,9 @@ export class OpencodeV2Store implements CredentialStore {
   }
 
   /**
-   * ADR-0019 Decision 10 — sqlite READ, so the readonly binding
+   * Sqlite READ, so the readonly binding
    * (cli-absent-db-present) reveals too: no assertWritable here. opencode's own
-   * HTTP surface cannot export keys (ADR Context); the local db read can, which
+   * HTTP surface cannot export keys; the local db read can, which
    * is exactly why the route gating this is password-first.
    */
   revealKey(accountId: string): string {
@@ -561,11 +561,11 @@ export class OpencodeV2Store implements CredentialStore {
   }
 
   async beginOAuth(): Promise<unknown> {
-    throw new CapabilityUnsupportedError('beginOAuth', 'ADR-0019 P2 write list excludes OAuth (all stores)');
+    throw new CapabilityUnsupportedError('beginOAuth', 'OAuth is excluded from every credential store');
   }
 
   async completeOAuth(): Promise<AccountMeta> {
-    throw new CapabilityUnsupportedError('completeOAuth', 'ADR-0019 P2 write list excludes OAuth (all stores)');
+    throw new CapabilityUnsupportedError('completeOAuth', 'OAuth is excluded from every credential store');
   }
 
   /** Any console credential action calls this (Decision 3 — no zombie keys). */
@@ -795,7 +795,7 @@ export class OpencodeV2Store implements CredentialStore {
   }
 
   /**
-   * One service call with the ADR retry: on failure, RE-READ service.json
+   * One service call with retry: on failure, RE-READ service.json
    * (password rotation / port drift — resolveServiceConfig is uncached) and
    * retry once; the second failure surfaces as WriteFailedError.
    */

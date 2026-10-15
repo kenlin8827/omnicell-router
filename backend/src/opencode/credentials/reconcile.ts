@@ -15,7 +15,7 @@ import {
 import { AuthSnapshot, authSnapshot } from './auth-snapshot.js';
 
 /**
- * ADR-0019 Decision 4 — the one-shot reconcile gate (anti-regression).
+ * The one-shot reconcile gate (anti-regression).
  *
  * On the FIRST boot that binds a writable OpencodeV2Store with no completion marker:
  * read the auth.json snapshot (opencode-v1 read path via bridge primitives — read
@@ -23,7 +23,7 @@ import { AuthSnapshot, authSnapshot } from './auth-snapshot.js';
  * auth.json-only keys through OpencodeV2Store.connectKey (POST …/connect/key).
  * Dedup is keyed by (provider case-insensitive × keyHash prefix — hash
  * primary, label advisory). oauth/wellknown entries are NEVER pushed
- * (ADR-0011 OAuth boundary; reconcile pushes {type:'key'}/api only).
+ * (the OAuth boundary — reconcile pushes {type:'key'}/api only).
  *
  * auth.json itself is never modified or deleted (opencode's territory).
  * Completing — even with partial push failures — writes the marker + audit
@@ -124,9 +124,9 @@ export function isStandaloneAuthImported(paths?: CredentialPaths): boolean {
 }
 
 /**
- * keyHash dedup index of a store's current credentials (ADR-0019 Decision 4/5
+ * KeyHash dedup index of a store's current credentials (shared dedup
  * rule: keyHash primary, label advisory). Shared by the reconcile gate and
- * the Decision 2 push endpoint — one guard, two converge-toward-opencode
+ * the push endpoint — one guard, two converge-toward-opencode
  * flows. An empty index on throw degrades toward pushing (a duplicate push is
  * louder and safer than skipping real keys); push failures land in results,
  * never silence.
@@ -170,7 +170,7 @@ async function runReconcile(
   }
   const state = readCredentialStoreState(paths);
   if (state?.reconcile?.doneAt) {
-    // Security/ADR-Decision-4 honesty (P2-5): the one-shot ran on an earlier
+    // Audit honesty (P2-5): the one-shot ran on an earlier
     // boot — failed entries from the persisted audit trail stay STRANDED
     // keys. Without this re-append they vanish after boot #1 (silent). The
     // reason was redacted by construction (http() redacts before the message
@@ -216,7 +216,7 @@ async function runReconcile(
     if (
       !entry ||
       typeof entry !== 'object' ||
-      entry.type !== 'api' || // oauth/wellknown never pushed (Decision 4 + ADR-0011)
+      entry.type !== 'api' || // oauth/wellknown never pushed
       typeof entry.key !== 'string' ||
       !entry.key
     ) {

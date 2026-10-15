@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Key, Check, RefreshCw, Trash2, Plug, Plus, Lock, Cpu, Zap, Upload, AlertTriangle, Star, Pencil, Unplug, Clock, ShieldAlert, Ban, PowerOff, Power, Copy } from 'lucide-react';
+import { Key, Check, RefreshCw, Trash2, Plug, Plus, Lock, Cpu, Zap, Upload, AlertTriangle, Star, Pencil, Unplug, Clock, ShieldAlert, Ban, PowerOff, Power, Copy, Gauge } from 'lucide-react';
 import {
   opencodeApi,
   api,
@@ -16,7 +16,15 @@ import {
   type AccountHealth,
   type CredentialWriteReasonCode,
   type CredentialRevealReasonCode,
+  type RateLimitSnapshotEntry,
 } from '../lib/api';
+import {
+  LimitsEditor,
+  compileLimitDrafts,
+  draftFromRule,
+  ruleLabel,
+  type LimitDraft,
+} from '../components/RateLimitEditor';
 import { ProviderModelsDialog } from '../components/ProviderModelsDialog';
 import { useI18n } from '../i18n/I18nContext';
 import { useConfirm } from '../components/ConfirmProvider';
@@ -155,7 +163,7 @@ async function copyToClipboard(text: string): Promise<void> {
   }
 }
 
-// ADR-0019 gap #8: the credential-store API serves machine-readable codes ONLY;
+// the credential-store API serves machine-readable codes ONLY;
 // these tables own all user-visible copy (unknown codes fall back to the raw
 // code string — loud, never a wrong localized claim).
 const STORE_KIND_LABEL: Partial<Record<CredentialStoreKind, string>> = {
@@ -199,7 +207,7 @@ const WRITE_REASON_LABEL: Partial<Record<CredentialWriteReasonCode, string>> = {
   invalid_reason: 'op.reasonInvalidReason',
 };
 /**
- * ADR-0019 Decision 10 reveal-route preconditions (console.ts `accountReveal`).
+ * Reveal-route preconditions (console.ts `accountReveal`).
  * The store-layer failures of the same route already ride WRITE_REASON_LABEL
  * (shared failure mapper); these three are the password-gate vocabulary.
  */
@@ -287,7 +295,7 @@ type AccountRowProps = {
    * masked key's tooltip — it is a correlation id, not something to read.
    */
   prefixVisible: boolean;
-  /** v2-readonly binding: every credential write is refused (ADR-0019 Decision 2). */
+  /** v2-readonly binding: every credential write is refused. */
   writesBlocked: boolean;
   /** This row has a request in flight — only one row is busy at a time. */
   pending: boolean;
@@ -307,19 +315,21 @@ type AccountRowProps = {
   onToggleDisabled: (a: AccountHealth) => void;
   onClearSuspect: (a: AccountHealth) => void;
   /**
-   * ADR-0019 Decision 10: reveal re-enters the console LOGIN password, so the
+   * Reveal re-enters the console LOGIN password, so the
    * copy affordance only exists where that password lives (webAuth active).
    * Disabled-with-reason, never silently absent — a mystery-disabled button is
    * the same UX bug as an unlabeled one.
    */
   canReveal: boolean;
   onCopyKey: (a: AccountHealth) => void;
+  /** Open the outbound rate-limit overlay editor for THIS credential. */
+  onEditLimits: (a: AccountHealth) => void;
   /** 1-based chain slot in the list. The chain head keeps the ★; every other
       row shows its slot number so the whole priority order is readable. */
   position: number;
 };
 
-/** One account of a multi-account provider — the ADR-0019 P3 drill-down row. */
+/** One account of a multi-account provider — the drill-down row. */
 const AccountRow: React.FC<AccountRowProps> = ({
   account,
   caps,
@@ -340,6 +350,7 @@ const AccountRow: React.FC<AccountRowProps> = ({
   onClearSuspect,
   canReveal,
   onCopyKey,
+  onEditLimits,
   position,
 }) => {
   const { t } = useI18n();
@@ -505,6 +516,18 @@ const AccountRow: React.FC<AccountRowProps> = ({
                 {formatCountdown(remaining)}
               </span>
             )}
+            {/* Outbound caps armed for THIS credential (config accounts: overlay).
+                The count is the rule count; per-rule detail lives in the tooltip
+                (the row is one dense line — machine text, not prose). */}
+            {(account.limits ?? []).length > 0 && (
+              <span
+                style={{ ...badgeStyle('var(--accent)', 'color-mix(in srgb, var(--accent) 12%, transparent)'), display: 'inline-flex', alignItems: 'center', gap: 3 }}
+                title={(account.limits ?? []).map(ruleLabel).join('\n')}
+              >
+                <Gauge size={9} />
+                {(account.limits ?? []).length}
+              </span>
+            )}
             {/* Per-account connectivity probe: pins the store row THIS line
                 names — the card-level Test only ever hits the head account. */}
             {account.routable && (
@@ -548,9 +571,9 @@ const AccountRow: React.FC<AccountRowProps> = ({
             >
               <Pencil size={12} />
             </button>
-            {/* ADR-0019 Decision 10 — raw-key export for the row the operator
+            {/* Raw-key export for the row the operator
                 can name. Only api-key rows have anything to reveal (oauth
-                material never leaves any surface, ADR-0011 boundary). */}
+                material never leaves any surface). */}
             {account.type === 'api' && account.routable && (
               <button
                 className="btn btn-sm"
@@ -573,6 +596,23 @@ const AccountRow: React.FC<AccountRowProps> = ({
                 onClick={() => onClearSuspect(account)}
               >
                 <ShieldAlert size={12} />
+              </button>
+            )}
+            {/* Outbound rate-limit overlay — CONFIG-side governance: the caps
+                live in OCR's own config.yaml, not in the credential store, so
+                `writesBlocked` (store read-only) does NOT gate this button —
+                same reasoning as the suspect door above. Routable rows only: a
+                credential that can never carry traffic has nothing to shape. */}
+            {account.keyHashPrefix && account.routable && (
+              <button
+                className="btn btn-sm"
+                style={rowIconBtn}
+                disabled={pending}
+                title={t('op.accountLimitsTip')}
+                aria-label={t('op.accountLimits')}
+                onClick={() => onEditLimits(account)}
+              >
+                <Gauge size={12} />
               </button>
             )}
             {/* Takedown first, destruction last: this is the safe lever, and the
@@ -615,7 +655,7 @@ type RevealDialogProps = {
 };
 
 /**
- * ADR-0019 Decision 10 password gate. The raw key is NEVER rendered or held
+ * Reveal password gate. The raw key is NEVER rendered or held
  * here — the confirm handler passes the response straight to the clipboard.
  * The input draft is cleared by the caller on close (the page-lifetime unlock
  * keeps the verified password in a ref, out of the DOM).
@@ -702,6 +742,106 @@ const RevealKeyDialog: React.FC<RevealDialogProps> = ({
   );
 };
 
+/**
+ * Outbound rate-limit overlay editor for ONE credential. Caps shape traffic
+ * toward the provider (outbound); the window list is the live sliding-ledger
+ * view, so what the operator arms is immediately verifiable.
+ */
+const AccountLimitsDialog: React.FC<{
+  providerId: string;
+  account: AccountHealth;
+  drafts: LimitDraft[];
+  windows: RateLimitSnapshotEntry[];
+  busy: boolean;
+  onChangeDrafts: (next: LimitDraft[]) => void;
+  onCancel: () => void;
+  onSave: () => void;
+}> = ({ providerId, account, drafts, windows, busy, onChangeDrafts, onCancel, onSave }) => {
+  const { t } = useI18n();
+  const name = accountName(account, t('op.accountUnnamed'));
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 200,
+        background: 'var(--scrim)',
+        display: 'flex',
+        padding: 16,
+        animation: 'ocr-fade-in 0.15s ease',
+      }}
+      onClick={onCancel}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={t('op.accountLimitsTitle', { label: name })}
+        style={{
+          margin: 'auto',
+          width: 460,
+          maxWidth: '100%',
+          padding: 16,
+          borderRadius: 12,
+          background: 'var(--card-bg, #111113)',
+          border: '1px solid var(--card-border)',
+          boxShadow: '0 16px 40px rgba(0,0,0,0.45)',
+          maxHeight: '90vh',
+          overflowY: 'auto',
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 2 }}>
+          {t('op.accountLimitsTitle', { label: name })}
+        </div>
+        <p style={{ fontSize: 11.5, color: 'var(--text-dim)', margin: '0 0 12px', lineHeight: 1.6 }}>
+          {t('op.accountLimitsDesc', { provider: providerId })}
+        </p>
+
+        <LimitsEditor value={drafts} onChange={onChangeDrafts} />
+
+        {windows.length > 0 && (
+          <div style={{ marginTop: 14 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', marginBottom: 6 }}>
+              {t('op.accountLimitsWindows')}
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {windows.map((w) => (
+                <div
+                  key={w.rule}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    gap: 10,
+                    fontSize: 11.5,
+                    fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                    color: w.retryAfterMs > 0 ? 'var(--accent-amber)' : 'var(--text-dim)',
+                  }}
+                >
+                  <span>{w.rule}</span>
+                  <span>
+                    {w.used} / {w.limit}
+                    {w.retryAfterMs > 0 ? ` · ${t('op.accountLimitsRetryIn', { s: Math.ceil(w.retryAfterMs / 1000) })}` : ''}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+          <button className="btn btn-sm" onClick={onCancel}>
+            <span>{t('common.cancel')}</span>
+          </button>
+          <button className="btn btn-sm btn-primary" disabled={busy} onClick={onSave}>
+            <Check size={12} />
+            <span>{t('common.confirm')}</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 
 export const KeysPage: React.FC = () => {
   const { t } = useI18n();
@@ -727,7 +867,7 @@ export const KeysPage: React.FC = () => {
   const [ocError, setOcError] = useState('');
   const [busy, setBusy] = useState(false);
 
-  // ADR-0019 Decision 10 — controlled key reveal. The gate is a re-entry of
+  // Controlled key reveal. The gate is a re-entry of
   // the console LOGIN password (a secret the browser does not keep after
   // login), so the flow only exists while webAuth is active; the session
   // probe is the same one App's boot gate uses.
@@ -737,13 +877,20 @@ export const KeysPage: React.FC = () => {
   const [revealError, setRevealError] = useState('');
   const [revealBusy, setRevealBusy] = useState(false);
   /**
-   * Page-lifetime unlock (ADR-0019 Decision 10, operator-accepted relaxation):
+   * Page-lifetime unlock (operator-accepted relaxation):
    * after ONE deliberate dialog entry the verified password lives in this REF
    * — memory only, never storage, never rendered, gone on reload — and later
    * copies are one click. A 401 (or reload) takes the unlock away.
    */
   const revealPassRef = useRef('');
   const [copyUnlocked, setCopyUnlocked] = useState(false);
+
+  // Outbound rate-limit overlay editor (config `accounts:`): the dialog is
+  // page-owned like the reveal gate — the row only names its target.
+  const [limitsTarget, setLimitsTarget] = useState<{ providerId: string; account: AccountHealth } | null>(null);
+  const [limitsDraft, setLimitsDraft] = useState<LimitDraft[]>([]);
+  const [limitsWindows, setLimitsWindows] = useState<RateLimitSnapshotEntry[]>([]);
+  const [limitsBusy, setLimitsBusy] = useState(false);
 
   // Custom provider create form
   const [form, setForm] = useState({ id: '', name: '', baseURL: '', npm: '', apiKey: '', inline: false });
@@ -780,7 +927,7 @@ export const KeysPage: React.FC = () => {
   const connectedIds = useMemo(() => new Set(ocProviders.map((p) => p.id)), [ocProviders]);
 
   // opencode-v2-readonly = CLI absent, db present: routing reads work but every store
-  // write is refused (ADR-0019 Decision 2) — disable credential-write affordances.
+  // write is refused — disable credential-write affordances.
   const writesBlocked = storeStatus?.kind === 'opencode-v2-readonly';
   // Decision 1: whether a submitted key ADDS an account or OVERWRITES the only
   // one is a capability of the bound store, never a name-check on `kind` — the
@@ -825,7 +972,7 @@ export const KeysPage: React.FC = () => {
     return set;
   }, [storeStatus]);
 
-  // ---- ADR-0019 P3 per-account drill-down -----------------------------------
+  // ---- per-account drill-down ----------------------------------------------------
   // The masked detail lives inside storeStatus (GET credential-store carries
   // it) so a write route's refreshed `accounts` array can patch it in place —
   // one source of truth, no second fetch.
@@ -868,7 +1015,7 @@ export const KeysPage: React.FC = () => {
     );
 
   /**
-   * gap #8 tail: known machine codes localize, unknown codes stay raw + loud.
+   * Gap #8 tail: known machine codes localize, unknown codes stay raw + loud.
    * The `as` only guides the table lookup — the code string itself arrives
    * untrusted from the HTTP body, and an unknown code never gets a guess.
    */
@@ -1004,8 +1151,57 @@ export const KeysPage: React.FC = () => {
     }
   };
 
+  /** Open the overlay editor for one credential: seed the draft from the row's
+   *  armed rules and pull the live windows so usage shows up immediately. */
+  const openLimitsDialog = async (providerId: string, a: AccountHealth) => {
+    if (!a.keyHashPrefix) return;
+    setLimitsTarget({ providerId, account: a });
+    setLimitsDraft((a.limits ?? []).map(draftFromRule));
+    setLimitsBusy(true);
+    try {
+      const snap = await api.getRateLimitWindows();
+      const subject = `account:${providerId}:${a.keyHashPrefix}`;
+      setLimitsWindows(snap.windows.filter((w) => w.subject === subject));
+    } catch (err) {
+      console.warn('[ratelimit] live window snapshot fetch failed', err);
+      setLimitsWindows([]);
+    } finally {
+      setLimitsBusy(false);
+    }
+  };
+
+  /** Upsert the entry (empty compile result = null = remove it). saveConfig
+   *  hot-reloads the limiter, so a successful write is already in effect. */
+  const handleSaveAccountLimits = async () => {
+    if (!limitsTarget?.account.keyHashPrefix) return;
+    const compiled = compileLimitDrafts(limitsDraft, t);
+    if (compiled.error) {
+      toast.error(compiled.error);
+      return;
+    }
+    setLimitsBusy(true);
+    try {
+      const res = await api.setAccountLimits({
+        provider: limitsTarget.providerId,
+        keyHashPrefix: limitsTarget.account.keyHashPrefix,
+        limits: compiled.rules ?? null,
+      });
+      if (!res.success) {
+        toast.error(typeof res.error === 'string' && res.error ? res.error : t('common.saveFailed'));
+        return;
+      }
+      toast.success(compiled.rules?.length ? t('op.accountLimitsSaved') : t('op.accountLimitsCleared'));
+      setLimitsTarget(null);
+      await loadCredentialStore(); // the caps ride the withAccountHealth overlay — refresh rows
+    } catch (err: any) {
+      toast.error(reasonError(err));
+    } finally {
+      setLimitsBusy(false);
+    }
+  };
+
   /**
-   * ADR-0019 Decision 10 — copy gesture. With the page unlocked (a verified
+   * Copy gesture. With the page unlocked (a verified
    * password in the ref) this is a silent one-click reveal; otherwise it opens
    * the password dialog. The key never transits this page's state: every
    * response passes straight into the clipboard and is forgotten.
@@ -1113,7 +1309,7 @@ export const KeysPage: React.FC = () => {
     }
   };
 
-  // ADR-0019 P2 badge source. Quiet on failure: an unreachable status endpoint
+  // Badge source. Quiet on failure: an unreachable status endpoint
   // must not fake-red the page — the badge simply stays absent. The resolved
   // status (or null) is also RETURNED so the delete flow can re-arbitrate the
   // Decision 8 confirm without waiting for the state round-trip.
@@ -1264,8 +1460,7 @@ export const KeysPage: React.FC = () => {
     if (boundOpencode) {
       // The key lives in opencode; after disconnect it is gone from the store —
       // export first via the row's password-gated reveal if needed. No backup/
-      // mitigation wording — that would be proliferation dressed as safety
-      // (ADR-0019 Decision 8).
+      // mitigation wording — that would be proliferation dressed as safety.
       const ok2 = await confirmDialog({
         title: t('op.deleteV2Title', { id: p.id }),
         description: t('op.deleteV2Desc'),
@@ -1398,7 +1593,7 @@ export const KeysPage: React.FC = () => {
           {t('op.connectedDesc', { sink: sinkLabel })}
         </p>
 
-        {/* ---- Bound credential-store status (ADR-0019 P2 badge) ---- */}
+        {/* ---- Bound credential-store status ---- */}
         {storeStatus && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4, margin: '0 0 12px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -1556,7 +1751,7 @@ export const KeysPage: React.FC = () => {
                 </div>
               ) : null}
 
-              {/* ADR-0019 P3 credential list — always visible, one line per key,
+              {/* Credential list — always visible, one line per key,
                   capped at 3 rows (more scroll). No expand gesture: per-key state
                   is the reason this page exists, and hiding it behind a click put
                   the active credential out of sight. */}
@@ -1604,6 +1799,7 @@ export const KeysPage: React.FC = () => {
                       onClearSuspect={handleAccountClearSuspect}
                       canReveal={webAuthActive}
                       onCopyKey={openRevealDialog}
+                      onEditLimits={(acc) => openLimitsDialog(p.id, acc)}
                     />
                   ))}
                 </div>
@@ -1925,6 +2121,21 @@ export const KeysPage: React.FC = () => {
               setRevealPassword('');
             }}
             onConfirm={handleRevealConfirm}
+          />
+        )}
+
+        {/* Outbound rate-limit overlay editor — same fixed-overlay mount rule
+            as the reveal gate (a tab switch must not orphan it). */}
+        {limitsTarget && (
+          <AccountLimitsDialog
+            providerId={limitsTarget.providerId}
+            account={limitsTarget.account}
+            drafts={limitsDraft}
+            windows={limitsWindows}
+            busy={limitsBusy}
+            onChangeDrafts={setLimitsDraft}
+            onCancel={() => setLimitsTarget(null)}
+            onSave={handleSaveAccountLimits}
           />
         )}
       </div>

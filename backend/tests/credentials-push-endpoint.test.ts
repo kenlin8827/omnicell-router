@@ -11,7 +11,7 @@ import { OcrStore } from '../src/opencode/credentials/ocr-store.js';
 import { DbOpener } from '../src/opencode/credentials/opencode-v2-store.js';
 
 /**
- * ADR-0019 Decision 2 recovery — POST /api/admin/credential-store/push.
+ * POST /api/admin/credential-store/push.
  * Convergence is push-ONLY: local OcrStore entries flow into opencode's opencode v2
  * credential db; a local entry is removed ONLY after confirmed convergence
  * (push accepted, or keyHash already present in the db). Preconditions:
@@ -229,7 +229,7 @@ describe('POST /api/admin/credential-store/push', () => {
   });
 });
 
-describe('SUSPECT lifecycle — Push clears converged accounts (ADR-0019 Decision 6)', () => {
+describe('SUSPECT lifecycle — Push clears converged accounts', () => {
   it('pushed (and deduped) accounts get their flag lifted, anchored on the key hash', async () => {
     const paths = sandboxPaths();
     const freshKey = 'sk-push-clears-suspect';

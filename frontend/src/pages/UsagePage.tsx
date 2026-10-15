@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { BarChart3, X } from 'lucide-react';
 import { api, type UsageStatsResponse, type KeyUsageRow, type TraceRecord } from '../lib/api';
-import { formatCost, shortId } from '../lib/format';
+import { formatCost, shortId, outputRate, formatRate } from '../lib/format';
 import { Combobox } from '../components/Combobox';
 import { useI18n } from '../i18n/I18nContext';
 
@@ -137,6 +137,12 @@ export const UsagePage: React.FC = () => {
     setSearchParams(next, { replace: true });
   };
 
+  // Effective output throughput over the *displayed* population: session view
+  // sums per-trace latencies, key/overall views sum the per-row latencyMsSum.
+  const toksRate = sessionFilter
+    ? outputRate(totals?.outputTokens ?? 0, sessionTraces.reduce((a, r) => a + r.execution.latencyMs, 0))
+    : outputRate(totals?.outputTokens ?? 0, rows.reduce((a, r) => a + r.latencyMsSum, 0));
+
   const cards = totals
     ? [
         { label: t('sessions.thRequests'), value: totals.requests.toLocaleString(), color: 'var(--accent-emerald)' },
@@ -145,6 +151,7 @@ export const UsagePage: React.FC = () => {
         { label: t('sessions.thTokensCached'), value: totals.cachedTokens.toLocaleString(), color: 'var(--accent-emerald)' },
         { label: t('sessions.thCost'), value: formatCost(totals.costUsd), color: 'var(--accent-amber)' },
         { label: t('overview.avgLatency'), value: `${totals.avgLatencyMs} ms`, color: 'var(--text-main)' },
+        { label: t('usage.thToks'), value: formatRate(toksRate), color: 'var(--text-dim)', tip: t('usage.toksTip') },
       ]
     : [];
 
@@ -197,7 +204,7 @@ export const UsagePage: React.FC = () => {
       {/* Totals cards (recomputed over the filtered row when ?key= is set) */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '12px' }}>
         {cards.map(c => (
-          <div key={c.label} className="card" style={{ padding: '12px 16px' }}>
+          <div key={c.label} className="card" style={{ padding: '12px 16px' }} title={'tip' in c ? c.tip : undefined}>
             <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{c.label}</div>
             <div style={{ fontSize: '20px', fontWeight: 800, marginTop: '4px', color: c.color }}>{c.value}</div>
           </div>
@@ -216,7 +223,7 @@ export const UsagePage: React.FC = () => {
               <div
                 style={{
                   display: 'grid',
-                  gridTemplateColumns: '64px 64px 30px minmax(90px, 1fr) 56px 56px 60px 86px 52px',
+                  gridTemplateColumns: '64px 64px 30px minmax(90px, 1fr) 56px 56px 60px 86px 52px 44px',
                   columnGap: '8px',
                   rowGap: '6px',
                   fontSize: '11px',
@@ -233,6 +240,7 @@ export const UsagePage: React.FC = () => {
                   t('sessions.colCached'),
                   t('sessions.colCost'),
                   t('sessions.colMs'),
+                  t('usage.thToks'),
                 ].map((label, i) => (
                   <span key={i} style={{ color: 'var(--text-dim)', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase' }}>
                     {label}
@@ -253,6 +261,7 @@ export const UsagePage: React.FC = () => {
                     </span>
                     <span style={{ color: 'var(--accent-amber)' }}>{formatCost(tr.finops.costUsd)}</span>
                     <span>{tr.execution.latencyMs}ms</span>
+                    <span title={t('usage.toksTip')}>{formatRate(outputRate(tr.finops.outputTokens, tr.execution.latencyMs))}</span>
                   </React.Fragment>
                 ))}
               </div>
@@ -287,6 +296,7 @@ export const UsagePage: React.FC = () => {
                   <th style={TH_STYLE}>{t('sessions.thTokensCached')}</th>
                   <th style={TH_STYLE}>{t('sessions.thCost')}</th>
                   <th style={TH_STYLE}>{t('usage.thAvgMs')}</th>
+                  <th style={TH_STYLE} title={t('usage.toksTip')}>{t('usage.thToks')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -316,6 +326,9 @@ export const UsagePage: React.FC = () => {
                     </td>
                     <td style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
                       {r.requests > 0 ? Math.round(r.latencyMsSum / r.requests) : 0} ms
+                    </td>
+                    <td style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-dim)' }}>
+                      {formatRate(outputRate(r.outputTokens, r.latencyMsSum))}
                     </td>
                   </tr>
                 ))}
