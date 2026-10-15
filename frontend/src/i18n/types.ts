@@ -860,6 +860,9 @@ hiddenBadge: string;
       sessionSticky: string;
       combo: string;
       cachedPrefix: string;
+      repinSuffix: string;
+      repinConfig: string;
+      repinHealth: string;
     };
   };
   logs: {

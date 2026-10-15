@@ -56,21 +56,34 @@ export const formatReason = (
   if (code === 'breaker.manual' && !String(params?.detail ?? '')) return t('guardrails.reasonManualConsole');
 
   const key = code ? REASON_KEY[code] : undefined;
-  if (!key) return rawReason ?? '';
+  let base = '';
+  if (key) {
+    const vars: Record<string, string | number> = {};
+    for (const [k, v] of Object.entries(params ?? {})) vars[k] = String(v);
 
-  const vars: Record<string, string | number> = {};
-  for (const [k, v] of Object.entries(params ?? {})) vars[k] = String(v);
+    // Trigger templates render the wrapped cause into {detail} from the same flat
+    // vars; an unknown cause_code keeps the raw English detail the backend sent.
+    if (vars.cause_code) {
+      const innerKey = REASON_KEY[vars.cause_code];
+      if (innerKey) vars.detail = t(innerKey, vars);
+    }
 
-  // Trigger templates render the wrapped cause into {detail} from the same flat
-  // vars; an unknown cause_code keeps the raw English detail the backend sent.
-  if (vars.cause_code) {
-    const innerKey = REASON_KEY[vars.cause_code];
-    if (innerKey) vars.detail = t(innerKey, vars);
+    const text = t(key, vars);
+    // t() returns the key itself when no locale carries it — keep the gateway wording.
+    base = text === key ? (rawReason ?? '') : params?.cached === true ? t('routing.reason.cachedPrefix') + text : text;
+  } else {
+    base = rawReason ?? '';
   }
 
-  const text = t(key, vars);
-  // t() returns the key itself when no locale carries it — keep the gateway wording.
-  if (text === key) return rawReason ?? '';
-
-  return params?.cached === true ? t('routing.reason.cachedPrefix') + text : text;
+  // Pin-switch attribution (Session-Pin Eviction, orchestrator 4B): the repin
+  // trio rides in reasonParams beside whatever session.* code the turn already
+  // carries, so it is appended as an explicit tail — the base templates never
+  // reference {repin*} slots and would otherwise render the switch blind.
+  if (params?.repin === undefined) return base;
+  const cause = t(params.repin === 'health' ? 'routing.reason.repinHealth' : 'routing.reason.repinConfig');
+  return `${base}${t('routing.reason.repinSuffix', {
+    repinFrom: String(params.repinFrom ?? '?'),
+    repinTo: String(params.repinTo ?? '?'),
+    cause,
+  })}`;
 };

@@ -805,6 +805,9 @@ export const zhCN: TranslationDict = {
       sessionSticky: '会话保持在 {tier}（模型 {model}）',
       combo: '使用自定义组合 {combo}，不参与自动路由',
       cachedPrefix: '缓存结果：',
+      repinSuffix: ' · 已切换绑定 {repinFrom} → {repinTo}（{cause}）',
+      repinConfig: '已从模型池移除',
+      repinHealth: '钉扎模型已不可用',
     },
   },
   logs: {

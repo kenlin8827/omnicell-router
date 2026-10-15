@@ -295,7 +295,9 @@ export class CircuitBreaker {
 
   /**
    * NON-CONSUMING availability check for selection/filtering ("dry checks"):
-   * pool building, session self-healing, leader picks, console introspection.
+   * pool building, the eviction landing guard, leader picks, console
+   * introspection. (Session-pin EVICTING itself reads the capability
+   * `modelHealthView` — a busy canary must never move a pin.)
    * Identical state evaluation to canExecute() but NEVER takes a HALF_OPEN
    * probe slot — only the execution gate (canExecute, called immediately
    * before the upstream call) may consume the canary quota, otherwise

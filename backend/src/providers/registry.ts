@@ -6,7 +6,7 @@ import { GoogleProvider } from './google.js';
 import { ModelRegistration, ModelVariant, ProviderConfig, RouterConfig, TiersConfig, TierMemberRule, ComboConfig, ComboModelRef } from '../config/types.js';
 import { PoolMembership, ReasoningEffort, TierLevel, EFFORT_LADDER, downgradeReasoning, modelSupportsEfforts } from '../types/router.js';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
-import { CircuitBreakerManager, UpstreamError, type ModelAvailability } from '../resilience/index.js';
+import { CircuitBreakerManager, UpstreamError, type ModelAvailability, type ModelHealthView } from '../resilience/index.js';
 import { globMatchAny } from '../utils/glob.js';
 import { loadConfig } from '../config/index.js';
 import { resolveTierMembers, claimModel, applyEffortMap, MEMBER_TIER_ORDER, TIER_DESCENDING_ORDER, type MemberClaim } from './member-match.js';
@@ -189,6 +189,17 @@ export class ProviderRegistry {
     const chain = this.credentialChains.get(model.provider);
     const prefixes = chain?.map((c) => c.keyHashPrefix) ?? [];
     return this.circuitBreakerManager.modelAvailability(model.id, prefixes);
+  }
+
+  /**
+   * Model capability view for session-pin eviction ('available' /
+   * 'recovering' / 'unavailable') — see
+   * `CircuitBreakerManager.modelHealthView`; state reads are non-consuming.
+   */
+  public modelHealthView(model: ModelRegistration): ModelHealthView {
+    const chain = this.credentialChains.get(model.provider);
+    const prefixes = chain?.map((c) => c.keyHashPrefix) ?? [];
+    return this.circuitBreakerManager.modelHealthView(model.id, prefixes);
   }
 
   public setDefaultTierModel(tier: TierLevel, model: ModelRegistration): void {

@@ -811,6 +811,9 @@ export const enUS: TranslationDict = {
       sessionSticky: 'Kept this session at {tier} (model: {model})',
       combo: 'Using your custom combo {combo} — no automatic routing',
       cachedPrefix: 'Cached: ',
+      repinSuffix: ' · pin switched {repinFrom} → {repinTo} ({cause})',
+      repinConfig: 'removed from the model pool',
+      repinHealth: 'pinned model unavailable',
     },
   },
   logs: {

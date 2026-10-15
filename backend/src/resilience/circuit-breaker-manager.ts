@@ -69,6 +69,29 @@ export interface ModelAvailability {
   openPrefixes: string[];
 }
 
+/**
+ * Model-level CAPABILITY view used by session-pin eviction — deliberately NOT
+ * the breaker's own state machine. `CLOSED / HALF_OPEN / OPEN` are
+ * `CircuitBreaker` states (component layer); a model aggregates many breakers
+ * (model-level × every credential pair), so its view reads in capability
+ * terms (the plain health dual `available`/`unavailable`, refined by the
+ * middle state `recovering` the boolean cannot express):
+ *   'available'   — some credential can serve right now;
+ *   'recovering'  — nothing can serve yet, but a breaker (model-level or a
+ *                   pair) is mid-trial: one successful probe closes it;
+ *   'unavailable' — nothing can serve and no trial is in flight: model
+ *                   breaker OPEN with no pair in trial, or every pair
+ *                   hard-OPEN / DISABLED / SUSPECT (cooldown expiry or an
+ *                   operator action is the only way back).
+ * Built from breaker STATES (non-consuming, `viewState()` below), never the
+ * peek verdict: a busy canary makes the peek read unavailable, and evicting
+ * on that would burn the session's KV cache one probe before recovery — and
+ * recovery never pulls traffic switch-back. Shadow mode folds the same way
+ * the `verdict()` contract does: an automatic trip under shadow still SERVES,
+ * so it never reads out; MANUAL trips are operator intent and stay verbatim.
+ */
+export type ModelHealthView = 'available' | 'recovering' | 'unavailable';
+
 /** One (model × credential) breaker plus the identity it is keyed by. */
 interface PairRecord {
   modelId: string;
@@ -371,6 +394,49 @@ export class CircuitBreakerManager {
       }
     }
     return { available: openPrefixes.length < candidatePrefixes.length, openPrefixes };
+  }
+
+  /**
+   * The breaker state as the ROUTING view sees it — the shadow fold of the
+   * `verdict()` contract: under `circuitBreaker.shadow` an AUTOMATIC trip
+   * runs its full accounting but never denies service, so counting it as
+   * down here would evict session pins the routing path happily serves.
+   * MANUAL trips are operator intent, never shadowed, and keep their state
+   * verbatim (DISABLED / SUSPECT gating lives in the caller, likewise exempt).
+   * `getSnapshot()` is non-consuming, exactly like `getState()`.
+   */
+  private viewState(breaker: CircuitBreaker): CircuitBreakerState {
+    const snap = breaker.getSnapshot();
+    return this.rules.shadow && snap.category !== 'MANUAL' ? 'CLOSED' : snap.state;
+  }
+
+  /**
+   * Model capability view for session-pin eviction (see `ModelHealthView`):
+   * a pin is evictable ONLY at 'unavailable'. Operator takedowns
+   * (DISABLED / SUSPECT) outrank trial state: they are decisions, not
+   * recovery-in-progress. Chain-less providers degenerate to the model
+   * breaker alone. A tripped model-level OPEN returns 'unavailable' even
+   * if pairs read healthy (the trip marks every prefix out anyway); a model
+   * trial mid-flight whose every pair is still hard-OPEN returns
+   * 'unavailable' too — no probe can reach upstream until a pair cools
+   * back, so the trial cannot serve either.
+   */
+  public modelHealthView(modelId: string, candidatePrefixes: string[]): ModelHealthView {
+    const modelBreaker = this.breakers.get(modelId);
+    const modelState = modelBreaker ? this.viewState(modelBreaker) : 'CLOSED';
+    if (modelState === 'OPEN') return 'unavailable';
+    if (candidatePrefixes.length === 0) {
+      return modelState === 'HALF_OPEN' ? 'recovering' : 'available';
+    }
+    let anyHalfOpen = false;
+    for (const prefix of candidatePrefixes) {
+      if (this.isDisabled(modelId, prefix) || this.isSuspect(modelId, prefix)) continue; // takedown: serves as 'out', never 'recovering'
+      const pair = this.pairs.get(pairKey(modelId, prefix));
+      const state = pair ? this.viewState(pair.breaker) : 'CLOSED'; // never failed on this account
+      if (state === 'CLOSED') return 'available';
+      if (state === 'HALF_OPEN') anyHalfOpen = true;
+    }
+    return anyHalfOpen ? 'recovering' : 'unavailable';
   }
 
   /** Administrative SUSPECT flag for the account this model belongs to. */

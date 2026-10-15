@@ -615,8 +615,9 @@ export class SessionManager {
   }
 
   /**
-   * Dynamically re-pins a session to a healthy model instance when the previous
-   * pinned model has been tripped by circuit breaker (Session Self-Healing).
+   * Dynamically re-pins a session onto a replacement model instance when the
+   * pinned model is evicted (Session-Pin Eviction: circuit-breaker outage or
+   * config removal — see the orchestrator 4B seam).
    */
   public repinModel(sessionId: string, newModel: TierModelConfig): boolean {
     const session = this.sessions.get(sessionId);

@@ -323,7 +323,7 @@ export class PipelineOrchestrator {
    * 1. Prompt normalization (canonical order)
    * 2. Zero-header session identification & prefix fingerprinting
    * 3. Multi-Layer hierarchical routing (Layer 0 -> Layer 1 -> Layer 2)
-   * 4. Monotonic Ratchet session state enforcement + Session Self-Healing
+   * 4. Monotonic Ratchet session state enforcement + Session-Pin Eviction
    * 5. Execution with Circuit Breaker, Transparent Failover & Schema Assertion
    * 6. FinOps accounting
    * 7. Active learning data flywheel logging
@@ -591,29 +591,80 @@ export class PipelineOrchestrator {
 
     let actualTier = decision.targetTier;
 
-    // 4B. Session Self-Healing (ratchet mode only — explicit/combo requests
-    // have no session pin):
-    // If the pinned model for this session is currently tripped in OPEN state,
-    // dynamically unpin/repin to the healthiest candidate model in actualTier!
+    // 4B. Session-Pin Eviction (ratchet mode only — explicit/combo requests
+    // have no session pin): when the pinned model is evicted by config intent
+    // or by health, hard-switch the session onto a healthy actualTier landing
+    // (with write-back). Two orthogonal forces — see the inline contract.
     const cbManager = this.registry.getCircuitBreakerManager();
     let preferredModel: ModelRegistration | null = null;
     if (sessionMode === 'ratchet') {
-      const pinnedModel = this.sessionManager.getSession(sessionId)?.pinnedModel;
-      preferredModel = pinnedModel ? this.registry.getModel(pinnedModel) ?? null : null;
-      // Decision 6 aggregate: a pinned model is "down" when its model breaker is down
-      // OR every credential pair of it is out — the pre-P3 model-only read kept
-      // sessions pinned to models that had nothing left to serve them.
-      if (preferredModel && !this.registry.modelAvailable(preferredModel).available) {
+      const pinnedId = this.sessionManager.getSession(sessionId)?.pinnedModel;
+      preferredModel = pinnedId ? this.registry.getModel(pinnedId) ?? null : null;
+      // Session-pin eviction — the unified hard-switch seam. A pin is evicted
+      // by exactly two orthogonal forces, checked here (before pool assembly)
+      // so every execution branch (direct AND the lite-lead cascade below,
+      // which ignores the pin for its own turn) inherits the repaired binding:
+      //   CONFIG (operator intent): the model no longer joins the pool its
+      //   live member lists give it — the id is gone from the registry
+      //   (removed from config.models; the unresolvable-pin / zombie case,
+      //   which pre-fix silently re-fell back through the getModelForTier
+      //   head below every turn without ever writing the pin back), it reads
+      //   `unclassified` (removed from every tier member list / no glob
+      //   claims it any more), or the global denylist (tiers.exclude) vetoes
+      //   it. A model MOVED to another tier is NOT evicted: reclassifyTiers
+      //   rewrites m.tier in place, so it still joins "its own" tier's pool.
+      //   Hand-configured models (no tierMatch) are reclassification-immune —
+      //   member-list edits never evict them; only the denylist or a registry
+      //   removal can. Checked with healthyOnly=false so health never
+      //   masquerades as config intent (and vice versa below).
+      //   HEALTH (runtime reality, model CAPABILITY view —
+      //   registry.modelHealthView): evict ONLY at 'unavailable' — the
+      //   model breaker hard-OPEN, or every credential pair out of service
+      //   as hard-OPEN / account-SUSPECT / operator-DISABLED, so a full
+      //   account takedown evicts the pin even though the model stays
+      //   configured. PARTIAL disablement is not eviction: the account
+      //   dimension handles it (FORCED rebind in account-selection).
+      //   'recovering' (a canary trial in flight — slot free OR busy) is
+      //   NEVER eviction: the peek view pool filters use reads a busy canary
+      //   as unavailable, and moving a pin off a model one probe from
+      //   closing back would burn its KV cache with no switch-back. The view
+      //   folds shadow the way the verdict contract does — a shadowed
+      //   automatic trip still SERVES (accounting only), so it never reads
+      //   out; MANUAL trips and takedowns stay verbatim. The landing guard
+      //   below intentionally keeps the stricter-on-entry peek
+      //   read: leave a pin only when it is really gone, and never land a
+      //   session on a model that cannot serve now.
+      const configEvicted =
+        pinnedId !== undefined &&
+        (preferredModel === null ||
+          !this.registry.getCandidateModelsForTier(preferredModel.tier, false).some((m) => m.id === pinnedId));
+      const healthEvicted = preferredModel !== null && this.registry.modelHealthView(preferredModel) === 'unavailable';
+      if (pinnedId && (configEvicted || healthEvicted)) {
         const healthyReplacement = this.registry.getModelForTier(actualTier, true);
-        // Guard: getModelForTier falls back to unhealthy candidates when the
-        // whole tier is down — never repin onto a known-tripped model.
+        // Guard: getModelForTier degrades across tiers when the whole tier is
+        // down — a cross-tier landing is legitimate (the registry logs it with
+        // reason=empty-pool) and repinModel moves the model pin only, never
+        // maxTier; landing onto a known-unhealthy model never is. When no
+        // healthy landing exists the session keeps serving on the evicted pin
+        // — safe fail: an emptied tier must not strand every bound session —
+        // and the eviction is re-evaluated (and retried) next turn.
         if (
           healthyReplacement &&
-          healthyReplacement.id !== preferredModel.id &&
+          healthyReplacement.id !== pinnedId &&
           this.registry.modelAvailable(healthyReplacement).available
         ) {
           this.sessionManager.repinModel(sessionId, healthyReplacement);
           preferredModel = healthyReplacement;
+          // Observability: repin attribution rides in reasonParams — this
+          // turn's reasonCode belongs to applyRatchet's session.* vocabulary
+          // and must not be overwritten. `repin` names the force (config vs
+          // health) and from/to let the trace attribute the KV-cache burn.
+          decision.reasonParams = {
+            ...(decision.reasonParams ?? {}),
+            repin: configEvicted ? 'config' : 'health',
+            repinFrom: pinnedId,
+            repinTo: healthyReplacement.id,
+          };
           // Account continuity rides here rather than mutating the binding:
           // the repinned model flows into executeCandidatePool, whose per-
           // candidate selection KEEPS the session binding when the bound
@@ -846,7 +897,7 @@ export class PipelineOrchestrator {
       } else {
         // Auto & explicit: tier pool (peek-filtered; fall back to the full
         // pool when everything is tripped — the loop force-tries the last
-        // candidate). Head = pinned model (auto, post-self-healing) or the
+        // candidate). Head = pinned model (auto, post-eviction) or the
         // explicit model, so KV-cache affinity is preserved.
         let pool = this.registry.getCandidateModelsForTier(actualTier, true);
         if (pool.length === 0) pool = this.registry.getCandidateModelsForTier(actualTier, false);
