@@ -58,6 +58,10 @@ export const ClientsPage: React.FC = () => {
   const [bindSel, setBindSel] = useState<Record<string, Record<string, string>>>({});
   /** Agent inventory filter box (binding table gets long with 25+ agents) */
   const [agentFilter, setAgentFilter] = useState('');
+  // Binding-table row order: 'name' = alphabetical (default); 'suffix'/'prefix'
+  // cluster rows by the agent name's last / first hyphen segment so same-kind
+  // agents (java-dev, node-dev, …) sit adjacent for batch binding.
+  const [agentSort, setAgentSort] = useState<'name' | 'suffix' | 'prefix'>('name');
   /** Environment-persisted form memory (config.yaml `clientProfileMemory`) */
   const [mem, setMem] = useState<Record<string, ClientProfileMemoryEntry> | null>(null);
 
@@ -636,6 +640,24 @@ export const ClientsPage: React.FC = () => {
                               style={{ flex: 1, maxWidth: '260px', fontSize: '12px', padding: '3px 8px' }}
                             />
                             <span style={{ flex: 1 }} />
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }} title={t('clients.profileSortHint')}>
+                              <span style={{ fontSize: '11px', color: 'var(--text-dim)', marginRight: '2px' }}>{t('clients.profileSortLabel')}</span>
+                              {([
+                                ['name', t('clients.profileSortName')],
+                                ['suffix', t('clients.profileSortSuffix')],
+                                ['prefix', t('clients.profileSortPrefix')],
+                              ] as const).map(([k, label]) => (
+                                <button
+                                  key={k}
+                                  type="button"
+                                  className="btn btn-sm"
+                                  style={{ fontSize: '11px', padding: '3px 8px', ...(agentSort === k ? { borderColor: 'var(--accent)', color: 'var(--accent)' } : {}) }}
+                                  onClick={() => setAgentSort(k)}
+                                >
+                                  {label}
+                                </button>
+                              ))}
+                            </div>
                             {Object.values(bindings).some(Boolean) && (
                               <button
                                 type="button"
@@ -659,13 +681,27 @@ export const ClientsPage: React.FC = () => {
                             const visible = agents.filter(a => !q || a.name.toLowerCase().includes(q));
                             // Primary first — few agents, biggest blast radius; subagents next;
                             // 'all' last. Inside a group already-applied bound rows lead, so the
-                            // eye lands on decisions already made; in-page picks keep the order
-                            // stable and only reshuffle after the next apply refresh.
+                            // eye lands on decisions already made — under the default 'name' sort;
+                            // with suffix/prefix clustering the cluster key leads instead and
+                            // applied-first drops to the secondary tiebreak. In-page picks keep
+                            // the order stable and only reshuffle after the next apply refresh.
                             const groups: [OpenCodeAgentView['mode'], string][] = [
                               ['primary', t('clients.profileGroupPrimary')],
                               ['subagent', t('clients.profileGroupSubagent')],
                               ['all', t('clients.profileGroupAll')],
                             ];
+                            // Name clustering key: 'suffix' = segment after the last '-'
+                            // (java-dev / node-dev cluster together), 'prefix' = segment
+                            // before the first '-'. Names without a hyphen use the full name.
+                            const nameKey = (a: OpenCodeAgentView): string => {
+                              const n = a.name;
+                              if (agentSort === 'prefix') {
+                                const i = n.indexOf('-');
+                                return i === -1 ? n : n.slice(0, i);
+                              }
+                              const i = n.lastIndexOf('-');
+                              return i === -1 ? n : n.slice(i + 1);
+                            };
                             return (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                               {visible.length === 0 && (
@@ -674,7 +710,9 @@ export const ClientsPage: React.FC = () => {
                               {groups.map(([mode, label]) => {
                                 const rows = visible
                                   .filter(a => a.mode === mode)
-                                  .sort((x, y) => (appliedBindings[y.name] ? 1 : 0) - (appliedBindings[x.name] ? 1 : 0) || x.name.localeCompare(y.name));
+                                  .sort((x, y) => (agentSort !== 'name' ? nameKey(x).localeCompare(nameKey(y)) : 0)
+                                    || (appliedBindings[y.name] ? 1 : 0) - (appliedBindings[x.name] ? 1 : 0)
+                                    || x.name.localeCompare(y.name));
                                 if (rows.length === 0) return null;
                                 const boundN = rows.filter(a => !!bindings[a.name]).length;
                                 return (

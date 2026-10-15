@@ -1168,6 +1168,12 @@ hiddenBadge: string;
     profileGroupSubagent: string;
     profileGroupAll: string;
     profileAgentsNoMatch: string;
+    /** Row-order button group: by agent name, or cluster rows by the name's last / first hyphen segment. */
+    profileSortLabel: string;
+    profileSortName: string;
+    profileSortSuffix: string;
+    profileSortPrefix: string;
+    profileSortHint: string;
     profileCurrentModel: string;
     profileApplyHint: string;
     /** Static "Other clients" row: manual hookup guide for non-hooked clients. */
