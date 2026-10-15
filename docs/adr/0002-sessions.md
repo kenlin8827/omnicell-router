@@ -1,0 +1,68 @@
+# ADR-0002: Sessions — Identity Resolution, Monotonic Ratchet, Pin Eviction, Account Affinity
+
+## Status
+
+Implemented — 2026-10-15. Derived from code fact (`backend/src/session/session-manager.ts`, `backend/src/pipeline/orchestrator.ts` 4B seam, `backend/src/pipeline/account-selection.ts`). Facts re-derived from current code in the corpus reset (historical numbering retired; current map: 0001 routing, 0003 addressing/membership, 0004 resilience, 0005 execution, 0006 credentials, 0007 environments, 0008 surfaces). Layer: cross-cutting (request-side conversation state). Health vocabulary referenced here is defined in ADR-0004; affinity identity anchoring in ADR-0006.
+
+## Context
+
+Every routed turn needs to answer two questions without client cooperation: *which conversation is this*, and *what should serve it*. Unbounded per-turn model choice causes intellectual degradation (follow-ups land on weaker models) and destroys upstream KV prompt caching (80–95% of input cost on cache miss). The session subsystem is the single owner of both problems; everything else in the pipeline reads its verdicts.
+
+## Decision
+
+### 1. Identity — layered zero-header resolution
+
+Priority order (first hit wins), `resolveSessionId`:
+
+1. Explicit header `x-session-id` / `x-conversation-id` / `session-id` / `conversation-id`, or `router_options.session_id`.
+2. Client-embedded conversation UUID — full-shape Claude Code convention `user_{hex}_account_{uuid}_session_{uuid}` (exact-shape match only; a loose `_session_` suffix would false-merge a user's unrelated conversations).
+3. Bare `request.user` (user-scoped; kept for compatibility).
+4. Chain anchors — hash of every head prefix of the prior history ending at an assistant turn (bounded probes; matches branched/regenerated histories sharing the head).
+5. Tail anchors — trailing windows of length ≥ 3 ending at an assistant boundary (clients that truncate old turns re-find their conversation).
+6. Root anchor — `sha256(clientIp + FULL first user message)`; ambiguous roots are **tombstoned** (two live sessions sharing a first message ⇒ neither may re-anchor; false split self-heals, false merge never does).
+7. Cold start — fresh random id (`sess_` + 12 random bytes). Deterministic birth ids are rejected: a local gateway sees `127.0.0.1` for everyone.
+
+Serialization is full-fidelity (tool_calls, ids, non-text parts included) — a lossy hash would make distinct pure-tool-call turns collide (false merge, the unrecoverable direction). Anchor maps are in-memory: after restart, cooperating clients (1–3) recover, non-cooperating get a fresh session (state was lost anyway; trace grouping splits). Full summarization rewrites match nothing and intentionally start a new session. Birth metadata (`origin`, `firstUserMessage`) is first-write-wins, immutable.
+
+### 2. Tier policy — three configurable strategies
+
+- `monotonic` (default): a session tracks its peak tier. Upgrades pass through (reasonCode `session.escalated`); downgrade asks are intercepted and the session is held at peak (`session.ratchet` / `session.preserved`). Rationale: short follow-ups ("thanks", "fix this line") must not downgrade the brain or invalidate the cache.
+- `sticky`: every turn runs at the session ceiling (`session.sticky`).
+- `stateless` / `enabled: false`: per-turn routing, no session writes.
+
+Session lifecycle: idle TTL (`ttlSeconds`, default 3600) and capacity (`maxSessions`, default 10000) evict via LRU at cleanup time; no timers.
+
+### 3. Model pin and its eviction — the only two ways a conversation moves models
+
+A session pins one model (`pinnedModel`, written by the ratchet on birth/escalation). Pin reads use the live registry; the pin is honored as chain head in ratchet mode. A pinned model is **hard-switched** (`repinModel`, persisted at the seam before execution) only when:
+
+```
+evict(pin) = configForce ∨ healthForce
+switch     = evict ∧ healthy landing exists ∧ landing.id ≠ pin
+```
+
+- **configForce** — `pin ∉ getCandidateModelsForTier(pin.tier, healthyOnly=false)`: the id is gone from the registry (zombie pin — repaired by the same seam), `unclassified` (removed from every tier member list / glob no longer claims it), or the global `tiers.exclude` denylist vetoes it. **Not** triggers: a model moved to another tier (`reclassifyTiers` rewrites `m.tier` in place — the pin still joins "its own" tier's pool), and member-list edits against hand-configured models (no `tierMatch`; their tier is permanent, per ADR-0003).
+- **healthForce** — `modelHealthView(pin) === 'unavailable'` (ADR-0004): model breaker OPEN, or every credential pair hard-OPEN / SUSPECT / operator-DISABLED. A `recovering` canary — slot free **or busy** — is never eviction: the peek view reads a busy trial as down, and moving a pin one probe from recovery burns the session's KV cache permanently (there is no switch-back). Shadow mode never evicts an automatic trip: shadowed breakers keep serving (the `verdict()` contract), and the view folds them as serving; MANUAL and takedowns enforce verbatim.
+- **Landing** — `getModelForTier(actualTier, true)` ∧ peek-available; cross-tier landing when the tier is empty is legitimate and logged (`reason=empty-pool`); `maxTier` is never touched by a repin. **No healthy landing → keep serving the evicted pin** (safe fail; an emptied tier must not strand bound sessions; re-evaluated lazily every turn).
+- **Scope** — ratchet mode only. Explicit-named requests never re-route and write the pin back only for alignment (client-named model serves at the ceiling tier). Combos bypass pins entirely (`sessionMode='bypass'`): the combo's member list is re-resolved per call, so a combo edit reaches every conversation next request — nothing is "bound" to evacuate.
+- **Attribution** — never a new `reasonCode` (the turn's code belongs to §2); the move rides `reasonParams`: `{ repin: 'config'|'health', repinFrom, repinTo }`, persisted on the trace, rendered as a tail in the session switch timeline.
+
+Rejected: peek-based eviction (moves pins off recovering models); filtering the chain head in `executeCandidatePool` (shared by explicit/combo — breaks the explicit-wins contract); waiting for TTL (up to an hour of silent override of a committed operator edit).
+
+### 4. Account affinity — switching is forced failover, never balancing
+
+Each session may bind one credential (`boundKeyHashPrefix` = display-safe `sha256(keyHash)` prefix, ADR-0006 identity). Contract (pure function at selection, `selectAccount`; persistence lives with the orchestrator, only after a serve):
+
+- bound & healthy & in the candidate's chain → **keep, ever** (local rate-limit caps never move a binding — only the provider's own 429 / pair-open / takedown does);
+- bound & pair-OPEN/SUSPECT/DISABLED → next healthy in chain order, **FORCED rebind** persisted after it serves;
+- bound & stale/expired/absent-from-chain → treated absent → deterministic new-session spread `sha256(sessionId) % healthyPool` (capped accounts preferred-against — shaping applies only to NEW placements);
+- every prefix out → no prefix (legacy force); every prefix DISABLED → move on to the next candidate (a takedown outranks a guess);
+- lazy window expiry (`accountAffinity.cacheTtlMs`, read against `lastActiveAt`) is independent of the session TTL; no switch-back on recovery anywhere.
+
+A model repin never rewrites the binding: continuity rides the selection boundary (keep if the bound prefix exists in the new provider's chain, else stale → re-spread + forced rebind). The model dimension and the account dimension are strictly separated: partial account disablement rebinds the account, never the model.
+
+## Consequences
+
+- Zero-header clients get full conversation continuity; a restart costs only non-cooperating grouping traces.
+- Operator edits (tier lists, denylist) reach live conversations next turn; each evicted session pays exactly one cache rebuild — forced, attributable, retried only when it has somewhere to land.
+- Tests: `backend/tests/pin-eviction.test.ts` (forces, non-triggers, recovering exemption with two-view divergence, landing guard, scope regressions), `account-affinity-orchestrator.test.ts`, `account-selection.test.ts`, `session.test.ts`, `resilience*.test.ts`.

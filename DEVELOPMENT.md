@@ -157,7 +157,7 @@ opencode-router/
 │   ├── flywheel-stats.ts          # Flywheel dataset distribution analyzer (bun run flywheel:stats)
 │   └── full-system-test.ts        # 10-point full system integration test suite
 ├── docs/
-│   └── adr/                       # Architecture Decision Records (ADR-0001 through ADR-0007)
+│   └── adr/                       # Architecture Decision Records (ADR-0001 through ADR-0008)
 │       └── zh-CN/                 # Bilingual Chinese ADR mirror directory
 ├── config.example.yaml            # Production configuration template
 ├── tests/                         # Comprehensive unit test suite (30/30 passing)

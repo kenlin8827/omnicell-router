@@ -34,7 +34,7 @@ import type { EnvType } from '../config/env.js';
 
 /**
  * Environment administration API (Phase 2 of the book-sets design,
- * docs/adr/0017). All routes live under /api/admin/environments* so the
+ * docs/adr/0007). All routes live under /api/admin/environments* so the
  * console webAuth gate in server.ts covers them with zero extra wiring.
  *
  * The switch route is the only one with process-restart side effects; its

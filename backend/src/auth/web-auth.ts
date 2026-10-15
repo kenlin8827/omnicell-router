@@ -12,8 +12,8 @@ import { getEnvPaths } from '../config/env.js';
  *    (webAuth.passwordHash). Plaintext never persists.
  *  - Stateless HMAC-signed session token in an HttpOnly SameSite=Lax cookie
  *    (`ocr_session`). The signing secret lives in the ACTIVE ENVIRONMENT's
- *    webauth-secret file (default env: <ocrHome>/webauth-secret, created on
- *    first use) so sessions survive gateway restarts — the UI
+ *    webauth-secret file (every env including default, under envs/<name>/;
+ *    created on first use) so sessions survive gateway restarts — the UI
  *    "Restart Gateway" button and daemon self-heal must not log the operator
  *    out. Per-env secrets also stop a cookie from one env being replayed as
  *    valid in another.

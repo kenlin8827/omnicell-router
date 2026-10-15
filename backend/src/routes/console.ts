@@ -753,8 +753,8 @@ export function registerConsoleRoutes(
     // `rules` is additive too (circuit-breaker rules spec): the EFFECTIVE
     // (startup-resolved) ruleset + the five-switch banner state the /guardrails
     // page renders ("automatic tripping: on / partly off / all off / shadow").
-    // Saved rule edits apply on restart (invariant 6) — handleSaveConfig hot-
-    // applies proxy/capture/layer2/combos/tiers only, never breaker rules.
+    // Saved rule edits hot-apply on every config save (handleSaveConfig →
+    // manager.applyConfig swaps rule sets, never live state machines).
     const cbSummary = {
       ...cbManager.getSummary(),
       pairs: cbManager.getPairSummary(),

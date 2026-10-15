@@ -16,7 +16,8 @@ export type TierLevel = 'lite' | 'plus' | 'pro' | 'ultra';
  * Tier naming: strength-gradient labels that work across model vendors
  * (Claude, GPT-*, Gemini, etc.) instead of vendor-specific brand names.
  * Four-tier vocabulary, ordered lite → plus → pro → ultra, with `ultra`
- * at the price/quality ceiling. See docs/adr for the tier-migration history.
+ * at the price/quality ceiling. Tier semantics and membership: docs/adr
+ * ADR-0003 (the facts-side corpus carries no migration history by design).
  */
 export type PoolMembership = TierLevel | 'unclassified';
 

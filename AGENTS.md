@@ -6,7 +6,7 @@ Guidance for AI coding agents. Repo conventions only — architecture decisions 
 
 OpenCode Router (OCR) — a local LLM gateway / cascaded router. Bun workspaces: `backend/` (Fastify + pino) and `frontend/` (React + Vite).
 
-Before touching environments/bootstrap, credentials, or `opencode.jsonc` provider defs, query the current ADRs (`adr_context`, or `docs/adr/`): ADR-0017/0018 (environment book-sets, bootstrap levers) and ADR-0019 (CredentialStore adapter, provider shape/slot). Before touching model-addressing vocabulary — `ModelRef`/`ModelIdentity`, candidate/policy types, or the request `model` field resolution — query ADR-0020 (model-reference glossary: `Ref` suffix = unresolved handle, `Identity` = resolved physical fact).
+Before touching environments/bootstrap, credentials, or `opencode.jsonc` provider defs, query the current ADRs (`docs/adr/`): ADR-0007 (environment book-sets, bootstrap, controlled-restart switching, export/import), ADR-0006 (CredentialStore capabilities, key-hash identity, push-only convergence), and ADR-0005 (direct execution, provider defs, credential chains). Before touching model-addressing vocabulary — the `modelRef` wording (gateway-visible id namespace: registered id / combo id / auto alias), `ModelRegistration` as the resolved physical record, tier-membership or combo types, or the request `model` field resolution — query ADR-0003 (model addressing and tier membership). The historical `ModelRef`/`ModelIdentity` TYPE NAMES never shipped in code — do not reintroduce them. Health vocabulary is layer-disciplined: `CLOSED/HALF_OPEN/OPEN` belong to the CircuitBreaker; model-level aggregation reads `available/recovering/unavailable` (ADR-0004; eviction fires only on `unavailable`, ADR-0002).
 
 ## Common commands
 

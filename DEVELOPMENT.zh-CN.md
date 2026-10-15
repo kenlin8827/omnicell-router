@@ -20,8 +20,7 @@
 - [三、核心模块职责与工程目录结构](#三核心模块职责与工程目录结构)
 - [四、主动学习数据飞轮与模型原地蒸馏](#四主动学习数据飞轮与模型原地蒸馏)
 - [五、完整测试矩阵与验证套件](#五完整测试矩阵与验证套件)
-- [六、架构决策记录 (ADR)](#六架构决策记录-adr)
-- [七、代码规范与零残留原则 (Zero Cruft)](#七代码规范与零残留原则-zero-cruft)
+- [六、代码规范与零残留原则 (Zero Cruft)](#六代码规范与零残留原则-zero-cruft)
 
 ---
 
@@ -158,7 +157,7 @@ opencode-router/
 │   ├── flywheel-stats.ts          # 飞轮样本分布统计分析 (bun run flywheel:stats)
 │   └── full-system-test.ts        # 10 点全链路系统端到端集成测试套件
 ├── docs/
-│   └── adr/                       # 架构决策记录 (ADR-0001 至 ADR-0007)
+│   └── adr/                       # 架构决策记录 (ADR-0001 至 ADR-0008)
 │       └── zh-CN/                 # 架构决策记录中文双语镜像目录
 ├── config.example.yaml            # 生产环境配置模板
 ├── tests/                         # 单元测试套件 (30/30 100% 通过)
@@ -238,23 +237,7 @@ bun run scripts/full-system-test.ts
 
 ---
 
-## 六、架构决策记录 (ADR)
-
-本项目严格采用 ADR 记录所有重大架构演进，所有决策均提供中英双语文档：
-
-| 编号 | 标题 | 状态 | 核心摘要 |
-| :--- | :--- | :--- | :--- |
-| [ADR-0001](docs/adr/0001-purge-fuzzy-semantic-cache.md) | [物理移除本地模糊语义缓存](docs/adr/zh-CN/0001-purge-fuzzy-semantic-cache.md) | **Accepted** | 杜绝 Prompt 权重坍塌与语义串味，保护上游原生 KV 提示词缓存 |
-| [ADR-0002](docs/adr/0002-dynamic-model-discovery-via-opencode.md) | [100% 动态模型发现与自适应分层](docs/adr/zh-CN/0002-dynamic-model-discovery-via-opencode.md) | **Accepted** | 摒弃静态供应商配置，由本地 OpenCode 守护进程接管动态发现与免密代理 |
-| [ADR-0003](docs/adr/0003-language-neutral-routing-engine.md) | [语言中立的多维复杂度与结构化引擎](docs/adr/zh-CN/0003-language-neutral-routing-engine.md) | **Accepted** | 采用语法符号密度、LaTeX 数学公式与信息熵取代自然语言硬编码词表 |
-| [ADR-0004](docs/adr/0004-hierarchical-classification-and-data-flywheel.md) | [多层分类架构与数据飞轮体系](docs/adr/zh-CN/0004-hierarchical-classification-and-data-flywheel.md) | **Implemented** | 落地 Layer 0 协议规则 -> Layer 1 本地微模型 -> Layer 2 专职裁决模型分层闭环 |
-| [ADR-0005](docs/adr/0005-auto-initializing-base-model-scaffold.md) | [空白底座模型自动初始化与确定性穿透](docs/adr/zh-CN/0005-auto-initializing-base-model-scaffold.md) | **Implemented** | 落地微张量空白骨架 (W=0, b=0)，数学保证均匀概率与确定性级联 |
-| [ADR-0006](docs/adr/0006-monotonic-session-ratchet-and-prefix-fingerprinting.md) | [多轮会话单调递增升档与前缀指纹](docs/adr/zh-CN/0006-monotonic-session-ratchet-and-prefix-fingerprinting.md) | **Implemented** | 强制“只升不降”状态机，保护上游 KV Cache 并杜绝对话智力倒退 |
-| [ADR-0007](docs/adr/0007-symmetrical-pipeline-naming-classifier-and-judge.md) | [层级对称流水线命名演进](docs/adr/zh-CN/0007-symmetrical-pipeline-naming-classifier-and-judge.md) | **Implemented** | 统一采用对称架构 (layer1-classifier / layer2-judge)，彻底物理清理旧存根 |
-
----
-
-## 七、代码规范与零残留原则 (Zero Cruft)
+## 六、代码规范与零残留原则 (Zero Cruft)
 
 1. **绝对物理清理（Zero Cruft）**：
    - 重构时不保留任何转发存根（`export * from ...`）或废弃别名，彻底物理删除旧文件以保持架构极简。

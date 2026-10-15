@@ -1,0 +1,52 @@
+# ADR-0003: Model Addressing and Tier Membership — One Resolution Ladder, One Membership Authority
+
+## Status
+
+Implemented — 2026-10-15 (facts-side corpus rewrite). Scope: what the request `model:` field may name and how that name resolves; who decides pool membership; combos; variants; per-key model policy; the effort vocabulary. Conversation consequences of membership edits = ADR-0002; pool execution semantics = ADR-0004/0005.
+
+## Decision
+
+### 1. The addressing ladder (one name, one winner)
+
+Resolution order, exact (chat path `orchestrator.ts:348-431`; decision surface mirrors it `surfaces/decision-pipeline.ts:54-137`):
+
+1. Trim once; `request.model` verbatim on the wire (surface contract — forwarded bytes are never rewritten).
+2. `auto-lite|plus|pro|ultra` virtual ids → `force_tier` (Layer 0, ADR-0001). These ids are RESERVED — registrable by neither models nor combos (`RESERVED_COMBO_IDS`, `registry.ts:695`).
+3. Exact registered id → transparent pass-through: pin that model and force its tier (`:364-373`).
+4. Variant sibling `base-variant` / `base#variant` → route to BASE, pin the variant's `reasoningEffort` over any client-sent effort (`ModelVariant = {id, reasoningEffort}`; `:375-387`). A real registered id always beats a sibling; a combo beats a variant ref; `#` with no matching variant → **404 loud, never silently auto-routed** (`:388-398`).
+5. Bare upstream name (no provider prefix — how clients name a model the way its catalog does): ALL hits returned, ordered cheapest-input then id (`getModelsByUpstreamName`); the MITM leg additionally narrows by intercepted host (`upstreamHost` from the client request's host — native leg deliberately excluded, anti-spoofing; `:106-124,415-418`).
+6. Combo id (checked after the explicit-model branch): the member list IS the candidate pool, classifier/session-ratchet/schema-escalation all bypassed; a combo with zero registered members **fails fast** — never silently demoted to `auto` (invisible billing drift) (`:433-449`).
+7. Anything else unregistered → the classifier decides. This IS intelligent routing (e.g. a native `claude-opus-*` name after an in-client model switch).
+
+Vocabulary fact: the resolved physical record is `ModelRegistration` (id + provider + wire + tier + pricing…, `config/types.ts:15-80`); `ComboModelRef {id, weight?}` is the unresolved config handle (`:99`); the `modelRef` WORDING names the gateway-visible id namespace = registered id ∪ combo id ∪ auto alias (`:120-137`). The historical glossary's `ModelRef`/`ModelIdentity` TYPE NAMES were never adopted in code — do not resurrect them; `AGENTS.md` now points here.
+
+### 2. Tier membership — the committed member list is the ONLY source
+
+`tiers.<tier>.members` decides pools (`config/types.ts:149-153`). Determinism beats zero-maintenance: a curated pool with no hidden heuristics; new models NOT auto-joining is a feature. The classifier survives as the **suggestion engine only** (boot pre-label, console preview/check; `match:` config @deprecated-suggestion, `:183-198`).
+
+- `TierMemberRule = {pattern, weight?≥1, effortMap?}`; pattern semantics: `*`/`?` case-insensitive glob, **no wildcard = substring**, full id = exact pin (`utils/glob.ts:7-16`).
+- First claim wins: tier order lite→plus→pro→ultra, then list order (`claimModel`, `member-match.ts:87-98`); a model belongs to exactly one tier; overlapping rules warn at SAVE time (`matchingTiers` via `POST /api/admin/tiers/check`).
+- Chain order = list order: priority = index+1, the list leader is the tier representative (`reclassifyTiers`, `registry.ts:431-456`); per-tier `selection: priority|weighted|round_robin` picks the leader (weighted draw / consecutive-slot RR with per-tier cursor) — `pickPrimary` `:291-343`.
+- **No runtime auto-seed** (the historical seed path is gone): templates ship as commented globs; an explicit `tiers: {}` is respected as "no pools"; a config with no `members` key anywhere leaves pools empty with a boot warning (`member-match.ts:28-35`; the YAML field comment "no runtime auto-seeding" lives, in Chinese, only in `config/index.ts`).
+- `unclassified` is a fourth-state MARKER, not a tier widening (`types/router.ts:9-21`): joins no pool, cannot become a tier representative, surfaced in a console "unpooled" view with one-click join.
+- Two-axis liveness: the BOOT snapshot owns the model universe (providers/credentials/wire); membership+priority+effortMap are FILE-DERIVED live projections — commit-on-save `applyTierConfigNow` (+ `applyCombos`) on both console save paths, with a 2 s lazy replay as the hand-edited-YAML safety net (`registry.ts:375-425`, `routes/console.ts:1076-1077,1100-1101`).
+- Hand-configured models (no captured `tierMatch`) are never reclassified — their explicit tier is permanent; member-list edits cannot move them (`projectedClaim` undefined → skip, `registry.ts:405-411`).
+- Global denylist `tiers.exclude` is the ONLY pool veto left — unconditional, "it outranks even an explicit pin" (`registry.ts:271-281`); per-tier `match.exclude/excludeTiers` are classification-gate vetoes on the suggestion path only.
+
+### 3. Combos
+
+`ComboConfig = {id, selection?, models:(string|ComboModelRef)[], note?}` — `selection` decides the LEADER only; failover always walks config order; no cross-tier escalation (the composition is the contract); attempt-cap = chain length (ADR-0005). `resolveCombo` re-resolves per call: config order preserved, unregistered ids dropped, duplicates collapsed to first — late registrations join naturally (`registry.ts:737-752`). Id namespace collisions are one-way and loud: a combo over an existing model id is ignored with a warn; a model registered over a combo shadows it (warn + hidden from `/v1/models`) (`:698-724`, `:161-163`).
+
+### 4. Per-key model access
+
+`apiKeys[].modelAccess = {mode: 'allow'|'deny', models: string[]}` — entries are exact ids, `*`-wildcards, or TIER-VIRTUAL entries `auto-*` (whole-tier rules); absent = unrestricted (`auth/model-access.ts`). Enforced at four layers so no path skips it: surface entry guard (reduces indirections before the pipeline: variant→base, combo→EVERY member, auto*→tier, `checkRequestedModel` :103-141), orchestrator defense-in-depth for explicit models (:452-467, 403), the execution choke point filtering every candidate (`executeCandidatePool`, ADR-0005) incl. escalation targets, and `/v1/models` + detail listing (variant judged via its base; combo listed only if every member is allowed). Bare `auto` under a policy WIDENS to the cross-tier allowed pool (chosen tier first, then proximity) instead of 403 — "auto" promises SOME allowed model, not a specific tier.
+
+### 5. Effort vocabulary
+
+`EFFORT_LADDER = none|low|medium|high|xhigh|max` — `indexOf` IS the rank (`types/router.ts:31-52`). `'none'` is a REAL ladder value a client may send, distinct from an omitted field; the "5-level + none-toggle" framing is stale (one vendor exception: the System One enum has no `none` — legacy `true` maps to the five non-none levels there). Honesty rules (`pickModelForEffort`, `registry.ts:484-544`): never upgrade above the ask (translate → capability-clamp → downgrade-or-nothing); an over-spec pool (everything supports MORE than asked) is not a match — route elsewhere rather than silently drop to none; cross-tier fallback allowed, descending order, actual model reported; `degraded` = served-rank < asked-rank (surfaced via `X-OCR-Thinking-*`, ADR-0004). Member rules' inline `effortMap` (`map?.[ask] ?? ask`) runs BEFORE the capability clamp at all four sites (selection, pinned-model path, per-candidate copy, post-failover recompute); `none→real` mappings engage even omitted-effort requests. `defaultEffort` pins only when the client omitted the field — explicit values, `none` included, always win.
+
+## Consequences
+
+- Membership, order and thinking translation are 100% reviewable in one config surface; churn is visible (unpooled/orphan views, save-time overlap warnings), not silently absorbed.
+- Naming honesty: no type claims an `Identity`/`Ref` contract the code never shipped; the ladder in this record IS the resolution contract.
+- Tests: `tier-membership`, `tier-pools*`, `combos`, `variants`, `model-access`, `tier-match` (suggestion path).

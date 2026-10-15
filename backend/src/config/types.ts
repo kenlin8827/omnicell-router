@@ -557,7 +557,8 @@ export interface RequestCaptureSystemoneConfig {
  *
  * OFF by default (opt-in): captured bodies may contain sensitive data, and the
  * console /api/admin/* endpoints are auth-exempt — enable consciously.
- * Request headers are NEVER recorded.
+ * Request header names are recorded; credential-shaped header VALUES are
+ * redacted ([REDACTED]) by the exchange serializer.
  *
  * The requestCapture tree (audit-log capture config).
  */
