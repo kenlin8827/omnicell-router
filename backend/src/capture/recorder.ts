@@ -632,11 +632,18 @@ export class CaptureRecorder {
       CaptureRecorder.localDateDir(new Date(ts)),
       CaptureRecorder.sessionFileName(full.sessionId)
     );
-    const line = JSON.stringify(full) + '\n';
     try {
+      // Serialization stays INSIDE the try: every call site is
+      // `void recorder.recordEvent(...)` with no rejection handler, so a throw
+      // here (BigInt / exotic value in an event) would be an unhandled
+      // rejection and kill the gateway — capture must fail open, always.
+      const line = JSON.stringify(full) + '\n';
       this.ensureDir(path.dirname(file));
       // Per-session seal: agent loops resend full history every turn (O(turns²)
       // growth); one runaway session must not starve the shared retention pool.
+      // The budget is SOFT: concurrent events on the same file can each observe
+      // the pre-append size, overshooting by roughly one line — the seal exists
+      // to bound a runaway loop, not to be an exact quota.
       let bytes = this.fileBytesCache.get(file);
       if (bytes === undefined) {
         try {
@@ -647,7 +654,6 @@ export class CaptureRecorder {
       }
       if (bytes >= this.maxSessionBytes) {
         if (!this.sealedFiles.has(file)) {
-          this.sealedFiles.add(file);
           const seal = JSON.stringify({
             eventType: 'archive-overflow',
             sessionId: full.sessionId,
@@ -657,6 +663,10 @@ export class CaptureRecorder {
             maxSessionMB: Math.round(this.maxSessionBytes / (1024 * 1024)),
           });
           await fs.promises.appendFile(file, seal + '\n', 'utf8');
+          // Only mark sealed AFTER the terminal line lands: if the write fails
+          // (disk full) the next event retries the marker instead of leaving
+          // the archive permanently undocumented.
+          this.sealedFiles.add(file);
           console.warn(`[Capture] Session archive sealed at ${this.maxSessionBytes} bytes (further events dropped): ${file}`);
         }
         return;
@@ -769,11 +779,23 @@ export class CaptureRecorder {
         let conversationKey: string | undefined;
         const streamEvents: HttpExchangeEvent[] = [];
         try {
+          // Ceiling: the tally needs EVERY line, so this is an uncapped
+          // synchronous read bounded only by the per-session seal
+          // (maxSessionMB, default 512 MB) — a date full of sealed-maximum
+          // sessions can stall the event loop for seconds per listing.
+          // Accepted: admin-console surface, operator-initiated, and the seal
+          // is what keeps the worst case finite. Upgrade path: stream the file
+          // in chunks (createReadStream + line splitter) or keep an on-disk
+          // per-file turn counter.
           const content = fs.readFileSync(filePath, 'utf8');
           for (const line of content.split(/\r?\n/)) {
             if (!line.trim()) continue;
             try {
               const rec = JSON.parse(line);
+              // Terminal seal marker — metadata, never a turn. Skipping it here
+              // keeps the legacy else-branch below from counting it as a
+              // phantom turn (the same bug class as event lines vs turns).
+              if (rec.eventType === 'archive-overflow') continue;
               if (rec.eventType === 'http-exchange') {
                 streamEvents.push(rec as HttpExchangeEvent);
                 if (rec.apiKey && rec.apiKey.id && !seenKeys.has(String(rec.apiKey.id))) {
@@ -857,7 +879,7 @@ export class CaptureRecorder {
 
   /**
    * Read records from one archive file, newest `limit` records in
-   * chronological order. Reads at most the last MAX_READ_BYTES of the file.
+   * chronological order. Reads at most the last readWindowBytes() of the file.
    */
   public readRecords(
     date: string,
@@ -889,7 +911,11 @@ export class CaptureRecorder {
       for (const raw of lines) {
         if (!raw.trim()) continue;
         try {
-          records.push(JSON.parse(raw));
+          const rec = JSON.parse(raw);
+          // The seal marker is metadata, not a turn — the legacy timeline must
+          // not grow a phantom record for it.
+          if (rec?.eventType === 'archive-overflow') continue;
+          records.push(rec);
         } catch {
           // Corrupt/partial line — skip, never fail the whole read.
         }
@@ -905,7 +931,7 @@ export class CaptureRecorder {
    * in chronological order. Returns events + a `turns` summary that
    * groups the events by `traceId` (spanId-aware) so the console can
    * render them as logical turns. The underlying file is also bounded at
-   * MAX_READ_BYTES (pathologically large archives are tailed; the tail is
+   * readWindowBytes() (pathologically large archives are tailed; the tail is
    * what matters).
    */
   public readEvents(
@@ -982,7 +1008,7 @@ export class CaptureRecorder {
     const firstTurnStart = newest.findIndex(e => e.direction === 'client' && e.phase === 'request');
     if (firstTurnStart > 0) newest = newest.slice(firstTurnStart);
     const turns = CaptureRecorder.groupEventsIntoTurns(newest);
-    // Total logical turns over the whole read window — the header's "N 轮"
+    // Total logical turns over the whole read window — the header's turn count
     // must use this, not totalLines (raw event lines, 2-4 per turn).
     const totalTurns = CaptureRecorder.groupEventsIntoTurns(events).length;
     return { events: newest, turns, totalLines: events.length, totalTurns, fileTruncated };
@@ -1093,8 +1119,12 @@ export class CaptureRecorder {
 
   /**
    * Read the raw JSONL archive verbatim (for export/download). Unlike
-   * readRecords this is NOT capped at MAX_READ_BYTES — exports should be
-   * complete; per-line size is already bounded by maxBodyBytes at write time.
+   * readRecords this is NOT capped at the read window — exports should be
+   * complete; per-line size is already bounded by maxBodyBytes at write time,
+   * and total size by the per-session seal (maxSessionMB). The whole file is
+   * read synchronously: a max-sealed session is a 512 MB buffer on the admin
+   * route. Accepted for an operator-initiated export; upgrade path is a
+   * streaming download (createReadStream piped to the reply).
    *
    * When `exclude` is non-empty, body fields are stripped and the rest is
    * re-serialized — metadata (ts/status/model/routing/ids) always survives.

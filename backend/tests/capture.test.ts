@@ -1008,4 +1008,24 @@ describe('CaptureRecorder per-session seal (maxSessionMB)', () => {
     const resealed = readLines();
     assert.equal(resealed.filter(l => l.eventType === 'archive-overflow').length, 1, 'recreated archive re-seals once');
   });
+
+  it('the terminal marker is metadata, never a turn in the console readers', () => {
+    // A reader that falls through to the legacy branch shows one phantom turn
+    // per sealed session (the same bug class as counting event lines).
+    const date = CaptureRecorder.localDateDir(new Date());
+    const lines = readLines();
+    const events = lines.filter(l => l.eventType === 'http-exchange').length;
+    assert.ok(events > 0 && lines.some(l => l.eventType === 'archive-overflow'), 'archive is sealed with events');
+
+    const row = recorder.listSessions(date).find(r => r.file === `${SESSION}.jsonl`);
+    assert.ok(row, 'sealed session is listed');
+    assert.equal(row!.turns, events, 'session tally counts exchange turns only');
+
+    const legacy = recorder.readRecords(date, `${SESSION}.jsonl`, 500);
+    assert.equal(
+      legacy.records.filter((r: any) => r.eventType === 'archive-overflow').length,
+      0,
+      'legacy record reader skips the marker'
+    );
+  });
 });
