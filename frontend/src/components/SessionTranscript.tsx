@@ -654,7 +654,7 @@ const RoundCard: React.FC<{
             <TranscriptBlock
               key={`${st.turn.traceId}-${st.idx}`}
               st={st}
-              label={`${ordinal}.${i + 1}`}
+              label={`${ordinal}-${i + 1}`}
               date={date}
               onOpenTurn={onOpenTurn}
             />
@@ -767,7 +767,7 @@ const FocusRoundView: React.FC<{
         <TranscriptBlock
           key={`${st.turn.traceId}-${st.idx}`}
           st={st}
-          label={`${ordinal}.${i + 1}`}
+          label={`${ordinal}-${i + 1}`}
           date={date}
           onOpenTurn={onOpenTurn}
         />
