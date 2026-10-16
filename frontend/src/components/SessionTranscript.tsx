@@ -863,7 +863,9 @@ export const SessionTranscript: React.FC<{
                 flexShrink: 0,
               }}
             >
-              <span style={{ fontSize: '13px', fontWeight: 700 }}>{t('captures.roundFocus')}</span>
+              <span style={{ fontSize: '13px', fontWeight: 700 }}>
+                {t('captures.roundFocus')} · {t('captures.roundOrdinal', { n: focusIdx + 1 })}
+              </span>
               <button
                 className="btn btn-sm"
                 style={{ marginLeft: 'auto', flexShrink: 0 }}
