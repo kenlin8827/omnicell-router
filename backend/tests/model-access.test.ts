@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadConfig } from '../src/config/index.js';
+import fs from 'node:fs';
+import { loadConfig, saveConfig, getConfigPath } from '../src/config/index.js';
 import { createServer } from '../src/server.js';
 import { validateModelAccess } from '../src/auth/api-keys.js';
 import {
@@ -337,6 +338,58 @@ describe('Per-key model access policy (auth/model-access.ts)', () => {
       assert.ok(ids.includes('auto') && ids.includes('mock-plus'), 'console picker sees the full catalog');
       const mockPlus = body.models.find((m: any) => m.id === 'mock-plus');
       assert.strictEqual(mockPlus.tier, 'plus', 'tier included for picker meta');
+    });
+
+    it('GET /api/admin/api-keys/:id/models mirrors /v1/models: combo rows carry the all-members gate', async () => {
+      // key-allow (allow-list: mock-lite only) comes from buildConfig(). The
+      // console key view reads listApiKeys() → loadConfig() = the ON-DISK
+      // default-env config, NOT the object handed to createServer, so the
+      // fixture must be persisted first — and the shared sandbox file restored
+      // byte-for-byte afterward (the isolated runner gives every test file the
+      // same OCR_HOME; an unrestored write leaks into every later file).
+      const cfg: RouterConfig = {
+        ...buildConfig(),
+        combos: [
+          { id: 'ma-combo-ok', selection: 'priority', models: ['mock-lite'] },
+          { id: 'ma-combo-partial', selection: 'priority', models: ['mock-lite', 'mock-ultra'] },
+        ],
+      };
+      const configPath = getConfigPath();
+      const diskBefore = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : null;
+      try {
+        const saved = saveConfig(cfg);
+        assert.ok(saved.success, `fixture save failed: ${saved.error}`);
+        const { app: app2 } = createServer(cfg, true);
+        const res = await app2.inject({ method: 'GET', url: '/api/admin/api-keys/key-allow/models' });
+        assert.strictEqual(res.statusCode, 200);
+        const rows: any[] = JSON.parse(res.body).models;
+        const ok = rows.find((m) => m.id === 'ma-combo-ok');
+        const partial = rows.find((m) => m.id === 'ma-combo-partial');
+        assert.ok(ok && partial, 'combo rows surface in the key view');
+        assert.strictEqual(ok.virtual, false, 'combos are selectable concrete entries, not auto* virtuals');
+        assert.strictEqual(ok.allowed, true, 'every member allowed → combo allowed');
+        assert.strictEqual(partial.allowed, false, 'one denied member blocks the whole combo (entry-gate parity)');
+        // Registered rows keep their per-model verdicts alongside the new groups.
+        assert.strictEqual(rows.find((m) => m.id === 'mock-lite').allowed, true);
+        assert.strictEqual(rows.find((m) => m.id === 'mock-ultra').allowed, false);
+        // Order mirrors /v1/models: virtual auto* precede combos and registered rows.
+        assert.ok(rows[0].virtual === true, 'virtual auto* rows lead the view');
+      } finally {
+        // Restore (Windows can transiently EBUSY freshly-written files — retry
+        // a few times; a failed restore must not fail the file, only warn).
+        const wait = (ms: number) =>
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+        for (let attempt = 0; attempt < 5; attempt++) {
+          try {
+            if (diskBefore === null) fs.rmSync(configPath, { force: true });
+            else fs.writeFileSync(configPath, diskBefore, 'utf8');
+            break;
+          } catch (err) {
+            if (attempt === 4) console.warn('model-access fixture: config.yaml restore failed:', err);
+            else wait(50);
+          }
+        }
+      }
     });
 
     it('GET /v1/models with an INVALID key errors 401 instead of degrading to the full list', async () => {

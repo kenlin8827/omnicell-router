@@ -6,7 +6,7 @@ import {
   safeReadJson,
   defaultGatewayPort,
 } from './base.js';
-import { ClientHookStatus, ModelProfileBinding } from '../types.js';
+import { ClientHookStatus, ModelProfileBinding, VIRTUAL_AUTO_IDS } from '../types.js';
 import {
   ROUTER_PROVIDER_ID,
   getOpenCodeConfigPath,
@@ -164,11 +164,10 @@ export class OpenCodeClientAdapter implements ClientAdapter {
 
     // Extra concrete models exposed in the provider's switcher (non-virtual entries)
     const mainId = stripPrefix(hookedData?.model);
-    const AUTO_MODEL_KEYS = new Set(['auto', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra']);
     const providerModels = hookedData?.providers?.[ROUTER_PROVIDER_ID]?.models;
     const extraModels =
       providerModels && typeof providerModels === 'object'
-        ? Object.keys(providerModels).filter(k => !AUTO_MODEL_KEYS.has(k) && k !== mainId)
+        ? Object.keys(providerModels).filter(k => !VIRTUAL_AUTO_IDS.has(k) && k !== mainId)
         : undefined;
 
     return {

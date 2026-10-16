@@ -44,7 +44,7 @@ switch     = evict ∧ 健康着陆点存在 ∧ landing.id ≠ pin
 - **configForce**——`pin ∉ getCandidateModelsForTier(pin.tier, healthyOnly=false)`：id 已离开注册表（僵尸钉扎——同接缝顺带修复）、`unclassified`（从所有梯队成员表移除 / glob 不再认领），或被全局 `tiers.exclude` denylist 否决。**非**触发项：模型移入其他梯队（`reclassifyTiers` 原地改写 `m.tier`——钉扎仍命中"自己梯队"的池）；对非捕获模型（无 `tierMatch`，其梯队是持久的，见 ADR-0003）的成员表编辑。
 - **healthForce**——`modelHealthView(pin) === 'unavailable'`（ADR-0004）：模型断路器 OPEN，或全部凭证 pair 硬 OPEN / SUSPECT / 操作员 DISABLED。`recovering`（试飞在途——金丝雀槽位空闲**或被占**）永不驱逐：peek 视图会把忙碌的试飞读成宕机，而在距恢复只差一次探针的模型上移走钉扎，烧毁的 KV 缓存永久不回（没有任何回切逻辑）。Shadow 模式下自动跳闸永不驱逐：被 shadow 的断路器照常服务（`verdict()` 契约），视图同样按在服务折叠；MANUAL 与行政下架逐字生效。
 - **着陆点**——`getModelForTier(actualTier, true)` ∧ peek 可用；请求梯队全空时跨层着陆合法且有日志（`reason=empty-pool`）；repin 永不触碰 `maxTier`。**无健康着陆点 → 被驱逐的钉扎继续服务**（安全失败：被清空的梯队不得搁浅绑定会话；每轮懒惰重判，有处可去即自动完成迟到的切换）。
-- **范围**——仅 ratchet 模式。显式点名请求永不改道，仅为对齐回写钉扎（点名模型在天花板梯队实际服务）。Combo 完全绕开钉扎（`sessionMode='bypass'`）：成员表逐调用现场重解析，combo 编辑下一个请求即触达所有对话——没有"绑定"需要撤离。
+- **范围**——仅 ratchet 模式。显式点名请求永不改道，仅为对齐回写钉扎（点名模型在天花板梯队实际服务；会话出生/升档时棘轮 resolver 收到的是**被点名模型本身**，绝非池代表——pool-less 部署下点名流量必须保持可调用；裸 `auto` 仍走池解析代表）。Combo 完全绕开钉扎（`sessionMode='bypass'`）：成员表逐调用现场重解析，combo 编辑下一个请求即触达所有对话——没有"绑定"需要撤离。
 - **归因**——绝不新增 `reasonCode`（本轮代码属于 §2 的 `session.*` 词汇）；迁移走 `reasonParams`：`{ repin: 'config'|'health', repinFrom, repinTo }`，随 trace 持久化，在会话切换时间线渲染为显式尾部。
 
 被否决：peek 式驱逐（把钉扎从恢复中的模型上搬走）；在 `executeCandidatePool` 过滤链首（该池被显式/combo 共用——打破显式优先契约）；干等 TTL（最长一小时静默否决已提交的操作员编辑）。

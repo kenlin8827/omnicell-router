@@ -40,10 +40,12 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { api, type GatewayStatusResponse } from '../lib/api';
+import { resolveStoredTheme, THEME_STORAGE_KEY, type ThemeId } from '../lib/theme';
 import { useI18n } from '../i18n/I18nContext';
 import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
 import { Combobox } from './Combobox';
+import { QuotaPeek } from './QuotaPeek';
 
 interface NavItemDef {
   to: string;
@@ -85,8 +87,8 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     icon: Shuffle,
     items: [
       { to: '/tiers', labelKey: 'nav.rules', icon: Network },
-      { to: '/combos', labelKey: 'nav.combos', icon: Layers },
       { to: '/auto', labelKey: 'nav.auto', icon: BrainCircuit },
+      { to: '/combos', labelKey: 'nav.combos', icon: Layers },
       { to: '/model-profiles', labelKey: 'nav.modelProfiles', icon: ClipboardList },
     ],
   },
@@ -175,13 +177,13 @@ export const Layout: React.FC = () => {
   const [statusError, setStatusError] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
-  const [theme, setTheme] = useState(() => localStorage.getItem('ocr_theme') || 'obsidian');
+  const [theme, setTheme] = useState<ThemeId>(() => resolveStoredTheme(localStorage.getItem(THEME_STORAGE_KEY)));
   // Console webAuth active → show the logout control in the header.
   const [webAuthActive, setWebAuthActive] = useState(false);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
-    localStorage.setItem('ocr_theme', theme);
+    localStorage.setItem(THEME_STORAGE_KEY, theme);
   }, [theme]);
 
   useEffect(() => {
@@ -283,13 +285,13 @@ export const Layout: React.FC = () => {
   // (24 padding + 10 swatch + 2×8 gaps + 13 chevron = 63px, +6px slack).
   // JetBrains Mono @12px ≈ 7.2px per latin char; CJK falls back to Noto Sans
   // SC at 12px per char. Width stays stable across selection and language.
-  const themeOptions = [
-    { value: 'obsidian', label: t('header.themes.obsidian'), swatch: '#06b6d4' },
+  const themeOptions: { value: ThemeId; label: string; swatch: string }[] = [
+    { value: 'onyx', label: t('header.themes.onyx'), swatch: '#06b6d4' },
     { value: 'indigo', label: t('header.themes.indigo'), swatch: '#6366f1' },
-    { value: 'cyber', label: t('header.themes.cyber'), swatch: '#10b981' },
+    { value: 'emerald', label: t('header.themes.emerald'), swatch: '#10b981' },
     { value: 'violet', label: t('header.themes.violet'), swatch: '#8b5cf6' },
-    { value: 'sunset', label: t('header.themes.sunset'), swatch: '#f43f5e' },
-    { value: 'light', label: t('header.themes.light'), swatch: '#0284c7' },
+    { value: 'rose', label: t('header.themes.rose'), swatch: '#f43f5e' },
+    { value: 'azure', label: t('header.themes.azure'), swatch: '#0284c7' },
     { value: 'amber', label: t('header.themes.amber'), swatch: '#d97706' },
   ];
   const themePickerWidth =
@@ -343,8 +345,14 @@ export const Layout: React.FC = () => {
           </div>
           <div>
             <div style={{ fontSize: '15px', fontWeight: 800, letterSpacing: '-0.02em' }}>OpenCode Router</div>
-            <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
-              {t('nav.consoleTag')}
+            {/* Tagline + static runtime version. The version used to trail at
+                the far end of the sidebar footer, where long env names pushed
+                it off-screen; it belongs with the product identity instead.
+                Still comes live from /api/admin/status (a stale cached bundle
+                can't misreport); the build-time constant is the fallback
+                until status arrives or while the gateway is unreachable. */}
+            <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", whiteSpace: 'nowrap' }}>
+              {t('nav.consoleTag')} · {t('nav.version', { version: status?.version ?? __APP_VERSION__ })}
             </div>
           </div>
         </div>
@@ -472,21 +480,21 @@ export const Layout: React.FC = () => {
         {/* Sidebar Footer — one line, left-aligned with the menu grid: the dot
             sits flush at the icon column's left edge (padding 22px) and the
             port trails it 4px, so the lamp reads attached to its endpoint.
-            Segment order: ● + listening port (the dot
-            binds to the live endpoint, VS Code / Docker convention — the port
-            copies the gateway base URL), then the active env (book-set) tag
-            (navigates to the Environments page; its icon carries the menu
-            label color, not the accent), and the static runtime version
-            trails at the far right — the weakest slot, since it never
-            changes while running. The two clickable segments stay paired
-            up front; "default:3000" would misread as a host:port address,
-            so they are separate targets. Version still
-            comes live from /api/admin/status (a stale cached bundle can't
-            misreport); the build-time constant is the fallback until status
-            arrives or while the gateway is unreachable, and the dot color makes
-            that fallback visible. Replaces the old hardcoded "OpenCode Router
-            Gateway Console" tagline, which duplicated the brand header and
-            skipped i18n. */}
+            Three segments distributed evenly across the row
+            (space-between): ● + listening port (the dot binds to the live
+            endpoint, VS Code / Docker convention — the port copies the
+            gateway base URL), the active env (book-set) tag (navigates to
+            the Environments page; its icon carries the menu label color,
+            not the accent), and the quota-peek chip at the right edge.
+            Even distribution replaced the old left-packed row with "·"
+            separators: the packed pair plus a lone right-pinned chip read
+            as lopsided. Spreading the segments also kills the address
+            misread — "default:3000" side by side looked like one host:port.
+            The static runtime version used to trail here at the far right
+            but moved up to the brand header tagline, where long env names
+            can no longer push it off-screen. Replaces the old hardcoded
+            "OpenCode Router Gateway Console" tagline, which duplicated the
+            brand header and skipped i18n. */}
         {(() => {
           const gatewayOnline = Boolean(status) && !statusError;
           const chipStyle = {
@@ -501,7 +509,6 @@ export const Layout: React.FC = () => {
             whiteSpace: 'nowrap' as const,
             cursor: 'pointer',
           };
-          const sepStyle = { color: 'var(--divider)' };
           return (
             <div
               style={{
@@ -512,8 +519,8 @@ export const Layout: React.FC = () => {
                 fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                 display: 'flex',
                 alignItems: 'center',
-                justifyContent: 'flex-start',
-                gap: '6px',
+                justifyContent: 'space-between',
+                gap: '8px',
                 whiteSpace: 'nowrap',
                 minWidth: 0,
               }}
@@ -551,21 +558,20 @@ export const Layout: React.FC = () => {
                 )}
               </span>
               {status && (
-                <>
-                  <span style={sepStyle}>·</span>
-                  <button
-                    type="button"
-                    onClick={() => navigate('/environments')}
-                    title={status.env?.configPath}
-                    style={{ ...chipStyle, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}
-                  >
-                    <FolderCog size={11} color="var(--text-muted)" style={{ flexShrink: 0 }} />
-                    {status.env?.name ?? '—'}
-                  </button>
-                </>
+                <button
+                  type="button"
+                  onClick={() => navigate('/environments')}
+                  title={status.env?.configPath}
+                  style={{ ...chipStyle, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}
+                >
+                  <FolderCog size={11} color="var(--text-muted)" style={{ flexShrink: 0 }} />
+                  {status.env?.name ?? '—'}
+                </button>
               )}
-              <span style={sepStyle}>·</span>
-              {t('nav.version', { version: status?.version ?? __APP_VERSION__ })}
+              {/* Right segment of the even three-way split: the always-visible
+                  quota peek chip (hover opens the panel, click goes to the
+                  quota page). */}
+              <QuotaPeek />
             </div>
           );
         })()}
@@ -599,7 +605,8 @@ export const Layout: React.FC = () => {
 
           {/* Right Action Tools — the env (book-set) chip and the Live-port pill
               used to live here; both moved to the always-visible sidebar footer
-              (version + status dot + env:port) to avoid triple duplication. */}
+              (status dot + env:port) to avoid triple duplication, and the
+              version sits in the brand header tagline. */}
           <div className="hdr-actions" style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', rowGap: 8, justifyContent: 'flex-end' }}>
             {/* Language Switcher (i18n) */}
             <button
@@ -636,7 +643,7 @@ export const Layout: React.FC = () => {
             <Combobox
               style={{ width: themePickerWidth, flexShrink: 0, padding: '6px 12px', fontSize: '12px', cursor: 'pointer' }}
               value={theme}
-              onChange={setTheme}
+              onChange={(v) => setTheme(resolveStoredTheme(v))}
               options={themeOptions}
             />
 

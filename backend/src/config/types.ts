@@ -113,6 +113,10 @@ export interface ComboModelRef {
  */
 export interface ComboConfig {
   id: string; // client-visible virtual model name, e.g. 'my-combo'
+  /** Operator takedown: hidden from every catalog surface (not selectable) and
+   *  requests naming it are rejected (not usable). Stays registered so the
+   *  request path can tell "disabled" apart from "unknown name". */
+  disabled?: boolean;
   selection?: 'priority' | 'weighted' | 'round_robin'; // default 'priority'
   models: (string | ComboModelRef)[]; // ordered: first = preferred leader
   note?: string; // free-form remark, console-display only (never routed)

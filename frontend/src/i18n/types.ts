@@ -28,6 +28,13 @@ export interface TranslationDict {
     integration: string;
     raw: string;
   };
+  /** Micro-chips tagging the kind of a gateway-addressable model ref in the
+   *  pickers that mix them (lib/modelRefBadge.ts). */
+  modelRef: {
+    kindAuto: string;
+    kindCombo: string;
+    kindVariant: string;
+  };
   common: {
     loading: string;
     failed: string;
@@ -82,7 +89,7 @@ export interface TranslationDict {
     grpSystem: string;
     searchPlaceholder: string;
     consoleTag: string;
-    /** Sidebar footer label; interpolates the runtime gateway version. */
+    /** Brand header tagline suffix; interpolates the runtime gateway version. */
     version: string;
     /** Sidebar footer dot tooltip while the gateway status poll succeeds. */
     footerOnline: string;
@@ -92,6 +99,11 @@ export interface TranslationDict {
     footerCopyUrl: string;
     /** Sidebar footer toast after the gateway base URL is copied. */
     footerUrlCopied: string;
+    /** Quota-peek chip (sidebar footer right slot): panel title (also the
+     *  chip's aria-label), prober-off notice, and empty-directory line. */
+    quotaPeekTitle: string;
+    quotaPeekOff: string;
+    quotaPeekNoPairs: string;
   };
   header: {
     restart: string;
@@ -106,13 +118,13 @@ export interface TranslationDict {
     switchLang: string;
     langBtn: string;
     themes: {
-      obsidian: string;
+      onyx: string;
       indigo: string;
-      cyber: string;
-      sunset: string;
-      light: string;
-      amber: string;
+      emerald: string;
       violet: string;
+      rose: string;
+      azure: string;
+      amber: string;
     };
   };
   overview: {
@@ -962,6 +974,12 @@ hiddenBadge: string;
     colPlan: string;
     colQuota: string;
     pairsEmpty: string;
+    /** Summary strip chips: covered-pair count, nearly-drained window count,
+     *  failed-sync pair count, and the earliest upcoming window reset. */
+    sumPairs: string;
+    sumLow: string;
+    sumStale: string;
+    sumNextReset: string;
     stateProbed: string;
     stateDeclared: string;
     stateUnverified: string;
@@ -970,6 +988,8 @@ hiddenBadge: string;
     windowLeft: string;
     windowBalance: string;
     windowResets: string;
+    /** Quota-peek countdown (no leading separator — it stands alone). */
+    peekResets: string;
     windowExpired: string;
     agoLine: string;
     wn: {
@@ -1195,6 +1215,7 @@ hiddenBadge: string;
     contextWindow: string;
     ctxDefault: string;
     models: string;
+    modelsInfo: string;
     addModel: string;
     modelAuto: string;
     modelModeNone: string;
@@ -1403,6 +1424,10 @@ hiddenBadge: string;
     unregisteredWarn: string;
     inactiveBadge: string;
     inactiveWarn: string;
+    disabledBadge: string;
+    disabledWarn: string;
+    disableBtn: string;
+    enableBtn: string;
     warnReservedId: string;
     warnShadowModel: string;
     empty: string;
@@ -1413,6 +1438,11 @@ hiddenBadge: string;
     warnDupMember: string;
     showMoreMembers: string;
     collapseMembers: string;
+    testBtn: string;
+    testOk: string;
+    testOkFailover: string;
+    testFailed: string;
+    testInactive: string;
   };
   modelProfiles: {
     title: string;
@@ -1437,7 +1467,6 @@ hiddenBadge: string;
     moveDown: string;
     noteLabel: string;
     notePlaceholder: string;
-    refVirtual: string;
     warnBadId: string;
     warnDupId: string;
     warnEmptyName: string;

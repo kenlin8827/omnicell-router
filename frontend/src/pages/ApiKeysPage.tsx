@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { InfoTip } from '../components/InfoTip';
 import { api, type ApiKeyItem, type ApiKeyModelAccess } from '../lib/api';
+import { modelRefBadge } from '../lib/modelRefBadge';
 import {
   LimitsEditor,
   compileLimitDrafts,
@@ -59,7 +60,7 @@ const ENTRY_PATTERN = /^[A-Za-z0-9._:/\-]+(\*[A-Za-z0-9._:/\-]*)*$/;
 const ModelAccessPicker: React.FC<{
   mode: AccessMode;
   models: string[];
-  gatewayModels: { id: string; owned_by: string }[];
+  gatewayModels: { id: string; owned_by: string; kind?: string }[];
   onModeChange: (m: AccessMode) => void;
   onModelsChange: (models: string[]) => void;
 }> = ({ mode, models, gatewayModels, onModeChange, onModelsChange }) => {
@@ -118,7 +119,7 @@ const ModelAccessPicker: React.FC<{
             style={{ cursor: 'pointer' }}
             value={models}
             onChange={onModelsChange}
-            options={gatewayModels.map((o) => ({ value: o.id, label: o.id, meta: o.owned_by }))}
+            options={gatewayModels.map((o) => ({ value: o.id, label: o.id, meta: o.owned_by, ...modelRefBadge(o.kind, t) }))}
             placeholder={t('apiKeys.accessAddPlaceholder')}
           />
           <div style={{ display: 'flex', gap: '6px', marginTop: '8px' }}>
@@ -287,7 +288,7 @@ export const ApiKeysPage: React.FC = () => {
   };
 
   // Gateway model catalog — lazy-loaded when a picker first needs it.
-  const [gatewayModels, setGatewayModels] = useState<{ id: string; owned_by: string }[]>([]);
+  const [gatewayModels, setGatewayModels] = useState<{ id: string; owned_by: string; kind?: string }[]>([]);
 
   useEffect(() => {
     const pickerVisible =

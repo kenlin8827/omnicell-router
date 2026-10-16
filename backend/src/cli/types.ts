@@ -61,6 +61,20 @@ export interface ModelProfileBinding {
   bindings: Record<string, string>;
 }
 
+/**
+ * Virtual tier aliases the gateway resolves natively. Every adapter injects
+ * these fixed into the client's model switcher, so they must never surface as
+ * user-managed extra entries (write dedupe + status echo filter both key off
+ * this list).
+ */
+export const VIRTUAL_AUTO_IDS: ReadonlySet<string> = new Set([
+  'auto',
+  'auto-lite',
+  'auto-plus',
+  'auto-pro',
+  'auto-ultra',
+]);
+
 export interface ClientModelSlot {
   /** Slot key: 'main' | 'opus' | 'sonnet' | 'haiku' | 'fable' | 'subagent' (frontend labels via i18n clients.slot*) */
   key: string;

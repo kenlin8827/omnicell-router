@@ -1680,7 +1680,11 @@ export function registerConsoleRoutes(
       note: c.note,
       // active=false ⇒ the gateway ignored this combo (reserved/colliding id
       // or model-shadowed) — the UI badges it instead of diverging silently.
-      active: registry.isCombo(c.id),
+      // A model registered AFTER the combo shadows the id but keeps isCombo
+      // true — cross-check the model map (same rule as getCombos exposure).
+      active: registry.isCombo(c.id) && !registry.getModel(c.id),
+      // Operator takedown flag (hidden from catalogs, calls rejected).
+      disabled: c.disabled === true,
       selection: c.selection || 'priority',
       members: (c.models || []).map((entry: any) => {
         const ref =
@@ -1701,6 +1705,65 @@ export function registerConsoleRoutes(
     return { status: 'ok', combos };
   };
   app.get('/api/admin/combos', handleCombos);
+
+  // 6d. Combo end-to-end test — ONE real completion through the production
+  // pipeline: the orchestrator's combo branch owns leader picking (breaker-
+  // aware selection strategy), config-order failover and the chain-length
+  // attempt cap, so this exercises exactly what inference traffic hits.
+  // It is a REAL upstream call: it burns quota and lands in logs/capture.
+  // Admin dispatch carries no per-key modelAccess policy — a policy-blocked
+  // member still tests green here (known limit, never silent: per-key access
+  // is exercised by real client traffic only).
+  app.post('/api/admin/combos/:id/test', async (req: any, reply: any) => {
+    const { id } = req.params as { id: string };
+    // Inactive combo (reserved/colliding id, model-shadowed, or an id a
+    // physical model claimed after registration — the catalog filter hides
+    // it) never enters the pipeline as a combo — the full-id lookup would
+    // silently serve the physical model instead. Refuse BEFORE spending an
+    // upstream call. isCombo alone stays true under late shadowing, so
+    // cross-check the model map exactly like getCombos exposure does.
+    if (!registry.isCombo(id) || registry.getModel(id)) {
+      return reply.status(400).send({ success: false, reasonCode: 'combo_inactive', combo: id });
+    }
+    try {
+      const result = await orchestrator.process(
+        {
+          model: id,
+          messages: [{ role: 'user', content: 'ping' }],
+          max_tokens: 1,
+        },
+        { wire: 'chat', clientIp: req.ip, headers: req.headers, fastifyRequest: req }
+      );
+      return {
+        status: 'ok',
+        ok: true,
+        combo: id,
+        modelUsed: result.modelUsed,
+        latencyMs: result.latencyMs,
+        failoverOccurred: result.failoverOccurred === true,
+        ...(result.failoverPath?.length ? { failoverPath: result.failoverPath } : {}),
+        ...(result.servedAccountPrefix ? { servedAccountPrefix: result.servedAccountPrefix } : {}),
+      };
+    } catch (err: unknown) {
+      // Same status mapping as the chat surface's execution-error policy:
+      // explicit 4xx/5xx pass through, anything else collapses to 500. The
+      // chain-exhausted / zero-registered-member fast-fails arrive here as
+      // orchestrator throws — machine limbs + the gateway's own message.
+      const e = err as { statusCode?: unknown; message?: string } | null | undefined;
+      const statusCode = e?.statusCode;
+      const status =
+        typeof statusCode === 'number' && Number.isInteger(statusCode) && statusCode >= 400 && statusCode < 600
+          ? statusCode
+          : 500;
+      return reply.status(200).send({
+        status: 'ok',
+        ok: false,
+        combo: id,
+        httpStatus: status,
+        error: e?.message || 'Combo test failed',
+      });
+    }
+  });
 
   // 7. OpenCode-native Provider Management (opencode.jsonc `provider` node + bound credential store)
   //     - Definitions live in ~/.config/opencode/opencode.jsonc (JSONC, comment-preserving edits)
@@ -3007,11 +3070,33 @@ export function registerConsoleRoutes(
       virtual: true,
       allowed: isAutoEntryUsable(id, policy, tierAllowed),
     }));
+    // Combo rows (mirrors /v1/models): routable virtual ids, but concrete
+    // selectable entries — NOT auto*-virtual, so follow-mode snapshots keep
+    // them. A combo passes only when EVERY member is allowed (the inference
+    // entry gate; no silent composition change).
+    const combos = registry.getCombos().map((c) => ({
+      id: c.id,
+      provider: 'opencode-router',
+      tier: '',
+      virtual: false,
+      allowed: registry.resolveCombo(c.id).every((mem) => isModelAllowed(mem.id, policy, mem.tier)),
+    }));
+    // Variant rows (mirrors /v1/models): `base-variant` ids resolve to the
+    // base model with a pinned reasoning effort; the policy verdict inherits
+    // from the base id.
+    const variants = registry.getVariantExposures().map(({ id, base }) => ({
+      id,
+      provider: base.provider,
+      tier: base.unclassified ? undefined : (base.tier as string),
+      virtual: false,
+      allowed: isModelAllowed(base.id, policy, base.tier),
+    }));
+    // Order mirrors /v1/models: virtual auto* → combos → registered → variants.
     return {
       status: 'ok',
       mode: policy?.mode ?? 'none',
       policyModels: policy?.models ?? [],
-      models: [...virtual, ...registered],
+      models: [...virtual, ...combos, ...registered, ...variants],
     };
   };
   app.get('/api/admin/api-keys/:id/models', handleGetKeyModels);
@@ -3020,23 +3105,33 @@ export function registerConsoleRoutes(
   //     /v1/models now requires a key like every other surface; the trusted
   //     console UI reads the unfiltered catalog here instead.
   const handleGatewayModels = async () => {
+    // `kind` tags the addressable-id namespace (virtual auto* / combo /
+    // registered model / variant) so console pickers can badge each row —
+    // owned_by alone cannot distinguish them (auto* and combos share
+    // 'opencode-router'; variants share their base model's provider).
     const models = [
       ...['auto', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra'].map((id) => ({
         id,
+        kind: 'auto' as const,
         owned_by: 'opencode-router',
         tier: '',
       })),
+      // Order mirrors /v1/models: auto* → combos → registered → variants, so
+      // console pickers surface the short virtual ids before the long physical
+      // list.
       // `unclassified` is the live membership truth; m.tier on those models is
       // a stale registration-time classification (legacy boot classifier).
       // Reporting it let console pickers badge models that belong to NO pool.
+      ...registry.getCombos().map((c) => ({ id: c.id, kind: 'combo' as const, owned_by: 'opencode-router', tier: '' })),
       ...registry.getAllModels().map((m) => ({
         id: m.id,
+        kind: 'model' as const,
         owned_by: m.provider,
         tier: m.unclassified ? undefined : (m.tier as string),
       })),
-      ...registry.getCombos().map((c) => ({ id: c.id, owned_by: 'opencode-router', tier: '' })),
       ...registry.getVariantExposures().map(({ id, base }) => ({
         id,
+        kind: 'variant' as const,
         owned_by: base.provider,
         tier: base.unclassified ? undefined : (base.tier as string),
       })),

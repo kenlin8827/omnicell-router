@@ -3,7 +3,9 @@ import { Link } from 'react-router-dom';
 import { Terminal, Check, X, RefreshCw, Undo2, ArrowUpRight, RotateCcw, ChevronDown, Puzzle, Eraser } from 'lucide-react';
 import { BrandIcon } from '../components/BrandIcons';
 import { Combobox } from '../components/Combobox';
+import { InfoTip } from '../components/InfoTip';
 import { api, type ClientStatus, type ApiKeyItem, type ModelProfileView, type OpenCodeAgentView, type ClientProfileMemoryEntry } from '../lib/api';
+import { modelRefBadge } from '../lib/modelRefBadge';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 
@@ -36,7 +38,7 @@ export const ClientsPage: React.FC = () => {
   /** Per-client per-slot model selection ('auto' = intelligent routing default) */
   const [modelSel, setModelSel] = useState<Record<string, Record<string, string>>>({});
   /** Gateway-routable models (virtual + registered) from /v1/models */
-  const [models, setModels] = useState<{ id: string; tier?: string }[]>([]);
+  const [models, setModels] = useState<{ id: string; tier?: string; kind?: string }[]>([]);
   /** Gateway API keys (Claude auth token writer) */
   const [apiKeys, setApiKeys] = useState<ApiKeyItem[]>([]);
   /** Per-client selected API key ('' = keep current token) */
@@ -314,7 +316,7 @@ export const ClientsPage: React.FC = () => {
     { value: 'auto', label: t('clients.modelAuto') },
     ...models
       .filter(m => m.id !== 'auto')
-      .map(m => ({ value: m.id, label: m.id })),
+      .map(m => ({ value: m.id, label: m.id, ...modelRefBadge(m.kind, t) })),
   ];
 
   const addExtraModel = (clientName: string, id: string) => {
@@ -332,8 +334,11 @@ export const ClientsPage: React.FC = () => {
 
   const extraOptions = (clientName: string) =>
     models
-      .filter(m => !m.id.startsWith('auto') && !(extraSel[clientName] || []).includes(m.id))
-      .map(m => ({ value: m.id, label: m.id }));
+      // The virtual auto* aliases are injected fixed into every client's model
+      // switcher by the adapters — hide them here (filter by catalog kind, never
+      // by id prefix: registered ids may legally start with "auto").
+      .filter(m => m.kind !== 'auto' && !(extraSel[clientName] || []).includes(m.id))
+      .map(m => ({ value: m.id, label: m.id, ...modelRefBadge(m.kind, t) }));
 
   /** Primary takeover/teardown button; `stretched` fills the form's action row. */
   const renderActionButtons = (c: ClientStatus, stretched: boolean) =>
@@ -477,7 +482,7 @@ export const ClientsPage: React.FC = () => {
                       onChange={v => setApiKeySel(prev => ({ ...prev, [c.name]: v }))}
                       options={[
                         { value: '', label: t('clients.apiKeyKeep') },
-                        ...apiKeys.map(k => ({ value: k.key, label: k.name, meta: k.key.length > 8 ? `…${k.key.slice(-4)}` : undefined })),
+                        ...apiKeys.map(k => ({ value: k.key, label: k.name, meta: k.key.length > 12 ? `${k.key.slice(0, 8)}…${k.key.slice(-4)}` : undefined })),
                       ]}
                     />
                   </div>
@@ -521,7 +526,7 @@ export const ClientsPage: React.FC = () => {
                         return (
                         <div style={{ gridColumn: '1 / -1' }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                            <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('clients.models')}</div>
+                            <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('clients.models')} <InfoTip text={t('clients.modelsInfo')} /></div>
                             <div style={{ display: 'inline-flex', gap: '4px' }}>
                               {(['none', 'custom', 'follow'] as const).map(m => (
                                 <button

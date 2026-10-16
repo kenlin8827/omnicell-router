@@ -8,17 +8,17 @@
 
 ### 1. 寻址阶梯（一个名字，一个胜者）
 
-解析顺序，精确（chat 路径 `orchestrator.ts:348-431`；决策面镜像同一顺序 `surfaces/decision-pipeline.ts:54-137`）：
+解析顺序，精确（chat 路径 `orchestrator.ts:348-467`；决策面镜像同一顺序 `surfaces/decision-pipeline.ts:54-137`）：
 
 1. trim 一次；`request.model` 原文上 wire（surface 契约——转发字节永不改写）。
 2. `auto-lite|plus|pro|ultra` 虚拟 id → `force_tier`（Layer 0，ADR-0001）。这些 id 是 RESERVED——模型与 combo 都不得注册（`RESERVED_COMBO_IDS`，`registry.ts:695`）。
 3. 精确已注册 id → 透明直通：钉扎该模型并强制其梯队（`:364-373`）。
 4. 变体兄弟 `base-variant` / `base#variant` → 路由到 BASE，钉扎变体的 `reasoningEffort`、压过客户端所发思考级别（`ModelVariant = {id, reasoningEffort}`；`:375-387`）。真实注册 id 永远赢过兄弟名；combo 赢过变体引用；`#` 无匹配变体 → **响亮 404，绝不静默转 auto**（`:388-398`）。
-5. 裸上游名（无 provider 前缀——客户端按其自家目录点名模型的方式）：全部命中返回，按输入价、id 定序（`getModelsByUpstreamName`）；MITM 腿额外按被拦截 host 收窄（`upstreamHost` 取自客户端请求 host——原生腿刻意不信 Host，防伪冒；`:106-124,415-418`）。
-6. combo id（在显式模型分支之后检查）：成员表**就是**候选池，分类器/会话棘轮/结构断言升档全部旁路；成员全未注册的 combo **快速报错**——绝不静默降级成 `auto`（不可见的计费/模型漂移）（`:433-449`）。
+5. 裸上游名（无 provider 前缀——客户端按其自家目录点名模型的方式）：全部命中返回，按输入价、id 定序（`getModelsByUpstreamName`）；MITM 腿额外按被拦截 host 收窄（`upstreamHost` 取自客户端请求 host——原生腿刻意不信 Host，防伪冒；`:106-124,415-418`）。裸命中**绝不**抢占某个仍是活跃 combo id 的名字（`:425`）——该名字的网关自释义是它公布的 combo；同名物理模型仍可用带 provider 前缀的完整 id 直达。
+6. combo id（在精确 id 与变体兄弟分支之后、分类器之前检查——且优先于裸名命中）：成员表**就是**候选池，分类器/会话棘轮/结构断言升档全部旁路；成员全未注册的 combo **快速报错**——绝不静默降级成 `auto`（不可见的计费/模型漂移）（`:439-467`）。管线执行前的占位模型解析（思考档位机制）对 combo 与点名显式模型**不得**咨询梯队池——"无任何梯队规则认领模型"的 pool-less 部署下两条路径必须保持可调用（`:584-591, 705-722`——会话 resolver 与占位模型两处）。
 7. 其余未注册名 → 分类器裁定。这就是智能路由本身（例如 Claude Code 内切模型后送来的原生 `claude-opus-*` 名）。
 
-词汇事实：已解析的物理记录是 `ModelRegistration`（id + provider + wire + tier + pricing…，`config/types.ts:15-80`）；`ComboModelRef {id, weight?}` 是未解析的配置句柄（`:99`）；`modelRef` **措辞**命名网关可见 id 命名空间 = 注册 id ∪ combo id ∪ auto 别名（`:120-137`）。历史语料的 `ModelRef`/`ModelIdentity` **类型名从未落地代码**——不得复活；`AGENTS.md` 已改指本篇。
+词汇事实：已解析的物理记录是 `ModelRegistration`（id + provider + wire + tier + pricing…，`config/types.ts:15-80`）；`ComboModelRef {id, weight?}` 是未解析的配置句柄（`:99`）；`modelRef` **措辞**命名网关可见 id 命名空间 = auto 别名 ∪ combo id ∪ 注册 id ∪ 变体兄弟 id（`:120-137`）——即控制台目录为每行打的四种标签（`kind: 'auto'|'combo'|'model'|'variant'`，`/api/admin/gateway-models`，排列顺序与此处命名空间的读法一致）。历史语料的 `ModelRef`/`ModelIdentity` **类型名从未落地代码**——不得复活；`AGENTS.md` 已改指本篇。
 
 ### 2. 梯队成员制——已提交的成员列表是唯一来源
 
@@ -35,7 +35,7 @@
 
 ### 3. Combo
 
-`ComboConfig = {id, selection?, models:(string|ComboModelRef)[], note?}`——`selection` 只决定 **leader**；failover 永远按配置序走；无跨梯升档（组合本身即契约）；尝试上限 = 链长（ADR-0005）。`resolveCombo` 逐调用现场解析：配置序保留、未注册 id 丢弃、重复折叠到首次出现——迟到注册的模型自然加入（`registry.ts:737-752`）。id 命名空间冲突单向且响亮：combo 撞已存在模型 id → combo 被忽略 + 告警；模型后注册盖住 combo → 遮蔽（告警 + 从 `/v1/models` 隐藏）（`:698-724`、`:161-163`）。
+`ComboConfig = {id, disabled?, selection?, models:(string|ComboModelRef)[], note?}`——`selection` 只决定 **leader**；failover 永远按配置序走；无跨梯升档（组合本身即契约）；尝试上限 = 链长（ADR-0005）。`disabled: true` 是运维下线开关：combo 仍保持注册，好让请求路径区分「已禁用」与「未知名字」，但它从所有目录隐藏（`/v1/models` 列表与详情 404、控制台模型选择器），请求显式点名它则快速失败返回 404——与空成员场景同一条「绝不静默降级」契约，绝不回落分类器路由（`orchestrator.ts:442-453`）。`resolveCombo` 逐调用现场解析：配置序保留、未注册 id 丢弃、重复折叠到首次出现——迟到注册的模型自然加入（`registry.ts:737-752`）。id 命名空间冲突单向且响亮：combo 撞已存在模型 id → combo 被忽略 + 告警；模型后注册盖住 combo → 遮蔽（告警 + 从 `/v1/models` 隐藏）（`:698-724`、`:161-163`）。`combos` 列表顺序即控制台展示顺序——可在 UI 中重排，按原顺序写回配置。
 
 ### 4. 按 key 的模型策略
 

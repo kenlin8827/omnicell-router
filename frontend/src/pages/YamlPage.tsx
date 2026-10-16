@@ -3,14 +3,15 @@ import CodeMirror, { EditorView, oneDark } from '@uiw/react-codemirror';
 import { yaml } from '@codemirror/lang-yaml';
 import { FileCode2, Save, RefreshCw, Check, AlertCircle } from 'lucide-react';
 import { api } from '../lib/api';
+import { DEFAULT_THEME, isLightTheme } from '../lib/theme';
 import { useI18n } from '../i18n/I18nContext';
 
 /** Track the app-level `data-theme` attribute (set by Layout) so the editor follows theme switches. */
 const useAppTheme = (): string => {
-  const [theme, setTheme] = useState(() => document.documentElement.getAttribute('data-theme') || 'obsidian');
+  const [theme, setTheme] = useState(() => document.documentElement.getAttribute('data-theme') || DEFAULT_THEME);
   useEffect(() => {
     const observer = new MutationObserver(() => {
-      setTheme(document.documentElement.getAttribute('data-theme') || 'obsidian');
+      setTheme(document.documentElement.getAttribute('data-theme') || DEFAULT_THEME);
     });
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     return () => observer.disconnect();
@@ -222,7 +223,7 @@ export const YamlPage: React.FC = () => {
                 value={yamlContent}
                 style={{ height: '100%' }}
                 height="100%"
-                theme={appTheme === 'light' ? [appChrome] : [oneDark, appChrome]}
+                theme={isLightTheme(appTheme) ? [appChrome] : [oneDark, appChrome]}
                 onCreateEditor={(view) => {
                   viewRef.current = view;
                   setActiveKey(sectionAtCursor(view));

@@ -8,6 +8,10 @@ export interface ComboboxOption {
   label: string;
   /** Right-aligned auxiliary text (e.g. model count, "not connected" marker). */
   meta?: string;
+  /** Tiny outline chip before `meta` (e.g. model-ref kind). Pair with `badgeColor`. */
+  badge?: string;
+  /** CSS color for the `badge` chip (text + derived border); defaults to dim text. */
+  badgeColor?: string;
   /** Leading color dot (e.g. theme preview swatch) — rendered in trigger and panel. */
   swatch?: string;
 }
@@ -433,6 +437,24 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
                     <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {o.label}
                     </span>
+                    {o.badge && (
+                      <span
+                        style={{
+                          fontSize: 9.5,
+                          fontWeight: 700,
+                          textTransform: 'uppercase',
+                          letterSpacing: '0.04em',
+                          lineHeight: 1.5,
+                          padding: '0 6px',
+                          borderRadius: 999,
+                          flexShrink: 0,
+                          color: o.badgeColor || 'var(--text-dim)',
+                          border: `1px solid color-mix(in srgb, ${o.badgeColor || 'var(--text-dim)'} 45%, transparent)`,
+                        }}
+                      >
+                        {o.badge}
+                      </span>
+                    )}
                     {o.meta && (
                       <span style={{ fontSize: 10.5, color: 'var(--text-dim)', flexShrink: 0 }}>{o.meta}</span>
                     )}

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Layers, Plus, Trash2, ArrowUp, ArrowDown, AlertTriangle, Pencil, X, Wand2, GripVertical } from 'lucide-react';
+import { Layers, Plus, Trash2, ArrowUp, ArrowDown, AlertTriangle, Pencil, X, Wand2, GripVertical, Power, Zap, Loader2 } from 'lucide-react';
 import { createPortal } from 'react-dom';
-import { api, opencodeApi, type ComboView, type ComboMemberView } from '../lib/api';
+import { api, opencodeApi, type ComboView, type ComboMemberView, type ComboTestResult } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
@@ -26,6 +26,7 @@ interface MemberDraft {
 interface ComboDraft {
   id: string;
   selection: Selection;
+  disabled: boolean;
   models: MemberDraft[];
   note: string;
 }
@@ -34,6 +35,7 @@ interface ComboDraft {
 const toDraft = (c: ComboView): ComboDraft => ({
   id: c.id,
   selection: (c.selection as Selection) || 'priority',
+  disabled: c.disabled === true,
   models: (c.members || []).map((m: ComboMemberView) => ({ id: m.id, weight: m.weight ?? 1 })),
   note: c.note || '',
 });
@@ -42,6 +44,7 @@ const toDraft = (c: ComboView): ComboDraft => ({
 const toPayload = (d: ComboDraft) => ({
   id: d.id.trim(),
   selection: d.selection,
+  ...(d.disabled ? { disabled: true } : {}),
   ...(d.note.trim() ? { note: d.note.trim() } : {}),
   models: d.models.map(m => (m.weight > 1 ? { id: m.id, weight: m.weight } : m.id)),
 });
@@ -466,6 +469,17 @@ export const CombosPage: React.FC = () => {
   // Absolute combo indices whose member chain is expanded past COMBO_PREVIEW_MEMBERS.
   // Cleared whenever the list order could shift (paging / save) so indices never point at the wrong card.
   const [expandedCards, setExpandedCards] = useState<Set<number>>(new Set());
+  // One-shot end-to-end combo tests (card ⚡ button): per-combo in-flight set
+  // and last result; the result chip persists visually until the next click.
+  const [testingCombos, setTestingCombos] = useState<Set<string>>(new Set());
+  const [testResults, setTestResults] = useState<Record<string, ComboTestResult>>({});
+
+  // Card-list drag-and-drop (same armed-grip pattern as the member rows in
+  // ComboDialog): a card is only draggable while its grip is held, so text
+  // selection on the cards keeps working.
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [overIdx, setOverIdx] = useState<number | null>(null);
+  const [armedIdx, setArmedIdx] = useState<number | null>(null);
 
   const refreshMeta = useCallback(() => {
     api
@@ -552,6 +566,76 @@ export const CombosPage: React.FC = () => {
     [combos, persist, t, confirmDialog]
   );
 
+  /** Flip the operator-disable flag and persist the whole list (server hot-applies). */
+  const handleToggleDisabled = useCallback(
+    async (idx: number) => {
+      if (!combos) return;
+      const next = combos.map((c, i) => (i === idx ? { ...c, disabled: !c.disabled } : c));
+      setCombos(next);
+      const saved = await persist(next);
+      if (!saved) setCombos(combos);
+    },
+    [combos, persist]
+  );
+
+  /** Move the card at `from` to position `to` (list order = config order) and persist.
+   *  Sole reorder path — grip drag only reaches cards on the current page; for
+   *  cross-page moves the user widens the page size (48) or pages first. */
+  const reorderCombo = useCallback(
+    async (from: number, to: number) => {
+      if (!combos || from === to || to < 0 || to >= combos.length) return;
+      const next = [...combos];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      setExpandedCards(new Set()); // order shifted — member expansion may point at the wrong card
+      setCombos(next);
+      const saved = await persist(next);
+      if (!saved) setCombos(combos);
+    },
+    [combos, persist]
+  );
+
+  /** One real minimal completion through the production pipeline. Precondition
+   * throws (the id went inactive between render and click) localize via the
+   * reasonCode; genuine chain failures show the gateway's own message. */
+  const handleTest = useCallback(
+    async (comboId: string) => {
+      if (!comboId || testingCombos.has(comboId)) return;
+      setTestingCombos(prev => new Set(prev).add(comboId));
+      try {
+        const res = await api.testCombo(comboId);
+        setTestResults(prev => ({ ...prev, [comboId]: res }));
+        if (res.ok) {
+          const base = t('combos.testOk', { combo: comboId, model: res.modelUsed || '—', ms: res.latencyMs ?? 0 });
+          toast.success(
+            res.failoverOccurred && res.failoverPath?.length
+              ? base + t('combos.testOkFailover', { path: res.failoverPath.join(' → ') })
+              : base
+          );
+        } else {
+          toast.error(t('combos.testFailed', { combo: comboId, error: res.error || `HTTP ${res.httpStatus ?? '?'}` }));
+        }
+      } catch (err: any) {
+        const failMsg = err?.reasonCode === 'combo_inactive' ? t('combos.testInactive') : err?.message || String(err);
+        const failed: ComboTestResult = {
+          status: 'ok',
+          ok: false,
+          combo: comboId,
+          error: failMsg,
+        };
+        setTestResults(prev => ({ ...prev, [comboId]: failed }));
+        toast.error(t('combos.testFailed', { combo: comboId, error: failMsg }));
+      } finally {
+        setTestingCombos(prev => {
+          const next = new Set(prev);
+          next.delete(comboId);
+          return next;
+        });
+      }
+    },
+    [t, toast, testingCombos]
+  );
+
   if (combos === null) {
     return <div style={{ color: 'var(--text-dim)' }}>Loading...</div>;
   }
@@ -565,14 +649,14 @@ export const CombosPage: React.FC = () => {
         </div>
         <button
           className="btn btn-primary"
-          onClick={() => setEditing({ draft: { id: '', selection: 'priority', models: [{ id: '', weight: 1 }], note: '' }, index: -1 })}
+          onClick={() => setEditing({ draft: { id: '', selection: 'priority', disabled: false, models: [{ id: '', weight: 1 }], note: '' }, index: -1 })}
         >
           <Plus size={14} />
           <span>{t('combos.addCombo')}</span>
         </button>
       </div>
 
-      <div style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: 1.6, marginBottom: '16px', whiteSpace: 'pre-line' }}>
+      <div style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.6, marginBottom: '16px', whiteSpace: 'pre-line' }}>
         {t('combos.hint')}
       </div>
 
@@ -588,25 +672,63 @@ export const CombosPage: React.FC = () => {
             const comboMeta = meta[combo.id.trim()];
             const membersMeta = comboMeta?.members || [];
             const inactive = comboMeta ? comboMeta.active === false : false;
+            const isDisabled = combo.disabled;
             const modelIds = registeredIds;
             const warn = validateDraft(combo, combos, idx, modelIds);
+            const cid = combo.id.trim();
+            const testRes = testResults[cid];
+            const isTesting = testingCombos.has(cid);
             const collapsed = combo.models.length > COMBO_PREVIEW_MEMBERS && !expandedCards.has(idx);
             const shownMembers = collapsed ? combo.models.slice(0, COMBO_PREVIEW_MEMBERS) : combo.models;
             return (
               <div
                 key={idx}
                 className="card"
+                draggable={armedIdx === idx}
+                onDragStart={e => {
+                  e.dataTransfer.effectAllowed = 'move';
+                  e.dataTransfer.setData('text/plain', String(idx)); // Firefox requires data to start a drag
+                  setDragIdx(idx);
+                }}
+                onDragOver={e => {
+                  if (dragIdx === null) return;
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = 'move';
+                  if (overIdx !== idx) setOverIdx(idx);
+                }}
+                onDrop={e => {
+                  e.preventDefault();
+                  if (dragIdx !== null && dragIdx !== idx) void reorderCombo(dragIdx, idx);
+                  setDragIdx(null);
+                  setOverIdx(null);
+                  setArmedIdx(null);
+                }}
+                onDragEnd={() => {
+                  setDragIdx(null);
+                  setOverIdx(null);
+                  setArmedIdx(null);
+                }}
                 style={{
                   padding: '14px',
                   display: 'flex',
                   flexDirection: 'column',
                   gap: '10px',
                   margin: 0,
-                  borderColor: warn || inactive ? 'var(--accent-rose)' : undefined,
+                  opacity: isDisabled ? 0.55 : dragIdx === idx ? 0.4 : 1,
+                  borderColor: dragIdx !== null && overIdx === idx && dragIdx !== idx ? 'var(--accent)' : warn || inactive ? 'var(--accent-rose)' : undefined,
+                  borderStyle: dragIdx !== null && overIdx === idx && dragIdx !== idx ? 'dashed' : undefined,
                 }}
               >
-                {/* Card head: id + strategy badge */}
+                {/* Card head: grip + id + strategy badge */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span
+                    title={t('combos.dragSort')}
+                    onMouseDown={() => setArmedIdx(idx)}
+                    onMouseUp={() => setArmedIdx(null)}
+                    style={{ cursor: 'grab', color: 'var(--text-dim)', display: 'inline-flex', flexShrink: 0 }}
+                  >
+                    <GripVertical size={14} />
+                  </span>
                   <span style={{ fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: '13px', fontWeight: 600, wordBreak: 'break-all' }}>
                     {combo.id.trim() || <span style={{ color: 'var(--accent-rose)' }}>—</span>}
                   </span>
@@ -616,6 +738,14 @@ export const CombosPage: React.FC = () => {
                       style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '10px', color: 'var(--accent-rose)', border: '1px solid var(--accent-rose)', whiteSpace: 'nowrap' }}
                     >
                       {t('combos.inactiveBadge')}
+                    </span>
+                  )}
+                  {isDisabled && (
+                    <span
+                      title={t('combos.disabledWarn')}
+                      style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '10px', color: 'var(--accent-amber)', border: '1px solid var(--accent-amber)', whiteSpace: 'nowrap' }}
+                    >
+                      {t('combos.disabledBadge')}
                     </span>
                   )}
                   <span
@@ -663,7 +793,7 @@ export const CombosPage: React.FC = () => {
                       >
                         <span style={{ color: 'var(--text-dim)', fontSize: '10px', width: '14px' }}>{mIdx + 1}</span>
                         <HealthDot member={mm} />
-                        <span title={m.id} style={{ fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace", overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        <span title={m.id} style={{ fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {m.id || <span style={{ color: 'var(--accent-rose)' }}>{t('combos.warnEmptyMember')}</span>}
                         </span>
                         {combo.selection !== 'priority' && (m.weight ?? 1) > 1 && (
@@ -693,8 +823,10 @@ export const CombosPage: React.FC = () => {
                   )}
                 </div>
 
-                {/* Card foot: count + actions */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '2px' }}>
+                {/* Card foot: count + actions — pinned to the card bottom so
+                    footers align across cards of different member counts
+                    (grid rows stretch cards to equal height). */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: 'auto', paddingTop: '2px' }}>
                   <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
                     {combo.models.length} {t('combos.membersUnit')}
                   </span>
@@ -704,7 +836,51 @@ export const CombosPage: React.FC = () => {
                       <span>{t(warn)}</span>
                     </span>
                   )}
-                  <div style={{ marginLeft: 'auto', display: 'flex', gap: '4px' }}>
+                  <div style={{ marginLeft: 'auto', display: 'flex', gap: '4px', alignItems: 'center' }}>
+                    {testRes && (
+                      <span
+                        style={{
+                          fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                          fontSize: '10px',
+                          whiteSpace: 'nowrap',
+                          color: testRes.ok ? 'var(--accent-emerald)' : 'var(--accent-rose)',
+                        }}
+                        title={
+                          testRes.ok
+                            ? `${testRes.modelUsed || '—'}${
+                                testRes.failoverOccurred && testRes.failoverPath?.length
+                                  ? ` (${testRes.failoverPath.join(' → ')})`
+                                  : ''
+                              }${testRes.servedAccountPrefix ? ` · ${testRes.servedAccountPrefix}` : ''} — ${testRes.latencyMs ?? 0} ms`
+                            : testRes.error
+                        }
+                      >
+                        {testRes.ok ? `✓${testRes.latencyMs ?? '?'}ms` : '✗'}
+                      </span>
+                    )}
+                    <button
+                      className="btn btn-sm"
+                      style={{ padding: '4px 8px' }}
+                      title={isTesting ? t('op.testing') : t('combos.testBtn')}
+                      disabled={isTesting || inactive || !cid}
+                      onClick={e => {
+                        e.stopPropagation();
+                        void handleTest(cid);
+                      }}
+                    >
+                      {isTesting ? <Loader2 size={13} style={{ animation: 'ocr-spin 0.8s linear infinite' }} /> : <Zap size={13} />}
+                    </button>
+                    <button
+                      className="btn btn-sm"
+                      style={{ padding: '4px 8px', opacity: 1, color: isDisabled ? 'var(--accent-amber)' : undefined }}
+                      title={isDisabled ? t('combos.enableBtn') : t('combos.disableBtn')}
+                      onClick={e => {
+                        e.stopPropagation();
+                        void handleToggleDisabled(idx);
+                      }}
+                    >
+                      <Power size={13} />
+                    </button>
                     <button
                       className="btn btn-sm"
                       style={{ padding: '4px 8px' }}

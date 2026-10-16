@@ -777,7 +777,7 @@ export function createServer(
     const found = specific ||
       variantRef ||
       ['auto', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra'].includes(model) ||
-      registry.isCombo(model);
+      (registry.isCombo(model) && !registry.isComboDisabled(model));
 
     if (!found) {
       return reply.status(404).send({

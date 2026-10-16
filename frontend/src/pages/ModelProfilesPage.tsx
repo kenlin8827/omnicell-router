@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { ClipboardList, Plus, Trash2, ArrowUp, ArrowDown, Pencil } from 'lucide-react';
 import { api, type ModelProfileView } from '../lib/api';
+import { modelRefBadge } from '../lib/modelRefBadge';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
-import { Combobox } from '../components/Combobox';
+import { Combobox, type ComboboxOption } from '../components/Combobox';
 import { Dialog } from '../components/Dialog';
 
 /** Slot keys seeded for a brand-new profile — the common subagent role vocabulary. */
@@ -192,17 +193,12 @@ const ProfileDialog: React.FC<{
   );
 };
 
-/** The auto* virtual ids exactly (mirrors the backend's
- *  auto list in routes/console.ts) — a prefix test would misclassify real
- *  models like autoglm-* as virtual. */
-const AUTO_MODEL_IDS = new Set(['auto', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra']);
-
 export const ModelProfilesPage: React.FC = () => {
   const { t } = useI18n();
   const toast = useToast();
   const confirmDialog = useConfirm();
   const [profiles, setProfiles] = useState<ProfileDraft[] | null>(null);
-  const [refOptions, setRefOptions] = useState<{ value: string; label: string; meta?: string }[]>([]);
+  const [refOptions, setRefOptions] = useState<ComboboxOption[]>([]);
   const [editing, setEditing] = useState<{ draft: ProfileDraft; index: number } | null>(null); // index -1 = new
   const [saving, setSaving] = useState(false);
 
@@ -214,10 +210,13 @@ export const ModelProfilesPage: React.FC = () => {
         // registered models, combos and variant exposures all come back here.
         // Profiles store the ref verbatim — provider connectivity is checked at
         // APPLY time (the console route refuses unresolvable refs cp-failfast).
+        // The backend `kind` tags which namespace each id lives in; pickers
+        // badge it (a prefix test on ids would misclassify autoglm-* etc.).
         setRefOptions(models.map(m => ({
           value: m.id,
           label: m.id,
-          meta: AUTO_MODEL_IDS.has(m.id) ? t('modelProfiles.refVirtual') : m.owned_by || undefined,
+          meta: m.owned_by || undefined,
+          ...modelRefBadge(m.kind, t),
         })));
       })
       .catch(err => {

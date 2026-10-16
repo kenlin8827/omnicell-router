@@ -416,7 +416,13 @@ export class PipelineOrchestrator {
             modelName,
             pickHeaderHost(context?.clientRequest?.headers)
           );
-          if (bareHits.length > 0) {
+          // A live combo id claims this name for the gateway: the combo fork
+          // below is the advertised meaning (/v1/models lists the id as a
+          // virtual model), and resolving the same name to one physical
+          // same-named member would be the single-model billing/model drift
+          // the combo fail-fast contract exists to forbid. The physical
+          // models stay addressable by their full provider-prefixed id.
+          if (bareHits.length > 0 && !this.registry.isCombo(modelName)) {
             explicitModel = bareHits[0];
             normalizedRequest.router_options = {
               ...normalizedRequest.router_options,
@@ -439,6 +445,17 @@ export class PipelineOrchestrator {
       !explicitModel && modelName && this.registry.isCombo(modelName)
         ? modelName
         : undefined;
+    if (comboByName && this.registry.isComboDisabled(comboByName)) {
+      // Fail fast like the empty-member case below: the combo is hidden from
+      // /v1/models, so an in-flight client naming it must get a loud 404 —
+      // routing it as `auto` would be invisible billing/model drift.
+      throw Object.assign(
+        new Error(
+          `Combo '${comboByName}' is disabled — re-enable it in the console or choose another model.`
+        ),
+        { statusCode: 404 }
+      );
+    }
     if (comboByName && this.registry.resolveCombo(comboByName).length === 0) {
       // Fail fast instead of silently degrading to classifier routing: the
       // combo is still advertised via /v1/models, so routing it as `auto`
@@ -564,7 +581,14 @@ export class PipelineOrchestrator {
       const ratchetResult = this.sessionManager.applyRatchet(
         sessionId,
         initialDecision,
-        (tier) => this.registry.getModelForTier(tier),
+        // Tier representative for session bookkeeping (pin birth). An
+        // explicitly named model IS the representative of its own turn —
+        // consulting the pool for it would hard-throw in a pool-less
+        // deployment where every registered model is unclassified, even
+        // though the request itself is directly callable by design. Bare
+        // `auto` keeps resolving through the pool (its empty-pool throw is
+        // the honest "add tier members" answer).
+        (tier) => explicitModel ?? this.registry.getModelForTier(tier),
         { allowIntercept: sessionMode === 'ratchet' }
       );
       decision = ratchetResult.finalDecision;
@@ -678,7 +702,22 @@ export class PipelineOrchestrator {
     }
 
     let finalResponse: ChatCompletionResponse;
-    let actualModel: ModelRegistration = preferredModel || this.registry.getModelForTier(actualTier, true);
+    // Pre-execution placeholder for the effort machinery below. Placeholder
+    // resolution must not consult the tier pool when the request already
+    // carries its own model: a combo is the sanctioned way to address
+    // pool-less models, and an explicitly named model stays directly
+    // callable by design — when every registered model is unclassified the
+    // tier lookup hard-throws and would kill both (and the placeholder is
+    // overwritten by the executed member after the pool run regardless).
+    // The combo's first resolved member is the honestest combo placeholder;
+    // the zero-member case fails fast above, so index 0 exists whenever
+    // comboId is set. Bare `auto` still resolves through the pool — its
+    // empty-pool throw is the honest "add members on the /tiers page" answer.
+    let actualModel: ModelRegistration =
+      preferredModel ||
+      (comboId ? this.registry.resolveCombo(comboId)[0] : undefined) ||
+      explicitModel ||
+      this.registry.getModelForTier(actualTier, true);
     // Reasoning-effort matching. `requestedEffort` is the
     // literal value the client sent (undefined if the field was omitted —
     // distinct from `'none'`, which is the client EXPLICITLY asking for no
@@ -705,7 +744,11 @@ export class PipelineOrchestrator {
       // Skip effort-based pick when the request is an explicit model choice
       // OR a combo — both are pinned by the caller and must not be re-routed
       // (the preferredModel branch below still translates/clamps THEIR map).
-      if (preferredModel || comboId) return null;
+      // NOTE: an explicit choice leaves preferredModel null (pins are a
+      // ratchet-mode concept) — explicitModel must be checked here too, or
+      // the pick consults the tier pool and hard-throws in a pool-less
+      // deployment where nothing is classified.
+      if (preferredModel || explicitModel || comboId) return null;
       if (requestedEffort === undefined || requestedEffort === 'none') {
         // No explicit level asked — still engage when a member rule
         // maps `none` to a real level (e.g. none→high) — the pick becomes

@@ -59,3 +59,16 @@ export const formatRate = (rate: number | null): string =>
  */
 export const formatCost = (usd: number): string =>
   '$' + usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+
+/** Compact duration ("45s" / "3m" / "2h" / "5d") — quota windows and reset
+ *  countdowns share this shape. */
+export const fmtDur = (ms: number): string => {
+  if (ms <= 0) return '0s';
+  const s = ms / 1000;
+  if (s < 60) return `${Math.max(1, Math.round(s))}s`;
+  const m = s / 60;
+  if (m < 60) return `${Math.round(m)}m`;
+  const h = m / 60;
+  if (h < 48) return `${Math.round(h)}h`;
+  return `${Math.round(h / 24)}d`;
+};

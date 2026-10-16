@@ -9,7 +9,7 @@ import {
   safeWriteJson,
   defaultGatewayPort,
 } from './base.js';
-import { ClientHookStatus } from '../types.js';
+import { ClientHookStatus, VIRTUAL_AUTO_IDS } from '../types.js';
 
 /**
  * Provider key written into pi's `~/.pi/agent/models.json` — the key name
@@ -75,7 +75,9 @@ export class PiClientAdapter implements ClientAdapter {
       details,
       // Pi has one model picker (/model, --model); the first entry is the main slot.
       modelSlots: [{ key: 'main', value: models[0]?.id ? String(models[0].id) : undefined, default: 'auto' }],
-      extraModels: models.slice(1).map((m: any) => String(m.id)).filter(Boolean),
+      // The fixed auto* alias block (see setup) is router-owned, not a user choice —
+      // never echo it back as extra entries.
+      extraModels: models.slice(1).map((m: any) => String(m.id)).filter(id => id && !VIRTUAL_AUTO_IDS.has(id)),
     };
   }
 
@@ -99,8 +101,11 @@ export class PiClientAdapter implements ClientAdapter {
     const port = options?.port || defaultGatewayPort();
     const targetUrl = `http://127.0.0.1:${port}/v1`;
     const main = options?.models?.main?.trim() || 'auto';
-    // Extra concrete models appended after main, deduped (main stays slot #1).
-    const ids = [main, ...(options?.extraModels || []).map(id => id.trim()).filter(id => id && id !== main)];
+    // Fixed auto* tier aliases are always exposed (the gateway resolves them
+    // natively), then the user's extra concrete models. Main stays slot #1;
+    // everything is deduped against what is already listed.
+    const extras = (options?.extraModels || []).map(id => id.trim()).filter(id => id && id !== main);
+    const ids = [main, ...[...VIRTUAL_AUTO_IDS].filter(id => id !== main && !extras.includes(id)), ...extras];
     const contextWindow = options?.contextWindow && options.contextWindow > 0 ? Math.floor(options.contextWindow) : undefined;
     // Gateway-issued key wins; keep the previous entry's key; placeholder only
     // as last resort (pi needs the field present; the gateway preHandler may

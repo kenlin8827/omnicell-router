@@ -717,10 +717,18 @@ export class ProviderRegistry {
   }
 
   public getCombos(): ComboConfig[] {
+    // Disabled combos stay registered (so the request path can reject them by
+    // id) but never surface in catalogs — clients cannot select what the
+    // gateway will not serve.
     // A model registered AFTER a combo (setDefaultTierModel / console flows)
     // shadows the combo id — exclude those from exposure so /v1/models never
     // lists a duplicate id that cannot route.
-    return Array.from(this.combos.values()).filter(c => !this.models.has(c.id));
+    return Array.from(this.combos.values()).filter(c => c.disabled !== true && !this.models.has(c.id));
+  }
+
+  /** True when the combo is registered but operator-disabled. */
+  public isComboDisabled(modelId: string): boolean {
+    return this.combos.get(modelId)?.disabled === true;
   }
 
   /** Normalize a member entry (bare string | {id, weight}) to {id, weight>=1}. */

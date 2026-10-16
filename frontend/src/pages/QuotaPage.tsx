@@ -10,6 +10,7 @@ import {
   type LastProbeCapture,
 } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
+import { fmtDur } from '../lib/format';
 import { ProviderLogo } from '../components/ProviderLogo';
 import { Dialog } from '../components/Dialog';
 import { useToast } from '../components/ToastProvider';
@@ -24,8 +25,10 @@ import { useToast } from '../components/ToastProvider';
  *
  * Layout: a page header with a manual refresh button (re-arms the probe
  * schedule — invalidation only, fresh numbers land on the next scheduler
- * tick) above the pair directory (badge + provenance + window bars +
- * served-usage join, all carried inside the cells they annotate); uncovered
+ * tick), a compact summary strip of aggregate scan-aid chips (covered pairs /
+ * low-quota windows / sync failures / earliest reset), then the pair directory
+ * (badge + provenance + window bars + served-usage join, all carried inside
+ * the cells they annotate); uncovered
  * pairs are never rendered (no coverage ⇒ no quota to show). Synced rows lead,
  * unread ones sink. The release
  * coverage plan, the rejected quotaProbes entries and the burn-event ledger
@@ -54,18 +57,6 @@ const TD: React.CSSProperties = {
   whiteSpace: 'nowrap',
 };
 
-/** Compact duration ("45s" / "3m" / "2h" / "5d"). */
-function fmtDur(ms: number): string {
-  if (ms <= 0) return '0s';
-  const s = ms / 1000;
-  if (s < 60) return `${Math.max(1, Math.round(s))}s`;
-  const m = s / 60;
-  if (m < 60) return `${Math.round(m)}m`;
-  const h = m / 60;
-  if (h < 48) return `${Math.round(h)}h`;
-  return `${Math.round(h / 24)}d`;
-}
-
 /** Pretty-print a captured probe body: parsed JSON → indented, text → verbatim. */
 function prettyBody(b: unknown): string {
   if (b === undefined || b === null) return '—';
@@ -82,6 +73,25 @@ const STATE_COLORS: Record<string, string> = {
   declared: 'var(--text-dim)',
   unverified: 'var(--accent-amber)',
   stale: 'var(--accent-rose)',
+};
+
+/** One summary-strip chip: a pill carrying a single aggregate signal. */
+const StatChip: React.FC<{ text: string; tone?: 'warn' | 'info' }> = ({ text, tone }) => {
+  const color = tone === 'warn' ? 'var(--accent-rose)' : tone === 'info' ? 'var(--accent)' : 'var(--text-dim)';
+  return (
+    <span
+      style={{
+        ...MONO,
+        padding: '3px 10px',
+        borderRadius: '999px',
+        border: `1px solid color-mix(in srgb, ${color} 45%, transparent)`,
+        color,
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {text}
+    </span>
+  );
 };
 
 const BadgePill: React.FC<{ quota: AccountQuotaView; stateWord: (k: string) => string }> = ({ quota, stateWord }) => {
@@ -249,6 +259,27 @@ export const QuotaPage: React.FC = () => {
     return rows;
   }, [data, q]);
 
+  // Compact summary strip — aggregate signals derived from the same covered
+  // pairs the table renders (the search box does not affect it): how many
+  // windows are nearly drained, how many pairs failed to sync, and when the
+  // earliest live window resets. Display-only, like everything on this page.
+  const summary = useMemo(() => {
+    const rows = (data?.pairs ?? []).filter((r) => r.covered);
+    if (rows.length === 0) return null;
+    const now = Date.now();
+    let lowWindows = 0;
+    let stalePairs = 0;
+    let nextReset: number | null = null;
+    for (const r of rows) {
+      if (r.quota?.badge === 'stale') stalePairs += 1;
+      for (const w of r.quota?.windows ?? []) {
+        if (!w.unlimited && w.remainingPct !== null && w.remainingPct < 10) lowWindows += 1;
+        if (w.resetAt !== null && w.resetAt > now && (nextReset === null || w.resetAt < nextReset)) nextReset = w.resetAt;
+      }
+    }
+    return { pairs: rows.length, lowWindows, stalePairs, nextReset };
+  }, [data]);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', height: '100%', minHeight: 0 }}>
       {/* ── Page header: identity + refresh ───────────────────────────────── */}
@@ -268,6 +299,18 @@ export const QuotaPage: React.FC = () => {
       {data && !data.enabled && (
         <div style={{ padding: '6px 10px', fontSize: '12px', borderRadius: '8px', background: 'color-mix(in srgb, var(--accent-amber) 10%, transparent)', color: 'var(--accent-amber)' }}>
           {t('quotaPage.disabledBanner')}
+        </div>
+      )}
+
+      {/* ── Summary strip: scan-aid chips over the directory ──────────────── */}
+      {summary && (
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+          <StatChip text={t('quotaPage.sumPairs', { n: summary.pairs })} />
+          <StatChip text={t('quotaPage.sumLow', { n: summary.lowWindows })} tone={summary.lowWindows > 0 ? 'warn' : undefined} />
+          <StatChip text={t('quotaPage.sumStale', { n: summary.stalePairs })} tone={summary.stalePairs > 0 ? 'warn' : undefined} />
+          {summary.nextReset !== null && (
+            <StatChip text={t('quotaPage.sumNextReset', { when: fmtDur(summary.nextReset - Date.now()) })} tone="info" />
+          )}
         </div>
       )}
 

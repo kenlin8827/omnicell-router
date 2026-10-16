@@ -828,6 +828,7 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'catalog.autoPullModels': '自动拉取模型：每个同步周期为自定义服务商拉取模型清单（live /v1/models 优先，只新增不覆盖；默认 true）',
   combos: '自定义模型组合（combo）：把若干已注册模型组成一个虚拟模型名，客户端直接以 combo id 作为 model 调用（控制台 /combos 页可视化编辑，保存后即时生效，无需重启）',
   'combos.*.selection': '主选策略：priority 配置顺序（默认）/ weighted 加权随机 / round_robin 轮询',
+  'combos.*.disabled': '禁用开关：true 时该组合下线——不再出现在模型目录（不可选），客户端以该组合 id 调用会被直接拒绝（不可用）；控制台仍可查看并重新启用',
   'combos.*.models': '成员列表（顺序即故障转移链序）：成员可写 \'model-id\' 或 { id, weight }（weight 用于 weighted/round_robin，默认 1）',
   'combos.*.note': '备注：仅控制台展示的自由文本，不参与路由',
   modelProfiles: '模型方案：一张「槽位 → 模型引用（modelRef）」命名表，与具体客户端无关。客户端挂接（应用）时选择方案，把各 agent/subagent 绑定到槽位，一次写入全部模型（控制台 /model-profiles 页可视化编辑；方案本身不参与路由，仅在应用时把 modelRef 写进客户端自身配置）',

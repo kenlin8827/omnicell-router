@@ -82,6 +82,7 @@ const baseConfig: RouterConfig = {
     { id: 'combo-rr', selection: 'round_robin', models: ['lite-1', 'lite-2'] },
     { id: 'combo-weighted', selection: 'weighted', models: [{ id: 'lite-1', weight: 1000000 }, { id: 'lite-2', weight: 1 }] },
     { id: 'combo-unknown-member', selection: 'priority', models: ['ghost-model', 'lite-2'] },
+    { id: 'combo-disabled', selection: 'priority', models: ['lite-1'], disabled: true },
   ],
 };
 
@@ -212,6 +213,69 @@ describe('Custom Model Combos: routing & execution', () => {
 
     assert.equal(result.modelUsed, 'lite-2');
   });
+
+  it('combo execution must not consult the tier pool when every model is unclassified', async () => {
+    // Combos exist to address pool-less models — the pre-execution tier
+    // placeholder must not hard-fail them (regression pin).
+    // The registry stores config model objects BY REFERENCE — clone them per
+    // fixture or the unclassified mutation below leaks into every later test
+    // in this file (module-level baseConfig is shared).
+    const cfg: RouterConfig = { ...baseConfig, models: baseConfig.models.map(m => ({ ...m })) };
+    const { registry, orchestrator } = makeOrchestrator(cfg);
+    for (const m of registry.getAllModels()) m.unclassified = true;
+
+    const result = await orchestrator.process({
+      model: 'combo-priority',
+      messages: [{ role: 'user', content: 'Hello pool-less combo' }],
+    } as any);
+
+    assert.equal(result.modelUsed, 'lite-1');
+  });
+
+  it('naming an unclassified model directly must execute it, not hard-fail on the empty tier pool', async () => {
+    // Boot contract: every model remains directly callable by full id even
+    // when no tier rule claims anything (the pool-less operator setup).
+    // Cloned fixtures — see the note in the combo test above.
+    const cfg: RouterConfig = { ...baseConfig, models: baseConfig.models.map(m => ({ ...m })) };
+    const { registry, orchestrator } = makeOrchestrator(cfg);
+    for (const m of registry.getAllModels()) m.unclassified = true;
+
+    const result = await orchestrator.process({
+      model: 'lite-2',
+      messages: [{ role: 'user', content: 'Hello pool-less explicit model' }],
+    } as any);
+
+    assert.equal(result.modelUsed, 'lite-2');
+  });
+
+  it('a bare upstream-name hit must NOT shadow a combo claiming the same name', async () => {
+    // /v1/models advertises the combo id as a virtual model; resolving that
+    // name to a single same-upstream-name physical model would be the
+    // invisible billing/model drift the combo fail-fast contract forbids.
+    const cfg: RouterConfig = {
+      ...baseConfig,
+      models: [
+        ...baseConfig.models,
+        {
+          id: 'mock/glm-shadow',
+          provider: 'mock',
+          upstreamModel: 'combo-shadow',
+          tier: 'lite',
+          priority: 9,
+          pricing: { input: 0.1, cacheRead: 0.01, output: 0.4 },
+        },
+      ],
+      combos: [...baseConfig.combos, { id: 'combo-shadow', selection: 'priority', models: ['plus-1'] }],
+    };
+    const { orchestrator } = makeOrchestrator(cfg);
+
+    const result = await orchestrator.process({
+      model: 'combo-shadow',
+      messages: [{ role: 'user', content: 'Combo or shadowed physical model?' }],
+    } as any);
+
+    assert.equal(result.modelUsed, 'plus-1');
+  });
 });
 
 describe('Custom Model Combos: exposure & config plumbing', () => {
@@ -264,5 +328,151 @@ describe('Custom Model Combos: exposure & config plumbing', () => {
     assert.equal(registry.isCombo('combo-priority'), false);
     assert.equal(registry.isCombo('combo-new'), true);
     assert.equal(registry.resolveCombo('combo-new').length, 1);
+  });
+});
+
+describe('Custom Model Combos: operator disable', () => {
+  it('disabled combo stays registered but is hidden from getCombos exposure', () => {
+    const { registry } = makeOrchestrator(baseConfig);
+
+    assert.equal(registry.isCombo('combo-disabled'), true);
+    assert.equal(registry.isComboDisabled('combo-disabled'), true);
+    assert.equal(registry.isComboDisabled('combo-priority'), false);
+    assert.ok(!registry.getCombos().some(c => c.id === 'combo-disabled'));
+    assert.ok(registry.getCombos().some(c => c.id === 'combo-priority'));
+    // Members still resolve — the console page renders disabled combos too.
+    assert.deepEqual(registry.resolveCombo('combo-disabled').map(m => m.id), ['lite-1']);
+  });
+
+  it('routing a disabled combo fails loud with 404 (never classifier-routed)', async () => {
+    const { orchestrator } = makeOrchestrator(baseConfig);
+
+    await assert.rejects(
+      async () =>
+        orchestrator.process({
+          model: 'combo-disabled',
+          messages: [{ role: 'user', content: 'Hello disabled combo' }],
+        } as any),
+      (err: any) => {
+        assert.match(err.message, /combo-disabled.*is disabled/);
+        assert.equal(err.statusCode, 404);
+        return true;
+      }
+    );
+  });
+
+  it('disabled combo is absent from /v1/models and 404s on /v1/models/:id', async () => {
+    const { app } = createServer(baseConfig, true);
+
+    const list = await app.inject({ method: 'GET', url: '/v1/models' });
+    assert.equal(list.statusCode, 200);
+    const ids = (list.json().data || []).map((m: any) => m.id);
+    assert.ok(!ids.includes('combo-disabled'));
+
+    const single = await app.inject({
+      method: 'GET',
+      url: '/v1/models/combo-disabled',
+      headers: authHeaders(),
+    });
+    assert.equal(single.statusCode, 404);
+  });
+
+  it('hot-apply re-enables a combo (disabled flag removed ⇒ selectable again)', () => {
+    const { registry } = makeOrchestrator(baseConfig);
+    assert.ok(!registry.getCombos().some(c => c.id === 'combo-disabled'));
+
+    registry.applyCombos(
+      baseConfig.combos!.map(c => (c.id === 'combo-disabled' ? { ...c, disabled: false } : c))
+    );
+    assert.equal(registry.isComboDisabled('combo-disabled'), false);
+    assert.ok(registry.getCombos().some(c => c.id === 'combo-disabled'));
+  });
+});
+
+describe('Custom Model Combos: console end-to-end test route', () => {
+  // The admin surface gate is the webAuth session check; the test configs
+  // carry no webAuth, so /api/admin/* is reachable via inject exactly like
+  // the console UI sees it after login.
+  it('should run one real completion for an active combo and echo the serving member', async () => {
+    const { app } = createServer(baseConfig, true);
+
+    const res = await app.inject({ method: 'POST', url: '/api/admin/combos/combo-priority/test' });
+
+    assert.equal(res.statusCode, 200);
+    const body = res.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.combo, 'combo-priority');
+    assert.equal(body.modelUsed, 'lite-1');
+    assert.equal(typeof body.latencyMs, 'number');
+    assert.equal(body.failoverOccurred, false);
+    // failoverPath records the TRIED order (the lone leader on a green run),
+    // not only an actual failover — the honest chain shape either way.
+    assert.deepEqual(body.failoverPath, ['lite-1']);
+  });
+
+  it('should refuse an id that is not a live combo BEFORE spending an upstream call', async () => {
+    const { app } = createServer(baseConfig, true);
+
+    const unknown = await app.inject({ method: 'POST', url: '/api/admin/combos/no-such-combo/test' });
+    assert.equal(unknown.statusCode, 400);
+    assert.equal(unknown.json().reasonCode, 'combo_inactive');
+
+    // Reserved virtual ids are not combos either — an auto-routed name must
+    // never masquerade as a combo test result.
+    const reserved = await app.inject({ method: 'POST', url: '/api/admin/combos/auto/test' });
+    assert.equal(reserved.statusCode, 400);
+    assert.equal(reserved.json().reasonCode, 'combo_inactive');
+  });
+
+  it('should refuse a LATE-SHADOWED combo id (physical model registered over it) as inactive', async () => {
+    // registerModel keeps isCombo true but hides the id from catalogs — the
+    // full-id lookup would silently serve the physical model under the
+    // combo's name. The precondition must match the exposure rule exactly
+    // (isCombo && !getModel).
+    const { app, registry } = createServer(baseConfig, true);
+    registry.registerModel({
+      id: 'combo-priority',
+      provider: 'mock',
+      upstreamModel: 'combo-priority',
+      tier: 'lite',
+      priority: 1,
+      pricing: { input: 0.1, cacheRead: 0.01, output: 0.4 },
+    } as any);
+    assert.equal(registry.isCombo('combo-priority'), true); // shadowed but still in the map
+
+    const res = await app.inject({ method: 'POST', url: '/api/admin/combos/combo-priority/test' });
+
+    assert.equal(res.statusCode, 400);
+    assert.equal(res.json().reasonCode, 'combo_inactive');
+  });
+
+  it('should report a disabled combo as a FAILED TEST (200 + ok:false), not a precondition error', async () => {
+    const { app } = createServer(baseConfig, true);
+
+    const res = await app.inject({ method: 'POST', url: '/api/admin/combos/combo-disabled/test' });
+
+    assert.equal(res.statusCode, 200);
+    const body = res.json();
+    assert.equal(body.ok, false);
+    assert.equal(body.httpStatus, 404);
+    assert.match(body.error, /combo-disabled.*is disabled/);
+  });
+
+  it('should test a combo green even when EVERY registered model is unclassified', async () => {
+    // The pool-less-operator shape: tiers rules match nothing (live default
+    // envs), combos are the only sanctioned address path. Before the fix the
+    // pre-execution tier placeholder hard-threw here and killed the combo.
+    // Cloned model fixtures — the mutation must not leak to later tests.
+    const cfg: RouterConfig = { ...baseConfig, models: baseConfig.models.map(m => ({ ...m })) };
+    const { app, registry } = createServer(cfg, true);
+    for (const m of registry.getAllModels()) m.unclassified = true;
+    assert.throws(() => registry.getModelForTier('plus', true), /No routable models registered/);
+
+    const res = await app.inject({ method: 'POST', url: '/api/admin/combos/combo-priority/test' });
+
+    assert.equal(res.statusCode, 200);
+    const body = res.json();
+    assert.equal(body.ok, true, `test failed: ${body.error}`);
+    assert.equal(body.modelUsed, 'lite-1');
   });
 });

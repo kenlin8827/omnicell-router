@@ -707,6 +707,7 @@ export interface ComboMemberView {
 export interface ComboView {
   id: string;
   active?: boolean;
+  disabled?: boolean;
   selection: 'priority' | 'weighted' | 'round_robin' | string;
   members: ComboMemberView[];
   note?: string;
@@ -715,6 +716,23 @@ export interface ComboView {
 export interface CombosResponse {
   status: string;
   combos: ComboView[];
+}
+
+/** Result of the combo end-to-end test (POST /api/admin/combos/:id/test).
+ * Mirror of the console contract — machine limbs only; the page composes the
+ * display. `ok:false` is a real test outcome (chain exhausted, member
+ * rejected); precondition failures (inactive id) throw OcApiError instead. */
+export interface ComboTestResult {
+  status: string;
+  ok: boolean;
+  combo: string;
+  modelUsed?: string;
+  latencyMs?: number;
+  failoverOccurred?: boolean;
+  failoverPath?: string[];
+  servedAccountPrefix?: string;
+  httpStatus?: number;
+  error?: string;
 }
 
 export interface LogLine {
@@ -1173,6 +1191,23 @@ export const api = {
     return res.json();
   },
 
+  /** One-shot combo end-to-end test — a REAL minimal completion through the
+   * production pipeline (burns quota, lands in logs). 4xx preconditions
+   * (combo_inactive) throw OcApiError with the reasonCode for local
+   * composition; a failed test itself answers 200 with ok:false limbs. */
+  async testCombo(id: string): Promise<ComboTestResult> {
+    const res = await fetch(`/api/admin/combos/${encodeURIComponent(id)}/test`, { method: 'POST' });
+    if (!res.ok) {
+      const e: any = await res.json().catch(() => ({}));
+      throw new OcApiError(
+        e?.error || e?.message || `HTTP ${res.status}`,
+        typeof e?.reasonCode === 'string' ? e.reasonCode : undefined,
+        e
+      );
+    }
+    return res.json();
+  },
+
   /** Model profiles (config.yaml `modelProfiles`) — raw section round-trip, no
    *  resolution view needed (refs are resolved by the client hook at apply). */
   async getModelProfiles(): Promise<ModelProfileView[]> {
@@ -1258,9 +1293,10 @@ export const api = {
     return res.json();
   },
 
-  /** All models the gateway can route to: virtual (auto/auto-lite/…) + registered.
+  /** All models the gateway can route to: virtual (auto/auto-lite/…), combos,
+   *  registered models and variant exposures — `kind` tags which one each id is.
    *  Reads the console endpoint — /v1/models requires a key like every surface. */
-  async listGatewayModels(): Promise<{ id: string; owned_by: string; tier?: string }[]> {
+  async listGatewayModels(): Promise<{ id: string; owned_by: string; tier?: string; kind?: string }[]> {
     const res = await fetch('/api/admin/gateway-models');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
@@ -1268,6 +1304,7 @@ export const api = {
       id: m.id,
       owned_by: m.owned_by || '',
       tier: m.tier || undefined,
+      kind: m.kind || undefined,
     }));
   },
 

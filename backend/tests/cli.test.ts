@@ -525,7 +525,8 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(route.baseURL).toBe('http://127.0.0.1:4000/v1');
     expect(route.api).toBe('openai-completions');
     expect(route.headers.Authorization).toBe('Bearer sk-test');
-    expect(route.models.map((m: any) => m.id)).toEqual(['auto-pro', 'deepseek-v4-pro']);
+    // Fixed auto* alias block is injected after main (minus main itself), then the user's extras.
+    expect(route.models.map((m: any) => m.id)).toEqual(['auto-pro', 'auto', 'auto-lite', 'auto-plus', 'auto-ultra', 'deepseek-v4-pro']);
 
     const teardownRes = await adapter.teardown();
     expect(teardownRes.success).toBe(true);
