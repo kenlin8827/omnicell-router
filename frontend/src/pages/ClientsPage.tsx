@@ -19,6 +19,14 @@ const clientSlots = (c: ClientStatus): { key: string; value?: string; default?: 
   return c.modelSlots;
 };
 
+/**
+ * Clients whose adapter honors `extraModels` (setup writes main + extras as a
+ * multi-entry models list into the hook config; getStatus echoes it back).
+ * These get the shared model-list editor (none / custom / follow).
+ */
+const supportsExtraModels = (name: string): boolean =>
+  name === 'opencode' || name === 'dsh' || name === 'pi';
+
 export const ClientsPage: React.FC = () => {
   const { t } = useI18n();
   const toast = useToast();
@@ -35,7 +43,7 @@ export const ClientsPage: React.FC = () => {
   const [apiKeySel, setApiKeySel] = useState<Record<string, string>>({});
   /** Per-client context window in tokens (claude compaction envs; default 256K) */
   const [ctxSel, setCtxSel] = useState<Record<string, string>>({});
-  /** Per-client extra concrete models (opencode provider models list) */
+  /** Per-client extra concrete models (model-list editors: opencode/dsh/pi) */
   const [extraSel, setExtraSel] = useState<Record<string, string[]>>({});
   /** Draft value of the extra-model add Combobox */
   const [extraDraft, setExtraDraft] = useState<Record<string, string>>({});
@@ -202,7 +210,7 @@ export const ClientsPage: React.FC = () => {
     setLoading(true);
     try {
       let extras = extraSel[clientName] || [];
-      if (action === 'setup' && clientName === 'opencode') {
+      if (action === 'setup' && supportsExtraModels(clientName)) {
         const mode = modeSel[clientName] ?? 'none';
         if (mode === 'none') {
           // Explicit 'none': the switcher keeps only the auto* virtual entries.
@@ -504,7 +512,7 @@ export const ClientsPage: React.FC = () => {
                           />
                         </div>
                       ))}
-                      {c.name === 'opencode' && (() => {
+                      {supportsExtraModels(c.name) && (() => {
                         const mode = modeSel[c.name] ?? 'none';
                         const follow = mode === 'follow';
                         const fk = follow ? followKeyOf(c.name) : undefined;
