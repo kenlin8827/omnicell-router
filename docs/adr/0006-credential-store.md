@@ -47,7 +47,7 @@ No store claims OAuth (`oauth:false`, `begin/completeOAuth` throw); oauth/wellkn
 
 ### 9. Boot and console surface
 
-Boot order: bind store → status → `ensureReconciled` → `buildDirectPool` (chains registered in-process, ADR-0005). Console: masked `AccountMeta` views + `AccountHealth` overlay (suspect / openPairs / cooldown / disabled+reason / limits) attached to EVERY account-returning response; store status route returns capabilities, degraded code, reconcile audit, integrations (when scoped). Reveal route = four hard gates: webAuth active, shared brute-force bucket, password verified BEFORE store touch, api-key rows only. Frontend `api.ts` mirrors these wire names 1:1 (repo convention).
+Boot order: bind store → status → `ensureReconciled` → `buildDirectPool` (chains registered in-process, ADR-0005). Console: masked `AccountMeta` views + `AccountHealth` overlay (suspect / openPairs / cooldown / disabled+reason / limits / `quota` — the quota-plane view, ADR-0009 §9) attached to EVERY account-returning response; store status route returns capabilities, degraded code, reconcile audit, integrations (when scoped). Reveal route = four hard gates: webAuth active, shared brute-force bucket, password verified BEFORE store touch, api-key rows only. Frontend `api.ts` mirrors these wire names 1:1 (repo convention).
 
 ## Consequences
 

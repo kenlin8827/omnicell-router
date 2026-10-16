@@ -1,4 +1,4 @@
-import { loadConfig, ensureDefaultConfigFile } from './config/index.js';
+import { loadConfig, ensureDefaultConfigFile, getRuntimeConfigRef } from './config/index.js';
 import { createServer } from './server.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { DispatchingProvider } from './providers/dispatch.js';
@@ -12,6 +12,9 @@ import { initProxyConfig } from './utils/proxy.js';
 import { adoptRestartParent, writeDaemonFiles } from './cli/daemon.js';
 import { openFinOpsStore } from './trace/persist.js';
 import { openRateLimitEventStore, getRateLimitEventLog } from './ratelimit/event-log.js';
+import { openQuotaEventStore, getQuotaEventLog } from './quota/events.js';
+import { QuotaProber, setQuotaProber, getQuotaProber } from './quota/prober.js';
+import { getQuotaStore } from './quota/store.js';
 import { getEnvPaths, resolveEnvName } from './config/env.js';
 import { getWarnThrottle } from './observability/warn-throttle.js';
 import { validateWebAuthStartup } from './auth/web-auth.js';
@@ -97,6 +100,20 @@ async function main() {
     console.log('[OCR] Rate-limit ledger: persistence disabled (rateLimit.persist.enabled=false)');
   }
 
+  // 0.5c Quota tracking: attach the quota_events durable mirror
+  //     (same traces.db, independent handle — the FinOps/ledger precedent) and
+  //     start the due-based prober. The prober's raw-key access is the
+  //     sanctioned in-process consumer door (CredentialStore resolveKey chain
+  //     contract): keys are read to build the inference-auth
+  //     probe header and never leave the process except toward the entry's
+  //     own disclosed host. Kill switch: quota.enabled:false. A quota failure
+  //     NEVER touches breakers (probe failure != quota failure).
+  const quotaEventStore = await openQuotaEventStore(getEnvPaths().tracesDir);
+  if (quotaEventStore) {
+    const replayed = getQuotaEventLog().attachStore(quotaEventStore);
+    if (replayed > 0) console.log(`[OCR] Quota events ledger: SQLite mirror active (${replayed} event(s) replayed)`);
+  }
+
   // 0.6 Bind the credential store and run the one-shot reconcile gate
   //     BEFORE the direct pool builds —
   //     auth.json-only keys are pushed into opencode v2 and the auth.json
@@ -173,6 +190,29 @@ async function main() {
   }
 
   const orchestrator = new PipelineOrchestrator(config, registry, tracker);
+
+  // Quota prober: coverage ships with the release, activation
+  // follows credentials — pairs resolve through the registry's chains (store
+  // credentials) or the config-baked inference key (chain-less degeneracy).
+  // Raw keys are read through the registry chain contract (in-process
+  // consumer door); the prober serializes only display-safe snapshots.
+  if (config.quota?.enabled !== false) {
+    const quotaProber = new QuotaProber({
+      registry: {
+        getCredentialChain: (name) => registry.getCredentialChain(name),
+        getProviderApiKey: (name) => registry.getProviderConfig(name)?.apiKey,
+        getProviderBaseUrl: (name) => registry.getProviderConfig(name)?.baseUrl,
+      },
+      config: () => getRuntimeConfigRef() ?? config,
+    });
+    setQuotaProber(quotaProber);
+    quotaProber.start();
+    const covered = quotaProber.getPlan().byProvider.size;
+    console.log(`[OCR] Quota prober: due-based scheduling active (${covered} provider(s) covered)`);
+  } else {
+    console.log('[OCR] Quota prober: disabled (quota.enabled=false)');
+  }
+
   const { app } = createServer(config, false, registry, orchestrator);
 
   try {
@@ -220,6 +260,10 @@ async function main() {
     // Flush FIRST: a throwing summary must never cost the snapshot its last
     // chance to reach the disk (breaker memory is durability-critical).
     breakerStore.flush();
+    // Quota: stop the scheduler, then flush pending snapshot writes
+    // (the store debounces; a graceful exit should not lose the last cycles).
+    getQuotaProber()?.stop();
+    getQuotaStore().flush();
     // Graceful-shutdown observability: print a one-line summary for every
     // deduped warn key when the process is asked to exit. Operators get a
     // final view of "what was failing during this lifetime" without the

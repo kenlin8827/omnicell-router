@@ -112,3 +112,14 @@ export function serviceJsonCandidates(paths: CredentialPaths = resolveDefaultPat
   // injected configDir only — never operator home.
   return paths.serviceJsonCandidates ?? [path.join(paths.configDir, 'service.json')];
 }
+
+/**
+ * Quota snapshots: attached to (provider × keyHashPrefix) — the
+ * credential-anchored identity — so they follow the suspect/disabled flags'
+ * GLOBAL lifecycle ("an account is an account wherever it is used"), not the
+ * per-env book-set. Display-safe metadata only (window numbers, prefixes,
+ * plan labels — never key material).
+ */
+export function quotaSnapshotsFile(paths: CredentialPaths = resolveDefaultPaths()): string {
+  return path.join(paths.ocrHome, 'quota-snapshots.json');
+}

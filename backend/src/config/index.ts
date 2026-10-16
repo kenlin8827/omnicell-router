@@ -5,6 +5,7 @@ import { Layer2JudgeConfig, RequestCaptureConfig, RouterConfig, WebAuthConfig, C
 import { DEFAULT_RETRIABLE_CAUSES } from '../resilience/types.js';
 import { ensureEnvScaffold, getEnvPaths, resolveEnvName } from './env.js';
 import { getRateLimiter } from '../ratelimit/rate-limiter.js';
+import { getQuotaProber } from '../quota/prober.js';
 
 // Bootstrap levers (OCR_ENV / OCR_HOME) come from the REAL process environment
 // only — there is no .env loader. A file-based override would be a second,
@@ -614,6 +615,12 @@ function syncRuntimeAuthView(fresh: RouterConfig): void {
     runtimeConfigRef.apiKeys = fresh.apiKeys;
     runtimeConfigRef.webAuth = fresh.webAuth;
     runtimeConfigRef.accounts = fresh.accounts;
+    // quotaProbes/quota ride the SAME routine (iron rule: a raw-YAML
+    // save must never leave the runtime view stale): the prober reads its
+    // entry set off the live ref on every reloadConfig(), and the console
+    // quota panel reads rejected/coverage state from it.
+    runtimeConfigRef.quotaProbes = fresh.quotaProbes;
+    runtimeConfigRef.quota = fresh.quota;
     // rateLimit (inbound grace) too: resolveActiveAuthConfig reads the boot
     // snapshot FIRST (`config.rateLimit?.inboundGraceMs ?? disk…` — the disk
     // arm never fires because loadConfig always resolves the section), so
@@ -621,6 +628,9 @@ function syncRuntimeAuthView(fresh: RouterConfig): void {
     runtimeConfigRef.rateLimit = fresh.rateLimit;
   }
   getRateLimiter().reload(fresh);
+  // Rebuild the effective quota plan right after the ref sync (the prober
+  // reads cfg.quotaProbes through the same live ref).
+  getQuotaProber()?.reloadConfig();
 }
 
 export function saveConfig(newConfig: Partial<RouterConfig>): { success: boolean; error?: string } {
@@ -783,6 +793,11 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   apiKeys: '客户端接入密钥（sk-ocr-*，见 /keys 页）；每个密钥可配 limits=入站滑动窗口限流，规则项 { window, requests | tokens | costUsd }（window 用时长语法 30s/5m/1h/1d；同一项可写多个维度=各自独立计数；任一窗口满即拒——宽限等待内（rateLimit.inboundGraceMs）先原地等满复查一次，否则 429 + Retry-After；被拒请求不计入窗口；保存即时生效）；requests 维度覆盖全部四条推理线（前向代理 MITM 腿不经该入口、不入站计量）；tokens/costUsd 在 chat 形态线（chat/messages/responses）与 systemone 决策线均于完成时记账（决策线以协议 usage 为准，上游未带 usage 的 native 应答只计 requests）',
   accounts: '模型账户限流叠加层（原始 YAML 页编辑，保存即时生效）：按 provider id 分组，每项 { keyHashPrefix, limits } —— keyHashPrefix 是该凭据 sha256 的前 12 位（控制台凭据卡片可见，与账号增删改名无关；大小写不敏感——编译/匹配时归一，磁盘保留原文）；limits 规则语法同 apiKeys（滑动窗口；requests=请求数、tokens=消耗 token 数、costUsd=费用美元，按完成时刻记账）；出站限流只做整形：超限账号在 NEW 会话选号时跳过、绝不改动已绑定会话（重绑会烧上游提示缓存）、候选耗尽时末位强制放行，真正的上游 429 仍由熔断器处理决策线例外：/v1/systemone 不经候选池——不做本地跳过/拒绝、也不经熔断，上游错误逐字透传；但该线的出站 dispatch 与完成记账照常计入，账户窗口会被它填充。内部腿（L2 裁判、健康探测）的上游调用不经任何记账，不会填充窗口',
   'accounts.*': '该 provider 的账号规则列表（键=provider id，如 anthropic）；条目 { keyHashPrefix, limits }',
+  quota: '额度探测调度：额度覆盖表与代码 adapter 随 release 内置，此处只调调度器；凭据出现即自动探测（激活随凭据），探测失败≠额度失败——保留旧值置 stale，绝不触发熔断/下架；声明上限只展示、不门控路由',
+  'quota.enabled': '额度探测总开关（默认 true）；false = 停止一切出网额度探测（已存快照仍可展示，标注 stale 逻辑不变）',
+  'quota.intervalMs': '调度 tick（毫秒，默认 60000，钳制 [10000, 3600000]）；每条目另有 cacheTtl 钳制 [60s, 24h] 的到期窗口 + 抖动，429 触发引擎级全局退避（非条目字段）',
+  quotaProbes: '自定义额度探测（长尾/自建网关，原始 YAML 页编辑，保存即时生效）：按 provider id 分组，条目 { url, windows, headers?, cacheTtlMs?, successIf?, override?, forkedFrom?, verifiedAt? } —— 铁律（仅约束本层）：url 只写相对路径且解析后必须落在该 provider 推理 baseURL 的 origin 内（拒 ../ / / 协议头）；认证固定复用推理同款 Bearer（需拼装/换 scheme/派生头的服务商走内置代码 adapter，不进本表）；GET-only；1 条目=1 URL；覆盖内置条目必须显式 override: <内置条目 id>（静默遮蔽被拒加载），fork 条目带 forkedFrom+verifiedAt 血统戳。windows 声明式抽取（12 构件：static/each/eachObject 三形态、firstOf、used/total/remaining 二推三、invert、scale、where 仅限存在/相等/∈、名称模板+枚举映射、静态 headers、successIf 单等值、unlimited、headers 取数、秒/毫秒/ISO 时间判别；算术/跨调用注入/值比较/正则/时间差/按URL反义/头值插值 七类禁例出现即整条拒绝加载并在控制台额度页显示原因）',
+  'quotaProbes.*': '该 provider 的探测条目数组（键=provider id，如 my-gateway）；每条目一张窗口表：windows { form: static|each|eachObject, path?, window|windows, plan? } —— 字段抽取 { path | header | literal, firstOf?, scale?, invertOf?, time? }；used/total/remaining 任二者可推第三；where 仅限存在/相等/∈ 三谓词；名称 nameSpec { from, enumMap, fallback } 或 template 纯插值（{field}）；successIf 单等值',
   opencode: 'OpenCode 本地服务连接',
   proxy: '出站代理策略（保存后即时生效，无需重启；作用于上游模型调用 / Layer2 判定 / 目录与 logo 同步；localhost/127.0.0.1 永不走代理）',
   'proxy.enabled': '出站代理总开关（默认 false 不启用；true 时按 url 与包含/排除规则出站）',

@@ -19,6 +19,7 @@ import { RouterConfig, type AccountLimitConfig, type RateLimitRule } from '../co
 import type { CatalogModel } from '../opencode/catalog/types.js';
 import type { AccountMeta, CredentialStore, RawCred } from '../opencode/credentials/types.js';
 import type { CircuitBreakerManager } from '../resilience/index.js';
+import type { TraceTracker } from '../trace/tracker.js';
 import type { OpenCodeProviderView } from '../opencode/user-config.js';
 import { listOpenCodeAgentsLive } from '../opencode/agents.js';
 import {
@@ -31,6 +32,10 @@ import {
 } from '../auth/api-keys.js';
 import { getModelAccessPolicy, isAutoEntryUsable, isModelAllowed, tierFromVirtualEntry } from '../auth/model-access.js';
 import { validateRateLimitRules, getRateLimiter, accountSubject } from '../ratelimit/rate-limiter.js';
+import { getQuotaProber } from '../quota/prober.js';
+import { getQuotaStore } from '../quota/store.js';
+import { getQuotaEventLog } from '../quota/events.js';
+import type { QuotaBadgeState, QuotaSnapshot, QuotaSource, QuotaWindow } from '../quota/types.js';
 import {
   checkLoginAllowed,
   createSessionToken,
@@ -439,6 +444,128 @@ async function mapStoreWriteFailure(err: unknown): Promise<{ status: number; bod
   return null;
 }
 
+// ─── Quota tracking ─────────────────────────────────────────────────────────
+
+/**
+ * The per-account quota view riding the AccountHealth overlay (every
+ * account-returning response, per the per-account overlay contract). Present
+ * ONLY when the account's provider is COVERED (built-in table / adapter /
+ * config entry); uncovered accounts carry no `quota` key at all — absence
+ * means "not covered", which is deliberately NOT the same signal as the
+ * `unverified` badge ("covered, no data yet").
+ */
+export interface AccountQuotaView {
+  /** Four-state badge: probed / declared / unverified / stale. */
+  badge: QuotaBadgeState;
+  source?: QuotaSource;
+  plan?: string;
+  windows: QuotaWindow[];
+  verifiedAt?: number;
+  lastFailureAt?: number;
+  /** Entry that produced (or would produce) this — built-in id,
+   *  `adapter:<id>`, or config `override:<id>` / `<pid>#<n>`. */
+  entryId?: string;
+  /** Effective cache window (ms) — the UI can render freshness honestly. */
+  ttlMs?: number;
+}
+
+/** Compute the overlay for one pair, joining the live plan (coverage/TTL)
+ *  with the store (snapshot). Undefined = provider not covered. */
+function quotaViewFor(providerId: string, keyHashPrefix?: string): AccountQuotaView | undefined {
+  if (!keyHashPrefix) return undefined;
+  const prober = getQuotaProber();
+  // ttlMs is defined exactly when the LIVE plan covers the provider.
+  const ttlMs = prober?.getTtlFor(providerId);
+  const store = getQuotaStore();
+  const snap = store.get(providerId, keyHashPrefix);
+  // Uncovered rows carry no quota key at all. With the prober OFF
+  // (quota.enabled:false) nothing can ever become `unverified` — the honest
+  // surface is then ONLY what a previous lifetime left on disk (entryId in
+  // the tooltip names its origin), never a badge promising a future probe.
+  if (ttlMs === undefined && !snap) return undefined;
+  const ttl = ttlMs ?? 15 * 60_000;
+  if (!snap) {
+    // Covered but nothing probed yet (or every attempt failed with no prior
+    // value): the honest state is `unverified`, not `stale`.
+    return { badge: 'unverified', windows: [], ttlMs: ttl };
+  }
+  const badge = store.badgeState(providerId, keyHashPrefix, ttl);
+  return {
+    badge,
+    source: snap.source,
+    plan: snap.plan,
+    windows: snap.windows,
+    verifiedAt: snap.verifiedAt,
+    lastFailureAt: snap.lastFailureAt,
+    entryId: snap.entryId,
+    ttlMs: ttl,
+  };
+}
+
+/**
+ * One row of the QUOTA PAGE directory (GET /api/admin/quota.pairs): every
+ * CONNECTED pair — the same enumeration the status surface's credentialHashes
+ * uses (store chains + config-baked inference keys, display-safe prefixes
+ * only) — joined with its quota view and its per-pair trace usage. This is
+ * the "all connected pairs, each with its quota" cross-provider surface;
+ * KeysPage keeps the per-account inline badge, this page owns the overview.
+ */
+interface QuotaPairRow {
+  providerId: string;
+  keyHashPrefix: string;
+  /** Chain label (account name) or the config provider name for baked keys. */
+  label?: string;
+  /** Live-plan coverage (built-in table / adapter / config entry). */
+  covered: boolean;
+  quota?: AccountQuotaView;
+  /** Attributed usage from the trace ring (undefined = nothing attributed
+   *  yet — turns recorded before the attribution field, or chain-less). */
+  usage?: { requests: number; inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number };
+}
+
+function buildQuotaPairRows(
+  registry: ProviderRegistry,
+  cfg: RouterConfig,
+  traceTracker: TraceTracker
+): QuotaPairRow[] {
+  const pairs = new Map<string, QuotaPairRow>();
+  const add = (providerId: string, keyHashPrefix: string, label?: string) => {
+    const id = `${providerId}#${keyHashPrefix}`;
+    if (pairs.has(id)) return;
+    pairs.set(id, {
+      providerId,
+      keyHashPrefix,
+      label,
+      covered: getQuotaProber()?.getPlan().byProvider.has(providerId) ?? false,
+      quota: quotaViewFor(providerId, keyHashPrefix),
+    });
+  };
+  for (const p of cfg.providers || []) {
+    if (p.apiKey) add(p.name, keyHashPrefix(p.apiKey), p.name);
+  }
+  for (const m of registry.getAllModels()) {
+    for (const c of registry.getCredentialChain(m.provider) ?? []) add(m.provider, c.keyHashPrefix, c.label);
+  }
+  // Per-pair usage join (trace ring GROUP BY provider×prefix — the step-1
+  // aggregation surface).
+  const usageRows = traceTracker.getAccountPairUsageStats();
+  for (const row of usageRows) {
+    const p = pairs.get(`${row.provider}#${row.keyHashPrefix}`);
+    if (p) {
+      p.usage = {
+        requests: row.requests,
+        inputTokens: row.inputTokens,
+        outputTokens: row.outputTokens,
+        cachedTokens: row.cachedTokens,
+        costUsd: row.costUsd,
+      };
+    }
+  }
+  return [...pairs.values()].sort(
+    (a, b) => a.providerId.localeCompare(b.providerId) || a.keyHashPrefix.localeCompare(b.keyHashPrefix)
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Per-account write surface (activate / rename / disconnect routes)
 // ---------------------------------------------------------------------------
@@ -454,6 +581,9 @@ type AccountHealth = AccountMeta & {
   disabledReason?: string;
   /** Outbound rate-limit rules armed for THIS credential (config `accounts:` overlay). */
   limits?: RateLimitRule[];
+  /** Quota tracking overlay — present only when the provider is
+   *  covered; absence != `unverified` badge. */
+  quota?: AccountQuotaView;
 };
 
 /** 404 body shared by the guard (pre-write) and the race catch (post-delete churn). */
@@ -833,6 +963,54 @@ export function registerConsoleRoutes(
       sinceTs !== undefined ? { sinceTs } : undefined
     );
     return { status: 'ok', totals, keys };
+  });
+
+  // 3C. Quota tracking surface: the coverage plan (which providers
+  //     the release/config actually probe), rejected config entries (validation
+  //     failures surfaced, never silent), every stored snapshot, and the quota
+  //     events ledger (inference-side ceiling burns). Display-only plane —
+  //     nothing here gates routing.
+  app.get('/api/admin/quota', async () => {
+    const prober = getQuotaProber();
+    const plan = prober?.getPlan();
+    const coverage = plan
+      ? Array.from(plan.byProvider.entries()).map(([providerId, target]) => ({
+          providerId,
+          kind: target.kind,
+          entryId: target.kind === 'dsl' ? target.entry.id : `adapter:${target.adapter.id}`,
+        }))
+      : [];
+    return {
+      status: 'ok',
+      // The live kill switch (quota.enabled) — not just boot wiring: a config
+      // save can disable probing without a restart.
+      enabled: prober !== undefined && (getRuntimeConfigRef() ?? loadConfig()).quota?.enabled !== false,
+      coverage,
+      rejected: plan?.rejected ?? [],
+      pairs: buildQuotaPairRows(registry, getRuntimeConfigRef() || loadConfig(), orchestrator.getTraceTracker()),
+      events: getQuotaEventLog().list().slice(0, 100),
+    };
+  });
+
+  // Force a pair due on the next tick (console "reprobe now"). Body carries
+  // the display-safe identity only; nothing is fetched synchronously here —
+  // probing stays on the scheduler (with its engine-level 429 backoff).
+  app.post('/api/admin/quota/refresh', async (req) => {
+    const body = req.body as { providerId?: string; keyHashPrefix?: string };
+    const prober = getQuotaProber();
+    if (!prober) return { status: 'ok', success: false, reasonCode: 'quota_disabled', error: 'quota prober is disabled' };
+    if (body?.providerId && body.keyHashPrefix) prober.invalidatePair(body.providerId, body.keyHashPrefix);
+    else prober.resetScheduling();
+    return { status: 'ok', success: true };
+  });
+
+  // Last raw HTTP exchange for one pair (memory-only capture — the quota
+  // endpoint's own response, display-safe: url/status/body, never headers;
+  // starts empty after a restart by design).
+  app.get('/api/admin/quota/last-probe', async (req) => {
+    const { providerId, keyHashPrefix } = req.query as { providerId?: string; keyHashPrefix?: string };
+    if (!providerId || !keyHashPrefix) return { status: 'ok', http: null };
+    return { status: 'ok', http: getQuotaStore().getLastHttp(`${providerId}#${keyHashPrefix}`) ?? null };
   });
 
   // 4. Client Interception Setup / Teardown
@@ -1573,12 +1751,14 @@ export function registerConsoleRoutes(
             (e) => (e.keyHashPrefix ?? '').toLowerCase() === meta.keyHashPrefix!.toLowerCase()
           )
         : undefined;
+      const quota = quotaViewFor(providerId, meta.keyHashPrefix);
       return {
         ...meta,
         suspect,
         disabled,
         ...(disabledReason ? { disabledReason } : {}),
         ...(limitEntry?.limits?.length ? { limits: limitEntry.limits } : {}),
+        ...(quota ? { quota } : {}),
         openPairs: open.length,
         ...(open.length > 0
           ? {

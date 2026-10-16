@@ -61,6 +61,7 @@ export interface TranslationDict {
     usage: string;
     logs: string;
     rateLimit: string;
+    quota: string;
     captures: string;
     flywheel: string;
     settings: string;
@@ -471,6 +472,19 @@ export interface TranslationDict {
     accountNotRoutableTip: string;
     accountSuspectTip: string;
     accountOpenPairs: string;
+    /** Per-credential quota tracking badge — display-only, never
+     *  gates routing. */
+    quotaLeft: string;
+    quotaLeftAbs: string;
+    quotaBalance: string;
+    quotaNoCap: string;
+    quotaResets: string;
+    quotaNoData: string;
+    quotaBadgeDeclared: string;
+    quotaStaleSince: string;
+    quotaUnverified: string;
+    quotaVerified: string;
+    quotaPlan: string;
     accountPrefixTip: string;
     accountActivate: string;
     accountActivated: string;
@@ -931,6 +945,52 @@ hiddenBadge: string;
     noteLastCandidate: string;
     noteSpread: string;
     noteFailover: string;
+  };
+  quotaPage: {
+    pageTitle: string;
+    pageSubtitle: string;
+    disabledBanner: string;
+    refreshNow: string;
+    /** Toast after a manual refresh re-armed the scheduler: numbers land on
+     *  the next probe tick (invalidation is never synchronous). */
+    refreshQueued: string;
+    /** Toast when the re-arm call itself failed (prober disabled, network). */
+    refreshUnavailable: string;
+    searchPlaceholder: string;
+    colState: string;
+    colAccount: string;
+    colPlan: string;
+    colQuota: string;
+    pairsEmpty: string;
+    stateProbed: string;
+    stateDeclared: string;
+    stateUnverified: string;
+    stateStale: string;
+    windowNoCap: string;
+    windowLeft: string;
+    windowBalance: string;
+    windowResets: string;
+    windowExpired: string;
+    agoLine: string;
+    wn: {
+      weekly: string;
+      monthly: string;
+      rolling: string;
+      credits: string;
+      balance: string;
+      sessionHours: string;
+      weekly7d: string;
+      limit: string;
+      modelSession: string;
+      modelWeekly: string;
+    };
+    lastProbeTitle: string;
+    lastProbeBtn: string;
+    lastProbeEmpty: string;
+    lastProbeNetwork: string;
+    lastProbeCopy: string;
+    lastProbeCopied: string;
+    lastProbeCopyFailed: string;
   };
   flywheel: {
     pageTitle: string;

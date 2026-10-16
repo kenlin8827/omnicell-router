@@ -47,7 +47,7 @@
 
 ### 9. 启动与控制台表面
 
-启动序：绑 store → 状态 → `ensureReconciled` → `buildDirectPool`（链以进程内裸 key 注册，ADR-0005）。控制台：掩码 `AccountMeta` + `AccountHealth` 叠层（suspect / openPairs / cooldown / disabled+reason / limits）附着在**每一个**返回账号的写响应上；store 状态路线给出能力、降级码、reconcile 审计、integrations（scoped 时）。Reveal 路线四道硬闸：webAuth 激活、共享爆破桶、密码先验后触 store、仅 api-key 行。前端 `api.ts` 与这些 wire 名 1:1 镜像（仓库约定）。
+启动序：绑 store → 状态 → `ensureReconciled` → `buildDirectPool`（链以进程内裸 key 注册，ADR-0005）。控制台：掩码 `AccountMeta` + `AccountHealth` 叠层（suspect / openPairs / cooldown / disabled+reason / limits / `quota`——quota 平面叠层，见 ADR-0009 §9）附着在**每一个**返回账号的写响应上；store 状态路线给出能力、降级码、reconcile 审计、integrations（scoped 时）。Reveal 路线四道硬闸：webAuth 激活、共享爆破桶、密码先验后触 store、仅 api-key 行。前端 `api.ts` 与这些 wire 名 1:1 镜像（仓库约定）。
 
 ## 后果
 

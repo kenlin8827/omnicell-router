@@ -2,6 +2,8 @@ import { EffortMap, ModelPricing, ReasoningEffort, TierLevel } from '../types/ro
 
 import { CircuitBreakerConfig, RetryConfig } from '../resilience/types.js';
 
+import type { QuotaProbeConfigEntry } from '../quota/types.js';
+
 export interface ProviderConfig {
   name: string;
   type: 'openai-compatible' | 'anthropic' | 'google' | 'responses' | 'dispatch' | 'systemone';
@@ -706,6 +708,30 @@ export interface RouterConfig {
   accounts?: Record<string, AccountLimitConfig[]>;
   /** Per-client console form memory (see ClientProfileMemoryEntry) — UI-only, never routed. */
   clientProfileMemory?: Record<string, ClientProfileMemoryEntry>;
+  /**
+   * Quota tracking: long-tail custom probe declarations keyed by
+   * provider id. Each entry carries a relative `url` (sanitized to stay inside
+   * that provider's inference origin), reuses the inference bearer auth, GET-
+   * only, one URL per entry, cacheTtl clamped [60s, 24h]. The built-in
+   * coverage (L-b table + L-c code adapters) ships with the release and is
+   * NOT configured here — this section only adds the long tail and explicit
+   * forks (an entry overriding a built-in must name it via `override:`).
+   */
+  quotaProbes?: Record<string, QuotaProbeConfigEntry[]>;
+  /** Quota scheduler knobs (enabled default-on; intervalMs default 60s). */
+  quota?: QuotaConfig;
+}
+
+/**
+ * Quota tracking scheduler knobs. The KNOWLEDGE (probe table +
+ * code adapters) ships with the release; this section only tunes scheduling:
+ * `enabled` is the kill switch (default ON — activation follows credentials,
+ * a covered provider's credential appearing arms its probes), `intervalMs`
+ * is the due-based tick (clamped [10s, 1h] at construction).
+ */
+export interface QuotaConfig {
+  enabled?: boolean;
+  intervalMs?: number;
 }
 
 export type { CircuitBreakerConfig, RetryConfig };

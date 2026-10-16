@@ -17,6 +17,7 @@ import {
   type CredentialWriteReasonCode,
   type CredentialRevealReasonCode,
   type RateLimitSnapshotEntry,
+  type AccountQuotaView,
 } from '../lib/api';
 import {
   LimitsEditor,
@@ -78,15 +79,16 @@ const FormField: React.FC<{ label: string; required?: boolean; style?: React.CSS
   </div>
 );
 
-/** Provider logo on a light chip (models.dev SVGs are dark glyphs — invisible on
- *  the dark theme without a backing plate). Falls back to an initial-letter chip. */
+/** Provider logo on the theme-tinted chip plate (models.dev SVGs are dark glyphs:
+ *  --logo-glyph-filter inverts them bright on dark-class themes, light-class
+ *  themes draw as-is). Falls back to an initial-letter chip. */
 const ProviderLogo: React.FC<{ id: string; logo?: string; size?: number }> = ({ id, logo, size = 28 }) => {
   const [failed, setFailed] = useState(false);
   const chip: React.CSSProperties = {
     width: size,
     height: size,
     borderRadius: Math.max(6, size * 0.28),
-    background: 'rgba(244, 244, 245, 0.95)',
+    background: 'var(--chip-bg)',
     border: '1px solid var(--card-border)',
     display: 'flex',
     alignItems: 'center',
@@ -101,7 +103,7 @@ const ProviderLogo: React.FC<{ id: string; logo?: string; size?: number }> = ({ 
           style={{
             fontWeight: 800,
             fontSize: size * 0.52,
-            color: '#18181b',
+            color: 'var(--text-main)',
             textTransform: 'uppercase',
             lineHeight: 1,
           }}
@@ -119,7 +121,7 @@ const ProviderLogo: React.FC<{ id: string; logo?: string; size?: number }> = ({ 
         width={Math.round(size * 0.72)}
         height={Math.round(size * 0.72)}
         onError={() => setFailed(true)}
-        style={{ objectFit: 'contain' }}
+        style={{ objectFit: 'contain', filter: 'var(--logo-glyph-filter)' }}
         loading="lazy"
       />
     </div>
@@ -225,6 +227,81 @@ function formatCountdown(ms: number): string {
   const s = total % 60;
   const pad = (n: number) => String(n).padStart(2, '0');
   return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+}
+
+/**
+ * Per-credential quota badge — four states, display-only (never
+ * gates routing). Compact label = the tightest window's remaining percent
+ * (probed) or a one-word state (declared / unverified); the tooltip lists every
+ * window with its reset countdown, plus provenance (plan / entry / verified).
+ * Staleness is honest: a probe failure keeps the last values and dims the
+ * badge — the store, not the badge, is the source of truth.
+ */
+function QuotaBadge({ quota }: { quota: AccountQuotaView }) {
+  const { t } = useI18n();
+  const now = Date.now();
+  // Balance pools are excluded from the tightest-window pick: their percent is
+  // a flattening artifact (always 100), never a real remaining allowance.
+  const pctWindows = quota.windows.filter((w) => w.remainingPct !== null && w.nameCode !== 'balance');
+  const tightest = pctWindows.length > 0
+    ? pctWindows.reduce((a, b) => ((a.remainingPct ?? 101) <= (b.remainingPct ?? 101) ? a : b))
+    : undefined;
+
+  let color = 'var(--text-dim)';
+  let label = '';
+  if (quota.badge === 'probed') {
+    const pct = tightest?.remainingPct ?? null;
+    color = pct === null ? 'var(--text-dim)' : pct < 10 ? 'var(--accent-rose)' : pct < 25 ? 'var(--accent-amber)' : 'var(--accent)';
+    label = pct === null ? '•' : `${Math.round(pct)}%`;
+  } else if (quota.badge === 'stale') {
+    color = 'var(--text-dim)';
+    label = tightest ? `${Math.round(tightest.remainingPct ?? 0)}%` : '—';
+  } else if (quota.badge === 'declared') {
+    label = t('op.quotaBadgeDeclared');
+  } else {
+    // unverified — covered, waiting for the first result.
+    label = '…';
+  }
+
+  const lines: string[] = [];
+  if (quota.badge === 'stale' && quota.lastFailureAt) {
+    lines.push(t('op.quotaStaleSince', { when: formatCountdown(Math.max(0, now - quota.lastFailureAt)) }));
+  }
+  if (quota.badge === 'unverified') lines.push(t('op.quotaUnverified'));
+  if (quota.plan) lines.push(t('op.quotaPlan', { plan: quota.plan }));
+  if (quota.windows.length === 0) {
+    lines.push(t('op.quotaNoData'));
+  } else {
+    for (const w of quota.windows) {
+      let desc: string;
+      if (w.nameCode === 'balance' && w.total !== null) desc = t('op.quotaBalance', { amount: fmtNum(Math.max(0, (w.total ?? 0) - (w.used ?? 0))) });
+      else if (w.unlimited || w.total === null) desc = t('op.quotaNoCap');
+      else if (w.remainingPct !== null && w.total === 100) desc = t('op.quotaLeft', { pct: Math.round(w.remainingPct) });
+      else if (w.remainingPct !== null) desc = `${Math.round(w.remainingPct)}% · ${t('op.quotaLeftAbs', { remaining: fmtNum((w.total ?? 0) - (w.used ?? 0)), total: fmtNum(w.total ?? 0) })}`;
+      else desc = t('op.quotaLeftAbs', { remaining: fmtNum((w.total ?? 0) - (w.used ?? 0)), total: fmtNum(w.total ?? 0) });
+      if (w.resetAt && w.resetAt > now) desc += ` · ${t('op.quotaResets', { when: formatCountdown(w.resetAt - now) })}`;
+      lines.push(`${w.name}: ${desc}`);
+    }
+  }
+  if (quota.verifiedAt && quota.badge !== 'unverified') {
+    lines.push(t('op.quotaVerified', { when: formatCountdown(Math.max(0, now - quota.verifiedAt)) }));
+  }
+  if (quota.entryId) lines.push(quota.entryId);
+
+  return (
+    <span
+      style={{ ...badgeStyle(color, 'transparent'), display: 'inline-flex', alignItems: 'center', gap: 3, opacity: quota.badge === 'stale' || quota.badge === 'unverified' ? 0.7 : 1 }}
+      title={lines.join('\n')}
+    >
+      <Gauge size={9} />
+      {label}
+    </span>
+  );
+}
+
+/** Trim long decimals for tooltip text (quota values carry unit noise). */
+function fmtNum(n: number): string {
+  return n >= 100 ? String(Math.round(n)) : String(Math.round(n * 100) / 100);
 }
 
 /**
@@ -528,6 +605,10 @@ const AccountRow: React.FC<AccountRowProps> = ({
                 {(account.limits ?? []).length}
               </span>
             )}
+            {/* Quota tracking badge: present only when the provider
+                is COVERED — absence != the `unverified` state. Display-only,
+                never gates routing; multi-window detail lives in the tooltip. */}
+            {account.quota && <QuotaBadge quota={account.quota} />}
             {/* Per-account connectivity probe: pins the store row THIS line
                 names — the card-level Test only ever hits the head account. */}
             {account.routable && (

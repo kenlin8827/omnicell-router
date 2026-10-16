@@ -153,6 +153,7 @@ export class ErrorClassifier {
       combinedText.includes('insufficient_quota') ||
       combinedText.includes('quota_exceeded') ||
       combinedText.includes('exceeded_current_quota') ||
+      combinedText.includes('allocated quota exceeded') ||
       combinedText.includes('credit_expired') ||
       combinedText.includes('billing_not_active') ||
       combinedText.includes('balance_exhausted') ||
@@ -162,7 +163,15 @@ export class ErrorClassifier {
       combinedText.includes('account_deactivated') ||
       combinedText.includes('insufficient balance') ||
       combinedText.includes('insufficient credit') ||
-      combinedText.includes('arrears');
+      combinedText.includes('arrears') ||
+      // Chinese quota-plan ceiling wording (CJK marker literals live in the
+      // includes below as match data only — the classifier's combined text is
+      // lowercased and CJK passes through unchanged). Deliberately broad: any
+      // CN upstream error naming "quota/credit" or the rolling-session cap in
+      // its failure text is a ceiling burn for THIS account, and QUOTA routes
+      // to another model rather than hard-cooling on the same key.
+      combinedText.includes('额度') ||
+      combinedText.includes('会话频控');
 
     if (isQuotaPattern) {
       return {

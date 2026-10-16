@@ -1607,6 +1607,38 @@ export const api = {
   },
 
   /**
+   * Quota tracking overview (GET /api/admin/quota): the connected
+   * pair directory with per-pair quota views + served usage, the release
+   * coverage plan, rejected quotaProbes entries, and the burn-event ledger.
+   */
+  async getQuotaOverview(): Promise<QuotaOverview> {
+    const res = await fetch('/api/admin/quota');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /** Last raw HTTP exchange for one pair (GET /api/admin/quota/last-probe):
+   *  the quota endpoint's own response, memory-only on the backend. */
+  async getLastProbe(providerId: string, keyHashPrefix: string): Promise<{ status: string; http: LastProbeCapture | null }> {
+    const qs = `providerId=${encodeURIComponent(providerId)}&keyHashPrefix=${encodeURIComponent(keyHashPrefix)}`;
+    const res = await fetch(`/api/admin/quota/last-probe?${qs}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /** Re-arm probing (POST /api/admin/quota/refresh): one pair, or the whole
+   *  schedule when no identity given. Invalidation only — never synchronous. */
+  async refreshQuota(target?: { providerId: string; keyHashPrefix: string }): Promise<{ status: string; success: boolean; reasonCode?: string }> {
+    const res = await fetch('/api/admin/quota/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(target ?? {}),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /**
    * Arm / clear ONE credential's outbound caps (config `accounts:` overlay
    * write — the credential itself is not touched). `limits: []` or `null`
    * clears the entry. Hot: the gateway reloads the rule table on save.
@@ -2108,7 +2140,120 @@ export type AccountHealth = AccountMeta & {
   cooldownUntilMs?: number;
   /** Outbound rate-limit rules armed for THIS credential (config `accounts:` overlay). */
   limits?: RateLimitRule[];
+  /**
+   * Quota tracking overlay — present ONLY when the account's
+   * provider is COVERED (built-in table / code adapter / config entry).
+   * Absence means "not covered", deliberately distinct from the `unverified`
+   * badge ("covered, nothing probed yet"). Mirrors backend `AccountQuotaView`.
+   */
+  quota?: AccountQuotaView;
 };
+
+/** Four-state quota badge — mirrors backend `QuotaBadgeState`. */
+export type QuotaBadgeState = 'probed' | 'declared' | 'unverified' | 'stale';
+
+/** Snapshot provenance — mirrors backend `QuotaSource`. */
+export type QuotaSource = 'probed' | 'measured' | 'declared' | 'forked';
+
+/** One usage window — mirrors backend `QuotaWindow`. Absolute `used`/`total`
+ *  in the window's own unit (v1 flattens currency), `remainingPct` 0..100,
+ *  `resetAt` epoch ms, `unlimited` = no stated cap. */
+export interface QuotaWindow {
+  name: string;
+  /** Machine-readable name identity for console i18n; absent = raw `name`. */
+  nameCode?: string;
+  /** Single argument for the coded name (hours, currency, model label, …). */
+  nameArg?: string;
+  used: number | null;
+  total: number | null;
+  remainingPct: number | null;
+  resetAt: number | null;
+  unlimited: boolean;
+}
+
+/** Raw last HTTP exchange for a quota pair — mirrors backend
+ *  `LastProbeCapture`. Memory-only server-side (starts empty on restart). */
+export interface LastProbeCapture {
+  url: string;
+  status?: number;
+  ok: boolean;
+  durationMs?: number;
+  error?: 'network';
+  body?: unknown;
+}
+
+/** Per-account quota view riding the AccountHealth overlay — mirrors backend
+ *  `AccountQuotaView`. Display-only: nothing here gates routing. */
+export interface AccountQuotaView {
+  badge: QuotaBadgeState;
+  source?: QuotaSource;
+  plan?: string;
+  windows: QuotaWindow[];
+  verifiedAt?: number;
+  lastFailureAt?: number;
+  /** Built-in id / `adapter:<id>` / config `override:<id>` — provenance label. */
+  entryId?: string;
+  /** Effective cache window (ms). */
+  ttlMs?: number;
+}
+
+/** Attributed per-pair served usage (trace ring GROUP BY provider×prefix) —
+ *  mirrors backend `QuotaPairRow.usage`. */
+export interface QuotaPairUsage {
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  costUsd: number;
+}
+
+/** One connected (provider × credential) pair directory row — mirrors
+ *  backend `QuotaPairRow` (GET /api/admin/quota). `covered` = live-plan
+ *  coverage; `quota` present only when covered (or persisted by a previous
+ *  lifetime); `usage` present only once turns have been attributed. */
+export interface QuotaPairRow {
+  providerId: string;
+  keyHashPrefix: string;
+  label?: string;
+  covered: boolean;
+  quota?: AccountQuotaView;
+  usage?: QuotaPairUsage;
+}
+
+/** A provider the release covers — mirrors backend coverage rows. */
+export interface QuotaCoverageRow {
+  providerId: string;
+  kind: 'dsl' | 'adapter';
+  entryId: string;
+}
+
+/** A rejected quotaProbes config entry — mirrors backend rejected rows. */
+export interface QuotaRejectedRow {
+  id: string;
+  error: string;
+}
+
+/** One quota burn event — mirrors backend `QuotaEvent` (quota_events ledger). */
+export interface QuotaEventRow {
+  id: string;
+  ts: number;
+  providerId: string;
+  keyHashPrefix?: string;
+  modelId?: string;
+  statusCode?: number;
+  reason: string;
+  reasonCode: 'quota-exhausted';
+}
+
+/** GET /api/admin/quota response — mirrors backend `AccountQuotaView` family. */
+export interface QuotaOverview {
+  status: string;
+  enabled: boolean;
+  coverage: QuotaCoverageRow[];
+  rejected: QuotaRejectedRow[];
+  pairs: QuotaPairRow[];
+  events: QuotaEventRow[];
+}
 
 /**
  * One live sliding-window constraint — mirrors backend `RateLimitSnapshotEntry`

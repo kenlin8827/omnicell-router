@@ -4,6 +4,7 @@ import { Zap, Scale, Brain, Sparkles, Save, RefreshCw, Plus, X, Eye, GripVertica
 import { api, opencodeApi, type TierPoolInfo } from '../lib/api';
 import { useConfirm } from '../components/ConfirmProvider';
 import { Combobox } from '../components/Combobox';
+import { ProviderLogo } from '../components/ProviderLogo';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
@@ -110,49 +111,6 @@ const buildTierPolicy = (f: TierPolicyForm): Record<string, unknown> => {
 
 const REASON_LABEL_KEY: Record<string, string> = {
   exclude: 'tierPolicy.reasonExclude',
-};
-
-/** Provider logo via the cached catalog proxy; falls back to the initial letter. */
-const ProviderLogo: React.FC<{ providerId: string; logoMap: Record<string, string>; size?: number }> = ({
-  providerId,
-  logoMap,
-  size = 16,
-}) => {
-  const [failed, setFailed] = useState(false);
-  const url = logoMap[providerId];
-  if (!url || failed) {
-    return (
-      <span
-        style={{
-          width: size,
-          height: size,
-          borderRadius: 4,
-          background: 'var(--card-border)',
-          color: 'var(--text-dim)',
-          fontSize: Math.round(size * 0.62),
-          fontWeight: 700,
-          display: 'inline-flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          flexShrink: 0,
-          textTransform: 'uppercase',
-        }}
-      >
-        {providerId.charAt(0)}
-      </span>
-    );
-  }
-  return (
-    <img
-      src={`/api/admin/catalog/logo?url=${encodeURIComponent(url)}`}
-      width={size}
-      height={size}
-      alt={providerId}
-      loading="lazy"
-      style={{ borderRadius: 4, objectFit: 'contain', flexShrink: 0 }}
-      onError={() => setFailed(true)}
-    />
-  );
 };
 
 export const RulesPage: React.FC = () => {

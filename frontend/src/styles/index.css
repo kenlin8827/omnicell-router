@@ -304,6 +304,17 @@
   --surface-hover: color-mix(in srgb, var(--text-main) 5%, transparent);
 }
 
+/* Provider logo glyphs (models.dev catalog SVGs) are dark ink. On dark-class
+   themes the theme-tinted --chip-bg plate is dark too, so invert the glyph
+   bright (hue-rotate keeps colored marks roughly true); light-class themes
+   draw the dark glyph as-is on the light plate. */
+:root {
+  --logo-glyph-filter: invert(1) hue-rotate(180deg);
+}
+[data-theme="light"], [data-theme="amber"] {
+  --logo-glyph-filter: none;
+}
+
 /* Capability/source badge hues — semantic identity is fixed (reasoning=violet,
    vision=emerald, audio=pink, video=blue, temperature=orange) but lightness
    follows the theme's lightness class: dark themes keep the Tailwind-400

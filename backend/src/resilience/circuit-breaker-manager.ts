@@ -22,6 +22,7 @@ import {
 } from './types.js';
 import { ModelRegistration } from '../config/types.js';
 import { ReasonParams } from '../types/router.js';
+import { recordQuotaEvent } from '../quota/events.js';
 
 export interface CircuitBreakerSummary {
   object: 'circuit_breaker_summary';
@@ -642,6 +643,27 @@ export class CircuitBreakerManager {
     provider?: string,
     keyHashPrefix?: string
   ): void {
+    // Quota linkage: every QUOTA_EXHAUSTED diagnosis
+    // lands a row in the quota_events ledger at this single join point —
+    // BEFORE rule gating, because the event plane is observability and the
+    // trip decision is policy (turning quota tripping OFF must not blind the
+    // ledger). Failed requests never enter the trace table (that plane
+    // records executed turns); this ledger is their quota-shaped counterpart.
+    // Fire-and-forget fail-open: a ledger error must never disturb the
+    // breaker record it piggybacks on.
+    if (diagnosis.category === 'QUOTA_EXHAUSTED') {
+      try {
+        recordQuotaEvent({
+          providerId: provider ?? this.modelProviders.get(modelId) ?? 'unknown',
+          keyHashPrefix,
+          modelId,
+          statusCode: diagnosis.statusCode,
+          reason: diagnosis.reason,
+        });
+      } catch {
+        // fail open
+      }
+    }
     this.schedulePersist();
     if (!keyHashPrefix) {
       this.applyFailure(modelId, diagnosis, provider ?? 'unknown', undefined);

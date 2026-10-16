@@ -1077,15 +1077,20 @@ export class PipelineOrchestrator {
       tokens: (finalResponse!.usage?.prompt_tokens || 0) + (finalResponse!.usage?.completion_tokens || 0),
       costUsd: computeRequestCost(finalResponse!.usage, actualModel.pricing),
     };
+    let usageAccountPrefix: string | undefined;
     {
       const rl = getRateLimiter();
       const clientKeyId = captureKeyIdentity(context?.fastifyRequest)?.id;
       if (clientKeyId) rl.recordUsage(apiKeySubject(clientKeyId), rlUsage);
       // The account that SERVED (same chain-head degeneracy as the pool gate,
-      // so single-credential providers carry usage too).
-      const rlAccountPrefix =
+      // so single-credential providers carry usage too). `servedUsagePrefix`
+      // also feeds the trace record below (execution.accountKeyHashPrefix):
+      // one credential attribution, two consumers (ratelimit subject + quota
+      // pairing).
+      const servedUsagePrefix =
         servedAccountPrefix ?? this.registry.getCredentialChain(actualModel.provider)?.[0]?.keyHashPrefix;
-      if (rlAccountPrefix) rl.recordUsage(accountSubject(actualModel.provider, rlAccountPrefix), rlUsage);
+      if (servedUsagePrefix) rl.recordUsage(accountSubject(actualModel.provider, servedUsagePrefix), rlUsage);
+      usageAccountPrefix = servedUsagePrefix;
     }
 
     // 8. Active Learning Data Flywheel Collection
@@ -1141,6 +1146,7 @@ export class PipelineOrchestrator {
       execution: {
         modelUsed: actualModel.id,
         provider: actualModel.provider,
+        accountKeyHashPrefix: usageAccountPrefix,
         tierUsed: actualTier,
         latencyMs,
         fallbackOccurred,

@@ -54,6 +54,15 @@ export interface ExecutionTrace {
   execution: {
     modelUsed: string;
     provider: string;
+    /**
+     * Display-safe sha256 prefix of the credential that SERVED this turn
+     * (same chain-head degeneracy as the ratelimit account subject, so a
+     * single-credential provider carries attribution too). Quota tracking
+     * aggregates per (provider × prefix) on this field. Forgiving
+     * forward-compat: traces replayed from disk before this field existed
+     * deserialize with `accountKeyHashPrefix === undefined`.
+     */
+    accountKeyHashPrefix?: string;
     tierUsed: TierLevel;
     latencyMs: number;
     fallbackOccurred: boolean;
@@ -74,6 +83,22 @@ export interface ExecutionTrace {
      */
     costUsd: number;
   };
+}
+
+/**
+ * Per-pair (provider × served-credential) usage row — the account-side
+ * counterpart of KeyUsageRow. Quota tracking's aggregation base
+ * (GROUP BY provider + keyHashPrefix); turns without credential
+ * attribution are skipped, never pooled into an anonymous bucket.
+ */
+export interface AccountPairUsageRow {
+  provider: string;
+  keyHashPrefix: string;
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  costUsd: number;
 }
 
 /** Per-API-key token usage row (also used for the anonymous bucket). */
@@ -303,6 +328,46 @@ export class TraceTracker {
       },
       keys: [...byKey.values()].sort((a, b) => b.inputTokens - a.inputTokens),
     };
+  }
+
+  /**
+   * Aggregate raw token usage over the in-memory trace ring buffer grouped by
+   * the SERVED credential pair (provider × keyHashPrefix) — the quota
+   * tracking foundation. Turns without credential attribution (chain-less
+   * providers, replayed pre-field rows) are skipped: the per-pair view only
+   * speaks for rows it can actually name. `sinceTs` narrows the window the
+   * same way as getUsageStats.
+   */
+  public getAccountPairUsageStats(options?: { sinceTs?: number }): AccountPairUsageRow[] {
+    const sinceTs = typeof options?.sinceTs === 'number' ? options.sinceTs : undefined;
+    const byPair = new Map<string, AccountPairUsageRow>();
+    for (const t of this.traces.values()) {
+      if (sinceTs !== undefined && t.timestamp < sinceTs) continue;
+      const prefix = t.execution.accountKeyHashPrefix;
+      if (!prefix) continue;
+      const id = `${t.execution.provider}#${prefix}`;
+      let row = byPair.get(id);
+      if (!row) {
+        row = {
+          provider: t.execution.provider,
+          keyHashPrefix: prefix,
+          requests: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          cachedTokens: 0,
+          costUsd: 0,
+        };
+        byPair.set(id, row);
+      }
+      row.requests++;
+      row.inputTokens += t.finops.inputTokens;
+      row.outputTokens += t.finops.outputTokens;
+      row.cachedTokens += t.finops.cachedTokens;
+      row.costUsd = Number((row.costUsd + t.finops.costUsd).toFixed(6));
+    }
+    return [...byPair.values()].sort(
+      (a, b) => a.provider.localeCompare(b.provider) || a.keyHashPrefix.localeCompare(b.keyHashPrefix)
+    );
   }
 
   /**
