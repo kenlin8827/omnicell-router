@@ -3361,6 +3361,30 @@ export function registerConsoleRoutes(
     return { status: 'ok', date, file, ...result };
   });
 
+  /**
+   * Serve one offloaded media file (base64 payload scrubbed out of a request
+   * body at capture time). Content-addressed: the URL is just the sha256
+   * prefix + date dir, so responses are immutable and cacheable. Strict
+   * regexes on both params keep the read inside <rootDir>/<date>/media/.
+   * Auth-exempt like the rest of /api/admin/capture (see section header).
+   */
+  app.get('/api/admin/capture/:date/media/:hash', async (req: any, reply: any) => {
+    const { date, hash } = req.params as { date: string; hash: string };
+    if (!CAPTURE_DATE_RE.test(date)) {
+      return reply.status(400).send({ status: 'error', message: 'date must be YYYY-MM-DD' });
+    }
+    if (!/^[0-9a-f]{16,64}$/.test(hash)) {
+      return reply.status(400).send({ status: 'error', message: 'hash must be 16-64 lowercase hex chars' });
+    }
+    const media = captureRecorder.getMediaFile(date, hash);
+    if (!media) {
+      return reply.status(404).send({ status: 'error', message: 'Capture media file not found' });
+    }
+    reply.header('Content-Type', media.contentType);
+    reply.header('Cache-Control', 'private, max-age=31536000, immutable');
+    return reply.send(media.data);
+  });
+
   app.delete('/api/admin/capture/:date/:file', async (req: any, reply: any) => {
     const { date, file } = req.params as { date: string; file: string };
     if (!CAPTURE_DATE_RE.test(date)) {
