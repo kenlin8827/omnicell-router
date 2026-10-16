@@ -556,13 +556,20 @@ export interface TranscriptRound {
 export function groupIntoRounds(items: TranscriptTurn[]): TranscriptRound[] {
   const rounds: TranscriptRound[] = [];
   let cur: TranscriptRound | null = null;
+  // A round opens on a user message that actually carries a PROMPT. In the
+  // Anthropic dialect tool results ride inside user-role messages (as
+  // tool_result parts) — those are hop CONTINUATIONS, not new prompts;
+  // counting them as prompts shattered the loop into one pseudo-round per
+  // tool hop and stranded each result outside the round that issued the call.
+  const isPrompt = (m: TranscriptMessage) =>
+    m.role === 'user' && m.blocks.some(b => b.kind === 'text' && b.text.trim().length > 0);
   const countResults = (msgs: TranscriptMessage[]) =>
     msgs.reduce(
       (n, m) => n + (m.role === 'tool' ? 1 : m.blocks.filter(b => b.kind === 'tool_result').length),
       0
     );
   for (const st of items) {
-    const pi = st.input.findIndex(m => m.role === 'user');
+    const pi = st.input.findIndex(isPrompt);
     const promptMsg = pi >= 0 ? st.input[pi] : null;
     // A round opens on a visible user prompt. Bonus signal: once a step's
     // output CONVERGED (pure-text answer), the next client request can only
