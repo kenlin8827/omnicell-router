@@ -293,4 +293,64 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
     assert.strictEqual(garbageBody.since, undefined, 'garbage since must be dropped silently');
     assert.ok(garbageBody.total >= 1, 'no-window default must still return everything');
   });
+
+  it('GET /api/admin/traces should support ?model=<modelId> exact-match filter', async () => {
+    // Record a fresh turn so the ring definitely holds a trace for it.
+    const sessId = 'sess_unit_test_model_filter';
+    await app.inject({
+      headers: { ...authHeaders(), 'x-session-id': sessId },
+      method: 'POST',
+      url: '/v1/chat/completions',
+      payload: { model: 'auto', messages: [{ role: 'user', content: 'ping' }] },
+    });
+
+    // Resolve the physical model id the gateway recorded for that turn.
+    const baseRes = await app.inject({
+      headers: authHeaders(),
+      method: 'GET',
+      url: `/api/admin/traces?session_id=${sessId}&limit=1`,
+    });
+    assert.strictEqual(baseRes.statusCode, 200);
+    const baseBody = JSON.parse(baseRes.body);
+    assert.ok(baseBody.data.length >= 1, 'fresh turn must be traceable');
+    const usedModel = baseBody.data[0].execution.modelUsed as string;
+    assert.ok(usedModel, 'trace must carry a resolved model id');
+
+    // (1) Exact match — every returned trace shares that model id.
+    const matchRes = await app.inject({
+      headers: authHeaders(),
+      method: 'GET',
+      url: `/api/admin/traces?model=${encodeURIComponent(usedModel)}&limit=200`,
+    });
+    assert.strictEqual(matchRes.statusCode, 200);
+    const matchBody = JSON.parse(matchRes.body);
+    assert.ok(matchBody.total >= 1, 'filtering by a used model id must return its traces');
+    assert.strictEqual(matchBody.model, usedModel, 'model should round-trip in the response');
+    assert.ok(
+      matchBody.data.every((t: any) => t.execution.modelUsed === usedModel),
+      'every returned trace must match the requested model'
+    );
+
+    // (2) Unknown model — empty list, no error.
+    const missRes = await app.inject({
+      headers: authHeaders(),
+      method: 'GET',
+      url: '/api/admin/traces?model=no-such-model-xyz',
+    });
+    assert.strictEqual(missRes.statusCode, 200);
+    const missBody = JSON.parse(missRes.body);
+    assert.strictEqual(missBody.total, 0);
+    assert.strictEqual(missBody.data.length, 0);
+
+    // (3) Blank value — ignored (same as omitted), falls back to unfiltered.
+    const blankRes = await app.inject({
+      headers: authHeaders(),
+      method: 'GET',
+      url: '/api/admin/traces?model=%20&limit=1',
+    });
+    assert.strictEqual(blankRes.statusCode, 200);
+    const blankBody = JSON.parse(blankRes.body);
+    assert.strictEqual(blankBody.model, undefined, 'blank model must be dropped');
+    assert.ok(blankBody.total >= 1, 'blank model must fall back to the unfiltered list');
+  });
 });

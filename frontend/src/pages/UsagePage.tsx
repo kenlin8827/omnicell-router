@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useSearchParams, useNavigate } from 'react-router-dom';
-import { BarChart3, X } from 'lucide-react';
+import { useSearchParams, useNavigate, useNavigationType } from 'react-router-dom';
+import { BarChart3, X, ArrowLeft } from 'lucide-react';
 import { api, type UsageStatsResponse, type KeyUsageRow, type TraceRecord } from '../lib/api';
 import { formatCost, shortId, outputRate, formatRate, fmtLatency } from '../lib/format';
 import { Combobox } from '../components/Combobox';
@@ -57,29 +57,34 @@ export const UsagePage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const keyFilter = searchParams.get('key') || '';
   const sessionFilter = searchParams.get('session') || '';
+  const modelFilter = searchParams.get('modelId') || '';
   const [rangeHours, setRangeHours] = useState('24');
   const [data, setData] = useState<UsageStatsResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  // Session-scoped view (entered from /sessions 📊 button): per-request rows
-  // straight from the session trace store, not the per-key aggregation.
-  const [sessionTraces, setSessionTraces] = useState<TraceRecord[]>([]);
+  // Scoped view (entered from /sessions 📊 button or a ?modelId= deep link):
+  // per-request rows straight from the trace store, not the per-key aggregation.
+  const [scopedTraces, setScopedTraces] = useState<TraceRecord[]>([]);
 
   useEffect(() => {
-    if (!sessionFilter) {
-      setSessionTraces([]);
+    if (!sessionFilter && !modelFilter) {
+      setScopedTraces([]);
       return;
     }
     let alive = true;
-    api
-      .getSessionTraces(sessionFilter)
+    const hours = Number(rangeHours);
+    const sinceMs = hours > 0 ? Date.now() - hours * 3_600_000 : undefined;
+    const fetcher = sessionFilter
+      ? api.getSessionTraces(sessionFilter)
+      : api.getTracesByModel(modelFilter, sinceMs);
+    fetcher
       .then(tr => {
-        if (alive) setSessionTraces(tr);
+        if (alive) setScopedTraces(tr);
       })
-      .catch(err => console.error('[Usage] session traces failed:', err));
+      .catch(err => console.error('[Usage] scoped traces failed:', err));
     return () => {
       alive = false;
     };
-  }, [sessionFilter]);
+  }, [sessionFilter, modelFilter, rangeHours]);
 
   const sumTraces = (tr: TraceRecord[]): UsageStatsResponse['totals'] => {
     let inputTokens = 0;
@@ -124,8 +129,9 @@ export const UsagePage: React.FC = () => {
 
   const allRows = data?.keys ?? [];
   const rows = keyFilter ? allRows.filter(r => r.id === keyFilter) : allRows;
-  const totals = sessionFilter
-    ? sumTraces(sessionTraces)
+  const scoped = Boolean(sessionFilter || modelFilter);
+  const totals = scoped
+    ? sumTraces(scopedTraces)
     : keyFilter
       ? sumRows(rows)
       : data?.totals;
@@ -134,13 +140,14 @@ export const UsagePage: React.FC = () => {
     const next = new URLSearchParams(searchParams);
     next.delete('key');
     next.delete('session');
+    next.delete('modelId');
     setSearchParams(next, { replace: true });
   };
 
-  // Effective output throughput over the *displayed* population: session view
-  // sums per-trace latencies, key/overall views sum the per-row latencyMsSum.
-  const toksRate = sessionFilter
-    ? outputRate(totals?.outputTokens ?? 0, sessionTraces.reduce((a, r) => a + r.execution.latencyMs, 0))
+  // Effective output throughput over the *displayed* population: scoped views
+  // sum per-trace latencies, key/overall views sum the per-row latencyMsSum.
+  const toksRate = scoped
+    ? outputRate(totals?.outputTokens ?? 0, scopedTraces.reduce((a, r) => a + r.execution.latencyMs, 0))
     : outputRate(totals?.outputTokens ?? 0, rows.reduce((a, r) => a + r.latencyMsSum, 0));
 
   const cards: { label: string; value: string; color: string; tip?: string; sub?: string }[] = totals
@@ -165,16 +172,47 @@ export const UsagePage: React.FC = () => {
       ]
     : [];
 
+  // A filtered view is entered by drilling in (sessions 📊, keys row, model
+  // cell). Show a back button when something is likely behind this URL: an
+  // in-app push, or a prior tab history entry (covers refresh after drill-in).
+  // A cold deep link in a fresh tab has neither, so only the filter chip X is
+  // offered there.
+  const navigationType = useNavigationType();
+  const hasFilter = Boolean(keyFilter || sessionFilter || modelFilter);
+  const canGoBack = hasFilter && (navigationType === 'PUSH' || window.history.length > 1);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
       {/* Toolbar: title + filter chip + range picker */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          {canGoBack && (
+            <button
+              type="button"
+              onClick={() => navigate(-1)}
+              title={t('usage.back')}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                background: 'transparent',
+                border: '1px solid var(--divider)',
+                color: 'var(--text-muted)',
+                borderRadius: '6px',
+                padding: '3px 8px',
+                fontSize: '11px',
+                cursor: 'pointer',
+              }}
+            >
+              <ArrowLeft size={12} />
+              {t('usage.back')}
+            </button>
+          )}
           <BarChart3 size={16} color="var(--accent)" />
           <span style={{ fontSize: '14px', fontWeight: 700 }}>
-            {sessionFilter ? t('usage.sessionTitle') : t('nav.usage')}
+            {sessionFilter ? t('usage.sessionTitle') : modelFilter ? t('usage.modelTitle') : t('nav.usage')}
           </span>
-          {(keyFilter || sessionFilter) && (
+          {(keyFilter || sessionFilter || modelFilter) && (
             <span
               className="badge"
               style={{
@@ -189,8 +227,8 @@ export const UsagePage: React.FC = () => {
                 fontSize: '11px',
               }}
             >
-              {/* Filter chip: app name when known; session view shows the short id. */}
-              {sessionFilter ? shortId(sessionFilter) : (allRows.find(r => r.id === keyFilter)?.name ?? keyFilter)}
+              {/* Filter chip: app name when known; session view shows the short id; model view the model id. */}
+              {sessionFilter ? shortId(sessionFilter) : modelFilter ? modelFilter : (allRows.find(r => r.id === keyFilter)?.name ?? keyFilter)}
               <span role="button" aria-label={t('usage.clearFilter')} title={t('usage.clearFilter')} onClick={clearFilter} style={{ cursor: 'pointer', display: 'inline-flex' }}>
                 <X size={11} />
               </span>
@@ -222,9 +260,9 @@ export const UsagePage: React.FC = () => {
         ))}
       </div>
 
-      {sessionFilter ? (
+      {scoped ? (
         <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-          {sessionTraces.length === 0 ? (
+          {scopedTraces.length === 0 ? (
             <div style={{ padding: '48px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '13px' }}>
               {t('usage.empty')}
             </div>
@@ -257,14 +295,28 @@ export const UsagePage: React.FC = () => {
                     {label}
                   </span>
                 ))}
-                {sessionTraces.map(tr => (
+                {scopedTraces.map(tr => (
                   <React.Fragment key={tr.traceId}>
                     <span style={{ color: 'var(--text-dim)' }}>{new Date(tr.timestamp).toLocaleTimeString()}</span>
                     <span style={{ color: 'var(--text-dim)' }}>
                       {new Date(tr.timestamp + tr.execution.latencyMs).toLocaleTimeString()}
                     </span>
                     <span style={{ color: 'var(--text-dim)' }}>#{tr.turnNumber}</span>
-                    <span style={{ color: 'var(--text-main)', wordBreak: 'break-all' }}>{tr.execution.modelUsed}</span>
+                    {/* Session view: clicking the model drills into its per-model call list. */}
+                    <span
+                      style={{
+                        color: 'var(--text-main)',
+                        wordBreak: 'break-all',
+                        cursor: sessionFilter ? 'pointer' : 'default',
+                        textDecoration: sessionFilter ? 'underline' : 'none',
+                        textDecorationColor: 'var(--divider)',
+                      }}
+                      onClick={() =>
+                        sessionFilter
+                          ? navigate(`/usage?modelId=${encodeURIComponent(tr.execution.modelUsed)}`)
+                          : undefined
+                      }
+                    >{tr.execution.modelUsed}</span>
                     <span>{tr.finops.inputTokens.toLocaleString()}</span>
                     <span>{tr.finops.outputTokens.toLocaleString()}</span>
                     <span style={{ color: tr.finops.cachedTokens > 0 ? 'var(--accent-emerald)' : 'var(--text-dim)' }}>

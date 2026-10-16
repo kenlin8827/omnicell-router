@@ -742,6 +742,8 @@ export const zhCN: TranslationDict = {
   },
   usage: {
     sessionTitle: '会话用量',
+    modelTitle: '模型用量',
+    back: '返回',
     thApp: '应用',
     thAvgMs: '平均耗时',
     thToks: 'tok/s',

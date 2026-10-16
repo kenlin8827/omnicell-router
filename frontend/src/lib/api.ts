@@ -1558,6 +1558,23 @@ export const api = {
   },
 
   /**
+   * Global trace query scoped to one resolved model id (exact match on the
+   * trace's `execution.modelUsed`), optionally narrowed to a time window.
+   * Backs the usage page's per-model call list.
+   */
+  async getTracesByModel(modelId: string, sinceMs?: number, limit = 500): Promise<TraceRecord[]> {
+    const qs = new URLSearchParams();
+    qs.set('model', modelId);
+    if (sinceMs !== undefined) qs.set('since', String(sinceMs));
+    qs.set('limit', String(limit));
+    const res = await fetch(`/api/admin/traces?${qs.toString()}`);
+    if (!res.ok) return [];
+    const json = await res.json();
+    // /api/admin/traces responds { object, total, limit, offset, data }
+    return json.data || [];
+  },
+
+  /**
    * Clear ALL sessions (console maintenance surface — browser pages cannot
    * present API keys, so destructive ops go through /api/admin).
    */

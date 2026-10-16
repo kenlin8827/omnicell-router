@@ -799,6 +799,8 @@ hiddenBadge: string;
   };
   usage: {
     sessionTitle: string;
+    modelTitle: string;
+    back: string;
     thApp: string;
     thAvgMs: string;
     thToks: string;

@@ -1027,11 +1027,14 @@ export function createServer(
     };
   });
 
-  // 3G. Global Request Trajectory Queries (with optional session_id filter, time-window & pagination)
+  // 3G. Global Request Trajectory Queries (with optional session_id / model
+  // filter, time-window & pagination). `model` is an exact match on the
+  // resolved physical model id recorded in each trace.
   app.get('/api/admin/traces', async (req) => {
-    const query = req.query as { session_id?: string; limit?: string; offset?: string; since?: string };
+    const query = req.query as { session_id?: string; model?: string; limit?: string; offset?: string; since?: string };
     const limit = query.limit ? parseInt(query.limit, 10) : 50;
     const offset = query.offset ? parseInt(query.offset, 10) : 0;
+    const modelId = query.model && query.model.trim() ? query.model.trim() : undefined;
     // `since` is an inclusive lower-bound epoch-ms timestamp. Garbage /
     // negative / future values are clamped to undefined so the tracker
     // returns the whole in-memory window instead of an empty list — same
@@ -1041,6 +1044,7 @@ export function createServer(
 
     const result = orchestrator.getTraceTracker().getRecentTraces({
       sessionId: query.session_id,
+      modelId,
       limit,
       offset,
       sinceTs,
@@ -1051,6 +1055,7 @@ export function createServer(
       total: result.total,
       limit,
       offset,
+      ...(modelId !== undefined ? { model: modelId } : {}),
       ...(sinceTs !== undefined ? { since: sinceTs } : {}),
       data: result.data,
     };

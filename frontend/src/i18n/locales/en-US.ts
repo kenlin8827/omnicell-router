@@ -748,6 +748,8 @@ export const enUS: TranslationDict = {
   },
   usage: {
     sessionTitle: 'Session usage',
+    modelTitle: 'Model usage',
+    back: 'Back',
     thApp: 'Application',
     thAvgMs: 'Avg Latency',
     thToks: 'tok/s',

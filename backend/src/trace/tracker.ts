@@ -224,15 +224,17 @@ export class TraceTracker {
   }
 
   /**
-   * Query recent traces with optional session filtering, time-window filter
-   * (inclusive lower bound `sinceTs` on `trace.timestamp`, epoch ms) and
-   * pagination. The time-window filter is applied AFTER the index-based
-   * candidate selection but BEFORE pagination so `total` reflects the
-   * window size and the page slice stays consistent. When `sinceTs` is
+   * Query recent traces with optional session filtering, model filtering
+   * (exact match on `execution.modelUsed`, the resolved physical model id),
+   * time-window filter (inclusive lower bound `sinceTs` on `trace.timestamp`,
+   * epoch ms) and pagination. The window/model filters are applied AFTER the
+   * index-based candidate selection but BEFORE pagination so `total` reflects
+   * the filtered size and the page slice stays consistent. When `sinceTs` is
    * undefined (the default) the whole in-memory ring is returned.
    */
   public getRecentTraces(options?: {
     sessionId?: string;
+    modelId?: string;
     limit?: number;
     offset?: number;
     sinceTs?: number;
@@ -255,6 +257,16 @@ export class TraceTracker {
       traceIds = traceIds.filter(id => {
         const t = this.traces.get(id);
         return t ? t.timestamp >= sinceTs : false;
+      });
+    }
+
+    // Model filter: same placement as the window filter — `total` and the
+    // page slice must describe the model-scoped population.
+    if (options?.modelId) {
+      const modelId = options.modelId;
+      traceIds = traceIds.filter(id => {
+        const t = this.traces.get(id);
+        return t ? t.execution.modelUsed === modelId : false;
       });
     }
 
