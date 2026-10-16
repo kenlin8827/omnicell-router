@@ -308,7 +308,7 @@ const MessageView: React.FC<{ msg: TranscriptMessage; date?: string }> = ({ msg,
         </div>
       ))}
       {msg.toolCalls.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: text ? 6 : 0 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: text ? 6 : 0 }}>
           {msg.toolCalls.map((c, i) => (
             <ToolCallCard key={c.id || i} call={c} />
           ))}
@@ -397,7 +397,7 @@ const OutputView: React.FC<{ out: TurnOutput }> = ({ out }) => {
       )}
       {out.text && <Prose text={out.text} />}
       {out.toolCalls.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: out.text ? 6 : 0 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: out.text ? 6 : 0 }}>
           {out.toolCalls.map((c, i) => (
             <ToolCallCard key={c.id || i} call={c} />
           ))}
