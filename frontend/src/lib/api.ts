@@ -606,6 +606,13 @@ export interface CaptureTurn {
 export interface SessionRecord {
   id: string;
   maxTier: 'lite' | 'plus' | 'pro' | 'ultra';
+  /**
+   * How the client addressed this session's turns, derived from its traces:
+   * 'auto' (ratchet owns the tier), 'explicit' (client named a model — no tier
+   * lock to show), 'combo' (the composition IS the decision), 'mixed'.
+   * Absent on pre-entryMode backends — the UI then falls back to the tier badge.
+   */
+  entryMode?: 'auto' | 'explicit' | 'combo' | 'mixed';
   pinnedModel: string;
   pinnedProvider: string;
   createdAt: number;

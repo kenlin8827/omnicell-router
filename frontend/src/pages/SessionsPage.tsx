@@ -47,6 +47,33 @@ const TIER_FULL_LABEL: Record<SessionRecord['maxTier'], string> = {
 };
 
 /**
+ * Tier column content by entry mode:
+ * - combo   -> a neutral "Combo" badge (the composition is the decision, the
+ *              executed member's tier is not a session ceiling).
+ * - explicit-> nothing (a dash): the client named the model, the gateway holds
+ *              no tier lock to display.
+ * - auto / mixed / absent -> the tier badge (the ratchet's locked ceiling).
+ */
+const TierCell: React.FC<{ s: SessionRecord }> = ({ s }) => {
+  const { t } = useI18n();
+  if (s.entryMode === 'combo') {
+    return (
+      <span className="badge badge-info" title={t('sessions.entryModeComboHint')}>
+        {t('sessions.entryModeCombo')}
+      </span>
+    );
+  }
+  if (s.entryMode === 'explicit') {
+    return <span style={{ color: 'var(--text-dim)' }} title={t('sessions.entryModeExplicitHint')}>—</span>;
+  }
+  return (
+    <span className={`badge ${TIER_BADGE[s.maxTier]}`} title={t(TIER_FULL_LABEL[s.maxTier])}>
+      {t(TIER_LABEL[s.maxTier])}
+    </span>
+  );
+};
+
+/**
  * Pinned-model cell: split `provider/model` into two stacked, non-wrapping
  * lines — model name on top (inherits the cell's bold weight), provider below
  * in dim gray. Overflowing lines ellipsis; hover shows the full value.
@@ -487,9 +514,7 @@ export const SessionsPage: React.FC = () => {
                     )}
                   </td>
                   <td style={{ padding: '10px 14px' }}>
-                    <span className={`badge ${TIER_BADGE[s.maxTier]}`} title={t(TIER_FULL_LABEL[s.maxTier])}>
-                      {t(TIER_LABEL[s.maxTier])}
-                    </span>
+                    <TierCell s={s} />
                   </td>
                   <td style={{ padding: '10px 14px' }}>
                     <span

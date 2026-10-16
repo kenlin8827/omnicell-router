@@ -23,6 +23,34 @@ import type { CaptureKeyIdentity } from './capture/recorder.js';
 const TIER_RANK: Record<string, number> = { lite: 1, plus: 2, pro: 3, ultra: 4 };
 
 /**
+ * How the client addressed a session's turns, derived from persisted traces
+ * (observability reconstruction — never routing state):
+ * - 'auto'    : every turn named bare auto/default — the ratchet owns the tier.
+ * - 'explicit': every turn named a concrete registered model — the client owns
+ *               the choice, the tier column has no lock to show.
+ * - 'combo'   : every turn went through a combo — the composition IS the
+ *               decision; the executed member's tier is not a session ceiling.
+ * - 'mixed'   : the conversation switched entry modes across turns.
+ */
+export type SessionEntryMode = 'auto' | 'explicit' | 'combo' | 'mixed';
+
+/** Classify a session from its traces (chronological order irrelevant). */
+export function deriveSessionEntryMode(traces: ExecutionTrace[]): SessionEntryMode {
+  let sawAuto = false;
+  let sawExplicit = false;
+  let sawCombo = false;
+  for (const t of traces) {
+    // Combo turns are the only ones carrying this reasonCode (the orchestrator
+    // sets it on the bypass decision and the trace copies it verbatim).
+    if (t.routing?.reasonCode === 'combo') sawCombo = true;
+    else if (!t.request?.model || t.request.model === 'auto' || t.request.model === 'default') sawAuto = true;
+    else sawExplicit = true;
+  }
+  if (Number(sawAuto) + Number(sawExplicit) + Number(sawCombo) !== 1) return 'mixed';
+  return sawCombo ? 'combo' : sawExplicit ? 'explicit' : 'auto';
+}
+
+/**
  * Rebuild a console session row from persisted traces alone (seen after a
  * gateway restart, when the live session-manager state is gone but the trace
  * store survived). Derived values are observability reconstructions — the
@@ -40,6 +68,7 @@ function reconstructSessionFromTraces(traceTracker: TraceTracker, id: string) {
   return {
     id,
     maxTier,
+    entryMode: deriveSessionEntryMode(traces),
     pinnedModel: last?.execution.modelUsed ?? '',
     pinnedProvider: last?.execution.provider ?? '',
     createdAt: first?.timestamp ?? 0,
@@ -857,12 +886,16 @@ export function createServer(
     // gateway restart) are reconstructed from their traces so console
     // history survives. Live wins on id collision.
     const live = (orchestrator.getSessionManager()?.getAllSessions() || []).map(s => {
-      const keyList = distinctTraceKeys(traceTracker.getTracesBySession(s.id));
+      const sessTraces = traceTracker.getTracesBySession(s.id);
+      const keyList = distinctTraceKeys(sessTraces);
       return {
         ...s,
         // Application attribution from the session's traces — distinct key set
         // in write order (first element = display anchor).
         apiKeys: keyList.length ? keyList : undefined,
+        // Entry mode is trace-derived for live rows too: the session entity
+        // itself does not record how the client addressed its turns.
+        entryMode: deriveSessionEntryMode(sessTraces),
         ...traceTracker.getSessionAggregates(s.id),
       };
     });
