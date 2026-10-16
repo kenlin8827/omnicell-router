@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
-import { Archive, RefreshCw, Trash2, X, AlertTriangle, Download, Search, Copy, Check, Braces } from 'lucide-react';
+import { Archive, RefreshCw, Trash2, X, AlertTriangle, Download, Search, Copy, Check, Braces, Maximize2, Minimize2 } from 'lucide-react';
 import {
   api,
   type CaptureStatus,
@@ -707,6 +707,20 @@ export const CapturesPage: React.FC = () => {
       /* ignore quota / private-mode errors */
     }
   };
+  // Fullscreen conversation reading (transient — never persisted).
+  const [chatFull, setChatFull] = useState(false);
+  useEffect(() => {
+    if (!chatFull) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setChatFull(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [chatFull]);
+  // Switching archives (or lenses) drops the reader back to the pane.
+  useEffect(() => {
+    setChatFull(false);
+  }, [selectedFile, mainView]);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [toggling, setToggling] = useState(false);
@@ -1420,12 +1434,27 @@ export const CapturesPage: React.FC = () => {
                                   cursor: 'pointer',
                                   fontSize: '11.5px',
                                   padding: '4px 10px',
+                                  minWidth: 64,
+                                  textAlign: 'center',
                                 }}
                               >
                                 {v === 'timeline' ? t('captures.viewTimeline') : t('captures.viewChat')}
                               </button>
                             ))}
                           </div>
+                          {/* Fullscreen reading for the conversation lens — the
+                              session pane is narrow; long agent sessions deserve
+                              the whole viewport. Below the wire drawer (z 210) so
+                              raw-wire access keeps working from inside it. */}
+                          {mainView === 'chat' && (
+                            <button
+                              className="btn btn-sm"
+                              onClick={() => setChatFull(v => !v)}
+                              title={chatFull ? t('captures.chatExitFullscreen') : t('captures.chatFullscreen')}
+                            >
+                              {chatFull ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+                            </button>
+                          )}
                           {/* Session-level refresh: re-read just this archive's
                               tail (cheap), vs the header button that reloads
                               status + dates + session list too. */}
@@ -1618,6 +1647,62 @@ export const CapturesPage: React.FC = () => {
       {selectedTurnIdx !== null && turns[selectedTurnIdx] && (
         <CaptureDrawer turn={turns[selectedTurnIdx]} onClose={() => setSelectedTurnIdx(null)} />
       )}
+
+      {chatFull && mainView === 'chat' &&
+        createPortal(
+          <div
+            style={{
+              position: 'fixed',
+              inset: 0,
+              zIndex: 200,
+              background: 'var(--bg)',
+              display: 'flex',
+              flexDirection: 'column',
+              animation: 'ocr-fade-in 0.15s ease',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                padding: '10px 18px',
+                borderBottom: '1px solid var(--divider)',
+                flexShrink: 0,
+              }}
+            >
+              <span style={{ fontSize: '13px', fontWeight: 700 }}>{t('captures.viewChat')}</span>
+              <span
+                style={{
+                  fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                  fontSize: '11px',
+                  color: 'var(--text-dim)',
+                  wordBreak: 'break-all',
+                }}
+              >
+                {sessions.find(s => s.file === selectedFile)?.sessionId ?? selectedFile}
+              </span>
+              <button
+                className="btn btn-sm"
+                style={{ marginLeft: 'auto', flexShrink: 0 }}
+                onClick={() => setChatFull(false)}
+                title={t('captures.chatExitFullscreen')}
+              >
+                <Minimize2 size={12} />
+                <span>{t('captures.chatExitFullscreen')}</span>
+              </button>
+            </div>
+            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '16px 24px' }}>
+              <SessionTranscript
+                turns={turns}
+                fileTruncated={fileTruncated}
+                date={selectedDate}
+                onOpenTurn={idx => setSelectedTurnIdx(idx)}
+              />
+            </div>
+          </div>,
+          document.body
+        )}
 
       {exportTarget && (
         <ExportDialog

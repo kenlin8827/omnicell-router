@@ -1203,6 +1203,8 @@ hiddenBadge: string;
     /** Conversation replay (chat lens) keys. */
     viewTimeline: string;
     viewChat: string;
+    chatFullscreen: string;
+    chatExitFullscreen: string;
     expand: string;
     collapse: string;
     msgSystem: string;

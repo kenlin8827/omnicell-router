@@ -1141,6 +1141,8 @@ export const enUS: TranslationDict = {
     sessionNotFound: 'No capture archive found for this session (capture may be off, or the session was never captured).',
     viewTimeline: 'Timeline',
     viewChat: 'Conversation',
+    chatFullscreen: 'Read fullscreen',
+    chatExitFullscreen: 'Exit fullscreen',
     expand: 'Expand',
     collapse: 'Collapse',
     msgSystem: 'System prompt',
