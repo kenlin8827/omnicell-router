@@ -689,6 +689,10 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
     const result = recorder.readEvents(dateDir, file, 100);
     assert.equal(result.turns.length, 2);
     assert.equal(result.events.length, 8);
+    // The header's turn tally must be the grouped count, not raw event
+    // lines (4 lines per turn here — labelling totalLines as turns 4x's it).
+    assert.equal(result.totalLines, 8);
+    assert.equal(result.totalTurns, 2);
     // Each turn has all four events paired.
     for (const t of result.turns) {
       assert.ok(t.clientRequest && t.gatewayResponse && t.upstreamRequest && t.upstreamResponse,

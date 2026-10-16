@@ -1827,12 +1827,13 @@ export const api = {
     events: HttpExchangeEvent[];
     turns: CaptureTurn[];
     totalLines: number;
+    totalTurns: number;
     fileTruncated: boolean;
   }> {
     const res = await fetch(
       `/api/admin/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}/events?limit=${limit}`
     );
-    if (!res.ok) return { events: [], turns: [], totalLines: 0, fileTruncated: false };
+    if (!res.ok) return { events: [], turns: [], totalLines: 0, totalTurns: 0, fileTruncated: false };
     return res.json();
   },
 

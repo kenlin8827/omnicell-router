@@ -16,7 +16,7 @@ import { useToast } from '../components/ToastProvider';
 import { Switch } from '../components/Switch';
 import { Combobox } from '../components/Combobox';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
-import { copyToClipboard, shortId, outputRate, formatRate } from '../lib/format';
+import { copyToClipboard, shortId, outputRate, formatRate, fmtDur } from '../lib/format';
 import { useSplitterWidth, VSplitter } from '../components/Splitter';
 
 /**
@@ -660,7 +660,9 @@ export const CapturesPage: React.FC = () => {
   const [selectedFile, setSelectedFile] = useState<string>('');
   const [turns, setTurns] = useState<CaptureTurn[]>([]);
   const [events, setEvents] = useState<HttpExchangeEvent[]>([]);
-  const [totalLines, setTotalLines] = useState(0);
+  // Logical turn count for the whole archive (totalLines is raw event
+  // lines — 2-4 per turn — and must never be labelled as turns).
+  const [totalTurns, setTotalTurns] = useState(0);
   const [fileTruncated, setFileTruncated] = useState(false);
   const [selectedTurnIdx, setSelectedTurnIdx] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
@@ -724,7 +726,7 @@ export const CapturesPage: React.FC = () => {
       // at state level so selectedTurnIdx / drawer / list keys stay consistent.
       setTurns([...res.turns].reverse());
       setEvents(res.events);
-      setTotalLines(res.totalLines);
+      setTotalTurns(res.totalTurns);
       setFileTruncated(res.fileTruncated);
       setSelectedTurnIdx(null);
     } catch (err) {
@@ -939,6 +941,15 @@ export const CapturesPage: React.FC = () => {
           (s.apiKeys ?? []).some(k => k.name.toLowerCase().includes(q))
       )
     : sessions;
+
+  // Header summary: sum of per-turn gateway latency over the loaded tail
+  // window. Idle gaps between turns are deliberately excluded — in long
+  // client sessions the wall-clock span is dominated by think time.
+  const totalLatencyMs = useMemo(() => {
+    let sum = 0;
+    for (const turn of turns) sum += turn.gatewayLatencyMs ?? turn.upstreamLatencyMs ?? 0;
+    return sum;
+  }, [turns]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, height: '100%' }}>
@@ -1272,8 +1283,16 @@ export const CapturesPage: React.FC = () => {
                       >
                         <span style={{ fontSize: '13px', fontWeight: 600 }}>{t('captures.turnsTitle')}</span>
                         <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: '11px', color: 'var(--text-dim)' }}>
-                          {selectedFile.replace(/\.jsonl$/, '')} · {totalLines} {t('captures.turnsUnit')}
+                          {selectedFile.replace(/\.jsonl$/, '')} · {totalTurns} {t('captures.turnsUnit')}
                         </span>
+                        {totalLatencyMs > 0 && (
+                          <span
+                            title={t('captures.totalTimeHint', { n: turns.length })}
+                            style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: '11px', color: 'var(--text-dim)' }}
+                          >
+                            · {t('captures.totalTime')} {fmtDur(totalLatencyMs)}
+                          </span>
+                        )}
                         {/* Session-level refresh: re-read just this archive's
                             tail (cheap), vs the header button that reloads
                             status + dates + session list too. */}

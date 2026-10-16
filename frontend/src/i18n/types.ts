@@ -1161,6 +1161,9 @@ hiddenBadge: string;
     turnsTitle: string;
     refreshTurnsHint: string;
     turnsUnit: string;
+    /** Timeline header summary: total gateway latency over the displayed turns. */
+    totalTime: string;
+    totalTimeHint: string;
     emptyRecords: string;
     statusOk: string;
     statusError: string;

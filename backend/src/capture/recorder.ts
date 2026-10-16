@@ -812,10 +812,13 @@ export class CaptureRecorder {
       upstreamLatencyMs?: number;
     }>;
     totalLines: number;
+    /** Logical turn count over ALL events in the read window (totalLines is
+     * raw event lines — 2-4 per turn — so it must never be shown as turns). */
+    totalTurns: number;
     fileTruncated: boolean;
   } {
     const filePath = this.resolveArchiveFile(date, file);
-    if (!filePath) return { events: [], turns: [], totalLines: 0, fileTruncated: false };
+    if (!filePath) return { events: [], turns: [], totalLines: 0, totalTurns: 0, fileTruncated: false };
 
     let text: string;
     let fileTruncated = false;
@@ -832,7 +835,7 @@ export class CaptureRecorder {
       }
       fileTruncated = readSize < st.size;
     } catch {
-      return { events: [], turns: [], totalLines: 0, fileTruncated: false };
+      return { events: [], turns: [], totalLines: 0, totalTurns: 0, fileTruncated: false };
     }
 
     const lines = text.split(/\r?\n/);
@@ -861,7 +864,10 @@ export class CaptureRecorder {
     const firstTurnStart = newest.findIndex(e => e.direction === 'client' && e.phase === 'request');
     if (firstTurnStart > 0) newest = newest.slice(firstTurnStart);
     const turns = CaptureRecorder.groupEventsIntoTurns(newest);
-    return { events: newest, turns, totalLines: events.length, fileTruncated };
+    // Total logical turns over the whole read window — the header's "N 轮"
+    // must use this, not totalLines (raw event lines, 2-4 per turn).
+    const totalTurns = CaptureRecorder.groupEventsIntoTurns(events).length;
+    return { events: newest, turns, totalLines: events.length, totalTurns, fileTruncated };
   }
 
   /**

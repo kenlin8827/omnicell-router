@@ -1095,6 +1095,8 @@ export const zhCN: TranslationDict = {
     turnsTitle: '会话时间线',
     refreshTurnsHint: '重新读取该会话归档的最新轮次',
     turnsUnit: '轮',
+    totalTime: '总耗时',
+    totalTimeHint: '当前展示 {n} 轮请求的网关耗时之和（不含轮次之间的空闲时间）',
     emptyRecords: '该会话暂无捕捉记录。',
     statusOk: '成功',
     statusError: '失败',

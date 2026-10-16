@@ -1101,6 +1101,8 @@ export const enUS: TranslationDict = {
     turnsTitle: 'Session Timeline',
     refreshTurnsHint: 'Re-read the latest turns of this session archive',
     turnsUnit: 'turns',
+    totalTime: 'total',
+    totalTimeHint: 'Sum of gateway latency over the {n} displayed turns (idle gaps between turns excluded)',
     emptyRecords: 'No captured records for this session.',
     statusOk: 'OK',
     statusError: 'ERROR',
