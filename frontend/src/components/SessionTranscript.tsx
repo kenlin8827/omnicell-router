@@ -7,7 +7,7 @@
  */
 import React, { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, ChevronDown, ChevronRight, Image as ImageIcon, Maximize2, Minimize2 } from 'lucide-react';
+import { AlertTriangle, ChevronDown, ChevronRight, Image as ImageIcon, Maximize2, Minimize2, Wrench } from 'lucide-react';
 import { useI18n } from '../i18n/I18nContext';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import type { CaptureTurn } from '../lib/api';
@@ -225,8 +225,12 @@ const ToolCallCard: React.FC<{ call: TranscriptToolCall }> = ({ call }) => {
             background: 'color-mix(in srgb, var(--accent-amber) 16%, transparent)',
             color: 'var(--accent-amber)',
             fontSize: '10px',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 3,
           }}
         >
+          <Wrench size={9} style={{ flexShrink: 0 }} />
           {t('captures.toolCallLabel')}
         </span>
         <span style={{ fontWeight: 600, fontFamily: MONO }}>{call.name || '?'}</span>
