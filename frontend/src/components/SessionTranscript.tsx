@@ -6,13 +6,16 @@
  * wire bodies by lib/transcript; each step links to its raw wire drawer.
  */
 import React, { useMemo, useState } from 'react';
-import { AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react';
+import { AlertTriangle, ChevronDown, ChevronRight, Image as ImageIcon } from 'lucide-react';
 import { useI18n } from '../i18n/I18nContext';
 import type { CaptureTurn } from '../lib/api';
 import {
   buildTranscript,
+  collapseMediaTokens,
   groupIntoRounds,
+  splitMediaTokens,
   unwrapHarnessText,
+  type TranscriptMedia,
   type TranscriptMessage,
   type TranscriptRound,
   type TranscriptToolCall,
@@ -88,6 +91,92 @@ const Prose: React.FC<{ text: string; clamp?: number; color?: string; bg?: strin
   );
 };
 
+/**
+ * A scrubbed media payload rendered from its [MEDIA …] token. With a stored
+ * file (token has `file=` + the archive date is known) it's a clickable
+ * thumbnail served by GET /api/admin/capture/:date/media/:hash; otherwise a
+ * grey badge stating the payload was omitted (storeMedia off / write failed).
+ */
+const ImageChip: React.FC<{ media: TranscriptMedia; date?: string }> = ({ media, date }) => {
+  const { t } = useI18n();
+  const url = media.file && date ? `/api/admin/capture/${date}/media/${media.sha256}` : null;
+  if (!url) {
+    return (
+      <div
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 5,
+          border: '1px dashed var(--card-border)',
+          borderRadius: 6,
+          padding: '3px 8px',
+          margin: '3px 0',
+          background: 'var(--chip-bg)',
+          color: 'var(--text-muted)',
+          fontSize: '11px',
+        }}
+        title={media.file ? t('captures.mediaDateMissing') : t('captures.mediaStoreOff')}
+      >
+        <ImageIcon size={12} />
+        <span>
+          {t('captures.mediaOmitted', { info: media.info })} · {shortId(media.sha256, 8)}
+        </span>
+      </div>
+    );
+  }
+  return (
+    <div style={{ margin: '4px 0' }}>
+      <img
+        src={url}
+        alt={media.info}
+        loading="lazy"
+        onClick={e => {
+          // The round header is a click-to-toggle surface — never let a
+          // thumbnail click collapse the card while opening the full view.
+          e.stopPropagation();
+          window.open(url, '_blank', 'noopener');
+        }}
+        title={t('captures.mediaOpenHint')}
+        style={{
+          maxHeight: 240,
+          maxWidth: '100%',
+          borderRadius: 6,
+          border: '1px solid var(--card-border)',
+          cursor: 'zoom-in',
+          display: 'block',
+          background: 'var(--well-bg)',
+        }}
+      />
+      <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginTop: 2, fontFamily: MONO }}>
+        {media.info} · {shortId(media.sha256, 10)}
+      </div>
+    </div>
+  );
+};
+
+/** Prose with inline [MEDIA …] tokens surfaced as chips/thumbnails. */
+const ProseWithMedia: React.FC<{ text: string; clamp?: number; color?: string; date?: string }> = ({
+  text,
+  clamp,
+  color,
+  date,
+}) => {
+  const segs = useMemo(() => splitMediaTokens(text), [text]);
+  // Fast path: no tokens (the common case) — one plain Prose.
+  if (segs.length === 1 && segs[0].kind === 'text') return <Prose text={text} clamp={clamp} color={color} />;
+  return (
+    <div>
+      {segs.map((s, i) =>
+        s.kind === 'media' ? (
+          <ImageChip key={i} media={s.media} date={date} />
+        ) : s.text.trim() ? (
+          <Prose key={i} text={s.text} clamp={clamp} color={color} />
+        ) : null
+      )}
+    </div>
+  );
+};
+
 const prettyArgs = (args: string): string => {
   const s = args.trim();
   if (!s) return args;
@@ -150,7 +239,7 @@ const RoleLabel: React.FC<{ label: string; color: string }> = ({ label, color })
 );
 
 /** One message from the request-side delta (user / tool result / system). */
-const MessageView: React.FC<{ msg: TranscriptMessage }> = ({ msg }) => {
+const MessageView: React.FC<{ msg: TranscriptMessage; date?: string }> = ({ msg, date }) => {
   const { t } = useI18n();
   const [sysOpen, setSysOpen] = useState(false);
   const text = msg.blocks
@@ -187,7 +276,7 @@ const MessageView: React.FC<{ msg: TranscriptMessage }> = ({ msg }) => {
   if (msg.role === 'tool') {
     return (
       <div style={{ marginLeft: 12 }}>
-        <ToolResultRow name={msg.toolName} blockText={text} />
+        <ToolResultRow name={msg.toolName} blockText={text} date={date} />
       </div>
     );
   }
@@ -205,10 +294,10 @@ const MessageView: React.FC<{ msg: TranscriptMessage }> = ({ msg }) => {
         label={isUser ? t('captures.msgUser') : msg.role === 'assistant' ? t('captures.msgAssistant') : t('captures.msgTool')}
         color={isUser ? 'var(--accent)' : 'var(--accent-emerald)'}
       />
-      {text && <Prose text={text} />}
+      {text && <ProseWithMedia text={text} date={date} />}
       {msg.blocks.filter(b => b.kind === 'tool_result').map((b, i) => (
         <div key={i} style={{ marginTop: 4 }}>
-          <ToolResultRow name={msg.toolName} blockText={b.text} />
+          <ToolResultRow name={msg.toolName} blockText={b.text} date={date} />
         </div>
       ))}
       {msg.toolCalls.length > 0 && (
@@ -223,7 +312,7 @@ const MessageView: React.FC<{ msg: TranscriptMessage }> = ({ msg }) => {
 };
 
 /** Collapsed-by-default tool output card shared by role=tool messages and tool_result parts. */
-const ToolResultRow: React.FC<{ name?: string; blockText: string }> = ({ name, blockText }) => {
+const ToolResultRow: React.FC<{ name?: string; blockText: string; date?: string }> = ({ name, blockText, date }) => {
   const { t } = useI18n();
   return (
     <div
@@ -240,7 +329,7 @@ const ToolResultRow: React.FC<{ name?: string; blockText: string }> = ({ name, b
         </span>
         {name && <span style={{ fontFamily: MONO, fontWeight: 600 }}>{name}</span>}
       </div>
-      {blockText ? <Prose text={blockText} clamp={6} /> : <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>—</div>}
+      {blockText ? <ProseWithMedia text={blockText} clamp={6} date={date} /> : <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>—</div>}
     </div>
   );
 };
@@ -305,8 +394,9 @@ const Note: React.FC<{ tone: 'warn' | 'dim'; text: string }> = ({ tone, text }) 
 const TranscriptBlock: React.FC<{
   st: TranscriptTurn;
   label: string;
+  date?: string;
   onOpenTurn: (idx: number) => void;
-}> = ({ st, label, onOpenTurn }) => {
+}> = ({ st, label, date, onOpenTurn }) => {
   const { t } = useI18n();
   const { turn } = st;
   const err =
@@ -363,7 +453,7 @@ const TranscriptBlock: React.FC<{
 
       {st.input.map((m, i) => (
         <div key={i} style={{ marginBottom: 6 }}>
-          <MessageView msg={m} />
+          <MessageView msg={m} date={date} />
         </div>
       ))}
 
@@ -390,8 +480,9 @@ const TranscriptBlock: React.FC<{
 const RoundCard: React.FC<{
   round: TranscriptRound;
   ordinal: number;
+  date?: string;
   onOpenTurn: (idx: number) => void;
-}> = ({ round, ordinal, onOpenTurn }) => {
+}> = ({ round, ordinal, date, onOpenTurn }) => {
   const { t } = useI18n();
   // All rounds collapsed by default — the Q→A skim (header + tail answer)
   // covers the whole session; steps open on demand.
@@ -400,13 +491,16 @@ const RoundCard: React.FC<{
   // ellipsis detour): own line, wraps, never truncated.
   const excerpt = useMemo(() => {
     if (!round.prompt) return '';
-    return round.prompt.blocks
-      .filter(b => b.kind === 'text')
-      .map(b => unwrapHarnessText(b.text))
-      .join('\n')
-      .replace(/[ \t]+/g, ' ')
-      .trim();
-  }, [round.prompt]);
+    return collapseMediaTokens(
+      round.prompt.blocks
+        .filter(b => b.kind === 'text')
+        .map(b => unwrapHarnessText(b.text))
+        .join('\n')
+        .replace(/[ \t]+/g, ' ')
+        .trim(),
+      t('captures.mediaChip')
+    );
+  }, [round.prompt, t]);
 
   return (
     <div
@@ -497,6 +591,7 @@ const RoundCard: React.FC<{
               key={`${st.turn.traceId}-${st.idx}`}
               st={st}
               label={`${ordinal}.${i + 1}`}
+              date={date}
               onOpenTurn={onOpenTurn}
             />
           ))}
@@ -545,8 +640,10 @@ const RoundCard: React.FC<{
 export const SessionTranscript: React.FC<{
   turns: CaptureTurn[];
   fileTruncated: boolean;
+  /** Archive date dir (YYYY-MM-DD) — builds the media read URLs for chips. */
+  date?: string;
   onOpenTurn: (idx: number) => void;
-}> = ({ turns, fileTruncated, onOpenTurn }) => {
+}> = ({ turns, fileTruncated, date, onOpenTurn }) => {
   const { t } = useI18n();
   const items = useMemo(() => buildTranscript(turns), [turns]);
   const rounds = useMemo(() => groupIntoRounds(items), [items]);
@@ -582,6 +679,7 @@ export const SessionTranscript: React.FC<{
             key={`${r.steps[0]?.turn.traceId ?? 'r'}-${i}`}
             round={r}
             ordinal={i + 1}
+            date={date}
             onOpenTurn={onOpenTurn}
           />
         ))

@@ -123,6 +123,7 @@ export const SettingsPage: React.FC = () => {
       retentionDays: 7,
       maxTotalMB: 512,
       maxBodyBytes: 262144,
+      storeMedia: true,
       ...(config.requestCapture || {}),
       ...patch,
     },
@@ -426,6 +427,14 @@ export const SettingsPage: React.FC = () => {
                       className="input"
                     />
                   </div>
+                  <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', fontSize: '12px', cursor: 'pointer' }}>
+                    <span>{t('settings.capStoreMedia')}</span>
+                    <Switch
+                      checked={config.requestCapture?.storeMedia ?? true}
+                      onChange={v => patchRequestCapture({ storeMedia: v })}
+                      ariaLabel={t('settings.capStoreMedia')}
+                    />
+                  </label>
                 </div>
               )}
             </div>

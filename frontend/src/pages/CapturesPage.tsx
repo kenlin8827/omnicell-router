@@ -18,8 +18,9 @@ import { Combobox } from '../components/Combobox';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import { copyToClipboard, shortId, outputRate, formatRate, fmtDur } from '../lib/format';
 import { useSplitterWidth, VSplitter } from '../components/Splitter';
+import { strToU8, zipSync } from 'fflate';
 import { SessionTranscript } from '../components/SessionTranscript';
-import { unwrapHarnessText } from '../lib/transcript';
+import { findMediaTokens, unwrapHarnessText } from '../lib/transcript';
 
 /**
  * Best-effort completion-token extraction from a captured response wire body.
@@ -548,12 +549,16 @@ const WireBlock: React.FC<{ event: HttpExchangeEvent }> = ({ event }) => {
 const ExportDialog: React.FC<{
   session: CaptureSessionRow;
   onClose: () => void;
-  onConfirm: (exclude: string[]) => void;
+  onConfirm: (exclude: string[], includeImages: boolean) => void;
 }> = ({ session, onClose, onConfirm }) => {
   const { t } = useI18n();
   const [keepReqIn, setKeepReqIn] = useState(true);
   const [keepReqOut, setKeepReqOut] = useState(true);
   const [keepResp, setKeepResp] = useState(true);
+  // Offload media files ride the export only when asked: the ZIP grows by
+  // every referenced payload (deduped), the JSONL alone always stands on its
+  // own — the [MEDIA …] placeholders keep it self-describing.
+  const [withImages, setWithImages] = useState(false);
   useBodyScrollLock(true);
 
   useEffect(() => {
@@ -636,6 +641,21 @@ const ExportDialog: React.FC<{
             </label>
           ))}
         </div>
+        <label
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 10,
+            fontSize: '12.5px',
+            cursor: 'pointer',
+            paddingTop: 2,
+            borderTop: '1px dashed var(--card-border)',
+          }}
+        >
+          <span>{t('captures.exportIncludeImages')}</span>
+          <Switch checked={withImages} onChange={setWithImages} ariaLabel={t('captures.exportIncludeImages')} />
+        </label>
         <div style={{ fontSize: '11.5px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
           {t('captures.exportOptionsHint')}
         </div>
@@ -643,7 +663,7 @@ const ExportDialog: React.FC<{
           <button className="btn" onClick={onClose}>
             {t('common.cancel')}
           </button>
-          <button className="btn btn-primary" onClick={() => onConfirm(exclude)}>
+          <button className="btn btn-primary" onClick={() => onConfirm(exclude, withImages)}}>
             {t('captures.exportBtn')}
           </button>
         </div>
@@ -882,14 +902,46 @@ export const CapturesPage: React.FC = () => {
     }
   };
 
-  const handleExport = async (s: CaptureSessionRow, exclude: string[] = []) => {
+  const handleExport = async (s: CaptureSessionRow, exclude: string[] = [], includeImages = false) => {
     if (!selectedDate) return;
     try {
       const blob = await api.exportCaptureArchive(selectedDate, s.file, exclude.length ? exclude : undefined);
-      const url = URL.createObjectURL(blob);
+      const jsonlName = `capture-${selectedDate}-${s.sessionId}.jsonl`;
+      if (!includeImages) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = jsonlName;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        toast.success(t('captures.exported'));
+        return;
+      }
+      // ZIP mode: the JSONL plus every offloaded payload it references
+      // (deduped by sha). A media fetch failure skips that one file — the
+      // archive text still exports complete with its [MEDIA …] placeholders.
+      const text = await blob.text();
+      const entries: Record<string, Uint8Array> = { [jsonlName]: strToU8(text) };
+      const wanted = new Set<string>();
+      for (const m of findMediaTokens(text)) if (m.file) wanted.add(m.sha256);
+      for (const sha of wanted) {
+        try {
+          const res = await fetch(`/api/admin/capture/${selectedDate}/media/${sha}`);
+          if (!res.ok) continue;
+          const token = findMediaTokens(text).find(x => x.sha256 === sha && x.file);
+          const name = token?.file?.replace(/^media\//, '') ?? sha;
+          entries[`media/${name}`] = new Uint8Array(await res.arrayBuffer());
+        } catch {
+          // fail-open per file, same doctrine as the recorder.
+        }
+      }
+      const zipped = zipSync(entries);
+      const url = URL.createObjectURL(new Blob([zipped], { type: 'application/zip' }));
       const a = document.createElement('a');
       a.href = url;
-      a.download = `capture-${selectedDate}-${s.sessionId}.jsonl`;
+      a.download = jsonlName.replace(/\.jsonl$/, '.zip');
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -1393,6 +1445,7 @@ export const CapturesPage: React.FC = () => {
                           <SessionTranscript
                             turns={turns}
                             fileTruncated={fileTruncated}
+                            date={selectedDate}
                             onOpenTurn={idx => setSelectedTurnIdx(idx)}
                           />
                         ) : (
@@ -1570,10 +1623,10 @@ export const CapturesPage: React.FC = () => {
         <ExportDialog
           session={exportTarget}
           onClose={() => setExportTarget(null)}
-          onConfirm={exclude => {
+          onConfirm={(exclude, includeImages) => {
             const s = exportTarget;
             setExportTarget(null);
-            handleExport(s, exclude);
+            handleExport(s, exclude, includeImages);
           }}
         />
       )}

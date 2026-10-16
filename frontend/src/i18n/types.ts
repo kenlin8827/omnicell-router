@@ -1223,6 +1223,13 @@ hiddenBadge: string;
     reqUnparsedNote: string;
     outputUnparsedNote: string;
     nothingNote: string;
+    /** Scrubbed [MEDIA …] placeholder rendering. */
+    mediaOmitted: string;
+    mediaStoreOff: string;
+    mediaDateMissing: string;
+    mediaOpenHint: string;
+    mediaChip: string;
+    exportIncludeImages: string;
   };
   clients: {
     title: string;
@@ -1341,6 +1348,7 @@ hiddenBadge: string;
     capMaxBody: string;
     capPolicyGroup: string;
     capPolicySummary: string;
+    capStoreMedia: string;
     capPrivacyHint: string;
     capHotHint: string;
     respTitle: string;

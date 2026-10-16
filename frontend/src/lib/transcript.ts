@@ -197,6 +197,11 @@ function normalizeMessage(raw: unknown): TranscriptMessage | null {
       } else if (part.type === 'thinking' && typeof part.thinking === 'string') {
         // Anthropic history carries thinking blocks inline — surface as prose.
         if (part.thinking) blocks.push({ kind: 'text', text: part.thinking });
+      } else {
+        // Scrubbed media parts survive as their [MEDIA …] placeholder string —
+        // surface it as a text block; the renderer turns it into a chip/img.
+        const tok = partMediaToken(part);
+        if (tok) blocks.push({ kind: 'text', text: tok });
       }
     }
   }
@@ -318,6 +323,79 @@ export function parseAssistantResponse(raw: string): TurnOutput | null {
   if (/\bdata:/.test(s) || /\bevent:/.test(s)) return parseSseResponse(s);
   return null;
 }
+
+// ------------------------------------------------------------- media tokens
+
+/**
+ * Recorder scrub token: `[MEDIA <mime> <human size> sha256=<16hex>[ file=<rel path>]]`
+ * — written when a base64 media payload was replaced in a captured request
+ * body. The `file=` segment exists only when the bytes were actually offloaded
+ * to disk (storeMedia on + write ok); without it the replay renders an
+ * omitted-badge instead of an image.
+ */
+export interface TranscriptMedia {
+  /** Label before the hash, e.g. "image/png 1.2 MB" (rendered verbatim). */
+  info: string;
+  /** First 16 hex chars of the payload's sha256 — also the read-URL key. */
+  sha256: string;
+  /** Archive-relative stored path ("media/<sha>.<ext>"); null when omitted. */
+  file: string | null;
+}
+
+const MEDIA_TOKEN_STRICT = /^\[MEDIA (.+?) sha256=([0-9a-f]{16})(?: file=([^\]]+))?\]$/;
+const MEDIA_TOKEN_GLOBAL = /\[MEDIA (.+?) sha256=([0-9a-f]{16})(?: file=([^\]]+))?\]/g;
+
+export function parseMediaToken(text: string): TranscriptMedia | null {
+  const m = MEDIA_TOKEN_STRICT.exec(text.trim());
+  if (!m) return null;
+  return { info: m[1], sha256: m[2], file: m[3] ?? null };
+}
+
+/** All tokens embedded in a string (export scanning uses this on raw JSONL). */
+export function findMediaTokens(text: string): TranscriptMedia[] {
+  const out: TranscriptMedia[] = [];
+  MEDIA_TOKEN_GLOBAL.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = MEDIA_TOKEN_GLOBAL.exec(text))) out.push({ info: m[1], sha256: m[2], file: m[3] ?? null });
+  return out;
+}
+
+/** Split prose into plain runs and inline media tokens (stringified tool
+ *  results carry tokens inside otherwise-normal text). */
+export function splitMediaTokens(
+  text: string
+): Array<{ kind: 'text'; text: string } | { kind: 'media'; media: TranscriptMedia }> {
+  const out: Array<{ kind: 'text'; text: string } | { kind: 'media'; media: TranscriptMedia }> = [];
+  MEDIA_TOKEN_GLOBAL.lastIndex = 0;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = MEDIA_TOKEN_GLOBAL.exec(text))) {
+    if (m.index > last) out.push({ kind: 'text', text: text.slice(last, m.index) });
+    out.push({ kind: 'media', media: { info: m[1], sha256: m[2], file: m[3] ?? null } });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out.push({ kind: 'text', text: text.slice(last) });
+  return out;
+}
+
+/** Collapse tokens to a short chip label for list heads (round excerpt). */
+export function collapseMediaTokens(text: string, chip: string): string {
+  MEDIA_TOKEN_GLOBAL.lastIndex = 0;
+  return text.replace(MEDIA_TOKEN_GLOBAL, chip).replace(/[ \t]{2,}/g, ' ').trim();
+}
+
+/** Placeholder carried by an already-scrubbed content part (either dialect). */
+const partMediaToken = (part: Record<string, any>): string | null => {
+  const cand =
+    typeof part.image_url === 'string'
+      ? part.image_url
+      : typeof part.image_url?.url === 'string'
+        ? part.image_url.url
+        : typeof part.source?.data === 'string'
+          ? part.source.data
+          : null;
+  return cand && MEDIA_TOKEN_STRICT.test(cand.trim()) ? cand : null;
+};
 
 // ---------------------------------------------------------------- display aid
 
