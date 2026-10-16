@@ -143,12 +143,22 @@ export const UsagePage: React.FC = () => {
     ? outputRate(totals?.outputTokens ?? 0, sessionTraces.reduce((a, r) => a + r.execution.latencyMs, 0))
     : outputRate(totals?.outputTokens ?? 0, rows.reduce((a, r) => a + r.latencyMsSum, 0));
 
-  const cards = totals
+  const cards: { label: string; value: string; color: string; tip?: string; sub?: string }[] = totals
     ? [
         { label: t('sessions.thRequests'), value: totals.requests.toLocaleString(), color: 'var(--accent-emerald)' },
         { label: t('sessions.thTokensIn'), value: totals.inputTokens.toLocaleString(), color: 'var(--text-main)' },
         { label: t('sessions.thTokensOut'), value: totals.outputTokens.toLocaleString(), color: 'var(--text-main)' },
-        { label: t('sessions.thTokensCached'), value: totals.cachedTokens.toLocaleString(), color: 'var(--accent-emerald)' },
+        {
+          label: t('sessions.thTokensCached'),
+          value: totals.cachedTokens.toLocaleString(),
+          color: 'var(--accent-emerald)',
+          // Token-weighted hit share of the input side; hidden when no input yet.
+          sub: totals.inputTokens > 0
+            ? t('sessions.cacheHitRate', { pct: ((totals.cachedTokens / totals.inputTokens) * 100).toFixed(1) })
+            : undefined,
+        },
+        // Total = in + out; cached is a subset of input, never added again.
+        { label: t('sessions.thTokensTotal'), value: (totals.inputTokens + totals.outputTokens).toLocaleString(), color: 'var(--text-main)', tip: t('sessions.tokensTotalTip') },
         { label: t('sessions.thCost'), value: formatCost(totals.costUsd), color: 'var(--accent-amber)' },
         { label: t('overview.avgLatency'), value: `${totals.avgLatencyMs} ms`, color: 'var(--text-main)' },
         { label: t('usage.thToks'), value: formatRate(toksRate), color: 'var(--text-dim)', tip: t('usage.toksTip') },
@@ -204,9 +214,10 @@ export const UsagePage: React.FC = () => {
       {/* Totals cards (recomputed over the filtered row when ?key= is set) */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '12px' }}>
         {cards.map(c => (
-          <div key={c.label} className="card" style={{ padding: '12px 16px' }} title={'tip' in c ? c.tip : undefined}>
+          <div key={c.label} className="card" style={{ padding: '12px 16px' }} title={c.tip}>
             <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{c.label}</div>
             <div style={{ fontSize: '20px', fontWeight: 800, marginTop: '4px', color: c.color }}>{c.value}</div>
+            {c.sub && <div style={{ fontSize: '11px', marginTop: '2px', color: 'var(--text-dim)' }}>{c.sub}</div>}
           </div>
         ))}
       </div>
@@ -320,6 +331,12 @@ export const UsagePage: React.FC = () => {
                     <td style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>{r.outputTokens.toLocaleString()}</td>
                     <td style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--accent-emerald)' }}>
                       {r.cachedTokens.toLocaleString()}
+                      {/* Token-weighted hit share per app, matching the cards. */}
+                      {r.inputTokens > 0 && (
+                        <div style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 400 }}>
+                          {t('sessions.cacheHitRate', { pct: ((r.cachedTokens / r.inputTokens) * 100).toFixed(1) })}
+                        </div>
+                      )}
                     </td>
                     <td style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--accent-amber)' }}>
                       {formatCost(r.costUsd)}

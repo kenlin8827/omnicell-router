@@ -129,6 +129,7 @@ export const OverviewPage: React.FC = () => {
           </div>
           <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
             {t('overview.tokensInSub', { cached: cachedTokens.toLocaleString() })}
+            {inputTokens > 0 && ` · ${t('sessions.cacheHitRate', { pct: ((cachedTokens / inputTokens) * 100).toFixed(1) })}`}
           </div>
         </div>
 

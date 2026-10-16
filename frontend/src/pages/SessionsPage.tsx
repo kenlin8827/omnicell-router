@@ -532,6 +532,12 @@ export const SessionsPage: React.FC = () => {
                     }}
                   >
                     {(s.cachedTokens ?? 0).toLocaleString()}
+                    {/* Same token-weighted ratio as the /usage cards; hidden pre-input. */}
+                    {(s.inputTokens ?? 0) > 0 && (
+                      <div style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 400 }}>
+                        {t('sessions.cacheHitRate', { pct: (((s.cachedTokens ?? 0) / s.inputTokens!) * 100).toFixed(1) })}
+                      </div>
+                    )}
                   </td>
                   <td
                     style={{
@@ -666,7 +672,7 @@ export const SessionsPage: React.FC = () => {
           <div
             className="card"
             onClick={e => e.stopPropagation()}
-            style={{ width: 'min(680px, 92vw)', maxHeight: '72vh', overflowY: 'auto', margin: 0 }}
+            style={{ width: 'min(920px, 94vw)', maxHeight: '88vh', overflowY: 'auto', margin: 0 }}
           >
             <div className="card-header">
               <div className="card-title">
@@ -756,7 +762,7 @@ export const SessionsPage: React.FC = () => {
                 <div
                   style={{
                     display: 'grid',
-                    gridTemplateColumns: '64px 64px 30px minmax(90px, 1fr) 56px 56px 60px 86px 52px 44px',
+                    gridTemplateColumns: '64px 64px 30px minmax(160px, 1fr) 56px 56px 60px 86px 52px 44px',
                     columnGap: '8px',
                     rowGap: '6px',
                     fontSize: '11px',
