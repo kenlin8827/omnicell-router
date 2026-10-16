@@ -399,7 +399,7 @@ const OutputView: React.FC<{ out: TurnOutput }> = ({ out }) => {
       )}
       {out.text && <Prose text={out.text} />}
       {out.toolCalls.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: out.text ? 6 : 0 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: out.text || out.reasoning ? 6 : 0 }}>
           {out.toolCalls.map((c, i) => (
             <ToolCallCard key={c.id || i} call={c} />
           ))}
