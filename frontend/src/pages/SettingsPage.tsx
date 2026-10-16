@@ -122,7 +122,7 @@ export const SettingsPage: React.FC = () => {
     requestCapture: {
       retentionDays: 7,
       maxTotalMB: 512,
-      maxBodyBytes: 65536,
+      maxBodyBytes: 262144,
       ...(config.requestCapture || {}),
       ...patch,
     },
@@ -388,7 +388,7 @@ export const SettingsPage: React.FC = () => {
                     {t('settings.capPolicySummary', {
                       days: config.requestCapture?.retentionDays ?? 7,
                       mb: config.requestCapture?.maxTotalMB ?? 512,
-                      bytes: config.requestCapture?.maxBodyBytes ?? 65536,
+                      bytes: config.requestCapture?.maxBodyBytes ?? 262144,
                     })}
                   </span>
                 )}
@@ -421,8 +421,8 @@ export const SettingsPage: React.FC = () => {
                       type="number"
                       min="1024"
                       step="1024"
-                      value={config.requestCapture?.maxBodyBytes ?? 65536}
-                      onChange={e => patchRequestCapture({ maxBodyBytes: parseInt(e.target.value) || 65536 })}
+                      value={config.requestCapture?.maxBodyBytes ?? 262144}
+                      onChange={e => patchRequestCapture({ maxBodyBytes: parseInt(e.target.value) || 262144 })}
                       className="input"
                     />
                   </div>

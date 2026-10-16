@@ -12,7 +12,7 @@ import {
 
 /**
  * Upper bound on the raw SSE bytes kept in memory for one streamed exchange's
- * capture event. The recorder truncates every body at `maxBodyBytes` (64 KB by
+ * capture event. The recorder truncates every body at `maxBodyBytes` (256 KB by
  * default) when writing the JSONL line, so retaining more than a few multiples
  * of that budget buys the archive nothing — it is purely a memory guard for
  * long agent-loop streams.

@@ -358,7 +358,7 @@ export class CaptureRecorder {
     // Fallbacks mirror DEFAULT_CONFIG (512 MB / 64 KB) — a bare
     // `new CaptureRecorder()` must not enforce looser limits than the config.
     this.maxTotalBytes = (config?.maxTotalMB ?? 512) * 1024 * 1024;
-    this.maxBodyBytes = config?.maxBodyBytes ?? 65536;
+    this.maxBodyBytes = config?.maxBodyBytes ?? 262144;
     this.rootDir = path.resolve(config?.dir || getEnvPaths().captureDir);
 
     if (this.enabled) {

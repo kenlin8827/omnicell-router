@@ -77,7 +77,7 @@ const DEFAULT_CONFIG: RouterConfig = {
     enabled: false, // opt-in: full bodies may contain sensitive data
     retentionDays: 7,
     maxTotalMB: 512,
-    maxBodyBytes: 65536,
+    maxBodyBytes: 262144,
     // System One group: surface master + judge-leg sub-switch, both default
     // ON — they only matter under the capture master, and a user who turns
     // the master on asked for capture; silence BOTH legs by flipping the

@@ -591,7 +591,7 @@ export interface RequestCaptureConfig {
   dir?: string; // default: ~/.opencode-router/capture
   retentionDays?: number; // default 7; date dirs older than today-N are swept (at boot + hourly)
   maxTotalMB?: number; // default 512; oldest date dirs are deleted first when exceeded
-  maxBodyBytes?: number; // default 65536 (64 KB); truncation budget applied to request and response separately
+  maxBodyBytes?: number; // default 262144 (256 KB); truncation budget applied to request and response separately
   systemone?: RequestCaptureSystemoneConfig;
 }
 
