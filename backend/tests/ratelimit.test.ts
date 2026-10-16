@@ -45,6 +45,9 @@ import { ProviderRegistry } from '../src/providers/registry.js';
  */
 const RL_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-rl-home-'));
 process.env.OCR_HOME = RL_HOME;
+// Owns its home → declares its book-set name (the runner's tripwire name
+// `itest` exists only in the runner's own sandbox home).
+process.env.OCR_ENV = 'default';
 afterAll(() => {
   // Windows can briefly hold the last config.yaml write handle (EBUSY) —
   // cleanup must never fail the file; an orphaned temp dir is acceptable.

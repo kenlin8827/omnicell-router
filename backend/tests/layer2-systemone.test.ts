@@ -31,6 +31,9 @@ fs.mkdirSync(sandbox);
 // Config + state resolve from OCR_HOME (never the cwd) — isolate a throwaway
 // home whose bootstrap `default` env holds the placeholder config.
 process.env.OCR_HOME = path.join(sandboxRoot, 'home');
+// Owns its home → declares its book-set name (the runner's tripwire name
+// `itest` exists only in the runner's own sandbox home).
+process.env.OCR_ENV = 'default';
 const ENV_DIR = path.join(process.env.OCR_HOME, 'envs', 'default');
 fs.mkdirSync(ENV_DIR, { recursive: true });
 fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'), 'port: 3000\nhost: 127.0.0.1\napiKeys: []\nmodels: []\n');

@@ -22,6 +22,10 @@ const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-decision-capture-'));
 // Config resolves from OCR_HOME (never the cwd) — isolate both the config and
 // the dataset sink inside a throwaway home, exactly like the isolated runner.
 process.env.OCR_HOME = path.join(sandbox, 'home');
+// This file owns its home → declare its book-set name too. The isolated
+// runner injects a tripwire name (itest) that exists only in the runner's
+// sandbox home; inheriting it here would fail resolution under OUR home.
+process.env.OCR_ENV = 'default';
 const ENV_DIR = path.join(process.env.OCR_HOME, 'envs', 'default');
 fs.mkdirSync(ENV_DIR, { recursive: true });
 fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'), 'port: 3000\nhost: 127.0.0.1\napiKeys: []\nmodels: []\n');

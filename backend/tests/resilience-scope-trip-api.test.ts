@@ -23,6 +23,9 @@ import type { RouterConfig } from '../src/config/types.js';
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-pairs-rest-'));
 const previousOcrHome = process.env.OCR_HOME;
 process.env.OCR_HOME = path.join(sandbox, 'ocr-home');
+// Owns its home → declares its book-set name (the runner's tripwire name
+// `itest` exists only in the runner's own sandbox home).
+process.env.OCR_ENV = 'default';
 resetAccountStateStoreForTests();
 
 const config = {

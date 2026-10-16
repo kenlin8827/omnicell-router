@@ -42,17 +42,24 @@ if (files.length === 0) {
 // never leak into a run — and never be written by one. Config resolution is
 // env-relative (<home>/envs/<env>/config.yaml), so the child's cwd is
 // irrelevant: OCR_HOME + OCR_ENV are the only levers that matter.
+// TRIPWIRE: the placeholder book-set is deliberately NOT named `default`.
+// `default` is the bootstrap tier, exempt from the resolution fail-fast
+// (assertEnvResolvable in backend/src/config/env.ts): if OCR_HOME sandboxing
+// ever leaked, OCR_ENV=default would silently resolve to the operator's REAL
+// default env and write into it. Naming the sandbox env `itest` — a name that
+// exists in no real home — turns any such leak into an immediate boot error.
+const SANDBOX_ENV = 'itest';
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-test-iso-'));
 const ocrHome = path.join(sandbox, 'home');
-const defaultEnvDir = path.join(ocrHome, 'envs', 'default');
-fs.mkdirSync(defaultEnvDir, { recursive: true });
+const sandboxEnvDir = path.join(ocrHome, 'envs', SANDBOX_ENV);
+fs.mkdirSync(sandboxEnvDir, { recursive: true });
 fs.writeFileSync(
-  path.join(defaultEnvDir, 'config.yaml'),
+  path.join(sandboxEnvDir, 'config.yaml'),
   'port: 3000\nhost: 127.0.0.1\napiKeys: []\nmodels: []\n'
 );
 fs.writeFileSync(
-  path.join(defaultEnvDir, 'env.json'),
-  JSON.stringify({ name: 'default', type: 'regular', createdAt: new Date().toISOString(), schemaVersion: 1 })
+  path.join(sandboxEnvDir, 'env.json'),
+  JSON.stringify({ name: SANDBOX_ENV, type: 'regular', createdAt: new Date().toISOString(), schemaVersion: 1 })
 );
 // opencode paths are sandboxed
 // too: user-config.ts (auth.json/opencode.jsonc) and credentials/paths.ts
@@ -69,7 +76,7 @@ fs.mkdirSync(xdgData, { recursive: true });
 const childEnv = {
   ...process.env,
   OCR_HOME: ocrHome,
-  OCR_ENV: 'default',
+  OCR_ENV: SANDBOX_ENV,
   XDG_CONFIG_HOME: xdgConfig,
   XDG_DATA_HOME: xdgData,
 };
