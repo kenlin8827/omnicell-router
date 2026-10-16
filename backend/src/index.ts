@@ -260,6 +260,10 @@ async function main() {
     // Flush FIRST: a throwing summary must never cost the snapshot its last
     // chance to reach the disk (breaker memory is durability-critical).
     breakerStore.flush();
+    // Session continuity (anchors + conversation keys) is debounced at 2s —
+    // flush the last window so a controlled restart doesn't strand an in-flight
+    // tool loop one boundary short of re-anchoring. Synchronous, self-contained.
+    orchestrator.getSessionManager().flushPersist();
     // Quota: stop the scheduler, then flush pending snapshot writes
     // (the store debounces; a graceful exit should not lose the last cycles).
     getQuotaProber()?.stop();
@@ -281,7 +285,10 @@ async function main() {
   // and flush() is synchronous and self-contained. Hard kills (taskkill
   // /F, power loss) have no handler anywhere: the debounce window is the
   // honest loss bound for those.
-  process.on('exit', () => breakerStore.flush());
+  process.on('exit', () => {
+    breakerStore.flush();
+    orchestrator.getSessionManager().flushPersist();
+  });
 }
 
 main();

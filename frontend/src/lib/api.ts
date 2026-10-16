@@ -459,6 +459,12 @@ export interface CaptureSessionRow {
    *  in write order — first element is the display anchor; more than one
    *  entry means the app rotated keys mid-session. */
   apiKeys?: CaptureKeyIdentity[];
+  /**
+   * Deterministic conversation key seen on this archive (first occurrence).
+   * Stable across session-id churn — regroups a conversation split by
+   * per-turn cold-start mints. Absent on key-less / legacy archives.
+   */
+  conversationKey?: string;
 }
 
 /** One archive hit for a session id: coordinates only (date dir + file name) */
@@ -557,6 +563,13 @@ export interface HttpExchangeEvent {
   spanId: string;
   traceId: string;
   sessionId: string;
+  /**
+   * Deterministic conversation key (content-addressed sha256 of apiKey identity +
+   * first user message). Stable across session-id churn and restarts — the join
+   * key that regroups a conversation even when zero-header resolution minted a
+   * fresh session id mid-loop. Absent on key-less / legacy archives.
+   */
+  conversationKey?: string;
   model: string;
   status: 'ok' | 'error' | 'pending';
   wire: RawWireCapture;

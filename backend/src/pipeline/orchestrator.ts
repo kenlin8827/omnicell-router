@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import path from 'node:path';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
 import { ExecutionResult, ReasoningEffort, EFFORT_LADDER, RoutingDecision, TIER_RANK, TierLevel, downgradeReasoning } from '../types/router.js';
 import { ClassifierConfig, FlywheelConfig, ModelRegistration, RouterConfig } from '../config/types.js';
@@ -31,6 +32,7 @@ interface ForcedPassRecord {
 import { recordRateLimitEvent, type RateLimitNoteCode } from '../ratelimit/event-log.js';
 import { FlywheelCollector } from '../flywheel/collector.js';
 import { SessionManager, SessionResolveResult } from '../session/session-manager.js';
+import { getEnvPaths } from '../config/env.js';
 import { TraceTracker } from '../trace/tracker.js';
 import { CaptureRecorder } from '../capture/recorder.js';
 import type { UpstreamEventContext } from '../providers/base.js';
@@ -168,7 +170,12 @@ export class PipelineOrchestrator {
     this.registry = registry;
     this.tracker = tracker;
     this.flywheel = new FlywheelCollector(config.flywheel);
-    this.sessionManager = sessionManager || new SessionManager(config.session);
+    // Session continuity state (anchors + conversation keys) rides a
+    // per-environment snapshot so a gateway restart no longer splits
+    // zero-header clients. The file holds content hashes only — no plaintext.
+    this.sessionManager =
+      sessionManager ||
+      new SessionManager(config.session, path.join(getEnvPaths().dataDir, 'sessions.json'));
     this.traceTracker = new TraceTracker(5000, config.tracePersist);
     this.captureRecorder = new CaptureRecorder(config.requestCapture);
 
@@ -274,15 +281,23 @@ export class PipelineOrchestrator {
     if (captureEnabled) {
       const normalizedMessages = PromptOptimizer.normalizeMessages(request);
       const snapshotRequest: ChatCompletionRequest = { ...request, messages: normalizedMessages };
+      const keyIdentity = captureKeyIdentity(context?.fastifyRequest ?? context?.clientRequest);
       // Resolve ONCE here and hand the result to processInternal: cold-start
       // IDs carry fresh random entropy, so a second resolve of the same
       // request would mint a different ID and split capture from routing.
-      preResolvedSession = this.sessionManager.resolveSessionId(
-        snapshotRequest,
-        context?.clientIp,
-        context?.headers
-      );
+      preResolvedSession = this.sessionManager.resolveSessionId(snapshotRequest, {
+        keyId: keyIdentity?.id,
+        headers: context?.headers,
+      });
       captureSessionId = preResolvedSession.sessionId;
+      // Deterministic conversation key stamped onto EVERY event of the turn:
+      // the capture archive can regroup turns even when the volatile session
+      // id shifts (content-addressed, never a credential, mirrors the
+      // session-manager resolution input exactly).
+      const conversationKey = SessionManager.conversationKey(
+        snapshotRequest.messages || [],
+        keyIdentity?.id
+      ) ?? undefined;
       // CLIENT REQUEST event fires synchronously here — independent of any
       // response. Even if the upstream call hangs / times out / the handler
       // throws, the client request event is already on disk.
@@ -297,6 +312,7 @@ export class PipelineOrchestrator {
         sessionId: captureSessionId,
         traceId: captureOutTraceId,
         model: request.model || 'auto',
+        conversationKey,
       });
       if (context?.fastifyRequest) {
         setClientExchangeContext(context.fastifyRequest, clientExchangeCtx);
@@ -311,7 +327,8 @@ export class PipelineOrchestrator {
         // Key attribution: the Fastify leg carries authInfo (attached by the
         // auth preHandler); MITM / master-key legs resolve to undefined and
         // their events simply omit the field — same as before this existed.
-        apiKey: captureKeyIdentity(context?.fastifyRequest),
+        apiKey: keyIdentity,
+        conversationKey,
       };
     }
 
@@ -498,11 +515,10 @@ export class PipelineOrchestrator {
     // Reuse the capture-time resolve when present: both call sites normalize
     // identically, and one request must yield exactly one session ID.
     const sessionResolve = preResolvedSession ??
-      this.sessionManager.resolveSessionId(
-        normalizedRequest,
-        context?.clientIp,
-        context?.headers
-      );
+      this.sessionManager.resolveSessionId(normalizedRequest, {
+        keyId: captureKeyIdentity(context?.fastifyRequest ?? context?.clientRequest)?.id,
+        headers: context?.headers,
+      });
     const sessionId = sessionResolve.sessionId;
 
     // 2B. Token-saver compression (toolOutput tool-output compression → headroom
@@ -1030,16 +1046,18 @@ export class PipelineOrchestrator {
     // 6. Post-Turn Registration: Register completed turn prefix fingerprint for zero-header tracking
     // Uses the PRE-compression snapshot (see 2B): clients always resend
     // uncompressed bytes, so the chain must be indexed on original content.
+    // The assistant echo keeps tool_calls — the canonical serializer absorbs
+    // the client's resend drift (dropped `type`, re-compacted argument JSON),
+    // and a content-only registration made every tool-call boundary of an
+    // agent loop unmatchable.
     // Account affinity needs nothing here: executeCandidatePool already
-    // persisted the bind/rebind right after the successful call (:894 would
-    // only ever see a still-unbound session when no multi-account chain was
-    // in play — nothing to bind).
-    const assistantContent = finalResponse!.choices[0]?.message?.content || '';
+    // persisted the bind/rebind right after the successful call (this point
+    // would only ever see a still-unbound session when no multi-account chain
+    // was in play — nothing to bind).
     this.sessionManager.registerCompletedTurn(
       sessionId,
       fingerprintMessages,
-      assistantContent,
-      context?.clientIp
+      finalResponse!.choices[0]?.message ?? ''
     );
 
     // 7. Post-turn observability

@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { isModelAllowed, tierFromVirtualEntry } from '../auth/model-access.js';
 import { loadConfig } from '../config/index.js';
 import type { PipelineOrchestrator } from '../pipeline/orchestrator.js';
+import { SessionManager } from '../session/session-manager.js';
 import { emitClientRequest, captureKeyIdentity, setClientExchangeContext } from '../observability/http-exchange.js';
 import type { UpstreamEventContext } from '../observability/upstream-events.js';
 import { resolveTraceId } from '../observability/trace-id.js';
@@ -193,9 +194,16 @@ export async function runDecisionSurface(
       : crypto.randomUUID().replace(/-/g, '').slice(0, 32);
     // sessionId: archive key ONLY (same SessionManager entry the chat leg
     // pre-resolves through; no ratchet, no turn registration).
+    const keyId = captureKeyIdentity(pctx.fastifyRequest ?? pctx.clientRequest)?.id;
     const sessionId = orchestrator
       .getSessionManager()
-      .resolveSessionId(sysBody as unknown as ChatCompletionRequest, t.clientIp, t.headers).sessionId;
+      .resolveSessionId(sysBody as unknown as ChatCompletionRequest, {
+        keyId,
+        headers: t.headers,
+      }).sessionId;
+    const conversationKey =
+      SessionManager.conversationKey((sysBody as { messages?: any[] }).messages || [], keyId) ??
+      undefined;
     const clientExchangeCtx = emitClientRequest({
       recorder,
       req: pctx.fastifyRequest ?? pctx.clientRequest,
@@ -203,6 +211,7 @@ export async function runDecisionSurface(
       sessionId,
       traceId,
       model: effective,
+      conversationKey,
     });
     if (pctx.fastifyRequest) {
       setClientExchangeContext(pctx.fastifyRequest, clientExchangeCtx);
@@ -212,7 +221,14 @@ export async function runDecisionSurface(
     // Upstream leg shares the client-leg identity. Set only AFTER the client
     // event durably landed — a client-side failure keeps both legs silent
     // (consistent pairing, no orphan upstream events).
-    upstreamEventContext = { recorder, sessionId, traceId, model: effective, apiKey: captureKeyIdentity(pctx.fastifyRequest) };
+    upstreamEventContext = {
+      recorder,
+      sessionId,
+      traceId,
+      model: effective,
+      apiKey: captureKeyIdentity(pctx.fastifyRequest),
+      conversationKey,
+    };
     } catch (captureErr) {
       // Non-fatal: decision proceeds unrecorded on any capture failure.
       t.logError(captureErr, 'systemone client-leg capture failed (non-fatal)');

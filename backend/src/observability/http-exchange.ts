@@ -235,6 +235,8 @@ export interface ClientExchangeContext {
   pending: {
     sessionId: string;
     model: string;
+    /** Deterministic conversation key (content-addressed, see HttpExchangeEvent.conversationKey). */
+    conversationKey?: string;
     /** Client API-key identity resolved at request-emit time (undefined for
      *  master-key / MITM legs) — reused by the gateway-response event so both
      *  client-leg events carry the same attribution. */
@@ -313,6 +315,7 @@ export function emitClientRequest(args: {
   sessionId: string;
   traceId: string;
   model: string;
+  conversationKey?: string;
 }): ClientExchangeContext {
   const spanId = cryptoRandom();
   const apiKey = captureKeyIdentity(args.req);
@@ -341,6 +344,7 @@ export function emitClientRequest(args: {
     model: args.model,
     status: 'ok',
     wire: requestWire,
+    ...(args.conversationKey ? { conversationKey: args.conversationKey } : {}),
     ...(apiKey ? { apiKey } : {}),
   });
   return {
@@ -352,6 +356,7 @@ export function emitClientRequest(args: {
       model: args.model,
       requestWire,
       apiKey,
+      conversationKey: args.conversationKey,
     },
   };
 }
@@ -416,6 +421,7 @@ export function emitGatewayResponse(
     model: ctx.pending.model,
     status: reply.statusCode >= 200 && reply.statusCode < 400 ? 'ok' : 'error',
     wire: responseWire,
+    ...(ctx.pending.conversationKey ? { conversationKey: ctx.pending.conversationKey } : {}),
     ...(ctx.pending.apiKey ? { apiKey: ctx.pending.apiKey } : {}),
   });
 }
@@ -453,6 +459,8 @@ export function emitUpstreamRequest(args: {
   purpose?: HttpExchangeEvent['purpose'];
   /** Client API-key identity of the owning turn (see HttpExchangeEvent.apiKey). */
   apiKey?: CaptureKeyIdentity;
+  /** Deterministic conversation key of the owning turn (see HttpExchangeEvent.conversationKey). */
+  conversationKey?: string;
 }): string {
   const spanId = args.spanId ?? cryptoRandom();
   void args.recorder.recordEvent({
@@ -479,6 +487,7 @@ export function emitUpstreamRequest(args: {
     },
     ...(args.proxy ? { proxy: redactProxyUrl(args.proxy) } : {}),
     ...(args.purpose ? { purpose: args.purpose } : {}),
+    ...(args.conversationKey ? { conversationKey: args.conversationKey } : {}),
     ...(args.apiKey ? { apiKey: args.apiKey } : {}),
   });
   return spanId;
@@ -508,6 +517,8 @@ export function emitUpstreamResponse(args: {
   purpose?: HttpExchangeEvent['purpose'];
   /** Client API-key identity of the owning turn (see HttpExchangeEvent.apiKey). */
   apiKey?: CaptureKeyIdentity;
+  /** Deterministic conversation key of the owning turn (see HttpExchangeEvent.conversationKey). */
+  conversationKey?: string;
 }): void {
   void args.recorder.recordEvent({
     eventType: 'http-exchange',
@@ -532,6 +543,7 @@ export function emitUpstreamResponse(args: {
     ...(args.routing ? { routing: args.routing } : {}),
     ...(args.error ? { error: args.error } : {}),
     ...(args.purpose ? { purpose: args.purpose } : {}),
+    ...(args.conversationKey ? { conversationKey: args.conversationKey } : {}),
     ...(args.apiKey ? { apiKey: args.apiKey } : {}),
   });
 }

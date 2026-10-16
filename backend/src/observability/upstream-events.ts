@@ -22,6 +22,12 @@ export interface UpstreamEventContext {
    */
   apiKey?: CaptureKeyIdentity;
   /**
+   * Deterministic conversation key of the owning turn (content-addressed,
+   * see HttpExchangeEvent.conversationKey) forwarded onto every event emitted
+   * through this context.
+   */
+  conversationKey?: string;
+  /**
    * Non-default call label forwarded onto every event emitted through this
    * context. The Layer 2 judge's decision-model leg carries 'l2-judge' so
    * the archive can tell it apart from candidate-execution events sharing the
@@ -57,6 +63,7 @@ export function emitUpstreamRequestOnce(
     proxy: args.proxy,
     purpose: ctx.purpose,
     apiKey: ctx.apiKey,
+    conversationKey: ctx.conversationKey,
   });
 }
 
@@ -89,6 +96,7 @@ export function emitUpstreamResponseOnce(
     spanId: args.spanId,
     purpose: ctx.purpose,
     apiKey: ctx.apiKey,
+    conversationKey: ctx.conversationKey,
   });
 }
 
@@ -128,6 +136,7 @@ export function emitUpstreamFailureOnce(
     error: args.error,
     purpose: ctx.purpose,
     apiKey: ctx.apiKey,
+    conversationKey: ctx.conversationKey,
   });
 }
 

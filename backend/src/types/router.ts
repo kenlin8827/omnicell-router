@@ -143,7 +143,7 @@ export type SessionLookupType =
   | 'request_user'      // raw OpenAI request.user field
   | 'prefix_chain'      // exact head-prefix anchor of a completed chain
   | 'tail_anchor'       // trailing-window anchor (survives history truncation)
-  | 'root_anchor'       // deterministic first-user-message key
+  | 'conversation_key'  // deterministic apiKey + first-user-message key
   | 'cold_start';       // fresh mint (random, collision-free by construction)
 
 /**

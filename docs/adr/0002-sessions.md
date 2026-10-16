@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented — 2026-10-15. Derived from code fact (`backend/src/session/session-manager.ts`, `backend/src/pipeline/orchestrator.ts` 4B seam, `backend/src/pipeline/account-selection.ts`). Facts re-derived from current code in the corpus reset (historical numbering retired; current map: 0001 routing, 0003 addressing/membership, 0004 resilience, 0005 execution, 0006 credentials, 0007 environments, 0008 surfaces). Layer: cross-cutting (request-side conversation state). Health vocabulary referenced here is defined in ADR-0004; affinity identity anchoring in ADR-0006.
+Implemented — 2026-10-15. Derived from code fact (`backend/src/session/session-manager.ts`, `backend/src/pipeline/orchestrator.ts` 4B seam, `backend/src/pipeline/account-selection.ts`). Facts re-derived from current code in the corpus reset (historical numbering retired; current map: 0001 routing, 0003 addressing/membership, 0004 resilience, 0005 execution, 0006 credentials, 0007 environments, 0008 surfaces). Layer: cross-cutting (request-side conversation state). Health vocabulary referenced here is defined in ADR-0004; affinity identity anchoring in ADR-0006. §1 identity revised 2026-10-16: conversation key (API-key scoped, no transport IP) replaces the root-anchor/tombstone layer; tool-call anchors serialize canonically; anchor/key snapshot persists across restarts.
 
 ## Context
 
@@ -17,12 +17,12 @@ Priority order (first hit wins), `resolveSessionId`:
 1. Explicit header `x-session-id` / `x-conversation-id` / `session-id` / `conversation-id`, or `router_options.session_id`.
 2. Client-embedded conversation UUID — full-shape Claude Code convention `user_{hex}_account_{uuid}_session_{uuid}` (exact-shape match only; a loose `_session_` suffix would false-merge a user's unrelated conversations).
 3. Bare `request.user` (user-scoped; kept for compatibility).
-4. Chain anchors — hash of every head prefix of the prior history ending at an assistant turn (bounded probes; matches branched/regenerated histories sharing the head).
+4. Chain anchors — hash of every head prefix of the prior history ending at an assistant turn (bounded probes; matches branched/regenerated histories sharing the head). Serialized **canonically** (see below): the served assistant echo keeps its `tool_calls`, so an agent tool-loop re-anchors across the client's resend byte drift.
 5. Tail anchors — trailing windows of length ≥ 3 ending at an assistant boundary (clients that truncate old turns re-find their conversation).
-6. Root anchor — `sha256(clientIp + FULL first user message)`; ambiguous roots are **tombstoned** (two live sessions sharing a first message ⇒ neither may re-anchor; false split self-heals, false merge never does).
-7. Cold start — fresh random id (`sess_` + 12 random bytes). Deterministic birth ids are rejected: a local gateway sees `127.0.0.1` for everyone.
+6. Conversation key — `sha256(apiKey identity + FULL first user message)`. Reaches only after the byte-exact anchors miss (turn 2+, e.g. a regenerated assistant rewrite), and rejoins only when the key has exactly ONE candidate (unambiguous); an ambiguous key (two live sessions sharing a first message) cold-starts — false split self-heals, false merge never does. The transport IP is deliberately NOT an input: on a local gateway every conversation shares `127.0.0.1`/`::1` (no discrimination) and the address flaps across the two loopback families (which broke re-anchoring). This replaces the former first-message root map: it short-circuited turn-1-shaped resends straight to mint (never consulting the key) and **tombstoned** an ambiguous key — a same-opening re-ask poisoned the key, and with the tool-call drift below every later turn fell through to it and re-minted, cascading one conversation into dozens of session ids.
+7. Cold start — fresh random id (`sess_` + 12 random bytes). A turn-1-shaped resend ALWAYS mints a distinct id (preserving the no-false-merge guarantee); it self-heals from turn 2 once the branches get their own anchors. Deterministic birth ids are rejected: they collide across conversations sharing boilerplate openings on a local gateway.
 
-Serialization is full-fidelity (tool_calls, ids, non-text parts included) — a lossy hash would make distinct pure-tool-call turns collide (false merge, the unrecoverable direction). Anchor maps are in-memory: after restart, cooperating clients (1–3) recover, non-cooperating get a fresh session (state was lost anyway; trace grouping splits). Full summarization rewrites match nothing and intentionally start a new session. Birth metadata (`origin`, `firstUserMessage`) is first-write-wins, immutable.
+Tool-call anchors serialize in **canonical** form — volatile wrapper fields (the `"type":"function"` marker, pretty-printed vs re-compacted `arguments` JSON, key reordering of the envelope) are normalized away; a raw-object hash missed every tool-call boundary against a client that re-serializes on resend. Discrimination is retained where it matters: pure tool-call turns still differ by id + name + arguments, so distinct calls never collide (the unrecoverable false-merge direction). Anchor maps and conversation keys persist to a per-environment JSON snapshot (`<env>/data/sessions.json` — content hashes + session ids only, no plaintext) written atomically on a 2 s debounce and flushed at shutdown; a restart no longer splits non-cooperating clients (session tier/pins/affinity stay in-memory and rebuild fresh). Full summarization rewrites match nothing and intentionally start a new session. Birth metadata (`origin`, `firstUserMessage`) is first-write-wins, immutable.
 
 ### 2. Tier policy — three configurable strategies
 
@@ -63,6 +63,7 @@ A model repin never rewrites the binding: continuity rides the selection boundar
 
 ## Consequences
 
-- Zero-header clients get full conversation continuity; a restart costs only non-cooperating grouping traces.
+- Zero-header clients get full conversation continuity; with the anchor/key snapshot, a restart no longer splits grouping either (only the in-memory ratchet/pin/affinity state rebuilds).
+- Identity is anchored on the API-key application (never the transport IP), and tool-call anchors survive client resend byte drift — the two failures that cascaded one agent loop into dozens of session ids. `conversationKey` is stamped on every capture event (ADR-0008) so the archive can regroup a conversation by content hash independent of the volatile session id.
 - Operator edits (tier lists, denylist) reach live conversations next turn; each evicted session pays exactly one cache rebuild — forced, attributable, retried only when it has somewhere to land.
 - Tests: `backend/tests/pin-eviction.test.ts` (forces, non-triggers, recovering exemption with two-view divergence, landing guard, scope regressions), `account-affinity-orchestrator.test.ts`, `account-selection.test.ts`, `session.test.ts`, `resilience*.test.ts`.

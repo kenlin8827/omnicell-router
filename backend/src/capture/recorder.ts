@@ -181,6 +181,17 @@ export interface HttpExchangeEvent {
   traceId: string;
   /** Session id from session-manager (or synthetic `ocr-turn-<id>` when no session exists yet). */
   sessionId: string;
+  /**
+   * Deterministic conversation key — `sha256(apiKey identity + FULL first
+   * user message)` (see `SessionManager.conversationKey`), content-addressed
+   * and stable across session-id churn and gateway restarts. Lets the
+   * archive regroup an application's turns into conversations even when
+   * zero-header resolution minted a fresh session id mid-loop. Never
+   * credential material — a hash of conversation content, same disclosure
+   * class as the anchor keys. Absent when the request carries no first user
+   * text (e.g. a bare system prompt) or predates this field.
+   */
+  conversationKey?: string;
   /** Client-requested model id (from inbound request body's `model` field). */
   model: string;
   /** Status of THIS event — request side rarely errors; response side mirrors the wire status. */
@@ -264,6 +275,13 @@ interface CaptureSessionRow {
    * (MITM, master-key access).
    */
   apiKeys?: CaptureKeyIdentity[];
+  /**
+   * Deterministic conversation key seen on this archive's events (first
+   * occurrence). Stable across session-id churn — the join key that regroups
+   * a conversation split by per-turn cold-start mints. Absent on key-less /
+   * legacy archives.
+   */
+  conversationKey?: string;
 }
 
 /**
@@ -630,6 +648,7 @@ export class CaptureRecorder {
         // mixed-key sessions → the full set so per-app retrieval matches
         // every app that contributed. Legacy lines carry no apiKey.
         const seenKeys = new Map<string, CaptureKeyIdentity>();
+        let conversationKey: string | undefined;
         const streamEvents: HttpExchangeEvent[] = [];
         try {
           const content = fs.readFileSync(filePath, 'utf8');
@@ -644,6 +663,9 @@ export class CaptureRecorder {
                     id: String(rec.apiKey.id),
                     name: String(rec.apiKey.name ?? ''),
                   });
+                }
+                if (conversationKey === undefined && typeof rec.conversationKey === 'string' && rec.conversationKey) {
+                  conversationKey = rec.conversationKey;
                 }
                 // First client request body = the session's opening turn.
                 // extractSessionPreview also accepts the raw string form
@@ -699,6 +721,7 @@ export class CaptureRecorder {
           lastStatus,
           preview,
           ...(keyList.length ? { apiKeys: keyList } : {}),
+          ...(conversationKey ? { conversationKey } : {}),
         });
       } catch {
         // Vanished mid-listing — skip.
