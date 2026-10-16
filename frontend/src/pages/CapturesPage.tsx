@@ -1075,7 +1075,7 @@ export const CapturesPage: React.FC = () => {
                     minHeight: 0,
                   }}
                 >
-                  <div style={{ padding: '8px 10px 4px', flexShrink: 0 }}>
+                  <div style={{ padding: '8px 10px 12px', flexShrink: 0 }}>
                     <input
                       type="text"
                       className="input"
@@ -1098,6 +1098,7 @@ export const CapturesPage: React.FC = () => {
                   {visibleSessions.map(s => (
                     <div
                       key={s.file}
+                      className="capture-session-card"
                       onClick={() => setSelectedFile(s.file)}
                       title={
                         [
@@ -1112,9 +1113,6 @@ export const CapturesPage: React.FC = () => {
                           .join('\n')
                       }
                       style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '8px',
                         padding: '7px 10px',
                         marginBottom: '3px',
                         borderRadius: '6px',
@@ -1125,126 +1123,160 @@ export const CapturesPage: React.FC = () => {
                         borderLeft: s.file === selectedFile ? '2px solid var(--accent)' : '2px solid transparent',
                       }}
                     >
-                      {/* Last-turn status dot: emerald = ok, red = error,
+                      {/* Row 1 — the scannable identity: status dot, the
+                          first-message preview as the title (falls back to the
+                          raw id), timestamp right-aligned on the same line.
+                          Last-turn status dot: emerald = ok, red = error,
                           dim gray = unknown (archive has the request half
                           only — no gateway response was ever recorded). */}
-                      <span
-                        title={
-                          s.lastStatus === 'ok'
-                            ? t('captures.lastOkTitle')
-                            : s.lastStatus === 'error'
-                              ? t('captures.lastErrorTitle')
-                              : t('captures.lastUnknownTitle')
-                        }
-                        style={{
-                          width: 8,
-                          height: 8,
-                          borderRadius: '50%',
-                          flexShrink: 0,
-                          background:
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                        <span
+                          title={
                             s.lastStatus === 'ok'
-                              ? 'var(--accent-emerald)'
+                              ? t('captures.lastOkTitle')
                               : s.lastStatus === 'error'
-                                ? '#ef4444'
-                                : 'var(--text-dim)',
-                          boxShadow:
-                            s.lastStatus === 'error'
-                              ? '0 0 6px rgba(239,68,68,0.5)'
-                              : s.lastStatus === 'ok'
-                                ? '0 0 6px color-mix(in srgb, var(--accent-emerald) 40%, transparent)'
-                                : 'none',
-                        }}
-                      />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div
+                                ? t('captures.lastErrorTitle')
+                                : t('captures.lastUnknownTitle')
+                          }
                           style={{
-                            fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                            width: 8,
+                            height: 8,
+                            borderRadius: '50%',
+                            flexShrink: 0,
+                            background:
+                              s.lastStatus === 'ok'
+                                ? 'var(--accent-emerald)'
+                                : s.lastStatus === 'error'
+                                  ? '#ef4444'
+                                  : 'var(--text-dim)',
+                            boxShadow:
+                              s.lastStatus === 'error'
+                                ? '0 0 6px rgba(239,68,68,0.5)'
+                                : s.lastStatus === 'ok'
+                                  ? '0 0 6px color-mix(in srgb, var(--accent-emerald) 40%, transparent)'
+                                  : 'none',
+                          }}
+                        />
+                        <span
+                          style={{
+                            flex: 1,
+                            minWidth: 0,
+                            fontWeight: 600,
                             whiteSpace: 'nowrap',
                             overflow: 'hidden',
                             textOverflow: 'ellipsis',
                           }}
                         >
-                          {s.sessionId}
-                        </div>
-                        {s.apiKeys && s.apiKeys.length > 0 && (
-                           <div
-                             style={{
-                               fontSize: '10.5px',
-                               color: 'var(--accent-emerald, var(--accent))',
-                               overflow: 'hidden',
-                               textOverflow: 'ellipsis',
-                               whiteSpace: 'nowrap',
-                             }}
-                           >
-                             {s.apiKeys[0].name}
-                             {s.apiKeys.length > 1 ? ` +${s.apiKeys.length - 1}` : ''}
-                           </div>
-                         )}
+                          {s.preview || s.sessionId}
+                        </span>
+                        <span
+                          style={{
+                            color: 'var(--text-dim)',
+                            fontSize: '11px',
+                            fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                            flexShrink: 0,
+                          }}
+                        >
+                          {fmtTime(s.mtimeMs)}
+                        </span>
+                      </div>
+                      {/* Row 2 — machine detail + actions. paddingLeft 16px
+                          aligns it under the title (dot 8 + gap 8). The short
+                          id is skipped when it already IS the row-1 title;
+                          action icons reveal on hover (capture-card-actions). */}
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          marginTop: '2px',
+                          paddingLeft: '16px',
+                          minWidth: 0,
+                        }}
+                      >
                         {s.preview && (
-                          <div
+                          <span
                             style={{
-                              fontSize: '11px',
+                              fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                              fontSize: '10.5px',
                               color: 'var(--text-dim)',
+                              whiteSpace: 'nowrap',
                               overflow: 'hidden',
                               textOverflow: 'ellipsis',
-                              whiteSpace: 'nowrap',
-                              marginTop: '1px',
+                              minWidth: 0,
                             }}
                           >
-                            {s.preview}
-                          </div>
+                            {shortId(s.sessionId, 16)}
+                          </span>
                         )}
+                        {s.apiKeys && s.apiKeys.length > 0 && (
+                          <span
+                            title={t('captures.apiKeyTooltip', { name: s.apiKeys[0].name, id: s.apiKeys[0].id })}
+                            style={{
+                              fontSize: '10px',
+                              lineHeight: '14px',
+                              padding: '1px 6px',
+                              borderRadius: '4px',
+                              background: 'color-mix(in srgb, var(--accent-emerald) 10%, transparent)',
+                              border: '1px solid color-mix(in srgb, var(--accent-emerald) 25%, transparent)',
+                              color: 'var(--accent-emerald)',
+                              flexShrink: 0,
+                            }}
+                          >
+                            {s.apiKeys[0].name}
+                            {s.apiKeys.length > 1 ? ` +${s.apiKeys.length - 1}` : ''}
+                          </span>
+                        )}
+                        <span
+                          className="capture-card-actions"
+                          style={{
+                            marginLeft: 'auto',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px',
+                            flexShrink: 0,
+                          }}
+                        >
+                          <span
+                            role="button"
+                            aria-label={t('captures.exportTitle')}
+                            title={t('captures.exportTitle')}
+                            onClick={e => {
+                              e.stopPropagation();
+                              setExportTarget(s);
+                            }}
+                            style={{
+                              color: 'var(--text-dim)',
+                              display: 'flex',
+                              alignItems: 'center',
+                              cursor: 'pointer',
+                            }}
+                            onMouseEnter={e => (e.currentTarget.style.color = 'var(--accent)')}
+                            onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-dim)')}
+                          >
+                            <Download size={13} />
+                          </span>
+                          <span
+                            role="button"
+                            aria-label={t('captures.deleteSession')}
+                            title={t('captures.deleteSession')}
+                            onClick={e => {
+                              e.stopPropagation();
+                              handleDeleteSession(s);
+                            }}
+                            style={{
+                              color: 'var(--text-dim)',
+                              display: 'flex',
+                              alignItems: 'center',
+                              cursor: 'pointer',
+                            }}
+                            onMouseEnter={e => (e.currentTarget.style.color = '#ef4444')}
+                            onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-dim)')}
+                          >
+                            <Trash2 size={13} />
+                          </span>
+                        </span>
                       </div>
-                      <span
-                        style={{
-                          color: 'var(--text-dim)',
-                          fontSize: '11px',
-                          fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
-                          flexShrink: 0,
-                        }}
-                      >
-                        {fmtTime(s.mtimeMs)}
-                      </span>
-                      <span
-                        role="button"
-                        aria-label={t('captures.exportTitle')}
-                        title={t('captures.exportTitle')}
-                        onClick={e => {
-                          e.stopPropagation();
-                          setExportTarget(s);
-                        }}
-                        style={{
-                          color: 'var(--text-dim)',
-                          display: 'flex',
-                          alignItems: 'center',
-                          flexShrink: 0,
-                          cursor: 'pointer',
-                        }}
-                        onMouseEnter={e => (e.currentTarget.style.color = 'var(--accent)')}
-                        onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-dim)')}
-                      >
-                        <Download size={13} />
-                      </span>
-                      <span
-                        role="button"
-                        aria-label={t('captures.deleteSession')}
-                        title={t('captures.deleteSession')}
-                        onClick={e => {
-                          e.stopPropagation();
-                          handleDeleteSession(s);
-                        }}
-                        style={{
-                          color: 'var(--text-dim)',
-                          display: 'flex',
-                          alignItems: 'center',
-                          flexShrink: 0,
-                          cursor: 'pointer',
-                        }}
-                        onMouseEnter={e => (e.currentTarget.style.color = '#ef4444')}
-                        onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-dim)')}
-                      >
-                        <Trash2 size={13} />
-                      </span>
                     </div>
                   ))}
                   {visibleSessions.length === 0 && (

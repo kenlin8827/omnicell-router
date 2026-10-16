@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { BarChart3, X } from 'lucide-react';
 import { api, type UsageStatsResponse, type KeyUsageRow, type TraceRecord } from '../lib/api';
-import { formatCost, shortId, outputRate, formatRate } from '../lib/format';
+import { formatCost, shortId, outputRate, formatRate, fmtLatency } from '../lib/format';
 import { Combobox } from '../components/Combobox';
 import { useI18n } from '../i18n/I18nContext';
 
@@ -160,7 +160,7 @@ export const UsagePage: React.FC = () => {
         // Total = in + out; cached is a subset of input, never added again.
         { label: t('sessions.thTokensTotal'), value: (totals.inputTokens + totals.outputTokens).toLocaleString(), color: 'var(--text-main)', tip: t('sessions.tokensTotalTip') },
         { label: t('sessions.thCost'), value: formatCost(totals.costUsd), color: 'var(--accent-amber)' },
-        { label: t('overview.avgLatency'), value: `${totals.avgLatencyMs} ms`, color: 'var(--text-main)' },
+        { label: t('overview.avgLatency'), value: fmtLatency(totals.avgLatencyMs), tip: `${totals.avgLatencyMs} ms`, color: 'var(--text-main)' },
         { label: t('usage.thToks'), value: formatRate(toksRate), color: 'var(--text-dim)', tip: t('usage.toksTip') },
       ]
     : [];
@@ -271,7 +271,7 @@ export const UsagePage: React.FC = () => {
                       {tr.finops.cachedTokens.toLocaleString()}
                     </span>
                     <span style={{ color: 'var(--accent-amber)' }}>{formatCost(tr.finops.costUsd)}</span>
-                    <span>{tr.execution.latencyMs}ms</span>
+                    <span title={`${tr.execution.latencyMs} ms`}>{fmtLatency(tr.execution.latencyMs)}</span>
                     <span title={t('usage.toksTip')}>{formatRate(outputRate(tr.finops.outputTokens, tr.execution.latencyMs))}</span>
                   </React.Fragment>
                 ))}
@@ -341,8 +341,11 @@ export const UsagePage: React.FC = () => {
                     <td style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--accent-amber)' }}>
                       {formatCost(r.costUsd)}
                     </td>
-                    <td style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
-                      {r.requests > 0 ? Math.round(r.latencyMsSum / r.requests) : 0} ms
+                    <td
+                      style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
+                      title={`${r.requests > 0 ? Math.round(r.latencyMsSum / r.requests) : 0} ms`}
+                    >
+                      {fmtLatency(r.requests > 0 ? r.latencyMsSum / r.requests : 0)}
                     </td>
                     <td style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-dim)' }}>
                       {formatRate(outputRate(r.outputTokens, r.latencyMsSum))}

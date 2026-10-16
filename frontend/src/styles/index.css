@@ -448,6 +448,16 @@ td, th {
   background: var(--surface-hover);
 }
 
+/* Capture rail session card: the export/delete icons stay hidden until the
+   row is hovered, so the two-line rows read as text, not a button strip. */
+.capture-card-actions {
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.capture-session-card:hover .capture-card-actions {
+  opacity: 1;
+}
+
 .card-header {
   display: flex;
   align-items: center;

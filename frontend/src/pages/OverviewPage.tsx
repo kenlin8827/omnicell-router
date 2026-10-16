@@ -10,7 +10,7 @@ import {
   ArrowRight,
 } from 'lucide-react';
 import { api, type GatewayStatusResponse, type UsageStatsResponse } from '../lib/api';
-import { outputRate, formatRate } from '../lib/format';
+import { outputRate, formatRate, fmtLatency } from '../lib/format';
 import { BrandIcon } from '../components/BrandIcons';
 import { Combobox } from '../components/Combobox';
 import { useI18n } from '../i18n/I18nContext';
@@ -152,8 +152,8 @@ export const OverviewPage: React.FC = () => {
             <span>{t('overview.avgLatency')}</span>
             <Clock size={16} color="var(--accent-amber)" />
           </div>
-          <div style={{ fontSize: '28px', fontWeight: 800, margin: '8px 0 4px 0', color: 'var(--text-main)' }}>
-            {latency} ms
+          <div style={{ fontSize: '28px', fontWeight: 800, margin: '8px 0 4px 0', color: 'var(--text-main)' }} title={`${latency} ms`}>
+            {fmtLatency(latency)}
           </div>
           <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
             {t('overview.latencySub')}

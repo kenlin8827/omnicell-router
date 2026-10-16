@@ -60,6 +60,23 @@ export const formatRate = (rate: number | null): string =>
 export const formatCost = (usd: number): string =>
   '$' + usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 });
 
+/**
+ * Smart-unit latency label for stats displays: sub-second stays in ms,
+ * seconds keep one decimal (7020 → "7.0s", 13526 → "13.5s"), then m s / h m.
+ * Callers keep the exact raw ms in a title tooltip since the label rounds.
+ */
+export const fmtLatency = (ms: number): string => {
+  if (!Number.isFinite(ms) || ms < 0) return '—';
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  // Round to whole seconds/minutes first — per-field rounding would strand
+  // carries like 59m 60s or 119.6s → 1m 60s.
+  const totalSec = Math.round(ms / 1000);
+  if (totalSec < 3_600) return `${Math.floor(totalSec / 60)}m ${String(totalSec % 60).padStart(2, '0')}s`;
+  const totalMin = Math.round(ms / 60_000);
+  return `${Math.floor(totalMin / 60)}h ${String(totalMin % 60).padStart(2, '0')}m`;
+};
+
 /** Compact duration ("45s" / "3m" / "2h" / "5d") — quota windows and reset
  *  countdowns share this shape. */
 export const fmtDur = (ms: number): string => {

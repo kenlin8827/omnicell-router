@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Users, RefreshCw, Archive, BarChart3, ChevronDown, ChevronRight, Eye, GitBranch, X, Search, Trash2 } from 'lucide-react';
 import { api, type SessionRecord, type TraceRecord } from '../lib/api';
 import { formatReason, type Translate } from '../lib/reason';
-import { copyToClipboard, formatCost, formatSessionId, outputRate, formatRate } from '../lib/format';
+import { copyToClipboard, formatCost, formatSessionId, outputRate, formatRate, fmtLatency } from '../lib/format';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
@@ -346,7 +346,10 @@ export const SessionsPage: React.FC = () => {
   // Switches gets 5.5 (icon + ×N ≈ 36px content) so no cell overflows.
   // Detail holds two side-by-side icons — 7 units keeps them on one line
   // (flex nowrap below also guarantees rows never grow a second line here).
-  const colWeights = [16, 7.5, 13.5, 7, 5.5, 4.5, 5, 6, 6, 6, 6.5, 7, 7, 5, ...(captureOn ? [4] : [])];
+  // Cached-tokens column is 8 (was 6): a 7-digit count in mono 12px is ~65px
+  // wide and overflowed the old ~50px content box, which made the centered
+  // alignment invisible (overflow always starts at the left edge).
+  const colWeights = [16, 7.5, 13.5, 7, 5.5, 4.5, 5, 6, 6, 8, 6.5, 7, 7, 5, ...(captureOn ? [4] : [])];
   const colSum = colWeights.reduce((a, b) => a + b, 0);
   const colWidths = colWeights.map(w => `${((w / colSum) * 100).toFixed(3)}%`);
 
@@ -416,7 +419,7 @@ export const SessionsPage: React.FC = () => {
                 <th style={TH_STYLE}>{t('sessions.thRequests')}</th>
                 <th style={TH_STYLE}>{t('sessions.thTokensIn')}</th>
                 <th style={TH_STYLE}>{t('sessions.thTokensOut')}</th>
-                <th style={TH_STYLE}>{t('sessions.thTokensCached')}</th>
+                <th style={{ ...TH_STYLE, textAlign: 'center' }}>{t('sessions.thTokensCached')}</th>
                 <th style={TH_STYLE}>{t('sessions.thCost')}</th>
                 <th style={TH_STYLE}>{t('sessions.thActive')}</th>
                 <th style={TH_STYLE}>{t('sessions.thDetail')}</th>
@@ -552,6 +555,9 @@ export const SessionsPage: React.FC = () => {
                   <td
                     style={{
                       padding: '10px 14px',
+                      // Centered column: the two-line header reads as centered
+                      // in this narrow column, so the values follow it.
+                      textAlign: 'center',
                       color: (s.cachedTokens ?? 0) > 0 ? 'var(--accent-emerald)' : 'var(--text-dim)',
                       fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                     }}
@@ -827,7 +833,7 @@ export const SessionsPage: React.FC = () => {
                         {tr.finops.cachedTokens.toLocaleString()}
                       </span>
                       <span style={{ color: 'var(--accent-amber)' }}>{formatCost(tr.finops.costUsd)}</span>
-                      <span>{tr.execution.latencyMs}ms</span>
+                      <span title={`${tr.execution.latencyMs} ms`}>{fmtLatency(tr.execution.latencyMs)}</span>
                       <span title={t('usage.toksTip')}>{formatRate(outputRate(tr.finops.outputTokens, tr.execution.latencyMs))}</span>
                     </React.Fragment>
                   ))}
