@@ -1137,6 +1137,7 @@ export const zhCN: TranslationDict = {
     viewChat: '对话回放',
     chatFullscreen: '全屏阅读',
     chatExitFullscreen: '退出全屏',
+    roundFocus: '聚焦本轮',
     expand: '展开',
     collapse: '收起',
     msgSystem: '系统提示词',

@@ -1205,6 +1205,7 @@ hiddenBadge: string;
     viewChat: string;
     chatFullscreen: string;
     chatExitFullscreen: string;
+    roundFocus: string;
     expand: string;
     collapse: string;
     msgSystem: string;

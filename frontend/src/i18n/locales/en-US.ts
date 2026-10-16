@@ -1143,6 +1143,7 @@ export const enUS: TranslationDict = {
     viewChat: 'Conversation',
     chatFullscreen: 'Read fullscreen',
     chatExitFullscreen: 'Exit fullscreen',
+    roundFocus: 'Focus this round',
     expand: 'Expand',
     collapse: 'Collapse',
     msgSystem: 'System prompt',

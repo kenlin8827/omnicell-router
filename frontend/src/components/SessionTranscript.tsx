@@ -5,9 +5,11 @@
  * middle, and the converged answer is the tail. Reconstructed from the turn
  * wire bodies by lib/transcript; each step links to its raw wire drawer.
  */
-import React, { useMemo, useState } from 'react';
-import { AlertTriangle, ChevronDown, ChevronRight, Image as ImageIcon } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { AlertTriangle, ChevronDown, ChevronRight, Image as ImageIcon, Maximize2, Minimize2 } from 'lucide-react';
 import { useI18n } from '../i18n/I18nContext';
+import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import type { CaptureTurn } from '../lib/api';
 import {
   buildTranscript,
@@ -513,12 +515,16 @@ const RoundCard: React.FC<{
   round: TranscriptRound;
   ordinal: number;
   date?: string;
+  /** Focus overlay: open the card immediately (pane default: collapsed). */
+  defaultOpen?: boolean;
+  /** Renders the ⛶ header button (absent inside the focus overlay itself). */
+  onFocus?: () => void;
   onOpenTurn: (idx: number) => void;
-}> = ({ round, ordinal, date, onOpenTurn }) => {
+}> = ({ round, ordinal, date, defaultOpen, onFocus, onOpenTurn }) => {
   const { t } = useI18n();
   // All rounds collapsed by default — the Q→A skim (header + tail answer)
   // covers the whole session; steps open on demand.
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen ?? false);
   // Full prompt shown in the header (final UX call after a single-line
   // ellipsis detour): own line, wraps, never truncated.
   const excerpt = useMemo(() => {
@@ -571,6 +577,26 @@ const RoundCard: React.FC<{
             {t('captures.roundStepsUnit', { n: round.steps.length })}
             {round.totalLatencyMs > 0 ? ` · ${fmtDur(round.totalLatencyMs)}` : ''}
           </span>
+          {onFocus && (
+            <button
+              onClick={e => {
+                e.stopPropagation();
+                onFocus();
+              }}
+              title={t('captures.roundFocus')}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: 'var(--text-dim)',
+                cursor: 'pointer',
+                padding: 2,
+                display: 'flex',
+                flexShrink: 0,
+              }}
+            >
+              <Maximize2 size={12} />
+            </button>
+          )}
           {/* Prominent toggle box — the card itself opens/closes anywhere,
               but this makes the collapsible affordance unmistakable. */}
           <span
@@ -679,6 +705,22 @@ export const SessionTranscript: React.FC<{
   const { t } = useI18n();
   const items = useMemo(() => buildTranscript(turns), [turns]);
   const rounds = useMemo(() => groupIntoRounds(items), [items]);
+  // Single-round focus: one card owns the viewport, open by default. Index
+  // into `rounds`; transient like the whole-session fullscreen (never
+  // persisted, resets when the archive changes underneath us).
+  const [focusIdx, setFocusIdx] = useState<number | null>(null);
+  useBodyScrollLock(focusIdx !== null);
+  useEffect(() => {
+    setFocusIdx(null);
+  }, [turns]);
+  useEffect(() => {
+    if (focusIdx === null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setFocusIdx(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [focusIdx]);
 
   const anyContent = items.some(
     s => s.input.length > 0 || s.output || s.reqTruncated || s.reqUnparsed || s.diverged || s.hasResponseBody
@@ -712,10 +754,75 @@ export const SessionTranscript: React.FC<{
             round={r}
             ordinal={i + 1}
             date={date}
+            onFocus={() => setFocusIdx(i)}
             onOpenTurn={onOpenTurn}
           />
         ))
       )}
+      {focusIdx !== null &&
+        rounds[focusIdx] &&
+        createPortal(
+          <div
+            style={{
+              position: 'fixed',
+              inset: 0,
+              zIndex: 205,
+              background: 'var(--bg)',
+              display: 'flex',
+              flexDirection: 'column',
+              animation: 'ocr-fade-in 0.15s ease',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                padding: '10px 18px',
+                borderBottom: '1px solid var(--divider)',
+                flexShrink: 0,
+              }}
+            >
+              <span style={{ fontSize: '13px', fontWeight: 700 }}>R{focusIdx + 1}</span>
+              <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+                {t('captures.roundStepsUnit', { n: rounds[focusIdx].steps.length })}
+              </span>
+              <button
+                className="btn btn-sm"
+                style={{ marginLeft: 'auto', flexShrink: 0 }}
+                onClick={() => setFocusIdx(null)}
+                title={t('captures.chatExitFullscreen')}
+              >
+                <Minimize2 size={12} />
+                <span>{t('captures.chatExitFullscreen')}</span>
+              </button>
+            </div>
+            <div
+              style={{
+                flex: 1,
+                minHeight: 0,
+                overflowY: 'auto',
+                padding: '16px 24px',
+                display: 'flex',
+                justifyContent: 'center',
+              }}
+            >
+              {/* Cap the reading column — full viewport WIDTH for a single
+                  round would stretch every prose line past comfortable
+                  measure; the win here is height + no competing cards. */}
+              <div style={{ width: '100%', maxWidth: 980 }}>
+                <RoundCard
+                  round={rounds[focusIdx]}
+                  ordinal={focusIdx + 1}
+                  date={date}
+                  defaultOpen
+                  onOpenTurn={onOpenTurn}
+                />
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 };
