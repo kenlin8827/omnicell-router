@@ -1218,6 +1218,7 @@ hiddenBadge: string;
     chatEmpty: string;
     roundMidOpenNote: string;
     roundStepsUnit: string;
+    roundOrdinal: string;
     roundTailLabel: string;
     roundUnconvergedNote: string;
     resultsMissingNote: string;

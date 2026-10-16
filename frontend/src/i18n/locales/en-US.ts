@@ -1156,6 +1156,7 @@ export const enUS: TranslationDict = {
     chatEmpty: 'No conversation content could be reconstructed from these turns (bodies may be non-UTF-8 / hex, or the archive holds metadata only).',
     roundMidOpenNote: 'This round\'s user prompt is not visible — it predates the capture window, or sits in the truncated tail of the request body.',
     roundStepsUnit: '{n} steps',
+    roundOrdinal: 'Round {n}',
     roundTailLabel: 'Answer',
     roundUnconvergedNote: 'Round ended without a converged text answer (interrupted, or still on a tool hop).',
     resultsMissingNote: 'Some tool results are missing: the newest tail of each turn\'s request body was cut by maxBodyBytes (64 KB) before being archived. Raise requestCapture.maxBodyBytes (Settings) to capture full results; already-archived truncation is unrecoverable.',

@@ -310,7 +310,7 @@ const MessageView: React.FC<{ msg: TranscriptMessage; date?: string }> = ({ msg,
         </div>
       ))}
       {msg.toolCalls.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: text ? 6 : 0 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: text ? 6 : 0 }}>
           {msg.toolCalls.map((c, i) => (
             <ToolCallCard key={c.id || i} call={c} />
           ))}
@@ -399,7 +399,7 @@ const OutputView: React.FC<{ out: TurnOutput }> = ({ out }) => {
       )}
       {out.text && <Prose text={out.text} />}
       {out.toolCalls.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: out.text ? 6 : 0 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: out.text ? 6 : 0 }}>
           {out.toolCalls.map((c, i) => (
             <ToolCallCard key={c.id || i} call={c} />
           ))}
@@ -571,7 +571,7 @@ const RoundCard: React.FC<{
               background: round.hasError ? '#ef4444' : 'var(--accent-emerald)',
             }}
           />
-          <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)' }}>R{ordinal}</span>
+          <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)' }}>{t('captures.roundOrdinal', { n: ordinal })}</span>
           {round.startTs !== undefined && (
             <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: MONO, flexShrink: 0 }}>{fmtTime(round.startTs)}</span>
           )}
@@ -732,7 +732,7 @@ const FocusRoundView: React.FC<{
             background: round.hasError ? '#ef4444' : 'var(--accent-emerald)',
           }}
         />
-        <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-dim)' }}>R{ordinal}</span>
+        <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-dim)' }}>{t('captures.roundOrdinal', { n: ordinal })}</span>
         {round.startTs !== undefined && (
           <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: MONO }}>{fmtTime(round.startTs)}</span>
         )}

@@ -1150,6 +1150,7 @@ export const zhCN: TranslationDict = {
     chatEmpty: '无法从这些轮次还原对话内容（请求/响应体可能为非 UTF-8 编码，或归档仅含元数据）。',
     roundMidOpenNote: '本轮的用户提问不可见——可能早于捕捉窗口起点，或位于被截断的请求体尾部。',
     roundStepsUnit: '{n} 步',
+    roundOrdinal: '第{n}轮',
     roundTailLabel: '最终回答',
     roundUnconvergedNote: '本轮未以收敛的文本回答结束（被打断，或仍停留在工具调用步）。',
     resultsMissingNote: '部分工具结果缺失：每轮请求体的最新尾部在落盘前被 maxBodyBytes（64 KB）截断，工具结果恰好写在尾部。请到「设置 → 请求捕捉」提高 maxBodyBytes 上限后再产生的新会话才有完整结果；已归档的截断无法恢复。',
