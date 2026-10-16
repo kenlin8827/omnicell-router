@@ -304,6 +304,18 @@ export const UsagePage: React.FC = () => {
                     <span style={{ color: 'var(--text-dim)' }}>#{tr.turnNumber}</span>
                     {/* Session view: clicking the model drills into its per-model call list. */}
                     <span
+                      role={sessionFilter ? 'button' : undefined}
+                      tabIndex={sessionFilter ? 0 : undefined}
+                      onKeyDown={
+                        sessionFilter
+                          ? e => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                navigate(`/usage?modelId=${encodeURIComponent(tr.execution.modelUsed)}`);
+                              }
+                            }
+                          : undefined
+                      }
                       style={{
                         color: 'var(--text-main)',
                         wordBreak: 'break-all',
