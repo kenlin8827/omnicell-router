@@ -36,6 +36,7 @@ import {
   FolderCog,
   Settings2,
   Gauge,
+  Wallet,
   type LucideIcon,
 } from 'lucide-react';
 import { api, type GatewayStatusResponse } from '../lib/api';
@@ -75,7 +76,6 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     items: [
       { to: '/api-keys', labelKey: 'nav.apiKeys', icon: KeyRound },
       { to: '/clients', labelKey: 'nav.clients', icon: MonitorSmartphone, badge: '3' },
-      { to: '/model-profiles', labelKey: 'nav.modelProfiles', icon: ClipboardList },
       { to: '/proxy-access', labelKey: 'nav.proxyAccess', icon: ShieldCheck },
     ],
   },
@@ -87,6 +87,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
       { to: '/tiers', labelKey: 'nav.rules', icon: Network },
       { to: '/combos', labelKey: 'nav.combos', icon: Layers },
       { to: '/auto', labelKey: 'nav.auto', icon: BrainCircuit },
+      { to: '/model-profiles', labelKey: 'nav.modelProfiles', icon: ClipboardList },
     ],
   },
   {
@@ -95,6 +96,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     icon: ArrowUpRight,
     items: [
       { to: '/providers', labelKey: 'nav.providers', icon: Plug },
+      { to: '/quota', labelKey: 'nav.quota', icon: Wallet },
       { to: '/models', labelKey: 'nav.models', icon: Cpu },
       { to: '/catalog', labelKey: 'nav.catalogSources', icon: CloudDownload },
       { to: '/proxy', labelKey: 'nav.proxy', icon: ArrowLeftRight },
@@ -140,7 +142,7 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/tiers': { groupKey: 'nav.grpTraffic', titleKey: 'nav.rules' },
   '/auto': { groupKey: 'nav.grpTraffic', titleKey: 'nav.auto' },
   '/combos': { groupKey: 'nav.grpTraffic', titleKey: 'nav.combos' },
-  '/model-profiles': { groupKey: 'nav.grpAccess', titleKey: 'nav.modelProfiles' },
+  '/model-profiles': { groupKey: 'nav.grpTraffic', titleKey: 'nav.modelProfiles' },
   '/api-keys': { groupKey: 'nav.grpAccess', titleKey: 'nav.apiKeys' },
   '/providers': { groupKey: 'nav.grpUpstream', titleKey: 'nav.providers' },
   '/models': { groupKey: 'nav.grpUpstream', titleKey: 'nav.models' },
@@ -154,6 +156,7 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/sessions': { groupKey: 'nav.grpObservability', titleKey: 'nav.sessions' },
   '/usage': { groupKey: 'nav.grpObservability', titleKey: 'nav.usage' },
   '/rate-limit': { groupKey: 'nav.grpObservability', titleKey: 'nav.rateLimit' },
+  '/quota': { groupKey: 'nav.grpUpstream', titleKey: 'nav.quota' },
   '/logs': { groupKey: 'nav.grpObservability', titleKey: 'nav.logs' },
   '/captures': { groupKey: 'nav.grpObservability', titleKey: 'nav.captures' },
   '/flywheel': { groupKey: 'nav.grpObservability', titleKey: 'nav.flywheel' },
