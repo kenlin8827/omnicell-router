@@ -200,7 +200,10 @@ export class ResponsesProvider implements LLMProvider {
     });
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs || 60000);
+    // Wall-clock cap on the non-streaming upstream execution — see the
+    // openai-compatible provider: agent coding traffic legitimately runs past
+    // a minute, so the default is 300 s.
+    const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs || 300000);
 
     try {
       const res = await withUpstreamFailureGuard(

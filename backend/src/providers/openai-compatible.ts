@@ -73,7 +73,12 @@ export class OpenAICompatibleProvider implements LLMProvider {
     });
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs || 60000);
+    // Wall-clock cap on the NON-streaming upstream execution (the gateway
+    // awaits the full response, then re-chunks to the client as SSE). Agent
+    // coding traffic carries large contexts and long generations, so a
+    // legitimate completion can easily run past a minute — 60 s used to cut
+    // healthy streams mid-flight and pay for them again on retry.
+    const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs || 300000);
 
     try {
       // The guard emits a paired failure response event on ANY thrown error

@@ -260,7 +260,10 @@ export class AnthropicProvider implements LLMProvider {
     });
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs || 60000);
+    // Wall-clock cap on the non-streaming upstream execution — see the
+    // openai-compatible provider: agent coding traffic legitimately runs past
+    // a minute, so the default is 300 s.
+    const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs || 300000);
 
     try {
       // The guard emits a paired failure response event on ANY thrown error
