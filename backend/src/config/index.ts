@@ -242,16 +242,25 @@ function resolveRequestCapture(parsed: any): RequestCaptureConfig {
   const base = DEFAULT_CONFIG.requestCapture as RequestCaptureConfig;
   const raw = (parsed?.requestCapture ?? {}) as Record<string, unknown>;
   // `as` cast: raw YAML is untyped at this boundary; the old spread was too.
-  const pick = <K extends 'enabled' | 'retentionDays' | 'maxTotalMB' | 'maxBodyBytes' | 'maxSessionMB' | 'dir'>(key: K) =>
-    (raw[key] ?? base[key]) as RequestCaptureConfig[K];
+  const pick = <K extends 'enabled' | 'dir'>(key: K) => (raw[key] ?? base[key]) as RequestCaptureConfig[K];
+  // Trust boundary: a negative maxTotalMB makes the sweep delete EVERY date
+  // dir, and a negative maxSessionMB seals every archive at its first event —
+  // both irreversible. The console's number inputs run `parseInt(v) || default`,
+  // which admits negatives, so clamp here (the one place all callers route
+  // through): finite values floor at 1, garbage falls back to the default.
+  const pickPositive = <K extends 'retentionDays' | 'maxTotalMB' | 'maxBodyBytes' | 'maxSessionMB'>(key: K): number => {
+    const v = Number(raw[key] ?? base[key]);
+    return Number.isFinite(v) ? Math.max(1, Math.round(v)) : (base[key] as number);
+  };
   const sysRaw = raw.systemone as Record<string, unknown> | undefined;
   return {
     enabled: pick('enabled'),
-    retentionDays: pick('retentionDays'),
-    maxTotalMB: pick('maxTotalMB'),
-    maxBodyBytes: pick('maxBodyBytes'),
-    maxSessionMB: pick('maxSessionMB'),
-    // boolean needs ?? chain (false must survive); not in the pick union since K extends keyof RequestCaptureConfig number/string keys only there
+    retentionDays: pickPositive('retentionDays'),
+    maxTotalMB: pickPositive('maxTotalMB'),
+    maxBodyBytes: pickPositive('maxBodyBytes'),
+    maxSessionMB: pickPositive('maxSessionMB'),
+    // boolean needs the ?? chain (false must survive); deliberately NOT in the
+    // pick union, which now types only the boolean/string keys.
     storeMedia: (raw.storeMedia ?? base.storeMedia) as boolean,
     dir: pick('dir'),
     systemone: {
@@ -829,7 +838,7 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'compression.headroom.compressUserMessages': '同时压缩 user 角色文本（会话模式下自动忽略）',
   'compression.caveman.enabled': 'caveman 输出压缩：向 system 幂等注入简洁风格提示词，显著压缩输出 token（代码/路径/命令逐字保留）',
   'compression.caveman.level': 'caveman 强度：lite / full / ultra / wenyan-lite / wenyan / wenyan-ultra（文言）',
-  requestCapture: '请求全量捕获（HTTP 交换审计日志；默认关闭）：请求/响应原文落盘 JSONL，捕获体可能含敏感数据且占用磁盘，按日期目录保留、到期或超容量自动清理',
+  requestCapture: '请求全量捕获（HTTP 交换审计日志；默认关闭）：请求/响应原文落盘 JSONL，捕获体可能含敏感数据且占用磁盘，按日期目录保留、到期或超容量自动清理；单会话另有 maxSessionMB 封顶（失控的 agent 循环不会吃光共享容量，触顶档案停止追加并落一条 archive-overflow 终态行）',
   'requestCapture.storeMedia': 'base64 图片/文档等二进制载荷转存硬盘（默认 true）：请求体中的 base64 媒体替换为 [MEDIA …sha256=… file=media/…] 占位符，内容寻址去重（同一张图多轮重发只落一份），随日期目录同批清理；关闭或写盘失败时仍替换为无 file= 的占位符（不留 base64 在归档里），对话回放页可直接显示缩略图',
   'requestCapture.systemone.enabled': 'System One 决策面总闸（默认 true；仅当 requestCapture.enabled 为 true 时生效）：关闭时两腿同哑——/v1/systemone 全链路捕捉（客户端请求/响应 + 网关对上游的调用腿；路由指标仍不捕获）连同下方 L2 裁判 HTTP 腿捕捉一并静默；开启时该面全链路捕捉照常（决策体是客户端状态快照，注意隐私与磁盘占用）',
   'requestCapture.systemone.l2DecisionEnabled': 'L2 裁判 HTTP 腿捕捉子开关（默认 true；仅当 requestCapture.enabled 与 requestCapture.systemone.enabled 均为 true 时生效）：L2 裁判内部发起的决策模型调用记为上游捕捉事件（挂外层会话/追踪），与客户端请求捕捉主语正交——只增记裁判自己的线路调用，不筛选客户端流量；注意与 classifier.layer2.collectEnabled（数据集采样落盘）是两个不同开关',
