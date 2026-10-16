@@ -663,7 +663,7 @@ const ExportDialog: React.FC<{
           <button className="btn" onClick={onClose}>
             {t('common.cancel')}
           </button>
-          <button className="btn btn-primary" onClick={() => onConfirm(exclude, withImages)}}>
+          <button className="btn btn-primary" onClick={() => onConfirm(exclude, withImages)}>
             {t('captures.exportBtn')}
           </button>
         </div>
