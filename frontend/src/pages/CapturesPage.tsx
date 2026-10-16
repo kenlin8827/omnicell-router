@@ -18,6 +18,8 @@ import { Combobox } from '../components/Combobox';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import { copyToClipboard, shortId, outputRate, formatRate, fmtDur } from '../lib/format';
 import { useSplitterWidth, VSplitter } from '../components/Splitter';
+import { SessionTranscript } from '../components/SessionTranscript';
+import { unwrapHarnessText } from '../lib/transcript';
 
 /**
  * Best-effort completion-token extraction from a captured response wire body.
@@ -56,6 +58,9 @@ const RAIL_MIN = 240;
 const RAIL_MAX = 640;
 const RAIL_DEFAULT = 320;
 const RAIL_WIDTH_KEY = 'ocr.captures.railWidth';
+
+// Main-pane view: wire-level turn timeline vs. reconstructed conversation.
+const MAIN_VIEW_KEY = 'ocr.captures.mainView';
 
 function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -665,6 +670,23 @@ export const CapturesPage: React.FC = () => {
   const [totalTurns, setTotalTurns] = useState(0);
   const [fileTruncated, setFileTruncated] = useState(false);
   const [selectedTurnIdx, setSelectedTurnIdx] = useState<number | null>(null);
+  // Main-pane view mode: wire timeline (default) or the reconstructed
+  // conversation replay. Persisted so the chosen lens survives reloads.
+  const [mainView, setMainView] = useState<'timeline' | 'chat'>(() => {
+    try {
+      return localStorage.getItem(MAIN_VIEW_KEY) === 'chat' ? 'chat' : 'timeline';
+    } catch {
+      return 'timeline';
+    }
+  });
+  const switchView = (v: 'timeline' | 'chat') => {
+    setMainView(v);
+    try {
+      localStorage.setItem(MAIN_VIEW_KEY, v);
+    } catch {
+      /* ignore quota / private-mode errors */
+    }
+  };
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [toggling, setToggling] = useState(false);
@@ -842,7 +864,7 @@ export const CapturesPage: React.FC = () => {
         requestCapture: {
           retentionDays: 7,
           maxTotalMB: 512,
-          maxBodyBytes: 65536,
+          maxBodyBytes: 262144,
           ...(cfg.requestCapture || {}),
           enabled: next,
         },
@@ -1167,7 +1189,7 @@ export const CapturesPage: React.FC = () => {
                             textOverflow: 'ellipsis',
                           }}
                         >
-                          {s.preview || s.sessionId}
+                          {unwrapHarnessText(s.preview ?? '') || s.sessionId}
                         </span>
                         <span
                           style={{
@@ -1325,21 +1347,56 @@ export const CapturesPage: React.FC = () => {
                             · {t('captures.totalTime')} {fmtDur(totalLatencyMs)}
                           </span>
                         )}
-                        {/* Session-level refresh: re-read just this archive's
-                            tail (cheap), vs the header button that reloads
-                            status + dates + session list too. */}
-                        <button
-                          className="btn btn-sm"
-                          style={{ marginLeft: 'auto' }}
-                          onClick={() => loadRecords(selectedDate, selectedFile)}
-                          disabled={loading}
-                          title={t('captures.refreshTurnsHint')}
-                        >
-                          <RefreshCw size={12} style={loading ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
-                          <span>{t('captures.refresh')}</span>
-                        </button>
+                        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+                          {/* View lens: raw-wire turn timeline vs reconstructed conversation replay. */}
+                          <div
+                            style={{
+                              display: 'flex',
+                              border: '1px solid var(--card-border)',
+                              borderRadius: 6,
+                              overflow: 'hidden',
+                            }}
+                          >
+                            {(['timeline', 'chat'] as const).map(v => (
+                              <button
+                                key={v}
+                                onClick={() => switchView(v)}
+                                style={{
+                                  background: mainView === v ? 'var(--chip-bg)' : 'transparent',
+                                  color: mainView === v ? 'var(--accent)' : 'var(--text-dim)',
+                                  border: 'none',
+                                  cursor: 'pointer',
+                                  fontSize: '11.5px',
+                                  padding: '4px 10px',
+                                }}
+                              >
+                                {v === 'timeline' ? t('captures.viewTimeline') : t('captures.viewChat')}
+                              </button>
+                            ))}
+                          </div>
+                          {/* Session-level refresh: re-read just this archive's
+                              tail (cheap), vs the header button that reloads
+                              status + dates + session list too. */}
+                          <button
+                            className="btn btn-sm"
+                            onClick={() => loadRecords(selectedDate, selectedFile)}
+                            disabled={loading}
+                            title={t('captures.refreshTurnsHint')}
+                          >
+                            <RefreshCw size={12} style={loading ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
+                            <span>{t('captures.refresh')}</span>
+                          </button>
+                        </div>
                       </div>
                       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '10px 16px 14px' }}>
+                        {mainView === 'chat' ? (
+                          <SessionTranscript
+                            turns={turns}
+                            fileTruncated={fileTruncated}
+                            onOpenTurn={idx => setSelectedTurnIdx(idx)}
+                          />
+                        ) : (
+                        <>
                         {fileTruncated && (
                           <div
                             style={{
@@ -1493,6 +1550,8 @@ export const CapturesPage: React.FC = () => {
                             );
                           })}
                         </div>
+                        </>
+                        )}
                       </div>
                     </>
                   )}
