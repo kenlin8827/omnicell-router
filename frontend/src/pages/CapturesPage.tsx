@@ -1697,6 +1697,7 @@ export const CapturesPage: React.FC = () => {
                 turns={turns}
                 fileTruncated={fileTruncated}
                 date={selectedDate}
+                expandAll
                 onOpenTurn={idx => setSelectedTurnIdx(idx)}
               />
             </div>

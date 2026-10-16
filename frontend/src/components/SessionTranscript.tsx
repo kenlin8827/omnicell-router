@@ -515,14 +515,18 @@ const RoundCard: React.FC<{
   round: TranscriptRound;
   ordinal: number;
   date?: string;
+  /** Fullscreen reading opens every round; the pane default stays skim-mode. */
+  defaultOpen?: boolean;
   /** Renders the ⛶ header button (absent inside the focus overlay itself). */
   onFocus?: () => void;
   onOpenTurn: (idx: number) => void;
-}> = ({ round, ordinal, date, onFocus, onOpenTurn }) => {
+}> = ({ round, ordinal, date, defaultOpen, onFocus, onOpenTurn }) => {
   const { t } = useI18n();
   // All rounds collapsed by default — the Q→A skim (header + tail answer)
-  // covers the whole session; steps open on demand.
-  const [open, setOpen] = useState(false);
+  // covers the whole session; steps open on demand. In fullscreen reading
+  // the point IS the steps, so they start open (still individually
+  // collapsible — this only seeds the initial state).
+  const [open, setOpen] = useState(defaultOpen ?? false);
   // Full prompt shown in the header (final UX call after a single-line
   // ellipsis detour): own line, wraps, never truncated.
   const excerpt = useMemo(() => {
@@ -773,8 +777,10 @@ export const SessionTranscript: React.FC<{
   fileTruncated: boolean;
   /** Archive date dir (YYYY-MM-DD) — builds the media read URLs for chips. */
   date?: string;
+  /** Fullscreen reading seeds every round open (pane default: collapsed). */
+  expandAll?: boolean;
   onOpenTurn: (idx: number) => void;
-}> = ({ turns, fileTruncated, date, onOpenTurn }) => {
+}> = ({ turns, fileTruncated, date, expandAll, onOpenTurn }) => {
   const { t } = useI18n();
   const items = useMemo(() => buildTranscript(turns), [turns]);
   const rounds = useMemo(() => groupIntoRounds(items), [items]);
@@ -827,6 +833,7 @@ export const SessionTranscript: React.FC<{
             round={r}
             ordinal={i + 1}
             date={date}
+            defaultOpen={expandAll}
             onFocus={() => setFocusIdx(i)}
             onOpenTurn={onOpenTurn}
           />
