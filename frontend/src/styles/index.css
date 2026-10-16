@@ -458,6 +458,72 @@ td, th {
   opacity: 1;
 }
 
+/* Markdown surface for rendered assistant answers (captures replay). The
+   Prose shell around it owns the well fill / border / line-clamp; this block
+   only styles the flow content. Raw HTML is never rendered (react-markdown
+   default) — captured text cannot inject markup. */
+.md-well {
+  overflow-wrap: anywhere;
+}
+.md-well > :first-child { margin-top: 0; }
+.md-well > :last-child { margin-bottom: 0; }
+.md-well p { margin: 0 0 8px; }
+.md-well h1, .md-well h2, .md-well h3, .md-well h4, .md-well h5, .md-well h6 {
+  margin: 12px 0 6px;
+  line-height: 1.4;
+  font-weight: 700;
+}
+.md-well h1 { font-size: 15px; }
+.md-well h2 { font-size: 14px; }
+.md-well h3 { font-size: 13px; }
+.md-well h4, .md-well h5, .md-well h6 { font-size: 12px; }
+.md-well ul, .md-well ol { margin: 0 0 8px; padding-left: 20px; }
+.md-well li { margin: 2px 0; }
+.md-well li > p { margin: 0; } /* GFM loose lists */
+.md-well code {
+  font-family: 'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace;
+  font-size: 11px;
+  background: var(--chip-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+.md-well pre {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  background: var(--input-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  overflow-x: auto;
+}
+.md-well pre code {
+  background: none;
+  border: none;
+  padding: 0;
+}
+.md-well blockquote {
+  margin: 0 0 8px;
+  padding: 2px 10px;
+  border-left: 2px solid var(--card-border);
+  color: var(--text-muted);
+}
+.md-well table {
+  border-collapse: collapse;
+  margin: 0 0 8px;
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.md-well th, .md-well td {
+  border: 1px solid var(--card-border);
+  padding: 3px 8px;
+  text-align: left;
+}
+.md-well th { background: var(--chip-bg); font-weight: 700; }
+.md-well a { color: var(--accent); }
+.md-well hr { border: none; border-top: 1px solid var(--divider); margin: 10px 0; }
+.md-well img { max-width: 100%; border-radius: 6px; }
+
 .card-header {
   display: flex;
   align-items: center;

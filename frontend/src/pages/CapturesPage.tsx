@@ -60,9 +60,6 @@ const RAIL_MAX = 640;
 const RAIL_DEFAULT = 320;
 const RAIL_WIDTH_KEY = 'ocr.captures.railWidth';
 
-// Main-pane view: wire-level turn timeline vs. reconstructed conversation.
-const MAIN_VIEW_KEY = 'ocr.captures.mainView';
-
 function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
@@ -691,22 +688,10 @@ export const CapturesPage: React.FC = () => {
   const [fileTruncated, setFileTruncated] = useState(false);
   const [selectedTurnIdx, setSelectedTurnIdx] = useState<number | null>(null);
   // Main-pane view mode: wire timeline (default) or the reconstructed
-  // conversation replay. Persisted so the chosen lens survives reloads.
-  const [mainView, setMainView] = useState<'timeline' | 'chat'>(() => {
-    try {
-      return localStorage.getItem(MAIN_VIEW_KEY) === 'chat' ? 'chat' : 'timeline';
-    } catch {
-      return 'timeline';
-    }
-  });
-  const switchView = (v: 'timeline' | 'chat') => {
-    setMainView(v);
-    try {
-      localStorage.setItem(MAIN_VIEW_KEY, v);
-    } catch {
-      /* ignore quota / private-mode errors */
-    }
-  };
+  // conversation replay. Always starts on the timeline — the chat lens
+  // parses + renders every round, so it should cost nothing until the
+  // user opts in per visit (deliberately NOT persisted across reloads).
+  const [mainView, setMainView] = useState<'timeline' | 'chat'>('timeline');
   // Fullscreen conversation reading (transient — never persisted).
   const [chatFull, setChatFull] = useState(false);
   useEffect(() => {
@@ -1427,7 +1412,7 @@ export const CapturesPage: React.FC = () => {
                             {(['timeline', 'chat'] as const).map(v => (
                               <button
                                 key={v}
-                                onClick={() => switchView(v)}
+                                onClick={() => setMainView(v)}
                                 style={{
                                   background: mainView === v ? 'var(--chip-bg)' : 'transparent',
                                   color: mainView === v ? 'var(--accent)' : 'var(--text-dim)',

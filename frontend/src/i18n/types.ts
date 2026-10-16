@@ -1223,6 +1223,7 @@ hiddenBadge: string;
     roundOrdinal: string;
     roundTailLabel: string;
     roundUnconvergedNote: string;
+    resultsMissingShort: string;
     resultsMissingNote: string;
     divergedNote: string;
     reqTruncatedNote: string;

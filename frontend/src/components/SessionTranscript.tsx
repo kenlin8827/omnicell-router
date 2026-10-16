@@ -5,9 +5,11 @@
  * middle, and the converged answer is the tail. Reconstructed from the turn
  * wire bodies by lib/transcript; each step links to its raw wire drawer.
  */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, ChevronDown, ChevronRight, Image as ImageIcon, Maximize2, Minimize2, Wrench } from 'lucide-react';
+import ReactMarkdown, { type Components } from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { AlertTriangle, Bot, ChevronDown, ChevronRight, Image as ImageIcon, Maximize2, Minimize2, User, Wrench } from 'lucide-react';
 import { useI18n } from '../i18n/I18nContext';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import type { CaptureTurn } from '../lib/api';
@@ -30,15 +32,42 @@ const MONO = "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', mon
 
 const fmtTime = (ts: number) => new Date(ts).toLocaleTimeString();
 
-/** Prose with line-clamp collapse; the toggle only appears for long bodies. */
-/** open/hideToggle support a parent-owned toggle (ToolResultRow's header row)
+const MD_PLUGINS = [remarkGfm];
+// Captured answers may link out — never hijack the console's own tab.
+// Remote <img> is never fetched: a model's markdown must not make the
+// operator's browser hit a third-party origin (IP/UA leak, tracking pixel).
+// The console's own media route is a same-origin relative path, so it stays.
+const MD_COMPONENTS: Components = {
+  a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
+  img: ({ node: _node, src, ...props }) =>
+    typeof src === 'string' && /^(?:https?:)?\/\//i.test(src) ? (
+      <span style={{ color: 'var(--text-dim)', fontSize: '11px' }}>[image]</span>
+    ) : (
+      <img {...props} src={src} loading="lazy" />
+    ),
+};
+
+/** Prose with line-clamp collapse; the toggle only appears for long bodies.
+ *  markdown=true renders GFM (assistant answers) instead of the monospace
+ *  pre-wrap well — clamp/expand behavior is identical, only the medium.
+ *  open/hideToggle support a parent-owned toggle (ToolResultRow's header row)
  *  so the control can sit above the preview instead of under it. */
-const Prose: React.FC<{ text: string; clamp?: number; color?: string; bg?: string; border?: string; open?: boolean; hideToggle?: boolean }> = ({
+const Prose: React.FC<{
+  text: string;
+  clamp?: number;
+  color?: string;
+  bg?: string;
+  border?: string;
+  markdown?: boolean;
+  open?: boolean;
+  hideToggle?: boolean;
+}> = ({
   text,
   clamp = 12,
   color,
   bg,
   border,
+  markdown = false,
   open: openProp,
   hideToggle,
 }) => {
@@ -46,38 +75,40 @@ const Prose: React.FC<{ text: string; clamp?: number; color?: string; bg?: strin
   const [openState, setOpen] = useState(false);
   const open = openProp ?? openState;
   const long = useMemo(() => text.split('\n').length > clamp || text.length > clamp * 140, [text, clamp]);
-  // Collapsed = line-clamp; expanded = capped viewport with its own vertical
-  // scroll — a giant tool dump must not stretch the whole waterfall.
-  const bodyStyle: React.CSSProperties = long && !open
-    ? {
-        display: '-webkit-box',
-        WebkitLineClamp: clamp,
-        WebkitBoxOrient: 'vertical',
-        overflow: 'hidden',
-      }
-    : long
-      ? { maxHeight: '45vh', overflowY: 'auto' }
+  // Collapsed = line-clamp; expanded = full flow — the round's waterfall
+  // panel owns vertical scrolling (two scroll layers, not three).
+  const bodyStyle: React.CSSProperties =
+    long && !open
+      ? {
+          display: '-webkit-box',
+          WebkitLineClamp: clamp,
+          WebkitBoxOrient: 'vertical',
+          overflow: 'hidden',
+        }
       : {};
+  const shell: React.CSSProperties = {
+    margin: 0,
+    padding: '8px 10px',
+    background: bg ?? 'var(--well-bg)',
+    border: `1px solid ${border ?? 'var(--card-border)'}`,
+    borderRadius: 6,
+    fontSize: '12px',
+    lineHeight: 1.6,
+    color: color ?? 'var(--text)',
+    wordBreak: 'break-word',
+    ...bodyStyle,
+  };
   return (
     <div>
-      <pre
-        style={{
-          margin: 0,
-          padding: '8px 10px',
-          background: bg ?? 'var(--well-bg)',
-          border: `1px solid ${border ?? 'var(--card-border)'}`,
-          borderRadius: 6,
-          fontSize: '11.5px',
-          lineHeight: 1.6,
-          color: color ?? 'var(--text)',
-          fontFamily: MONO,
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-word',
-          ...bodyStyle,
-        }}
-      >
-        {text}
-      </pre>
+      {markdown ? (
+        <div className="md-well" style={shell}>
+          <ReactMarkdown remarkPlugins={MD_PLUGINS} components={MD_COMPONENTS}>
+            {text}
+          </ReactMarkdown>
+        </div>
+      ) : (
+        <pre style={{ ...shell, fontFamily: MONO, whiteSpace: 'pre-wrap' }}>{text}</pre>
+      )}
       {long && !hideToggle && (
         <button
           onClick={() => setOpen(o => !o)}
@@ -204,10 +235,11 @@ const ToolCallCard: React.FC<{ call: TranscriptToolCall }> = ({ call }) => {
   return (
     <div
       style={{
-        border: '1px solid color-mix(in srgb, var(--accent-amber) 35%, transparent)',
-        borderRadius: 6,
-        background: 'color-mix(in srgb, var(--accent-amber) 7%, transparent)',
-        padding: '6px 8px',
+        // Left-rule language matching user/assistant message rails — a full
+        // amber box per call was the loudest element on screen despite being
+        // the most frequent (hierarchy inversion).
+        borderLeft: '2px solid color-mix(in srgb, var(--accent-amber) 45%, transparent)',
+        paddingLeft: 8,
       }}
     >
       <div
@@ -219,17 +251,7 @@ const ToolCallCard: React.FC<{ call: TranscriptToolCall }> = ({ call }) => {
         ) : (
           <span style={{ width: 12, flexShrink: 0 }} />
         )}
-        <span
-          className="badge"
-          style={{
-            background: 'color-mix(in srgb, var(--accent-amber) 16%, transparent)',
-            color: 'var(--accent-amber)',
-            fontSize: '10px',
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 3,
-          }}
-        >
+        <span className="badge badge-amber">
           <Wrench size={9} style={{ flexShrink: 0 }} />
           {t('captures.toolCallLabel')}
         </span>
@@ -247,8 +269,11 @@ const ToolCallCard: React.FC<{ call: TranscriptToolCall }> = ({ call }) => {
   );
 };
 
-const RoleLabel: React.FC<{ label: string; color: string }> = ({ label, color }) => (
-  <div style={{ fontSize: '10.5px', fontWeight: 700, color, marginBottom: 3, letterSpacing: 0.3 }}>{label}</div>
+const RoleLabel: React.FC<{ label: string; color: string; icon?: React.ReactNode }> = ({ label, color, icon }) => (
+  <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '11px', fontWeight: 700, color, marginBottom: 3, letterSpacing: 0.3 }}>
+    {icon}
+    {label}
+  </div>
 );
 
 /** One message from the request-side delta (user / tool result / system). */
@@ -306,15 +331,18 @@ const MessageView: React.FC<{ msg: TranscriptMessage; date?: string }> = ({ msg,
       <RoleLabel
         label={isUser ? t('captures.msgUser') : msg.role === 'assistant' ? t('captures.msgAssistant') : t('captures.msgTool')}
         color={isUser ? 'var(--accent)' : 'var(--accent-emerald)'}
+        icon={isUser ? <User size={12} /> : <Bot size={12} />}
       />
-      {text && <ProseWithMedia text={text} date={date} />}
+      {/* User prompts stay verbatim (harness text / media tokens); assistant
+          echoes render as GFM like the live output they were. */}
+      {text && (isUser ? <ProseWithMedia text={text} date={date} /> : <Prose text={text} markdown />)}
       {msg.blocks.filter(b => b.kind === 'tool_result').map((b, i) => (
         <div key={i} style={{ marginTop: 4 }}>
           <ToolResultRow name={msg.toolName} blockText={b.text} date={date} />
         </div>
       ))}
       {msg.toolCalls.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: text ? 6 : 0 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: text ? 10 : 0 }}>
           {msg.toolCalls.map((c, i) => (
             <ToolCallCard key={c.id || i} call={c} />
           ))}
@@ -332,21 +360,14 @@ const ToolResultRow: React.FC<{ name?: string; blockText: string; date?: string 
   const [open, setOpen] = useState(false);
   const long = blockText.split('\n').length > 6 || blockText.length > 6 * 140;
   return (
-    <div
-      style={{
-        border: '1px dashed var(--card-border)',
-        borderRadius: 6,
-        padding: '5px 8px',
-        background: 'var(--surface)',
-      }}
-    >
+    <div>
       <div
         onClick={() => long && setOpen(o => !o)}
         style={{
           display: 'flex',
           alignItems: 'center',
           gap: 6,
-          fontSize: '10.5px',
+          fontSize: '11px',
           color: 'var(--text-dim)',
           marginBottom: 3,
           cursor: long ? 'pointer' : 'default',
@@ -358,7 +379,7 @@ const ToolResultRow: React.FC<{ name?: string; blockText: string; date?: string 
         </span>
         {name && <span style={{ fontFamily: MONO, fontWeight: 600 }}>{name}</span>}
         {long && (
-          <span style={{ marginLeft: 'auto', color: 'var(--accent)', fontSize: '10.5px' }}>
+          <span style={{ marginLeft: 'auto', color: 'var(--accent)', fontSize: '11px' }}>
             {open ? t('captures.collapse') : t('captures.expand')}
           </span>
         )}
@@ -377,7 +398,7 @@ const OutputView: React.FC<{ out: TurnOutput }> = ({ out }) => {
   const [thinkOpen, setThinkOpen] = useState(false);
   return (
     <div style={{ borderLeft: '2px solid var(--accent-emerald)', paddingLeft: 10, marginBottom: 6 }}>
-      <RoleLabel label={t('captures.msgAssistant')} color="var(--accent-emerald)" />
+      <RoleLabel label={t('captures.msgAssistant')} color="var(--accent-emerald)" icon={<Bot size={12} />} />
       {out.reasoning && (
         <div style={{ marginBottom: 4 }}>
           <button
@@ -401,9 +422,9 @@ const OutputView: React.FC<{ out: TurnOutput }> = ({ out }) => {
           )}
         </div>
       )}
-      {out.text && <Prose text={out.text} />}
+      {out.text && <Prose text={out.text} markdown />}
       {out.toolCalls.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: out.text || out.reasoning ? 6 : 0 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: out.text || out.reasoning ? 10 : 0 }}>
           {out.toolCalls.map((c, i) => (
             <ToolCallCard key={c.id || i} call={c} />
           ))}
@@ -413,8 +434,9 @@ const OutputView: React.FC<{ out: TurnOutput }> = ({ out }) => {
   );
 };
 
-const Note: React.FC<{ tone: 'warn' | 'dim'; text: string }> = ({ tone, text }) => (
+const Note: React.FC<{ tone: 'warn' | 'dim'; text: string; title?: string }> = ({ tone, text, title }) => (
   <div
+    title={title}
     style={{
       display: 'flex',
       alignItems: 'flex-start',
@@ -433,8 +455,9 @@ const TranscriptBlock: React.FC<{
   st: TranscriptTurn;
   label: string;
   date?: string;
+  first?: boolean;
   onOpenTurn: (idx: number) => void;
-}> = ({ st, label, date, onOpenTurn }) => {
+}> = ({ st, label, date, first, onOpenTurn }) => {
   const { t } = useI18n();
   const { turn } = st;
   const err =
@@ -445,9 +468,11 @@ const TranscriptBlock: React.FC<{
   return (
     <div
       style={{
-        paddingBottom: 10,
-        marginBottom: 10,
-        borderBottom: '1px solid var(--divider)',
+        // List-row language (index.css list-group contract): steps share the
+        // panel's single frame, separated by one hairline rule — a bordered
+        // card per step was box-in-box wire-mesh noise.
+        padding: '10px 2px',
+        borderTop: first ? undefined : '1px solid var(--divider)',
       }}
     >
       {/* Turn header — same chip language as the timeline row; click opens the wire drawer. */}
@@ -456,17 +481,10 @@ const TranscriptBlock: React.FC<{
         {st.ts !== undefined && (
           <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: MONO }}>{fmtTime(st.ts)}</span>
         )}
-        <span
-          className="badge"
-          style={
-            err
-              ? { background: 'rgba(239,68,68,0.12)', color: '#ef4444' }
-              : { background: 'color-mix(in srgb, var(--accent-emerald) 12%, transparent)', color: 'var(--accent-emerald)' }
-          }
-        >
+        <span className={`badge ${err ? 'badge-danger' : 'badge-success'}`}>
           {err ? t('captures.statusError') : t('captures.statusOk')}
         </span>
-        <span style={{ fontSize: '11.5px', fontWeight: 600 }}>
+        <span style={{ fontSize: '12px', fontWeight: 600 }}>
           {turn.model}
           {upstreamModel && upstreamModel !== turn.model && (
             <span style={{ fontWeight: 400, color: 'var(--text-dim)' }}> → {upstreamModel}</span>
@@ -474,6 +492,12 @@ const TranscriptBlock: React.FC<{
         </span>
         {turn.gatewayLatencyMs !== undefined && (
           <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: MONO }}>↳ {turn.gatewayLatencyMs} ms</span>
+        )}
+        {st.reqTruncated && (
+          <span className="badge badge-warning" title={t('captures.reqTruncatedNote')} style={{ flexShrink: 0 }}>
+            <AlertTriangle size={10} />
+            {t('captures.truncatedBadge')}
+          </span>
         )}
         <button
           className="btn btn-sm"
@@ -486,7 +510,6 @@ const TranscriptBlock: React.FC<{
       </div>
 
       {st.diverged && <Note tone="warn" text={t('captures.divergedNote')} />}
-      {st.reqTruncated && <Note tone="warn" text={t('captures.reqTruncatedNote')} />}
       {st.reqUnparsed && <Note tone="dim" text={t('captures.reqUnparsedNote')} />}
 
       {st.input.map((m, i) => (
@@ -511,9 +534,51 @@ const TranscriptBlock: React.FC<{
 };
 
 /**
- * One by-prompt round. Collapsed (default): prompt header + tail answer —
- * the Q→A skim. Expanded: the waterfall of HTTP turns the prompt drove, each
- * step keeping its own latency chips and raw-wire access.
+ * The round's converged tail answer — a persistent footer under the card
+ * in BOTH states (collapsed: directly under the header; expanded: below the
+ * step panel, outside it), and after the steps in the focus overlay. Falls
+ * back to the final reasoning (DeepSeek-style thinking-only answers), else
+ * a dim note.
+ */
+const RoundTail: React.FC<{ round: TranscriptRound }> = ({ round }) => {
+  const { t } = useI18n();
+  return round.finalText ? (
+    <>
+      <RoleLabel label={t('captures.roundTailLabel')} color="var(--accent-emerald)" />
+      <Prose text={round.finalText} clamp={6} markdown />
+      {round.finalToolCalls.length > 0 && (
+        <div style={{ marginTop: 4 }}>
+          <Note tone="dim" text={t('captures.roundUnconvergedNote')} />
+        </div>
+      )}
+    </>
+  ) : round.finalReasoning ? (
+    <>
+      <RoleLabel label={t('captures.msgThinking')} color="var(--text-muted)" />
+      <Prose text={round.finalReasoning} clamp={6} color="var(--text-muted)" />
+      <div style={{ marginTop: 4 }}>
+        <Note tone="dim" text={t('captures.roundUnconvergedNote')} />
+      </div>
+    </>
+  ) : (
+    <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+      {round.hasError || round.toolCallsIssued > 0
+        ? t('captures.roundUnconvergedNote')
+        : t('captures.nothingNote')}
+    </div>
+  );
+};
+
+/**
+ * One by-prompt round. Header band: bare disclosure triangle leads on the
+ * LEFT (tree convention); the title row is ONE inline line — meta chips,
+ * prompt (1-line ellipsis, expandable in place), step count. Collapsed
+ * (default): header + tail answer — the Q→A skim. Expanded: the waterfall
+ * of HTTP turns the prompt drove, held in an independent inset panel
+ * (.sub-card language) that owns its own scrollbar capped at 60vh — an
+ * expanded round never blows up the session scroll. The tail answer is a
+ * persistent footer OUTSIDE the panel in both states — it closes the card
+ * below the steps and stays within one short scroll.
  */
 const RoundCard: React.FC<{
   round: TranscriptRound;
@@ -531,8 +596,16 @@ const RoundCard: React.FC<{
   // the point IS the steps, so they start open (still individually
   // collapsible — this only seeds the initial state).
   const [open, setOpen] = useState(defaultOpen ?? false);
-  // Full prompt shown in the header (final UX call after a single-line
-  // ellipsis detour): own line, wraps, never truncated.
+  // Round title row: ONE inline line — meta chips, the prompt (1-line
+  // ellipsis, full text on hover title), its expand toggle, step count.
+  // Overflow is MEASURED horizontally (ResizeObserver), not guessed from
+  // char counts — the pane is splitter-resizable and CJK wraps differently.
+  const [promptOpen, setPromptOpen] = useState(false);
+  const [clipped, setClipped] = useState(false);
+  const promptRef = useRef<HTMLSpanElement | null>(null);
+  // Prompt text for the title row — 1-line ellipsis by default, expandable
+  // in place. Scrubbed media tokens collapse to a short chip — the
+  // thumbnail lives in the step view.
   const excerpt = useMemo(() => {
     if (!round.prompt) return '';
     return collapseMediaTokens(
@@ -546,6 +619,19 @@ const RoundCard: React.FC<{
     );
   }, [round.prompt, t]);
 
+  useEffect(() => {
+    // Only the collapsed inline span needs measuring; while expanded the
+    // full text is visible and the toggle stays reachable via promptOpen.
+    if (promptOpen) return;
+    const el = promptRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() =>
+      setClipped(el.scrollWidth > el.clientWidth + 1)
+    );
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [excerpt, promptOpen]);
+
   return (
     <div
       style={{
@@ -555,99 +641,160 @@ const RoundCard: React.FC<{
         overflow: 'hidden',
       }}
     >
+      {/* Header band — the whole band toggles, so it stays quiet at rest and
+          lights up on hover (the timeline-row language). A permanent
+          --surface-hover fill read as a "selected" gray slab: it boxed the
+          prompt in a hard-edged block and washed out the white text. */}
       <div
         style={{
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: 10,
           padding: '8px 12px',
-          background: 'var(--surface)',
+          background: 'transparent',
           cursor: 'pointer',
           fontSize: '12px',
         }}
         onClick={() => setOpen(o => !o)}
+        onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface-hover)')}
+        onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
       >
-        {/* Row 1 — round meta chips. */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span
-            style={{
-              width: 8,
-              height: 8,
-              borderRadius: '50%',
-              flexShrink: 0,
-              background: round.hasError ? '#ef4444' : 'var(--accent-emerald)',
-            }}
-          />
-          <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)' }}>{t('captures.roundOrdinal', { n: ordinal })}</span>
-          {round.startTs !== undefined && (
-            <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: MONO, flexShrink: 0 }}>{fmtTime(round.startTs)}</span>
-          )}
-          <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: MONO, marginLeft: 'auto', flexShrink: 0 }}>
-            {t('captures.roundStepsUnit', { n: round.steps.length })}
-            {round.totalLatencyMs > 0 ? ` · ${fmtDur(round.totalLatencyMs)}` : ''}
-          </span>
-          {onFocus && (
-            <button
-              onClick={e => {
-                e.stopPropagation();
-                onFocus();
-              }}
-              title={t('captures.roundFocus')}
+        {/* Bare disclosure triangle in a fixed 26px slot (tree convention) —
+            the bordered square read as a checkbox; the whole band toggles. */}
+        <span
+          style={{
+            width: 26,
+            height: 26,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: 'var(--text-muted)',
+            flexShrink: 0,
+          }}
+        >
+          {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+        </span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {/* Title row — one inline line: dot · round · time · prompt
+              (ellipsis) · toggle · steps. */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minHeight: 26 }}>
+            <span
               style={{
-                background: 'none',
-                border: 'none',
-                color: 'var(--text-dim)',
-                cursor: 'pointer',
-                padding: 2,
-                display: 'flex',
+                width: 8,
+                height: 8,
+                borderRadius: '50%',
                 flexShrink: 0,
+                background: round.hasError ? '#ef4444' : 'var(--accent-emerald)',
+              }}
+            />
+            <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', flexShrink: 0 }}>{t('captures.roundOrdinal', { n: ordinal })}</span>
+            {round.startTs !== undefined && (
+              <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: MONO, flexShrink: 0 }}>{fmtTime(round.startTs)}</span>
+            )}
+            {excerpt && !promptOpen && (
+              <span
+                ref={promptRef}
+                title={excerpt}
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  fontWeight: 500,
+                }}
+              >
+                {t('captures.msgUser')}: {excerpt}
+              </span>
+            )}
+            {excerpt && (clipped || promptOpen) && (
+              <button
+                onClick={e => {
+                  e.stopPropagation();
+                  setPromptOpen(o => !o);
+                }}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--accent)',
+                  cursor: 'pointer',
+                  fontSize: '11px',
+                  padding: '2px 4px',
+                  flexShrink: 0,
+                }}
+              >
+                {promptOpen ? t('captures.collapse') : t('captures.expand')}
+              </button>
+            )}
+            <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: MONO, marginLeft: excerpt && !promptOpen ? 0 : 'auto', flexShrink: 0 }}>
+              {t('captures.roundStepsUnit', { n: round.steps.length })}
+              {round.totalLatencyMs > 0 ? ` · ${fmtDur(round.totalLatencyMs)}` : ''}
+            </span>
+            {onFocus && (
+              <button
+                onClick={e => {
+                  e.stopPropagation();
+                  onFocus();
+                }}
+                title={t('captures.roundFocus')}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--text-dim)',
+                  cursor: 'pointer',
+                  padding: 2,
+                  display: 'flex',
+                  flexShrink: 0,
+                }}
+              >
+                <Maximize2 size={12} />
+              </button>
+            )}
+          </div>
+          {/* Expanded prompt — full text as a wrapped block under the row. */}
+          {excerpt && promptOpen ? (
+            <div
+              style={{
+                marginTop: 5,
+                fontWeight: 500,
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                lineHeight: 1.5,
               }}
             >
-              <Maximize2 size={12} />
-            </button>
-          )}
-          {/* Prominent toggle box — the card itself opens/closes anywhere,
-              but this makes the collapsible affordance unmistakable. */}
-          <span
-            style={{
-              width: 26,
-              height: 26,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              border: '1px solid var(--card-border)',
-              borderRadius: 6,
-              background: open ? 'var(--chip-bg)' : 'transparent',
-              color: 'var(--text-muted)',
-              flexShrink: 0,
-            }}
-          >
-            {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-          </span>
+              {t('captures.msgUser')}: {excerpt}
+            </div>
+          ) : !excerpt ? (
+            <div style={{ marginTop: 5, color: 'var(--text-dim)', fontSize: '11px' }}>
+              {t('captures.roundMidOpenNote')}
+            </div>
+          ) : null}
         </div>
-        {/* Row 2 — the user prompt, full text, wrapping freely. */}
-        {excerpt ? (
-          <div
-            style={{
-              marginTop: 5,
-              paddingLeft: 16,
-              fontWeight: 600,
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-              lineHeight: 1.5,
-            }}
-          >
-            {t('captures.msgUser')}: {excerpt}
-          </div>
-        ) : (
-          <div style={{ marginTop: 5, paddingLeft: 16, color: 'var(--text-dim)', fontSize: '11px' }}>
-            {t('captures.roundMidOpenNote')}
-          </div>
-        )}
       </div>
 
-      {open ? (
-        <div style={{ padding: '10px 12px 2px' }}>
+      {open && (
+        /* Expanded: an independent inset panel (.sub-card language — bg-elev
+           fill + one frame) with its own scrollbar; overscroll is contained
+           so the wheel stops here instead of chaining to the outer session
+           pane. Steps inside read as list rows, not boxes. */
+        <div
+          style={{
+            margin: '10px 12px 12px',
+            padding: '6px 10px',
+            background: 'var(--bg-elev)',
+            border: '1px solid var(--card-border)',
+            borderRadius: 8,
+            maxHeight: '60vh',
+            overflowY: 'auto',
+            overscrollBehavior: 'contain',
+          }}
+        >
+          {/* Per-round truncation reminder — the gap is only visible inside
+              the waterfall, so the explanation lives here (short line; the
+              full capture-era note rides the hover title). */}
           {round.toolResultsSeen < round.toolCallsIssued && (
-            <div style={{ marginBottom: 6 }}>
-              <Note tone="warn" text={t('captures.resultsMissingNote')} />
+            <div style={{ padding: '4px 2px 2px' }}>
+              <Note tone="warn" text={t('captures.resultsMissingShort')} title={t('captures.resultsMissingNote')} />
             </div>
           )}
           {round.steps.map((st, i) => (
@@ -656,47 +803,20 @@ const RoundCard: React.FC<{
               st={st}
               label={`${ordinal}-${i + 1}`}
               date={date}
+              first={i === 0}
               onOpenTurn={onOpenTurn}
             />
           ))}
         </div>
-      ) : (
-        /* Collapsed: the tail stays visible so a whole session skims as Q→A. */
-        <div style={{ padding: '8px 12px 10px' }}>
-          {round.toolResultsSeen < round.toolCallsIssued && (
-            <div style={{ marginBottom: 6 }}>
-              <Note tone="warn" text={t('captures.resultsMissingNote')} />
-            </div>
-          )}
-          {round.finalText ? (
-            <>
-              <RoleLabel label={t('captures.roundTailLabel')} color="var(--accent-emerald)" />
-              <Prose text={round.finalText} clamp={6} />
-              {round.finalToolCalls.length > 0 && (
-                <div style={{ marginTop: 4 }}>
-                  <Note tone="dim" text={t('captures.roundUnconvergedNote')} />
-                </div>
-              )}
-            </>
-          ) : round.finalReasoning ? (
-            // DeepSeek-style rounds often stream the whole answer as thinking;
-            // showing that beats an empty card.
-            <>
-              <RoleLabel label={t('captures.msgThinking')} color="var(--text-muted)" />
-              <Prose text={round.finalReasoning} clamp={6} color="var(--text-muted)" />
-              <div style={{ marginTop: 4 }}>
-                <Note tone="dim" text={t('captures.roundUnconvergedNote')} />
-              </div>
-            </>
-          ) : (
-            <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
-              {round.hasError || round.toolCallsIssued > 0
-                ? t('captures.roundUnconvergedNote')
-                : t('captures.nothingNote')}
-            </div>
-          )}
-        </div>
       )}
+      {/* Tail answer — persistent card footer in BOTH states, outside the
+          waterfall panel: collapsed it aligns with the prompt column
+          (12 + 26 + 10 = 48); expanded it aligns with the panel's inner
+          content column (margin 12 + border 1 + padding 10 = 23) so the
+          conclusion reads as the waterfall's last row, not a stray indent. */}
+      <div style={{ padding: open ? '0 23px 10px' : '8px 12px 10px 48px' }}>
+        <RoundTail round={round} />
+      </div>
     </div>
   );
 };
@@ -750,7 +870,7 @@ const FocusRoundView: React.FC<{
       </div>
       {promptText ? (
         <div style={{ marginBottom: 10 }}>
-          <RoleLabel label={t('captures.msgUser')} color="var(--accent)" />
+          <RoleLabel label={t('captures.msgUser')} color="var(--accent)" icon={<User size={12} />} />
           <ProseWithMedia text={promptText} date={date} />
         </div>
       ) : (
@@ -760,7 +880,7 @@ const FocusRoundView: React.FC<{
       )}
       {round.toolResultsSeen < round.toolCallsIssued && (
         <div style={{ marginBottom: 8 }}>
-          <Note tone="warn" text={t('captures.resultsMissingNote')} />
+          <Note tone="warn" text={t('captures.resultsMissingShort')} title={t('captures.resultsMissingNote')} />
         </div>
       )}
       {round.steps.map((st, i) => (
@@ -772,6 +892,13 @@ const FocusRoundView: React.FC<{
           onOpenTurn={onOpenTurn}
         />
       ))}
+      {/* Persistent tail — after the steps: the conclusion always reads
+          below the tool calls that produced it. paddingLeft 14 matches the
+          steps' content column (2 + 2 + 10) so the tail aligns with them;
+          marginBottom keeps a real gap above the overlay's bottom edge. */}
+      <div style={{ marginTop: 12, marginBottom: 28, paddingLeft: 14 }}>
+        <RoundTail round={round} />
+      </div>
     </div>
   );
 };
@@ -808,6 +935,8 @@ export const SessionTranscript: React.FC<{
   const anyContent = items.some(
     s => s.input.length > 0 || s.output || s.reqTruncated || s.reqUnparsed || s.diverged || s.hasResponseBody
   );
+  // The missing-results reminder is NOT a session-level banner — it lives on
+  // the affected rounds' waterfalls, where the gap is actually visible.
 
   return (
     <div style={{ fontSize: '12px' }}>
