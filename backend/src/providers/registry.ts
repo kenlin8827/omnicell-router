@@ -10,6 +10,7 @@ import { CircuitBreakerManager, UpstreamError, type ModelAvailability, type Mode
 import { globMatchAny } from '../utils/glob.js';
 import { loadConfig } from '../config/index.js';
 import { resolveTierMembers, claimModel, applyEffortMap, MEMBER_TIER_ORDER, TIER_DESCENDING_ORDER, type MemberClaim } from './member-match.js';
+import { createChunkAccumulator, type StreamRelay } from '../utils/chat-stream.js';
 
 /**
  * Normalize a client-supplied upstream host for provider matching: lowercase,
@@ -872,7 +873,17 @@ export class ProviderRegistry {
     request: ChatCompletionRequest,
     model: ModelRegistration,
     upstreamEventContext?: UpstreamEventContext,
-    credentialKeyHashPrefix?: string
+    credentialKeyHashPrefix?: string,
+    /**
+       * Progressive-output relay. Present = the caller is able to forward
+       * chunks to the client as they arrive; the registry still returns ONE
+       * complete `ChatCompletionResponse` (accumulated from the chunks), so
+       * every post-turn consumer — breaker, FinOps, rate ledger, trace, session
+       * registration — keeps reading a buffered object and is untouched by
+       * streaming. Absent, or a wire with no streaming executor, or mock mode =
+       * the existing buffered call, byte-for-byte as before.
+       */
+    relay?: StreamRelay
   ): Promise<ChatCompletionResponse> {
     if (this.mockMode) {
       return this.mockExecute(request, model);
@@ -899,6 +910,28 @@ export class ProviderRegistry {
     }
 
     try {
+      if (relay) {
+        const streams = provider.supportsStreaming
+          ? provider.supportsStreaming(model)
+          : typeof provider.createStream === 'function';
+        if (streams) {
+          const accumulate = createChunkAccumulator();
+          const stream = await provider.createStream!(request, model, upstreamEventContext, credential);
+          // Drained to the end even when the client has gone away: the turn's
+          // usage frame arrives only with the last chunk, and an abort-triggered
+          // accounting hole would let a client dodge token rate limits by
+          // cancelling repeatedly.
+          for await (const chunk of stream) {
+            accumulate.push(chunk);
+            relay.onChunk(chunk);
+          }
+          return accumulate.finish();
+        }
+        // No streaming executor for this wire — fall through to the buffered
+        // call. Legal precisely because nothing has been forwarded yet: a relay
+        // that has committed bytes can never take this path (createStream would
+        // have been reached first, and its failure surfaces as an error).
+      }
       return await provider.createCompletion(request, model, upstreamEventContext, credential);
     } catch (err) {
       // Attribution stamp: selector hit → that account; no selector → the chain

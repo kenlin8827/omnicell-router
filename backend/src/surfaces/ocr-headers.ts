@@ -1,4 +1,5 @@
 import type { ExecutionResult } from '../types/router.js';
+import type { StreamRoutingFacts } from '../utils/chat-stream.js';
 
 /**
  * Single sink for the X-OCR response headers on every protocol surface.
@@ -57,6 +58,58 @@ export function buildChatOcrHeaders(result: ExecutionResult, fallbackModel: stri
     headers['X-OCR-Variant'] = result.variantUsed;
   }
   return headers;
+}
+
+/**
+ * Routing-time X-OCR header block for a streamed turn — see
+ * `StreamRoutingFacts` in utils/chat-stream (every field is decidable before a
+ * single upstream byte exists).
+ *
+ * Deliberately NOT `buildChatOcrHeaders` with defaults: SSE headers flush with
+ * the first byte, while failover counts, in-place retries, breaker state, total
+ * latency and the served thinking level describe a turn that has not finished.
+ * Sending their buffered-path defaults (`Latency-MS: 0`, `Failover: false`)
+ * would assert facts the gateway does not have yet, so those keys are simply
+ * absent here and ride the trailing `ocr-summary` frame instead.
+ */
+export function buildChatOcrRoutingHeaders(
+  facts: StreamRoutingFacts,
+  fallbackModel: string
+): Record<string, string> {
+  const headers: Record<string, string> = {
+    'X-OCR-Tier': facts.tierUsed ?? '',
+    'X-OCR-Layer': facts.layerUsed || 'layer0',
+    'X-OCR-Model': facts.modelUsed || fallbackModel || 'auto',
+    'X-OCR-Session-ID': facts.sessionId || '',
+    'X-OCR-Session-Ratchet': facts.sessionRatchetApplied ? 'true' : 'false',
+    'X-OCR-Session-Lookup': facts.sessionLookupType || '',
+    'X-OCR-Trace-ID': facts.traceId || '',
+  };
+  if (facts.requestedEffort && facts.requestedEffort !== 'none') {
+    // The REQUEST half of the thinking pair is a client fact (known now); the
+    // ACTUAL / DEGRADED half belongs to the completion summary.
+    headers['X-OCR-Thinking-Requested'] = facts.requestedEffort;
+  }
+  if (facts.variantUsed) headers['X-OCR-Variant'] = facts.variantUsed;
+  return headers;
+}
+
+/**
+ * Completion-time X-OCR facts for a streamed turn, carried in a trailing SSE
+ * comment frame (HTTP trailers are not readable by browser/`fetch` clients, and
+ * inventing a `data:` frame would break strict chunk parsers).
+ *
+ * Same names as the buffered headers, so a client that wants them can parse the
+ * `ocr-summary` comment; the buffered path keeps sending them as headers.
+ */
+export function buildChatOcrCompletionFacts(result: ExecutionResult): Record<string, string> {
+  const all = buildChatOcrHeaders(result, result.modelUsed || 'auto');
+  const routing = buildChatOcrRoutingHeaders(result, result.modelUsed || 'auto');
+  const completion: Record<string, string> = {};
+  for (const [k, v] of Object.entries(all)) {
+    if (!(k in routing)) completion[k] = v;
+  }
+  return completion;
 }
 
 /**

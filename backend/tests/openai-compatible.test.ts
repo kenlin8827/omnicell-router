@@ -17,10 +17,11 @@ function makeModel(): ModelRegistration {
 }
 
 /**
- * Regression: the gateway streams to clients by executing non-streaming
- * upstream calls and re-chunking, so a client-sent `stream_options` must be
- * stripped in createCompletion — strict upstreams (e.g. Alibaba) reject
- * stream_options without stream:true with a 400.
+ * Regression: `createCompletion` is the BUFFERED leg (a wire with no streaming
+ * executor, the schema-assertion cascade, mock mode, or a client that did not
+ * ask for a stream), so a client-sent `stream_options` must be stripped — strict
+ * upstreams (e.g. Alibaba) reject stream_options without stream:true with a 400.
+ * A streamed client is served by `createStream` instead, which sets both.
  */
 describe('OpenAICompatibleProvider payload shaping', () => {
   test('createCompletion strips stream_options from a non-streaming payload', async () => {

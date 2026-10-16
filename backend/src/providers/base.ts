@@ -37,9 +37,30 @@ export interface LLMProvider {
     credential?: CallCredential
   ): Promise<ChatCompletionResponse>;
 
+  /**
+   * Streaming capability probe for the relay path — answered BEFORE any fetch,
+   * so a wire that cannot stream simply never enters the streaming branch
+   * instead of surfacing a "not supported" error mid-request. Optional: an
+   * executor without it is probed by whether `createStream` exists.
+   */
+  supportsStreaming?(model: ModelRegistration): boolean;
+
+  /**
+   * Native streaming execution: yields `chat.completion.chunk` frames as the
+   * upstream SSE body arrives. Optional — a wire whose upstream has no
+   * streaming support simply does not implement it, and the caller falls back
+   * to `createCompletion` (that fallback is only legal while NOTHING has been
+   * written to the client, which the StreamRelay's commit point guarantees).
+   *
+   * Same event/capture discipline as `createCompletion`: request event before
+   * the fetch, a response (or failure) event carrying the raw SSE body once the
+   * stream is consumed, and an `UpstreamError` on a non-2xx head so the
+   * classifier keeps its status / retry-after / credential attribution.
+   */
   createStream?(
     request: ChatCompletionRequest,
     model: ModelRegistration,
+    upstreamEventContext?: UpstreamEventContext,
     credential?: CallCredential
   ): Promise<AsyncIterable<ChatCompletionChunk>>;
 }

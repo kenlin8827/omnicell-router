@@ -373,6 +373,24 @@ export interface ResponsesSurfaceConfig {
 }
 
 /**
+ * Inference streaming posture.
+ */
+export interface StreamingConfig {
+  /**
+   * Relay the upstream SSE body to the client frame by frame instead of
+   * buffering the whole generation and re-chunking it. Default TRUE.
+   *
+   * Scope is bounded by capability, not by preference: only a wire with a
+   * streaming executor (today: OpenAI `chat/completions`) streams, and a turn
+   * whose schema-assertion cascade must see the full content first still takes
+   * the buffered path. `false` restores the pre-streaming behavior everywhere —
+   * it exists as a rollback lever, not as a tuning knob. Restart-scoped (no hot
+   * applyConfig).
+   */
+  enabled?: boolean;
+}
+
+/**
  * Per-key model access policy. ABSENT = unrestricted (see & use every model —
  * the backward-compatible default for existing keys).
  * - mode 'allow' (whitelist): ONLY the listed model ids are visible/routable.
@@ -692,6 +710,12 @@ export interface RouterConfig {
   systemone?: SystemoneSurfaceConfig;
   /** OpenAI Responses protocol surface (POST /v1/responses). */
   responses?: ResponsesSurfaceConfig;
+  /**
+   * Inference streaming posture (see StreamingConfig). Absent = enabled: the
+   * upstream SSE body is relayed to the client frame by frame wherever the
+   * serving wire can stream.
+   */
+  streaming?: StreamingConfig;
   flywheel?: FlywheelConfig;
   session?: SessionConfig;
   circuitBreaker?: CircuitBreakerConfig;

@@ -1,6 +1,6 @@
 import type { ChatCompletionRequest } from '../types/openai.js';
 import type { ExecutionResult } from '../types/router.js';
-import { buildChatStreamChunks } from '../utils/chat-sse.js';
+import { buildChatStreamChunks, formatChatChunkForClient } from '../utils/chat-sse.js';
 import type { ChatSurface, SurfaceParseResult } from './types.js';
 
 /**
@@ -38,6 +38,10 @@ export const chatSurface: ChatSurface = {
     // generator; the `modelUsed || gate || 'auto'` fallback is only for the
     // X-OCR-Model HEADER (ocr-headers.ts), never for chunk bodies.
     return [...buildChatStreamChunks(result.response, result.modelUsed), 'data: [DONE]\n\n'];
+  },
+
+  encodeChunk(chunk, ctx) {
+    return formatChatChunkForClient(chunk, ctx.model, ctx.includeUsage);
   },
 
   errorBody(status: number, message: string, code?: string): unknown {

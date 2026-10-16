@@ -129,7 +129,7 @@ describe('(b) per-call credential overrides the baked key — all four wires', (
 
     captured.length = 0;
     mockFetch(200, 'data: [DONE]\n\n');
-    await dispatch.createStream({ ...request, stream: true }, model('openai'), credential);
+    await dispatch.createStream({ ...request, stream: true }, model('openai'), undefined, credential);
     expect(captured[0]?.headers['Authorization']).toBe(`Bearer ${PER_CALL}`);
   });
 });

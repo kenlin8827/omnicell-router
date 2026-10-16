@@ -49,15 +49,37 @@ export class DispatchingProvider implements LLMProvider {
     return this.exec(model).createCompletion(request, model, upstreamEventContext, credential);
   }
 
+  /**
+   * Phase-1 ceiling: streaming is served ONLY on the plain OpenAI
+   * `chat/completions` wire, because that is the single executor with an SSE
+   * reader (`OpenAICompatibleProvider.createStream`). Anthropic / Google /
+   * Responses executors still return a buffered JSON document, so their models
+   * keep the buffered path and the fake-stream re-chunker.
+   * Upgrade path: implement `createStream` on those executors and drop the wire
+   * restriction below — the relay, commit point and header split are already
+   * wire-agnostic.
+   */
+  public supportsStreaming(model: ModelRegistration): boolean {
+    if ((model.wire ?? 'openai') !== 'openai') return false;
+    try {
+      return !!this.exec(model).createStream;
+    } catch {
+      // Unroutable wire (exec throws): report "cannot stream" and let the pool
+      // surface the real routing error — a capability probe must not mask it.
+      return false;
+    }
+  }
+
   public async createStream(
     request: ChatCompletionRequest,
     model: ModelRegistration,
+    upstreamEventContext?: UpstreamEventContext,
     credential?: CallCredential
   ): Promise<AsyncIterable<ChatCompletionChunk>> {
     const exec = this.exec(model);
     if (!exec.createStream) {
-      throw new Error(`线型 ${model.wire ?? 'openai'} 暂不支持原生流式`);
+      throw new Error(`Wire '${model.wire ?? 'openai'}' has no native streaming executor`);
     }
-    return exec.createStream(request, model, credential);
+    return exec.createStream(request, model, upstreamEventContext, credential);
   }
 }

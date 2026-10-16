@@ -10,6 +10,15 @@ import {
   withUpstreamFailureGuard,
 } from '../observability/upstream-events.js';
 
+/**
+ * Upper bound on the raw SSE bytes kept in memory for one streamed exchange's
+ * capture event. The recorder truncates every body at `maxBodyBytes` (64 KB by
+ * default) when writing the JSONL line, so retaining more than a few multiples
+ * of that budget buys the archive nothing — it is purely a memory guard for
+ * long agent-loop streams.
+ */
+const STREAM_CAPTURE_CAP = 256 * 1024;
+
 export class OpenAICompatibleProvider implements LLMProvider {
   public name: string;
   private config: ProviderConfig;
@@ -44,10 +53,12 @@ export class OpenAICompatibleProvider implements LLMProvider {
       stream: false,
     };
     delete payload.router_options;
-    // The gateway streams to clients by executing non-streaming upstream calls
-    // and re-chunking the result — a client-sent stream_options must never leak
-    // into a non-streaming payload (strict upstreams like Alibaba reject
-    // stream_options without stream: true with a 400).
+    // A streamed client on THIS wire is served by createStream (frames relayed
+    // as they arrive). This method is the buffered leg: an inbound surface with
+    // no chunk encoder, the schema-assertion cascade, mock mode, a client that
+    // did not ask for a stream, or `streaming.enabled:false`. A client-sent
+    // stream_options must never leak into this payload — strict upstreams (e.g.
+    // Alibaba) reject stream_options without stream:true with a 400.
     delete payload.stream_options;
     // Models the catalog marks temperature:false (next-gen Claude etc.) reject
     // sampling params — strip them from the passthrough payload to avoid an
@@ -73,11 +84,12 @@ export class OpenAICompatibleProvider implements LLMProvider {
     });
 
     const controller = new AbortController();
-    // Wall-clock cap on the NON-streaming upstream execution (the gateway
-    // awaits the full response, then re-chunks to the client as SSE). Agent
-    // coding traffic carries large contexts and long generations, so a
-    // legitimate completion can easily run past a minute — 60 s used to cut
-    // healthy streams mid-flight and pay for them again on retry.
+    // Wall-clock cap on the buffered upstream execution (the gateway awaits the
+    // full response, then the surface encodes it). Agent coding traffic carries
+    // large contexts and long generations, so a legitimate completion can easily
+    // run past a minute — 60 s used to cut healthy streams mid-flight and pay for
+    // them again on retry. The streamed leg applies the same cap across the whole
+    // SSE body (see createStream).
     const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs || 300000);
 
     try {
@@ -178,6 +190,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
   public async createStream(
     request: ChatCompletionRequest,
     model: ModelRegistration,
+    upstreamEventContext?: UpstreamEventContext,
     credential?: CallCredential
   ): Promise<AsyncIterable<ChatCompletionChunk>> {
     const url = `${this.config.baseUrl.replace(/\/+$/, '')}/chat/completions`;
@@ -200,43 +213,185 @@ export class OpenAICompatibleProvider implements LLMProvider {
     // reasoning_effort is the OpenAI-standard field; forwarded verbatim.
     if (request.reasoning_effort) payload.reasoning_effort = request.reasoning_effort;
 
-    const res = await proxiedFetch(url, {
+    // Event-stream emit BEFORE the fetch fires — same discipline as
+    // createCompletion above, so a streamed turn is captured as a full
+    // request/response pair instead of a dangling request line.
+    const spanId = emitUpstreamRequestOnce(upstreamEventContext, {
+      url,
       method: 'POST',
-      headers,
-      body: JSON.stringify(payload),
-    }, { provider: this.config.name, model: model.id });
+      requestHeaders: headers,
+      requestBody: JSON.stringify(payload),
+      model: model.upstreamModel,
+      proxy: resolveProxyUrl(url, { provider: this.config.name, model: model.id }),
+    });
 
-    if (!res.ok || !res.body) {
-      const err = await res.text();
-      throw new Error(`Upstream streaming failed [${res.status}]: ${err}`);
+    const controller = new AbortController();
+    // Wall-clock cap, identical in kind to the non-streaming path. It aborts
+    // MID-STREAM when generation runs long: by then the relay has committed
+    // bytes to the client, so the pipeline closes the SSE without `[DONE]`
+    // rather than failing over (re-issuing upstream would duplicate output).
+    const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs || 300000);
+
+    let res: Response;
+    try {
+      res = await withUpstreamFailureGuard(
+        upstreamEventContext,
+        spanId,
+        url,
+        'POST',
+        () =>
+          proxiedFetch(
+            url,
+            {
+              method: 'POST',
+              headers,
+              body: JSON.stringify(payload),
+              signal: controller.signal,
+            },
+            { provider: this.config.name, model: model.id }
+          ),
+        model.upstreamModel
+      );
+
+      if (!res.ok || !res.body) {
+        let errorText: string;
+        try {
+          errorText = await res.text();
+        } catch (err: any) {
+          emitUpstreamFailureOnce(upstreamEventContext, {
+            model: model.upstreamModel,
+            spanId,
+            url,
+            method: 'POST',
+            status: res.status,
+            statusText: res.statusText,
+            error: `Streaming error body read failed: ${err?.message ?? err}`,
+          });
+          throw err;
+        }
+        const retryAfterHeader = res.headers.get('retry-after');
+        const retryAfterSeconds = retryAfterHeader ? parseInt(retryAfterHeader, 10) : undefined;
+        emitUpstreamFailureOnce(upstreamEventContext, {
+          model: model.upstreamModel,
+          spanId,
+          url,
+          method: 'POST',
+          status: res.status,
+          statusText: res.statusText,
+          responseHeaders: res.headers,
+          responseBody: errorText,
+          error: `Upstream ${res.status}`,
+        });
+        // UpstreamError (not a bare Error) keeps the classifier's status /
+        // retry-after / credential attribution working on the streaming leg too
+        // — a 429 head must trip the same breaker path as on the buffered leg.
+        throw new UpstreamError({
+          message: `Upstream ${this.name} returned status ${res.status}: ${errorText}`,
+          status: res.status,
+          errorBody: errorText,
+          provider: this.name,
+          modelId: model.id,
+          retryAfterSeconds: isNaN(retryAfterSeconds as number) ? undefined : retryAfterSeconds,
+        });
+      }
+    } catch (err) {
+      // No readable body ever materialized — release the timer, the generator
+      // below is the only other owner of it.
+      clearTimeout(timeout);
+      throw err;
     }
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder('utf-8');
+    // Captured before the object literal below: inside `*[Symbol.asyncIterator]`
+    // `this` is the iterable, not the provider.
+    const providerName = this.name;
 
     return {
       async *[Symbol.asyncIterator]() {
         let buffer = '';
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
+        // Raw wire bytes accumulated for the capture event only, capped — the
+        // recorder truncates at maxBodyBytes anyway, so holding a multi-megabyte
+        // stream in memory would be pure cost for zero extra evidence.
+        let raw = '';
+        let rawCapped = false;
+        let captured = false;
+        let sawDone = false;
+        let sawFinishReason = false;
+        const appendRaw = (piece: string): void => {
+          if (rawCapped) return;
+          raw += piece;
+          if (raw.length > STREAM_CAPTURE_CAP) {
+            raw = raw.slice(0, STREAM_CAPTURE_CAP) + '...[TRUNCATED]';
+            rawCapped = true;
+          }
+        };
+        /** Exactly one response event per streamed exchange (cp-failfast: paired, never dangling). */
+        const capture = (error?: string): void => {
+          if (captured || !spanId) return;
+          captured = true;
+          const base = {
+            spanId,
+            url,
+            method: 'POST',
+            status: res.status,
+            statusText: res.statusText,
+            responseHeaders: res.headers,
+            responseBody: raw,
+            model: model.upstreamModel,
+          };
+          if (error) emitUpstreamFailureOnce(upstreamEventContext, { ...base, error });
+          else emitUpstreamResponseOnce(upstreamEventContext, base);
+        };
 
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed || trimmed.startsWith(':')) continue;
-            if (trimmed === 'data: [DONE]') return;
-            if (trimmed.startsWith('data: ')) {
-              try {
-                const chunk = JSON.parse(trimmed.slice(6)) as ChatCompletionChunk;
-                yield chunk;
-              } catch {
-                // Ignore parse errors on partial lines
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const decoded = decoder.decode(value, { stream: true });
+            appendRaw(decoded);
+            buffer += decoded;
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed || trimmed.startsWith(':')) continue;
+              if (trimmed === 'data: [DONE]') {
+                sawDone = true;
+                return;
+              }
+              if (trimmed.startsWith('data: ')) {
+                try {
+                  const chunk = JSON.parse(trimmed.slice(6)) as ChatCompletionChunk;
+                  if (chunk.choices?.some((c) => c.finish_reason)) sawFinishReason = true;
+                  yield chunk;
+                } catch {
+                  // Ignore parse errors on partial lines
+                }
               }
             }
           }
+          // TRUNCATION GUARD. A body that simply stops is indistinguishable
+          // from a clean end at the reader level, and silently assembling it
+          // into `{content: null, finish_reason: 'stop'}` would bill a garbage
+          // turn as a success. A stream is complete only if it said so — via a
+          // finish_reason frame or [DONE] (some compatible-mode upstreams close
+          // right after finish_reason without ever sending [DONE]).
+          if (!sawDone && !sawFinishReason) {
+            throw new Error(`Upstream ${providerName} stream ended before completion`);
+          }
+        } catch (err: any) {
+          capture(`Stream aborted: ${err?.message ?? err}`);
+          throw err;
+        } finally {
+          // Whether the upstream ever sent `[DONE]` is visible in the captured
+          // raw body itself — the exchange event stays a success event, because
+          // a stream that ends after a finish_reason chunk is a complete answer
+          // for some compatible-mode upstreams and a failed one must not be
+          // mislabelled as such here.
+          capture();
+          clearTimeout(timeout);
         }
       },
     };

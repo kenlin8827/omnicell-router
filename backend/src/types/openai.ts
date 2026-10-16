@@ -62,6 +62,14 @@ export interface ChatCompletionRequest {
   tools?: Tool[];
   tool_choice?: 'none' | 'auto' | 'required' | { type: 'function'; function: { name: string } };
 
+  /**
+   * OpenAI streaming extras. The gateway requests the terminal usage frame from
+   * the upstream on every streamed call (FinOps needs it) and forwards it to the
+   * client ONLY when asked for here — a strict client must not receive a frame
+   * shape it did not request.
+   */
+  stream_options?: { include_usage?: boolean };
+
   // Extended thinking-effort controls. The internal representation is
   // the full EFFORT_LADDER; the OpenAI Chat Completions wire only accepts
   // 5 levels (no `max` — that's Anthropic-only). The orchestrator's
@@ -133,4 +141,6 @@ export interface ChatCompletionChunk {
   model: string;
   choices: ChatCompletionChunkChoice[];
   usage?: Usage;
+  /** Present on chunk streams from fingerprint-reporting upstreams (OpenAI spec). */
+  system_fingerprint?: string;
 }

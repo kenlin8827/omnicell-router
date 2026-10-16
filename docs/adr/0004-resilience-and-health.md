@@ -30,6 +30,7 @@ Scoping rule: a trip is scoped ONLY when the error carries credential attributio
 - **Consuming gate** `canExecute` is called only immediately before an upstream call. **Peek** `peekExecute` (selection, pool filters, leader picks, console) NEVER takes a probe slot — lookups would starve a recovering model into permanent HALF_OPEN.
 - Pair/account verdicts deliberately never reach the model breaker (a pair that 429s must not strand the whole model); a model trip reads as "every prefix out" through the AGGREGATE, not by rewriting pair states.
 - Non-penalty outcomes (rule-dropped, `shouldTripBreaker:false`) release any consumed probe slot; client-side 413/499 never reach the breaker at all (no upstream call → no record).
+- **Commit point (streamed turns).** Failover and in-place retry are legal only while no byte has reached the client. Once the relay forwards a frame the turn is committed: a later upstream break is still classified and recorded through the normal taxonomy (health stays honest), but is never re-issued — a retry would hand the client a second copy of a generation it has partly consumed. The stream simply ends without `[DONE]`, which is also the signal to the client that the turn did not complete (ADR-0008 §1).
 
 ### 3. Live rule tree with contractual OFF-semantics
 

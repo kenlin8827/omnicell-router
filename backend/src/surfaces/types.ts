@@ -1,6 +1,6 @@
 import type { ModelAccessConfig } from '../config/types.js';
 import type { ProcessContext } from '../pipeline/orchestrator.js';
-import type { ChatCompletionRequest } from '../types/openai.js';
+import type { ChatCompletionChunk, ChatCompletionRequest } from '../types/openai.js';
 import type { ExecutionResult } from '../types/router.js';
 
 /**
@@ -86,6 +86,17 @@ export interface SurfaceParseResult {
 }
 
 /**
+ * Per-turn framing context handed to a surface's `encodeChunk` for every
+ * upstream chunk that is relayed to the client.
+ */
+export interface ChatChunkContext {
+  /** Gateway-served model id every forwarded frame carries (never the upstream's own deployment name). */
+  model: string;
+  /** Client asked for the terminal usage frame (`stream_options.include_usage`). */
+  includeUsage: boolean;
+}
+
+/**
  * Inference-protocol surface (chat / anthropic / responses wires). `capture`
  * is a PROTOCOL-LEVEL POLICY encoded as a literal type, not a runtime flag:
  * surfaces that carry no client-request capture path make it structurally
@@ -101,6 +112,14 @@ export interface ChatSurface {
   parse(body: unknown): SurfaceParseResult;
   encodeJson(result: ExecutionResult, state: unknown): unknown;
   encodeStream(result: ExecutionResult, state: unknown): string[];
+  /**
+   * Pass-through frame encoder for the streamed leg: ONE upstream chunk → one
+   * SSE frame, or `null` to drop it. Present only on a wire whose client
+   * protocol is chunk-shaped end to end (today: `chat`); a surface without it
+   * keeps the buffered `encodeStream` path even when its upstream could stream,
+   * because the pipeline only offers a relay when the surface can encode chunks.
+   */
+  encodeChunk?(chunk: ChatCompletionChunk, ctx: ChatChunkContext): string | null;
   /** Runs BEFORE the first response byte (responses wire: RespStore.append). */
   afterResult?(result: ExecutionResult, state: unknown): void;
   errorBody(status: number, message: string, code?: string): unknown;

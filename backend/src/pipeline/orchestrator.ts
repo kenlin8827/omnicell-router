@@ -36,6 +36,7 @@ import { getEnvPaths } from '../config/env.js';
 import { TraceTracker } from '../trace/tracker.js';
 import { CaptureRecorder } from '../capture/recorder.js';
 import type { UpstreamEventContext } from '../providers/base.js';
+import type { StreamRelay, StreamRoutingFacts } from '../utils/chat-stream.js';
 import { emitClientRequest, captureKeyIdentity, setClientExchangeContext, type CaptureClientRequest, type ClientExchangeContext } from '../observability/http-exchange.js';
 import { resolveTraceId } from '../observability/trace-id.js';
 import { getWarnThrottle } from '../observability/warn-throttle.js';
@@ -254,7 +255,16 @@ export class PipelineOrchestrator {
    */
   public async process(
     request: ChatCompletionRequest,
-    context?: ProcessContext
+    context?: ProcessContext,
+    /**
+     * Progressive-output relay (see utils/chat-stream). Offered by a transport
+     * that can flush SSE bytes as they arrive. The orchestrator USES it only
+     * where streaming is legal — same candidate pool, no schema-assertion
+     * cascade, a wire with a streaming executor, mock mode off — and silently
+     * leaves it unused otherwise, which is always safe because nothing has been
+     * written to the client before the first forwarded chunk.
+     */
+    relay?: StreamRelay
   ): Promise<ExecutionResult> {
     const startTime = Date.now();
     const captureEnabled = this.captureRecorder.isEnabled();
@@ -332,7 +342,14 @@ export class PipelineOrchestrator {
       };
     }
 
-    return await this.processInternal(request, context, preResolvedSession, upstreamEventContext, captureOutTraceId);
+    return await this.processInternal(
+      request,
+      context,
+      preResolvedSession,
+      upstreamEventContext,
+      captureOutTraceId,
+      relay
+    );
   }
 
   /**
@@ -351,7 +368,8 @@ export class PipelineOrchestrator {
     context?: ProcessContext,
     preResolvedSession?: SessionResolveResult,
     upstreamEventContext?: UpstreamEventContext,
-    traceId?: string
+    traceId?: string,
+    relay?: StreamRelay
   ): Promise<ExecutionResult> {
     const startTime = Date.now();
 
@@ -993,7 +1011,31 @@ export class PipelineOrchestrator {
       // Standard Direct Model Execution with Multi-Model Failover & Circuit Breaker
       const execResult = await this.executeCandidatePool(
         normalizedRequest,
-        { chain, tier: actualTier, allowEscalate, attemptCap, label: poolLabel, modelAccess: context?.modelAccess, requestedEffort, sessionId },
+        {
+          chain,
+          tier: actualTier,
+          allowEscalate,
+          attemptCap,
+          label: poolLabel,
+          modelAccess: context?.modelAccess,
+          requestedEffort,
+          sessionId,
+          // Streaming is offered ONLY on this direct path. The schema-assertion
+          // cascade above must inspect the full `message.content` before any byte
+          // may reach the client (its verdict can re-ask the whole turn on a
+          // bigger tier), so relaying there would commit output the cascade is
+          // about to throw away.
+          relay: this.config.streaming?.enabled === false ? undefined : relay,
+          streamRouting: {
+            layerUsed: decision.layerUsed || 'layer0',
+            sessionId,
+            sessionRatchetApplied: ratchetApplied,
+            sessionLookupType: sessionResolve.lookupType,
+            traceId: traceId ?? 'unknown',
+            requestedEffort,
+            variantUsed,
+          },
+        },
         upstreamEventContext
       );
 
@@ -1345,6 +1387,18 @@ export class PipelineOrchestrator {
        * pre-P3 execution path, kept for non-conversational callers).
        */
       sessionId?: string;
+      /**
+       * Progressive-output relay from `process()`, already gated for
+       * eligibility (config switch, non-assertion path). Present = the client
+       * may receive upstream frames as they arrive.
+       */
+      relay?: StreamRelay;
+      /**
+       * Routing facts staged to the relay for each candidate attempt, so the
+       * transport can flush the X-OCR routing headers with the first forwarded
+       * chunk (the candidate is only known inside the pool).
+       */
+      streamRouting?: StreamRoutingFacts;
     },
     upstreamEventContext?: UpstreamEventContext
   ): Promise<{
@@ -1594,6 +1648,14 @@ export class PipelineOrchestrator {
         }
       }
 
+      // Stage this attempt's routing facts BEFORE the call: a relay that gets
+      // bytes flushes them with the first forwarded chunk, and only an attempt
+      // that actually proceeds can commit any (earlier attempts never got that
+      // far, and each later attempt simply overwrites the staged set).
+      if (opts.relay) {
+        opts.relay.stageRouting({ ...opts.streamRouting, modelUsed: candidate.id, tierUsed: candidate.tier });
+      }
+
       // In-place retry loop on the SAME candidate model
       let candidateSucceeded = false;
       let candidateResponse: ChatCompletionResponse | undefined = undefined;
@@ -1604,7 +1666,8 @@ export class PipelineOrchestrator {
             candidateReq,
             candidate,
             upstreamEventContext,
-            accountPrefix
+            accountPrefix,
+            opts.relay
           );
           // Scope-aware success: undefined prefix degenerates to the exact
           // model recordSuccess of the pre-P3 path.
@@ -1625,6 +1688,22 @@ export class PipelineOrchestrator {
           // diagnosed blast radius when a prefix attributes it, and routes the
           // bare model breaker when not (today's semantics).
           cbManager.recordFailureScoped(candidate.id, diagnosis, candidate.provider, accountPrefix);
+
+          // COMMIT POINT: bytes already reached the client on this attempt.
+          // Neither an in-place retry nor a failover is legal any more — either
+          // re-issues the generation, and the client would consume a second copy
+          // of a turn it has already seen part of. Stop the pool here; the
+          // transport closes the SSE stream without [DONE] (see StreamRelay).
+          if (opts.relay?.committed) {
+            return {
+              success: false,
+              failoverOccurred: failoverAttempts > 1,
+              failoverAttempts,
+              failoverPath,
+              inplaceRetries: totalInplaceRetries,
+              lastError: err,
+            };
+          }
 
           // 1. Client error (400 Bad Request, context length exceeded) -> NEVER retriable, fail immediately
           if (!diagnosis.isRetriable) {
