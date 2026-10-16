@@ -29,15 +29,20 @@ const MONO = "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', mon
 const fmtTime = (ts: number) => new Date(ts).toLocaleTimeString();
 
 /** Prose with line-clamp collapse; the toggle only appears for long bodies. */
-const Prose: React.FC<{ text: string; clamp?: number; color?: string; bg?: string; border?: string }> = ({
+/** open/hideToggle support a parent-owned toggle (ToolResultRow's header row)
+ *  so the control can sit above the preview instead of under it. */
+const Prose: React.FC<{ text: string; clamp?: number; color?: string; bg?: string; border?: string; open?: boolean; hideToggle?: boolean }> = ({
   text,
   clamp = 12,
   color,
   bg,
   border,
+  open: openProp,
+  hideToggle,
 }) => {
   const { t } = useI18n();
-  const [open, setOpen] = useState(false);
+  const [openState, setOpen] = useState(false);
+  const open = openProp ?? openState;
   const long = useMemo(() => text.split('\n').length > clamp || text.length > clamp * 140, [text, clamp]);
   // Collapsed = line-clamp; expanded = capped viewport with its own vertical
   // scroll — a giant tool dump must not stretch the whole waterfall.
@@ -71,7 +76,7 @@ const Prose: React.FC<{ text: string; clamp?: number; color?: string; bg?: strin
       >
         {text}
       </pre>
-      {long && (
+      {long && !hideToggle && (
         <button
           onClick={() => setOpen(o => !o)}
           style={{
@@ -155,22 +160,24 @@ const ImageChip: React.FC<{ media: TranscriptMedia; date?: string }> = ({ media,
 };
 
 /** Prose with inline [MEDIA …] tokens surfaced as chips/thumbnails. */
-const ProseWithMedia: React.FC<{ text: string; clamp?: number; color?: string; date?: string }> = ({
+const ProseWithMedia: React.FC<{ text: string; clamp?: number; color?: string; date?: string; open?: boolean; hideToggle?: boolean }> = ({
   text,
   clamp,
   color,
   date,
+  open,
+  hideToggle,
 }) => {
   const segs = useMemo(() => splitMediaTokens(text), [text]);
   // Fast path: no tokens (the common case) — one plain Prose.
-  if (segs.length === 1 && segs[0].kind === 'text') return <Prose text={text} clamp={clamp} color={color} />;
+  if (segs.length === 1 && segs[0].kind === 'text') return <Prose text={text} clamp={clamp} color={color} open={open} hideToggle={hideToggle} />;
   return (
     <div>
       {segs.map((s, i) =>
         s.kind === 'media' ? (
           <ImageChip key={i} media={s.media} date={date} />
         ) : s.text.trim() ? (
-          <Prose key={i} text={s.text} clamp={clamp} color={color} />
+          <Prose key={i} text={s.text} clamp={clamp} color={color} open={open} hideToggle={hideToggle} />
         ) : null
       )}
     </div>
@@ -311,9 +318,13 @@ const MessageView: React.FC<{ msg: TranscriptMessage; date?: string }> = ({ msg,
   );
 };
 
-/** Collapsed-by-default tool output card shared by role=tool messages and tool_result parts. */
+/** Collapsed-by-default tool output card shared by role=tool messages and tool_result parts.
+ *  The header row itself is the toggle — same affordance as ToolCallCard —
+ *  so "expand" sits above the preview instead of hiding under it. */
 const ToolResultRow: React.FC<{ name?: string; blockText: string; date?: string }> = ({ name, blockText, date }) => {
   const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const long = blockText.split('\n').length > 6 || blockText.length > 6 * 140;
   return (
     <div
       style={{
@@ -323,13 +334,34 @@ const ToolResultRow: React.FC<{ name?: string; blockText: string; date?: string 
         background: 'var(--surface)',
       }}
     >
-      <div style={{ fontSize: '10.5px', color: 'var(--text-dim)', marginBottom: 3 }}>
+      <div
+        onClick={() => long && setOpen(o => !o)}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          fontSize: '10.5px',
+          color: 'var(--text-dim)',
+          marginBottom: 3,
+          cursor: long ? 'pointer' : 'default',
+        }}
+      >
+        {long ? open ? <ChevronDown size={12} /> : <ChevronRight size={12} /> : <span style={{ width: 12, flexShrink: 0 }} />}
         <span className="badge" style={{ fontSize: '10px', marginRight: 6 }}>
           {t('captures.msgTool')}
         </span>
         {name && <span style={{ fontFamily: MONO, fontWeight: 600 }}>{name}</span>}
+        {long && (
+          <span style={{ marginLeft: 'auto', color: 'var(--accent)', fontSize: '10.5px' }}>
+            {open ? t('captures.collapse') : t('captures.expand')}
+          </span>
+        )}
       </div>
-      {blockText ? <ProseWithMedia text={blockText} clamp={6} date={date} /> : <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>—</div>}
+      {blockText ? (
+        <ProseWithMedia text={blockText} clamp={6} date={date} open={open} hideToggle />
+      ) : (
+        <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>—</div>
+      )}
     </div>
   );
 };
