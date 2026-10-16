@@ -664,6 +664,7 @@ export const CapturesPage: React.FC = () => {
   const [fileTruncated, setFileTruncated] = useState(false);
   const [selectedTurnIdx, setSelectedTurnIdx] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [toggling, setToggling] = useState(false);
   const [exportTarget, setExportTarget] = useState<CaptureSessionRow | null>(null);
   const [query, setQuery] = useState('');
@@ -800,6 +801,22 @@ export const CapturesPage: React.FC = () => {
     }
     setPendingFile('');
   }, [pendingFile, sessions]);
+
+  /**
+   * Full refresh: status + date chips, then the session list of the selected
+   * day, then the open session's timeline. The old button only re-read the
+   * status header, which almost never changes — it looked dead.
+   */
+  const handleRefreshAll = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await loadStatus();
+      await loadSessions(selectedDate, apiKeyFilter);
+      if (selectedFile) await loadRecords(selectedDate, selectedFile);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadStatus, loadSessions, loadRecords, selectedDate, apiKeyFilter, selectedFile]);
 
   const handleToggle = async (next: boolean) => {
     if (toggling) return;
@@ -944,8 +961,8 @@ export const CapturesPage: React.FC = () => {
                 ariaLabel={t('captures.title')}
               />
             </label>
-            <button className="btn btn-sm" onClick={loadStatus} disabled={loading}>
-              <RefreshCw size={12} />
+            <button className="btn btn-sm" onClick={handleRefreshAll} disabled={loading || refreshing}>
+              <RefreshCw size={12} style={refreshing ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
               <span>{t('captures.refresh')}</span>
             </button>
           </div>
@@ -1257,6 +1274,19 @@ export const CapturesPage: React.FC = () => {
                         <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: '11px', color: 'var(--text-dim)' }}>
                           {selectedFile.replace(/\.jsonl$/, '')} · {totalLines} {t('captures.turnsUnit')}
                         </span>
+                        {/* Session-level refresh: re-read just this archive's
+                            tail (cheap), vs the header button that reloads
+                            status + dates + session list too. */}
+                        <button
+                          className="btn btn-sm"
+                          style={{ marginLeft: 'auto' }}
+                          onClick={() => loadRecords(selectedDate, selectedFile)}
+                          disabled={loading}
+                          title={t('captures.refreshTurnsHint')}
+                        >
+                          <RefreshCw size={12} style={loading ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
+                          <span>{t('captures.refresh')}</span>
+                        </button>
                       </div>
                       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '10px 16px 14px' }}>
                         {fileTruncated && (

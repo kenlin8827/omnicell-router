@@ -1087,6 +1087,7 @@ export const zhCN: TranslationDict = {
     emptySessions: '该日期下暂无会话归档。',
     pickSession: '从左侧选择一个会话归档，按时间线浏览捕捉的请求轮次。',
     turnsTitle: '会话时间线',
+    refreshTurnsHint: '重新读取该会话归档的最新轮次',
     turnsUnit: '轮',
     emptyRecords: '该会话暂无捕捉记录。',
     statusOk: '成功',

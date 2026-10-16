@@ -1153,6 +1153,7 @@ hiddenBadge: string;
     emptySessions: string;
     pickSession: string;
     turnsTitle: string;
+    refreshTurnsHint: string;
     turnsUnit: string;
     emptyRecords: string;
     statusOk: string;

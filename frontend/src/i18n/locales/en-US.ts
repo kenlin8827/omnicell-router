@@ -1093,6 +1093,7 @@ export const enUS: TranslationDict = {
     emptySessions: 'No session archives under this date.',
     pickSession: 'Pick a session archive on the left to browse its captured turns on the timeline.',
     turnsTitle: 'Session Timeline',
+    refreshTurnsHint: 'Re-read the latest turns of this session archive',
     turnsUnit: 'turns',
     emptyRecords: 'No captured records for this session.',
     statusOk: 'OK',
