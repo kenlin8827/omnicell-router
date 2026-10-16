@@ -76,13 +76,13 @@ const DEFAULT_CONFIG: RouterConfig = {
   requestCapture: {
     enabled: false, // opt-in: full bodies may contain sensitive data
     retentionDays: 7,
-    maxTotalMB: 512,
-    maxBodyBytes: 262144,
-    // base64 media payloads (screenshots, documents) in request bodies are
-    // offloaded to content-addressed files under <date>/media/ and replaced
-    // by [MEDIA …] placeholders; default ON — deduped, swept with the date
-    // dir. Same sensitive-data class as the archives themselves (the capture
-    // master stays the privacy gate).
+    // 2048 MB rolling pool; a single session seals at 512 MB (maxSessionMB)
+    // so one O(n²) agent loop cannot starve the shared budget; the per-body
+    // cap (16 MB) is sized for a fully-loaded 2M-token context (~13 MB worst
+    // case text+JSON after image scrubbing).
+    maxTotalMB: 2048,
+    maxBodyBytes: 16777216,
+    maxSessionMB: 512,
     storeMedia: true,
     // System One group: surface master + judge-leg sub-switch, both default
     // ON — they only matter under the capture master, and a user who turns
@@ -242,7 +242,7 @@ function resolveRequestCapture(parsed: any): RequestCaptureConfig {
   const base = DEFAULT_CONFIG.requestCapture as RequestCaptureConfig;
   const raw = (parsed?.requestCapture ?? {}) as Record<string, unknown>;
   // `as` cast: raw YAML is untyped at this boundary; the old spread was too.
-  const pick = <K extends 'enabled' | 'retentionDays' | 'maxTotalMB' | 'maxBodyBytes' | 'dir'>(key: K) =>
+  const pick = <K extends 'enabled' | 'retentionDays' | 'maxTotalMB' | 'maxBodyBytes' | 'maxSessionMB' | 'dir'>(key: K) =>
     (raw[key] ?? base[key]) as RequestCaptureConfig[K];
   const sysRaw = raw.systemone as Record<string, unknown> | undefined;
   return {
@@ -250,8 +250,8 @@ function resolveRequestCapture(parsed: any): RequestCaptureConfig {
     retentionDays: pick('retentionDays'),
     maxTotalMB: pick('maxTotalMB'),
     maxBodyBytes: pick('maxBodyBytes'),
-    // boolean needs the ?? chain (false must survive); deliberately NOT in
-    // the pick union, which types the numeric/string keys.
+    maxSessionMB: pick('maxSessionMB'),
+    // boolean needs ?? chain (false must survive); not in the pick union since K extends keyof RequestCaptureConfig number/string keys only there
     storeMedia: (raw.storeMedia ?? base.storeMedia) as boolean,
     dir: pick('dir'),
     systemone: {

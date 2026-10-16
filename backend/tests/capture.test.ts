@@ -900,3 +900,112 @@ function emptyWire(): any {
     responseBody: '',
   };
 }
+
+describe('CaptureRecorder per-session seal (maxSessionMB)', () => {
+  const SESSION = 'sess_seal_aaa';
+  const CAP_BYTES = 1 * 1024 * 1024; // maxSessionMB: 1
+  const PAD = 'x'.repeat(300 * 1024); // one fat client-request event ≈ 300 KB
+  let tmp: string;
+  let recorder: CaptureRecorder;
+
+  before(() => {
+    tmp = makeTmpDir();
+    recorder = new CaptureRecorder({
+      enabled: true,
+      dir: tmp,
+      retentionDays: 7,
+      maxTotalMB: 512,
+      // Above the event size, so truncation never interferes with the seal math.
+      maxBodyBytes: 1024 * 1024,
+      maxSessionMB: 1,
+    });
+  });
+
+  after(() => {
+    recorder.stop();
+    rmrf(tmp);
+  });
+
+  const archiveFile = () =>
+    path.join(tmp, CaptureRecorder.localDateDir(new Date()), `${SESSION}.jsonl`);
+
+  async function emitBigRequestEvent(i: number): Promise<void> {
+    await recorder.recordEvent({
+      eventType: 'http-exchange',
+      direction: 'client',
+      phase: 'request',
+      spanId: `w_seal_${i}`,
+      traceId: `t_seal_${i}`,
+      sessionId: SESSION,
+      model: 'auto-lite',
+      status: 'ok',
+      wire: {
+        requestLine: 'POST /v1/chat/completions HTTP/1.1',
+        requestHeaders: {},
+        requestBody: JSON.stringify({ messages: [{ role: 'user', content: PAD }] }),
+        responseLine: '',
+        status: 0,
+        responseHeaders: {},
+        responseBody: '',
+      },
+    } as any);
+  }
+
+  function readLines(): any[] {
+    const file = archiveFile();
+    if (!fs.existsSync(file)) return [];
+    return fs
+      .readFileSync(file, 'utf8')
+      .split('\n')
+      .filter(l => l.trim())
+      .map(l => JSON.parse(l));
+  }
+
+  // Emit events until the archive crosses the cap, plus one more (the event
+  // that observes the crossing is the one that writes the seal marker).
+  async function overflowArchive(): Promise<void> {
+    let i = 0;
+    while (fs.existsSync(archiveFile()) ? fs.statSync(archiveFile()).size < CAP_BYTES : i < 2) {
+      await emitBigRequestEvent(i++);
+    }
+    await emitBigRequestEvent(i++);
+  }
+
+  it('stops appending at the cap and writes exactly one terminal marker', async () => {
+    await overflowArchive();
+    const lines = readLines();
+    const seals = lines.filter(l => l.eventType === 'archive-overflow');
+    assert.equal(seals.length, 1, 'one archive-overflow marker per seal');
+    assert.equal(lines[lines.length - 1].eventType, 'archive-overflow', 'marker is the terminal line');
+    assert.ok(lines[lines.length - 1].bytes >= CAP_BYTES, 'marker records the size at seal time');
+
+    // Further events are dropped — nothing grows, and no second marker.
+    const before = fs.statSync(archiveFile()).size;
+    const eventsBefore = lines.filter(l => l.eventType === 'http-exchange').length;
+    await emitBigRequestEvent(900);
+    await emitBigRequestEvent(901);
+    assert.equal(fs.statSync(archiveFile()).size, before, 'sealed archive never grows again');
+    const after = readLines();
+    assert.equal(after.filter(l => l.eventType === 'http-exchange').length, eventsBefore, 'events after the seal are dropped');
+    assert.equal(after.filter(l => l.eventType === 'archive-overflow').length, 1, 'marker is not repeated');
+  });
+
+  it('deleteSession clears seal bookkeeping so a recreated archive records again', async () => {
+    // The seal above is still in effect for this session file; deleting it
+    // must reset the cached size and the sealed set, otherwise the recreated
+    // file would seal at its first event (data loss) or never re-seal.
+    const date = CaptureRecorder.localDateDir(new Date());
+    assert.ok(recorder.deleteSession(date, `${SESSION}.jsonl`), 'deleteSession removes the sealed file');
+
+    await emitBigRequestEvent(1000);
+    const fresh = readLines();
+    assert.ok(fresh.length >= 1, 'recreated archive accepts events');
+    assert.equal(fresh.filter(l => l.eventType === 'archive-overflow').length, 0, 'no stale seal carried over');
+    assert.ok(fs.statSync(archiveFile()).size < CAP_BYTES, 'recreated archive starts from zero bytes');
+
+    // And it can seal on its own merits — proving the marker set was cleared.
+    await overflowArchive();
+    const resealed = readLines();
+    assert.equal(resealed.filter(l => l.eventType === 'archive-overflow').length, 1, 'recreated archive re-seals once');
+  });
+});

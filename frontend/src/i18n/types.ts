@@ -1349,6 +1349,7 @@ hiddenBadge: string;
     capL2DecisionHint: string;
     capRetention: string;
     capMaxTotal: string;
+    capSession: string;
     capMaxBody: string;
     capPolicyGroup: string;
     capPolicySummary: string;

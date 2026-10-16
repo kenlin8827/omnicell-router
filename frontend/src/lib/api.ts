@@ -435,6 +435,7 @@ export interface CaptureStatus {
   retentionDays: number;
   maxTotalMB: number;
   maxBodyBytes: number;
+  maxSessionMB: number;
   storeMedia: boolean;
   totalBytes: number;
   dateCount: number;

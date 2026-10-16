@@ -897,8 +897,9 @@ export const CapturesPage: React.FC = () => {
         ...cfg,
         requestCapture: {
           retentionDays: 7,
-          maxTotalMB: 512,
-          maxBodyBytes: 262144,
+          maxTotalMB: 2048,
+          maxBodyBytes: 16777216,
+          maxSessionMB: 512,
           ...(cfg.requestCapture || {}),
           enabled: next,
         },

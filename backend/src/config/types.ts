@@ -590,8 +590,9 @@ export interface RequestCaptureConfig {
   enabled?: boolean; // master switch; default false
   dir?: string; // default: ~/.opencode-router/capture
   retentionDays?: number; // default 7; date dirs older than today-N are swept (at boot + hourly)
-  maxTotalMB?: number; // default 512; oldest date dirs are deleted first when exceeded
-  maxBodyBytes?: number; // default 262144 (256 KB); truncation budget applied to request and response separately
+  maxTotalMB?: number; // default 2048; oldest date dirs are deleted first when exceeded
+  maxBodyBytes?: number; // default 16777216 (16 MB) — sized so one 2M-token context body fits untruncated
+  maxSessionMB?: number; // default 512; a single session archive seals (stops appending) at this size — guard against O(n²) agent-loop growth
   /**
    * Offload base64 media payloads (images, documents, any long base64 blob)
    * from captured REQUEST bodies to content-addressed files under

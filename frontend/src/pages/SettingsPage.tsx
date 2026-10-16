@@ -121,8 +121,9 @@ export const SettingsPage: React.FC = () => {
     ...config,
     requestCapture: {
       retentionDays: 7,
-      maxTotalMB: 512,
-      maxBodyBytes: 262144,
+      maxTotalMB: 2048,
+      maxBodyBytes: 16777216,
+      maxSessionMB: 512,
       storeMedia: true,
       ...(config.requestCapture || {}),
       ...patch,
@@ -388,8 +389,9 @@ export const SettingsPage: React.FC = () => {
                   <span style={{ marginLeft: 'auto', fontWeight: 400, fontSize: '11px', color: 'var(--text-dim)' }}>
                     {t('settings.capPolicySummary', {
                       days: config.requestCapture?.retentionDays ?? 7,
-                      mb: config.requestCapture?.maxTotalMB ?? 512,
-                      bytes: config.requestCapture?.maxBodyBytes ?? 262144,
+                      mb: config.requestCapture?.maxTotalMB ?? 2048,
+                      ses: config.requestCapture?.maxSessionMB ?? 512,
+                      bytes: config.requestCapture?.maxBodyBytes ?? 16777216,
                     })}
                   </span>
                 )}
@@ -411,8 +413,18 @@ export const SettingsPage: React.FC = () => {
                     <input
                       type="number"
                       min="1"
-                      value={config.requestCapture?.maxTotalMB ?? 512}
-                      onChange={e => patchRequestCapture({ maxTotalMB: parseInt(e.target.value) || 512 })}
+                      value={config.requestCapture?.maxTotalMB ?? 2048}
+                      onChange={e => patchRequestCapture({ maxTotalMB: parseInt(e.target.value) || 2048 })}
+                      className="input"
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.capSession')}</label>
+                    <input
+                      type="number"
+                      min="1"
+                      value={config.requestCapture?.maxSessionMB ?? 512}
+                      onChange={e => patchRequestCapture({ maxSessionMB: parseInt(e.target.value) || 512 })}
                       className="input"
                     />
                   </div>
@@ -422,8 +434,8 @@ export const SettingsPage: React.FC = () => {
                       type="number"
                       min="1024"
                       step="1024"
-                      value={config.requestCapture?.maxBodyBytes ?? 262144}
-                      onChange={e => patchRequestCapture({ maxBodyBytes: parseInt(e.target.value) || 262144 })}
+                      value={config.requestCapture?.maxBodyBytes ?? 16777216}
+                      onChange={e => patchRequestCapture({ maxBodyBytes: parseInt(e.target.value) || 16777216 })}
                       className="input"
                     />
                   </div>
