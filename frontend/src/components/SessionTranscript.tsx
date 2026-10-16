@@ -515,16 +515,14 @@ const RoundCard: React.FC<{
   round: TranscriptRound;
   ordinal: number;
   date?: string;
-  /** Focus overlay: open the card immediately (pane default: collapsed). */
-  defaultOpen?: boolean;
   /** Renders the ⛶ header button (absent inside the focus overlay itself). */
   onFocus?: () => void;
   onOpenTurn: (idx: number) => void;
-}> = ({ round, ordinal, date, defaultOpen, onFocus, onOpenTurn }) => {
+}> = ({ round, ordinal, date, onFocus, onOpenTurn }) => {
   const { t } = useI18n();
   // All rounds collapsed by default — the Q→A skim (header + tail answer)
   // covers the whole session; steps open on demand.
-  const [open, setOpen] = useState(defaultOpen ?? false);
+  const [open, setOpen] = useState(false);
   // Full prompt shown in the header (final UX call after a single-line
   // ellipsis detour): own line, wraps, never truncated.
   const excerpt = useMemo(() => {
@@ -695,6 +693,81 @@ const RoundCard: React.FC<{
   );
 };
 
+/**
+ * Dedicated view for the focus overlay — deliberately NOT a wrapped RoundCard.
+ * The pane card's header band exists to toggle collapse and to skim a list;
+ * a focused round needs neither: the meta line is static, the prompt shows in
+ * full (media renders as thumbnails, not the list's collapsed chip), and the
+ * steps flow into the overlay's single scroll layer — no nested card frame,
+ * no second 60vh viewport.
+ */
+const FocusRoundView: React.FC<{
+  round: TranscriptRound;
+  ordinal: number;
+  date?: string;
+  onOpenTurn: (idx: number) => void;
+}> = ({ round, ordinal, date, onOpenTurn }) => {
+  const { t } = useI18n();
+  const promptText = useMemo(() => {
+    if (!round.prompt) return '';
+    return round.prompt.blocks
+      .filter(b => b.kind === 'text')
+      .map(b => unwrapHarnessText(b.text))
+      .join('\n\n')
+      .trim();
+  }, [round.prompt]);
+  return (
+    <div style={{ fontSize: '12px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <span
+          style={{
+            width: 8,
+            height: 8,
+            borderRadius: '50%',
+            flexShrink: 0,
+            background: round.hasError ? '#ef4444' : 'var(--accent-emerald)',
+          }}
+        />
+        <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-dim)' }}>R{ordinal}</span>
+        {round.startTs !== undefined && (
+          <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: MONO }}>{fmtTime(round.startTs)}</span>
+        )}
+        {round.endTs !== undefined && round.endTs !== round.startTs && (
+          <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: MONO }}>→ {fmtTime(round.endTs)}</span>
+        )}
+        <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: MONO, marginLeft: 'auto' }}>
+          {t('captures.roundStepsUnit', { n: round.steps.length })}
+          {round.totalLatencyMs > 0 ? ` · ${fmtDur(round.totalLatencyMs)}` : ''}
+        </span>
+      </div>
+      {promptText ? (
+        <div style={{ marginBottom: 10 }}>
+          <RoleLabel label={t('captures.msgUser')} color="var(--accent)" />
+          <ProseWithMedia text={promptText} date={date} />
+        </div>
+      ) : (
+        <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: 10 }}>
+          {t('captures.roundMidOpenNote')}
+        </div>
+      )}
+      {round.toolResultsSeen < round.toolCallsIssued && (
+        <div style={{ marginBottom: 8 }}>
+          <Note tone="warn" text={t('captures.resultsMissingNote')} />
+        </div>
+      )}
+      {round.steps.map((st, i) => (
+        <TranscriptBlock
+          key={`${st.turn.traceId}-${st.idx}`}
+          st={st}
+          label={`${ordinal}.${i + 1}`}
+          date={date}
+          onOpenTurn={onOpenTurn}
+        />
+      ))}
+    </div>
+  );
+};
+
 export const SessionTranscript: React.FC<{
   turns: CaptureTurn[];
   fileTruncated: boolean;
@@ -783,10 +856,7 @@ export const SessionTranscript: React.FC<{
                 flexShrink: 0,
               }}
             >
-              <span style={{ fontSize: '13px', fontWeight: 700 }}>R{focusIdx + 1}</span>
-              <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
-                {t('captures.roundStepsUnit', { n: rounds[focusIdx].steps.length })}
-              </span>
+              <span style={{ fontSize: '13px', fontWeight: 700 }}>{t('captures.roundFocus')}</span>
               <button
                 className="btn btn-sm"
                 style={{ marginLeft: 'auto', flexShrink: 0 }}
@@ -811,11 +881,10 @@ export const SessionTranscript: React.FC<{
                   round would stretch every prose line past comfortable
                   measure; the win here is height + no competing cards. */}
               <div style={{ width: '100%', maxWidth: 980 }}>
-                <RoundCard
+                <FocusRoundView
                   round={rounds[focusIdx]}
                   ordinal={focusIdx + 1}
                   date={date}
-                  defaultOpen
                   onOpenTurn={onOpenTurn}
                 />
               </div>
