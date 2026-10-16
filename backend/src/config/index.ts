@@ -78,6 +78,12 @@ const DEFAULT_CONFIG: RouterConfig = {
     retentionDays: 7,
     maxTotalMB: 512,
     maxBodyBytes: 262144,
+    // base64 media payloads (screenshots, documents) in request bodies are
+    // offloaded to content-addressed files under <date>/media/ and replaced
+    // by [MEDIA …] placeholders; default ON — deduped, swept with the date
+    // dir. Same sensitive-data class as the archives themselves (the capture
+    // master stays the privacy gate).
+    storeMedia: true,
     // System One group: surface master + judge-leg sub-switch, both default
     // ON — they only matter under the capture master, and a user who turns
     // the master on asked for capture; silence BOTH legs by flipping the
@@ -244,6 +250,9 @@ function resolveRequestCapture(parsed: any): RequestCaptureConfig {
     retentionDays: pick('retentionDays'),
     maxTotalMB: pick('maxTotalMB'),
     maxBodyBytes: pick('maxBodyBytes'),
+    // boolean needs the ?? chain (false must survive); deliberately NOT in
+    // the pick union, which types the numeric/string keys.
+    storeMedia: (raw.storeMedia ?? base.storeMedia) as boolean,
     dir: pick('dir'),
     systemone: {
       enabled: (sysRaw?.enabled ?? base.systemone?.enabled) as boolean,
@@ -821,6 +830,7 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'compression.caveman.enabled': 'caveman 输出压缩：向 system 幂等注入简洁风格提示词，显著压缩输出 token（代码/路径/命令逐字保留）',
   'compression.caveman.level': 'caveman 强度：lite / full / ultra / wenyan-lite / wenyan / wenyan-ultra（文言）',
   requestCapture: '请求全量捕获（HTTP 交换审计日志；默认关闭）：请求/响应原文落盘 JSONL，捕获体可能含敏感数据且占用磁盘，按日期目录保留、到期或超容量自动清理',
+  'requestCapture.storeMedia': 'base64 图片/文档等二进制载荷转存硬盘（默认 true）：请求体中的 base64 媒体替换为 [MEDIA …sha256=… file=media/…] 占位符，内容寻址去重（同一张图多轮重发只落一份），随日期目录同批清理；关闭或写盘失败时仍替换为无 file= 的占位符（不留 base64 在归档里），对话回放页可直接显示缩略图',
   'requestCapture.systemone.enabled': 'System One 决策面总闸（默认 true；仅当 requestCapture.enabled 为 true 时生效）：关闭时两腿同哑——/v1/systemone 全链路捕捉（客户端请求/响应 + 网关对上游的调用腿；路由指标仍不捕获）连同下方 L2 裁判 HTTP 腿捕捉一并静默；开启时该面全链路捕捉照常（决策体是客户端状态快照，注意隐私与磁盘占用）',
   'requestCapture.systemone.l2DecisionEnabled': 'L2 裁判 HTTP 腿捕捉子开关（默认 true；仅当 requestCapture.enabled 与 requestCapture.systemone.enabled 均为 true 时生效）：L2 裁判内部发起的决策模型调用记为上游捕捉事件（挂外层会话/追踪），与客户端请求捕捉主语正交——只增记裁判自己的线路调用，不筛选客户端流量；注意与 classifier.layer2.collectEnabled（数据集采样落盘）是两个不同开关',
   catalog: '目录数据源：远程 catalog 源定义与本地锚定（控制台 /catalog 页可视化编辑，改后即时生效）',

@@ -592,6 +592,18 @@ export interface RequestCaptureConfig {
   retentionDays?: number; // default 7; date dirs older than today-N are swept (at boot + hourly)
   maxTotalMB?: number; // default 512; oldest date dirs are deleted first when exceeded
   maxBodyBytes?: number; // default 262144 (256 KB); truncation budget applied to request and response separately
+  /**
+   * Offload base64 media payloads (images, documents, any long base64 blob)
+   * from captured REQUEST bodies to content-addressed files under
+   * `<dir>/<YYYY-MM-DD>/media/<sha256>.<ext>` and replace them in the
+   * archive with `[MEDIA …]` placeholders. Default true: agent loops resend
+   * every screenshot on every turn, so raw base64 blows the per-body budget
+   * O(turns)-times over; offload keeps one copy per distinct payload. When
+   * false (or a disk write fails), the payload is STILL replaced by the
+   * placeholder — just without the `file=` pointer, so the archive never
+   * stores binary bytes.
+   */
+  storeMedia?: boolean;
   systemone?: RequestCaptureSystemoneConfig;
 }
 

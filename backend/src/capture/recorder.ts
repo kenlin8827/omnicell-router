@@ -301,6 +301,7 @@ interface CaptureStatus {
   retentionDays: number;
   maxTotalMB: number;
   maxBodyBytes: number;
+  storeMedia: boolean;
   totalBytes: number;
   dateCount: number;
 }
@@ -319,6 +320,54 @@ const SAFE_SESSION_RE = /^[\w.@:-]{1,80}$/;
 const HASH_NAME_RE = /^h_[0-9a-f]{16}$/i;
 const JSONL_SUFFIX = '.jsonl';
 const TRUNCATION_SUFFIX = '...[TRUNCATED]';
+// Binary-media offload sub-directory inside each date archive (content-
+// addressed, deduped by sha256 name). Retention sweeps whole date dirs, so
+// the media files ride the same daily cleanup batch — and every directory
+// listing in this class filters on isFile()/.jsonl, so it never surfaces as
+// a "session".
+const MEDIA_SUBDIR = 'media';
+// Reader-side shape of the stored file name: `<64hex>.<ext>` — the route
+// accepts the bare hash (16–64 hex) and prefix-matches it against this.
+const MEDIA_FILE_RE = /^[0-9a-f]{16,64}\.[a-z0-9]{1,8}$/;
+// A bare (no data-URL prefix) base64 payload worth scrubbing: ≥256 chars of
+// strict alphabet. Prose, code, or paths carry spaces/punctuation and never
+// match — the guard's false-positive class is "long base64-ish token", which
+// is exactly what image/audio/document blobs look like.
+const BASE64_SHAPE_RE = /^[A-Za-z0-9+/]{256,}={0,2}$/;
+/** media_type → file extension for the offloaded payload (unknown → bin). */
+const MIME_TO_EXT: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/jpg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/svg+xml': 'svg',
+  'image/bmp': 'bmp',
+  'image/avif': 'avif',
+  'application/pdf': 'pdf',
+  'text/plain': 'txt',
+};
+/** Reverse map for the read route's Content-Type. */
+const EXT_TO_MIME: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  svg: 'image/svg+xml',
+  bmp: 'image/bmp',
+  avif: 'image/avif',
+  pdf: 'application/pdf',
+  txt: 'text/plain',
+};
+
+const MEDIA_HASH_RE = /^[0-9a-f]{16,64}$/;
+
+/** `1.2 MB` style size for the placeholder's human-readable field. */
+function humanBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
 // Read cap for a single archive file — a turn is bounded by maxBodyBytes, so
 // this only trips on pathologically long sessions; the tail is what matters.
 const MAX_READ_BYTES = 8 * 1024 * 1024;
@@ -346,6 +395,7 @@ export class CaptureRecorder {
   private retentionDays: number;
   private maxTotalBytes: number;
   private maxBodyBytes: number;
+  private storeMedia: boolean;
   private rootDir: string;
   private sweepTimer?: ReturnType<typeof setInterval>;
 
@@ -359,6 +409,7 @@ export class CaptureRecorder {
     // `new CaptureRecorder()` must not enforce looser limits than the config.
     this.maxTotalBytes = (config?.maxTotalMB ?? 512) * 1024 * 1024;
     this.maxBodyBytes = config?.maxBodyBytes ?? 262144;
+    this.storeMedia = config?.storeMedia ?? true;
     this.rootDir = path.resolve(config?.dir || getEnvPaths().captureDir);
 
     if (this.enabled) {
@@ -418,6 +469,7 @@ export class CaptureRecorder {
     this.retentionDays = cfg?.retentionDays ?? this.retentionDays;
     this.maxTotalBytes = (cfg?.maxTotalMB ?? this.maxTotalBytes / (1024 * 1024)) * 1024 * 1024;
     this.maxBodyBytes = cfg?.maxBodyBytes ?? this.maxBodyBytes;
+    this.storeMedia = cfg?.storeMedia ?? this.storeMedia;
     const newDir = path.resolve(cfg?.dir || this.rootDir);
     if (newDir !== this.rootDir) {
       this.rootDir = newDir;
@@ -531,7 +583,14 @@ export class CaptureRecorder {
       return { value: sliced + '...[TRUNCATED]', truncated: true };
     };
 
-    const truncatedReq = truncateBody(event.wire?.requestBody);
+    // Scrub base64 media payloads BEFORE the byte-budget cut: the placeholder
+    // is ~120 bytes, so the maxBodyBytes window keeps conversation text
+    // instead of a resent screenshot's base64, and truncation can no longer
+    // slice a payload mid-stream into an unrecoverable fragment. Request
+    // bodies only — responses are one-shot per turn, and a generated-image
+    // payload in one IS the captured content.
+    const dateDir = CaptureRecorder.localDateDir(new Date(ts));
+    const truncatedReq = truncateBody(this.scrubMedia(event.wire?.requestBody, dateDir));
     const truncatedResp = truncateBody(event.wire?.responseBody);
     const truncated = truncatedReq.truncated || truncatedResp.truncated || undefined;
     const wire: RawWireCapture = {
@@ -561,6 +620,180 @@ export class CaptureRecorder {
     }
   }
 
+  /* ------------------------------------------------------------ media scrub */
+
+  /**
+   * Replace base64 media payloads in a JSON request body with `[MEDIA …]`
+   * placeholders and offload the bytes to content-addressed files under
+   * `<rootDir>/<dateDir>/media/<sha256>.<ext>` (when storeMedia is on).
+   * Handles OpenAI `image_url.url` data URLs, Anthropic `image`/`document`
+   * `source.data` blocks, and any long base64-shaped string as a fallback.
+   * Fail-open on every level: non-string bodies (hex dumps), non-JSON text,
+   * and parse errors all pass through UNTOUCHED — a capture problem must
+   * never break the inference hot path, and never silently drop the payload
+   * either (worst case the archive keeps the base64 it started with).
+   */
+  private scrubMedia(body: WireBody | undefined, dateDir: string): WireBody | undefined {
+    if (typeof body !== 'string') return body;
+    // Cheap guard: the two substrings that must appear for any handled shape
+    // (the 'base64' tag/type and the data-URL prefix). Bodies without them
+    // are archived without a parse pass.
+    if (!body.includes('base64') && !body.includes('data:image')) return body;
+    try {
+      const obj = JSON.parse(body) as unknown;
+      if (!obj || typeof obj !== 'object') return body;
+      return this.walkScrubMedia(obj, dateDir) ? JSON.stringify(obj) : body;
+    } catch {
+      return body;
+    }
+  }
+
+  /** Recursive walk; mutates matching string values in place. Returns changed. */
+  private walkScrubMedia(node: unknown, dateDir: string, depth = 0): boolean {
+    if (depth > 24 || node === null || typeof node !== 'object') return false;
+    let changed = false;
+    if (Array.isArray(node)) {
+      for (const item of node) changed = this.walkScrubMedia(item, dateDir, depth + 1) || changed;
+      return changed;
+    }
+    const o = node as Record<string, any>;
+    // OpenAI chat: {type:'image_url', image_url:{url:'data:image/png;base64,…'}}
+    if (o.image_url && typeof o.image_url === 'object' && typeof o.image_url.url === 'string') {
+      const rep = this.scrubMediaValue(o.image_url.url, dateDir);
+      if (rep !== null) {
+        o.image_url.url = rep;
+        changed = true;
+      }
+    }
+    // Anthropic: {type:'image'|'document', source:{type:'base64', media_type, data}}
+    if ((o.type === 'image' || o.type === 'document') && o.source && typeof o.source === 'object') {
+      const mime = typeof o.source.media_type === 'string' ? o.source.media_type : undefined;
+      if (o.source.type === 'base64' && typeof o.source.data === 'string') {
+        const rep = this.scrubMediaValue(o.source.data, dateDir, mime);
+        if (rep !== null) {
+          o.source.data = rep;
+          changed = true;
+        }
+      }
+    }
+    // Generic fallback: any strict-alphabet ≥256-char string value (audio
+    // blobs, inline tool payloads) — replaces the bytes, mime unknown.
+    for (const k of Object.keys(o)) {
+      const v = o[k];
+      if (typeof v === 'string') {
+        if (BASE64_SHAPE_RE.test(v) || (v.startsWith('data:') && v.includes(';base64,'))) {
+          const rep = this.scrubMediaValue(v, dateDir);
+          if (rep !== null) {
+            o[k] = rep;
+            changed = true;
+          }
+        }
+      } else {
+        changed = this.walkScrubMedia(v, dateDir, depth + 1) || changed;
+      }
+    }
+    return changed;
+  }
+
+  /**
+   * Build the placeholder for one base64 payload (optionally inside a data
+   * URL), offloading the bytes when storeMedia is on. Returns null when the
+   * value is not a scrubbable payload (http(s) data URL, short string,
+   * non-base64) so callers keep the original.
+   */
+  private scrubMediaValue(s: string, dateDir: string, mimeHint?: string): string | null {
+    let mime = mimeHint;
+    let payload = s;
+    if (s.startsWith('data:')) {
+      const comma = s.indexOf(',');
+      if (comma < 0) return null;
+      const meta = s.slice(5, comma); // e.g. "image/png;base64"
+      if (!/;base64$/i.test(meta)) return null; // non-base64 data URL — keep
+      mime = mime || meta.replace(/;base64$/i, '') || undefined;
+      payload = s.slice(comma + 1);
+    }
+    if (!BASE64_SHAPE_RE.test(payload)) return null;
+    // node's base64 decode never throws (lenient); a fully-ignored payload
+    // yields an empty buffer and is kept unscrubbed rather than placeholdered.
+    const raw = Buffer.from(payload, 'base64');
+    if (raw.length === 0) return null;
+    const sha = crypto.createHash('sha256').update(raw).digest('hex');
+    const ext = MIME_TO_EXT[(mime ?? '').toLowerCase()] ?? 'bin';
+    const file = this.storeMediaFile(raw, sha, ext, dateDir);
+    const head = `[MEDIA ${mime ?? 'unknown'} ${humanBytes(raw.length)} sha256=${sha.slice(0, 16)}`;
+    // No file= segment when the switch is off or the write failed — the
+    // placeholder still marks the payload and its identity.
+    return file ? `${head} file=${file}]` : `${head}]`;
+  }
+
+  /**
+   * Persist one decoded payload under the date dir's media/ (atomic
+   * tmp+rename; the existsSync short-circuit is the dedupe: a screenshot
+   * resent across 20 turns lands once). Returns the archive-relative
+   * pointer, or null on any failure (fail-open: caller emits the
+   * placeholder without file=).
+   */
+  private storeMediaFile(raw: Buffer, sha: string, ext: string, dateDir: string): string | null {
+    if (!this.storeMedia) return null;
+    const dir = path.join(this.rootDir, dateDir, MEDIA_SUBDIR);
+    const name = `${sha}.${ext}`;
+    const fp = path.join(dir, name);
+    try {
+      if (fs.existsSync(fp)) return `${MEDIA_SUBDIR}/${name}`;
+      this.ensureDir(dir);
+      const tmp = `${fp}.${process.pid}.${crypto.randomUUID().slice(0, 8)}.tmp`;
+      try {
+        fs.writeFileSync(tmp, raw);
+        fs.renameSync(tmp, fp);
+      } catch (inner: any) {
+        try {
+          fs.rmSync(tmp, { force: true });
+        } catch {
+          /* tmp already gone */
+        }
+        console.warn(`[Capture] media write failed for ${name}: ${inner.message}`);
+        return null;
+      }
+      return `${MEDIA_SUBDIR}/${name}`;
+    } catch (err: any) {
+      console.warn(`[Capture] media store error for ${name}: ${err.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Read one offloaded media file by its date dir + hash prefix (16–64 hex,
+   * matched against the content-addressed file name `<hash>.<ext>`). The
+   * strict regexes make path traversal impossible: neither date nor hash can
+   * carry separators or dots. Null = not found / invalid.
+   */
+  public getMediaFile(date: string, hash: string): { data: Buffer; contentType: string; fileName: string } | null {
+    if (!DATE_DIR_RE.test(date) || !MEDIA_HASH_RE.test(hash)) return null;
+    const dir = path.join(this.rootDir, date, MEDIA_SUBDIR);
+    let names: string[];
+    try {
+      names = fs.readdirSync(dir);
+    } catch {
+      return null;
+    }
+    const name = names
+      .sort()
+      .find(n => {
+        const stem = n.slice(0, n.lastIndexOf('.'));
+        // Full hash hits exactly; a shorter (16-hex) placeholder hash hits the
+        // unique stem that carries it as a prefix.
+        return stem === hash || (stem.length === 64 && stem.startsWith(hash));
+      });
+    if (!name || !MEDIA_FILE_RE.test(name)) return null;
+    try {
+      const data = fs.readFileSync(path.join(dir, name));
+      const ext = name.slice(name.lastIndexOf('.') + 1);
+      return { data, contentType: EXT_TO_MIME[ext] ?? 'application/octet-stream', fileName: name };
+    } catch {
+      return null;
+    }
+  }
+
   /* -------------------------------------------------------------- queries */
 
   public getStatus(): CaptureStatus {
@@ -571,6 +804,7 @@ export class CaptureRecorder {
       retentionDays: this.retentionDays,
       maxTotalMB: Math.round(this.maxTotalBytes / (1024 * 1024)),
       maxBodyBytes: this.maxBodyBytes,
+      storeMedia: this.storeMedia,
       totalBytes: dates.reduce((sum, d) => sum + d.bytes, 0),
       dateCount: dates.length,
     };
