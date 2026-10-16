@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Terminal, Check, X, RefreshCw, Undo2, ArrowUpRight, RotateCcw, ChevronDown, Puzzle, Eraser } from 'lucide-react';
 import { BrandIcon } from '../components/BrandIcons';
@@ -71,10 +71,9 @@ export const ClientsPage: React.FC = () => {
     { value: '200000', label: '200K' },
     { value: '1048576', label: '1M' },
   ];
-  /** Accordion: which client's config form is expanded */
+  /** Accordion: which client's config form is expanded. Starts fully collapsed —
+   *  opening a form is always a deliberate user action. */
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  /** Seeds the default expansion (first un-hooked client) exactly once, on initial load */
-  const didSeedExpand = useRef(false);
   /** Live gateway port for the manual-endpoint guide ('' → fall back to console origin / OCR default). */
   const [port, setPort] = useState<string>('');
   const gwPort = port || window.location.port || '4000';
@@ -84,15 +83,6 @@ export const ClientsPage: React.FC = () => {
       const data = await api.getStatus();
       setClients(data.clients || []);
       if (data.port) setPort(String(data.port));
-      // Progressive setup: with nothing hooked yet, pre-expand the first candidate so
-      // its form is visible; once anything is hooked, keep everything collapsed.
-      if (!didSeedExpand.current) {
-        didSeedExpand.current = true;
-        if (!(data.clients || []).some(c => c.hooked)) {
-          const first = (data.clients || []).find(c => !c.hooked);
-          if (first) setExpanded({ [first.name]: true });
-        }
-      }
       // Seed selections from the client config's current slot values (don't clobber unsaved edits)
       setModelSel(prev => {
         const next = { ...prev };
