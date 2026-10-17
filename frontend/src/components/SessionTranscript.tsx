@@ -796,10 +796,11 @@ const RoundCard: React.FC<{
         overflow: 'hidden',
       }}
     >
-      {/* Header band — the whole band toggles, so it stays quiet at rest and
-          lights up on hover (the timeline-row language). A permanent
-          --surface-hover fill read as a "selected" gray slab: it boxed the
-          prompt in a hard-edged block and washed out the white text. */}
+      {/* Header band — the whole band toggles. NO background fill on hover
+          (operator call: the gray slab boxed the prompt in a hard-edged
+          block and washed out the text); the affordance is the cursor +
+          the quiet-list text lift (.round-header:hover .round-prompt-excerpt
+          in index.css). */}
       <div
         className="round-header"
         style={{
@@ -807,13 +808,10 @@ const RoundCard: React.FC<{
           alignItems: 'flex-start',
           gap: 10,
           padding: '8px 12px',
-          background: 'transparent',
           cursor: 'pointer',
           fontSize: '12px',
         }}
         onClick={() => setOpen(o => !o)}
-        onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface-hover)')}
-        onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
       >
         {/* Bare disclosure triangle in a fixed 26px slot (tree convention) —
             the bordered square read as a checkbox; the whole band toggles. */}
