@@ -1255,8 +1255,10 @@ export const CapturesPage: React.FC = () => {
                         </span>
                       </div>
                       {/* Row 2 — machine detail + actions. paddingLeft 16px
-                          aligns it under the title (dot 8 + gap 8). The short
-                          id is skipped when it already IS the row-1 title;
+                          aligns it under the title (dot 8 + gap 8). The id
+                          renders in full and CSS ellipsis cuts it at the real
+                          pixel boundary, so it claims every available column
+                          width; skipped when it already IS the row-1 title;
                           action icons reveal on hover (capture-card-actions). */}
                       <div
                         style={{
@@ -1280,7 +1282,7 @@ export const CapturesPage: React.FC = () => {
                               minWidth: 0,
                             }}
                           >
-                            {shortId(s.sessionId, 16)}
+                            {s.sessionId}
                           </span>
                         )}
                         {s.apiKeys && s.apiKeys.length > 0 && (
