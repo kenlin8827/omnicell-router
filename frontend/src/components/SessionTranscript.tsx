@@ -878,12 +878,17 @@ const RoundCard: React.FC<{
                   fontSize: '11px',
                   padding: '2px 4px',
                   flexShrink: 0,
+                  // The toggle stays on the RIGHT in both states: collapsed,
+                  // the flex:1 excerpt span pushes it there; expanded, that
+                  // span unmounts, so the button must claim the auto margin
+                  // itself — otherwise it drifts next to the time chip.
+                  marginLeft: promptOpen ? 'auto' : undefined,
                 }}
               >
                 {promptOpen ? t('captures.collapse') : t('captures.expand')}
               </button>
             )}
-            <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: MONO, marginLeft: excerpt && !promptOpen ? 0 : 'auto', flexShrink: 0 }}>
+            <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: MONO, marginLeft: excerpt ? 0 : 'auto', flexShrink: 0 }}>
               {t('captures.roundStepsUnit', { n: round.steps.length })}
               {round.totalLatencyMs > 0 ? ` · ${fmtDur(round.totalLatencyMs)}` : ''}
             </span>
