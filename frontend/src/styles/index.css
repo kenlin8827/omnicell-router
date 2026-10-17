@@ -458,6 +458,22 @@ td, th {
   opacity: 1;
 }
 
+/* Quiet-list language for the two capture scanning rows (rail card title,
+   round-header prompt): a wall of bold near-white titles competes with the
+   content below it, so the prompt text rests at --text-muted and only the
+   row the reader is actually on — hovered, or the selected card — lifts to
+   --text-main. Weight and layout stay untouched; this is color only. */
+.capture-session-title,
+.round-prompt-excerpt {
+  color: var(--text-muted);
+  transition: color 0.15s ease;
+}
+.capture-session-card:hover .capture-session-title,
+.capture-session-card[data-selected='true'] .capture-session-title,
+.round-header:hover .round-prompt-excerpt {
+  color: var(--text-main);
+}
+
 /* Markdown surface for rendered assistant answers (captures replay). The
    Prose shell around it owns the well fill / border / line-clamp; this block
    only styles the flow content. Raw HTML is never rendered (react-markdown

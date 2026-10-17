@@ -661,6 +661,7 @@ const RoundCard: React.FC<{
           --surface-hover fill read as a "selected" gray slab: it boxed the
           prompt in a hard-edged block and washed out the white text. */}
       <div
+        className="round-header"
         style={{
           display: 'flex',
           alignItems: 'flex-start',
@@ -710,6 +711,7 @@ const RoundCard: React.FC<{
               <span
                 ref={promptRef}
                 title={excerpt}
+                className="round-prompt-excerpt"
                 style={{
                   flex: 1,
                   minWidth: 0,
@@ -769,6 +771,7 @@ const RoundCard: React.FC<{
           {/* Expanded prompt — full text as a wrapped block under the row. */}
           {excerpt && promptOpen ? (
             <div
+              className="round-prompt-excerpt"
               style={{
                 marginTop: 5,
                 fontWeight: 500,

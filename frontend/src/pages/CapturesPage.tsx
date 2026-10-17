@@ -1173,6 +1173,7 @@ export const CapturesPage: React.FC = () => {
                     <div
                       key={s.file}
                       className="capture-session-card"
+                      data-selected={s.file === selectedFile || undefined}
                       onClick={() => setSelectedFile(s.file)}
                       title={
                         [
@@ -1232,6 +1233,7 @@ export const CapturesPage: React.FC = () => {
                           }}
                         />
                         <span
+                          className="capture-session-title"
                           style={{
                             flex: 1,
                             minWidth: 0,
