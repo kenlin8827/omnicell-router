@@ -641,11 +641,17 @@ export interface SessionRecord {
   cachedTokens?: number;
   /** Cumulative recorded actual cost (USD) across the session's traces. Optional as above. */
   costUsd?: number;
+  /** Summed end-to-end latency (ms) across the session's traces — the
+   *  denominator of the average output-rate stat. Optional as above. */
+  totalLatencyMs?: number;
   /** First user prompt of the session (backend-capped summary). */
   firstUserMessage?: string;
   /** Distinct client API-key identities (applications) seen on this
    *  session's traces, write order — first element is the display anchor. */
   apiKeys?: CaptureKeyIdentity[];
+  /** Distinct client User-Agent strings seen on this session's traces,
+   *  write order (display-only fingerprint; forgeable, never identity). */
+  clients?: string[];
 }
 
 // Mirrors backend UsageStatsSummary (backend/src/trace/tracker.ts getUsageStats)

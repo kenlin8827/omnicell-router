@@ -152,7 +152,7 @@ export const UsagePage: React.FC = () => {
 
   const cards: { label: string; value: string; color: string; tip?: string; sub?: string }[] = totals
     ? [
-        { label: t('sessions.thRequests'), value: totals.requests.toLocaleString(), color: 'var(--accent-emerald)' },
+        { label: t('usage.thRequests'), value: totals.requests.toLocaleString(), color: 'var(--accent-emerald)' },
         { label: t('sessions.thTokensIn'), value: totals.inputTokens.toLocaleString(), color: 'var(--text-main)' },
         { label: t('sessions.thTokensOut'), value: totals.outputTokens.toLocaleString(), color: 'var(--text-main)' },
         {
@@ -365,7 +365,7 @@ export const UsagePage: React.FC = () => {
                   }}
                 >
                   <th style={TH_STYLE}>{t('usage.thApp')}</th>
-                  <th style={TH_STYLE}>{t('sessions.thRequests')}</th>
+                  <th style={TH_STYLE}>{t('usage.thRequests')}</th>
                   <th style={TH_STYLE}>{t('sessions.thTokensIn')}</th>
                   <th style={TH_STYLE}>{t('sessions.thTokensOut')}</th>
                   <th style={TH_STYLE}>{t('sessions.thTokensCached')}</th>

@@ -191,6 +191,33 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
     assert.strictEqual(resolve.sessionId, 'cc_6f978fa1-8a13-4a42-9f77-65bef0e6802f');
   });
 
+  it('should extract the session UUID from the Claude Code 2.x JSON identity payload', () => {
+    const req: ChatCompletionRequest = {
+      model: 'auto',
+      messages: [{ role: 'user', content: 'Anything' }],
+      // claude-cli/2.1.211 sends metadata.user_id as a JSON identity payload;
+      // the inner session_id is the same conversation-uuid namespace (cc_).
+      user: '{"device_id":"00afe3c9d2b47f6a8c51e0d9b7a3f25c8e64d1b09c7f3a25e8b4c6d9f0a1b234","account_uuid":"","session_id":"7c9e6679-7425-40de-944b-e07fc1f90ae7"}',
+    };
+
+    const resolve = sessionManager.resolveSessionId(req);
+    assert.strictEqual(resolve.lookupType, 'embedded_user_id');
+    assert.strictEqual(resolve.sessionId, 'cc_7c9e6679-7425-40de-944b-e07fc1f90ae7');
+  });
+
+  it('must NOT promote JSON user values that carry no session_id (stay user-level)', () => {
+    const raw = '{"device_id":"00afe3c9d2b47f6a8c51e0d9b7a3f25c8e64d1b09c7f3a25e8b4c6d9f0a1b234","account_uuid":""}';
+    const req: ChatCompletionRequest = {
+      model: 'auto',
+      messages: [{ role: 'user', content: 'Anything' }],
+      user: raw,
+    };
+
+    const resolve = sessionManager.resolveSessionId(req);
+    assert.strictEqual(resolve.lookupType, 'request_user', 'JSON without session_id stays user-level');
+    assert.strictEqual(resolve.sessionId, raw);
+  });
+
   it('must NOT promote ordinary user ids that merely contain "_session_" (loose-suffix false merge)', () => {
     const req: ChatCompletionRequest = {
       model: 'auto',

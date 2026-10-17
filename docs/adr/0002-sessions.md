@@ -15,7 +15,7 @@ Every routed turn needs to answer two questions without client cooperation: *whi
 Priority order (first hit wins), `resolveSessionId`:
 
 1. Explicit header `x-session-id` / `x-conversation-id` / `session-id` / `conversation-id`, or `router_options.session_id`.
-2. Client-embedded conversation UUID — full-shape Claude Code convention `user_{hex}_account_{uuid}_session_{uuid}` (exact-shape match only; a loose `_session_` suffix would false-merge a user's unrelated conversations).
+2. Client-embedded conversation UUID — Claude Code `metadata.user_id` in either shape: the legacy `user_{hex}_account_{uuid}_session_{uuid}` string or the 2.x JSON payload `{"device_id":...,"account_uuid":...,"session_id":"<uuid>"}`; both inner ids live in the same conversation-uuid namespace and map onto the shared `cc_` prefix. Exact-shape match only: a loose `_session_` suffix would promote ordinary user ids, and the JSON probe requires a JSON object with a non-empty string `session_id` (mirrors the console's `formatSessionId`).
 3. Bare `request.user` (user-scoped; kept for compatibility).
 4. Chain anchors — hash of every head prefix of the prior history ending at an assistant turn (bounded probes; matches branched/regenerated histories sharing the head). Serialized **canonically** (see below): the served assistant echo keeps its `tool_calls`, so an agent tool-loop re-anchors across the client's resend byte drift.
 5. Tail anchors — trailing windows of length ≥ 3 ending at an assistant boundary (clients that truncate old turns re-find their conversation).
@@ -65,5 +65,6 @@ A model repin never rewrites the binding: continuity rides the selection boundar
 
 - Zero-header clients get full conversation continuity; with the anchor/key snapshot, a restart no longer splits grouping either (only the in-memory ratchet/pin/affinity state rebuilds).
 - Identity is anchored on the API-key application (never the transport IP), and tool-call anchors survive client resend byte drift — the two failures that cascaded one agent loop into dozens of session ids. `conversationKey` is stamped on every capture event (ADR-0008) so the archive can regroup a conversation by content hash independent of the volatile session id.
+- Client User-Agent headers ride the traces (`request.clientHeaders.userAgent`) and are surfaced read-only on the console session table as a display-only client fingerprint; being client-forgeable they are never an identity or routing input — same reasoning as the transport-IP exclusion above.
 - Operator edits (tier lists, denylist) reach live conversations next turn; each evicted session pays exactly one cache rebuild — forced, attributable, retried only when it has somewhere to land.
 - Tests: `backend/tests/pin-eviction.test.ts` (forces, non-triggers, recovering exemption with two-view divergence, landing guard, scope regressions), `account-affinity-orchestrator.test.ts`, `account-selection.test.ts`, `session.test.ts`, `resilience*.test.ts`.

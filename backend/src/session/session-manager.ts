@@ -90,10 +90,12 @@ const PERSIST_SAVE_DEBOUNCE_MS = 2_000;
  *
  * Zero-header identity resolution (in priority order):
  *   1. Explicit header / router_options.session_id.
- *   2. Embedded client session UUID — Claude Code sends
- *      metadata.user_id = "user_{hash}_account_{uuid}_session_{uuid}";
- *      the trailing UUID is a client-minted conversation id that survives
- *      gateway restarts for free.
+ *   2. Embedded client session UUID — Claude Code sends metadata.user_id as
+ *      either the legacy string "user_{hash}_account_{uuid}_session_{uuid}"
+ *      or the 2.x JSON payload {"device_id":...,"account_uuid":...,
+ *      "session_id":"<uuid>"}; the inner UUID is a client-minted conversation
+ *      id that survives gateway restarts for free. Both shapes share the cc_
+ *      prefix (same conversation-uuid namespace).
  *   3. Raw request.user (OpenAI end-user field; NOTE: user-scoped, not
  *      conversation-scoped — kept for backward compatibility).
  *   4. Chain anchors — exact hash of the current history's head prefixes that
@@ -275,9 +277,17 @@ export class SessionManager {
 
   /**
    * Extract a client-embedded conversation id from a user identifier string.
-   * Recognizes the FULL Claude Code convention
-   *   user_{hex hash}_account_{uuid}_session_{uuid}
-   * (the same extraction peer gateways perform for observability tooling).
+   * Recognizes both Claude Code identity payload shapes (metadata.user_id):
+   *   1. Legacy convention — `user_{hex hash}_account_{uuid}_session_{uuid}`
+   *      (the same extraction peer gateways perform for observability tooling).
+   *   2. Claude Code 2.x JSON payload — `{"device_id":"<hex>","account_uuid":
+   *      "<uuid or empty>","session_id":"<uuid>"}` (observed on
+   *      claude-cli/2.1.211). The inner session_id lives in the SAME
+   *      conversation-uuid namespace, so both shapes map onto the shared
+   *      `cc_` prefix and one conversation keeps a single session id across
+   *      client builds. Recognition mirrors the console's formatSessionId:
+   *      any JSON object carrying a non-empty string session_id — an
+   *      ordinary user-level id cannot accidentally look like that.
    * The whole shape must match: a loose "_session_" suffix match would
    * promote ordinary user-level ids that merely contain that marker to
    * session level, falsely merging every conversation of that user. False
@@ -287,9 +297,20 @@ export class SessionManager {
    */
   private static extractEmbeddedSessionId(user?: unknown): string | null {
     if (!user || typeof user !== 'string') return null;
-    const m = /^user_[0-9a-f]{8,64}_account_[0-9a-f-]{8,64}_session_([0-9a-f-]{8,64})$/i.exec(user.trim());
-    if (!m) return null;
-    return `cc_${m[1]}`;
+    const trimmed = user.trim();
+    const m = /^user_[0-9a-f]{8,64}_account_[0-9a-f-]{8,64}_session_([0-9a-f-]{8,64})$/i.exec(trimmed);
+    if (m) return `cc_${m[1]}`;
+    if (trimmed.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(trimmed) as { session_id?: unknown };
+        if (parsed && typeof parsed === 'object' && typeof parsed.session_id === 'string' && parsed.session_id) {
+          return `cc_${parsed.session_id}`;
+        }
+      } catch {
+        /* not JSON — fall through to the user-level layers */
+      }
+    }
+    return null;
   }
 
   /**

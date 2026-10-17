@@ -200,5 +200,6 @@ describe('TraceTracker.getUsageStats / getSessionAggregates — raw token aggreg
     assert.equal(agg.outputTokens, 15);
     assert.equal(agg.cachedTokens, 40);
     assert.equal(agg.costUsd, 0.003);
+    assert.equal(agg.totalLatencyMs, 50, '20ms + 30ms summed across the session traces');
   });
 });

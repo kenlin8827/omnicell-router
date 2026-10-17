@@ -15,7 +15,7 @@
 优先级序（先中先得），`resolveSessionId`：
 
 1. 显式 Header `x-session-id` / `x-conversation-id` / `session-id` / `conversation-id`，或 `router_options.session_id`。
-2. 客户端内嵌会话 UUID——Claude Code 全形约定 `user_{hex}_account_{uuid}_session_{uuid}`（仅全形匹配；宽松的 `_session_` 后缀会把同一用户的不相关对话假性合并）。
+2. 客户端内嵌会话 UUID——Claude Code `metadata.user_id` 的两种形态：旧版字符串 `user_{hex}_account_{uuid}_session_{uuid}` 与 2.x JSON 载荷 `{"device_id":...,"account_uuid":...,"session_id":"<uuid>"}`；两者的内层 id 同属一个对话 uuid 命名空间，统一映射到共享的 `cc_` 前缀。仅全形匹配：宽松的 `_session_` 后缀会把普通用户 id 提升为会话级；JSON 探测要求 JSON 对象且 `session_id` 为非空字符串（与控制台的 `formatSessionId` 同一语义）。
 3. 裸 `request.user`（用户粒度；为兼容保留）。
 4. 链锚——历史头部截至每个 assistant 轮的前缀哈希（探针有界；命中分叉/重生成后仍共头的历史）。按**规范形**序列化（见下）：登记的 assistant 回音保留其 `tool_calls`，故 agent 工具循环能扛住客户端回传时的字节漂移重新锚定。
 5. 尾锚——长度 ≥ 3、终于 assistant 边界的尾部窗口（截旧轮保上下文的客户端靠它回家）。
@@ -65,5 +65,6 @@ switch     = evict ∧ 健康着陆点存在 ∧ landing.id ≠ pin
 
 - 零 Header 客户端获得完整对话连续性；有了锚点/键快照，重启连分组也不再撕碎（只有内存态的 ratchet/钉选/亲和绑定会重建）。
 - 身份锚定在 API-key 应用上（绝不用传输 IP），且 tool-call 锚能扛住客户端回传的字节漂移——正是这两处失败把一条 agent 循环级联成几十个 session id。每个捕捉事件都带 `conversationKey`（ADR-0008），档案可凭内容哈希按会话重组，与易变的 sessionId 无关。
+- 客户端 User-Agent 头随轨迹记录（`request.clientHeaders.userAgent`），并在控制台会话表上只读展示为客户端指纹；因其可被客户端伪造，绝不作为身份或路由输入——与上文排除传输 IP 的理由相同。
 - 操作员编辑（梯队成员表、denylist）下一轮即触达活会话；每个被驱逐会话恰好支付一次缓存重建——强制、可归因、只在有处可去时重试。
 - 测试：`pin-eviction.test.ts`（两力、非触发、试飞豁免含双视图分歧、着陆守卫、范围回归）、`account-affinity-orchestrator.test.ts`、`account-selection.test.ts`、`session.test.ts`、`resilience*.test.ts`。

@@ -386,7 +386,8 @@ export class TraceTracker {
    * Per-session aggregates for the console's session table, computed in one
    * pass over the session's chronological traces: request count, model
    * switches (adjacent modelUsed changes), cumulative token consumption
-   * (input / output / cached) and cumulative recorded cost.
+   * (input / output / cached), cumulative recorded cost and the summed
+   * end-to-end latency (denominator of the console's average output-rate).
    */
   public getSessionAggregates(sessionId: string): {
     traceCount: number;
@@ -395,6 +396,7 @@ export class TraceTracker {
     outputTokens: number;
     cachedTokens: number;
     costUsd: number;
+    totalLatencyMs: number;
   } {
     const traces = this.getTracesBySession(sessionId);
     let switchCount = 0;
@@ -402,6 +404,7 @@ export class TraceTracker {
     let outputTokens = 0;
     let cachedTokens = 0;
     let costUsd = 0;
+    let totalLatencyMs = 0;
     let prevModel: string | null = null;
     for (const t of traces) {
       if (prevModel !== null && t.execution.modelUsed !== prevModel) switchCount++;
@@ -410,6 +413,7 @@ export class TraceTracker {
       outputTokens += t.finops.outputTokens;
       cachedTokens += t.finops.cachedTokens;
       costUsd += t.finops.costUsd;
+      totalLatencyMs += t.execution.latencyMs;
     }
     return {
       traceCount: traces.length,
@@ -418,6 +422,7 @@ export class TraceTracker {
       outputTokens,
       cachedTokens,
       costUsd: Number(costUsd.toFixed(6)),
+      totalLatencyMs,
     };
   }
 

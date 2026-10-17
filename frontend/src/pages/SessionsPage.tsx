@@ -4,6 +4,7 @@ import { Users, RefreshCw, Archive, BarChart3, ChevronDown, ChevronRight, Eye, G
 import { api, type SessionRecord, type TraceRecord } from '../lib/api';
 import { formatReason, type Translate } from '../lib/reason';
 import { copyToClipboard, formatCost, formatSessionId, outputRate, formatRate, fmtLatency } from '../lib/format';
+import { clientDisplayName } from '../lib/clientDetect';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
@@ -11,11 +12,6 @@ import { Combobox } from '../components/Combobox';
 import { Pagination } from '../components/Pagination';
 
 const PAGE_SIZES = [10, 20, 50, 100, 200];
-
-// Sticky column header inside the scrollable table area (matches the card background).
-// Above this many requests in one session, entering from the switch badge
-// starts the request detail collapsed (the timeline is the point there).
-const DETAIL_AUTO_EXPAND_LIMIT = 12;
 
 const TH_STYLE: React.CSSProperties = {
   padding: '10px 14px',
@@ -45,6 +41,41 @@ const TIER_FULL_LABEL: Record<SessionRecord['maxTier'], string> = {
   pro: 'tierPolicy.tierPro',
   ultra: 'tierPolicy.tierUltra',
 };
+
+/**
+ * One labeled stat line inside the merged tokens cell. The fixed-width dim
+ * label keeps the number columns vertically aligned across the cell's 2×2
+ * grid (In/Out stacked left, Cached/Hit stacked right). `title` carries the
+ * exact value when the displayed one is compacted.
+ */
+const TokenStatRow: React.FC<{ label: string; value: string; color?: string; title?: string }> = ({ label, value, color, title }) => (
+  <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, lineHeight: 1.7 }}>
+    <span style={{ fontSize: '10px', color: 'var(--text-dim)', flexShrink: 0, minWidth: 24 }}>
+      {label}
+    </span>
+    <span
+      title={title}
+      style={{
+        fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+        fontWeight: 600,
+        color: color ?? 'var(--text-main)',
+      }}
+    >
+      {value}
+    </span>
+  </div>
+);
+
+/**
+ * Compact token display for the fixed-layout table: a 7-digit count (~65px
+ * in mono 12px) overflows its column and bleeds into the neighbor cell
+ * (table-layout:fixed never clips). ≥100K collapses to 38.9K/4.3M-style so
+ * the 2×2 halves stay inside the container-query threshold; the exact value
+ * stays in the row tooltip.
+ */
+const COMPACT_FMT = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 });
+const tokenDisplay = (v: number): string => (v >= 100_000 ? COMPACT_FMT.format(v) : v.toLocaleString());
+
 
 /**
  * Tier column content by entry mode:
@@ -103,7 +134,7 @@ const PinnedModelCell: React.FC<{ model: string }> = ({ model }) => {
         title={model}
         style={{
           ...PINNED_LINE_STYLE,
-          marginTop: '1px',
+          marginTop: '3px',
           fontSize: '10px',
           fontWeight: 500,
           color: 'var(--text-dim)',
@@ -139,6 +170,35 @@ const SWITCH_LABEL: Record<SwitchKind, string> = {
   switch: 'sessions.switchPlain',
 };
 
+/** Spine-dot color per switch kind — mirrors the SWITCH_BADGE hues. */
+const SWITCH_DOT: Record<SwitchKind, string> = {
+  first: 'var(--accent)',
+  ratchet: 'var(--accent-amber)',
+  fallback: 'var(--accent-rose)',
+  switch: 'var(--text-dim)',
+};
+
+/**
+ * Provider namespace shared by every model in the timeline, when all from/to
+ * refs carry the same `provider/` prefix. The modal then prints the prefix
+ * once as a header chip and keeps rows short (`glm-5.3-flash → glm-5.3`
+ * instead of repeating a 30-char ref per name). Mixed or prefix-less models
+ * return null and rows fall back to full refs.
+ */
+const commonProviderOf = (events: SwitchEvent[]): string | null => {
+  let ns: string | null = null;
+  for (const ev of events) {
+    for (const m of [ev.from, ev.to]) {
+      if (!m) continue;
+      const slash = m.indexOf('/');
+      const p = slash < 0 ? '' : m.slice(0, slash);
+      if (ns === null) ns = p;
+      else if (ns !== p) return null;
+    }
+  }
+  return ns ? ns : null;
+};
+
 /**
  * Derive the model-switch timeline from a session's chronological traces:
  * a switch happens wherever the executed model differs from the previous
@@ -165,7 +225,15 @@ const buildSwitchTimeline = (traces: TraceRecord[], t: Translate): SwitchEvent[]
           : ratcheted
             ? 'ratchet'
             : 'switch';
-      const detail = tr.execution.fallbackReason || tr.execution.failoverPath?.join(' → ') || routingDetail;
+      // Failover narrative only when it tells a story: the pool pushes its
+      // first candidate into failoverPath unconditionally (orchestrator
+      // failoverAttempts), so a clean turn still carries a single-entry path —
+      // preferring it would clobber the real routing reason with the bare
+      // model ref.
+      const fp = tr.execution.failoverPath;
+      const failoverStory =
+        tr.execution.failoverOccurred && fp && fp.length > 1 ? fp.join(' → ') : undefined;
+      const detail = tr.execution.fallbackReason || failoverStory || routingDetail;
       events.push({ at: tr.timestamp, from: prev, to: model, kind, detail });
     }
     prev = model;
@@ -188,13 +256,15 @@ export const SessionsPage: React.FC = () => {
   const [captureOn, setCaptureOn] = useState(false);
   // Switch-timeline modal: null = closed; events + raw request rows filled
   // once traces arrive (the detail list renders every turn, not only switches).
-  // detailOpen: short sessions always expand; long sessions collapse unless the
-  // Detail column opened the modal. The section header toggles either way.
+  // Fold states are decided ONCE by the entry-point intent — switch badge
+  // opens trail + collapses the request detail, the Detail button is the
+  // reverse — and both headers stay user-toggleable afterwards.
   const [timeline, setTimeline] = useState<{
     session: SessionRecord;
     events: SwitchEvent[];
     traces: TraceRecord[];
     detailOpen: boolean;
+    trailOpen: boolean;
   } | null>(null);
   // Server-side filter (?q=), debounced from the search input; resets to page 1.
   const [filterInput, setFilterInput] = useState('');
@@ -258,21 +328,15 @@ export const SessionsPage: React.FC = () => {
 
   const openTimeline = useCallback(
     async (s: SessionRecord, forceOpen: boolean) => {
-      setTimeline({ session: s, events: [], traces: [], detailOpen: true });
+      // Entry intent decides the fold states at open: switch badge → trail
+      // open + detail collapsed; Detail button → the reverse. The refill
+      // below only adds data — a toggle made while traces load survives.
+      setTimeline({ session: s, events: [], traces: [], detailOpen: forceOpen, trailOpen: !forceOpen });
       try {
         const traces = await api.getSessionTraces(s.id);
-        // Functional update: refill events/traces while preserving which
-        // session is open. Detail collapses only for the exception case —
-        // entered from the switch badge AND a long session; short sessions
-        // and the Detail-column entry always expand.
         setTimeline(cur =>
           cur && cur.session.id === s.id
-            ? {
-                ...cur,
-                events: buildSwitchTimeline(traces, t),
-                traces,
-                detailOpen: forceOpen || traces.length <= DETAIL_AUTO_EXPAND_LIMIT,
-              }
+            ? { ...cur, events: buildSwitchTimeline(traces, t), traces }
             : cur
         );
       } catch (err) {
@@ -339,19 +403,29 @@ export const SessionsPage: React.FC = () => {
   // colgroup so columns line up pixel-perfect. Weights are normalized to
   // percentages; the capture column joins only when the archive is enabled.
   // Pinned model gets 13.5 so its two non-wrapping lines (model + provider,
-  // e.g. "alibaba-token-plan-cn") fit without ellipsis; apps shrinks to 7.5
-  // (short badges only) and session id to 16 (long ids wrap by design).
-  // Tier badge is a single short word (Lite/Plus/Pro/Ultra) — 7 units so it
+  // e.g. "alibaba-token-plan-cn") fit without ellipsis; apps gets 11 (app-key
+  // + client badges wrap onto two lines here) and session id 15 (long ids
+  // wrap by design, so it can donate a unit).
+  // In/Out/Cached share ONE column as a 2×2 stat grid (left half: In over
+  // Out; right half: Cached over Hit-rate) — 16.5 units keeps its two halves
+  // above the container-query threshold (see .tokens-stat-wrap in index.css)
+  // on ordinary desktop windows; ≥100K counts render compact (4.3M/38.9K)
+  // so a half never exceeds its share. Folding cached in also removed the
+  // narrow centered column whose number used to bleed into neighbors.
+  // Tier badge is a single short word (Lite/Plus/Pro/Ultra) — 6.5 units; it
   // clears the badge padding without bleeding into the Switches column;
   // Switches gets 5.5 (icon + ×N ≈ 36px content) so no cell overflows.
   // Detail holds two side-by-side icons — 7 units keeps them on one line
   // (flex nowrap below also guarantees rows never grow a second line here).
-  // Cached-tokens column is 8 (was 6): a 7-digit count in mono 12px is ~65px
-  // wide and overflowed the old ~50px content box, which made the centered
-  // alignment invisible (overflow always starts at the left edge).
-  const colWeights = [16, 7.5, 13.5, 7, 5.5, 4.5, 5, 6, 6, 8, 6.5, 7, 7, 5, ...(captureOn ? [4] : [])];
+  // Active is a bare clock time — 6.5.
+  const colWeights = [15, 11, 13.5, 6.5, 5.5, 4.5, 5, 16.5, 6.5, 6.5, 7, 5, ...(captureOn ? [4] : [])];
   const colSum = colWeights.reduce((a, b) => a + b, 0);
   const colWidths = colWeights.map(w => `${((w / colSum) * 100).toFixed(3)}%`);
+  // Switch-timeline modal: when every event shares one provider prefix, print
+  // that prefix once as a header chip and show bare model ids in the rows.
+  const providerNs = timeline ? commonProviderOf(timeline.events) : null;
+  const shortModel = (m: string): string =>
+    providerNs && m.startsWith(`${providerNs}/`) ? m.slice(providerNs.length + 1) : m;
 
   return (
     <div className="card" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -417,9 +491,7 @@ export const SessionsPage: React.FC = () => {
                 <th style={TH_STYLE}>{t('sessions.thSwitches')}</th>
                 <th style={TH_STYLE}>{t('sessions.thTurns')}</th>
                 <th style={TH_STYLE}>{t('sessions.thRequests')}</th>
-                <th style={TH_STYLE}>{t('sessions.thTokensIn')}</th>
-                <th style={TH_STYLE}>{t('sessions.thTokensOut')}</th>
-                <th style={{ ...TH_STYLE, textAlign: 'center' }}>{t('sessions.thTokensCached')}</th>
+                <th style={TH_STYLE}>{t('sessions.thTokens')}</th>
                 <th style={TH_STYLE}>{t('sessions.thCost')}</th>
                 <th style={TH_STYLE}>{t('sessions.thActive')}</th>
                 <th style={TH_STYLE}>{t('sessions.thDetail')}</th>
@@ -457,9 +529,9 @@ export const SessionsPage: React.FC = () => {
                     </span>
                   </td>
                   <td style={{ padding: '10px 14px' }}>
-                    {s.apiKeys && s.apiKeys.length > 0 ? (
+                    {(s.apiKeys && s.apiKeys.length > 0) || (s.clients && s.clients.length > 0) ? (
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                        {s.apiKeys.map(k => (
+                        {s.apiKeys?.map(k => (
                           <span
                             key={k.id}
                             title={t('captures.apiKeyTooltip', { name: k.name, id: k.id })}
@@ -478,6 +550,27 @@ export const SessionsPage: React.FC = () => {
                             }}
                           >
                             {k.name}
+                          </span>
+                        ))}
+                        {s.clients?.map(ua => (
+                          <span
+                            key={ua}
+                            title={t('sessions.clientTip', { ua })}
+                            style={{
+                              fontSize: '10px',
+                              lineHeight: '14px',
+                              padding: '1px 6px',
+                              borderRadius: '4px',
+                              background: 'color-mix(in srgb, var(--accent-violet) 10%, transparent)',
+                              border: '1px solid color-mix(in srgb, var(--accent-violet) 25%, transparent)',
+                              color: 'var(--accent-violet)',
+                              maxWidth: '150px',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {clientDisplayName(ua)}
                           </span>
                         ))}
                       </div>
@@ -546,29 +639,55 @@ export const SessionsPage: React.FC = () => {
                   <td style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
                     {s.traceCount.toLocaleString()}
                   </td>
-                  <td style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
-                    {(s.inputTokens ?? 0).toLocaleString()}
-                  </td>
-                  <td style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
-                    {(s.outputTokens ?? 0).toLocaleString()}
-                  </td>
-                  <td
-                    style={{
-                      padding: '10px 14px',
-                      // Centered column: the two-line header reads as centered
-                      // in this narrow column, so the values follow it.
-                      textAlign: 'center',
-                      color: (s.cachedTokens ?? 0) > 0 ? 'var(--accent-emerald)' : 'var(--text-dim)',
-                      fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
-                    }}
-                  >
-                    {(s.cachedTokens ?? 0).toLocaleString()}
-                    {/* Same token-weighted ratio as the /usage cards; hidden pre-input. */}
-                    {(s.inputTokens ?? 0) > 0 && (
-                      <div style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 400 }}>
-                        {t('sessions.cacheHitRate', { pct: (((s.cachedTokens ?? 0) / s.inputTokens!) * 100).toFixed(1) })}
+                  <td style={{ padding: '10px 14px' }}>
+                    {/* Grid auto-placement fills row-major, so the child order
+                        below yields: In|Cached on row 1, Out|Hit on row 2 (2×2
+                        when the column is wide; 4 stacked rows when narrow —
+                        see .tokens-stat-wrap in index.css). */}
+                    <div className="tokens-stat-wrap">
+                      <div className="tokens-stat-grid">
+                        <TokenStatRow
+                          label={t('sessions.tokenIn')}
+                          value={tokenDisplay(s.inputTokens ?? 0)}
+                          title={(s.inputTokens ?? 0).toLocaleString()}
+                        />
+                        <TokenStatRow
+                          label={t('sessions.tokenCached')}
+                          value={tokenDisplay(s.cachedTokens ?? 0)}
+                          title={(s.cachedTokens ?? 0).toLocaleString()}
+                          color={(s.cachedTokens ?? 0) > 0 ? 'var(--accent-emerald)' : 'var(--text-dim)'}
+                        />
+                        <TokenStatRow
+                          label={t('sessions.tokenOut')}
+                          value={tokenDisplay(s.outputTokens ?? 0)}
+                          title={(s.outputTokens ?? 0).toLocaleString()}
+                          color="var(--text-muted)"
+                        />
+                        <TokenStatRow
+                          label={t('sessions.tokenHit')}
+                          value={
+                            (s.inputTokens ?? 0) > 0
+                              ? `${(((s.cachedTokens ?? 0) / s.inputTokens!) * 100).toFixed(1)}%`
+                              : '—'
+                          }
+                          color="var(--text-dim)"
+                        />
+                        {/* Session-level effective output rate: total output
+                            tokens over the summed end-to-end latency. Same
+                            semantics as the per-request rate in the detail
+                            grid (queueing + routing + retries included). */}
+                        <TokenStatRow
+                          label={t('sessions.tokenRate')}
+                          value={
+                            (s.outputTokens ?? 0) > 0 && (s.totalLatencyMs ?? 0) > 0
+                              ? `${formatRate(outputRate(s.outputTokens!, s.totalLatencyMs!))} ${t('usage.thToks')}`
+                              : '—'
+                          }
+                          title={t('usage.toksTip')}
+                          color="var(--text-muted)"
+                        />
                       </div>
-                    )}
+                    </div>
                   </td>
                   <td
                     style={{
@@ -663,7 +782,7 @@ export const SessionsPage: React.FC = () => {
               ))
             ) : (
               <tr>
-                <td colSpan={captureOn ? 15 : 14} style={{ padding: '24px', textAlign: 'center', color: 'var(--text-dim)' }}>
+                <td colSpan={captureOn ? 13 : 12} style={{ padding: '24px', textAlign: 'center', color: 'var(--text-dim)' }}>
                   {filter ? t('sessions.filterEmpty') : t('sessions.emptySessions')}
                 </td>
               </tr>
@@ -726,45 +845,125 @@ export const SessionsPage: React.FC = () => {
               {timeline.session.id}
             </div>
             <div
+              role="button"
+              aria-expanded={timeline.trailOpen}
+              onClick={() => setTimeline(cur => (cur ? { ...cur, trailOpen: !cur.trailOpen } : cur))}
               style={{
-                fontSize: '11px',
-                fontWeight: 700,
-                textTransform: 'uppercase',
-                letterSpacing: '0.04em',
-                color: 'var(--text-dim)',
-                marginBottom: '8px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px',
+                marginBottom: timeline.trailOpen ? '8px' : 0,
+                cursor: 'pointer',
+                userSelect: 'none',
               }}
             >
-              {t('sessions.switchTitle')}
+              {timeline.trailOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+              <span
+                style={{
+                  fontSize: '11px',
+                  fontWeight: 700,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.04em',
+                  color: 'var(--text-dim)',
+                }}
+              >
+                {t('sessions.switchTitle')}
+              </span>
+              {/* Shared provider prefix, printed once: rows below show bare
+                  model ids; hover reveals the full ref. */}
+              {providerNs && (
+                <span
+                  title={t('sessions.switchProviderTip')}
+                  style={{
+                    fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                    fontSize: '10px',
+                    fontWeight: 500,
+                    color: 'var(--text-dim)',
+                    background: 'var(--chip-bg)',
+                    border: '1px solid var(--card-border)',
+                    padding: '1px 8px',
+                    borderRadius: '4px',
+                    wordBreak: 'break-all',
+                  }}
+                >
+                  {providerNs}/
+                </span>
+              )}
             </div>
-            {timeline.events.length === 0 ? (
-              <p style={{ fontSize: '13px', color: 'var(--text-dim)', margin: 0 }}>{t('sessions.switchEmpty')}</p>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                {timeline.events.map((ev, i) => (
-                  <div key={i} style={{ display: 'flex', alignItems: 'baseline', gap: '10px', fontSize: '12px', flexWrap: 'wrap' }}>
-                    <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-dim)', minWidth: 68 }}>
-                      {new Date(ev.at).toLocaleTimeString()}
-                    </span>
-                    <span className={'badge' + (SWITCH_BADGE[ev.kind] ? ` ${SWITCH_BADGE[ev.kind]}` : '')}>
-                      {t(SWITCH_LABEL[ev.kind])}
-                    </span>
-                    <span style={{ fontWeight: 600, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
-                      {ev.from ? <><span style={{ color: 'var(--text-dim)' }}>{ev.from}</span>{' → '}</> : null}
-                      {ev.to}
-                    </span>
-                    {ev.detail && (
+            {timeline.trailOpen &&
+              (timeline.events.length === 0 ? (
+                <p style={{ fontSize: '13px', color: 'var(--text-dim)', margin: 0 }}>{t('sessions.switchEmpty')}</p>
+              ) : (
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '12px',
+                  // Spine: rows read as one chronological trail, the per-row
+                  // dot carries the badge's kind color.
+                  borderLeft: '2px solid var(--divider)',
+                  paddingLeft: '16px',
+                  marginLeft: '4px',
+                }}
+              >
+                {timeline.events.map((ev, i) => {
+                  // A detail that merely restates the transition (the gateway's
+                  // raw reason can be the bare target ref) is pure noise.
+                  const detail =
+                    ev.detail && ev.detail !== ev.to && ev.detail !== `${ev.from} → ${ev.to}` ? ev.detail : undefined;
+                  return (
+                    <div
+                      key={i}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'baseline',
+                        gap: '10px',
+                        fontSize: '12px',
+                        flexWrap: 'wrap',
+                        position: 'relative',
+                      }}
+                    >
                       <span
-                        style={{ color: 'var(--text-dim)', fontSize: '11px', flexBasis: '100%', wordBreak: 'break-word' }}
-                        title={ev.detail}
-                      >
-                        {ev.detail}
+                        aria-hidden
+                        style={{
+                          position: 'absolute',
+                          // 6px dot centered on the 2px spine: row content
+                          // starts 18px from the container edge (2 border +
+                          // 16 padding), so left edge = 1 - 3 - 18 = -20.
+                          left: -20,
+                          top: 4,
+                          width: 6,
+                          height: 6,
+                          borderRadius: '50%',
+                          background: SWITCH_DOT[ev.kind],
+                        }}
+                      />
+                      <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-dim)', minWidth: 68 }}>
+                        {new Date(ev.at).toLocaleTimeString()}
                       </span>
-                    )}
-                  </div>
-                ))}
+                      <span className={'badge' + (SWITCH_BADGE[ev.kind] ? ` ${SWITCH_BADGE[ev.kind]}` : '')}>
+                        {t(SWITCH_LABEL[ev.kind])}
+                      </span>
+                      <span
+                        title={providerNs ? (ev.from ? `${ev.from} → ${ev.to}` : ev.to) : undefined}
+                        style={{ fontWeight: 600, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
+                      >
+                        {ev.from ? <><span style={{ color: 'var(--text-dim)' }}>{shortModel(ev.from)}</span>{' → '}</> : null}
+                        {shortModel(ev.to)}
+                      </span>
+                      {detail && (
+                        <span
+                          style={{ color: 'var(--text-dim)', fontSize: '11px', flexBasis: '100%', wordBreak: 'break-word' }}
+                          title={detail}
+                        >
+                          {detail}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-            )}
+            ))}
             {/* Per-request detail: every turn's recorded token counts + actual cost */}
             {timeline.traces.length > 0 && (
               <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: '1px solid var(--divider)' }}>

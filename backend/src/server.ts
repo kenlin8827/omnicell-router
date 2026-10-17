@@ -65,6 +65,7 @@ function reconstructSessionFromTraces(traceTracker: TraceTracker, id: string) {
     'lite'
   );
   const keyList = distinctTraceKeys(traces);
+  const uaList = distinctTraceUserAgents(traces);
   return {
     id,
     maxTier,
@@ -80,6 +81,8 @@ function reconstructSessionFromTraces(traceTracker: TraceTracker, id: string) {
     // write order (first element = display anchor). Only appears once key
     // attribution exists; a rotated-key session lists every contributor.
     apiKeys: keyList.length ? keyList : undefined,
+    // DISTINCT client User-Agent strings (write order) — console display only.
+    clients: uaList.length ? uaList : undefined,
     ...traceTracker.getSessionAggregates(id),
   };
 }
@@ -91,6 +94,25 @@ function distinctTraceKeys(traces: ExecutionTrace[]): CaptureKeyIdentity[] {
     if (t.apiKey && !m.has(t.apiKey.id)) m.set(t.apiKey.id, t.apiKey);
   }
   return [...m.values()];
+}
+
+/**
+ * Distinct client User-Agent strings across a session's traces (write order,
+ * first element = display anchor). Display-only client fingerprint — the UA
+ * is forgeable and is deliberately NOT an identity/routing input (ADR-0002
+ * §1 resolves identity zero-header, anchored on the API-key application).
+ */
+function distinctTraceUserAgents(traces: ExecutionTrace[]): string[] {
+  const seen = new Set<string>();
+  const list: string[] = [];
+  for (const t of traces) {
+    const ua = t.request.clientHeaders?.userAgent;
+    if (ua && !seen.has(ua)) {
+      seen.add(ua);
+      list.push(ua);
+    }
+  }
+  return list;
 }
 
 /**
@@ -888,11 +910,14 @@ export function createServer(
     const live = (orchestrator.getSessionManager()?.getAllSessions() || []).map(s => {
       const sessTraces = traceTracker.getTracesBySession(s.id);
       const keyList = distinctTraceKeys(sessTraces);
+      const uaList = distinctTraceUserAgents(sessTraces);
       return {
         ...s,
         // Application attribution from the session's traces — distinct key set
         // in write order (first element = display anchor).
         apiKeys: keyList.length ? keyList : undefined,
+        // Client User-Agents (write order) — console display only (forgeable).
+        clients: uaList.length ? uaList : undefined,
         // Entry mode is trace-derived for live rows too: the session entity
         // itself does not record how the client addressed its turns.
         entryMode: deriveSessionEntryMode(sessTraces),
