@@ -465,19 +465,23 @@ td, th {
   background: var(--surface-hover);
 }
 
-/* Quiet-list language for the two capture scanning rows (rail card title,
-   round-header prompt): a wall of bold near-white titles competes with the
-   content below it, so the prompt text rests at --text-muted and only the
-   row the reader is actually on — hovered, or the selected card — lifts to
-   --text-main. Weight and layout stay untouched; this is color only. */
+/* Quiet-list language for the capture scanning rows: a wall of bold
+   near-white titles competes with the content below it, so the prompt text
+   rests at --text-muted and only the row the reader is actually on —
+   hovered, or the selected card — lifts to --text-main. Weight and layout
+   stay untouched; this is color only. The round-header excerpt gets NO
+   hover lift (operator call): the disclosure triangle + cursor already say
+   "clickable", and sweeping a 25-round fullscreen list flickered every
+   title in turn. The EXPANDED prompt block drops this class entirely —
+   text you opened to read must sit at the main color, not a hover away
+   from it. */
 .capture-session-title,
 .round-prompt-excerpt {
   color: var(--text-muted);
   transition: color 0.15s ease;
 }
 .capture-session-card:hover .capture-session-title,
-.capture-session-card[data-selected='true'] .capture-session-title,
-.round-header:hover .round-prompt-excerpt {
+.capture-session-card[data-selected='true'] .capture-session-title {
   color: var(--text-main);
 }
 

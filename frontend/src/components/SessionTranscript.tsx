@@ -800,13 +800,11 @@ const RoundCard: React.FC<{
         borderTop: first ? undefined : '1px solid var(--divider)',
       }}
     >
-      {/* Header band — the whole band toggles. NO background fill on hover
-          (operator call: the gray slab boxed the prompt in a hard-edged
-          block and washed out the text); the affordance is the cursor +
-          the quiet-list text lift (.round-header:hover .round-prompt-excerpt
-          in index.css). */}
+      {/* Header band — the whole band toggles. NO background fill and NO
+          text lift on hover (operator calls: the gray slab boxed the prompt
+          in a hard-edged block; the hover flicker across a long list read
+          as noise) — the affordance is the cursor + disclosure triangle. */}
       <div
-        className="round-header"
         style={{
           display: 'flex',
           alignItems: 'flex-start',
@@ -916,9 +914,10 @@ const RoundCard: React.FC<{
             )}
           </div>
           {/* Expanded prompt — full text as a wrapped block under the row. */}
+          {/* Expanded prompt — full text as a wrapped block under the row.
+              No quiet-list class: reading text sits at the main color. */}
           {excerpt && promptOpen ? (
             <div
-              className="round-prompt-excerpt"
               style={{
                 marginTop: 5,
                 fontWeight: 500,
