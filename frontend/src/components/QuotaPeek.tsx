@@ -5,6 +5,7 @@ import { Wallet } from 'lucide-react';
 import { api, type QuotaOverview, type QuotaWindow } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { fmtDur } from '../lib/format';
+import { byQuotaUrgency } from '../lib/quotaRank';
 
 /**
  * Sidebar-resident quota peek — the wallet chip in the footer's right slot.
@@ -14,11 +15,12 @@ import { fmtDur } from '../lib/format';
  * full quota directory. Display-only, like the quota page itself: nothing
  * here gates routing.
  *
- * Row anatomy (two lines per covered pair — a single line truncated both the
- * long provider ids and the window labels): line 1 = provider + the scarcest
- * window's percentage (or the cash balance); line 2 = window label + mini
- * burn bar + reset countdown. Rows are hover tiles (.quota-peek-row in
- * index.css), not table lines.
+ * Row anatomy (a compact usage-meter card per covered pair — the standard
+ * quota-widget pattern where the burn bar spans the full row width, so every
+ * meter shares the exact same track): line 1 = provider + the scarcest
+ * window's percentage (or the cash balance); line 2 = the bar; line 3 = a
+ * quiet caption under the bar (window label left, reset countdown right).
+ * Rows are hover tiles (.quota-peek-row in index.css), not table lines.
  *
  * Hover continuity across the chip→panel gap is kept by a 250ms close delay
  * shared between the chip wrapper and the panel.
@@ -91,7 +93,8 @@ export const QuotaPeek: React.FC = () => {
     if (open) load();
   }, [open, load]);
 
-  const rows = useMemo(() => (data?.pairs ?? []).filter((r) => r.covered), [data]);
+  // Same urgency-first order as the quota page — the scarcest pair leads.
+  const rows = useMemo(() => (data?.pairs ?? []).filter((r) => r.covered).sort(byQuotaUrgency), [data]);
 
   const globalWorst = useMemo(() => {
     let m: number | null = null;
@@ -210,33 +213,25 @@ export const QuotaPeek: React.FC = () => {
               {rows.length === 0 ? (
                 <div style={{ fontSize: '11.5px', color: 'var(--text-dim)', padding: '10px 2px' }}>{t('nav.quotaPeekNoPairs')}</div>
               ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                   {rows.map((r) => {
                     const windows = r.quota?.windows ?? [];
                     const w = worstWindow(windows);
                     const balance = w ? undefined : windows.find((x) => x.nameCode === 'balance');
                     let headValue: React.ReactNode;
                     let subLabel = '';
-                    let bar: React.ReactNode = null;
-                    let countdown: React.ReactNode = null;
+                    let pct: number | null = null;
+                    let resetText: string | null = null;
                     if (w && w.remainingPct !== null) {
+                      pct = w.remainingPct;
                       headValue = (
-                        <span style={{ ...MONO, fontSize: '13px', fontWeight: 700, color: pctColor(w.remainingPct), flexShrink: 0 }}>
-                          {Math.round(w.remainingPct)}%
+                        <span style={{ ...MONO, fontSize: '13px', fontWeight: 700, color: pctColor(pct), flexShrink: 0 }}>
+                          {Math.round(pct)}%
                         </span>
                       );
                       subLabel = winLabel(w);
-                      bar = (
-                        <span style={{ display: 'block', flex: '0 1 140px', height: '4px', borderRadius: '2px', background: 'var(--chip-bg)', overflow: 'hidden' }}>
-                          <span style={{ display: 'block', height: '100%', width: `${Math.max(2, Math.min(100, w.remainingPct))}%`, background: pctColor(w.remainingPct) }} />
-                        </span>
-                      );
                       if (w.resetAt !== null && w.resetAt > Date.now()) {
-                        countdown = (
-                          <span style={{ fontSize: '10.5px', color: 'var(--text-dim)', whiteSpace: 'nowrap', flexShrink: 0 }}>
-                            {t('quotaPage.peekResets', { when: fmtDur(w.resetAt - Date.now()) })}
-                          </span>
-                        );
+                        resetText = t('quotaPage.peekResets', { when: fmtDur(w.resetAt - Date.now()) });
                       }
                     } else if (balance) {
                       const amount = Math.max(0, (balance.total ?? 0) - (balance.used ?? 0));
@@ -278,16 +273,38 @@ export const QuotaPeek: React.FC = () => {
                           </span>
                           {headValue}
                         </div>
-                        {(subLabel || bar || countdown) && (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px', minWidth: 0 }}>
-                            {subLabel && (
-                              <span style={{ fontSize: '11px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, maxWidth: '55%' }}>
-                                {subLabel}
-                              </span>
-                            )}
-                            {bar}
-                            <span style={{ flex: 1 }} />
-                            {countdown}
+                        {pct !== null && (
+                          // The meter itself: full row width, so every bar shares
+                          // the same track and the fill reads as remaining quota.
+                          <div
+                            style={{
+                              marginTop: '6px',
+                              height: '6px',
+                              borderRadius: '3px',
+                              background: 'var(--chip-bg)',
+                              overflow: 'hidden',
+                            }}
+                          >
+                            <div
+                              style={{
+                                height: '100%',
+                                width: `${Math.max(2, Math.min(100, pct))}%`,
+                                borderRadius: '3px',
+                                background: pctColor(pct),
+                                transition: 'width 0.3s ease',
+                              }}
+                            />
+                          </div>
+                        )}
+                        {(subLabel || resetText) && (
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '10px', marginTop: '4px', minWidth: 0 }}>
+                            <span
+                              style={{ fontSize: '10.5px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}
+                              title={subLabel || undefined}
+                            >
+                              {subLabel}
+                            </span>
+                            {resetText && <span style={{ fontSize: '10.5px', color: 'var(--text-dim)', whiteSpace: 'nowrap', flexShrink: 0 }}>{resetText}</span>}
                           </div>
                         )}
                       </div>

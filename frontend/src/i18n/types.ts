@@ -977,10 +977,6 @@ hiddenBadge: string;
     /** Toast when the re-arm call itself failed (prober disabled, network). */
     refreshUnavailable: string;
     searchPlaceholder: string;
-    colState: string;
-    colAccount: string;
-    colPlan: string;
-    colQuota: string;
     pairsEmpty: string;
     /** Summary strip chips: covered-pair count, nearly-drained window count,
      *  failed-sync pair count, and the earliest upcoming window reset. */
@@ -993,8 +989,6 @@ hiddenBadge: string;
     stateUnverified: string;
     stateStale: string;
     windowNoCap: string;
-    windowLeft: string;
-    windowBalance: string;
     windowResets: string;
     /** Quota-peek countdown (no leading separator — it stands alone). */
     peekResets: string;

@@ -14,6 +14,7 @@ import { fmtDur } from '../lib/format';
 import { ProviderLogo } from '../components/ProviderLogo';
 import { Dialog } from '../components/Dialog';
 import { useToast } from '../components/ToastProvider';
+import { byQuotaUrgency } from '../lib/quotaRank';
 
 /**
  * Quota tracking overview — every CONNECTED (provider × credential) pair of a
@@ -26,36 +27,21 @@ import { useToast } from '../components/ToastProvider';
  * Layout: a page header with a manual refresh button (re-arms the probe
  * schedule — invalidation only, fresh numbers land on the next scheduler
  * tick), a compact summary strip of aggregate scan-aid chips (covered pairs /
- * low-quota windows / sync failures / earliest reset), then the pair directory
- * (badge + provenance + window bars + served-usage join, all carried inside
- * the cells they annotate); uncovered
- * pairs are never rendered (no coverage ⇒ no quota to show). Synced rows lead,
- * unread ones sink. The release
+ * low-quota windows / sync failures / earliest reset), then a responsive card
+ * grid — one usage-meter card per covered pair, the standard quota-widget
+ * pattern: identity + provenance badge in the header, one full-width burn bar
+ * per window (caption line above the bar: window label + reset countdown on
+ * the left, the value on the right), plan/entry and the last-probe raw-body
+ * button in the footer. Full-width bars keep every meter on the same track no
+ * matter how long the labels are — the old table squeezed bars into a column
+ * beside variable-width text. Uncovered pairs are never rendered (no coverage
+ * ⇒ no quota to show). Synced rows lead, unread ones sink. The release
  * coverage plan, the rejected quotaProbes entries and the burn-event ledger
  * stay on the `GET /api/admin/quota` diagnostics contract — they are not
  * rendered here.
  */
 
 const MONO: React.CSSProperties = { fontFamily: "'JetBrains Mono', monospace", fontSize: '11.5px' };
-
-const TH: React.CSSProperties = {
-  padding: '8px 12px',
-  textAlign: 'left',
-  fontSize: '11px',
-  color: 'var(--text-dim)',
-  textTransform: 'uppercase',
-  letterSpacing: '0.4px',
-  borderBottom: '1px solid var(--divider)',
-  whiteSpace: 'nowrap',
-};
-
-const TD: React.CSSProperties = {
-  padding: '14px 12px',
-  lineHeight: 1.55,
-  borderBottom: '1px solid var(--divider)',
-  verticalAlign: 'middle',
-  whiteSpace: 'nowrap',
-};
 
 /** Pretty-print a captured probe body: parsed JSON → indented, text → verbatim. */
 function prettyBody(b: unknown): string {
@@ -74,6 +60,9 @@ const STATE_COLORS: Record<string, string> = {
   unverified: 'var(--accent-amber)',
   stale: 'var(--accent-rose)',
 };
+
+const pctColor = (p: number): string =>
+  p < 10 ? 'var(--accent-rose)' : p < 25 ? 'var(--accent-amber)' : 'var(--accent)';
 
 /** One summary-strip chip: a pill carrying a single aggregate signal. */
 const StatChip: React.FC<{ text: string; tone?: 'warn' | 'info' }> = ({ text, tone }) => {
@@ -114,15 +103,19 @@ const BadgePill: React.FC<{ quota: AccountQuotaView; stateWord: (k: string) => s
   );
 };
 
-/** One quota window: label + percent bar (or absolute line) + reset countdown. */
-const WindowLine: React.FC<{ w: QuotaWindow; t: (k: string, p?: Record<string, string | number>) => string }> = ({ w, t }) => {
+/**
+ * One quota window as a usage meter: a caption line (window label + reset
+ * countdown left, value right) over a burn bar spanning the full card width.
+ * The bar only appears when there is a percentage to burn against.
+ */
+const WindowMeter: React.FC<{ w: QuotaWindow; t: (k: string, p?: Record<string, string | number>) => string }> = ({ w, t }) => {
   const pct = w.remainingPct;
-  const barColor = pct === null ? 'var(--text-dim)' : pct < 10 ? 'var(--accent-rose)' : pct < 25 ? 'var(--accent-amber)' : 'var(--accent)';
   // A cash-balance pool has no cap to burn against — the snapshot flattens it
-  // to used=0 / total=balance, so its percent is always 100 and a bar would
-  // be meaningless. Show the absolute amount instead.
+  // to used=0 / total=balance, so its percent is always 100 and a bar would be
+  // meaningless. Show the absolute amount instead.
   const isBalance = w.nameCode === 'balance' && w.total !== null;
   const amount = Math.max(0, (w.total ?? 0) - (w.used ?? 0));
+  const noCap = !isBalance && (w.unlimited || (w.total === null && pct === null));
   // i18n: a machine-readable nameCode maps to a translated label (the repo's
   // noteCode pattern); unknown codes and legacy snapshots show the raw name.
   let label = w.name;
@@ -131,34 +124,49 @@ const WindowLine: React.FC<{ w: QuotaWindow; t: (k: string, p?: Record<string, s
     const translated = t(key, w.nameArg !== undefined ? { n: w.nameArg } : undefined);
     if (translated !== key) label = translated;
   }
-  let text: string;
-  if (isBalance)
-    text = t('quotaPage.windowBalance', {
-      amount: amount.toLocaleString(undefined, { maximumFractionDigits: 2 }),
-      currency: w.nameArg ? ` ${w.nameArg}` : '',
-    });
-  else if (w.unlimited || (w.total === null && pct === null)) text = t('quotaPage.windowNoCap');
-  else if (pct !== null) text = t('quotaPage.windowLeft', { pct: Math.round(pct) });
-  else text = `${Math.max(0, (w.total ?? 0) - (w.used ?? 0)).toLocaleString()} / ${(w.total ?? 0).toLocaleString()}`;
+  let value: string;
+  let valueColor: string;
+  if (isBalance) {
+    value = `${amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}${w.nameArg ? ` ${w.nameArg}` : ''}`;
+    valueColor = amount <= 0 ? 'var(--accent-rose)' : 'var(--text-main)';
+  } else if (noCap) {
+    value = t('quotaPage.windowNoCap');
+    valueColor = 'var(--text-dim)';
+  } else if (pct !== null) {
+    value = `${Math.round(pct)}%`;
+    valueColor = pctColor(pct);
+  } else {
+    value = `${amount.toLocaleString()} / ${(w.total ?? 0).toLocaleString()}`;
+    valueColor = 'var(--text-main)';
+  }
+  let caption = label;
   if (w.resetAt !== null) {
-    text += w.resetAt > Date.now()
-      ? t('quotaPage.windowResets', { when: fmtDur(w.resetAt - Date.now()) })
-      : t('quotaPage.windowExpired');
+    caption +=
+      w.resetAt > Date.now()
+        ? t('quotaPage.windowResets', { when: fmtDur(w.resetAt - Date.now()) })
+        : t('quotaPage.windowExpired');
   }
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '3px' }}>
-      <span style={{ ...MONO, width: '120px', flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', color: 'var(--text-main)' }} title={label}>
-        {label}
-      </span>
-      <span style={{ width: '96px', flexShrink: 0 }}>
-        {!isBalance &&
-          pct !== null && (
-            <span style={{ display: 'block', height: '4px', borderRadius: '2px', background: 'var(--chip-bg)', overflow: 'hidden' }}>
-              <span style={{ display: 'block', height: '100%', width: `${Math.max(2, Math.min(100, pct))}%`, background: barColor }} />
-            </span>
-          )}
-      </span>
-      <span style={{ fontSize: '11px', color: isBalance ? (amount <= 0 ? 'var(--accent-rose)' : 'var(--text-main)') : barColor, whiteSpace: 'nowrap' }}>{text}</span>
+    <div style={{ marginTop: '10px', minWidth: 0 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '10px', minWidth: 0 }}>
+        <span style={{ fontSize: '11px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }} title={caption}>
+          {caption}
+        </span>
+        <span style={{ ...MONO, fontWeight: 700, color: valueColor, flexShrink: 0 }}>{value}</span>
+      </div>
+      {pct !== null && !isBalance && !noCap && (
+        <div style={{ marginTop: '5px', height: '6px', borderRadius: '3px', background: 'var(--chip-bg)', overflow: 'hidden' }}>
+          <div
+            style={{
+              height: '100%',
+              width: `${Math.max(2, Math.min(100, pct))}%`,
+              borderRadius: '3px',
+              background: pctColor(pct),
+              transition: 'width 0.3s ease',
+            }}
+          />
+        </div>
+      )}
     </div>
   );
 };
@@ -243,24 +251,15 @@ export const QuotaPage: React.FC = () => {
         `${r.providerId} ${r.keyHashPrefix} ${r.label ?? ''}`.toLowerCase().includes(needle)
       );
     }
-    // Synced-first ordering: rows carrying a real read (verifiedAt) lead,
-    // newest on top; the unread tail sinks, by provider identity so the row
-    // order stays deterministic across reloads.
-    rows = [...rows].sort((a, b) => {
-      const av = a.quota?.verifiedAt;
-      const bv = b.quota?.verifiedAt;
-      if (av === undefined && bv !== undefined) return 1;
-      if (av !== undefined && bv === undefined) return -1;
-      if (av !== undefined && bv !== undefined && av !== bv) return bv - av;
-      const an = `${a.providerId}#${a.keyHashPrefix}`;
-      const bn = `${b.providerId}#${b.keyHashPrefix}`;
-      return an < bn ? -1 : an > bn ? 1 : 0;
-    });
+    // Urgency-first ordering (shared with the sidebar peek): the scarcest
+    // window leads, drained balances next, sync failures and never-read
+    // pairs sink to the bottom. See lib/quotaRank.ts.
+    rows = [...rows].sort(byQuotaUrgency);
     return rows;
   }, [data, q]);
 
   // Compact summary strip — aggregate signals derived from the same covered
-  // pairs the table renders (the search box does not affect it): how many
+  // pairs the grid renders (the search box does not affect it): how many
   // windows are nearly drained, how many pairs failed to sync, and when the
   // earliest live window resets. Display-only, like everything on this page.
   const summary = useMemo(() => {
@@ -314,89 +313,86 @@ export const QuotaPage: React.FC = () => {
         </div>
       )}
 
-      {/* ── Connected pairs directory — the single surface ────────────────── */}
-      <div className="card" style={{ display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0 }}>
-        {/* Filter toolbar: free-text search only — provider / account (label
-            or key-hash) match through the search, plan/entry do not. Rows are
-            pre-filtered to covered pairs, so there is no view segment. */}
-        <div style={{ display: 'flex', gap: '8px', padding: '10px 14px', flexWrap: 'wrap', alignItems: 'center', borderBottom: '1px solid var(--divider)' }}>
-          <div style={{ position: 'relative', flex: 1, minWidth: '180px' }}>
-            <Search size={13} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)' }} />
-            <input
-              className="input"
-              style={{ width: '100%', fontSize: '12px', paddingLeft: '30px' }}
-              placeholder={t('quotaPage.searchPlaceholder')}
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-            />
-          </div>
+      {/* ── Filter toolbar: free-text search only — provider / account (label
+          or key-hash) match through the search, plan/entry do not. Cards are
+          pre-filtered to covered pairs, so there is no view segment. ──────── */}
+      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+        <div style={{ position: 'relative', width: '300px', maxWidth: '100%' }}>
+          <Search size={13} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)' }} />
+          <input
+            className="input"
+            style={{ width: '100%', fontSize: '12px', paddingLeft: '30px' }}
+            placeholder={t('quotaPage.searchPlaceholder')}
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
         </div>
+      </div>
 
-        <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
-          {error && (
-            <div style={{ padding: '10px 14px', fontSize: '12px', color: 'var(--accent-rose)' }}>{error}</div>
-          )}
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12.5px' }}>
-            <thead>
-              <tr>
-                <th style={TH}>{t('quotaPage.colAccount')}</th>
-                <th style={{ ...TH, textAlign: 'center' }}>{t('quotaPage.colState')}</th>
-                <th style={TH}>{t('quotaPage.colPlan')}</th>
-                <th style={{ ...TH, minWidth: '320px' }}>{t('quotaPage.colQuota')}</th>
-                <th style={{ ...TH, textAlign: 'center', width: '56px' }} title={t('quotaPage.lastProbeBtn')}>
-                  <FileJson size={13} style={{ verticalAlign: '-2px', color: 'var(--text-dim)' }} aria-hidden />
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredPairs.length === 0 && (
-                <tr>
-                  <td colSpan={5} style={{ padding: '24px 14px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '12.5px' }}>
-                    {t('quotaPage.pairsEmpty')}
-                  </td>
-                </tr>
-              )}
-              {filteredPairs.map((row: QuotaPairRow) => (
-                <tr key={`${row.providerId}#${row.keyHashPrefix}`}>
-                  <td style={TD}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '9px' }}>
-                      {/* Logo vertically centered against the two-line block. */}
-                      <ProviderLogo providerId={row.providerId} logoMap={logoMap} size={32} />
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{ fontWeight: 600 }}>{row.providerId}</div>
-                        <div style={{ ...MONO, color: 'var(--text-dim)' }}>{row.label || row.keyHashPrefix}</div>
+      {/* ── Connected pairs directory — the single surface ────────────────── */}
+      <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+        {error && (
+          <div style={{ padding: '10px 14px', fontSize: '12px', color: 'var(--accent-rose)' }}>{error}</div>
+        )}
+        {filteredPairs.length === 0 ? (
+          <div style={{ padding: '24px 14px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '12.5px' }}>
+            {t('quotaPage.pairsEmpty')}
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(330px, 1fr))', gap: '12px', alignContent: 'start', paddingRight: '2px' }}>
+            {filteredPairs.map((row: QuotaPairRow) => {
+              const meta = [row.quota?.plan, row.quota?.entryId].filter(Boolean).join(' · ');
+              return (
+                <div key={`${row.providerId}#${row.keyHashPrefix}`} className="card" style={{ padding: '14px 16px', minWidth: 0 }}>
+                  {/* Header: identity + provenance badge + read freshness */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '9px', minWidth: 0 }}>
+                    <ProviderLogo providerId={row.providerId} logoMap={logoMap} size={30} />
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ fontSize: '13px', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.providerId}>
+                        {row.providerId}
+                      </div>
+                      <div style={{ ...MONO, fontSize: '11px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.label || row.keyHashPrefix}>
+                        {row.label || row.keyHashPrefix}
                       </div>
                     </div>
-                  </td>
-                  <td style={{ ...TD, textAlign: 'center' }}>
-                    {!row.quota ? (
-                      <span style={{ color: 'var(--text-dim)', fontSize: '11.5px' }}>—</span>
-                    ) : (
-                      <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: '3px' }}>
+                    <div style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-end', gap: '3px', flexShrink: 0 }}>
+                      {!row.quota ? (
+                        <span style={{ color: 'var(--text-dim)', fontSize: '11.5px' }}>—</span>
+                      ) : (
                         <BadgePill quota={row.quota} stateWord={stateWord} />
-                        {row.quota.verifiedAt && (
-                          <span style={{ ...MONO, color: 'var(--text-dim)' }}>
-                            {t('quotaPage.agoLine', { when: fmtDur(Date.now() - row.quota.verifiedAt) })}
-                          </span>
-                        )}
-                      </span>
-                    )}
-                  </td>
-                  <td style={TD}>
-                    {row.quota?.plan && <div style={{ fontSize: '12px' }}>{row.quota.plan}</div>}
-                    {row.quota?.entryId && <div style={{ ...MONO, color: 'var(--text-dim)' }}>{row.quota.entryId}</div>}
-                  </td>
-                  <td style={TD}>
-                    {row.quota && row.quota.windows.length > 0 ? (
-                      row.quota.windows.map((w) => <WindowLine key={w.name} w={w} t={t} />)
-                    ) : (
-                      <span style={{ color: 'var(--text-dim)', fontSize: '11.5px' }}>—</span>
-                    )}
-                  </td>
-                  <td style={{ ...TD, textAlign: 'center' }}>
+                      )}
+                      {row.quota?.verifiedAt && (
+                        <span style={{ ...MONO, fontSize: '10.5px', color: 'var(--text-dim)' }}>
+                          {t('quotaPage.agoLine', { when: fmtDur(Date.now() - row.quota.verifiedAt) })}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  {/* One usage meter per tracked window */}
+                  {row.quota && row.quota.windows.length > 0 ? (
+                    row.quota.windows.map((w) => <WindowMeter key={w.name} w={w} t={t} />)
+                  ) : (
+                    <div style={{ marginTop: '10px', fontSize: '11.5px', color: 'var(--text-dim)' }}>—</div>
+                  )}
+                  {/* Footer: plan/entry provenance + raw last-probe body */}
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      gap: '8px',
+                      marginTop: '12px',
+                      paddingTop: '8px',
+                      borderTop: '1px solid var(--divider)',
+                      minWidth: 0,
+                    }}
+                  >
+                    <span style={{ ...MONO, fontSize: '10.5px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }} title={meta || undefined}>
+                      {meta}
+                    </span>
                     <button
                       className="btn btn-sm"
-                      style={{ padding: '3px 6px' }}
+                      style={{ padding: '3px 6px', flexShrink: 0 }}
                       title={t('quotaPage.lastProbeBtn')}
                       onClick={async () => {
                         const title = `${row.providerId} · ${row.label || row.keyHashPrefix}`;
@@ -410,12 +406,12 @@ export const QuotaPage: React.FC = () => {
                     >
                       <FileJson size={13} />
                     </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* ── Last-probe dialog: the raw quota-endpoint response, pretty-printed ─ */}
