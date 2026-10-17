@@ -449,6 +449,41 @@ export function unwrapHarnessText(text: string): string {
   return text; // pure metadata blob, no human part to extract
 }
 
+/**
+ * Harness-injected context riding inside user-role messages: system reminders,
+ * project instruction files, runtime-context snapshots. The client concatenates
+ * these into the prompt channel — no human typed them, so replay folds them
+ * into a collapsed chip instead of a full "user" message. Prefixes are the
+ * observed harness shapes; anything unknown stays verbatim (never swallow a
+ * real prompt on a guess).
+ */
+const INJECTION_PREFIXES = [
+  '<system-reminder>',
+  '<system_reminder>',
+  '<user_instructions>',
+  '<environment_context>',
+  'Instructions from:',
+  'Current runtime context',
+];
+
+/** Joined, envelope-unwrapped text of a message's text blocks ('' if none). */
+export function messageText(m: TranscriptMessage): string {
+  return m.blocks
+    .filter(b => b.kind === 'text')
+    .map(b => unwrapHarnessText(b.text))
+    .join('\n\n')
+    .trim();
+}
+
+/** A pure injection message: user-role, text-only, opening on a known harness marker. */
+export function isInjectionMessage(m: TranscriptMessage): boolean {
+  if (m.role !== 'user') return false;
+  if (m.toolCalls.length > 0) return false;
+  if (m.blocks.some(b => b.kind !== 'text')) return false;
+  const text = messageText(m);
+  return INJECTION_PREFIXES.some(p => text.startsWith(p));
+}
+
 // ------------------------------------------------------------- reconstruction
 
 /**

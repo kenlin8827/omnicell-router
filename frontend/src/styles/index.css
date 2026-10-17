@@ -458,6 +458,13 @@ td, th {
   opacity: 1;
 }
 
+/* Row hover lift for the frameless list rows inside the rail card — inline
+   styles can't express :hover. The selected row's inline chip-bg fill
+   intentionally wins over this rule. */
+.capture-session-card:hover {
+  background: var(--surface-hover);
+}
+
 /* Quiet-list language for the two capture scanning rows (rail card title,
    round-header prompt): a wall of bold near-white titles competes with the
    content below it, so the prompt text rests at --text-muted and only the

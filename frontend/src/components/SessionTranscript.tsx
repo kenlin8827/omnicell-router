@@ -5,18 +5,21 @@
  * middle, and the converged answer is the tail. Reconstructed from the turn
  * wire bodies by lib/transcript; each step links to its raw wire drawer.
  */
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { AlertTriangle, Bot, ChevronDown, ChevronRight, Image as ImageIcon, Maximize2, Minimize2, User, Wrench } from 'lucide-react';
+import { AlertTriangle, Bot, ChevronDown, ChevronRight, ChevronsUpDown, Image as ImageIcon, Maximize2, Minimize2, User, Wrench } from 'lucide-react';
 import { useI18n } from '../i18n/I18nContext';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
+import { BackToTop } from './BackToTop';
 import type { CaptureTurn } from '../lib/api';
 import {
   buildTranscript,
   collapseMediaTokens,
   groupIntoRounds,
+  isInjectionMessage,
+  messageText,
   splitMediaTokens,
   unwrapHarnessText,
   type TranscriptMedia,
@@ -48,8 +51,12 @@ const MD_COMPONENTS: Components = {
 };
 
 /** Prose with line-clamp collapse; the toggle only appears for long bodies.
- *  markdown=true renders GFM (assistant answers) instead of the monospace
- *  pre-wrap well — clamp/expand behavior is identical, only the medium.
+ *  markdown=true renders GFM (assistant answers) instead of the pre-wrap
+ *  well — clamp/expand behavior is identical, only the medium.
+ *  mono=false switches the plain (non-markdown) well from the terminal face
+ *  to the body font — natural language (prompts, reasoning, injected context)
+ *  is not code; JetBrains Mono has no CJK glyphs and the mixed-width fallback
+ *  reads as broken typesetting. Tool output stays mono.
  *  open/hideToggle support a parent-owned toggle (ToolResultRow's header row)
  *  so the control can sit above the preview instead of under it. */
 const Prose: React.FC<{
@@ -59,6 +66,7 @@ const Prose: React.FC<{
   bg?: string;
   border?: string;
   markdown?: boolean;
+  mono?: boolean;
   open?: boolean;
   hideToggle?: boolean;
 }> = ({
@@ -68,6 +76,7 @@ const Prose: React.FC<{
   bg,
   border,
   markdown = false,
+  mono = true,
   open: openProp,
   hideToggle,
 }) => {
@@ -88,8 +97,10 @@ const Prose: React.FC<{
       : {};
   const shell: React.CSSProperties = {
     margin: 0,
-    padding: '8px 10px',
+    padding: '6px 10px',
     background: bg ?? 'var(--well-bg)',
+    // 1px frame kept: on the dark theme the fill alone (5% text) is too low a
+    // contrast against the panel bg — borderless wells read as edgeless void.
     border: `1px solid ${border ?? 'var(--card-border)'}`,
     borderRadius: 6,
     fontSize: '12px',
@@ -107,7 +118,7 @@ const Prose: React.FC<{
           </ReactMarkdown>
         </div>
       ) : (
-        <pre style={{ ...shell, fontFamily: MONO, whiteSpace: 'pre-wrap' }}>{text}</pre>
+        <pre style={{ ...shell, fontFamily: mono ? MONO : 'inherit', whiteSpace: 'pre-wrap' }}>{text}</pre>
       )}
       {long && !hideToggle && (
         <button
@@ -193,24 +204,25 @@ const ImageChip: React.FC<{ media: TranscriptMedia; date?: string }> = ({ media,
 };
 
 /** Prose with inline [MEDIA …] tokens surfaced as chips/thumbnails. */
-const ProseWithMedia: React.FC<{ text: string; clamp?: number; color?: string; date?: string; open?: boolean; hideToggle?: boolean }> = ({
+const ProseWithMedia: React.FC<{ text: string; clamp?: number; color?: string; mono?: boolean; date?: string; open?: boolean; hideToggle?: boolean }> = ({
   text,
   clamp,
   color,
+  mono,
   date,
   open,
   hideToggle,
 }) => {
   const segs = useMemo(() => splitMediaTokens(text), [text]);
   // Fast path: no tokens (the common case) — one plain Prose.
-  if (segs.length === 1 && segs[0].kind === 'text') return <Prose text={text} clamp={clamp} color={color} open={open} hideToggle={hideToggle} />;
+  if (segs.length === 1 && segs[0].kind === 'text') return <Prose text={text} clamp={clamp} color={color} mono={mono} open={open} hideToggle={hideToggle} />;
   return (
     <div>
       {segs.map((s, i) =>
         s.kind === 'media' ? (
           <ImageChip key={i} media={s.media} date={date} />
         ) : s.text.trim() ? (
-          <Prose key={i} text={s.text} clamp={clamp} color={color} open={open} hideToggle={hideToggle} />
+          <Prose key={i} text={s.text} clamp={clamp} color={color} mono={mono} open={open} hideToggle={hideToggle} />
         ) : null
       )}
     </div>
@@ -231,7 +243,7 @@ const ToolCallCard: React.FC<{ call: TranscriptToolCall }> = ({ call }) => {
   const { t } = useI18n();
   // Args collapsed by default: a tool-heavy round stays a readable waterfall;
   // the name row is the toggle.
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useSectionOpen('toolCall');
   return (
     <div
       style={{
@@ -276,10 +288,140 @@ const RoleLabel: React.FC<{ label: string; color: string; icon?: React.ReactNode
   </div>
 );
 
+/** Shared pill-button language for the collapsed-by-default sections
+ *  (system prompt / thinking / injected context) — one style, three users. */
+const CHIP_BTN: React.CSSProperties = {
+  background: 'var(--chip-bg)',
+  border: '1px solid var(--card-border)',
+  borderRadius: 6,
+  color: 'var(--text-muted)',
+  cursor: 'pointer',
+  fontSize: '11px',
+  padding: '4px 8px',
+};
+
+// ------------------------------------------------- focus-overlay bulk expand
+// The focus overlay's menu can force-open every section of a kind at once.
+// Sections keep their private toggle OUTSIDE the overlay (ctx is null there —
+// the pane cards and timeline must not inherit a stranger's bulk state).
+
+type SectionKind = 'thinking' | 'toolCall' | 'toolResult' | 'context' | 'system';
+const SECTION_KINDS: SectionKind[] = ['thinking', 'toolCall', 'toolResult', 'context', 'system'];
+
+const ExpandCtx = React.createContext<{ open: Record<SectionKind, boolean>; rev: number } | null>(null);
+
+/** A section's open state: private toggle, re-seeded whenever the focus
+ *  overlay's bulk menu commits a change (rev bump). */
+const useSectionOpen = (kind: SectionKind): [boolean, React.Dispatch<React.SetStateAction<boolean>>] => {
+  const ctx = useContext(ExpandCtx);
+  const [open, setOpen] = useState(false);
+  const rev = ctx?.rev ?? 0;
+  useEffect(() => {
+    if (ctx) setOpen(ctx.open[kind]);
+    // rev is the commit signal; ctx/open[kind] are read through it by design.
+  }, [rev]);
+  return [open, setOpen];
+};
+
+const ExpandMenu: React.FC<{
+  open: Record<SectionKind, boolean>;
+  onToggle: (k: SectionKind) => void;
+  onAll: (v: boolean) => void;
+}> = ({ open, onToggle, onAll }) => {
+  const { t } = useI18n();
+  const [show, setShow] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!show) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setShow(false);
+    };
+    window.addEventListener('mousedown', onDown);
+    return () => window.removeEventListener('mousedown', onDown);
+  }, [show]);
+  const labels: Record<SectionKind, string> = {
+    thinking: t('captures.msgThinking'),
+    toolCall: t('captures.toolCallLabel'),
+    toolResult: t('captures.msgTool'),
+    context: t('captures.injectedContext'),
+    system: t('captures.msgSystem'),
+  };
+  return (
+    <div ref={ref} style={{ position: 'relative', marginLeft: 'auto', flexShrink: 0 }}>
+      <button className="btn btn-sm" onClick={() => setShow(s => !s)} title={t('captures.expandSectionsHint')}>
+        <ChevronsUpDown size={12} />
+        <span>{t('captures.expandSectionsBtn')}</span>
+      </button>
+      {show && (
+        <div
+          style={{
+            position: 'absolute',
+            right: 0,
+            top: 'calc(100% + 6px)',
+            zIndex: 10,
+            width: 190,
+            background: 'var(--bg-elev)',
+            border: '1px solid var(--card-border)',
+            borderRadius: 8,
+            padding: '6px 10px',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
+          }}
+        >
+          {SECTION_KINDS.map(k => (
+            <label
+              key={k}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '12px', padding: '5px 2px', cursor: 'pointer' }}
+            >
+              <input type="checkbox" checked={open[k]} onChange={() => onToggle(k)} />
+              {labels[k]}
+            </label>
+          ))}
+          <div style={{ display: 'flex', gap: 8, marginTop: 4, paddingTop: 6, borderTop: '1px solid var(--divider)' }}>
+            <button className="btn btn-sm" onClick={() => onAll(true)}>
+              {t('captures.selectAll')}
+            </button>
+            <button className="btn btn-sm" onClick={() => onAll(false)}>
+              {t('captures.clearAll')}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+/**
+ * Consecutive harness-injected user messages (system reminders, instruction
+ * files, runtime-context snapshots) folded into ONE collapsed chip. They ride
+ * the user channel but no human typed them — showing each as a full
+ * user-role well buried the real conversation under walls of injected monospace.
+ */
+const ContextChip: React.FC<{ msgs: TranscriptMessage[] }> = ({ msgs }) => {
+  const { t } = useI18n();
+  const [open, setOpen] = useSectionOpen('context');
+  return (
+    <div style={{ marginLeft: 12, marginBottom: 6 }}>
+      <button onClick={() => setOpen(o => !o)} style={CHIP_BTN}>
+        {t('captures.injectedContext')} · {msgs.length} {t('captures.injectedSegments')} · {open ? t('captures.collapse') : t('captures.expand')}
+      </button>
+      {open &&
+        msgs.map((m, i) => {
+          const text = messageText(m);
+          return text ? (
+            <div key={i} style={{ marginTop: 4 }}>
+              <Prose text={text} clamp={40} color="var(--text-muted)" mono={false} />
+            </div>
+          ) : null;
+        })}
+    </div>
+  );
+};
+
 /** One message from the request-side delta (user / tool result / system). */
 const MessageView: React.FC<{ msg: TranscriptMessage; date?: string }> = ({ msg, date }) => {
   const { t } = useI18n();
-  const [sysOpen, setSysOpen] = useState(false);
+  const [sysOpen, setSysOpen] = useSectionOpen('system');
+  // Only user text carries the harness envelope; assistant echoes stay verbatim.
   const text = msg.blocks
     .filter(b => b.kind === 'text')
     .map(b => (msg.role === 'user' ? unwrapHarnessText(b.text) : b.text))
@@ -288,18 +430,7 @@ const MessageView: React.FC<{ msg: TranscriptMessage; date?: string }> = ({ msg,
   if (msg.role === 'system') {
     return (
       <div style={{ marginLeft: 12 }}>
-        <button
-          onClick={() => setSysOpen(o => !o)}
-          style={{
-            background: 'var(--chip-bg)',
-            border: '1px solid var(--card-border)',
-            borderRadius: 6,
-            color: 'var(--text-muted)',
-            cursor: 'pointer',
-            fontSize: '11px',
-            padding: '4px 8px',
-          }}
-        >
+        <button onClick={() => setSysOpen(o => !o)} style={CHIP_BTN}>
           {t('captures.msgSystem')} · {sysOpen ? t('captures.collapse') : t('captures.expand')}
         </button>
         {sysOpen && text && (
@@ -335,7 +466,7 @@ const MessageView: React.FC<{ msg: TranscriptMessage; date?: string }> = ({ msg,
       />
       {/* User prompts stay verbatim (harness text / media tokens); assistant
           echoes render as GFM like the live output they were. */}
-      {text && (isUser ? <ProseWithMedia text={text} date={date} /> : <Prose text={text} markdown />)}
+      {text && (isUser ? <ProseWithMedia text={text} date={date} mono={false} /> : <Prose text={text} markdown />)}
       {msg.blocks.filter(b => b.kind === 'tool_result').map((b, i) => (
         <div key={i} style={{ marginTop: 4 }}>
           <ToolResultRow name={msg.toolName} blockText={b.text} date={date} />
@@ -357,7 +488,7 @@ const MessageView: React.FC<{ msg: TranscriptMessage; date?: string }> = ({ msg,
  *  so "expand" sits above the preview instead of hiding under it. */
 const ToolResultRow: React.FC<{ name?: string; blockText: string; date?: string }> = ({ name, blockText, date }) => {
   const { t } = useI18n();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useSectionOpen('toolResult');
   const long = blockText.split('\n').length > 6 || blockText.length > 6 * 140;
   return (
     <div>
@@ -395,7 +526,7 @@ const ToolResultRow: React.FC<{ name?: string; blockText: string; date?: string 
 
 const OutputView: React.FC<{ out: TurnOutput }> = ({ out }) => {
   const { t } = useI18n();
-  const [thinkOpen, setThinkOpen] = useState(false);
+  const [thinkOpen, setThinkOpen] = useSectionOpen('thinking');
   return (
     <div style={{ borderLeft: '2px solid var(--accent-emerald)', paddingLeft: 10, marginBottom: 6 }}>
       <RoleLabel label={t('captures.msgAssistant')} color="var(--accent-emerald)" icon={<Bot size={12} />} />
@@ -403,21 +534,13 @@ const OutputView: React.FC<{ out: TurnOutput }> = ({ out }) => {
         <div style={{ marginBottom: 4 }}>
           <button
             onClick={() => setThinkOpen(o => !o)}
-            style={{
-              background: 'var(--chip-bg)',
-              border: '1px solid var(--card-border)',
-              borderRadius: 6,
-              color: 'var(--text-muted)',
-              cursor: 'pointer',
-              fontSize: '11px',
-              padding: '3px 8px',
-            }}
+            style={{ ...CHIP_BTN, padding: '3px 8px' }}
           >
             {t('captures.msgThinking')} · {thinkOpen ? t('captures.collapse') : t('captures.expand')}
           </button>
           {thinkOpen && (
             <div style={{ marginTop: 4 }}>
-              <Prose text={out.reasoning} clamp={20} color="var(--text-muted)" />
+              <Prose text={out.reasoning} clamp={20} color="var(--text-muted)" mono={false} />
             </div>
           )}
         </div>
@@ -456,14 +579,25 @@ const TranscriptBlock: React.FC<{
   label: string;
   date?: string;
   first?: boolean;
+  /** The round's prompt message — already shown at the round top; skipped here. */
+  skipPrompt?: TranscriptMessage | null;
   onOpenTurn: (idx: number) => void;
-}> = ({ st, label, date, first, onOpenTurn }) => {
+}> = ({ st, label, date, first, skipPrompt, onOpenTurn }) => {
   const { t } = useI18n();
   const { turn } = st;
   const err =
     turn.upstreamResponse?.status === 'error' || turn.gatewayResponse?.status === 'error' || !!turn.error;
   const upstreamModel = turn.upstreamRequest?.model ?? turn.upstreamResponse?.model;
-  const silent = st.input.length === 0 && !st.output && !st.reqTruncated && !st.reqUnparsed && !st.diverged;
+  const input = skipPrompt ? st.input.filter(m => m !== skipPrompt) : st.input;
+  // Consecutive harness-injection messages fold into one run → one chip.
+  const runs: Array<{ ctx: boolean; msgs: TranscriptMessage[] }> = [];
+  for (const m of input) {
+    const ctx = isInjectionMessage(m);
+    const last = runs[runs.length - 1];
+    if (last && last.ctx === ctx) last.msgs.push(m);
+    else runs.push({ ctx, msgs: [m] });
+  }
+  const silent = input.length === 0 && !st.output && !st.reqTruncated && !st.reqUnparsed && !st.diverged;
 
   return (
     <div
@@ -512,11 +646,17 @@ const TranscriptBlock: React.FC<{
       {st.diverged && <Note tone="warn" text={t('captures.divergedNote')} />}
       {st.reqUnparsed && <Note tone="dim" text={t('captures.reqUnparsedNote')} />}
 
-      {st.input.map((m, i) => (
-        <div key={i} style={{ marginBottom: 6 }}>
-          <MessageView msg={m} date={date} />
-        </div>
-      ))}
+      {runs.map((run, i) =>
+        run.ctx ? (
+          <ContextChip key={`ctx-${i}`} msgs={run.msgs} />
+        ) : (
+          run.msgs.map((m, j) => (
+            <div key={`${i}-${j}`} style={{ marginBottom: 6 }}>
+              <MessageView msg={m} date={date} />
+            </div>
+          ))
+        )
+      )}
 
       {st.output ? (
         <OutputView out={st.output} />
@@ -568,7 +708,7 @@ const RoundTail: React.FC<{ round: TranscriptRound }> = ({ round }) => {
       ) : round.finalReasoning ? (
         <>
           <RoleLabel label={t('captures.msgThinking')} color="var(--text-muted)" />
-          <Prose text={round.finalReasoning} clamp={6} color="var(--text-muted)" />
+          <Prose text={round.finalReasoning} clamp={6} color="var(--text-muted)" mono={false} />
           <div style={{ marginTop: 4 }}>
             <Note tone="dim" text={t('captures.roundUnconvergedNote')} />
           </div>
@@ -822,6 +962,7 @@ const RoundCard: React.FC<{
               label={`${ordinal}-${i + 1}`}
               date={date}
               first={i === 0}
+              skipPrompt={round.prompt}
               onOpenTurn={onOpenTurn}
             />
           ))}
@@ -891,7 +1032,7 @@ const FocusRoundView: React.FC<{
       {promptText ? (
         <div style={{ marginBottom: 10 }}>
           <RoleLabel label={t('captures.msgUser')} color="var(--accent)" icon={<User size={12} />} />
-          <ProseWithMedia text={promptText} date={date} />
+          <ProseWithMedia text={promptText} date={date} mono={false} />
         </div>
       ) : (
         <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: 10 }}>
@@ -909,6 +1050,7 @@ const FocusRoundView: React.FC<{
           st={st}
           label={`${ordinal}-${i + 1}`}
           date={date}
+          skipPrompt={round.prompt}
           onOpenTurn={onOpenTurn}
         />
       ))}
@@ -920,10 +1062,12 @@ const FocusRoundView: React.FC<{
           rides the bottom edge so the answer stays readable while the steps
           scroll behind it — the same "answer always visible" contract the
           expanded card gets from its footer sitting outside the 60vh panel.
-          Opaque bg + hairline rule read as a bar. This bar owns the bottom
-          gap (20px, its own padding — the scroll container's is 0 so the two
-          never stack); paddingLeft 2 puts the rail RoundTail draws on the
-          steps' rails. */}
+          Opaque bg + hairline rule read as a bar. --bg-elev alone is a
+          translucent TINT (content scrolls through it) — composite it over
+          the opaque --bg base so the bar matches the page fill AND hides
+          what passes behind. This bar owns the bottom gap (20px, its own
+          padding — the scroll container's is 0 so the two never stack);
+          paddingLeft 2 puts the rail RoundTail draws on the steps' rails. */}
       <div
         style={{
           position: 'sticky',
@@ -932,7 +1076,7 @@ const FocusRoundView: React.FC<{
           paddingTop: 12,
           paddingBottom: 20,
           paddingLeft: 2,
-          background: 'var(--bg)',
+          background: 'linear-gradient(var(--bg-elev), var(--bg-elev)), var(--bg)',
           borderTop: '1px solid var(--divider)',
           // Ceiling: the tail prose is clamped to 6 lines, so this never
           // engages by default. Only a hand-expanded long answer hits it —
@@ -965,6 +1109,26 @@ export const SessionTranscript: React.FC<{
   // into `rounds`; transient like the whole-session fullscreen (never
   // persisted, resets when the archive changes underneath us).
   const [focusIdx, setFocusIdx] = useState<number | null>(null);
+  // Bulk-expand menu (focus overlay only): committing a change bumps `secRev`,
+  // which re-seeds every matching section inside the provider below.
+  const [secOpen, setSecOpen] = useState<Record<SectionKind, boolean>>({
+    thinking: false,
+    toolCall: false,
+    toolResult: false,
+    context: false,
+    system: false,
+  });
+  const [secRev, setSecRev] = useState(0);
+  // Scroll layer of the focus overlay — feeds the back-to-top pill.
+  const focusScrollRef = useRef<HTMLDivElement | null>(null);
+  const toggleSec = (k: SectionKind) => {
+    setSecOpen(s => ({ ...s, [k]: !s[k] }));
+    setSecRev(r => r + 1);
+  };
+  const allSec = (v: boolean) => {
+    setSecOpen(Object.fromEntries(SECTION_KINDS.map(k => [k, v])) as Record<SectionKind, boolean>);
+    setSecRev(r => r + 1);
+  };
   useBodyScrollLock(focusIdx !== null);
   useEffect(() => {
     setFocusIdx(null);
@@ -1045,9 +1209,10 @@ export const SessionTranscript: React.FC<{
               <span style={{ fontSize: '13px', fontWeight: 700 }}>
                 {t('captures.roundFocus')} · {t('captures.roundOrdinal', { n: focusIdx + 1 })}
               </span>
+              <ExpandMenu open={secOpen} onToggle={toggleSec} onAll={allSec} />
               <button
                 className="btn btn-sm"
-                style={{ marginLeft: 'auto', flexShrink: 0 }}
+                style={{ flexShrink: 0 }}
                 onClick={() => setFocusIdx(null)}
                 title={t('captures.chatExitFullscreen')}
               >
@@ -1056,6 +1221,7 @@ export const SessionTranscript: React.FC<{
               </button>
             </div>
             <div
+              ref={focusScrollRef}
               style={{
                 flex: 1,
                 minHeight: 0,
@@ -1063,22 +1229,43 @@ export const SessionTranscript: React.FC<{
                 // Bottom inset 0: the conclusion bar inside carries the 20px
                 // gap itself, so pinned and in-flow states measure the same.
                 padding: '16px 24px 0',
-                display: 'flex',
-                justifyContent: 'center',
               }}
             >
               {/* Cap the reading column — full viewport WIDTH for a single
                   round would stretch every prose line past comfortable
-                  measure; the win here is height + no competing cards. */}
-              <div style={{ width: '100%', maxWidth: 980 }}>
-                <FocusRoundView
-                  round={rounds[focusIdx]}
-                  ordinal={focusIdx + 1}
-                  date={date}
-                  onOpenTurn={onOpenTurn}
-                />
-              </div>
+                  measure; the win here is height + no competing cards.
+                  The column is a visible PAGE: frame + elevated fill give
+                  the reading area left/right edge lines — borderless, the
+                  content floated in the --bg void with no boundary. */}
+              <ExpandCtx.Provider value={{ open: secOpen, rev: secRev }}>
+                <div
+                  style={{
+                    width: '100%',
+                    maxWidth: 980,
+                    margin: '0 auto',
+                    // Fill the scrollport even for short rounds (frame spans
+                    // the whole visible page) and GROW past it for long ones
+                    // — flex-stretch pinned the box to viewport height and
+                    // the steps leaked below its own bottom border.
+                    minHeight: '100%',
+                    boxSizing: 'border-box',
+                    border: '1px solid var(--card-border)',
+                    borderRadius: 10,
+                    background: 'var(--bg-elev)',
+                    padding: '14px 18px 0',
+                  }}
+                >
+                  <FocusRoundView
+                    round={rounds[focusIdx]}
+                    ordinal={focusIdx + 1}
+                    date={date}
+                    onOpenTurn={onOpenTurn}
+                  />
+                </div>
+              </ExpandCtx.Provider>
             </div>
+            {/* Sibling of the scroll layer, absolute against the fixed root. */}
+            <BackToTop scrollRef={focusScrollRef} />
           </div>,
           document.body
         )}

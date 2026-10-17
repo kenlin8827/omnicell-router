@@ -20,6 +20,7 @@ import { copyToClipboard, shortId, outputRate, formatRate, fmtDur } from '../lib
 import { useSplitterWidth, VSplitter } from '../components/Splitter';
 import { strToU8, zipSync } from 'fflate';
 import { SessionTranscript } from '../components/SessionTranscript';
+import { BackToTop } from '../components/BackToTop';
 import { findMediaTokens, unwrapHarnessText } from '../lib/transcript';
 
 /**
@@ -694,6 +695,8 @@ export const CapturesPage: React.FC = () => {
   const [mainView, setMainView] = useState<'timeline' | 'chat'>('timeline');
   // Fullscreen conversation reading (transient — never persisted).
   const [chatFull, setChatFull] = useState(false);
+  // Scroll layer of the fullscreen reading portal — feeds the back-to-top pill.
+  const chatFullScrollRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!chatFull) return;
     const onKey = (e: KeyboardEvent) => {
@@ -1138,18 +1141,38 @@ export const CapturesPage: React.FC = () => {
 
               <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
                 {/* Left rail: filter + session list of the selected day.
-                    Width is user-resizable via the splitter; persisted. */}
+                    Width is user-resizable via the splitter; persisted.
+                    No borderRight here — the list card below owns the pane
+                    frame; a second line beside it read as a double rule. */}
                 <div
                   style={{
                     width: railWidth,
                     flexShrink: 0,
-                    borderRight: '1px solid var(--card-border)',
+                    padding: '10px',
                     display: 'flex',
                     flexDirection: 'column',
                     minHeight: 0,
                   }}
                 >
-                  <div style={{ padding: '8px 10px 12px', flexShrink: 0 }}>
+                  {/* One card frames the whole scanning surface (filters +
+                      list): the pane felt floaty in light themes when the
+                      bordered inputs sat above borderless drifting rows.
+                      Rows themselves stay frameless — hairline rules divide
+                      them (list-group language), selection rides the 2px
+                      left rail. */}
+                  <div
+                    style={{
+                      flex: 1,
+                      minHeight: 0,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      border: '1px solid var(--card-border)',
+                      borderRadius: 8,
+                      background: 'var(--bg-elev)',
+                      overflow: 'hidden',
+                    }}
+                  >
+                  <div style={{ padding: '10px 10px 12px', flexShrink: 0, borderBottom: '1px solid var(--divider)' }}>
                     <input
                       type="text"
                       className="input"
@@ -1168,8 +1191,8 @@ export const CapturesPage: React.FC = () => {
                       style={{ width: '100%', fontSize: '12px', padding: '6px 10px', marginTop: 6 }}
                     />
                   </div>
-                  <div style={{ overflowY: 'auto', padding: '2px 10px 10px', flex: 1, minHeight: 0 }}>
-                  {visibleSessions.map(s => (
+                  <div style={{ overflowY: 'auto', flex: 1, minHeight: 0 }}>
+                  {visibleSessions.map((s, i) => (
                     <div
                       key={s.file}
                       className="capture-session-card"
@@ -1188,12 +1211,14 @@ export const CapturesPage: React.FC = () => {
                           .join('\n')
                       }
                       style={{
-                        padding: '7px 10px',
-                        marginBottom: '3px',
-                        borderRadius: '6px',
+                        padding: '8px 10px',
                         cursor: 'pointer',
                         fontSize: '12px',
                         lineHeight: 1.4,
+                        // Full-bleed list row: hairline between neighbors,
+                        // 2px left rail marks the selection (transparent
+                        // otherwise so text columns never shift).
+                        borderTop: i > 0 ? '1px solid var(--divider)' : undefined,
                         background: s.file === selectedFile ? 'var(--chip-bg)' : undefined,
                         borderLeft: s.file === selectedFile ? '2px solid var(--accent)' : '2px solid transparent',
                       }}
@@ -1358,10 +1383,11 @@ export const CapturesPage: React.FC = () => {
                     </div>
                   ))}
                   {visibleSessions.length === 0 && (
-                    <div style={{ padding: '8px', fontSize: '11px', color: 'var(--text-dim)' }}>
+                    <div style={{ padding: '8px 10px', fontSize: '11px', color: 'var(--text-dim)' }}>
                       {q ? t('captures.noMatchSessions') : t('captures.emptySessions')}
                     </div>
                   )}
+                  </div>
                   </div>
                 </div>
 
@@ -1682,15 +1708,45 @@ export const CapturesPage: React.FC = () => {
                 <span>{t('captures.chatExitFullscreen')}</span>
               </button>
             </div>
-            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '16px 24px' }}>
-              <SessionTranscript
-                turns={turns}
-                fileTruncated={fileTruncated}
-                date={selectedDate}
-                expandAll
-                onOpenTurn={idx => setSelectedTurnIdx(idx)}
-              />
+            <div
+              ref={chatFullScrollRef}
+              style={{
+                flex: 1,
+                minHeight: 0,
+                overflowY: 'auto',
+                padding: '16px 24px',
+              }}
+            >
+              {/* Reading column as a visible PAGE: frame + elevated fill give
+                  the fullscreen view left/right edge lines — borderless, the
+                  rounds floated in the --bg void with no boundary, and prose
+                  lines stretched to the full viewport width. min-height keeps
+                  the frame spanning the whole scrollport for short sessions;
+                  the box grows past it for long ones. */}
+              <div
+                style={{
+                  width: '100%',
+                  maxWidth: 1200,
+                  margin: '0 auto',
+                  minHeight: '100%',
+                  boxSizing: 'border-box',
+                  border: '1px solid var(--card-border)',
+                  borderRadius: 10,
+                  background: 'var(--bg-elev)',
+                  padding: '14px 18px',
+                }}
+              >
+                <SessionTranscript
+                  turns={turns}
+                  fileTruncated={fileTruncated}
+                  date={selectedDate}
+                  expandAll
+                  onOpenTurn={idx => setSelectedTurnIdx(idx)}
+                />
+              </div>
             </div>
+            {/* Sibling of the scroll layer, absolute against the fixed root. */}
+            <BackToTop scrollRef={chatFullScrollRef} />
           </div>,
           document.body
         )}
