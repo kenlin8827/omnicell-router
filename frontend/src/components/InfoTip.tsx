@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Info } from 'lucide-react';
+import { TipBubble } from './TooltipProvider';
 
 /**
  * Help icon with a hover / focus / click tooltip, portaled to <body> so cards
@@ -73,29 +74,7 @@ export const InfoTip: React.FC<{ text: string }> = ({ text }) => {
       {open &&
         pos &&
         createPortal(
-          <div
-            role="tooltip"
-            style={{
-              position: 'fixed',
-              left: pos.left,
-              top: pos.top,
-              transform: pos.below ? undefined : 'translateY(-100%)',
-              width: pos.width,
-              zIndex: 230,
-              padding: '8px 10px',
-              borderRadius: 8,
-              background: 'var(--card-bg)',
-              border: '1px solid var(--card-border)',
-              boxShadow: '0 12px 32px rgba(0,0,0,0.45)',
-              color: 'var(--text-main)',
-              fontSize: 12,
-              lineHeight: 1.6,
-              textAlign: 'left',
-              pointerEvents: 'none',
-            }}
-          >
-            {text}
-          </div>,
+          <TipBubble left={pos.left} top={pos.top} below={pos.below} width={pos.width} text={text} />,
           document.body,
         )}
     </>

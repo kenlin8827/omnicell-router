@@ -166,6 +166,8 @@ export const enUS: TranslationDict = {
     tierDescUltra: 'Extreme reasoning, deep research, multi-hour autonomous agents (≈ Claude Fable)',
     excludeBtn: 'Exclude',
     excludeBtnHint: 'Add to the global exclude list: joins no candidate pool (unclassified; still reachable by direct id calls)',
+    excludedSectionHint: 'Models excluded by this tier policy — hover a badge to see why it was excluded',
+    excludedReasonHint: 'Reason: {reason} — click to remove from the global exclude list',
     addedToExclude: 'Added to the exclude list (form) — remember to click "Save All Policies"',
     removedFromExclude: 'Removed from the exclude list (form) — remember to click "Save All Policies"',
     reasonExclude: 'unclassified (excluded)',

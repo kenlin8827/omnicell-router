@@ -592,10 +592,15 @@ td, th {
   cursor: pointer;
   transition: all 0.15s ease;
   user-select: none;
+  /* Shared elevation language with cards: the flat gray tint alone read as
+     inert paint; resting + hover shadows give every secondary button lift. */
+  box-shadow: var(--card-shadow);
 }
 .btn:hover {
   background: var(--btn-bg-hover);
   border-color: var(--card-border-hover);
+  transform: translateY(-1px);
+  box-shadow: var(--card-shadow-hover);
 }
 .btn:focus-visible {
   outline: none;
@@ -615,6 +620,7 @@ td, th {
 .btn:disabled:hover {
   background: var(--btn-bg);
   border-color: var(--card-border);
+  box-shadow: var(--card-shadow);
 }
 
 /* Primary fill is the darkened accent step (--btn-primary-bg), never the raw
@@ -638,6 +644,7 @@ td, th {
 .btn-primary:disabled:hover {
   background: var(--btn-primary-bg);
   border-color: var(--btn-primary-bg);
+  box-shadow: var(--btn-primary-shadow);
 }
 
 .btn-danger {
@@ -755,12 +762,16 @@ td, th {
   background: var(--btn-bg);
   border: 1px solid var(--card-border);
   color: var(--text-muted);
-  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, transform 0.1s ease;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, transform 0.1s ease, box-shadow 0.15s ease;
+  /* Same elevation language as .btn — chips are buttons too. */
+  box-shadow: var(--card-shadow);
 }
 .chip:hover {
   background: var(--btn-bg-hover);
   border-color: var(--card-border-hover);
   color: var(--text-main);
+  transform: translateY(-1px);
+  box-shadow: var(--card-shadow-hover);
 }
 .chip:focus-visible {
   outline: none;

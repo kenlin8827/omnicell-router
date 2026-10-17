@@ -257,9 +257,19 @@ const ComboDialog: React.FC<{
           </div>
 
           <div>
-            <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '6px', display: 'block' }}>
-              {t('combos.members')}
-            </label>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
+              <label style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+                {t('combos.members')}
+              </label>
+              <button
+                className="btn btn-sm"
+                style={{ gap: '6px', padding: '3px 8px' }}
+                onClick={() => patch({ models: [...work.models, { id: '', weight: 1 }] })}
+              >
+                <Plus size={12} />
+                <span>{t('combos.addMember')}</span>
+              </button>
+            </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               {work.models.map((member, mIdx) => {
                 const known = registeredIds.has(member.id);
@@ -394,14 +404,6 @@ const ComboDialog: React.FC<{
                   <span>{t('combos.patternAdd')}</span>
                 </button>
               </div>
-              <button
-                className="btn btn-sm"
-                style={{ alignSelf: 'flex-start', gap: '6px' }}
-                onClick={() => patch({ models: [...work.models, { id: '', weight: 1 }] })}
-              >
-                <Plus size={14} />
-                <span>{t('combos.addMember')}</span>
-              </button>
             </div>
           </div>
 

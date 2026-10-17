@@ -166,6 +166,8 @@ export const zhCN: TranslationDict = {
     tierDescUltra: '极限推理、深度研究、数小时自治 agent（对标 Claude Fable）',
     excludeBtn: '排除',
     excludeBtnHint: '加入全局排除名单：不进入任何梯队候选池（未分类，仍可直连调用）',
+    excludedSectionHint: '被本梯队策略排除的模型 —— 鼠标悬停徽章查看排除原因',
+    excludedReasonHint: '原因：{reason} — 点击从全局排除名单移除',
     addedToExclude: '已加入排除名单（表单）—— 记得点击「保存全部策略」',
     removedFromExclude: '已从排除名单移除（表单）—— 记得点击「保存全部策略」',
     reasonExclude: '未分类（已排除）',

@@ -175,6 +175,8 @@ export interface TranslationDict {
     tierDescUltra: string;
     excludeBtn: string;
     excludeBtnHint: string;
+    excludedSectionHint: string;
+    excludedReasonHint: string;
     addedToExclude: string;
     removedFromExclude: string;
     alreadyExcluded: string;

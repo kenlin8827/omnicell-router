@@ -28,6 +28,7 @@ import { FlywheelPage } from './pages/FlywheelPage';
 import { YamlPage } from './pages/YamlPage';
 import { ConfirmProvider } from './components/ConfirmProvider';
 import { ToastProvider } from './components/ToastProvider';
+import { TooltipProvider } from './components/TooltipProvider';
 import { LoginPage } from './pages/LoginPage';
 import { api } from './lib/api';
 
@@ -64,6 +65,7 @@ export const App: React.FC = () => {
 
   return (
     <ToastProvider>
+      <TooltipProvider>
       <ConfirmProvider>
         <Routes>
       <Route path="/" element={<Layout />}>
@@ -96,6 +98,7 @@ export const App: React.FC = () => {
       </Route>
         </Routes>
       </ConfirmProvider>
+      </TooltipProvider>
     </ToastProvider>
   );
 };
