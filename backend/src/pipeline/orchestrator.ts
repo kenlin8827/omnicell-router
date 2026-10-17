@@ -610,7 +610,11 @@ export class PipelineOrchestrator {
     let sessionTurnCount: number;
     if (sessionMode === 'bypass') {
       decision = { ...initialDecision, sessionId, sessionRatchetApplied: false, sessionLookupType: sessionResolve.lookupType };
-      sessionTurnCount = (this.sessionManager.getSession(sessionId)?.turnCount ?? 0) + 1;
+      // Bypass never mints a session entity, so getSession reads undefined
+      // every turn and stamped every combo request #1 in the console's
+      // request-detail table. Dedicated counter instead — display-only
+      // bookkeeping, no pin/tier state (ADR-0002).
+      sessionTurnCount = this.sessionManager.recordBypassTurn(sessionId);
     } else {
       const ratchetResult = this.sessionManager.applyRatchet(
         sessionId,

@@ -66,5 +66,6 @@ switch     = evict ∧ 健康着陆点存在 ∧ landing.id ≠ pin
 - 零 Header 客户端获得完整对话连续性；有了锚点/键快照，重启连分组也不再撕碎（只有内存态的 ratchet/钉选/亲和绑定会重建）。
 - 身份锚定在 API-key 应用上（绝不用传输 IP），且 tool-call 锚能扛住客户端回传的字节漂移——正是这两处失败把一条 agent 循环级联成几十个 session id。每个捕捉事件都带 `conversationKey`（ADR-0008），档案可凭内容哈希按会话重组，与易变的 sessionId 无关。
 - 客户端 User-Agent 头随轨迹记录（`request.clientHeaders.userAgent`），并在控制台会话表上只读展示为客户端指纹；因其可被客户端伪造，绝不作为身份或路由输入——与上文排除传输 IP 的理由相同。
+- 旁路（combo）回合从不创建会话实体，因此按会话的回合编号使用独立的持久化计数器（`SessionManager.recordBypassTurn`，快照字段 `bypassTurns`）——纯展示用途的记账，绝不参与路由；缺少它时每个 combo 请求都会读到 `undefined + 1`，控制台请求明细表的每一行都被标成 #1。
 - 操作员编辑（梯队成员表、denylist）下一轮即触达活会话；每个被驱逐会话恰好支付一次缓存重建——强制、可归因、只在有处可去时重试。
 - 测试：`pin-eviction.test.ts`（两力、非触发、试飞豁免含双视图分歧、着陆守卫、范围回归）、`account-affinity-orchestrator.test.ts`、`account-selection.test.ts`、`session.test.ts`、`resilience*.test.ts`。

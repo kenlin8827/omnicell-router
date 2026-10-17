@@ -523,6 +523,40 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
     }
   });
 
+  it('counts bypass (combo) turns per session so the console detail table numbers them 1,2,3…', () => {
+    const sid = 'cc_bypass-counter-test';
+    assert.strictEqual(sessionManager.recordBypassTurn(sid), 1, 'first combo turn = #1');
+    assert.strictEqual(sessionManager.recordBypassTurn(sid), 2, 'second combo turn = #2');
+    assert.strictEqual(sessionManager.recordBypassTurn(sid), 3, 'third combo turn = #3');
+    assert.strictEqual(sessionManager.recordBypassTurn('cc_other-session'), 1, 'independent per-session counters');
+    assert.strictEqual(sessionManager.recordBypassTurn(sid), 4, 'original session keeps its own sequence');
+  });
+
+  it('bypass turn counter survives a gateway restart (persisted snapshot reload)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-sess-'));
+    const file = path.join(dir, 'sessions.json');
+    try {
+      const sid = 'cc_bypass-restart-test';
+      const mgr1 = new SessionManager({ enabled: true, strategy: 'monotonic' }, file);
+      mgr1.recordBypassTurn(sid);
+      mgr1.recordBypassTurn(sid);
+      mgr1.flushPersist();
+
+      const mgr2 = new SessionManager({ enabled: true, strategy: 'monotonic' }, file);
+      assert.strictEqual(mgr2.recordBypassTurn(sid), 3, 'post-restart combo turn continues at #3, not #1');
+    } finally {
+      rmrf(dir);
+    }
+  });
+
+  it('deleting a session clears its bypass turn counter', () => {
+    const sid = 'cc_bypass-delete-test';
+    sessionManager.recordBypassTurn(sid);
+    sessionManager.recordBypassTurn(sid);
+    sessionManager.deleteSession(sid);
+    assert.strictEqual(sessionManager.recordBypassTurn(sid), 1, 'counter restarts after the session is deleted');
+  });
+
   it('scopes the conversation key to the API-key identity (same message, different key = different session)', () => {
     const u1 = 'Shared opening.';
     const a1 = 'reply';

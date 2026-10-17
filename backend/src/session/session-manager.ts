@@ -72,6 +72,7 @@ const MAX_TAIL_PROBES = 256;       // window probes examined per resolve
 const MAX_CHAIN_ENTRIES = 200_000; // global FIFO caps
 const MAX_TAIL_ENTRIES = 100_000;
 const MAX_CONVKEY_ENTRIES = 50_000;
+const MAX_BYPASS_ENTRIES = 10_000; // combo turn counters — aligns with the default session capacity
 const CANDIDATE_CAP = 3;           // sessions a single conversation key may claim
 const ANCHOR_HEX = 20;             // anchor digest length
 const CONVERSATION_KEY_HEX = 24;   // conversation-key digest length
@@ -146,6 +147,7 @@ export class SessionManager {
   private chainAnchors = new Map<string, string>();  // 'C'-salted head-prefix hash -> sessionId
   private tailAnchors = new Map<string, string>();   // 'T'-salted trailing-window hash -> sessionId
   private convKeys = new Map<string, string[]>();    // conversation key -> candidate session ids, newest first
+  private bypassTurns = new Map<string, number>();   // combo/bypass sessionId -> recorded turn count (display-only)
   private readonly ttlMs: number;
   private readonly maxSessions: number;
   private readonly persistPath?: string;
@@ -721,12 +723,31 @@ export class SessionManager {
     return this.sessions.get(sessionId);
   }
 
+  /**
+   * Record a bypass (combo) turn and return its per-session sequence number.
+   *
+   * Bypass mode never calls applyRatchet — the combo composition IS the
+   * decision, so no session entity is minted and no pin/tier state is
+   * touched. Turn NUMBERING, though, is pure observability: without a
+   * counter every combo turn reads `getSession() → undefined + 1` and the
+   * console's request-detail table stamps every row #1. Persisted with the
+   * anchors snapshot so numbering survives restarts (the live session
+   * entities intentionally rebuild fresh — see loadPersisted).
+   */
+  public recordBypassTurn(sessionId: string): number {
+    const next = (this.bypassTurns.get(sessionId) ?? 0) + 1;
+    this.setBounded(this.bypassTurns, sessionId, next, MAX_BYPASS_ENTRIES);
+    this.markDirty();
+    return next;
+  }
+
   public getAllSessions(): ConversationSession[] {
     return Array.from(this.sessions.values());
   }
 
   public deleteSession(sessionId: string): boolean {
     const existed = this.sessions.delete(sessionId);
+    this.bypassTurns.delete(sessionId);
     // Purge anchor keys pointing at the deleted session. Scans are O(map) but
     // deletes are rare (manual UI delete / eviction at maxSessions capacity).
     for (const map of [this.chainAnchors, this.tailAnchors]) {
@@ -791,9 +812,9 @@ export class SessionManager {
   /* ------------------------------------------------------------ persist */
 
   /**
-   * Load anchors + conversation keys written by a previous run (per-environment
-   * JSON snapshot). Fail-open: a broken/missing file starts empty; a capture
-   * or persistence problem must never break routing.
+   * Load anchors + conversation keys + bypass turn counters written by a
+   * previous run (per-environment JSON snapshot). Fail-open: a broken/missing
+   * file starts empty; a capture or persistence problem must never break routing.
    */
   private loadPersisted(): void {
     if (!this.persistPath) return;
@@ -819,6 +840,13 @@ export class SessionManager {
           }
         }
       }
+      if (data.bypassTurns && typeof data.bypassTurns === 'object') {
+        for (const [k, v] of Object.entries(data.bypassTurns)) {
+          if (typeof k === 'string' && typeof v === 'number' && Number.isInteger(v) && v >= 1) {
+            this.setBounded(this.bypassTurns, k, v, MAX_BYPASS_ENTRIES);
+          }
+        }
+      }
     } catch {
       // Missing / corrupt snapshot — start empty.
     }
@@ -841,8 +869,8 @@ export class SessionManager {
    * deterministic tests. Never throws — disk failure is fail-open by contract.
    *
    * Scale ceiling (documented, not yet a problem at local-gateway volume): the
-   * write is a FULL synchronous serialization of the three anchor/key maps,
-   * which are FIFO-capped at 350k combined entries; anchor keys are pruned only
+   * write is a FULL synchronous serialization of the four anchor/key/counter
+   * maps, which are FIFO-capped at 460k combined entries; anchor keys are pruned only
    * on `deleteSession`, and TTL eviction runs only at session capacity, so under
    * sustained heavy agent traffic the maps grow toward their caps and each
    * debounced flush costs more (sub-second at the cap). Upgrade path when that
@@ -863,6 +891,7 @@ export class SessionManager {
         chainAnchors: Object.fromEntries(this.chainAnchors),
         tailAnchors: Object.fromEntries(this.tailAnchors),
         convKeys: Object.fromEntries(this.convKeys),
+        bypassTurns: Object.fromEntries(this.bypassTurns),
       };
       fs.mkdirSync(path.dirname(this.persistPath), { recursive: true });
       const tmp = `${this.persistPath}.tmp`;
