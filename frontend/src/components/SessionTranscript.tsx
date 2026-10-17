@@ -539,32 +539,47 @@ const TranscriptBlock: React.FC<{
  * step panel, outside it), and after the steps in the focus overlay. Falls
  * back to the final reasoning (DeepSeek-style thinking-only answers), else
  * a dim note.
+ *
+ * Owns the assistant-message block language (OutputView's 2px emerald rail
+ * + 10px gutter + icon'd role line), so a caller only sets the block's LEFT
+ * EDGE: place that edge on the surrounding assistant rail and the label, the
+ * prose well and the rail all land on the assistant's own columns.
  */
 const RoundTail: React.FC<{ round: TranscriptRound }> = ({ round }) => {
   const { t } = useI18n();
-  return round.finalText ? (
-    <>
-      <RoleLabel label={t('captures.roundTailLabel')} color="var(--accent-emerald)" />
-      <Prose text={round.finalText} clamp={6} markdown />
-      {round.finalToolCalls.length > 0 && (
-        <div style={{ marginTop: 4 }}>
-          <Note tone="dim" text={t('captures.roundUnconvergedNote')} />
+  const hasAnswer = !!(round.finalText || round.finalReasoning);
+  return (
+    <div
+      style={{
+        borderLeft: `2px solid ${hasAnswer ? 'var(--accent-emerald)' : 'var(--card-border)'}`,
+        paddingLeft: 10,
+      }}
+    >
+      {round.finalText ? (
+        <>
+          <RoleLabel label={t('captures.roundTailLabel')} color="var(--accent-emerald)" icon={<Bot size={12} />} />
+          <Prose text={round.finalText} clamp={6} markdown />
+          {round.finalToolCalls.length > 0 && (
+            <div style={{ marginTop: 4 }}>
+              <Note tone="dim" text={t('captures.roundUnconvergedNote')} />
+            </div>
+          )}
+        </>
+      ) : round.finalReasoning ? (
+        <>
+          <RoleLabel label={t('captures.msgThinking')} color="var(--text-muted)" />
+          <Prose text={round.finalReasoning} clamp={6} color="var(--text-muted)" />
+          <div style={{ marginTop: 4 }}>
+            <Note tone="dim" text={t('captures.roundUnconvergedNote')} />
+          </div>
+        </>
+      ) : (
+        <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+          {round.hasError || round.toolCallsIssued > 0
+            ? t('captures.roundUnconvergedNote')
+            : t('captures.nothingNote')}
         </div>
       )}
-    </>
-  ) : round.finalReasoning ? (
-    <>
-      <RoleLabel label={t('captures.msgThinking')} color="var(--text-muted)" />
-      <Prose text={round.finalReasoning} clamp={6} color="var(--text-muted)" />
-      <div style={{ marginTop: 4 }}>
-        <Note tone="dim" text={t('captures.roundUnconvergedNote')} />
-      </div>
-    </>
-  ) : (
-    <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
-      {round.hasError || round.toolCallsIssued > 0
-        ? t('captures.roundUnconvergedNote')
-        : t('captures.nothingNote')}
     </div>
   );
 };
@@ -810,11 +825,13 @@ const RoundCard: React.FC<{
         </div>
       )}
       {/* Tail answer — persistent card footer in BOTH states, outside the
-          waterfall panel: collapsed it aligns with the prompt column
-          (12 + 26 + 10 = 48); expanded it aligns with the panel's inner
-          content column (margin 12 + border 1 + padding 10 = 23) so the
-          conclusion reads as the waterfall's last row, not a stray indent. */}
-      <div style={{ padding: open ? '0 23px 10px' : '8px 12px 10px 48px' }}>
+          waterfall panel. RoundTail draws its own assistant rail, so this is
+          only the block's LEFT EDGE: collapsed it sits on the prompt column
+          (12 + 26 + 10 = 48); expanded it sits on the assistant rail inside
+          the panel (panel inset 23 = margin 12 + border 1 + padding 10, plus
+          the step row's own padding 2) — never on the panel's content edge,
+          which would leave the conclusion 14px left of every assistant row. */}
+      <div style={{ padding: open ? '0 23px 10px 25px' : '8px 12px 10px 48px' }}>
         <RoundTail round={round} />
       </div>
     </div>
@@ -892,11 +909,37 @@ const FocusRoundView: React.FC<{
           onOpenTurn={onOpenTurn}
         />
       ))}
-      {/* Persistent tail — after the steps: the conclusion always reads
-          below the tool calls that produced it. paddingLeft 14 matches the
-          steps' content column (2 + 2 + 10) so the tail aligns with them;
-          marginBottom keeps a real gap above the overlay's bottom edge. */}
-      <div style={{ marginTop: 12, marginBottom: 28, paddingLeft: 14 }}>
+      {/* Conclusion bar — sticky to the overlay's bottom edge. Why sticky and
+          not a flex footer outside the scroll layer: a short round has no
+          scrollbar, and a hard-pinned bar would float at the screen bottom
+          with a dead gap under the steps; sticky keeps it IN FLOW (right
+          below the steps) until the waterfall actually overflows, then it
+          rides the bottom edge so the answer stays readable while the steps
+          scroll behind it — the same "answer always visible" contract the
+          expanded card gets from its footer sitting outside the 60vh panel.
+          Opaque bg + hairline rule read as a bar. This bar owns the bottom
+          gap (20px, its own padding — the scroll container's is 0 so the two
+          never stack); paddingLeft 2 puts the rail RoundTail draws on the
+          steps' rails. */}
+      <div
+        style={{
+          position: 'sticky',
+          bottom: 0,
+          marginTop: 12,
+          paddingTop: 12,
+          paddingBottom: 20,
+          paddingLeft: 2,
+          background: 'var(--bg)',
+          borderTop: '1px solid var(--divider)',
+          // Ceiling: the tail prose is clamped to 6 lines, so this never
+          // engages by default. Only a hand-expanded long answer hits it —
+          // then the bar scrolls instead of pushing its own label off the
+          // top of the viewport. Upgrade path if it ever bothers anyone:
+          // cap the clamp inside the bar.
+          maxHeight: '55vh',
+          overflowY: 'auto',
+        }}
+      >
         <RoundTail round={round} />
       </div>
     </div>
@@ -1014,7 +1057,9 @@ export const SessionTranscript: React.FC<{
                 flex: 1,
                 minHeight: 0,
                 overflowY: 'auto',
-                padding: '16px 24px',
+                // Bottom inset 0: the conclusion bar inside carries the 20px
+                // gap itself, so pinned and in-flow states measure the same.
+                padding: '16px 24px 0',
                 display: 'flex',
                 justifyContent: 'center',
               }}
