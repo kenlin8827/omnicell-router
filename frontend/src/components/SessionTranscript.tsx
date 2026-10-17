@@ -739,12 +739,14 @@ const RoundCard: React.FC<{
   round: TranscriptRound;
   ordinal: number;
   date?: string;
+  /** First round in the list — no hairline rule above it. */
+  first?: boolean;
   /** Fullscreen reading opens every round; the pane default stays skim-mode. */
   defaultOpen?: boolean;
   /** Renders the ⛶ header button (absent inside the focus overlay itself). */
   onFocus?: () => void;
   onOpenTurn: (idx: number) => void;
-}> = ({ round, ordinal, date, defaultOpen, onFocus, onOpenTurn }) => {
+}> = ({ round, ordinal, date, first, defaultOpen, onFocus, onOpenTurn }) => {
   const { t } = useI18n();
   // All rounds collapsed by default — the Q→A skim (header + tail answer)
   // covers the whole session; steps open on demand. In fullscreen reading
@@ -790,10 +792,12 @@ const RoundCard: React.FC<{
   return (
     <div
       style={{
-        marginBottom: 12,
-        border: '1px solid var(--card-border)',
-        borderRadius: 8,
-        overflow: 'hidden',
+        // Flat section, not a box: rounds divide by one hairline rule (the
+        // step rows' list-group language) — a bordered card per round read
+        // as a stack of pillowy wide-flat boxes inside the page column's
+        // own frame (triple nesting). Breathing room comes from the header
+        // and tail paddings around the rule.
+        borderTop: first ? undefined : '1px solid var(--divider)',
       }}
     >
       {/* Header band — the whole band toggles. NO background fill on hover
@@ -1179,6 +1183,7 @@ export const SessionTranscript: React.FC<{
             round={r}
             ordinal={i + 1}
             date={date}
+            first={i === 0}
             defaultOpen={expandAll}
             onFocus={() => setFocusIdx(i)}
             onOpenTurn={onOpenTurn}
