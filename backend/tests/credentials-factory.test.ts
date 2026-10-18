@@ -83,7 +83,9 @@ function readLkg(paths: CredentialPaths): Record<string, unknown> | null {
 const probeVersion = (v: string | null) => async () => v;
 
 function base(overrides: BindOverrides): BindOverrides {
-  return { env: {}, now: () => 555_000, ...overrides };
+  // Default no-op sleep: the bind-time probe retry must not cost real wall
+  // time in tests; the retry test below injects a recording sleep instead.
+  return { env: {}, now: () => 555_000, sleep: async () => {}, ...overrides };
 }
 
 describe('credential store factory', () => {
@@ -201,6 +203,28 @@ describe('credential store factory', () => {
     expect(binding.status.degradedCode).toBeNull();
     expect(binding.status.evidence.used).toBe('none');
     expect(binding.status.probeResult?.state).toBe('empty');
+  });
+
+  it('a null first probe retries once — boot-contention guard promotes CLI evidence when the retry hits', async () => {
+    const paths = sandboxPaths();
+    fs.writeFileSync(paths.installedVersionPath, '2.0.0'); // fallback evidence would win without the retry
+    let calls = 0;
+    const sleeps: number[] = [];
+    const binding = await bindCredentialStore(
+      base({
+        paths,
+        versionProbe: async () => (++calls === 1 ? null : 'v2.0.15'),
+        openDatabase: fakeDb([OAUTH_ROW]),
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+      })
+    );
+    expect(binding.status.kind).toBe('opencode-v2');
+    expect(binding.status.degradedCode).toBeNull();
+    expect(binding.status.evidence.used).toBe('cli');
+    expect(calls).toBe(2); // exactly one retry
+    expect(sleeps).toEqual([2500]);
   });
 
   it('a CRASHING versionProbe is evidence-free (same landing as CLI-absent), never a bind failure', async () => {
@@ -349,7 +373,11 @@ describe('bind totality + sticky rejection reset (reviewer P1-2)', () => {
         return realHome;
       },
     };
-    resetCredentialStoreForTests(hostile, probeVersion(null), undefined, { env: {}, now: () => 1 });
+    resetCredentialStoreForTests(hostile, probeVersion(null), undefined, {
+      env: {},
+      now: () => 1,
+      sleep: async () => {}, // probe-retry guard must not cost real time here
+    });
     let firstErr: unknown;
     try {
       await getCredentialStore();

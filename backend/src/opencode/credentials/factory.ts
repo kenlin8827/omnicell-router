@@ -37,6 +37,9 @@ import { OpencodeV2Store, DbOpener, resolveServiceConfigForPaths } from './openc
 
 export type VersionProbe = () => Promise<string | null>;
 
+const defaultSleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
 export interface ExcludedCredential {
   provider: string;
   /** machine-readable code (touchpoint gap #8) — the frontend renders i18n text. */
@@ -153,7 +156,7 @@ export function parseVersionMajor(text: string | null): number | null {
  * the event loop never blocks. Injectable via BindOverrides.versionProbe —
  * tests never spawn.
  */
-export function probeVersionViaCli(timeoutMs = 5000): Promise<string | null> {
+export function probeVersionViaCli(timeoutMs = 15000): Promise<string | null> {
   return new Promise((resolve) => {
     let settled = false;
     const done = (v: string | null): void => {
@@ -180,14 +183,18 @@ export function probeVersionViaCli(timeoutMs = 5000): Promise<string | null> {
     });
     child.stderr?.on('data', () => undefined); // drain so the child can exit
     child.on('error', (e) => {
-      console.warn(`[credentials] opencode CLI probe spawn error: ${e.message}`);
+      console.warn(
+        `[credentials] opencode CLI probe spawn error: ${e.message} ` +
+          `(bunBinOnPath=${(process.env.PATH ?? '').includes('D:\\dev\\bun\\bin')} pathLen=${(process.env.PATH ?? '').length})`,
+      );
       done(null);
     });
     child.on('close', (code) => {
       if (code === 0 && out.trim()) done(out.trim());
       else {
         console.warn(
-          `[credentials] opencode CLI probe failed: exit=${code} out="${out.trim().slice(0, 80)}" stderr-drained`,
+          `[credentials] opencode CLI probe failed: exit=${code} out="${out.trim().slice(0, 80)}" ` +
+            `(bunBinOnPath=${(process.env.PATH ?? '').includes('D:\\dev\\bun\\bin')} pathLen=${(process.env.PATH ?? '').length})`,
         );
         done(null);
       }
@@ -518,6 +525,18 @@ async function bindCredentialStoreOnce(overrides: BindOverrides = {}): Promise<S
   let cli: string | null = null;
   try {
     cli = await versionProbe();
+    // Boot-contention guard: the 5s probe budget competes with catalog sync
+    // / SQLite opens and can time out even when the CLI is on PATH (observed
+    // on the desktop sidecar: probe timed out at bind, the SAME binary
+    // succeeded post-boot). One delayed retry closes that race. A truly
+    // absent CLI fails the spawn fast, so the retry costs it ~2.5s only.
+    if (!cli) {
+      console.warn(
+        '[credentials] CLI probe empty at bind — retrying once after 2500ms (boot-contention guard)',
+      );
+      await (overrides.sleep ?? defaultSleep)(2500);
+      cli = await versionProbe();
+    }
   } catch {
     cli = null; // a broken probe is evidence-free, same as "not on PATH"
   }
@@ -724,7 +743,13 @@ export function resetCredentialStoreForTests(
   extra?: BindOverrides
 ): void {
   currentBinding = null;
-  const overrides: BindOverrides = { ...(extra ?? {}) };
+  const overrides: BindOverrides = {
+    // Default a no-op sleep so the bind-time probe-retry never costs real
+    // wall time in tests; a test exercising the retry timing injects its
+    // own recording sleep via extra.
+    ...(extra?.sleep ? {} : { sleep: async () => {} }),
+    ...extra,
+  };
   if (paths) overrides.paths = paths;
   if (versionProbe) overrides.versionProbe = versionProbe;
   if (fetchImpl) overrides.fetchImpl = fetchImpl;

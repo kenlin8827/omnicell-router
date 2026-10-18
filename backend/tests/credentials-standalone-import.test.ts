@@ -63,7 +63,7 @@ function sandboxPaths(): CredentialPaths {
   return paths;
 }
 
-const noOpencode = { versionProbe: async () => null as string | null, env: {}, now: () => 7000 };
+const noOpencode = { versionProbe: async () => null as string | null, env: {}, now: () => 7000, sleep: async () => {} };
 
 function readCredentialsFile(paths: CredentialPaths): any {
   const file = path.join(paths.ocrHome, 'credentials.json');

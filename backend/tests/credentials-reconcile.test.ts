@@ -206,6 +206,7 @@ describe('reconcile gate', () => {
     const binding = await bindCredentialStore({
       paths,
       versionProbe: async () => null, // CLI absent + db present -> readonly
+      sleep: async () => {}, // probe-retry guard must not cost real time here
       fetchImpl,
       env: {},
       now: () => 1,
