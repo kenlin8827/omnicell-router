@@ -453,6 +453,14 @@ export function loadConfig(configPath?: string): RouterConfig {
       return applyTestEnvOverrides({
         ...DEFAULT_CONFIG,
         ...parsedRest,
+        // Explicit PORT env is the bootstrap/deployment lever (same tier as
+        // OCR_HOME): the desktop shell and the daemon restart flows pin the
+        // listen port via env, so a config.yaml `port:` must NOT override it
+        // (a CLI-first install's yaml would otherwise bind the desktop
+        // sidecar onto the yaml port while the shell waits on its own).
+        ...(process.env.PORT?.trim()
+          ? { port: parseInt(process.env.PORT, 10) }
+          : {}),
         // `role` (removed key-level RBAC — unrestricted is expressed by
         // simply not configuring modelAccess) is stripped so stale keys
         // don't get re-persisted on the next config save.

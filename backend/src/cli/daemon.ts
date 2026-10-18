@@ -361,9 +361,12 @@ export async function startDaemon(options: {
   }
 
   const logFile = getLogFilePath();
-  const repoDir = getRepoRootDir();
 
   const { bin, args } = resolveRuntimeBinary();
+  // Snapshot mode (desktop sidecar): the repo layout doesn't exist in an
+  // installed app — anchor the spawn next to our own exe, same as the
+  // restart-child branch in spawnDetachedGatewayChild.
+  const repoDir = compiledSnapshotExe() ? path.dirname(process.execPath) : getRepoRootDir();
 
   // Rotate before opening the log for append so the new daemon always starts
   // on a fresh file when the previous one had grown past the threshold.

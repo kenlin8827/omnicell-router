@@ -282,18 +282,32 @@ fn main() {
             if let Err(msg) = boot(app) {
                 // A GUI binary failing in setup dies SILENTLY (no console, no
                 // window): leave a persistent trace, show a native dialog with
-                // the reason + log path, then exit deterministically.
-                let home = default_ocr_home(&std::env::temp_dir());
-                let _ = fs::create_dir_all(&home);
-                shell_log(&home, &format!("boot failed: {msg}"));
+                // the reason + log path, then exit. Cleanup is EXPLICIT here —
+                // boot() may have already spawned the sidecar (health-timeout
+                // path), and std::process::exit would skip RunEvent::Exit and
+                // orphan it as a headless gateway holding the port.
+                let state = app.state::<GatewayState>();
+                if let Some(mut child) = state.child.lock().unwrap().take() {
+                    let _ = child.kill();
+                }
+                let home = state.home.lock().unwrap().take();
+                let log_home = home
+                    .clone()
+                    .unwrap_or_else(|| default_ocr_home(&std::env::temp_dir()));
+                let _ = fs::create_dir_all(&log_home);
+                shell_log(&log_home, &format!("boot failed: {msg}"));
                 app.dialog()
                     .message(format!(
                         "OpenCode Router failed to start:\n\n{msg}\n\nShell log: {}",
-                        home.join("desktop.log").display()
+                        log_home.join("desktop.log").display()
                     ))
                     .title("OpenCode Router")
                     .blocking_show();
-                std::process::exit(1);
+                if let Some(home) = home {
+                    kill_gateway_tree(&home);
+                }
+                app.handle().exit(1);
+                return Ok(());
             }
             build_tray(app)?;
             Ok(())
