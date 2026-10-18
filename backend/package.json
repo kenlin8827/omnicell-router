@@ -1,6 +1,6 @@
 {
   "name": "@opencode-router/backend",
-  "version": "0.0.1",
+  "version": "0.1.4",
   "description": "High-performance OpenCode Router (OCR) Gateway & CLI Core",
   "type": "module",
   "main": "dist/index.js",
