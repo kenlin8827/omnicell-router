@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { OpenCodeServiceConfig } from '../connector.js';
@@ -204,10 +205,16 @@ function classifyServiceTarget(baseUrl: string): ServiceTargetPolicy {
  * without a store instance; OpencodeV2Store.resolveServiceConfig delegates here.
  * Returns null when no Basic-auth password exists = no reachable service.
  */
-export function resolveServiceConfigForPaths(
+/**
+ * env first, then service.json candidates — password/url ONLY, no defaulting.
+ * resolveServiceConfigForPaths applies the legacy loopback default; the async
+ * write-path discovery (runServiceStatus) needs to know whether a url was
+ * EXPLICIT, so the raw extraction lives in its own helper.
+ */
+function resolveRawServiceConfig(
   paths: CredentialPaths,
-  env: Readonly<Record<string, string | undefined>> = defaultEnv()
-): OpencodeV2ServiceConfig | null {
+  env: Readonly<Record<string, string | undefined>>
+): { password: string; url?: string } | null {
   let password = env.OPENCODE_SERVER_PASSWORD;
   let url = env.OPENCODE_SERVER_URL;
   if (!password || !url) {
@@ -220,11 +227,20 @@ export function resolveServiceConfigForPaths(
     }
   }
   if (!password) return null;
+  return { password, ...(url ? { url } : {}) };
+}
+
+export function resolveServiceConfigForPaths(
+  paths: CredentialPaths,
+  env: Readonly<Record<string, string | undefined>> = defaultEnv()
+): OpencodeV2ServiceConfig | null {
+  const raw = resolveRawServiceConfig(paths, env);
+  if (!raw) return null;
   // P2-7 (contract fix): construct the config EXPLICITLY from injected values.
   // OpenCodeConnector would fall through to the REAL process.env.OPENCODE_SERVER_URL
   // when the injected env carries no url — violating paths.ts' sole-env-read
   // contract and leaking ambient state into injected-seam resolution.
-  const baseUrl = url ?? 'http://127.0.0.1:49374'; // connector.ts default (loopback)
+  const baseUrl = raw.url ?? DEFAULT_SERVICE_BASE_URL;
   const targetPolicy = classifyServiceTarget(baseUrl);
   if (targetPolicy === 'remote_tls') {
     console.warn(
@@ -238,11 +254,40 @@ export function resolveServiceConfigForPaths(
   }
   return {
     baseUrl,
-    authHeader: 'Basic ' + Buffer.from(`opencode:${password}`).toString('base64'),
-    password,
+    authHeader: 'Basic ' + Buffer.from(`opencode:${raw.password}`).toString('base64'),
+    password: raw.password,
     targetPolicy,
   };
 }
+
+/** Legacy loopback default (connector.ts parity) — last resort when NO explicit url is resolvable. */
+export const DEFAULT_SERVICE_BASE_URL = 'http://127.0.0.1:49374';
+
+/**
+ * `opencode service status` runner — the live-discovery seam for the write path.
+ * Default impl: execFile (args array, no shell), 5 s timeout, first http(s)
+ * URL line of stdout. Returns null on ANY failure — callers keep the legacy
+ * default, so this only ever widens reachability, never breaks it.
+ * Wire-adapter material: the CLI's status answer is a v2-service-wire fact
+ * (live-probed 2.0.32, 2026-10-18).
+ */
+export type ServiceStatusRunner = () => Promise<string | null>;
+
+export const defaultServiceStatusRunner: ServiceStatusRunner = () =>
+  new Promise((resolve) => {
+    execFile('opencode', ['service', 'status'], { timeout: 5_000, windowsHide: true }, (err, stdout) => {
+      if (err) {
+        resolve(null);
+        return;
+      }
+      const line = String(stdout)
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .find((l) => /^https?:\/\//i.test(l));
+      resolve(line ?? null);
+    });
+  });
+
 // ---------------------------------------------------------------------------
 // end WIRE ADAPTER
 // ---------------------------------------------------------------------------
@@ -327,6 +372,8 @@ export interface OpencodeV2StoreDeps {
   /** Poll backoff seam — tests inject an instant resolve so the 30 s budget costs nothing. */
   sleep?: (ms: number) => Promise<void>;
   openDatabase?: DbOpener;
+  /** Live service-url discovery seam (write path stage 2) — tests inject a canned answer. */
+  runServiceStatus?: ServiceStatusRunner;
   ttlMs?: number;
   busyAttempts?: number;
   busyBackoffMs?: number;
@@ -360,6 +407,7 @@ export class OpencodeV2Store implements CredentialStore {
   private readonly env: Readonly<Record<string, string | undefined>>;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly runServiceStatus: ServiceStatusRunner;
   private readonly dbFile: string;
   private readonly ttlMs: number;
   private db: OpencodeV2Database;
@@ -386,6 +434,7 @@ export class OpencodeV2Store implements CredentialStore {
     this.env = deps.env ?? defaultEnv();
     this.now = deps.now ?? Date.now;
     this.sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+    this.runServiceStatus = deps.runServiceStatus ?? defaultServiceStatusRunner;
     this.ttlMs = deps.ttlMs ?? VIEW_TTL_MS;
   }
 
@@ -678,12 +727,30 @@ export class OpencodeV2Store implements CredentialStore {
   }
 
   /**
-   * Service discovery for writes — delegates to the module-level
-   * resolveServiceConfigForPaths (uncached on purpose: a failed write
-   * re-reads service.json to pick up password rotation / port drift).
+   * Service discovery for writes. Stage 1: the sync file/env resolution
+   * (uncached on purpose: a failed write re-reads service.json to pick up
+   * password rotation / port drift). Stage 2 (live gap, opencode 2.0.32,
+   * observed 2026-10-18): when env/service.json carry NO explicit url, the
+   * sync stage would fall back to the legacy default — but current builds
+   * pick an ephemeral port per boot and no longer record it in service.json
+   * (the file holds {password, env} only, while `opencode service status`
+   * answers the real URL). Ask the CLI instead; a failed probe keeps the
+   * legacy default, so this only ever widens reachability, never breaks it.
    */
-  private resolveServiceConfig(): OpencodeV2ServiceConfig | null {
-    return resolveServiceConfigForPaths(this.paths, this.env);
+  private async resolveServiceConfig(): Promise<OpencodeV2ServiceConfig | null> {
+    const cfg = resolveServiceConfigForPaths(this.paths, this.env);
+    if (!cfg) return null;
+    const raw = resolveRawServiceConfig(this.paths, this.env);
+    if (raw?.url) return cfg; // explicit env/service.json url — never second-guessed
+    const live = await this.runServiceStatus();
+    if (!live || live === cfg.baseUrl) return cfg;
+    const targetPolicy = classifyServiceTarget(live);
+    if (targetPolicy !== 'loopback') {
+      console.warn(
+        `[credentials] opencode v2 service discovered via CLI at ${live} (${targetPolicy}) — service.json carries no explicit url`
+      );
+    }
+    return { ...cfg, baseUrl: live, targetPolicy };
   }
 
   /**
@@ -802,7 +869,7 @@ export class OpencodeV2Store implements CredentialStore {
   private async callService(label: string, fn: (cfg: OpencodeV2ServiceConfig) => Promise<unknown>): Promise<unknown> {
     let lastError: unknown;
     for (let attempt = 0; attempt < 2; attempt++) {
-      const cfg = this.resolveServiceConfig();
+      const cfg = await this.resolveServiceConfig();
       if (!cfg) {
         lastError = new Error('no opencode v2 service config (OPENCODE_SERVER_PASSWORD / service.json absent)');
         continue;

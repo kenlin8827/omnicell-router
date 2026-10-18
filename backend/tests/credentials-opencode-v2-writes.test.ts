@@ -89,6 +89,7 @@ async function makeStore(opts: {
   fetchImpl: typeof fetch;
   rows?: unknown[];
   loads?: { loads: number };
+  runServiceStatus?: () => Promise<string | null>;
 }) {
   return OpencodeV2Store.create({
     paths: opts.paths,
@@ -97,6 +98,7 @@ async function makeStore(opts: {
     env: {}, // fully hermetic: no OPENCODE_SERVER_* leakage from the ambient shell
     sleep: async () => {}, // instant reload-poll backoff
     openDatabase: fakeDb(opts.rows ?? [], opts.loads),
+    ...(opts.runServiceStatus ? { runServiceStatus: opts.runServiceStatus } : {}),
   });
 }
 
@@ -493,5 +495,55 @@ describe('opencode v2 http hardening (security P3-3/P3-4 + P3-13)', () => {
     expect(inits.length).toBeGreaterThan(0);
     expect(inits.every((i) => i.redirect === 'manual')).toBe(true);
     expect(inits.every((i) => i.signal instanceof AbortSignal)).toBe(true);
+  });
+});
+
+describe('write-path service discovery fallback (opencode 2.0.32 service.json carries {password, env} only)', () => {
+  it('no explicit url: DELETE consults `opencode service status` and hits the live port', async () => {
+    const paths = sandboxPaths();
+    writeServiceJson(paths, { password: 'pw', env: { HTTPS_PROXY: 'http://127.0.0.1:10000' } }); // no port/baseUrl
+    const { fetchImpl, calls } = makeFetch(() => ({ status: 200, json: { ok: true } }));
+    let statusRuns = 0;
+    const store = await makeStore({
+      paths,
+      fetchImpl,
+      runServiceStatus: async () => {
+        statusRuns += 1;
+        return 'http://127.0.0.1:45278';
+      },
+    });
+    await store.disconnect('cred_live');
+    const del = calls.find((c) => c.method === 'DELETE');
+    expect(del?.url).toBe('http://127.0.0.1:45278/api/credential/cred_live');
+    expect(statusRuns).toBe(1); // one attempt, one CLI probe — no polling storm
+  });
+
+  it('CLI probe failure keeps the legacy default — the fallback only widens reachability', async () => {
+    const paths = sandboxPaths();
+    writeServiceJson(paths, { password: 'pw' }); // no url anywhere
+    const { fetchImpl, calls } = makeFetch(() => ({ status: 200, json: { ok: true } }));
+    const store = await makeStore({ paths, fetchImpl, runServiceStatus: async () => null });
+    await store.disconnect('cred_fallback');
+    const del = calls.find((c) => c.method === 'DELETE');
+    expect(del?.url).toBe('http://127.0.0.1:49374/api/credential/cred_fallback');
+  });
+
+  it('explicit port in service.json bypasses the CLI probe entirely', async () => {
+    const paths = sandboxPaths();
+    writeServiceJson(paths, { password: 'pw', port: 4100 });
+    const { fetchImpl, calls } = makeFetch(() => ({ status: 200, json: { ok: true } }));
+    let statusRuns = 0;
+    const store = await makeStore({
+      paths,
+      fetchImpl,
+      runServiceStatus: async () => {
+        statusRuns += 1;
+        return 'http://127.0.0.1:45278';
+      },
+    });
+    await store.disconnect('cred_explicit');
+    const del = calls.find((c) => c.method === 'DELETE');
+    expect(del?.url).toBe('http://127.0.0.1:4100/api/credential/cred_explicit');
+    expect(statusRuns).toBe(0);
   });
 });

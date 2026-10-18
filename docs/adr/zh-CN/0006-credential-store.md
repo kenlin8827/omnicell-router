@@ -16,7 +16,7 @@
 
 - 读：`bun:sqlite` **readonly** 打开 `<dataDir>/opencode.db`（表 `credential`，必需列校验，缺列 = 响亮 `schema_mismatch`）；**永不**写库——"不得改库管理凭证"是上游的明文规矩，从违（`opencode-v2-store.ts:30-31,49-73`）。视图缓存 60s + `invalidate()`；空表 = 类型化 `EmptyCredentialTableError`。
 - 写：纯托管服务 HTTP——`POST /api/integration/{id}/connect/key`、`POST /api/credential/{id}/activate`、`PATCH /api/credential/{id}`、`DELETE /api/credential/{id}`、`GET /api/integration`，外加 `POST /api/location/reload` 作未知 integration id 的**自愈**。集合式 `GET/POST /api/credential` 刻意不用（实测构建上 404——经验之谈，注在 API 表 `:82-84`）。`connectKey` **验证落库**（轮询 sqlite 找新行、重试一次；绝不伪造 synthetic-id 成功）。
-- 服务发现：`OPENCODE_SERVER_URL`/`OPENCODE_SERVER_PASSWORD` 或 `service.json`；Basic auth；**目标策略 `loopback | remote_tls | insecure_remote`**——非回环明文 HTTP 在 fetch 之前拒绝，无 opt-in 旋钮（`:169-177,827-831`）。
+- 服务发现：`OPENCODE_SERVER_URL`/`OPENCODE_SERVER_PASSWORD` 或 `service.json`；Basic auth；**目标策略 `loopback | remote_tls | insecure_remote`**——非回环明文 HTTP 在 fetch 之前拒绝，无 opt-in 旋钮（`:169-177,827-831`）。**第二级实时发现（2.0.32 wire 漂移，2026-10-18）：**env/文件均无显式 url 时，写路径先问 `opencode service status` 取真实端点（现行构建的 service.json 只存 `{password, env}`，服务每次启动用临时端口——旧默认 `127.0.0.1:49374` 仅作最后兜底；探测失败回退默认值，只会扩大可达性，不会阻断；seam `runServiceStatus`，默认实现 `defaultServiceStatusRunner`）。
 - 只读变体（`db-present` 证据但无 CLI 可写）：读全同、含本地 `revealKey`；一切写抛 `CapabilityUnsupportedError('…','cli-absent-db-present')` → 控制台映射 409 `store_readonly`。
 
 ### 3. OcrStore——独立/降级两用的本地 store

@@ -8,6 +8,11 @@
 // wait for its /health, then open a window on the console UI the gateway
 // serves at http://127.0.0.1:<port>/admin/. The sidecar is killed on exit.
 //
+// Window close follows the STANDARD desktop contract — X exits the app and
+// stops the gateway. Tray residency is OPT-IN via the tray menu checkbox
+// "Close to tray" (persisted in <OCR_HOME>/desktop.json); when enabled, X
+// hides the window and only the tray Quit really exits.
+//
 // The gateway binary is produced by `bun run sidecar` (bun build --compile
 // of backend/src/index.ts) and declared as Tauri externalBin "bin/ocr-backend"
 // — Tauri copies it next to the app binary at build time, so both the
@@ -19,11 +24,12 @@ use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::{
-    menu::{Menu, MenuItem},
+    menu::{CheckMenuItem, Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
@@ -76,6 +82,35 @@ struct GatewayState {
     /// ourselves. An adopted pre-existing gateway stays under its own
     /// management (`ocr stop` / console stop).
     home: Mutex<Option<std::path::PathBuf>>,
+    /// Opt-in tray residency: when true, a window close hides to tray
+    /// instead of exiting. Default false — X means exit. Persisted in
+    /// <OCR_HOME>/desktop.json.
+    close_to_tray: AtomicBool,
+    /// Handle to the tray checkbox so the menu event handler can sync the
+    /// visual state with our persisted value.
+    close_to_tray_item: Mutex<Option<tauri::menu::CheckMenuItem<tauri::Wry>>>,
+}
+
+fn settings_path(home: &std::path::Path) -> std::path::PathBuf {
+    home.join("desktop.json")
+}
+
+/// Missing or corrupt file = default (false). The file is shell-owned and
+/// contains a single key, so a strict read is fine.
+fn load_close_to_tray(home: &std::path::Path) -> bool {
+    fs::read_to_string(settings_path(home))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("closeToTray").and_then(|b| b.as_bool()))
+        .unwrap_or(false)
+}
+
+fn save_close_to_tray(home: &std::path::Path, enabled: bool) {
+    let _ = fs::create_dir_all(home);
+    let _ = fs::write(
+        settings_path(home),
+        format!("{{\"closeToTray\":{enabled}}}"),
+    );
 }
 
 /// The gateway may have REPLACED itself via the console restart route — that
@@ -118,12 +153,22 @@ fn show_main(app: &tauri::AppHandle) {
 }
 
 /// System tray: left click raises the window, right click opens the menu
-/// (Open Console / Quit). Quit goes through app.exit(0), which still runs the
-/// gateway cleanup in the RunEvent::Exit handler.
-fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+/// (Open Console / Close-to-tray toggle / Quit). Quit goes through
+/// app.exit(0), which still runs the gateway cleanup in RunEvent::Exit.
+fn build_tray(app: &tauri::App, close_to_tray: bool) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open Console", true, None::<&str>)?;
+    let hide_on_close = CheckMenuItem::with_id(
+        app,
+        "close_to_tray",
+        "Close to tray (keep gateway running)",
+        true,
+        close_to_tray,
+        None::<&str>,
+    )?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &quit])?;
+    let menu = Menu::with_items(app, &[&open, &hide_on_close, &quit])?;
+    let state = app.state::<GatewayState>();
+    *state.close_to_tray_item.lock().unwrap() = Some(hide_on_close.clone());
     TrayIconBuilder::with_id("main-tray")
         .icon(
             app.default_window_icon()
@@ -135,6 +180,26 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open" => show_main(app),
+            "close_to_tray" => {
+                // CheckMenuItem toggles itself visually on click; sync our
+                // persisted flag with the new visual state.
+                let state = app.state::<GatewayState>();
+                let enabled = state
+                    .close_to_tray_item
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .and_then(|item| item.is_checked().ok())
+                    .unwrap_or_else(|| !state.close_to_tray.load(Ordering::Relaxed));
+                state.close_to_tray.store(enabled, Ordering::Relaxed);
+                let home = default_ocr_home(
+                    &app.path()
+                        .resource_dir()
+                        .unwrap_or(std::env::temp_dir().into()),
+                );
+                save_close_to_tray(&home, enabled);
+                shell_log(&home, &format!("close_to_tray = {enabled}"));
+            }
             "quit" => app.exit(0),
             _ => {}
         })
@@ -300,17 +365,37 @@ fn main() {
         .manage(GatewayState {
             child: Mutex::new(None),
             home: Mutex::new(None),
+            close_to_tray: AtomicBool::new(false),
+            close_to_tray_item: Mutex::new(None),
         })
         .on_window_event(|window, event| {
-            // Close = hide to tray; the gateway keeps serving in the
-            // background. Real exit is tray → Quit, which runs the gateway
-            // cleanup in the RunEvent::Exit handler.
             if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+                // Default desktop contract: X exits (gateway cleanup runs in
+                // RunEvent::Exit). Tray residency is opt-in via the tray
+                // checkbox — then close hides and only Quit really exits.
+                let to_tray = window
+                    .app_handle()
+                    .state::<GatewayState>()
+                    .close_to_tray
+                    .load(Ordering::Relaxed);
+                if to_tray {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
             }
         })
         .setup(move |app| {
+            // Load the close-to-tray preference BEFORE the window exists so
+            // the first CloseRequested already honors it.
+            let ocr_home = default_ocr_home(
+                &app.path()
+                    .resource_dir()
+                    .unwrap_or(std::env::temp_dir().into()),
+            );
+            let close_to_tray = load_close_to_tray(&ocr_home);
+            app.state::<GatewayState>()
+                .close_to_tray
+                .store(close_to_tray, Ordering::Relaxed);
             if let Err(msg) = boot(app) {
                 // A GUI binary failing in setup dies SILENTLY (no console, no
                 // window): leave a persistent trace, show a native dialog with
@@ -341,7 +426,7 @@ fn main() {
                 app.handle().exit(1);
                 return Ok(());
             }
-            build_tray(app)?;
+            build_tray(app, close_to_tray)?;
             Ok(())
         })
         .build(tauri::generate_context!())

@@ -17,6 +17,11 @@
   --input-bg: rgba(0, 0, 0, 0.4);
   --accent: #06b6d4;
   --accent-glow: rgba(6, 182, 212, 0.35);
+  /* Glyph-fill gold for "default/starred" markers (chain-head star). Separate
+     from --accent-amber because that token is AA-tuned for *text* on paper —
+     as a star fill it reads muddy brown on light themes. Dark themes get
+     amber-400, light themes amber-600 (>=3:1 non-text contrast on white). */
+  --accent-star: #fbbf24;
   --accent-emerald: #10b981;
   --accent-amber: #f59e0b;
   --accent-rose: #f43f5e;
@@ -55,6 +60,7 @@
   --input-bg: rgba(15, 23, 42, 0.6);
   --accent: #6366f1;
   --accent-glow: rgba(99, 102, 241, 0.35);
+  --accent-star: #fbbf24;
   --accent-emerald: #10b981;
   --accent-amber: #f59e0b;
   --accent-rose: #f43f5e;
@@ -90,6 +96,7 @@
   --input-bg: rgba(2, 10, 6, 0.7);
   --accent: #10b981;
   --accent-glow: rgba(16, 185, 129, 0.4);
+  --accent-star: #fbbf24;
   --accent-emerald: #34d399;
   --accent-amber: #fbbf24;
   --accent-rose: #fb7185;
@@ -125,6 +132,7 @@
   --input-bg: rgba(20, 9, 14, 0.7);
   --accent: #f43f5e;
   --accent-glow: rgba(244, 63, 94, 0.4);
+  --accent-star: #fbbf24;
   --accent-emerald: #10b981;
   --accent-amber: #fbbf24;
   --accent-rose: #f43f5e;
@@ -162,6 +170,7 @@
   --input-bg: #ffffff;
   --accent: #0284c7;
   --accent-glow: rgba(2, 132, 199, 0.25);
+  --accent-star: #d97706;
   /* Semantic accents must clear AA as *text* on paper (they are used for
      cost figures, badges, tier labels): 500-series fails, 600/700 passes.
      Same rule the hue tokens follow. */
@@ -207,6 +216,7 @@
   --input-bg: #ffffff;
   --accent: #d97706;
   --accent-glow: rgba(217, 119, 6, 0.25);
+  --accent-star: #d97706;
   --accent-emerald: #047857;
   --accent-amber: #b45309;
   --accent-rose: #e11d48;
@@ -242,6 +252,7 @@
   --input-bg: rgba(14, 8, 24, 0.7);
   --accent: #8b5cf6;
   --accent-glow: rgba(139, 92, 246, 0.4);
+  --accent-star: #fbbf24;
   --accent-emerald: #10b981;
   --accent-amber: #fbbf24;
   --accent-rose: #f43f5e;
