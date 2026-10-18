@@ -1,7 +1,7 @@
 {
   "name": "@opencode-router/desktop",
   "private": true,
-  "version": "0.1.4",
+  "version": "0.0.1",
   "type": "module",
   "description": "OpenCode Router desktop shell (Tauri) — bundles the gateway sidecar and opens the console UI",
   "scripts": {
