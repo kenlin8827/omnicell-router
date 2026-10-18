@@ -11,6 +11,7 @@ import { getEnvPaths, resolveEnvName } from '../config/env.js';
 import { applyConfig as applyDecisionCaptureConfig } from '../flywheel/decision-capture.js';
 import { initProxyConfig } from '../utils/proxy.js';
 import { getOcrHomeDir } from '../cli/paths.js';
+import { getHeadroomSidecarStatus, startHeadroomSidecar, stopHeadroomSidecar } from '../compression/headroom-sidecar.js';
 import { APP_VERSION } from '../version.js';
 import { keyHashPrefix } from '../opencode/credentials/types.js';
 import { ensureCa } from '../forward-proxy/ca.js';
@@ -3257,7 +3258,34 @@ export function registerConsoleRoutes(
   app.post('/api/admin/logs/clear', handleClearLogs);
 
   /* ---------------------------------------------------------------------- *
-   * 12. Request-capture archive browser (CaptureRecorder; opt-in audit log)
+   * 12. Headroom sidecar lifecycle (probe → adopt, else detached-spawn).
+   * The gateway only ever kills a sidecar pid it recorded itself
+   * (<home>/headroom.pid); a manually started instance is adopted for
+   * compression but refused on stop with an honest message. Endpoints sit
+   * under /api/admin/* (auth preHandler surface) like every admin route.
+   * ---------------------------------------------------------------------- */
+  const headroomSidecarCfg = () => (getRuntimeConfigRef() || loadConfig()).compression?.headroom;
+
+  app.get('/api/admin/headroom/sidecar', async () => {
+    return getHeadroomSidecarStatus({ url: headroomSidecarCfg()?.url });
+  });
+
+  app.post('/api/admin/headroom/sidecar/start', async () => {
+    const hr = headroomSidecarCfg();
+    if (!hr?.enabled) {
+      return { status: 'error', ok: false, reused: false, pid: null, version: null, code: 'disabled', error: 'compression.headroom.enabled is false — enable headroom compression first' };
+    }
+    const r = await startHeadroomSidecar({ url: hr.url });
+    return { status: r.ok ? 'ok' : 'error', ...r };
+  });
+
+  app.post('/api/admin/headroom/sidecar/stop', async () => {
+    const r = await stopHeadroomSidecar({ url: headroomSidecarCfg()?.url });
+    return { status: r.ok ? 'ok' : 'error', ...r };
+  });
+
+  /* ---------------------------------------------------------------------- *
+   * 12b. Request-capture archive browser (CaptureRecorder; opt-in audit log)
    * Bodies may contain sensitive data — these endpoints sit under /api/admin/*
    * which the auth preHandler whitelists, exactly like /api/admin/logs.
    * ---------------------------------------------------------------------- */

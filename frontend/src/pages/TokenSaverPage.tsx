@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Zap, Save, Check, Copy } from 'lucide-react';
-import { api } from '../lib/api';
+import { Zap, Save, Check, Copy, Loader2 } from 'lucide-react';
+import { api, HeadroomSidecarStatus } from '../lib/api';
 import { copyToClipboard } from '../lib/format';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
@@ -9,6 +9,9 @@ import { Combobox } from '../components/Combobox';
 
 const CAVEMAN_LEVELS = ['lite', 'full', 'ultra', 'wenyan-lite', 'wenyan', 'wenyan-ultra'] as const;
 
+/** Shared spinner style (keyframes in styles/index.css; same pattern as EnvironmentsPage). */
+const SIDECAR_SPIN: React.CSSProperties = { animation: 'ocr-spin 0.8s linear infinite' };
+
 interface CompressionShape {
   rtk?: { enabled?: boolean };
   headroom?: {
@@ -16,6 +19,7 @@ interface CompressionShape {
     url?: string;
     timeoutMs?: number;
     compressUserMessages?: boolean;
+    autoStart?: boolean;
   };
   caveman?: { enabled?: boolean; level?: string };
 }
@@ -93,6 +97,8 @@ export const TokenSaverPage: React.FC = () => {
   const [compression, setCompression] = useState<CompressionShape | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [sidecar, setSidecar] = useState<HeadroomSidecarStatus | null>(null);
+  const [sidecarBusy, setSidecarBusy] = useState<null | 'start' | 'stop'>(null);
 
   useEffect(() => {
     api.getConfig().then(cfg => {
@@ -113,12 +119,81 @@ export const TokenSaverPage: React.FC = () => {
     }
   };
 
+  const refreshSidecar = () => {
+    api.getHeadroomSidecar().then(setSidecar).catch(() => setSidecar(null));
+  };
+
+  useEffect(() => {
+    refreshSidecar();
+  }, []);
+
+  const handleSidecarStart = async () => {
+    setSidecarBusy('start');
+    try {
+      const r = await api.startHeadroomSidecar();
+      if (r.ok) toast.success(t(r.reused ? 'tokenSaver.headroomReused' : 'tokenSaver.headroomStarted'));
+      else toast.error(sidecarErrorText(r));
+    } catch (err: any) {
+      toast.error(err.message);
+    } finally {
+      setSidecarBusy(null);
+      refreshSidecar();
+    }
+  };
+
+  const handleSidecarStop = async () => {
+    setSidecarBusy('stop');
+    try {
+      const r = await api.stopHeadroomSidecar();
+      if (r.ok) toast.success(t('tokenSaver.headroomStopped'));
+      else toast.error(sidecarErrorText(r));
+    } catch (err: any) {
+      toast.error(err.message);
+    } finally {
+      setSidecarBusy(null);
+      refreshSidecar();
+    }
+  };
+
+  // State-driven sidecar buttons: exactly ONE action is visible at a time —
+  // start when not running, stop when running (refused for adopted instances),
+  // the spinning one while an operation is in flight.
+  const sidecarBtnStyle: React.CSSProperties = {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '6px',
+    fontSize: '11px',
+    padding: '3px 10px',
+    borderRadius: '6px',
+    background: 'var(--btn-bg)',
+    border: '1px solid var(--divider)',
+    color: 'var(--text)',
+    cursor: sidecarBusy ? 'wait' : 'pointer',
+  };
+
+  // Backend failures ride machine codes (`HeadroomSidecarErrorCode`); this maps
+  // them to localized toast text. The raw English `error` string is the
+  // fallback for unknown codes — never shown when the tables are in sync.
+  const SIDECAR_ERROR_KEYS: Record<string, string> = {
+    'url-missing': 'tokenSaver.headroomErrUrlMissing',
+    'not-loopback': 'tokenSaver.headroomErrNotLoopback',
+    'spawn-failed': 'tokenSaver.headroomErrSpawnFailed',
+    'spawn-exited': 'tokenSaver.headroomErrSpawnExited',
+    'not-ready': 'tokenSaver.headroomErrNotReady',
+    disabled: 'tokenSaver.headroomErrDisabled',
+    'pid-unknown': 'tokenSaver.headroomErrPidUnknown',
+    'kill-failed': 'tokenSaver.headroomErrKillFailed',
+  };
+  const sidecarErrorText = (r: { code?: string | null; error?: string | null }): string =>
+    (r.code && SIDECAR_ERROR_KEYS[r.code] ? t(SIDECAR_ERROR_KEYS[r.code]) : r.error) || 'Failed';
+
   if (loading || !compression) {
     return <div style={{ color: 'var(--text-dim)' }}>Loading...</div>;
   }
 
   const rtk = compression.rtk || {};
   const headroom = compression.headroom || {};
+  const headroomBase = (headroom.url || 'http://127.0.0.1:8787').replace(/\/+$/, '');
   const caveman = compression.caveman || {};
 
   return (
@@ -162,29 +237,103 @@ export const TokenSaverPage: React.FC = () => {
               <CmdLine cmd={t('tokenSaver.headroomStepInstall')} />
               <CmdLine cmd={t('tokenSaver.headroomStepRun')} />
               <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.7 }}>
-                <div>{t('tokenSaver.headroomStepNote')}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                  <span>{t('tokenSaver.headroomStepNote')}</span>
+                  <a
+                    href="https://docs.headroomlabs.ai/docs/quickstart"
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ fontSize: '11px', color: 'var(--accent)', width: 'fit-content' }}
+                  >
+                    {t('tokenSaver.headroomDocs')} ↗
+                  </a>
+                </div>
                 <div>{t('tokenSaver.headroomCacheNote')}</div>
               </div>
-              <a
-                href="https://docs.headroomlabs.ai/docs/quickstart"
-                target="_blank"
-                rel="noreferrer"
-                style={{ fontSize: '12px', color: 'var(--accent)', width: 'fit-content' }}
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('tokenSaver.headroomSidecarLabel')}</span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px' }}>
+                <span
+                  style={{
+                    width: '8px',
+                    height: '8px',
+                    borderRadius: '50%',
+                    background: sidecar?.running ? 'var(--accent-emerald)' : 'var(--text-dim)',
+                    flexShrink: 0,
+                  }}
+                />
+                {!sidecar
+                  ? t('tokenSaver.headroomStatusChecking')
+                  : sidecar.running
+                    ? `${t('tokenSaver.headroomStatusRunning')}${sidecar.version ? ` · v${sidecar.version}` : ''}`
+                    : t('tokenSaver.headroomStatusStopped')}
+              </span>
+              {sidecarBusy === 'start' && (
+                <button disabled style={sidecarBtnStyle}>
+                  <Loader2 size={11} style={SIDECAR_SPIN} />
+                  {t('tokenSaver.headroomStartBtn')}
+                </button>
+              )}
+              {sidecarBusy === 'stop' && (
+                <button disabled style={sidecarBtnStyle}>
+                  <Loader2 size={11} style={SIDECAR_SPIN} />
+                  {t('tokenSaver.headroomStopBtn')}
+                </button>
+              )}
+              {!sidecarBusy && (!sidecar || !sidecar.running) && (
+                <button onClick={handleSidecarStart} style={sidecarBtnStyle}>
+                  {t('tokenSaver.headroomStartBtn')}
+                </button>
+              )}
+              {!sidecarBusy && sidecar?.running && (
+                <button onClick={handleSidecarStop} style={sidecarBtnStyle}>
+                  {t('tokenSaver.headroomStopBtn')}
+                </button>
+              )}
+              <label
+                title={t('tokenSaver.headroomAutoStart')}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  fontSize: '12px',
+                  cursor: 'pointer',
+                  marginLeft: 'auto',
+                  paddingRight: '8px',
+                }}
               >
-                {t('tokenSaver.headroomDocs')} ↗
-              </a>
+                <Switch
+                  size="sm"
+                  checked={headroom.autoStart ?? false}
+                  onChange={v => setCompression({ ...compression, headroom: { ...headroom, autoStart: v } })}
+                />
+                <span>{t('tokenSaver.headroomAutoStartShort')}</span>
+              </label>
             </div>
             <div>
               <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
                 {t('tokenSaver.headroomUrl')}
               </label>
-              <input
-                type="text"
-                placeholder="http://127.0.0.1:8787"
-                value={headroom.url || ''}
-                onChange={e => setCompression({ ...compression, headroom: { ...headroom, url: e.target.value } })}
-                className="input"
-              />
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <input
+                  type="text"
+                  placeholder="http://127.0.0.1:8787"
+                  value={headroom.url || ''}
+                  onChange={e => setCompression({ ...compression, headroom: { ...headroom, url: e.target.value } })}
+                  className="input"
+                  style={{ flex: 1, minWidth: 0 }}
+                />
+                <a
+                  href={`${headroomBase}/dashboard`}
+                  target="_blank"
+                  rel="noreferrer"
+                  title={headroomBase}
+                  style={{ fontSize: '12px', color: 'var(--accent)', whiteSpace: 'nowrap', flexShrink: 0 }}
+                >
+                  {t('tokenSaver.headroomDashboard')} ↗
+                </a>
+              </div>
             </div>
             <div style={{ display: 'flex', gap: '16px', alignItems: 'flex-end', flexWrap: 'wrap' }}>
               <div style={{ width: '180px' }}>

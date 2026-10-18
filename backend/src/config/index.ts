@@ -70,7 +70,7 @@ const DEFAULT_CONFIG: RouterConfig = {
   },
   compression: {
     rtk: { enabled: false },
-    headroom: { enabled: false, url: 'http://127.0.0.1:8787', timeoutMs: 3000 },
+    headroom: { enabled: false, url: 'http://127.0.0.1:8787', timeoutMs: 3000, autoStart: false },
     caveman: { enabled: false, level: 'full' },
   },
   requestCapture: {
@@ -836,6 +836,7 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'compression.headroom.url': 'headroom sidecar 地址（需自行运行 headroom proxy，默认 127.0.0.1:8787，仅本机回环）',
   'compression.headroom.timeoutMs': 'headroom 调用超时（毫秒，超时放行原文）',
   'compression.headroom.compressUserMessages': '同时压缩 user 角色文本（会话模式下自动忽略）',
+  'compression.headroom.autoStart': '网关启动时自动拉起 headroom sidecar（先探测 /health 复用已在运行的实例，没有才以分离进程启动 headroom proxy --mode cache；仅支持 loopback 地址；sidecar 独立常驻、不随网关退出，会话重放状态跨网关重启保留）',
   'compression.caveman.enabled': 'caveman 输出压缩：向 system 幂等注入简洁风格提示词，显著压缩输出 token（代码/路径/命令逐字保留）',
   'compression.caveman.level': 'caveman 强度：lite / full / ultra / wenyan-lite / wenyan / wenyan-ultra（文言）',
   requestCapture: '请求全量捕获（HTTP 交换审计日志；默认关闭）：请求/响应原文落盘 JSONL，捕获体可能含敏感数据且占用磁盘，按日期目录保留、到期或超容量自动清理；单会话另有 maxSessionMB 封顶（失控的 agent 循环不会吃光共享容量，触顶档案停止追加并落一条 archive-overflow 终态行）',

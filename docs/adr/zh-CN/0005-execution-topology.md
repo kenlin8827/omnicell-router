@@ -34,6 +34,8 @@
 
 路由前 `applyCompression`（`compression/index.ts:36-75`）：① **rtk** 工具输出压缩（git/grep/ls/logs/build 形态；确定性 ⇒ 同内容同字节同缓存键）；② **headroom** sidecar（`POST /v1/compress`，按网关**自家** sessionId 会话粘连 ⇒ 重放前缀字节稳定；fail-open）；③ **caveman** 输出风格注入（幂等 system-message 追加；`lite|full|ultra|wenyan-*` 档；约束：代码/路径/命令/URL/报错逐字保留、安全告警临时恢复全句、保持用户主导语言）。**压缩前指纹原则**闭环：客户端永远重发**未压缩**字节，故会话锚索引压缩前快照（`orchestrator.ts:491-505`；身份见 ADR-0002），而上游压缩前缀靠压缩器确定性 + 会话模式保持字节稳定。
 
+**Sidecar 生命周期——关联而非拥有**（`compression.headroom.autoStart`，默认关闭）：网关启动时探测 `<url>/health` 并**收编**任何已在运行的实例；仅当无人应答时才以**分离进程**启动 `headroom proxy --host 127.0.0.1 --port <从url推导> --mode cache`（仅限 loopback 地址）并轮询就绪（≤20s），全程不阻塞请求面——期间照常 fail-open，仍在启动中的 sidecar 由下一次探测自然收编。被拉起的 pid 记录在 `<home>/headroom.pid`（进程级文件，ADR-0007 约定），网关退出**永不**杀 sidecar：headroom 的会话重放状态正是跨网关受控重启（ADR-0007）保上游前缀字节稳定的那一环，故 sidecar 天然比网关活得久。控制台面：`GET /api/admin/headroom/sidecar` + `/start` + `/stop`。停止不区分启动者：网关记录的 pid 直接终止；手动启动的**本机**实例按端口识别监听 pid（`Get-NetTCPConnection` / `lsof`；仅限 loopback——/health 探测刚刚确认该端口就是 headroom）后同样终止；拒绝保持诚实——远程实例（`not-loopback`）与无法识别的监听者（`pid-unknown`）以机器码如实上报、由控制台本地化，绝不瞎猜。
+
 ### 7. 成本真相，拒绝省钱表演
 
 单请求成本 = 未命中×input + 命中×`cache_read` + output（仅当模型有 `pricing.reasoning` 才对 reasoning_tokens 加价）（`request-cost.ts:13-39`）。`cache_read` 是**目录价**（兜底 `input×0.25`）——无硬编码折扣常数。基线/节省额**刻意不计算**（legacy `savedCostUsd` 在重放时被剥除）：反事实基线不是度量。FinOps 梯队/token/延迟聚合是**进程内**的；只有 `totalRequests`+`fallbackCount` 持久（共享 `traces.db` 里的 `finops_totals` 表，WAL、独立句柄、故障隔离先例）。出口 = trace 的 finops 块 + `GET /api/admin/metrics`(+reset)。不存在任何 `X-OCR-FinOps-*` 头。

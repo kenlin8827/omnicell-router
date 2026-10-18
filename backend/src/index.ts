@@ -21,6 +21,7 @@ import { validateWebAuthStartup } from './auth/web-auth.js';
 import { startForwardProxy } from './forward-proxy/index.js';
 import { setForwardProxyStatus } from './forward-proxy/status.js';
 import { defaultBreakerStateStore } from './resilience/breaker-state.js';
+import { startHeadroomSidecar } from './compression/headroom-sidecar.js';
 
 async function main() {
   // If this process was spawned by the UI "Restart Gateway" button, wait for
@@ -44,6 +45,26 @@ async function main() {
 
   const config = loadConfig();
   initProxyConfig(config.proxy);
+
+  // Headroom sidecar association (opt-in compression.headroom.autoStart):
+  // probe <url>/health → adopt a running instance, else detached-spawn one.
+  // Fire-and-forget — never blocks or crashes boot; the compression stage
+  // stays fail-open regardless of sidecar health, and the Token Saver page
+  // surfaces the live status via /api/admin/headroom/sidecar.
+  const headroomCfg = config.compression?.headroom;
+  if (headroomCfg?.enabled && headroomCfg.autoStart && headroomCfg.url) {
+    void startHeadroomSidecar({ url: headroomCfg.url })
+      .then((r) => {
+        if (r.ok) {
+          console.log(
+            `[OCR] headroom sidecar ${r.reused ? 'adopted (already running)' : 'started'}${r.pid ? ` (pid ${r.pid})` : ''}${r.version ? ` v${r.version}` : ''}`
+          );
+        } else {
+          console.warn(`[OCR] headroom sidecar auto-start failed: ${r.error}`);
+        }
+      })
+      .catch((err: any) => console.warn(`[OCR] headroom sidecar auto-start threw: ${err?.message ?? err}`));
+  }
 
   // Console webAuth boot gate — a non-loopback binding FORCES console login
   // on. Throws (crash with a clear message) on an insecure/contradictory

@@ -27,6 +27,11 @@ export function getInfoFilePath(): string {
   return path.join(getOcrHomeDir(), 'ocr.info.json');
 }
 
+/** Pid record of a gateway-spawned headroom sidecar (compression/headroom-sidecar.ts). */
+export function getHeadroomPidFilePath(): string {
+  return path.join(getOcrHomeDir(), 'headroom.pid');
+}
+
 export function getDefaultBinDir(): string {
   const isWindows = process.platform === 'win32';
   if (isWindows) {

@@ -541,6 +541,7 @@ export interface CompressionConfig {
     url?: string; // headroom proxy base URL, e.g. http://127.0.0.1:8787 (loopback-only by default)
     timeoutMs?: number; // default 3000; on timeout the original messages flow upstream unchanged
     compressUserMessages?: boolean; // also compress user-role text (ignored in session mode)
+    autoStart?: boolean; // at boot: probe <url>/health → adopt a running sidecar, else detached-spawn one (loopback URLs only); default false
   };
   caveman?: {
     enabled?: boolean; // terse-style system-prompt injection to cut output tokens; default false

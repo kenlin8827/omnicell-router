@@ -1052,6 +1052,29 @@ async function postBreakerScope(path: string, body: Record<string, unknown>): Pr
   return json;
 }
 
+// ---- headroom sidecar lifecycle (backend: compression/headroom-sidecar.ts) ----
+
+export interface HeadroomSidecarStatus {
+  url: string;
+  running: boolean;
+  version: string | null;
+  managed: boolean; // a gateway-recorded pid exists and is alive
+  pid: number | null;
+  error: string | null;
+  code: string | null; // machine-readable failure code → i18n key (see TokenSaverPage)
+}
+
+export interface HeadroomSidecarOpResult {
+  status: string;
+  ok: boolean;
+  reused?: boolean; // start: already running, nothing spawned
+  stopped?: boolean; // stop: actually killed a recorded pid
+  pid: number | null;
+  version: string | null;
+  error: string | null; // English operator/log text — UI shows the localized `code` message
+  code: string | null;
+}
+
 export const api = {
   async getStatus(): Promise<GatewayStatusResponse> {
     const res = await fetch('/api/admin/status');
@@ -1175,6 +1198,22 @@ export const api = {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.message || `HTTP ${res.status}`);
     }
+    return res.json();
+  },
+
+  async getHeadroomSidecar(): Promise<HeadroomSidecarStatus> {
+    const res = await fetch('/api/admin/headroom/sidecar');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async startHeadroomSidecar(): Promise<HeadroomSidecarOpResult> {
+    const res = await fetch('/api/admin/headroom/sidecar/start', { method: 'POST' });
+    return res.json();
+  },
+
+  async stopHeadroomSidecar(): Promise<HeadroomSidecarOpResult> {
+    const res = await fetch('/api/admin/headroom/sidecar/stop', { method: 'POST' });
     return res.json();
   },
 
