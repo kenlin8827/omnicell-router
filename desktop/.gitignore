@@ -1,0 +1,6 @@
+node_modules/
+src-tauri/target/
+# Sidecar artifacts: extensionless for POSIX cross targets, .exe for Windows.
+src-tauri/bin/ocr-backend-*
+src-tauri/generated/
+src-tauri/gen/

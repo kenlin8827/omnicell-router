@@ -17,6 +17,8 @@
     "build": "tsc -p backend && vite build frontend",
     "build:backend": "tsc -p backend",
     "build:frontend": "vite build frontend",
+    "build:sidecar": "cd desktop && bun run sidecar",
+    "build:desktop": "bun run build && bun run build:sidecar && cd desktop && bun run build",
     "start": "node backend/dist/index.js",
     "start:bun": "bun --no-env-file backend/src/index.ts",
     "test": "bun --no-env-file scripts/test-isolated.ts",

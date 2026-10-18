@@ -79,11 +79,124 @@ const FormField: React.FC<{ label: string; required?: boolean; style?: React.CSS
   </div>
 );
 
-/** Provider logo on the theme-tinted chip plate (models.dev SVGs are dark glyphs:
- *  --logo-glyph-filter inverts them bright on dark-class themes, light-class
- *  themes draw as-is). Falls back to an initial-letter chip. */
+/** Brand hues for this page's logo chips only (page-scoped by design — Rules,
+ *  Quota etc. keep the monochrome treatment). models.dev catalog SVGs are
+ *  single-color `currentColor` glyphs with no baked-in palette, so color must
+ *  come from here: a CSS mask paints the glyph silhouette in the brand hue.
+ *  Coverage: every recognizable brand (majors, Chinese brands, known hosts).
+ *  Deliberately unmapped: true monochrome brands (xai, github-copilot,
+ *  openrouter, opencode, vercel, …) and anonymous long-tail routers — they
+ *  fall through to the original theme-filtered logo, which is always faithful. */
+const PROVIDER_BRAND_COLORS: Record<string, string> = {
+  // Majors
+  anthropic: '#D97757',
+  openai: '#10A37F',
+  google: '#4285F4',
+  'google-vertex': '#4285F4',
+  'google-vertex-anthropic': '#4285F4',
+  azure: '#0078D4',
+  'azure-cognitive-services': '#0078D4',
+  'amazon-bedrock': '#FF9900',
+  nova: '#FF9900',
+  meta: '#0668E1',
+  llama: '#0668E1',
+  mistral: '#FF7000',
+  cohere: '#39594D',
+  perplexity: '#20808D',
+  'perplexity-agent': '#20808D',
+  groq: '#F55036',
+  deepseek: '#4D6BFE',
+  nvidia: '#76B900',
+  huggingface: '#FFD21E',
+  databricks: '#FF3621',
+  'snowflake-cortex': '#29B5E8',
+  // Cloud hosts / gateways
+  'cloudflare-ai-gateway': '#F38020',
+  'cloudflare-workers-ai': '#F38020',
+  hetzner: '#D50C2D',
+  vultr: '#007BFC',
+  digitalocean: '#0080FF',
+  scaleway: '#510CC0',
+  ovhcloud: '#000891',
+  gitlab: '#FC6D26',
+  togetherai: '#0F6FFF',
+  'fireworks-ai': '#FF4A00',
+  // Zhipu / GLM (incl. legacy row id and z.ai global brand)
+  zhipu: '#3859FF',
+  zhipuai: '#3859FF',
+  'zhipuai-coding-plan': '#3859FF',
+  zai: '#3859FF',
+  'zai-coding-plan': '#3859FF',
+  // Alibaba / Qwen / iFlow
+  alibaba: '#615CED',
+  'alibaba-cn': '#615CED',
+  qwen: '#615CED',
+  'alibaba-coding-plan': '#615CED',
+  'alibaba-coding-plan-cn': '#615CED',
+  'alibaba-token-plan': '#615CED',
+  'alibaba-token-plan-cn': '#615CED',
+  iflowcn: '#615CED',
+  // Other Chinese brands
+  'minimax-cn-coding-plan': '#E5241D',
+  minimax: '#E5241D',
+  'minimax-cn': '#E5241D',
+  'minimax-coding-plan': '#E5241D',
+  volcengine: '#1664FF',
+  'volcengine-coding-plan': '#1664FF',
+  'tencent-coding-plan': '#0052D9',
+  'tencent-token-plan': '#0052D9',
+  'tencent-tokenhub': '#0052D9',
+  xiaomi: '#FF6900',
+  'xiaomi-token-plan-ams': '#FF6900',
+  'xiaomi-token-plan-cn': '#FF6900',
+  'xiaomi-token-plan-sgp': '#FF6900',
+  stepfun: '#00B96B',
+  'stepfun-ai': '#00B96B',
+  'stepfun-ai-step-plan': '#00B96B',
+  'stepfun-step-plan': '#00B96B',
+  longcat: '#FFD100',
+  sensenova: '#00B4C5',
+  modelscope: '#7D3AFF',
+  siliconflow: '#6B5CFF',
+  'siliconflow-cn': '#6B5CFF',
+};
+
+type LogoDecode = 'loading' | 'ok' | 'failed';
+
+/** Decode-test a logo URL before using it as a mask image: a missing mask
+ *  paints the element solid, so the brand-colored path must know the asset
+ *  decoded before it can safely hide the fallback. Same-URL second fetch is
+ *  served from cache (the catalog logo proxy is local). */
+const useLogoDecode = (url?: string): LogoDecode => {
+  const [state, setState] = useState<LogoDecode>('loading');
+  useEffect(() => {
+    setState('loading');
+    if (!url) return;
+    let alive = true;
+    const img = new Image();
+    img.onload = () => {
+      if (alive) setState('ok');
+    };
+    img.onerror = () => {
+      if (alive) setState('failed');
+    };
+    img.src = url;
+    return () => {
+      alive = false;
+    };
+  }, [url]);
+  return url ? state : 'failed';
+};
+
+/** Provider logo on the theme-tinted chip plate. Mapped providers render as a
+ *  brand-colored mask silhouette; unmapped ones keep the dark-glyph treatment
+ *  (models.dev SVGs are dark ink: --logo-glyph-filter inverts them bright on
+ *  dark-class themes, light-class themes draw as-is). Missing asset or failed
+ *  load falls back to an initial-letter chip. */
 const ProviderLogo: React.FC<{ id: string; logo?: string; size?: number }> = ({ id, logo, size = 28 }) => {
   const [failed, setFailed] = useState(false);
+  const brandColor = PROVIDER_BRAND_COLORS[id];
+  const decoded = useLogoDecode(brandColor ? logo : undefined);
   const chip: React.CSSProperties = {
     width: size,
     height: size,
@@ -96,7 +209,7 @@ const ProviderLogo: React.FC<{ id: string; logo?: string; size?: number }> = ({ 
     flexShrink: 0,
     overflow: 'hidden',
   };
-  if (!logo || failed) {
+  if (!logo || failed || (brandColor && decoded === 'failed')) {
     return (
       <div style={chip}>
         <span
@@ -110,6 +223,29 @@ const ProviderLogo: React.FC<{ id: string; logo?: string; size?: number }> = ({ 
         >
           {id.slice(0, 1)}
         </span>
+      </div>
+    );
+  }
+  if (brandColor) {
+    // Decode pending: bare plate, the same pre-load look as the <img> path.
+    if (decoded !== 'ok') return <div style={chip} />;
+    return (
+      <div style={chip}>
+        <div
+          style={{
+            width: Math.round(size * 0.72),
+            height: Math.round(size * 0.72),
+            backgroundColor: brandColor,
+            WebkitMaskImage: `url("${logo}")`,
+            maskImage: `url("${logo}")`,
+            WebkitMaskSize: 'contain',
+            maskSize: 'contain',
+            WebkitMaskRepeat: 'no-repeat',
+            maskRepeat: 'no-repeat',
+            WebkitMaskPosition: 'center',
+            maskPosition: 'center',
+          }}
+        />
       </div>
     );
   }

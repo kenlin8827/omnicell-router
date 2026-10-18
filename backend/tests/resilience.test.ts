@@ -113,6 +113,15 @@ describe('Resilience: Error Taxonomy & Diagnostic Classification', () => {
     const diagTimeout = ErrorClassifier.classify(errTimeout, 'claude-3-5-sonnet', 'anthropic');
     assert.equal(diagTimeout.category, 'SERVICE_UNAVAILABLE');
     assert.equal(diagTimeout.isRetriable, true);
+
+    // Bun surfaces a fetch deadline as a TimeoutError whose message carries no
+    // "timeout" substring — must still land in SERVICE_UNAVAILABLE / NETWORK_TIMEOUT,
+    // not the UNKNOWN bucket ("未知上游错误").
+    const errBunTimeout = new Error('The operation timed out.');
+    const diagBunTimeout = ErrorClassifier.classify(errBunTimeout, 'glm-5.3-flash', 'zhipu');
+    assert.equal(diagBunTimeout.category, 'SERVICE_UNAVAILABLE');
+    assert.equal(diagBunTimeout.networkCause, 'NETWORK_TIMEOUT');
+    assert.equal(diagBunTimeout.isRetriable, true);
   });
 
   it('should classify HTTP 400 client payload errors as CLIENT_ERROR and NEVER trip circuit breaker', () => {

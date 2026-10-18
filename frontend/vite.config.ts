@@ -21,14 +21,16 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // Dev API target = the live gateway from config.yaml (port: 3000).
+      // Dev API target = the live gateway from config.yaml. Backend port comes
+      // from PORT (same env the backend reads, see backend config/index.ts);
+      // default 3000 keeps `bun run dev` behavior unchanged.
       // The old :4000 daemon is gone since gateway port unification.
       '/api': {
-        target: 'http://127.0.0.1:3000',
+        target: `http://127.0.0.1:${process.env.PORT ?? 3000}`,
         changeOrigin: true,
       },
       '/v1': {
-        target: 'http://127.0.0.1:3000',
+        target: `http://127.0.0.1:${process.env.PORT ?? 3000}`,
         changeOrigin: true,
       },
     },

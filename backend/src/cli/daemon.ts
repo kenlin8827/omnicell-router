@@ -107,7 +107,32 @@ export async function checkServerHealth(port = defaultGatewayPort(), host = '127
   return { ok: false };
 }
 
+/**
+ * True when this process itself is a bun compiled snapshot (bun build
+ * --compile — how the desktop sidecar ships): process.execPath IS the gateway
+ * binary, so a replacement child is a bare relaunch of our own exe with no
+ * runtime install or repo layout needed. Detection rides Bun.main's virtual
+ * embedded-FS path; node/bun source runs report a real path and stay on the
+ * source-layout resolution below.
+ */
+function compiledSnapshotExe(): boolean {
+  try {
+    // Verified on bun 1.3.14 (scripts/tmp-probe.ts experiment, 2026-10-18):
+    // inside a `bun build --compile` snapshot Bun.main/import.meta.path live
+    // on the virtual embedded FS (Windows: `B:\~BUN\root\…`, POSIX:
+    // `/$bunfs/…`); a plain `bun`/node runtime reports a real path. Note
+    // Bun.embeddedFiles is [] in BOTH modes on this version — not a signal.
+    const bunMain = (globalThis as { Bun?: { main?: string } }).Bun?.main;
+    if (!bunMain) return false;
+    return bunMain.startsWith('/$bunfs/') || /^[A-Za-z]:[\\/]~BUN[\\/]/.test(bunMain);
+  } catch {
+    return false;
+  }
+}
+
 export function resolveRuntimeBinary(): { bin: string; args: string[] } {
+  // Compiled snapshot (desktop sidecar): our own exe is the gateway entry.
+  if (compiledSnapshotExe()) return { bin: process.execPath, args: [] };
   const repoDir = getRepoRootDir();
   const entryTs = path.join(repoDir, 'backend', 'src', 'index.ts');
   const entryJs = path.join(repoDir, 'dist', 'index.js');
@@ -219,7 +244,10 @@ export function buildWindowsEnvSets(opts: GatewayChildSpawnOpts): string {
 function spawnDetachedGatewayChild(opts: GatewayChildSpawnOpts): boolean {
   try {
     const { bin, args } = resolveRuntimeBinary();
-    const repoDir = getRepoRootDir();
+    // Snapshot mode: the repo layout doesn't exist in an installed app —
+    // anchor the detached spawn next to our own exe so the -WorkingDirectory
+    // / cwd points at a real directory.
+    const repoDir = compiledSnapshotExe() ? path.dirname(process.execPath) : getRepoRootDir();
     const logFile = getLogFilePath();
 
     if (IS_WINDOWS) {

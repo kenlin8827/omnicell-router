@@ -1,0 +1,110 @@
+# Desktop release build matrix — one job per OS, native Rust shell + bun
+# cross-compiled gateway sidecar.
+#
+# Proven locally (2026-10-18): `bun build --compile --target=…` cross-builds
+# the backend sidecar for linux-x64 (ELF) and darwin-arm64 (Mach-O) from a
+# Windows host, so the sidecar is built on each runner with the SAME command.
+# The Rust shell cannot be cross-built (WebKit/GTK syslibs + Apple bundling),
+# hence the native-runner matrix.
+#
+# Triggers: manual (Actions tab) or a v* tag push.
+# Artifacts: per-platform installers under the "desktop-<target>" artifact.
+
+name: desktop-build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bunTarget: bun-windows-x64
+            ext: .exe
+            bundles: nsis
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            bunTarget: bun-darwin-arm64
+            ext: ""
+            bundles: app,dmg
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            bunTarget: bun-darwin-x64
+            ext: ""
+            bundles: app,dmg
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bunTarget: bun-linux-x64
+            ext: ""
+            bundles: appimage,deb
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux deps (Tauri v2 / webkit2gtk-4.1)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Install JS deps (root workspaces + desktop shell)
+        run: |
+          bun install
+          cd desktop && bun install
+
+      - name: Build backend + frontend dist
+        run: bun run build
+
+      - name: Cross-compile gateway sidecar (${{ matrix.bunTarget }})
+        run: >
+          bun build --compile --external onnxruntime-node
+          --target ${{ matrix.bunTarget }}
+          backend/src/index.ts
+          --outfile desktop/src-tauri/bin/ocr-backend-${{ matrix.target }}${{ matrix.ext }}
+
+      - name: Build desktop shell + bundles
+        working-directory: desktop
+        run: bun x tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+
+      - name: Upload NSIS installer
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.target }}
+          path: desktop/src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe
+
+      - name: Upload macOS dmg
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.target }}
+          path: desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+
+      - name: Upload Linux AppImage + deb
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.target }}
+          path: |
+            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb

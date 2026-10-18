@@ -320,6 +320,10 @@ export class ErrorClassifier {
       (statusCode !== undefined && statusCode >= 500 && statusCode < 600) ||
       combinedText.includes('etimedout') ||
       combinedText.includes('esockettimedout') ||
+      // Bun surfaces a fetch deadline/abort as a TimeoutError whose message is
+      // "The operation timed out." — the word "timeout" never appears (the 'd '
+      // breaks the substring), so it must be matched by its own phrase.
+      combinedText.includes('timed out') ||
       combinedText.includes('econnrefused') ||
       combinedText.includes('econnreset') ||
       combinedText.includes('econnaborted') ||
@@ -355,6 +359,7 @@ export class ErrorClassifier {
         statusCode === 504 ||
         combinedText.includes('etimedout') ||
         combinedText.includes('esockettimedout') ||
+        combinedText.includes('timed out') || // Bun TimeoutError wording (see isServerUnavailable)
         combinedText.includes('aborterror') ||
         combinedText.includes('gateway timeout') ||
         (combinedText.includes('timeout') && !combinedText.includes('rate'))

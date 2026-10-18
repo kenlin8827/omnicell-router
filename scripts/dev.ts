@@ -1,8 +1,9 @@
 import { spawn } from 'node:child_process';
 
-console.log('🚀 Starting OpenCode Router (OCR) Full-Stack Development Services...');
-console.log('   ├─ Backend API:  http://127.0.0.1:3000');
-console.log('   └─ Frontend App: http://127.0.0.1:5173\n');
+const backendPort = process.env.PORT || '3000';
+console.log(`🚀 Starting OpenCode Router (OCR) Full-Stack Development Services...`);
+console.log(`   ├─ Backend API:  http://127.0.0.1:${backendPort}`);
+console.log(`   └─ Frontend App: http://127.0.0.1:5173\n`);
 
 // 1. Start Backend in watch mode
 const backend = spawn('bun', ['--no-env-file', '--watch', 'backend/src/index.ts'], {
