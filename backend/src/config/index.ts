@@ -26,16 +26,17 @@ const DEFAULT_CONFIG: RouterConfig = {
   port: parseInt(process.env.PORT || '3000', 10),
   host: process.env.HOST || '127.0.0.1',
   adminApiKey: process.env.ROUTER_API_KEY || undefined,
-  // First-boot tier members live HERE, not in runtime seeding: defaultConfigYaml()
-  // bakes them into every brand-new config.yaml and the loadConfig() fallback
-  // below re-applies them when a file has no `tiers:` section at all. One glob
-  // per tier over the full `provider/model` id (case-insensitive), mapping the
-  // four Claude model families lite→ultra: haiku / sonnet / opus / fable.
+  // First-boot tier defaults are EMPTY pools: defaultConfigYaml() writes the
+  // four tier shells into every brand-new config.yaml and the loadConfig()
+  // fallback below re-applies them when a file has no `tiers:` section at all.
+  // No member glob ships — the operator curates pools on the console /tiers
+  // page (or by hand); until members exist every pool is empty, `auto` cannot
+  // route, and boot-direct warns. Models stay directly callable by full id.
   tiers: {
-    lite: { members: [{ pattern: '*haiku*' }] },
-    plus: { members: [{ pattern: '*sonnet*' }] },
-    pro: { members: [{ pattern: '*opus*' }] },
-    ultra: { members: [{ pattern: '*fable*' }] },
+    lite: {},
+    plus: {},
+    pro: {},
+    ultra: {},
   },
   routing: { mode: 'smart' },
   fallback: {
@@ -466,10 +467,11 @@ export function loadConfig(configPath?: string): RouterConfig {
         // don't get re-persisted on the next config save.
         apiKeys: (parsed?.apiKeys || DEFAULT_CONFIG.apiKeys).map(({ role: _role, ...k }: { role?: unknown; [k: string]: unknown }) => k),
         webAuth: sanitizeWebAuthInput(parsed?.webAuth),
-        // Absent `tiers:` section → ship the DEFAULT_CONFIG template members
-        // (the 4 glob rules); an explicit `tiers: {}` stays `{}` (truthy) —
-        // empty pools + the boot-direct warning, the operator's own choice.
-        // Cloned so a future in-place edit cannot poison the module template.
+        // Absent `tiers:` section → the DEFAULT_CONFIG empty tier shells; an
+        // explicit `tiers: {}` stays `{}` (truthy). Both leave every pool
+        // empty by design (defaults ship no members) — the boot-direct
+        // warning points at the /tiers page. Cloned so a future in-place
+        // edit cannot poison the module template.
         tiers: parsed?.tiers || structuredClone(DEFAULT_CONFIG.tiers),
         routing: { ...DEFAULT_CONFIG.routing, ...parsed?.routing },
         fallback: { ...DEFAULT_CONFIG.fallback, ...parsed?.fallback },
@@ -710,11 +712,11 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'webAuth.enabled': '控制台登录开关：true 需账号密码登录；绑定 0.0.0.0 / 局域网 IP 时必须为 true（否则网关拒绝启动），仅 127.0.0.1 绑定可关闭',
   'webAuth.username': '控制台登录用户名',
   'webAuth.passwordHash': '登录密码的 scrypt 哈希（格式 scrypt$<saltHex>$<hashHex>，绝不存明文；在控制台「系统设置」页修改，勿手写）',
-  tiers: '梯队成员策略：候选池唯一依据 = 各梯队显式 members 成员列表 + 全局排除名单；默认模板为每个梯队内置 1 条 glob 成员（haiku→lite / sonnet→plus / opus→pro / fable→ultra，运行时不再自动生成种子，删除整个 tiers 段会在下次加载时恢复这套模板默认）；无任何规则命中的模型=未分类，不进任何池；主选策略只影响池内用法（控制台 /tiers 页可视化编辑，保存即时生效）',
+  tiers: '梯队成员策略：候选池唯一依据 = 各梯队显式 members 成员列表 + 全局排除名单；出厂默认为四个空梯队（不内置任何成员 glob，运行时也不自动生成种子），首次启动所有候选池为空、`auto` 无法路由，需在控制台 /tiers 页或本文件添加 members；无任何规则命中的模型=未分类，不进任何池；主选策略只影响池内用法（控制台 /tiers 页可视化编辑，保存即时生效；删除整个 tiers 段会在下次加载时恢复这套空默认）',
   'tiers.*.members': '成员列表（顺序=优先级/failover 链）：每项 { pattern, weight?, effortMap? } —— pattern 匹配完整模型 id（provider/model），glob 通配（* 任意 / ? 单字符，不区分大小写），不带通配符=子串匹配、写完整 id=单项；effortMap=思考级别翻译（如 { none: high, low: high }，未配置的级别原样透传）；同一模型只归属一个梯队（跨档重叠按 lite→plus→pro→ultra 先得，保存时提示）',
   'tiers.exclude': '全局排除名单（在原始 YAML 页编辑；/tiers 页保存时原样回传）：命中的模型不进入任何梯队候选池（无条件；仅可按 id 直连或经组合调用）',
   'tiers.*.selection': '主选策略：priority 优先级 / weighted 加权随机 / round_robin 轮询',
-  'tiers.*.match': '【仅匹配建议引擎】不参与路由、不再生成成员列表：用于模型目录页推荐、/tiers 页预览与保存时检查；候选池唯一依据是上方 members，默认模板已内置四档 glob（haiku→lite / sonnet→plus / opus→pro / fable→ultra），请在控制台 /tiers 页增删成员（保存即时生效）',
+  'tiers.*.match': '【仅匹配建议引擎】不参与路由、不再生成成员列表：用于模型目录页推荐、/tiers 页预览与保存时检查；候选池唯一依据是上方 members（出厂默认为空，无内置 glob），请在控制台 /tiers 页增删成员（保存即时生效）',
   'tiers.*.match.patterns': '【仅匹配建议引擎】名称通配符（glob）',
   'tiers.*.match.minInputPerM': '【仅匹配建议引擎】输入价下限 $/M',
   'tiers.*.match.maxInputPerM': '【仅匹配建议引擎】输入价上限 $/M',

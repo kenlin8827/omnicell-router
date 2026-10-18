@@ -67,27 +67,34 @@ opencode:
 #               the actual served level is reported via X-OCR-Thinking-* headers.
 # A model matching NO rule is 'unclassified' (joins no pool; still callable by
 # id / combo). The block below IS the shipped default (DEFAULT_CONFIG.tiers,
-# written verbatim into a brand-new config.yaml on first run): ONE glob per
-# tier, mapping the four Claude model families lite → ultra. Nothing is seeded
-# at runtime — edit members on the console /tiers page (takes effect on save,
-# no restart); deleting the whole `tiers:` section restores these template
-# defaults on the next load.
+# written verbatim into a brand-new config.yaml on first run): FOUR EMPTY
+# pools — no member glob ships, nothing is seeded at runtime, and `auto`
+# cannot route until you add members (console /tiers page, effective on save,
+# no restart; deleting the whole `tiers:` section restores these empty
+# defaults on the next load).
 tiers:
-  lite:
-    members:
-      - pattern: "*haiku*"
-      # append your own rules below the template glob, e.g.
-      # - pattern: "anthropic/claude-haiku-4.5"   # full id = exactly one model
-      #   effortMap: { none: "high", low: "high" }
-  plus:
-    members:
-      - pattern: "*sonnet*"
-  pro:
-    members:
-      - pattern: "*opus*"
-  ultra:
-    members:
-      - pattern: "*fable*"
+  lite: {}
+  plus: {}
+  pro: {}
+  ultra: {}
+# Example — one glob per tier over the four Claude model families
+# (lite→ultra: haiku / sonnet / opus / fable); uncomment to adopt:
+# tiers:
+#   lite:
+#     members:
+#       - pattern: "*haiku*"
+#       # append your own rules below the example glob, e.g.
+#       # - pattern: "anthropic/claude-haiku-4.5"   # full id = exactly one model
+#       #   effortMap: { none: "high", low: "high" }
+#   plus:
+#     members:
+#       - pattern: "*sonnet*"
+#   pro:
+#     members:
+#       - pattern: "*opus*"
+#   ultra:
+#     members:
+#       - pattern: "*fable*"
 
 # Legacy smart-match (DEPRECATED for routing) — kept ONLY as
 # the suggestion engine: catalog-page recommendations and the /tiers

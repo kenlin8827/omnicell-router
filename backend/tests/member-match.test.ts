@@ -14,8 +14,8 @@ import type { TierLevel } from '../src/types/router.js';
  *   - claim order (tier lite→plus→pro→ultra, then list order; first hit wins)
  *   - glob semantics (no wildcard = substring over the FULL model id)
  *   - effortMap translation (`effortMap[requested] ?? requested`)
- * No seed generator: first-boot members live in DEFAULT_CONFIG.tiers
- * (template shape pinned in config-tiers-template.test.ts; end-to-end
+ * No seed generator and no shipped member defaults: DEFAULT_CONFIG.tiers is
+ * four empty tier shells (pinned in config-tiers-template.test.ts; end-to-end
  * claiming in boot-direct-template-members.test.ts).
  */
 

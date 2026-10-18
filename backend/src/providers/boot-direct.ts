@@ -391,12 +391,12 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
   }
 
   // ─── membership: explicit member lists are the ONLY source ──────
-  // No runtime seeding: the first-boot defaults live in DEFAULT_CONFIG.tiers
-  // (one glob per tier: *haiku*/*sonnet*/*opus*/*fable) — defaultConfigYaml()
-  // bakes them into every brand-new config.yaml, and loadConfig() falls back
-  // to them when a file has no `tiers:` section. A config that carries no
-  // `members` anywhere (e.g. an explicit `tiers: {}`) gets EMPTY pools and
-  // the all-empty warning below; every model stays directly callable by id.
+  // No runtime seeding and no shipped member defaults: DEFAULT_CONFIG.tiers
+  // is four EMPTY tier shells (defaultConfigYaml() writes them into every
+  // brand-new config.yaml; loadConfig() falls back to them when a file has
+  // no `tiers:` section). Every install starts pool-less — the all-empty
+  // warning below fires until the operator adds members on the console
+  // /tiers page; every model stays directly callable by id.
   // List order IS chain order (priority = rule index + 1), list index 0 is
   // the tier representative. Members are edited on the console /tiers page
   // (hot-applied by the registry; no restart, no persistence from boot).

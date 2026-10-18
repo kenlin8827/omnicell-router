@@ -27,7 +27,7 @@
 - `TierMemberRule = {pattern, weight?≥1, effortMap?}`；pattern 语义：`*`/`?` 大小写不敏感 glob，**无通配符 = 子串匹配**，全量 id = 精确钉（`utils/glob.ts:7-16`）。
 - 首次认领即得：梯队序 lite→plus→pro→ultra，再列表序（`claimModel`，`member-match.ts:87-98`）；一个模型恰属一个梯队；规则重叠在**保存时**告警（`matchingTiers` 经 `POST /api/admin/tiers/check`）。
 - 链序 = 列表序：priority = 序号+1，表首即梯队代表（`reclassifyTiers`，`registry.ts:431-456`）；按梯队 `selection: priority|weighted|round_robin` 选 leader（权重抽签 / 连续槽位 RR + 梯队级游标）——`pickPrimary` `:291-343`。
-- **运行时无自动种子**（历史种子路径已删除）：模板以注释 glob 出厂；显式 `tiers: {}` 被尊重为"无池"；任何梯队都无 `members` 键的配置保持空池 + 启动告警（`member-match.ts:28-35`；YAML 字段注释的中文原文"运行时不再自动生成种子"只存在于 `config/index.ts`）。
+- **运行时无自动种子、出厂无内置成员**（历史种子路径已删除）：`DEFAULT_CONFIG.tiers` 为四个空梯队壳——全新 config.yaml 出厂即无池，`auto` 在操作者于 /tiers 页添加成员前无法路由；显式 `tiers: {}` 被尊重为"无池"；任何梯队都无 `members` 键的配置保持空池 + 启动告警（`member-match.ts:28-35`；YAML 字段注释的中文原文"运行时不再自动生成种子"只存在于 `config/index.ts`）。
 - `unclassified` 是第四态**标记位**，不是梯队加宽（`types/router.ts:9-21`）：不进任何池、不得成为梯队代表，控制台以"未入池"视图呈现并可一键加入。
 - 双轴活性：BOOT 快照拥有模型宇宙（provider/凭证/wire）；成员资格+链优先序+effortMap 是**文件派生的活投影**——控制台两条保存路径即时提交 `applyTierConfigNow`（+ `applyCombos`），另有 2 秒懒惰重放兜手改 YAML（`registry.ts:375-425`，`routes/console.ts:1076-1077,1100-1101`）。
 - 非捕获模型（无 `tierMatch`）永不重分类——其显式梯队是永久的，成员表编辑动不了它们（`projectedClaim` 返回 undefined → 跳过，`registry.ts:405-411`）。

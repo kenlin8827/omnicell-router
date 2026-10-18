@@ -14,8 +14,8 @@ import type { TiersConfig, TierMemberRule } from '../config/types.js';
  *
  * The classifier (tier-match.ts) stays alive as the SUGGESTION engine —
  * it feeds catalog-page recommendations, the /tiers ephemeral preview and
- * save-time checks, but NEVER routing and NEVER seeding (the first-boot
- * member defaults live in DEFAULT_CONFIG.tiers, not in generated lists).
+ * save-time checks, but NEVER routing and NEVER seeding (DEFAULT_CONFIG.tiers
+ * ships four EMPTY pools — no member defaults exist to seed from).
  */
 
 export const MEMBER_TIER_ORDER: TierLevel[] = ['lite', 'plus', 'pro', 'ultra'];
@@ -27,10 +27,10 @@ export interface ResolvedMembers {
   tiers: Record<TierLevel, TierMemberRule[]>;
   /**
    * True when ANY tier defines a `members` key (an explicit `members: []`
-   * counts). False = the config carries no member lists anywhere (e.g. an
-   * explicit `tiers: {}` or tiers without any members key) — there is no
-   * runtime seeding: boot-direct keeps the pools empty and warns; the
-   * template defaults live in DEFAULT_CONFIG.tiers (loadConfig fallback).
+   * counts). False = the config carries no member lists anywhere (the
+   * shipped default: DEFAULT_CONFIG.tiers is four empty tier shells, same
+   * as an explicit `tiers: {}`) — there is no runtime seeding: boot-direct
+   * keeps the pools empty and warns until the operator adds members.
    */
   configured: boolean;
 }

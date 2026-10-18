@@ -4,15 +4,15 @@ import type { TiersConfig } from '../src/config/types.js';
 import type { TierLevel } from '../src/types/router.js';
 
 /**
- * Lock for "no runtime seeding — the template member lists ARE the seed".
+ * Lock for "no runtime seeding — boot claims against member lists as loaded".
  *
- * boot-direct never generates or persists member lists anymore: it claims
- * models against `tiers.*.members` as loaded. The first-boot defaults live in
- * DEFAULT_CONFIG.tiers — one glob per tier (*haiku* / *sonnet* / *opus* /
- * *fable*), shipped by defaultConfigYaml(). Here the stub config carries
- * exactly those template lists.
+ * boot-direct never generates or persists member lists: it claims models
+ * against `tiers.*.members` as loaded. Defaults ship NO members (four empty
+ * tier shells in DEFAULT_CONFIG.tiers, pinned in config-tiers-template.test.ts).
+ * Here the stub config carries operator-written member lists (the globs once
+ * shipped as the first-boot template) to exercise the claiming path.
  *
- *   a) the 4 template globs claim the matching models into the right tiers
+ *   a) the member globs claim the matching models into the right tiers
  *      (list index 0 = leader = primary); non-matching siblings come out
  *      `unclassified` (still callable by full id — direct path, not pooled);
  *   b) zero claims → the all-empty warning fires once, every model is
@@ -26,7 +26,7 @@ import type { TierLevel } from '../src/types/router.js';
 const PROVIDER = 'acme';
 const TEXT = { input: ['text'], output: ['text'] };
 
-/** The shipped DEFAULT_CONFIG.tiers template (shape pinned in config-tiers-template.test.ts). */
+/** Operator-written member lists (defaults ship none; shape pinned in config-tiers-template.test.ts). */
 const TEMPLATE_TIERS: TiersConfig = {
   lite: { members: [{ pattern: '*haiku*' }] },
   plus: { members: [{ pattern: '*sonnet*' }] },
@@ -112,19 +112,19 @@ async function boot() {
   }
 }
 
-describe('boot-direct — template globs claim, nothing seeds or persists', () => {
+describe('boot-direct — member globs claim, nothing seeds or persists', () => {
   beforeEach(() => {
     savedPatches.length = 0;
     catalogModels = [];
   });
 
-  it('(a) the 4 template globs claim matching models; siblings stay unclassified; silent + no writes', async () => {
+  it('(a) the member globs claim matching models; siblings stay unclassified; silent + no writes', async () => {
     catalogModels = [
       fam('claude-haiku-1'),
       fam('claude-sonnet-x'),
       fam('claude-opus-y'),
       fam('claude-fable-z'),
-      fam('gpt-5'), // matches no template glob
+      fam('gpt-5'), // matches no member glob
       fam('gemini-3'), // …ditto
     ];
     const { res, warns } = await boot();

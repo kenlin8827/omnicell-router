@@ -113,6 +113,46 @@ fn save_close_to_tray(home: &std::path::Path, enabled: bool) {
     );
 }
 
+/// Persist the window's last OUTER physical bounds — the standard "remember
+/// my geometry" contract. The restore path compensates for the chrome delta
+/// (outer − client) measured at restore time; persisting inner would grow the
+/// window by that delta on every restart cycle. Merges into desktop.json so
+/// closeToTray survives. Called from CloseRequested — both the exit path and
+/// the tray-hide path.
+fn persist_window_bounds(
+    home: &std::path::Path,
+    win: &tauri::Window,
+) {
+    let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) else {
+        return;
+    };
+    let mut v: serde_json::Value = fs::read_to_string(settings_path(home))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(serde_json::json!({}));
+    v["window"] = serde_json::json!({
+        "x": pos.x, "y": pos.y, "w": size.width, "h": size.height
+    });
+    let _ = fs::create_dir_all(home);
+    let _ = fs::write(settings_path(home), serde_json::to_string(&v).unwrap_or_default());
+}
+
+/// Saved bounds sanity: nonzero, positive origin, and at least a usable
+/// window. Corrupt entries fall back to the first-run default.
+fn load_window_bounds(home: &std::path::Path) -> Option<(i32, i32, u32, u32)> {
+    let v: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(settings_path(home)).ok()?,
+    )
+    .ok()?;
+    let w = v.get("window")?;
+    let (x, y) = (w.get("x")?.as_i64()? as i32, w.get("y")?.as_i64()? as i32);
+    let (wd, ht) = (w.get("w")?.as_u64()? as u32, w.get("h")?.as_u64()? as u32);
+    if wd < 400 || ht < 300 {
+        return None;
+    }
+    Some((x, y, wd, ht))
+}
+
 /// The gateway may have REPLACED itself via the console restart route — that
 /// replacement is a detached grandchild, not our direct child, so
 /// `child.kill()` misses it. Kill the pid-file process tree instead so a
@@ -281,6 +321,16 @@ fn boot(app: &tauri::App) -> Result<(), String> {
     let sidecar = exe_dir.join(SIDECAR_FILE);
     let home = default_ocr_home(&resource_dir);
 
+    // First-run default = 75% of the primary monitor (logical), clamped to a
+    // usable minimum. After the first session the SAVED bounds take over
+    // (remember-my-geometry), so this only shapes the first impression.
+    let (mut default_w, mut default_h) = (1320.0f64, 880.0f64);
+    if let Ok(Some(monitor)) = app.primary_monitor() {
+        let scale = monitor.scale_factor();
+        default_w = (monitor.size().width as f64 / scale * 0.75).round().max(1024.0);
+        default_h = (monitor.size().height as f64 / scale * 0.75).round().max(680.0);
+    }
+
     if !health_ok(PORT) {
         if !sidecar.exists() {
             return Err(format!(
@@ -332,24 +382,63 @@ fn boot(app: &tauri::App) -> Result<(), String> {
     let url = format!("http://127.0.0.1:{PORT}/admin/")
         .parse::<tauri::Url>()
         .map_err(|e| e.to_string())?;
+    // Hidden until placement settles: WebView2 adjusts the frame
+    // asynchronously, so centering against a just-built window measures a
+    // stale size (visible ~50px offset). Center while invisible, then show.
     WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
         .title("OpenCode Router")
-        .inner_size(1320.0, 880.0)
+        .inner_size(default_w, default_h)
+        .visible(false)
         .build()
         .map_err(|e| format!("failed to open the app window:\n{e}"))?;
-    // Note: NOT WebviewWindowBuilder::center() — that centers on the WORK
-    // AREA (excluding the taskbar), which reads as off-center. Reposition
-    // onto the full primary monitor in physical pixels for true centering.
-    if let Ok(Some(monitor)) = app.primary_monitor() {
-        if let Some(win) = app.get_webview_window("main") {
-            let monitor_size = monitor.size();
-            if let Ok(window_size) = win.outer_size() {
-                let x = (monitor_size.width as f64 - window_size.width as f64) / 2.0;
-                let y = (monitor_size.height as f64 - window_size.height as f64) / 2.0;
-                let _ = win.set_position(tauri::PhysicalPosition::new(x.round() as i32, y.round() as i32));
+    let win = app.get_webview_window("main").expect("main window exists");
+    let scale = app
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|m| m.scale_factor())
+        .unwrap_or(1.0);
+    let monitor_size = app
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|m| *m.size());
+    let req_w = (default_w * scale).round() as i64;
+    let req_h = (default_h * scale).round() as i64;
+    let saved = load_window_bounds(&home);
+    let win = win.clone();
+    std::thread::spawn(move || {
+        // WebView2 settles the frame asynchronously — measuring earlier
+        // returns stale sizes (raced corrections were swallowed).
+        std::thread::sleep(Duration::from_millis(400));
+        // Chrome delta: settled outer minus the client we requested at
+        // build time (physical). Constant for this window's style, so the
+        // saved outer bounds convert exactly: client = saved_outer - delta.
+        let (delta_w, delta_h) = win
+            .outer_size()
+            .map(|o| (o.width as i64 - req_w, o.height as i64 - req_h))
+            .unwrap_or((0, 0));
+        match saved {
+            Some((x, y, wo, ho)) => {
+                let _ = win.set_size(tauri::PhysicalSize::new(
+                    (wo as i64 - delta_w).max(400) as u32,
+                    (ho as i64 - delta_h).max(300) as u32,
+                ));
+                let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+            }
+            None => {
+                if let Some(mon) = monitor_size {
+                    if let Ok(o) = win.outer_size() {
+                        let x = ((mon.width as i64 - o.width as i64) / 2).max(0) as i32;
+                        let y = ((mon.height as i64 - o.height as i64) / 2).max(0) as i32;
+                        let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+                    }
+                }
             }
         }
-    }
+        let _ = win.show();
+        let _ = win.set_focus();
+    });
     shell_log(&home, "window created");
     Ok(())
 }
@@ -370,11 +459,19 @@ fn main() {
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
+                // Remember geometry on BOTH close paths (exit and tray-hide).
+                let handle = window.app_handle();
+                let home = default_ocr_home(
+                    &handle
+                        .path()
+                        .resource_dir()
+                        .unwrap_or(std::env::temp_dir().into()),
+                );
+                persist_window_bounds(&home, window);
                 // Default desktop contract: X exits (gateway cleanup runs in
                 // RunEvent::Exit). Tray residency is opt-in via the tray
                 // checkbox — then close hides and only Quit really exits.
-                let to_tray = window
-                    .app_handle()
+                let to_tray = handle
                     .state::<GatewayState>()
                     .close_to_tray
                     .load(Ordering::Relaxed);

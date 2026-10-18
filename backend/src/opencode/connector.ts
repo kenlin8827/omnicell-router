@@ -70,6 +70,8 @@ export class OpenCodeConnector {
     if (!this.serviceConfig) throw new Error('OpenCode v2 service credentials not found');
     const res = await fetch(`${this.serviceConfig.baseUrl}/api/provider`, {
       headers: { Authorization: this.serviceConfig.authHeader },
+      // Parity with getAgents(): a hung local daemon must not stall the caller.
+      signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) throw new Error(`OpenCode provider fetch failed [${res.status}]`);
     const json = (await res.json()) as any;
