@@ -281,6 +281,41 @@ fn default_ocr_home(resource_dir: &std::path::Path) -> std::path::PathBuf {
         .unwrap_or_else(|_| resource_dir.join("data"))
 }
 
+/// The shell process inherits its parent's environment, and a GUI parent
+/// (Explorer shortcut) freezes PATH at logon — tools added to the user PATH
+/// afterwards (e.g. the opencode CLI under D:\dev\bun\bin) stay unresolvable
+/// for the whole desktop chain, which degrades the credential store to
+/// read-only. Merge the registry's user PATH entries into the inherited PATH
+/// so the sidecar sees the same tool surface a fresh terminal would.
+#[cfg(windows)]
+fn sidecar_path_env() -> String {
+    let inherited = std::env::var("PATH").unwrap_or_default();
+    let user = match registry_user_path() {
+        Some(u) => u,
+        None => return inherited,
+    };
+    let mut parts: Vec<String> = inherited
+        .split(';')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    for entry in user.split(';').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+        if !parts.iter().any(|e| e.eq_ignore_ascii_case(&entry)) {
+            parts.push(entry);
+        }
+    }
+    parts.join(";")
+}
+
+#[cfg(windows)]
+fn registry_user_path() -> Option<String> {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let env = hkcu.open_subkey("Environment").ok()?;
+    env.get_value("PATH").ok()
+}
+
 /// POSIX: %LOCALAPPDATA% doesn't exist and bundling the data dir under the
 /// install location fails (AppImage squashfs is read-only, deb lands under
 /// /usr, macOS translocation mounts unsigned apps read-only). Use the
@@ -350,6 +385,11 @@ fn boot(app: &tauri::App) -> Result<(), String> {
             .env("OCR_HOME", &home)
             .env("PORT", PORT.to_string())
             .env("HOST", "127.0.0.1");
+        // GUI-parented chains freeze PATH at logon; merge the registry user
+        // PATH so tools like the opencode CLI resolve (credential-store
+        // write capability depends on it).
+        #[cfg(windows)]
+        cmd.env("PATH", sidecar_path_env());
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);
         let log = fs::OpenOptions::new()
