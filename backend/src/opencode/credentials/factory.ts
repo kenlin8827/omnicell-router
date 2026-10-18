@@ -179,14 +179,26 @@ export function probeVersionViaCli(timeoutMs = 5000): Promise<string | null> {
       out += String(c);
     });
     child.stderr?.on('data', () => undefined); // drain so the child can exit
-    child.on('error', () => done(null));
-    child.on('close', (code) => done(code === 0 && out.trim() ? out.trim() : null));
+    child.on('error', (e) => {
+      console.warn(`[credentials] opencode CLI probe spawn error: ${e.message}`);
+      done(null);
+    });
+    child.on('close', (code) => {
+      if (code === 0 && out.trim()) done(out.trim());
+      else {
+        console.warn(
+          `[credentials] opencode CLI probe failed: exit=${code} out="${out.trim().slice(0, 80)}" stderr-drained`,
+        );
+        done(null);
+      }
+    });
     const timer = setTimeout(() => {
       try {
         child.kill();
       } catch {
         // already gone
       }
+      console.warn(`[credentials] opencode CLI probe timed out after ${timeoutMs}ms`);
       done(null);
     }, timeoutMs);
     timer.unref();
