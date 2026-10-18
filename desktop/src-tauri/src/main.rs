@@ -36,6 +36,14 @@ const HEALTH_TIMEOUT: Duration = Duration::from_secs(20);
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+/// Sidecar file name: Tauri's bundler strips the `-{target}` triple suffix
+/// from externalBin, so the installed name is `ocr-backend.exe` on Windows
+/// and extensionless `ocr-backend` on macOS/Linux.
+#[cfg(windows)]
+const SIDECAR_FILE: &str = "ocr-backend.exe";
+#[cfg(not(windows))]
+const SIDECAR_FILE: &str = "ocr-backend";
+
 /// True when something already answers GET /health with 200 on the port
 /// (an existing `ocr start` daemon — adopt it instead of spawning).
 fn health_ok(port: u16) -> bool {
@@ -161,10 +169,34 @@ fn shell_log(home: &std::path::Path, msg: &str) {
 
 /// Same data root `ocr desktop` / the daemon tooling already assume
 /// (%LOCALAPPDATA%\opencode-router).
+#[cfg(windows)]
 fn default_ocr_home(resource_dir: &std::path::Path) -> std::path::PathBuf {
     std::env::var("LOCALAPPDATA")
         .map(|d| std::path::PathBuf::from(d).join("opencode-router"))
         .unwrap_or_else(|_| resource_dir.join("data"))
+}
+
+/// POSIX: %LOCALAPPDATA% doesn't exist and bundling the data dir under the
+/// install location fails (AppImage squashfs is read-only, deb lands under
+/// /usr, macOS translocation mounts unsigned apps read-only). Use the
+/// platform data dir instead; a `data/` folder next to the binary is the
+/// dev-run fallback only.
+#[cfg(not(windows))]
+fn default_ocr_home(resource_dir: &std::path::Path) -> std::path::PathBuf {
+    if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
+        if !xdg.trim().is_empty() {
+            return std::path::PathBuf::from(xdg).join("opencode-router");
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.trim().is_empty() {
+            if cfg!(target_os = "macos") {
+                return std::path::PathBuf::from(home).join("Library/Application Support/opencode-router");
+            }
+            return std::path::PathBuf::from(home).join(".local/share/opencode-router");
+        }
+    }
+    resource_dir.join("data")
 }
 
 /// Spawn the gateway (or adopt a healthy one), wait for readiness, open the
@@ -181,7 +213,7 @@ fn boot(app: &tauri::App) -> Result<(), String> {
         .parent()
         .expect("exe has a parent dir")
         .to_path_buf();
-    let sidecar = exe_dir.join("ocr-backend.exe");
+    let sidecar = exe_dir.join(SIDECAR_FILE);
     let home = default_ocr_home(&resource_dir);
 
     if !health_ok(PORT) {
