@@ -792,6 +792,8 @@ export const enUS: TranslationDict = {
     tokensTotalTip: 'Total = input + output; cached tokens are a subset of input and are not double-counted.',
     thCost: 'Cost',
     requestsTitle: 'Request detail ({count})',
+    requestsSortAsc: 'Oldest first',
+    requestsSortDesc: 'Newest first',
     detailTitle: 'Session detail',
     viewDetail: 'View detail',
     viewUsage: 'View usage',

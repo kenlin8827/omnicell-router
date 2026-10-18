@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Users, RefreshCw, Archive, BarChart3, ChevronDown, ChevronRight, Eye, GitBranch, X, Search, Trash2 } from 'lucide-react';
+import { ArrowDownWideNarrow, ArrowUpNarrowWide, Users, RefreshCw, Archive, BarChart3, ChevronDown, ChevronRight, Eye, GitBranch, X, Search, Trash2 } from 'lucide-react';
 import { api, type SessionRecord, type TraceRecord } from '../lib/api';
 import { formatReason, type Translate } from '../lib/reason';
 import { copyToClipboard, formatCost, formatSessionId, outputRate, formatRate, fmtLatency } from '../lib/format';
@@ -266,6 +266,9 @@ export const SessionsPage: React.FC = () => {
     detailOpen: boolean;
     trailOpen: boolean;
   } | null>(null);
+  // Request-detail list order: false = chronological (the traces' recorded
+  // order), true = newest first. Reset per open in openTimeline.
+  const [detailDesc, setDetailDesc] = useState(false);
   // Server-side filter (?q=), debounced from the search input; resets to page 1.
   const [filterInput, setFilterInput] = useState('');
   const [filter, setFilter] = useState('');
@@ -331,6 +334,8 @@ export const SessionsPage: React.FC = () => {
       // Entry intent decides the fold states at open: switch badge → trail
       // open + detail collapsed; Detail button → the reverse. The refill
       // below only adds data — a toggle made while traces load survives.
+      // Fresh modal = chronological order again (per-session reset).
+      setDetailDesc(false);
       setTimeline({ session: s, events: [], traces: [], detailOpen: forceOpen, trailOpen: !forceOpen });
       try {
         const traces = await api.getSessionTraces(s.id);
@@ -987,6 +992,30 @@ export const SessionsPage: React.FC = () => {
                 >
                   {timeline.detailOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                   <span>{t('sessions.requestsTitle', { count: timeline.traces.length })}</span>
+                  {/* Sort toggle: icon-only ghost button (same language as
+                      RoundCard's header icons — a boxed btn read too heavy
+                      on the 11px fold row). Title = what a click switches
+                      to; stopPropagation keeps the section fold. */}
+                  <button
+                    onClick={e => {
+                      e.stopPropagation();
+                      setDetailDesc(d => !d);
+                    }}
+                    title={detailDesc ? t('sessions.requestsSortAsc') : t('sessions.requestsSortDesc')}
+                    style={{
+                      marginLeft: 'auto',
+                      background: 'none',
+                      border: 'none',
+                      color: 'var(--text-dim)',
+                      cursor: 'pointer',
+                      padding: 2,
+                      display: 'flex',
+                      alignItems: 'center',
+                      flexShrink: 0,
+                    }}
+                  >
+                    {detailDesc ? <ArrowDownWideNarrow size={12} /> : <ArrowUpNarrowWide size={12} />}
+                  </button>
                 </div>
                 {timeline.detailOpen && (
                 <div
@@ -1018,7 +1047,7 @@ export const SessionsPage: React.FC = () => {
                       {label}
                     </span>
                   ))}
-                  {timeline.traces.map(tr => (
+                  {(detailDesc ? [...timeline.traces].reverse() : timeline.traces).map(tr => (
                     <React.Fragment key={tr.traceId}>
                       <span style={{ color: 'var(--text-dim)' }}>{new Date(tr.timestamp).toLocaleTimeString()}</span>
                       <span style={{ color: 'var(--text-dim)' }}>

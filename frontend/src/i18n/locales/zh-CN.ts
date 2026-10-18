@@ -786,6 +786,8 @@ export const zhCN: TranslationDict = {
     tokensTotalTip: '总 Tokens = 输入 + 输出；缓存 Tokens 是输入的子集，不重复计入。',
     thCost: '成本',
     requestsTitle: '请求明细（{count}）',
+    requestsSortAsc: '最早在前',
+    requestsSortDesc: '最新在前',
     detailTitle: '会话详情',
     viewDetail: '查看详情',
     viewUsage: '查看用量',

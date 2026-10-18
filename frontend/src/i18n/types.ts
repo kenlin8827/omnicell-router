@@ -835,6 +835,8 @@ hiddenBadge: string;
     tokensTotalTip: string;
     thCost: string;
     requestsTitle: string;
+    requestsSortAsc: string;
+    requestsSortDesc: string;
     detailTitle: string;
     viewDetail: string;
     viewUsage: string;
