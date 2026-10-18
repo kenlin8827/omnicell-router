@@ -594,9 +594,14 @@ export async function launchDesktop(options: { port?: number } = {}): Promise<vo
     await startDaemon({ port });
   }
 
-  // Look for native Tauri desktop binary candidates
+  // Native Tauri desktop binary candidates. Names must track
+  // desktop/src-tauri/tauri.conf.json (productName drives both the NSIS
+  // install dir and the bundled exe name).
+  const localAppData = process.env.LOCALAPPDATA || '';
   const candidates = [
-    path.join(process.env.LOCALAPPDATA || '', 'opencode-router', 'opencode-router-desktop.exe'),
+    // installed layout (NSIS, currentUser): %LOCALAPPDATA%\OpenCode Router\OpenCode Router.exe
+    path.join(localAppData, 'OpenCode Router', 'OpenCode Router.exe'),
+    // dev bare-run layout: cargo keeps the package name for target/release
     path.join(getRepoRootDir(), 'desktop', 'src-tauri', 'target', 'release', 'opencode-router-desktop.exe'),
   ];
 

@@ -172,8 +172,23 @@ fn kill_gateway_tree(home: &std::path::Path) {
     let _ = kill.output();
 }
 
+/// POSIX: the gateway may have REPLACED itself via the console restart
+/// route (detached grandchild, not our direct child) — deliver SIGTERM to
+/// the pid-file pid so a window close stops everything we started.
 #[cfg(not(windows))]
-fn kill_gateway_tree(_home: &std::path::Path) {}
+fn kill_gateway_tree(home: &std::path::Path) {
+    let Ok(pid) = fs::read_to_string(home.join("ocr.pid")) else {
+        return;
+    };
+    let Ok(pid) = pid.trim().parse::<i32>() else {
+        return;
+    };
+    // SAFETY: kill(2) with a validated numeric pid; EPERM/ESRCH are ignored
+    // (the gateway may already be gone).
+    unsafe {
+        libc::kill(pid, libc::SIGTERM);
+    }
+}
 
 fn unix_now() -> u64 {
     SystemTime::now()
@@ -281,30 +296,47 @@ fn default_ocr_home(resource_dir: &std::path::Path) -> std::path::PathBuf {
         .unwrap_or_else(|_| resource_dir.join("data"))
 }
 
-/// The shell process inherits its parent's environment, and a GUI parent
-/// (Explorer shortcut) freezes PATH at logon — tools added to the user PATH
-/// afterwards (e.g. the opencode CLI under D:\dev\bun\bin) stay unresolvable
-/// for the whole desktop chain, which degrades the credential store to
-/// read-only. Merge the registry's user PATH entries into the inherited PATH
-/// so the sidecar sees the same tool surface a fresh terminal would.
-#[cfg(windows)]
+/// GUI parents (Explorer shortcut, macOS Finder/LaunchServices) freeze PATH
+/// at logon — tools added later (the opencode CLI among them) stay
+/// unresolvable for the whole desktop chain, which degrades the credential
+/// store to read-only. Merge the platform's canonical user tool dirs into
+/// the inherited PATH so the sidecar sees what a fresh terminal would.
 fn sidecar_path_env() -> String {
+    let sep = if cfg!(windows) { ';' } else { ':' };
     let inherited = std::env::var("PATH").unwrap_or_default();
-    let user = match registry_user_path() {
-        Some(u) => u,
-        None => return inherited,
-    };
     let mut parts: Vec<String> = inherited
-        .split(';')
+        .split(sep)
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
-    for entry in user.split(';').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
-        if !parts.iter().any(|e| e.eq_ignore_ascii_case(&entry)) {
+    let mut push = |parts: &mut Vec<String>, entry: &str| {
+        let entry = entry.trim().to_string();
+        if !entry.is_empty() && !parts.iter().any(|e| e.eq_ignore_ascii_case(&entry)) {
             parts.push(entry);
         }
+    };
+    #[cfg(windows)]
+    if let Some(user) = registry_user_path() {
+        for entry in user.split(';') {
+            push(&mut parts, entry);
+        }
     }
-    parts.join(";")
+    #[cfg(not(windows))]
+    {
+        let home = std::env::var("HOME").unwrap_or_default();
+        if !home.is_empty() {
+            for entry in [
+                format!("{home}/.local/bin"),
+                "/opt/homebrew/bin".to_string(),
+                "/usr/local/bin".to_string(),
+                format!("{home}/.bun/bin"),
+                format!("{home}/.cargo/bin"),
+            ] {
+                push(&mut parts, &entry);
+            }
+        }
+    }
+    parts.join(if cfg!(windows) { ";" } else { ":" })
 }
 
 #[cfg(windows)]
@@ -385,10 +417,9 @@ fn boot(app: &tauri::App) -> Result<(), String> {
             .env("OCR_HOME", &home)
             .env("PORT", PORT.to_string())
             .env("HOST", "127.0.0.1");
-        // GUI-parented chains freeze PATH at logon; merge the registry user
-        // PATH so tools like the opencode CLI resolve (credential-store
+        // GUI-parented chains freeze PATH at logon; merge the platform's
+        // canonical tool dirs so the opencode CLI resolves (credential-store
         // write capability depends on it).
-        #[cfg(windows)]
         cmd.env("PATH", sidecar_path_env());
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);
