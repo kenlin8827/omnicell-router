@@ -227,6 +227,39 @@ describe('credential store factory', () => {
     expect(sleeps).toEqual([2500]);
   });
 
+  it('a readonly-degraded bind upgrades in the background once the CLI probe succeeds', async () => {
+    const paths = sandboxPaths();
+    fs.writeFileSync(paths.installedVersionPath, '2.0.0');
+    let calls = 0;
+    resetCredentialStoreForTests(
+      paths,
+      async () => (++calls <= 2 ? null : 'v2.0.15'), // two nulls replay the probe-timeout bind…
+      undefined,
+      {
+        env: {},
+        now: () => 555_000,
+        openDatabase: fakeDb([OAUTH_ROW]),
+        upgradeIntervalMs: 1,
+        upgradeMaxAttempts: 20,
+      }
+    );
+    const first = await getCredentialStoreStatus();
+    expect(first.kind).toBe('opencode-v2-readonly'); // …bind lands readonly
+    expect(first.degradedCode).toBe('cli_absent_db_present');
+
+    // …then the lazy-upgrade loop re-binds through the singleton and the
+    // store surfaces as FULL without any restart.
+    let status = first;
+    for (let i = 0; i < 200 && status.degradedCode !== null; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+      status = await getCredentialStoreStatus();
+    }
+    expect(status.kind).toBe('opencode-v2');
+    expect(status.degradedCode).toBeNull();
+    expect(status.evidence.used).toBe('cli');
+    expect(calls).toBeGreaterThanOrEqual(3); // the upgrade re-bind probed again
+  });
+
   it('a CRASHING versionProbe is evidence-free (same landing as CLI-absent), never a bind failure', async () => {
     const paths = sandboxPaths();
     fs.writeFileSync(paths.opencodeDbPath, 'fake-db-bytes'); // db-present evidence
@@ -361,15 +394,15 @@ describe('bind totality + sticky rejection reset (reviewer P1-2)', () => {
   it('a bind that STILL rejects (crash inside the degraded landing) is never cached — the next call re-binds', async () => {
     const paths = sandboxPaths();
     const realHome = paths.ocrHome;
-    let homeReads = 0;
+    // Hostility is FLAG-based, not read-count-based: the bind's internal
+    // read order is an implementation detail (the probe retry changed it),
+    // but the contract under test is stable — first bind fails with
+    // 'home unreadable', the rejection must not stick, the next bind lands.
+    let hostileMode = true;
     const hostile: CredentialPaths = {
       ...paths,
       get ocrHome() {
-        homeReads += 1;
-        // #1: lkg read (swallowed internally), #2: standalone OcrStore ctor
-        // (bind crashes), #3: landing OcrStore ctor (degraded path crashes
-        // too) -> bindCredentialStore rejects and ensureBinding must reset.
-        if (homeReads <= 3) throw new Error('home unreadable');
+        if (hostileMode) throw new Error('home unreadable');
         return realHome;
       },
     };
@@ -386,6 +419,7 @@ describe('bind totality + sticky rejection reset (reviewer P1-2)', () => {
     }
     expect(String(firstErr)).toContain('home unreadable');
     // the rejection must NOT stick: next call retries the bind for real
+    hostileMode = false; // "the machine healed"
     const store = await getCredentialStore();
     expect(store.kind).toBe('ocr');
   });

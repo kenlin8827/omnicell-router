@@ -1,11 +1,64 @@
 <!doctype html>
 <html>
-  <head><meta charset="utf-8"><title>OpenCode Router</title></head>
+  <head>
+    <meta charset="utf-8" />
+    <title>OpenCode Router</title>
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        background: #09090b;
+        color: #f4f4f5;
+        font-family: "Segoe UI", system-ui, sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .box {
+        text-align: center;
+      }
+      .bolt {
+        font-size: 46px;
+      }
+      .spin {
+        width: 34px;
+        height: 34px;
+        margin: 20px auto 0;
+        border: 3px solid #27272a;
+        border-top-color: #facc15;
+        border-radius: 50%;
+        animation: spin 0.9s linear infinite;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      .t {
+        margin-top: 16px;
+        font-size: 14px;
+        color: #a1a1aa;
+      }
+      .hint {
+        margin-top: 6px;
+        font-size: 12px;
+        color: #52525b;
+      }
+    </style>
+  </head>
   <body>
-    <!-- Never shown in normal operation: the real UI is the gateway console
-         served at http://127.0.0.1:<port>/admin/ (main.rs navigates there
-         after the sidecar gateway passes its /health wait). This stub only
-         satisfies Tauri's required build.frontendDist. -->
-    <p>OpenCode Router desktop bootstrap…</p>
+    <!-- Boot splash: shown while the gateway sidecar initializes; the shell
+         navigates this webview to http://127.0.0.1:<port>/admin/ once
+         /health answers (main.rs). Never rendered in normal operation
+         afterwards. -->
+    <div class="box">
+      <div class="bolt">⚡</div>
+      <div class="spin"></div>
+      <div class="t">Starting OpenCode Router…</div>
+      <div class="hint">first start can take ~20s while the gateway initializes</div>
+    </div>
   </body>
 </html>

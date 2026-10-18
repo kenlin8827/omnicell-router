@@ -370,25 +370,14 @@ fn boot(app: &tauri::App) -> Result<(), String> {
         *state.home.lock().unwrap() = Some(home.clone());
     }
 
-    if !wait_health(PORT, HEALTH_TIMEOUT) {
-        return Err(format!(
-            "the gateway did not become healthy on 127.0.0.1:{PORT} within {}s.\n\nIts output is in:\n  {}",
-            HEALTH_TIMEOUT.as_secs(),
-            home.join("gateway.log").display()
-        ));
-    }
-    shell_log(&home, "gateway healthy");
-
-    let url = format!("http://127.0.0.1:{PORT}/admin/")
-        .parse::<tauri::Url>()
-        .map_err(|e| e.to_string())?;
-    // Hidden until placement settles: WebView2 adjusts the frame
-    // asynchronously, so centering against a just-built window measures a
-    // stale size (visible ~50px offset). Center while invisible, then show.
-    WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
+    // Visible IMMEDIATELY with the bundled loading page — gateway boot takes
+    // 10-30s (catalog sync, Defender scans) and a black wait reads as a hang.
+    // Once /health answers, the SAME window navigates onto the console.
+    // NOTE: not WebviewWindowBuilder::center() — that centers on the WORK
+    // AREA (excluding the taskbar); we center on the full monitor below.
+    WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .title("OpenCode Router")
         .inner_size(default_w, default_h)
-        .visible(false)
         .build()
         .map_err(|e| format!("failed to open the app window:\n{e}"))?;
     let win = app.get_webview_window("main").expect("main window exists");
@@ -406,7 +395,7 @@ fn boot(app: &tauri::App) -> Result<(), String> {
     let req_w = (default_w * scale).round() as i64;
     let req_h = (default_h * scale).round() as i64;
     let saved = load_window_bounds(&home);
-    let win = win.clone();
+    let win2 = win.clone();
     std::thread::spawn(move || {
         // WebView2 settles the frame asynchronously — measuring earlier
         // returns stale sizes (raced corrections were swallowed).
@@ -414,31 +403,44 @@ fn boot(app: &tauri::App) -> Result<(), String> {
         // Chrome delta: settled outer minus the client we requested at
         // build time (physical). Constant for this window's style, so the
         // saved outer bounds convert exactly: client = saved_outer - delta.
-        let (delta_w, delta_h) = win
+        let (delta_w, delta_h) = win2
             .outer_size()
             .map(|o| (o.width as i64 - req_w, o.height as i64 - req_h))
             .unwrap_or((0, 0));
         match saved {
             Some((x, y, wo, ho)) => {
-                let _ = win.set_size(tauri::PhysicalSize::new(
+                let _ = win2.set_size(tauri::PhysicalSize::new(
                     (wo as i64 - delta_w).max(400) as u32,
                     (ho as i64 - delta_h).max(300) as u32,
                 ));
-                let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+                let _ = win2.set_position(tauri::PhysicalPosition::new(x, y));
             }
             None => {
                 if let Some(mon) = monitor_size {
-                    if let Ok(o) = win.outer_size() {
+                    if let Ok(o) = win2.outer_size() {
                         let x = ((mon.width as i64 - o.width as i64) / 2).max(0) as i32;
                         let y = ((mon.height as i64 - o.height as i64) / 2).max(0) as i32;
-                        let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+                        let _ = win2.set_position(tauri::PhysicalPosition::new(x, y));
                     }
                 }
             }
         }
-        let _ = win.show();
-        let _ = win.set_focus();
     });
+
+    if !wait_health(PORT, HEALTH_TIMEOUT) {
+        return Err(format!(
+            "the gateway did not become healthy on 127.0.0.1:{PORT} within {}s.\n\nIts output is in:\n  {}",
+            HEALTH_TIMEOUT.as_secs(),
+            home.join("gateway.log").display()
+        ));
+    }
+    shell_log(&home, "gateway healthy");
+
+    // Navigate the SAME window onto the console — no second window, no
+    // flicker: the loading page IS the boot UX.
+    let url = format!("http://127.0.0.1:{PORT}/admin/");
+    let _ = win.eval(&format!("window.location.replace('{url}')"));
+    let _ = win.set_focus();
     shell_log(&home, "window created");
     Ok(())
 }

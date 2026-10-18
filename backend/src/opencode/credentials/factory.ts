@@ -139,6 +139,10 @@ export interface BindOverrides {
   openDatabase?: DbOpener;
   busyAttempts?: number;
   busyBackoffMs?: number;
+  /** Lazy-upgrade poll interval for a readonly-degraded bind (ms). Default 10s. */
+  upgradeIntervalMs?: number;
+  /** Lazy-upgrade attempt cap. Default 12 (2min at the default interval). */
+  upgradeMaxAttempts?: number;
 }
 
 const VERSION_REGEX = /v?(\d+)\.(\d+)(?:\.\d+)?/;
@@ -693,6 +697,42 @@ async function bindCredentialStoreOnce(overrides: BindOverrides = {}): Promise<S
 let currentBinding: Promise<StoreBinding> | null = null;
 let testOverrides: BindOverrides = {};
 let lastBoundPaths: CredentialPaths | null = null;
+let upgradeTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Lazy upgrade for a readonly-degraded bind: the CLI probe can time out at
+ * boot (Defender first-execution scans block the spawn for 20s+ on the
+ * desktop sidecar) even though the CLI is on PATH. Routing works fine on the
+ * readonly store, so instead of blocking boot we re-probe in the background
+ * and re-bind (upgrading kind to opencode-v2) once the probe succeeds.
+ * Single-flight: armed once per degraded bind, cleared on upgrade/cap.
+ */
+function maybeScheduleUpgrade(binding: StoreBinding, overrides: BindOverrides): void {
+  if (upgradeTimer !== null) return; // a poll loop is already running
+  if (binding.status.degradedCode !== 'cli_absent_db_present') return;
+  const intervalMs = overrides.upgradeIntervalMs ?? 10_000;
+  const maxAttempts = overrides.upgradeMaxAttempts ?? 60;
+  let attempts = 0;
+  const tick = async (): Promise<void> => {
+    upgradeTimer = null;
+    attempts += 1;
+    if (attempts > maxAttempts) return;
+    currentBinding = null; // drop the degraded binding; re-bind for fresh evidence
+    try {
+      const fresh = await ensureBinding();
+      if (fresh.status.degradedCode === null) {
+        console.log(
+          `[credentials] opencode CLI available again — store upgraded to ${fresh.status.kind} (attempt ${attempts})`,
+        );
+        return; // upgraded: stop polling
+      }
+    } catch {
+      // re-bind failed — keep polling until the cap
+    }
+    upgradeTimer = setTimeout(() => void tick(), intervalMs);
+  };
+  upgradeTimer = setTimeout(() => void tick(), intervalMs);
+}
 
 /** The CredentialPaths the most recent bind used (state-file readers: reconcile, status endpoint). */
 export function getBoundCredentialPaths(): CredentialPaths | null {
@@ -709,6 +749,13 @@ function ensureBinding(): Promise<StoreBinding> {
     void pending.catch(() => {
       if (currentBinding === pending) currentBinding = null;
     });
+    // Scheduler hook — two-arg form: a REJECTING bind must not surface an
+    // unhandled rejection through this derived promise; the scheduler only
+    // acts on successful (degraded-but-total) binds.
+    void pending.then(
+      (b) => maybeScheduleUpgrade(b, testOverrides),
+      () => undefined,
+    );
   }
   return currentBinding;
 }
@@ -743,6 +790,7 @@ export function resetCredentialStoreForTests(
   extra?: BindOverrides
 ): void {
   currentBinding = null;
+  upgradeTimer = null; // a pending lazy-upgrade loop must not leak across tests
   const overrides: BindOverrides = {
     // Default a no-op sleep so the bind-time probe-retry never costs real
     // wall time in tests; a test exercising the retry timing injects its
