@@ -769,6 +769,11 @@ export const CapturesPage: React.FC = () => {
   // click updates the live selection one render BEFORE the turns are
   // replaced, so per-turn fetches must target this pair, not the live one.
   const [loadedFor, setLoadedFor] = useState<{ date: string; file: string }>({ date: '', file: '' });
+  // Left-rail list: in-flight marker + monotonic read sequence — while a
+  // date's list is loading the rail shows skeleton rows, never the stale
+  // previous date's list nor a premature "no archives" empty state.
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const sessionsSeqRef = useRef(0);
   const [drawerTurn, setDrawerTurn] = useState<CaptureTurn | null>(null);
   const [drawerLoading, setDrawerLoading] = useState(false);
   const [drawerMiss, setDrawerMiss] = useState(false);
@@ -811,16 +816,22 @@ export const CapturesPage: React.FC = () => {
   }, []);
 
   const loadSessions = useCallback(async (date: string, apiKey?: string) => {
+    const seq = ++sessionsSeqRef.current;
     if (!date) {
       setSessions([]);
+      setSessionsLoading(false);
       return;
     }
+    setSessionsLoading(true);
     try {
       const rows = await api.getCaptureSessions(date, apiKey || undefined);
+      if (seq !== sessionsSeqRef.current) return; // superseded by a newer date/filter
       setSessions(rows);
       setSelectedFile(prev => (prev && rows.some(r => r.file === prev) ? prev : ''));
     } catch (err) {
       console.error(err);
+    } finally {
+      if (seq === sessionsSeqRef.current) setSessionsLoading(false);
     }
   }, []);
 
@@ -1345,7 +1356,18 @@ export const CapturesPage: React.FC = () => {
                     />
                   </div>
                   <div style={{ overflowY: 'auto', flex: 1, minHeight: 0 }}>
-                  {visibleSessions.map((s, i) => (
+                  {sessionsLoading && (
+                    <div style={{ padding: '4px 0' }}>
+                      {Array.from({ length: 7 }, (_, i) => (
+                        <div
+                          key={i}
+                          className="ocr-skeleton-row"
+                          style={{ height: 34, width: `${92 - (i % 3) * 10}%` }}
+                        />
+                      ))}
+                    </div>
+                  )}
+                  {!sessionsLoading && visibleSessions.map((s, i) => (
                     <div
                       key={s.file}
                       className="capture-session-card"
@@ -1535,7 +1557,7 @@ export const CapturesPage: React.FC = () => {
                       </div>
                     </div>
                   ))}
-                  {visibleSessions.length === 0 && (
+                  {!sessionsLoading && visibleSessions.length === 0 && (
                     <div style={{ padding: '8px 10px', fontSize: '11px', color: 'var(--text-dim)' }}>
                       {q ? t('captures.noMatchSessions') : t('captures.emptySessions')}
                     </div>
