@@ -235,6 +235,14 @@ export interface HttpExchangeEvent {
    * outer request's trace/session). Absent = ordinary traffic.
    */
   purpose?: ExchangePurpose;
+  /**
+   * Completion-token total derived at read time from the response body (last
+   * usage occurrence — streaming SSE repeats it, the final chunk is the
+   * cumulative total). Lets metadata-only reads (`bodies=none`, bodies
+   * stripped) still render per-turn tok/s chips without shipping the body.
+   * Absent for hex/binary bodies or bodies without a usage block.
+   */
+  completionTokens?: number;
 }
 
 /** Label for capture events that carry a non-default call purpose. */
@@ -248,6 +256,26 @@ export type ExchangePurpose = 'l2-judge';
 export interface CaptureKeyIdentity {
   id: string;
   name: string;
+}
+
+/**
+ * One logical inference turn: the four http-exchange events joined by
+ * `traceId` / `spanId` (see `groupEventsIntoTurns`).
+ */
+export interface CaptureTurnSummary {
+  traceId: string;
+  sessionId: string;
+  model: string;
+  clientRequest?: HttpExchangeEvent;
+  gatewayResponse?: HttpExchangeEvent;
+  upstreamRequest?: HttpExchangeEvent;
+  upstreamResponse?: HttpExchangeEvent;
+  /** Any of the four events with an error field set; "first error wins". */
+  error?: string;
+  /** Gateway cycle latency (client-resp.ts - client-req.ts). */
+  gatewayLatencyMs?: number;
+  /** Upstream cycle latency (upstream-resp.ts - upstream-req.ts). */
+  upstreamLatencyMs?: number;
 }
 
 interface CaptureDateRow {
@@ -373,13 +401,49 @@ function humanBytes(n: number): string {
 // with maxBodyBytes (see readWindowBytes): a raised per-body cap must not
 // silently shrink replay to a handful of turns. Full history always via
 // export (readRawArchive is uncapped).
-// Ceiling trade-off: the read is a single synchronous fs.openSync/readSync
-// on the admin route, so a window this large can stall the event loop for
-// tens of ms per console open. Accepted — the surface is single-operator and
-// reads are user-initiated. Upgrade path: stream the tail in chunks
-// (createReadStream + fs.promises) and parse incrementally.
+// The window read is async (fs.promises) and parsing is yield-paced in
+// batches, so a large window no longer stalls the event loop while an
+// archive read is in flight.
 const READ_WINDOW_FLOOR_BYTES = 8 * 1024 * 1024;
 const READ_WINDOW_CEIL_BYTES = 48 * 1024 * 1024;
+
+/**
+ * Last "completion_tokens" / "output_tokens" occurrence in a response body —
+ * streaming SSE repeats it and the final chunk carries the cumulative total
+ * (Anthropic message_delta / OpenAI final usage chunk). Derived at read time
+ * so metadata-only responses (`bodies=none`) still render per-turn tok/s
+ * chips without shipping the body. Hex (binary) bodies are skipped. Manual
+ * exec loop: no match-all array for chunked SSE bodies with thousands of
+ * usage repeats.
+ */
+const COMPLETION_TOKENS_RE = /"(?:completion_tokens|output_tokens)"\s*:\s*(\d+)/g;
+const deriveCompletionTokens = (ev: HttpExchangeEvent): void => {
+  if (ev.phase !== 'response') return;
+  const body = ev.wire?.responseBody;
+  if (typeof body !== 'string') return;
+  let last: string | null = null;
+  COMPLETION_TOKENS_RE.lastIndex = 0;
+  for (let m = COMPLETION_TOKENS_RE.exec(body); m; m = COMPLETION_TOKENS_RE.exec(body)) last = m[1];
+  if (last !== null) ev.completionTokens = Number(last);
+};
+
+/**
+ * bodies='none' strips the wire bodies (lines, status, headers kept) —
+ * metadata-first reads return KB instead of MB so the console paints the
+ * turn list immediately; full bodies arrive on demand via readTurn (per
+ * turn) or a bodies=full re-read (conversation lens).
+ */
+const stripBodies = (events: HttpExchangeEvent[]): void => {
+  for (const ev of events) {
+    // Partial view of the wire: RawWireCapture declares the bodies required
+    // (they are, on disk) — the stripped in-memory copy drops them.
+    const wire = ev.wire as Partial<RawWireCapture> | undefined;
+    if (wire) {
+      delete wire.requestBody;
+      delete wire.responseBody;
+    }
+  }
+};
 
 /**
  * Full request/response capture recorder (opt-in audit log).
@@ -927,78 +991,90 @@ export class CaptureRecorder {
   }
 
   /**
-   * Read HTTP exchange events from one archive file, newest `limit` events
-   * in chronological order. Returns events + a `turns` summary that
-   * groups the events by `traceId` (spanId-aware) so the console can
-   * render them as logical turns. The underlying file is also bounded at
-   * readWindowBytes() (pathologically large archives are tailed; the tail is
-   * what matters).
+   * Read the last `readWindowBytes()` of one archive and parse its
+   * http-exchange events. Async and yield-paced: the window can be tens of
+   * MB and per-line JSON.parse is CPU-bound — parsing in batches with
+   * event-loop yields keeps the gateway responsive while an archive read is
+   * in flight. Never fails: corrupt lines are skipped.
    */
-  public readEvents(
+  private async readWindowEvents(
     date: string,
-    file: string,
-    limit = 500
-  ): {
-    events: HttpExchangeEvent[];
-    turns: Array<{
-      traceId: string;
-      sessionId: string;
-      model: string;
-      clientRequest?: HttpExchangeEvent;
-      gatewayResponse?: HttpExchangeEvent;
-      upstreamRequest?: HttpExchangeEvent;
-      upstreamResponse?: HttpExchangeEvent;
-      /** Any of the four events with an error field set; "first error wins". */
-      error?: string;
-      /** gateway cycle latency (client-resp.ts - client-req.ts). */
-      gatewayLatencyMs?: number;
-      /** upstream cycle latency (upstream-resp.ts - upstream-req.ts). */
-      upstreamLatencyMs?: number;
-    }>;
-    totalLines: number;
-    /** Logical turn count over ALL events in the read window (totalLines is
-     * raw event lines — 2-4 per turn — so it must never be shown as turns). */
-    totalTurns: number;
-    fileTruncated: boolean;
-  } {
+    file: string
+  ): Promise<{ events: HttpExchangeEvent[]; fileTruncated: boolean }> {
     const filePath = this.resolveArchiveFile(date, file);
-    if (!filePath) return { events: [], turns: [], totalLines: 0, totalTurns: 0, fileTruncated: false };
+    if (!filePath) return { events: [], fileTruncated: false };
 
     let text: string;
     let fileTruncated = false;
     try {
-      const st = fs.statSync(filePath);
+      const st = await fs.promises.stat(filePath);
       const readSize = Math.min(st.size, this.readWindowBytes());
-      const fd = fs.openSync(filePath, 'r');
+      const fh = await fs.promises.open(filePath, 'r');
       try {
         const buf = Buffer.alloc(readSize);
-        fs.readSync(fd, buf, 0, readSize, st.size - readSize);
+        await fh.read(buf, 0, readSize, st.size - readSize);
         text = buf.toString('utf8');
       } finally {
-        fs.closeSync(fd);
+        await fh.close();
       }
       fileTruncated = readSize < st.size;
     } catch {
-      return { events: [], turns: [], totalLines: 0, totalTurns: 0, fileTruncated: false };
+      return { events: [], fileTruncated: false };
     }
 
     const lines = text.split(/\r?\n/);
     if (fileTruncated && lines.length > 0) lines.shift();
 
     const events: HttpExchangeEvent[] = [];
-    for (const raw of lines) {
+    const yieldLoop = () => new Promise<void>(r => setImmediate(r));
+    const BATCH = 128; // lines per event-loop slice
+    for (let i = 0; i < lines.length; i++) {
+      const raw = lines[i];
       if (!raw.trim()) continue;
       try {
         const obj = JSON.parse(raw) as Record<string, unknown>;
         if (obj.eventType === 'http-exchange') {
-          events.push(obj as unknown as HttpExchangeEvent);
+          const ev = obj as unknown as HttpExchangeEvent;
+          deriveCompletionTokens(ev);
+          events.push(ev);
         }
         // cap_xxx entries (turn-centric) are skipped — the console reads
         // those via /api/admin/capture/:date/:file (readRecords path).
       } catch {
         // Corrupt/partial line — skip, never fail the whole read.
       }
+      if ((i + 1) % BATCH === 0) await yieldLoop();
     }
+    return { events, fileTruncated };
+  }
+
+  /**
+   * Read HTTP exchange events from one archive file, newest `limit` events
+   * in chronological order. Returns events + a `turns` summary that
+   * groups the events by `traceId` (spanId-aware) so the console can
+   * render them as logical turns. The underlying file is also bounded at
+   * readWindowBytes() (pathologically large archives are tailed; the tail is
+   * what matters). `bodies='none'` strips wire bodies for metadata-first
+   * console reads — the tok/s chips keep working via the derived
+   * `completionTokens` field, and full bodies come back on demand
+   * (readTurn / bodies='full').
+   */
+  public async readEvents(
+    date: string,
+    file: string,
+    limit = 500,
+    bodies: 'full' | 'none' = 'full'
+  ): Promise<{
+    events: HttpExchangeEvent[];
+    turns: CaptureTurnSummary[];
+    totalLines: number;
+    /** Logical turn count over ALL events in the read window (totalLines is
+     * raw event lines — 2-4 per turn — so it must never be shown as turns). */
+    totalTurns: number;
+    fileTruncated: boolean;
+  }> {
+    const { events, fileTruncated } = await this.readWindowEvents(date, file);
+    if (bodies === 'none') stripBodies(events);
 
     let newest = events.slice(-Math.max(1, limit));
     // Don't cut a turn in half: when the window starts mid-turn, the
@@ -1015,6 +1091,30 @@ export class CaptureRecorder {
   }
 
   /**
+   * Read one turn's FULL wire bodies by the id of any of its events (the
+   * console passes the client-request event id). The metadata-first console
+   * flow fetches the heavy bodies here when a turn is opened. Returns null
+   * when the id is unknown or falls outside the read window.
+   */
+  public async readTurn(
+    date: string,
+    file: string,
+    eventId: string
+  ): Promise<{ turn: CaptureTurnSummary } | null> {
+    const { events } = await this.readWindowEvents(date, file);
+    const anchor = events.find(e => e.id === eventId);
+    if (!anchor) return null;
+    const subset = events.filter(e => e.traceId === anchor.traceId);
+    const turns = CaptureRecorder.groupEventsIntoTurns(subset);
+    const turn = turns.find(t =>
+      [t.clientRequest, t.gatewayResponse, t.upstreamRequest, t.upstreamResponse].some(
+        e => e?.id === eventId
+      )
+    );
+    return turn ? { turn } : null;
+  }
+
+  /**
    * Group a flat list of HTTP exchange events into logical turns via
    * `traceId`. Each turn joins its four events: client-direction events
    * pair by `spanId`, upstream events attach to the trace's active turn
@@ -1023,38 +1123,13 @@ export class CaptureRecorder {
    * collapse the whole session into one turn.
    * Pure function — exported for unit tests.
    */
-  public static groupEventsIntoTurns(
-    events: HttpExchangeEvent[]
-  ): Array<{
-    traceId: string;
-    sessionId: string;
-    model: string;
-    clientRequest?: HttpExchangeEvent;
-    gatewayResponse?: HttpExchangeEvent;
-    upstreamRequest?: HttpExchangeEvent;
-    upstreamResponse?: HttpExchangeEvent;
-    error?: string;
-    gatewayLatencyMs?: number;
-    upstreamLatencyMs?: number;
-  }> {
-    type Turn = {
-      traceId: string;
-      sessionId: string;
-      model: string;
-      clientRequest?: HttpExchangeEvent;
-      gatewayResponse?: HttpExchangeEvent;
-      upstreamRequest?: HttpExchangeEvent;
-      upstreamResponse?: HttpExchangeEvent;
-      error?: string;
-      gatewayLatencyMs?: number;
-      upstreamLatencyMs?: number;
-    };
-    const byTrace = new Map<string, Turn[]>();
+  public static groupEventsIntoTurns(events: HttpExchangeEvent[]): CaptureTurnSummary[] {
+    const byTrace = new Map<string, CaptureTurnSummary[]>();
     /** traceId → the turn upstream events should attach to (the latest). */
-    const activeByTrace = new Map<string, Turn>();
+    const activeByTrace = new Map<string, CaptureTurnSummary>();
 
-    const newTurn = (ev: HttpExchangeEvent): Turn => {
-      const t: Turn = { traceId: ev.traceId, sessionId: ev.sessionId, model: ev.model };
+    const newTurn = (ev: HttpExchangeEvent): CaptureTurnSummary => {
+      const t: CaptureTurnSummary = { traceId: ev.traceId, sessionId: ev.sessionId, model: ev.model };
       let list = byTrace.get(ev.traceId);
       if (!list) {
         list = [];
@@ -1065,7 +1140,7 @@ export class CaptureRecorder {
     };
 
     for (const ev of events) {
-      let t: Turn | undefined;
+      let t: CaptureTurnSummary | undefined;
       if (ev.direction === 'client' && ev.phase === 'request') {
         // A client request ALWAYS starts a new turn — even when the traceId
         // was already seen (a client sending a constant x-request-id on
@@ -1100,7 +1175,7 @@ export class CaptureRecorder {
       }
       if (ev.error && !t.error) t.error = ev.error;
     }
-    const all: Turn[] = [];
+    const all: CaptureTurnSummary[] = [];
     for (const list of byTrace.values()) all.push(...list);
     for (const t of all) {
       if (t.clientRequest && t.gatewayResponse) {

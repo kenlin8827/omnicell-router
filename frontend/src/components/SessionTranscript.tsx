@@ -5,7 +5,7 @@
  * middle, and the converged answer is the tail. Reconstructed from the turn
  * wire bodies by lib/transcript; each step links to its raw wire drawer.
  */
-import React, { useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useContext, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -1164,6 +1164,12 @@ const FocusRoundView: React.FC<{
   );
 };
 
+// Progressive round rendering: paint the first page immediately, then pull
+// in the next page whenever the sentinel below the last painted round
+// approaches the viewport. Long sessions never block on one giant render —
+// the list loads in steps while the user reads downward.
+const ROUNDS_PAGE = 20;
+
 export const SessionTranscript: React.FC<{
   turns: CaptureTurn[];
   fileTruncated: boolean;
@@ -1174,8 +1180,36 @@ export const SessionTranscript: React.FC<{
   onOpenTurn: (idx: number) => void;
 }> = ({ turns, fileTruncated, date, expandAll, onOpenTurn }) => {
   const { t } = useI18n();
-  const items = useMemo(() => buildTranscript(turns), [turns]);
+  // Transcript parsing (one JSON.parse per wire body) is the heaviest CPU
+  // step of the lens — run it against the deferred turns so a session switch
+  // paints the pane shell before the parse lands.
+  const deferredTurns = useDeferredValue(turns);
+  const items = useMemo(() => buildTranscript(deferredTurns), [deferredTurns]);
   const rounds = useMemo(() => groupIntoRounds(items), [items]);
+  const [visibleRounds, setVisibleRounds] = useState(ROUNDS_PAGE);
+  useEffect(() => {
+    setVisibleRounds(ROUNDS_PAGE);
+  }, [turns]);
+  const shown = useMemo(() => rounds.slice(0, visibleRounds), [rounds, visibleRounds]);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el || visibleRounds >= rounds.length) return;
+    if (typeof IntersectionObserver === 'undefined') {
+      setVisibleRounds(rounds.length);
+      return;
+    }
+    const io = new IntersectionObserver(
+      entries => {
+        if (entries.some(e => e.isIntersecting)) {
+          setVisibleRounds(c => Math.min(c + ROUNDS_PAGE, rounds.length));
+        }
+      },
+      { rootMargin: '600px 0px' }
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [visibleRounds, rounds.length]);
   // Single-round focus: one card owns the viewport, open by default. Index
   // into `rounds`; transient like the whole-session fullscreen (never
   // persisted, resets when the archive changes underneath us).
@@ -1246,7 +1280,7 @@ export const SessionTranscript: React.FC<{
           {t('captures.chatEmpty')}
         </div>
       ) : (
-        rounds.map((r, i) => (
+        shown.map((r, i) => (
           <RoundCard
             key={`${r.steps[0]?.turn.traceId ?? 'r'}-${i}`}
             round={r}
@@ -1258,6 +1292,19 @@ export const SessionTranscript: React.FC<{
             onOpenTurn={onOpenTurn}
           />
         ))
+      )}
+      {visibleRounds < rounds.length && (
+        <div
+          ref={sentinelRef}
+          style={{
+            padding: '14px 0 20px',
+            textAlign: 'center',
+            color: 'var(--text-dim)',
+            fontSize: '11px',
+          }}
+        >
+          {t('captures.loadingMoreRounds')}
+        </div>
       )}
       {focusIdx !== null &&
         rounds[focusIdx] &&

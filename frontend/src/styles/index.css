@@ -1126,6 +1126,19 @@ input[type='checkbox']:not(.switch):disabled {
   to { transform: translateX(0); opacity: 1; }
 }
 
+/* ---- Loading skeleton rows (CapturesPage TurnsSkeleton) ---- */
+@keyframes ocr-skeleton {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 0.9; }
+}
+.ocr-skeleton-row {
+  border-radius: 6px;
+  background: var(--chip-bg);
+  border: 1px solid var(--divider);
+  margin-bottom: 8px;
+  animation: ocr-skeleton 1.4s ease-in-out infinite;
+}
+
 /* ---- Console top header: responsive degradation (Layout.tsx) ---- */
 /* Wrapping + nowrap (inline styles in Layout) stop CJK labels from breaking
    one-character-per-line; these rules then collapse labels to icon-only as

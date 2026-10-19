@@ -3382,9 +3382,35 @@ export function registerConsoleRoutes(
       return reply.status(400).send({ status: 'error', message: 'date must be YYYY-MM-DD' });
     }
     const limit = Math.min(Math.max(parseInt((req.query as any)?.limit || '500', 10) || 500, 1), 5000);
-    const result = captureRecorder.readEvents(date, file, limit);
+    // Metadata-first console reads: bodies=none strips the wire bodies (KB
+    // payload, instant paint); full bodies come back per turn via /turn or a
+    // bodies=full re-read.
+    const bodies = (req.query as any)?.bodies === 'none' ? 'none' : 'full';
+    const result = await captureRecorder.readEvents(date, file, limit, bodies);
     if (result.totalLines === 0 && !captureRecorder.listSessions(date).some(s => s.file === file)) {
       return reply.status(404).send({ status: 'error', message: 'Capture archive not found' });
+    }
+    return { status: 'ok', date, file, ...result };
+  });
+
+  /**
+   * Full wire bodies for ONE turn (the console passes the client-request
+   * event id). The metadata-first events read strips bodies; the drawer
+   * fetches them here when a turn is opened. Bounded by the same read
+   * window as /events — a turn archived beyond the window answers 404.
+   */
+  app.get('/api/admin/capture/:date/:file/turn', async (req: any, reply: any) => {
+    const { date, file } = req.params as { date: string; file: string };
+    if (!CAPTURE_DATE_RE.test(date)) {
+      return reply.status(400).send({ status: 'error', message: 'date must be YYYY-MM-DD' });
+    }
+    const id = (req.query as any)?.id;
+    if (typeof id !== 'string' || !id || id.length > 128) {
+      return reply.status(400).send({ status: 'error', message: 'id query param required' });
+    }
+    const result = await captureRecorder.readTurn(date, file, id);
+    if (!result) {
+      return reply.status(404).send({ status: 'error', message: 'Turn not found in read window' });
     }
     return { status: 'ok', date, file, ...result };
   });

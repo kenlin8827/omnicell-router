@@ -31,7 +31,11 @@ import { findMediaTokens, unwrapHarnessText } from '../lib/transcript';
  */
 const COMPLETION_TOKENS_RE = /"(?:completion_tokens|output_tokens)"\s*:\s*(\d+)/g;
 const completionTokensFrom = (event?: HttpExchangeEvent): number | null => {
-  const body = event?.wire?.responseBody;
+  if (!event) return null;
+  // Server-derived total (metadata-only reads strip the body) takes
+  // precedence; the body regex stays as the fallback for older reads.
+  if (typeof event.completionTokens === 'number') return event.completionTokens;
+  const body = event.wire?.responseBody;
   if (typeof body !== 'string') return null;
   let last: string | null = null;
   for (const m of body.matchAll(COMPLETION_TOKENS_RE)) last = m[1];
@@ -70,6 +74,23 @@ function fmtBytes(n: number): string {
 function fmtTime(ts: number): string {
   return new Date(ts).toLocaleTimeString();
 }
+
+/** Loading skeleton for the session pane — shimmer rows so a click gives
+ *  instant structural feedback instead of a silent wait on the fetch. */
+const TurnsSkeleton: React.FC<{ chat?: boolean }> = ({ chat }) => {
+  const rows = chat ? 6 : 9;
+  return (
+    <div style={{ padding: '6px 0' }}>
+      {Array.from({ length: rows }, (_, i) => (
+        <div
+          key={i}
+          className="ocr-skeleton-row"
+          style={{ height: chat ? 44 : 26, width: `${88 - (i % 4) * 9}%`, marginLeft: chat ? 0 : 4 }}
+        />
+      ))}
+    </div>
+  );
+};
 
 /**
  * Wire-content block with a small toolbar: copy-to-clipboard (with textarea
@@ -180,11 +201,18 @@ type DrawerTab = 'clientRequest' | 'gatewayResponse' | 'upstreamRequest' | 'upst
  * Tabs keep the three bodies (inbound request / upstream request / response)
  * focused instead of one long scroll — the upstream tab is where you land only
  * when debugging compression/wire behavior, so it defaults to the inbound view.
+ * With metadata-first list reads the drawer shell paints instantly and the
+ * full wire bodies stream in via the per-turn fetch (`loading`); `outOfWindow`
+ * marks a turn archived beyond the read window (bodies unrecoverable).
  */
 const CaptureDrawer: React.FC<{
   turn: CaptureTurn;
+  /** Full wire bodies are being fetched for this turn. */
+  loading?: boolean;
+  /** Turn's bodies fall outside the read window (long archive, tail kept). */
+  outOfWindow?: boolean;
   onClose: () => void;
-}> = ({ turn, onClose }) => {
+}> = ({ turn, loading, outOfWindow, onClose }) => {
   const { t } = useI18n();
   const toast = useToast();
   const [tab, setTab] = useState<DrawerTab>('clientRequest');
@@ -449,12 +477,32 @@ const CaptureDrawer: React.FC<{
 
         {/* Body: one wire dump (request line + headers + body) OR (response line + status + headers + body) */}
         <div style={{ flex: 1, overflow: 'auto', padding: '14px 16px', minHeight: 0 }}>
-          {!active.ev ? (
+          {loading ? (
+            <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '12px' }}>
+              <RefreshCw size={14} style={{ animation: 'ocr-spin 0.8s linear infinite', verticalAlign: '-2px', marginRight: 6 }} />
+              {t('captures.turnLoading')}
+            </div>
+          ) : !active.ev ? (
             <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '12px' }}>
               {t('captures.tabEmpty')}
             </div>
           ) : (
             <>
+              {outOfWindow && (
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    fontSize: '11px',
+                    color: 'var(--accent-amber)',
+                    padding: '0 0 10px',
+                  }}
+                >
+                  <AlertTriangle size={12} />
+                  <span>{t('captures.turnOutOfRange')}</span>
+                </div>
+              )}
               <WireBlock event={active.ev} />
               {active.ev.truncated && (
                 <div
@@ -712,6 +760,26 @@ export const CapturesPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [toggling, setToggling] = useState(false);
+  // Metadata-first reads: the turn list loads WITHOUT wire bodies (instant
+  // paint); `bodiesLoaded` marks that the current `turns` carry the full
+  // bodies (conversation lens / explicit full read). Drawer bodies are
+  // fetched per turn and cached per session (fetchedTurnsRef).
+  const [bodiesLoaded, setBodiesLoaded] = useState(false);
+  // The date/file pair the rendered `turns` were loaded for — a date-chip
+  // click updates the live selection one render BEFORE the turns are
+  // replaced, so per-turn fetches must target this pair, not the live one.
+  const [loadedFor, setLoadedFor] = useState<{ date: string; file: string }>({ date: '', file: '' });
+  const [drawerTurn, setDrawerTurn] = useState<CaptureTurn | null>(null);
+  const [drawerLoading, setDrawerLoading] = useState(false);
+  const [drawerMiss, setDrawerMiss] = useState(false);
+  // Monotonic read sequence: a newer selection supersedes an in-flight read
+  // (fast A→B clicks must never let A's late response clobber B's).
+  const loadSeqRef = useRef(0);
+  // Set when the latest read failed: the conversation-lens upgrade effect
+  // keys off bodiesLoaded/loading and would refetch in a loop on a
+  // persistent failure — the explicit refresh buttons are the retry path.
+  const loadFailedRef = useRef(false);
+  const fetchedTurnsRef = useRef(new Map<string, CaptureTurn>());
   const [exportTarget, setExportTarget] = useState<CaptureSessionRow | null>(null);
   const [query, setQuery] = useState('');
   // Per-application retrieval: '' = all keys; otherwise a client API-key id
@@ -756,27 +824,43 @@ export const CapturesPage: React.FC = () => {
     }
   }, []);
 
-  const loadRecords = useCallback(async (date: string, file: string) => {
+  const loadRecords = useCallback(async (date: string, file: string, wantBodies = false) => {
+    const seq = ++loadSeqRef.current;
+    fetchedTurnsRef.current.clear();
+    setDrawerTurn(null);
+    setDrawerLoading(false);
+    setDrawerMiss(false);
+    setSelectedTurnIdx(null);
+    setBodiesLoaded(false);
+    // Immediate feedback: the previous session's rows drop right away and a
+    // skeleton takes over — a click never waits silently on the fetch. The
+    // metadata-first read (no wire bodies) keeps that wait to KBs.
+    setTurns([]);
+    setEvents([]);
     if (!date || !file) {
-      setTurns([]);
-      setEvents([]);
+      // Supersedes any in-flight read — its seq-guarded finally must not be
+      // the one to clear `loading`, so clear it here or a deselect while a
+      // load is in flight would stick the skeleton on forever.
+      if (seq === loadSeqRef.current) setLoading(false);
       return;
     }
+    loadFailedRef.current = false;
     setLoading(true);
+    setLoadedFor({ date, file });
     try {
-      const res = await api.getCaptureEvents(date, file);
-      // Timeline renders newest-first: the read window is the file's tail, so
-      // the most recent turn is the one worth seeing first. Reverse ONCE here
-      // at state level so selectedTurnIdx / drawer / list keys stay consistent.
+      const res = await api.getCaptureEvents(date, file, 500, wantBodies ? 'full' : 'none');
+      if (seq !== loadSeqRef.current) return; // superseded by a newer selection
       setTurns([...res.turns].reverse());
       setEvents(res.events);
       setTotalTurns(res.totalTurns);
       setFileTruncated(res.fileTruncated);
-      setSelectedTurnIdx(null);
+      setBodiesLoaded(wantBodies);
     } catch (err) {
       console.error(err);
+      // No auto-retry (see loadFailedRef) — flag it for the upgrade effect.
+      if (seq === loadSeqRef.current) loadFailedRef.current = true;
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
   }, []);
 
@@ -808,8 +892,20 @@ export const CapturesPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    loadRecords(selectedDate, selectedFile);
+    // A session opened while the conversation lens is active needs full
+    // bodies immediately; lens switches are upgraded by the effect below.
+    loadRecords(selectedDate, selectedFile, mainView === 'chat');
   }, [selectedDate, selectedFile, loadRecords]);
+
+  // Switching to the conversation lens needs full wire bodies (the
+  // metadata-first list is enough only for the timeline). Upgrade in place:
+  // the skeleton takes over, then the full read renders progressively.
+  // loadFailedRef stops the loop: on a persistent failure this effect would
+  // otherwise refire on every loading flip — the refresh button retries.
+  useEffect(() => {
+    if (mainView !== 'chat' || !selectedFile || bodiesLoaded || loading || loadFailedRef.current) return;
+    loadRecords(selectedDate, selectedFile, true);
+  }, [mainView, selectedFile, bodiesLoaded, loading, selectedDate, loadRecords]);
 
   /**
    * Deep link from other pages: /captures?session=<raw sessionId>.
@@ -848,6 +944,63 @@ export const CapturesPage: React.FC = () => {
     setPendingFile('');
   }, [pendingFile, sessions]);
 
+  // Drawer bodies: metadata-first turns carry no wire bodies — fetch the
+  // full turn on open (cached per session so re-opening is instant). With
+  // bodies already loaded (conversation lens) the local turn is used as-is.
+  useEffect(() => {
+    if (selectedTurnIdx === null) {
+      setDrawerTurn(null);
+      setDrawerMiss(false);
+      return;
+    }
+    const meta = turns[selectedTurnIdx];
+    if (!meta) return;
+    // The rendered turns belong to `loadedFor`, not necessarily to the live
+    // selection — a date-chip click updates selectedDate a render before the
+    // turns are replaced. Fetching against the live selection here would ask
+    // the WRONG archive for bodies; wait until the load lands.
+    if (loadedFor.date !== selectedDate || loadedFor.file !== selectedFile) return;
+    if (bodiesLoaded) {
+      setDrawerTurn(meta);
+      setDrawerMiss(false);
+      return;
+    }
+    const key = meta.clientRequest?.id ?? meta.traceId;
+    const cached = fetchedTurnsRef.current.get(key);
+    if (cached) {
+      setDrawerTurn(cached);
+      setDrawerMiss(false);
+      return;
+    }
+    let alive = true;
+    setDrawerTurn(null);
+    setDrawerLoading(true);
+    setDrawerMiss(false);
+    api
+      .getCaptureTurn(loadedFor.date, loadedFor.file, key)
+      .then(res => {
+        if (!alive) return;
+        if (res) {
+          fetchedTurnsRef.current.set(key, res);
+          setDrawerTurn(res);
+        } else {
+          // Turn archived beyond the read window — render the metadata-only
+          // turn plus an explanation instead of a silent blank.
+          setDrawerMiss(true);
+        }
+      })
+      .catch(err => {
+        console.error(err);
+        if (alive) setDrawerMiss(true);
+      })
+      .finally(() => {
+        if (alive) setDrawerLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [selectedTurnIdx, turns, bodiesLoaded, loadedFor, selectedDate, selectedFile]);
+
   /**
    * Full refresh: status + date chips, then the session list of the selected
    * day, then the open session's timeline. The old button only re-read the
@@ -858,11 +1011,11 @@ export const CapturesPage: React.FC = () => {
     try {
       await loadStatus();
       await loadSessions(selectedDate, apiKeyFilter);
-      if (selectedFile) await loadRecords(selectedDate, selectedFile);
+      if (selectedFile) await loadRecords(selectedDate, selectedFile, mainView === 'chat' || bodiesLoaded);
     } finally {
       setRefreshing(false);
     }
-  }, [loadStatus, loadSessions, loadRecords, selectedDate, apiKeyFilter, selectedFile]);
+  }, [loadStatus, loadSessions, loadRecords, selectedDate, apiKeyFilter, selectedFile, mainView, bodiesLoaded]);
 
   const handleToggle = async (next: boolean) => {
     if (toggling) return;
@@ -1476,7 +1629,7 @@ export const CapturesPage: React.FC = () => {
                               status + dates + session list too. */}
                           <button
                             className="btn btn-sm"
-                            onClick={() => loadRecords(selectedDate, selectedFile)}
+                            onClick={() => loadRecords(selectedDate, selectedFile, mainView === 'chat' || bodiesLoaded)}
                             disabled={loading}
                             title={t('captures.refreshTurnsHint')}
                           >
@@ -1486,7 +1639,9 @@ export const CapturesPage: React.FC = () => {
                         </div>
                       </div>
                       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '10px 16px 14px' }}>
-                        {mainView === 'chat' ? (
+                        {loading && turns.length === 0 ? (
+                          <TurnsSkeleton chat={mainView === 'chat'} />
+                        ) : mainView === 'chat' ? (
                           <SessionTranscript
                             turns={turns}
                             fileTruncated={fileTruncated}
@@ -1661,7 +1816,12 @@ export const CapturesPage: React.FC = () => {
       )}
 
       {selectedTurnIdx !== null && turns[selectedTurnIdx] && (
-        <CaptureDrawer turn={turns[selectedTurnIdx]} onClose={() => setSelectedTurnIdx(null)} />
+        <CaptureDrawer
+          turn={drawerTurn ?? turns[selectedTurnIdx]}
+          loading={drawerLoading}
+          outOfWindow={drawerMiss}
+          onClose={() => setSelectedTurnIdx(null)}
+        />
       )}
 
       {chatFull && mainView === 'chat' &&

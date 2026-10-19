@@ -686,7 +686,7 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
     await emitOneTurn('corr_read_2', sessionId, 'auto-plus');
     const dateDir = CaptureRecorder.localDateDir(new Date());
     const file = `${sessionId}.jsonl`;
-    const result = recorder.readEvents(dateDir, file, 100);
+    const result = await recorder.readEvents(dateDir, file, 100);
     assert.equal(result.turns.length, 2);
     assert.equal(result.events.length, 8);
     // The header's turn tally must be the grouped count, not raw event
@@ -700,6 +700,94 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
       assert.equal(t.clientRequest!.spanId, t.gatewayResponse!.spanId);
       assert.equal(t.upstreamRequest!.spanId, t.upstreamResponse!.spanId);
     }
+  });
+
+  it('readEvents bodies=none strips wire bodies, keeps lines/status/headers', async () => {
+    const sessionId = 'sess_read_none';
+    await emitOneTurn('corr_none_1', sessionId, 'auto-lite');
+    const dateDir = CaptureRecorder.localDateDir(new Date());
+    const file = `${sessionId}.jsonl`;
+    const result = await recorder.readEvents(dateDir, file, 100, 'none');
+    assert.equal(result.turns.length, 1);
+    const t = result.turns[0];
+    assert.ok(t.clientRequest && t.gatewayResponse && t.upstreamRequest && t.upstreamResponse);
+    // Bodies stripped — metadata-first reads ship KBs, not MBs.
+    assert.equal(t.clientRequest!.wire.requestBody, undefined);
+    assert.equal(t.upstreamResponse!.wire.responseBody, undefined);
+    // Lines, status and headers survive for metadata rendering.
+    assert.equal(t.clientRequest!.wire.requestLine, 'POST /v1/chat/completions HTTP/1.1');
+    assert.equal(t.gatewayResponse!.wire.status, 200);
+    assert.equal(t.upstreamRequest!.wire.requestHeaders['content-type'], 'application/json');
+    // Full read of the same archive still carries the bodies.
+    const full = await recorder.readEvents(dateDir, file, 100, 'full');
+    assert.equal(full.turns[0].clientRequest!.wire.requestBody, '{"messages":[]}');
+  });
+
+  it('readEvents derives completionTokens from the last usage block', async () => {
+    const sessionId = 'sess_read_tokens';
+    await emitOneTurn('corr_tok_1', sessionId, 'auto-lite');
+    // Streaming-style body: usage repeats per chunk, the LAST occurrence is
+    // the cumulative total.
+    await recorder.recordEvent({
+      eventType: 'http-exchange',
+      direction: 'client',
+      phase: 'request',
+      spanId: 'wire_tok_2',
+      traceId: 'corr_tok_2',
+      sessionId,
+      model: 'auto-lite',
+      status: 'ok',
+      wire: {
+        requestLine: 'POST /v1/chat/completions HTTP/1.1',
+        requestHeaders: {},
+        requestBody: '{}',
+        responseLine: '',
+        status: 0,
+        responseHeaders: {},
+        responseBody: '',
+      },
+    });
+    await recorder.recordEvent({
+      eventType: 'http-exchange',
+      direction: 'client',
+      phase: 'response',
+      spanId: 'wire_tok_2',
+      traceId: 'corr_tok_2',
+      sessionId,
+      model: 'auto-lite',
+      status: 'ok',
+      wire: {
+        requestLine: '',
+        requestHeaders: {},
+        requestBody: '',
+        responseLine: 'HTTP/1.1 200 OK',
+        status: 200,
+        responseHeaders: {},
+        responseBody: 'data: {"usage":{"output_tokens":5}}\ndata: {"usage":{"output_tokens":42}}',
+      },
+    });
+    const dateDir = CaptureRecorder.localDateDir(new Date());
+    const file = `${sessionId}.jsonl`;
+    const result = await recorder.readEvents(dateDir, file, 100);
+    const t = result.turns.find(x => x.traceId === 'corr_tok_2');
+    assert.ok(t?.gatewayResponse);
+    assert.equal(t.gatewayResponse!.completionTokens, 42);
+  });
+
+  it('readTurn returns the full turn by client-request id; unknown ids answer null', async () => {
+    const sessionId = 'sess_read_turn';
+    await emitOneTurn('corr_turn_1', sessionId, 'auto-lite');
+    const dateDir = CaptureRecorder.localDateDir(new Date());
+    const file = `${sessionId}.jsonl`;
+    const meta = await recorder.readEvents(dateDir, file, 100, 'none');
+    const clientReqId = meta.turns[0].clientRequest!.id;
+    const res = await recorder.readTurn(dateDir, file, clientReqId);
+    assert.ok(res);
+    assert.equal(res!.turn.traceId, 'corr_turn_1');
+    // Full bodies restored — this is the per-turn fetch behind the drawer.
+    assert.equal(res!.turn.clientRequest!.wire.requestBody, '{"messages":[]}');
+    assert.equal(res!.turn.upstreamResponse!.wire.responseBody, '{"choices":[]}');
+    assert.equal(await recorder.readTurn(dateDir, file, 'evt_missing'), null);
   });
 
   it('truncates oversized wire bodies (UTF-8 path)', async () => {

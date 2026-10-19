@@ -589,6 +589,12 @@ export interface HttpExchangeEvent {
   /** Redacted proxy origin when the upstream call went through a proxy (upstream events only). */
   proxy?: string;
   truncated?: boolean;
+  /**
+   * Completion-token total derived at read time from the response body (last
+   * usage occurrence). Present on server responses so metadata-only reads
+   * (bodies=none) still render per-turn tok/s chips without the body.
+   */
+  completionTokens?: number;
 }
 
 export interface CaptureTurn {
@@ -1886,7 +1892,8 @@ export const api = {
   async getCaptureEvents(
     date: string,
     file: string,
-    limit = 500
+    limit = 500,
+    bodies: 'full' | 'none' = 'full'
   ): Promise<{
     events: HttpExchangeEvent[];
     turns: CaptureTurn[];
@@ -1895,10 +1902,24 @@ export const api = {
     fileTruncated: boolean;
   }> {
     const res = await fetch(
-      `/api/admin/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}/events?limit=${limit}`
+      `/api/admin/capture/${encodeURIComponent(date)}/${encodeURIComponent(
+        file
+      )}/events?limit=${limit}&bodies=${bodies}`
     );
     if (!res.ok) return { events: [], turns: [], totalLines: 0, totalTurns: 0, fileTruncated: false };
     return res.json();
+  },
+
+  /** Full wire bodies for ONE turn, fetched on demand (metadata-first list reads). */
+  async getCaptureTurn(date: string, file: string, eventId: string): Promise<CaptureTurn | null> {
+    const res = await fetch(
+      `/api/admin/capture/${encodeURIComponent(date)}/${encodeURIComponent(
+        file
+      )}/turn?id=${encodeURIComponent(eventId)}`
+    );
+    if (!res.ok) return null;
+    const json = await res.json();
+    return json.turn || null;
   },
 
   async getCaptureRecords(
