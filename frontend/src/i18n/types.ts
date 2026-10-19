@@ -1239,6 +1239,8 @@ hiddenBadge: string;
     roundStepsUnit: string;
     roundOrdinal: string;
     roundTailLabel: string;
+    view: string;
+    answerSection: string;
     roundUnconvergedNote: string;
     resultsMissingShort: string;
     resultsMissingNote: string;

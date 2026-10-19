@@ -24,6 +24,8 @@ export type DialogProps = {
   width?: number;
   /** Blur the backdrop as well as dimming it. */
   blur?: boolean;
+  /** Fill the viewport instead of the centered card (fullscreen reading). */
+  full?: boolean;
 };
 
 /**
@@ -45,6 +47,7 @@ export const Dialog: React.FC<DialogProps> = ({
   closeLabel,
   width = 660,
   blur = false,
+  full = false,
 }) => {
   useBodyScrollLock(true);
 
@@ -61,8 +64,12 @@ export const Dialog: React.FC<DialogProps> = ({
   // must not dismiss the dialog.
   const mouseDownOnOverlay = useRef(false);
 
+  // Marker for layered-Escape handling: an overlay beneath this dialog (e.g.
+  // the capture focus view's own window-level Escape listener) sees the node
+  // and yields the key to the topmost dialog.
   return createPortal(
     <div
+      data-ocr-dialog=""
       style={{
         position: 'fixed',
         inset: 0,
@@ -72,7 +79,7 @@ export const Dialog: React.FC<DialogProps> = ({
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        padding: '16px',
+        padding: full ? 0 : '16px',
       }}
       onMouseDown={(e) => { mouseDownOnOverlay.current = e.target === e.currentTarget; }}
       onMouseUp={(e) => { if (mouseDownOnOverlay.current && e.target === e.currentTarget) onClose(); }}
@@ -81,8 +88,10 @@ export const Dialog: React.FC<DialogProps> = ({
         className="card"
         style={{
           width: '100%',
-          maxWidth: width,
-          maxHeight: '88vh',
+          maxWidth: full ? 'none' : width,
+          maxHeight: full ? 'none' : '88vh',
+          height: full ? '100%' : undefined,
+          borderRadius: full ? 0 : undefined,
           padding: '20px',
           boxShadow: '0 20px 40px rgba(0,0,0,0.6)',
           display: 'flex',

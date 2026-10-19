@@ -1174,6 +1174,8 @@ export const enUS: TranslationDict = {
     roundStepsUnit: '{n} steps',
     roundOrdinal: 'Round {n}',
     roundTailLabel: 'Answer',
+    view: 'View',
+    answerSection: 'Assistant answers',
     roundUnconvergedNote: 'Round ended without a converged text answer (interrupted, or still on a tool hop).',
     resultsMissingShort: 'Some tool results are missing (archived under an older truncation cap; unrecoverable) — hover for details',
     resultsMissingNote: 'Some tool results are missing: these sessions were captured under an older per-body cap that cut the request tails where tool results live. The cap has since been raised — NEW sessions replay fully; these archived bytes cannot be recovered.',

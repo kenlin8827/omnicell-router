@@ -13,6 +13,7 @@ import { AlertTriangle, Bot, ChevronDown, ChevronRight, ChevronsUpDown, Image as
 import { useI18n } from '../i18n/I18nContext';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import { BackToTop } from './BackToTop';
+import { Dialog } from './Dialog';
 import type { CaptureTurn } from '../lib/api';
 import {
   buildTranscript,
@@ -58,7 +59,11 @@ const MD_COMPONENTS: Components = {
  *  is not code; JetBrains Mono has no CJK glyphs and the mixed-width fallback
  *  reads as broken typesetting. Tool output stays mono.
  *  open/hideToggle support a parent-owned toggle (ToolResultRow's header row)
- *  so the control can sit above the preview instead of under it. */
+ *  so the control can sit above the preview instead of under it.
+ *  viewTitle shows a "view" button next to the toggle: it opens the shared
+ *  dialog with the full text — scrollable, fullscreen-capable — while the
+ *  toggle keeps expanding in place. Answer blocks use both; every other
+ *  block keeps just the toggle. */
 const Prose: React.FC<{
   text: string;
   clamp?: number;
@@ -68,7 +73,11 @@ const Prose: React.FC<{
   markdown?: boolean;
   mono?: boolean;
   open?: boolean;
+  /** Notifies the parent-owned open state on toggle (bulk section control). */
+  onOpenChange?: (v: boolean) => void;
   hideToggle?: boolean;
+  /** Present → the "view" button appears; its value is the dialog title. */
+  viewTitle?: string;
 }> = ({
   text,
   clamp = 12,
@@ -78,15 +87,19 @@ const Prose: React.FC<{
   markdown = false,
   mono = true,
   open: openProp,
+  onOpenChange,
   hideToggle,
+  viewTitle,
 }) => {
   const { t } = useI18n();
   const [openState, setOpen] = useState(false);
+  const [viewOpen, setViewOpen] = useState(false);
+  const [viewFull, setViewFull] = useState(false);
   const open = openProp ?? openState;
   const long = useMemo(() => text.split('\n').length > clamp || text.length > clamp * 140, [text, clamp]);
   // Collapsed = line-clamp; expanded = full flow — the round's waterfall
   // panel owns vertical scrolling (two scroll layers, not three).
-  const bodyStyle: React.CSSProperties =
+  const clampStyle: React.CSSProperties =
     long && !open
       ? {
           display: '-webkit-box',
@@ -95,7 +108,7 @@ const Prose: React.FC<{
           overflow: 'hidden',
         }
       : {};
-  const shell: React.CSSProperties = {
+  const baseShell: React.CSSProperties = {
     margin: 0,
     padding: '6px 10px',
     background: bg ?? 'var(--well-bg)',
@@ -107,8 +120,8 @@ const Prose: React.FC<{
     lineHeight: 1.6,
     color: color ?? 'var(--text)',
     wordBreak: 'break-word',
-    ...bodyStyle,
   };
+  const shell: React.CSSProperties = { ...baseShell, ...clampStyle };
   return (
     <div>
       {markdown ? (
@@ -121,20 +134,71 @@ const Prose: React.FC<{
         <pre style={{ ...shell, fontFamily: mono ? MONO : 'inherit', whiteSpace: 'pre-wrap' }}>{text}</pre>
       )}
       {long && !hideToggle && (
-        <button
-          onClick={() => setOpen(o => !o)}
-          style={{
-            background: 'none',
-            border: 'none',
-            color: 'var(--accent)',
-            cursor: 'pointer',
-            fontSize: '11px',
-            padding: '2px 4px',
-            marginLeft: 2,
-          }}
+        <>
+          <button
+            onClick={() => (onOpenChange ? onOpenChange(!open) : setOpen(o => !o))}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: 'var(--accent)',
+              cursor: 'pointer',
+              fontSize: '11px',
+              padding: '2px 4px',
+              marginLeft: 2,
+            }}
+          >
+            {open ? t('captures.collapse') : t('captures.expand')}
+          </button>
+          {viewTitle && (
+            <button
+              onClick={() => setViewOpen(true)}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: 'var(--accent)',
+                cursor: 'pointer',
+                fontSize: '11px',
+                padding: '2px 4px',
+                marginLeft: 6,
+              }}
+            >
+              {t('captures.view')}
+            </button>
+          )}
+        </>
+      )}
+      {/* view dialog: the shared dialog shell hosts the same well, unclamped,
+          in its own scroll layer; the header action toggles fullscreen. */}
+      {viewOpen && (
+        <Dialog
+          title={viewTitle ?? t('captures.expand')}
+          closeLabel={t('common.close')}
+          width={900}
+          full={viewFull}
+          onClose={() => setViewOpen(false)}
+          headerActions={
+            <button
+              type="button"
+              className="btn btn-sm"
+              style={{ display: 'flex', alignItems: 'center', height: 24, padding: '0 6px' }}
+              onClick={() => setViewFull(f => !f)}
+              title={viewFull ? t('captures.chatExitFullscreen') : t('captures.chatFullscreen')}
+              aria-label={viewFull ? t('captures.chatExitFullscreen') : t('captures.chatFullscreen')}
+            >
+              {viewFull ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+            </button>
+          }
         >
-          {open ? t('captures.collapse') : t('captures.expand')}
-        </button>
+          {markdown ? (
+            <div className="md-well" style={baseShell}>
+              <ReactMarkdown remarkPlugins={MD_PLUGINS} components={MD_COMPONENTS}>
+                {text}
+              </ReactMarkdown>
+            </div>
+          ) : (
+            <pre style={{ ...baseShell, fontFamily: mono ? MONO : 'inherit', whiteSpace: 'pre-wrap' }}>{text}</pre>
+          )}
+        </Dialog>
       )}
     </div>
   );
@@ -305,8 +369,8 @@ const CHIP_BTN: React.CSSProperties = {
 // Sections keep their private toggle OUTSIDE the overlay (ctx is null there —
 // the pane cards and timeline must not inherit a stranger's bulk state).
 
-type SectionKind = 'thinking' | 'toolCall' | 'toolResult' | 'context' | 'system';
-const SECTION_KINDS: SectionKind[] = ['thinking', 'toolCall', 'toolResult', 'context', 'system'];
+type SectionKind = 'thinking' | 'toolCall' | 'toolResult' | 'context' | 'system' | 'answer' | 'finalAnswer';
+const SECTION_KINDS: SectionKind[] = ['thinking', 'toolCall', 'toolResult', 'context', 'system', 'answer', 'finalAnswer'];
 
 const ExpandCtx = React.createContext<{ open: Record<SectionKind, boolean>; rev: number } | null>(null);
 
@@ -345,6 +409,8 @@ const ExpandMenu: React.FC<{
     toolResult: t('captures.msgTool'),
     context: t('captures.injectedContext'),
     system: t('captures.msgSystem'),
+    answer: t('captures.answerSection'),
+    finalAnswer: t('captures.roundTailLabel'),
   };
   return (
     <div ref={ref} style={{ position: 'relative', marginLeft: 'auto', flexShrink: 0 }}>
@@ -527,6 +593,7 @@ const ToolResultRow: React.FC<{ name?: string; blockText: string; date?: string 
 const OutputView: React.FC<{ out: TurnOutput }> = ({ out }) => {
   const { t } = useI18n();
   const [thinkOpen, setThinkOpen] = useSectionOpen('thinking');
+  const [ansOpen, setAnsOpen] = useSectionOpen('answer');
   return (
     <div style={{ borderLeft: '2px solid var(--accent-emerald)', paddingLeft: 10, marginBottom: 6 }}>
       <RoleLabel label={t('captures.msgAssistant')} color="var(--accent-emerald)" icon={<Bot size={12} />} />
@@ -545,7 +612,9 @@ const OutputView: React.FC<{ out: TurnOutput }> = ({ out }) => {
           )}
         </div>
       )}
-      {out.text && <Prose text={out.text} markdown />}
+      {out.text && (
+        <Prose text={out.text} markdown open={ansOpen} onOpenChange={setAnsOpen} viewTitle={t('captures.msgAssistant')} />
+      )}
       {out.toolCalls.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: out.text || out.reasoning ? 10 : 0 }}>
           {out.toolCalls.map((c, i) => (
@@ -688,6 +757,10 @@ const TranscriptBlock: React.FC<{
 const RoundTail: React.FC<{ round: TranscriptRound }> = ({ round }) => {
   const { t } = useI18n();
   const hasAnswer = !!(round.finalText || round.finalReasoning);
+  // The tail answer joins the bulk-expand vocabulary: the focus overlay's
+  // menu can force-open every "final answer" at once (the pane keeps a
+  // private toggle — ctx is null there).
+  const [tailOpen, setTailOpen] = useSectionOpen('finalAnswer');
   return (
     <div
       style={{
@@ -698,7 +771,14 @@ const RoundTail: React.FC<{ round: TranscriptRound }> = ({ round }) => {
       {round.finalText ? (
         <>
           <RoleLabel label={t('captures.roundTailLabel')} color="var(--accent-emerald)" icon={<Bot size={12} />} />
-          <Prose text={round.finalText} clamp={6} markdown />
+          <Prose
+            text={round.finalText}
+            clamp={6}
+            markdown
+            open={tailOpen}
+            onOpenChange={setTailOpen}
+            viewTitle={t('captures.roundTailLabel')}
+          />
           {round.finalToolCalls.length > 0 && (
             <div style={{ marginTop: 4 }}>
               <Note tone="dim" text={t('captures.roundUnconvergedNote')} />
@@ -1123,6 +1203,8 @@ export const SessionTranscript: React.FC<{
     toolResult: false,
     context: false,
     system: false,
+    answer: false,
+    finalAnswer: false,
   });
   const [secRev, setSecRev] = useState(0);
   // Scroll layer of the focus overlay — feeds the back-to-top pill.
@@ -1142,6 +1224,9 @@ export const SessionTranscript: React.FC<{
   useEffect(() => {
     if (focusIdx === null) return;
     const onKey = (e: KeyboardEvent) => {
+      // Any dialog stacked on top of this overlay (e.g. the answer reading
+      // view) owns Escape first — close only the topmost layer.
+      if (document.querySelector('[data-ocr-dialog]')) return;
       if (e.key === 'Escape') setFocusIdx(null);
     };
     window.addEventListener('keydown', onKey);

@@ -1168,6 +1168,8 @@ export const zhCN: TranslationDict = {
     roundStepsUnit: '{n} 步',
     roundOrdinal: '第{n}轮',
     roundTailLabel: '最终回答',
+    view: '查看',
+    answerSection: '助手回答',
     roundUnconvergedNote: '本轮未以收敛的文本回答结束（被打断，或仍停留在工具调用步）。',
     resultsMissingShort: '部分工具结果缺失（旧截断上限时期归档，无法恢复）— 悬停看说明',
     resultsMissingNote: '部分工具结果缺失：这些会话是在旧单体截断上限下调小捕捉的，工具结果所在的请求体尾部当时未落盘。上限现已调高——之后新会话将完整显示结果；本批已归档部分无法恢复。',
