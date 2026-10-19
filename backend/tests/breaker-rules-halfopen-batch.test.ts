@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { AccountStateStore } from '../src/resilience/account-state.js';
+import { CredentialStateStore } from '../src/resilience/credential-state.js';
 import { CircuitBreaker } from '../src/resilience/circuit-breaker.js';
 import { CircuitBreakerManager } from '../src/resilience/circuit-breaker-manager.js';
 import type { CredentialPaths } from '../src/opencode/credentials/paths.js';
@@ -272,8 +272,8 @@ describe('pair success counts toward the model batch (recordSuccessScoped intera
   function makeScopingManager(rules?: BreakerRulesConfig) {
     const clock = makeClock();
     const paths = sandboxPaths();
-    const accountState = new AccountStateStore({ paths, now: clock.now });
-    const manager = new CircuitBreakerManager({ ...BASE, ...(rules ? { rules } : {}) }, clock.now, accountState);
+    const credentialState = new CredentialStateStore({ paths, now: clock.now });
+    const manager = new CircuitBreakerManager({ ...BASE, ...(rules ? { rules } : {}) }, clock.now, credentialState);
     const m: ModelRegistration = {
       id: 'p/x', provider: 'p', upstreamModel: 'x', tier: 'plus',
       pricing: { input: 1, output: 2, cacheRead: 0.1 },

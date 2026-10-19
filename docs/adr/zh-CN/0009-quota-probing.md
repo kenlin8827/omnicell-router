@@ -8,10 +8,10 @@
 
 ### 1. 总原则：覆盖随 release，激活随凭据
 
-额度状态按 **(providerId, keyHashPrefix)** 对跟踪——与配对熔断、账号行政标记同一套展示安全的凭据身份（ADR-0006 §6）。两条轴刻意解耦：
+额度状态按 **(providerId, keyHashPrefix)** 对跟踪——与配对熔断、凭证行政标记同一套展示安全的凭据身份（ADR-0006 §6）。两条轴刻意解耦：
 
-- **覆盖**（哪些 provider *可以*被探测）随 release 出货：内置声明表（§3）+ 内置代码 adapter（§4），或随用户配置（§5）。它绝不按当前账号池快照圈范围：账号天天增减，而某服务商额度端点的知识不随之变动。
-- **激活**（是否真的调度一次探测）随凭据：被覆盖的 provider 只要凭据出现在绑定存储的任意位置（或 config 烘焙的推理 key——无链退化形态），下一轮调度自动armed。账号池枚举从不参与覆盖判定。
+- **覆盖**（哪些 provider *可以*被探测）随 release 出货：内置声明表（§3）+ 内置代码 adapter（§4），或随用户配置（§5）。它绝不按当前凭证池快照圈范围：凭证天天增减，而某服务商额度端点的知识不随之变动。
+- **激活**（是否真的调度一次探测）随凭据：被覆盖的 provider 只要凭据出现在绑定存储的任意位置（或 config 烘焙的推理 key——无链退化形态），下一轮调度自动armed。凭证池枚举从不参与覆盖判定。
 
 额度面**只展示**：声明的或探测出的上限永远不门控路由。配置过期不得逐出健康配对；下架决定权仍在熔断面（下文），后者依据的是*推理侧*证据，而非探测侧聚合值。
 
@@ -26,7 +26,7 @@ badge  ∈ probed | declared | unverified | stale        （控制台可见四�
 
 v1 明知有损而有意不建模（在此备案而非塞进模型）：每窗口的 `currency` / `isCreditBalance`（多币种预付费余额拍平为信贷池窗口：`used 0 / total = 实时余额`），以及周期窗口元数据。`measured` 是二期头收割层（L-a）预留的血统值；`declared` 为静态套餐上限声明保留。徽章映射：无快照 → `unverified`；`declared` 血统 → `declared`；最近一次尝试失败或超出条目 cacheTtl → `stale`；其余 `probed`。
 
-存储纪律：快照是凭据锚定的展示安全聚合值，因此住在**全局**状态根（`<OCR_HOME>/quota-snapshots.json`，原子 temp+rename 0600、load-once、防抖写盘——SUSPECT/DISABLED 标记文件先例，ADR-0006 §7），**不是**按环境账本目录：账号的额度属于账号本身，在任何环境同样成立。密钥材料永不进文件（只有前缀与数字）。**最后一次探测的原始交换**（url/status/解析后的 body——绝不存响应头，超大或非 JSON 的 body 截断为文本）是同一存储上的**仅内存**侧表，永不序列化：供控制台逐配对的"查看最后一次探测"弹窗使用，重启后即为空。
+存储纪律：快照是凭据锚定的展示安全聚合值，因此住在**全局**状态根（`<OCR_HOME>/quota-snapshots.json`，原子 temp+rename 0600、load-once、防抖写盘——SUSPECT/DISABLED 标记文件先例，ADR-0006 §7），**不是**按环境账本目录：凭证的额度属于凭证本身，在任何环境同样成立。密钥材料永不进文件（只有前缀与数字）。**最后一次探测的原始交换**（url/status/解析后的 body——绝不存响应头，超大或非 JSON 的 body 截断为文本）是同一存储上的**仅内存**侧表，永不序列化：供控制台逐配对的"查看最后一次探测"弹窗使用，重启后即为空。
 
 ### 3. L-b：内置声明表（DSL 驱动，随 release）
 
@@ -55,7 +55,7 @@ host + auth 披露（此表是可信 release 代码；内置条目允许绝对 U
 
 ### 5. L-a 与 L-d：预留的收割层与用户表
 
-- **L-a（二期，仅预留数据面）：** 从推理响应 `x-ratelimit-*` 头收割（捕获面对响应头保留 NAMES、仅脱敏凭据形态的 VALUE，故 `x-ratelimit-*` 三件套在捕获中存活——ADR-0008 §5），挂靠在已落地的 `ExecutionTrace.execution.accountKeyHashPrefix` 逐轮归因上（第 1 步地基：orchestrator 为实际 SERVED 凭据打戳——与限流账号 subject 同款链头退化；SQLite 无需 DDL，因为 trace 行是 JSON blob，旧行 replay 该字段为 `undefined`，即 `clientHeaders` 前向兼容先例）。目前没有任何写入方产出 `source: measured`。
+- **L-a（二期，仅预留数据面）：** 从推理响应 `x-ratelimit-*` 头收割（捕获面对响应头保留 NAMES、仅脱敏凭据形态的 VALUE，故 `x-ratelimit-*` 三件套在捕获中存活——ADR-0008 §5），挂靠在已落地的 `ExecutionTrace.execution.credentialKeyHashPrefix` 逐轮归因上（第 1 步地基：orchestrator 为实际 SERVED 凭据打戳——与限流凭证 subject 同款链头退化；SQLite 无需 DDL，因为 trace 行是 JSON blob，旧行 replay 该字段为 `undefined`，即 `clientHeaders` 前向兼容先例）。目前没有任何写入方产出 `source: measured`。
 - **L-d（config.yaml `quotaProbes:` 节）：** 长尾与自建网关（以及对内置条目的显式 fork）。用户条目受下述铁律约束——它们是铁律**唯一**约束的层（内置代码与 release 表可信，改以 §3/§4 披露代替约束）。
 
 ### 6. DSL：十二构件、五类禁例
@@ -78,11 +78,11 @@ due-based，形照主动健康 prober（借思路不借代码）：固定 tick�
 
 ### 8. 失败语义与路由面防火墙
 
-**探测失败 ≠ 额度失败。** 失败尝试不进熔断器、不标 SUSPECT、不禁用、不进 trace 表：旧快照保留，`lastFailureAt` 把徽章翻成 `stale`。反向额度面消费推理侧证据只有一个方向：在熔断 manager 唯一失败汇聚点（`recordFailureScoped`）记录的每个 `QUOTA_EXHAUSTED` 诊断，在规则门控**之前**落 **`quota_events`** 账本一行（观测不是政策——关掉额度*跳闸*不得蒙住账本）。账本照限流账本纪律：环 500、`traces.db` 镜像（`quota_events` 表、独立 WAL 句柄、fail-open、启动 replay）。分类器新增中文撞顶 marker（额度措辞 + 会话频控措辞进入匹配字面量），使中文服务商的额度烧穿折入 QUOTA_EXHAUSTED（account 作用域、12 小时下限、不打 SUSPECT——ADR-0004 语义不变）。词汇防火墙成立：`CLOSED/HALF_OPEN/OPEN` 仍是 CircuitBreaker 专属词；额度徽章态（`probed/declared/unverified/stale`）另立一轴，永不复用为健康词汇。撞顶下架继续走既有配对熔断 trip 语义；`resetAt` 对齐冷却整形为二期。
+**探测失败 ≠ 额度失败。** 失败尝试不进熔断器、不标 SUSPECT、不禁用、不进 trace 表：旧快照保留，`lastFailureAt` 把徽章翻成 `stale`。反向额度面消费推理侧证据只有一个方向：在熔断 manager 唯一失败汇聚点（`recordFailureScoped`）记录的每个 `QUOTA_EXHAUSTED` 诊断，在规则门控**之前**落 **`quota_events`** 账本一行（观测不是政策——关掉额度*跳闸*不得蒙住账本）。账本照限流账本纪律：环 500、`traces.db` 镜像（`quota_events` 表、独立 WAL 句柄、fail-open、启动 replay）。分类器新增中文撞顶 marker（额度措辞 + 会话频控措辞进入匹配字面量），使中文服务商的额度烧穿折入 QUOTA_EXHAUSTED（credential 作用域、12 小时下限、不打 SUSPECT——ADR-0004 语义不变）。词汇防火墙成立：`CLOSED/HALF_OPEN/OPEN` 仍是 CircuitBreaker 专属词；额度徽章态（`probed/declared/unverified/stale`）另立一轴，永不复用为健康词汇。撞顶下架继续走既有配对熔断 trip 语义；`resetAt` 对齐冷却整形为二期。
 
 ### 9. 消费面
 
-控制台：`AccountHealth` 叠加层（每个返回账号的响应都带，ADR-0006 §9 契约）新增附加键 `quota?: AccountQuotaView`——四态徽章、逐窗口条 + 重置倒计时、血统（`entryId`、`source`、`plan`、过期态）在 tooltip。该键缺席 = *未覆盖*，与 `unverified` 徽章（已覆盖尚无结果）刻意不同。独立**额度页**（`/admin/quota`）渲染跨服务商目录：服务商被覆盖的每个已连接配对（配对枚举同 status 的 credentialHashes——链上凭据 + config 烘焙 key，仅展示安全前缀；未覆盖服务商不出行），携徽章、窗口条、套餐、血统与其归属用量联查（trace 环上的 `getAccountPairUsageStats`）。版本覆盖面清单（覆盖/激活二分保持可检视）、被拒的 `quotaProbes:` 条目（校验失败上报，绝不吞）与近期烧穿事件账由 `GET /api/admin/quota` 按诊断契约供给（`coverage / rejected / pairs / events`）——页面本体保持单一目录面，不内嵌这三张清单。`POST /api/admin/quota/refresh` 重排一对或整个调度（只做失效标记——探测留在调度器，绝不在请求路径同步跑）。`frontend/src/lib/api.ts` 按后端契约名 1:1 镜像（`AccountQuotaView`、`QuotaPairRow`、`QuotaWindow`、`QuotaBadgeState`、`QuotaSource`）。原始密钥在任何界面上都不出现（只有展示安全前缀）；UI 文案全走 `t()`。
+控制台：`CredentialHealth` 叠加层（每个返回凭证的响应都带，ADR-0006 §9 契约）新增附加键 `quota?: CredentialQuotaView`——四态徽章、逐窗口条 + 重置倒计时、血统（`entryId`、`source`、`plan`、过期态）在 tooltip。该键缺席 = *未覆盖*，与 `unverified` 徽章（已覆盖尚无结果）刻意不同。独立**额度页**（`/admin/quota`）渲染跨服务商目录：服务商被覆盖的每个已连接配对（配对枚举同 status 的 credentialHashes——链上凭据 + config 烘焙 key，仅展示安全前缀；未覆盖服务商不出行），携徽章、窗口条、套餐、血统与其归属用量联查（trace 环上的 `getCredentialPairUsageStats`）。版本覆盖面清单（覆盖/激活二分保持可检视）、被拒的 `quotaProbes:` 条目（校验失败上报，绝不吞）与近期烧穿事件账由 `GET /api/admin/quota` 按诊断契约供给（`coverage / rejected / pairs / events`）——页面本体保持单一目录面，不内嵌这三张清单。`POST /api/admin/quota/refresh` 重排一对或整个调度（只做失效标记——探测留在调度器，绝不在请求路径同步跑）。`frontend/src/lib/api.ts` 按后端契约名 1:1 镜像（`CredentialQuotaView`、`QuotaPairRow`、`QuotaWindow`、`QuotaBadgeState`、`QuotaSource`）。原始密钥在任何界面上都不出现（只有展示安全前缀）；UI 文案全走 `t()`。
 
 ## IP 纪律（备案约束）
 
@@ -90,7 +90,7 @@ due-based，形照主动健康 prober（借思路不借代码）：固定 tick�
 
 ## 后果
 
-- 新增一个覆盖 provider：语义可声明则一表行（执行 §3 catalog 核对 + auth 披露），不可声明则一家一文件 adapter，长尾则一条用户 `quotaProbes:` 条目——release 在长大，运行时无需知道账号池。
+- 新增一个覆盖 provider：语义可声明则一表行（执行 §3 catalog 核对 + auth 披露），不可声明则一家一文件 adapter，长尾则一条用户 `quotaProbes:` 条目——release 在长大，运行时无需知道凭证池。
 - 禁例列表在加载时可强制，因为它是结构性的：拼不出的东西就跑不起来；坏的用户条目大声落到 `/api/admin/quota.rejected`，不会半工作。
 - 额度可见性永远不会搁浅流量：探测结果只是展示证据；推理侧额度烧穿维持既有熔断语义，另得一本持久事件账本。
 - 测试：`quota-dsl`（构件、禁类、逐条目 fixture）、`quota-engine`（铁律、计划合并、探测执行、MiniMax 语义、调度器、事件联动、trace 配对）。

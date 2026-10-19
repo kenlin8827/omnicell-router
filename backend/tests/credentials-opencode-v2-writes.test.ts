@@ -122,7 +122,7 @@ describe('OpencodeV2Store writes (HTTP mock against the opencode v2 service)', (
     expect(meta).toMatchObject({ id: 'cred_new', providerId: 'anthropic', type: 'api', active: true, routable: true });
     expect(meta.keyHashPrefix).toBe(keyHashPrefix('sk-connect-key-123456'));
     // explicit invalidate on console write forces the next read to re-query (no zombie keys)
-    store.listAccounts('anthropic');
+    store.listCredentials('anthropic');
     expect(loads.loads).toBe(2);
   });
 
@@ -162,7 +162,7 @@ describe('OpencodeV2Store writes (HTTP mock against the opencode v2 service)', (
     };
     const store = await makeStore({ paths, fetchImpl, loads, rows: [row] });
     const afterBind = loads.loads; // create() eager load
-    store.listAccounts('anthropic');
+    store.listCredentials('anthropic');
     expect(loads.loads).toBe(afterBind); // cached within TTL
     let baseline = loads.loads;
     for (const op of [
@@ -174,7 +174,7 @@ describe('OpencodeV2Store writes (HTTP mock against the opencode v2 service)', (
       // findRow must serve from the CACHED view: an invalidate BEFORE the
       // lookup (wrong order) would re-query mid-write.
       expect(loads.loads).toBe(baseline);
-      store.listAccounts('anthropic');
+      store.listCredentials('anthropic');
       // exactly one re-query proves invalidate() ran AFTER the lookup.
       expect(loads.loads).toBe(baseline + 1);
       baseline += 1;

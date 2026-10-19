@@ -73,7 +73,7 @@ const request = (model: string, stream = true) =>
   ({ model, messages: [{ role: 'user', content: 'hi' }], stream }) as any;
 
 describe('true streaming through the candidate pool', () => {
-  it('forwards frames while the turn is still executing, then accounts normally', async () => {
+  it('forwards frames while the turn is still executing, then credentials normally', async () => {
     let hits = 0;
     let pulled = 0;
     const server = serve({
@@ -125,7 +125,7 @@ describe('true streaming through the candidate pool', () => {
       assert.equal(result.response.usage?.completion_tokens, 3);
       assert.equal(result.modelUsed, 'stub/one');
       assert.equal(hits, 1);
-      // Accounting saw usage, so the turn is billed exactly like a buffered one.
+      // Credentialing saw usage, so the turn is billed exactly like a buffered one.
       assert.equal(relay.committed, true);
     } finally {
       server.stop(true);

@@ -30,12 +30,12 @@ export type NetworkFailureCause =
  * Blast radius of a trip once the failure is attributed
  * to one credential of a multi-credential provider.
  *  pair    = (model × credential) only — per-model rate limit, uncertain errors
- *  account = this credential everywhere — account quota / dead key
+ *  credential = this credential everywhere — credential quota / dead key
  *  model   = this model for every credential — outage / 5xx / network
  * Absent on a diagnosis means "model", today's pre-P3 semantics. The same
  * vocabulary serves manual (console/REST) trips: 'model' is the legacy scope.
  */
-export type TripScope = 'pair' | 'account' | 'model';
+export type TripScope = 'pair' | 'credential' | 'model';
 
 /**
  * Machine-readable trip-reason vocabulary (the routing reasonCode convention).
@@ -90,8 +90,8 @@ export interface ErrorDiagnosis {
    * model-level semantics it has always had (single-credential degeneracy).
    */
   tripScope?: TripScope;
-  /** Account-scope failures that mean "this account is administratively bad" (dead key) — SUSPECT flag. */
-  accountSuspect?: boolean;
+  /** Credential-scope failures that mean "this credential is administratively bad" (dead key) — SUSPECT flag. */
+  credentialSuspect?: boolean;
 }
 
 /** Blast-radius override for one trip rule ('auto' = keep the classifier's diagnosed scope). */
@@ -252,12 +252,12 @@ export interface CircuitBreakerConfig {
     intervalMs?: number; // background liveness sweep interval (default: 60000 = 1min)
   };
   /**
-   * Session↔account affinity window. A session idle
+   * Session↔credential affinity window. A session idle
    * past this window is re-selected as if new (the upstream prompt cache is
    * gone anyway, so the switch is free). Default 300000 = the Anthropic
    * cache TTL (5 min, 2026-03-06); OpenAI caches are load-dependent.
    */
-  accountAffinity?: {
+  credentialAffinity?: {
     cacheTtlMs?: number;
   };
   /** Per-rule toggles/params (spec docs/design/circuit-breaker-rules-config.md); absent = today's behavior byte-for-byte. */

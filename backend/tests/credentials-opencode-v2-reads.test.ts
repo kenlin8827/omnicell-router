@@ -130,18 +130,18 @@ describe('OpencodeV2Store reads (fake sqlite fixtures)', () => {
     // oauth + malformed variants: listed, badged, never routed
     expect(store.resolveKey('zen')).toBeNull();
     expect(store.resolveKey('broken')).toBeNull();
-    expect(store.listAccounts('zen')[0]).toMatchObject({ type: 'oauth', routable: false, active: true });
-    expect(store.listAccounts('broken')[0]?.type).toBe('unknown');
+    expect(store.listCredentials('zen')[0]).toMatchObject({ type: 'oauth', routable: false, active: true });
+    expect(store.listCredentials('broken')[0]?.type).toBe('unknown');
 
-    // masked surfaces — no raw secret leaves listAccounts
-    const dumped = JSON.stringify(store.listAccounts('anthropic'));
+    // masked surfaces — no raw secret leaves listCredentials
+    const dumped = JSON.stringify(store.listCredentials('anthropic'));
     expect(dumped).not.toContain('sk-active-key-123');
-    const metas = store.listAccounts('anthropic');
+    const metas = store.listCredentials('anthropic');
     expect(metas[0]!.keyHashPrefix).toBe(keyHashPrefix('sk-active-key-123'));
     expect(metas[1]!.label).toBe('work');
 
-    expect(store.accountsOverview()).toHaveLength(4); // anthropic, zen, sole, broken
-    expect(store.accountsOverview().find((o) => o.providerId === 'zen')).toMatchObject({ total: 1, routable: 0 });
+    expect(store.credentialsOverview()).toHaveLength(4); // anthropic, zen, sole, broken
+    expect(store.credentialsOverview().find((o) => o.providerId === 'zen')).toMatchObject({ total: 1, routable: 0 });
   });
 
   it('newest time_updated wins when no row is active', async () => {
@@ -158,7 +158,7 @@ describe('OpencodeV2Store reads (fake sqlite fixtures)', () => {
     const paths = sandboxPaths();
     await makeDb(paths.opencodeDbPath, []);
     const store = await OpencodeV2Store.create({ paths, env: {} });
-    expect(store.listAccounts('anthropic')).toEqual([]);
+    expect(store.listCredentials('anthropic')).toEqual([]);
     let err: unknown;
     try {
       store.probe();
@@ -270,16 +270,16 @@ describe('OpencodeV2Store reads (fake sqlite fixtures)', () => {
       env: {},
     });
     expect(loads.loads).toBe(1); // initial load at create
-    store.listAccounts('x');
+    store.listCredentials('x');
     expect(loads.loads).toBe(1); // cached within TTL
     t += 59_000;
-    store.listAccounts('x');
+    store.listCredentials('x');
     expect(loads.loads).toBe(1);
     t += 2_000; // beyond the 60s TTL
-    store.listAccounts('x');
+    store.listCredentials('x');
     expect(loads.loads).toBe(2);
     store.invalidate();
-    store.listAccounts('x');
+    store.listCredentials('x');
     expect(loads.loads).toBe(3);
     store.close();
   });
@@ -351,6 +351,6 @@ describe('OpencodeV2Store value-shape assertions (security P2-2)', () => {
       env: {},
       openDatabase: rawDb([{ ...baseRow, active: '1', time_updated: '42' }]),
     });
-    expect(store.listAccounts('anthropic')[0]).toMatchObject({ active: true, routable: true });
+    expect(store.listCredentials('anthropic')[0]).toMatchObject({ active: true, routable: true });
   });
 });

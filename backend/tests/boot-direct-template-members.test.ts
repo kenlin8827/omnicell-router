@@ -54,18 +54,18 @@ mock.module('../src/opencode/user-config.js', () => ({
 
 /**
  * Boot-direct resolves credentials through the bound
- * CredentialStore (NOT readAuthEntries anymore). In-memory single-account store
+ * CredentialStore (NOT readAuthEntries anymore). In-memory single-credential store
  * double: one key per provider, no activate/rename, which is what the OCR file
  * store also gives a one-key provider.
  */
 const fakeStore = {
   kind: 'ocr' as const,
-  capabilities: { multiAccount: false, activate: false, rename: false, oauth: false, envVisible: true },
+  capabilities: { multiCredential: false, activate: false, rename: false, oauth: false, envVisible: true },
   resolveKey: (id: string) =>
     id === PROVIDER
-      ? { key: 'sk-test', account: { id, providerId: id, type: 'api' as const, active: true, routable: true } }
+      ? { key: 'sk-test', credential: { id, providerId: id, type: 'api' as const, active: true, routable: true } }
       : null,
-  listAccounts: (id: string) =>
+  listCredentials: (id: string) =>
     id === PROVIDER ? [{ id, providerId: id, type: 'api' as const, active: true, routable: true }] : [],
   resolveKeyChain: () => [],
 };

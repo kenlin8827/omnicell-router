@@ -41,9 +41,9 @@ State lives in `<ocrHome>/credential-sync.json` (`{version:1, clients:{<id>:{aut
 - `autoRead` ON: the 60s poll pulls new client keys into the OCR file.
 - Toggles are per client and checked at fire time (flipping off mid-debounce skips the push); both off = manual only. Manual runs (route `run`) execute either or both directions for one client and record outcomes like the auto paths.
 
-### 6. Account identity (unchanged)
+### 6. Credential identity (unchanged)
 
-sha256(rawKey) is the durable identity; UIs see the 12-char prefix only. Breaker pairs, SUSPECT/DISABLED flags, session affinity and quota snapshots anchor on `(provider × keyHashPrefix)`. Every write-sync-converged pair (pushed or deduped) is a reconnect gesture and lifts that account's SUSPECT flag; DISABLED deliberately survives.
+sha256(rawKey) is the durable identity; UIs see the 12-char prefix only. Breaker pairs, SUSPECT/DISABLED flags, session affinity and quota snapshots anchor on `(provider × keyHashPrefix)`. Every write-sync-converged pair (pushed or deduped) is a reconnect gesture and lifts that credential's SUSPECT flag; DISABLED deliberately survives.
 
 ### 7. OAuth boundary (unchanged)
 

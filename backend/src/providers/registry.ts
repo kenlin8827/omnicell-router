@@ -63,8 +63,8 @@ export class ProviderRegistry {
   /**
    * Per-provider credential chains for per-call selection,
    * populated ONLY through `registerProvider` (the boot path hands raw keys from
-   * `buildDirectPool` here and nowhere else). NEVER serialize: masked account
-   * views keep going through the credential store's `AccountMeta`. Chain order =
+   * `buildDirectPool` here and nowhere else). NEVER serialize: masked credential
+   * views keep going through the credential store's `CredentialMeta`. Chain order =
    * selection priority (active head first); chain head = the boot-baked
    * `config.apiKey` (inline-precedence case included — boot prepends it).
    */
@@ -474,7 +474,7 @@ export class ProviderRegistry {
 
     if (healthyOnly) {
       // Decision 6 aggregate — a model is healthy iff at least one of its
-      // credentials still serves (pair breaker not OPEN, account not SUSPECT) and the
+      // credentials still serves (pair breaker not OPEN, credential not SUSPECT) and the
       // model itself is not down. Single-chain/chain-less providers behave
       // exactly like the old isAvailable read (no pair breakers exist to be open).
       return list.filter((m) => this.modelAvailable(m).available);
@@ -771,7 +771,7 @@ export class ProviderRegistry {
     if (members.length <= 1) return members[0];
     const strategy = this.combos.get(comboId)?.selection ?? 'priority';
     // Decision 6 aggregate (same rule as the tier pools): a member whose every
-    // account is out must not lead a combo.
+    // credential is out must not lead a combo.
     const healthy = members.filter((m) => this.modelAvailable(m).available);
     const pool = healthy.length > 0 ? healthy : members;
     const weights = new Map<string, number>();
@@ -900,7 +900,7 @@ export class ProviderRegistry {
       credential = chain?.find((c) => c.keyHashPrefix === credentialKeyHashPrefix);
       if (!credential) {
         // Loud fail (cp-failfast): a selector matching no chain entry means the
-        // caller routes on account state that is stale w.r.t. this boot's pool
+        // caller routes on credential state that is stale w.r.t. this boot's pool
         // — silently serving the baked key would hide exactly the drift the
         // keyHash anchor exists to catch.
         throw new Error(
@@ -934,7 +934,7 @@ export class ProviderRegistry {
       }
       return await provider.createCompletion(request, model, upstreamEventContext, credential);
     } catch (err) {
-      // Attribution stamp: selector hit → that account; no selector → the chain
+      // Attribution stamp: selector hit → that credential; no selector → the chain
       // head, which IS the baked key boot executed with (registry invariant).
       const used = credential ?? chain?.[0];
       if (used && err && (typeof err === 'object' || typeof err === 'function')) {

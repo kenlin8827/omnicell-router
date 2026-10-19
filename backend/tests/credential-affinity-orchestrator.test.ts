@@ -3,7 +3,7 @@ import { loadConfig } from '../src/config/index.js';
 import { ProviderRegistry } from '../src/providers/registry.js';
 import { FinOpsTracker } from '../src/metrics/finops-tracker.js';
 import { PipelineOrchestrator } from '../src/pipeline/orchestrator.js';
-import { accountSpreadIndex } from '../src/pipeline/account-selection.js';
+import { credentialSpreadIndex } from '../src/pipeline/credential-selection.js';
 import { keyHashPrefix } from '../src/opencode/credentials/index.js';
 import type { CallCredential } from '../src/providers/base.js';
 import type { ChatCompletionRequest, ChatCompletionResponse } from '../src/types/openai.js';
@@ -79,7 +79,7 @@ function makeFixture(combos?: { id: string; models: string[] }[], mode: 'both' |
       enabled: true,
       failureThreshold: 1000, // manual trips drive state here; auto trips must not fire
       initialCooldownMs: 600000,
-      accountAffinity: { cacheTtlMs: 300000 },
+      credentialAffinity: { cacheTtlMs: 300000 },
     },
   } as unknown as RouterConfig;
   const registry = new ProviderRegistry(config, false);
@@ -106,9 +106,9 @@ describe('affinity bind + persistence across turns', () => {
     const sessionId = 'sess-aff-keep';
 
     const r1 = await orchestrator.process(turn('first hello', 'p1/alpha'), sessCtx(sessionId));
-    const expected = chainP1[accountSpreadIndex(sessionId, 2)].keyHashPrefix;
+    const expected = chainP1[credentialSpreadIndex(sessionId, 2)].keyHashPrefix;
     expect(stub1.seen[0]?.keyHashPrefix).toBe(expected); // selection actually served
-    expect(r1.servedAccountPrefix).toBe(expected); // observability mirrors it (additive)
+    expect(r1.servedCredentialPrefix).toBe(expected); // observability mirrors it (additive)
     expect(r1.breakerState).toBe('CLOSED'); // legacy field shape kept
     const session = orchestrator.getSessionManager().getSession(sessionId)!;
     expect(session.boundKeyHashPrefix).toBe(expected);
@@ -118,10 +118,10 @@ describe('affinity bind + persistence across turns', () => {
     const r2 = await orchestrator.process(turn('second hello', 'p1/alpha'), sessCtx(sessionId));
     expect(stub1.seen[1]?.keyHashPrefix).toBe(expected);
     expect(session.boundKeyHashPrefix).toBe(expected);
-    expect(r2.servedAccountPrefix).toBe(expected);
+    expect(r2.servedCredentialPrefix).toBe(expected);
   });
 
-  it('forced failover: OPEN bound pair breaker moves to the other account and the rebind persists', async () => {
+  it('forced failover: OPEN bound pair breaker moves to the other credential and the rebind persists', async () => {
     const { orchestrator, registry, stub1 } = makeFixture();
     const sessionId = 'sess-aff-fail';
     const cb = registry.getCircuitBreakerManager();
@@ -132,17 +132,17 @@ describe('affinity bind + persistence across turns', () => {
 
     cb.tripPair(m1.id, bound, { cooldownMs: 600000 }, 'p1');
     const r2 = await orchestrator.process(turn('hello again', 'p1/alpha'), sessCtx(sessionId));
-    expect(r2.modelUsed).toBe(m1.id); // SAME model — only the account moved
+    expect(r2.modelUsed).toBe(m1.id); // SAME model — only the credential moved
     expect(stub1.seen[1]?.keyHashPrefix).toBe(other.keyHashPrefix);
     expect(orchestrator.getSessionManager().getSession(sessionId)!.boundKeyHashPrefix).toBe(other.keyHashPrefix);
-    expect(r2.servedAccountPrefix).toBe(other.keyHashPrefix);
+    expect(r2.servedCredentialPrefix).toBe(other.keyHashPrefix);
 
-    // Old account recovers: NO switch-back (the prefix lives where traffic went).
+    // Old credential recovers: NO switch-back (the prefix lives where traffic went).
     cb.resetScoped(m1.id, bound);
     const r3 = await orchestrator.process(turn('hello third', 'p1/alpha'), sessCtx(sessionId));
     expect(stub1.seen[2]?.keyHashPrefix).toBe(other.keyHashPrefix);
     expect(orchestrator.getSessionManager().getSession(sessionId)!.boundKeyHashPrefix).toBe(other.keyHashPrefix);
-    expect(r3.servedAccountPrefix).toBe(other.keyHashPrefix);
+    expect(r3.servedCredentialPrefix).toBe(other.keyHashPrefix);
   });
 
   it('all-unhealthy force keeps legacy semantics: no prefix, no attribution, binding frozen', async () => {
@@ -151,7 +151,7 @@ describe('affinity bind + persistence across turns', () => {
     await orchestrator.process(turn('hello', 'p1/alpha'), sessCtx(sessionId));
     const bound = orchestrator.getSessionManager().getSession(sessionId)!.boundKeyHashPrefix!;
 
-    // Trip BOTH p1 accounts: selection says all-unhealthy (no bind decided).
+    // Trip BOTH p1 credentials: selection says all-unhealthy (no bind decided).
     // m1 is the pool's only candidate -> today's last-candidate FORCE runs the
     // legacy no-prefix execute; the binding must not move without a verified
     // alternative, and the model breaker (not a pair) records the outcome.
@@ -160,12 +160,12 @@ describe('affinity bind + persistence across turns', () => {
     const r2 = await orchestrator.process(turn('hello again', 'p1/alpha'), sessCtx(sessionId));
     expect(r2.modelUsed).toBe(m1.id); // served via the last-candidate force
     expect(stub1.seen[1]).toBeUndefined(); // no credential selector on the forced call
-    expect(r2.servedAccountPrefix).toBeUndefined();
+    expect(r2.servedCredentialPrefix).toBeUndefined();
     expect(orchestrator.getSessionManager().getSession(sessionId)!.boundKeyHashPrefix).toBe(bound);
   });
 });
 
-describe('self-healing: account rebind rides the model repin', () => {
+describe('self-healing: credential rebind rides the model repin', () => {
   it('model down repins the model and re-spreads onto the new provider chain', async () => {
     const { orchestrator, registry, stub1, stub2 } = makeFixture();
     const sessionId = 'sess-aff-heal';
@@ -186,13 +186,13 @@ describe('self-healing: account rebind rides the model repin', () => {
     expect(stub2.seen[0]?.keyHashPrefix).toBeDefined(); // selection passed a real credential
     expect(session.boundKeyHashPrefix).toBe(stub2.seen[0]!.keyHashPrefix); // continuity moved to p2
     expect(chainP2.some((c) => c.keyHashPrefix === session.boundKeyHashPrefix)).toBe(true);
-    expect(chainP2.some((c) => c.keyHashPrefix === boundP1)).toBe(false); // different account space
+    expect(chainP2.some((c) => c.keyHashPrefix === boundP1)).toBe(false); // different credential space
     expect(stub1.seen).toHaveLength(1); // m1 never called after the trip (model gate)
   });
 
   it('binding survives a same-provider model repin (continuity kept, NOT re-spread)', async () => {
     // m1 and m2 share provider p1's chain: the self-healed repin keeps the bound
-    // account because the prefix exists in the new pin's chain.
+    // credential because the prefix exists in the new pin's chain.
     const base = loadConfig();
     const config = {
       ...base,
@@ -218,7 +218,7 @@ describe('self-healing: account rebind rides the model repin', () => {
     const r2 = await orchestrator.process(turn('hello again', 'auto-plus'), sessCtx(sessionId));
     expect(r2.modelUsed).toBe(m2same.id);
     expect(orchestrator.getSessionManager().getSession(sessionId)!.boundKeyHashPrefix).toBe(bound); // continuity
-    expect(stub.seen[1]?.keyHashPrefix).toBe(bound); // served on the SAME account
+    expect(stub.seen[1]?.keyHashPrefix).toBe(bound); // served on the SAME credential
   });
 });
 
@@ -231,7 +231,7 @@ describe('explicit-pin and combo paths flow through the same selection', () => {
     const served = stub1.seen[0];
     expect(served).toBeDefined();
     expect(chainP1.some((c) => c.keyHashPrefix === served!.keyHashPrefix)).toBe(true);
-    expect(result.servedAccountPrefix).toBe(served!.keyHashPrefix);
+    expect(result.servedCredentialPrefix).toBe(served!.keyHashPrefix);
     // Combo sessions carry no session row (bypass mode never creates one): the
     // deterministic hash is the affinity; nothing to persist. Documented shape.
     expect(orchestrator.getSessionManager().getSession(sessionId)).toBeUndefined();
@@ -246,9 +246,9 @@ describe('explicit-pin and combo paths flow through the same selection', () => {
     // Simulate the stale-binding boot state (pool rebuilt without that key):
     session.boundKeyHashPrefix = 'ffffffffffff';
     const r2 = await orchestrator.process(turn('hello again', 'p1/alpha'), sessCtx(sessionId));
-    expect(r2.servedAccountPrefix).toBeDefined(); // recovered via forced re-spread
-    expect(r2.servedAccountPrefix).not.toBe('ffffffffffff');
-    expect(session.boundKeyHashPrefix).toBe(r2.servedAccountPrefix);
-    expect(stub1.seen[1]?.keyHashPrefix).toBe(r2.servedAccountPrefix); // and it was actually served
+    expect(r2.servedCredentialPrefix).toBeDefined(); // recovered via forced re-spread
+    expect(r2.servedCredentialPrefix).not.toBe('ffffffffffff');
+    expect(session.boundKeyHashPrefix).toBe(r2.servedCredentialPrefix);
+    expect(stub1.seen[1]?.keyHashPrefix).toBe(r2.servedCredentialPrefix); // and it was actually served
   });
 });

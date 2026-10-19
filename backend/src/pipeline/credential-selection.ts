@@ -5,7 +5,7 @@ import type { ModelRegistration } from '../config/types.js';
 import type { ConversationSession } from '../session/session-manager.js';
 
 /**
- * Per-request account selection with session affinity.
+ * Per-request credential selection with session affinity.
  *
  *   switching is FORCED FAILOVER, never balancing
  *
@@ -13,7 +13,7 @@ import type { ConversationSession } from '../session/session-manager.js';
  * credential of a provider chain should serve one (session x model) call and
  * which affinity mutation the caller must PERSIST after a success. Persistence
  * lives with the caller (the orchestrator) precisely so a speculative move is
- * never written when the chosen account then fails.
+ * never written when the chosen credential then fails.
  *
  *   bound present & healthy            -> keep   (no rebalance, ever)
  *   bound present & pair breaker OPEN/suspect  -> next healthy in chain order, FORCED rebind
@@ -24,14 +24,14 @@ import type { ConversationSession } from '../session/session-manager.js';
  *
  * No switch-back logic exists anywhere: a binding only moves while its breaker is
  * out, and the moved-to value then holds while it is healthy — recovery of the
- * old account cannot pull traffic back (correct by construction).
+ * old credential cannot pull traffic back (correct by construction).
  */
 
 /** Anthropic's default prompt-cache TTL (5 min, 2026-03-06) — the affinity window. */
-export const DEFAULT_ACCOUNT_AFFINITY_CACHE_TTL_MS = 300_000;
+export const DEFAULT_CREDENTIAL_AFFINITY_CACHE_TTL_MS = 300_000;
 
 /** Why no credential was selected (never an error — each maps to a caller rule). */
-export type AccountSelectionReason =
+export type CredentialSelectionReason =
   /** Provider has no registered chain (config.yaml/mock boot shape) — baked key path. */
   | 'no-chain'
   /**
@@ -41,7 +41,7 @@ export type AccountSelectionReason =
    * outranks the degeneracy and 'all-disabled' is returned instead.
    */
   | 'single-credential'
-  /** Every prefix is pair-OPEN or account-SUSPECT — caller forces without attribution. */
+  /** Every prefix is pair-OPEN or credential-SUSPECT — caller forces without attribution. */
   | 'all-unhealthy'
   /**
    * Every credential of this chain is operator-DISABLED. Unlike 'all-unhealthy'
@@ -50,35 +50,35 @@ export type AccountSelectionReason =
    */
   | 'all-disabled';
 
-export interface AccountSelection {
+export interface CredentialSelection {
   /** Credential to pass to `registry.execute`; undefined = no prefix (legacy path). */
   credential?: CallCredential;
   /** Set only when this turn produced NO credential; explains which degeneracy applies. */
-  reason?: AccountSelectionReason;
+  reason?: CredentialSelectionReason;
   /**
    * Affinity mutation to persist AFTER the call succeeds:
    * forced=false -> first-write-wins bind; forced=true -> rebind (the bound
-   * account moved, or its stored prefix is stale/expired).
+   * credential moved, or its stored prefix is stale/expired).
    */
   bind?: { keyHashPrefix: string; forced: boolean };
-  /** True when this selection moved the session off its previously bound account. */
+  /** True when this selection moved the session off its previously bound credential. */
   forcedMove: boolean;
 }
 
-export interface AccountSelectionCtx {
+export interface CredentialSelectionCtx {
   /** Session id the deterministic spread hashes over (conversation identity). */
   sessionId: string;
-  /** Affinity window; default `DEFAULT_ACCOUNT_AFFINITY_CACHE_TTL_MS`. */
+  /** Affinity window; default `DEFAULT_CREDENTIAL_AFFINITY_CACHE_TTL_MS`. */
   affinityWindowMs?: number;
   /** Clock seam for tests. */
   now?: () => number;
   /**
    * Rate-limit shaping predicate: true = this credential is currently at a
-   * local window cap (`accounts:` overlay). Applied ONLY to the new-session
+   * local window cap (`credentials:` overlay). Applied ONLY to the new-session
    * spread and the forced-failover landing — NEVER to a kept binding, which a
    * local cap must not move (iron law: rebinding burns the prompt cache; the
    * provider's own 429, not a local hint, is what a bound session should
-   * react to). When EVERY healthy account is capped the filter opens again —
+   * react to). When EVERY healthy credential is capped the filter opens again —
    * shaping never starves a provider that has no slack.
    * PURE READ: call sites peek without consuming; use `onSpreadCapped` (not a
    * side effect in this predicate) to observe a cap that actually shaped a
@@ -101,19 +101,19 @@ export interface AccountSelectionCtx {
  * spreading new sessions is free (Decision 7). Exported so tests assert the
  * same function the resolver uses instead of duplicating the hash.
  */
-export function accountSpreadIndex(sessionId: string, count: number): number {
+export function credentialSpreadIndex(sessionId: string, count: number): number {
   if (count <= 1) return 0;
   const hex = crypto.createHash('sha256').update(sessionId).digest('hex').slice(0, 8);
   return parseInt(hex, 16) % count;
 }
 
-export function selectAccount(
+export function selectCredential(
   session: ConversationSession | undefined,
   model: ModelRegistration,
   chain: readonly CallCredential[] | undefined,
   cb: CircuitBreakerManager,
-  ctx: AccountSelectionCtx
-): AccountSelection {
+  ctx: CredentialSelectionCtx
+): CredentialSelection {
   if (!chain || chain.length === 0) return { forcedMove: false, reason: 'no-chain' };
   // A takedown outranks every degeneracy: the no-prefix paths (single-credential,
   // and 'all-unhealthy' below) fall back to the boot-baked head key, which would
@@ -129,7 +129,7 @@ export function selectAccount(
   const healthy = chain.filter((c) => !cb.isPairOut(model.id, c.keyHashPrefix));
 
   // Rate-limit shaping: when a predicate exists, NEW placements (spread and
-  // the forced-failover landing) prefer accounts with window slack; a kept
+  // the forced-failover landing) prefer credentials with window slack; a kept
   // binding below never consults it (iron law). All-capped chain = filter
   // opens again — local shaping must never starve a provider of its own key.
   const spreadCapped = ctx.spreadCapped;
@@ -149,7 +149,7 @@ export function selectAccount(
 
   const bound = session?.boundKeyHashPrefix;
   const now = (ctx.now ?? Date.now)();
-  const windowMs = ctx.affinityWindowMs ?? DEFAULT_ACCOUNT_AFFINITY_CACHE_TTL_MS;
+  const windowMs = ctx.affinityWindowMs ?? DEFAULT_CREDENTIAL_AFFINITY_CACHE_TTL_MS;
   // Lazy TTL expiry: idle past the cache window the prefix is re-billed anyway,
   // so the binding is treated as ABSENT and the session re-spreads like new.
   const boundLive = bound !== undefined && now - (session?.lastActiveAt ?? 0) <= windowMs;
@@ -158,7 +158,7 @@ export function selectAccount(
     const kept = healthy.find((c) => c.keyHashPrefix === bound);
     if (kept) return { credential: kept, forcedMove: false };
     if (chain.some((c) => c.keyHashPrefix === bound)) {
-      // FORCED failover — the bound account is known-bad for this model.
+      // FORCED failover — the bound credential is known-bad for this model.
       if (healthy.length === 0) return { forcedMove: false, reason: 'all-unhealthy' };
       const next = spreadPool[0]; // chain order = selection priority (active head first)
       notifyShaped();
@@ -175,7 +175,7 @@ export function selectAccount(
 
   // New-session spread — also the landing for expired and stale bindings.
   if (healthy.length === 0) return { forcedMove: false, reason: 'all-unhealthy' };
-  const pick = spreadPool[accountSpreadIndex(ctx.sessionId, spreadPool.length)];
+  const pick = spreadPool[credentialSpreadIndex(ctx.sessionId, spreadPool.length)];
   notifyShaped();
   return {
     credential: pick,

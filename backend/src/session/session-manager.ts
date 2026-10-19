@@ -23,11 +23,11 @@ export interface ConversationSession {
   /** First ~200 chars of the first user message (UI identification aid). */
   firstUserMessage?: string;
   /**
-   * Session↔account affinity binding (sha256 key-hash
+   * Session↔credential affinity binding (sha256 key-hash
    * prefix, Decision 5 identity; display-safe, never key material). Written
    * once by the first successful routed turn, overwritten only by a FORCED
-   * failover (bound pair breaker OPEN / account SUSPECT / stale prefix). A binding
-   * older than the affinity window (circuitBreaker.accountAffinity.cacheTtlMs,
+   * failover (bound pair breaker OPEN / credential SUSPECT / stale prefix). A binding
+   * older than the affinity window (circuitBreaker.credentialAffinity.cacheTtlMs,
    * read against lastActiveAt) is treated ABSENT at selection — lazy expiry,
    * no timer, and independent of the session ttlSeconds machinery.
    */
@@ -691,14 +691,14 @@ export class SessionManager {
   }
 
   /**
-   * Bind a session to one credential account.
+   * Bind a session to one credential credential.
    * First-write-wins (like attachOrigin): selection NEVER re-balances a live
-   * binding; only `rebindAccount` (forced failover) may overwrite it. Expired
+   * binding; only `rebindCredential` (forced failover) may overwrite it. Expired
    * bindings are overwritten by a forced rebind too (the stale value must not
-   * outlive the account it names).
+   * outlive the credential it names).
    * @returns true when this call created the binding.
    */
-  public bindAccount(sessionId: string, keyHashPrefix: string): boolean {
+  public bindCredential(sessionId: string, keyHashPrefix: string): boolean {
     const session = this.sessions.get(sessionId);
     if (!session || session.boundKeyHashPrefix) return false;
     session.boundKeyHashPrefix = keyHashPrefix;
@@ -707,11 +707,11 @@ export class SessionManager {
   }
 
   /**
-   * FORCED account move (bound pair breaker OPEN / account SUSPECT / stale prefix).
+   * FORCED credential move (bound pair breaker OPEN / credential SUSPECT / stale prefix).
    * Never called for balancing — the caller only rebinds after the new
-   * account actually served (switching is forced failover).
+   * credential actually served (switching is forced failover).
    */
-  public rebindAccount(sessionId: string, keyHashPrefix: string): boolean {
+  public rebindCredential(sessionId: string, keyHashPrefix: string): boolean {
     const session = this.sessions.get(sessionId);
     if (!session) return false;
     session.boundKeyHashPrefix = keyHashPrefix;

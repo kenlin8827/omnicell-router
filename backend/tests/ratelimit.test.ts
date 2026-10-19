@@ -5,14 +5,14 @@ import path from 'node:path';
 import {
   RateLimiter,
   apiKeySubject,
-  accountSubject,
+  credentialSubject,
   parseDuration,
   compileRules,
   validateRateLimitRules,
   getRateLimiter,
   setRateLimiterForTests,
 } from '../src/ratelimit/rate-limiter.js';
-import { selectAccount, accountSpreadIndex } from '../src/pipeline/account-selection.js';
+import { selectCredential, credentialSpreadIndex } from '../src/pipeline/credential-selection.js';
 import {
   RateLimitEventLog,
   openRateLimitEventStore,
@@ -21,7 +21,7 @@ import {
   type RateLimitEventInput,
 } from '../src/ratelimit/event-log.js';
 import { CircuitBreakerManager } from '../src/resilience/index.js';
-import { AccountStateStore } from '../src/resilience/account-state.js';
+import { CredentialStateStore } from '../src/resilience/credential-state.js';
 import { loadConfig, getRuntimeConfigRef, resolveRateLimit, defaultConfigYaml } from '../src/config/index.js';
 import { createServer } from '../src/server.js';
 import { keyHashPrefix } from '../src/opencode/credentials/index.js';
@@ -36,7 +36,7 @@ import { ProviderRegistry } from '../src/providers/registry.js';
 
 /**
  * Sliding-window rate limiting — engine semantics (fake clock), selection
- * shaping, config plumbing, the wire-level 429, and the account overlay route.
+ * shaping, config plumbing, the wire-level 429, and the credential overlay route.
  *
  * File-scoped OCR_HOME sandbox: the overlay-route test calls saveConfig for
  * real (upsert/clear semantics are worth pinning end to end), and every
@@ -124,11 +124,11 @@ describe('compileRules', () => {
 
 // ─── engine semantics (fake clock) ───────────────────────────────────────────
 
-function limiterWith(rules: { id: string; limits: unknown }[], accounts?: Record<string, { keyHashPrefix: string; limits: unknown }[]>): RateLimiter {
+function limiterWith(rules: { id: string; limits: unknown }[], credentials?: Record<string, { keyHashPrefix: string; limits: unknown }[]>): RateLimiter {
   const rl = new RateLimiter();
   rl.reload({
     apiKeys: rules.map((r) => ({ ...r })) as never,
-    accounts: accounts as never,
+    credentials: credentials as never,
   } as unknown as RouterConfig);
   return rl;
 }
@@ -300,14 +300,14 @@ describe('RateLimiter — reload lifecycle', () => {
 
 // ─── config file pass-through (hand-written YAML) ───────────────────────────
 
-describe('config plumbing — accounts:/limits survive the loadConfig round trip', () => {
-  it('loadConfig() exposes accounts: and per-key limits; reload() compiles both subjects', () => {
+describe('config plumbing — credentials:/limits survive the loadConfig round trip', () => {
+  it('loadConfig() exposes credentials: and per-key limits; reload() compiles both subjects', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-rl-cfg-'));
     const cfgPath = path.join(dir, 'config.yaml');
     fs.writeFileSync(
       cfgPath,
       [
-        'accounts:',
+        'credentials:',
         '  anthropic:',
         '    - keyHashPrefix: "ab12cd34ef56"',
         '      limits:',
@@ -328,15 +328,15 @@ describe('config plumbing — accounts:/limits survive the loadConfig round trip
       'utf8'
     );
     const cfg = loadConfig(cfgPath);
-    expect(cfg.accounts?.anthropic?.[0]?.keyHashPrefix).toBe('ab12cd34ef56');
-    expect(cfg.accounts?.anthropic?.[0]?.limits?.length).toBe(3);
+    expect(cfg.credentials?.anthropic?.[0]?.keyHashPrefix).toBe('ab12cd34ef56');
+    expect(cfg.credentials?.anthropic?.[0]?.limits?.length).toBe(3);
     expect(cfg.apiKeys?.[0]?.limits?.length).toBe(2);
     // YAML 1.1 resolved `1m`/`1d` stay STRINGS (duration contract).
-    expect(typeof cfg.accounts?.anthropic?.[0]?.limits?.[0]?.window).toBe('string');
+    expect(typeof cfg.credentials?.anthropic?.[0]?.limits?.[0]?.window).toBe('string');
 
     const rl = new RateLimiter();
     rl.reload(cfg);
-    expect(rl.isTracked(accountSubject('anthropic', 'ab12cd34ef56'))).toBe(true);
+    expect(rl.isTracked(credentialSubject('anthropic', 'ab12cd34ef56'))).toBe(true);
     expect(rl.isTracked(apiKeySubject('key-abc'))).toBe(true);
     fs.rmSync(dir, { recursive: true, force: true });
   });
@@ -394,7 +394,7 @@ function makeManager(): CircuitBreakerManager {
   const mgr = new CircuitBreakerManager(
     { enabled: true, failureThreshold: 1000, initialCooldownMs: 600000 },
     Date.now,
-    new AccountStateStore({ paths: sandboxPaths() })
+    new CredentialStateStore({ paths: sandboxPaths() })
   );
   mgr.registerModel(MODEL);
   return mgr;
@@ -412,33 +412,33 @@ const session = (id: string, over: Partial<ConversationSession> = {}): Conversat
   ...over,
 });
 
-describe('selectAccount — rate-limit shaping', () => {
-  it('a new-session spread prefers accounts with slack over the hash pick', () => {
+describe('selectCredential — rate-limit shaping', () => {
+  it('a new-session spread prefers credentials with slack over the hash pick', () => {
     const cb = makeManager();
     // Without the predicate, the spread hash decides; WITH it, only 'two' has
     // slack → the placement lands there deterministically.
-    const sel = selectAccount(session('s-capped'), MODEL, chain, cb, {
+    const sel = selectCredential(session('s-capped'), MODEL, chain, cb, {
       sessionId: 's-capped',
       spreadCapped: (p) => p !== chain[1].keyHashPrefix,
     });
     expect(sel.credential?.keyHashPrefix).toBe(chain[1].keyHashPrefix);
   });
 
-  it('KEEP-BOUND IRON LAW: a bound session is kept even when its account is capped', () => {
+  it('KEEP-BOUND IRON LAW: a bound session is kept even when its credential is capped', () => {
     const cb = makeManager();
-    const sel = selectAccount(session('s-keep', { boundKeyHashPrefix: chain[0].keyHashPrefix }), MODEL, chain, cb, {
+    const sel = selectCredential(session('s-keep', { boundKeyHashPrefix: chain[0].keyHashPrefix }), MODEL, chain, cb, {
       sessionId: 's-keep',
-      spreadCapped: () => true, // every account capped
+      spreadCapped: () => true, // every credential capped
     });
     expect(sel.credential?.keyHashPrefix).toBe(chain[0].keyHashPrefix);
     expect(sel.forcedMove).toBe(false);
     expect(sel.bind).toBeUndefined(); // never moved → nothing to persist
   });
 
-  it('all accounts capped re-opens the filter (shaping must not starve the provider)', () => {
+  it('all credentials capped re-opens the filter (shaping must not starve the provider)', () => {
     const cb = makeManager();
-    const noFilter = selectAccount(session('s-all'), MODEL, chain, cb, { sessionId: 's-all' });
-    const allCapped = selectAccount(session('s-all'), MODEL, chain, cb, {
+    const noFilter = selectCredential(session('s-all'), MODEL, chain, cb, { sessionId: 's-all' });
+    const allCapped = selectCredential(session('s-all'), MODEL, chain, cb, {
       sessionId: 's-all',
       spreadCapped: () => true,
     });
@@ -446,10 +446,10 @@ describe('selectAccount — rate-limit shaping', () => {
     expect(allCapped.credential).toBeDefined();
   });
 
-  it('forced-failover landing prefers a slack account over the chain head', () => {
+  it('forced-failover landing prefers a slack credential over the chain head', () => {
     const cb = makeManager();
     cb.tripPair(MODEL.id, chain[0].keyHashPrefix, { cooldownMs: 600000 }, PROVIDER); // bound head is out
-    const sel = selectAccount(session('s-move', { boundKeyHashPrefix: chain[0].keyHashPrefix }), MODEL, chain, cb, {
+    const sel = selectCredential(session('s-move', { boundKeyHashPrefix: chain[0].keyHashPrefix }), MODEL, chain, cb, {
       sessionId: 's-move',
       spreadCapped: (p) => p === chain[1].keyHashPrefix, // next head 'two' is capped
     });
@@ -554,9 +554,9 @@ describe('inbound enforcement — server 429', () => {
   });
 });
 
-// ─── account overlay route — PUT /api/admin/accounts/limits (real save) ─────
+// ─── credential overlay route — PUT /api/admin/credentials/limits (real save) ─────
 
-describe('account limits overlay route', () => {
+describe('credential limits overlay route', () => {
   const baseConfig = loadConfig();
   const { app } = createServer(
     { ...baseConfig, host: '127.0.0.1', webAuth: { enabled: false } } as RouterConfig,
@@ -564,7 +564,7 @@ describe('account limits overlay route', () => {
   );
 
   const put = (payload: unknown) =>
-    app.inject({ method: 'PUT', url: '/api/admin/accounts/limits', payload: payload as any });
+    app.inject({ method: 'PUT', url: '/api/admin/credentials/limits', payload: payload as any });
 
   it('arms an overlay entry, persists it, and reloads the engine', async () => {
     const res = await put({
@@ -576,9 +576,9 @@ describe('account limits overlay route', () => {
     const body = res.json();
     expect(body.success).toBe(true);
     expect(body.windows[0]?.rule).toBe('1m/requests');
-    expect(getRateLimiter().isTracked(accountSubject('anthropic', 'ab12cd34ef56'))).toBe(true);
+    expect(getRateLimiter().isTracked(credentialSubject('anthropic', 'ab12cd34ef56'))).toBe(true);
     const disk = loadConfig();
-    expect(disk.accounts?.anthropic?.[0]?.limits?.[0]?.requests).toBe(10);
+    expect(disk.credentials?.anthropic?.[0]?.limits?.[0]?.requests).toBe(10);
   });
 
   it('upserts the same prefix (second write replaces, never appends)', async () => {
@@ -586,22 +586,22 @@ describe('account limits overlay route', () => {
     const res = await put({ provider: 'anthropic', keyHashPrefix: 'ab12cd34ef56', limits: [{ window: '1m', requests: 3 }] });
     expect(res.statusCode).toBe(200);
     const disk = loadConfig();
-    expect(disk.accounts?.anthropic?.length).toBe(1);
-    expect(disk.accounts?.anthropic?.[0]?.limits).toEqual([{ window: '1m', requests: 3 }]);
+    expect(disk.credentials?.anthropic?.length).toBe(1);
+    expect(disk.credentials?.anthropic?.[0]?.limits).toEqual([{ window: '1m', requests: 3 }]);
   });
 
   it('null or [] clears the entry and un-arms the subject', async () => {
     await put({ provider: 'anthropic', keyHashPrefix: 'ab12cd34ef56', limits: [{ window: '1d', costUsd: 5 }] });
-    expect(getRateLimiter().isTracked(accountSubject('anthropic', 'ab12cd34ef56'))).toBe(true);
+    expect(getRateLimiter().isTracked(credentialSubject('anthropic', 'ab12cd34ef56'))).toBe(true);
     const res = await put({ provider: 'anthropic', keyHashPrefix: 'ab12cd34ef56', limits: null });
     expect(res.statusCode).toBe(200);
     const disk = loadConfig();
-    expect(disk.accounts?.anthropic).toBeUndefined();
-    expect(getRateLimiter().isTracked(accountSubject('anthropic', 'ab12cd34ef56'))).toBe(false);
+    expect(disk.credentials?.anthropic).toBeUndefined();
+    expect(getRateLimiter().isTracked(credentialSubject('anthropic', 'ab12cd34ef56'))).toBe(false);
   });
 
   it('rejects malformed provider/prefix/rule shapes with 400 and writes nothing', async () => {
-    const before = JSON.stringify(loadConfig().accounts ?? {});
+    const before = JSON.stringify(loadConfig().credentials ?? {});
     const bad = [
       { provider: '', keyHashPrefix: 'ab12cd34ef56', limits: [] },
       { provider: 'anthropic', keyHashPrefix: 'not-hex!!', limits: [] },
@@ -615,20 +615,20 @@ describe('account limits overlay route', () => {
       expect(res.statusCode).toBe(400);
       expect(res.json().error).toBeTruthy();
     }
-    expect(JSON.stringify(loadConfig().accounts ?? {})).toBe(before);
+    expect(JSON.stringify(loadConfig().credentials ?? {})).toBe(before);
   });
 
-  it('the runtime config ref follows every accounts write (overlay badge freshness)', async () => {
-    // withAccountHealth reads the runtime ref for the per-row caps badge —
+  it('the runtime config ref follows every credentials write (overlay badge freshness)', async () => {
+    // withCredentialHealth reads the runtime ref for the per-row caps badge —
     // after this route's saveConfig the snapshot must carry the new entry,
     // or the dialog re-seeds a stale draft and the operator concludes the
     // save failed (advisor finding #1 regression pin).
     await put({ provider: 'openai', keyHashPrefix: 'cafe1234beef', limits: [{ window: '1h', tokens: 1000 }] });
     const ref = getRuntimeConfigRef();
-    expect(ref?.accounts?.openai?.[0]?.keyHashPrefix).toBe('cafe1234beef');
-    expect(ref?.accounts?.openai?.[0]?.limits?.[0]?.tokens).toBe(1000);
+    expect(ref?.credentials?.openai?.[0]?.keyHashPrefix).toBe('cafe1234beef');
+    expect(ref?.credentials?.openai?.[0]?.limits?.[0]?.tokens).toBe(1000);
     await put({ provider: 'openai', keyHashPrefix: 'cafe1234beef', limits: null });
-    expect(getRuntimeConfigRef()?.accounts?.openai).toBeUndefined();
+    expect(getRuntimeConfigRef()?.credentials?.openai).toBeUndefined();
   });
 });
 
@@ -638,13 +638,13 @@ describe('prefix case normalization', () => {
   it('an upper-case hand-written prefix arms the LOWER-case subject call sites use', () => {
     const rl = new RateLimiter();
     rl.reload({
-      accounts: { anthropic: [{ keyHashPrefix: 'AB12CD34EF56', limits: [{ window: '1m', requests: 1 }] }] },
+      credentials: { anthropic: [{ keyHashPrefix: 'AB12CD34EF56', limits: [{ window: '1m', requests: 1 }] }] },
     } as unknown as RouterConfig);
     // registry/credential prefixes are sha256 hex slices — always lower-case;
     // a case-mismatched subject would be a silent dead rule.
-    expect(rl.isTracked(accountSubject('anthropic', 'ab12cd34ef56'))).toBe(true);
-    expect(rl.tryDispatch(accountSubject('anthropic', 'ab12cd34ef56')).allowed).toBe(true);
-    expect(rl.tryDispatch(accountSubject('anthropic', 'ab12cd34ef56')).allowed).toBe(false);
+    expect(rl.isTracked(credentialSubject('anthropic', 'ab12cd34ef56'))).toBe(true);
+    expect(rl.tryDispatch(credentialSubject('anthropic', 'ab12cd34ef56')).allowed).toBe(true);
+    expect(rl.tryDispatch(credentialSubject('anthropic', 'ab12cd34ef56')).allowed).toBe(false);
   });
 });
 
@@ -710,14 +710,14 @@ describe('outbound shaping — executeCandidatePool', () => {
   // Each case swaps in a FRESH singleton limiter (call sites read
   // getRateLimiter() per decision, not a captured reference) — event windows
   // never leak between tests.
-  it('a new session spreads onto the slack account while the capped sibling waits', async () => {
+  it('a new session spreads onto the slack credential while the capped sibling waits', async () => {
     const { config, orchestrator, chainAlpha, seenByAlpha } = makeRlFixture();
     setRateLimiterForTests(new RateLimiter());
     const rl = getRateLimiter();
     rl.reload({
       ...config,
-      accounts: {
-        // cap BOTH alpha accounts to 1 request; consume the one the spread
+      credentials: {
+        // cap BOTH alpha credentials to 1 request; consume the one the spread
         // would pick, so the predicate lands the session on the other.
         rlp: [
           { keyHashPrefix: chainAlpha[0].keyHashPrefix, limits: [{ window: '1m', requests: 1 }] },
@@ -729,39 +729,39 @@ describe('outbound shaping — executeCandidatePool', () => {
     // (no bind to persist), so shaping is asserted on the credential that
     // SERVED; the bind seam is pinned by the keep-bound case below.
     const sessionId = 'sess-rl-spread';
-    const first = chainAlpha[accountSpreadIndex(sessionId, chainAlpha.length)];
-    rl.dispatch(accountSubject('rlp', first.keyHashPrefix)); // the hash pick is already at cap
+    const first = chainAlpha[credentialSpreadIndex(sessionId, chainAlpha.length)];
+    rl.dispatch(credentialSubject('rlp', first.keyHashPrefix)); // the hash pick is already at cap
     setRateLimitEventLogForTests(new RateLimitEventLog());
     const turn = { model: 'rl-combo', messages: [{ role: 'user', content: 'shaping' }] } as ChatCompletionRequest;
     const res = await orchestrator.process(turn, { headers: { 'x-session-id': sessionId } });
     expect(res.modelUsed).toBe('rl/alpha'); // shaped WITHIN the provider (slack sibling)
     const slack = first.keyHashPrefix === chainAlpha[0].keyHashPrefix ? chainAlpha[1] : chainAlpha[0];
-    expect(res.servedAccountPrefix).toBe(slack.keyHashPrefix);
+    expect(res.servedCredentialPrefix).toBe(slack.keyHashPrefix);
     expect(seenByAlpha[seenByAlpha.length - 1]).toBe(slack.keyHashPrefix);
     // The capped sibling the spread actually steered around is in the ledger.
     const shaped = getRateLimitEventLog().list().find((e) => e.kind === 'shaped');
     expect(shaped).toBeDefined();
-    expect(shaped!.subject).toBe(accountSubject('rlp', first.keyHashPrefix));
+    expect(shaped!.subject).toBe(credentialSubject('rlp', first.keyHashPrefix));
     expect(shaped!.direction).toBe('outbound');
     expect(shaped!.note).toBe('spread selection');
     expect(shaped!.noteCode).toBe('spread');
   });
 
-  it('every alpha account full → the candidate is skipped and the next provider serves', async () => {
+  it('every alpha credential full → the candidate is skipped and the next provider serves', async () => {
     const { config, orchestrator, chainAlpha, seenByAlpha } = makeRlFixture();
     setRateLimiterForTests(new RateLimiter());
     const rl = getRateLimiter();
     rl.reload({
       ...config,
-      accounts: {
+      credentials: {
         rlp: [
           { keyHashPrefix: chainAlpha[0].keyHashPrefix, limits: [{ window: '1m', requests: 1 }] },
           { keyHashPrefix: chainAlpha[1].keyHashPrefix, limits: [{ window: '1m', requests: 1 }] },
         ],
       },
     } as unknown as RouterConfig);
-    rl.dispatch(accountSubject('rlp', chainAlpha[0].keyHashPrefix));
-    rl.dispatch(accountSubject('rlp', chainAlpha[1].keyHashPrefix));
+    rl.dispatch(credentialSubject('rlp', chainAlpha[0].keyHashPrefix));
+    rl.dispatch(credentialSubject('rlp', chainAlpha[1].keyHashPrefix));
     setRateLimitEventLogForTests(new RateLimitEventLog());
     const turn = { model: 'rl-combo', messages: [{ role: 'user', content: 'cross-provider' }] } as ChatCompletionRequest;
     const res = await orchestrator.process(turn, { headers: { 'x-session-id': 'sess-rl-skip' } });
@@ -771,11 +771,11 @@ describe('outbound shaping — executeCandidatePool', () => {
     // outbound gate. No `shaped` events here — every alpha member is capped,
     // so the slack filter re-opens (shaping must not starve the provider).
     const events = getRateLimitEventLog().list();
-    expect(events.some((e) => e.direction === 'outbound' && e.kind === 'skipped' && e.subject.startsWith('account:rlp:'))).toBe(true);
+    expect(events.some((e) => e.direction === 'outbound' && e.kind === 'skipped' && e.subject.startsWith('credential:rlp:'))).toBe(true);
     expect(events.some((e) => e.kind === 'shaped')).toBe(false);
   });
 
-  it('keep-bound: a capped bound account is FORCED THROUGH, never rebound', async () => {
+  it('keep-bound: a capped bound credential is FORCED THROUGH, never rebound', async () => {
     const { config, orchestrator, chainAlpha, seenByAlpha } = makeRlFixture();
     setRateLimiterForTests(new RateLimiter()); // clean slate for turn 1 too
     const rl = getRateLimiter();
@@ -794,10 +794,10 @@ describe('outbound shaping — executeCandidatePool', () => {
     // before any rule existed — the degeneracy promise, no hidden count)
     rl.reload({
       ...config,
-      accounts: { rlp: [{ keyHashPrefix: bound, limits: [{ window: '1m', requests: 1 }] }] },
+      credentials: { rlp: [{ keyHashPrefix: bound, limits: [{ window: '1m', requests: 1 }] }] },
     } as unknown as RouterConfig);
-    rl.dispatch(accountSubject('rlp', bound));
-    expect(rl.peek(accountSubject('rlp', bound)).allowed).toBe(false);
+    rl.dispatch(credentialSubject('rlp', bound));
+    expect(rl.peek(credentialSubject('rlp', bound)).allowed).toBe(false);
     setRateLimitEventLogForTests(new RateLimitEventLog());
     const before = seenByAlpha.length;
     const second = await orchestrator.process(
@@ -811,23 +811,23 @@ describe('outbound shaping — executeCandidatePool', () => {
     // The override is visible in the ledger: at-cap but force-through, keep-bound note.
     const forced = getRateLimitEventLog().list().find((e) => e.kind === 'forced');
     expect(forced).toBeDefined();
-    expect(forced!.subject).toBe(accountSubject('rlp', bound));
+    expect(forced!.subject).toBe(credentialSubject('rlp', bound));
     expect(forced!.note).toBe('keep-bound session');
     expect(forced!.noteCode).toBe('keep-bound');
   });
 
-  it('completed turns record token usage onto the serving account ledger', async () => {
+  it('completed turns record token usage onto the serving credential ledger', async () => {
     const { config, orchestrator, chainAlpha } = makeRlFixture();
     setRateLimiterForTests(new RateLimiter());
     const rl = getRateLimiter();
     rl.reload({
       ...config,
-      accounts: { rlp: chainAlpha.map((c) => ({ keyHashPrefix: c.keyHashPrefix, limits: [{ window: '1d', tokens: 120 }] })) },
+      credentials: { rlp: chainAlpha.map((c) => ({ keyHashPrefix: c.keyHashPrefix, limits: [{ window: '1d', tokens: 120 }] })) },
     } as unknown as RouterConfig);
     const turn = { model: 'rl/alpha', messages: [{ role: 'user', content: 'usage' }] } as ChatCompletionRequest;
     const res = await orchestrator.process(turn, { headers: { 'x-session-id': 'sess-rl-usage' } });
-    const prefix = res.servedAccountPrefix ?? chainAlpha[0].keyHashPrefix;
-    const v = rl.peek(accountSubject('rlp', prefix));
+    const prefix = res.servedCredentialPrefix ?? chainAlpha[0].keyHashPrefix;
+    const v = rl.peek(credentialSubject('rlp', prefix));
     expect(v.allowed).toBe(false); // 150 tokens > 120 budget
     if (!v.allowed) expect(v.limitedBy).toBe('tokens');
   });
@@ -1209,7 +1209,7 @@ describe('RateLimitEventLog — SQLite mirror (persist)', () => {
 // ─── raw-YAML save is a config save too (runtime view + limiter follow) ──────
 
 describe('raw-YAML save syncs the whole runtime auth view', () => {
-  it('POST /api/admin/config/raw refreshes apiKeys/accounts AND arms the limiter', async () => {
+  it('POST /api/admin/config/raw refreshes apiKeys/credentials AND arms the limiter', async () => {
     setRateLimiterForTests(new RateLimiter());
     const fresh = getRateLimiter();
     const { app } = createServer(
@@ -1218,7 +1218,7 @@ describe('raw-YAML save syncs the whole runtime auth view', () => {
     );
     const yaml = [
       'port: 3000',
-      'accounts:',
+      'credentials:',
       '  gemini:',
       '    - keyHashPrefix: "deadbeef1234"',
       '      limits:',
@@ -1239,9 +1239,9 @@ describe('raw-YAML save syncs the whole runtime auth view', () => {
     // EDITOR" follows immediately — both writers must land in the SAME sync
     // routine (advisor D3: pre-fix saveRawConfig left runtimeConfigRef stale).
     const ref = getRuntimeConfigRef();
-    expect(ref?.accounts?.gemini?.[0]?.keyHashPrefix).toBe('deadbeef1234');
+    expect(ref?.credentials?.gemini?.[0]?.keyHashPrefix).toBe('deadbeef1234');
     expect(ref?.apiKeys?.find((k) => k.id === 'key-raw')?.limits?.[0]?.requests).toBe(3);
-    expect(fresh.isTracked(accountSubject('gemini', 'deadbeef1234'))).toBe(true);
+    expect(fresh.isTracked(credentialSubject('gemini', 'deadbeef1234'))).toBe(true);
     expect(fresh.isTracked(apiKeySubject('key-raw'))).toBe(true);
   });
 });
@@ -1350,9 +1350,9 @@ describe('prune-on-add', () => {
   it('a window that is NEVER read still discards expired events', () => {
     const rl = new RateLimiter();
     rl.reload({
-      accounts: { p: [{ keyHashPrefix: 'ab12cd34ef56', limits: [{ window: '1m', requests: 5 }] }] },
+      credentials: { p: [{ keyHashPrefix: 'ab12cd34ef56', limits: [{ window: '1m', requests: 5 }] }] },
     } as unknown as RouterConfig);
-    const subject = accountSubject('p', 'ab12cd34ef56');
+    const subject = credentialSubject('p', 'ab12cd34ef56');
     const t0 = 1_700_000_000_000;
     // 60 dispatches, one per minute: the decision wire is dispatch/recordUsage-
     // ONLY (no peek by frozen contract) — pre-fix this window grew forever.

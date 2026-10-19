@@ -14,12 +14,12 @@ import {
   type CredentialPushReasonCode,
   type CredentialSyncClientView,
   type CredentialSyncOutcome,
-  type AccountMeta,
-  type AccountHealth,
+  type CredentialMeta,
+  type CredentialHealth,
   type CredentialWriteReasonCode,
   type CredentialRevealReasonCode,
   type RateLimitSnapshotEntry,
-  type AccountQuotaView,
+  type CredentialQuotaView,
 } from '../lib/api';
 import {
   LimitsEditor,
@@ -250,11 +250,11 @@ const PUSH_REASON_LABEL: Partial<Record<CredentialPushReasonCode, string>> = {
   client_absent: 'op.syncPrecClientAbsent',
 };
 /**
- * Credential-store write reasonCodes — the per-account routes AND provider
+ * Credential-store write reasonCodes — the per-credential routes AND provider
  * connect/key/create share console.ts `mapStoreWriteFailure`.
  */
 const WRITE_REASON_LABEL: Partial<Record<CredentialWriteReasonCode, string>> = {
-  account_not_found: 'op.reasonAccountNotFound',
+  credential_not_found: 'op.reasonCredentialNotFound',
   capability_unsupported: 'op.reasonCapabilityUnsupported',
   integration_unmatched: 'op.reasonIntegrationUnmatched',
   invalid_label: 'op.reasonInvalidLabel',
@@ -265,7 +265,7 @@ const WRITE_REASON_LABEL: Partial<Record<CredentialWriteReasonCode, string>> = {
   invalid_reason: 'op.reasonInvalidReason',
 };
 /**
- * Reveal-route preconditions (console.ts `accountReveal`).
+ * Reveal-route preconditions (console.ts `credentialReveal`).
  * The store-layer failures of the same route already ride WRITE_REASON_LABEL
  * (shared failure mapper); these three are the password-gate vocabulary.
  */
@@ -293,7 +293,7 @@ function formatCountdown(ms: number): string {
  * Staleness is honest: a probe failure keeps the last values and dims the
  * badge — the store, not the badge, is the source of truth.
  */
-function QuotaBadge({ quota }: { quota: AccountQuotaView }) {
+function QuotaBadge({ quota }: { quota: CredentialQuotaView }) {
   const { t } = useI18n();
   const now = Date.now();
   // Balance pools are excluded from the tightest-window pick: their percent is
@@ -379,14 +379,14 @@ function useCountdownClock(untilMax: number): number {
 
 /**
  * Capped credential list: 3 one-line rows visible, the rest scrolls inside the
- * card. `ACCOUNT_ROW_HEIGHT_EST` is an ESTIMATE of a single-line AccountRow
+ * card. `CREDENTIAL_ROW_HEIGHT_EST` is an ESTIMATE of a single-line CredentialRow
  * (padding + the tallest of its mono chips / icon buttons); if the row style
  * changes, this constant must follow — an off-by-a-few cap only shows slightly
  * fewer rows. Upgrade path if it ever needs to be exact: measure the first
  * rendered row and drive max-height from it.
  */
-const ACCOUNT_ROWS_VISIBLE = 3;
-const ACCOUNT_ROW_HEIGHT_EST = 36;
+const CREDENTIAL_ROWS_VISIBLE = 3;
+const CREDENTIAL_ROW_HEIGHT_EST = 36;
 
 /**
  * Credential display name: the operator's label, or a bare neutral placeholder.
@@ -394,26 +394,26 @@ const ACCOUNT_ROW_HEIGHT_EST = 36;
  * unlabeled rows are already distinguished by their masked key, and get the
  * explicit `#fingerprint` chip when even that collides (see prefixVisible).
  */
-function accountName(a: AccountMeta, unnamed: string): string {
+function credentialName(a: CredentialMeta, unnamed: string): string {
   return a.label?.trim() || unnamed;
 }
 
 /** Short fingerprint chip text (`#abcdef0123`); the full value rides in the title. */
-const PrefixChip: React.FC<{ account: AccountHealth }> = ({ account }) => {
+const PrefixChip: React.FC<{ credential: CredentialHealth }> = ({ credential }) => {
   const { t } = useI18n();
-  if (!account.keyHashPrefix) return null;
+  if (!credential.keyHashPrefix) return null;
   return (
     <span
       style={{ ...badgeStyle('var(--text-dim)', 'var(--chip-bg)'), fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
-      title={t('op.accountPrefixTip', { prefix: account.keyHashPrefix, id: account.id })}
+      title={t('op.credentialPrefixTip', { prefix: credential.keyHashPrefix, id: credential.id })}
     >
-      #{account.keyHashPrefix.slice(0, 8)}
+      #{credential.keyHashPrefix.slice(0, 8)}
     </span>
   );
 };
 
-type AccountRowProps = {
-  account: AccountHealth;
+type CredentialRowProps = {
+  credential: CredentialHealth;
   caps: CredentialStoreCapabilities;
   /**
    * This is the provider's ONLY routable credential, so it is what actually
@@ -430,7 +430,7 @@ type AccountRowProps = {
   prefixVisible: boolean;
   /** This row has a request in flight — only one row is busy at a time. */
   pending: boolean;
-  /** A connectivity probe for THIS credential row is in flight (multi-account: per-row, not per-card). */
+  /** A connectivity probe for THIS credential row is in flight (multi-credential: per-row, not per-card). */
   testing: boolean;
   /** Label edit mode is page-owned: it closes on the write's success, not before. */
   renaming: boolean;
@@ -438,13 +438,13 @@ type AccountRowProps = {
   onCancelRename: () => void;
   /** Shared tick clock (cooldown chips). */
   now: number;
-  onActivate: (a: AccountHealth) => void;
-  onRename: (a: AccountHealth, label: string) => void;
+  onActivate: (a: CredentialHealth) => void;
+  onRename: (a: CredentialHealth, label: string) => void;
   /** One-shot upstream probe with THIS row's exact key (bypasses head selection). */
-  onTest: (a: AccountHealth) => void;
-  onDisconnect: (a: AccountHealth) => void;
-  onToggleDisabled: (a: AccountHealth) => void;
-  onClearSuspect: (a: AccountHealth) => void;
+  onTest: (a: CredentialHealth) => void;
+  onDisconnect: (a: CredentialHealth) => void;
+  onToggleDisabled: (a: CredentialHealth) => void;
+  onClearSuspect: (a: CredentialHealth) => void;
   /**
    * Reveal re-enters the console LOGIN password, so the
    * copy affordance only exists where that password lives (webAuth active).
@@ -452,17 +452,17 @@ type AccountRowProps = {
    * the same UX bug as an unlabeled one.
    */
   canReveal: boolean;
-  onCopyKey: (a: AccountHealth) => void;
+  onCopyKey: (a: CredentialHealth) => void;
   /** Open the outbound rate-limit overlay editor for THIS credential. */
-  onEditLimits: (a: AccountHealth) => void;
+  onEditLimits: (a: CredentialHealth) => void;
   /** 1-based chain slot in the list. The chain head keeps the ★; every other
       row shows its slot number so the whole priority order is readable. */
   position: number;
 };
 
-/** One account of a multi-account provider — the drill-down row. */
-const AccountRow: React.FC<AccountRowProps> = ({
-  account,
+/** One credential of a multi-credential provider — the drill-down row. */
+const CredentialRow: React.FC<CredentialRowProps> = ({
+  credential,
   caps,
   soleServing,
   prefixVisible,
@@ -485,12 +485,12 @@ const AccountRow: React.FC<AccountRowProps> = ({
 }) => {
   const { t } = useI18n();
   const [labelDraft, setLabelDraft] = useState('');
-  const remaining = account.cooldownUntilMs !== undefined ? account.cooldownUntilMs - now : 0;
-  const name = accountName(account, t('op.accountUnnamed'));
+  const remaining = credential.cooldownUntilMs !== undefined ? credential.cooldownUntilMs - now : 0;
+  const name = credentialName(credential, t('op.credentialUnnamed'));
   // Display truth: the active flag, or the only credential able to serve.
   // A takedown is never "serving", even when it is the store's active row or the
   // sole routable one — the operator took it out of routing on purpose.
-  const serving = !account.disabled && (account.active || soleServing);
+  const serving = !credential.disabled && (credential.active || soleServing);
 
   // Action availability is capability-first (Decision 1: branch on flags,
   // never on `kind`). Disabled affordances keep the blocked-tooltip pattern so
@@ -501,9 +501,9 @@ const AccountRow: React.FC<AccountRowProps> = ({
   // traffic, so "make it the chain head" has no routing effect — the only thing
   // it changes is which credential opencode itself uses. Say that, don't let the
   // button imply the gateway will start serving this key.
-  const activateTip = !account.routable
-    ? t('op.accountActivateNotRoutableTip')
-    : actionTip(caps.activate, t('op.accountActivate'));
+  const activateTip = !credential.routable
+    ? t('op.credentialActivateNotRoutableTip')
+    : actionTip(caps.activate, t('op.credentialActivate'));
 
   // ONE line per credential: identity, status and actions share a single row so a
   // provider with several keys never outgrows its scroll cap. Word badges became
@@ -532,14 +532,14 @@ const AccountRow: React.FC<AccountRowProps> = ({
           <input
             className="input"
             style={{ fontSize: 12, flex: 1, minWidth: 110 }}
-            aria-label={t('op.accountLabelPlaceholder')}
-            placeholder={t('op.accountLabelPlaceholder')}
+            aria-label={t('op.credentialLabelPlaceholder')}
+            placeholder={t('op.credentialLabelPlaceholder')}
             maxLength={80}
             value={labelDraft}
             onChange={(e) => setLabelDraft(e.target.value)}
             onKeyDown={(e) => {
               // Enter with an empty draft is the CLEAR gesture, not a no-op.
-              if (e.key === 'Enter') onRename(account, labelDraft.trim());
+              if (e.key === 'Enter') onRename(credential, labelDraft.trim());
               if (e.key === 'Escape') onCancelRename();
             }}
             autoFocus
@@ -547,9 +547,9 @@ const AccountRow: React.FC<AccountRowProps> = ({
           <button
             className="btn btn-sm btn-primary"
             style={rowIconBtn}
-            disabled={pending || labelDraft.trim() === (account.label?.trim() ?? '')}
-            title={labelDraft.trim() ? t('op.accountRename') : t('op.accountClearLabel')}
-            onClick={() => onRename(account, labelDraft.trim())}
+            disabled={pending || labelDraft.trim() === (credential.label?.trim() ?? '')}
+            title={labelDraft.trim() ? t('op.credentialRename') : t('op.credentialClearLabel')}
+            onClick={() => onRename(credential, labelDraft.trim())}
           >
             <Check size={12} />
           </button>
@@ -570,7 +570,7 @@ const AccountRow: React.FC<AccountRowProps> = ({
           {serving ? (
             <span
               style={{ display: 'inline-flex', alignItems: 'center', color: 'var(--accent-star)' }}
-              title={account.active ? t('op.accountChainHeadTip') : t('op.accountSoleServingTip')}
+              title={credential.active ? t('op.credentialChainHeadTip') : t('op.credentialSoleServingTip')}
             >
               {/* Outline, not fill: this is status metadata on a row whose
                   content (label + key) must outweigh it; gold outline stays
@@ -590,7 +590,7 @@ const AccountRow: React.FC<AccountRowProps> = ({
                 color: 'var(--text-dim)',
                 fontVariantNumeric: 'tabular-nums',
               }}
-              title={t('op.accountChainHeadTip')}
+              title={t('op.credentialChainHeadTip')}
             >
               #{position}
             </span>
@@ -602,12 +602,12 @@ const AccountRow: React.FC<AccountRowProps> = ({
             {name}
           </span>
           {/* The fingerprint is a CORRELATION id (breaker state, SUSPECT flags,
-              the Guardrails per-account trip and the logs all key on it), not
+              the Guardrails per-credential trip and the logs all key on it), not
               something to read. So it lives in the masked key's tooltip, and the
               chip only appears when two rows of this provider mask to the same
               text — the one case where a row is otherwise ambiguous. */}
-          {prefixVisible && <PrefixChip account={account} />}
-          {account.maskedKey && (
+          {prefixVisible && <PrefixChip credential={credential} />}
+          {credential.maskedKey && (
             <span
               style={{
                 fontSize: 11,
@@ -620,66 +620,66 @@ const AccountRow: React.FC<AccountRowProps> = ({
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
               }}
-              title={account.keyHashPrefix ? t('op.accountPrefixTip', { prefix: account.keyHashPrefix, id: account.id }) : undefined}
+              title={credential.keyHashPrefix ? t('op.credentialPrefixTip', { prefix: credential.keyHashPrefix, id: credential.id }) : undefined}
             >
-              {account.maskedKey}
+              {credential.maskedKey}
             </span>
           )}
           <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
-            {account.disabled && (
+            {credential.disabled && (
               <span
                 style={{ ...badgeStyle('var(--accent-rose)', 'color-mix(in srgb, var(--accent-rose) 12%, transparent)'), display: 'inline-flex', alignItems: 'center', gap: 3 }}
-                title={account.disabledReason ? `${t('op.accountDisabledTip')} · ${account.disabledReason}` : t('op.accountDisabledTip')}
+                title={credential.disabledReason ? `${t('op.credentialDisabledTip')} · ${credential.disabledReason}` : t('op.credentialDisabledTip')}
               >
                 <PowerOff size={9} />
-                {t('op.accountDisabled')}
+                {t('op.credentialDisabled')}
               </span>
             )}
-            {!account.routable && (
-              <span style={{ display: 'inline-flex', color: 'var(--text-dim)' }} title={t('op.accountNotRoutableTip')}>
+            {!credential.routable && (
+              <span style={{ display: 'inline-flex', color: 'var(--text-dim)' }} title={t('op.credentialNotRoutableTip')}>
                 <Ban size={11} />
               </span>
             )}
-            {account.suspect && (
-              <span style={{ display: 'inline-flex', color: 'var(--accent-rose)' }} title={t('op.accountSuspectTip')}>
+            {credential.suspect && (
+              <span style={{ display: 'inline-flex', color: 'var(--accent-rose)' }} title={t('op.credentialSuspectTip')}>
                 <AlertTriangle size={11} />
               </span>
             )}
             {remaining > 0 && (
               <span
                 style={{ ...badgeStyle('var(--accent-amber)', 'color-mix(in srgb, var(--accent-amber) 12%, transparent)'), display: 'inline-flex', alignItems: 'center', gap: 3 }}
-                title={t('op.accountOpenPairs', { n: account.openPairs })}
+                title={t('op.credentialOpenPairs', { n: credential.openPairs })}
               >
                 <Clock size={9} />
                 {formatCountdown(remaining)}
               </span>
             )}
-            {/* Outbound caps armed for THIS credential (config accounts: overlay).
+            {/* Outbound caps armed for THIS credential (config credentials: overlay).
                 The count is the rule count; per-rule detail lives in the tooltip
                 (the row is one dense line — machine text, not prose). */}
-            {(account.limits ?? []).length > 0 && (
+            {(credential.limits ?? []).length > 0 && (
               <span
                 style={{ ...badgeStyle('var(--accent)', 'color-mix(in srgb, var(--accent) 12%, transparent)'), display: 'inline-flex', alignItems: 'center', gap: 3 }}
-                title={(account.limits ?? []).map(ruleLabel).join('\n')}
+                title={(credential.limits ?? []).map(ruleLabel).join('\n')}
               >
                 <Gauge size={9} />
-                {(account.limits ?? []).length}
+                {(credential.limits ?? []).length}
               </span>
             )}
             {/* Quota tracking badge: present only when the provider
                 is COVERED — absence != the `unverified` state. Display-only,
                 never gates routing; multi-window detail lives in the tooltip. */}
-            {account.quota && <QuotaBadge quota={account.quota} />}
-            {/* Per-account connectivity probe: pins the store row THIS line
-                names — the card-level Test only ever hits the head account. */}
-            {account.routable && (
+            {credential.quota && <QuotaBadge quota={credential.quota} />}
+            {/* Per-credential connectivity probe: pins the store row THIS line
+                names — the card-level Test only ever hits the head credential. */}
+            {credential.routable && (
               <button
                 className="btn btn-sm"
                 style={rowIconBtn}
                 disabled={testing || pending}
-                title={testing ? t('op.testing') : t('op.accountTestTip')}
-                aria-label={t('op.accountTest')}
-                onClick={() => onTest(account)}
+                title={testing ? t('op.testing') : t('op.credentialTestTip')}
+                aria-label={t('op.credentialTest')}
+                onClick={() => onTest(credential)}
               >
                 {testing ? (
                   <RefreshCw size={12} style={{ animation: 'ocr-spin 0.8s linear infinite' }} />
@@ -688,14 +688,14 @@ const AccountRow: React.FC<AccountRowProps> = ({
                 )}
               </button>
             )}
-            {!account.active && !account.disabled && (
+            {!credential.active && !credential.disabled && (
               <button
                 className="btn btn-sm"
                 style={rowIconBtn}
-                disabled={!caps.activate || !account.routable || pending}
+                disabled={!caps.activate || !credential.routable || pending}
                 title={activateTip}
-                aria-label={t('op.accountActivate')}
-                onClick={() => onActivate(account)}
+                aria-label={t('op.credentialActivate')}
+                onClick={() => onActivate(credential)}
               >
                 <Star size={12} />
               </button>
@@ -704,10 +704,10 @@ const AccountRow: React.FC<AccountRowProps> = ({
               className="btn btn-sm"
               style={rowIconBtn}
               disabled={!caps.rename || pending}
-              title={actionTip(caps.rename, t('op.accountRename'))}
-              aria-label={t('op.accountRename')}
+              title={actionTip(caps.rename, t('op.credentialRename'))}
+              aria-label={t('op.credentialRename')}
               onClick={() => {
-                setLabelDraft(account.label ?? '');
+                setLabelDraft(credential.label ?? '');
                 onStartRename();
               }}
             >
@@ -716,26 +716,26 @@ const AccountRow: React.FC<AccountRowProps> = ({
             {/* Raw-key export for the row the operator
                 can name. Only api-key rows have anything to reveal (oauth
                 material never leaves any surface). */}
-            {account.type === 'api' && account.routable && (
+            {credential.type === 'api' && credential.routable && (
               <button
                 className="btn btn-sm"
                 style={rowIconBtn}
                 disabled={!canReveal || pending}
-                title={canReveal ? t('op.accountCopyKey') : t('op.accountCopyNeedsAuthTip')}
-                aria-label={t('op.accountCopyKey')}
-                onClick={() => onCopyKey(account)}
+                title={canReveal ? t('op.credentialCopyKey') : t('op.credentialCopyNeedsAuthTip')}
+                aria-label={t('op.credentialCopyKey')}
+                onClick={() => onCopyKey(credential)}
               >
                 <Copy size={12} />
               </button>
             )}
-            {account.suspect && account.keyHashPrefix && (
+            {credential.suspect && credential.keyHashPrefix && (
               <button
                 className="btn btn-sm"
                 style={rowIconBtn}
                 disabled={pending}
-                title={t('op.accountClearSuspect')}
-                aria-label={t('op.accountClearSuspect')}
-                onClick={() => onClearSuspect(account)}
+                title={t('op.credentialClearSuspect')}
+                aria-label={t('op.credentialClearSuspect')}
+                onClick={() => onClearSuspect(credential)}
               >
                 <ShieldAlert size={12} />
               </button>
@@ -744,14 +744,14 @@ const AccountRow: React.FC<AccountRowProps> = ({
                 live in OCR's own config.yaml, not in the credential store —
                 same reasoning as the suspect door above. Routable rows only: a
                 credential that can never carry traffic has nothing to shape. */}
-            {account.keyHashPrefix && account.routable && (
+            {credential.keyHashPrefix && credential.routable && (
               <button
                 className="btn btn-sm"
                 style={rowIconBtn}
                 disabled={pending}
-                title={t('op.accountLimitsTip')}
-                aria-label={t('op.accountLimits')}
-                onClick={() => onEditLimits(account)}
+                title={t('op.credentialLimitsTip')}
+                aria-label={t('op.credentialLimits')}
+                onClick={() => onEditLimits(credential)}
               >
                 <Gauge size={12} />
               </button>
@@ -762,19 +762,19 @@ const AccountRow: React.FC<AccountRowProps> = ({
               className="btn btn-sm"
               style={rowIconBtn}
               disabled={pending}
-              title={account.disabled ? t('op.accountEnableTip') : t('op.accountDisableTip')}
-              aria-label={account.disabled ? t('op.accountEnable') : t('op.accountDisable')}
-              onClick={() => onToggleDisabled(account)}
+              title={credential.disabled ? t('op.credentialEnableTip') : t('op.credentialDisableTip')}
+              aria-label={credential.disabled ? t('op.credentialEnable') : t('op.credentialDisable')}
+              onClick={() => onToggleDisabled(credential)}
             >
-              {account.disabled ? <Power size={12} /> : <PowerOff size={12} />}
+              {credential.disabled ? <Power size={12} /> : <PowerOff size={12} />}
             </button>
             <button
               className="btn btn-sm"
               style={{ ...rowIconBtn, color: 'var(--accent-rose)' }}
               disabled={pending}
-              title={t('op.accountDisconnect')}
-              aria-label={t('op.accountDisconnect')}
-              onClick={() => onDisconnect(account)}
+              title={t('op.credentialDisconnect')}
+              aria-label={t('op.credentialDisconnect')}
+              onClick={() => onDisconnect(credential)}
             >
               <Unplug size={12} />
             </button>
@@ -786,7 +786,7 @@ const AccountRow: React.FC<AccountRowProps> = ({
 };
 
 type RevealDialogProps = {
-  account: AccountHealth;
+  credential: CredentialHealth;
   password: string;
   error: string;
   busy: boolean;
@@ -802,7 +802,7 @@ type RevealDialogProps = {
  * keeps the verified password in a ref, out of the DOM).
  */
 const RevealKeyDialog: React.FC<RevealDialogProps> = ({
-  account,
+  credential,
   password,
   error,
   busy,
@@ -811,7 +811,7 @@ const RevealKeyDialog: React.FC<RevealDialogProps> = ({
   onConfirm,
 }) => {
   const { t } = useI18n();
-  const name = accountName(account, t('op.accountUnnamed'));
+  const name = credentialName(credential, t('op.credentialUnnamed'));
   return (
     <div
       style={{
@@ -888,18 +888,18 @@ const RevealKeyDialog: React.FC<RevealDialogProps> = ({
  * toward the provider (outbound); the window list is the live sliding-ledger
  * view, so what the operator arms is immediately verifiable.
  */
-const AccountLimitsDialog: React.FC<{
+const CredentialLimitsDialog: React.FC<{
   providerId: string;
-  account: AccountHealth;
+  credential: CredentialHealth;
   drafts: LimitDraft[];
   windows: RateLimitSnapshotEntry[];
   busy: boolean;
   onChangeDrafts: (next: LimitDraft[]) => void;
   onCancel: () => void;
   onSave: () => void;
-}> = ({ providerId, account, drafts, windows, busy, onChangeDrafts, onCancel, onSave }) => {
+}> = ({ providerId, credential, drafts, windows, busy, onChangeDrafts, onCancel, onSave }) => {
   const { t } = useI18n();
-  const name = accountName(account, t('op.accountUnnamed'));
+  const name = credentialName(credential, t('op.credentialUnnamed'));
   return (
     <div
       style={{
@@ -916,7 +916,7 @@ const AccountLimitsDialog: React.FC<{
       <div
         role="dialog"
         aria-modal="true"
-        aria-label={t('op.accountLimitsTitle', { label: name })}
+        aria-label={t('op.credentialLimitsTitle', { label: name })}
         style={{
           margin: 'auto',
           width: 460,
@@ -932,10 +932,10 @@ const AccountLimitsDialog: React.FC<{
         onClick={(e) => e.stopPropagation()}
       >
         <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 2 }}>
-          {t('op.accountLimitsTitle', { label: name })}
+          {t('op.credentialLimitsTitle', { label: name })}
         </div>
         <p style={{ fontSize: 11.5, color: 'var(--text-dim)', margin: '0 0 12px', lineHeight: 1.6 }}>
-          {t('op.accountLimitsDesc', { provider: providerId })}
+          {t('op.credentialLimitsDesc', { provider: providerId })}
         </p>
 
         <LimitsEditor value={drafts} onChange={onChangeDrafts} />
@@ -943,7 +943,7 @@ const AccountLimitsDialog: React.FC<{
         {windows.length > 0 && (
           <div style={{ marginTop: 14 }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', marginBottom: 6 }}>
-              {t('op.accountLimitsWindows')}
+              {t('op.credentialLimitsWindows')}
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               {windows.map((w) => (
@@ -961,7 +961,7 @@ const AccountLimitsDialog: React.FC<{
                   <span>{w.rule}</span>
                   <span>
                     {w.used} / {w.limit}
-                    {w.retryAfterMs > 0 ? ` · ${t('op.accountLimitsRetryIn', { s: Math.ceil(w.retryAfterMs / 1000) })}` : ''}
+                    {w.retryAfterMs > 0 ? ` · ${t('op.credentialLimitsRetryIn', { s: Math.ceil(w.retryAfterMs / 1000) })}` : ''}
                   </span>
                 </div>
               ))}
@@ -1013,7 +1013,7 @@ export const KeysPage: React.FC = () => {
   // login), so the flow only exists while webAuth is active; the session
   // probe is the same one App's boot gate uses.
   const [webAuthActive, setWebAuthActive] = useState(false);
-  const [revealTarget, setRevealTarget] = useState<AccountHealth | null>(null);
+  const [revealTarget, setRevealTarget] = useState<CredentialHealth | null>(null);
   const [revealPassword, setRevealPassword] = useState('');
   const [revealError, setRevealError] = useState('');
   const [revealBusy, setRevealBusy] = useState(false);
@@ -1026,9 +1026,9 @@ export const KeysPage: React.FC = () => {
   const revealPassRef = useRef('');
   const [copyUnlocked, setCopyUnlocked] = useState(false);
 
-  // Outbound rate-limit overlay editor (config `accounts:`): the dialog is
+  // Outbound rate-limit overlay editor (config `credentials:`): the dialog is
   // page-owned like the reveal gate — the row only names its target.
-  const [limitsTarget, setLimitsTarget] = useState<{ providerId: string; account: AccountHealth } | null>(null);
+  const [limitsTarget, setLimitsTarget] = useState<{ providerId: string; credential: CredentialHealth } | null>(null);
   const [limitsDraft, setLimitsDraft] = useState<LimitDraft[]>([]);
   const [limitsWindows, setLimitsWindows] = useState<RateLimitSnapshotEntry[]>([]);
   const [limitsBusy, setLimitsBusy] = useState(false);
@@ -1038,7 +1038,7 @@ export const KeysPage: React.FC = () => {
   const [npmChoice, setNpmChoice] = useState<string>('');
   const [activeTab, setActiveTab] = useState<'connected' | 'catalog' | 'custom' | 'sync'>('connected');
   // Default OFF (show connected providers): a connected provider is exactly where
-  // a SECOND credential is added, so hiding connected rows made multi-account
+  // a SECOND credential is added, so hiding connected rows made multi-credential
   // unreachable from this tab. Hiding is opt-in for "only show what's new".
   // Default ON: the catalog tab is pure-connect — hide rows already connected
   // (their credential management lives in the Connected tab). The toggle stays
@@ -1067,11 +1067,11 @@ export const KeysPage: React.FC = () => {
 
   const connectedIds = useMemo(() => new Set(ocProviders.map((p) => p.id)), [ocProviders]);
 
-  // Decision 1: whether a submitted key ADDS an account or OVERWRITES the only
+  // Decision 1: whether a submitted key ADDS an credential or OVERWRITES the only
   // one is a capability of the bound store, never a name-check on `kind` — the
-  // ocr landing gets append semantics for free, a future single-account store
+  // ocr landing gets append semantics for free, a future single-credential store
   // would get overwrite without the UI changing.
-  const multiAccountStore = !!storeStatus?.capabilities.multiAccount;
+  const multiCredentialStore = !!storeStatus?.capabilities.multiCredential;
   /**
    * The file the BOUND store actually addresses — the truth behind every "stored
    * in X" claim on this page. opencode v2 keeps credentials in `opencode.db`, an
@@ -1100,52 +1100,52 @@ export const KeysPage: React.FC = () => {
   );
   const canWriteCredential = (providerId: string): boolean =>
     integrationIds === null || integrationIds.has(providerId.toLowerCase());
-  // OcrStore binding: its accounts are by definition local, not in opencode —
+  // OcrStore binding: its credentials are by definition local, not in opencode —
   // these get the one-shot Push to opencode affordance (Decision 2 convergence).
   const localOnlyProviders = useMemo(() => {
     const set = new Set<string>();
     if (storeStatus?.kind === 'ocr') {
-      for (const a of storeStatus.accounts) if (a.total > 0) set.add(a.providerId);
+      for (const a of storeStatus.credentials) if (a.total > 0) set.add(a.providerId);
     }
     return set;
   }, [storeStatus]);
 
-  // ---- per-account drill-down ----------------------------------------------------
+  // ---- per-credential drill-down ----------------------------------------------------
   // The masked detail lives inside storeStatus (GET credential-store carries
-  // it) so a write route's refreshed `accounts` array can patch it in place —
+  // it) so a write route's refreshed `credentials` array can patch it in place —
   // one source of truth, no second fetch.
-  const accountsByProvider = useMemo(() => {
-    const map = new Map<string, AccountHealth[]>();
-    for (const a of storeStatus?.accounts ?? []) if (a.accounts && a.accounts.length > 0) map.set(a.providerId, a.accounts);
+  const credentialsByProvider = useMemo(() => {
+    const map = new Map<string, CredentialHealth[]>();
+    for (const a of storeStatus?.credentials ?? []) if (a.credentials && a.credentials.length > 0) map.set(a.providerId, a.credentials);
     return map;
   }, [storeStatus]);
   const maxCooldownUntil = useMemo(() => {
     let until = 0;
-    for (const list of accountsByProvider.values()) for (const a of list) until = Math.max(until, a.cooldownUntilMs ?? 0);
+    for (const list of credentialsByProvider.values()) for (const a of list) until = Math.max(until, a.cooldownUntilMs ?? 0);
     return until;
-  }, [accountsByProvider]);
+  }, [credentialsByProvider]);
   const now = useCountdownClock(maxCooldownUntil);
-  const [pendingAccount, setPendingAccount] = useState<string | null>(null);
-  // `${providerId}:${accountId}` of the row in label-edit mode (page-owned so it
+  const [pendingCredential, setPendingCredential] = useState<string | null>(null);
+  // `${providerId}:${credentialId}` of the row in label-edit mode (page-owned so it
   // closes only when the rename write succeeds).
   const [renameKey, setRenameKey] = useState<string | null>(null);
 
-  const applyAccountList = (providerId: string, accounts: AccountHealth[]) =>
+  const applyCredentialList = (providerId: string, credentials: CredentialHealth[]) =>
     setStoreStatus((prev) =>
       prev
         ? {
             ...prev,
-            accounts: prev.accounts.map((a) =>
+            credentials: prev.credentials.map((a) =>
               a.providerId !== providerId
                 ? a
                 : {
                     ...a,
-                    accounts,
+                    credentials,
                     // The overview counters are derivable from the detail list —
                     // patch them too so a disconnect never leaves a stale total.
-                    total: accounts.length,
-                    routable: accounts.filter((x) => x.routable).length,
-                    activeAccountId: accounts.find((x) => x.active)?.id ?? null,
+                    total: credentials.length,
+                    routable: credentials.filter((x) => x.routable).length,
+                    activeCredentialId: credentials.find((x) => x.active)?.id ?? null,
                   }
             ),
           }
@@ -1168,18 +1168,18 @@ export const KeysPage: React.FC = () => {
     return code ? t('op.reasonGenericCode', { code, message }) : t('op.reasonGeneric', { message });
   };
 
-  const handleAccountActivate = async (a: AccountHealth) => {
-    setPendingAccount(`${a.providerId}:${a.id}`);
+  const handleCredentialActivate = async (a: CredentialHealth) => {
+    setPendingCredential(`${a.providerId}:${a.id}`);
     try {
-      const res = await opencodeApi.activateProviderAccount(a.providerId, a.id);
-      applyAccountList(a.providerId, res.accounts);
-      toast.success(t('op.accountActivated', { label: accountName(a, t('op.accountUnnamed')) }));
-      // The card's own masked key mirrors the ACTIVE account — keep it honest.
+      const res = await opencodeApi.activateProviderCredential(a.providerId, a.id);
+      applyCredentialList(a.providerId, res.credentials);
+      toast.success(t('op.credentialActivated', { label: credentialName(a, t('op.credentialUnnamed')) }));
+      // The card's own masked key mirrors the ACTIVE credential — keep it honest.
       await loadOpenCodeProviders();
     } catch (err: any) {
       toast.error(reasonError(err));
     } finally {
-      setPendingAccount(null);
+      setPendingCredential(null);
     }
   };
 
@@ -1188,60 +1188,60 @@ export const KeysPage: React.FC = () => {
    * the store), so no confirmation gate — unlike disconnect, which deletes the
    * only copy and must double-confirm (Decision 8).
    */
-  const handleAccountToggleDisabled = async (a: AccountHealth) => {
-    setPendingAccount(`${a.providerId}:${a.id}`);
+  const handleCredentialToggleDisabled = async (a: CredentialHealth) => {
+    setPendingCredential(`${a.providerId}:${a.id}`);
     try {
       const res = a.disabled
-        ? await opencodeApi.enableProviderAccount(a.providerId, a.id)
-        : await opencodeApi.disableProviderAccount(a.providerId, a.id);
-      applyAccountList(a.providerId, res.accounts);
+        ? await opencodeApi.enableProviderCredential(a.providerId, a.id)
+        : await opencodeApi.disableProviderCredential(a.providerId, a.id);
+      applyCredentialList(a.providerId, res.credentials);
       if (a.disabled) {
-        toast.success(t('op.accountEnabled', { label: accountName(a, t('op.accountUnnamed')) }));
+        toast.success(t('op.credentialEnabled', { label: credentialName(a, t('op.credentialUnnamed')) }));
       } else {
-        toast.info(t('op.accountDisabledOk', { label: accountName(a, t('op.accountUnnamed')) }));
+        toast.info(t('op.credentialDisabledOk', { label: credentialName(a, t('op.credentialUnnamed')) }));
       }
     } catch (err: any) {
       toast.error(reasonError(err));
     } finally {
-      setPendingAccount(null);
+      setPendingCredential(null);
     }
   };
 
   /** Empty `label` is the CLEAR gesture (backend: '' is a valid label value). */
-  const handleAccountRename = async (a: AccountHealth, label: string) => {
-    setPendingAccount(`${a.providerId}:${a.id}`);
+  const handleCredentialRename = async (a: CredentialHealth, label: string) => {
+    setPendingCredential(`${a.providerId}:${a.id}`);
     try {
-      const res = await opencodeApi.renameProviderAccount(a.providerId, a.id, label);
-      applyAccountList(a.providerId, res.accounts);
+      const res = await opencodeApi.renameProviderCredential(a.providerId, a.id, label);
+      applyCredentialList(a.providerId, res.credentials);
       setRenameKey(null);
-      toast.success(label ? t('op.accountRenamed', { label }) : t('op.accountLabelCleared'));
+      toast.success(label ? t('op.credentialRenamed', { label }) : t('op.credentialLabelCleared'));
     } catch (err: any) {
       toast.error(reasonError(err));
     } finally {
-      setPendingAccount(null);
+      setPendingCredential(null);
     }
   };
 
-  const handleAccountDisconnect = async (a: AccountHealth) => {
-    const name = accountName(a, t('op.accountUnnamed'));
+  const handleCredentialDisconnect = async (a: CredentialHealth) => {
+    const name = credentialName(a, t('op.credentialUnnamed'));
     const ok = await confirmDialog({
-      title: t('op.accountDisconnectConfirm', { label: name }),
-      description: t('op.accountDisconnectPurge'),
+      title: t('op.credentialDisconnectConfirm', { label: name }),
+      description: t('op.credentialDisconnectPurge'),
       danger: true,
       confirmLabel: t('common.delete'),
     });
     if (!ok) return;
-    setPendingAccount(`${a.providerId}:${a.id}`);
+    setPendingCredential(`${a.providerId}:${a.id}`);
     try {
-      const res = await opencodeApi.disconnectProviderAccount(a.providerId, a.id);
-      applyAccountList(a.providerId, res.accounts);
-      toast.success(t('op.accountDisconnected', { label: name }));
+      const res = await opencodeApi.disconnectProviderCredential(a.providerId, a.id);
+      applyCredentialList(a.providerId, res.credentials);
+      toast.success(t('op.credentialDisconnected', { label: name }));
       // The credential set behind the card changed; the provider view must follow.
       await loadOpenCodeProviders();
     } catch (err: any) {
       toast.error(reasonError(err));
     } finally {
-      setPendingAccount(null);
+      setPendingCredential(null);
     }
   };
 
@@ -1249,30 +1249,30 @@ export const KeysPage: React.FC = () => {
    * Decision 6 explicit admin door. The suspect flag lives in OCR's own state
    * file, not in the credential store.
    */
-  const handleAccountClearSuspect = async (a: AccountHealth) => {
+  const handleCredentialClearSuspect = async (a: CredentialHealth) => {
     if (!a.keyHashPrefix) return;
-    setPendingAccount(`${a.providerId}:${a.id}`);
+    setPendingCredential(`${a.providerId}:${a.id}`);
     try {
-      const res = await api.clearSuspectAccount(a.providerId, a.keyHashPrefix);
-      toast.info(res.cleared ? t('op.accountSuspectCleared', { label: accountName(a, t('op.accountUnnamed')) }) : t('op.accountSuspectNone', { label: accountName(a, t('op.accountUnnamed')) }));
+      const res = await api.clearSuspectCredential(a.providerId, a.keyHashPrefix);
+      toast.info(res.cleared ? t('op.credentialSuspectCleared', { label: credentialName(a, t('op.credentialUnnamed')) }) : t('op.credentialSuspectNone', { label: credentialName(a, t('op.credentialUnnamed')) }));
       await loadCredentialStore();
     } catch (err: any) {
       toast.error(reasonError(err));
     } finally {
-      setPendingAccount(null);
+      setPendingCredential(null);
     }
   };
 
   /** Open the overlay editor for one credential: seed the draft from the row's
    *  armed rules and pull the live windows so usage shows up immediately. */
-  const openLimitsDialog = async (providerId: string, a: AccountHealth) => {
+  const openLimitsDialog = async (providerId: string, a: CredentialHealth) => {
     if (!a.keyHashPrefix) return;
-    setLimitsTarget({ providerId, account: a });
+    setLimitsTarget({ providerId, credential: a });
     setLimitsDraft((a.limits ?? []).map(draftFromRule));
     setLimitsBusy(true);
     try {
       const snap = await api.getRateLimitWindows();
-      const subject = `account:${providerId}:${a.keyHashPrefix}`;
+      const subject = `credential:${providerId}:${a.keyHashPrefix}`;
       setLimitsWindows(snap.windows.filter((w) => w.subject === subject));
     } catch (err) {
       console.warn('[ratelimit] live window snapshot fetch failed', err);
@@ -1284,8 +1284,8 @@ export const KeysPage: React.FC = () => {
 
   /** Upsert the entry (empty compile result = null = remove it). saveConfig
    *  hot-reloads the limiter, so a successful write is already in effect. */
-  const handleSaveAccountLimits = async () => {
-    if (!limitsTarget?.account.keyHashPrefix) return;
+  const handleSaveCredentialLimits = async () => {
+    if (!limitsTarget?.credential.keyHashPrefix) return;
     const compiled = compileLimitDrafts(limitsDraft, t);
     if (compiled.error) {
       toast.error(compiled.error);
@@ -1293,18 +1293,18 @@ export const KeysPage: React.FC = () => {
     }
     setLimitsBusy(true);
     try {
-      const res = await api.setAccountLimits({
+      const res = await api.setCredentialLimits({
         provider: limitsTarget.providerId,
-        keyHashPrefix: limitsTarget.account.keyHashPrefix,
+        keyHashPrefix: limitsTarget.credential.keyHashPrefix,
         limits: compiled.rules ?? null,
       });
       if (!res.success) {
         toast.error(typeof res.error === 'string' && res.error ? res.error : t('common.saveFailed'));
         return;
       }
-      toast.success(compiled.rules?.length ? t('op.accountLimitsSaved') : t('op.accountLimitsCleared'));
+      toast.success(compiled.rules?.length ? t('op.credentialLimitsSaved') : t('op.credentialLimitsCleared'));
       setLimitsTarget(null);
-      await loadCredentialStore(); // the caps ride the withAccountHealth overlay — refresh rows
+      await loadCredentialStore(); // the caps ride the withCredentialHealth overlay — refresh rows
     } catch (err: any) {
       toast.error(reasonError(err));
     } finally {
@@ -1318,22 +1318,22 @@ export const KeysPage: React.FC = () => {
    * the password dialog. The key never transits this page's state: every
    * response passes straight into the clipboard and is forgotten.
    */
-  const openRevealDialog = (a: AccountHealth) => {
+  const openRevealDialog = (a: CredentialHealth) => {
     setRevealTarget(a);
     setRevealPassword('');
     setRevealError('');
   };
 
-  const handleAccountCopyKey = async (a: AccountHealth) => {
+  const handleCredentialCopyKey = async (a: CredentialHealth) => {
     if (!revealPassRef.current) {
       openRevealDialog(a);
       return;
     }
-    setPendingAccount(`${a.providerId}:${a.id}`);
+    setPendingCredential(`${a.providerId}:${a.id}`);
     try {
       const res = await opencodeApi.revealProviderKey(a.providerId, a.id, revealPassRef.current);
       await copyToClipboard(res.key);
-      toast.success(t('op.accountKeyCopied'));
+      toast.success(t('op.credentialKeyCopied'));
     } catch (err: any) {
       if (err?.reasonCode === 'invalid_password') {
         // The held password stopped being true (changed upstream, or the
@@ -1345,7 +1345,7 @@ export const KeysPage: React.FC = () => {
         toast.error(reasonError(err));
       }
     } finally {
-      setPendingAccount(null);
+      setPendingCredential(null);
     }
   };
 
@@ -1359,7 +1359,7 @@ export const KeysPage: React.FC = () => {
       setCopyUnlocked(true);
       setRevealTarget(null);
       setRevealPassword('');
-      toast.success(t('op.accountKeyCopiedUnlocked'));
+      toast.success(t('op.credentialKeyCopiedUnlocked'));
     } catch (err: any) {
       setRevealError(reasonError(err));
     } finally {
@@ -1547,13 +1547,13 @@ export const KeysPage: React.FC = () => {
   /**
    * One announcement rule for every "hand this key to the store" gesture (the
    * catalog connect and the card key submit are the SAME route): dedup says
-   * which account already owns the key, a first connection says connected, and a
+   * which credential already owns the key, a first connection says connected, and a
    * key onto an already-connected provider states what the sink actually did —
-   * appended an account (multi-account store) or replaced the only one.
+   * appended an credential (multi-credential store) or replaced the only one.
    */
   const announceConnect = (res: Awaited<ReturnType<typeof opencodeApi.connectProvider>>, id: string) => {
     if (res.deduped) {
-      toast.info(t('op.keyAlreadyExists', { label: res.account ? accountName(res.account, t('op.accountUnnamed')) : id }));
+      toast.info(t('op.keyAlreadyExists', { label: res.credential ? credentialName(res.credential, t('op.credentialUnnamed')) : id }));
       return;
     }
     if (!connectedIds.has(id)) {
@@ -1563,11 +1563,11 @@ export const KeysPage: React.FC = () => {
     // The sink moved the chain head and we moved it back — say so, or the
     // operator cannot tell why the new row is not starred.
     if (res.headPreserved) {
-      const added = res.account ? accountName(res.account, t('op.accountUnnamed')) : id;
-      toast.info(t('op.headPreserved', { added, head: accountName(res.headPreserved, t('op.accountUnnamed')) }));
+      const added = res.credential ? credentialName(res.credential, t('op.credentialUnnamed')) : id;
+      toast.info(t('op.headPreserved', { added, head: credentialName(res.headPreserved, t('op.credentialUnnamed')) }));
       return;
     }
-    showNotice(t(multiAccountStore ? 'op.keyAdded' : 'op.keyUpdated', { sink: sinkLabel }));
+    showNotice(t(multiCredentialStore ? 'op.keyAdded' : 'op.keyUpdated', { sink: sinkLabel }));
   };
 
   const handleConnect = async (id: string) => {
@@ -1629,7 +1629,7 @@ export const KeysPage: React.FC = () => {
       // double test guards against a malformed reply claiming success).
       if (res.success === false || failed.length > 0) {
         const detail =
-          failed.map((f) => `${f.accountId}: ${f.reason}`).join('; ') || t('op.purgeFailedUnknown');
+          failed.map((f) => `${f.credentialId}: ${f.reason}`).join('; ') || t('op.purgeFailedUnknown');
         toast.error(t('op.purgeFailed', { detail }));
       } else {
         showNotice(t('op.deleted'));
@@ -1829,18 +1829,18 @@ export const KeysPage: React.FC = () => {
             while a narrow one drops to 2 / 1 by the 300px floor. */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(max(300px, calc((100% - 28px) / 3)), 1fr))', gap: '14px' }}>
           {pagedConnected.map(p => {
-            const accountList = accountsByProvider.get(p.id) ?? [];
+            const credentialList = credentialsByProvider.get(p.id) ?? [];
             const caps = storeStatus?.capabilities;
-            // Sole routable credential (see AccountRow.soleServing): exactly one
+            // Sole routable credential (see CredentialRow.soleServing): exactly one
             // key that can route AND has not been taken down — a disabled row is
             // in neither the spread nor the failover pool, so it never counts.
-            const liveIds = accountList.filter((a) => a.routable && !a.disabled).map((a) => a.id);
+            const liveIds = credentialList.filter((a) => a.routable && !a.disabled).map((a) => a.id);
             const soleRoutableId = liveIds.length === 1 ? liveIds[0] : null;
             // Key writes need a registered integration (see canWriteCredential).
             const keyWritable = canWriteCredential(p.id);
             // Two rows printing the same masked key are indistinguishable without
             // the fingerprint — that (and only that) is when the chip earns space.
-            const masks = accountList.map((a) => a.maskedKey ?? a.id);
+            const masks = credentialList.map((a) => a.maskedKey ?? a.id);
             const ambiguousMasks = new Set(masks.filter((m, i) => masks.indexOf(m) !== i));
             return (
             <div key={p.id} className="sub-card" style={cardFlex}>
@@ -1885,8 +1885,8 @@ export const KeysPage: React.FC = () => {
               {/* Chain-head key summary. With the per-credential list on screen it
                   would repeat the first row, so once that list renders only the
                   OAuth expiry still needs a line of its own — that field lives on
-                  the provider view, never on AccountMeta. */}
-              {!(caps && accountList.length > 0) ? (
+                  the provider view, never on CredentialMeta. */}
+              {!(caps && credentialList.length > 0) ? (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
                   <Lock size={11} />
                   <span>{p.auth.keyMasked || '—'}</span>
@@ -1908,47 +1908,47 @@ export const KeysPage: React.FC = () => {
                   capped at 3 rows (more scroll). No expand gesture: per-key state
                   is the reason this page exists, and hiding it behind a click put
                   the active credential out of sight. */}
-              {caps && accountList.length > 0 && liveIds.length > 1 && (
-                <div style={{ fontSize: 10.5, color: 'var(--text-dim)' }} title={t('op.accountChainHeadTip')}>
-                  {t('op.accountsSpreadHint', { n: liveIds.length })}
+              {caps && credentialList.length > 0 && liveIds.length > 1 && (
+                <div style={{ fontSize: 10.5, color: 'var(--text-dim)' }} title={t('op.credentialChainHeadTip')}>
+                  {t('op.credentialsSpreadHint', { n: liveIds.length })}
                 </div>
               )}
               {/* Everything parked: say so plainly instead of letting the card look live. */}
-              {caps && accountList.length > 0 && liveIds.length === 0 && (
-                <div style={{ fontSize: 10.5, color: 'var(--accent-rose)' }} title={t('op.accountsAllDisabledTip')}>
-                  {t('op.accountsAllDisabled')}
+              {caps && credentialList.length > 0 && liveIds.length === 0 && (
+                <div style={{ fontSize: 10.5, color: 'var(--accent-rose)' }} title={t('op.credentialsAllDisabledTip')}>
+                  {t('op.credentialsAllDisabled')}
                 </div>
               )}
-              {caps && accountList.length > 0 && (
+              {caps && credentialList.length > 0 && (
                 <div
                   className="list-group"
                   style={{
                     display: 'flex',
                     flexDirection: 'column',
-                    maxHeight: ACCOUNT_ROWS_VISIBLE * ACCOUNT_ROW_HEIGHT_EST,
+                    maxHeight: CREDENTIAL_ROWS_VISIBLE * CREDENTIAL_ROW_HEIGHT_EST,
                     overflowY: 'auto',
                   }}
                 >
-                  {accountList.map((a, i) => (
-                    <AccountRow
+                  {credentialList.map((a, i) => (
+                    <CredentialRow
                       key={a.id}
-                      account={a}
+                      credential={a}
                       position={i + 1}
                       caps={caps}
                       soleServing={soleRoutableId === a.id}
                       prefixVisible={a.maskedKey ? ambiguousMasks.has(a.maskedKey) : true}
-                      pending={pendingAccount === `${p.id}:${a.id}`}
+                      pending={pendingCredential === `${p.id}:${a.id}`}
                       testing={testingIds.has(`${p.id}:${a.id}`)}
-                      onTest={(acc) => testOne({ key: `${p.id}:${acc.id}`, providerId: p.id, accountId: acc.id })}
+                      onTest={(acc) => testOne({ key: `${p.id}:${acc.id}`, providerId: p.id, credentialId: acc.id })}
                       renaming={renameKey === `${p.id}:${a.id}`}
                       onStartRename={() => setRenameKey(`${p.id}:${a.id}`)}
                       onCancelRename={() => setRenameKey(null)}
                       now={now}
-                      onActivate={handleAccountActivate}
-                      onRename={handleAccountRename}
-                      onDisconnect={handleAccountDisconnect}
-                      onToggleDisabled={handleAccountToggleDisabled}
-                      onClearSuspect={handleAccountClearSuspect}
+                      onActivate={handleCredentialActivate}
+                      onRename={handleCredentialRename}
+                      onDisconnect={handleCredentialDisconnect}
+                      onToggleDisabled={handleCredentialToggleDisabled}
+                      onClearSuspect={handleCredentialClearSuspect}
                       canReveal={webAuthActive}
                       onCopyKey={openRevealDialog}
                       onEditLimits={(acc) => openLimitsDialog(p.id, acc)}
@@ -1982,7 +1982,7 @@ export const KeysPage: React.FC = () => {
                     <input
                       className="input"
                       style={{ fontSize: 12, flex: 1, minWidth: 140 }}
-                      placeholder={t(multiAccountStore ? 'op.addKeyPrompt' : 'op.updateKeyPrompt')}
+                      placeholder={t(multiCredentialStore ? 'op.addKeyPrompt' : 'op.updateKeyPrompt')}
                       value={keyEditValue}
                       onChange={e => setKeyEditValue(e.target.value)}
                       autoFocus
@@ -2001,12 +2001,12 @@ export const KeysPage: React.FC = () => {
                     title={
                       !keyWritable
                           ? t('op.integrationMissingTip')
-                          : t(multiAccountStore ? 'op.addKeyAccountTip' : 'op.updateKeyTip')
+                          : t(multiCredentialStore ? 'op.addKeyCredentialTip' : 'op.updateKeyTip')
                     }
                     onClick={() => setKeyEditId(p.id)}
                   >
-                    {multiAccountStore ? <Plus size={12} /> : <Key size={12} />}
-                    <span>{t(multiAccountStore ? 'op.addKeyAccount' : 'op.updateKey')}</span>
+                    {multiCredentialStore ? <Plus size={12} /> : <Key size={12} />}
+                    <span>{t(multiCredentialStore ? 'op.addKeyCredential' : 'op.updateKey')}</span>
                   </button>
                 )}
                 {keyEditId !== p.id && (
@@ -2261,24 +2261,20 @@ export const KeysPage: React.FC = () => {
                   <span style={badgeStyle('var(--text-dim)', 'transparent')}>{t('op.syncServiceMissing')}</span>
                 )}
               </div>
-              {/* Auto-sync arms only while the client exists on this machine —
-                  an armed toggle on an absent client just records a precondition
-                  failure every poll cycle. writeReady stays togglable: the
-                  service endpoint coming back is transient and auto-retried. */}
               <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 16, paddingTop: 2 }}>
                 <label
-                  style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-main)', cursor: c.present ? 'pointer' : 'not-allowed' }}
+                  style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-main)', cursor: 'pointer' }}
                   title={t('op.syncAutoReadTip')}
                 >
-                  <Switch size="sm" checked={c.autoRead} disabled={!c.present} onChange={(v) => handleSyncToggle(c.id, 'read', v)} />
-                  <span style={c.present ? undefined : { opacity: 0.45 }}>{t('op.syncAutoRead')}</span>
+                  <Switch size="sm" checked={c.autoRead} onChange={(v) => handleSyncToggle(c.id, 'read', v)} />
+                  <span>{t('op.syncAutoRead')}</span>
                 </label>
                 <label
-                  style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-main)', cursor: c.present ? 'pointer' : 'not-allowed' }}
+                  style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-main)', cursor: 'pointer' }}
                   title={t('op.syncAutoWriteTip')}
                 >
-                  <Switch size="sm" checked={c.autoWrite} disabled={!c.present} onChange={(v) => handleSyncToggle(c.id, 'write', v)} />
-                  <span style={c.present ? undefined : { opacity: 0.45 }}>{t('op.syncAutoWrite')}</span>
+                  <Switch size="sm" checked={c.autoWrite} onChange={(v) => handleSyncToggle(c.id, 'write', v)} />
+                  <span>{t('op.syncAutoWrite')}</span>
                 </label>
               </div>
               <div style={syncTimeCell}>
@@ -2347,7 +2343,7 @@ export const KeysPage: React.FC = () => {
             bodies so a tab switch cannot orphan it mid-reveal. */}
         {revealTarget && (
           <RevealKeyDialog
-            account={revealTarget}
+            credential={revealTarget}
             password={revealPassword}
             error={revealError}
             busy={revealBusy}
@@ -2363,15 +2359,15 @@ export const KeysPage: React.FC = () => {
         {/* Outbound rate-limit overlay editor — same fixed-overlay mount rule
             as the reveal gate (a tab switch must not orphan it). */}
         {limitsTarget && (
-          <AccountLimitsDialog
+          <CredentialLimitsDialog
             providerId={limitsTarget.providerId}
-            account={limitsTarget.account}
+            credential={limitsTarget.credential}
             drafts={limitsDraft}
             windows={limitsWindows}
             busy={limitsBusy}
             onChangeDrafts={setLimitsDraft}
             onCancel={() => setLimitsTarget(null)}
-            onSave={handleSaveAccountLimits}
+            onSave={handleSaveCredentialLimits}
           />
         )}
       </div>

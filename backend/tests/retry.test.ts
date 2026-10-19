@@ -159,7 +159,7 @@ describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation ', () =>
       messages: [{ role: 'user', content: 'Explain Raft' }],
       __simulate_error_model__: 'primary-plus',
       __simulate_status__: 402,
-      __simulate_message__: 'insufficient_quota: account balance is 0',
+      __simulate_message__: 'insufficient_quota: credential balance is 0',
     };
 
     const result = await orchestrator.process(req);

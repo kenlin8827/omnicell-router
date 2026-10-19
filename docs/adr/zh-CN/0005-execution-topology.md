@@ -2,7 +2,7 @@
 
 ## 状态
 
-已实现 — 2026-10-15（事实面语料重写）。范围：决策如何变成上游调用；启动池由什么构成；重试/failover 语义；流式；token-saver 压缩；成本真相。健康语义 = ADR-0004；寻址/成员制 = ADR-0003；账号选择/亲和 = ADR-0002。
+已实现 — 2026-10-15（事实面语料重写）。范围：决策如何变成上游调用；启动池由什么构成；重试/failover 语义；流式；token-saver 压缩；成本真相。健康语义 = ADR-0004；寻址/成员制 = ADR-0003；凭证选择/亲和 = ADR-0002。
 
 ## 决策
 
@@ -18,7 +18,7 @@
 
 ### 3. 唯一的候选咽喉
 
-`executeCandidatePool` 是所有入口模式（auto/显式/combo/升档）的**唯一**执行漏斗——所以在此施加的按 key 模型访问过滤覆盖一切，包括升档尾巴踏入被禁模型（`orchestrator.ts:1316-1331`；`policyDenied` → 诚实 403，`:939-946`）。逐候选次序被固定：selectAccount（健康+亲和+余量，ADR-0002/0004）→ 限流 PEEK → 消耗门 `canExecuteScoped`（请求路径上唯一的探针消耗点）→ 出站扣槽 → `registry.execute` 携所选凭证（未知选择器的抛掷不可达——陈旧绑定在**选择边界**恢复，绝不成 500）→ scoped 熔断记录。末位候选在闸门全禁时被无条件强试（all-unhealthy 保留 legacy 无前缀强试）；全 DISABLED **永不**强试（下架优先于可用性猜测，ADR-0004）。
+`executeCandidatePool` 是所有入口模式（auto/显式/combo/升档）的**唯一**执行漏斗——所以在此施加的按 key 模型访问过滤覆盖一切，包括升档尾巴踏入被禁模型（`orchestrator.ts:1316-1331`；`policyDenied` → 诚实 403，`:939-946`）。逐候选次序被固定：selectCredential（健康+亲和+余量，ADR-0002/0004）→ 限流 PEEK → 消耗门 `canExecuteScoped`（请求路径上唯一的探针消耗点）→ 出站扣槽 → `registry.execute` 携所选凭证（未知选择器的抛掷不可达——陈旧绑定在**选择边界**恢复，绝不成 500）→ scoped 熔断记录。末位候选在闸门全禁时被无条件强试（all-unhealthy 保留 legacy 无前缀强试）；全 DISABLED **永不**强试（下架优先于可用性猜测，ADR-0004）。
 
 ### 4. 两级重试经济性
 

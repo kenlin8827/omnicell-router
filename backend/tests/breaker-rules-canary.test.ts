@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { AccountStateStore } from '../src/resilience/account-state.js';
+import { CredentialStateStore } from '../src/resilience/credential-state.js';
 import { CircuitBreakerManager, resolveBreakerRules } from '../src/resilience/index.js';
 import type { CredentialPaths } from '../src/opencode/credentials/paths.js';
 import type { ModelRegistration } from '../src/config/types.js';
@@ -53,11 +53,11 @@ const BASE: CircuitBreakerConfig = {
 function makeManager(rules?: BreakerRulesConfig) {
   const clock = makeClock();
   const paths = sandboxPaths();
-  const accountState = new AccountStateStore({ paths, now: clock.now });
+  const credentialState = new CredentialStateStore({ paths, now: clock.now });
   const config: CircuitBreakerConfig = { ...BASE, ...(rules ? { rules } : {}) };
-  const manager = new CircuitBreakerManager(config, clock.now, accountState);
+  const manager = new CircuitBreakerManager(config, clock.now, credentialState);
   manager.registerModel(model('p/x', 'p'));
-  return { manager, clock, accountState };
+  return { manager, clock, credentialState };
 }
 
 function model(id: string, provider: string): ModelRegistration {

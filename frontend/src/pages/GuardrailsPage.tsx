@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Link, useOutletContext } from 'react-router-dom';
 import { ShieldAlert, RefreshCw, RotateCcw, Ban, Zap, Loader2, AlertTriangle } from 'lucide-react';
-import { api, opencodeApi, type GatewayStatusResponse, type BreakerInfo, type BreakerTripScope, type AccountHealth } from '../lib/api';
+import { api, opencodeApi, type GatewayStatusResponse, type BreakerInfo, type BreakerTripScope, type CredentialHealth } from '../lib/api';
 import { useModelTest, type ModelTestTarget } from '../lib/useModelTest';
 import { buildPairCards, effectiveState, effectiveCooldown, type PairCard } from '../lib/guardrails-matrix';
 import { formatReason } from '../lib/reason';
@@ -29,10 +29,10 @@ const TRIP_PRESETS: { label: string; ms: number }[] = [
 ];
 
 /** Trip scopes in panel order — 'model' first = today's default flow. */
-const TRIP_SCOPES: BreakerTripScope[] = ['model', 'account', 'pair'];
+const TRIP_SCOPES: BreakerTripScope[] = ['model', 'credential', 'pair'];
 const SCOPE_LABEL_KEY: Record<BreakerTripScope, string> = {
   model: 'guardrails.scopeModel',
-  account: 'guardrails.scopeAccount',
+  credential: 'guardrails.scopeCredential',
   pair: 'guardrails.scopePair',
 };
 
@@ -43,10 +43,10 @@ export const GuardrailsPage: React.FC = () => {
   const confirmDialog = useConfirm();
   // Exact-scope drill-downs (each Combobox carries its own filter input):
   // provider narrows the grid to one provider, model to one modelId;
-  // credential narrows to one account's pair cards.
+  // credential narrows to one credential's pair cards.
   const [providerFilter, setProviderFilter] = useState('');
   const [modelIdFilter, setModelIdFilter] = useState('');
-  const [accountFilter, setAccountFilter] = useState('');
+  const [credentialFilter, setCredentialFilter] = useState('');
   const [stateFilter, setStateFilter] = useState<StateFilter>('ALL');
   const [breakerPage, setBreakerPage] = useState(1);
   const [breakerPageSize, setBreakerPageSize] = useState(BREAKER_PAGE_SIZE);
@@ -60,9 +60,9 @@ export const GuardrailsPage: React.FC = () => {
   const [tripScope, setTripScope] = useState<BreakerTripScope>('model');
   const [resettingScope, setResettingScope] = useState(false);
   const [resettingPair, setResettingPair] = useState<string | null>(null);
-  // Credential roster source: the bound store's masked accounts, fetched once
+  // Credential roster source: the bound store's masked credentials, fetched once
   // per page. null = not tried, [] = none/unreadable.
-  const [storeAccounts, setStoreAccounts] = useState<AccountHealth[] | null>(null);
+  const [storeCredentials, setStoreCredentials] = useState<CredentialHealth[] | null>(null);
 
   // Localized option rows are rebuilt per language; the code→key table is static.
   const scopeOptions = useMemo(
@@ -70,20 +70,20 @@ export const GuardrailsPage: React.FC = () => {
     [t]
   );
 
-  const loadStoreAccounts = async () => {
-    if (storeAccounts !== null) return;
+  const loadStoreCredentials = async () => {
+    if (storeCredentials !== null) return;
     try {
       const res = await opencodeApi.getCredentialStore();
-      setStoreAccounts(res.store.accounts.flatMap((a) => a.accounts ?? []));
+      setStoreCredentials(res.store.credentials.flatMap((a) => a.credentials ?? []));
     } catch {
-      setStoreAccounts([]);
+      setStoreCredentials([]);
     }
   };
 
-  // The grid is roster-driven (every model × every credential), so the account
+  // The grid is roster-driven (every model × every credential), so the credential
   // list must be present at first paint — fetch on mount (self-guarded).
   useEffect(() => {
-    loadStoreAccounts();
+    loadStoreCredentials();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -93,7 +93,7 @@ export const GuardrailsPage: React.FC = () => {
     // Single-credential columns (store chain of 1, or the config-baked key)
     // route through the no-prefix path — only the model breaker gates them.
     setTripScope(c.chainLen >= 2 ? 'pair' : 'model');
-    loadStoreAccounts();
+    loadStoreCredentials();
   };
 
   const closeTripPanel = () => {
@@ -142,12 +142,12 @@ export const GuardrailsPage: React.FC = () => {
       buildPairCards(
         modelBreakers,
         pairBreakers,
-        storeAccounts ?? [],
+        storeCredentials ?? [],
         maskedKeyByProvider,
         status?.credentialHashes ?? [],
-        { unnamed: t('op.accountUnnamed'), configKey: t('guardrails.configKey') }
+        { unnamed: t('op.credentialUnnamed'), configKey: t('guardrails.configKey') }
       ),
-    [modelBreakers, pairBreakers, storeAccounts, maskedKeyByProvider, status, t]
+    [modelBreakers, pairBreakers, storeCredentials, maskedKeyByProvider, status, t]
   );
 
   // Drill-down selectors: distinct providers / model ids present in the grid.
@@ -177,7 +177,7 @@ export const GuardrailsPage: React.FC = () => {
   // Combobox filtering matches meta too, so a 'sk-…abcd' fragment search
   // still works here. The raw key never reaches the browser, so it cannot be
   // a search term by design.
-  const accountFilterOptions = useMemo(() => {
+  const credentialFilterOptions = useMemo(() => {
     const seen = new Map<string, { label: string; providers: Set<string>; maskedKey?: string }>();
     for (const c of allItems) {
       if (c.synthetic || !c.prefix) continue;
@@ -207,20 +207,20 @@ export const GuardrailsPage: React.FC = () => {
       setProviderFilter('');
     } else if (modelIdFilter && !modelFilterOptions.some((o) => o.value === modelIdFilter)) {
       setModelIdFilter('');
-    } else if (accountFilter && !accountFilterOptions.some((o) => o.value === accountFilter)) {
-      setAccountFilter('');
+    } else if (credentialFilter && !credentialFilterOptions.some((o) => o.value === credentialFilter)) {
+      setCredentialFilter('');
     } else {
       return;
     }
     setBreakerPage(1);
-  }, [providerFilter, providerFilterOptions, modelIdFilter, modelFilterOptions, accountFilter, accountFilterOptions]);
+  }, [providerFilter, providerFilterOptions, modelIdFilter, modelFilterOptions, credentialFilter, credentialFilterOptions]);
 
   const filteredItems = useMemo<PairCard[]>(() => {
     return allItems
       .filter((c) => {
         if (providerFilter !== '' && c.provider !== providerFilter) return false;
         if (modelIdFilter !== '' && c.modelId !== modelIdFilter) return false;
-        if (accountFilter !== '' && c.prefix !== accountFilter) return false;
+        if (credentialFilter !== '' && c.prefix !== credentialFilter) return false;
         if (stateFilter !== 'ALL' && effectiveState(c) !== stateFilter) return false;
         return true;
       })
@@ -231,7 +231,7 @@ export const GuardrailsPage: React.FC = () => {
           ? STATE_ORDER[sa] - STATE_ORDER[sb]
           : effectiveCooldown(b) - effectiveCooldown(a);
       });
-  }, [allItems, stateFilter, providerFilter, modelIdFilter, accountFilter]);
+  }, [allItems, stateFilter, providerFilter, modelIdFilter, credentialFilter]);
   const pagedItems = filteredItems.slice(
     (breakerPage - 1) * breakerPageSize,
     breakerPage * breakerPageSize
@@ -286,7 +286,7 @@ export const GuardrailsPage: React.FC = () => {
         await api.tripBreaker(c.modelId, opts);
         toast.success(t('guardrails.tripSuccess', { model: c.modelId }));
       } else {
-        const res = await api.tripBreakersScoped(scope, { model: c.modelId, account: c.prefix, ...opts });
+        const res = await api.tripBreakersScoped(scope, { model: c.modelId, credential: c.prefix, ...opts });
         toast.success(t('guardrails.tripScopeSuccess', { scope: t(SCOPE_LABEL_KEY[scope]), n: res.affected ?? 0 }));
       }
       closeTripPanel();
@@ -297,20 +297,20 @@ export const GuardrailsPage: React.FC = () => {
     }
   };
 
-  /** Scoped reset from an open panel — the undo door for an account/pair trip. */
+  /** Scoped reset from an open panel — the undo door for an credential/pair trip. */
   const handleResetScope = async (c: PairCard) => {
     const scope = tripScope;
     if (scope === 'model') return;
     // A credential-wide reset clears every pair breaker of this key for the
-    // active provider (manager.resetByScope 'account' skips other providers'
+    // active provider (manager.resetByScope 'credential' skips other providers'
     // pairs sharing the same prefix) — count from the same predicate it walks.
-    if (scope === 'account') {
+    if (scope === 'credential') {
       const mine = pairBreakers.filter(
         (p) => p.keyHashPrefix === c.prefix && p.provider === c.provider,
       );
       const ok = await confirmDialog({
-        title: t('guardrails.resetAccountConfirmTitle', { account: c.prefix }),
-        description: t('guardrails.resetAccountConfirmDesc', {
+        title: t('guardrails.resetCredentialConfirmTitle', { credential: c.prefix }),
+        description: t('guardrails.resetCredentialConfirmDesc', {
           total: mine.length,
           open: mine.filter((p) => p.state === 'OPEN').length,
           half: mine.filter((p) => p.state === 'HALF_OPEN').length,
@@ -322,7 +322,7 @@ export const GuardrailsPage: React.FC = () => {
     }
     setResettingScope(true);
     try {
-      const res = await api.resetBreakersScoped(scope, { model: c.modelId, account: c.prefix });
+      const res = await api.resetBreakersScoped(scope, { model: c.modelId, credential: c.prefix });
       const n = res.resetCount ?? 0;
       if (n > 0) toast.success(t('guardrails.resetScopeSuccess', { n }));
       else toast.info(t('guardrails.resetScopeNone'));
@@ -345,8 +345,8 @@ export const GuardrailsPage: React.FC = () => {
         await api.resetBreakers(c.modelId);
         toast.success(t('guardrails.resetOneSuccess', { model: c.modelId }));
       } else {
-        const res = await api.resetBreakersScoped('pair', { model: c.modelId, account: c.prefix });
-        if ((res.resetCount ?? 0) > 0) toast.success(t('guardrails.resetPairSuccess', { model: c.modelId, account: c.prefix }));
+        const res = await api.resetBreakersScoped('pair', { model: c.modelId, credential: c.prefix });
+        if ((res.resetCount ?? 0) > 0) toast.success(t('guardrails.resetPairSuccess', { model: c.modelId, credential: c.prefix }));
         else toast.info(t('guardrails.resetScopeNone'));
       }
     } catch (err: any) {
@@ -381,18 +381,18 @@ export const GuardrailsPage: React.FC = () => {
       : t('guardrails.cooldown', { sec: Math.round(ms / 1000) });
 
   /**
-   * Probe pinned to THIS card's credential (KeysPage's per-account channel):
-   * accountId selects the store row, the bare model id the pairing. The
+   * Probe pinned to THIS card's credential (KeysPage's per-credential channel):
+   * credentialId selects the store row, the bare model id the pairing. The
    * synthetic config-key column has no store row to pin — the provider probe
-   * IS that key (there is no chain). An orphan prefix (account gone) gets no
+   * IS that key (there is no chain). An orphan prefix (credential gone) gets no
    * probe: the chain head would answer for a credential nobody selected.
    */
   const pairTestTarget = (c: PairCard): ModelTestTarget | null => {
     const provPrefix = `${c.provider}/`;
     const bare = c.modelId.startsWith(provPrefix) ? c.modelId.slice(provPrefix.length) : c.modelId;
     if (c.synthetic) return { key: c.key, providerId: c.provider, modelId: bare };
-    if (!c.accountId) return null;
-    return { key: c.key, providerId: c.provider, modelId: bare, accountId: c.accountId };
+    if (!c.credentialId) return null;
+    return { key: c.key, providerId: c.provider, modelId: bare, credentialId: c.credentialId };
   };
 
   const stateFilters: { key: StateFilter; label: string }[] = [
@@ -494,12 +494,12 @@ export const GuardrailsPage: React.FC = () => {
             </span>
           )}
           {c.suspect && (
-            <span style={{ display: 'inline-flex', color: 'var(--accent-rose)' }} title={t('op.accountSuspectTip')}>
+            <span style={{ display: 'inline-flex', color: 'var(--accent-rose)' }} title={t('op.credentialSuspectTip')}>
               <AlertTriangle size={12} />
             </span>
           )}
           {c.disabled && (
-            <span style={{ display: 'inline-flex', color: 'var(--accent-rose)' }} title={c.disabledReason || t('op.accountDisabledTip')}>
+            <span style={{ display: 'inline-flex', color: 'var(--accent-rose)' }} title={c.disabledReason || t('op.credentialDisabledTip')}>
               <Ban size={12} />
             </span>
           )}
@@ -550,7 +550,7 @@ export const GuardrailsPage: React.FC = () => {
               <span style={{ display: 'inline-flex' }} title={t('guardrails.tripScopeTip')}>
                 <Combobox
                   value={tripScope}
-                  onChange={(v) => setTripScope(v === 'account' || v === 'pair' ? v : 'model')}
+                  onChange={(v) => setTripScope(v === 'credential' || v === 'pair' ? v : 'model')}
                   options={scopeOptions}
                   style={{ fontSize: '11px', padding: '4px 8px', width: '160px' }}
                   panelMinWidth={210}
@@ -612,7 +612,7 @@ export const GuardrailsPage: React.FC = () => {
                 style={{ display: 'flex', alignItems: 'center', gap: '5px', whiteSpace: 'nowrap' }}
                 disabled={isBusy}
                 onClick={() => testOne(pTest)}
-                title={c.synthetic ? undefined : t('op.accountTestTip')}
+                title={c.synthetic ? undefined : t('op.credentialTestTip')}
               >
                 {testing ? <Loader2 size={12} style={{ animation: 'ocr-spin 0.8s linear infinite' }} /> : <Zap size={12} />}
                 <span>{testing ? t('op.testing') : t('op.testBtn')}</span>
@@ -737,12 +737,12 @@ export const GuardrailsPage: React.FC = () => {
               panelMinWidth={320}
             />
           )}
-          {accountFilterOptions.length > 0 && (
+          {credentialFilterOptions.length > 0 && (
             <Combobox
-              value={accountFilter}
-              onChange={(v) => { setAccountFilter(v); setBreakerPage(1); }}
-              options={accountFilterOptions}
-              placeholder={t('guardrails.accountFilter')}
+              value={credentialFilter}
+              onChange={(v) => { setCredentialFilter(v); setBreakerPage(1); }}
+              options={credentialFilterOptions}
+              placeholder={t('guardrails.credentialFilter')}
               clearable
               forceFilter
               style={{ fontSize: '12px', padding: '7px 12px', minWidth: 260, flex: '1 1 260px' }}

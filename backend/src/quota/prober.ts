@@ -14,7 +14,7 @@ import { getQuotaStore } from './store.js';
  * candidate whenever its provider has an effective entry (built-in L-b/L-c or
  * config L-d) AND the credential exists — the registry chain entry when the
  * provider carries a chain, the inference-baked key otherwise (the same
- * single-credential degeneracy the ratelimit subject uses). No account-pool
+ * single-credential degeneracy the ratelimit subject uses). No credential-pool
  * snapshot ever gates coverage.
  *
  * 429 handling is ENGINE-LEVEL GLOBAL logic (never per entry): any 429 pauses

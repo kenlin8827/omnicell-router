@@ -293,7 +293,7 @@ async function pullV1IntoOcr(ocr: CredentialStore, overrides: SyncOverrides): Pr
     try {
       localPrefixes = new Set(
         ocr
-          .listAccounts(providerId)
+          .listCredentials(providerId)
           .map((a) => a.keyHashPrefix ?? '')
           .filter(Boolean)
       );
@@ -349,14 +349,14 @@ async function pullV2IntoOcr(ocr: CredentialStore, overrides: SyncOverrides): Pr
     const entries: SyncEntryRecord[] = [];
     let pulled = 0;
     let deduped = 0;
-    for (const overview of v2.accountsOverview()) {
+    for (const overview of v2.credentialsOverview()) {
       const providerId = overview.providerId;
       if (!providerId) continue;
       let localPrefixes: Set<string>;
       try {
         localPrefixes = new Set(
           ocr
-            .listAccounts(providerId)
+            .listCredentials(providerId)
             .map((a) => a.keyHashPrefix ?? '')
             .filter(Boolean)
         );
@@ -425,7 +425,7 @@ async function pushOcrIntoV1(
 
   const providerIds = overrides.provider
     ? [overrides.provider]
-    : ocr.accountsOverview().map((a) => a.providerId);
+    : ocr.credentialsOverview().map((a) => a.providerId);
 
   const entries: SyncEntryRecord[] = [];
   const pushedKeys: { provider: string; keyHashPrefix: string }[] = [];
@@ -500,7 +500,7 @@ async function pushOcrIntoV2(
   // opencode is down — a manual sync with an empty OCR file must not fake-fail.
   const providerIds = overrides.provider
     ? [overrides.provider]
-    : ocr.accountsOverview().map((a) => a.providerId);
+    : ocr.credentialsOverview().map((a) => a.providerId);
   const local: { cred: ReturnType<CredentialStore['resolveKeyChain']>[number] }[] = [];
   for (const id of providerIds) {
     for (const cred of ocr.resolveKeyChain(id)) local.push({ cred });
@@ -563,8 +563,8 @@ async function pushOcrIntoV2(
 function indexV2KeyHashes(v2: CredentialStore, log: SyncLogSink): Map<string, Set<string>> {
   const index = new Map<string, Set<string>>();
   try {
-    for (const overview of v2.accountsOverview()) {
-      for (const meta of v2.listAccounts(overview.providerId)) {
+    for (const overview of v2.credentialsOverview()) {
+      for (const meta of v2.listCredentials(overview.providerId)) {
         if (!meta.keyHashPrefix) continue;
         const bucket = index.get(meta.providerId.toLowerCase());
         if (bucket) bucket.add(meta.keyHashPrefix);

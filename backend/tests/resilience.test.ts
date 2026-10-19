@@ -152,7 +152,7 @@ describe('Resilience: Circuit Breaker State Machine & Cooldown Transitions', () 
       // Echo of the global knob — the hard-trip length is resolved from
       // trip.quota.cooldownMs (default quotaCooldownMs = 12h), not from this.
       minCooldownMs: 12 * 3600 * 1000,
-      reason: 'Balance exhausted on Anthropic account',
+      reason: 'Balance exhausted on Anthropic credential',
       reasonCode: 'breaker.quota',
       reasonParams: { model: 'claude-3-5-sonnet', provider: 'anthropic' },
     });
@@ -362,7 +362,7 @@ describe('Resilience: Circuit Breaker State Machine & Cooldown Transitions', () 
     breaker.trip('Admin simulated trip', 'QUOTA_EXHAUSTED', 12 * 3600 * 1000);
     assert.equal(breaker.getState(), 'OPEN');
 
-    // Admin recharged account and calls reset
+    // Admin recharged credential and calls reset
     breaker.reset();
     assert.equal(breaker.getState(), 'CLOSED');
     assert.equal(breaker.canExecute().allowed, true);

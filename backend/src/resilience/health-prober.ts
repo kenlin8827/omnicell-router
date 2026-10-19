@@ -103,16 +103,16 @@ export class ActiveHealthProber {
 
       const chain = (this.resolver.getCredentialChain?.(model.provider) ?? []).map((c) => c.keyHashPrefix);
       // Pair mode = a chain is registered AND this model has per-credential state
-      // (or more than one account to choose from). No chain => single-account
+      // (or more than one credential to choose from). No chain => single-credential
       // degeneracy => the bare model probe today's prober performs; that also
       // keeps a stale pair (chain removed after a disconnect) from starving the
       // model probe, since the representative pick needs a live chain entry.
-      const multiAccountMode = chain.length > 1 || (chain.length > 0 && group.pairs.length > 0);
+      const multiCredentialMode = chain.length > 1 || (chain.length > 0 && group.pairs.length > 0);
       let budget = this.manager.getProbeBudget();
       const prefixes: (string | undefined)[] = [];
 
       if (group.model && ActiveHealthProber.isDue(group.model)) {
-        if (!multiAccountMode) {
+        if (!multiCredentialMode) {
           prefixes.push(undefined);
           budget--;
         } else {
@@ -128,7 +128,7 @@ export class ActiveHealthProber {
       for (const pair of group.pairs) {
         if (budget <= 0) break;
         if (!pair.keyHashPrefix || !ActiveHealthProber.isDue(pair)) continue;
-        // Never auto-return a SUSPECT account: it must be reconnected, not probed.
+        // Never auto-return a SUSPECT credential: it must be reconnected, not probed.
         if (this.manager.isSuspect(modelId, pair.keyHashPrefix)) continue;
         if (prefixes.includes(pair.keyHashPrefix)) continue;
         prefixes.push(pair.keyHashPrefix);
@@ -159,7 +159,7 @@ export class ActiveHealthProber {
 
   /**
    * One trial call. `credentialKeyHashPrefix` undefined = the boot-baked key.
-   * Outcomes go through the scoped API, so a pair/account verdict cannot cool
+   * Outcomes go through the scoped API, so a pair/credential verdict cannot cool
    * the model for its healthy siblings; `registry.execute` re-stamps the used
    * credential onto the error, which is what gives the diagnosis its scope.
    */

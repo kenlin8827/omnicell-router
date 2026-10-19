@@ -12,7 +12,7 @@ import { ProviderRegistry } from '../providers/registry.js';
 import { applyEffortMap } from '../providers/member-match.js';
 import { FinOpsTracker } from '../metrics/finops-tracker.js';
 import { computeRequestCost } from '../metrics/request-cost.js';
-import { getRateLimiter, accountSubject, apiKeySubject, type Countable } from '../ratelimit/rate-limiter.js';
+import { getRateLimiter, credentialSubject, apiKeySubject, type Countable } from '../ratelimit/rate-limiter.js';
 
 /**
  * A cap-override decision pending ledger emission (orchestrator pool gate):
@@ -43,10 +43,10 @@ import { getWarnThrottle } from '../observability/warn-throttle.js';
 import { ActiveHealthProber, CircuitBreakerManager, ErrorClassifier } from '../resilience/index.js';
 import { ModelAccessConfig, isModelAllowed } from '../auth/model-access.js';
 import {
-  DEFAULT_ACCOUNT_AFFINITY_CACHE_TTL_MS,
-  selectAccount,
-  type AccountSelection,
-} from './account-selection.js';
+  DEFAULT_CREDENTIAL_AFFINITY_CACHE_TTL_MS,
+  selectCredential,
+  type CredentialSelection,
+} from './credential-selection.js';
 
 export interface ProcessContext {
   clientIp?: string;
@@ -682,10 +682,10 @@ export class PipelineOrchestrator {
       //   HEALTH (runtime reality, model CAPABILITY view —
       //   registry.modelHealthView): evict ONLY at 'unavailable' — the
       //   model breaker hard-OPEN, or every credential pair out of service
-      //   as hard-OPEN / account-SUSPECT / operator-DISABLED, so a full
-      //   account takedown evicts the pin even though the model stays
-      //   configured. PARTIAL disablement is not eviction: the account
-      //   dimension handles it (FORCED rebind in account-selection).
+      //   as hard-OPEN / credential-SUSPECT / operator-DISABLED, so a full
+      //   credential takedown evicts the pin even though the model stays
+      //   configured. PARTIAL disablement is not eviction: the credential
+      //   dimension handles it (FORCED rebind in credential-selection).
       //   'recovering' (a canary trial in flight — slot free OR busy) is
       //   NEVER eviction: the peek view pool filters use reads a busy canary
       //   as unavailable, and moving a pin off a model one probe from
@@ -727,14 +727,14 @@ export class PipelineOrchestrator {
             repinFrom: pinnedId,
             repinTo: healthyReplacement.id,
           };
-          // Account continuity rides here rather than mutating the binding:
+          // Credential continuity rides here rather than mutating the binding:
           // the repinned model flows into executeCandidatePool, whose per-
           // candidate selection KEEPS the session binding when the bound
           // prefix exists in the new provider's chain (prefer continuity —
           // same key material, same cache economics), and otherwise treats it
           // as stale and re-spreads with a FORCED rebind persisted after the
           // first success. Explicitly rebinding here to the new chain head
-          // would pick an account the model was never verified against.
+          // would pick an credential the model was never verified against.
         }
       }
     }
@@ -836,9 +836,9 @@ export class PipelineOrchestrator {
     let failoverAttempts = 1;
     let failoverPath: string[] = [];
     let inplaceRetries = 0;
-    // the account (keyHash prefix) that actually served;
+    // the credential (keyHash prefix) that actually served;
     // undefined = legacy no-prefix path (chain-less provider or single key).
-    let servedAccountPrefix: string | undefined = undefined;
+    let servedCredentialPrefix: string | undefined = undefined;
 
     // 5. Execution with Cascading Fallback & Schema Assertion
     // (lite-lead cascade is skipped for explicit model choices and combos —
@@ -892,7 +892,7 @@ export class PipelineOrchestrator {
           failoverAttempts = liteResult.failoverAttempts;
           failoverPath = liteResult.failoverPath;
           inplaceRetries += liteResult.inplaceRetries;
-          servedAccountPrefix = liteResult.servedAccountPrefix;
+          servedCredentialPrefix = liteResult.servedCredentialPrefix;
         } else {
           assertionError = validation.error || 'Schema validation assertion failed';
         }
@@ -952,7 +952,7 @@ export class PipelineOrchestrator {
         failoverAttempts = plusResult.failoverAttempts;
         failoverPath = plusResult.failoverPath;
         inplaceRetries += plusResult.inplaceRetries;
-        servedAccountPrefix = plusResult.servedAccountPrefix;
+        servedCredentialPrefix = plusResult.servedCredentialPrefix;
       }
     } else {
       // Unified candidate-chain resolution for the direct path. One shape for
@@ -1071,7 +1071,7 @@ export class PipelineOrchestrator {
       failoverAttempts = execResult.failoverAttempts;
       failoverPath = execResult.failoverPath;
       inplaceRetries = execResult.inplaceRetries;
-      servedAccountPrefix = execResult.servedAccountPrefix;
+      servedCredentialPrefix = execResult.servedCredentialPrefix;
 
       // Explicit-mode pin write-back: when the explicitly named model itself
       // served the request at the session's current ceiling tier, migrate the
@@ -1096,9 +1096,9 @@ export class PipelineOrchestrator {
     // the client's resend drift (dropped `type`, re-compacted argument JSON),
     // and a content-only registration made every tool-call boundary of an
     // agent loop unmatchable.
-    // Account affinity needs nothing here: executeCandidatePool already
+    // Credential affinity needs nothing here: executeCandidatePool already
     // persisted the bind/rebind right after the successful call (this point
-    // would only ever see a still-unbound session when no multi-account chain
+    // would only ever see a still-unbound session when no multi-credential chain
     // was in play — nothing to bind).
     this.sessionManager.registerCompletedTurn(
       sessionId,
@@ -1184,20 +1184,20 @@ export class PipelineOrchestrator {
       tokens: (finalResponse!.usage?.prompt_tokens || 0) + (finalResponse!.usage?.completion_tokens || 0),
       costUsd: computeRequestCost(finalResponse!.usage, actualModel.pricing),
     };
-    let usageAccountPrefix: string | undefined;
+    let usageCredentialPrefix: string | undefined;
     {
       const rl = getRateLimiter();
       const clientKeyId = captureKeyIdentity(context?.fastifyRequest)?.id;
       if (clientKeyId) rl.recordUsage(apiKeySubject(clientKeyId), rlUsage);
-      // The account that SERVED (same chain-head degeneracy as the pool gate,
+      // The credential that SERVED (same chain-head degeneracy as the pool gate,
       // so single-credential providers carry usage too). `servedUsagePrefix`
-      // also feeds the trace record below (execution.accountKeyHashPrefix):
+      // also feeds the trace record below (execution.credentialKeyHashPrefix):
       // one credential attribution, two consumers (ratelimit subject + quota
       // pairing).
       const servedUsagePrefix =
-        servedAccountPrefix ?? this.registry.getCredentialChain(actualModel.provider)?.[0]?.keyHashPrefix;
-      if (servedUsagePrefix) rl.recordUsage(accountSubject(actualModel.provider, servedUsagePrefix), rlUsage);
-      usageAccountPrefix = servedUsagePrefix;
+        servedCredentialPrefix ?? this.registry.getCredentialChain(actualModel.provider)?.[0]?.keyHashPrefix;
+      if (servedUsagePrefix) rl.recordUsage(credentialSubject(actualModel.provider, servedUsagePrefix), rlUsage);
+      usageCredentialPrefix = servedUsagePrefix;
     }
 
     // 8. Active Learning Data Flywheel Collection
@@ -1253,7 +1253,7 @@ export class PipelineOrchestrator {
       execution: {
         modelUsed: actualModel.id,
         provider: actualModel.provider,
-        accountKeyHashPrefix: usageAccountPrefix,
+        credentialKeyHashPrefix: usageCredentialPrefix,
         tierUsed: actualTier,
         latencyMs,
         fallbackOccurred,
@@ -1275,8 +1275,8 @@ export class PipelineOrchestrator {
     // additive keys only — older readers keep reading
     // breakerState alone: when the turn ran in pair mode, expose the serving
     // credential's pair snapshot and the model's availability aggregate.
-    const scopedBreakerSnap = servedAccountPrefix ? cbManager.getPairBreaker(actualModel.id, servedAccountPrefix)?.getSnapshot() : undefined;
-    const modelAvailability = servedAccountPrefix ? this.registry.modelAvailable(actualModel) : undefined;
+    const scopedBreakerSnap = servedCredentialPrefix ? cbManager.getPairBreaker(actualModel.id, servedCredentialPrefix)?.getSnapshot() : undefined;
+    const modelAvailability = servedCredentialPrefix ? this.registry.modelAvailable(actualModel) : undefined;
 
     return {
       response: finalResponse!,
@@ -1290,7 +1290,7 @@ export class PipelineOrchestrator {
       failoverPath,
       inplaceRetries,
       breakerState,
-      servedAccountPrefix,
+      servedCredentialPrefix,
       scopedBreakerSnap,
       modelAvailability,
       sessionId,
@@ -1364,7 +1364,7 @@ export class PipelineOrchestrator {
    *
    * each candidate is served through
    * the session's bound credential (keep while healthy), a FORCED failover
-   * move (rebind persisted only after the new account serves), or the
+   * move (rebind persisted only after the new credential serves), or the
    * deterministic new-session spread. Chain-less / single-credential
    * providers run the exact pre-P3 no-prefix path.
    */
@@ -1386,7 +1386,7 @@ export class PipelineOrchestrator {
        */
       requestedEffort?: ReasoningEffort;
       /**
-       * Conversation session for account affinity. Every
+       * Conversation session for credential affinity. Every
        * orchestrator request path passes it; absent = no selection at all (the
        * pre-P3 execution path, kept for non-conversational callers).
        */
@@ -1417,8 +1417,8 @@ export class PipelineOrchestrator {
     lastError?: any;
     /** True when the key's model policy left zero admissible candidates. */
     policyDenied?: boolean;
-    /** Display-safe keyHash prefix of the account that served (undefined = baked-key path). */
-    servedAccountPrefix?: string;
+    /** Display-safe keyHash prefix of the credential that served (undefined = baked-key path). */
+    servedCredentialPrefix?: string;
   }> {
     const { tier, allowEscalate, attemptCap, label } = opts;
     const cbManager = this.registry.getCircuitBreakerManager();
@@ -1468,7 +1468,7 @@ export class PipelineOrchestrator {
     // success return, so candidates never read a mid-turn move).
     const affinitySession = opts.sessionId ? this.sessionManager.getSession(opts.sessionId) : undefined;
     const affinityWindowMs =
-      this.config.circuitBreaker?.accountAffinity?.cacheTtlMs ?? DEFAULT_ACCOUNT_AFFINITY_CACHE_TTL_MS;
+      this.config.circuitBreaker?.credentialAffinity?.cacheTtlMs ?? DEFAULT_CREDENTIAL_AFFINITY_CACHE_TTL_MS;
 
     for (let ci = 0; ci < candidateList.length; ci++) {
       const candidate = candidateList[ci];
@@ -1477,17 +1477,17 @@ export class PipelineOrchestrator {
         break;
       }
 
-      // Per-candidate account selection (Decision 7). The chain belongs to the
+      // Per-candidate credential selection (Decision 7). The chain belongs to the
       // CANDIDATE's provider — a model failover that crosses providers
       // re-spreads on the new chain (a binding the new provider does not know
-      // counts as stale and is force-rebound after the new account serves).
+      // counts as stale and is force-rebound after the new credential serves).
       // No session / no chain / single credential => the prefix stays
       // undefined and every call below degenerates to the pre-P3 model path.
       // The registry's unknown-selector throw is unreachable from here: the
       // resolver only ever returns entries of the live chain (stale-binding
       // recovery happens at this boundary, never as a 500).
-      const selection: AccountSelection = opts.sessionId
-        ? selectAccount(
+      const selection: CredentialSelection = opts.sessionId
+        ? selectCredential(
             affinitySession,
             candidate,
             this.registry.getCredentialChain(candidate.provider),
@@ -1495,16 +1495,16 @@ export class PipelineOrchestrator {
             {
               sessionId: opts.sessionId,
               affinityWindowMs,
-              // Rate-limit shaping input (see AccountSelectionCtx.spreadCapped):
+              // Rate-limit shaping input (see CredentialSelectionCtx.spreadCapped):
               // a peek per chain member, map lookups only — no state consumed.
               spreadCapped: (prefix) =>
-                !getRateLimiter().peek(accountSubject(candidate.provider, prefix)).allowed,
+                !getRateLimiter().peek(credentialSubject(candidate.provider, prefix)).allowed,
               // A capped member the slack filter actually excluded from the
               // landing is a TRIGGERED outbound cap — record it where the
               // shaping lands (never for a kept binding, never on the
               // all-capped re-open).
               onSpreadCapped: (prefix) => {
-                const subject = accountSubject(candidate.provider, prefix);
+                const subject = credentialSubject(candidate.provider, prefix);
                 const verdict = getRateLimiter().peek(subject);
                 if (verdict.allowed) return; // defensive — the filter just said capped
                 recordRateLimitEvent({
@@ -1523,7 +1523,7 @@ export class PipelineOrchestrator {
             }
           )
         : { forcedMove: false, reason: 'no-chain' };
-      const accountPrefix = selection.credential?.keyHashPrefix;
+      const credentialPrefix = selection.credential?.keyHashPrefix;
 
       // Operator takedown is absolute — an ADMINISTRATIVE refusal, not a health
       // guess, so it suppresses even the last-candidate force (that force exists
@@ -1537,7 +1537,7 @@ export class PipelineOrchestrator {
         continue;
       }
 
-      // Outbound sliding-window gate (`accounts:` overlay) — evaluated BEFORE the
+      // Outbound sliding-window gate (`credentials:` overlay) — evaluated BEFORE the
       // breaker gate so an at-cap credential never burns a half-open canary.
       // The chain head stands in when the selector degenerated (single-credential
       // / sessionless paths — the head IS the boot-baked credential registry.execute
@@ -1545,15 +1545,15 @@ export class PipelineOrchestrator {
       // NON-CONSUMING peek: the request slot is taken below only when the call
       // actually proceeds.
       const limitPrefix =
-        accountPrefix ?? this.registry.getCredentialChain(candidate.provider)?.[0]?.keyHashPrefix;
-      const limitSubject = limitPrefix ? accountSubject(candidate.provider, limitPrefix) : undefined;
+        credentialPrefix ?? this.registry.getCredentialChain(candidate.provider)?.[0]?.keyHashPrefix;
+      const limitSubject = limitPrefix ? credentialSubject(candidate.provider, limitPrefix) : undefined;
       // Deferred cap-override ledger entry for THIS candidate — set at the
       // rate gate, emitted only after the breaker gate confirms the call
       // proceeds (MINOR-3: no "forced" for a call that never went out).
       let forcedPass: ForcedPassRecord | undefined;
       if (limitSubject) {
         const cap = getRateLimiter().peek(limitSubject);
-        // KEEP-BOUND IRON LAW: a conversation already bound to this account is
+        // KEEP-BOUND IRON LAW: a conversation already bound to this credential is
         // never moved off it by a local cap (selection.credential set with no
         // pending bind = the keep branch). Rebinding burns the upstream prompt
         // cache over a shaping hint; cap ≠ failure — the provider's own 429 is
@@ -1574,7 +1574,7 @@ export class PipelineOrchestrator {
             noteCode: 'failover',
           });
           lastError = new Error(
-            `Account '${limitPrefix}' rate-limited (${cap.rule}, retry in ${Math.ceil(cap.retryAfterMs / 1000)}s)`
+            `Credential '${limitPrefix}' rate-limited (${cap.rule}, retry in ${Math.ceil(cap.retryAfterMs / 1000)}s)`
           );
           continue;
         }
@@ -1601,12 +1601,12 @@ export class PipelineOrchestrator {
       // Execution gate — position-based skip: drop an unavailable candidate
       // while an untried one remains AFTER it; the last candidate is always
       // attempted (the pool builder already exhausted healthy-only options,
-      // and a rejected upstream call is free). With a selected account this is
+      // and a rejected upstream call is free). With a selected credential this is
       // the scoped gate (model peek + pair canary consume); without one (single
       // chain, chain-less, or 'all-unhealthy') it is exactly the old
       // model-level canExecute — the last-candidate force semantics are
       // preserved for every reason the selector returned undefined.
-      const check = cbManager.canExecuteScoped(candidate.id, accountPrefix);
+      const check = cbManager.canExecuteScoped(candidate.id, credentialPrefix);
       if (!check.allowed && ci < candidateList.length - 1) {
         continue;
       }
@@ -1670,12 +1670,12 @@ export class PipelineOrchestrator {
             candidateReq,
             candidate,
             upstreamEventContext,
-            accountPrefix,
+            credentialPrefix,
             opts.relay
           );
           // Scope-aware success: undefined prefix degenerates to the exact
           // model recordSuccess of the pre-P3 path.
-          cbManager.recordSuccessScoped(candidate.id, accountPrefix, candidate.provider);
+          cbManager.recordSuccessScoped(candidate.id, credentialPrefix, candidate.provider);
           candidateSucceeded = true;
           break; // successfully executed on this candidate!
         } catch (err: any) {
@@ -1688,10 +1688,10 @@ export class PipelineOrchestrator {
             this.config.retry
           );
           // The classifier already read the registry-stamped usedCredentialKeyHashPrefix
-          // (tripScope + accountSuspect); this call expands the verdict over the
+          // (tripScope + credentialSuspect); this call expands the verdict over the
           // diagnosed blast radius when a prefix attributes it, and routes the
           // bare model breaker when not (today's semantics).
-          cbManager.recordFailureScoped(candidate.id, diagnosis, candidate.provider, accountPrefix);
+          cbManager.recordFailureScoped(candidate.id, diagnosis, candidate.provider, credentialPrefix);
 
           // COMMIT POINT: bytes already reached the client on this attempt.
           // Neither an in-place retry nor a failover is legal any more — either
@@ -1740,16 +1740,16 @@ export class PipelineOrchestrator {
 
       if (candidateSucceeded && candidateResponse) {
         // Decision 7 persistence point — the affinity mutation is written ONLY
-        // after the chosen account actually served (a speculative bind/rebind
-        // would strand the session on an account that never answered):
+        // after the chosen credential actually served (a speculative bind/rebind
+        // would strand the session on an credential that never answered):
         //   forced=false -> first-write-wins bind of a fresh session
         //   forced=true  -> rebind after a FORCED failover move (bound pair breaker
         //                   OPEN/SUSPECT, expired window, or stale prefix).
         if (opts.sessionId && selection.bind) {
           if (selection.bind.forced) {
-            this.sessionManager.rebindAccount(opts.sessionId, selection.bind.keyHashPrefix);
+            this.sessionManager.rebindCredential(opts.sessionId, selection.bind.keyHashPrefix);
           } else {
-            this.sessionManager.bindAccount(opts.sessionId, selection.bind.keyHashPrefix);
+            this.sessionManager.bindCredential(opts.sessionId, selection.bind.keyHashPrefix);
           }
         }
         // The provider published its real wire body through the capture sink
@@ -1764,7 +1764,7 @@ export class PipelineOrchestrator {
           failoverAttempts,
           failoverPath,
           inplaceRetries: totalInplaceRetries,
-          servedAccountPrefix: accountPrefix,
+          servedCredentialPrefix: credentialPrefix,
         };
       }
     }

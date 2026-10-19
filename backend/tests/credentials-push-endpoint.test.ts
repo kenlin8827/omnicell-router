@@ -233,8 +233,8 @@ describe('POST /api/admin/credential-store/push', () => {
   });
 });
 
-describe('SUSPECT lifecycle — Push clears converged accounts', () => {
-  it('pushed (and deduped) accounts get their flag lifted, anchored on the key hash', async () => {
+describe('SUSPECT lifecycle — Push clears converged credentials', () => {
+  it('pushed (and deduped) credentials get their flag lifted, anchored on the key hash', async () => {
     const paths = sandboxPaths();
     const freshKey = 'sk-push-clears-suspect';
     const dupKey = 'sk-dup-in-opencode-v2-db';
@@ -246,7 +246,7 @@ describe('SUSPECT lifecycle — Push clears converged accounts', () => {
     const { fetchImpl } = makeFetch(() => ({ status: 200, json: { credential: { id: 'c1' } } }));
     bindOcr(paths, fetchImpl, fakeDb(v2Rows));
 
-    const state = registry.getCircuitBreakerManager().getAccountStateStore();
+    const state = registry.getCircuitBreakerManager().getCredentialStateStore();
     state.mark('anthropic', keyHashPrefix(freshKey), 'confirmed-bad key (test)');
     state.mark('openai', keyHashPrefix(dupKey), 'confirmed-bad key (test)');
 
@@ -255,7 +255,7 @@ describe('SUSPECT lifecycle — Push clears converged accounts', () => {
     expect(res.json().pushed.sort()).toEqual(['anthropic', 'openai']);
 
     // Decision 6: SUSPECT is cleared ONLY by manual reconnect or Push — both
-    // converged accounts lift here; the clear keys on (provider, keyHashPrefix).
+    // converged credentials lift here; the clear keys on (provider, keyHashPrefix).
     expect(state.isSuspect('anthropic', keyHashPrefix(freshKey))).toBe(false);
     expect(state.isSuspect('openai', keyHashPrefix(dupKey))).toBe(false);
   });
@@ -268,7 +268,7 @@ describe('SUSPECT lifecycle — Push clears converged accounts', () => {
       url.includes('/api/integration/failing/connect/key') ? { status: 500, json: { error: 'nope' } } : { status: 200, json: {} }
     );
     bindOcr(paths, fetchImpl, fakeDb([]));
-    const state = registry.getCircuitBreakerManager().getAccountStateStore();
+    const state = registry.getCircuitBreakerManager().getCredentialStateStore();
     state.mark('failing', keyHashPrefix(failingKey), 'confirmed-bad key (test)');
     try {
       const res = await app.inject({ method: 'POST', url: '/api/admin/credential-store/push', payload: {} });

@@ -41,7 +41,7 @@ export interface DirectBootResult {
      * outranks the store (Decision 1), so the baked default always equals the
      * chain head. RAW KEYS IN MEMORY ONLY: this payload goes to
      * `registry.registerProvider` and nothing else — never serialize it into
-     * a console/API surface (masked views keep using `AccountMeta`).
+     * a console/API surface (masked views keep using `CredentialMeta`).
      */
     credentialChain: CallCredential[];
   }[];
@@ -317,16 +317,16 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
     // ordered chain rides on the payload (registry-only, raw keys in memory).
     // Single-credential providers get a length-1 chain — behavior byte-identical.
     const credentialChain: CallCredential[] = storeCreds.map((c) =>
-      toCallCredential(c.key, c.label ?? c.accountId)
+      toCallCredential(c.key, c.label ?? c.credentialId)
     );
     // Defensive fallback consistency: if the chain read was empty but resolveKey
     // supplied the baked key, represent it so head === config.apiKey always holds.
     if (credentialChain.length === 0 && resolved) {
-      credentialChain.push(toCallCredential(resolved.key, resolved.account.label ?? resolved.account.id));
+      credentialChain.push(toCallCredential(resolved.key, resolved.credential.label ?? resolved.credential.id));
     }
     // Inline {env}/options.apiKey outranks the store for the baked default
     // (Decision 1) — it becomes the chain HEAD too, keeping the invariant
-    // head === config.apiKey; store accounts stay selectable below it.
+    // head === config.apiKey; store credentials stay selectable below it.
     if (inlineKey) credentialChain.unshift(toCallCredential(inlineKey, 'inline'));
     instances.push({
       name: rec.id,
@@ -362,9 +362,9 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
   //    more specific than the overview-derived generic one);
   //  - 'no_routable_credential' is ALSO skipped when the provider ended up with
   //    an instance anyway — an inline `{env:VAR}`/settings key or an imported
-  //    account can make it routable after the binding snapshot was taken, and
+  //    credential can make it routable after the binding snapshot was taken, and
   //    reporting "no routable credential" for a provider that is serving traffic
-  //    is a false exclusion (the binding's account overview is store-scoped and
+  //    is a false exclusion (the binding's credential overview is store-scoped and
   //    cannot see the config-side credential);
   //  - every other store-level code REPLACES a provider-level loop entry
   //    (stranded-key diagnostics, e.g. "db unreadable, key present in the

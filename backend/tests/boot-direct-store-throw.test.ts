@@ -11,16 +11,16 @@ import { describe, expect, it, mock } from 'bun:test';
 const actualCredentials = await import('../src/opencode/credentials/index.js');
 const actualUserConfig = await import('../src/opencode/user-config.js');
 
-import type { AccountMeta, CredentialStore, ResolvedCredential, StoreCapabilities } from '../src/opencode/credentials/types.js';
+import type { CredentialMeta, CredentialStore, ResolvedCredential, StoreCapabilities } from '../src/opencode/credentials/types.js';
 
-const caps: StoreCapabilities = { multiAccount: true, activate: true, rename: true, oauth: false, envVisible: true };
+const caps: StoreCapabilities = { multiCredential: true, activate: true, rename: true, oauth: false, envVisible: true };
 
 /** Throws for provider 'p-poison' on every read path; behaves otherwise. */
 const poisonStore: CredentialStore = {
   kind: 'opencode-v2',
   capabilities: caps,
-  probe: () => ({ ok: true, kind: 'opencode-v2', state: 'ready', accountCount: 2 }),
-  listAccounts: (providerId): AccountMeta[] => {
+  probe: () => ({ ok: true, kind: 'opencode-v2', state: 'ready', credentialCount: 2 }),
+  listCredentials: (providerId): CredentialMeta[] => {
     if (providerId === 'p-poison') throw new Error('SQLITE_CORRUPT: block checksum mismatch');
     return providerId === 'p-good'
       ? [{ id: 'c1', providerId, type: 'api', active: true, routable: true, keyHashPrefix: 'a'.repeat(12) }]
@@ -29,7 +29,7 @@ const poisonStore: CredentialStore = {
   resolveKey: (providerId): ResolvedCredential | null => {
     if (providerId === 'p-poison') throw new Error('SQLITE_CORRUPT: block checksum mismatch');
     return providerId === 'p-good'
-      ? { key: 'sk-good-key', account: { id: 'c1', providerId, type: 'api', active: true, routable: true } }
+      ? { key: 'sk-good-key', credential: { id: 'c1', providerId, type: 'api', active: true, routable: true } }
       : null;
   },
   resolveKeyChain: () => [],
@@ -52,9 +52,9 @@ const poisonStore: CredentialStore = {
     throw new Error('unused');
   },
   invalidate: () => undefined,
-  accountsOverview: () => [
-    { providerId: 'p-good', total: 1, routable: 1, activeAccountId: 'c1' },
-    { providerId: 'p-poison', total: 1, routable: 1, activeAccountId: null },
+  credentialsOverview: () => [
+    { providerId: 'p-good', total: 1, routable: 1, activeCredentialId: 'c1' },
+    { providerId: 'p-poison', total: 1, routable: 1, activeCredentialId: null },
   ],
 };
 
@@ -67,8 +67,8 @@ mock.module('../src/opencode/credentials/index.js', () => ({
     degradedCode: null,
     evidence: { cli: 'v2.0.15', file: null, used: 'cli' as const, lastKnownGood: null },
     excluded: [],
-    accounts: [{ providerId: 'p-good', total: 1, routable: 1, activeAccountId: 'c1' }],
-    probeResult: { ok: true, kind: 'opencode-v2' as const, state: 'ready' as const, accountCount: 2 },
+    credentials: [{ providerId: 'p-good', total: 1, routable: 1, activeCredentialId: 'c1' }],
+    probeResult: { ok: true, kind: 'opencode-v2' as const, state: 'ready' as const, credentialCount: 2 },
     credentialFile: 'x.db',
     boundAt: 1,
   }),

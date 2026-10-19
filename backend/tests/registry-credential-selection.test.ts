@@ -11,7 +11,7 @@ import type { ChatCompletionRequest, ChatCompletionResponse } from '../src/types
  *
  * Coverage:
  *  (d) usedCredentialKeyHashPrefix is stamped centrally on failures with the USED
- *      credential's prefix (selector hit → that account; no selector → chain
+ *      credential's prefix (selector hit → that credential; no selector → chain
  *      head = the boot-baked key) and the original error class/shape is
  *      preserved untouched;
  *  (c) no-selector calls pass NO credential down (executors keep using the
@@ -108,7 +108,7 @@ describe('selector resolution from the registered chain', () => {
     expect(seen).toEqual([chain[1]]);
   });
 
-  it('an unknown prefix fails LOUDLY before the executor runs (stale account state)', async () => {
+  it('an unknown prefix fails LOUDLY before the executor runs (stale credential state)', async () => {
     const registry = makeRegistry();
     const { provider, seen } = makeStub(okResponse);
     registry.registerProvider('p', provider, chain);
@@ -144,7 +144,7 @@ describe('(d) central error attribution — usedCredentialKeyHashPrefix', () => 
     expect(boom.usedCredentialKeyHashPrefix).toBe(chain[0]!.keyHashPrefix);
   });
 
-  it('selector-path failure stamps the SELECTED account, not the head', async () => {
+  it('selector-path failure stamps the SELECTED credential, not the head', async () => {
     const registry = makeRegistry();
     const boom = new UpstreamError({ message: 'quota', status: 429, provider: 'p', modelId: 'p/m1' });
     const { provider } = makeStub(async () => {

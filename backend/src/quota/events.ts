@@ -4,7 +4,7 @@ import path from 'node:path';
 /**
  * The quota_events ledger (quota-plane linkage).
  *
- * One event per inference-side QUOTA_EXHAUSTED diagnosis — the "account hit
+ * One event per inference-side QUOTA_EXHAUSTED diagnosis — the "credential hit
  * its ceiling" history that complements the probed snapshots. Events fire at
  * the breaker manager's single failure join point (credential attribution is
  * stamped there), BEFORE rule gating: the event plane is observability, the

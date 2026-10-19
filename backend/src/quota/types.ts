@@ -5,7 +5,7 @@
  * whose provider is covered. Coverage ships with the release (the built-in
  * declaration table + built-in code adapters); activation follows credentials —
  * a covered provider's credential appearing in the chain is all it takes for
- * the prober to schedule it. Nothing snapshots the current account pool.
+ * the prober to schedule it. Nothing snapshots the current credential pool.
  *
  * KNOWN v1 LOSSY FIELDS (deliberately not modeled): per-window `currency` /
  * `isCreditBalance` (DeepSeek multi-currency balances and prepaid credit are
@@ -14,7 +14,7 @@
  * response, not in the snapshot.
  *
  * Identity note: `keyHashPrefix` is the same display-safe sha256 prefix the
- * pair breakers / account flags anchor on — the key-hash identity. Snapshots
+ * pair breakers / credential flags anchor on — the key-hash identity. Snapshots
  * carry ONLY that prefix, never key material.
  */
 
@@ -24,7 +24,7 @@
  *                actively fetched and parsed.
  *  - measured  : harvested from inference-response headers (L-a). Phase 2 —
  *                the data plane is reserved (ExecutionTrace.execution
- *                .accountKeyHashPrefix is the attribution base), nothing
+ *                .credentialKeyHashPrefix is the attribution base), nothing
  *                writes this value yet.
  *  - declared  : static declaration without live verification (reserved for
  *                plan-cap declarations; v1 writers: none — badge still maps

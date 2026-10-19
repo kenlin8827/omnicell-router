@@ -4,9 +4,9 @@ import path from 'node:path';
 import { maskSecret } from '../user-config.js';
 import { CredentialPaths, ocrCredentialsFile, resolveDefaultPaths } from './paths.js';
 import {
-  AccountMeta,
-  AccountNotFoundError,
-  AccountOverview,
+  CredentialMeta,
+  CredentialNotFoundError,
+  CredentialOverview,
   CapabilityUnsupportedError,
   CredentialStore,
   RawCred,
@@ -29,12 +29,12 @@ import {
  * the factory). An opencode v2 NEVER falls back here — read-side degradation is
  * allowed with a badge, write-side proliferation is not.
  *
- * Schema: { version: 1, providers: Record<providerId, [{ accountId, label?,
+ * Schema: { version: 1, providers: Record<providerId, [{ credentialId, label?,
  * key, timeCreated, timeUpdated, active }]> }
  */
 
-interface OcrAccount {
-  accountId: string;
+interface OcrCredential {
+  credentialId: string;
   label?: string;
   key: string;
   timeCreated: number;
@@ -44,7 +44,7 @@ interface OcrAccount {
 
 interface OcrFile {
   version: 1;
-  providers: Record<string, OcrAccount[]>;
+  providers: Record<string, OcrCredential[]>;
 }
 
 export interface OcrStoreDeps {
@@ -60,7 +60,7 @@ export interface OcrStoreDeps {
 }
 
 const OCR_CAPABILITIES: StoreCapabilities = {
-  multiAccount: true,
+  multiCredential: true,
   activate: true,
   rename: true,
   oauth: false,
@@ -68,28 +68,28 @@ const OCR_CAPABILITIES: StoreCapabilities = {
   integrationScoped: false, // any provider id is addressable: OCR owns the file
 };
 
-function toMeta(providerId: string, account: OcrAccount): AccountMeta {
+function toMeta(providerId: string, credential: OcrCredential): CredentialMeta {
   return {
-    id: account.accountId,
+    id: credential.credentialId,
     providerId,
-    label: account.label,
+    label: credential.label,
     type: 'api', // OcrStore only ever holds raw api keys (oauth capability false)
-    active: account.active,
-    routable: Boolean(account.key),
-    keyHashPrefix: keyHashPrefix(account.key),
-    maskedKey: maskSecret(account.key),
+    active: credential.active,
+    routable: Boolean(credential.key),
+    keyHashPrefix: keyHashPrefix(credential.key),
+    maskedKey: maskSecret(credential.key),
   };
 }
 
-function toRaw(providerId: string, account: OcrAccount): RawCred {
+function toRaw(providerId: string, credential: OcrCredential): RawCred {
   return {
-    accountId: account.accountId,
+    credentialId: credential.credentialId,
     providerId,
-    label: account.label,
-    key: account.key,
-    keyHash: sha256KeyHash(account.key),
-    active: account.active,
-    timeUpdated: account.timeUpdated,
+    label: credential.label,
+    key: credential.key,
+    keyHash: sha256KeyHash(credential.key),
+    active: credential.active,
+    timeUpdated: credential.timeUpdated,
   };
 }
 
@@ -129,7 +129,7 @@ export class OcrStore implements CredentialStore {
 
   probe(): StoreProbeResult {
     if (!fs.existsSync(this.file)) {
-      return { ok: true, kind: this.kind, state: 'empty', accountCount: 0 };
+      return { ok: true, kind: this.kind, state: 'empty', credentialCount: 0 };
     }
     let count = 0;
     try {
@@ -140,35 +140,35 @@ export class OcrStore implements CredentialStore {
         kind: this.kind,
         state: 'unreadable',
         detail: e instanceof Error ? e.message : String(e),
-        accountCount: 0,
+        credentialCount: 0,
       };
     }
-    return { ok: true, kind: this.kind, state: count === 0 ? 'empty' : 'ready', accountCount: count };
+    return { ok: true, kind: this.kind, state: count === 0 ? 'empty' : 'ready', credentialCount: count };
   }
 
-  listAccounts(providerId: string): AccountMeta[] {
+  listCredentials(providerId: string): CredentialMeta[] {
     return this.load(providerId).map((a) => toMeta(providerId, a));
   }
 
   resolveKey(providerId: string): ResolvedCredential | null {
     const row = selectKey(this.load(providerId).filter((a) => a.key));
-    return row ? { key: row.key, account: toMeta(providerId, row) } : null;
+    return row ? { key: row.key, credential: toMeta(providerId, row) } : null;
   }
 
   resolveKeyChain(providerId: string): RawCred[] {
     return chainOrder(this.load(providerId).filter((a) => a.key)).map((a) => toRaw(providerId, a));
   }
 
-  revealKey(accountId: string): string {
-    const found = this.findAccount(accountId);
-    if (!found) throw new AccountNotFoundError(accountId);
-    if (!found.account.key) {
-      throw new CapabilityUnsupportedError('revealKey', 'ocr account carries no raw key material');
+  revealKey(credentialId: string): string {
+    const found = this.findCredential(credentialId);
+    if (!found) throw new CredentialNotFoundError(credentialId);
+    if (!found.credential.key) {
+      throw new CapabilityUnsupportedError('revealKey', 'ocr credential carries no raw key material');
     }
-    return found.account.key;
+    return found.credential.key;
   }
 
-  async connectKey(providerId: string, key: string, label?: string): Promise<AccountMeta> {
+  async connectKey(providerId: string, key: string, label?: string): Promise<CredentialMeta> {
     if (!key) throw new Error('connectKey requires a non-empty key');
     if (!providerId || /[^A-Za-z0-9._\-\/]/.test(providerId)) {
       throw new Error(`Invalid provider id: '${providerId}'`);
@@ -180,54 +180,54 @@ export class OcrStore implements CredentialStore {
       throw new Error(`Invalid provider id: '${providerId}'`);
     }
     const rows = this.load(providerId);
-    const account: OcrAccount = {
-      accountId: crypto.randomUUID(),
+    const credential: OcrCredential = {
+      credentialId: crypto.randomUUID(),
       ...(label !== undefined ? { label } : {}),
       key,
       timeCreated: this.now(),
       timeUpdated: this.now(),
       active: rows.length === 0, // first key for a provider is active by default
     };
-    this.save(providerId, [...rows, account]);
-    return toMeta(providerId, account);
+    this.save(providerId, [...rows, credential]);
+    return toMeta(providerId, credential);
   }
 
-  async activate(accountId: string): Promise<AccountMeta> {
-    const found = this.findAccount(accountId);
-    if (!found) throw new AccountNotFoundError(accountId);
+  async activate(credentialId: string): Promise<CredentialMeta> {
+    const found = this.findCredential(credentialId);
+    if (!found) throw new CredentialNotFoundError(credentialId);
     const { providerId } = found;
     const rows = this.load(providerId).map((a) => ({
       ...a,
-      active: a.accountId === accountId,
-      timeUpdated: a.accountId === accountId ? this.now() : a.timeUpdated,
+      active: a.credentialId === credentialId,
+      timeUpdated: a.credentialId === credentialId ? this.now() : a.timeUpdated,
     }));
     this.save(providerId, rows);
-    const updated = rows.find((a) => a.accountId === accountId)!;
+    const updated = rows.find((a) => a.credentialId === credentialId)!;
     return toMeta(providerId, updated);
   }
 
-  async rename(accountId: string, label: string): Promise<AccountMeta> {
-    const found = this.findAccount(accountId);
-    if (!found) throw new AccountNotFoundError(accountId);
+  async rename(credentialId: string, label: string): Promise<CredentialMeta> {
+    const found = this.findCredential(credentialId);
+    if (!found) throw new CredentialNotFoundError(credentialId);
     const { providerId } = found;
     // Empty clears the field entirely (the route's contract): storing "" would
     // leave a ghost label that every reader must remember to treat as absent.
     const rows = this.load(providerId).map((a) => {
-      if (a.accountId !== accountId) return a;
+      if (a.credentialId !== credentialId) return a;
       const { label: _dropped, ...rest } = a;
       return { ...rest, ...(label ? { label } : {}), timeUpdated: this.now() };
     });
     this.save(providerId, rows);
-    return toMeta(providerId, rows.find((a) => a.accountId === accountId)!);
+    return toMeta(providerId, rows.find((a) => a.credentialId === credentialId)!);
   }
 
-  async disconnect(accountId: string): Promise<void> {
-    const found = this.findAccount(accountId);
-    if (!found) throw new AccountNotFoundError(accountId);
+  async disconnect(credentialId: string): Promise<void> {
+    const found = this.findCredential(credentialId);
+    if (!found) throw new CredentialNotFoundError(credentialId);
     const { providerId } = found;
     this.save(
       providerId,
-      this.load(providerId).filter((a) => a.accountId !== accountId)
+      this.load(providerId).filter((a) => a.credentialId !== credentialId)
     );
   }
 
@@ -235,7 +235,7 @@ export class OcrStore implements CredentialStore {
     throw new CapabilityUnsupportedError('beginOAuth', 'OAuth is excluded from every credential store');
   }
 
-  async completeOAuth(): Promise<AccountMeta> {
+  async completeOAuth(): Promise<CredentialMeta> {
     throw new CapabilityUnsupportedError('completeOAuth', 'OAuth is excluded from every credential store');
   }
 
@@ -243,13 +243,13 @@ export class OcrStore implements CredentialStore {
     // file read per call — nothing cached
   }
 
-  accountsOverview(): AccountOverview[] {
+  credentialsOverview(): CredentialOverview[] {
     const file = this.readFile();
     return Object.entries(file.providers).map(([providerId, rows]) => ({
       providerId,
       total: rows.length,
       routable: rows.filter((r) => r.key).length,
-      activeAccountId: rows.find((r) => r.active)?.accountId ?? null,
+      activeCredentialId: rows.find((r) => r.active)?.credentialId ?? null,
     }));
   }
 
@@ -281,32 +281,32 @@ export class OcrStore implements CredentialStore {
   }
 
   /** @throws StoreUnreadableError when the file exists but cannot be parsed. */
-  private load(providerId: string): OcrAccount[] {
+  private load(providerId: string): OcrCredential[] {
     const { providers } = this.readFile();
     // P3-1: own-property-only lookup — a bare `providers['__proto__']` read
     // would surface Object.prototype for a key absent from the file.
     const rows = Object.hasOwn(providers, providerId) ? providers[providerId] : undefined;
     if (!Array.isArray(rows)) return [];
-    return rows.filter((r): r is OcrAccount => Boolean(r) && typeof r === 'object' && typeof r.accountId === 'string');
+    return rows.filter((r): r is OcrCredential => Boolean(r) && typeof r === 'object' && typeof r.credentialId === 'string');
   }
 
-  private loadRows(): OcrAccount[] {
+  private loadRows(): OcrCredential[] {
     const file = this.readFile();
     return Object.values(file.providers).flatMap((rows) =>
       Array.isArray(rows) ? rows.filter((r) => Boolean(r) && typeof r === 'object') : []
     );
   }
 
-  private findAccount(accountId: string): { providerId: string; account: OcrAccount } | null {
+  private findCredential(credentialId: string): { providerId: string; credential: OcrCredential } | null {
     for (const providerId of Object.keys(this.readFile().providers)) {
-      const account = this.load(providerId).find((a) => a.accountId === accountId);
-      if (account) return { providerId, account };
+      const credential = this.load(providerId).find((a) => a.credentialId === credentialId);
+      if (credential) return { providerId, credential };
     }
     return null;
   }
 
   /** Atomic write: temp + rename (user-config.ts:71 precedent), best-effort 0600. */
-  private save(providerId: string, rows: OcrAccount[]): void {
+  private save(providerId: string, rows: OcrCredential[]): void {
     const file = this.readFile();
     const providers = { ...file.providers };
     // An emptied provider loses its key entirely — no `[]` debris in the

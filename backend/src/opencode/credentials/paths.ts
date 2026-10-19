@@ -89,12 +89,12 @@ export function credentialSyncFile(paths: CredentialPaths = resolveDefaultPaths(
 }
 
 /**
- * SUSPECT account flags (Decision 6). Same GLOBAL root as the
- * OCR credentials file: an account is suspect wherever it is used, not per
+ * SUSPECT credential flags (Decision 6). Same GLOBAL root as the
+ * OCR credentials file: an credential is suspect wherever it is used, not per
  * environment. Display-safe metadata only (keyHash prefixes, no key material).
  */
-export function suspectAccountsFile(paths: CredentialPaths = resolveDefaultPaths()): string {
-  return path.join(paths.ocrHome, 'suspect-accounts.json');
+export function suspectCredentialsFile(paths: CredentialPaths = resolveDefaultPaths()): string {
+  return path.join(paths.ocrHome, 'suspect-credentials.json');
 }
 
 /**
@@ -105,7 +105,7 @@ export function suspectAccountsFile(paths: CredentialPaths = resolveDefaultPaths
  * records are pruned against the ACTIVE env's model set, so one shared file
  * would let an env switch destroy the other env's memory (the first save
  * after restore rewrites the whole file). Unlike the suspect flags — which
- * stay GLOBAL because an account is suspect wherever it is used — breaker
+ * stay GLOBAL because an credential is suspect wherever it is used — breaker
  * memory is about model rotation, and that is per book-set.
  * `envName` is injected by the caller (BreakerStateStore resolves it from
  * peekEnvName) so this registry keeps reading no process env itself.
@@ -126,7 +126,7 @@ export function serviceJsonCandidates(paths: CredentialPaths = resolveDefaultPat
 /**
  * Quota snapshots: attached to (provider × keyHashPrefix) — the
  * credential-anchored identity — so they follow the suspect/disabled flags'
- * GLOBAL lifecycle ("an account is an account wherever it is used"), not the
+ * GLOBAL lifecycle ("an credential is an credential wherever it is used"), not the
  * per-env book-set. Display-safe metadata only (window numbers, prefixes,
  * plan labels — never key material).
  */

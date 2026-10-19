@@ -17,7 +17,7 @@ import { QuotaProber, type QuotaRegistryView } from '../src/quota/prober.js';
 import { QuotaSnapshotStore, setQuotaStoreForTests } from '../src/quota/store.js';
 import { QuotaEventLog, setQuotaEventLogForTests } from '../src/quota/events.js';
 import { CircuitBreakerManager } from '../src/resilience/circuit-breaker-manager.js';
-import { AccountStateStore } from '../src/resilience/account-state.js';
+import { CredentialStateStore } from '../src/resilience/credential-state.js';
 import { ErrorClassifier } from '../src/resilience/error-classifier.js';
 import { TraceTracker } from '../src/trace/tracker.js';
 import type { RouterConfig } from '../src/config/types.js';
@@ -516,11 +516,11 @@ describe('quota events linkage', () => {
     setQuotaEventLogForTests(log);
     try {
       const tmp = sandboxPaths('quota-link');
-      const accountState = new AccountStateStore({ paths: tmp });
+      const credentialState = new CredentialStateStore({ paths: tmp });
       const manager = new CircuitBreakerManager(
         { enabled: true, failureThreshold: 3, slidingWindowSize: 20, failureRateThreshold: 0.5, initialCooldownMs: 1000, maxCooldownMs: 50_000, cooldownMultiplier: 2, quotaCooldownMs: 60_000, halfOpenMaxProbes: 1 },
         () => 1_000_000,
-        accountState
+        credentialState
       );
       const diag = ErrorClassifier.classify({ status: 402, message: 'Insufficient Balance', usedCredentialKeyHashPrefix: 'K9' }, 'p/x', 'p');
       assert.equal(diag.category, 'QUOTA_EXHAUSTED');
@@ -537,9 +537,9 @@ describe('quota events linkage', () => {
       // Rule OFF: tripping stops, the LEDGER KEEPS EMITTING (event plane !=
       // policy plane).
       const mgrOff = new CircuitBreakerManager(
-        { enabled: true, failureThreshold: 3, slidingWindowSize: 20, failureRateThreshold: 0.5, initialCooldownMs: 1000, maxCooldownMs: 50_000, cooldownMultiplier: 2, quotaCooldownMs: 60_000, halfOpenMaxProbes: 1, rules: { trip: { quota: { enabled: false, cooldownMs: 60_000, scope: 'account' } } } as any },
+        { enabled: true, failureThreshold: 3, slidingWindowSize: 20, failureRateThreshold: 0.5, initialCooldownMs: 1000, maxCooldownMs: 50_000, cooldownMultiplier: 2, quotaCooldownMs: 60_000, halfOpenMaxProbes: 1, rules: { trip: { quota: { enabled: false, cooldownMs: 60_000, scope: 'credential' } } } as any },
         () => 1_000_000,
-        new AccountStateStore({ paths: tmp })
+        new CredentialStateStore({ paths: tmp })
       );
       mgrOff.recordFailureScoped('p/x', diag, 'p', 'K9');
       assert.equal(log.list().length, 2, 'quota trip OFF still emits ledger events');
@@ -562,7 +562,7 @@ describe('trace per-pair aggregation', () => {
       timestamp: Date.now(),
       request: { model: 'm', userPromptSummary: '', messageCount: 1, hasSystemPrompt: false, hasToolsOrSchema: false },
       routing: { layerUsed: 'layer0', targetTier: 'lite', confidence: 1, reason: 'x', sessionRatchetApplied: false },
-      execution: { modelUsed: 'm', provider, accountKeyHashPrefix: prefix, tierUsed: 'lite', latencyMs: 5, fallbackOccurred: false },
+      execution: { modelUsed: 'm', provider, credentialKeyHashPrefix: prefix, tierUsed: 'lite', latencyMs: 5, fallbackOccurred: false },
       finops: { inputTokens: 10, outputTokens: 1, cachedTokens: 0, costUsd: cost },
     } as any);
     t.record(mk('p1', 'AAA', 0.1));
@@ -570,7 +570,7 @@ describe('trace per-pair aggregation', () => {
     t.record(mk('p1', 'BBB', 0.3));
     t.record(mk('p2', 'AAA', 0.4));
     t.record(mk('p3', undefined, 0.5));
-    const rows = t.getAccountPairUsageStats();
+    const rows = t.getCredentialPairUsageStats();
     assert.equal(rows.length, 3, 'only attributed pairs');
     const a = rows.find((r) => r.provider === 'p1' && r.keyHashPrefix === 'AAA')!;
     assert.equal(a.requests, 2);

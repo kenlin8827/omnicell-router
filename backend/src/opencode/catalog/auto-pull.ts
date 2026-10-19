@@ -342,9 +342,9 @@ export async function autoPullProvider(id: string, opts: { pattern?: string; dry
   const def = getProviderNodeById(id);
   // B4: live capability keyed on the BOUND store (pullLiveModels resolves the
   // same way — one source, no live/catalog branch mismatch). P3-5: capability
-  // only — listAccounts is masked, no raw key ever enters here.
+  // only — listCredentials is masked, no raw key ever enters here.
   const store = await getCredentialStore();
   const inlineKey = expandEnvTemplate(def?.options?.apiKey);
-  const liveCapable = Boolean(def?.options?.baseURL && (inlineKey || store.listAccounts(id).some((a) => a.routable)));
+  const liveCapable = Boolean(def?.options?.baseURL && (inlineKey || store.listCredentials(id).some((a) => a.routable)));
   return liveCapable ? pullLiveModels(id, opts) : pullCatalogModels(id, opts);
 }

@@ -7,7 +7,7 @@ import { createServer } from '../src/server.js';
 import { hashPassword, recordLoginSuccess } from '../src/auth/web-auth.js';
 import { CredentialPaths, ocrCredentialsFile } from '../src/opencode/credentials/paths.js';
 import {
-  AccountNotFoundError,
+  CredentialNotFoundError,
   CapabilityUnsupportedError,
   OcrStore,
   OpencodeV2Store,
@@ -19,8 +19,8 @@ import { DbOpener } from '../src/opencode/credentials/opencode-v2-store.js';
  * Controlled credential reveal.
  * Covers the four contract gates: webAuth-active precondition (409), login-bucket
  * throttle sharing (wrong reveal password counts as a login failure, lockout
- * answers 429), password-before-store ordering (401 carries NO account signal —
- * a bogus accountId + right password must not 404), and the row-type boundary
+ * answers 429), password-before-store ordering (401 carries NO credential signal —
+ * a bogus credentialId + right password must not 404), and the row-type boundary
  * (oauth/wellknown refuse, api rows reveal) across all three stores — unit
  * (revealKey) and HTTP (route). The happy-path body is asserted to be EXACTLY
  * {status,key}: the key must never ride alongside a masked view.
@@ -105,7 +105,7 @@ function seedOcr(
         Object.entries(providers).map(([p, rows]) => [
           p,
           rows.map((r) => ({
-            accountId: r.id,
+            credentialId: r.id,
             ...(r.label !== undefined ? { label: r.label } : {}),
             key: r.key,
             timeCreated: 1,
@@ -158,16 +158,16 @@ function bearer() {
   return { authorization: `Bearer ${ADMIN_KEY}`, 'content-type': 'application/json' };
 }
 
-const revealUrl = (providerId: string, accountId: string) =>
-  `/api/admin/opencode/providers/${encodeURIComponent(providerId)}/accounts/${encodeURIComponent(accountId)}/reveal`;
+const revealUrl = (providerId: string, credentialId: string) =>
+  `/api/admin/opencode/providers/${encodeURIComponent(providerId)}/credentials/${encodeURIComponent(credentialId)}/reveal`;
 
 describe('revealKey — store unit surface (Decision 10 row-type boundary)', () => {
-  it('OcrStore: exact addressed row reveals; unknown id → AccountNotFoundError', async () => {
+  it('OcrStore: exact addressed row reveals; unknown id → CredentialNotFoundError', async () => {
     const paths = credPaths();
     const store = new OcrStore({ paths, now: () => 1 });
     const meta = await store.connectKey('myprov', KEY);
     expect(store.revealKey(meta.id)).toBe(KEY);
-    expect(() => store.revealKey('nope')).toThrow(AccountNotFoundError);
+    expect(() => store.revealKey('nope')).toThrow(CredentialNotFoundError);
   });
 
   it('OpencodeV2Store: key row reveals; oauth row refuses; readonly binding reveals too (it is a db READ)', async () => {
@@ -176,7 +176,7 @@ describe('revealKey — store unit surface (Decision 10 row-type boundary)', () 
     const store = await OpencodeV2Store.create({ paths, fetchImpl, env: {}, now: () => 1, openDatabase: fakeDb(rows) });
     expect(store.revealKey('c1')).toBe(KEY);
     expect(() => store.revealKey('c2')).toThrow(CapabilityUnsupportedError);
-    expect(() => store.revealKey('zzz')).toThrow(AccountNotFoundError);
+    expect(() => store.revealKey('zzz')).toThrow(CredentialNotFoundError);
     store.close();
 
     fs.writeFileSync(paths.opencodeDbPath, 'fake-db-bytes');
@@ -193,7 +193,7 @@ describe('revealKey — store unit surface (Decision 10 row-type boundary)', () 
   });
 });
 
-describe('POST …/accounts/:accountId/reveal — the four gates', () => {
+describe('POST …/credentials/:credentialId/reveal — the four gates', () => {
   it('gate 1: webAuth inactive → 409 webauth_required, never a key', async () => {
     const prev = testConfig.webAuth;
     (testConfig as any).webAuth = { enabled: false };
@@ -211,15 +211,15 @@ describe('POST …/accounts/:accountId/reveal — the four gates', () => {
     }
   });
 
-  it('401 answers are constant: wrong password + BOGUS accountId must NOT 404 (no pre-auth enumeration)', async () => {
+  it('401 answers are constant: wrong password + BOGUS credentialId must NOT 404 (no pre-auth enumeration)', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: revealUrl('myprov', 'account-that-does-not-exist'),
+      url: revealUrl('myprov', 'credential-that-does-not-exist'),
       headers: bearer(),
       payload: { password: 'totally-wrong' },
     });
     expect(res.statusCode).toBe(401);
-    expect(res.body).not.toContain('account_not_found');
+    expect(res.body).not.toContain('credential_not_found');
     expect(res.body).not.toContain(KEY);
   });
 
@@ -235,7 +235,7 @@ describe('POST …/accounts/:accountId/reveal — the four gates', () => {
     });
     expect(res.statusCode).toBe(200);
     // The success body is EXACTLY the two fields — the key never travels with
-    // a masked view or account echo (Decision 10 condition 3).
+    // a masked view or credential echo (Decision 10 condition 3).
     expect(JSON.parse(res.body)).toEqual({ status: 'ok', key: KEY });
     expect(res.headers['cache-control']).toBe('no-store');
     expect(res.headers['set-cookie']).toBeUndefined();
@@ -255,7 +255,7 @@ describe('POST …/accounts/:accountId/reveal — the four gates', () => {
     expect(JSON.parse(res.body).reasonCode).toBe('capability_unsupported');
   });
 
-  it('cross-provider guard: a real account id under the WRONG provider → 404 (post-auth)', async () => {
+  it('cross-provider guard: a real credential id under the WRONG provider → 404 (post-auth)', async () => {
     const paths = credPaths();
     resetCredentialStoreForTests(paths, undefined, undefined, { env: {}, now: () => 1 });
     seedOcr(paths, { myprov: [{ id: 'c1', key: KEY }] });
@@ -266,7 +266,7 @@ describe('POST …/accounts/:accountId/reveal — the four gates', () => {
       payload: { password: PASSWORD },
     });
     expect(res.statusCode).toBe(404);
-    expect(JSON.parse(res.body).reasonCode).toBe('account_not_found');
+    expect(JSON.parse(res.body).reasonCode).toBe('credential_not_found');
   });
 
   it('ocr binding reveals the local credentials.json key', async () => {

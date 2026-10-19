@@ -23,7 +23,7 @@ const PROBE_HINT_KEY: Record<ProbeHintCode, string> = {
 const TEST_REASON_KEY: Record<string, string> = {
   no_testable_model: 'op.reasonNoTestableModel',
   no_base_url: 'op.reasonNoBaseUrl',
-  account_not_testable: 'op.reasonAccountNotTestable',
+  credential_not_testable: 'op.reasonCredentialNotTestable',
 };
 
 /**
@@ -65,7 +65,7 @@ export const apiErrorText = (err: unknown, providerId: string, t: TFn): string =
   const e = err as OcApiError;
   const code = e?.reasonCode;
   if (code && TEST_REASON_KEY[code])
-    return t(TEST_REASON_KEY[code], { provider: providerId, account: (e.body as any)?.accountId ?? '' });
+    return t(TEST_REASON_KEY[code], { provider: providerId, credential: (e.body as any)?.credentialId ?? '' });
   if (code === 'pull_unreachable')
     return t('op.probeUnreachable', { url: (e.body as any)?.url ?? '?', cause: (e.body as any)?.cause ?? '?' });
   if (code === 'pull_non_json') return t('op.pullNonJson', { url: (e.body as any)?.url ?? '?' });
@@ -87,8 +87,8 @@ export interface ModelTestTarget {
   key: string;
   providerId: string;
   modelId?: string;
-  /** Pin the probe to ONE credential row (KeysPage account list); default = provider head. */
-  accountId?: string;
+  /** Pin the probe to ONE credential row (KeysPage credential list); default = provider head. */
+  credentialId?: string;
 }
 
 /** Probe outcome — the ok:false shape also covers HTTP-level failures. */
@@ -129,9 +129,9 @@ export const useModelTest = () => {
   const runTest = async (target: ModelTestTarget): Promise<ModelTestOutcome> => {
     setTestingIds((prev) => new Set(prev).add(target.key));
     try {
-      const payload: { modelId?: string; accountId?: string } = {};
+      const payload: { modelId?: string; credentialId?: string } = {};
       if (target.modelId) payload.modelId = target.modelId;
-      if (target.accountId) payload.accountId = target.accountId;
+      if (target.credentialId) payload.credentialId = target.credentialId;
       const r = await opencodeApi.testProvider(target.providerId, Object.keys(payload).length ? payload : undefined);
       // The wire carries machine limbs only — compose the localized display
       // ONCE here so every outcome surface (card/badge/toast/title) stays raw.

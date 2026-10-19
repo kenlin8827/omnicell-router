@@ -38,7 +38,7 @@ function sandboxPaths(): CredentialPaths {
 }
 
 const OCR_CAPS = {
-  multiAccount: true,
+  multiCredential: true,
   activate: true,
   rename: true,
   oauth: false,
@@ -52,11 +52,11 @@ function seedOcrFile(paths: CredentialPaths, providers: Record<string, unknown[]
 }
 
 describe('GET /api/admin/credential-store', () => {
-  it('serves the bound OCR store verbatim, masked-only, with per-provider account detail', async () => {
+  it('serves the bound OCR store verbatim, masked-only, with per-provider credential detail', async () => {
     const paths = sandboxPaths();
     seedOcrFile(paths, {
       anthropic: [
-        { accountId: 'a-secret', label: 'work', key: 'sk-SUPER-SECRET-000111222', timeCreated: 1, timeUpdated: 1, active: true },
+        { credentialId: 'a-secret', label: 'work', key: 'sk-SUPER-SECRET-000111222', timeCreated: 1, timeUpdated: 1, active: true },
       ],
     });
     resetCredentialStoreForTests(paths, undefined, undefined, { env: {}, now: () => 1234 });
@@ -74,10 +74,10 @@ describe('GET /api/admin/credential-store', () => {
     expect(body.reconcile).toBeNull(); // no legacy marker
 
     // per-provider detail: masked metadata only
-    const anthropic = body.store.accounts.find((a: { providerId: string }) => a.providerId === 'anthropic');
+    const anthropic = body.store.credentials.find((a: { providerId: string }) => a.providerId === 'anthropic');
     expect(anthropic.routable).toBe(1);
-    expect(anthropic.accounts[0]).toMatchObject({ id: 'a-secret', type: 'api', active: true, routable: true });
-    expect(anthropic.accounts[0].maskedKey).toContain('••••');
+    expect(anthropic.credentials[0]).toMatchObject({ id: 'a-secret', type: 'api', active: true, routable: true });
+    expect(anthropic.credentials[0].maskedKey).toContain('••••');
 
     // THE masking assertion — no raw key anywhere in the wire payload
     expect(res.body).not.toContain('sk-SUPER-SECRET-000111222');

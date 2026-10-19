@@ -11,7 +11,7 @@ import type { RateLimitRule } from '../lib/api';
  * engine's validation client-side so a bad row never reaches the API.
  *
  * Two consumers by design: the inbound editor (ApiKeysPage, apiKeys[].limits)
- * and the outbound overlay (KeysPage accounts, config `accounts:`) — one
+ * and the outbound overlay (KeysPage credentials, config `credentials:`) — one
  * concept, one editor.
  */
 const WINDOW_PATTERN = /^(\d+(?:\.\d+)?)(ms|s|m|h|d)$/;

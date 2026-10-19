@@ -13,7 +13,7 @@ import type { QuotaBadgeState, QuotaSnapshot, LastProbeCapture } from './types.j
  * Snapshots are credential-anchored display-safe aggregates (window numbers,
  * prefixes, plan labels — never key material), so they follow the GLOBAL
  * state root like the SUSPECT/DISABLED flags: an
- * account's quota history belongs to the account, not to a book-set.
+ * credential's quota history belongs to the credential, not to a book-set.
  *
  * Persistence: atomic temp+rename 0600 with a debounce (the prober writes in
  * bursts; the file is a cold-boot badge seed, not a hot ledger). Load-once:

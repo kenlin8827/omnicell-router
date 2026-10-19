@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { AccountStateStore } from '../src/resilience/account-state.js';
+import { CredentialStateStore } from '../src/resilience/credential-state.js';
 import { CircuitBreakerManager } from '../src/resilience/circuit-breaker-manager.js';
 import { ErrorClassifier, UpstreamError } from '../src/resilience/error-classifier.js';
 import { ActiveHealthProber, type ProberTargetResolver } from '../src/resilience/health-prober.js';
@@ -14,7 +14,7 @@ import type { CircuitBreakerConfig, ErrorDiagnosis } from '../src/resilience/typ
 
 /**
  * The resilience CORE: pair breakers keyed
- * (modelId x credentialKeyHashPrefix), classifier tripScope, SUSPECT account
+ * (modelId x credentialKeyHashPrefix), classifier tripScope, SUSPECT credential
  * flags, model aggregation, prober per-model budget.
  *
  * State root is sandboxed the same way the credential tests sandbox theirs —
@@ -48,11 +48,11 @@ function makeClock(start = 1_000_000) {
   return { now: () => now, advance: (ms: number) => { now += ms; } };
 }
 
-function makeManager(cfg: CircuitBreakerConfig = CELL_CFG, clock = makeClock(), store?: AccountStateStore) {
+function makeManager(cfg: CircuitBreakerConfig = CELL_CFG, clock = makeClock(), store?: CredentialStateStore) {
   const paths = sandboxPaths();
-  const accountState = store ?? new AccountStateStore({ paths, now: clock.now });
-  const manager = new CircuitBreakerManager(cfg, clock.now, accountState);
-  return { manager, accountState, paths, clock };
+  const credentialState = store ?? new CredentialStateStore({ paths, now: clock.now });
+  const manager = new CircuitBreakerManager(cfg, clock.now, credentialState);
+  return { manager, credentialState, paths, clock };
 }
 
 function model(id: string, provider: string): ModelRegistration {
@@ -89,21 +89,21 @@ function stamped(status: number, message: string, keyHashPrefix?: string, extra:
   return err;
 }
 
-describe('(a) classifier tripScope + accountSuspect table', () => {
+describe('(a) classifier tripScope + credentialSuspect table', () => {
   const K = 'aaaaaaaaaaaa';
 
-  it('QUOTA 402 -> account, and NOT suspect (quota recovers on its own)', () => {
+  it('QUOTA 402 -> credential, and NOT suspect (quota recovers on its own)', () => {
     const d = ErrorClassifier.classify(stamped(402, 'insufficient_quota', K), 'p/m1', 'p');
     expect(d.category).toBe('QUOTA_EXHAUSTED');
-    expect(d.tripScope).toBe('account');
-    expect(d.accountSuspect).toBeUndefined();
+    expect(d.tripScope).toBe('credential');
+    expect(d.credentialSuspect).toBeUndefined();
   });
 
-  it('AUTH 401 -> account + accountSuspect', () => {
+  it('AUTH 401 -> credential + credentialSuspect', () => {
     const d = ErrorClassifier.classify(stamped(401, 'invalid_api_key', K), 'p/m1', 'p');
     expect(d.category).toBe('AUTHENTICATION_ERROR');
-    expect(d.tripScope).toBe('account');
-    expect(d.accountSuspect).toBe(true);
+    expect(d.tripScope).toBe('credential');
+    expect(d.credentialSuspect).toBe(true);
   });
 
   it('RATE_LIMITED 429 -> pair (per-model RPM window), Retry-After still honored', () => {
@@ -111,15 +111,15 @@ describe('(a) classifier tripScope + accountSuspect table', () => {
     expect(d.category).toBe('RATE_LIMITED');
     expect(d.tripScope).toBe('pair');
     expect(d.minCooldownMs).toBe(3_600_000);
-    expect(d.accountSuspect).toBeUndefined();
+    expect(d.credentialSuspect).toBeUndefined();
   });
 
-  it('RATE_LIMITED with daily/weekly-limit wording -> account', () => {
+  it('RATE_LIMITED with daily/weekly-limit wording -> credential', () => {
     const weekly = ErrorClassifier.classify(stamped(429, 'You have hit your weekly limit, resets at 9pm', K), 'p/m1', 'p');
-    expect(weekly.tripScope).toBe('account');
+    expect(weekly.tripScope).toBe('credential');
     const daily = ErrorClassifier.classify(stamped(429, 'daily limit of 100 requests exceeded', K), 'p/m1', 'p');
-    expect(daily.tripScope).toBe('account');
-    expect(weekly.accountSuspect).toBeUndefined(); // a spent budget is not a dead key
+    expect(daily.tripScope).toBe('credential');
+    expect(weekly.credentialSuspect).toBeUndefined(); // a spent budget is not a dead key
   });
 
   it('5xx / network jitter -> model', () => {
@@ -151,10 +151,10 @@ describe('(a) classifier tripScope + accountSuspect table', () => {
   // field-for-field what pre-P3 produced — same keys, same values. With
   // attribution the ONLY additions are the new blast-radius fields.
   const legacyCases: Array<[string, number, string, string | undefined]> = [
-    ['quota', 402, 'insufficient_quota', 'account'],
-    ['auth', 401, 'invalid_api_key', 'account'],
+    ['quota', 402, 'insufficient_quota', 'credential'],
+    ['auth', 401, 'invalid_api_key', 'credential'],
     ['rate', 429, 'too many requests', 'pair'],
-    ['rate-weekly', 429, 'weekly limit reached', 'account'],
+    ['rate-weekly', 429, 'weekly limit reached', 'credential'],
     ['outage', 503, 'bad gateway', 'model'],
     ['unknown', 418, 'something nobody recognizes', 'pair'],
     ['client', 400, 'context_length_exceeded', undefined],
@@ -163,12 +163,12 @@ describe('(a) classifier tripScope + accountSuspect table', () => {
   it.each(legacyCases)('chain-less %s error keeps byte-identical model-level semantics', (_label, status, message, scope) => {
     const plain = ErrorClassifier.classify(stamped(status, message), 'p/m1', 'p');
     expect('tripScope' in plain).toBe(false);
-    expect('accountSuspect' in plain).toBe(false);
+    expect('credentialSuspect' in plain).toBe(false);
 
     const attributed = ErrorClassifier.classify(stamped(status, message, 'bbbbbbbbbbbb'), 'p/m1', 'p');
     const plainKeys = Object.keys(plain);
     const added = Object.keys(attributed).filter((k) => !plainKeys.includes(k));
-    const expectedAdded = [...(scope ? ['tripScope'] : []), ...(status === 401 ? ['accountSuspect'] : [])].sort();
+    const expectedAdded = [...(scope ? ['tripScope'] : []), ...(status === 401 ? ['credentialSuspect'] : [])].sort();
     expect(added.sort()).toEqual(expectedAdded);
     expect(attributed.tripScope).toBe(scope);
     for (const key of plainKeys as Array<keyof ErrorDiagnosis>) {
@@ -214,16 +214,16 @@ describe('(b) pair trips are isolated per (model x credential)', () => {
   });
 });
 
-// ─── (c) account expansion ──────────────────────────────────────────────────────
+// ─── (c) credential expansion ──────────────────────────────────────────────────────
 
-describe('(c) account scope cools the whole account, not the model', () => {
+describe('(c) credential scope cools the whole credential, not the model', () => {
   it('quota on K1 opens every K1 pair, K2 stays alive, model available via K2', () => {
-    const { manager, accountState } = makeManager();
+    const { manager, credentialState } = makeManager();
     manager.registerModel(model('p/x', 'p'));
     manager.registerModel(model('p/y', 'p'));
     manager.registerModel(model('q/z', 'q')); // other provider must not care
 
-    manager.recordFailureScoped('p/x', diagnosis({ category: 'QUOTA_EXHAUSTED', tripScope: 'account' }), 'p', 'K1');
+    manager.recordFailureScoped('p/x', diagnosis({ category: 'QUOTA_EXHAUSTED', tripScope: 'credential' }), 'p', 'K1');
 
     expect(manager.getPairBreaker('p/x', 'K1')?.getState()).toBe('OPEN');
     expect(manager.getPairBreaker('p/y', 'K1')?.getState()).toBe('OPEN'); // never-used model, still covered
@@ -234,17 +234,17 @@ describe('(c) account scope cools the whole account, not the model', () => {
     const agg = manager.modelAvailability('p/x', ['K1', 'K2']);
     expect(agg.available).toBe(true);
     expect(agg.openPrefixes).toEqual(['K1']);
-    // Account scope did not spread to another provider's pair breakers.
+    // Credential scope did not spread to another provider's pair breakers.
     expect(manager.getPairBreaker('q/z', 'K1')).toBeUndefined();
-    expect(accountState.list()).toEqual([]); // quota is NOT suspect
+    expect(credentialState.list()).toEqual([]); // quota is NOT suspect
   });
 
-  it('an account with every credential down takes the model down through the aggregate', () => {
+  it('an credential with every credential down takes the model down through the aggregate', () => {
     const { manager } = makeManager();
     manager.registerModel(model('p/x', 'p'));
-    const accountDiagnosis = diagnosis({ category: 'QUOTA_EXHAUSTED', tripScope: 'account' });
-    manager.recordFailureScoped('p/x', accountDiagnosis, 'p', 'K1');
-    manager.recordFailureScoped('p/x', accountDiagnosis, 'p', 'K2');
+    const credentialDiagnosis = diagnosis({ category: 'QUOTA_EXHAUSTED', tripScope: 'credential' });
+    manager.recordFailureScoped('p/x', credentialDiagnosis, 'p', 'K1');
+    manager.recordFailureScoped('p/x', credentialDiagnosis, 'p', 'K2');
 
     const agg = manager.modelAvailability('p/x', ['K1', 'K2']);
     expect(agg.available).toBe(false);
@@ -278,16 +278,16 @@ describe('(d) model trip takes every credential out', () => {
 
 // ─── (e) SUSPECT flag lifecycle ─────────────────────────────────────────────
 
-describe('(e) SUSPECT flag: auth account-scope marks it, it survives recreation, clear() lifts it', () => {
+describe('(e) SUSPECT flag: auth credential-scope marks it, it survives recreation, clear() lifts it', () => {
   it('marks, persists, blocks after the cooldown expires, clears', () => {
     const paths = sandboxPaths();
     const clock = makeClock();
-    const store = new AccountStateStore({ paths, now: clock.now });
+    const store = new CredentialStateStore({ paths, now: clock.now });
     const { manager } = makeManager(CELL_CFG, clock, store);
     manager.registerModel(model('p/x', 'p'));
     manager.registerModel(model('p/y', 'p'));
 
-    const auth = diagnosis({ category: 'AUTHENTICATION_ERROR', tripScope: 'account', accountSuspect: true });
+    const auth = diagnosis({ category: 'AUTHENTICATION_ERROR', tripScope: 'credential', credentialSuspect: true });
     manager.recordFailureScoped('p/x', auth, 'p', 'K1');
 
     expect(store.list().map((a) => a.providerId + '/' + a.keyHashPrefix)).toEqual(['p/K1']);
@@ -302,7 +302,7 @@ describe('(e) SUSPECT flag: auth account-scope marks it, it survives recreation,
     expect(store.get('p', 'K1')!.markedAt).toBe(first);
 
     // SUSPECT is file-backed under the OCR GLOBAL state root, display-safe only.
-    const file = path.join(paths.ocrHome, 'suspect-accounts.json');
+    const file = path.join(paths.ocrHome, 'suspect-credentials.json');
     expect(fs.existsSync(file)).toBe(true);
     const onDisk = fs.readFileSync(file, 'utf8');
     expect(onDisk).toContain('K1');
@@ -311,27 +311,27 @@ describe('(e) SUSPECT flag: auth account-scope marks it, it survives recreation,
     // Cooldown expiry un-trips the pair breakers — the flag must still refuse service.
     clock.advance(120_000);
     manager.reset(); // simulates a restart-and-untrip world
-    const rebound = new CircuitBreakerManager(CELL_CFG, clock.now, new AccountStateStore({ paths, now: clock.now }));
+    const rebound = new CircuitBreakerManager(CELL_CFG, clock.now, new CredentialStateStore({ paths, now: clock.now }));
     rebound.registerModel(model('p/x', 'p'));
     expect(rebound.isSuspect('p/x', 'K1')).toBe(true);
     expect(rebound.canExecuteScoped('p/x', 'K1').allowed).toBe(false);
     expect(rebound.modelAvailability('p/x', ['K1', 'K2'])).toEqual({ available: true, openPrefixes: ['K1'] });
 
     // Explicit clear (console reconnect / admin REST) is the only way back.
-    expect(rebound.getAccountStateStore().clear('p', 'K1')).toBe(true);
+    expect(rebound.getCredentialStateStore().clear('p', 'K1')).toBe(true);
     expect(rebound.isSuspect('p/x', 'K1')).toBe(false);
     expect(rebound.canExecuteScoped('p/x', 'K1').allowed).toBe(true);
-    expect(rebound.getAccountStateStore().clear('p', 'K1')).toBe(false); // idempotent clear
+    expect(rebound.getCredentialStateStore().clear('p', 'K1')).toBe(false); // idempotent clear
     expect(fs.existsSync(file)).toBe(true);
   });
 
   it('a corrupt flags file is preserved, never silently replaced', () => {
     const paths = sandboxPaths();
     fs.mkdirSync(paths.ocrHome, { recursive: true });
-    const file = path.join(paths.ocrHome, 'suspect-accounts.json');
+    const file = path.join(paths.ocrHome, 'suspect-credentials.json');
     fs.writeFileSync(file, '{"version":1,"acc', 'utf8');
 
-    const store = new AccountStateStore({ paths });
+    const store = new CredentialStateStore({ paths });
     expect(store.isSuspect('p', 'K1')).toBe(false); // reads as empty, does not throw
     store.mark('p', 'K1', 'dead key');
 
@@ -343,12 +343,12 @@ describe('(e) SUSPECT flag: auth account-scope marks it, it survives recreation,
   it('a well-formed flags file with an unknown version is preserved too', () => {
     const paths = sandboxPaths();
     fs.mkdirSync(paths.ocrHome, { recursive: true });
-    const file = path.join(paths.ocrHome, 'suspect-accounts.json');
+    const file = path.join(paths.ocrHome, 'suspect-credentials.json');
     // Parses cleanly but no reader here understands it: the preserveCorrupt
     // path must fire on the shape branch, not only on the JSON-error branch.
-    fs.writeFileSync(file, '{"version":2,"accounts":{}}', 'utf8');
+    fs.writeFileSync(file, '{"version":2,"credentials":{}}', 'utf8');
 
-    const store = new AccountStateStore({ paths });
+    const store = new CredentialStateStore({ paths });
     expect(store.isSuspect('p', 'K1')).toBe(false); // read as empty, not fatal
     store.mark('p', 'K1', 'dead key');
 
@@ -358,12 +358,12 @@ describe('(e) SUSPECT flag: auth account-scope marks it, it survives recreation,
     expect(fs.readFileSync(file, 'utf8')).toContain('K1');
   });
 
-  it('a manual account trip never implies a suspect mark', () => {
-    const { manager, accountState } = makeManager();
+  it('a manual credential trip never implies a suspect mark', () => {
+    const { manager, credentialState } = makeManager();
     manager.registerModel(model('p/x', 'p'));
-    manager.tripAccount('K1', { reason: 'maintenance' }, 'p');
+    manager.tripCredential('K1', { reason: 'maintenance' }, 'p');
     expect(manager.getPairBreaker('p/x', 'K1')?.getState()).toBe('OPEN');
-    expect(accountState.list()).toEqual([]);
+    expect(credentialState.list()).toEqual([]);
   });
 });
 
@@ -423,12 +423,12 @@ describe('(f) prober probes one representative pair per model', () => {
   it('a tripped model breaker probes through the first live prefix, skipping OPEN and SUSPECT', () => {
     const clock = makeClock();
     const paths = sandboxPaths();
-    const store = new AccountStateStore({ paths, now: clock.now });
+    const store = new CredentialStateStore({ paths, now: clock.now });
     const { manager } = makeManager(CELL_CFG, clock, store);
     const m = model('p/x', 'p');
     manager.registerModel(m);
     // model breaker down with a SHORT cooldown, two pairs down with a LONG one,
-    // a third account administratively suspect: only K4 is live when due.
+    // a third credential administratively suspect: only K4 is live when due.
     manager.recordFailureScoped('p/x', diagnosis({ tripScope: 'model', hardTrip: true }), 'p', 'K0');
     const stillCooling = diagnosis({ tripScope: 'pair', retryAfterSeconds: 600 }); // hard 429, 600_000ms cooldown
     manager.recordFailureScoped('p/x', stillCooling, 'p', 'K1');
@@ -466,7 +466,7 @@ describe('(f) prober probes one representative pair per model', () => {
   it('a suspect pair is never probed (no auto-return, Decision 6)', () => {
     const clock = makeClock();
     const paths = sandboxPaths();
-    const store = new AccountStateStore({ paths, now: clock.now });
+    const store = new CredentialStateStore({ paths, now: clock.now });
     const { manager } = makeManager(CELL_CFG, clock, store);
     const m = model('p/x', 'p');
     manager.registerModel(m);

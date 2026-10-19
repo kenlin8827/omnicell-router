@@ -1,8 +1,8 @@
-# ADR-0002: 会话——身份解析、单调棘轮、钉扎驱逐、账号亲和
+# ADR-0002: 会话——身份解析、单调棘轮、钉扎驱逐、凭证亲和
 
 ## 状态
 
-已实现 — 2026-10-15。由代码事实推导（`backend/src/session/session-manager.ts`、`backend/src/pipeline/orchestrator.ts` 4B 接缝、`backend/src/pipeline/account-selection.ts`）。语料重置中按现行代码重新推导（历史编号已退役；现行图谱：0001 路由、0003 寻址/成员制、0004 容错、0005 执行、0006 凭证、0007 环境、0008 接入面）。层级：跨切面（请求侧会话状态）。本篇一引用的健康词汇定义于 ADR-0004；亲和身份锚定定义于 ADR-0006。
+已实现 — 2026-10-15。由代码事实推导（`backend/src/session/session-manager.ts`、`backend/src/pipeline/orchestrator.ts` 4B 接缝、`backend/src/pipeline/credential-selection.ts`）。语料重置中按现行代码重新推导（历史编号已退役；现行图谱：0001 路由、0003 寻址/成员制、0004 容错、0005 执行、0006 凭证、0007 环境、0008 接入面）。层级：跨切面（请求侧会话状态）。本篇一引用的健康词汇定义于 ADR-0004；亲和身份锚定定义于 ADR-0006。
 
 ## 背景
 
@@ -49,17 +49,17 @@ switch     = evict ∧ 健康着陆点存在 ∧ landing.id ≠ pin
 
 被否决：peek 式驱逐（把钉扎从恢复中的模型上搬走）；在 `executeCandidatePool` 过滤链首（该池被显式/combo 共用——打破显式优先契约）；干等 TTL（最长一小时静默否决已提交的操作员编辑）。
 
-### 4. 账号亲和——切换是强制故障转移，绝非负载均衡
+### 4. 凭证亲和——切换是强制故障转移，绝非负载均衡
 
-每个会话可绑定一个凭证（`boundKeyHashPrefix` = 显示安全的 `sha256(keyHash)` 前缀，身份定义见 ADR-0006）。契约（选择点的纯函数 `selectAccount`；持久化归编排器，且仅在成功服务之后）：
+每个会话可绑定一个凭证（`boundKeyHashPrefix` = 显示安全的 `sha256(keyHash)` 前缀，身份定义见 ADR-0006）。契约（选择点的纯函数 `selectCredential`；持久化归编排器，且仅在成功服务之后）：
 
-- 绑定的账号健康且在该候选链中 → **永不**因再平衡而移动（本地速率封顶不得移动绑定——只有 provider 自己的 429 / pair 跳闸 / 下架才动它）；
-- 绑定 pair OPEN / SUSPECT / DISABLED → 按链序取下一个健康账号，**FORCED rebind** 在其成功服务后持久化；
-- 绑定陈旧/过期/不在该链 → 视为未绑定 → 确定性新会话散布 `sha256(sessionId) % healthyPool`（被封顶账号优先避开——整形只作用于**新落位**）；
+- 绑定的凭证健康且在该候选链中 → **永不**因再平衡而移动（本地速率封顶不得移动绑定——只有 provider 自己的 429 / pair 跳闸 / 下架才动它）；
+- 绑定 pair OPEN / SUSPECT / DISABLED → 按链序取下一个健康凭证，**FORCED rebind** 在其成功服务后持久化；
+- 绑定陈旧/过期/不在该链 → 视为未绑定 → 确定性新会话散布 `sha256(sessionId) % healthyPool`（被封顶凭证优先避开——整形只作用于**新落位**）；
 - 全部前缀不可用 → 不带前缀（legacy 强试）；全部 DISABLED → 移到下一候选（下架是决定，不是猜测）；
-- 窗口懒惰过期（`accountAffinity.cacheTtlMs`，对照 `lastActiveAt` 读取）独立于会话 TTL；恢复后不回切，模型账号皆然。
+- 窗口懒惰过期（`credentialAffinity.cacheTtlMs`，对照 `lastActiveAt` 读取）独立于会话 TTL；恢复后不回切，模型凭证皆然。
 
-模型 repin 从不重写绑定：连续性骑在选择边界（绑定前缀存在于新模型 provider 链则 keep，否则算 stale → 重散布 + 成功后 FORCED rebind）。模型维度与账号维度严格分层：部分账号禁用 rebind 的是账号，永远不是模型。
+模型 repin 从不重写绑定：连续性骑在选择边界（绑定前缀存在于新模型 provider 链则 keep，否则算 stale → 重散布 + 成功后 FORCED rebind）。模型维度与凭证维度严格分层：部分凭证禁用 rebind 的是凭证，永远不是模型。
 
 ## 后果
 
@@ -68,4 +68,4 @@ switch     = evict ∧ 健康着陆点存在 ∧ landing.id ≠ pin
 - 客户端 User-Agent 头随轨迹记录（`request.clientHeaders.userAgent`），并在控制台会话表上只读展示为客户端指纹；因其可被客户端伪造，绝不作为身份或路由输入——与上文排除传输 IP 的理由相同。
 - 旁路（combo）回合从不创建会话实体，因此按会话的回合编号使用独立的持久化计数器（`SessionManager.recordBypassTurn`，快照字段 `bypassTurns`）——纯展示用途的记账，绝不参与路由；缺少它时每个 combo 请求都会读到 `undefined + 1`，控制台请求明细表的每一行都被标成 #1。
 - 操作员编辑（梯队成员表、denylist）下一轮即触达活会话；每个被驱逐会话恰好支付一次缓存重建——强制、可归因、只在有处可去时重试。
-- 测试：`pin-eviction.test.ts`（两力、非触发、试飞豁免含双视图分歧、着陆守卫、范围回归）、`account-affinity-orchestrator.test.ts`、`account-selection.test.ts`、`session.test.ts`、`resilience*.test.ts`。
+- 测试：`pin-eviction.test.ts`（两力、非触发、试飞豁免含双视图分歧、着陆守卫、范围回归）、`credential-affinity-orchestrator.test.ts`、`credential-selection.test.ts`、`session.test.ts`、`resilience*.test.ts`。

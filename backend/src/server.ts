@@ -623,28 +623,28 @@ export function createServer(
   // 1C. Reset Tripped Circuit Breakers (Admin recovery after quota top-up)
   // optional `scope` (default 'model' = legacy behavior):
   //   model   -> the model breaker (bare modelId); no model = reset everything
-  //   account -> every pair breaker of one credential (keyHash prefix)
+  //   credential -> every pair breaker of one credential (keyHash prefix)
   //   pair    -> one (model, credential) breaker
-  // Resetting an account never lifts its SUSPECT flag — that is administrative
+  // Resetting an credential never lifts its SUSPECT flag — that is administrative
   // state and needs 1E (or a console reconnect / Push).
   app.post('/api/admin/health/circuit-breakers/reset', async (req, reply) => {
-    const query = req.query as { model?: string; account?: string; scope?: string };
-    const body = (req.body || {}) as { model?: string; account?: string; scope?: string };
+    const query = req.query as { model?: string; credential?: string; scope?: string };
+    const body = (req.body || {}) as { model?: string; credential?: string; scope?: string };
     const targetModel = query?.model || body?.model;
-    const account = query?.account || body?.account;
+    const credential = query?.credential || body?.credential;
     const scopeRaw = body?.scope || query?.scope || 'model';
     const cbManager = registry.getCircuitBreakerManager();
 
-    if (scopeRaw !== 'model' && scopeRaw !== 'account' && scopeRaw !== 'pair') {
+    if (scopeRaw !== 'model' && scopeRaw !== 'credential' && scopeRaw !== 'pair') {
       return reply.status(400).send({
         status: 'error',
-        message: `Unknown scope '${scopeRaw}' (expected 'model', 'account' or 'pair')`,
+        message: `Unknown scope '${scopeRaw}' (expected 'model', 'credential' or 'pair')`,
       });
     }
-    if (scopeRaw !== 'model' && !account) {
+    if (scopeRaw !== 'model' && !credential) {
       return reply.status(400).send({
         status: 'error',
-        message: `scope '${scopeRaw}' requires an account (keyHash prefix)`,
+        message: `scope '${scopeRaw}' requires an credential (keyHash prefix)`,
       });
     }
     if (scopeRaw === 'pair' && !targetModel) {
@@ -654,42 +654,42 @@ export function createServer(
     const scope = scopeRaw as TripScope;
     const result = cbManager.resetByScope(scope, {
       modelId: targetModel,
-      keyHashPrefix: account,
+      keyHashPrefix: credential,
       providerId: targetModel ? registry.getModel(targetModel)?.provider : undefined,
     });
-    return { status: 'ok', scope, model: targetModel, account, ...result };
+    return { status: 'ok', scope, model: targetModel, credential, ...result };
   });
 
   // 1D. Manually trip a circuit breaker (admin takes a model, one credential,
   // or one (model, credential) pair out of rotation from the console).
   // Legacy body {model, reason?, cooldownMs?} is scope 'model' = today's trip.
   app.post('/api/admin/health/circuit-breakers/trip', async (req, reply) => {
-    const query = req.query as { model?: string; account?: string; scope?: string };
+    const query = req.query as { model?: string; credential?: string; scope?: string };
     const body = (req.body || {}) as {
       model?: string;
       reason?: string;
       cooldownMs?: number;
       scope?: string;
-      account?: string;
+      credential?: string;
     };
     const targetModel = query?.model || body?.model;
-    const account = query?.account || body?.account;
+    const credential = query?.credential || body?.credential;
     const scopeRaw = body?.scope || query?.scope || 'model';
     const cbManager = registry.getCircuitBreakerManager();
 
-    if (scopeRaw !== 'model' && scopeRaw !== 'account' && scopeRaw !== 'pair') {
+    if (scopeRaw !== 'model' && scopeRaw !== 'credential' && scopeRaw !== 'pair') {
       return reply.status(400).send({
         status: 'error',
-        message: `Unknown scope '${scopeRaw}' (expected 'model', 'account' or 'pair')`,
+        message: `Unknown scope '${scopeRaw}' (expected 'model', 'credential' or 'pair')`,
       });
     }
     if (scopeRaw === 'model' && !targetModel) {
       return reply.status(400).send({ status: 'error', message: 'Model id is required (?model= or body.model)' });
     }
-    if (scopeRaw !== 'model' && !account) {
+    if (scopeRaw !== 'model' && !credential) {
       return reply.status(400).send({
         status: 'error',
-        message: `scope '${scopeRaw}' requires an account (keyHash prefix)`,
+        message: `scope '${scopeRaw}' requires an credential (keyHash prefix)`,
       });
     }
     if (scopeRaw === 'pair' && !targetModel) {
@@ -703,32 +703,32 @@ export function createServer(
       scope,
       {
         modelId: targetModel,
-        keyHashPrefix: account,
+        keyHashPrefix: credential,
         providerId: targetModel ? registry.getModel(targetModel)?.provider : undefined,
       },
       { reason: body.reason, cooldownMs: typeof body.cooldownMs === 'number' ? body.cooldownMs : undefined }
     );
     if (result.affected === 0) {
-      return reply.status(400).send({ status: 'error', scope, model: targetModel, account, message: result.message });
+      return reply.status(400).send({ status: 'error', scope, model: targetModel, credential, message: result.message });
     }
-    return { status: 'ok', scope, model: targetModel, account, ...result };
+    return { status: 'ok', scope, model: targetModel, credential, ...result };
   });
 
-  // 1E. Clear an account's SUSPECT flag. The flag is set
+  // 1E. Clear an credential's SUSPECT flag. The flag is set
   // by a confirmed-bad credential and never decays on its own; the console's
   // reconnect/Push paths clear it implicitly, this is the explicit admin door.
-  app.post('/api/admin/health/suspect-accounts/clear', async (req, reply) => {
-    const query = req.query as { provider?: string; account?: string };
-    const body = (req.body || {}) as { provider?: string; account?: string };
+  app.post('/api/admin/health/suspect-credentials/clear', async (req, reply) => {
+    const query = req.query as { provider?: string; credential?: string };
+    const body = (req.body || {}) as { provider?: string; credential?: string };
     const providerId = body.provider || query.provider;
-    const account = body.account || query.account;
-    if (!providerId || !account) {
+    const credential = body.credential || query.credential;
+    if (!providerId || !credential) {
       return reply
         .status(400)
-        .send({ status: 'error', message: 'Both provider and account (keyHash prefix) are required' });
+        .send({ status: 'error', message: 'Both provider and credential (keyHash prefix) are required' });
     }
-    const cleared = registry.getCircuitBreakerManager().getAccountStateStore().clear(providerId, account);
-    return { status: 'ok', provider: providerId, account, cleared };
+    const cleared = registry.getCircuitBreakerManager().getCredentialStateStore().clear(providerId, credential);
+    return { status: 'ok', provider: providerId, credential, cleared };
   });
 
   // 2. OpenAI-compatible Models list

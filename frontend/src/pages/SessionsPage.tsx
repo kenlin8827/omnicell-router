@@ -595,10 +595,10 @@ export const SessionsPage: React.FC = () => {
                   </td>
                   <td style={{ padding: '10px 14px', fontWeight: 600 }}>
                     <PinnedModelCell model={s.pinnedModel} />
-                    {/* Account affinity (display-safe keyHash). */}
+                    {/* Credential affinity (display-safe keyHash). */}
                     {s.boundKeyHashPrefix && (
                       <span
-                        title={t('sessions.boundAccountTip', {
+                        title={t('sessions.boundCredentialTip', {
                           prefix: s.boundKeyHashPrefix,
                           time: s.boundAt ? new Date(s.boundAt).toLocaleString() : '—',
                         })}

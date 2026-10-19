@@ -108,13 +108,13 @@ describe('B4 standalone one-shot import', () => {
     // auth.json can never be a sink), asserted by the bound/doneAt checks above.
   });
 
-  it('idempotent across rebinds: no duplicate accounts, marker preserved', async () => {
+  it('idempotent across rebinds: no duplicate credentials, marker preserved', async () => {
     const paths = sandboxPaths();
     fs.writeFileSync(paths.authJsonPath, JSON.stringify({ anthropic: { type: 'api', key: 'sk-idempotent' } }));
     await bindCredentialStore({ paths, ...noOpencode });
     const first = readCredentialStoreState(paths)!;
-    const accounts1 = readCredentialsFile(paths).providers.anthropic as unknown[];
-    expect(accounts1).toHaveLength(1);
+    const credentials1 = readCredentialsFile(paths).providers.anthropic as unknown[];
+    expect(credentials1).toHaveLength(1);
 
     await new Promise((r) => setTimeout(r, 5)); // doneAt clock moves (marker must NOT rerun)
     const second = await bindCredentialStore({ paths, ...noOpencode, now: () => 9000 });
@@ -124,7 +124,7 @@ describe('B4 standalone one-shot import', () => {
     expect(state2.standaloneImport?.doneAt).toBe(first.standaloneImport!.doneAt); // original marker preserved
   });
 
-  it('keyHash dedup against existing local accounts', async () => {
+  it('keyHash dedup against existing local credentials', async () => {
     const paths = sandboxPaths();
     fs.mkdirSync(paths.ocrHome, { recursive: true });
     fs.writeFileSync(
@@ -132,7 +132,7 @@ describe('B4 standalone one-shot import', () => {
       JSON.stringify({
         version: 1,
         providers: {
-          anthropic: [{ accountId: 'pre-existing', key: 'sk-already-local', timeCreated: 1, timeUpdated: 1, active: true }],
+          anthropic: [{ credentialId: 'pre-existing', key: 'sk-already-local', timeCreated: 1, timeUpdated: 1, active: true }],
         },
       })
     );
@@ -194,7 +194,7 @@ describe('B4 standalone one-shot import', () => {
     expect(malformed.map((e) => e.provider).sort()).toEqual(['broken', 'weird']);
     expect(readCredentialStoreState(paths)?.standaloneImport).toBeUndefined(); // marker withheld
 
-    // next boot: rerun — anthropic dedups (no duplicate account), still no
+    // next boot: rerun — anthropic dedups (no duplicate credential), still no
     // marker while the malformed entries remain in auth.json
     const { resetCredentialStoreForTests, getCredentialStore } = await import('../src/opencode/credentials/factory.js');
     resetCredentialStoreForTests(paths, async () => null, undefined, { env: {}, now: () => 8000 });

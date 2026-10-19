@@ -42,12 +42,12 @@ export class UpstreamError extends Error {
 }
 
 /**
- * 429 wording that means "this ACCOUNT burned its
+ * 429 wording that means "this credential burned its
  * budget" instead of "this MODEL/KEY hit its RPM window". Only consulted when
  * the diagnosis is attributable to one credential; anything goes
  * `pair` (under-cool rather than over-cool).
  */
-const ACCOUNT_LIMIT_MARKERS = [
+const CREDENTIAL_LIMIT_MARKERS = [
   'daily limit',
   'weekly limit',
   'monthly limit',
@@ -92,12 +92,12 @@ export class ErrorClassifier {
     const usedAttribution: string | undefined =
       typeof error?.usedCredentialKeyHashPrefix === 'string' ? error.usedCredentialKeyHashPrefix : undefined;
     // Blast radius only travels with attribution (`cp-failfast`: silently
-    // scoping a chain-less trip would cool accounts nobody asked about).
-    const scoped = (tripScope: TripScope, accountSuspect = false): Partial<ErrorDiagnosis> =>
+    // scoping a chain-less trip would cool credentials nobody asked about).
+    const scoped = (tripScope: TripScope, credentialSuspect = false): Partial<ErrorDiagnosis> =>
       usedAttribution === undefined
         ? {}
-        : accountSuspect
-          ? { tripScope, accountSuspect: true }
+        : credentialSuspect
+          ? { tripScope, credentialSuspect: true }
           : { tripScope };
 
     // Helper: checks if this failure cause is whitelisted for in-place retry
@@ -160,7 +160,7 @@ export class ErrorClassifier {
       combinedText.includes('out_of_credits') ||
       combinedText.includes('has exceeded its quota') ||
       combinedText.includes('payment_required') ||
-      combinedText.includes('account_deactivated') ||
+      combinedText.includes('credential_deactivated') ||
       combinedText.includes('insufficient balance') ||
       combinedText.includes('insufficient credit') ||
       combinedText.includes('arrears') ||
@@ -168,7 +168,7 @@ export class ErrorClassifier {
       // includes below as match data only — the classifier's combined text is
       // lowercased and CJK passes through unchanged). Deliberately broad: any
       // CN upstream error naming "quota/credit" or the rolling-session cap in
-      // its failure text is a ceiling burn for THIS account, and QUOTA routes
+      // its failure text is a ceiling burn for THIS credential, and QUOTA routes
       // to another model rather than hard-cooling on the same key.
       combinedText.includes('额度') ||
       combinedText.includes('会话频控');
@@ -189,9 +189,9 @@ export class ErrorClassifier {
         reason: `Quota or balance exhausted for model '${modelId}' (Provider: ${provider})`,
         reasonCode: 'breaker.quota',
         reasonParams: { model: modelId, provider },
-        // Account-wide burn: every model this credential can reach is out of
+        // Credential-wide burn: every model this credential can reach is out of
         // budget. No SUSPECT mark — quota resets, a dead key does not.
-        ...scoped('account'),
+        ...scoped('credential'),
         rawError: error,
       };
     }
@@ -221,9 +221,9 @@ export class ErrorClassifier {
         reason: `Invalid API key or unauthorized for model '${modelId}' (Provider: ${provider})`,
         reasonCode: 'breaker.auth',
         reasonParams: { model: modelId, provider },
-        // A rejected key is administrative, not a cooldown: the account goes
+        // A rejected key is administrative, not a cooldown: the credential goes
         // SUSPECT (never auto-returns) and every model it can reach is out.
-        ...scoped('account', true),
+        ...scoped('credential', true),
         rawError: error,
       };
     }
@@ -262,10 +262,10 @@ export class ErrorClassifier {
       // without Retry-After stays a soft statistical failure. shouldTripBreaker
       // stays unconditional: every 429 counts (countedness has no toggle).
       const hardTrip = Boolean(retryAfterSeconds && !isShortBurst);
-      // "per day / weekly limit / usage allocation" wording = the ACCOUNT's
-      // budget, not this model's RPM window -> account. Plain 429/RPM/TPM stays
+      // "per day / weekly limit / usage allocation" wording = the credential's
+      // budget, not this model's RPM window -> credential. Plain 429/RPM/TPM stays
       // pair; uncertain stays pair (Decision 6: under-cool over over-cool).
-      const isAccountLimit = ACCOUNT_LIMIT_MARKERS.some((m) => combinedText.includes(m));
+      const isCredentialLimit = CREDENTIAL_LIMIT_MARKERS.some((m) => combinedText.includes(m));
 
       return {
         category: 'RATE_LIMITED',
@@ -280,7 +280,7 @@ export class ErrorClassifier {
         reason: `Rate limit (429) on model '${modelId}' (Retry-After: ${retryAfterSeconds ?? 'unknown'}s, InPlace: ${inPlaceAllowed}, HardTrip: ${hardTrip})`,
         reasonCode: 'breaker.rate_limit',
         reasonParams: { model: modelId, retry_after: retryAfterSeconds ?? 'unknown' },
-        ...scoped(isAccountLimit ? 'account' : 'pair'),
+        ...scoped(isCredentialLimit ? 'credential' : 'pair'),
         rawError: error,
       };
     }

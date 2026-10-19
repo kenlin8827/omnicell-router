@@ -117,7 +117,7 @@ export interface BreakerInfo {
  * are materialized by the backend sanitizer on config load. */
 
 /** Blast-radius override for one trip rule ('auto' = keep the diagnosed scope). */
-export type BreakerScopeOverride = 'auto' | 'pair' | 'account' | 'model';
+export type BreakerScopeOverride = 'auto' | 'pair' | 'credential' | 'model';
 
 /** HALF_OPEN re-trip policy (spec rule #9). */
 export type OnCanaryFailureMode = 'backoff' | 'initial' | 'close';
@@ -267,7 +267,7 @@ export interface CircuitBreakerConfig {
     enabled?: boolean;
     intervalMs?: number;
   };
-  accountAffinity?: {
+  credentialAffinity?: {
     cacheTtlMs?: number;
   };
   /** Per-rule toggles/params; absent = today's behavior byte-for-byte. */
@@ -280,10 +280,10 @@ export interface CircuitBreakerConfig {
 
 /**
  * Manual trip/reset granularity — mirrors backend TripScope.
- * 'model' is the legacy whole-model breaker; 'account' is one credential across the
+ * 'model' is the legacy whole-model breaker; 'credential' is one credential across the
  * models it can reach; 'pair' is one (model, credential) pair.
  */
-export type BreakerTripScope = 'model' | 'account' | 'pair';
+export type BreakerTripScope = 'model' | 'credential' | 'pair';
 
 export interface BreakerScopeResponse {
   status: string;
@@ -764,7 +764,7 @@ export interface ComboTestResult {
   latencyMs?: number;
   failoverOccurred?: boolean;
   failoverPath?: string[];
-  servedAccountPrefix?: string;
+  servedCredentialPrefix?: string;
   httpStatus?: number;
   error?: string;
 }
@@ -1403,40 +1403,40 @@ export const api = {
   },
 
   /**
-   * Scope-aware trip for 'account' / 'pair'. Deliberately NOT
+   * Scope-aware trip for 'credential' / 'pair'. Deliberately NOT
    * routed through tripBreaker(): the legacy 'model' scope keeps its exact
    * body and its legacy non-throwing reply handling. Unlike the model scope,
-   * an account/pair trip with nothing to take down answers 400 — thrown here
+   * an credential/pair trip with nothing to take down answers 400 — thrown here
    * so the console reports it as a failure instead of a fake success.
    */
   async tripBreakersScoped(
     scope: Exclude<BreakerTripScope, 'model'>,
-    target: { model?: string; account?: string; reason?: string; cooldownMs?: number }
+    target: { model?: string; credential?: string; reason?: string; cooldownMs?: number }
   ): Promise<BreakerScopeResponse> {
     return postBreakerScope('/api/admin/health/circuit-breakers/trip', { scope, ...target });
   },
 
   /**
-   * Account/pair reset. Resetting a credential never lifts its
-   * SUSPECT flag (administrative state — see clearSuspectAccount below).
+   * Credential/pair reset. Resetting a credential never lifts its
+   * SUSPECT flag (administrative state — see clearSuspectCredential below).
    */
   async resetBreakersScoped(
     scope: Exclude<BreakerTripScope, 'model'>,
-    target: { model?: string; account?: string }
+    target: { model?: string; credential?: string }
   ): Promise<BreakerScopeResponse> {
     return postBreakerScope('/api/admin/health/circuit-breakers/reset', { scope, ...target });
   },
 
   /**
    * Explicit admin door for a SUSPECT credential (body
-   * {provider, account}; `account` is the keyHash prefix). `cleared:false`
+   * {provider, credential}; `credential` is the keyHash prefix). `cleared:false`
    * means the flag was already absent — a no-op, not an error.
    */
-  async clearSuspectAccount(providerId: string, account: string): Promise<SuspectAccountClearResponse> {
-    const res = await fetch('/api/admin/health/suspect-accounts/clear', {
+  async clearSuspectCredential(providerId: string, credential: string): Promise<SuspectCredentialClearResponse> {
+    const res = await fetch('/api/admin/health/suspect-credentials/clear', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider: providerId, account }),
+      body: JSON.stringify({ provider: providerId, credential }),
     });
     if (!res.ok) {
       const e: any = await res.json().catch(() => ({}));
@@ -1766,11 +1766,11 @@ export const api = {
   },
 
   /**
-   * Arm / clear ONE credential's outbound caps (config `accounts:` overlay
+   * Arm / clear ONE credential's outbound caps (config `credentials:` overlay
    * write — the credential itself is not touched). `limits: []` or `null`
    * clears the entry. Hot: the gateway reloads the rule table on save.
    */
-  async setAccountLimits(payload: {
+  async setCredentialLimits(payload: {
     provider: string;
     keyHashPrefix: string;
     limits: RateLimitRule[] | null;
@@ -1781,7 +1781,7 @@ export const api = {
     windows?: RateLimitSnapshotEntry[];
     error?: string;
   }> {
-    const res = await fetch('/api/admin/accounts/limits', {
+    const res = await fetch('/api/admin/credentials/limits', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -2183,7 +2183,7 @@ export interface TestProviderResult {
   error?: string;
   /** Provider-level rotation: candidates tried, in order (only when > 1). */
   triedModels?: string[];
-  account?: AccountMeta;
+  credential?: CredentialMeta;
   provider?: string;
 }
 
@@ -2230,7 +2230,7 @@ export type CredentialExcludedReasonCode =
   | 'bind_failed';
 
 export interface CredentialStoreCapabilities {
-  multiAccount: boolean;
+  multiCredential: boolean;
   activate: boolean;
   rename: boolean;
   oauth: boolean;
@@ -2239,8 +2239,8 @@ export interface CredentialStoreCapabilities {
   integrationScoped: boolean;
 }
 
-/** Masked, management-safe account metadata — never raw key material. */
-export interface AccountMeta {
+/** Masked, management-safe credential metadata — never raw key material. */
+export interface CredentialMeta {
   id: string;
   providerId: string;
   label?: string;
@@ -2251,22 +2251,22 @@ export interface AccountMeta {
   maskedKey?: string;
 }
 
-export interface AccountOverview {
+export interface CredentialOverview {
   providerId: string;
   total: number;
   routable: number;
-  activeAccountId: string | null;
+  activeCredentialId: string | null;
   /** Per-provider masked detail joined in by the B2 console handler. */
-  accounts?: AccountHealth[];
+  credentials?: CredentialHealth[];
 }
 
 /**
- * The health overlay every console account list carries
- * (GET credential-store + all three per-account write routes answer the same
- * shape, mirrors backend `AccountHealth` in console.ts). Additive keys only:
- * masked `AccountMeta` fields ride through untouched.
+ * The health overlay every console credential list carries
+ * (GET credential-store + all three per-credential write routes answer the same
+ * shape, mirrors backend `CredentialHealth` in console.ts). Additive keys only:
+ * masked `CredentialMeta` fields ride through untouched.
  */
-export type AccountHealth = AccountMeta & {
+export type CredentialHealth = CredentialMeta & {
   /** Administrative auth-failure flag; survives breaker resets (Decision 6). */
   suspect: boolean;
   /**
@@ -2281,15 +2281,15 @@ export type AccountHealth = AccountMeta & {
   openPairs: number;
   /** Latest OPEN pair breaker's cooldown end (epoch ms) — only present when openPairs > 0. */
   cooldownUntilMs?: number;
-  /** Outbound rate-limit rules armed for THIS credential (config `accounts:` overlay). */
+  /** Outbound rate-limit rules armed for THIS credential (config `credentials:` overlay). */
   limits?: RateLimitRule[];
   /**
-   * Quota tracking overlay — present ONLY when the account's
+   * Quota tracking overlay — present ONLY when the credential's
    * provider is COVERED (built-in table / code adapter / config entry).
    * Absence means "not covered", deliberately distinct from the `unverified`
-   * badge ("covered, nothing probed yet"). Mirrors backend `AccountQuotaView`.
+   * badge ("covered, nothing probed yet"). Mirrors backend `CredentialQuotaView`.
    */
-  quota?: AccountQuotaView;
+  quota?: CredentialQuotaView;
 };
 
 /** Four-state quota badge — mirrors backend `QuotaBadgeState`. */
@@ -2325,9 +2325,9 @@ export interface LastProbeCapture {
   body?: unknown;
 }
 
-/** Per-account quota view riding the AccountHealth overlay — mirrors backend
- *  `AccountQuotaView`. Display-only: nothing here gates routing. */
-export interface AccountQuotaView {
+/** Per-credential quota view riding the CredentialHealth overlay — mirrors backend
+ *  `CredentialQuotaView`. Display-only: nothing here gates routing. */
+export interface CredentialQuotaView {
   badge: QuotaBadgeState;
   source?: QuotaSource;
   plan?: string;
@@ -2359,7 +2359,7 @@ export interface QuotaPairRow {
   keyHashPrefix: string;
   label?: string;
   covered: boolean;
-  quota?: AccountQuotaView;
+  quota?: CredentialQuotaView;
   usage?: QuotaPairUsage;
 }
 
@@ -2388,7 +2388,7 @@ export interface QuotaEventRow {
   reasonCode: 'quota-exhausted';
 }
 
-/** GET /api/admin/quota response — mirrors backend `AccountQuotaView` family. */
+/** GET /api/admin/quota response — mirrors backend `CredentialQuotaView` family. */
 export interface QuotaOverview {
   status: string;
   enabled: boolean;
@@ -2401,7 +2401,7 @@ export interface QuotaOverview {
 /**
  * One live sliding-window constraint — mirrors backend `RateLimitSnapshotEntry`
  * (GET /api/admin/ratelimit). `subject` is the engine identity:
- * `apikey:<id>` or `account:<provider>:<keyHashPrefix>`.
+ * `apikey:<id>` or `credential:<provider>:<keyHashPrefix>`.
  */
 export interface RateLimitSnapshotEntry {
   subject: string;
@@ -2459,13 +2459,13 @@ export interface RateLimitEvent {
 
 /**
  * ReasonCodes of every credential-store write surface (console.ts
- * `capabilityRefusalBody` / `accountNotFoundBody` / `mapStoreWriteFailure`,
- * shared by the per-account routes and the provider connect/key/create ones).
+ * `capabilityRefusalBody` / `credentialNotFoundBody` / `mapStoreWriteFailure`,
+ * shared by the per-credential routes and the provider connect/key/create ones).
  * `schema_mismatch` is deliberately absent: it exists only as a backend
  * StoreUnreadableError *reason*, and reaches the wire as `store_unreadable`.
  */
 export type CredentialWriteReasonCode =
-  | 'account_not_found'
+  | 'credential_not_found'
   | 'capability_unsupported'
   | 'integration_unmatched'
   | 'invalid_label'
@@ -2477,33 +2477,33 @@ export type CredentialWriteReasonCode =
 
 /**
  * ReasonCodes of the reveal route (console.ts
- * `accountReveal`). The route ALSO surfaces the write table's codes through the
- * shared failure mapper (account_not_found / capability_unsupported /
+ * `credentialReveal`). The route ALSO surfaces the write table's codes through the
+ * shared failure mapper (credential_not_found / capability_unsupported /
  * store_unreadable) — these three are its own pre-login vocabulary.
  */
 export type CredentialRevealReasonCode = 'webauth_required' | 'invalid_password' | 'too_many_attempts';
 
-/** 200 reply of activate / rename — `accounts` is the refreshed store truth. */
-export interface AccountWriteResponse {
+/** 200 reply of activate / rename — `credentials` is the refreshed store truth. */
+export interface CredentialWriteResponse {
   status: string;
   success: boolean;
-  account: AccountHealth;
-  accounts: AccountHealth[];
+  credential: CredentialHealth;
+  credentials: CredentialHealth[];
 }
 
 /** 200 reply of disconnect (Decision 8: the credential itself is gone). */
-export interface AccountDisconnectResponse {
+export interface CredentialDisconnectResponse {
   status: string;
   success: boolean;
   disconnected: string;
-  accounts: AccountHealth[];
+  credentials: CredentialHealth[];
 }
 
-/** POST /api/admin/health/suspect-accounts/clear — `cleared:false` = nothing to lift. */
-export interface SuspectAccountClearResponse {
+/** POST /api/admin/health/suspect-credentials/clear — `cleared:false` = nothing to lift. */
+export interface SuspectCredentialClearResponse {
   status: string;
   provider: string;
-  account: string;
+  credential: string;
   cleared: boolean;
 }
 
@@ -2520,7 +2520,7 @@ export interface CredentialProbeResult {
   state: 'ready' | 'empty' | 'unreadable';
   degradedCode?: CredentialStoreDegradedCode;
   detail?: string;
-  accountCount: number;
+  credentialCount: number;
 }
 
 export interface CredentialExcluded {
@@ -2536,7 +2536,7 @@ export interface CredentialStoreStatus {
   degradedCode: CredentialStoreDegradedCode | null;
   evidence: CredentialVersionEvidence;
   excluded: CredentialExcluded[];
-  accounts: AccountOverview[];
+  credentials: CredentialOverview[];
   probeResult: CredentialProbeResult | null;
   credentialFile: string;
   boundAt: number;
@@ -2624,9 +2624,9 @@ export interface CredentialSyncRunResponse {
   write?: CredentialSyncOutcome;
 }
 
-/** One per-account purge failure in the honest DELETE reply. */
+/** One per-credential purge failure in the honest DELETE reply. */
 export interface ProviderPurgeFailure {
-  accountId: string;
+  credentialId: string;
   reason: string;
 }
 
@@ -2675,9 +2675,9 @@ function ocJson<T>(res: Response): Promise<T> {
   return res.json();
 }
 
-/** Per-account write path (activate / rename / disconnect share it). */
-function accountPath(providerId: string, accountId: string): string {
-  return `/api/admin/opencode/providers/${encodeURIComponent(providerId)}/accounts/${encodeURIComponent(accountId)}`;
+/** Per-credential write path (activate / rename / disconnect share it). */
+function credentialPath(providerId: string, credentialId: string): string {
+  return `/api/admin/opencode/providers/${encodeURIComponent(providerId)}/credentials/${encodeURIComponent(credentialId)}`;
 }
 
 export const opencodeApi = {
@@ -2690,7 +2690,7 @@ export const opencodeApi = {
     return ocJson(await fetch('/api/admin/opencode/providers'));
   },
 
-  /** Bound credential-store status (kind, capabilities, exclusions, masked accounts). */
+  /** Bound credential-store status (kind, capabilities, exclusions, masked credentials). */
   async getCredentialStore(): Promise<CredentialStoreStatusResponse> {
     return ocJson(await fetch('/api/admin/credential-store'));
   },
@@ -2740,26 +2740,26 @@ export const opencodeApi = {
     );
   },
 
-  /** Make one account the active credential of its provider. */
-  async activateProviderAccount(
+  /** Make one credential the active credential of its provider. */
+  async activateProviderCredential(
     providerId: string,
-    accountId: string
-  ): Promise<AccountWriteResponse> {
-    return ocJson(await fetch(accountPath(providerId, accountId) + '/activate', { method: 'POST' }));
+    credentialId: string
+  ): Promise<CredentialWriteResponse> {
+    return ocJson(await fetch(credentialPath(providerId, credentialId) + '/activate', { method: 'POST' }));
   },
 
   /**
    * Take one credential out of routing / put it back. The flag lives in OCR's own
-   * account state, so unlike the store writes these work on a read-only binding
+   * credential state, so unlike the store writes these work on a read-only binding
    * too. `reason` is an operator note (max 200 chars), display only.
    */
-  async disableProviderAccount(
+  async disableProviderCredential(
     providerId: string,
-    accountId: string,
+    credentialId: string,
     reason?: string
-  ): Promise<AccountWriteResponse> {
+  ): Promise<CredentialWriteResponse> {
     return ocJson(
-      await fetch(accountPath(providerId, accountId) + '/disable', {
+      await fetch(credentialPath(providerId, credentialId) + '/disable', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(reason ? { reason } : {}),
@@ -2768,18 +2768,18 @@ export const opencodeApi = {
   },
 
   /** Lift the takedown (the only path that does — cooldown never will). */
-  async enableProviderAccount(providerId: string, accountId: string): Promise<AccountWriteResponse> {
-    return ocJson(await fetch(accountPath(providerId, accountId) + '/enable', { method: 'POST' }));
+  async enableProviderCredential(providerId: string, credentialId: string): Promise<CredentialWriteResponse> {
+    return ocJson(await fetch(credentialPath(providerId, credentialId) + '/enable', { method: 'POST' }));
   },
 
-  /** Set an account's user-editable label (backend trims, max 80). */
-  async renameProviderAccount(
+  /** Set an credential's user-editable label (backend trims, max 80). */
+  async renameProviderCredential(
     providerId: string,
-    accountId: string,
+    credentialId: string,
     label: string
-  ): Promise<AccountWriteResponse> {
+  ): Promise<CredentialWriteResponse> {
     return ocJson(
-      await fetch(accountPath(providerId, accountId), {
+      await fetch(credentialPath(providerId, credentialId), {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ label }),
@@ -2788,15 +2788,15 @@ export const opencodeApi = {
   },
 
   /**
-   * Disconnect one account: the store holds the
+   * Disconnect one credential: the store holds the
    * only copy of the key, so the caller must have run the double confirmation
    * (see KeysPage's Decision 8 arbiter) before calling this.
    */
-  async disconnectProviderAccount(
+  async disconnectProviderCredential(
     providerId: string,
-    accountId: string
-  ): Promise<AccountDisconnectResponse> {
-    return ocJson(await fetch(accountPath(providerId, accountId), { method: 'DELETE' }));
+    credentialId: string
+  ): Promise<CredentialDisconnectResponse> {
+    return ocJson(await fetch(credentialPath(providerId, credentialId), { method: 'DELETE' }));
   },
 
   /**
@@ -2807,11 +2807,11 @@ export const opencodeApi = {
    */
   async revealProviderKey(
     providerId: string,
-    accountId: string,
+    credentialId: string,
     password: string
   ): Promise<{ status: string; key: string }> {
     return ocJson(
-      await fetch(accountPath(providerId, accountId) + '/reveal', {
+      await fetch(credentialPath(providerId, credentialId) + '/reveal', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password }),
@@ -2957,11 +2957,11 @@ export const opencodeApi = {
 
   /**
    * Connect hands a key to the BOUND store. `deduped:true` = the store already
-   * held this exact key for the provider, so NO second account was created
-   * (idempotent success — `account` names the row that survived).
+   * held this exact key for the provider, so NO second credential was created
+   * (idempotent success — `credential` names the row that survived).
    * `headPreserved` = the sink auto-activated the new key and this surface handed
    * the chain head back to the credential that was serving (opencode's `active`
-   * is ALSO the key its own CLI uses, so adding an account must not repoint it).
+   * is ALSO the key its own CLI uses, so adding an credential must not repoint it).
    * The reply mirrors backend console.ts `connect` inline.
    */
   async connectProvider(
@@ -2972,8 +2972,8 @@ export const opencodeApi = {
     status: string;
     success: boolean;
     deduped?: boolean;
-    account?: AccountMeta;
-    headPreserved?: AccountMeta;
+    credential?: CredentialMeta;
+    headPreserved?: CredentialMeta;
     message?: string;
   }> {
     return ocJson(
@@ -2985,10 +2985,10 @@ export const opencodeApi = {
     );
   },
 
-  /** One-shot upstream connectivity probe — optional overrides enable test-before-save; `accountId` pins the probe to ONE credential row (per-account test). */
+  /** One-shot upstream connectivity probe — optional overrides enable test-before-save; `credentialId` pins the probe to ONE credential row (per-credential test). */
   async testProvider(
     id: string,
-    payload?: { modelId?: string; apiKey?: string; baseURL?: string; accountId?: string }
+    payload?: { modelId?: string; apiKey?: string; baseURL?: string; credentialId?: string }
   ): Promise<TestProviderResult> {
     return ocJson(
       await fetch(`/api/admin/opencode/providers/${encodeURIComponent(id)}/test`, {
@@ -3000,7 +3000,7 @@ export const opencodeApi = {
   },
 
   /**
-   * PurgeAuth=1 deletes the config node AND loops per-account disconnects
+   * PurgeAuth=1 deletes the config node AND loops per-credential disconnects
    * through the bound store; the reply carries the honest `purge` detail.
    */
   async deleteProvider(

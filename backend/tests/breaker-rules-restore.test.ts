@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { AccountStateStore } from '../src/resilience/account-state.js';
+import { CredentialStateStore } from '../src/resilience/credential-state.js';
 import { BreakerStateStore } from '../src/resilience/breaker-state.js';
 import { CircuitBreakerManager } from '../src/resilience/circuit-breaker-manager.js';
 import type { CredentialPaths } from '../src/opencode/credentials/paths.js';
@@ -90,8 +90,8 @@ function bootedWith(tag: string, file: BreakerStateFile, rules?: BreakerRulesCon
   fs.mkdirSync(paths.ocrHome, { recursive: true });
   const store = new BreakerStateStore({ paths, debounceMs: 3_600_000 });
   fs.writeFileSync(store.filePath, JSON.stringify(file), 'utf8');
-  const accountState = new AccountStateStore({ paths, now: clock.now });
-  const manager = new CircuitBreakerManager({ ...BASE, ...(rules ? { rules } : {}) }, clock.now, accountState);
+  const credentialState = new CredentialStateStore({ paths, now: clock.now });
+  const manager = new CircuitBreakerManager({ ...BASE, ...(rules ? { rules } : {}) }, clock.now, credentialState);
   manager.registerModel(model(X));
   manager.attachStateStore(store);
   return { manager, store, clock };
@@ -242,7 +242,7 @@ describe('legacy record files without the new fields sanitize to 0/undefined', (
     expect(loadedRec.outcomeWindow).toEqual([]);
     expect(loadedRec.reasonCode).toBeUndefined(); // closed vocabulary at the trust boundary
 
-    const manager = new CircuitBreakerManager(BASE, clock.now, new AccountStateStore({ paths, now: clock.now }));
+    const manager = new CircuitBreakerManager(BASE, clock.now, new CredentialStateStore({ paths, now: clock.now }));
     manager.registerModel(model(X));
     manager.attachStateStore(store);
     expect(manager.restoreState()).toEqual({ models: 1, pairs: 0 });

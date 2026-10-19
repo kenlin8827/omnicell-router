@@ -49,7 +49,7 @@ function readLkg(paths: CredentialPaths): Record<string, unknown> | null {
 }
 
 const OCR_CAPS = {
-  multiAccount: true,
+  multiCredential: true,
   activate: true,
   rename: true,
   oauth: false,

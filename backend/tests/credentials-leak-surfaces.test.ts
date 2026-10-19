@@ -18,7 +18,7 @@ import { WriteFailedError, keyHashPrefix } from '../src/opencode/credentials/typ
 /**
  * Leak-surface sweep — every serialization boundary a WRITE
  * path touches, asserted against a seeded raw key:
- *   - AccountMeta / StoreStatus / provider-list merge (masked-only contract,
+ *   - CredentialMeta / StoreStatus / provider-list merge (masked-only contract,
  *     Decision 1 risk limb: no management route ever receives raw secrets),
  *   - the opencode v2 service's error-response ECHO (an upstream that repeats the
  *     submitted key in its 500 body must not get that key re-served through
@@ -122,17 +122,17 @@ afterEach(() => {
 });
 
 describe('masked-surface contract (Decision 1 risk limb)', () => {
-  it('OcrStore: maskSecret on EVERY AccountMeta surface — list, connect, activate, rename, resolveKey, probe', async () => {
+  it('OcrStore: maskSecret on EVERY CredentialMeta surface — list, connect, activate, rename, resolveKey, probe', async () => {
     const paths = sandboxPaths();
     const store = new OcrStore({ paths, now: () => 1 });
     const k1 = 'sk-ocr-surface-AAA-001122';
     const k2 = 'sk-ocr-surface-BBB-334455';
     const first = await store.connectKey('anthropic', k1);
     await store.connectKey('anthropic', k2);
-    const rows = store.listAccounts('anthropic');
+    const rows = store.listCredentials('anthropic');
     const activated = await store.activate(rows[1]!.id);
     const renamed = await store.rename(rows[0]!.id, 'laptop');
-    const resolved = store.resolveKey('anthropic')!.account;
+    const resolved = store.resolveKey('anthropic')!.credential;
 
     // maskSecret applied exactly, on every surface (not just "contains dots")
     expect(first.maskedKey).toBe(maskSecret(k1));
@@ -143,17 +143,17 @@ describe('masked-surface contract (Decision 1 risk limb)', () => {
     // no raw key material anywhere in ANY serialized management value
     const dumps = [
       JSON.stringify(store.probe()),
-      JSON.stringify(store.accountsOverview()),
-      JSON.stringify(store.listAccounts('anthropic')),
+      JSON.stringify(store.credentialsOverview()),
+      JSON.stringify(store.listCredentials('anthropic')),
       JSON.stringify([first, activated, renamed, resolved]),
-      JSON.stringify(store.listAccounts('missing')),
+      JSON.stringify(store.listCredentials('missing')),
     ];
     for (const d of dumps) {
       expect(d).not.toContain(k1);
       expect(d).not.toContain(k2);
     }
     // keyHashPrefix is display-safe: hash hex only, never derived from the
-    // key's literal prefix (Decision 5 — logs can name an account safely).
+    // key's literal prefix (Decision 5 — logs can name an credential safely).
     expect(renamed.keyHashPrefix).toMatch(/^[0-9a-f]{12}$/);
     expect(renamed.keyHashPrefix).toBe(keyHashPrefix(k1));
     expect(renamed.keyHashPrefix).not.toBe(k1.slice(0, 12));
@@ -176,7 +176,7 @@ describe('masked-surface contract (Decision 1 risk limb)', () => {
     // active=1 alone must NOT make the oauth row routable 
     expect(store.resolveKey('zen')).toBeNull();
     expect(store.resolveKeyChain('zen')).toEqual([]);
-    expect(store.listAccounts('zen')[0]).toMatchObject({ type: 'oauth', active: true, routable: false });
+    expect(store.listCredentials('zen')[0]).toMatchObject({ type: 'oauth', active: true, routable: false });
 
     const k = 'sk-v2-connect-meta-998877';
     const meta = await store.connectKey('anthropic', k);
@@ -197,8 +197,8 @@ describe('masked-surface contract (Decision 1 risk limb)', () => {
     resetCredentialStoreForTests(paths, async () => null, echoFetch().fetchImpl, { env: {}, now: () => 1 });
     const res = await app.inject({ method: 'GET', url: '/api/admin/credential-store' });
     expect(res.statusCode).toBe(200);
-    const anthropic = res.json().store.accounts.find((a: { providerId: string }) => a.providerId === 'anthropic');
-    expect(anthropic.accounts[0].maskedKey).toBe(maskSecret(k));
+    const anthropic = res.json().store.credentials.find((a: { providerId: string }) => a.providerId === 'anthropic');
+    expect(anthropic.credentials[0].maskedKey).toBe(maskSecret(k));
     expect(res.body).not.toContain(k);
   });
 
@@ -210,7 +210,7 @@ describe('masked-surface contract (Decision 1 risk limb)', () => {
     // parse error must describe the problem WITHOUT echoing the secret.
     fs.writeFileSync(
       path.join(paths.ocrHome, 'credentials.json'),
-      `{"version":1,"providers":{"anthropic":[{"accountId":"a1","key":"${k}"}]}`
+      `{"version":1,"providers":{"anthropic":[{"credentialId":"a1","key":"${k}"}]}`
     );
     resetCredentialStoreForTests(paths, async () => null, echoFetch().fetchImpl, { env: {}, now: () => 1 });
 

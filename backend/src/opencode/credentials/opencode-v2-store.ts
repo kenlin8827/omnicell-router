@@ -5,9 +5,9 @@ import type { OpenCodeServiceConfig } from '../connector.js';
 import { maskSecret, readJsonc } from '../user-config.js';
 import { CredentialPaths, defaultEnv, resolveDefaultPaths, serviceJsonCandidates } from './paths.js';
 import {
-  AccountMeta,
-  AccountNotFoundError,
-  AccountOverview,
+  CredentialMeta,
+  CredentialNotFoundError,
+  CredentialOverview,
   CapabilityUnsupportedError,
   CredentialStore,
   CredentialType,
@@ -337,7 +337,7 @@ function mapValue(raw: unknown): { type: CredentialType; key?: string } {
   return { type: 'unknown' };
 }
 
-function rowToMeta(row: OpencodeV2Row): AccountMeta {
+function rowToMeta(row: OpencodeV2Row): CredentialMeta {
   return {
     id: row.id,
     providerId: row.integrationId,
@@ -352,7 +352,7 @@ function rowToMeta(row: OpencodeV2Row): AccountMeta {
 function rowToRaw(row: OpencodeV2Row): RawCred {
   // routable rows always carry a key string.
   return {
-    accountId: row.id,
+    credentialId: row.id,
     providerId: row.integrationId,
     ...(row.label !== null ? { label: row.label } : {}),
     key: row.key ?? '',
@@ -423,7 +423,7 @@ export class OpencodeV2Store implements CredentialStore {
     this.writable = writable;
     this.kind = writable ? 'opencode-v2' : 'opencode-v2-readonly';
     this.capabilities = {
-      multiAccount: true,
+      multiCredential: true,
       activate: writable,
       rename: writable,
       oauth: false, // OAuth is excluded on every store
@@ -494,7 +494,7 @@ export class OpencodeV2Store implements CredentialStore {
           state: 'unreadable',
           degradedCode: 'db_unreadable',
           detail: e.message,
-          accountCount: 0,
+          credentialCount: 0,
         };
       }
       throw e;
@@ -506,10 +506,10 @@ export class OpencodeV2Store implements CredentialStore {
       // badge logic) must handle it separately, so it is a typed throw.
       throw new EmptyCredentialTableError(this.dbFile);
     }
-    return { ok: true, kind: this.kind, state: 'ready', accountCount: total };
+    return { ok: true, kind: this.kind, state: 'ready', credentialCount: total };
   }
 
-  listAccounts(providerId: string): AccountMeta[] {
+  listCredentials(providerId: string): CredentialMeta[] {
     return (this.currentView().get(providerId) ?? []).map(rowToMeta);
   }
 
@@ -520,7 +520,7 @@ export class OpencodeV2Store implements CredentialStore {
     const picked =
       rows.find((r) => r.active) ??
       (rows.length === 1 ? rows[0] : [...rows].sort((a, b) => (b.timeUpdated ?? 0) - (a.timeUpdated ?? 0))[0]);
-    return picked ? { key: picked.key ?? '', account: rowToMeta(picked) } : null;
+    return picked ? { key: picked.key ?? '', credential: rowToMeta(picked) } : null;
   }
 
   resolveKeyChain(providerId: string): RawCred[] {
@@ -536,16 +536,16 @@ export class OpencodeV2Store implements CredentialStore {
    * HTTP surface cannot export keys; the local db read can, which
    * is exactly why the route gating this is password-first.
    */
-  revealKey(accountId: string): string {
-    const row = this.findRow(accountId);
-    if (!row) throw new AccountNotFoundError(accountId);
+  revealKey(credentialId: string): string {
+    const row = this.findRow(credentialId);
+    if (!row) throw new CredentialNotFoundError(credentialId);
     if (!row.routable || !row.key) {
-      throw new CapabilityUnsupportedError('revealKey', `credential ${accountId} is type '${row.type}' — only api keys reveal`);
+      throw new CapabilityUnsupportedError('revealKey', `credential ${credentialId} is type '${row.type}' — only api keys reveal`);
     }
     return row.key;
   }
 
-  async connectKey(providerId: string, key: string, label?: string): Promise<AccountMeta> {
+  async connectKey(providerId: string, key: string, label?: string): Promise<CredentialMeta> {
     this.assertWritable('connectKey');
     if (!key) throw new Error('connectKey requires a non-empty key');
     const integrationId = await this.resolveIntegrationId(providerId);
@@ -587,25 +587,25 @@ export class OpencodeV2Store implements CredentialStore {
     };
   }
 
-  async activate(accountId: string): Promise<AccountMeta> {
+  async activate(credentialId: string): Promise<CredentialMeta> {
     this.assertWritable('activate');
-    await this.callService('activate', (cfg) => this.http(cfg, 'POST', API.activate(accountId)));
-    const known = this.findRow(accountId);
+    await this.callService('activate', (cfg) => this.http(cfg, 'POST', API.activate(credentialId)));
+    const known = this.findRow(credentialId);
     this.invalidate();
-    return known ? { ...rowToMeta(known), active: true } : { id: accountId, providerId: '(unknown)', type: 'api', active: true, routable: true };
+    return known ? { ...rowToMeta(known), active: true } : { id: credentialId, providerId: '(unknown)', type: 'api', active: true, routable: true };
   }
 
-  async rename(accountId: string, label: string): Promise<AccountMeta> {
+  async rename(credentialId: string, label: string): Promise<CredentialMeta> {
     this.assertWritable('rename');
-    await this.callService('rename', (cfg) => this.http(cfg, 'PATCH', API.rename(accountId), BODIES.rename(label)));
-    const known = this.findRow(accountId);
+    await this.callService('rename', (cfg) => this.http(cfg, 'PATCH', API.rename(credentialId), BODIES.rename(label)));
+    const known = this.findRow(credentialId);
     this.invalidate();
-    return known ? { ...rowToMeta(known), label: label || undefined } : { id: accountId, providerId: '(unknown)', type: 'api', active: false, routable: false };
+    return known ? { ...rowToMeta(known), label: label || undefined } : { id: credentialId, providerId: '(unknown)', type: 'api', active: false, routable: false };
   }
 
-  async disconnect(accountId: string): Promise<void> {
+  async disconnect(credentialId: string): Promise<void> {
     this.assertWritable('disconnect');
-    await this.callService('disconnect', (cfg) => this.http(cfg, 'DELETE', API.disconnect(accountId)));
+    await this.callService('disconnect', (cfg) => this.http(cfg, 'DELETE', API.disconnect(credentialId)));
     this.invalidate();
   }
 
@@ -613,7 +613,7 @@ export class OpencodeV2Store implements CredentialStore {
     throw new CapabilityUnsupportedError('beginOAuth', 'OAuth is excluded from every credential store');
   }
 
-  async completeOAuth(): Promise<AccountMeta> {
+  async completeOAuth(): Promise<CredentialMeta> {
     throw new CapabilityUnsupportedError('completeOAuth', 'OAuth is excluded from every credential store');
   }
 
@@ -624,14 +624,14 @@ export class OpencodeV2Store implements CredentialStore {
     this.integrations = null;
   }
 
-  accountsOverview(): AccountOverview[] {
-    const out: AccountOverview[] = [];
+  credentialsOverview(): CredentialOverview[] {
+    const out: CredentialOverview[] = [];
     for (const [providerId, rows] of this.currentView()) {
       out.push({
         providerId,
         total: rows.length,
         routable: rows.filter((r) => r.routable).length,
-        activeAccountId: rows.find((r) => r.active && r.routable)?.id ?? null,
+        activeCredentialId: rows.find((r) => r.active && r.routable)?.id ?? null,
       });
     }
     return out;
@@ -658,9 +658,9 @@ export class OpencodeV2Store implements CredentialStore {
     return (this.currentView().get(providerId) ?? []).filter((r) => r.routable);
   }
 
-  private findRow(accountId: string): OpencodeV2Row | null {
+  private findRow(credentialId: string): OpencodeV2Row | null {
     for (const rows of this.currentView().values()) {
-      const hit = rows.find((r) => r.id === accountId);
+      const hit = rows.find((r) => r.id === credentialId);
       if (hit) return hit;
     }
     return null;

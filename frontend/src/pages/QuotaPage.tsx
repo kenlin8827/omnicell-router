@@ -5,7 +5,7 @@ import {
   opencodeApi,
   type QuotaOverview,
   type QuotaPairRow,
-  type AccountQuotaView,
+  type CredentialQuotaView,
   type QuotaWindow,
   type LastProbeCapture,
 } from '../lib/api';
@@ -83,7 +83,7 @@ const StatChip: React.FC<{ text: string; tone?: 'warn' | 'info' }> = ({ text, to
   );
 };
 
-const BadgePill: React.FC<{ quota: AccountQuotaView; stateWord: (k: string) => string }> = ({ quota, stateWord }) => {
+const BadgePill: React.FC<{ quota: CredentialQuotaView; stateWord: (k: string) => string }> = ({ quota, stateWord }) => {
   const color = STATE_COLORS[quota.badge] ?? 'var(--text-dim)';
   return (
     <span
@@ -245,7 +245,7 @@ export const QuotaPage: React.FC = () => {
     let rows = (data?.pairs ?? []).filter((r) => r.covered);
     if (q) {
       const needle = q.toLowerCase();
-      // Row identity only: provider + account (label or key-hash). Plan/entry
+      // Row identity only: provider + credential (label or key-hash). Plan/entry
       // metadata is deliberately not searchable.
       rows = rows.filter((r) =>
         `${r.providerId} ${r.keyHashPrefix} ${r.label ?? ''}`.toLowerCase().includes(needle)
@@ -313,7 +313,7 @@ export const QuotaPage: React.FC = () => {
         </div>
       )}
 
-      {/* ── Filter toolbar: free-text search only — provider / account (label
+      {/* ── Filter toolbar: free-text search only — provider / credential (label
           or key-hash) match through the search, plan/entry do not. Cards are
           pre-filtered to covered pairs, so there is no view segment. ──────── */}
       <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>

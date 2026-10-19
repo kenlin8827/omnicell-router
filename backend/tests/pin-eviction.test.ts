@@ -22,15 +22,15 @@ import type { TierLevel } from '../src/types/router.js';
  *            eviction-worthy (peek would read a busy canary as
  *            unavailable; routing may failover, the pin holds).
  * NOT triggers: a model moved to another tier (still joins "its own" pool),
- * partial account disablement (the account dimension rebinds, the pin holds),
+ * partial credential disablement (the credential dimension rebinds, the pin holds),
  * shadow-mode automatic trips (the view folds them as serving — the verdict
  * contract), and the explicit / combo paths (4B never runs for them by
  * contract).
  *
- * Harness mirrors account-affinity-orchestrator.test.ts (stub providers, real
+ * Harness mirrors credential-affinity-orchestrator.test.ts (stub providers, real
  * orchestrator, manual breaker drives). Models carry tierMatch so they are
  * reclassification-capable — and are built FRESH per fixture, because
- * reclassifyTiers mutates the live registration objects and the account-state
+ * reclassifyTiers mutates the live registration objects and the credential-state
  * store persists (any DISABLED must be re-ENABLED in the same test).
  */
 
@@ -95,7 +95,7 @@ function makeConfig(base: unknown, extras: Record<string, unknown> = {}) {
       enabled: true,
       failureThreshold: 1000, // manual trips drive state here; auto trips must not fire
       initialCooldownMs: 600000,
-      accountAffinity: { cacheTtlMs: 300000 },
+      credentialAffinity: { cacheTtlMs: 300000 },
     },
     ...extras,
   } as unknown as RouterConfig;
@@ -241,12 +241,12 @@ describe('config eviction: removed from tier members', () => {
 });
 
 describe('health eviction: in the pool, nothing to serve it', () => {
-  it('a model whose every account is operator-DISABLED is pinned out (aggregate reads out)', async () => {
+  it('a model whose every credential is operator-DISABLED is pinned out (aggregate reads out)', async () => {
     const { orchestrator, registry, m1, m2 } = makeFixture();
     const sessionId = 'sess-ev-disabled';
     await orchestrator.process(turn('first hello'), sessCtx(sessionId));
 
-    const store = registry.getCircuitBreakerManager().getAccountStateStore();
+    const store = registry.getCircuitBreakerManager().getCredentialStateStore();
     for (const c of chainP1) store.disable('p1', c.keyHashPrefix);
     try {
       // Config dimension untouched: m1 still joins the plus pool (healthyOnly=false).
@@ -265,7 +265,7 @@ describe('health eviction: in the pool, nothing to serve it', () => {
     }
   });
 
-  it('partial disablement is NOT eviction: the pin holds, only the account moves', async () => {
+  it('partial disablement is NOT eviction: the pin holds, only the credential moves', async () => {
     const { orchestrator, registry, stub1, m1 } = makeFixture();
     const sessionId = 'sess-ev-partial';
     await orchestrator.process(turn('first hello'), sessCtx(sessionId));
@@ -273,13 +273,13 @@ describe('health eviction: in the pool, nothing to serve it', () => {
     const parked = chainP1.find((c) => c.keyHashPrefix === bound)!;
     const other = chainP1.find((c) => c.keyHashPrefix !== bound)!;
 
-    const store = registry.getCircuitBreakerManager().getAccountStateStore();
+    const store = registry.getCircuitBreakerManager().getCredentialStateStore();
     store.disable('p1', parked.keyHashPrefix);
     try {
       const r2 = await orchestrator.process(turn('second hello'), sessCtx(sessionId));
       expect(r2.modelUsed).toBe(m1.id); // same model — the aggregate still reads available
       expect(orchestrator.getSessionManager().getSession(sessionId)!.pinnedModel).toBe(m1.id);
-      expect(stub1.seen[1]?.keyHashPrefix).toBe(other.keyHashPrefix); // account FORCED-rebinded
+      expect(stub1.seen[1]?.keyHashPrefix).toBe(other.keyHashPrefix); // credential FORCED-rebinded
     } finally {
       store.enable('p1', parked.keyHashPrefix);
     }
@@ -344,7 +344,7 @@ describe('shadow mode: automatic trips never evict', () => {
     shadow: true,
     failureThreshold: 1, // a single 503 auto-trips — the trip must be REAL
     initialCooldownMs: 600000,
-    accountAffinity: { cacheTtlMs: 300000 },
+    credentialAffinity: { cacheTtlMs: 300000 },
   };
   const diag5xx = {
     category: 'SERVICE_UNAVAILABLE' as const,

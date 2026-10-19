@@ -1,4 +1,4 @@
-import type { BreakerInfo, AccountHealth } from './api';
+import type { BreakerInfo, CredentialHealth } from './api';
 
 /**
  * Pure (model × credential) matrix builder for the guardrails grid
@@ -15,7 +15,7 @@ const STATE_ORDER: Record<BreakerInfo['state'], number> = { OPEN: 0, HALF_OPEN: 
  * `snap` resolves the credential-scoped truth:
  *   pair breaker    — multi-credential providers attribute failures here
  *   model-mirror    — single-credential chains degenerate to the no-prefix
- *                     runtime path (account-selection), so the model breaker
+ *                     runtime path (credential-selection), so the model breaker
  *                     IS this credential's state for this model
  *   undefined       — never failed on this pairing, no breaker yet
  */
@@ -23,9 +23,9 @@ export interface PairCard {
   key: string;
   modelId: string;
   provider: string;
-  /** Store account identity; '' for the synthetic config-key column. */
+  /** Store credential identity; '' for the synthetic config-key column. */
   prefix: string;
-  accountId?: string;
+  credentialId?: string;
   label: string;
   /** True for the config-baked single key of a chainless provider. */
   synthetic: boolean;
@@ -51,7 +51,7 @@ export interface CredentialHash {
 
 /** Injected display strings — the module stays i18n-free to stay testable. */
 export interface MatrixLabels {
-  /** Stand-in for an unlabeled store row (i18n key: accountUnnamed). */
+  /** Stand-in for an unlabeled store row (i18n key: credentialUnnamed). */
   unnamed: string;
   /** Display name for the provider's config-baked key. */
   configKey: string;
@@ -72,7 +72,7 @@ export function effectiveCooldown(c: PairCard): number {
 export function buildPairCards(
   modelBreakers: BreakerInfo[],
   pairBreakers: BreakerInfo[],
-  storeAccounts: AccountHealth[],
+  storeCredentials: CredentialHealth[],
   maskedKeyByProvider: Map<string, string>,
   credentialHashes: CredentialHash[],
   labels: MatrixLabels
@@ -81,17 +81,17 @@ export function buildPairCards(
   for (const p of pairBreakers) {
     if (p.keyHashPrefix) pairBy.set(`${p.modelId}#${p.keyHashPrefix}`, p);
   }
-  const accountsByProvider = new Map<string, AccountHealth[]>();
-  for (const a of storeAccounts) {
+  const credentialsByProvider = new Map<string, CredentialHealth[]>();
+  for (const a of storeCredentials) {
     if (!a.keyHashPrefix) continue;
-    const arr = accountsByProvider.get(a.providerId);
+    const arr = credentialsByProvider.get(a.providerId);
     if (arr) arr.push(a);
-    else accountsByProvider.set(a.providerId, [a]);
+    else credentialsByProvider.set(a.providerId, [a]);
   }
   const items: PairCard[] = [];
   const covered = new Set<string>();
   for (const b of modelBreakers) {
-    const accts = accountsByProvider.get(b.provider) ?? [];
+    const accts = credentialsByProvider.get(b.provider) ?? [];
     if (accts.length === 0) {
       // Chainless provider: one synthetic column for the config-baked key.
       items.push({
@@ -120,9 +120,9 @@ export function buildPairCards(
         modelId: b.modelId,
         provider: b.provider,
         prefix,
-        accountId: a.id,
-        // KeysPage convention (accountName): unlabeled rows read the
-        // accountUnnamed stand-in — never the raw internal accountId,
+        credentialId: a.id,
+        // KeysPage convention (credentialName): unlabeled rows read the
+        // credentialUnnamed stand-in — never the raw internal credentialId,
         // never an invented name.
         label: a.label?.trim() || labels.unnamed,
         synthetic: false,
@@ -146,7 +146,7 @@ export function buildPairCards(
   for (const b of modelBreakers) modelBy.set(b.modelId, b);
   for (const p of pairBreakers) {
     if (!p.keyHashPrefix || covered.has(`${p.modelId}#${p.keyHashPrefix}`)) continue;
-    const a = storeAccounts.find((x) => x.keyHashPrefix === p.keyHashPrefix);
+    const a = storeCredentials.find((x) => x.keyHashPrefix === p.keyHashPrefix);
     const isServingKey = credentialHashes.some(
       (h) => h.keyHashPrefix === p.keyHashPrefix && h.provider === p.provider
     );
@@ -155,7 +155,7 @@ export function buildPairCards(
       modelId: p.modelId,
       provider: p.provider,
       prefix: p.keyHashPrefix,
-      accountId: a?.id,
+      credentialId: a?.id,
       label: a ? a.label?.trim() || labels.unnamed : isServingKey ? labels.configKey : `#${p.keyHashPrefix}`,
       synthetic: false,
       unmatched: !a && !isServingKey,

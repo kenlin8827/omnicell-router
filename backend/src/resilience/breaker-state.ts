@@ -20,16 +20,16 @@ import {
  *
  * Before this the whole circuit-breaker state machine lived only in process
  * memory: a restart cleared every cooldown, so a gateway could re-hammer an
- * account still inside its 12h quota cooldown minutes after booting. This
+ * credential still inside its 12h quota cooldown minutes after booting. This
  * store persists the FULL state of every model and pair breaker
  * (`<OCR_HOME>/breaker-state.<env>.json`, per environment so an env switch
  * cannot rewrite the other book-set's memory) and replays it at boot.
  *
- * File doctrines are the AccountStateStore ones, deliberately: atomic
+ * File doctrines are the CredentialStateStore ones, deliberately: atomic
  * temp+rename 0600 write, load-once where a missing/malformed file is an
  * empty memory (never fatal), and a corrupt-but-present file is renamed
  * aside on the first write instead of being overwritten (cp-dataloss — the
- * file may be the only record of why an account was parked).
+ * file may be the only record of why an credential was parked).
  *
  * Writes are DEBOUNCED: mutations are rare but a failure storm can produce
  * many in a second, and the loss window of a crash is bounded by the debounce

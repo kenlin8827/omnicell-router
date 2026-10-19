@@ -126,8 +126,8 @@ const DEFAULT_CONFIG: RouterConfig = {
       enabled: false,
       intervalMs: 60000,
     },
-    accountAffinity: {
-      // a session keeps its account while its pair breaker is up;
+    credentialAffinity: {
+      // a session keeps its credential while its pair breaker is up;
       // idle past this window it re-spreads like a new session (the upstream
       // prompt cache is gone by then anyway). 300000 = Anthropic cache TTL.
       cacheTtlMs: 300000,
@@ -297,8 +297,8 @@ function resolveCircuitBreaker(parsed: any): CircuitBreakerConfig {
   const ms = (v: unknown): number | undefined =>
     typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined;
   const flag = (v: unknown, fallback: boolean): boolean => (typeof v === 'boolean' ? v : fallback);
-  const scope = (v: unknown): 'auto' | 'pair' | 'account' | 'model' =>
-    v === 'pair' || v === 'account' || v === 'model' ? v : 'auto';
+  const scope = (v: unknown): 'auto' | 'pair' | 'credential' | 'model' =>
+    v === 'pair' || v === 'credential' || v === 'model' ? v : 'auto';
   const canaryMode = (v: unknown): 'backoff' | 'initial' | 'close' =>
     v === 'initial' || v === 'close' ? v : 'backoff';
 
@@ -417,7 +417,7 @@ function resolveCircuitBreaker(parsed: any): CircuitBreakerConfig {
 
 /**
  * Resolve the `rateLimit:` tree (policy knobs only — the windows themselves
- * are `apiKeys[].limits` / the `accounts:` overlay). Junk falls back to the
+ * are `apiKeys[].limits` / the `credentials:` overlay). Junk falls back to the
  * default, values are floored at 0 (disable) and hard-capped at
  * MAX_INBOUND_GRACE_MS; unknown keys are dropped (round-trip hygiene, same
  * doctrine as resolveRequestCapture). `persist.enabled` defaults to true —
@@ -596,7 +596,7 @@ export function saveRawConfig(yamlContent: string): { success: boolean; error?: 
     }
     fs.writeFileSync(configPath, yamlContent, 'utf8');
     // The raw save is a config save too: refresh the auth snapshot view, the
-    // accounts overlay AND the limiter rule table through the SAME routine as
+    // credentials overlay AND the limiter rule table through the SAME routine as
     // saveConfig (the pre-fix here left runtimeConfigRef stale — the YAML
     // editor violated the module's own hot-apply promise).
     syncRuntimeAuthView(loadConfig());
@@ -634,7 +634,7 @@ export function getRuntimeConfigRef(): RouterConfig | undefined {
  * Single sync routine for BOTH writers (saveConfig / saveRawConfig): the
  * module docstring above registerRuntimeConfigRef promises "a key edited via
  * the UI OR THE YAML EDITOR" follows immediately — refreshing apiKeys/webAuth
- * (the auth views), the accounts rate-limit overlay (withAccountHealth badge),
+ * (the auth views), the credentials rate-limit overlay (withCredentialHealth badge),
  * the rateLimit grace knob (read boot-snapshot-first per request) and the
  * limiter rule table together is what makes that promise true for every save
  * path, not just the visual one.
@@ -643,7 +643,7 @@ function syncRuntimeAuthView(fresh: RouterConfig): void {
   if (runtimeConfigRef) {
     runtimeConfigRef.apiKeys = fresh.apiKeys;
     runtimeConfigRef.webAuth = fresh.webAuth;
-    runtimeConfigRef.accounts = fresh.accounts;
+    runtimeConfigRef.credentials = fresh.credentials;
     // quotaProbes/quota ride the SAME routine (iron rule: a raw-YAML
     // save must never leave the runtime view stale): the prober reads its
     // entry set off the live ref on every reloadConfig(), and the console
@@ -677,7 +677,7 @@ export function saveConfig(newConfig: Partial<RouterConfig>): { success: boolean
     const yamlContent = annotateYamlComments(stringify(merged));
     fs.writeFileSync(configPath, yamlContent, 'utf8');
     // Single sync routine for both writers (see syncRuntimeAuthRef doc): the
-    // running gateway's key snapshot, the accounts overlay and the limiter
+    // running gateway's key snapshot, the credentials overlay and the limiter
     // rule table follow every save (key CRUD, visual editor, raw YAML — all
     // writers pass through here); windows survive unchanged constraints.
     syncRuntimeAuthView(merged);
@@ -708,8 +708,8 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   port: '网关监听端口',
   host: '监听地址（默认 127.0.0.1 仅本机；0.0.0.0 = 监听所有网卡，非回环绑定强制启用 webAuth 登录）',
   adminApiKey: '推理面主密钥（/v1/* 全模型访问），亦可作为控制台 /api/admin/* 的程序化访问凭据（Authorization: Bearer）',
-  webAuth: '控制台登录鉴权（/admin 管理面的账号密码；绑定非回环地址时强制启用）',
-  'webAuth.enabled': '控制台登录开关：true 需账号密码登录；绑定 0.0.0.0 / 局域网 IP 时必须为 true（否则网关拒绝启动），仅 127.0.0.1 绑定可关闭',
+  webAuth: '控制台登录鉴权（/admin 管理面的凭证密码；绑定非回环地址时强制启用）',
+  'webAuth.enabled': '控制台登录开关：true 需凭证密码登录；绑定 0.0.0.0 / 局域网 IP 时必须为 true（否则网关拒绝启动），仅 127.0.0.1 绑定可关闭',
   'webAuth.username': '控制台登录用户名',
   'webAuth.passwordHash': '登录密码的 scrypt 哈希（格式 scrypt$<saltHex>$<hashHex>，绝不存明文；在控制台「系统设置」页修改，勿手写）',
   tiers: '梯队成员策略：候选池唯一依据 = 各梯队显式 members 成员列表 + 全局排除名单；出厂默认为四个空梯队（不内置任何成员 glob，运行时也不自动生成种子），首次启动所有候选池为空、`auto` 无法路由，需在控制台 /tiers 页或本文件添加 members；无任何规则命中的模型=未分类，不进任何池；主选策略只影响池内用法（控制台 /tiers 页可视化编辑，保存即时生效；删除整个 tiers 段会在下次加载时恢复这套空默认）',
@@ -752,8 +752,8 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'circuitBreaker.halfOpenMaxProbes': '半开状态最大并发探测数；rules.recovery.halfOpen.maxProbes 未设置时的默认值（同时是主动探测每模型每周期的预算，下限 1）',
   'circuitBreaker.activeProbing': '主动探测（冷却期内定时试探是否恢复）',
   'circuitBreaker.activeProbing.intervalMs': '探测间隔（毫秒）',
-  'circuitBreaker.accountAffinity': '会话账号亲和（多账号供应商：会话绑定一个账号，仅故障转移时切换，绝不负载均衡）',
-  'circuitBreaker.accountAffinity.cacheTtlMs': '亲和窗口（毫秒，默认 300000 = Anthropic 提示缓存 5 分钟）；空闲超过此窗口的会话按新会话重新分散选号',
+  'circuitBreaker.credentialAffinity': '会话凭证亲和（多凭证供应商：会话绑定一个凭证，仅故障转移时切换，绝不负载均衡）',
+  'circuitBreaker.credentialAffinity.cacheTtlMs': '亲和窗口（毫秒，默认 300000 = Anthropic 提示缓存 5 分钟）；空闲超过此窗口的会话按新会话重新分散选号',
   'circuitBreaker.rules': '熔断规则组，阅读顺序=因果链：counting 计不计入失败 → trip 何时熔断 → recovery 如何恢复；每项缺省=沿用上方全局旋钮/当前行为；整段缺省与旧版行为逐字节一致；保存后即时生效（新规则从下一次判定起生效，已有熔断状态不回溯重评）',
   'circuitBreaker.rules.counting': 'A 区：哪些错误算失败（计入 trip 规则），各自熔断的最短时长（minCooldownMs 下限，经 max(下限, 计算值) 生效）',
   'circuitBreaker.rules.counting.serverErrors': '5xx/网络抖动（SERVICE_UNAVAILABLE）计入开关+冷却下限；关闭=既不熔断也不计数（默认开，下限默认=initialCooldownMs）',
@@ -766,28 +766,28 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'circuitBreaker.rules.counting.rateLimitErrors.minCooldownMs': '无 Retry-After 的 429 计入后的熔断冷却下限（毫秒）；带 Retry-After 的沿用其推导值',
   'circuitBreaker.rules.counting.clientErrors': '400/422 客户端错误是否计入失败（默认关=现行为不惩罚；开启后按 trip 规则自身阶梯计）',
   'circuitBreaker.rules.counting.clientErrors.enabled': '开启后 400/422 计入熔断统计（不建议：客户端问题不应惩罚上游）',
-  'circuitBreaker.rules.trip': 'B 区：计数到的失败何时打开熔断；scope=blast 半径覆写 auto|pair|account|model（仅在有凭据归属时生效，无链供应商自然退化为模型级）；五个开关全部关闭=自动熔断彻底关闭（手动熔断不受影响）',
+  'circuitBreaker.rules.trip': 'B 区：计数到的失败何时打开熔断；scope=blast 半径覆写 auto|pair|credential|model（仅在有凭据归属时生效，无链供应商自然退化为模型级）；五个开关全部关闭=自动熔断彻底关闭（手动熔断不受影响）',
   'circuitBreaker.rules.trip.quota': '402/配额措辞 → 立即熔断（默认开）；关闭=402 既不熔断也不计数，并会释放存量 breaker.quota 熔断记录（保存时与重启恢复时均对账丢弃）',
   'circuitBreaker.rules.trip.quota.enabled': '关闭后 402 不再自动熔断',
   'circuitBreaker.rules.trip.quota.cooldownMs': '402 硬熔断时长（毫秒，默认=quotaCooldownMs 12h）',
-  'circuitBreaker.rules.trip.quota.scope': 'blast 半径覆写：auto=按错误类型（402 默认 account=该凭据全部模型）/ pair=仅模型×该凭据 / account=该凭据全部模型 / model=该模型全部凭据',
+  'circuitBreaker.rules.trip.quota.scope': 'blast 半径覆写：auto=按错误类型（402 默认 credential=该凭据全部模型）/ pair=仅模型×该凭据 / credential=该凭据全部模型 / model=该模型全部凭据',
   'circuitBreaker.rules.trip.auth': '401 → 立即熔断（默认开）；关闭=401 既不熔断也不计数，并释放存量 breaker.auth 记录',
   'circuitBreaker.rules.trip.auth.enabled': '关闭后 401 不再自动熔断',
   'circuitBreaker.rules.trip.auth.cooldownMs': '401 硬熔断时长（毫秒，默认=quotaCooldownMs 12h）',
-  'circuitBreaker.rules.trip.auth.markSuspect': '熔断时把该账号标记为 SUSPECT（默认开）；关闭只停止新标记——已存在的标记仍拦截选路，直到手动清除',
-  'circuitBreaker.rules.trip.auth.scope': 'blast 半径覆写（401 默认 account）；见 rules.trip 说明',
+  'circuitBreaker.rules.trip.auth.markSuspect': '熔断时把该凭证标记为 SUSPECT（默认开）；关闭只停止新标记——已存在的标记仍拦截选路，直到手动清除',
+  'circuitBreaker.rules.trip.auth.scope': 'blast 半径覆写（401 默认 credential）；见 rules.trip 说明',
   'circuitBreaker.rules.trip.rateLimit': '429 带 Retry-After 且超过 hardTripAboveMs → 硬熔断；关闭=此类 429 降级为“计入统计的失败”（不是忽略），其 Retry-After 推导下限照常流入 max(下限, 计算值)',
   'circuitBreaker.rules.trip.rateLimit.enabled': '关闭后长 Retry-After 的 429 不再硬熔断，只计入统计失败',
   'circuitBreaker.rules.trip.rateLimit.hardTripAboveMs': '硬/软分界（毫秒）：Retry-After 超过它才硬熔断；默认=retry.inplace.maxRateLimitWaitMs（覆写后与重试侧分界脱钩，属有意分歧）',
   'circuitBreaker.rules.trip.rateLimit.minCooldownMs': 'Retry-After 推导冷却的下限（毫秒，默认 1000；总封顶仍是全局 maxCooldownMs）',
-  'circuitBreaker.rules.trip.rateLimit.scope': 'blast 半径覆写（429 默认 pair；“每日/每周额度”措辞默认 account）；见 rules.trip 说明',
+  'circuitBreaker.rules.trip.rateLimit.scope': 'blast 半径覆写（429 默认 pair；“每日/每周额度”措辞默认 credential）；见 rules.trip 说明',
   'circuitBreaker.rules.trip.consecutiveFailures': '连续失败达阈值 → 熔断（默认开）；关闭=连续阈值不再检查；阶梯：initialCooldownMs×cooldownMultiplier^n，封顶 maxCooldownMs',
   'circuitBreaker.rules.trip.consecutiveFailures.enabled': '关闭后不再按“连续失败次数”自动熔断',
   'circuitBreaker.rules.trip.consecutiveFailures.threshold': '连续失败次数阈值（默认=failureThreshold 3）',
   'circuitBreaker.rules.trip.consecutiveFailures.initialCooldownMs': '阶梯首档冷却（毫秒，默认=initialCooldownMs）',
   'circuitBreaker.rules.trip.consecutiveFailures.cooldownMultiplier': '阶梯倍数（默认=cooldownMultiplier 2.0）',
   'circuitBreaker.rules.trip.consecutiveFailures.maxCooldownMs': '阶梯封顶（毫秒，默认=maxCooldownMs 5h）',
-  'circuitBreaker.rules.trip.consecutiveFailures.scope': 'blast 半径覆写（计入统计类失败默认按分类器 scope：5xx=account、未分类=pair）；见 rules.trip 说明',
+  'circuitBreaker.rules.trip.consecutiveFailures.scope': 'blast 半径覆写（计入统计类失败默认按分类器 scope：5xx=credential、未分类=pair）；见 rules.trip 说明',
   'circuitBreaker.rules.trip.failureRate': '滑动窗口失败率 → 熔断（默认开）；关闭=窗口速率不再检查；速率仅在已记录调用数 >= minCalls 时评估',
   'circuitBreaker.rules.trip.failureRate.enabled': '关闭后不再按“窗口失败率”自动熔断',
   'circuitBreaker.rules.trip.failureRate.windowSize': '共享结果环形缓冲大小（默认=slidingWindowSize 20；是熔断器构造参数，改变会影响持久化窗口切片）',
@@ -815,13 +815,13 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'retry.failover': '故障转移（切换候选模型重试）',
   'retry.failover.maxAttempts': '故障转移尝试次数',
   'retry.failover.tierCrossPolicy': '跨梯队策略：allow_escalate 允许向上升级',
-  rateLimit: '限流策略开关（窗口本身在 apiKeys[].limits 与 accounts: 叠加层）',
+  rateLimit: '限流策略开关（窗口本身在 apiKeys[].limits 与 credentials: 叠加层）',
   'rateLimit.persist': '已触发限流事件账本的持久化：写入 traces.db（与 trace/FinOps 共库独立句柄），重启后 /rate-limit 页仍可回看上一次的触发历史；观测性写入 fail-open，永不阻塞请求路径',
   'rateLimit.persist.enabled': '账本持久化开关（默认开）；关闭=仅内存环（重启清零）',
   'rateLimit.inboundGraceMs': '宽限等待（毫秒，默认 1000，上限 2000，0=关闭）：客户端密钥窗口满、但重开等待不超过该值时，网关原地等待窗口重开后复查一次（不循环），复查仍满或等待超限才回 429 + Retry-After——吸收亚秒级突发，避免短限流变成用户可见错误；长窗口维持快速失败：限流契约不变，等待归属客户端自己的退避',
   apiKeys: '客户端接入密钥（sk-ocr-*，见 /keys 页）；每个密钥可配 limits=入站滑动窗口限流，规则项 { window, requests | tokens | costUsd }（window 用时长语法 30s/5m/1h/1d；同一项可写多个维度=各自独立计数；任一窗口满即拒——宽限等待内（rateLimit.inboundGraceMs）先原地等满复查一次，否则 429 + Retry-After；被拒请求不计入窗口；保存即时生效）；requests 维度覆盖全部四条推理线（前向代理 MITM 腿不经该入口、不入站计量）；tokens/costUsd 在 chat 形态线（chat/messages/responses）与 systemone 决策线均于完成时记账（决策线以协议 usage 为准，上游未带 usage 的 native 应答只计 requests）',
-  accounts: '模型账户限流叠加层（原始 YAML 页编辑，保存即时生效）：按 provider id 分组，每项 { keyHashPrefix, limits } —— keyHashPrefix 是该凭据 sha256 的前 12 位（控制台凭据卡片可见，与账号增删改名无关；大小写不敏感——编译/匹配时归一，磁盘保留原文）；limits 规则语法同 apiKeys（滑动窗口；requests=请求数、tokens=消耗 token 数、costUsd=费用美元，按完成时刻记账）；出站限流只做整形：超限账号在 NEW 会话选号时跳过、绝不改动已绑定会话（重绑会烧上游提示缓存）、候选耗尽时末位强制放行，真正的上游 429 仍由熔断器处理决策线例外：/v1/systemone 不经候选池——不做本地跳过/拒绝、也不经熔断，上游错误逐字透传；但该线的出站 dispatch 与完成记账照常计入，账户窗口会被它填充。内部腿（L2 裁判、健康探测）的上游调用不经任何记账，不会填充窗口',
-  'accounts.*': '该 provider 的账号规则列表（键=provider id，如 anthropic）；条目 { keyHashPrefix, limits }',
+  credentials: '模型账户限流叠加层（原始 YAML 页编辑，保存即时生效）：按 provider id 分组，每项 { keyHashPrefix, limits } —— keyHashPrefix 是该凭据 sha256 的前 12 位（控制台凭据卡片可见，与凭证增删改名无关；大小写不敏感——编译/匹配时归一，磁盘保留原文）；limits 规则语法同 apiKeys（滑动窗口；requests=请求数、tokens=消耗 token 数、costUsd=费用美元，按完成时刻记账）；出站限流只做整形：超限凭证在 NEW 会话选号时跳过、绝不改动已绑定会话（重绑会烧上游提示缓存）、候选耗尽时末位强制放行，真正的上游 429 仍由熔断器处理决策线例外：/v1/systemone 不经候选池——不做本地跳过/拒绝、也不经熔断，上游错误逐字透传；但该线的出站 dispatch 与完成记账照常计入，账户窗口会被它填充。内部腿（L2 裁判、健康探测）的上游调用不经任何记账，不会填充窗口',
+  'credentials.*': '该 provider 的凭证规则列表（键=provider id，如 anthropic）；条目 { keyHashPrefix, limits }',
   quota: '额度探测调度：额度覆盖表与代码 adapter 随 release 内置，此处只调调度器；凭据出现即自动探测（激活随凭据），探测失败≠额度失败——保留旧值置 stale，绝不触发熔断/下架；声明上限只展示、不门控路由',
   'quota.enabled': '额度探测总开关（默认 true）；false = 停止一切出网额度探测（已存快照仍可展示，标注 stale 逻辑不变）',
   'quota.intervalMs': '调度 tick（毫秒，默认 60000，钳制 [10000, 3600000]）；每条目另有 cacheTtl 钳制 [60s, 24h] 的到期窗口 + 抖动，429 触发引擎级全局退避（非条目字段）',
@@ -891,9 +891,9 @@ function lookupYamlComment(path: string): string | undefined {
   if (segs[0] === 'combos' && segs.length >= 3) {
     return YAML_FIELD_COMMENTS[`combos.*.${segs.slice(2).join('.')}`];
   }
-  // Dynamic map level: accounts.<providerId> → accounts.*
-  if (segs[0] === 'accounts' && segs.length >= 2) {
-    return YAML_FIELD_COMMENTS['accounts.*'];
+  // Dynamic map level: credentials.<providerId> → credentials.*
+  if (segs[0] === 'credentials' && segs.length >= 2) {
+    return YAML_FIELD_COMMENTS['credentials.*'];
   }
   // Dynamic array level: modelProfiles.<index>.<field…> → modelProfiles.*.<field…>
   if (segs[0] === 'modelProfiles' && segs.length >= 3) {

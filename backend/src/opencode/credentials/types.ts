@@ -9,7 +9,7 @@ import { createHash } from 'node:crypto';
  * Hard rules encoded here:
  *  - Callers branch on `capabilities`, NEVER on `kind` (kind is a diagnostic
  *    label for logs/badges only).
- *  - Masked metadata leaves the interface via listAccounts/accountsOverview;
+ *  - Masked metadata leaves the interface via listCredentials/credentialsOverview;
  *    raw keys exit ONLY through resolveKey/resolveKeyChain —
  *    callable only by boot/pool-rebuild code — and through revealKey, the
  *    single controlled exception bound to the password-gated console reveal
@@ -29,10 +29,10 @@ export function isStoreKind(value: unknown): value is StoreKind {
 
 export interface StoreCapabilities {
   /** More than one credential per provider is expressible. */
-  multiAccount: boolean;
-  /** A specific account can be marked active. */
+  multiCredential: boolean;
+  /** A specific credential can be marked active. */
   activate: boolean;
-  /** Accounts carry a user-editable label. */
+  /** Credentials carry a user-editable label. */
   rename: boolean;
   /** OAuth connect is supported. Capability-gated; false for ALL stores in P1+P2. */
   oauth: boolean;
@@ -69,9 +69,9 @@ export type StoreDegradedCode =
   | 'cli_absent_db_present'
   | 'bind_failed';
 
-/** Masked, management-safe account metadata. Never carries raw key material. */
-export interface AccountMeta {
-  /** Store-native account id (opencode v2 credential row id, ocr accountId). */
+/** Masked, management-safe credential metadata. Never carries raw key material. */
+export interface CredentialMeta {
+  /** Store-native credential id (opencode v2 credential row id, ocr credentialId). */
   id: string;
   providerId: string;
   label?: string;
@@ -87,7 +87,7 @@ export interface AccountMeta {
 
 export interface ResolvedCredential {
   key: string;
-  account: AccountMeta;
+  credential: CredentialMeta;
 }
 
 /**
@@ -97,12 +97,12 @@ export interface ResolvedCredential {
  * SECURITY: `key` is RAW material. Values of this type exist ONLY in process
  * memory (boot payload → registry chain map → executor call argument). They
  * must NEVER be serialized into console/API surfaces — masked metadata keeps
- * travelling through `AccountMeta` instead.
+ * travelling through `CredentialMeta` instead.
  */
 export interface CallCredential {
   /** Display-safe sha256 prefix — the per-call selector key (Decision 5). */
   keyHashPrefix: string;
-  /** Human-readable account name (falls back to the store account id). */
+  /** Human-readable credential name (falls back to the store credential id). */
   label: string;
   /** Raw key material — in-memory only. */
   key: string;
@@ -114,7 +114,7 @@ export interface CallCredential {
  * is complete now — later consumers arriving is expected.
  */
 export interface RawCred {
-  accountId: string;
+  credentialId: string;
   providerId: string;
   label?: string;
   key: string;
@@ -130,15 +130,15 @@ export interface StoreProbeResult {
   state: 'ready' | 'empty' | 'unreadable';
   degradedCode?: StoreDegradedCode;
   detail?: string;
-  accountCount: number;
+  credentialCount: number;
 }
 
 /** Masked per-provider summary, served inside StoreStatus (B2 console endpoint). */
-export interface AccountOverview {
+export interface CredentialOverview {
   providerId: string;
   total: number;
   routable: number;
-  activeAccountId: string | null;
+  activeCredentialId: string | null;
 }
 
 /**
@@ -177,33 +177,33 @@ export interface CredentialStore {
   probe(): StoreProbeResult;
 
   /** MASKED metadata only — safe for management surfaces. */
-  listAccounts(providerId: string): AccountMeta[];
+  listCredentials(providerId: string): CredentialMeta[];
 
   /** Active-first, sole-row next, newest time_updated last. Raw — boot/pool-rebuild callers, plus the console test route (sanctioned probe read: the key exits only as the upstream probe header). */
   resolveKey(providerId: string): ResolvedCredential | null;
 
-  /** Ordered pool for failover (active first, then newest time_updated). Raw — boot/pool-rebuild callers, plus the console test route's account-addressed probe (same exit rule: header only, response masked). */
+  /** Ordered pool for failover (active first, then newest time_updated). Raw — boot/pool-rebuild callers, plus the console test route's credential-addressed probe (same exit rule: header only, response masked). */
   resolveKeyChain(providerId: string): RawCred[];
 
   /**
-   * Raw key of ONE addressed account, for the
+   * Raw key of ONE addressed credential, for the
    * password-gated console reveal route. Unlike `resolveKey` there is no
-   * selection: it takes the accountId the operator pointed at and returns
-   * exactly that row's key. Throws AccountNotFoundError for an absent row and
+   * selection: it takes the credentialId the operator pointed at and returns
+   * exactly that row's key. Throws CredentialNotFoundError for an absent row and
    * CapabilityUnsupportedError for a row without raw api-key material
    * (oauth/wellknown/empty key). Callers: the reveal route ONLY — never a
    * list/status/probe surface.
    */
-  revealKey(accountId: string): string;
+  revealKey(credentialId: string): string;
 
-  connectKey(providerId: string, key: string, label?: string): Promise<AccountMeta>;
-  activate(accountId: string): Promise<AccountMeta>;
-  rename(accountId: string, label: string): Promise<AccountMeta>;
-  disconnect(accountId: string): Promise<void>;
+  connectKey(providerId: string, key: string, label?: string): Promise<CredentialMeta>;
+  activate(credentialId: string): Promise<CredentialMeta>;
+  rename(credentialId: string, label: string): Promise<CredentialMeta>;
+  disconnect(credentialId: string): Promise<void>;
 
   /** Present on the surface; throws CapabilityUnsupportedError on ALL stores in P1+P2. */
   beginOAuth(providerId: string): Promise<unknown>;
-  completeOAuth(providerId: string, interaction?: unknown): Promise<AccountMeta>;
+  completeOAuth(providerId: string, interaction?: unknown): Promise<CredentialMeta>;
 
   /**
    * Only implemented when `capabilities.integrationScoped` is true: the provider
@@ -217,7 +217,7 @@ export interface CredentialStore {
   invalidate(): void;
 
   /** Masked summary for StoreStatus; implemented by all three stores. */
-  accountsOverview(): AccountOverview[];
+  credentialsOverview(): CredentialOverview[];
 }
 
 // ---------------------------------------------------------------------------
@@ -274,11 +274,11 @@ export class IntegrationUnmatchedError extends Error {
   }
 }
 
-/** accountId not present in the store (Ocr/V1 local addressing). */
-export class AccountNotFoundError extends Error {
-  constructor(accountId: string) {
-    super(`credential account not found: ${accountId}`);
-    this.name = 'AccountNotFoundError';
+/** credentialId not present in the store (Ocr/V1 local addressing). */
+export class CredentialNotFoundError extends Error {
+  constructor(credentialId: string) {
+    super(`credential credential not found: ${credentialId}`);
+    this.name = 'CredentialNotFoundError';
   }
 }
 
@@ -291,7 +291,7 @@ export function sha256KeyHash(rawKey: string): string {
   return createHash('sha256').update(rawKey, 'utf8').digest('hex');
 }
 
-/** Display-safe prefix of the key hash (logs/traces/console can name an account without secrets). */
+/** Display-safe prefix of the key hash (logs/traces/console can name an credential without secrets). */
 export function keyHashPrefix(rawKey: string, length = 12): string {
   return sha256KeyHash(rawKey).slice(0, length);
 }

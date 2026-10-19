@@ -426,7 +426,7 @@ export interface RateLimitRule {
  * `keyHashPrefix`). The credential itself lives in the
  * CredentialStore; this entry only attaches outbound limit rules to it.
  */
-export interface AccountLimitConfig {
+export interface CredentialLimitConfig {
   keyHashPrefix: string;
   limits: RateLimitRule[];
 }
@@ -672,7 +672,7 @@ export interface ClientProfileMemoryEntry {
  * Rate-limit policy knobs (the caller-side policy of the engine —
  * ratelimit/rate-limiter.ts stays verdict-not-action and holds no policy).
  * The windows themselves are data: `apiKeys[].limits` (inbound) and the
- * `accounts:` overlay (outbound), never config-tree members.
+ * `credentials:` overlay (outbound), never config-tree members.
  */
 export interface RateLimitPersistConfig {
   /**
@@ -734,7 +734,7 @@ export interface RouterConfig {
   session?: SessionConfig;
   circuitBreaker?: CircuitBreakerConfig;
   retry?: RetryConfig;
-  /** Rate-limit policy (see RateLimitConfig); the windows themselves live in `apiKeys[].limits` / `accounts:`. */
+  /** Rate-limit policy (see RateLimitConfig); the windows themselves live in `apiKeys[].limits` / `credentials:`. */
   rateLimit?: RateLimitConfig;
   providers?: ProviderConfig[];
   models?: ModelRegistration[];
@@ -743,11 +743,11 @@ export interface RouterConfig {
   modelProfiles?: ModelProfileConfig[];
   /**
    * Outbound rate-limit overlay for upstream credentials: provider id → list
-   * of per-account rules keyed by the credential identity
+   * of per-credential rules keyed by the credential identity
    * (`keyHashPrefix`). The credentials themselves live in the CredentialStore;
    * this section only attaches window caps to them (see ratelimit/rate-limiter.ts).
    */
-  accounts?: Record<string, AccountLimitConfig[]>;
+  credentials?: Record<string, CredentialLimitConfig[]>;
   /** Per-client console form memory (see ClientProfileMemoryEntry) — UI-only, never routed. */
   clientProfileMemory?: Record<string, ClientProfileMemoryEntry>;
   /**

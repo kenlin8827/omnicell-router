@@ -14,8 +14,8 @@ import type { RateLimitRule, RouterConfig } from '../config/types.js';
  *    "no payment configured" to those SDKs — never retry, wrong signal here).
  *    Denied attempts are NOT counted — otherwise a retry storm would push the
  *    lockout past the window itself.
- *  - OUTBOUND (`account:<provider>:<keyHashPrefix>` subjects, from the
- *    `accounts:` overlay): shaping. The candidate pool `peek()s` before
+ *  - OUTBOUND (`credential:<provider>:<keyHashPrefix>` subjects, from the
+ *    `credentials:` overlay): shaping. The candidate pool `peek()s` before
  *    dispatch and skips an at-cap credential while another candidate remains,
  *    EXCEPT a keep-bound session (rebinding on a local cap burns the upstream
  *    prompt cache for a mere shaping hint — the breaker stays the reactive
@@ -48,7 +48,7 @@ import type { RateLimitRule, RouterConfig } from '../config/types.js';
  *    own hook (decision-pipeline.ts — the protocol's `usage` field when the
  *    upstream publishes one; a native response WITHOUT usage records nothing
  *    for that call, the request slot still counts).
- *  - outbound `account:` subjects — the chat pool gets the full shaping
+ *  - outbound `credential:` subjects — the chat pool gets the full shaping
  *    (peek skip / keep-bound / last-force + dispatch); the decision wire
  *    (which bypasses the pool) is COUNTED (dispatch + usage at the surface)
  *    but never locally refused: its frozen contract is "the named model
@@ -85,8 +85,8 @@ interface Constraint {
 export function apiKeySubject(id: string): string {
   return `apikey:${id}`;
 }
-export function accountSubject(provider: string, keyHashPrefix: string): string {
-  return `account:${provider}:${keyHashPrefix}`;
+export function credentialSubject(provider: string, keyHashPrefix: string): string {
+  return `credential:${provider}:${keyHashPrefix}`;
 }
 
 /** Go/Prometheus duration syntax: `500ms`, `30s`, `5m`, `1h`, `1d`. */
@@ -202,7 +202,7 @@ class EventWindow {
 
   /**
    * Append one event. Prunes BEFORE pushing: a write-only window (the
-   * decision wire's account subject is dispatch/recordUsage-only — no peek
+   * decision wire's credential subject is dispatch/recordUsage-only — no peek
    * ever touches it) must not grow unboundedly just because nobody looked
    * (review MAJOR-1: read-side-only pruning leaked ~600k events at 1 rps ×
    * 1 week per window).
@@ -243,21 +243,21 @@ export class RateLimiter {
       if (rules.length > 0) next.set(subject, rules);
     }
 
-    const accounts = config.accounts;
-    if (accounts && typeof accounts === 'object') {
-      for (const [provider, entries] of Object.entries(accounts)) {
+    const credentials = config.credentials;
+    if (credentials && typeof credentials === 'object') {
+      for (const [provider, entries] of Object.entries(credentials)) {
         if (!Array.isArray(entries)) {
-          console.warn(`[ratelimit] accounts.${provider}: expected a list of account entries, ignored`);
+          console.warn(`[ratelimit] credentials.${provider}: expected a list of credential entries, ignored`);
           continue;
         }
         for (const entry of entries) {
           if (!entry || typeof entry !== 'object') continue;
           const prefix = (entry as { keyHashPrefix?: unknown }).keyHashPrefix;
           if (typeof prefix !== 'string' || !prefix) {
-            console.warn(`[ratelimit] accounts.${provider}: entry without keyHashPrefix ignored`);
+            console.warn(`[ratelimit] credentials.${provider}: entry without keyHashPrefix ignored`);
             continue;
           }
-          const subject = accountSubject(provider, prefix.trim().toLowerCase());
+          const subject = credentialSubject(provider, prefix.trim().toLowerCase());
           // Lower-cased identity: chain prefixes are sha256 hex (always lower);
           // a hand-written upper-case YAML prefix would otherwise arm a subject
           // no call site can ever hit — a silent dead rule.

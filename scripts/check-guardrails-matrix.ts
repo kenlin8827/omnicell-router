@@ -10,7 +10,7 @@ import {
   effectiveCooldown,
   type PairCard,
 } from '../frontend/src/lib/guardrails-matrix';
-import type { BreakerInfo, AccountHealth } from '../frontend/src/lib/api';
+import type { BreakerInfo, CredentialHealth } from '../frontend/src/lib/api';
 
 let failures = 0;
 const check = (name: string, cond: boolean) => {
@@ -33,7 +33,7 @@ const snap = (over: Partial<BreakerInfo> & { modelId: string; provider: string }
   ...over,
 });
 
-const acct = (over: Partial<AccountHealth> & { id: string; providerId: string }): AccountHealth => ({
+const acct = (over: Partial<CredentialHealth> & { id: string; providerId: string }): CredentialHealth => ({
   type: 'api',
   active: true,
   routable: true,
@@ -57,11 +57,11 @@ const LABELS = { unnamed: '未命名', configKey: '配置密钥' };
     [],
     LABELS
   );
-  check('cross = models × accounts (2 cards)', cards.length === 2);
+  check('cross = models × credentials (2 cards)', cards.length === 2);
   const c1 = cards.find((c) => c.prefix === 'k1')!;
   const c2 = cards.find((c) => c.prefix === 'k2')!;
   check('labeled row keeps its label', c1.label === 'Z-1 主力');
-  check('unlabeled row reads 未命名, never the accountId', c2.label === '未命名');
+  check('unlabeled row reads 未命名, never the credentialId', c2.label === '未命名');
   check('pair breaker joins its card (snapSource=pair)', c1.snap === pair && c1.snapSource === 'pair');
   check('healthy sibling has no snap but keeps modelSnap', c2.snap === undefined && c2.modelSnap === model);
   check('effective state folds model breaker into every card', effectiveState(c2) === 'CLOSED');

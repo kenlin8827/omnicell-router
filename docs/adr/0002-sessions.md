@@ -1,8 +1,8 @@
-# ADR-0002: Sessions — Identity Resolution, Monotonic Ratchet, Pin Eviction, Account Affinity
+# ADR-0002: Sessions — Identity Resolution, Monotonic Ratchet, Pin Eviction, Credential Affinity
 
 ## Status
 
-Implemented — 2026-10-15. Derived from code fact (`backend/src/session/session-manager.ts`, `backend/src/pipeline/orchestrator.ts` 4B seam, `backend/src/pipeline/account-selection.ts`). Facts re-derived from current code in the corpus reset (historical numbering retired; current map: 0001 routing, 0003 addressing/membership, 0004 resilience, 0005 execution, 0006 credentials, 0007 environments, 0008 surfaces). Layer: cross-cutting (request-side conversation state). Health vocabulary referenced here is defined in ADR-0004; affinity identity anchoring in ADR-0006. §1 identity revised 2026-10-16: conversation key (API-key scoped, no transport IP) replaces the root-anchor/tombstone layer; tool-call anchors serialize canonically; anchor/key snapshot persists across restarts.
+Implemented — 2026-10-15. Derived from code fact (`backend/src/session/session-manager.ts`, `backend/src/pipeline/orchestrator.ts` 4B seam, `backend/src/pipeline/credential-selection.ts`). Facts re-derived from current code in the corpus reset (historical numbering retired; current map: 0001 routing, 0003 addressing/membership, 0004 resilience, 0005 execution, 0006 credentials, 0007 environments, 0008 surfaces). Layer: cross-cutting (request-side conversation state). Health vocabulary referenced here is defined in ADR-0004; affinity identity anchoring in ADR-0006. §1 identity revised 2026-10-16: conversation key (API-key scoped, no transport IP) replaces the root-anchor/tombstone layer; tool-call anchors serialize canonically; anchor/key snapshot persists across restarts.
 
 ## Context
 
@@ -49,17 +49,17 @@ switch     = evict ∧ healthy landing exists ∧ landing.id ≠ pin
 
 Rejected: peek-based eviction (moves pins off recovering models); filtering the chain head in `executeCandidatePool` (shared by explicit/combo — breaks the explicit-wins contract); waiting for TTL (up to an hour of silent override of a committed operator edit).
 
-### 4. Account affinity — switching is forced failover, never balancing
+### 4. Credential affinity — switching is forced failover, never balancing
 
-Each session may bind one credential (`boundKeyHashPrefix` = display-safe `sha256(keyHash)` prefix, ADR-0006 identity). Contract (pure function at selection, `selectAccount`; persistence lives with the orchestrator, only after a serve):
+Each session may bind one credential (`boundKeyHashPrefix` = display-safe `sha256(keyHash)` prefix, ADR-0006 identity). Contract (pure function at selection, `selectCredential`; persistence lives with the orchestrator, only after a serve):
 
 - bound & healthy & in the candidate's chain → **keep, ever** (local rate-limit caps never move a binding — only the provider's own 429 / pair-open / takedown does);
 - bound & pair-OPEN/SUSPECT/DISABLED → next healthy in chain order, **FORCED rebind** persisted after it serves;
-- bound & stale/expired/absent-from-chain → treated absent → deterministic new-session spread `sha256(sessionId) % healthyPool` (capped accounts preferred-against — shaping applies only to NEW placements);
+- bound & stale/expired/absent-from-chain → treated absent → deterministic new-session spread `sha256(sessionId) % healthyPool` (capped credentials preferred-against — shaping applies only to NEW placements);
 - every prefix out → no prefix (legacy force); every prefix DISABLED → move on to the next candidate (a takedown outranks a guess);
-- lazy window expiry (`accountAffinity.cacheTtlMs`, read against `lastActiveAt`) is independent of the session TTL; no switch-back on recovery anywhere.
+- lazy window expiry (`credentialAffinity.cacheTtlMs`, read against `lastActiveAt`) is independent of the session TTL; no switch-back on recovery anywhere.
 
-A model repin never rewrites the binding: continuity rides the selection boundary (keep if the bound prefix exists in the new provider's chain, else stale → re-spread + forced rebind). The model dimension and the account dimension are strictly separated: partial account disablement rebinds the account, never the model.
+A model repin never rewrites the binding: continuity rides the selection boundary (keep if the bound prefix exists in the new provider's chain, else stale → re-spread + forced rebind). The model dimension and the credential dimension are strictly separated: partial credential disablement rebinds the credential, never the model.
 
 ## Consequences
 
@@ -68,4 +68,4 @@ A model repin never rewrites the binding: continuity rides the selection boundar
 - Client User-Agent headers ride the traces (`request.clientHeaders.userAgent`) and are surfaced read-only on the console session table as a display-only client fingerprint; being client-forgeable they are never an identity or routing input — same reasoning as the transport-IP exclusion above.
 - Bypass (combo) turns never mint a session entity, so per-session turn numbering uses a dedicated persisted counter (`SessionManager.recordBypassTurn`, snapshot field `bypassTurns`) — display-only bookkeeping that never feeds routing; without it every combo request read `undefined + 1` and stamped every row #1 in the console's request-detail table.
 - Operator edits (tier lists, denylist) reach live conversations next turn; each evicted session pays exactly one cache rebuild — forced, attributable, retried only when it has somewhere to land.
-- Tests: `backend/tests/pin-eviction.test.ts` (forces, non-triggers, recovering exemption with two-view divergence, landing guard, scope regressions), `account-affinity-orchestrator.test.ts`, `account-selection.test.ts`, `session.test.ts`, `resilience*.test.ts`.
+- Tests: `backend/tests/pin-eviction.test.ts` (forces, non-triggers, recovering exemption with two-view divergence, landing guard, scope regressions), `credential-affinity-orchestrator.test.ts`, `credential-selection.test.ts`, `session.test.ts`, `resilience*.test.ts`.

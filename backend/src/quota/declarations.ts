@@ -3,7 +3,7 @@ import type { QuotaCodeAdapter, QuotaProbeEntry } from './types.js';
 /**
  * Built-in declaration table (L-b) — ships with the release, keyed by the OCR
  * CATALOG provider id (never another project's id namespace). Coverage here is
- * independent of the live account pool: a covered provider's credential
+ * independent of the live credential pool: a covered provider's credential
  * appearing anywhere in the store arms its probes automatically.
  *
  * Per-entry discipline:
@@ -34,7 +34,7 @@ export const BUILTIN_QUOTA_DECLARATIONS: QuotaProbeEntry[] = [
         // Credit-pool flattening (v1-lossy: currency +
         // granted/topped-up split are not modeled): the balance reads as a
         // pool that drains from its current total — used 0 at fetch time,
-        // total = the live balance. A funded account is 100% left, an empty
+        // total = the live balance. A funded credential is 100% left, an empty
         // one 0%.
         used: { literal: 0 },
         total: { firstOf: [{ path: 'total_balance' }, { path: 'totalBalance' }] },
@@ -164,7 +164,7 @@ export const BUILTIN_QUOTA_DECLARATIONS: QuotaProbeEntry[] = [
           nameCode: 'weekly',
           // usage is an OBJECT on the response (limits is the sibling array);
           // the DSL path walks it directly. `where` gates on a real cap so a
-          // limit-less free account does not read as an unlimited 100% window.
+          // limit-less free credential does not read as an unlimited 100% window.
           where: { path: 'usage.limit', exists: true },
           used: { path: 'usage.used' },
           total: { path: 'usage.limit' },

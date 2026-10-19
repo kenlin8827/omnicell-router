@@ -10,7 +10,7 @@ import { runSystemoneDecision } from '../protocols/systemone/decide.js';
 import { validateSystemoneRequest } from '../protocols/systemone/convert.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import { computeRequestCost } from '../metrics/request-cost.js';
-import { getRateLimiter, accountSubject, apiKeySubject } from '../ratelimit/rate-limiter.js';
+import { getRateLimiter, credentialSubject, apiKeySubject } from '../ratelimit/rate-limiter.js';
 import { UpstreamError } from '../resilience/error-classifier.js';
 import type { ChatCompletionRequest, Usage } from '../types/openai.js';
 import { buildSystemoneOcrHeaders } from './ocr-headers.js';
@@ -246,7 +246,7 @@ export async function runDecisionSurface(
   // repairs re-call the SAME candidate and must not re-consume the slot
   // ("counts dispatch decisions, not HTTP attempts" — rate-limiter.ts).
   const rlPrefix = registry.getCredentialChain(model.provider)?.[0]?.keyHashPrefix;
-  const rlSubject = rlPrefix ? accountSubject(model.provider, rlPrefix) : undefined;
+  const rlSubject = rlPrefix ? credentialSubject(model.provider, rlPrefix) : undefined;
   if (rlSubject) getRateLimiter().dispatch(rlSubject);
 
   const startedAt = Date.now();

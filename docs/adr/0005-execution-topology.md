@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented — 2026-10-15 (facts-side corpus rewrite). Scope: how a decision becomes an upstream call; what the boot pool is built from; retry/failover semantics; streaming; token-saver compression; cost truth. Health semantics = ADR-0004; addressing/membership = ADR-0003; account selection/affinity = ADR-0002.
+Implemented — 2026-10-15 (facts-side corpus rewrite). Scope: how a decision becomes an upstream call; what the boot pool is built from; retry/failover semantics; streaming; token-saver compression; cost truth. Health semantics = ADR-0004; addressing/membership = ADR-0003; credential selection/affinity = ADR-0002.
 
 ## Decision
 
@@ -18,7 +18,7 @@ Failure doctrine: an unroutable provider is EXCLUDED and reported (`db_unreadabl
 
 ### 3. The single candidate choke point
 
-`executeCandidatePool` is the ONE execution funnel for every entry mode (auto/explicit/combo/escalation) — so per-key model-access filtering applied there covers everything, including tier-escalation tails into denied models (`orchestrator.ts:1316-1331`; `policyDenied` → honest 403, `:939-946`). Per-candidate sequence fixed: selectAccount (health+affinity+slack, ADR-0002/0004) → rate-limit PEEK → consuming breaker gate `canExecuteScoped` (the ONLY probe-consuming check on the request path) → outbound slot deduct → `registry.execute` with the chosen credential (unknown-selector throw unreachable — stale-binding recovery happens at the selection boundary, never as a 500) → scoped breaker record. Last candidate is forced free when every gate denies (all-unhealthy keeps the legacy no-prefix force); all-DISABLED is NEVER forced (a takedown outranks availability, ADR-0004).
+`executeCandidatePool` is the ONE execution funnel for every entry mode (auto/explicit/combo/escalation) — so per-key model-access filtering applied there covers everything, including tier-escalation tails into denied models (`orchestrator.ts:1316-1331`; `policyDenied` → honest 403, `:939-946`). Per-candidate sequence fixed: selectCredential (health+affinity+slack, ADR-0002/0004) → rate-limit PEEK → consuming breaker gate `canExecuteScoped` (the ONLY probe-consuming check on the request path) → outbound slot deduct → `registry.execute` with the chosen credential (unknown-selector throw unreachable — stale-binding recovery happens at the selection boundary, never as a 500) → scoped breaker record. Last candidate is forced free when every gate denies (all-unhealthy keeps the legacy no-prefix force); all-DISABLED is NEVER forced (a takedown outranks availability, ADR-0004).
 
 ### 4. Two-stage retry economics
 

@@ -32,7 +32,7 @@ export interface LLMProvider {
      * authenticates with `credential.key` INSTEAD of the boot-baked
      * `config.apiKey`; when absent the baked key is used (100% backward
      * compatible — the registry only passes this for explicitly selected
-     * accounts, and the no-selector default stays `undefined`).
+     * credentials, and the no-selector default stays `undefined`).
      */
     credential?: CallCredential
   ): Promise<ChatCompletionResponse>;

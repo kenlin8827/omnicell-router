@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { AccountStateStore } from '../src/resilience/account-state.js';
+import { CredentialStateStore } from '../src/resilience/credential-state.js';
 import { CircuitBreakerManager } from '../src/resilience/circuit-breaker-manager.js';
 import { ActiveHealthProber, type ProberTargetResolver } from '../src/resilience/health-prober.js';
 import type { CredentialPaths } from '../src/opencode/credentials/paths.js';
@@ -62,14 +62,14 @@ const NET_503: ErrorDiagnosis = {
 function makeShadowManager(rules?: BreakerRulesConfig, over: Partial<CircuitBreakerConfig> = {}) {
   const clock = makeClock();
   const paths = sandboxPaths();
-  const accountState = new AccountStateStore({ paths, now: clock.now });
+  const credentialState = new CredentialStateStore({ paths, now: clock.now });
   const manager = new CircuitBreakerManager(
     { ...BASE, shadow: true, ...over, ...(rules ? { rules } : {}) },
     clock.now,
-    accountState,
+    credentialState,
   );
   manager.registerModel(model('p/x', 'p'));
-  return { manager, clock, accountState, paths };
+  return { manager, clock, credentialState, paths };
 }
 
 function model(id: string, provider: string): ModelRegistration {
@@ -146,7 +146,7 @@ describe('shadow: full accounting, never denies', () => {
     const manager = new CircuitBreakerManager(
       { ...BASE, shadow: false },
       clock.now,
-      new AccountStateStore({ paths, now: clock.now }),
+      new CredentialStateStore({ paths, now: clock.now }),
     );
     manager.registerModel(model('p/x', 'p'));
     manager.recordFailureScoped('p/x', NET_503, 'p');
@@ -167,15 +167,15 @@ describe('shadow exemptions: operator intent is not a rule', () => {
   });
 
   it('the DISABLED operator takedown gates selection regardless of shadow', () => {
-    const { manager, accountState } = makeShadowManager();
-    expect(accountState.disable('p', 'K1', 'operator takedown')).toBe(true);
+    const { manager, credentialState } = makeShadowManager();
+    expect(credentialState.disable('p', 'K1', 'operator takedown')).toBe(true);
     expect(manager.isPairOut('p/x', 'K1')).toBe(true); // first check in isPairOut, exempt from shadow
     expect(manager.modelAvailability('p/x', ['K1']).openPrefixes).toEqual(['K1']);
   });
 
   it('SUSPECT gating is unaffected by shadow', () => {
-    const { manager, accountState } = makeShadowManager();
-    accountState.mark('p', 'K1', 'dead key');
+    const { manager, credentialState } = makeShadowManager();
+    credentialState.mark('p', 'K1', 'dead key');
     const gate = manager.canExecuteScoped('p/x', 'K1');
     expect(gate.allowed).toBe(false); // suspect refusal is the manager's, not the breaker verdict
     expect(manager.isPairOut('p/x', 'K1')).toBe(true);

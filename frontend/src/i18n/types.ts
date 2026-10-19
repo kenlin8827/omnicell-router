@@ -266,8 +266,8 @@ export interface TranslationDict {
     updateKey: string;
     updateKeyPrompt: string;
     keyUpdated: string;
-    addKeyAccount: string;
-    addKeyAccountTip: string;
+    addKeyCredential: string;
+    addKeyCredentialTip: string;
     addKeyPrompt: string;
     keyAdded: string;
     updateKeyTip: string;
@@ -315,7 +315,7 @@ export interface TranslationDict {
     /** Test-route 400 precondition reasonCodes. */
     reasonNoTestableModel: string;
     reasonNoBaseUrl: string;
-    reasonAccountNotTestable: string;
+    reasonCredentialNotTestable: string;
     /** Model-pull failures (pull_* reasonCodes). */
     pullHttp: string;
     pullNonJson: string;
@@ -420,7 +420,7 @@ export interface TranslationDict {
     exclDbUnreadable: string;
     exclNoRoutable: string;
     exclReconcilePushFailed: string;
-    /** One-shot Push-to-opencode convergence (ocr binding with local-only accounts). */
+    /** One-shot Push-to-opencode convergence (ocr binding with local-only credentials). */
     pushBtn: string;
     pushTip: string;
     pushOk: string;
@@ -428,7 +428,7 @@ export interface TranslationDict {
     pushNone: string;
     /** Honest error notice when a purgeAuth delete left credentials behind (Decision 8). */
     purgeFailed: string;
-    /** Fallback detail when the store reports a failed purge without per-account entries. */
+    /** Fallback detail when the store reports a failed purge without per-credential entries. */
     purgeFailedUnknown: string;
     pushOpencodeV2Unreachable: string;
     pushOpencodeV2DbUnreadable: string;
@@ -468,8 +468,8 @@ export interface TranslationDict {
     /** gap #8 tail: 'bind_failed' badge (degraded status + exclusion row). */
     storeDegradedBind: string;
     exclBindFailed: string;
-    /** Per-account write route reasonCodes (activate / rename / disconnect). */
-    reasonAccountNotFound: string;
+    /** Per-credential write route reasonCodes (activate / rename / disconnect). */
+    reasonCredentialNotFound: string;
     reasonCapabilityUnsupported: string;
     /** opencode v2 service does not recognize the provider's integration id (409). */
     reasonIntegrationUnmatched: string;
@@ -482,29 +482,29 @@ export interface TranslationDict {
     reasonStoreReadonly: string;
     reasonStoreUnreadable: string;
     reasonWriteFailed: string;
-    /** Per-account drill-down (KeysPage provider cards). */
-    accountSoleServingTip: string;
+    /** Per-credential drill-down (KeysPage provider cards). */
+    credentialSoleServingTip: string;
     /** Chain head = opencode's own key + failover priority head, not the only serving row. */
-    accountChainHeadTip: string;
+    credentialChainHeadTip: string;
     /** Refusal reason: activating a non-routable credential cannot affect gateway routing. */
-    accountActivateNotRoutableTip: string;
+    credentialActivateNotRoutableTip: string;
     /** Under-list line: several credentials DO serve at once (per-session spread). */
-    accountsSpreadHint: string;
-    /** Operator takedown (OCR account state; reversible, never destructive). */
-    accountDisabled: string;
-    accountDisabledTip: string;
-    accountDisable: string;
-    accountDisableTip: string;
-    accountEnable: string;
-    accountEnableTip: string;
-    accountDisabledOk: string;
-    accountEnabled: string;
-    accountsAllDisabled: string;
-    accountsAllDisabledTip: string;
+    credentialsSpreadHint: string;
+    /** Operator takedown (OCR credential state; reversible, never destructive). */
+    credentialDisabled: string;
+    credentialDisabledTip: string;
+    credentialDisable: string;
+    credentialDisableTip: string;
+    credentialEnable: string;
+    credentialEnableTip: string;
+    credentialDisabledOk: string;
+    credentialEnabled: string;
+    credentialsAllDisabled: string;
+    credentialsAllDisabledTip: string;
     /** Full explanation behind the ⊘ icon (the two-word badge answered nothing). */
-    accountNotRoutableTip: string;
-    accountSuspectTip: string;
-    accountOpenPairs: string;
+    credentialNotRoutableTip: string;
+    credentialSuspectTip: string;
+    credentialOpenPairs: string;
     /** Per-credential quota tracking badge — display-only, never
      *  gates routing. */
     quotaLeft: string;
@@ -518,53 +518,53 @@ export interface TranslationDict {
     quotaUnverified: string;
     quotaVerified: string;
     quotaPlan: string;
-    accountPrefixTip: string;
-    accountActivate: string;
-    accountActivated: string;
-    /** Per-account connectivity probe (multi-account: the provider-level Test only ever hits the head row). */
-    accountTest: string;
-    accountTestTip: string;
-    accountRename: string;
-    accountLabelPlaceholder: string;
-    accountRenamed: string;
+    credentialPrefixTip: string;
+    credentialActivate: string;
+    credentialActivated: string;
+    /** Per-credential connectivity probe (multi-credential: the provider-level Test only ever hits the head row). */
+    credentialTest: string;
+    credentialTestTip: string;
+    credentialRename: string;
+    credentialLabelPlaceholder: string;
+    credentialRenamed: string;
     /** Neutral stand-in for an unlabeled credential (OCR never invents a name). */
-    accountUnnamed: string;
+    credentialUnnamed: string;
     /** Confirm button tooltip when the draft is empty = remove the name. */
-    accountClearLabel: string;
-    accountLabelCleared: string;
+    credentialClearLabel: string;
+    credentialLabelCleared: string;
     /** Fallback sink name when the bound store is unknown (status endpoint failed). */
     credentialStoreNeutral: string;
     /** Adding a key must not steal the chain head (opencode's own active credential). */
     headPreserved: string;
-    accountDisconnect: string;
-    accountDisconnected: string;
+    credentialDisconnect: string;
+    credentialDisconnected: string;
     /** Decision 8 step 1 on a non-opencode v2 binding — store-neutral wording. */
-    accountDisconnectPurge: string;
+    credentialDisconnectPurge: string;
     /** Decision 8 step 1 — same shape as the provider delete confirm. */
-    accountDisconnectConfirm: string;
-    accountClearSuspect: string;
-    accountLimits: string;
-    accountLimitsTip: string;
-    accountLimitsTitle: string;
-    accountLimitsDesc: string;
-    accountLimitsSaved: string;
-    accountLimitsCleared: string;
-    accountLimitsWindows: string;
-    accountLimitsRetryIn: string;
-    accountSuspectCleared: string;
-    accountSuspectNone: string;
+    credentialDisconnectConfirm: string;
+    credentialClearSuspect: string;
+    credentialLimits: string;
+    credentialLimitsTip: string;
+    credentialLimitsTitle: string;
+    credentialLimitsDesc: string;
+    credentialLimitsSaved: string;
+    credentialLimitsCleared: string;
+    credentialLimitsWindows: string;
+    credentialLimitsRetryIn: string;
+    credentialSuspectCleared: string;
+    credentialSuspectNone: string;
     reasonGeneric: string;
     reasonGenericCode: string;
     /** Password-gated raw-key copy (row action + dialog). */
-    accountCopyKey: string;
-    accountCopyNeedsAuthTip: string;
+    credentialCopyKey: string;
+    credentialCopyNeedsAuthTip: string;
     copyKeyTitle: string;
     copyKeyDesc: string;
     copyKeyPassword: string;
     copyKeyConfirm: string;
     copyKeyCopying: string;
-    accountKeyCopied: string;
-    accountKeyCopiedUnlocked: string;
+    credentialKeyCopied: string;
+    credentialKeyCopiedUnlocked: string;
     reasonWebauthRequired: string;
     reasonInvalidPassword: string;
     reasonTooManyAttempts: string;
@@ -671,15 +671,15 @@ hiddenBadge: string;
     catUnknown: string;
     /** Scope-aware manual trip / reset. */
     scopeModel: string;
-    scopeAccount: string;
+    scopeCredential: string;
     scopePair: string;
     tripScopeTip: string;
     tripScopeSuccess: string;
     resetScope: string;
     resetScopeSuccess: string;
     resetScopeNone: string;
-    resetAccountConfirmTitle: string;
-    resetAccountConfirmDesc: string;
+    resetCredentialConfirmTitle: string;
+    resetCredentialConfirmDesc: string;
     /** The (model × credential) matrix grid. */
     singlePoint: string;
     resetPairSuccess: string;
@@ -687,7 +687,7 @@ hiddenBadge: string;
     pairTrippedSub: string;
     providerFilter: string;
     modelFilter: string;
-    accountFilter: string;
+    credentialFilter: string;
     noPairRecords: string;
     unmatchedHint: string;
     configKey: string;
@@ -741,7 +741,7 @@ hiddenBadge: string;
     pBlast: string;
     rScopeAuto: string;
     rScopePair: string;
-    rScopeAccount: string;
+    rScopeCredential: string;
     rScopeModel: string;
     markSuspect: string;
     markSuspectWarn: string;
@@ -832,8 +832,8 @@ hiddenBadge: string;
   sessions: {
     sessionsTitle: string;
     sessionsDesc: string;
-    /** Tooltip for the account-affinity chip (Decision 7 binding). */
-    boundAccountTip: string;
+    /** Tooltip for the credential-affinity chip (Decision 7 binding). */
+    boundCredentialTip: string;
     refresh: string;
     thTokensIn: string;
     thTokensOut: string;

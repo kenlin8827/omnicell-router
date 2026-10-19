@@ -61,7 +61,7 @@ export interface RateLimitEvent {
   count: number;
   direction: RateLimitEventDirection;
   kind: RateLimitEventKind;
-  /** Engine subject: `apikey:<id>` or `account:<provider>:<keyHashPrefix>`. */
+  /** Engine subject: `apikey:<id>` or `credential:<provider>:<keyHashPrefix>`. */
   subject: string;
   /** Binding constraint display label, e.g. "1m/requests" — echoes the YAML rule. */
   rule: string;

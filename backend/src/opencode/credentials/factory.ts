@@ -16,7 +16,7 @@ import {
   StoreCapabilities,
   StoreProbeResult,
   StoreUnreadableError,
-  AccountOverview,
+  CredentialOverview,
   EmptyCredentialTableError,
   VersionEvidence,
   keyHashPrefix,
@@ -52,7 +52,7 @@ export interface StoreStatus {
   evidence: VersionEvidence;
   excluded: ExcludedCredential[];
   /** Masked per-provider summary — never raw keys. */
-  accounts: AccountOverview[];
+  credentials: CredentialOverview[];
   probeResult: StoreProbeResult | null;
   /** The file/db the bound store actually addresses (console display). */
   credentialFile: string;
@@ -225,9 +225,9 @@ export function writeCredentialStoreState(paths: CredentialPaths, rec: Credentia
   }
 }
 
-function safeOverview(store: CredentialStore): AccountOverview[] {
+function safeOverview(store: CredentialStore): CredentialOverview[] {
   try {
-    return store.accountsOverview();
+    return store.credentialsOverview();
   } catch {
     return []; // probeResult carries the loud state
   }
@@ -238,7 +238,7 @@ function safeProbe(store: CredentialStore): StoreProbeResult | null {
     return store.probe();
   } catch (e) {
     if (e instanceof EmptyCredentialTableError) {
-      return { ok: true, kind: store.kind, state: 'empty', accountCount: 0 };
+      return { ok: true, kind: store.kind, state: 'empty', credentialCount: 0 };
     }
     if (e instanceof StoreUnreadableError) {
       return {
@@ -247,7 +247,7 @@ function safeProbe(store: CredentialStore): StoreProbeResult | null {
         state: 'unreadable',
         degradedCode: 'db_unreadable',
         detail: e.message,
-        accountCount: 0,
+        credentialCount: 0,
       };
     }
     return null;
@@ -277,7 +277,7 @@ interface StandaloneImportOutcome {
  * before the store flip may hold keys ONLY in auth.json. At bind time, when
  * no completion marker exists and auth.json has entries:
  *  - type:'api' entries are imported into <ocrHome>/credentials.json
- *    (keyHash dedup against existing accounts — idempotent by construction),
+ *    (keyHash dedup against existing credentials — idempotent by construction),
  *  - oauth/wellknown entries are listed and badged, never imported as keys
  *    (OAuth boundary — a token is not an api key),
  *  - auth.json stays on disk BYTE-IDENTICAL (never delete an upstream
@@ -334,7 +334,7 @@ async function runStandaloneImport(
     // boot, not reject the whole bind through this "total" helper.
     let localHashes: Set<string>;
     try {
-      localHashes = new Set(store.listAccounts(providerId).map((a) => a.keyHashPrefix ?? ''));
+      localHashes = new Set(store.listCredentials(providerId).map((a) => a.keyHashPrefix ?? ''));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       entries.push({ provider: providerId, action: 'failed', reason: `local store unreadable: ${msg}` });
@@ -413,7 +413,7 @@ function bindFailureLanding(overrides: BindOverrides, detail: string): StoreBind
     degradedCode: 'bind_failed',
     evidence,
     excluded: [{ provider: '*', reasonCode: 'bind_failed', detail }],
-    accounts: safeOverview(store),
+    credentials: safeOverview(store),
     probeResult: safeProbe(store),
     credentialFile: credentialFileFor(store.kind, paths),
     boundAt: Date.now(),
@@ -474,7 +474,7 @@ async function bindCredentialStoreOnce(overrides: BindOverrides = {}): Promise<S
     degradedCode: null,
     evidence,
     excluded,
-    accounts: safeOverview(ocr),
+    credentials: safeOverview(ocr),
     probeResult: safeProbe(ocr),
     credentialFile: credentialFileFor(ocr.kind, paths),
     boundAt: now(),

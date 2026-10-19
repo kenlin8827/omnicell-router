@@ -17,9 +17,9 @@ import { keyHashPrefix } from '../opencode/credentials/types.js';
 import { isSyncClientId } from '../opencode/credentials/sync.js';
 import { ensureCa } from '../forward-proxy/ca.js';
 import { getForwardProxyStatus } from '../forward-proxy/status.js';
-import { RouterConfig, type AccountLimitConfig, type RateLimitRule } from '../config/types.js';
+import { RouterConfig, type CredentialLimitConfig, type RateLimitRule } from '../config/types.js';
 import type { CatalogModel } from '../opencode/catalog/types.js';
-import type { AccountMeta, CredentialStore, RawCred } from '../opencode/credentials/types.js';
+import type { CredentialMeta, CredentialStore, RawCred } from '../opencode/credentials/types.js';
 import type { CircuitBreakerManager } from '../resilience/index.js';
 import type { TraceTracker } from '../trace/tracker.js';
 import type { OpenCodeProviderView } from '../opencode/user-config.js';
@@ -33,7 +33,7 @@ import {
   validateModelAccess,
 } from '../auth/api-keys.js';
 import { getModelAccessPolicy, isAutoEntryUsable, isModelAllowed, tierFromVirtualEntry } from '../auth/model-access.js';
-import { validateRateLimitRules, getRateLimiter, accountSubject } from '../ratelimit/rate-limiter.js';
+import { validateRateLimitRules, getRateLimiter, credentialSubject } from '../ratelimit/rate-limiter.js';
 import { getQuotaProber } from '../quota/prober.js';
 import { getQuotaStore } from '../quota/store.js';
 import { getQuotaEventLog } from '../quota/events.js';
@@ -305,30 +305,30 @@ function credentialSinkLabel(store: CredentialStore): string {
 /**
  * Reconnect clears SUSPECT. The flag never auto-returns
  * ("cleared only by manual reconnect or Push"), and every such gesture hands
- * this account's key material to the bound store: the write's returned
- * AccountMeta names the Decision 5 identity (keyHashPrefix), so the clear is
+ * this credential's key material to the bound store: the write's returned
+ * CredentialMeta names the Decision 5 identity (keyHashPrefix), so the clear is
  * anchored on key material, never on a churnable id or label. No prefix in the
  * result (oauth / non-routable row) = nothing to clear; the next 401 re-marks it anyway.
  */
-function clearSuspectForAccount(cb: CircuitBreakerManager, providerId: string, keyHashPrefix?: string): void {
+function clearSuspectForCredential(cb: CircuitBreakerManager, providerId: string, keyHashPrefix?: string): void {
   if (!keyHashPrefix) return;
-  cb.getAccountStateStore().clear(providerId, keyHashPrefix);
+  cb.getCredentialStateStore().clear(providerId, keyHashPrefix);
 }
 
 /**
  * Idempotent connect (identity at the write seam): handing the store a
- * key it ALREADY holds for this provider is idempotent — the existing account is
+ * key it ALREADY holds for this provider is idempotent — the existing credential is
  * reported back and NO second row is created. Without this, every repeated
  * connect grows the chain (`resolveKeyChain` → `registry.credentialChains`), and
- * `pipeline/account-selection.ts` counts chain members, so one physical key would
- * carry the weight of two accounts in the new-session spread while the console
+ * `pipeline/credential-selection.ts` counts chain members, so one physical key would
+ * carry the weight of two credentials in the new-session spread while the console
  * showed two indistinguishable rows.
  *
  * Compared on the sha256 PREFIX (the display-safe identity the whole console
  * surface already keys breakers/SUSPECT on); reconcile/push run the stricter
  * full-hash rule against the raw db, which is their own business.
  *
- * `listAccounts` is NOT caught: an unreadable store must fail the same
+ * `listCredentials` is NOT caught: an unreadable store must fail the same
  * `store_unreadable` the write path would have raised (cp-failfast — a swallowed
  * read here would silently permit the duplicate it exists to prevent).
  *
@@ -345,50 +345,50 @@ async function connectKeyIdempotent(
   providerId: string,
   key: string,
   label: string | undefined,
-  // Account flags live in the resilience state file, reached through the manager
+  // Credential flags live in the resilience state file, reached through the manager
   // so the write seam never re-derives its own view of "is this head still good".
   cb: CircuitBreakerManager
-): Promise<{ account: AccountMeta; deduped: boolean; headPreserved?: AccountMeta }> {
+): Promise<{ credential: CredentialMeta; deduped: boolean; headPreserved?: CredentialMeta }> {
   const { keyHashPrefix } = await import('../opencode/credentials/index.js');
   const prefix = keyHashPrefix(key);
-  const before = store.listAccounts(providerId);
+  const before = store.listCredentials(providerId);
   const existing = before.find((a) => a.keyHashPrefix === prefix);
-  if (existing) return { account: existing, deduped: true };
+  if (existing) return { credential: existing, deduped: true };
 
   // Who was serving before this gesture — decided on the PRE-write view.
   const priorHead = before.find((a) => a.active && a.routable);
 
-  let account = await store.connectKey(providerId, key, label);
+  let credential = await store.connectKey(providerId, key, label);
   store.invalidate(); // the post-write view must reflect the sink, not the cache
-  const created = store.listAccounts(providerId).find((a) => a.keyHashPrefix === prefix);
+  const created = store.listCredentials(providerId).find((a) => a.keyHashPrefix === prefix);
 
   if (label === undefined && created && store.capabilities.rename && created.label) {
     try {
-      account = await store.rename(created.id, '');
+      credential = await store.rename(created.id, '');
     } catch {
-      account = created; // honest: the sink's name is still on the row
+      credential = created; // honest: the sink's name is still on the row
     }
   }
 
   /**
    * Opencode v2 makes a connected credential the active one (verified live on
    * 2.0.15: adding a second deepseek key demoted the working row to active=0).
-   * `active` is ALSO the credential opencode's own CLI uses, so "add an account"
+   * `active` is ALSO the credential opencode's own CLI uses, so "add an credential"
    * silently repointing the operator's terminal sessions is a hijack, not a
    * default. When a USEABLE head already existed, put it back: the new key joins
-   * the chain as an extra account, and promoting it stays a deliberate second
+   * the chain as an extra credential, and promoting it stays a deliberate second
    * action (the row's own set-as-chain-head button). A prior head that is SUSPECT or
    * operator-disabled is NOT defended — there, the new key taking over IS the
    * rotation the operator was reaching for.
    */
-  let headPreserved: AccountMeta | undefined;
+  let headPreserved: CredentialMeta | undefined;
   if (
     priorHead &&
     created?.active &&
     created.id !== priorHead.id &&
     store.capabilities.activate
   ) {
-    const state = cb.getAccountStateStore();
+    const state = cb.getCredentialStateStore();
     const defensible = !(
       (priorHead.keyHashPrefix && state.isSuspect(providerId, priorHead.keyHashPrefix)) ||
       (priorHead.keyHashPrefix && state.isDisabled(providerId, priorHead.keyHashPrefix))
@@ -396,14 +396,14 @@ async function connectKeyIdempotent(
     if (defensible) {
       try {
         headPreserved = await store.activate(priorHead.id);
-        account = store.listAccounts(providerId).find((a) => a.keyHashPrefix === prefix) ?? account;
+        credential = store.listCredentials(providerId).find((a) => a.keyHashPrefix === prefix) ?? credential;
       } catch {
         headPreserved = undefined; // the sink kept the new head; the reply stays truthful
       }
     }
   }
 
-  return { account, deduped: false, ...(headPreserved ? { headPreserved } : {}) };
+  return { credential, deduped: false, ...(headPreserved ? { headPreserved } : {}) };
 }
 
 /**
@@ -449,14 +449,14 @@ async function mapStoreWriteFailure(err: unknown): Promise<{ status: number; bod
 // ─── Quota tracking ─────────────────────────────────────────────────────────
 
 /**
- * The per-account quota view riding the AccountHealth overlay (every
- * account-returning response, per the per-account overlay contract). Present
- * ONLY when the account's provider is COVERED (built-in table / adapter /
- * config entry); uncovered accounts carry no `quota` key at all — absence
+ * The per-credential quota view riding the CredentialHealth overlay (every
+ * credential-returning response, per the per-credential overlay contract). Present
+ * ONLY when the credential's provider is COVERED (built-in table / adapter /
+ * config entry); uncovered credentials carry no `quota` key at all — absence
  * means "not covered", which is deliberately NOT the same signal as the
  * `unverified` badge ("covered, no data yet").
  */
-export interface AccountQuotaView {
+export interface CredentialQuotaView {
   /** Four-state badge: probed / declared / unverified / stale. */
   badge: QuotaBadgeState;
   source?: QuotaSource;
@@ -473,7 +473,7 @@ export interface AccountQuotaView {
 
 /** Compute the overlay for one pair, joining the live plan (coverage/TTL)
  *  with the store (snapshot). Undefined = provider not covered. */
-function quotaViewFor(providerId: string, keyHashPrefix?: string): AccountQuotaView | undefined {
+function quotaViewFor(providerId: string, keyHashPrefix?: string): CredentialQuotaView | undefined {
   if (!keyHashPrefix) return undefined;
   const prober = getQuotaProber();
   // ttlMs is defined exactly when the LIVE plan covers the provider.
@@ -510,16 +510,16 @@ function quotaViewFor(providerId: string, keyHashPrefix?: string): AccountQuotaV
  * uses (store chains + config-baked inference keys, display-safe prefixes
  * only) — joined with its quota view and its per-pair trace usage. This is
  * the "all connected pairs, each with its quota" cross-provider surface;
- * KeysPage keeps the per-account inline badge, this page owns the overview.
+ * KeysPage keeps the per-credential inline badge, this page owns the overview.
  */
 interface QuotaPairRow {
   providerId: string;
   keyHashPrefix: string;
-  /** Chain label (account name) or the config provider name for baked keys. */
+  /** Chain label (credential name) or the config provider name for baked keys. */
   label?: string;
   /** Live-plan coverage (built-in table / adapter / config entry). */
   covered: boolean;
-  quota?: AccountQuotaView;
+  quota?: CredentialQuotaView;
   /** Attributed usage from the trace ring (undefined = nothing attributed
    *  yet — turns recorded before the attribution field, or chain-less). */
   usage?: { requests: number; inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number };
@@ -550,7 +550,7 @@ function buildQuotaPairRows(
   }
   // Per-pair usage join (trace ring GROUP BY provider×prefix — the step-1
   // aggregation surface).
-  const usageRows = traceTracker.getAccountPairUsageStats();
+  const usageRows = traceTracker.getCredentialPairUsageStats();
   for (const row of usageRows) {
     const p = pairs.get(`${row.provider}#${row.keyHashPrefix}`);
     if (p) {
@@ -569,32 +569,32 @@ function buildQuotaPairRows(
 }
 
 // ---------------------------------------------------------------------------
-// Per-account write surface (activate / rename / disconnect routes)
+// Per-credential write surface (activate / rename / disconnect routes)
 // ---------------------------------------------------------------------------
 
-/** Masked account meta + the P3-step3 store-status overlay keys (badge shape). */
-type AccountHealth = AccountMeta & {
+/** Masked credential meta + the P3-step3 store-status overlay keys (badge shape). */
+type CredentialHealth = CredentialMeta & {
   suspect: boolean;
   openPairs: number;
   cooldownUntilMs?: number;
-  /** Operator takedown (the `disabled` section of the account state file). */
+  /** Operator takedown (the `disabled` section of the credential state file). */
   disabled: boolean;
   /** The operator's note attached at takedown time — display only, only when disabled. */
   disabledReason?: string;
-  /** Outbound rate-limit rules armed for THIS credential (config `accounts:` overlay). */
+  /** Outbound rate-limit rules armed for THIS credential (config `credentials:` overlay). */
   limits?: RateLimitRule[];
   /** Quota tracking overlay — present only when the provider is
    *  covered; absence != `unverified` badge. */
-  quota?: AccountQuotaView;
+  quota?: CredentialQuotaView;
 };
 
 /** 404 body shared by the guard (pre-write) and the race catch (post-delete churn). */
-function accountNotFoundBody(accountId: string, providerId: string): Record<string, unknown> {
+function credentialNotFoundBody(credentialId: string, providerId: string): Record<string, unknown> {
   return {
     status: 'error',
     success: false,
-    reasonCode: 'account_not_found',
-    error: `account '${accountId}' is not listed under provider '${providerId}'`,
+    reasonCode: 'credential_not_found',
+    error: `credential '${credentialId}' is not listed under provider '${providerId}'`,
   };
 }
 
@@ -610,44 +610,44 @@ function capabilityRefusalBody(capability: 'activate' | 'rename'): Record<string
 }
 
 /**
- * Cross-check guard: accountId MUST name an account the bound store lists
+ * Cross-check guard: credentialId MUST name an credential the bound store lists
  * under :providerId — no blind passthrough of arbitrary ids to store methods
  * (OcrStore.activate would otherwise happily touch another provider's row).
  * The pre-write meta is returned because disconnect needs the keyHashPrefix
  * BEFORE deletion (Decision 5: SUSPECT state is anchored on key material).
  */
-async function guardStoreAccount(
+async function guardStoreCredential(
   store: CredentialStore,
   providerId: string,
-  accountId: string
-): Promise<{ ok: true; meta: AccountMeta } | { ok: false; status: number; body: Record<string, unknown> }> {
-  let metas: AccountMeta[];
+  credentialId: string
+): Promise<{ ok: true; meta: CredentialMeta } | { ok: false; status: number; body: Record<string, unknown> }> {
+  let metas: CredentialMeta[];
   try {
-    metas = store.listAccounts(providerId);
+    metas = store.listCredentials(providerId);
   } catch (err) {
     const failure = await mapStoreWriteFailure(err); // StoreUnreadableError → 500 store_unreadable
     if (failure) return { ok: false, status: failure.status, body: { status: 'error', ...failure.body } };
     return { ok: false, status: 500, body: { status: 'error', success: false, error: errMessage(err) } };
   }
-  const meta = metas.find((a) => a.id === accountId);
-  if (!meta) return { ok: false, status: 404, body: accountNotFoundBody(accountId, providerId) };
+  const meta = metas.find((a) => a.id === credentialId);
+  if (!meta) return { ok: false, status: 404, body: credentialNotFoundBody(credentialId, providerId) };
   return { ok: true, meta };
 }
 
 /**
- * Shared catch for the three account-write routes — Decision 3: writes fail
- * LOUD, never fall back to OcrStore. AccountNotFoundError is the race edge
+ * Shared catch for the three credential-write routes — Decision 3: writes fail
+ * LOUD, never fall back to OcrStore. CredentialNotFoundError is the race edge
  * (row vanished between guard and write) → 404; everything else keeps the
  * mapStoreWriteFailure vocabulary, with `status: 'error'` merged additively.
  */
-async function mapAccountWriteFailure(
+async function mapCredentialWriteFailure(
   err: unknown,
   providerId: string,
-  accountId: string
+  credentialId: string
 ): Promise<{ status: number; body: Record<string, unknown> }> {
   const m = await import('../opencode/credentials/index.js');
-  if (err instanceof m.AccountNotFoundError) {
-    return { status: 404, body: accountNotFoundBody(accountId, providerId) };
+  if (err instanceof m.CredentialNotFoundError) {
+    return { status: 404, body: credentialNotFoundBody(credentialId, providerId) };
   }
   const failure = await mapStoreWriteFailure(err);
   if (failure) return { status: failure.status, body: { status: 'error', ...failure.body } };
@@ -657,8 +657,8 @@ async function mapAccountWriteFailure(
 /**
  * Masked provider views from the BOUND store (listProviders for every
  * non-opencode-v1-sink binding): config providers from opencode.jsonc ∪ store
- * accounts, in the existing OpenCodeProviderView shape — no new shape.
- * Raw keys never enter the view (AccountMeta is masked by interface
+ * credentials, in the existing OpenCodeProviderView shape — no new shape.
+ * Raw keys never enter the view (CredentialMeta is masked by interface
  * contract; Decision 1 risk limb).
  */
 async function storeProviderViews(store: CredentialStore): Promise<OpenCodeProviderView[]> {
@@ -667,10 +667,10 @@ async function storeProviderViews(store: CredentialStore): Promise<OpenCodeProvi
   // Position reference for the stable ordering applied at the end of this function.
   const configOrder = views.map((v) => v.id);
   const byId = new Map<string, OpenCodeProviderView>(views.map((v) => [v.id, v]));
-  for (const overview of store.accountsOverview()) {
-    let metas: AccountMeta[] = [];
+  for (const overview of store.credentialsOverview()) {
+    let metas: CredentialMeta[] = [];
     try {
-      metas = store.listAccounts(overview.providerId);
+      metas = store.listCredentials(overview.providerId);
     } catch {
       continue; // per-provider unreadable detail: the status endpoint carries it loudly
     }
@@ -701,7 +701,7 @@ async function storeProviderViews(store: CredentialStore): Promise<OpenCodeProvi
     }
   }
   return [...byId.values()].sort((a, b) => {
-    // DETERMINISTIC grid order. `store.accountsOverview()` yields credential-table
+    // DETERMINISTIC grid order. `store.credentialsOverview()` yields credential-table
     // order (`active DESC, time_updated DESC`), so appending store-only providers
     // in that order makes a provider JUMP to the front of the grid every time a
     // key is added to it. Config-defined providers keep their author-defined
@@ -719,10 +719,10 @@ interface PurgeSummary {
   removed: number;
   /**
    * P1-3 response contract (frontend renders these as an error toast):
-   * `{accountId, reason}` + additive machine-readable `reasonCode`
+   * `{credentialId, reason}` + additive machine-readable `reasonCode`
    * ('store_readonly' | 'write_failed' | 'disconnect_failed').
    */
-  failed: { accountId: string; reason: string; reasonCode: 'store_readonly' | 'write_failed' | 'disconnect_failed' }[];
+  failed: { credentialId: string; reason: string; reasonCode: 'store_readonly' | 'write_failed' | 'disconnect_failed' }[];
 }
 
 /** Map a purge disconnect failure to its machine-readable code (P1-3). */
@@ -742,34 +742,34 @@ const SYNC_PRECONDITION_ERROR: Record<'client_absent' | 'client_unreadable' | 's
 
 /**
  * Provider-wide credential purge via the bound store:
- * provider-wide disconnect is a UI-level LOOP over per-account disconnects
- * (not an interface primitive) — per-account failures are collected into the
+ * provider-wide disconnect is a UI-level LOOP over per-credential disconnects
+ * (not an interface primitive) — per-credential failures are collected into the
  * response detail, never dropped.
  */
 async function purgeProviderCredentials(store: CredentialStore, id: string): Promise<PurgeSummary> {
   const failed: PurgeSummary['failed'] = [];
   let removed = 0;
-  if (!store.capabilities.multiAccount) {
-    // single-account store (capability branch, Decision 1): the provider id addresses the sole credential
+  if (!store.capabilities.multiCredential) {
+    // single-credential store (capability branch, Decision 1): the provider id addresses the sole credential
     try {
       await store.disconnect(id);
       removed = 1;
     } catch (e) {
-      failed.push({ accountId: id, reason: errMessage(e), reasonCode: await purgeFailureCode(e) });
+      failed.push({ credentialId: id, reason: errMessage(e), reasonCode: await purgeFailureCode(e) });
     }
     store.invalidate();
     return { attempted: 1, removed, failed };
   }
-  const metas = store.listAccounts(id);
+  const metas = store.listCredentials(id);
   for (const meta of metas) {
     try {
       await store.disconnect(meta.id);
       removed += 1;
     } catch (e) {
-      // Decision 8 + P1-3: honest per-account result, machine-readable code.
-      // An opencode v2-readonly binding fails HERE for every account — loudly, through
+      // Decision 8 + P1-3: honest per-credential result, machine-readable code.
+      // An opencode v2-readonly binding fails HERE for every credential — loudly, through
       // failed[] (reasonCode store_readonly), never a silent removed=0.
-      failed.push({ accountId: meta.id, reason: errMessage(e), reasonCode: await purgeFailureCode(e) });
+      failed.push({ credentialId: meta.id, reason: errMessage(e), reasonCode: await purgeFailureCode(e) });
     }
   }
   store.invalidate();
@@ -777,7 +777,7 @@ async function purgeProviderCredentials(store: CredentialStore, id: string): Pro
 }
 
 /**
- * P1-3 outcome flip: whenever the purge ATTEMPTED accounts but did not
+ * P1-3 outcome flip: whenever the purge ATTEMPTED credentials but did not
  * remove them all, the response must NOT claim success. HTTP stays 200 (the
  * flip is additive: {status:'ok', success:boolean, message, purge} — the
  * frontend renders purge.failed as an error toast). An opencode v2-readonly binding
@@ -788,19 +788,19 @@ function purgeOutcomeMessage(purge: PurgeSummary, id: string, configNodeRemoved:
   const complete = purge.attempted === 0 || purge.removed >= purge.attempted;
   if (complete) {
     // attempted===0 is success but NOT a credential removal claim: the store
-    // simply showed no account rows for this id. Say so instead of the bare
+    // simply showed no credential rows for this id. Say so instead of the bare
     // "'x' removed" the full-purge case uses.
     const noun = configNodeRemoved ? `Provider '${id}' removed` : `Credential entry '${id}' removed`;
     return {
       success: true,
-      message: purge.attempted === 0 ? `${noun} (0 accounts visible to clear)` : noun,
+      message: purge.attempted === 0 ? `${noun} (0 credentials visible to clear)` : noun,
     };
   }
-  const codes = purge.failed.map((f) => `${f.accountId}: ${f.reasonCode}`).join('; ');
+  const codes = purge.failed.map((f) => `${f.credentialId}: ${f.reasonCode}`).join('; ');
   const head = configNodeRemoved
     ? `Provider '${id}' config removed but the credential purge FAILED`
     : `Credential purge for '${id}' FAILED`;
-  return { success: false, message: `${head} (${purge.removed}/${purge.attempted} accounts removed): ${codes}` };
+  return { success: false, message: `${head} (${purge.removed}/${purge.attempted} credentials removed): ${codes}` };
 }
 
 export function registerConsoleRoutes(
@@ -1322,7 +1322,7 @@ export function registerConsoleRoutes(
         inputPrice: model.pricing?.input,
         outputPrice: model.pricing?.output,
         // Decision 6 aggregate: healthy iff the model breaker is up AND at least one
-        // a credential pair serves — a model whose every account is cooling shows
+        // a credential pair serves — a model whose every credential is cooling shows
         // down here exactly as it does to the pool builders.
         healthy: registry.modelAvailable(model).available,
         weight,
@@ -1390,7 +1390,7 @@ export function registerConsoleRoutes(
           inputPrice: model.pricing?.input,
           outputPrice: model.pricing?.output,
           // Decision 6 aggregate: healthy iff the model breaker is up AND at least one
-          // a credential pair serves — a model whose every account is cooling shows
+          // a credential pair serves — a model whose every credential is cooling shows
           // down here exactly as it does to the pool builders.
           healthy: registry.modelAvailable(model).available,
           weight,
@@ -1744,7 +1744,7 @@ export function registerConsoleRoutes(
         latencyMs: result.latencyMs,
         failoverOccurred: result.failoverOccurred === true,
         ...(result.failoverPath?.length ? { failoverPath: result.failoverPath } : {}),
-        ...(result.servedAccountPrefix ? { servedAccountPrefix: result.servedAccountPrefix } : {}),
+        ...(result.servedCredentialPrefix ? { servedCredentialPrefix: result.servedCredentialPrefix } : {}),
       };
     } catch (err: unknown) {
       // Same status mapping as the chat surface's execution-error policy:
@@ -1773,25 +1773,25 @@ export function registerConsoleRoutes(
   //     - Connectable catalog comes from models.dev (same source as `opencode auth login`)
 
   /**
-   * THE account-list shape the
-   * console renders (GET credential-store + the per-account write routes),
+   * THE credential-list shape the
+   * console renders (GET credential-store + the per-credential write routes),
    * so the frontend never relearns a second variant:
    *   suspect        administrative flag (reconnect or Push lifts it)
-   *   openPairs      this account's pair breakers currently OPEN (any model)
+   *   openPairs      this credential's pair breakers currently OPEN (any model)
    *   cooldownUntilMs latest OPEN pair breaker's cooldown end (epoch ms, only when openPairs>0)
    *   disabled       operator takedown — outranks every runtime signal, lifted
    *                  ONLY by the matching enable route (never by cooldown,
    *                  reconnect, Push or a breaker reset)
-   * Masked AccountMeta fields ride through untouched (additive keys only).
+   * Masked CredentialMeta fields ride through untouched (additive keys only).
    */
-  const withAccountHealth = (providerId: string, metas: AccountMeta[]): AccountHealth[] => {
+  const withCredentialHealth = (providerId: string, metas: CredentialMeta[]): CredentialHealth[] => {
     const cb = registry.getCircuitBreakerManager();
-    const accountState = cb.getAccountStateStore();
+    const credentialState = cb.getCredentialStateStore();
     const pairSnaps = cb.snapshotsWithPairs().filter((s) => s.keyHashPrefix !== undefined);
-    // Rate-limit overlay (config `accounts:`): the armed rules per prefix, so
-    // every account row carries its caps beside breaker state — KeysPage
-    // stays the single account panel, no second surface learns this join.
-    const limitOverlay = (getRuntimeConfigRef() || loadConfig()).accounts?.[providerId] ?? [];
+    // Rate-limit overlay (config `credentials:`): the armed rules per prefix, so
+    // every credential row carries its caps beside breaker state — KeysPage
+    // stays the single credential panel, no second surface learns this join.
+    const limitOverlay = (getRuntimeConfigRef() || loadConfig()).credentials?.[providerId] ?? [];
     // Active-first display order, matching the chain order that actually routes
     // (resolveKeyChain: active head, then newest). opencode v2's SQL already
     // yields `ORDER BY active DESC`, but OcrStore returns FILE order — without
@@ -1800,13 +1800,13 @@ export function registerConsoleRoutes(
     // store's own order survives inside each group. Disabled rows sink LAST
     // regardless of the store's active flag — an operator takedown must never
     // read as "the credential in service", and it sorts below every live one.
-    const isOff = (meta: AccountMeta): number =>
-      meta.keyHashPrefix && accountState.isDisabled(providerId, meta.keyHashPrefix) ? 1 : 0;
+    const isOff = (meta: CredentialMeta): number =>
+      meta.keyHashPrefix && credentialState.isDisabled(providerId, meta.keyHashPrefix) ? 1 : 0;
     const ordered = [...metas].sort((a, b) => isOff(a) - isOff(b) || Number(b.active) - Number(a.active));
     return ordered.map((meta) => {
-      const suspect = meta.keyHashPrefix ? accountState.isSuspect(providerId, meta.keyHashPrefix) : false;
-      const disabled = meta.keyHashPrefix ? accountState.isDisabled(providerId, meta.keyHashPrefix) : false;
-      const disabledReason = disabled && meta.keyHashPrefix ? accountState.getDisabled(providerId, meta.keyHashPrefix)?.reason : undefined;
+      const suspect = meta.keyHashPrefix ? credentialState.isSuspect(providerId, meta.keyHashPrefix) : false;
+      const disabled = meta.keyHashPrefix ? credentialState.isDisabled(providerId, meta.keyHashPrefix) : false;
+      const disabledReason = disabled && meta.keyHashPrefix ? credentialState.getDisabled(providerId, meta.keyHashPrefix)?.reason : undefined;
       const pairs = meta.keyHashPrefix
         ? pairSnaps.filter((s) => s.keyHashPrefix === meta.keyHashPrefix && s.provider === providerId)
         : [];
@@ -1843,7 +1843,7 @@ export function registerConsoleRoutes(
       const { catalogRepository } = await import('../opencode/catalog/repository.js');
       const store = await getCredentialStore();
       // B4: credentials come from the BOUND store on every binding — the masked store
-      // accounts merge into the config views, so a stale auth.json entry can never
+      // credentials merge into the config views, so a stale auth.json entry can never
       // masquerade as a connected provider.
       const views = await storeProviderViews(store);
       const unified = await catalogRepository.list();
@@ -1975,10 +1975,10 @@ export function registerConsoleRoutes(
       // registry snapshot (a false refusal would grey the button for up to the TTL).
       store.invalidate();
 
-      let keyMeta: AccountMeta | undefined;
+      let keyMeta: CredentialMeta | undefined;
       if (keyToStore) {
         try {
-          keyMeta = (await connectKeyIdempotent(store, id, String(body.apiKey), undefined, registry.getCircuitBreakerManager())).account;
+          keyMeta = (await connectKeyIdempotent(store, id, String(body.apiKey), undefined, registry.getCircuitBreakerManager())).credential;
         } catch (err) {
           // Roll back only a node THIS request created — with ONE exception: the
           // unmatched refusal now fires only AFTER the store's reload attempt, so
@@ -1997,8 +1997,8 @@ export function registerConsoleRoutes(
           return reply.status(400).send({ success: false, error: errMessage(err) });
         }
       }
-      // Decision 6: fresh key material = reconnect — the account's SUSPECT flag lifts.
-      if (keyToStore) clearSuspectForAccount(registry.getCircuitBreakerManager(), id, keyMeta?.keyHashPrefix);
+      // Decision 6: fresh key material = reconnect — the credential's SUSPECT flag lifts.
+      if (keyToStore) clearSuspectForCredential(registry.getCircuitBreakerManager(), id, keyMeta?.keyHashPrefix);
       // Opportunistic model pull — FIRE AND FORGET: a slow or unreachable
       // /v1/models must NOT hold the creation response (awaiting it made create
       // block up to its 15s timeout). Best-effort by design: refusals/errors are
@@ -2030,10 +2030,10 @@ export function registerConsoleRoutes(
       const store = await getCredentialStore();
       const inline = body.apiKeyInline ?? Boolean(existing.options?.apiKey);
       const keyToStore = Boolean(body?.apiKey) && !inline;
-      let keyMeta: AccountMeta | undefined;
+      let keyMeta: CredentialMeta | undefined;
       if (keyToStore) {
         try {
-          keyMeta = (await connectKeyIdempotent(store, id, String(body.apiKey), undefined, registry.getCircuitBreakerManager())).account;
+          keyMeta = (await connectKeyIdempotent(store, id, String(body.apiKey), undefined, registry.getCircuitBreakerManager())).credential;
         } catch (err) {
           const failure = await mapStoreWriteFailure(err);
           if (failure) return reply.status(failure.status).send(failure.body);
@@ -2061,7 +2061,7 @@ export function registerConsoleRoutes(
       // A def edit can change what upstream registers — never answer from the stale
       // integration snapshot.
       store.invalidate();
-      if (keyToStore) clearSuspectForAccount(registry.getCircuitBreakerManager(), id, keyMeta?.keyHashPrefix);
+      if (keyToStore) clearSuspectForCredential(registry.getCircuitBreakerManager(), id, keyMeta?.keyHashPrefix);
       return { status: 'ok', ...result };
     },
 
@@ -2083,7 +2083,7 @@ export function registerConsoleRoutes(
         // A WriteFailedError maps to 5xx and NEVER falls back to OcrStore
         // (Decision 3: read degrades with a badge, write refuses).
         const store = await getCredentialStore();
-        const { account: keyMeta, deduped, headPreserved } = await connectKeyIdempotent(
+        const { credential: keyMeta, deduped, headPreserved } = await connectKeyIdempotent(
           store, id, body.apiKey, undefined, registry.getCircuitBreakerManager()
         );
         // Optional baseURL override — merge with the existing definition so we
@@ -2107,17 +2107,17 @@ export function registerConsoleRoutes(
           });
         }
         store.invalidate(); // Decision 3: console action invalidates the store view
-        // Decision 6: reconnecting lifts a SUSPECT mark on this account.
-        clearSuspectForAccount(registry.getCircuitBreakerManager(), id, keyMeta?.keyHashPrefix);
+        // Decision 6: reconnecting lifts a SUSPECT mark on this credential.
+        clearSuspectForCredential(registry.getCircuitBreakerManager(), id, keyMeta?.keyHashPrefix);
         return {
           status: 'ok',
           success: true,
           // ADDITIVE (idempotent connect): `deduped` is a SUCCESS outcome, not a
           // refusal — the key IS in the store, which is what the caller asked
           // for — so it rides its own flag and never a failure `reasonCode`.
-          // `account` names the row (existing or new) so the UI can say which.
+          // `credential` names the row (existing or new) so the UI can say which.
           deduped,
-          account: keyMeta,
+          credential: keyMeta,
           // Non-null when the sink auto-activated the new key and this surface put
           // the previous head back: the row the operator must be told is still head.
           headPreserved,
@@ -2143,7 +2143,7 @@ export function registerConsoleRoutes(
         modelId?: string;
         apiKey?: string;
         baseURL?: string;
-        accountId?: string;
+        credentialId?: string;
       };
       const { getProviderNodeById, getProviderModelDefs, expandEnvTemplate } = await import(
         '../opencode/user-config.js'
@@ -2157,22 +2157,22 @@ export function registerConsoleRoutes(
       // Inline {env:VAR}/options.apiKey keep priority ABOVE the store (Decision 1).
       const store = await getCredentialStore();
       const resolved = store.resolveKey(id);
-      // Per-account probe: the operator pinned ONE credential row (KeysPage
-      // account list). resolveKeyChain is a sanctioned raw read on this route
+      // Per-credential probe: the operator pinned ONE credential row (KeysPage
+      // credential list). resolveKeyChain is a sanctioned raw read on this route
       // — same contract as resolveKey above: the key leaves only as the
       // upstream probe header, the response carries masked metadata only.
       // An addressed read deliberately BYPASSES the inline-key precedence:
-      // "test this account" is not "what routing would pick" — the routing
+      // "test this credential" is not "what routing would pick" — the routing
       // head may be a different row, and that is exactly what is being tested.
       let addressed: RawCred | undefined;
-      if (body.accountId) {
-        addressed = store.resolveKeyChain(id).find((c) => c.accountId === body.accountId);
+      if (body.credentialId) {
+        addressed = store.resolveKeyChain(id).find((c) => c.credentialId === body.credentialId);
         if (!addressed) {
           return reply.status(400).send({
             success: false,
-            reasonCode: 'account_not_testable',
+            reasonCode: 'credential_not_testable',
             provider: id,
-            accountId: body.accountId,
+            credentialId: body.credentialId,
           });
         }
       }
@@ -2181,7 +2181,7 @@ export function registerConsoleRoutes(
       // model: explicit override (config key or upstream id) → up to
       // PROBE_CANDIDATE_CAP enabled config defs → up to CAP catalog text
       // models. Provider-level tests get a CANDIDATE LIST because catalog order
-      // is upstream-given and the head model may simply be one the account has
+      // is upstream-given and the head model may simply be one the credential has
       // not opened (Ark answers that as a model-scoped 404); the probe loop
       // below rotates on model-scoped failures only. An explicit modelId is
       // NEVER substituted — "test this model" reports exactly that model.
@@ -2273,7 +2273,7 @@ export function registerConsoleRoutes(
       }
       // Masked echo of the addressed row (never raw material): the UI can
       // confirm WHICH credential answered, not just that the provider did.
-      const accountMeta = addressed ? store.listAccounts(id).find((a) => a.id === addressed.accountId) : undefined;
+      const credentialMeta = addressed ? store.listCredentials(id).find((a) => a.id === addressed.credentialId) : undefined;
       return {
         status: 'ok',
         provider: id,
@@ -2281,7 +2281,7 @@ export function registerConsoleRoutes(
         // Rotation evidence (machine data, localized by the console): which
         // candidates were tried, in order. Only meaningful when > 1.
         ...(tried.length > 1 ? { triedModels: tried } : {}),
-        ...(accountMeta ? { account: accountMeta } : {}),
+        ...(credentialMeta ? { credential: credentialMeta } : {}),
         ...result,
       };
     },
@@ -2295,21 +2295,21 @@ export function registerConsoleRoutes(
       }
       try {
         // Route through the bound store — opencode v2
-        // hits the HTTP sink (a NEW key ADDS an account — multi-account reality; the
+        // hits the HTTP sink (a NEW key ADDS an credential — multi-credential reality; the
         // same key is deduped, never doubled) and ocr writes the local file. No
         // auth.json write exists on any binding.
         const store = await getCredentialStore();
-        const { account: keyMeta, deduped, headPreserved } = await connectKeyIdempotent(
+        const { credential: keyMeta, deduped, headPreserved } = await connectKeyIdempotent(
           store, id, body.apiKey, undefined, registry.getCircuitBreakerManager()
         );
         store.invalidate();
         // Decision 6: a key rotation handed to the store is a reconnect — clear SUSPECT.
-        clearSuspectForAccount(registry.getCircuitBreakerManager(), id, keyMeta?.keyHashPrefix);
+        clearSuspectForCredential(registry.getCircuitBreakerManager(), id, keyMeta?.keyHashPrefix);
         return {
           status: 'ok',
           success: true,
           deduped,
-          account: keyMeta,
+          credential: keyMeta,
           headPreserved,
           message: `Credential updated for '${id}'`,
         };
@@ -2345,7 +2345,7 @@ export function registerConsoleRoutes(
           return { status: 'ok', ...result, ...outcome, purge };
         }
         // Credential-only entry: provider-wide disconnect = the UI-level
-        // account loop (Decision 1), never a direct upstream-file edit.
+        // credential loop (Decision 1), never a direct upstream-file edit.
         const purge = await purgeProviderCredentials(store, id);
         return { status: 'ok', ...purgeOutcomeMessage(purge, id, false), purge };
       } catch (err: any) {
@@ -2528,8 +2528,8 @@ export function registerConsoleRoutes(
      * Bound credential-store status — the console badge data
      * source, and what closes touchpoint gap #1 (boot excluded[] used to be
      * log-only). Returns the StoreStatus verbatim plus per-provider masked
-     * AccountMeta detail and the Decision 4 reconcile summary. Masked-only:
-     * the payload can never carry a raw key (listAccounts/AccountOverview
+     * CredentialMeta detail and the Decision 4 reconcile summary. Masked-only:
+     * the payload can never carry a raw key (listCredentials/CredentialOverview
      * expose maskSecret output + keyHash prefixes only).
      */
     credentialStore: async () => {
@@ -2538,26 +2538,26 @@ export function registerConsoleRoutes(
       const status = await getCredentialStoreStatus();
       const store = await getCredentialStore();
       // ADDITIVE keys only — old consumers ignore them:
-      // per-account pair health via the shared overlay (one shape everywhere).
-      // The provider SET comes from a LIVE `accountsOverview()`, not from
-      // `status.accounts` (a bind-time snapshot): a provider connected after
+      // per-credential pair health via the shared overlay (one shape everywhere).
+      // The provider SET comes from a LIVE `credentialsOverview()`, not from
+      // `status.credentials` (a bind-time snapshot): a provider connected after
       // boot would otherwise never list its credentials at all, which is exactly
       // the "added a key, nothing shows up" hole the snapshot left open. The
       // snapshot is kept as the fallback so an unreadable store still reports the
       // bind-time view plus its loud degraded badge.
-      let overview: typeof status.accounts;
+      let overview: typeof status.credentials;
       try {
-        overview = store.accountsOverview();
+        overview = store.credentialsOverview();
       } catch {
         // Unreadable store: fall back to the bind-time snapshot rather than
         // emptying the list — `probeResult` / `excluded[]` carry the loud state.
-        overview = status.accounts;
+        overview = status.credentials;
       }
-      const accounts = overview.map((a) => {
+      const credentials = overview.map((a) => {
         try {
-          return { ...a, accounts: withAccountHealth(a.providerId, store.listAccounts(a.providerId)) };
+          return { ...a, credentials: withCredentialHealth(a.providerId, store.listCredentials(a.providerId)) };
         } catch {
-          return { ...a, accounts: [] }; // unreadable store: probeResult/excluded stay loud
+          return { ...a, credentials: [] }; // unreadable store: probeResult/excluded stay loud
         }
       });
       const state = readCredentialStoreState(getBoundCredentialPaths() ?? undefined);
@@ -2574,7 +2574,7 @@ export function registerConsoleRoutes(
       }
       return {
         status: 'ok',
-        store: { ...status, accounts, ...(integrations ? { integrations } : {}) },
+        store: { ...status, credentials, ...(integrations ? { integrations } : {}) },
         reconcile: state?.reconcile ?? null,
       };
     },
@@ -2626,7 +2626,7 @@ export function registerConsoleRoutes(
         // Every converged (provider, key) pair is a reconnect gesture —
         // its SUSPECT flag lifts here, anchored on the pushed key's hash.
         const cb = registry.getCircuitBreakerManager();
-        for (const k of outcome.pushedKeys ?? []) clearSuspectForAccount(cb, k.provider, k.keyHashPrefix);
+        for (const k of outcome.pushedKeys ?? []) clearSuspectForCredential(cb, k.provider, k.keyHashPrefix);
         const pushed = [
           ...new Set(
             outcome.entries
@@ -2675,15 +2675,22 @@ export function registerConsoleRoutes(
       if (typeof body.enabled !== 'boolean') {
         return reply.status(400).send({ status: 'error', success: false, error: 'enabled must be a boolean' });
       }
-      const { getBoundCredentialPaths, getBindTestOverrides, setSyncAutoToggle } = await import(
+      const { getBoundCredentialPaths, getBindTestOverrides, setSyncAutoToggle, credentialSyncStatusView } = await import(
         '../opencode/credentials/index.js'
       );
       const overrides = getBindTestOverrides();
-      const client = setSyncAutoToggle(body.clientId, body.direction, body.enabled, {
+      setSyncAutoToggle(body.clientId, body.direction, body.enabled, {
         paths: getBoundCredentialPaths() ?? undefined,
         now: overrides.now,
       });
-      return { status: 'ok', client: { id: body.clientId, ...client } };
+      // Echo the FULL row (label/present/writeReady + sync state): the console
+      // patches its table row with this object verbatim, so a state-only echo
+      // would wipe the client's name and availability flags.
+      const client = credentialSyncStatusView({
+        paths: getBoundCredentialPaths() ?? undefined,
+        env: overrides.env,
+      }).clients.find((c) => c.id === body.clientId);
+      return { status: 'ok', client };
     },
 
     /**
@@ -2714,7 +2721,7 @@ export function registerConsoleRoutes(
           openDatabase: overrides.openDatabase,
         });
         const cb = registry.getCircuitBreakerManager();
-        for (const k of result.write?.pushedKeys ?? []) clearSuspectForAccount(cb, k.provider, k.keyHashPrefix);
+        for (const k of result.write?.pushedKeys ?? []) clearSuspectForCredential(cb, k.provider, k.keyHashPrefix);
         return { status: 'ok', direction, ...result };
       } catch (err: any) {
         return reply.status(500).send({
@@ -2726,33 +2733,33 @@ export function registerConsoleRoutes(
     },
 
     /**
-     * Activate ONE account of a multi-account provider (the
+     * Activate ONE credential of a multi-credential provider (the
      * Keys page's "make active" action). Gated purely on
      * capabilities.activate (Decision 1): OpencodeV2Store-readonly has false
      * → 400 'capability_unsupported'; the ocr store has true → allowed (no
-     * kind branching anywhere). Response carries the refreshed masked account
+     * kind branching anywhere). Response carries the refreshed masked credential
      * list in the store-status overlay shape so the UI repaints without a
      * second fetch.
      */
-    accountActivate: async (req: any, reply: any) => {
-      const { id, accountId } = req.params as { id: string; accountId: string };
+    credentialActivate: async (req: any, reply: any) => {
+      const { id, credentialId } = req.params as { id: string; credentialId: string };
       const { getCredentialStore } = await import('../opencode/credentials/index.js');
       const store = await getCredentialStore();
       if (!store.capabilities.activate) return reply.status(400).send(capabilityRefusalBody('activate'));
-      const guard = await guardStoreAccount(store, id, accountId);
+      const guard = await guardStoreCredential(store, id, credentialId);
       if (!guard.ok) return reply.status(guard.status).send(guard.body);
       try {
-        const account = await store.activate(accountId);
+        const credential = await store.activate(credentialId);
         store.invalidate(); // Decision 3: console action invalidates the store view
-        return { status: 'ok', success: true, account, accounts: withAccountHealth(id, store.listAccounts(id)) };
+        return { status: 'ok', success: true, credential, credentials: withCredentialHealth(id, store.listCredentials(id)) };
       } catch (err) {
-        const failure = await mapAccountWriteFailure(err, id, accountId);
+        const failure = await mapCredentialWriteFailure(err, id, credentialId);
         return reply.status(failure.status).send(failure.body);
       }
     },
 
     /**
-     * Rename one account (user-editable label; opencode v2 rows carry
+     * Rename one credential (user-editable label; opencode v2 rows carry
      * one; a store without labels refuses via capabilities.rename=false). Label contract:
      * trimmed, ≤80 chars, and EMPTY IS VALID — it CLEARS the label. An empty value
      * used to be a 400, which made opencode's own auto-name (e.g. the default
@@ -2760,8 +2767,8 @@ export function registerConsoleRoutes(
      * blank only locked the operator into a label this product did not choose.
      * The display falls back to the row's fingerprint handle when unlabeled.
      */
-    accountRename: async (req: any, reply: any) => {
-      const { id, accountId } = req.params as { id: string; accountId: string };
+    credentialRename: async (req: any, reply: any) => {
+      const { id, credentialId } = req.params as { id: string; credentialId: string };
       const body = req.body as { label?: unknown } | undefined;
       if (body?.label !== undefined && typeof body.label !== 'string') {
         return reply.status(400).send({
@@ -2780,20 +2787,20 @@ export function registerConsoleRoutes(
       const { getCredentialStore } = await import('../opencode/credentials/index.js');
       const store = await getCredentialStore();
       if (!store.capabilities.rename) return reply.status(400).send(capabilityRefusalBody('rename'));
-      const guard = await guardStoreAccount(store, id, accountId);
+      const guard = await guardStoreCredential(store, id, credentialId);
       if (!guard.ok) return reply.status(guard.status).send(guard.body);
       try {
-        const account = await store.rename(accountId, label);
+        const credential = await store.rename(credentialId, label);
         store.invalidate();
-        return { status: 'ok', success: true, account, accounts: withAccountHealth(id, store.listAccounts(id)) };
+        return { status: 'ok', success: true, credential, credentials: withCredentialHealth(id, store.listCredentials(id)) };
       } catch (err) {
-        const failure = await mapAccountWriteFailure(err, id, accountId);
+        const failure = await mapCredentialWriteFailure(err, id, credentialId);
         return reply.status(failure.status).send(failure.body);
       }
     },
 
     /**
-     * Disconnect ONE account: deletes the store's
+     * Disconnect ONE credential: deletes the store's
      * copy of the credential. The double confirmation is FRONTEND-side; the
      * backend honors an explicit DELETE. Since Decision 10 the operator CAN
      * export the key first (the row's password-gated reveal) — the confirmation
@@ -2806,16 +2813,16 @@ export function registerConsoleRoutes(
      * explicit clears (reconnect / Push / takedown release) are the shipped
      * anti-zombie mechanism; snapshot-wide keyHash GC is deferred follow-up.
      */
-    accountDisconnect: async (req: any, reply: any) => {
-      const { id, accountId } = req.params as { id: string; accountId: string };
+    credentialDisconnect: async (req: any, reply: any) => {
+      const { id, credentialId } = req.params as { id: string; credentialId: string };
       const { getCredentialStore } = await import('../opencode/credentials/index.js');
       const store = await getCredentialStore();
-      const guard = await guardStoreAccount(store, id, accountId);
+      const guard = await guardStoreCredential(store, id, credentialId);
       if (!guard.ok) return reply.status(guard.status).send(guard.body);
       try {
-        await store.disconnect(accountId);
+        await store.disconnect(credentialId);
         store.invalidate();
-        clearSuspectForAccount(registry.getCircuitBreakerManager(), id, guard.meta.keyHashPrefix);
+        clearSuspectForCredential(registry.getCircuitBreakerManager(), id, guard.meta.keyHashPrefix);
         // A DISABLED flag is deliberately NOT dropped here: it is anchored on the
         // key hash (Decision 5), so if the same key material comes back later the
         // operator's takedown still applies. Re-adding a parked credential must
@@ -2824,11 +2831,11 @@ export function registerConsoleRoutes(
         return {
           status: 'ok',
           success: true,
-          disconnected: accountId,
-          accounts: withAccountHealth(id, store.listAccounts(id)),
+          disconnected: credentialId,
+          credentials: withCredentialHealth(id, store.listCredentials(id)),
         };
       } catch (err) {
-        const failure = await mapAccountWriteFailure(err, id, accountId);
+        const failure = await mapCredentialWriteFailure(err, id, credentialId);
         return reply.status(failure.status).send(failure.body);
       }
     },
@@ -2842,14 +2849,14 @@ export function registerConsoleRoutes(
      *  2. the login brute-force bucket is shared — a wrong reveal password counts
      *     as a login failure, so this route is never an offline-guessing machine
      *     (a correct one clears the bucket exactly like a successful login);
-     *  3. password verified BEFORE any store read — no pre-auth account
+     *  3. password verified BEFORE any store read — no pre-auth credential
      *     enumeration; POST-only + no-store — the key never enters URLs, GET
      *     surfaces, caches, or logs;
      *  4. only rows carrying raw api-key material reveal — oauth/wellknown/empty
      *     refuse via CapabilityUnsupportedError (the OAuth boundary).
      */
-    accountReveal: async (req: any, reply: any) => {
-      const { id, accountId } = req.params as { id: string; accountId: string };
+    credentialReveal: async (req: any, reply: any) => {
+      const { id, credentialId } = req.params as { id: string; credentialId: string };
       const disk = getRuntimeConfigRef() || loadConfig(); // same snapshot the login route reads
       if (!isWebAuthActive(disk) || !hasWebAuthCredentials(disk.webAuth)) {
         return reply.status(409).send({
@@ -2884,10 +2891,10 @@ export function registerConsoleRoutes(
       recordLoginSuccess(ip);
       const { getCredentialStore } = await import('../opencode/credentials/index.js');
       const store = await getCredentialStore();
-      const guard = await guardStoreAccount(store, id, accountId);
+      const guard = await guardStoreCredential(store, id, credentialId);
       if (!guard.ok) return reply.status(guard.status).send(guard.body);
       try {
-        const key = store.revealKey(accountId);
+        const key = store.revealKey(credentialId);
         reply.header('Cache-Control', 'no-store');
         return { status: 'ok', key };
       } catch (err) {
@@ -2903,7 +2910,7 @@ export function registerConsoleRoutes(
             error: errMessage(err),
           });
         }
-        const failure = await mapAccountWriteFailure(err, id, accountId);
+        const failure = await mapCredentialWriteFailure(err, id, credentialId);
         return reply.status(failure.status).send(failure.body);
       }
     },
@@ -2912,21 +2919,21 @@ export function registerConsoleRoutes(
      * Operator DISABLE / ENABLE one credential — a durable takedown that never
      * auto-returns (cooldown expiry, reconnect, Push and breaker resets all leave
      * it alone), and the only lever between "temporarily tripped" and "deleted".
-     * The flag lives in OCR's own account-state file, NOT the credential store,
+     * The flag lives in OCR's own credential-state file, NOT the credential store,
      * so it is deliberately NOT gated on `writesBlocked` or on any store
      * capability — the same reasoning as the admin suspect-clear door
      * (Decision 6). Enforcement happens at the single shared out-of-service
      * predicate (`isPairOut`), which selection, the prober plan and model
      * availability all read — one guard, every caller.
      */
-    accountSetDisabled: async (req: any, reply: any, disabled: boolean) => {
-      const { id, accountId } = req.params as { id: string; accountId: string };
+    credentialSetDisabled: async (req: any, reply: any, disabled: boolean) => {
+      const { id, credentialId } = req.params as { id: string; credentialId: string };
       const body = (req.body || {}) as { reason?: unknown };
       const { getCredentialStore } = await import('../opencode/credentials/index.js');
       const store = await getCredentialStore();
-      const guard = await guardStoreAccount(store, id, accountId);
+      const guard = await guardStoreCredential(store, id, credentialId);
       if (!guard.ok) return reply.status(guard.status).send(guard.body);
-      // Decision 5: every account flag is anchored on the key hash, never on the
+      // Decision 5: every credential flag is anchored on the key hash, never on the
       // churnable id. A row without a hash (no key material) has no identity to
       // flag — refuse loudly instead of keying a flag on something that drifts.
       const keyHashPrefix = guard.meta.keyHashPrefix;
@@ -2935,11 +2942,11 @@ export function registerConsoleRoutes(
           status: 'error',
           success: false,
           reasonCode: 'no_key_identity',
-          error: `account '${accountId}' carries no key hash (type '${guard.meta.type}') — it cannot be taken down`,
+          error: `credential '${credentialId}' carries no key hash (type '${guard.meta.type}') — it cannot be taken down`,
         });
       }
-      const accountState = registry.getCircuitBreakerManager().getAccountStateStore();
-      const name = guard.meta.label?.trim() || accountId;
+      const credentialState = registry.getCircuitBreakerManager().getCredentialStateStore();
+      const name = guard.meta.label?.trim() || credentialId;
       if (disabled) {
         const raw = typeof body.reason === 'string' ? body.reason.trim() : '';
         if (raw.length > 200) {
@@ -2947,30 +2954,30 @@ export function registerConsoleRoutes(
             .status(400)
             .send({ status: 'error', success: false, reasonCode: 'invalid_reason', error: 'reason too long (max 200 characters)' });
         }
-        accountState.disable(id, keyHashPrefix, raw);
-        const accounts = withAccountHealth(id, store.listAccounts(id));
+        credentialState.disable(id, keyHashPrefix, raw);
+        const credentials = withCredentialHealth(id, store.listCredentials(id));
         return {
           status: 'ok',
           success: true,
           disabled: true,
-          account: accounts.find((a) => a.id === accountId),
-          accounts,
+          credential: credentials.find((a) => a.id === credentialId),
+          credentials,
           message: `Credential '${name}' taken down (no traffic will route through it)`,
         };
       }
-      accountState.enable(id, keyHashPrefix);
-      const accounts = withAccountHealth(id, store.listAccounts(id));
+      credentialState.enable(id, keyHashPrefix);
+      const credentials = withCredentialHealth(id, store.listCredentials(id));
       return {
         status: 'ok',
         success: true,
         disabled: false,
-        accounts,
+        credentials,
         message: `Credential '${name}' restored to routing`,
       };
     },
 
-    accountDisable: (req: any, reply: any) => ocHandlers.accountSetDisabled(req, reply, true),
-    accountEnable: (req: any, reply: any) => ocHandlers.accountSetDisabled(req, reply, false),
+    credentialDisable: (req: any, reply: any) => ocHandlers.credentialSetDisabled(req, reply, true),
+    credentialEnable: (req: any, reply: any) => ocHandlers.credentialSetDisabled(req, reply, false),
   };
 
   for (const prefix of ['/api/admin']) {
@@ -2997,17 +3004,17 @@ export function registerConsoleRoutes(
     app.post(`${prefix}/opencode/providers/:id/models/pull`, ocHandlers.modelsPull);
     app.post(`${prefix}/opencode/providers/:id/models/clear`, ocHandlers.modelsClear);
 
-    // Per-account credential writes (activate / rename / disconnect).
+    // Per-credential credential writes (activate / rename / disconnect).
     // Decision 8 double-confirm lives in the console UI; these honor the call.
-    app.post(`${prefix}/opencode/providers/:id/accounts/:accountId/activate`, ocHandlers.accountActivate);
-    // Operator takedown (OCR account state, NOT the credential store — survives
+    app.post(`${prefix}/opencode/providers/:id/credentials/:credentialId/activate`, ocHandlers.credentialActivate);
+    // Operator takedown (OCR credential state, NOT the credential store — survives
     // cooldown/reconnect/Push and is lifted only here).
-    app.post(`${prefix}/opencode/providers/:id/accounts/:accountId/disable`, ocHandlers.accountDisable);
-    app.post(`${prefix}/opencode/providers/:id/accounts/:accountId/enable`, ocHandlers.accountEnable);
-    app.patch(`${prefix}/opencode/providers/:id/accounts/:accountId`, ocHandlers.accountRename);
-    app.delete(`${prefix}/opencode/providers/:id/accounts/:accountId`, ocHandlers.accountDisconnect);
+    app.post(`${prefix}/opencode/providers/:id/credentials/:credentialId/disable`, ocHandlers.credentialDisable);
+    app.post(`${prefix}/opencode/providers/:id/credentials/:credentialId/enable`, ocHandlers.credentialEnable);
+    app.patch(`${prefix}/opencode/providers/:id/credentials/:credentialId`, ocHandlers.credentialRename);
+    app.delete(`${prefix}/opencode/providers/:id/credentials/:credentialId`, ocHandlers.credentialDisconnect);
     // password-gated raw-key export (controlled exception).
-    app.post(`${prefix}/opencode/providers/:id/accounts/:accountId/reveal`, ocHandlers.accountReveal);
+    app.post(`${prefix}/opencode/providers/:id/credentials/:credentialId/reveal`, ocHandlers.credentialReveal);
   }
 
   // 8b. Catalog logo proxy — remote provider logos served from the local disk
@@ -3076,21 +3083,21 @@ export function registerConsoleRoutes(
   };
   app.delete('/api/admin/api-keys/:id', handleDeleteApiKey);
 
-  // 9a. Account rate-limit overlay (config `accounts:` section) — CONFIG-side
+  // 9a. Credential rate-limit overlay (config `credentials:` section) — CONFIG-side
   // governance: the credential itself lives in the CredentialStore and is not
   // touched here, so NO store capability gates this write. The body mirrors
   // the raw-YAML shape one entry at a time; validateRateLimitRules is the
   // shared grammar, so a console-saved rule and a hand-edited rule compile
   // identically. saveConfig hot-reloads the limiter (config/index.ts sync).
-  const ACCOUNT_PREFIX_PATTERN = /^[0-9a-f]{4,64}$/i;
-  const handleSetAccountLimits = async (req: any, reply: any) => {
+  const CREDENTIAL_PREFIX_PATTERN = /^[0-9a-f]{4,64}$/i;
+  const handleSetCredentialLimits = async (req: any, reply: any) => {
     const body = req.body as { provider?: unknown; keyHashPrefix?: unknown; limits?: unknown };
     const provider = typeof body?.provider === 'string' ? body.provider.trim() : '';
     const prefix = typeof body?.keyHashPrefix === 'string' ? body.keyHashPrefix.trim().toLowerCase() : '';
     if (!provider) {
       return reply.status(400).send({ success: false, error: 'provider is required' });
     }
-    if (!ACCOUNT_PREFIX_PATTERN.test(prefix)) {
+    if (!CREDENTIAL_PREFIX_PATTERN.test(prefix)) {
       return reply.status(400).send({ success: false, error: 'keyHashPrefix must be a 4-64 char hex string' });
     }
     if (body?.limits === undefined) {
@@ -3108,8 +3115,8 @@ export function registerConsoleRoutes(
     // also synced by syncRuntimeAuthView, but the file is the authoritative
     // merge base either way).
     const cfg = loadConfig();
-    const accounts: Record<string, AccountLimitConfig[]> = structuredClone(cfg.accounts ?? {});
-    const list = accounts[provider] ?? [];
+    const credentials: Record<string, CredentialLimitConfig[]> = structuredClone(cfg.credentials ?? {});
+    const list = credentials[provider] ?? [];
     const idx = list.findIndex((e) => (e.keyHashPrefix ?? '').toLowerCase() === prefix);
     const rules = checked.value ?? [];
     if (rules.length === 0) {
@@ -3119,21 +3126,21 @@ export function registerConsoleRoutes(
     } else {
       list.push({ keyHashPrefix: prefix, limits: rules });
     }
-    if (list.length > 0) accounts[provider] = list;
-    else delete accounts[provider];
-    const result = saveConfig({ accounts: Object.keys(accounts).length > 0 ? accounts : undefined });
+    if (list.length > 0) credentials[provider] = list;
+    else delete credentials[provider];
+    const result = saveConfig({ credentials: Object.keys(credentials).length > 0 ? credentials : undefined });
     if (!result.success) {
-      return reply.status(400).send({ success: false, error: result.error || 'Failed to persist account limits' });
+      return reply.status(400).send({ success: false, error: result.error || 'Failed to persist credential limits' });
     }
     // Live windows for the addressed subject. Constraints whose
     // (windowMs,countable) survived the reload keep their accumulated sums;
     // newly armed or reshaped constraints start empty — the response reflects
     // exactly what the reloaded engine enforces.
-    const subject = accountSubject(provider, prefix);
+    const subject = credentialSubject(provider, prefix);
     const windows = getRateLimiter().snapshot().filter((w) => w.subject === subject);
     return { status: 'ok', success: true, limits: rules.length > 0 ? rules : undefined, windows };
   };
-  app.put('/api/admin/accounts/limits', handleSetAccountLimits);
+  app.put('/api/admin/credentials/limits', handleSetCredentialLimits);
 
   // 9b. Effective model view for ONE key — what this key can actually see &
   //     use right now (mirrors the /v1/models policy filter + the execution

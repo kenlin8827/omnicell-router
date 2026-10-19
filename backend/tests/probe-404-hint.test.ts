@@ -24,7 +24,7 @@ beforeAll(() => {
         // Ark-style business 404: endpoint alive, model-level failure.
         return new Response(
           JSON.stringify({
-            error: { code: 'ModelNotOpen', message: 'Your account [123] has not opened this model' },
+            error: { code: 'ModelNotOpen', message: 'Your credential [123] has not opened this model' },
           }),
           { status: 404, headers: { 'content-type': 'application/json' } },
         );

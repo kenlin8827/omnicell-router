@@ -308,7 +308,7 @@ Standard stateless routers dispatch short follow-ups (e.g. "thanks", "fix line 3
 - **Quota / Balance Exhaustion (HTTP 402)**: Hard-trips immediately into OPEN (default 12h cooldown), bypassing the model with zero latency.
 - **Service Outages (5xx / Timeouts)**: Tripped upon consecutive failures or sliding window error rates, applying exponential backoff up to 5 hours max.
 - **Transparent Same-Tier Failover**: Automatically retries across candidate models within the same tier in milliseconds; the client receives a seamless 200 response.
-- **Session-Pin Eviction**: A bound session is hard-switched onto a healthy landing (write-back included) when the pinned model leaves its pool — config edit, denylist, removal — or reads fully `unavailable` (model breaker open, or every account down); cross-tier landing is allowed when the tier is empty, and with no healthy landing the session keeps serving on its pin (safe fail, retried next turn).
+- **Session-Pin Eviction**: A bound session is hard-switched onto a healthy landing (write-back included) when the pinned model leaves its pool — config edit, denylist, removal — or reads fully `unavailable` (model breaker open, or every credential down); cross-tier landing is allowed when the tier is empty, and with no healthy landing the session keeps serving on its pin (safe fail, retried next turn).
 
 ### Q5: Does model switching cause KV prompt cache invalidation and 10x cost explosion?
 **Never**. OpenCode Router (OCR) implements a **Cost-Aware Two-Tier Retry Engine (ADR-0005)**:

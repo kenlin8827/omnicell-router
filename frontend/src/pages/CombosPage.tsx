@@ -853,7 +853,7 @@ export const CombosPage: React.FC = () => {
                                 testRes.failoverOccurred && testRes.failoverPath?.length
                                   ? ` (${testRes.failoverPath.join(' → ')})`
                                   : ''
-                              }${testRes.servedAccountPrefix ? ` · ${testRes.servedAccountPrefix}` : ''} — ${testRes.latencyMs ?? 0} ms`
+                              }${testRes.servedCredentialPrefix ? ` · ${testRes.servedCredentialPrefix}` : ''} — ${testRes.latencyMs ?? 0} ms`
                             : testRes.error
                         }
                       >

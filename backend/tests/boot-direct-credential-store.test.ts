@@ -14,7 +14,7 @@ import path from 'node:path';
  * CredentialPaths — no global env mutation, no operator home.
  *
  * Coverage:
- *  (a) multi-account rows in the OCR file — the ACTIVE row is the baked
+ *  (a) multi-credential rows in the OCR file — the ACTIVE row is the baked
  *      chain head; P3 step 1 attaches the ordered resolveKeyChain to the
  *      instance payload (head === baked key); rows that fail validation
  *      never route (无凭证 exclusion, def present).
@@ -78,7 +78,7 @@ function sandboxPaths(): import('../src/opencode/credentials/paths.js').Credenti
 }
 
 interface OcrRow {
-  accountId: string;
+  credentialId: string;
   key: string;
   active?: boolean;
   timeUpdated?: number;
@@ -102,7 +102,7 @@ function seedOcr(
             r.invalid
               ? { nope: true } // fails load() validation → filtered out
               : {
-                  accountId: r.accountId,
+                  credentialId: r.credentialId,
                   key: r.key,
                   timeCreated: 1,
                   timeUpdated: r.timeUpdated ?? 1,
@@ -134,7 +134,7 @@ afterEach(() => {
   catalogRecs = [];
 });
 
-describe('(a) OCR-file boot: multi-account rows', () => {
+describe('(a) OCR-file boot: multi-credential rows', () => {
   function bindStore(rows: Record<string, OcrRow[]>) {
     const paths = sandboxPaths();
     seedOcr(paths, rows);
@@ -145,10 +145,10 @@ describe('(a) OCR-file boot: multi-account rows', () => {
   it('bakes the ACTIVE row as the head; rows that fail validation never route', async () => {
     bindStore({
       'p-active': [
-        { accountId: 'c-stale', key: 'sk-stale-newer', active: false, timeUpdated: 100 },
-        { accountId: 'c-act', key: 'sk-active', active: true, timeUpdated: 1 }, // active beats newer-inactive
+        { credentialId: 'c-stale', key: 'sk-stale-newer', active: false, timeUpdated: 100 },
+        { credentialId: 'c-act', key: 'sk-active', active: true, timeUpdated: 1 }, // active beats newer-inactive
       ],
-      'p-broken': [{ accountId: 'c-junk', key: '', invalid: true }],
+      'p-broken': [{ credentialId: 'c-junk', key: '', invalid: true }],
     });
     for (const id of ['p-active', 'p-broken']) {
       defFixtures[id] = defFor(id);
@@ -173,8 +173,8 @@ describe('(a) OCR-file boot: multi-account rows', () => {
   it('P3 step 1: one instance per provider with MULTIPLE credentials — chain head baked, full chain attached', async () => {
     bindStore({
       'p-active': [
-        { accountId: 'c1', key: 'sk-active', active: true, timeUpdated: 1 },
-        { accountId: 'c2', key: 'sk-backup', active: false, timeUpdated: 99 },
+        { credentialId: 'c1', key: 'sk-active', active: true, timeUpdated: 1 },
+        { credentialId: 'c2', key: 'sk-backup', active: false, timeUpdated: 99 },
       ],
     });
     defFixtures['p-active'] = defFor('p-active');
@@ -185,7 +185,7 @@ describe('(a) OCR-file boot: multi-account rows', () => {
     expect(inst).toHaveLength(1);
     expect(inst[0]!.config.apiKey).toBe('sk-active'); // the ACTIVE-first chain head is what gets baked
     // Per-call selection chain (in-memory, registry-only payload): ordered
-    // active-first, identity prefixes, accountId fallback labels.
+    // active-first, identity prefixes, credentialId fallback labels.
     expect(inst[0]!.credentialChain.map((c) => c.key)).toEqual(['sk-active', 'sk-backup']);
     expect(inst[0]!.credentialChain[0]!.keyHashPrefix).toBe(keyHashPrefix('sk-active'));
     expect(inst[0]!.credentialChain[0]!.label).toBe('c1');
@@ -223,7 +223,7 @@ describe('(b)+(c) auth.json one-shot import boot: lands on the OCR store', () =>
     expect(byName.get('v1-api')?.config.baseUrl).toBe('https://v1-api.test/v1');
     expect(byName.get('v1-api')?.config.headers).toEqual({ 'X-T': '1' });
 
-    // Single-account degeneracy: length-1 chain, head === baked key.
+    // Single-credential degeneracy: length-1 chain, head === baked key.
     const v1Chain = byName.get('v1-api')?.credentialChain;
     expect(v1Chain).toHaveLength(1);
     expect(v1Chain?.[0]?.key).toBe('sk-v1');
@@ -254,7 +254,7 @@ describe('(b)+(c) auth.json one-shot import boot: lands on the OCR store', () =>
     const byName = new Map(res.instances.map((i) => [i.name, i]));
     expect(byName.get('v1-api')?.config.apiKey).toBe('sk-inline'); // Decision 1: inline above store
     // Inline precedence also owns the chain HEAD (invariant head === baked key);
-    // the store account stays selectable below it.
+    // the store credential stays selectable below it.
     expect(byName.get('v1-api')?.credentialChain?.map((c) => c.key)).toEqual(['sk-inline', 'sk-store']);
     expect(byName.get('v1-api')?.credentialChain?.[0]?.label).toBe('inline');
   });

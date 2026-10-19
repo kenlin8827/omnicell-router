@@ -58,7 +58,7 @@ const durationLabels = (t: (path: string, params?: Record<string, string | numbe
 });
 
 const asScope = (v: string): BreakerScopeOverride =>
-  v === 'pair' || v === 'account' || v === 'model' ? v : 'auto';
+  v === 'pair' || v === 'credential' || v === 'model' ? v : 'auto';
 const asCanary = (v: string): OnCanaryFailureMode => (v === 'initial' || v === 'close' ? v : 'backoff');
 
 /** Client-side mirror of backend resolveBreakerRules — the fallback view of
@@ -342,11 +342,11 @@ const Params: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px 12px' }}>{children}</div>
 );
 
-const BREAKER_SCOPE_VALUES: BreakerScopeOverride[] = ['auto', 'pair', 'account', 'model'];
+const BREAKER_SCOPE_VALUES: BreakerScopeOverride[] = ['auto', 'pair', 'credential', 'model'];
 const SCOPE_R_KEY: Record<BreakerScopeOverride, string> = {
   auto: 'breakerRules.rScopeAuto',
   pair: 'breakerRules.rScopePair',
-  account: 'breakerRules.rScopeAccount',
+  credential: 'breakerRules.rScopeCredential',
   model: 'breakerRules.rScopeModel',
 };
 const CANARY_R_KEY: Record<OnCanaryFailureMode, string> = {
@@ -630,7 +630,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
     { label: t('breakerRules.kProbes'), value: fmtPlain(cb.halfOpenMaxProbes ?? CB_KNOB_DEFAULTS.halfOpenMaxProbes), key: 'circuitBreaker.halfOpenMaxProbes' },
     { label: t('breakerRules.kProbing'), value: cb.activeProbing?.enabled ? t('breakerRules.stateOn') : t('breakerRules.stateOff'), key: 'circuitBreaker.activeProbing.enabled' },
     { label: t('breakerRules.kInterval'), value: fmtMs(cb.activeProbing?.intervalMs ?? 60_000, durLabels), key: 'circuitBreaker.activeProbing.intervalMs' },
-    { label: t('breakerRules.kAffinity'), value: fmtMs(cb.accountAffinity?.cacheTtlMs ?? 300_000, durLabels), key: 'circuitBreaker.accountAffinity.cacheTtlMs' },
+    { label: t('breakerRules.kAffinity'), value: fmtMs(cb.credentialAffinity?.cacheTtlMs ?? 300_000, durLabels), key: 'circuitBreaker.credentialAffinity.cacheTtlMs' },
     { label: t('breakerRules.kDebounce'), value: fmtMs(cb.persistence?.debounceMs ?? 1000, durLabels), key: 'circuitBreaker.persistence.debounceMs' },
     { label: t('breakerRules.kHardBoundary'), value: fmtMs(retryBoundary ?? 2000, durLabels), key: 'retry.inplace.maxRateLimitWaitMs', note: t('breakerRules.kHardBoundaryNote') },
   ];

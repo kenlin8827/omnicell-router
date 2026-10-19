@@ -56,13 +56,13 @@ export interface ExecutionTrace {
     provider: string;
     /**
      * Display-safe sha256 prefix of the credential that SERVED this turn
-     * (same chain-head degeneracy as the ratelimit account subject, so a
+     * (same chain-head degeneracy as the ratelimit credential subject, so a
      * single-credential provider carries attribution too). Quota tracking
      * aggregates per (provider × prefix) on this field. Forgiving
      * forward-compat: traces replayed from disk before this field existed
-     * deserialize with `accountKeyHashPrefix === undefined`.
+     * deserialize with `credentialKeyHashPrefix === undefined`.
      */
-    accountKeyHashPrefix?: string;
+    credentialKeyHashPrefix?: string;
     tierUsed: TierLevel;
     latencyMs: number;
     fallbackOccurred: boolean;
@@ -86,12 +86,12 @@ export interface ExecutionTrace {
 }
 
 /**
- * Per-pair (provider × served-credential) usage row — the account-side
+ * Per-pair (provider × served-credential) usage row — the credential-side
  * counterpart of KeyUsageRow. Quota tracking's aggregation base
  * (GROUP BY provider + keyHashPrefix); turns without credential
  * attribution are skipped, never pooled into an anonymous bucket.
  */
-export interface AccountPairUsageRow {
+export interface CredentialPairUsageRow {
   provider: string;
   keyHashPrefix: string;
   requests: number;
@@ -350,12 +350,12 @@ export class TraceTracker {
    * speaks for rows it can actually name. `sinceTs` narrows the window the
    * same way as getUsageStats.
    */
-  public getAccountPairUsageStats(options?: { sinceTs?: number }): AccountPairUsageRow[] {
+  public getCredentialPairUsageStats(options?: { sinceTs?: number }): CredentialPairUsageRow[] {
     const sinceTs = typeof options?.sinceTs === 'number' ? options.sinceTs : undefined;
-    const byPair = new Map<string, AccountPairUsageRow>();
+    const byPair = new Map<string, CredentialPairUsageRow>();
     for (const t of this.traces.values()) {
       if (sinceTs !== undefined && t.timestamp < sinceTs) continue;
-      const prefix = t.execution.accountKeyHashPrefix;
+      const prefix = t.execution.credentialKeyHashPrefix;
       if (!prefix) continue;
       const id = `${t.execution.provider}#${prefix}`;
       let row = byPair.get(id);

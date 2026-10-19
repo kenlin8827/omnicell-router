@@ -195,12 +195,12 @@ export interface ExecutionResult {
   inplaceRetries?: number;
   breakerState?: string;
   /**
-   * Additive — older readers never see these: the account
+   * Additive — older readers never see these: the credential
    * that served the turn (display-safe keyHash prefix; undefined = the legacy
    * no-prefix/baked-key path), that pair's breaker snapshot, and the model
    * aggregate summary for the served model.
    */
-  servedAccountPrefix?: string;
+  servedCredentialPrefix?: string;
   scopedBreakerSnap?: CircuitBreakerSnapshot;
   modelAvailability?: ModelAvailability;
   /**

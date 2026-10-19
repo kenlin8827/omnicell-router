@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createServer } from '../src/server.js';
-import { resetAccountStateStoreForTests } from '../src/resilience/account-state.js';
+import { resetCredentialStateStoreForTests } from '../src/resilience/credential-state.js';
 import { ErrorClassifier } from '../src/resilience/error-classifier.js';
 import type { RouterConfig } from '../src/config/types.js';
 
@@ -11,8 +11,8 @@ import type { RouterConfig } from '../src/config/types.js';
  * Manual-trip scope on the admin REST surface.
  *
  *   scope 'model'   (default, legacy body)  -> model trip, today's behavior
- *   scope 'account' (keyHashPrefix)         -> every pair breaker of one credential
- *   scope 'pair'    (model + account)       -> exactly one breaker
+ *   scope 'credential' (keyHashPrefix)         -> every pair breaker of one credential
+ *   scope 'pair'    (model + credential)       -> exactly one breaker
  * plus the explicit SUSPECT clear endpoint. Bad combos keep returning 400.
  *
  * The suspect store is sandboxed through OCR_HOME before the server is built
@@ -26,7 +26,7 @@ process.env.OCR_HOME = path.join(sandbox, 'ocr-home');
 // Owns its home → declares its book-set name (the runner's tripwire name
 // `itest` exists only in the runner's own sandbox home).
 process.env.OCR_ENV = 'default';
-resetAccountStateStoreForTests();
+resetCredentialStateStoreForTests();
 
 const config = {
   port: 3000,
@@ -63,7 +63,7 @@ afterAll(async () => {
   await app.close();
   if (previousOcrHome === undefined) delete process.env.OCR_HOME;
   else process.env.OCR_HOME = previousOcrHome;
-  resetAccountStateStoreForTests();
+  resetCredentialStateStoreForTests();
 });
 
 const post = (url: string, payload?: Record<string, unknown>) =>
@@ -89,12 +89,12 @@ describe('POST /api/admin/health/circuit-breakers/trip — scopes', () => {
     expect(res.json().message).toContain('Model id is required');
   });
 
-  it("scope 'pair' trips one (model, account) breaker and leaves its siblings", async () => {
+  it("scope 'pair' trips one (model, credential) breaker and leaves its siblings", async () => {
     cb().reset();
     const res = await post('/api/admin/health/circuit-breakers/trip', {
       scope: 'pair',
       model: 'plus-1',
-      account: 'k1prefix0000',
+      credential: 'k1prefix0000',
       cooldownMs: 60000,
       reason: 'canary',
     });
@@ -110,23 +110,23 @@ describe('POST /api/admin/health/circuit-breakers/trip — scopes', () => {
     });
   });
 
-  it("scope 'account' trips every pair breaker of the credential without marking SUSPECT", async () => {
+  it("scope 'credential' trips every pair breaker of the credential without marking SUSPECT", async () => {
     cb().reset();
-    await post('/api/admin/health/circuit-breakers/trip', { scope: 'pair', model: 'plus-1', account: 'kA' });
+    await post('/api/admin/health/circuit-breakers/trip', { scope: 'pair', model: 'plus-1', credential: 'kA' });
     const res = await post('/api/admin/health/circuit-breakers/trip', {
-      scope: 'account',
-      account: 'kA',
+      scope: 'credential',
+      credential: 'kA',
       cooldownMs: 30000,
       reason: 'billing freeze',
     });
     expect(res.statusCode).toBe(200);
     const json = res.json();
     expect(json.affected).toBeGreaterThanOrEqual(1);
-    expect(json.account).toBe('kA');
+    expect(json.credential).toBe('kA');
     expect(cb().getPairBreaker('plus-1', 'kA')?.getState()).toBe('OPEN');
-    // provider 'mock' owns both registered models -> the account scope covers them both
+    // provider 'mock' owns both registered models -> the credential scope covers them both
     expect(cb().getPairBreaker('plus-2', 'kA')?.getState()).toBe('OPEN');
-    expect(cb().getAccountStateStore().list()).toEqual([]); // manual != administrative
+    expect(cb().getCredentialStateStore().list()).toEqual([]); // manual != administrative
   });
 
   it('keeps a cooldown floor and ceiling via the shared manual trip rule', async () => {
@@ -143,37 +143,37 @@ describe('POST /api/admin/health/circuit-breakers/trip — scopes', () => {
     expect(badScope.statusCode).toBe(400);
     expect(badScope.json().message).toContain("Unknown scope 'row'");
 
-    const accountWithoutPrefix = await post('/api/admin/health/circuit-breakers/trip', { scope: 'account' });
-    expect(accountWithoutPrefix.statusCode).toBe(400);
-    expect(accountWithoutPrefix.json().message).toContain('requires an account');
+    const credentialWithoutPrefix = await post('/api/admin/health/circuit-breakers/trip', { scope: 'credential' });
+    expect(credentialWithoutPrefix.statusCode).toBe(400);
+    expect(credentialWithoutPrefix.json().message).toContain('requires an credential');
 
-    const pairWithoutAccount = await post('/api/admin/health/circuit-breakers/trip', { scope: 'pair', model: 'plus-1' });
-    expect(pairWithoutAccount.statusCode).toBe(400);
+    const pairWithoutCredential = await post('/api/admin/health/circuit-breakers/trip', { scope: 'pair', model: 'plus-1' });
+    expect(pairWithoutCredential.statusCode).toBe(400);
 
-    const pairWithoutModel = await post('/api/admin/health/circuit-breakers/trip', { scope: 'pair', account: 'kA' });
+    const pairWithoutModel = await post('/api/admin/health/circuit-breakers/trip', { scope: 'pair', credential: 'kA' });
     expect(pairWithoutModel.statusCode).toBe(400);
   });
 });
 
 describe('POST /api/admin/health/circuit-breakers/reset — scopes', () => {
-  it('scope pair / account reset their breakers, leaving the model path alone', async () => {
+  it('scope pair / credential reset their breakers, leaving the model path alone', async () => {
     cb().reset();
-    await post('/api/admin/health/circuit-breakers/trip', { scope: 'pair', model: 'plus-1', account: 'kA' });
-    await post('/api/admin/health/circuit-breakers/trip', { scope: 'pair', model: 'plus-1', account: 'kB' });
+    await post('/api/admin/health/circuit-breakers/trip', { scope: 'pair', model: 'plus-1', credential: 'kA' });
+    await post('/api/admin/health/circuit-breakers/trip', { scope: 'pair', model: 'plus-1', credential: 'kB' });
 
-    const one = await post('/api/admin/health/circuit-breakers/reset', { scope: 'pair', model: 'plus-1', account: 'kA' });
+    const one = await post('/api/admin/health/circuit-breakers/reset', { scope: 'pair', model: 'plus-1', credential: 'kA' });
     expect(one.statusCode).toBe(200);
     expect(one.json().resetCount).toBe(1);
     expect(cb().getPairBreaker('plus-1', 'kA')?.getState()).toBe('CLOSED');
     expect(cb().getPairBreaker('plus-1', 'kB')?.getState()).toBe('OPEN');
 
-    const accountReset = await post('/api/admin/health/circuit-breakers/reset', { scope: 'account', account: 'kB' });
-    expect(accountReset.statusCode).toBe(200);
-    expect(accountReset.json().resetCount).toBe(1);
+    const credentialReset = await post('/api/admin/health/circuit-breakers/reset', { scope: 'credential', credential: 'kB' });
+    expect(credentialReset.statusCode).toBe(200);
+    expect(credentialReset.json().resetCount).toBe(1);
     expect(cb().getPairBreaker('plus-1', 'kB')?.getState()).toBe('CLOSED');
   });
 
-  it("scope account never lifts SUSPECT — that needs the explicit clear endpoint", async () => {
+  it("scope credential never lifts SUSPECT — that needs the explicit clear endpoint", async () => {
     cb().reset();
     const auth = ErrorClassifier.classify(
       Object.assign(new Error('invalid_api_key'), { status: 401, usedCredentialKeyHashPrefix: 'kS' }),
@@ -181,17 +181,17 @@ describe('POST /api/admin/health/circuit-breakers/reset — scopes', () => {
       'mock'
     );
     cb().recordFailureScoped('plus-1', auth, 'mock', 'kS');
-    expect(cb().getAccountStateStore().isSuspect('mock', 'kS')).toBe(true);
+    expect(cb().getCredentialStateStore().isSuspect('mock', 'kS')).toBe(true);
 
-    const reset = await post('/api/admin/health/circuit-breakers/reset', { scope: 'account', account: 'kS' });
+    const reset = await post('/api/admin/health/circuit-breakers/reset', { scope: 'credential', credential: 'kS' });
     expect(reset.statusCode).toBe(200);
-    expect(cb().getAccountStateStore().isSuspect('mock', 'kS')).toBe(true);
+    expect(cb().getCredentialStateStore().isSuspect('mock', 'kS')).toBe(true);
     expect(cb().modelAvailability('plus-1', ['kS']).available).toBe(false); // still out of service
   });
 
   it('legacy ?model= query still resets the model breaker, and no target resets everything', async () => {
     cb().reset();
-    await post('/api/admin/health/circuit-breakers/trip', { scope: 'pair', model: 'plus-1', account: 'kZ', cooldownMs: 600000 });
+    await post('/api/admin/health/circuit-breakers/trip', { scope: 'pair', model: 'plus-1', credential: 'kZ', cooldownMs: 600000 });
     await post('/api/admin/health/circuit-breakers/trip', { model: 'plus-1', cooldownMs: 60000 });
 
     const res = await post('/api/admin/health/circuit-breakers/reset?model=plus-1');
@@ -209,14 +209,14 @@ describe('POST /api/admin/health/circuit-breakers/reset — scopes', () => {
     expect(cb().getBreaker('plus-2')?.getState()).toBe('CLOSED');
   });
 
-  it('400s an unknown scope and a scope that needs an account without one', async () => {
-    // 'column' is not in the manual vocabulary (model / account / pair) — rejected, not mapped.
+  it('400s an unknown scope and a scope that needs an credential without one', async () => {
+    // 'column' is not in the manual vocabulary (model / credential / pair) — rejected, not mapped.
     expect((await post('/api/admin/health/circuit-breakers/reset', { scope: 'column' })).statusCode).toBe(400);
     expect((await post('/api/admin/health/circuit-breakers/reset', { scope: 'pair', model: 'plus-1' })).statusCode).toBe(400);
   });
 });
 
-describe('POST /api/admin/health/suspect-accounts/clear', () => {
+describe('POST /api/admin/health/suspect-credentials/clear', () => {
   it('requires both halves of the composite key, clears, and is idempotent', async () => {
     cb().reset();
     const auth = ErrorClassifier.classify(
@@ -225,26 +225,26 @@ describe('POST /api/admin/health/suspect-accounts/clear', () => {
       'mock'
     );
     cb().recordFailureScoped('plus-1', auth, 'mock', 'kC');
-    expect(cb().getAccountStateStore().isSuspect('mock', 'kC')).toBe(true);
+    expect(cb().getCredentialStateStore().isSuspect('mock', 'kC')).toBe(true);
 
-    expect((await post('/api/admin/health/suspect-accounts/clear', { account: 'kC' })).statusCode).toBe(400);
-    expect((await post('/api/admin/health/suspect-accounts/clear', { provider: 'mock' })).statusCode).toBe(400);
+    expect((await post('/api/admin/health/suspect-credentials/clear', { credential: 'kC' })).statusCode).toBe(400);
+    expect((await post('/api/admin/health/suspect-credentials/clear', { provider: 'mock' })).statusCode).toBe(400);
 
-    const cleared = await post('/api/admin/health/suspect-accounts/clear', { provider: 'mock', account: 'kC' });
+    const cleared = await post('/api/admin/health/suspect-credentials/clear', { provider: 'mock', credential: 'kC' });
     expect(cleared.statusCode).toBe(200);
-    expect(cleared.json()).toEqual({ status: 'ok', provider: 'mock', account: 'kC', cleared: true });
+    expect(cleared.json()).toEqual({ status: 'ok', provider: 'mock', credential: 'kC', cleared: true });
     expect(cb().isSuspect('plus-1', 'kC')).toBe(false);
-    // Clearing the ADMINISTRATIVE flag does not un-trip the the pair breakers the account
+    // Clearing the ADMINISTRATIVE flag does not un-trip the the pair breakers the credential
     // expansion left open — the two gates are independent by design.
     expect(cb().modelAvailability('plus-1', ['kC'])).toEqual({ available: false, openPrefixes: ['kC'] });
-    await post('/api/admin/health/circuit-breakers/reset', { scope: 'account', account: 'kC' });
+    await post('/api/admin/health/circuit-breakers/reset', { scope: 'credential', credential: 'kC' });
     expect(cb().modelAvailability('plus-1', ['kC'])).toEqual({ available: true, openPrefixes: [] });
 
-    const again = await post('/api/admin/health/suspect-accounts/clear', { provider: 'mock', account: 'kC' });
+    const again = await post('/api/admin/health/suspect-credentials/clear', { provider: 'mock', credential: 'kC' });
     expect(again.json().cleared).toBe(false);
 
     // and the file landed in the sandboxed state root, display-safe only
-    const file = path.join(process.env.OCR_HOME!, 'suspect-accounts.json');
+    const file = path.join(process.env.OCR_HOME!, 'suspect-credentials.json');
     expect(fs.existsSync(file)).toBe(true);
     expect(fs.readFileSync(file, 'utf8')).not.toMatch(/kC/);
   });

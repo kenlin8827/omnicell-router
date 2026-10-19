@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { AccountStateStore } from '../src/resilience/account-state.js';
+import { CredentialStateStore } from '../src/resilience/credential-state.js';
 import { BreakerStateStore } from '../src/resilience/breaker-state.js';
 import { CircuitBreakerManager } from '../src/resilience/circuit-breaker-manager.js';
 import type { CredentialPaths } from '../src/opencode/credentials/paths.js';
@@ -14,7 +14,7 @@ import type { BreakerStateFile, CircuitBreakerConfig, ErrorDiagnosis } from '../
  * Breaker memory on disk.
  *
  * The failure this exists to prevent: a restart used to wipe every cooldown,
- * letting the gateway re-hammer a 402 account still inside its quota
+ * letting the gateway re-hammer a 402 credential still inside its quota
  * cooldown. Under test: what survives (state, cooldown position, backoff,
  * sliding window, manual trips, pairs), what self-cleans (records for models
  * the config removed), and what never breaks the boot (corrupt files).
@@ -90,12 +90,12 @@ const outageDiag: ErrorDiagnosis = {
 
 /** A manager wired like the boot path: models registered, THEN store attached. */
 function bootManager(clock: ReturnType<typeof makeClock>, paths: CredentialPaths, registered: ModelRegistration[]) {
-  const accountState = new AccountStateStore({ paths, now: clock.now });
+  const credentialState = new CredentialStateStore({ paths, now: clock.now });
   const store = new BreakerStateStore({ paths, debounceMs: 3_600_000 });
-  const manager = new CircuitBreakerManager(CFG, clock.now, accountState);
+  const manager = new CircuitBreakerManager(CFG, clock.now, credentialState);
   for (const m of registered) manager.registerModel(m);
   manager.attachStateStore(store);
-  return { manager, store, accountState };
+  return { manager, store, credentialState };
 }
 
 describe('BreakerStateStore — restart continuity', () => {
@@ -143,8 +143,8 @@ describe('BreakerStateStore — restart continuity', () => {
     expect(second.manager.getSnapshot(X)?.state).toBe('CLOSED');
   });
 
-  it('account-scoped resetByScope arms the debounced snapshot like every other mutation entry point', () => {
-    const paths = sandboxPaths('account-reset');
+  it('credential-scoped resetByScope arms the debounced snapshot like every other mutation entry point', () => {
+    const paths = sandboxPaths('credential-reset');
     const clock = makeClock();
     const boot = bootManager(clock, paths, [model(X)]);
     boot.manager.recordFailureScoped(X, quotaDiag({ tripScope: 'pair' }), 'anthropic', 'K1');
@@ -159,10 +159,10 @@ describe('BreakerStateStore — restart continuity', () => {
       return original(build as () => BreakerStateFile);
     };
 
-    const res = m.manager.resetByScope('account', { keyHashPrefix: 'K1' });
+    const res = m.manager.resetByScope('credential', { keyHashPrefix: 'K1' });
     expect(res.resetCount).toBe(1);
     expect(m.manager.canExecuteScoped(X, 'K1').allowed).toBe(true);
-    // The account branch calls breaker.reset() directly, bypassing the hooked
+    // The credential branch calls breaker.reset() directly, bypassing the hooked
     // reset/resetScoped entry points — so it must arm the save itself.
     expect(armed).toBeGreaterThan(0);
   });
@@ -260,16 +260,16 @@ describe('BreakerStateStore — restart continuity', () => {
     expect(second.manager.getSnapshot(X)?.state).toBe('OPEN');
   });
 
-  it('pair breakers (account-scope fan-out) restore with their keyHashPrefix attribution', () => {
+  it('pair breakers (credential-scope fan-out) restore with their keyHashPrefix attribution', () => {
     const paths = sandboxPaths('pairs');
     const clock = makeClock();
     // Hard-trip length resolves from trip.quota.cooldownMs (default = CFG
     // quotaCooldownMs 60_000); minCooldownMs is only a statistical-path floor.
-    const accountDiag = quotaDiag({ tripScope: 'account', minCooldownMs: 10_000 });
+    const credentialDiag = quotaDiag({ tripScope: 'credential', minCooldownMs: 10_000 });
     const first = bootManager(clock, paths, [model(X), model(Y)]);
-    first.manager.recordFailureScoped(X, accountDiag, 'anthropic', 'k1');
+    first.manager.recordFailureScoped(X, credentialDiag, 'anthropic', 'k1');
     expect(first.manager.isPairOut(X, 'k1')).toBe(true);
-    expect(first.manager.isPairOut(Y, 'k1')).toBe(true); // account-wide blast radius
+    expect(first.manager.isPairOut(Y, 'k1')).toBe(true); // credential-wide blast radius
     first.store.flush();
 
     const second = bootManager(clock, paths, [model(X), model(Y)]);

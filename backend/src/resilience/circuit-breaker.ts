@@ -29,7 +29,7 @@ export const DEFAULT_CIRCUIT_BREAKER_CONFIG: Required<Omit<CircuitBreakerConfig,
   },
   // Carried like activeProbing (the breaker itself never probes): the
   // affinity window is read by the selection layer from RouterConfig.
-  accountAffinity: {
+  credentialAffinity: {
     cacheTtlMs: 300_000,
   },
 };
@@ -63,7 +63,7 @@ export function resolveBreakerRules(
     typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1 ? v : fallback;
   const bool = (v: unknown, fallback: boolean): boolean => (typeof v === 'boolean' ? v : fallback);
   const scope = (v: unknown): BreakerScopeOverride =>
-    v === 'auto' || v === 'pair' || v === 'account' || v === 'model' ? (v as BreakerScopeOverride) : 'auto';
+    v === 'auto' || v === 'pair' || v === 'credential' || v === 'model' ? (v as BreakerScopeOverride) : 'auto';
   const mode = (v: unknown): OnCanaryFailureMode =>
     v === 'initial' || v === 'close' || v === 'backoff' ? (v as OnCanaryFailureMode) : 'backoff';
 
@@ -165,9 +165,9 @@ function resolveBreakerConfig(
       enabled: config?.activeProbing?.enabled ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.activeProbing.enabled,
       intervalMs: config?.activeProbing?.intervalMs ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.activeProbing.intervalMs,
     },
-    accountAffinity: {
+    credentialAffinity: {
       cacheTtlMs:
-        config?.accountAffinity?.cacheTtlMs ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.accountAffinity.cacheTtlMs,
+        config?.credentialAffinity?.cacheTtlMs ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.credentialAffinity.cacheTtlMs,
     },
   };
 }

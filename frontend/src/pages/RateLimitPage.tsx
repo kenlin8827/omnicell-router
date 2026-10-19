@@ -16,7 +16,7 @@ import { InfoTip } from '../components/InfoTip';
 /**
  * Rate-limit observability — every TRIGGERED cap from both directions:
  *   inbound  = client API key hit its `apiKeys[].limits` window (429 / grace)
- *   outbound = an account credential hit its `accounts:` overlay window
+ *   outbound = an credential credential hit its `credentials:` overlay window
  *              (candidate skip / policy force / spread shaping)
  * plus the live window snapshot (headroom per armed constraint). The ledger
  * is a bounded ring durably mirrored in traces.db (backend
@@ -128,10 +128,10 @@ const TIME_RANGES: Record<string, number> = {
   '7d': 7 * 24 * 60 * 60_000,
 };
 
-/** subject `apikey:<id>` / `account:<provider>:<prefix>` → display identity. */
+/** subject `apikey:<id>` / `credential:<provider>:<prefix>` → display identity. */
 function subjectLabel(subject: string): string {
   if (subject.startsWith('apikey:')) return subject.slice('apikey:'.length);
-  if (subject.startsWith('account:')) return subject.slice('account:'.length); // provider:prefix
+  if (subject.startsWith('credential:')) return subject.slice('credential:'.length); // provider:prefix
   return subject;
 }
 

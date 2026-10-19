@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { AccountStateStore } from '../src/resilience/account-state.js';
+import { CredentialStateStore } from '../src/resilience/credential-state.js';
 import { CircuitBreakerManager } from '../src/resilience/circuit-breaker-manager.js';
 import { ErrorClassifier, UpstreamError } from '../src/resilience/error-classifier.js';
 import type { CredentialPaths } from '../src/opencode/credentials/paths.js';
@@ -52,11 +52,11 @@ const BASE: CircuitBreakerConfig = {
 function makeManager(rules?: BreakerRulesConfig, over: Partial<CircuitBreakerConfig> = {}, shadow = false) {
   const clock = makeClock();
   const paths = sandboxPaths();
-  const accountState = new AccountStateStore({ paths, now: clock.now });
+  const credentialState = new CredentialStateStore({ paths, now: clock.now });
   const config: CircuitBreakerConfig = { ...BASE, ...over, shadow, ...(rules ? { rules } : {}) };
-  const manager = new CircuitBreakerManager(config, clock.now, accountState);
+  const manager = new CircuitBreakerManager(config, clock.now, credentialState);
   manager.registerModel(model('p/x', 'p'));
-  return { manager, clock, accountState, paths };
+  return { manager, clock, credentialState, paths };
 }
 
 function model(id: string, provider: string): ModelRegistration {
@@ -79,7 +79,7 @@ const AUTH_401: ErrorDiagnosis = {
   category: 'AUTHENTICATION_ERROR', isRetriable: true, isInPlaceRetriable: false,
   shouldTripBreaker: true, hardTrip: true, minCooldownMs: 60_000,
   reason: '401 invalid_api_key', reasonCode: 'breaker.auth', reasonParams: { model: 'p/x', provider: 'p' },
-  tripScope: 'account', accountSuspect: true,
+  tripScope: 'credential', credentialSuspect: true,
 };
 // Retry-After 30s > the default 2000ms boundary -> hard trip by today's shape.
 const RA_LONG_429: ErrorDiagnosis = {
@@ -126,7 +126,7 @@ describe('(a) rule-toggle matrix: OFF semantics per switch (manager gate)', () =
 
   it('trip.auth off: 401 neither trips nor counts (breaker-wise)', () => {
     const { manager } = makeManager({ trip: { auth: { enabled: false } } });
-    manager.recordFailureScoped('p/x', AUTH_401, 'p', 'K1'); // account scope, real 401 shape
+    manager.recordFailureScoped('p/x', AUTH_401, 'p', 'K1'); // credential scope, real 401 shape
 
     expect(manager.getPairBreaker('p/x', 'K1')?.getState()).toBe('CLOSED');
     expect(manager.getPairBreaker('p/x', 'K1')?.getSnapshot().totalRequests).toBe(0);
@@ -134,40 +134,40 @@ describe('(a) rule-toggle matrix: OFF semantics per switch (manager gate)', () =
     expect(manager.canExecute('p/x').allowed).toBe(true);
   });
 
-  // F1 adjudication: spec line 52 defines markSuspect as "flag the account
+  // F1 adjudication: spec line 52 defines markSuspect as "flag the credential
   // SUSPECT on trip" — an auth rule OFF ("ignore", rule semantics #2) trips
-  // nothing, so it must mark nothing. A SUSPECT account never auto-returns
+  // nothing, so it must mark nothing. A SUSPECT credential never auto-returns
   // (manual clear only), so an ignored 401 administratively ejecting the
-  // account was the bug; this is the formal pin.
+  // credential was the bug; this is the formal pin.
   it('trip.auth off ("ignore"): 401 neither trips, counts, nor marks SUSPECT', () => {
-    const { manager, accountState } = makeManager({ trip: { auth: { enabled: false } } });
+    const { manager, credentialState } = makeManager({ trip: { auth: { enabled: false } } });
     manager.recordFailureScoped('p/x', AUTH_401, 'p', 'K1');
 
     expect(manager.getPairBreaker('p/x', 'K1')?.getState()).toBe('CLOSED'); // no trip
     expect(manager.getPairBreaker('p/x', 'K1')?.getSnapshot().totalRequests).toBe(0); // no count
-    expect(accountState.isSuspect('p', 'K1')).toBe(false); // no flag: markSuspect fires on trip only
+    expect(credentialState.isSuspect('p', 'K1')).toBe(false); // no flag: markSuspect fires on trip only
 
     // Invariant 2 boundary: disabling the rule neither sets nor clears
     // EXISTING flags — an operator-cleared entry keeps gating until clear.
-    accountState.mark('p', 'K1', 'pre-existing flag');
+    credentialState.mark('p', 'K1', 'pre-existing flag');
     manager.recordFailureScoped('p/x', AUTH_401, 'p', 'K1');
-    expect(accountState.isSuspect('p', 'K1')).toBe(true); // untouched by the OFF rule
+    expect(credentialState.isSuspect('p', 'K1')).toBe(true); // untouched by the OFF rule
   });
 
-  it('trip.auth on + markSuspect on (default): 401 hard-trips AND flags the account SUSPECT', () => {
-    const { manager, accountState } = makeManager({ trip: { auth: { enabled: true } } });
+  it('trip.auth on + markSuspect on (default): 401 hard-trips AND flags the credential SUSPECT', () => {
+    const { manager, credentialState } = makeManager({ trip: { auth: { enabled: true } } });
     manager.recordFailureScoped('p/x', AUTH_401, 'p', 'K1');
 
     expect(manager.getPairBreaker('p/x', 'K1')?.getState()).toBe('OPEN');
-    expect(accountState.isSuspect('p', 'K1')).toBe(true);
+    expect(credentialState.isSuspect('p', 'K1')).toBe(true);
   });
 
   it('trip.auth on + markSuspect off: trips without flagging (stops NEW flags only)', () => {
-    const { manager, accountState } = makeManager({ trip: { auth: { enabled: true, markSuspect: false } } });
+    const { manager, credentialState } = makeManager({ trip: { auth: { enabled: true, markSuspect: false } } });
     manager.recordFailureScoped('p/x', AUTH_401, 'p', 'K1');
 
     expect(manager.getPairBreaker('p/x', 'K1')?.getState()).toBe('OPEN'); // trip unchanged
-    expect(accountState.isSuspect('p', 'K1')).toBe(false); // new flag suppressed
+    expect(credentialState.isSuspect('p', 'K1')).toBe(false); // new flag suppressed
   });
 
   it('trip.consecutiveFailures off: failures still count, threshold never checked', () => {

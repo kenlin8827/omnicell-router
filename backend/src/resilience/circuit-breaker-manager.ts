@@ -4,7 +4,7 @@ import {
   resolveBreakerRules,
 } from './circuit-breaker.js';
 import { BreakerStateStore } from './breaker-state.js';
-import { AccountStateStore, defaultAccountStateStore } from './account-state.js';
+import { CredentialStateStore, defaultCredentialStateStore } from './credential-state.js';
 import {
   AutomaticTrippingStatus,
   BreakerReasonCode,
@@ -63,10 +63,10 @@ export interface TripResult {
   message: string;
 }
 
-/** Aggregate availability of one model-level breaker, with the accounts that are out of it. */
+/** Aggregate availability of one model-level breaker, with the credentials that are out of it. */
 export interface ModelAvailability {
   available: boolean;
-  /** Candidate prefixes that cannot serve: pair OPEN/unavailable, or account SUSPECT. */
+  /** Candidate prefixes that cannot serve: pair OPEN/unavailable, or credential SUSPECT. */
   openPrefixes: string[];
 }
 
@@ -121,7 +121,7 @@ function pairKey(modelId: string, keyHashPrefix: string): string {
  *
  *   bare-modelId breaker          == model scope   (this model, every credential)
  *   `${modelId}::${keyHashPrefix}` == pair scope    (this model, this credential)
- *   all pairs of one credential    == account scope (this credential, every model)
+ *   all pairs of one credential    == credential scope (this credential, every model)
  *
  * A provider whose chain has a single credential never gets pair breakers: the caller
  * omits `keyHashPrefix` and every path degenerates to the bare-modelId breaker
@@ -134,8 +134,8 @@ function pairKey(modelId: string, keyHashPrefix: string): string {
 export class CircuitBreakerManager {
   private breakers = new Map<string, CircuitBreaker>();
   private pairs = new Map<string, PairRecord>();
-  // modelId -> provider, so account-wide expansion and SUSPECT lookups can name the
-  // account owner even for pair breakers created lazily on a failure path.
+  // modelId -> provider, so credential-wide expansion and SUSPECT lookups can name the
+  // credential owner even for pair breakers created lazily on a failure path.
   private modelProviders = new Map<string, string>();
   private config: CircuitBreakerConfig;
   /**
@@ -149,7 +149,7 @@ export class CircuitBreakerManager {
    */
   private rules: ResolvedBreakerRules;
   private nowFn: () => number;
-  private accountState: AccountStateStore;
+  private credentialState: CredentialStateStore;
   // optional on-disk breaker memory.
   // Undefined = pure in-memory (every test harness and any registry the boot
   // path never attaches a store to; behavior is byte-identical to pre-P3).
@@ -158,7 +158,7 @@ export class CircuitBreakerManager {
   constructor(
     config?: CircuitBreakerConfig,
     nowFn: () => number = Date.now,
-    accountState?: AccountStateStore,
+    credentialState?: CredentialStateStore,
     // Only consulted for trip.rateLimit.hardTripAboveMs's default
     // (retry.inplace.maxRateLimitWaitMs); the breaker side never rewrites the
     // retry-side in-place-retry decision.
@@ -167,7 +167,7 @@ export class CircuitBreakerManager {
     this.config = config || {};
     this.rules = resolveBreakerRules(this.config, retryConfig);
     this.nowFn = nowFn;
-    this.accountState = accountState ?? defaultAccountStateStore();
+    this.credentialState = credentialState ?? defaultCredentialStateStore();
   }
 
   /**
@@ -244,7 +244,7 @@ export class CircuitBreakerManager {
   }
 
   /**
-   * Models this registry knows for a provider — the model set an account-wide
+   * Models this registry knows for a provider — the model set an credential-wide
    * trip covers (registerModel is called for every registered model).
    */
   private modelsOfProvider(providerId?: string): string[] {
@@ -257,11 +257,11 @@ export class CircuitBreakerManager {
   }
 
   /**
-   * Models an account-wide trip of (provider, credential) covers: everything
+   * Models an credential-wide trip of (provider, credential) covers: everything
    * registered for that provider, plus any model that already carries a pair
-   * breaker for the account (a pair can outlive a provider re-index).
+   * breaker for the credential (a pair can outlive a provider re-index).
    */
-  private accountModelIds(providerId: string, keyHashPrefix: string): string[] {
+  private credentialModelIds(providerId: string, keyHashPrefix: string): string[] {
     const out = new Set<string>(this.modelsOfProvider(providerId));
     for (const pair of this.pairs.values()) {
       if (pair.keyHashPrefix === keyHashPrefix && pair.provider === providerId) out.add(pair.modelId);
@@ -320,9 +320,9 @@ export class CircuitBreakerManager {
    * With a prefix the model breaker is only PEEKED and the pair breaker consumes
    * the canary slot. Consuming the model slot here would strand it: a pair-scope
    * verdict deliberately never reaches the model breaker, so a HALF_OPEN model
-   * whose slot was spent on a request that came back 429-on-one-account would
-   * sit with an exhausted quota while every account stayed healthy. Pair scope
-   * therefore bounds background traffic by (accounts x the HALF_OPEN trial
+   * whose slot was spent on a request that came back 429-on-one-credential would
+   * sit with an exhausted quota while every credential stayed healthy. Pair scope
+   * therefore bounds background traffic by (credentials x the HALF_OPEN trial
    * budget) instead, and a pair success counts as a model trial success
    * (see `recordSuccessScoped` — closes only at recovery.halfOpen.successThreshold).
    */
@@ -344,13 +344,13 @@ export class CircuitBreakerManager {
       return {
         allowed: false,
         reason:
-          `Account '${keyHashPrefix}' is SUSPECT for model '${modelId}' ` +
+          `Credential '${keyHashPrefix}' is SUSPECT for model '${modelId}' ` +
           '(confirmed-bad credential; reconnect or clear to restore).',
         state: pair ? pair.breaker.getState() : 'OPEN',
       };
     }
     if (!pair) {
-      // No pair state = never failed on this account: the model breaker already said yes.
+      // No pair state = never failed on this credential: the model breaker already said yes.
       return { allowed: true, state: modelBreaker ? modelBreaker.getState() : 'CLOSED' };
     }
     const check = pair.breaker.canExecute();
@@ -374,7 +374,7 @@ export class CircuitBreakerManager {
    * The derived aggregate the pool builders will read:
    * a model is available iff its model breaker is CLOSED/HALF_OPEN-capable AND
    * at least one candidate credential serves (its pair breaker not OPEN, its
-   * account not SUSPECT). A down model breaker reports every candidate unusable
+   * credential not SUSPECT). A down model breaker reports every candidate unusable
    * (the pair breakers themselves may all be healthy — the model is what
    * failed); an empty `candidatePrefixes` (no chain registered) degenerates to
    * the model-breaker check alone, never to "unavailable", which is what keeps
@@ -433,37 +433,37 @@ export class CircuitBreakerManager {
     for (const prefix of candidatePrefixes) {
       if (this.isDisabled(modelId, prefix) || this.isSuspect(modelId, prefix)) continue; // takedown: serves as 'out', never 'recovering'
       const pair = this.pairs.get(pairKey(modelId, prefix));
-      const state = pair ? this.viewState(pair.breaker) : 'CLOSED'; // never failed on this account
+      const state = pair ? this.viewState(pair.breaker) : 'CLOSED'; // never failed on this credential
       if (state === 'CLOSED') return 'available';
       if (state === 'HALF_OPEN') anyHalfOpen = true;
     }
     return anyHalfOpen ? 'recovering' : 'unavailable';
   }
 
-  /** Administrative SUSPECT flag for the account this model belongs to. */
+  /** Administrative SUSPECT flag for the credential this model belongs to. */
   public isSuspect(modelId: string, keyHashPrefix: string): boolean {
     const providerId = this.resolveProvider(modelId);
     if (providerId === 'unknown') return false;
-    return this.accountState.isSuspect(providerId, keyHashPrefix);
+    return this.credentialState.isSuspect(providerId, keyHashPrefix);
   }
 
   /**
-   * Operator takedown for the account this model belongs to. Unlike SUSPECT it is
+   * Operator takedown for the credential this model belongs to. Unlike SUSPECT it is
    * never set or lifted by runtime evidence — only the console (or the REST twin)
    * flips it, and it survives reconnect, Push and every cooldown.
    */
   public isDisabled(modelId: string, keyHashPrefix: string): boolean {
     const providerId = this.resolveProvider(modelId);
     if (providerId === 'unknown') return false;
-    return this.accountState.isDisabled(providerId, keyHashPrefix);
+    return this.credentialState.isDisabled(providerId, keyHashPrefix);
   }
 
   /**
    * The single NON-CONSUMING "out of service" predicate
-   * for one (model, credential) pair: account SUSPECT, or its pair breaker
+   * for one (model, credential) pair: credential SUSPECT, or its pair breaker
    * currently not peek-allowed. NEVER takes a HALF_OPEN probe slot — the
    * consuming gate is `canExecuteScoped()` at the execution site only.
-   * Selection (account-selection.ts), the prober plan (health-prober.ts) and
+   * Selection (credential-selection.ts), the prober plan (health-prober.ts) and
    * `modelAvailability()` below all route through this one implementation.
    */
   public isPairOut(modelId: string, keyHashPrefix: string): boolean {
@@ -476,8 +476,8 @@ export class CircuitBreakerManager {
     return pair !== undefined && !pair.breaker.peekExecute().allowed;
   }
 
-  public getAccountStateStore(): AccountStateStore {
-    return this.accountState;
+  public getCredentialStateStore(): CredentialStateStore {
+    return this.credentialState;
   }
 
   // -- Breaker memory persistence ---------
@@ -496,7 +496,7 @@ export class CircuitBreakerManager {
    * Rehydrate breakers from disk. Records for models the registry no longer
    * knows (config removed/renamed them over the restart) are DROPPED, so the
    * file self-cleans and removed models never ghost through snapshots or
-   * account-wide trip expansion. OPEN records whose reasonCode belongs to a
+   * credential-wide trip expansion. OPEN records whose reasonCode belongs to a
    * now-disabled trip rule are skipped too — the startup reconciliation of
    * spec invariant 2: closing a rule must not resurrect a cooldown nobody
    * asked for (the same filter runs live in `applyConfig` at every hot-apply,
@@ -603,7 +603,7 @@ export class CircuitBreakerManager {
       pair.breaker.recordSuccess();
     } else if (owner !== 'unknown') {
       // A success on a never-failed pair still has to name the owner, or the
-      // account-wide expansion would not know which provider this model belongs to.
+      // credential-wide expansion would not know which provider this model belongs to.
       this.getOrCreatePair(modelId, keyHashPrefix, owner);
     }
     const modelBreaker = this.breakers.get(modelId);
@@ -624,7 +624,7 @@ export class CircuitBreakerManager {
    * bare-modelId breaker, exactly as before P3.
    *
    *   'pair'    -> this (model, credential) only
-   *   'account' -> every model this credential can reach; SUSPECT if diagnosed
+   *   'credential' -> every model this credential can reach; SUSPECT if diagnosed
    *   'model'   -> the bare-modelId breaker (aggregation takes the model down)
    *
    * A rule `scope` override replaces the classifier's blast radius here —
@@ -632,7 +632,7 @@ export class CircuitBreakerManager {
    * pair space to expand into, so chain-less providers keep degenerating to
    * the model breaker no matter what an override says.
    *
-   * Pair and account verdicts deliberately do NOT touch the model breaker:
+   * Pair and credential verdicts deliberately do NOT touch the model breaker:
    * credential-scoped failures are not evidence about the model, and cooling a
    * model because one of its credentials hit a limit is the flaw this design
    * removes.
@@ -687,7 +687,7 @@ export class CircuitBreakerManager {
    *     trip.rateLimit OFF downgrades long-Retry-After 429s to counted
    *     statistical failures whose Retry-After-derived floor still flows
    *     through max(min, computed) (rule #3);
-   *   - the effective `scope` override picks the blast radius (account
+   *   - the effective `scope` override picks the blast radius (credential
    *     expansion needs the attribution this call site already has).
    *
    * Never rewrites category/isRetriable (invariant 3): adjustments ride on a
@@ -727,9 +727,9 @@ export class CircuitBreakerManager {
       deliver(this.getOrCreatePair(modelId, keyHashPrefix, owner).breaker);
       return;
     }
-    // account-wide: the credential is the problem, on every model it can serve.
+    // credential-wide: the credential is the problem, on every model it can serve.
     if (!this.modelProviders.has(modelId)) this.modelProviders.set(modelId, owner);
-    const rowTargets = new Set(this.accountModelIds(owner, keyHashPrefix));
+    const rowTargets = new Set(this.credentialModelIds(owner, keyHashPrefix));
     rowTargets.add(modelId);
     for (const targetId of rowTargets) {
       deliver(this.getOrCreatePair(targetId, keyHashPrefix, owner).breaker);
@@ -739,10 +739,10 @@ export class CircuitBreakerManager {
     // SUSPECT "on trip"): with the auth rule OFF the 401 is "ignore" (rule
     // semantics #2 — neither trips nor counts), so nothing is flagged. Manual
     // trips never set it, and trip.auth.markSuspect:false stops NEW flags
-    // only — existing suspect-accounts.json entries keep gating selection
+    // only — existing suspect-credentials.json entries keep gating selection
     // until operator clear (invariant 2: toggles never clear existing flags).
-    if (diagnosis.accountSuspect && r.trip.auth.enabled && r.trip.auth.markSuspect) {
-      this.accountState.mark(owner, keyHashPrefix, diagnosis.reason);
+    if (diagnosis.credentialSuspect && r.trip.auth.enabled && r.trip.auth.markSuspect) {
+      this.credentialState.mark(owner, keyHashPrefix, diagnosis.reason);
     }
   }
 
@@ -859,9 +859,9 @@ export class CircuitBreakerManager {
   /**
    * Manual reset. `modelId` = the model's breaker AND that model's pair
    * breakers (an operator
-   * putting a model back in service does not want a stale account cooldown to
+   * putting a model back in service does not want a stale credential cooldown to
    * keep the aggregate down). SUSPECT is the separate administrative gate and
-   * survives every reset path — only `AccountStateStore.clear()` lifts it.
+   * survives every reset path — only `CredentialStateStore.clear()` lifts it.
    * No argument resets every model breaker and every pair breaker.
    */
   public reset(modelId?: string): { resetCount: number; message: string } {
@@ -902,12 +902,12 @@ export class CircuitBreakerManager {
     this.schedulePersist();
     const pair = this.pairs.get(pairKey(modelId, keyHashPrefix));
     if (!pair) {
-      return { resetCount: 0, message: `No pair breaker for model '${modelId}' on account '${keyHashPrefix}'.` };
+      return { resetCount: 0, message: `No pair breaker for model '${modelId}' on credential '${keyHashPrefix}'.` };
     }
     pair.breaker.reset();
     return {
       resetCount: 1,
-      message: `Circuit breaker for model '${modelId}' on account '${keyHashPrefix}' reset to CLOSED.`,
+      message: `Circuit breaker for model '${modelId}' on credential '${keyHashPrefix}' reset to CLOSED.`,
     };
   }
 
@@ -917,15 +917,15 @@ export class CircuitBreakerManager {
 
     if (scope === 'pair') {
       if (!target.modelId || !target.keyHashPrefix) {
-        return { resetCount: 0, message: "scope 'pair' requires both model and account." };
+        return { resetCount: 0, message: "scope 'pair' requires both model and credential." };
       }
       return this.resetScoped(target.modelId, target.keyHashPrefix);
     }
 
-    // account: every pair breaker of this credential. SUSPECT is NOT cleared here —
+    // credential: every pair breaker of this credential. SUSPECT is NOT cleared here —
     // it needs the explicit clear endpoint (administrative, not a cooldown).
     if (!target.keyHashPrefix) {
-      return { resetCount: 0, message: "scope 'account' requires an account (keyHashPrefix)." };
+      return { resetCount: 0, message: "scope 'credential' requires an credential (keyHashPrefix)." };
     }
     // Direct breaker.reset() calls bypass the hooked reset/resetScoped
     // entry points, so arm the debounced snapshot here.
@@ -940,8 +940,8 @@ export class CircuitBreakerManager {
     return {
       resetCount: count,
       message: count
-        ? `Reset ${count} pair breaker(s) for account '${target.keyHashPrefix}'.`
-        : `No pair breakers found for account '${target.keyHashPrefix}'.`,
+        ? `Reset ${count} pair breaker(s) for credential '${target.keyHashPrefix}'.`
+        : `No pair breakers found for credential '${target.keyHashPrefix}'.`,
     };
   }
 
@@ -1002,17 +1002,17 @@ export class CircuitBreakerManager {
       tripped: true,
       affected: 1,
       message:
-        `Circuit breaker for model '${modelId}' on account '${keyHashPrefix}' ` +
+        `Circuit breaker for model '${modelId}' on credential '${keyHashPrefix}' ` +
         `manually tripped (OPEN) for ${CircuitBreakerManager.minutes(cooldownMs)}.`,
     };
   }
 
   /**
-   * Manually trip a whole account (one credential across the models it can reach).
+   * Manually trip a whole credential (one credential across the models it can reach).
    * No SUSPECT mark: a manual trip is a temporary takedown with a cooldown,
    * while SUSPECT is the administrative state an operator must clear by hand.
    */
-  public tripAccount(
+  public tripCredential(
     keyHashPrefix: string,
     options?: ManualTripOptions,
     providerId?: string
@@ -1020,7 +1020,7 @@ export class CircuitBreakerManager {
     this.schedulePersist();
     const cooldownMs = this.manualCooldownMs(options);
     const reason = `Manual trip: ${this.manualReason(options)}`;
-    // Without an explicit provider the account's owner(s) are whatever the
+    // Without an explicit provider the credential's owner(s) are whatever the
     // existing pair breakers say — a prefix is only ever seen through a provider.
     const owners = new Set<string>();
     if (providerId) owners.add(providerId);
@@ -1035,7 +1035,7 @@ export class CircuitBreakerManager {
       }
     }
     for (const owner of owners) {
-      for (const modelId of this.accountModelIds(owner, keyHashPrefix)) targets.add(modelId);
+      for (const modelId of this.credentialModelIds(owner, keyHashPrefix)) targets.add(modelId);
     }
     for (const modelId of targets) {
       this.getOrCreatePair(modelId, keyHashPrefix, providerId).breaker.trip(
@@ -1051,16 +1051,16 @@ export class CircuitBreakerManager {
       tripped: targets.size > 0,
       affected: targets.size,
       message: targets.size
-        ? `Account '${keyHashPrefix}' tripped (OPEN) on ${targets.size} model(s) for ${label}.`
-        : `Account '${keyHashPrefix}' has no pair breakers to trip (unknown provider or no models registered).`,
+        ? `Credential '${keyHashPrefix}' tripped (OPEN) on ${targets.size} model(s) for ${label}.`
+        : `Credential '${keyHashPrefix}' has no pair breakers to trip (unknown provider or no models registered).`,
     };
   }
 
   /**
    * Manual (console/REST) trip with explicit scope. `model` is the legacy
-   * scope and stays the default; `account` and `pair` address the finer grain.
+   * scope and stays the default; `credential` and `pair` address the finer grain.
    * `affected` counts the breakers actually taken down, so a caller can tell a
-   * no-op (unknown account) from a real trip without parsing prose.
+   * no-op (unknown credential) from a real trip without parsing prose.
    */
   public tripByScope(scope: TripScope, target: ScopeTarget, options?: ManualTripOptions): TripResult {
     if (scope === 'model') {
@@ -1071,14 +1071,14 @@ export class CircuitBreakerManager {
     }
     if (scope === 'pair') {
       if (!target.modelId || !target.keyHashPrefix) {
-        return { tripped: false, affected: 0, message: "scope 'pair' requires both model and account." };
+        return { tripped: false, affected: 0, message: "scope 'pair' requires both model and credential." };
       }
       return this.tripPair(target.modelId, target.keyHashPrefix, options, target.providerId);
     }
     if (!target.keyHashPrefix) {
-      return { tripped: false, affected: 0, message: "scope 'account' requires an account (keyHashPrefix)." };
+      return { tripped: false, affected: 0, message: "scope 'credential' requires an credential (keyHashPrefix)." };
     }
-    return this.tripAccount(target.keyHashPrefix, options, target.providerId);
+    return this.tripCredential(target.keyHashPrefix, options, target.providerId);
   }
 
   public getSnapshot(modelId: string): CircuitBreakerSnapshot | undefined {

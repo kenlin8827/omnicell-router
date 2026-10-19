@@ -221,7 +221,7 @@ export async function runSystemoneDecision(
     // (chain head) instead of trusting only the baked config key. A
     // config.yaml-registered systemone provider has no credential chain →
     // head undefined → providerConfig.apiKey exactly as before (identical for
-    // the single-key shape; multi-account systemone upstreams get the store's
+    // the single-key shape; multi-credential systemone upstreams get the store's
     // active key automatically once chains land for them).
     const active = registry.getActiveCredential(model.provider);
     const cfg = active ? { ...providerConfig, apiKey: active.key } : providerConfig;

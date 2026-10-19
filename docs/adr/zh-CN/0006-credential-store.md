@@ -41,9 +41,9 @@ auth.json 依旧永不是管理写入的汇（控制台凭证写永不触碰它�
 - `autoRead` 开：60s 轮询把客户端新密钥拉进 OCR 文件。
 - 开关按客户端独立、在**触发时**检查（防抖期间关掉即跳过）；全关 = 仅手动。手动运行（`run` 路由）对单个客户端执行任一或两个方向，结果与自动路径一样入档。
 
-### 6. 账号身份（不变）
+### 6. 凭证身份（不变）
 
-sha256(rawKey) 是持久身份；界面只见 12 字符前缀。熔断对、SUSPECT/DISABLED 标记、会话亲和与额度快照都锚定 `(provider × keyHashPrefix)`。每个写同步收敛对（推送或已有）都是一次重连手势，解除该账号 SUSPECT；DISABLED 刻意存续。
+sha256(rawKey) 是持久身份；界面只见 12 字符前缀。熔断对、SUSPECT/DISABLED 标记、会话亲和与额度快照都锚定 `(provider × keyHashPrefix)`。每个写同步收敛对（推送或已有）都是一次重连手势，解除该凭证 SUSPECT；DISABLED 刻意存续。
 
 ### 7. OAuth 边界（不变）
 
