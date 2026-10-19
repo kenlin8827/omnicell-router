@@ -695,7 +695,7 @@ async function storeProviderViews(store: CredentialStore): Promise<OpenCodeProvi
       byId.set(overview.providerId, {
         id: overview.providerId,
         models: [],
-        custom: false, // credential-only provider (store-connected, no jsonc node)
+        custom: false, // credential-only provider (store-connected, no defs-file node)
         auth: { connected: true, ...badge, ...(shown?.maskedKey ? { keyMasked: shown.maskedKey } : {}) },
       });
     }
@@ -705,7 +705,7 @@ async function storeProviderViews(store: CredentialStore): Promise<OpenCodeProvi
     // order (`active DESC, time_updated DESC`), so appending store-only providers
     // in that order makes a provider JUMP to the front of the grid every time a
     // key is added to it. Config-defined providers keep their author-defined
-    // jsonc sequence; credential-only providers follow, alphabetically.
+    // defs-file sequence; credential-only providers follow, alphabetically.
     const ra = configOrder.indexOf(a.id);
     const rb = configOrder.indexOf(b.id);
     if (ra !== rb) return (ra < 0 ? Number.MAX_SAFE_INTEGER : ra) - (rb < 0 ? Number.MAX_SAFE_INTEGER : rb);
@@ -1870,7 +1870,7 @@ export function registerConsoleRoutes(
           const u = byId.get(v.id);
           return {
             ...v,
-            // upgraded custom: an explicit jsonc definition OR not covered by
+            // upgraded custom: an explicit defs-file definition OR not covered by
             // the remote catalog (credential-only zhipu, private relays, …)
             custom: u?.custom ?? v.custom,
             logo: u?.logo,
