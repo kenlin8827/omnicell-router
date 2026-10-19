@@ -77,8 +77,17 @@ export class CredentialStateStore {
   private disabled = new Map<string, DisabledCredential>();
   // A file that existed but could not be parsed is preserved on the first
   // write instead of being overwritten (cp-dataloss: the flags are the only
-  // record of an credential an operator may have been working on).
+  // record of a credential an operator may have been working on).
   private preserveCorrupt = false;
+  /** The file the preserveCorrupt rename-aside targets (may be the LEGACY name). */
+  private corruptSourceFile: string | undefined;
+  /**
+   * Migration state: the legacy file was read and seeded, and must be removed
+   * after the FIRST successful persist of the new file — never earlier (a
+   * crash before any mutation would otherwise lose every flag: a disabled
+   * credential routes no traffic, so no diagnostic would re-write them).
+   */
+  private legacyCleanupFile: string | undefined;
 
   constructor(deps: CredentialStateStoreDeps = {}) {
     this.paths = deps.paths;
@@ -95,8 +104,11 @@ export class CredentialStateStore {
    * Load-once; a missing or malformed file is an empty set (never fatal).
    * One-time migration: flags saved under the pre-rename name
    * (suspect-accounts.json, inner key `accounts`) are read, seeded and the
-   * legacy file removed once the next persist writes the new one — a
-   * takedown must never silently un-disable because of a file rename.
+   * legacy file removed ONLY after the first successful persist of the new
+   * file — deleting earlier would lose every SUSPECT/DISABLED flag if the
+   * process died before any mutation produced a write (a disabled
+   * credential routes no traffic, so no diagnostic would ever re-write it).
+   * An unparsable LEGACY file is renamed aside under its own name.
    */
   private ensureLoaded(): void {
     if (this.loaded) return;
@@ -123,9 +135,12 @@ export class CredentialStateStore {
       parsed = JSON.parse(raw);
     } catch (e) {
       // Loud, not silent: a half-written file must not read as "no suspects".
+      // Rename aside the SOURCE that is corrupt (the legacy name when the
+      // migration read it — the new file may not exist yet to be renamed).
       this.preserveCorrupt = true;
+      this.corruptSourceFile = legacy ? legacyFile : this.filePath;
       console.warn(
-        `[resilience] ${legacy ? legacyFile : this.filePath} is unparseable, starting empty: ${
+        `[resilience] ${this.corruptSourceFile} is unparseable, starting empty: ${
           e instanceof Error ? e.message : String(e)
         }`
       );
@@ -141,17 +156,18 @@ export class CredentialStateStore {
           : undefined;
     if (file.version !== 1 || !suspectMap) {
       this.preserveCorrupt = true;
-      console.warn(`[resilience] ${legacy ? legacyFile : this.filePath} has an unexpected shape, starting empty`);
+      this.corruptSourceFile = legacy ? legacyFile : this.filePath;
+      console.warn(`[resilience] ${this.corruptSourceFile} has an unexpected shape, starting empty`);
       return;
     }
     for (const [id, entry] of Object.entries(suspectMap)) {
-      const a = entry as Partial<SuspectCredential> | null;
-      if (!a || typeof a.providerId !== 'string' || typeof a.keyHashPrefix !== 'string') continue;
+      const c = entry as Partial<SuspectCredential> | null;
+      if (!c || typeof c.providerId !== 'string' || typeof c.keyHashPrefix !== 'string') continue;
       this.credentials.set(id, {
-        providerId: a.providerId,
-        keyHashPrefix: a.keyHashPrefix,
-        reason: typeof a.reason === 'string' ? a.reason : '',
-        markedAt: typeof a.markedAt === 'number' ? a.markedAt : 0,
+        providerId: c.providerId,
+        keyHashPrefix: c.keyHashPrefix,
+        reason: typeof c.reason === 'string' ? c.reason : '',
+        markedAt: typeof c.markedAt === 'number' ? c.markedAt : 0,
       });
     }
     // Optional in v1 files (both directions): absent = nothing takedown.
@@ -168,11 +184,9 @@ export class CredentialStateStore {
       }
     }
     if (legacy) {
-      try {
-        fs.unlinkSync(legacyFile); // migrated — the legacy name never comes back
-      } catch {
-        // best effort; the next persist re-writes the new file regardless
-      }
+      // Deferred: the legacy file stays on disk until the new file is durably
+      // written (persist() unlinks it) — never deleted on load alone.
+      this.legacyCleanupFile = legacyFile;
     }
   }
 
@@ -180,11 +194,13 @@ export class CredentialStateStore {
   private persist(): void {
     if (this.preserveCorrupt) {
       this.preserveCorrupt = false;
+      const corruptSource = this.corruptSourceFile ?? this.filePath;
       try {
-        fs.renameSync(this.filePath, `${this.filePath}.corrupt.${this.nowFn()}`);
+        fs.renameSync(corruptSource, `${corruptSource}.corrupt.${this.nowFn()}`);
       } catch {
         // best effort — a rename race must not block the write of live flags
       }
+      this.corruptSourceFile = undefined;
     }
     const credentials: Record<string, SuspectCredential> = {};
     for (const [id, entry] of this.credentials) credentials[id] = entry;
@@ -206,6 +222,16 @@ export class CredentialStateStore {
       // best effort — Windows chmod semantics differ
     }
     fs.renameSync(tmpPath, this.filePath);
+    // The new file is durable — only now may the legacy name go away. A failed
+    // unlink leaves the flag set; the next persist retries the cleanup.
+    if (this.legacyCleanupFile) {
+      try {
+        fs.unlinkSync(this.legacyCleanupFile);
+        this.legacyCleanupFile = undefined;
+      } catch {
+        // best effort — retried on the next persist
+      }
+    }
   }
 
   /**

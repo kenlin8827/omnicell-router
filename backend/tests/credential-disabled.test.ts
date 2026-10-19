@@ -115,6 +115,63 @@ describe('CredentialStateStore — disabled limb', () => {
   });
 });
 
+describe('CredentialStateStore — legacy suspect-accounts.json migration', () => {
+  it('seeds flags from the pre-rename file and removes it ONLY after the first persist', () => {
+    const paths = tmpPaths('legacy');
+    // A pre-rename layout: legacy filename, legacy inner key, a real takedown.
+    fs.writeFileSync(
+      path.join(paths.ocrHome, 'suspect-accounts.json'),
+      JSON.stringify({
+        version: 1,
+        accounts: {
+          [suspectCredentialId('anthropic', 'sk-prefix-1'.slice(0, 12))]: {
+            providerId: 'anthropic',
+            keyHashPrefix: 'sk-prefix-1'.slice(0, 12),
+            reason: 'quota burned',
+            markedAt: 111,
+          },
+        },
+        disabled: {
+          [suspectCredentialId('openai', 'sk-prefix-2'.slice(0, 12))]: {
+            providerId: 'openai',
+            keyHashPrefix: 'sk-prefix-2'.slice(0, 12),
+            reason: 'operator takedown',
+            disabledAt: 222,
+          },
+        },
+      })
+    );
+    const store = new CredentialStateStore({ paths, now: () => 1 });
+    // Flags are live in memory AND the legacy file still exists (no premature unlink).
+    expect(store.isSuspect('anthropic', 'sk-prefix-1'.slice(0, 12))).toBe(true);
+    expect(store.isDisabled('openai', 'sk-prefix-2'.slice(0, 12))).toBe(true);
+    const legacyPath = path.join(paths.ocrHome, 'suspect-accounts.json');
+    expect(fs.existsSync(legacyPath)).toBe(true);
+    expect(fs.existsSync(path.join(paths.ocrHome, 'suspect-credentials.json'))).toBe(false);
+
+    // The FIRST persist (any mutation) writes the new file and only then
+    // removes the legacy name — a crash before this point loses nothing.
+    store.mark('anthropic', 'sk-prefix-3'.slice(0, 12), 'fresh suspicion');
+    expect(fs.existsSync(path.join(paths.ocrHome, 'suspect-credentials.json'))).toBe(true);
+    const migrated = JSON.parse(fs.readFileSync(path.join(paths.ocrHome, 'suspect-credentials.json'), 'utf8'));
+    expect(migrated.credentials[suspectCredentialId('openai', 'sk-prefix-2'.slice(0, 12))]).toBeUndefined(); // disabled lives in its own block
+    expect(migrated.disabled[suspectCredentialId('openai', 'sk-prefix-2'.slice(0, 12))]).toMatchObject({
+      providerId: 'openai',
+      reason: 'operator takedown',
+    });
+    expect(fs.existsSync(legacyPath)).toBe(false); // removed AFTER the durable write
+  });
+
+  it('an unparsable LEGACY file is renamed aside under its own name (cp-dataloss)', () => {
+    const paths = tmpPaths('legacy-corrupt');
+    fs.writeFileSync(path.join(paths.ocrHome, 'suspect-accounts.json'), '{ not json');
+    const store = new CredentialStateStore({ paths, now: () => 7 });
+    store.mark('anthropic', 'aaaaaaaaaaaa', 'boom'); // load (corrupt legacy) + corrupt rename-aside + persist
+    const debris = fs.readdirSync(paths.ocrHome).filter((f) => f.startsWith('suspect-accounts.json.corrupt.'));
+    expect(debris).toHaveLength(1); // preserved under the LEGACY name, not the new one
+  });
+});
+
 describe('isPairOut — the shared out-of-service gate', () => {
   it('a disabled credential is out for EVERY model of its provider, no breaker involved', () => {
     const store = new CredentialStateStore({ paths: tmpPaths('cb-all'), now: () => 1 });

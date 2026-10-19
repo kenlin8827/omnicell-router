@@ -294,7 +294,7 @@ async function pullV1IntoOcr(ocr: CredentialStore, overrides: SyncOverrides): Pr
       localPrefixes = new Set(
         ocr
           .listCredentials(providerId)
-          .map((a) => a.keyHashPrefix ?? '')
+          .map((c) => c.keyHashPrefix ?? '')
           .filter(Boolean)
       );
     } catch (e) {
@@ -760,7 +760,15 @@ async function tickAutoPoll(): Promise<void> {
       // Re-read per client: a fresh pull that added keys is exactly the state a
       // lagging write retry should converge (dedup keeps it idempotent).
       const fresh = clientStateOf(readSyncState(paths), client.id);
-      if (!fresh.lastWrite || !fresh.lastWrite.ok) {
+      // The safety net retries self-healing failures only: a missing precondition
+      // (service down) or per-entry failures. client_absent / client_unreadable
+      // do not heal by themselves — retrying them every tick would just churn
+      // the state file (the toggle row shows them; the operator fixes those).
+      const lastWrite = fresh.lastWrite;
+      const retryable =
+        !lastWrite ||
+        (!lastWrite.ok && (!lastWrite.precondition || lastWrite.precondition === 'service_unreachable'));
+      if (retryable) {
         engine.writing.add(client.id);
         void pushFromOcr(client.id, store, overrides)
           .then((outcome) => recordSyncOutcome(client.id, 'write', outcome, overrides))

@@ -2266,14 +2266,24 @@ export const KeysPage: React.FC = () => {
                   style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-main)', cursor: 'pointer' }}
                   title={t('op.syncAutoReadTip')}
                 >
-                  <Switch size="sm" checked={c.autoRead} onChange={(v) => handleSyncToggle(c.id, 'read', v)} />
+                  <Switch
+                    size="sm"
+                    checked={c.autoRead}
+                    disabled={!c.present}
+                    onChange={(v) => handleSyncToggle(c.id, 'read', v)}
+                  />
                   <span>{t('op.syncAutoRead')}</span>
                 </label>
                 <label
                   style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-main)', cursor: 'pointer' }}
                   title={t('op.syncAutoWriteTip')}
                 >
-                  <Switch size="sm" checked={c.autoWrite} onChange={(v) => handleSyncToggle(c.id, 'write', v)} />
+                  <Switch
+                    size="sm"
+                    checked={c.autoWrite}
+                    disabled={!c.present}
+                    onChange={(v) => handleSyncToggle(c.id, 'write', v)}
+                  />
                   <span>{t('op.syncAutoWrite')}</span>
                 </label>
               </div>
