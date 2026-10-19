@@ -8,7 +8,7 @@ import { matchesGlobPattern } from '../user-config.js';
  * Custom-pull store (~/.onecast-router/catalog/custom.json).
  *
  * Models pulled for CREDENTIAL-ONLY providers (auth.json entry without an
- * opencode.jsonc definition) — they have no jsonc node to write into, so the
+ * defs-file definition) — they have no defs node to write into, so the
  * pulled lists land here and feed the aggregation as the 'custom' source
  * (after config defs, entry-creating like the baseline). Merge is add-only:
  * a model id already present for a provider is never overwritten.

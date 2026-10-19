@@ -157,7 +157,7 @@ export const ModelsPage: React.FC = () => {
 
   /** Hide / show a model in the catalog.
    *
-   *  Writes the OVERRIDE layer (overrides.json), not the opencode.jsonc def:
+   *  Writes the OVERRIDE layer (overrides.json), not the defs-file def:
    *  that works for every row (catalog-sourced, credential-only and def-backed)
    *  and creates no def, which matters because a provider that suddenly gains a
    *  def would have its model universe collapse to the enabled defs. Read back
@@ -390,7 +390,7 @@ const toggleHidden = async (m: OpenCodeModelView) => {
                       {/* editing needs a local def to patch — `m.custom` is a PROVIDER-level flag
                           and would offer the pencil on catalog-filled models, which then
                           fail with "model is not defined for provider". `source === 'config'`
-                          is exactly "has an opencode.jsonc definition". */}
+                          is exactly "has a defs-file definition". */}
                       {m.source === 'config' && (
                         <button
                           style={{ color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', flexShrink: 0 }}

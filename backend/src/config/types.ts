@@ -52,7 +52,7 @@ export interface ModelRegistration {
   defaultEffort?: ReasoningEffort;
   /**
    * Named model variants, materialized by the boot-direct pool from
-   * opencode.jsonc model defs (effort-bearing entries only — see
+   * defs-file model defs (effort-bearing entries only — see
    * boot-direct.ts `routableVariants`). Each variant is routable as a
    * sibling id `<id>-<variant>` and via `<id>#<variant>` syntax; the
    * variant's reasoning effort is pinned onto the request.
@@ -65,7 +65,7 @@ export interface ModelRegistration {
    * Hand-configured models omit it and keep their explicit tier forever.
    */
   tierMatch?: { rawInputPerM?: number; reasoningFlag: boolean };
-  /** Explicit tier from the opencode.jsonc model definition (catalog overrides are read live) */
+  /** Explicit tier from the defs-file model definition (catalog overrides are read live) */
   configTier?: TierLevel;
   /**
    * Fourth state: the model matched no tier's positive conditions
@@ -504,13 +504,13 @@ export interface CatalogConfig {
   sources?: CatalogSourceConfig[];
   /**
    * Locally anchored model ids (bare model id, applies across providers): a
-   * locked id that already has a local/opencode.jsonc definition keeps its
+   * locked id that already has a local/defs-file definition keeps its
    * maintained values — INCLUDING explicit zero prices — no remote source may
    * overwrite them. Read live from config.yaml (hot, no restart needed).
    */
   lockedModels?: string[];
   /**
-   * Auto-pull models for every opencode.jsonc provider on each sync period
+   * Auto-pull models for every defs-file provider on each sync period
    * (live /v1/models first, static catalog fallback). ADD-ONLY: existing
    * definitions are never overwritten. Default: true.
    */

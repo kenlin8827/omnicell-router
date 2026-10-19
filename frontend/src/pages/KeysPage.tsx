@@ -1740,7 +1740,7 @@ export const KeysPage: React.FC = () => {
         {/* Scrollable tab content: the tab bars stay fixed, long lists scroll here. */}
         <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
         {activeTab === 'connected' && (<>
-        {/* ---- Connected providers (opencode.jsonc provider node ∪ bound store) ---- */}
+        {/* ---- Connected providers (defs file providers map ∪ bound store) ---- */}
         <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>{t('op.connectedTitle')}</div>
         <p style={{ color: 'var(--text-dim)', fontSize: 11, margin: '0 0 12px' }} title={`${ocPaths.configPath} | ${ocPaths.authPath}`}>
           {t('op.connectedDesc', { sink: sinkLabel })}
@@ -2233,7 +2233,9 @@ export const KeysPage: React.FC = () => {
         {activeTab === 'sync' && (<>
         {/* ---- Credential sync (client ⇄ OCR file; the OCR file is the single truth) ---- */}
         <div style={{ fontSize: 13, fontWeight: 700, margin: '0 0 8px' }}>{t('op.syncTitle')}</div>
-        <p style={{ color: 'var(--text-dim)', fontSize: 11, margin: '0 0 14px' }}>{t('op.syncDesc')}</p>
+        <p style={{ color: 'var(--text-dim)', fontSize: 11, margin: '0 0 2px' }}>{t('op.syncDesc')}</p>
+        <p style={{ color: 'var(--text-dim)', fontSize: 11, margin: '0 0 2px' }}>{t('op.syncDescToggles')}</p>
+        <p style={{ color: 'var(--text-dim)', fontSize: 11, margin: '0 0 14px' }}>{t('op.syncDescDefaults')}</p>
         <div
           style={{
             display: 'grid',

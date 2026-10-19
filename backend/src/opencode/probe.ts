@@ -1,7 +1,7 @@
 /**
  * One-shot upstream probe behind the console "Test" buttons.
  *
- * Speaks the three wire shapes users actually configure in opencode.jsonc:
+ * Speaks the three wire shapes users actually configure in their provider defs:
  *   - openai    → POST {base}/chat/completions              (default / OpenAI-compatible gateways)
  *   - anthropic → POST {base}/messages                      (x-api-key)
  *   - google    → POST {base}/models/{model}:generateContent
@@ -46,7 +46,7 @@ export interface ProbeOptions {
   /** Provider id — only used for outbound proxy includes/excludes matching. */
   provider?: string;
   kind?: ProbeKind;
-  /** Provider-configured extra headers (opencode.jsonc options.headers). */
+  /** Provider-configured extra headers (defs-file options.headers). */
   headers?: Record<string, string>;
   timeoutMs?: number;
 }

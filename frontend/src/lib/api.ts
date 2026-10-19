@@ -2013,7 +2013,7 @@ export interface WebAuthConfigView extends WebAuthStatus {
 }
 
 // ---------------------------------------------------------------------------
-// OpenCode-native provider management (opencode.jsonc `provider` + auth.json)
+// Provider management (defs file `providers` map + bound credential store)
 // ---------------------------------------------------------------------------
 
 export interface OpenCodeProviderView {

@@ -12,7 +12,7 @@ import { TiersConfig } from '../config/types.js';
  * There is no dead configuration — every field below is honored for every tier.
  *
  * Classification chain for ONE model (first hit wins, highest authority first):
- *   1. explicit tier (catalog override / opencode.jsonc model def) — resolved by
+ *   1. explicit tier (catalog override / defs-file model def) — resolved by
  *      the registry BEFORE calling classifyTier; human pins outrank rules
  *   2. tier name patterns (wildcards over the model id) — lite → pro → plus →
  *      ultra (lighter tiers claim first so heavier ones aren't accidentally

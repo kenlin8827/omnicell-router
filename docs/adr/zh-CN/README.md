@@ -19,3 +19,4 @@
 | [ADR-0007](./0007-environments-and-bootstrap.md) | 环境——账本目录、重启切换、导出/导入 | **已实现** | 2026-10-15 | 单一目录布局无 legacy 分支；OCR_ENV>指针>default（customPath ≠ 杠杆）；切换 = 受控重启（两类子进程 PORT/HOST 纪律不同）；'ocr-env' 信封默认脱敏、封闭白名单、导入守卫成栈；废纸篓删除 |
 | [ADR-0008](./0008-protocol-surfaces-and-capture.md) | 接入面与捕获 | **已实现** | 2026-10-15 | 一张派发表双传输；入站别名恰四个；MITM 全捕获姿态；requestCapture = HTTP 交换事件（每轮 2–4 条）、凭证值掩码、默认关字节同一；systemone 两腿闸树 + 概率诚实措辞；responses.persist 失忆边界 |
 | [ADR-0009](./0009-quota-probing.md) | 额度跟踪——分层知识、声明式探测 | **已实现** | 2026-10-15 | 覆盖随 release、激活随凭据；四层（头收割预留 / 声明表 / 代码 adapter / 用户表）；12 构件 DSL、五类禁例结构上写不出；铁律只约束用户配置；探测失败≠额度失败；只展示不门控路由；熔断汇聚点写 quota_events 账本 |
+| [ADR-0010](./0010-provider-def-ownership.md) | Provider 定义归属——OCR 定义文件，opencode.jsonc 物化目标 | **已接受** | 2026-10-19 | 连接定义真相落于 `<ocrHome>/custom-providers.json`（jsonc 保形移植、解析器不动）；opencode.jsonc 退出真相链——同步客户端物化目标（推定义只写不读，reload 自愈存活）；boot pool 换源；一次性 jsonc 导入带 marker；v1 只推 key；页面去 opencode 化 |

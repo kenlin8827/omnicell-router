@@ -238,7 +238,7 @@ export const ProviderModelsDialog: React.FC<{
             .sort((a, b) => a.id.localeCompare(b.id))
         );
       } else {
-        // raw opencode.jsonc definitions — v1 or v2 shape, kept verbatim
+        // raw defs-file definitions — v1 or v2 shape, kept verbatim
         const res = await opencodeApi.listProviderModels(providerId);
         setRows(
           Object.entries(res.models || {})

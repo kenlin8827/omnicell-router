@@ -10,6 +10,7 @@ import {
   getProviderModelDefs,
   expandEnvTemplate,
   legacyShapedSlotEntries,
+  ROUTER_PROVIDER_ID,
 } from '../opencode/user-config.js';
 import { getCredentialStore, getCredentialStoreStatus } from '../opencode/credentials/index.js';
 import { keyHashPrefix } from '../opencode/credentials/types.js';
@@ -19,7 +20,8 @@ import { WireKind, wireFor, unroutableReason, baseForWire } from './wire.js';
 /**
  * Build the direct execution pool WITHOUT the opencode daemon.
  * Truth sources:
- *   - opencode.jsonc provider nodes (baseURL/headers/npm/model defs)   [user-config.ts]
+ *   - the OCR provider-defs file's provider nodes (baseURL/headers/npm/model defs)
+ *     [provider-defs.ts via user-config.ts]
  *   - the bound CredentialStore (opencode v2 db, the v2
  *     read-only fallback, or the OCR file — whichever the factory bound at boot) [credentials/]
  *   - models.dev catalog (pricing/capabilities/provider+model npm)     [catalogRepository]
@@ -116,7 +118,7 @@ export function effortLadderFor(
 
 /** One shared line for a node the reader refuses to route (Decision 11). */
 function retiredShapeReason(paths: string[]): string {
-  return `opencode.jsonc 节点为已废弃形状（${paths.join(', ')}）：opencode 会丢弃整个 provider 节点，OCR 同样拒绝路由 —— 请改用 package/settings 的 v2 形状`;
+  return `provider 定义节点为已废弃形状（${paths.join(', ')}）：已废弃形状不可路由 —— 请改用 package/settings 的 v2 形状`;
 }
 
 export async function buildDirectPool(): Promise<DirectBootResult> {
@@ -142,6 +144,17 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
   const retiredShapes = new Map(legacyShapedSlotEntries().map((e) => [e.id, e.paths]));
 
   for (const rec of catalog) {
+    // The gateway must never route THROUGH itself: the hook-owned
+    // `onecast-router` def (baseURL = this gateway) is client-takeover
+    // material, not an upstream. Excluded loudly, never silently pooled.
+    if (rec.id === ROUTER_PROVIDER_ID) {
+      excluded.push({
+        provider: rec.id,
+        reason: 'router self-loop — the gateway cannot be its own upstream',
+        reasonCode: 'router_self_loop',
+      });
+      continue;
+    }
     const retired = retiredShapes.get(rec.id);
     if (retired) {
       retiredShapes.delete(rec.id);
@@ -252,7 +265,7 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
       const outputCost = catModel?.cost?.output ?? inputCost * 4.0;
       const cacheRead = catModel?.cost?.cache_read ?? inputCost * 0.25;
 
-      // Explicit tier from the opencode.jsonc model definition wins; otherwise
+      // Explicit tier from the defs-file model definition wins; otherwise
       // the configurable smart match classifies (patterns → price band →
       // thinking-effort flag). Free models (input = 0) can hit the lite band;
       // models without catalog pricing simply skip bands. This pre-labeling is

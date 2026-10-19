@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { normalizeModelsDev, modelsDevLogoUrl } from '../src/opencode/catalog/sources/models-dev.js';
 import { normalizeOpenRouter, OPENROUTER_PROVIDER_ID } from '../src/opencode/catalog/sources/openrouter.js';
+import { getProviderDefsPath, writeProviderDefs } from '../src/opencode/provider-defs.js';
 import { mergeModels, CatalogRepository } from '../src/opencode/catalog/repository.js';
 import { readCacheFile, writeCacheFile } from '../src/opencode/catalog/cache.js';
 import { readOcrStore, writeOcrStore } from '../src/opencode/catalog/ocr-store.js';
@@ -530,6 +531,7 @@ describe('auto-pull sweep end-to-end (regression: TDZ in Phase-1)', () => {
   let tmpDir: string;
   let oldConfigHome: string | undefined;
   let oldDataHome: string | undefined;
+  let oldOcrHome: string | undefined;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-autopull-'));
@@ -537,19 +539,14 @@ describe('auto-pull sweep end-to-end (regression: TDZ in Phase-1)', () => {
     oldDataHome = process.env.XDG_DATA_HOME;
     process.env.XDG_CONFIG_HOME = path.join(tmpDir, 'config');
     process.env.XDG_DATA_HOME = path.join(tmpDir, 'data');
-    fs.mkdirSync(path.join(process.env.XDG_CONFIG_HOME, 'opencode'), { recursive: true });
-    fs.writeFileSync(
-      path.join(process.env.XDG_CONFIG_HOME, 'opencode', 'opencode.jsonc'),
-      JSON.stringify({
-        providers: {
-          'home-lab': {
-            package: '@opencode/ai/providers/openai-compatible',
-            settings: { baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-test' },
-          },
-        },
-      }),
-      'utf8',
-    );
+    oldOcrHome = process.env.OCR_HOME;
+    process.env.OCR_HOME = path.join(tmpDir, 'home');
+    writeProviderDefs({
+      'home-lab': {
+        package: '@opencode/ai/providers/openai-compatible',
+        settings: { baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-test' },
+      },
+    });
   });
 
   afterEach(() => {
@@ -557,6 +554,8 @@ describe('auto-pull sweep end-to-end (regression: TDZ in Phase-1)', () => {
     else process.env.XDG_CONFIG_HOME = oldConfigHome;
     if (oldDataHome === undefined) delete process.env.XDG_DATA_HOME;
     else process.env.XDG_DATA_HOME = oldDataHome;
+    if (oldOcrHome === undefined) delete process.env.OCR_HOME;
+    else process.env.OCR_HOME = oldOcrHome;
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     } catch {

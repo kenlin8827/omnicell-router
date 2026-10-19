@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { OpenCodeAuthEntry } from '../user-config.js';
+import { migrateJsoncProviderDefs, type ProviderDefsImportRecord } from '../provider-defs.js';
 import {
   CredentialPaths,
   credentialStoreStateFile,
@@ -110,7 +111,8 @@ export interface StandaloneImportRecord {
 /**
  * Schema of <ocrHome>/credential-store.json. ADDITIVE: `reconcile` appears
  * only after the Decision 4 gate ran, `standaloneImport` only after the B4
- * standalone one-shot import ran; readers must tolerate both absences.
+ * standalone one-shot import ran, `providerDefsImport` only after the jsonc
+ * provider-def port ran; readers must tolerate all absences.
  * B4/F1 consume this shape (bind evidence + hysteresis + markers).
  */
 export interface CredentialStoreState {
@@ -121,6 +123,7 @@ export interface CredentialStoreState {
   updatedAt: number;
   reconcile?: CredentialStoreStateReconcile;
   standaloneImport?: StandaloneImportRecord;
+  providerDefsImport?: ProviderDefsImportRecord;
 }
 
 export interface BindOverrides {
@@ -427,6 +430,7 @@ function bindFailureLanding(overrides: BindOverrides, detail: string): StoreBind
     updatedAt: status.boundAt,
     ...(lkg?.reconcile ? { reconcile: lkg.reconcile } : {}),
     ...(lkg?.standaloneImport ? { standaloneImport: lkg.standaloneImport } : {}),
+    ...(lkg?.providerDefsImport ? { providerDefsImport: lkg.providerDefsImport } : {}),
   });
   return { store, status, excludedWithReason: status.excluded };
 }
@@ -455,6 +459,15 @@ async function bindCredentialStoreOnce(overrides: BindOverrides = {}): Promise<S
     const imported = await runStandaloneImport(ocr, paths, now);
     standaloneImport = imported.record;
     excluded = imported.excluded;
+  }
+
+  // One-shot jsonc provider-def port (marker-gated, same ledger pattern):
+  // undefined = deferred (unparsable source / write failure) — no marker, retried next boot.
+  let providerDefsImport: ProviderDefsImportRecord | undefined;
+  if (lkg?.providerDefsImport?.doneAt) {
+    providerDefsImport = lkg.providerDefsImport;
+  } else {
+    providerDefsImport = migrateJsoncProviderDefs({ paths, now });
   }
 
   // Non-routable rows are loud (oauth/unknown shapes hold no api key).
@@ -489,6 +502,7 @@ async function bindCredentialStoreOnce(overrides: BindOverrides = {}): Promise<S
     updatedAt: status.boundAt,
     ...(lkg?.reconcile ? { reconcile: lkg.reconcile } : {}),
     ...(standaloneImport ? { standaloneImport } : {}),
+    ...(providerDefsImport ? { providerDefsImport } : {}),
   });
 
   return { store: ocr, status, excludedWithReason: excluded };

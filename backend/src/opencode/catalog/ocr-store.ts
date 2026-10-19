@@ -10,7 +10,7 @@ import { getEnvPaths } from '../../config/env.js';
  * This is the LOCAL DATABASE of the catalog: the full aggregated view
  * (catalogRepository.list()) materialized to disk. The repository loads this
  * file at boot when its signature matches, and rewrites it whenever the
- * aggregation is rebuilt (source sync, config/opencode.jsonc changes).
+ * aggregation is rebuilt (source sync, config/defs-file changes).
  * Writes are atomic (tmp + rename), mirroring cache.ts.
  */
 

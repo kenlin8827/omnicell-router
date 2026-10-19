@@ -656,7 +656,7 @@ async function mapCredentialWriteFailure(
 
 /**
  * Masked provider views from the BOUND store (listProviders for every
- * non-opencode-v1-sink binding): config providers from opencode.jsonc ∪ store
+ * non-opencode-v1-sink binding): config providers from the defs file ∪ store
  * credentials, in the existing OpenCodeProviderView shape — no new shape.
  * Raw keys never enter the view (CredentialMeta is masked by interface
  * contract; Decision 1 risk limb).
@@ -1620,7 +1620,7 @@ export function registerConsoleRoutes(
     lockedModels: loadConfig().catalog?.lockedModels ?? [],
   });
 
-  // The FULL OCR catalog view (catalogRepository.list()): opencode.jsonc
+  // The FULL OCR catalog view (catalogRepository.list()): defs-file
   // definitions + credentials first, then provider-catalog sources (builtin
   // baseline) and model-list enrichments, service baseURL hints — the exact
   // aggregation the /providers and /models pages are built on.
@@ -1631,7 +1631,7 @@ export function registerConsoleRoutes(
   };
 
   // Aggregate-level model overrides (OCR Catalog viewer edits) — a separate
-  // editing plane from opencode.jsonc definitions. Applied LAST on the
+  // editing plane from defs-file definitions. Applied LAST on the
   // aggregation so edited values always win over sourced values.
   const handleGetCatalogOverride = async (req: any) => {
     const { getOverride } = await import('../opencode/catalog/overrides-store.js');
@@ -1779,8 +1779,8 @@ export function registerConsoleRoutes(
     }
   });
 
-  // 7. OpenCode-native Provider Management (opencode.jsonc `provider` node + bound credential store)
-  //     - Definitions live in ~/.config/opencode/opencode.jsonc (JSONC, comment-preserving edits)
+  // 7. Provider Management (defs file `providers` map + bound credential store)
+  //     - Definitions live in <ocrHome>/custom-providers.json (provider-defs.ts)
   //     - Credentials live in the boot-bound CredentialStore (auth.json is never written)
   //     - Connectable catalog comes from models.dev (same source as `opencode auth login`)
 
@@ -1850,7 +1850,8 @@ export function registerConsoleRoutes(
 
   const ocHandlers = {
     list: async () => {
-      const { getOpenCodeConfigPath, getOpenCodeAuthPath } = await import('../opencode/user-config.js');
+      const { getOpenCodeAuthPath } = await import('../opencode/user-config.js');
+      const { getProviderDefsPath } = await import('../opencode/provider-defs.js');
       const { getCredentialStore } = await import('../opencode/credentials/index.js');
       const { catalogRepository } = await import('../opencode/catalog/repository.js');
       const store = await getCredentialStore();
@@ -1862,7 +1863,7 @@ export function registerConsoleRoutes(
       const byId = new Map(unified.map((p) => [p.id, p]));
       return {
         status: 'ok',
-        configPath: getOpenCodeConfigPath(),
+        configPath: getProviderDefsPath(),
         authPath: getOpenCodeAuthPath(),
         catalogSync: catalogRepository.lastSyncOrigin,
         providers: views.map((v) => {
@@ -2035,7 +2036,7 @@ export function registerConsoleRoutes(
       const { getCredentialStore } = await import('../opencode/credentials/index.js');
       const existing = getProviderNodeById(id);
       if (!existing) {
-        return reply.status(404).send({ success: false, error: `Provider '${id}' not found in opencode.jsonc` });
+        return reply.status(404).send({ success: false, error: `Provider '${id}' not found in the provider defs file` });
       }
       // B4: same implicit auth.json side-write as create (apiKey + !inline) —
       // routed to the bound store when auth.json is not the sink (Decision 4).
@@ -2383,7 +2384,7 @@ export function registerConsoleRoutes(
           for (const m of custom) models[m.id] = catalogModelToV2Def(m);
           return { status: 'ok', id, models, custom: true };
         }
-        return reply.status(404).send({ success: false, error: `Provider '${id}' is not defined in opencode.jsonc` });
+        return reply.status(404).send({ success: false, error: `Provider '${id}' is not defined in the provider defs file` });
       }
       return { status: 'ok', id, models: defs };
     },

@@ -1,5 +1,6 @@
 import { OpenCodeConnector } from '../connector.js';
-import { listOpenCodeProviders, getProviderNodeById, getOpenCodeConfigPath } from '../user-config.js';
+import { listOpenCodeProviders, getProviderNodeById } from '../user-config.js';
+import { getProviderDefsPath } from '../provider-defs.js';
 import { BUILTIN_SOURCE_ID, type CatalogConfig, type CatalogSourceConfig, type SourceMapConfig } from '../../config/types.js';
 import { resolveSources, parseByType, isKnownSourceType, type RemoteSourceDef, type ParsedSource } from './sources/registry.js';
 import { modelsDevLogoUrl } from './sources/models-dev.js';
@@ -547,7 +548,7 @@ async setSourceEnabled(id: string, enabled: boolean): Promise<CatalogSourceView>
 
   /**
    * Aggregation signature: everything that can change the ocr result OUTSIDE
-   * a source sync — opencode.jsonc edits (providers/models/credentials), and
+   * a source sync — provider-defs file edits (providers/models), and
    * config.yaml edits (catalog.sources CRUD, lockedModels). Source data itself
    * flips ocrDirty via applyRemote().
    */
@@ -567,7 +568,11 @@ async setSourceEnabled(id: string, enabled: boolean): Promise<CatalogSourceView>
     const locked = (loadConfig().catalog?.lockedModels ?? []).join(',');
     const customMtime = mtime(getCustomStorePath());
     const overridesMtime = mtime(getOverridesStorePath());
-    return `${mtime(getOpenCodeConfigPath())}:${mtime(getConfigPath())}:${srcs}:${fetched}:${locked}:${customMtime}:${overridesMtime}`;
+    // The defs file replaced opencode.jsonc as the def truth: its mtime drives
+    // the rebuild, and the jsonc mtime stays OUT — a materialization rewrite
+    // must not look like a source change.
+    const defsMtime = mtime(getProviderDefsPath());
+    return `${defsMtime}:${mtime(getConfigPath())}:${srcs}:${fetched}:${locked}:${customMtime}:${overridesMtime}`;
   }
 
   private ocrLoadOrigin = 'not-built';
@@ -782,7 +787,7 @@ async setSourceEnabled(id: string, enabled: boolean): Promise<CatalogSourceView>
 
     // 3e. aggregate overrides — field-level edits made in the OCR Catalog viewer,
     // applied LAST so they always win over sourced values. This is a separate
-    // editing plane from opencode.jsonc definitions (provider layer).
+    // editing plane from defs-file definitions (provider layer).
     const overrides = readOverridesStore();
     if (overrides) {
       for (const [key, entry] of Object.entries(overrides.models)) {

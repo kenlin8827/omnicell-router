@@ -5,7 +5,7 @@
  * schema (snake_case): models carry `tool_call`, `limit{context,output}`,
  * `cost{input,output,cache_read,cache_write}`, `attachment`, `temperature`,
  * `modalities` — so normalizer output is near-identity and writing definitions
- * into opencode.jsonc needs no reshaping. Pricing/cost unit: USD per 1M tokens
+ * into the defs file needs no reshaping. Pricing/cost unit: USD per 1M tokens
  * (models.dev `cost` is already $/1M; OpenRouter is converted at the source).
  */
 
@@ -118,11 +118,11 @@ export interface CatalogProviderRecord {
   npm?: string;
   /** default API base from the catalog */
   api?: string;
-  /** effective base URL override (opencode.jsonc definition wins, then live service) */
+  /** effective base URL override (defs-file definition wins, then live service) */
   baseURL?: string;
   doc?: string;
   env?: string[];
-  /** defined in opencode.jsonc provider node */
+  /** defined in the defs file's providers map */
   custom: boolean;
   /** has a usable credential (auth.json entry or inline key) */
   connected: boolean;

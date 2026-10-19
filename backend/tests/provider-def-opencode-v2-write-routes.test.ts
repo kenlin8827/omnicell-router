@@ -54,9 +54,18 @@ mock.module('../src/opencode/catalog/auto-pull.js', () => ({
 
 const { createServer } = await import('../src/server.js');
 const { buildDirectPool } = await import('../src/providers/boot-direct.js');
-const { upsertCustomProvider, getOpenCodeConfigPath, getOpenCodeAuthPath } = await import(
+const { upsertCustomProvider, getOpenCodeAuthPath } = await import(
   '../src/opencode/user-config.js'
 );
+const { readProviderDefsFile, writeProviderDefs, getProviderDefsPath } = await import(
+  '../src/opencode/provider-defs.js'
+);
+
+// Hermetic defs file: the funnel writes through env-resolved OCR_HOME (shared
+// runner sandbox) — clear leftovers before every test.
+beforeEach(() => {
+  fs.rmSync(getProviderDefsPath(), { force: true });
+});
 
 const baseConfig = loadConfig();
 baseConfig.host = '127.0.0.1';
@@ -147,11 +156,11 @@ function bindStore(paths: CredentialPaths) {
 }
 
 function rawJsonc(): any {
-  return JSON.parse(fs.readFileSync(getOpenCodeConfigPath(), 'utf8'));
+  return { providers: readProviderDefsFile()?.providers ?? {} };
 }
 
 function writeJsoncFile(text: string): void {
-  fs.writeFileSync(getOpenCodeConfigPath(), text, 'utf8');
+  writeProviderDefs(JSON.parse(text.replace(/^\s*\/\/.*$/gm, '')).providers ?? {});
 }
 
 const rec = (id: string, modelIds: string[]) => ({

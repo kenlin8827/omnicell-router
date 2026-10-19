@@ -107,12 +107,18 @@ function credPaths(): CredentialPaths {
   };
 }
 
+let oldOcrHome: string | undefined;
+
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-console-routes-'));
   oldCfg = process.env.XDG_CONFIG_HOME;
   oldData = process.env.XDG_DATA_HOME;
+  oldOcrHome = process.env.OCR_HOME;
   process.env.XDG_CONFIG_HOME = path.join(tmpDir, 'config');
   process.env.XDG_DATA_HOME = path.join(tmpDir, 'data');
+  // The defs funnel resolves through OCR_HOME — align it with credPaths().ocrHome
+  // so route writes and test assertions address the same custom-providers.json.
+  process.env.OCR_HOME = path.join(tmpDir, 'ocr-home');
   const p = credPaths();
   fs.mkdirSync(p.configDir, { recursive: true });
   fs.mkdirSync(p.dataDir, { recursive: true });
@@ -129,6 +135,8 @@ afterEach(() => {
   else process.env.XDG_CONFIG_HOME = oldCfg;
   if (oldData === undefined) delete process.env.XDG_DATA_HOME;
   else process.env.XDG_DATA_HOME = oldData;
+  if (oldOcrHome === undefined) delete process.env.OCR_HOME;
+  else process.env.OCR_HOME = oldOcrHome;
 });
 
 // ---------------------------------------------------------------------------
@@ -157,6 +165,8 @@ function bindStore(paths: CredentialPaths) {
   resetCredentialStoreForTests(paths, undefined, fetchImpl, { env: {}, now: () => 1 });
 }
 
+import { readProviderDefsFile, writeProviderDefs } from '../src/opencode/provider-defs.js';
+
 /** Seed the OCR file directly — the bound store reads it per call. */
 function seedOcr(
   p: CredentialPaths,
@@ -184,8 +194,12 @@ function seedOcr(
   );
 }
 
-function writeJsonc(p: CredentialPaths, body: unknown) {
-  fs.writeFileSync(path.join(p.configDir, 'opencode.jsonc'), JSON.stringify(body, null, 2));
+function writeJsonc(p: CredentialPaths, body: any) {
+  writeProviderDefs((body?.providers ?? {}) as Record<string, any>, p);
+}
+
+function readJsoncProviders(p: CredentialPaths): any {
+  return readProviderDefsFile(p)?.providers ?? {};
 }
 
 function readAuth(p: CredentialPaths): Record<string, any> {
@@ -402,8 +416,8 @@ describe('POST/PATCH /opencode/providers — implicit auth.json side-write suppr
       payload: { id: 'myprov', name: 'My', baseURL: 'https://x.test/v1', apiKey: 'sk-created-key', apiKeyInline: false },
     });
     expect(res.statusCode).toBe(200);
-    const jsonc = JSON.parse(fs.readFileSync(path.join(p.configDir, 'opencode.jsonc'), 'utf8'));
-    expect(jsonc.providers.myprov).toBeDefined();
+    const jsonc: any = readJsoncProviders(p);
+    expect(jsonc.myprov).toBeDefined();
     // THE suppression assertions: no auth.json side-write — the key went to the store
     expect(fs.existsSync(p.authJsonPath)).toBe(false);
     expect(readOcrFile(p).providers.myprov[0].key).toBe('sk-created-key');
@@ -418,11 +432,11 @@ describe('POST/PATCH /opencode/providers — implicit auth.json side-write suppr
       payload: { id: 'myprov', baseURL: 'https://x.test/v1', apiKey: '{env:MY_KEY}', apiKeyInline: true },
     });
     expect(res.statusCode).toBe(200);
-    const jsonc = JSON.parse(fs.readFileSync(path.join(p.configDir, 'opencode.jsonc'), 'utf8'));
+    const jsonc: any = readJsoncProviders(p);
     // P4: a literal `{env:X}` string is not a store key — the writer translates
     // it to env:["X"] and drops the fake inline key.
-    expect(jsonc.providers.myprov.env).toEqual(['MY_KEY']);
-    expect(jsonc.providers.myprov.settings?.apiKey).toBeUndefined();
+    expect(jsonc.myprov.env).toEqual(['MY_KEY']);
+    expect(jsonc.myprov.settings?.apiKey).toBeUndefined();
     // nothing landed in the credential store for an inline key
     expect(readOcrFile(p)?.providers?.myprov ?? []).toHaveLength(0);
     expect(fetchCalls.filter((c) => c.method === 'POST')).toHaveLength(0);
@@ -452,8 +466,8 @@ describe('DELETE /opencode/providers/:id?purgeAuth=1 — credential loop through
     bindStore(p);
     const res = await app.inject({ method: 'DELETE', url: '/api/admin/opencode/providers/myprov?purgeAuth=1' });
     expect(res.statusCode).toBe(200);
-    const jsonc = JSON.parse(fs.readFileSync(path.join(p.configDir, 'opencode.jsonc'), 'utf8'));
-    expect(jsonc.providers.myprov).toBeUndefined();
+    const jsonc: any = readJsoncProviders(p);
+    expect(jsonc.myprov).toBeUndefined();
     expect(res.json().purge).toMatchObject({ attempted: 1, removed: 1 });
     // the auth.json snapshot entry SURVIVES (OCR never deletes upstream files)
     expect(readAuth(p).myprov).toBeDefined();

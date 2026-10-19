@@ -437,6 +437,8 @@ export interface TranslationDict {
     syncTab: string;
     syncTitle: string;
     syncDesc: string;
+    syncDescToggles: string;
+    syncDescDefaults: string;
     syncColClient: string;
     syncColAuto: string;
     syncColLastRead: string;

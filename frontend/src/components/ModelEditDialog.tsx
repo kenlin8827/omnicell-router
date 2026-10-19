@@ -84,7 +84,7 @@ const formFromDef = (modelKey: string, d: any): ModelFormState => ({
 
 /**
  * Self-contained single-model editor (opencode v2 schema): fetches the model's
- * current definition from opencode.jsonc, edits it in place, PATCHes back.
+ * current definition from the defs file, edits it in place, PATCHes back.
  * Used from the /models page rows of config-defined models.
  */
 export const ModelEditDialog: React.FC<{
@@ -178,7 +178,7 @@ export const ModelEditDialog: React.FC<{
     if (!form) return;
     const f = form;
     // Backstop for data the form did not produce (pulled from the catalog, or
-    // hand-edited in opencode.jsonc): a default effort outside the declared
+    // hand-edited in the defs file): a default effort outside the declared
     // levels would be pinned onto every request that omits one. Picking a
     // default auto-checks its level, so this only fires on pre-existing
     // mismatches. An empty ladder declares no explicit levels → skip.

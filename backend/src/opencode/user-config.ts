@@ -9,16 +9,22 @@ import {
   type ParseError,
 } from 'jsonc-parser';
 import { isOpencodeV2Package } from '../providers/wire.js';
+import { readProviderDefsFile, writeProviderDefs } from './provider-defs.js';
 
 /**
- * OpenCode user-level configuration management.
+ * OpenCode-adjacent configuration management.
  *
- * Responsibilities (mirrors OpenCode's own conventions):
- *  - Provider definitions  -> `provider` node of ~/.config/opencode/opencode.jsonc (JSONC, comments preserved)
- *  - Credentials           -> ~/.local/share/opencode/auth.json ({ "<providerID>": { type: 'api', key } | { type: 'oauth', ... } })
+ * Responsibilities:
+ *  - Provider definitions  -> the OCR provider-defs file (<ocrHome>/custom-providers.json,
+ *    provider-defs.ts) — the single def truth. opencode.jsonc is a sync-client
+ *    materialization target, never read or written here as truth; the one-shot
+ *    port from jsonc lives in provider-defs.ts.
+ *  - Credentials           -> ~/.local/share/opencode/auth.json is a READ-ONLY legacy
+ *    snapshot; the bound CredentialStore owns all credential writes.
  *
  * Hard rules:
- *  - All writes to opencode.jsonc are text-level edits via jsonc-parser (parse -> modify -> applyEdits),
+ *  - The remaining JSONC writes here (patchJsonc) serve CLIENT integration surfaces
+ *    (the opencode CLI hook), text-level via jsonc-parser (parse -> modify -> applyEdits)
  *    so user comments and formatting survive.
  *  - All writes are read-modify-write with atomic rename (temp file + rename).
  *  - Secrets are never returned unmasked from list/read APIs.
@@ -153,18 +159,17 @@ export function expandEnvTemplate(value?: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Provider definitions (opencode.jsonc `provider` node)
+// Provider definitions (the OCR provider-defs file — `providers` map)
 // ---------------------------------------------------------------------------
 
 export const ROUTER_PROVIDER_ID = 'onecast-router';
 const DEFAULT_NPM = '@ai-sdk/openai-compatible';
 
 /**
- * No legacy compatibility: opencode.jsonc
- * provider defs have ONE shape and ONE home, the v2 node (`package`/`settings`/
- * `headers`/`env`/`canonical`/`body`) in the native `providers` slot. opencode v1
- * installs are not supported, so there is no v1 emit path and no legacy
- * `provider`-slot reader; the credential stores read the same file.
+ * No legacy compatibility: provider defs have ONE shape and ONE home — the v2
+ * node (`package`/`settings`/`headers`/`env`/`canonical`/`body`) in the defs
+ * file's `providers` map. opencode v1 installs are not supported, so there is
+ * no v1 emit path and no legacy `provider`-slot reader.
  */
 
 export interface CustomProviderDef {
@@ -347,7 +352,8 @@ function isPlainRecord(v: unknown): v is Record<string, any> {
 }
 
 /**
- * The one home of a provider node: opencode v2's native `providers` slot.
+ * The `providers` map key — one name shared by the defs file and the jsonc
+ * materialization target.
  *
  * Slot matters more than it looks — opencode's normalizer picks its decoder BY SLOT
  * (`providers` = the v2 schema, the retired singular `provider` = the v1 schema), so
@@ -357,7 +363,7 @@ function isPlainRecord(v: unknown): v is Record<string, any> {
  * `legacyShapedSlotEntries` (applied by `normalizeSlotMap`) drops and reports
  * retired-shape nodes instead of routing providers opencode never registered.
  */
-const PROVIDER_SLOT = 'providers';
+export const PROVIDER_SLOT = 'providers';
 
 /**
  * Retired NODE spellings the v2 `providers` decoder cannot read: node-level `npm`
@@ -377,12 +383,6 @@ export function legacyShapedProviderPaths(def: Record<string, any>): string[] {
   if (def.npm !== undefined) bad.push('npm');
   if (def.options !== undefined) bad.push('options');
   return bad;
-}
-
-/** Raw map of the `providers` slot, {} when absent or malformed. */
-function providerSlotMap(parsed: any): Record<string, any> {
-  const node = parsed?.[PROVIDER_SLOT];
-  return isPlainRecord(node) ? (node as Record<string, any>) : {};
 }
 
 /**
@@ -472,13 +472,14 @@ function buildV2ProviderNode(def: CustomProviderDef): { node?: Record<string, an
 }
 
 /**
- * Provider defs from the native `providers` slot, normalized to the internal shape
+ * Provider defs from the defs file's `providers` map, normalized to the internal shape
  * (`package`≙`npm`, `settings`≙`options` — the aliasing in normalizeProviderDef).
- * The retired singular `provider` slot is not read: one shape, one home, and a v0.0.1
- * install has no legacy file to honor (existing dev files are migrated by hand).
+ * The retired singular `provider` slot is not read: one shape, one home. opencode.jsonc
+ * is NOT a source here — the defs file is the only def truth (the one-shot port in
+ * provider-defs.ts fed it from jsonc once).
  */
 function getProviderNode(): Record<string, any> {
-  return normalizeSlotMap(providerSlotMap(readJsonc(getOpenCodeConfigPath())));
+  return normalizeSlotMap(readProviderDefsFile()?.providers ?? {});
 }
 
 /**
@@ -509,7 +510,7 @@ function normalizeSlotMap(node: Record<string, any>): Record<string, any> {
 }
 
 /**
- * Entries of the native `providers` slot the reader drops and the writer refuses:
+ * Entries of the defs file's `providers` map the reader drops and the writer refuses:
  * retired node shapes (node-level npm/options — see legacyShapedProviderPaths for
  * the model-level analysis: those defs are current file spelling, not retired).
  * Consumers use this to tell the operator WHY a provider they defined is missing —
@@ -517,7 +518,7 @@ function normalizeSlotMap(node: Record<string, any>): Record<string, any> {
  */
 export function legacyShapedSlotEntries(): { id: string; paths: string[] }[] {
   const entries: { id: string; paths: string[] }[] = [];
-  for (const [id, def] of Object.entries(providerSlotMap(readJsonc(getOpenCodeConfigPath())))) {
+  for (const [id, def] of Object.entries(readProviderDefsFile()?.providers ?? {})) {
     if (!isPlainRecord(def)) continue;
     const paths = legacyShapedProviderPaths(def as Record<string, any>);
     if (paths.length > 0) entries.push({ id, paths });
@@ -525,14 +526,14 @@ export function legacyShapedSlotEntries(): { id: string; paths: string[] }[] {
   return entries;
 }
 
-/** Raw (unmasked) provider definition from opencode.jsonc — internal use only. */
+/** Raw (unmasked) provider definition from the defs file — internal use only. */
 export function getProviderNodeById(id: string): any | undefined {
   const node = getProviderNode();
   const def = node[id];
   return def && typeof def === 'object' ? def : undefined;
 }
 
-/** Masked, management-safe view of every provider defined in opencode.jsonc. */
+/** Masked, management-safe view of every provider defined in the defs file. */
 export function listConfigProviders(): OpenCodeProviderView[] {
   const node = getProviderNode();
   return Object.entries(node).map(([id, def]: [string, any]) => {
@@ -556,17 +557,18 @@ export function listConfigProviders(): OpenCodeProviderView[] {
 }
 
 /**
- * Upsert a custom provider into opencode.jsonc's native `providers` slot, in the v2
+ * Upsert a custom provider into the OCR defs file's `providers` map, in the v2
  * node shape (`package`/`settings`/`headers`/`env`/`canonical`/`body`).
  *
- * This writer NEVER touches auth.json: the bound credential store owns secrets, so a
- * non-inline key is pushed through store.connectKey once the def has landed, and an
- * inline key is an explicit apiKeyInline opt-in. Content that the native decoder
- * would drop (a retired NODE shape) is REFUSED up front — cp-failfast: a rejected
- * write is recoverable, a provider that silently vanishes from opencode's view is not.
- * Model-level defs are passed through as written (see legacyShapedProviderPaths for why).
+ * This writer NEVER touches credential files: the bound credential store owns
+ * secrets, so a non-inline key is pushed through store.connectKey once the def
+ * has landed, and an inline key is an explicit apiKeyInline opt-in. Content the
+ * v2 shape forbids (a retired NODE shape) is REFUSED up front — cp-failfast: a
+ * rejected write is recoverable, a provider that silently vanishes from the
+ * routing pool is not. Model-level defs are passed through as written (see
+ * legacyShapedProviderPaths for why).
  *
- * Comment-preserving text-level JSONC edit.
+ * Atomic whole-map rewrite of <ocrHome>/custom-providers.json.
  */
 export function upsertCustomProvider(def: CustomProviderDef): { success: boolean; error?: string } {
   if (!isValidProviderId(def.id)) {
@@ -586,24 +588,25 @@ export function upsertCustomProvider(def: CustomProviderDef): { success: boolean
   }
 
   try {
-    patchJsonc(getOpenCodeConfigPath(), [PROVIDER_SLOT, def.id], node, {
-      backupSuffix: '.ocr-backup',
-    });
+    const providers = { ...(readProviderDefsFile()?.providers ?? {}) };
+    providers[def.id] = node;
+    writeProviderDefs(providers);
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err.message };
   }
 }
 
-/** Delete a custom provider from the `providers` slot. */
+/** Delete a custom provider from the defs file's `providers` map. */
 export function deleteCustomProvider(id: string): { success: boolean; error?: string } {
-  if (!Object.hasOwn(providerSlotMap(readJsonc(getOpenCodeConfigPath())), id)) {
-    return { success: false, error: `Provider '${id}' is not defined in opencode.jsonc` };
+  const providers = readProviderDefsFile()?.providers ?? {};
+  if (!Object.hasOwn(providers, id)) {
+    return { success: false, error: `Provider '${id}' is not defined in the provider defs file` };
   }
   try {
-    patchJsonc(getOpenCodeConfigPath(), [PROVIDER_SLOT, id], undefined, {
-      backupSuffix: '.ocr-backup',
-    });
+    const next = { ...providers };
+    delete next[id];
+    writeProviderDefs(next);
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err.message };
@@ -611,7 +614,7 @@ export function deleteCustomProvider(id: string): { success: boolean; error?: st
 }
 
 // ---------------------------------------------------------------------------
-// Per-provider model maintenance (opencode.jsonc `provider.<id>.models`)
+// Per-provider model maintenance (defs file `providers.<id>.models`)
 // ---------------------------------------------------------------------------
 
 /** Valid model id inside a provider's `models` map — `/` allowed (aggregator
@@ -656,10 +659,11 @@ export function getProviderModelDefs(id: string): Record<string, any> | undefine
 }
 
 /**
- * Add or replace one model inside `<slot>.<id>.models` (text-level JSONC edit).
- * `definition` is the models.dev FILE shape (flat cost cache keys, keyed variants,
- * model-level provider.npm) and is written verbatim — v2's file decoder reads that
- * shape natively (see legacyShapedProviderPaths for the retired-shape analysis).
+ * Add or replace one model inside `providers.<id>.models` (atomic defs-file
+ * rewrite). `definition` is the models.dev FILE shape (flat cost cache keys,
+ * keyed variants, model-level provider.npm) and is written verbatim — v2's
+ * file decoder reads that shape natively (see legacyShapedProviderPaths for
+ * the retired-shape analysis).
  */
 export function upsertProviderModel(
   providerId: string,
@@ -667,7 +671,7 @@ export function upsertProviderModel(
   definition: Record<string, any>
 ): { success: boolean; error?: string } {
   if (!getProviderNodeById(providerId)) {
-    return { success: false, error: `Provider '${providerId}' is not defined in opencode.jsonc` };
+    return { success: false, error: `Provider '${providerId}' is not defined in the provider defs file` };
   }
   if (!isValidModelId(modelId)) {
     return { success: false, error: `Invalid model id: '${modelId}'` };
@@ -676,28 +680,36 @@ export function upsertProviderModel(
     return { success: false, error: 'Model definition must be an object' };
   }
   try {
-    patchJsonc(getOpenCodeConfigPath(), [PROVIDER_SLOT, providerId, 'models', modelId], definition, {
-      backupSuffix: '.ocr-backup',
-    });
+    const providers = { ...(readProviderDefsFile()?.providers ?? {}) };
+    const node = { ...providers[providerId] };
+    const models = { ...(node.models && typeof node.models === 'object' ? node.models : {}) };
+    models[modelId] = definition;
+    node.models = models;
+    providers[providerId] = node;
+    writeProviderDefs(providers);
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err.message };
   }
 }
 
-/** Remove one model from `<slot>.<id>.models`. */
+/** Remove one model from `providers.<id>.models`. */
 export function removeProviderModel(providerId: string, modelId: string): { success: boolean; error?: string } {
   const defs = getProviderModelDefs(providerId);
   if (defs === undefined) {
-    return { success: false, error: `Provider '${providerId}' is not defined in opencode.jsonc` };
+    return { success: false, error: `Provider '${providerId}' is not defined in the provider defs file` };
   }
   if (!(modelId in defs)) {
     return { success: false, error: `Model '${modelId}' is not defined for provider '${providerId}'` };
   }
   try {
-    patchJsonc(getOpenCodeConfigPath(), [PROVIDER_SLOT, providerId, 'models', modelId], undefined, {
-      backupSuffix: '.ocr-backup',
-    });
+    const providers = { ...(readProviderDefsFile()?.providers ?? {}) };
+    const node = { ...providers[providerId] };
+    const models = { ...(node.models && typeof node.models === 'object' ? node.models : {}) };
+    delete models[modelId];
+    node.models = models;
+    providers[providerId] = node;
+    writeProviderDefs(providers);
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err.message };
@@ -707,40 +719,36 @@ export function removeProviderModel(providerId: string, modelId: string): { succ
 /**
  * Clear models of a config-defined provider. Without a pattern the whole
  * `models` node is dropped; with a pattern only matching ids are removed
- * (per-id edits, so comments on untouched models survive).
+ * (a pattern that matches every id removes the empty `models` node too).
  */
 export function clearProviderModels(
   providerId: string,
   pattern?: string
 ): { success: boolean; removed?: number; error?: string } {
   if (!getProviderNodeById(providerId)) {
-    return { success: false, error: `Provider '${providerId}' is not defined in opencode.jsonc` };
+    return { success: false, error: `Provider '${providerId}' is not defined in the provider defs file` };
   }
   const defs = getProviderModelDefs(providerId) || {};
   const ids = Object.keys(defs);
   if (ids.length === 0) return { success: true, removed: 0 };
-  const slot = PROVIDER_SLOT;
   try {
-    if (!pattern || !pattern.trim()) {
-      patchJsonc(getOpenCodeConfigPath(), [slot, providerId, 'models'], undefined, {
-        backupSuffix: '.ocr-backup',
-      });
-      return { success: true, removed: ids.length };
-    }
+    const providers = { ...(readProviderDefsFile()?.providers ?? {}) };
+    const node = { ...providers[providerId] };
+    const models = { ...(node.models && typeof node.models === 'object' ? node.models : {}) };
     let removed = 0;
     for (const mid of ids) {
-      if (!matchesGlobPattern(pattern, mid)) continue;
-      patchJsonc(getOpenCodeConfigPath(), [slot, providerId, 'models', mid], undefined, {
-        backupSuffix: '.ocr-backup',
-      });
+      if (!matchesGlobPattern(pattern ?? '', mid)) continue;
+      delete models[mid];
       removed++;
     }
-    if (removed === ids.length) {
-      // pattern matched everything — drop the now-empty models node too
-      patchJsonc(getOpenCodeConfigPath(), [slot, providerId, 'models'], undefined, {
-        backupSuffix: '.ocr-backup',
-      });
+    if (!pattern || !pattern.trim() || removed === ids.length) {
+      // everything matched — drop the now-empty models node too
+      delete node.models;
+    } else {
+      node.models = models;
     }
+    providers[providerId] = node;
+    writeProviderDefs(providers);
     return { success: true, removed };
   } catch (err: any) {
     return { success: false, error: err.message };
@@ -748,7 +756,7 @@ export function clearProviderModels(
 }
 
 /**
- * Merge opencode.jsonc provider definitions with auth.json credentials into
+ * Merge defs-file provider definitions with auth.json credentials into
  * a single management-safe view (one entry per provider id across both stores).
  */
 export function listOpenCodeProviders(): OpenCodeProviderView[] {

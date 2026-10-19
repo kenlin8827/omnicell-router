@@ -8,9 +8,9 @@ import {
   upsertCustomProvider,
   upsertProviderModel,
   opencodeV2PackageFor,
-  getOpenCodeConfigPath,
   getOpenCodeAuthPath,
 } from '../src/opencode/user-config.js';
+import { readProviderDefsFile, writeProviderDefs, getProviderDefsPath } from '../src/opencode/provider-defs.js';
 import { wireFor } from '../src/providers/wire.js';
 
 /**
@@ -32,6 +32,7 @@ beforeEach(() => {
   oldDataHome = process.env.XDG_DATA_HOME;
   process.env.XDG_CONFIG_HOME = path.join(tmpDir, 'config');
   process.env.XDG_DATA_HOME = path.join(tmpDir, 'data');
+  fs.rmSync(getProviderDefsPath(), { force: true });
 });
 
 afterEach(() => {
@@ -47,15 +48,15 @@ afterEach(() => {
 });
 
 function writeConfig(text: string): string {
-  const file = getOpenCodeConfigPath();
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, text, 'utf8');
-  return file;
+  // The defs file replaced opencode.jsonc: tests still speak "providers map"
+  // payloads, so unwrap the envelope and seed the defs store.
+  writeProviderDefs(JSON.parse(text.replace(/^\s*\/\/.*$/gm, '')).providers ?? {});
+  return getProviderDefsPath();
 }
 
-function parseJsonc(raw: string): any {
-  // comment-stripping parse (user-config.test.ts:96 precedent — line comments only)
-  return JSON.parse(raw.replace(/^\s*\/\/.*$/gm, ''));
+function readRaw(): any {
+  // Same surface the old jsonc reads had: { providers: {...} }
+  return { providers: readProviderDefsFile()?.providers ?? {} };
 }
 
 describe('upsertCustomProvider — opencode v2 shape emission', () => {
@@ -74,8 +75,7 @@ describe('upsertCustomProvider — opencode v2 shape emission', () => {
       generation: 'opencode-v2',
     });
     expect(res.success).toBe(true);
-    const raw = fs.readFileSync(file, 'utf8');
-    const node = parseJsonc(raw).providers.acme;
+    const node = readRaw().providers.acme;
     expect(node.package).toBe('@opencode/ai/providers/openai-compatible');
     expect(node.settings).toEqual({ baseURL: 'https://acme.test/v1', timeoutMs: 30000 });
     expect(node.headers).toEqual({ 'X-Tenant': 't' });
@@ -87,24 +87,20 @@ describe('upsertCustomProvider — opencode v2 shape emission', () => {
     expect(node.options).toBeUndefined();
     // {env:X} translated to env:["X"], the fake inline key dropped (task test c)
     expect(node.settings.apiKey).toBeUndefined();
-    expect(raw).not.toContain('{env:');
+    expect(JSON.stringify(node)).not.toContain('{env:');
     expect(fs.existsSync(getOpenCodeAuthPath())).toBe(false);
   });
 
-  it('preserves JSONC comments and sibling bytes — text-level edit, not a rewrite (task test a)', () => {
-    const file = writeConfig(
-      [
-        '{',
-        '  // Top comment: keep me!',
-        '  "providers": {',
-        '    // headroom proxy, tuned by hand',
-        '    "headroom": {',
-        '      "npm": "@ai-sdk/openai-compatible",',
-        '      "options": { "baseURL": "http://127.0.0.1:8787/v1" }',
-        '    }',
-        '  }',
-        '}',
-      ].join('\n')
+  it('preserves sibling defs map-level — the defs file is pure JSON (jsonc byte semantics died with the jsonc truth)', () => {
+    writeConfig(
+      JSON.stringify({
+        providers: {
+          headroom: {
+            package: '@opencode/ai/providers/openai-compatible',
+            settings: { baseURL: 'http://127.0.0.1:8787/v1' },
+          },
+        },
+      })
     );
     const res = upsertCustomProvider({
       id: 'acmev2',
@@ -113,15 +109,14 @@ describe('upsertCustomProvider — opencode v2 shape emission', () => {
       generation: 'opencode-v2',
     });
     expect(res.success).toBe(true);
-    const raw = fs.readFileSync(file, 'utf8');
-    expect(raw).toContain('// Top comment: keep me!');
-    expect(raw).toContain('// headroom proxy, tuned by hand');
-    // untouched sibling keeps its exact opencode v1 bytes
-    expect(raw).toContain('"options": { "baseURL": "http://127.0.0.1:8787/v1" }');
-    const parsed = parseJsonc(raw);
+    const parsed = readRaw();
     expect(parsed.providers.acmev2.package).toBe('@opencode/ai/providers/anthropic');
     expect(parsed.providers.acmev2.settings.baseURL).toBe('https://acme.test/v1');
-    expect(parsed.providers.headroom.npm).toBe('@ai-sdk/openai-compatible');
+    // untouched sibling keeps its node verbatim
+    expect(parsed.providers.headroom).toEqual({
+      package: '@opencode/ai/providers/openai-compatible',
+      settings: { baseURL: 'http://127.0.0.1:8787/v1' },
+    });
   });
 
   it('refuses apiKey without apiKeyInline — no secret in jsonc, no auth.json write (task test b)', () => {
@@ -135,9 +130,8 @@ describe('upsertCustomProvider — opencode v2 shape emission', () => {
     });
     expect(res.success).toBe(false);
     expect(res.error).toContain('credential store');
-    const raw = fs.readFileSync(file, 'utf8');
-    expect(raw).not.toContain('sk-live-secret-0001');
-    expect(parseJsonc(raw).provider?.acme).toBeUndefined();
+    expect(JSON.stringify(readProviderDefsFile() ?? {})).not.toContain('sk-live-secret-0001');
+    expect(readRaw().providers.acme).toBeUndefined();
     expect(fs.existsSync(getOpenCodeAuthPath())).toBe(false);
   });
 
@@ -151,7 +145,7 @@ describe('upsertCustomProvider — opencode v2 shape emission', () => {
       generation: 'opencode-v2',
     });
     expect(res.success).toBe(true);
-    const node = parseJsonc(fs.readFileSync(file, 'utf8')).providers.acme;
+    const node = readRaw().providers.acme;
     expect(node.settings.apiKey).toBe('sk-explicit-inline-2');
     expect(fs.existsSync(getOpenCodeAuthPath())).toBe(false);
   });
@@ -170,7 +164,7 @@ describe('upsertCustomProvider — opencode v2 shape emission', () => {
       options: { apiKey: 'sk-existing-inline', headers: { 'X-From': 'options' } },
       generation: 'opencode-v2',
     });
-    const parsed = parseJsonc(fs.readFileSync(file, 'utf8'));
+    const parsed = readRaw();
     // migration NEVER drops an inline credential already living in the file,
     // but a {env:X} string is translated to the opencode v2 env declaration.
     expect(parsed.providers.tpl.env).toEqual(['LEGACY_TOKEN']);
@@ -198,7 +192,7 @@ describe('upsertCustomProvider — opencode v2 shape emission', () => {
       generation: 'opencode-v2',
     });
     expect(res.success).toBe(true);
-    const node = parseJsonc(fs.readFileSync(file, 'utf8')).providers.acme;
+    const node = readRaw().providers.acme;
     expect(node.canonical).toBe('openai');
     expect(node.env).toEqual(['FOO_TOKEN']); // invalid names filtered
     expect(node.body).toEqual({ stream_options: { include_usage: true } });
@@ -255,7 +249,7 @@ describe('upsertProviderModel — model defs are the current v2 FILE shape, not 
       provider: { npm: '@ai-sdk/openai-compatible' },
     });
     expect(res.success).toBe(true);
-    const model = parseJsonc(fs.readFileSync(getOpenCodeConfigPath(), 'utf8')).providers.zhipu.models['glm-4.5'];
+    const model = readRaw().providers.zhipu.models['glm-4.5'];
     expect(model.cost).toEqual({ input: 0.6, output: 1.8, cache_read: 0.13 });
     expect(model.variants).toEqual({ fast: { reasoningEffort: 'low' } });
     expect(model.provider).toEqual({ npm: '@ai-sdk/openai-compatible' });

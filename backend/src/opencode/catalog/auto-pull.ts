@@ -2,14 +2,14 @@ import { loadConfig } from '../../config/index.js';
 import type { CatalogModel } from './types.js';
 
 /**
- * Model pull engine for opencode.jsonc-defined (custom) providers.
+ * Model pull engine for defs-file-defined (custom) providers.
  *
  * Two paths, chosen automatically by console routes AND the periodic
  * auto-pull scheduler (catalog.autoPullModels, default on):
  *  - live:     provider has baseURL + credential → pull its own /v1/models
  *  - catalog:  otherwise → static merged catalog (builtin → extensions)
  *
- * Both paths are ADD-ONLY: models already defined in opencode.jsonc are never
+ * Both paths are ADD-ONLY: models already defined in the defs file are never
  * overwritten — locally maintained values stay source-proof.
  */
 
@@ -43,7 +43,7 @@ export async function pullLiveModels(id: string, opts: { pattern?: string; dryRu
     await import('../user-config.js');
   const def = getProviderNodeById(id);
   if (!def) {
-    return { httpStatus: 404, body: { success: false, error: `Provider '${id}' is not defined in opencode.jsonc` } };
+    return { httpStatus: 404, body: { success: false, error: `Provider '${id}' is not defined in the provider defs file` } };
   }
   const baseURL = def?.options?.baseURL;
   if (!baseURL) {
@@ -143,7 +143,7 @@ export async function pullCatalogModels(id: string, opts: { pattern?: string; dr
   if (opts.dryRun) {
     return { httpStatus: 200, body: { status: 'ok', matched: matched.length, pullable: pullable.length, models: pullable, hint } };
   }
-  // Landing spot: providers with an opencode.jsonc node write there; CREDENTIAL-ONLY
+  // Landing spot: providers with a defs-file node write there; CREDENTIAL-ONLY
   // providers (auth.json entry without a node) land in catalog/custom.json, which
   // feeds the aggregation as the 'custom' source.
   const hasNode = Boolean(getProviderNodeById(id));
@@ -246,7 +246,7 @@ async function enrichFromCatalog(models: CatalogModel[], excludeProviderId: stri
 }
 
 /**
- * One auto-pull sweep over EVERY opencode.jsonc provider (ADD-ONLY per
+ * One auto-pull sweep over EVERY defs-file provider (ADD-ONLY per
  * provider). Gated by catalog.autoPullModels (default ON, checked live so the
  * console switch is hot). Failures are captured per provider — a sweep never
  * throws.
@@ -298,8 +298,8 @@ export async function autoPullProviderModels(): Promise<AutoPullEntry[]> {
     })
   );
 
-  // Phase 2 — SERIAL WRITE: patchJsonc is a read-modify-write over the shared
-  // opencode.jsonc, so model upserts must never run concurrently.
+  // Phase 2 — SERIAL WRITE: writeProviderDefs is a whole-map read-modify-write over the shared
+  // defs file, so model upserts must never run concurrently.
   const { getProviderModelDefs, upsertProviderModel } = await import('../user-config.js');
   const { upsertCustomProviderModels } = await import('./custom-store.js');
   const out: AutoPullEntry[] = [];

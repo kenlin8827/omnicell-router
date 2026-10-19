@@ -9,7 +9,7 @@ import type { ReasoningEffort } from '../../types/router.js';
  *
  * Field-level overrides applied LAST on the aggregated catalog (ocr.json) —
  * this is the landing spot for edits made in the OCR Catalog viewer, which
- * targets the AGGREGATION (not opencode.jsonc definitions, not custom.json).
+ * targets the AGGREGATION (not defs-file definitions, not custom.json).
  * Key is `${providerId}||${modelId}` (model ids may contain '/').
  */
 
@@ -26,7 +26,7 @@ export interface OverrideEntry {
    * `/v1/models` omits it and no request can be pinned to it.
    *
    * This is the ONLY writer of the flag in the UI (both model-list rows) — a
-   * def-level `disabled: true` in opencode.jsonc is still honoured, but the
+   * def-level `disabled: true` in the defs file is still honoured, but the
    * override wins, exactly like `temperature` below.
    */
   disabled?: boolean;

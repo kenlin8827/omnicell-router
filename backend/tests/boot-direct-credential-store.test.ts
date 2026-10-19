@@ -35,6 +35,7 @@ let catalogRecs: any[] = [];
 const actualUserConfig = await import('../src/opencode/user-config.js');
 
 mock.module('../src/opencode/user-config.js', () => ({
+  ROUTER_PROVIDER_ID: 'onecast-router',
   ...actualUserConfig,
   getProviderNodeById: (id: string) => defFixtures[id],
   getProviderModelDefs: (id: string) => (id in defFixtures ? modelFixtures[id] ?? {} : undefined),

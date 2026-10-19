@@ -102,7 +102,8 @@ mock.module('../src/config/index.js', () => ({
 }));
 
 const { buildDirectPool } = await import('../src/providers/boot-direct.js');
-const { getOpenCodeConfigPath, getOpenCodeAuthPath } = await import('../src/opencode/user-config.js');
+const { getOpenCodeAuthPath } = await import('../src/opencode/user-config.js');
+const { writeProviderDefs, getProviderDefsPath } = await import('../src/opencode/provider-defs.js');
 const { resolveDefaultPaths } = await import('../src/opencode/credentials/paths.js');
 const { resetCredentialStoreForTests } = await import('../src/opencode/credentials/factory.js');
 
@@ -120,7 +121,7 @@ const rec = (id: string, modelIds: string[]) => ({
   models: modelIds.map((m) => ({ id: m })),
 });
 
-describe('boot-direct — mixed valid / retired-shape nodes in the native slot (real parser)', () => {
+describe('boot-direct — mixed valid / retired-shape nodes in the defs file (real parser)', () => {
   let tmpDir: string;
   let oldConfigHome: string | undefined;
   let oldDataHome: string | undefined;
@@ -140,6 +141,7 @@ describe('boot-direct — mixed valid / retired-shape nodes in the native slot (
     if (oldDataHome === undefined) delete process.env.XDG_DATA_HOME;
     else process.env.XDG_DATA_HOME = oldDataHome;
     resetCredentialStoreForTests();
+    fs.rmSync(getProviderDefsPath(), { force: true }); // defs writes go to the shared env sandbox — never leak
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     } catch {
@@ -148,11 +150,11 @@ describe('boot-direct — mixed valid / retired-shape nodes in the native slot (
   });
 
   it('normalizes v2 defs on read: settings→options, package→npm, headers carried; a retired-shape node is REFUSED', async () => {
-    // One file, three shapes: a v2 provider, a retired npm/options provider, a v2 unknown package.
-    // A JSONC comment proves normalization is read-only (comments never break).
-    writeJsonc(
-      getOpenCodeConfigPath(),
-      `// user comment survives — normalization is read-side only\n${JSON.stringify(
+    // Three shapes seeded straight into the defs file: a v2 provider, a retired
+    // npm/options provider, a v2 unknown package.
+    writeProviderDefs(
+      JSON.parse(
+        JSON.stringify(
         {
           providers: {
             v2prov: {
@@ -182,7 +184,8 @@ describe('boot-direct — mixed valid / retired-shape nodes in the native slot (
         },
         null,
         2
-      )}`
+        )
+      ).providers
     );
     writeJsonc(getOpenCodeAuthPath(), {
       v2prov: { type: 'api', key: 'sk-opencode-v2-store' },

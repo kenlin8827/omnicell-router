@@ -43,6 +43,7 @@ let catalogModels: CatalogModel[] = [];
 const savedPatches: unknown[] = [];
 
 mock.module('../src/opencode/user-config.js', () => ({
+  ROUTER_PROVIDER_ID: 'onecast-router',
   getProviderNodeById: () => node,
   getProviderModelDefs: () => ({}),
   // boot-direct asks the reader which native-slot nodes it refused (Decision 11);

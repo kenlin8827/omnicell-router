@@ -9,8 +9,8 @@ import {
   legacyShapedSlotEntries,
   upsertCustomProvider,
   deleteCustomProvider,
-  getOpenCodeConfigPath,
 } from '../src/opencode/user-config.js';
+import { writeProviderDefs, getProviderDefsPath } from '../src/opencode/provider-defs.js';
 
 /**
  * Provider-shape READ normalization in user-config.ts.
@@ -31,6 +31,7 @@ beforeEach(() => {
   oldDataHome = process.env.XDG_DATA_HOME;
   process.env.XDG_CONFIG_HOME = path.join(tmpDir, 'config');
   process.env.XDG_DATA_HOME = path.join(tmpDir, 'data');
+  fs.rmSync(getProviderDefsPath(), { force: true });
 });
 
 afterEach(() => {
@@ -46,10 +47,8 @@ afterEach(() => {
 });
 
 function writeConfig(node: Record<string, unknown>): string {
-  const file = getOpenCodeConfigPath();
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify({ providers: node }, null, 2), 'utf8');
-  return file;
+  writeProviderDefs(node as Record<string, any>);
+  return getProviderDefsPath();
 }
 
 describe('normalizeProviderDef — opencode v2 provider shape on read', () => {

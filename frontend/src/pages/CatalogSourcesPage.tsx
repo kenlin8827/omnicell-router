@@ -799,7 +799,7 @@ const OcrCatalogModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 
 /** Aggregate-override editor (OCR Catalog viewer): edits land in
  * catalog/overrides.json and win over sourced values — a separate editing
- * plane from opencode.jsonc definitions (which /providers manages). */
+ * plane from defs-file definitions (which /providers manages). */
 const OcrEditModal: React.FC<{
   target: { providerId: string; modelId: string; current: CatalogSourceDataModelRecord };
   onClose: () => void;
