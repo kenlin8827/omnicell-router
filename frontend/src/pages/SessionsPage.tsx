@@ -48,8 +48,18 @@ const TIER_FULL_LABEL: Record<SessionRecord['maxTier'], string> = {
  * grid (In/Out stacked left, Cached/Hit stacked right). `title` carries the
  * exact value when the displayed one is compacted.
  */
-const TokenStatRow: React.FC<{ label: string; value: string; color?: string; title?: string }> = ({ label, value, color, title }) => (
-  <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, lineHeight: 1.7 }}>
+const TokenStatRow: React.FC<{ label: string; value: string; color?: string; title?: string; span?: boolean }> = ({ label, value, color, title, span }) => (
+  <div
+    style={{
+      display: 'flex',
+      alignItems: 'baseline',
+      gap: 6,
+      lineHeight: 1.7,
+      // span: bleed across every grid column (no-op in the 1-col narrow
+      // layout) so a lone trailing row doesn't strand an empty half-column.
+      ...(span ? { gridColumn: '1 / -1' } : {}),
+    }}
+  >
     <span style={{ fontSize: '10px', color: 'var(--text-dim)', flexShrink: 0, minWidth: 24 }}>
       {label}
     </span>
@@ -268,7 +278,7 @@ export const SessionsPage: React.FC = () => {
   } | null>(null);
   // Request-detail list order: false = chronological (the traces' recorded
   // order), true = newest first. Reset per open in openTimeline.
-  const [detailDesc, setDetailDesc] = useState(false);
+  const [detailDesc, setDetailDesc] = useState(true);
   // Server-side filter (?q=), debounced from the search input; resets to page 1.
   const [filterInput, setFilterInput] = useState('');
   const [filter, setFilter] = useState('');
@@ -334,8 +344,8 @@ export const SessionsPage: React.FC = () => {
       // Entry intent decides the fold states at open: switch badge → trail
       // open + detail collapsed; Detail button → the reverse. The refill
       // below only adds data — a toggle made while traces load survives.
-      // Fresh modal = chronological order again (per-session reset).
-      setDetailDesc(false);
+      // Fresh modal = newest first again (per-session reset).
+      setDetailDesc(true);
       setTimeline({ session: s, events: [], traces: [], detailOpen: forceOpen, trailOpen: !forceOpen });
       try {
         const traces = await api.getSessionTraces(s.id);
@@ -646,9 +656,10 @@ export const SessionsPage: React.FC = () => {
                   </td>
                   <td style={{ padding: '10px 14px' }}>
                     {/* Grid auto-placement fills row-major, so the child order
-                        below yields: In|Cached on row 1, Out|Hit on row 2 (2×2
-                        when the column is wide; 4 stacked rows when narrow —
-                        see .tokens-stat-wrap in index.css). */}
+                        below yields: In|Cached on row 1, Out|Hit on row 2, and
+                        the Rate row bleeding across both columns (2×2 grid +
+                        a full-width line when the column is wide; 5 stacked
+                        rows when narrow — see .tokens-stat-wrap in index.css). */}
                     <div className="tokens-stat-wrap">
                       <div className="tokens-stat-grid">
                         <TokenStatRow
@@ -680,8 +691,11 @@ export const SessionsPage: React.FC = () => {
                         {/* Session-level effective output rate: total output
                             tokens over the summed end-to-end latency. Same
                             semantics as the per-request rate in the detail
-                            grid (queueing + routing + retries included). */}
+                            grid (queueing + routing + retries included).
+                            Spans the full grid width — a 5th row would
+                            otherwise strand an empty right half-column. */}
                         <TokenStatRow
+                          span
                           label={t('sessions.tokenRate')}
                           value={
                             (s.outputTokens ?? 0) > 0 && (s.totalLatencyMs ?? 0) > 0
