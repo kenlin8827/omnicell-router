@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Info } from 'lucide-react';
+import { AlertTriangle, Info } from 'lucide-react';
 import { TipBubble } from './TooltipProvider';
 
 /**
@@ -11,16 +11,20 @@ import { TipBubble } from './TooltipProvider';
  *
  * Positioning: centered above the icon when there is headroom, flipped below
  * near the top edge, clamped to the viewport; follows scroll and resize.
+ *
+ * variant="warning" swaps the icon for an amber triangle (state warnings,
+ * e.g. "client not detected on this machine"); default stays the info glyph.
  */
 
 const BUBBLE_MAX_WIDTH = 320;
 const GAP = 8;
 const FLIP_HEADROOM = 160;
 
-export const InfoTip: React.FC<{ text: string }> = ({ text }) => {
+export const InfoTip: React.FC<{ text: string; variant?: 'info' | 'warning' }> = ({ text, variant = 'info' }) => {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ left: number; top: number; below: boolean; width: number } | null>(null);
   const iconRef = useRef<HTMLButtonElement>(null);
+  const Icon = variant === 'warning' ? AlertTriangle : Info;
 
   const place = useCallback(() => {
     const el = iconRef.current;
@@ -58,7 +62,7 @@ export const InfoTip: React.FC<{ text: string }> = ({ text }) => {
       <button
         type="button"
         ref={iconRef}
-        className="info-tip"
+        className={variant === 'warning' ? 'info-tip info-tip--warning' : 'info-tip'}
         aria-label={text}
         onMouseEnter={() => setOpen(true)}
         onMouseLeave={() => setOpen(false)}
@@ -69,7 +73,7 @@ export const InfoTip: React.FC<{ text: string }> = ({ text }) => {
           setOpen((o) => !o);
         }}
       >
-        <Info size={12} />
+        <Icon size={12} />
       </button>
       {open &&
         pos &&

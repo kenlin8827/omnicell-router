@@ -418,7 +418,7 @@ export const enUS: TranslationDict = {
     // ---- Credential sync (client ⇄ OCR file; the OCR file is the single truth) ----
     syncTab: 'Credential Sync',
     syncTitle: 'Credential Sync',
-    syncDesc: 'The OCR file (credentials.json) is the single credential source; this table manages two-way sync with each client. Read = periodically pull new client keys into the OCR file (keyHash dedup; V1 reads auth.json, V2 reads opencode.db). Write = auto-push OCR credential changes to the client (near-realtime debounce; failed pushes auto-retry next cycle; local keys are always kept; V1 merges api entries only and never touches oauth entries). The toggles are independent and default OFF — with both off, only manual sync runs.',
+    syncDesc: 'The OCR file (credentials.json) is the single credential source; this table manages two-way sync with each client. Read = periodically pull new client keys into the OCR file (keyHash-deduped). Write = auto-push OCR credential changes to the client (realtime debounce; failures auto-retry; local keys are always kept). The toggles are independent and default OFF — with both off, only manual sync runs.',
     syncColClient: 'Client',
     syncColAuto: 'Auto sync',
     syncColLastRead: 'Last read',
@@ -445,7 +445,7 @@ export const enUS: TranslationDict = {
     syncWriteEmpty: 'no local keys to push',
     syncPrecClientAbsent: "the client's credential file was not found on this machine",
     syncPrecClientUnreadable: "the client's credential file/db is unreadable",
-    syncPrecServiceUnreachable: 'cannot reach the opencode v2 service — start opencode first',
+    syncPrecServiceUnreachable: 'cannot reach the client service — start the client first',
     syncGenericFailure: 'sync failed',
     syncEmpty: 'no sync clients available',
     storeDegradedBind: 'Credential store binding failed — running on the local store (see the service log)',

@@ -35,6 +35,7 @@ import { useToast } from '../components/ToastProvider';
 import { Combobox } from '../components/Combobox';
 import { Pagination } from '../components/Pagination';
 import { Switch } from '../components/Switch';
+import { InfoTip } from '../components/InfoTip';
 import { useModelTest } from '../lib/useModelTest';
 
 // Nested-card surface (bg/border/radius/padding) is the global .sub-card
@@ -2252,26 +2253,32 @@ export const KeysPage: React.FC = () => {
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', paddingTop: 2 }}>
                 <span style={{ fontSize: 12.5, fontWeight: 600 }}>{c.label}</span>
                 {!c.present && (
-                  <span style={badgeStyle('var(--accent-amber)', 'transparent')}>{t('op.syncClientAbsent')}</span>
+                  // Absent client: compact amber warning glyph + hover bubble
+                  // instead of a text badge (the condition is static per client).
+                  <InfoTip variant="warning" text={t('op.syncClientAbsent')} />
                 )}
                 {c.present && !c.writeReady && (
                   <span style={badgeStyle('var(--text-dim)', 'transparent')}>{t('op.syncServiceMissing')}</span>
                 )}
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {/* Auto-sync arms only while the client exists on this machine —
+                  an armed toggle on an absent client just records a precondition
+                  failure every poll cycle. writeReady stays togglable: the
+                  service endpoint coming back is transient and auto-retried. */}
+              <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 16, paddingTop: 2 }}>
                 <label
-                  style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-main)', cursor: 'pointer' }}
+                  style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-main)', cursor: c.present ? 'pointer' : 'not-allowed' }}
                   title={t('op.syncAutoReadTip')}
                 >
-                  <Switch size="sm" checked={c.autoRead} onChange={(v) => handleSyncToggle(c.id, 'read', v)} />
-                  <span>{t('op.syncAutoRead')}</span>
+                  <Switch size="sm" checked={c.autoRead} disabled={!c.present} onChange={(v) => handleSyncToggle(c.id, 'read', v)} />
+                  <span style={c.present ? undefined : { opacity: 0.45 }}>{t('op.syncAutoRead')}</span>
                 </label>
                 <label
-                  style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-main)', cursor: 'pointer' }}
+                  style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-main)', cursor: c.present ? 'pointer' : 'not-allowed' }}
                   title={t('op.syncAutoWriteTip')}
                 >
-                  <Switch size="sm" checked={c.autoWrite} onChange={(v) => handleSyncToggle(c.id, 'write', v)} />
-                  <span>{t('op.syncAutoWrite')}</span>
+                  <Switch size="sm" checked={c.autoWrite} disabled={!c.present} onChange={(v) => handleSyncToggle(c.id, 'write', v)} />
+                  <span style={c.present ? undefined : { opacity: 0.45 }}>{t('op.syncAutoWrite')}</span>
                 </label>
               </div>
               <div style={syncTimeCell}>

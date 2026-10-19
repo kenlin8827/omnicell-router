@@ -889,6 +889,16 @@ td, th {
   color: var(--accent);
   outline: none;
 }
+/* Warning variant: amber triangle that stays amber on hover (state warning,
+   not a help hint). */
+.info-tip--warning {
+  color: var(--accent-amber);
+}
+.info-tip--warning:hover,
+.info-tip--warning:focus-visible {
+  color: var(--accent-amber);
+  outline: none;
+}
 
 /* Edge injects native reveal/autofill glyphs into password inputs; they are
    un-themeable, so hide them and let the browser icon layer stay invisible. */
