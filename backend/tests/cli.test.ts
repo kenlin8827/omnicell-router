@@ -500,6 +500,157 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     // The unreadable file must be left byte-for-byte intact.
     expect(fs.readFileSync(configPath, 'utf8')).toBe('{ not json !');
   });
+
+  it('Pi adapter should pin subagent tier overrides into settings.json and strip only its own on teardown', async () => {
+    const configPath = path.join(tmpDir, 'models.json');
+    const settingsPath = path.join(tmpDir, 'settings.json');
+    fs.writeFileSync(configPath, JSON.stringify({ providers: { ollama: { baseUrl: 'http://localhost:11434/v1', api: 'openai-completions', models: [{ id: 'x' }] } } }, null, 2));
+    fs.writeFileSync(settingsPath, JSON.stringify({
+      theme: 'nvim-dark',
+      subagents: { agentOverrides: { worker: { thinking: 'high' }, reviewer: { model: 'anthropic/claude-x' } } },
+    }, null, 2));
+
+    const adapter = new PiClientAdapter();
+    adapter.getConfigPath = () => configPath; // settings.json derives from the same dir
+
+    const setupRes = await adapter.setup({ port: 4000 });
+    expect(setupRes.success).toBe(true);
+    expect(setupRes.message).toContain('subagent');
+    expect(fs.existsSync(`${settingsPath}.bak.ocr`)).toBe(true);
+
+    const hooked = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    expect(hooked.theme).toBe('nvim-dark'); // unrelated settings keys survive
+    expect(hooked.subagents.agentOverrides.worker).toEqual({ thinking: 'high', model: 'opencode-router/auto-pro' });
+    expect(hooked.subagents.agentOverrides.scout.model).toBe('opencode-router/auto-lite');
+    expect(hooked.subagents.agentOverrides.oracle.model).toBe('opencode-router/auto-ultra');
+    expect(hooked.subagents.agentOverrides.reviewer).toEqual({ model: 'anthropic/claude-x' }); // user-owned override untouched
+
+    const status = await adapter.getStatus();
+    expect(status.details).toContain('subagent role(s) pinned');
+
+    const teardownRes = await adapter.teardown();
+    expect(teardownRes.success).toBe(true);
+    // Single-setup backup is the pristine original → restore alone returns the
+    // pre-hook state; no router-owned residue to strip (contaminated-backup
+    // stripping is covered by the fresh-install test below).
+    expect(fs.existsSync(`${settingsPath}.bak.ocr`)).toBe(false);
+
+    const restored = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    expect(restored.theme).toBe('nvim-dark');
+    expect(restored.subagents.agentOverrides.worker).toEqual({ thinking: 'high' }); // router model stripped, user field kept
+    expect(restored.subagents.agentOverrides.reviewer).toEqual({ model: 'anthropic/claude-x' });
+    expect(restored.subagents.agentOverrides.oracle).toBeUndefined(); // router-only role pruned
+  });
+
+  it('Pi adapter subagent overrides survive re-setup and vanish fully on teardown (fresh install)', async () => {
+    const configPath = path.join(tmpDir, 'fresh.json');
+    const settingsPath = path.join(tmpDir, 'settings.json'); // does not exist yet
+    const adapter = new PiClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    await adapter.setup({ port: 4000 });
+    await adapter.setup({ port: 8000 }); // re-setup: the backup now contains pinned overrides
+
+    expect(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).subagents.agentOverrides.oracle.model).toBe('opencode-router/auto-ultra');
+
+    const res = await adapter.teardown();
+    expect(res.success).toBe(true);
+    // Fresh-install settings file ends up empty → removed outright.
+    expect(fs.existsSync(settingsPath)).toBe(false);
+    expect((await adapter.getStatus()).details).not.toContain('subagent');
+  });
+
+  it('Pi adapter should skip the subagent mapping (and say so) when settings.json is unparseable', async () => {
+    const configPath = path.join(tmpDir, 'models.json');
+    const settingsPath = path.join(tmpDir, 'settings.json');
+    fs.writeFileSync(configPath, JSON.stringify({ providers: {} }, null, 2));
+    fs.writeFileSync(settingsPath, '{ not json !');
+
+    const adapter = new PiClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    const res = await adapter.setup({ port: 4000 });
+    expect(res.success).toBe(true); // models.json hook still applies
+    expect(res.message).toContain('subagent tier mapping skipped');
+    // The unreadable settings file must be left byte-for-byte intact.
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe('{ not json !');
+  });
+
+  it('Pi adapter should apply explicit subagent slot picks and echo them back as model slots', async () => {
+    const configPath = path.join(tmpDir, 'models.json');
+    const settingsPath = path.join(tmpDir, 'settings.json');
+    const adapter = new PiClientAdapter();
+    adapter.getConfigPath = () => configPath;
+    // Pre-existing manual pin on reviewer (non-router namespace).
+    fs.writeFileSync(settingsPath, JSON.stringify({ subagents: { agentOverrides: { reviewer: { model: 'anthropic/claude-x' } } } }, null, 2));
+
+    const res = await adapter.setup({
+      port: 4000,
+      models: { main: 'auto', scout: 'auto', oracle: 'glm-5.3', worker: 'my-worker', reviewer: 'anthropic/claude-x' },
+    });
+    expect(res.success).toBe(true);
+
+    const hooked = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    expect(hooked.subagents.agentOverrides.scout.model).toBe('opencode-router/auto'); // bare pick → qualified
+    expect(hooked.subagents.agentOverrides.oracle.model).toBe('opencode-router/glm-5.3');
+    expect(hooked.subagents.agentOverrides.worker.model).toBe('opencode-router/my-worker');
+    // Unchanged echo of a manual non-router pin is left byte-identical.
+    expect(hooked.subagents.agentOverrides.reviewer.model).toBe('anthropic/claude-x');
+    // Roles absent from the payload get the router preset (fill-only-absent).
+    expect(hooked.subagents.agentOverrides.researcher.model).toBe('opencode-router/auto-lite');
+
+    const status = await adapter.getStatus();
+    const byKey = Object.fromEntries(status.modelSlots.map(s => [s.key, s]));
+    expect(byKey.main).toBeDefined();
+    expect(byKey.scout).toMatchObject({ value: 'auto', default: 'auto-lite' });
+    expect(byKey.oracle).toMatchObject({ value: 'glm-5.3', default: 'auto-ultra' });
+    expect(byKey.researcher).toMatchObject({ value: 'auto-lite' });
+    expect(byKey.reviewer).toMatchObject({ value: 'anthropic/claude-x' }); // foreign pin echoed verbatim
+
+    // Payload-less re-setup: explicit concrete picks survive; preset-vocabulary
+    // alias picks normalize to the current tier table.
+    await adapter.setup({ port: 4000, models: { main: 'auto' } });
+    const after = JSON.parse(fs.readFileSync(settingsPath, 'utf8')).subagents.agentOverrides;
+    expect(after.oracle.model).toBe('opencode-router/glm-5.3');
+    expect(after.worker.model).toBe('opencode-router/my-worker');
+    expect(after.reviewer.model).toBe('anthropic/claude-x');
+    expect(after.researcher.model).toBe('opencode-router/auto-lite');
+    expect(after.scout.model).toBe('opencode-router/auto-lite'); // alias pick normalized
+  });
+
+  it('Pi adapter should discover the subagent roster dynamically (package builtins + user agents, launchers skipped)', async () => {
+    const configPath = path.join(tmpDir, 'models.json');
+    const settingsPath = path.join(tmpDir, 'settings.json');
+    const adapter = new PiClientAdapter();
+    adapter.getConfigPath = () => configPath;
+    // Fake an installed pi-subagents package: one real builtin + one external-CLI launcher.
+    const pkgAgents = path.join(tmpDir, 'npm', 'node_modules', 'pi-subagents', 'agents');
+    fs.mkdirSync(pkgAgents, { recursive: true });
+    fs.writeFileSync(path.join(pkgAgents, 'scout.md'), '---\nname: scout\ndescription: recon\n---\nbody');
+    fs.writeFileSync(path.join(pkgAgents, 'claude-code.md'), '---\nname: claude-code\nrunner:\n  type: external-cli\n---\nbody');
+    // A custom user agent.
+    const userAgents = path.join(tmpDir, 'agents');
+    fs.mkdirSync(userAgents, { recursive: true });
+    fs.writeFileSync(path.join(userAgents, 'custom-helper.md'), '---\nname: custom-helper\ndescription: mine\n---\nbody');
+
+    const res = await adapter.setup({ port: 4000, models: { main: 'auto' } });
+    expect(res.success).toBe(true);
+
+    const overrides = JSON.parse(fs.readFileSync(settingsPath, 'utf8')).subagents.agentOverrides;
+    expect(overrides.scout.model).toBe('opencode-router/auto-lite'); // known role → preset tier
+    expect(overrides['custom-helper'].model).toBe('opencode-router/auto'); // discovered custom → auto cascade
+    expect(overrides['claude-code']).toBeUndefined(); // external-CLI launcher skipped
+    expect(overrides.planner).toBeUndefined(); // preset-only role absent from a discoverable roster
+
+    const status = await adapter.getStatus();
+    const keys = status.modelSlots.map(s => s.key);
+    expect(keys).toContain('main');
+    expect(keys).toContain('scout');
+    expect(keys).toContain('custom-helper');
+    expect(keys).not.toContain('claude-code');
+    expect(keys).not.toContain('planner');
+  });
+
   it('Dsh adapter should create the web profile patch, hook, and remove cleanly on teardown', async () => {
     const profilesRoot = path.join(tmpDir, 'profiles'); // does not exist yet
     const webFile = path.join(profilesRoot, 'web', 'cordis.patch.yml');

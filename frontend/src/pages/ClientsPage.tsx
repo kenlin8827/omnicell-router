@@ -29,6 +29,9 @@ const clientSlots = (c: ClientStatus): { key: string; value?: string; default?: 
 const supportsExtraModels = (name: string): boolean =>
   name === 'opencode' || name === 'dsh' || name === 'pi';
 
+/** Model-chip lists longer than this render truncated behind a "+N more" chip toggle. */
+const MODEL_CHIP_LIMIT = 12;
+
 export const ClientsPage: React.FC = () => {
   const { t } = useI18n();
   const toast = useToast();
@@ -49,6 +52,8 @@ export const ClientsPage: React.FC = () => {
   const [extraSel, setExtraSel] = useState<Record<string, string[]>>({});
   /** Draft value of the extra-model add Combobox */
   const [extraDraft, setExtraDraft] = useState<Record<string, string>>({});
+  /** Expanded/collapsed state of long model-chip walls (follow/custom lists). */
+  const [extrasOpen, setExtrasOpen] = useState<Record<string, boolean>>({});
   /** Per-client model-list source: 'none' (default) exposes no concrete
    *  models, 'follow' mirrors the selected API key's effective access,
    *  'custom' keeps the manual picker. */
@@ -319,6 +324,15 @@ export const ClientsPage: React.FC = () => {
       .map(m => ({ value: m.id, label: m.id, ...modelRefBadge(m.kind, t) })),
   ];
 
+  /** Slot options with an echoed-but-unlisted value (e.g. a manual foreign pin
+   *  like `anthropic/claude-x`) kept visible at the top — the trigger would
+   *  otherwise render empty even though a pin is active. */
+  const slotOptions = (s: { key: string; value?: string }) => {
+    const v = s.value;
+    if (!v || v === 'auto' || modelOptions.some(o => o.value === v)) return modelOptions;
+    return [{ value: v, label: v }, ...modelOptions];
+  };
+
   const addExtraModel = (clientName: string, id: string) => {
     if (!id) return;
     setExtraSel(prev => {
@@ -339,6 +353,55 @@ export const ClientsPage: React.FC = () => {
       // by id prefix: registered ids may legally start with "auto").
       .filter(m => m.kind !== 'auto' && !(extraSel[clientName] || []).includes(m.id))
       .map(m => ({ value: m.id, label: m.id, ...modelRefBadge(m.kind, t) }));
+
+  /** Chip wall for the model-list editor (follow snapshot / custom picks).
+   *  Long lists truncate to the first MODEL_CHIP_LIMIT chips with a "+N more"
+   *  toggle — 85 flat chips bury the rest of the card (user escalation). */
+  const renderModelChips = (clientName: string, ids: string[], onRemove?: (id: string) => void) => {
+    const open = !!extrasOpen[clientName];
+    const truncated = !open && ids.length > MODEL_CHIP_LIMIT;
+    const shown = truncated ? ids.slice(0, MODEL_CHIP_LIMIT) : ids;
+    const chipStyle: React.CSSProperties = {
+      padding: '3px 10px',
+      borderRadius: '999px',
+      border: '1px solid var(--card-border)',
+      fontSize: '11px',
+      fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+    };
+    return (
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '6px' }}>
+        {shown.map(id => (
+          <span key={id} style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', ...chipStyle }}>
+            {id}
+            {onRemove && (
+              <button onClick={() => onRemove(id)} style={{ display: 'inline-flex', cursor: 'pointer', color: 'var(--text-dim)', background: 'none', border: 'none', padding: 0 }}>
+                <X size={10} />
+              </button>
+            )}
+          </span>
+        ))}
+        {truncated && (
+          <button
+            type="button"
+            title={t('clients.modelsShowAll', { n: ids.length })}
+            onClick={() => setExtrasOpen(prev => ({ ...prev, [clientName]: true }))}
+            style={{ ...chipStyle, display: 'inline-flex', alignItems: 'center', cursor: 'pointer', background: 'var(--chip-bg)', color: 'var(--accent)' }}
+          >
+            +{ids.length - MODEL_CHIP_LIMIT} {t('clients.modelsMore')}
+          </button>
+        )}
+        {!truncated && ids.length > MODEL_CHIP_LIMIT && (
+          <button
+            type="button"
+            onClick={() => setExtrasOpen(prev => ({ ...prev, [clientName]: false }))}
+            style={{ ...chipStyle, display: 'inline-flex', alignItems: 'center', cursor: 'pointer', background: 'transparent', color: 'var(--text-dim)' }}
+          >
+            {t('clients.modelsCollapse')}
+          </button>
+        )}
+      </div>
+    );
+  };
 
   /** Primary takeover/teardown button; `stretched` fills the form's action row. */
   const renderActionButtons = (c: ClientStatus, stretched: boolean) =>
@@ -510,7 +573,7 @@ export const ClientsPage: React.FC = () => {
                                 [c.name]: { ...(prev[c.name] || {}), [s.key]: v || 'auto' },
                               }))
                             }
-                            options={modelOptions}
+                            options={slotOptions(s)}
                             panelMinWidth={360}
                             // while a profile owns the agent node, 'general' binds via the mapping table
                             disabled={c.name === 'opencode' && s.key === 'subagent' && !!(profileSel[c.name] || '')}
@@ -553,13 +616,7 @@ export const ClientsPage: React.FC = () => {
                               )}
                               {followLoaded && (
                                 <>
-                                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '6px' }}>
-                                    {followList.map(id => (
-                                      <span key={id} style={{ padding: '3px 10px', borderRadius: '999px', border: '1px solid var(--card-border)', fontSize: '11px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
-                                        {id}
-                                      </span>
-                                    ))}
-                                  </div>
+                                  {renderModelChips(c.name, followList)}
                                   <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
                                     {t('clients.followCount', { n: followList.length })} · {t('clients.followSnapshot')}
                                   </div>
@@ -570,18 +627,8 @@ export const ClientsPage: React.FC = () => {
                             <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('clients.modelModeNoneHint')}</div>
                           ) : (
                             <>
-                              {(extraSel[c.name] || []).length > 0 && (
-                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '6px' }}>
-                                  {(extraSel[c.name] || []).map(id => (
-                                    <span key={id} style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '3px 10px', borderRadius: '999px', border: '1px solid var(--card-border)', fontSize: '11px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
-                                      {id}
-                                      <button onClick={() => removeExtraModel(c.name, id)} style={{ display: 'inline-flex', cursor: 'pointer', color: 'var(--text-dim)', background: 'none', border: 'none', padding: 0 }}>
-                                        <X size={10} />
-                                      </button>
-                                    </span>
-                                  ))}
-                                </div>
-                              )}
+                              {(extraSel[c.name] || []).length > 0 &&
+                                renderModelChips(c.name, extraSel[c.name] || [], id => removeExtraModel(c.name, id))}
                               <Combobox
                                 value={extraDraft[c.name] || ''}
                                 onChange={v => addExtraModel(c.name, v)}

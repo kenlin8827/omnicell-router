@@ -1312,6 +1312,10 @@ hiddenBadge: string;
     followLoading: string;
     followCount: string;
     followSnapshot: string;
+    /** Truncation toggle for long model-chip walls (follow/custom lists) */
+    modelsMore: string;
+    modelsShowAll: string;
+    modelsCollapse: string;
     reset: string;
     proxyHint: string;
     nameOpencodeProxy: string;
