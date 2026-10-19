@@ -2575,8 +2575,58 @@ export interface CredentialPushResponse {
   failed: { provider: string; reason: string }[];
 }
 
-/** 400 precondition codes of the push route — mirrors backend PUSH_PRECONDITION_ERROR keys. */
-export type CredentialPushReasonCode = 'not_ocr_bound' | 'opencode_v2_service_unreachable' | 'opencode_v2_db_unreadable';
+/** 400 precondition codes of the push route — mirrors backend SYNC_PRECONDITION_ERROR keys. */
+export type CredentialPushReasonCode =
+  | 'opencode_v2_service_unreachable'
+  | 'opencode_v2_db_unreadable'
+  | 'db_absent'
+  | 'db_unreadable';
+
+/** One per-entry record of a sync run (masked metadata only — never key material). */
+export interface CredentialSyncEntry {
+  provider: string;
+  action: 'pulled' | 'deduped' | 'failed' | 'pushed';
+  reason?: string;
+}
+
+/** One sync run outcome as recorded in credential-sync.json. */
+export interface CredentialSyncOutcome {
+  ok: boolean;
+  precondition?: CredentialPushReasonCode;
+  pulled?: number;
+  pushed?: number;
+  deduped?: number;
+  entries: CredentialSyncEntry[];
+  detail?: string;
+}
+
+/** One client row of the credential-sync table (GET /credential-sync). */
+export interface CredentialSyncClientView {
+  id: string;
+  label: string;
+  /** The opencode v2 db file exists on this machine (read sync is possible). */
+  present: boolean;
+  /** A service.json / env service endpoint is discoverable (write sync is possible). */
+  serviceConfigured: boolean;
+  autoRead: boolean;
+  autoWrite: boolean;
+  lastReadAt?: number;
+  lastWriteAt?: number;
+  lastRead?: CredentialSyncOutcome;
+  lastWrite?: CredentialSyncOutcome;
+}
+
+export interface CredentialSyncStatusResponse {
+  status: string;
+  clients: CredentialSyncClientView[];
+}
+
+export interface CredentialSyncRunResponse {
+  status: string;
+  direction: string;
+  read?: CredentialSyncOutcome;
+  write?: CredentialSyncOutcome;
+}
 
 /** One per-account purge failure in the honest DELETE reply. */
 export interface ProviderPurgeFailure {
@@ -2649,13 +2699,47 @@ export const opencodeApi = {
     return ocJson(await fetch('/api/admin/credential-store'));
   },
 
-  /** One-shot Push-to-opencode convergence. */
+  /** Push OCR credentials into opencode v2 (write sync; local entries are kept). */
   async pushCredentialStore(provider: string): Promise<CredentialPushResponse> {
     return ocJson(
       await fetch('/api/admin/credential-store/push', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ provider }),
+      })
+    );
+  },
+
+  /** Credential-sync table: per-client toggles, availability, last outcomes. */
+  async getCredentialSync(): Promise<CredentialSyncStatusResponse> {
+    return ocJson(await fetch('/api/admin/credential-sync'));
+  },
+
+  /** Flip one auto-sync direction of one client. */
+  async toggleCredentialSync(
+    clientId: string,
+    direction: 'read' | 'write',
+    enabled: boolean
+  ): Promise<{ status: string; client: CredentialSyncClientView }> {
+    return ocJson(
+      await fetch('/api/admin/credential-sync/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clientId, direction, enabled }),
+      })
+    );
+  },
+
+  /** Manual sync run (read / write / both) for one client. */
+  async runCredentialSync(
+    clientId: string,
+    direction: 'read' | 'write' | 'both'
+  ): Promise<CredentialSyncRunResponse> {
+    return ocJson(
+      await fetch('/api/admin/credential-sync/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clientId, direction }),
       })
     );
   },

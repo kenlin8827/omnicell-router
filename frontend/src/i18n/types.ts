@@ -412,26 +412,14 @@ export interface TranslationDict {
     storeKindOpencodeV2: string;
     storeKindOpencodeV2Readonly: string;
     storeKindOcr: string;
-    /** WARNING badge copy, keyed by the backend's machine-readable degraded code. */
-    storeDegradedDb: string;
-    /** opencode v1 detected: unsupported, credentials live in the OCR store. */
-    storeDegradedV1: string;
-    storeDegradedCli: string;
     /** Fallback for degraded codes this build does not know (loud raw-code display is the last resort). */
     storeDegradedGeneric: string;
     storeCredentialFile: string;
-    /** Tooltip for credential-write affordances disabled on a read-only binding. */
-    storeReadOnlyTip: string;
     /** Boot/reconcile exclusion list rendered under the status badge. */
     excludedTitle: string;
     exclDbUnreadable: string;
     exclNoRoutable: string;
     exclReconcilePushFailed: string;
-    /** Decision 8 honest disconnect double-confirmation (opencode-v2-family bindings only). */
-    deletePurgeV2: string;
-    deleteV2Title: string;
-    deleteV2Desc: string;
-    deleteV2Btn: string;
     /** One-shot Push-to-opencode convergence (ocr binding with local-only accounts). */
     pushBtn: string;
     pushTip: string;
@@ -442,10 +430,41 @@ export interface TranslationDict {
     purgeFailed: string;
     /** Fallback detail when the store reports a failed purge without per-account entries. */
     purgeFailedUnknown: string;
-    /** Localized push precondition failures (400 machine reasonCode). */
-    pushNotOcrBound: string;
     pushOpencodeV2Unreachable: string;
     pushOpencodeV2DbUnreadable: string;
+    // ---- Credential sync (client ⇄ OCR file; the OCR file is the single truth) ----
+    syncTab: string;
+    syncTitle: string;
+    syncDesc: string;
+    syncColClient: string;
+    syncColAuto: string;
+    syncColLastRead: string;
+    syncColLastWrite: string;
+    syncColAction: string;
+    syncAutoRead: string;
+    syncAutoWrite: string;
+    syncAutoReadTip: string;
+    syncAutoWriteTip: string;
+    syncNow: string;
+    syncRunning: string;
+    syncNever: string;
+    syncJustNow: string;
+    syncMinutesAgo: string;
+    syncHoursAgo: string;
+    syncDaysAgo: string;
+    syncClientAbsent: string;
+    syncServiceMissing: string;
+    syncReadSummary: string;
+    syncWriteSummary: string;
+    syncFailedCount: string;
+    syncReadEmpty: string;
+    syncWriteEmpty: string;
+    syncPrecDbAbsent: string;
+    syncPrecDbUnreadable: string;
+    syncPrecV2DbUnreadable: string;
+    syncPrecServiceUnreachable: string;
+    syncGenericFailure: string;
+    syncEmpty: string;
     /** gap #8 tail: 'bind_failed' badge (degraded status + exclusion row). */
     storeDegradedBind: string;
     exclBindFailed: string;
@@ -523,9 +542,6 @@ export interface TranslationDict {
     accountDisconnectPurge: string;
     /** Decision 8 step 1 — same shape as the provider delete confirm. */
     accountDisconnectConfirm: string;
-    /** Decision 8 step 2 (opencode-v2-family bindings only) — the unrecoverable copy. */
-    accountDisconnectV2Title: string;
-    accountDisconnectV2Desc: string;
     accountClearSuspect: string;
     accountLimits: string;
     accountLimitsTip: string;

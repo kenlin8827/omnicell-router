@@ -7,10 +7,6 @@ import {
   bindCredentialStore,
   readCredentialStoreState,
 } from '../src/opencode/credentials/factory.js';
-import {
-  isAuthJsonWriteDisabled,
-  isStandaloneAuthImported,
-} from '../src/opencode/credentials/reconcile.js';
 
 /**
  * Standalone one-shot import (fixes the previously flagged standalone
@@ -107,10 +103,9 @@ describe('B4 standalone one-shot import', () => {
     const actions = Object.fromEntries(state.standaloneImport!.entries.map((e) => [e.provider, e.action]));
     expect(actions).toEqual({ anthropic: 'imported', zen: 'skipped_oauth', wky: 'skipped_wellknown' });
 
-    // the two one-shot flags stand on their own (auth.json is never a sink, so no
-    // combined "superseded" query is needed anymore)
-    expect(isStandaloneAuthImported(paths)).toBe(true);
-    expect(isAuthJsonWriteDisabled(paths)).toBe(false);
+    // the import marker IS the "auth.json superseded" flag (the reconcile-era
+    // authWriteDisabled gate is retired — the OCR file is the only truth, so
+    // auth.json can never be a sink), asserted by the bound/doneAt checks above.
   });
 
   it('idempotent across rebinds: no duplicate accounts, marker preserved', async () => {

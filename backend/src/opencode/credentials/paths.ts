@@ -73,9 +73,19 @@ export function ocrCredentialsFile(paths: CredentialPaths = resolveDefaultPaths(
   return path.join(paths.ocrHome, 'credentials.json');
 }
 
-/** Factory's last-known-good binding record (Decision 2 hysteresis). */
+/** Factory's binding record: the (single) landing plus the one-shot import markers. */
 export function credentialStoreStateFile(paths: CredentialPaths = resolveDefaultPaths()): string {
   return path.join(paths.ocrHome, 'credential-store.json');
+}
+
+/**
+ * Credential-sync state — per-client auto-sync toggles, last read/write
+ * outcomes and the one-shot v2 migration marker. Same GLOBAL root as the
+ * OCR credentials file. Display-safe metadata only (toggles, timestamps,
+ * per-entry provider/action records — never key material).
+ */
+export function credentialSyncFile(paths: CredentialPaths = resolveDefaultPaths()): string {
+  return path.join(paths.ocrHome, 'credential-sync.json');
 }
 
 /**

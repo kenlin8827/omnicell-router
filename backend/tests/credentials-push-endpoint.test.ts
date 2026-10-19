@@ -11,12 +11,12 @@ import { OcrStore } from '../src/opencode/credentials/ocr-store.js';
 import { DbOpener } from '../src/opencode/credentials/opencode-v2-store.js';
 
 /**
- * POST /api/admin/credential-store/push.
- * Convergence is push-ONLY: local OcrStore entries flow into opencode's opencode v2
- * credential db; a local entry is removed ONLY after confirmed convergence
- * (push accepted, or keyHash already present in the db). Preconditions:
- * bound store is the OCR-owned file AND an opencode v2 service is reachable NOW —
- * otherwise a 400 with a machine-readable reason code.
+ * POST /api/admin/credential-store/push — the write direction of credential
+ * sync (OCR file → opencode v2, via its HTTP management API). The OCR file is
+ * the single truth, so a push NEVER removes local entries: it converges the
+ * CLIENT toward the OCR file (push accepted, or keyHash already present in
+ * the db). Preconditions: an opencode v2 service reachable NOW and a readable
+ * db — otherwise a 400 with a machine-readable reason code.
  * Frontend contract: {status:'ok', pushed: string[], failed:[{provider, reason}]}.
  */
 
@@ -113,7 +113,7 @@ function bindOcr(paths: CredentialPaths, fetchImpl: typeof fetch, openDatabase: 
 }
 
 describe('POST /api/admin/credential-store/push', () => {
-  it('happy + dedup + failure: pushed converges (local removed), failed keeps its local copy', async () => {
+  it('happy + dedup + failure: client converges, local entries are ALWAYS kept', async () => {
     const paths = sandboxPaths();
     await seedLocal(paths, [
       ['anthropic', 'sk-push-brand-new'],
@@ -142,11 +142,12 @@ describe('POST /api/admin/credential-store/push', () => {
     expect(posts.filter((c) => c.url.includes('/api/integration/failing/connect/key'))).toHaveLength(2);
     expect(posts.find((c) => c.url.includes('anthropic'))?.body?.key).toBe('sk-push-brand-new');
 
-    // local removal ONLY on confirmed convergence
+    // The OCR file is the truth: every local entry SURVIVES the push —
+    // converged or failed, nothing is ever blind-deleted from it.
     const local = readLocalFile(paths);
-    expect(local.providers.anthropic).toBeUndefined();
-    expect(local.providers.openai).toBeUndefined();
-    expect(local.providers.failing).toHaveLength(1); // kept — never blind-deleted
+    expect(local.providers.anthropic).toHaveLength(1);
+    expect(local.providers.openai).toHaveLength(1);
+    expect(local.providers.failing).toHaveLength(1);
     expect(res.body).not.toContain('sk-push-brand-new'); // no raw key material in the response
   });
 
@@ -164,21 +165,35 @@ describe('POST /api/admin/credential-store/push', () => {
     expect(res.json().pushed).toEqual(['anthropic']);
     expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1);
     const local = readLocalFile(paths);
-    expect(local.providers.anthropic).toBeUndefined();
+    expect(local.providers.anthropic).toHaveLength(1); // kept — OCR is the truth
     expect(local.providers.openai).toHaveLength(1); // untouched by a filtered push
   });
 
-  it('re-push after convergence is a no-op (idempotent)', async () => {
+  it('re-push after convergence is a no-op (the db gained the row, dedup stops the re-POST)', async () => {
     const paths = sandboxPaths();
     await seedLocal(paths, [['anthropic', 'sk-once-only']]);
-    const { calls, fetchImpl } = makeFetch(() => ({ status: 200, json: { credential: { id: 'c1' } } }));
-    bindOcr(paths, fetchImpl, fakeDb([]));
+    // A db that GAINS the row on a successful POST — the real convergence shape.
+    const v2Rows: unknown[] = [];
+    let seq = 0;
+    let posts = 0;
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      if (String(init?.method ?? 'GET') === 'GET') {
+        return new Response(JSON.stringify({ data: [{ id: 'anthropic', connections: [] }] }), { status: 200 });
+      }
+      posts += 1;
+      const body = JSON.parse(String(init?.body ?? '{}'));
+      v2Rows.push(keyRow(`c${++seq}`, 'anthropic', body.key));
+      return new Response(JSON.stringify({ credential: { id: `c${seq}` } }), { status: 200 });
+    };
+    bindOcr(paths, fetchImpl, fakeDb(v2Rows));
     await app.inject({ method: 'POST', url: '/api/admin/credential-store/push', payload: {} });
-    const postsBefore = calls.filter((c) => c.method === 'POST').length;
+    const postsBefore = posts;
     const res = await app.inject({ method: 'POST', url: '/api/admin/credential-store/push', payload: {} });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ status: 'ok', pushed: [], failed: [] });
-    expect(calls.filter((c) => c.method === 'POST').length).toBe(postsBefore);
+    expect(res.json()).toEqual({ status: 'ok', pushed: ['anthropic'], failed: [] });
+    // dedup against the now-populated db: the second run posts NOTHING new
+    expect(posts).toBe(postsBefore);
   });
 
   it('no opencode v2 service (no service.json, no env): 400 opencode_v2_service_unreachable, locals untouched', async () => {
@@ -195,17 +210,6 @@ describe('POST /api/admin/credential-store/push', () => {
     expect(body.failed).toEqual([]);
     expect(calls).toHaveLength(0);
     expect(readLocalFile(paths).providers.anthropic).toHaveLength(1);
-  });
-
-  it('bound store is not the OCR file: 400 not_ocr_bound (opencode v2 owns the truth there)', async () => {
-    const paths = sandboxPaths();
-    await seedLocal(paths, [['anthropic', 'sk-stray']]); // file exists but the binding is opencode v2
-    const { calls, fetchImpl } = makeFetch(() => ({ status: 200 }));
-    resetCredentialStoreForTests(paths, async () => 'v2.0.15', fetchImpl, { env: {}, now: () => 1, openDatabase: fakeDb([]) });
-    const res = await app.inject({ method: 'POST', url: '/api/admin/credential-store/push', payload: {} });
-    expect(res.statusCode).toBe(400);
-    expect(res.json().reasonCode).toBe('not_ocr_bound');
-    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(0);
   });
 
   it('opencode v2 db unreadable (service up, db down): 400 opencode_v2_db_unreadable before any push', async () => {

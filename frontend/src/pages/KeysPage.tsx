@@ -12,6 +12,8 @@ import {
   type CredentialStoreDegradedCode,
   type CredentialExcludedReasonCode,
   type CredentialPushReasonCode,
+  type CredentialSyncClientView,
+  type CredentialSyncOutcome,
   type AccountMeta,
   type AccountHealth,
   type CredentialWriteReasonCode,
@@ -140,6 +142,61 @@ const badgeStyle = (color: string, _bg: string): React.CSSProperties => ({
   border: `1px solid color-mix(in srgb, ${color} 45%, transparent)`,
 });
 
+type TFn = (path: string, params?: Record<string, string | number>) => string;
+
+/** Relative "last synced" label (just now / N min ago / …) — "never" when absent. */
+const syncTimeAgo = (ts: number | undefined, t: TFn): string => {
+  if (!ts) return t('op.syncNever');
+  const diff = Date.now() - ts;
+  if (diff < 60_000) return t('op.syncJustNow');
+  if (diff < 3_600_000) return t('op.syncMinutesAgo', { n: Math.floor(diff / 60_000) });
+  if (diff < 86_400_000) return t('op.syncHoursAgo', { n: Math.floor(diff / 3_600_000) });
+  return t('op.syncDaysAgo', { n: Math.floor(diff / 86_400_000) });
+};
+
+/** One-line outcome summary under a "last synced" timestamp (masked metadata only). */
+const syncOutcomeText = (o: CredentialSyncOutcome | undefined, t: TFn): string => {
+  if (!o) return '';
+  if (o.precondition) {
+    const map: Record<string, string> = {
+      db_absent: 'op.syncPrecDbAbsent',
+      db_unreadable: 'op.syncPrecDbUnreadable',
+      opencode_v2_service_unreachable: 'op.syncPrecServiceUnreachable',
+      opencode_v2_db_unreadable: 'op.syncPrecV2DbUnreadable',
+    };
+    return t(map[o.precondition] ?? 'op.syncGenericFailure');
+  }
+  const failed = o.entries.filter((e) => e.action === 'failed').length;
+  const parts: string[] = [];
+  if (o.pulled !== undefined) {
+    parts.push(o.entries.length === 0 ? t('op.syncReadEmpty') : t('op.syncReadSummary', { n: o.pulled ?? 0, d: o.deduped ?? 0 }));
+  } else {
+    parts.push(o.entries.length === 0 ? t('op.syncWriteEmpty') : t('op.syncWriteSummary', { n: o.pushed ?? 0, d: o.deduped ?? 0 }));
+  }
+  if (failed > 0) parts.push(t('op.syncFailedCount', { n: failed }));
+  return parts.join(' · ');
+};
+
+const syncHeadCell: React.CSSProperties = {
+  fontSize: 11,
+  fontWeight: 600,
+  color: 'var(--text-dim)',
+  borderBottom: '1px solid var(--divider)',
+  paddingBottom: 6,
+};
+const syncTimeCell: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 2,
+  fontSize: 12,
+  color: 'var(--text-main)',
+};
+const syncOutcomeStyle: React.CSSProperties = {
+  fontSize: 10.5,
+  color: 'var(--text-dim)',
+  lineHeight: 1.5,
+};
+
 /**
  * Clipboard write with a non-secure-context fallback. navigator.clipboard
  * requires a trustworthy origin: the loopback console has one, a LAN http://
@@ -174,9 +231,6 @@ const STORE_KIND_LABEL: Partial<Record<CredentialStoreKind, string>> = {
   ocr: 'op.storeKindOcr',
 };
 const STORE_DEGRADED_LABEL: Partial<Record<CredentialStoreDegradedCode, string>> = {
-  db_unreadable: 'op.storeDegradedDb',
-  unsupported_version: 'op.storeDegradedV1',
-  cli_absent_db_present: 'op.storeDegradedCli',
   bind_failed: 'op.storeDegradedBind',
 };
 const EXCLUDED_REASON_LABEL: Partial<Record<CredentialExcludedReasonCode, string>> = {
@@ -189,9 +243,10 @@ const EXCLUDED_REASON_LABEL: Partial<Record<CredentialExcludedReasonCode, string
 // the machine code on the error; only KNOWN codes get a localized claim —
 // unknown codes fall back to the raw string, loud over pretty-but-wrong.
 const PUSH_REASON_LABEL: Partial<Record<CredentialPushReasonCode, string>> = {
-  not_ocr_bound: 'op.pushNotOcrBound',
   opencode_v2_service_unreachable: 'op.pushOpencodeV2Unreachable',
   opencode_v2_db_unreadable: 'op.pushOpencodeV2DbUnreadable',
+  db_absent: 'op.syncPrecDbAbsent',
+  db_unreadable: 'op.syncPrecDbUnreadable',
 };
 /**
  * Credential-store write reasonCodes — the per-account routes AND provider
@@ -372,8 +427,6 @@ type AccountRowProps = {
    * masked key's tooltip — it is a correlation id, not something to read.
    */
   prefixVisible: boolean;
-  /** v2-readonly binding: every credential write is refused. */
-  writesBlocked: boolean;
   /** This row has a request in flight — only one row is busy at a time. */
   pending: boolean;
   /** A connectivity probe for THIS credential row is in flight (multi-account: per-row, not per-card). */
@@ -412,7 +465,6 @@ const AccountRow: React.FC<AccountRowProps> = ({
   caps,
   soleServing,
   prefixVisible,
-  writesBlocked,
   pending,
   testing,
   renaming,
@@ -439,11 +491,11 @@ const AccountRow: React.FC<AccountRowProps> = ({
   // sole routable one — the operator took it out of routing on purpose.
   const serving = !account.disabled && (account.active || soleServing);
 
-  // Action availability is capability-first, then the read-only binding gate
-  // (Decision 1: branch on flags, never on `kind`). Disabled affordances keep
-  // the existing blocked-tooltip pattern so the reason is never a mystery.
+  // Action availability is capability-first (Decision 1: branch on flags,
+  // never on `kind`). Disabled affordances keep the blocked-tooltip pattern so
+  // the reason is never a mystery.
   const actionTip = (supported: boolean, okLabel: string) =>
-    writesBlocked ? t('op.storeReadOnlyTip') : supported ? okLabel : t('op.reasonCapabilityUnsupported');
+    supported ? okLabel : t('op.reasonCapabilityUnsupported');
   // A non-routable row (oauth / wellknown / empty key) can never carry OCR
   // traffic, so "make it the chain head" has no routing effect — the only thing
   // it changes is which credential opencode itself uses. Say that, don't let the
@@ -639,7 +691,7 @@ const AccountRow: React.FC<AccountRowProps> = ({
               <button
                 className="btn btn-sm"
                 style={rowIconBtn}
-                disabled={writesBlocked || !caps.activate || !account.routable || pending}
+                disabled={!caps.activate || !account.routable || pending}
                 title={activateTip}
                 aria-label={t('op.accountActivate')}
                 onClick={() => onActivate(account)}
@@ -650,7 +702,7 @@ const AccountRow: React.FC<AccountRowProps> = ({
             <button
               className="btn btn-sm"
               style={rowIconBtn}
-              disabled={writesBlocked || !caps.rename || pending}
+              disabled={!caps.rename || pending}
               title={actionTip(caps.rename, t('op.accountRename'))}
               aria-label={t('op.accountRename')}
               onClick={() => {
@@ -688,8 +740,7 @@ const AccountRow: React.FC<AccountRowProps> = ({
               </button>
             )}
             {/* Outbound rate-limit overlay — CONFIG-side governance: the caps
-                live in OCR's own config.yaml, not in the credential store, so
-                `writesBlocked` (store read-only) does NOT gate this button —
+                live in OCR's own config.yaml, not in the credential store —
                 same reasoning as the suspect door above. Routable rows only: a
                 credential that can never carry traffic has nothing to shape. */}
             {account.keyHashPrefix && account.routable && (
@@ -719,8 +770,8 @@ const AccountRow: React.FC<AccountRowProps> = ({
             <button
               className="btn btn-sm"
               style={{ ...rowIconBtn, color: 'var(--accent-rose)' }}
-              disabled={writesBlocked || pending}
-              title={writesBlocked ? t('op.storeReadOnlyTip') : t('op.accountDisconnect')}
+              disabled={pending}
+              title={t('op.accountDisconnect')}
               aria-label={t('op.accountDisconnect')}
               onClick={() => onDisconnect(account)}
             >
@@ -984,7 +1035,7 @@ export const KeysPage: React.FC = () => {
   // Custom provider create form
   const [form, setForm] = useState({ id: '', name: '', baseURL: '', npm: '', apiKey: '', inline: false });
   const [npmChoice, setNpmChoice] = useState<string>('');
-  const [activeTab, setActiveTab] = useState<'connected' | 'catalog' | 'custom'>('connected');
+  const [activeTab, setActiveTab] = useState<'connected' | 'catalog' | 'custom' | 'sync'>('connected');
   // Default OFF (show connected providers): a connected provider is exactly where
   // a SECOND credential is added, so hiding connected rows made multi-account
   // unreachable from this tab. Hiding is opt-in for "only show what's new".
@@ -1015,9 +1066,6 @@ export const KeysPage: React.FC = () => {
 
   const connectedIds = useMemo(() => new Set(ocProviders.map((p) => p.id)), [ocProviders]);
 
-  // opencode-v2-readonly = CLI absent, db present: routing reads work but every store
-  // write is refused — disable credential-write affordances.
-  const writesBlocked = storeStatus?.kind === 'opencode-v2-readonly';
   // Decision 1: whether a submitted key ADDS an account or OVERWRITES the only
   // one is a capability of the bound store, never a name-check on `kind` — the
   // ocr landing gets append semantics for free, a future single-account store
@@ -1108,8 +1156,7 @@ export const KeysPage: React.FC = () => {
    * The `as` only guides the table lookup — the code string itself arrives
    * untrusted from the HTTP body, and an unknown code never gets a guess.
    */
-  const reasonError = (err: any): string => {
-    const code: string | undefined = err?.reasonCode;
+  const reasonError = (err: any): string => {    const code: string | undefined = err?.reasonCode;
     const key = code
       ? WRITE_REASON_LABEL[code as CredentialWriteReasonCode]
         ?? PUSH_REASON_LABEL[code as CredentialPushReasonCode]
@@ -1118,19 +1165,6 @@ export const KeysPage: React.FC = () => {
     if (key) return t(key);
     const message = err?.message ?? 'unknown error';
     return code ? t('op.reasonGenericCode', { code, message }) : t('op.reasonGeneric', { message });
-  };
-
-  /**
-   * Decision 8 arbiter, shared by provider delete and per-account disconnect:
-   * a opencode-v2-family binding means the store holds the only copy of the key. A null
-   * storeStatus may be a transient status-API failure rather than a non-v2
-   * store, so refetch once and fail SAFE into the double confirmation —
-   * over-confirming on the ocr store costs a click, under-confirming on opencode v2 loses the
-   * store's only copy (export first via the row's password-gated reveal — never a backup).
-   */
-  const isOpencodeV2Binding = async (): Promise<boolean> => {
-    const status = storeStatus ?? (await loadCredentialStore());
-    return !status || status.kind === 'opencode-v2' || status.kind === 'opencode-v2-readonly';
   };
 
   const handleAccountActivate = async (a: AccountHealth) => {
@@ -1189,25 +1223,13 @@ export const KeysPage: React.FC = () => {
 
   const handleAccountDisconnect = async (a: AccountHealth) => {
     const name = accountName(a, t('op.accountUnnamed'));
-    const boundOpencode = await isOpencodeV2Binding();
     const ok = await confirmDialog({
       title: t('op.accountDisconnectConfirm', { label: name }),
-      description: boundOpencode ? t('op.deletePurgeV2') : t('op.accountDisconnectPurge'),
+      description: t('op.accountDisconnectPurge'),
       danger: true,
       confirmLabel: t('common.delete'),
     });
     if (!ok) return;
-    if (boundOpencode) {
-      // Same Decision 8 second gate as the provider delete: no backup or
-      // mitigation wording — the copy states plainly that the key is gone.
-      const ok2 = await confirmDialog({
-        title: t('op.accountDisconnectV2Title', { label: name }),
-        description: t('op.accountDisconnectV2Desc'),
-        danger: true,
-        confirmLabel: t('op.deleteV2Btn'),
-      });
-      if (!ok2) return;
-    }
     setPendingAccount(`${a.providerId}:${a.id}`);
     try {
       const res = await opencodeApi.disconnectProviderAccount(a.providerId, a.id);
@@ -1223,8 +1245,8 @@ export const KeysPage: React.FC = () => {
   };
 
   /**
-   * Decision 6 explicit admin door. Not gated by writesBlocked: the suspect
-   * flag lives in OCR's own state file, not in the credential store.
+   * Decision 6 explicit admin door. The suspect flag lives in OCR's own state
+   * file, not in the credential store.
    */
   const handleAccountClearSuspect = async (a: AccountHealth) => {
     if (!a.keyHashPrefix) return;
@@ -1413,6 +1435,51 @@ export const KeysPage: React.FC = () => {
     }
   };
 
+  // ---- credential sync (client ⇄ OCR file) ---------------------------------
+  const [syncClients, setSyncClients] = useState<CredentialSyncClientView[]>([]);
+  const [syncBusyId, setSyncBusyId] = useState<string | null>(null);
+
+  const loadCredentialSync = async (): Promise<void> => {
+    try {
+      const res = await opencodeApi.getCredentialSync();
+      setSyncClients(res.clients || []);
+    } catch {
+      // unreachable status endpoint must not fake-red the tab — it stays empty
+    }
+  };
+
+  const handleSyncToggle = async (clientId: string, direction: 'read' | 'write', enabled: boolean) => {
+    // Optimistic patch; the persisted echo (or a reload on failure) wins.
+    setSyncClients((prev) =>
+      prev.map((c) => (c.id === clientId ? { ...c, [direction === 'read' ? 'autoRead' : 'autoWrite']: enabled } : c))
+    );
+    try {
+      const res = await opencodeApi.toggleCredentialSync(clientId, direction, enabled);
+      setSyncClients((prev) => prev.map((c) => (c.id === clientId ? { ...res.client, id: clientId } : c)));
+    } catch (err: any) {
+      showNotice(err?.message ?? String(err), 'err');
+      loadCredentialSync();
+    }
+  };
+
+  const handleSyncRun = async (clientId: string, direction: 'read' | 'write' | 'both') => {
+    setSyncBusyId(clientId);
+    const started = Date.now();
+    try {
+      await opencodeApi.runCredentialSync(clientId, direction);
+      // Perceptible-click floor, same contract as the rest of this page.
+      const elapsed = Date.now() - started;
+      if (elapsed < MIN_SPIN_MS) await sleep(MIN_SPIN_MS - elapsed);
+      await loadCredentialSync();
+    } catch (err: any) {
+      showNotice(err?.message ?? String(err), 'err');
+      await sleep(MIN_SPIN_MS); // the spinner must stay perceptible on failure too
+      loadCredentialSync();
+    } finally {
+      setSyncBusyId(null);
+    }
+  };
+
   /** Returns whether the fetch succeeded. On a MANUAL refresh failure the
    * loaded catalog is kept (the caller surfaces an error notice — emptying the
    * list on a hiccup would destroy good data, cp-dataloss); initial load keeps
@@ -1436,12 +1503,20 @@ export const KeysPage: React.FC = () => {
     loadOpenCodeProviders();
     loadCredentialStore();
     loadCatalog();
+    loadCredentialSync();
     api
       .getAuthSession()
       .then((s) => setWebAuthActive(Boolean(s.webAuth?.active)))
       .catch(() => setWebAuthActive(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // The sync table refreshes on every entry — outcomes move without page reloads
+  // (auto-sync runs on the gateway) and a stale table would invite wrong toggles.
+  useEffect(() => {
+    if (activeTab === 'sync') loadCredentialSync();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
 
   // Deep link from /models: /providers?openModels=<id> opens the maintenance
   // dialog for that config-defined provider once the list has loaded.
@@ -1533,31 +1608,16 @@ export const KeysPage: React.FC = () => {
     testAllTargets(connectedResults.map((p) => ({ key: p.id, providerId: p.id })));
 
   const handleDelete = async (p: OpenCodeProviderView) => {
-    // Decision 8 arbiter (shared with the per-account disconnect): a opencode-v2-family
-    // binding triggers the second confirm; an unknown store fails safe INTO it.
-    // v2-readonly deletes are deliberately NOT disabled by writesBlocked: only
-    // the credential purge fails there, through the honest error path below,
-    // so config nodes in opencode.jsonc stay removable.
-    const boundOpencode = await isOpencodeV2Binding();
+    // Decision 8: the OCR file is the credential truth — the purge deletes its
+    // rows, so the confirm names the sink. If the key is also synced into
+    // opencode, the client keeps its copy until the next sync run.
     const ok = await confirmDialog({
       title: t('op.deleteConfirm', { id: p.id }),
-      description: boundOpencode ? t('op.deletePurgeV2') : t('op.deletePurge', { sink: sinkLabel }),
+      description: t('op.deletePurge', { sink: sinkLabel }),
       danger: true,
       confirmLabel: t('common.delete'),
     });
     if (!ok) return;
-    if (boundOpencode) {
-      // The key lives in opencode; after disconnect it is gone from the store —
-      // export first via the row's password-gated reveal if needed. No backup/
-      // mitigation wording — that would be proliferation dressed as safety.
-      const ok2 = await confirmDialog({
-        title: t('op.deleteV2Title', { id: p.id }),
-        description: t('op.deleteV2Desc'),
-        danger: true,
-        confirmLabel: t('op.deleteV2Btn'),
-      });
-      if (!ok2) return;
-    }
     setBusy(true);
     try {
       const res = await opencodeApi.deleteProvider(p.id, true);
@@ -1670,6 +1730,9 @@ export const KeysPage: React.FC = () => {
           </button>
           <button style={tabBtn('custom', t('op.tabCustom'))} onClick={() => setActiveTab('custom')}>
             {t('op.tabCustom')}
+          </button>
+          <button style={tabBtn('sync', t('op.syncTab'))} onClick={() => setActiveTab('sync')}>
+            {t('op.syncTab')}
           </button>
         </div>
 
@@ -1873,7 +1936,6 @@ export const KeysPage: React.FC = () => {
                       caps={caps}
                       soleServing={soleRoutableId === a.id}
                       prefixVisible={a.maskedKey ? ambiguousMasks.has(a.maskedKey) : true}
-                      writesBlocked={writesBlocked}
                       pending={pendingAccount === `${p.id}:${a.id}`}
                       testing={testingIds.has(`${p.id}:${a.id}`)}
                       onTest={(acc) => testOne({ key: `${p.id}:${acc.id}`, providerId: p.id, accountId: acc.id })}
@@ -1934,11 +1996,9 @@ export const KeysPage: React.FC = () => {
                 ) : (
                   <button
                     className="btn btn-sm"
-                    disabled={writesBlocked || !keyWritable}
+                    disabled={!keyWritable}
                     title={
-                      writesBlocked
-                        ? t('op.storeReadOnlyTip')
-                        : !keyWritable
+                      !keyWritable
                           ? t('op.integrationMissingTip')
                           : t(multiAccountStore ? 'op.addKeyAccountTip' : 'op.updateKeyTip')
                     }
@@ -2084,11 +2144,9 @@ export const KeysPage: React.FC = () => {
                 ) : (
                   <button
                     className="btn btn-sm"
-                    disabled={writesBlocked || !canWriteCredential(c.id)}
+                    disabled={!canWriteCredential(c.id)}
                     title={
-                      writesBlocked
-                        ? t('op.storeReadOnlyTip')
-                        : !canWriteCredential(c.id)
+                      !canWriteCredential(c.id)
                           ? t('op.integrationMissingTip')
                           : undefined
                     }
@@ -2169,6 +2227,88 @@ export const KeysPage: React.FC = () => {
             <span>{busy ? t('op.creating') : t('op.createBtn')}</span>
           </button>
         </div>
+        </>)}
+
+        {activeTab === 'sync' && (<>
+        {/* ---- Credential sync (client ⇄ OCR file; the OCR file is the single truth) ---- */}
+        <div style={{ fontSize: 13, fontWeight: 700, margin: '0 0 8px' }}>{t('op.syncTitle')}</div>
+        <p style={{ color: 'var(--text-dim)', fontSize: 11, margin: '0 0 14px' }}>{t('op.syncDesc')}</p>
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns:
+              'minmax(150px, 1.1fr) minmax(200px, 1.4fr) minmax(130px, 1fr) minmax(130px, 1fr) minmax(120px, 0.9fr)',
+            gap: '12px 14px',
+            alignItems: 'start',
+          }}
+        >
+          <div style={syncHeadCell}>{t('op.syncColClient')}</div>
+          <div style={syncHeadCell}>{t('op.syncColAuto')}</div>
+          <div style={syncHeadCell}>{t('op.syncColLastRead')}</div>
+          <div style={syncHeadCell}>{t('op.syncColLastWrite')}</div>
+          <div style={{ ...syncHeadCell, textAlign: 'right' }}>{t('op.syncColAction')}</div>
+          {syncClients.map((c) => (
+            <React.Fragment key={c.id}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', paddingTop: 2 }}>
+                <span style={{ fontSize: 12.5, fontWeight: 600 }}>{c.label}</span>
+                {!c.present && (
+                  <span style={badgeStyle('var(--accent-amber)', 'transparent')}>{t('op.syncClientAbsent')}</span>
+                )}
+                {c.present && !c.serviceConfigured && (
+                  <span style={badgeStyle('var(--text-dim)', 'transparent')}>{t('op.syncServiceMissing')}</span>
+                )}
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <label
+                  style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-main)', cursor: 'pointer' }}
+                  title={t('op.syncAutoReadTip')}
+                >
+                  <Switch size="sm" checked={c.autoRead} onChange={(v) => handleSyncToggle(c.id, 'read', v)} />
+                  <span>{t('op.syncAutoRead')}</span>
+                </label>
+                <label
+                  style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-main)', cursor: 'pointer' }}
+                  title={t('op.syncAutoWriteTip')}
+                >
+                  <Switch size="sm" checked={c.autoWrite} onChange={(v) => handleSyncToggle(c.id, 'write', v)} />
+                  <span>{t('op.syncAutoWrite')}</span>
+                </label>
+              </div>
+              <div style={syncTimeCell}>
+                <div>{syncTimeAgo(c.lastReadAt, t)}</div>
+                {syncOutcomeText(c.lastRead, t) && (
+                  <div style={syncOutcomeStyle} title={syncOutcomeText(c.lastRead, t)}>
+                    {syncOutcomeText(c.lastRead, t)}
+                  </div>
+                )}
+              </div>
+              <div style={syncTimeCell}>
+                <div>{syncTimeAgo(c.lastWriteAt, t)}</div>
+                {syncOutcomeText(c.lastWrite, t) && (
+                  <div style={syncOutcomeStyle} title={syncOutcomeText(c.lastWrite, t)}>
+                    {syncOutcomeText(c.lastWrite, t)}
+                  </div>
+                )}
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <button
+                  className="btn btn-sm"
+                  disabled={syncBusyId === c.id}
+                  onClick={() => handleSyncRun(c.id, 'both')}
+                >
+                  <RefreshCw
+                    size={12}
+                    style={syncBusyId === c.id ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined}
+                  />
+                  <span>{syncBusyId === c.id ? t('op.syncRunning') : t('op.syncNow')}</span>
+                </button>
+              </div>
+            </React.Fragment>
+          ))}
+        </div>
+        {syncClients.length === 0 && (
+          <div style={{ color: 'var(--text-dim)', fontSize: 12, marginTop: 10 }}>{t('op.syncEmpty')}</div>
+        )}
         </>)}
         </div>
 

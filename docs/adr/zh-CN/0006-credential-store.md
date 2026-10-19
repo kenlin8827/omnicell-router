@@ -1,56 +1,57 @@
-# ADR-0006: 凭证存储——能力旗标后的两个适配器、以密钥哈希锚定的身份、仅推式收敛
+# ADR-0006: 凭证存储——OCR 文件是唯一真相；opencode v2 是同步客户端
 
 ## 状态
 
-已实现 — 2026-10-15（事实面语料重写）。范围：凭证住在哪儿、网关如何读写、什么状态挂在密钥上、哪些写路径被说不。消费方：启动链 = ADR-0005；熔断/亲和锚定 = ADR-0004/0002。
-
-开篇事实勘误：历史语料描述过三个 store（含 "OpencodeV1Store"）。该形状已不存在：`StoreKind = 'opencode-v2' | 'opencode-v2-readonly' | 'ocr'`（`credentials/types.ts:23`）——**两个适配器加一个只读变体**；`auth.json` 是只读的一次性迁移/导入源，从来不是活 store。
+已实现 — 2026-10-19（凭证同步重写）。取代 2026-10-15 的「能力旗标后的两个适配器 + 仅推式收敛」绑定模型：启动不再**选择** store，opencode v2 不再是另一份凭证真相，旧 reconcile/push 的单一真相语义退役。范围：凭证住在哪儿、网关如何读写、什么状态挂在密钥上、凭证如何向各客户端传播。消费方：启动链 = ADR-0005；熔断/亲和锚定 = ADR-0004/0002；额度探测 = ADR-0009。
 
 ## 决策
 
-### 1. 一个带能力旗标的接口；按能力分支，永不按 kind 分支
+### 1. 唯一被绑定的 store——永远是 OcrStore
 
-`CredentialStore`：`probe / listAccounts / resolveKey / resolveKeyChain / revealKey / connectKey / activate / rename / disconnect / beginOAuth / completeOAuth / listIntegrationIds? / invalidate? / accountsOverview?`（`types.ts:164-219`），门面 `StoreCapabilities = {multiAccount, activate, rename, oauth, envVisible, integrationScoped}`（`:30-55`）。硬规则：调用方按 `capabilities` 分支，**永不**按 `kind`（`:10-11,22-23`）。类型化失败词汇（`StoreUnreadable / EmptyCredentialTable / CapabilityUnsupported / WriteFailed / IntegrationUnmatched / AccountNotFound`）；原型污染型 provider id 被拒（`RESERVED_PROVIDER_IDS`）。裸密钥离开 store 只有四道门：`resolveKey/resolveKeyChain`（仅启动/池消费者）、`revealKey`（密码门控的控制台路线）、store 自己的 HTTP 写，以及——没有别的。
+`<ocrHome>/credentials.json` 是唯一凭证真相。`bindCredentialStore` 不做任何选择：没有 CLI 探测、没有版本证据阶梯、没有 last-known-good 滞回、没有惰性升级。工厂是全函数，落到 OcrStore 且 `degradedCode: null`；唯一带徽标的落点是 `bind_failed`（意外崩溃）。`VersionEvidence` 只记录 `installed.version` 内容作诊断（`cli` 恒为 null，不选择任何东西）。`StoreKind` 保留 `'opencode-v2' | 'opencode-v2-readonly' | 'ocr'`——这些标签现在描述的是**同步客户端**的适配器，永远不是被绑定的 store。能力旗标规则不变：调用方按 `capabilities` 分支、永不按 `kind`；裸密钥依旧只从 `resolveKey/resolveKeyChain`（启动/池/同步消费者）、`revealKey`（密码门控路线）与同步引擎自己的 HTTP 写三处离开。
 
-### 2. OpencodeV2Store——SQLite 只读、HTTP 独写、目标策略收紧
+### 2. auth.json——只进不出的导入源（不变，扩大适用面）
 
-- 读：`bun:sqlite` **readonly** 打开 `<dataDir>/opencode.db`（表 `credential`，必需列校验，缺列 = 响亮 `schema_mismatch`）；**永不**写库——"不得改库管理凭证"是上游的明文规矩，从违（`opencode-v2-store.ts:30-31,49-73`）。视图缓存 60s + `invalidate()`；空表 = 类型化 `EmptyCredentialTableError`。
-- 写：纯托管服务 HTTP——`POST /api/integration/{id}/connect/key`、`POST /api/credential/{id}/activate`、`PATCH /api/credential/{id}`、`DELETE /api/credential/{id}`、`GET /api/integration`，外加 `POST /api/location/reload` 作未知 integration id 的**自愈**。集合式 `GET/POST /api/credential` 刻意不用（实测构建上 404——经验之谈，注在 API 表 `:82-84`）。`connectKey` **验证落库**（轮询 sqlite 找新行、重试一次；绝不伪造 synthetic-id 成功）。
-- 服务发现：`OPENCODE_SERVER_URL`/`OPENCODE_SERVER_PASSWORD` 或 `service.json`；Basic auth；**目标策略 `loopback | remote_tls | insecure_remote`**——非回环明文 HTTP 在 fetch 之前拒绝，无 opt-in 旋钮（`:169-177,827-831`）。**第二级实时发现（2.0.32 wire 漂移，2026-10-18）：**env/文件均无显式 url 时，写路径先问 `opencode service status` 取真实端点（现行构建的 service.json 只存 `{password, env}`，服务每次启动用临时端口——旧默认 `127.0.0.1:49374` 仅作最后兜底；探测失败回退默认值，只会扩大可达性，不会阻断；seam `runServiceStatus`，默认实现 `defaultServiceStatusRunner`）。
-- 只读变体（`db-present` 证据但无 CLI 可写）：读全同、含本地 `revealKey`；一切写抛 `CapabilityUnsupportedError('…','cli-absent-db-present')` → 控制台映射 409 `store_readonly`。
+独立一次性导入（marker 记于 `<ocrHome>/credential-store.json` 的 `standaloneImport`，keyHash 去重，oauth/wellknown 仅列出并打徽标，auth.json 字节不动）如今在**所有**落点上运行——包括 v2 机器。auth.json 时代的遗留密钥并入 OCR 文件：这正是已退役 reconcile 做过的数据迁移，改指向新的真相。
 
-### 3. OcrStore——独立/降级两用的本地 store
+### 3. 一次性 v2 迁移——翻转时的路由连续性
 
-`<ocrHome>/credentials.json`——刻意**全局**（熬得过环境更迭；对照断路器记忆的按环境制，ADR-0004 §5）。`{version:1, providers:{id:[...]}}`，原子 temp+rename 0600，首 key 默认 active，空 provider 整键剪除。在没有 opencode 的机器上是**常态主 store（无任何降级挂牌）**——factory 在此不打折；此外才是响亮 fallback store（`degradedCode: db_unreadable | unsupported_version`）。它没有 auth.json 写路径，永远没有。
+密钥只存在于 opencode v2 db 的机器，在池改为只读 OCR 文件时不能丢路由。`maybeRunV2Migration`（启动时、`buildDirectPool` 之前）把 v2 db 中所有可路由 api 密钥拉进 OCR 文件一次；marker（`credential-sync.json` 的 `migration`）记录 `doneAt/pulled/deduped`。任何失败条目或 db 不可读都扣留 marker → 下次启动重试（去重保证幂等）。db 不存在的机器零成本跳过、不写 marker（之后装了 opencode 也会在后续启动被迁移）。
 
-### 4. auth.json——导入源，永不是汇
+### 4. 凭证同步——按客户端传播（`credentials/sync.ts`）
 
-`AuthSnapshot.read()` 而已（`auth-snapshot.ts`）：opencode v2 在自身 db 迁移时一次性导入该文件且永不写回 ⇒ 在 v2 机器上 auth.json **定义上**就是陈旧快照。后果链：v2 store 不可读 ⇒ 降级 OcrStore + 挂牌 + 逐 provider 排除报告——回落 auth.json 会静默路由陈旧凭证（被禁）；OCR 永不写 auth.json；独立导入（见下）保持源文件字节不变。
+当前唯一客户端：`opencode-v2`。
 
-### 5. Factory——证据阶梯、每启动粘滞绑定、永不炸启动
+- **读（拉取）**：v2 db（只读 sqlite）→ OCR 文件。只取可路由 api 行；oauth/wellknown 永不出客户端（OAuth 边界）。keyHash 去重使重跑为零操作。
+- **写（推送）**：OCR 文件 → opencode v2 托管服务 HTTP API（`connectKey`；服务发现与目标策略 `loopback | remote_tls | insecure_remote` 拒绝不变）。去重键为（provider 大小写不敏感 × keyHash 前缀）对活 db。**本地 OCR 条目永远保留**——推送让客户端向 OCR 文件收敛，绝不反向；与单一真相模型配套的「验证收敛后删除本地副本」行为一并退役。
 
-`bindCredentialStoreOnce` 证据优先级（`factory.ts:500-541`）：① CLI `opencode --version` ② `installed.version` **内容**解析（文件存在本身绝不选 store）③ `last-known-good` 迟滞（PATH 抖动不得在生命周期内来回换 store）④ `db-present`（CLI 缺席但 db 存在——这本身就是 opencode 证据）⑤ none。`isV2 = db-present ∨ major ≥ 2`；`writable = 有 CLI 证据`（db-present ⇒ 只读变体）。检出 v1 ⇒ 不支持 ⇒ OcrStore + 挂牌 + 一次性**独立 auth.json 导入**（仅 type:api，oauth/wellknown 列而不导、源不动、失败条目留手待下次启动重试）。完全没有 opencode ⇒ OcrStore 静默常态。绑定崩溃 ⇒ OcrStore + `bind_failed` 挂牌——`bindCredentialStore` 全函数永不 reject。绑定每启动一次、进程内粘滞（重启再探）。持久态：`<ocrHome>/credential-store.json`（`{bound, version, evidence, degradedCode, reconcile?, standaloneImport?}`，原子写、Windows-EPERM 退避重试）。
+### 5. 自动同步——开关、实时推送、轮询拉取、自愈
 
-### 6. 仅推式收敛——"单真源"的操作化
+状态在 `<ocrHome>/credential-sync.json`（`{version:1, clients:{'opencode-v2':{autoRead,autoWrite,lastReadAt,lastWriteAt,lastRead,lastWrite}}, migration}`）。仅展示安全内容——时间戳、开关、脱敏的逐条记录；绝无密钥材料。
 
-- **Reconcile**（store-backed 读翻转**之前**）：可写 v2 首次绑定且无完成标记 ⇒ 把 auth.json-only 的 `type:api` 密钥经 `connectKey` 推入 v2 db——大小写不敏感的 provider × keyHash 去重、**哈希为主 label 为辅**、oauth 形永不推；门查能力（`envVisible ∧ activate` 即可写 v2 的签名——readonly 推不动，门会**等**可写绑定）；auth.json 永不修改/删除（`reconcile.ts`）。完成即写标记并置 `authWriteDisabled:true`——**部分推送失败也照置**（反回归："此机器不再有 auth.json 写入"；标记写失败有进程内 override 兜底）。
-- **Push**（恢复收敛，`push.ts`，路线 `POST /api/admin/credential-store/push`）：OcrStore 绑定机恢复 opencode ⇒ 本条目单向复制进 v2；本地行仅在**验证收敛**后删除（失败保本地）；收敛的 `(provider, keyHashPrefix)` 账号清 SUSPECT（DISABLED 刻意保留）。
-- **写纪律**："读侧降级许以挂牌；写侧增殖一概拒绝"——任何地方没有 fallback 分支：`WriteFailedError`→502 `write_failed`、`CapabilityUnsupportedError`→409 `store_readonly`（`console.ts:408-434`）。控制台加 key 幂等（同 keyHash ⇒ `deduped:true`，旧 head 除非 suspect/disabled 保持原位）。
+- `autoWrite` 开：每次成功的 OCR 变更（connect/activate/rename/disconnect，经 `OcrStore` 变更钩子）排定一次防抖推送（约 1.5s）。60s 轮询 tick 是兜底：失败或从未执行的写（变更时服务不可用）会重试，直到记录到 ok 结果。
+- `autoRead` 开：60s 轮询把客户端新密钥拉进 OCR 文件。
+- 开关在**触发时**检查（防抖期间关掉即跳过）；全关 = 仅手动。手动运行（`run` 路由）执行任一或两个方向，结果与自动路径一样入档。
 
-### 7. 账号身份 = sha256(rawKey)，显示安全前缀
+### 6. 账号身份（不变）
 
-`sha256KeyHash` + `keyHashPrefix(rawKey, 12)`（`types.ts:287-295`）：**密钥哈希即持久身份**——熬过 label 编辑、凭证行 id 更迭、provider 改名；UI 只见 12 字符安全前缀，密钥材料永不出面。以此锚定的状态：pair 断路器 `(model × prefix)`、SUSPECT/DISABLED 旗标 `(provider × prefix)`（生命周期相反，ADR-0004 §3/§5）、会话亲和绑定（ADR-0002）、按账号健康/限流主体。`disconnect` 尊重显式 DELETE（不可逆的双重确认在**控制台 UI**，不在后端）；删除前捕获的锚用于清该账号 SUSPECT，其 DISABLED 旗标刻意存续——同一把 key 回来时，下架仍然作数。
+sha256(rawKey) 是持久身份；界面只见 12 字符前缀。熔断对、SUSPECT/DISABLED 标记、会话亲和与额度快照都锚定 `(provider × keyHashPrefix)`。每个写同步收敛对（推送或已有）都是一次重连手势，解除该账号 SUSPECT；DISABLED 刻意存续。
 
-### 8. OAuth 边界
+### 7. OAuth 边界（不变）
 
-没有任何 store 声称 OAuth（`oauth:false`，`begin/completeOAuth` 抛错）；oauth/wellknown 行列示挂牌、永不路由、永不 reconcile/import/push；reveal 对无裸 api-key 材料的行说不。OAuth 凭证生命周期归上游服务——网关绕开它，绝不穿过它。
+没有任何 store 声明 OAuth。oauth/wellknown 行只列出并打徽标：不路由、不导入、不推送、不拉取；reveal 拒绝无裸 api 密钥材料的行。
 
-### 9. 启动与控制台表面
+### 8. 启动与控制台表面
 
-启动序：绑 store → 状态 → `ensureReconciled` → `buildDirectPool`（链以进程内裸 key 注册，ADR-0005）。控制台：掩码 `AccountMeta` + `AccountHealth` 叠层（suspect / openPairs / cooldown / disabled+reason / limits / `quota`——quota 平面叠层，见 ADR-0009 §9）附着在**每一个**返回账号的写响应上；store 状态路线给出能力、降级码、reconcile 审计、integrations（scoped 时）。Reveal 路线四道硬闸：webAuth 激活、共享爆破桶、密码先验后触 store、仅 api-key 行。前端 `api.ts` 与这些 wire 名 1:1 镜像（仓库约定）。
+启动顺序：绑定 store（OcrStore）→ `initCredentialSync`（迁移一次性 + 自动定时器 + 变更钩子）→ `buildDirectPool`。控制台：`GET /credential-store`（状态；`kind` 恒为 `'ocr'`；`integrations` 字段移除——被绑定 store 不按 integration 定址）；`POST /credential-store/push` 即按 provider 的写同步（本地保留，结果入档）；新增 `GET /credential-sync`（表格数据）、`POST /credential-sync/toggle`、`POST /credential-sync/run`。reveal 的四道硬闸不变。
+
+### 9. 退役
+
+reconcile 闸（auth.json→v2 推送 + `authWriteDisabled` marker——被 §2 导入 + §4 写同步取代）、CLI 版本探测 + 滞回 + 惰性升级循环、`not_ocr_bound` 前置拒绝、只读变体的路由表面（被绑定 store 发出的 409 `store_readonly` 不可达；适配器内部只读变体仍服务同步侧读取）、以及启动时的 CLI 子进程（启动对 opencode 零耦合）。旧 `credential-store.json` 的 reconcile 块仍可读（加法式容忍），但不再写入。
 
 ## 后果
 
-- 凭证状态机可读而无可写歧路；每个收敛方向都是单向经验证的，密钥不可能跨 store 静默增殖。
-- 身份锚在密钥材料（而非 id/label）上，使熔断/嫌疑/亲和历史熬得过上游更迭。
-- 测试：`credentials*`、`user-config*`、factory/reconcile/push 各套件、`guardrails*`。
+- 管理面写入永不依赖 opencode：opencode 缺席、停止或损坏时控制台照常工作。
+- 控制台新增的密钥只有经过一次写同步才会到达 opencode——开启自动则自动发生，否则需要显式操作。凭证同步表格让这种传播可见，而非隐式。
+- `OpencodeV2Store` 作为同步引擎的工具被完整测试（拉取用读、推送用带验证的 HTTP 写、二级服务发现不变）；它的路由级 v2 行为（integration 不匹配 409、只读拒绝、视图失效）不再从控制台可达，相应路由测试随行为一并退役。
+- 测试：`credentials-sync`（引擎）、`credentials-factory`（唯一落点 + 全函数）、`credentials-console-routes`（路由 × OCR 文件）、`credentials-push-endpoint`（保留本地）、`boot-direct-credential-store`（OCR 文件启动），以及契约不变的 `credentials-leak-surfaces` / `credentials-reveal-route` / `credentials-standalone-import` / `credentials-opencode-v2-*` 适配器套件。

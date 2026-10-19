@@ -13,7 +13,7 @@ import {
 } from '../opencode/user-config.js';
 import { getCredentialStore, getCredentialStoreStatus } from '../opencode/credentials/index.js';
 import { keyHashPrefix } from '../opencode/credentials/types.js';
-import type { AccountMeta, CallCredential, RawCred, ResolvedCredential } from '../opencode/credentials/types.js';
+import type { CallCredential, RawCred, ResolvedCredential } from '../opencode/credentials/types.js';
 import { WireKind, wireFor, unroutableReason, baseForWire } from './wire.js';
 
 /**
@@ -154,19 +154,16 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
     // ABOVE the store; the store supplies only the "store segment" the old
     // `auth.key || auth.access` lookup covered.
     const inlineKey = expandEnvTemplate(def?.options?.apiKey);
-    // P2-9: a per-provider store read that THROWS (mid-loop schema drift,
-    // db handle failure) must not kill the whole pool rebuild — the affected
-    // provider lands as an excluded entry (reasonCode db_unreadable) and the
-    // loop continues with the others.
+    // P2-9: a per-provider store read that THROWS (file unreadable mid-loop)
+    // must not kill the whole pool rebuild — the affected provider lands as an
+    // excluded entry (reasonCode db_unreadable) and the loop continues with the
+    // others.
     let resolved: ResolvedCredential | null;
-    let metas: AccountMeta[];
     // the same try-guarded read also fetches the
-    // ordered chain (active head first); key-type rows only, oauth never
-    // enters a chain (store contract).
+    // ordered chain (active head first); routable rows only.
     let storeCreds: RawCred[];
     try {
       resolved = store.resolveKey(rec.id);
-      metas = store.listAccounts(rec.id);
       storeCreds = store.resolveKeyChain(rec.id);
     } catch (e) {
       excluded.push({
@@ -181,15 +178,6 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
     // answered — head === baked key is an invariant the registry relies on.
     const apiKey = inlineKey || storeCreds[0]?.key || resolved?.key;
 
-    // OAuth exclusion (old `auth?.type === 'oauth'` check) now derives from
-    // masked AccountMeta — raw oauth tokens never leave resolveKey. A
-    // routable store credential outranks a coexisting oauth account (opencode v2
-    // multi-account reality; a single-account store can hold only one of the two,
-    // so those bindings behave exactly as before).
-    if (!resolved && metas.some((a) => a.type === 'oauth')) {
-      excluded.push({ provider: rec.id, reason: 'OAuth 凭证（网关自持刷新前显式排除）' });
-      continue;
-    }
     if (!apiKey) {
       // catalog-universe providers without credentials are structural noise —
       // only surface when the user actually defined a config node for them.

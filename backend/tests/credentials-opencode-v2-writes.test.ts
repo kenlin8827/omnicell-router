@@ -5,7 +5,6 @@ import path from 'node:path';
 import { CredentialPaths } from '../src/opencode/credentials/paths.js';
 import { ocrCredentialsFile } from '../src/opencode/credentials/paths.js';
 import { DbOpener, OpencodeV2Store, resolveServiceConfigForPaths } from '../src/opencode/credentials/opencode-v2-store.js';
-import { bindCredentialStore } from '../src/opencode/credentials/factory.js';
 import {
   CapabilityUnsupportedError,
   IntegrationUnmatchedError,
@@ -375,20 +374,6 @@ describe('service target policy (security P2-1)', () => {
     const cfg = resolveServiceConfigForPaths(paths, {});
     expect(cfg?.targetPolicy).toBe('loopback');
     expect(cfg?.baseUrl).toBe('http://127.0.0.1:4100');
-  });
-
-  it('bind surfaces a remote target on StoreStatus.detail (badge-visible policy)', async () => {
-    const paths = sandboxPaths();
-    writeServiceJson(paths, { password: 'pw', baseUrl: 'https://managed.test/oc' });
-    const binding = await bindCredentialStore({
-      paths,
-      versionProbe: async () => 'v2.0.15',
-      env: {},
-      now: () => 1,
-      openDatabase: fakeDb([]),
-    });
-    expect(binding.status.detail).toContain('remote opencode v2 service over https');
-    expect(binding.status.degradedCode).toBeNull(); // allowed — a flag, not a degradation
   });
 
   it('injected env WITHOUT url never falls through to real process.env (paths.ts sole-env-read contract)', () => {

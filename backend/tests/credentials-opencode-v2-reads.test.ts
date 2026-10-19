@@ -353,19 +353,4 @@ describe('OpencodeV2Store value-shape assertions (security P2-2)', () => {
     });
     expect(store.listAccounts('anthropic')[0]).toMatchObject({ active: true, routable: true });
   });
-
-  it('the badged landing: bindCredentialStore surfaces schema drift as db_unreadable (badge, not wrong key)', async () => {
-    const paths = sandboxPaths();
-    const { bindCredentialStore } = await import('../src/opencode/credentials/factory.js');
-    const binding = await bindCredentialStore({
-      paths,
-      versionProbe: async () => 'v2.0.15',
-      env: {},
-      now: () => 1,
-      openDatabase: rawDb([{ ...baseRow, active: 'true', time_updated: 5 }]),
-    });
-    expect(binding.status.kind).toBe('ocr');
-    expect(binding.status.degradedCode).toBe('db_unreadable');
-    expect(binding.status.detail).toContain('schema_mismatch');
-  });
 });

@@ -8,5 +8,4 @@ export * from './auth-snapshot.js';
 export * from './ocr-store.js';
 export * from './opencode-v2-store.js';
 export * from './factory.js';
-export * from './reconcile.js';
-export * from './push.js';
+export * from './sync.js';

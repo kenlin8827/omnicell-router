@@ -5,7 +5,7 @@ import path from 'node:path';
 import { loadConfig } from '../src/config/index.js';
 import { createServer } from '../src/server.js';
 import { hashPassword, recordLoginSuccess } from '../src/auth/web-auth.js';
-import { CredentialPaths } from '../src/opencode/credentials/paths.js';
+import { CredentialPaths, ocrCredentialsFile } from '../src/opencode/credentials/paths.js';
 import {
   AccountNotFoundError,
   CapabilityUnsupportedError,
@@ -87,6 +87,36 @@ const oauthRow = (id: string, integration: string) => ({
   time_created: 1,
   time_updated: 1,
 });
+
+/**
+ * Seed the OCR file directly — the bound store ALWAYS reads credentials.json
+ * per call, so a pre-written file is the fixture (no store seam needed).
+ */
+function seedOcr(
+  paths: CredentialPaths,
+  providers: Record<string, Array<{ id: string; key: string; label?: string }>>
+): void {
+  fs.mkdirSync(paths.ocrHome, { recursive: true });
+  fs.writeFileSync(
+    ocrCredentialsFile(paths),
+    JSON.stringify({
+      version: 1,
+      providers: Object.fromEntries(
+        Object.entries(providers).map(([p, rows]) => [
+          p,
+          rows.map((r) => ({
+            accountId: r.id,
+            ...(r.label !== undefined ? { label: r.label } : {}),
+            key: r.key,
+            timeCreated: 1,
+            timeUpdated: 1,
+            active: true,
+          })),
+        ])
+      ),
+    })
+  );
+}
 
 let tmpDir = '';
 let oldCfg: string | undefined;
@@ -193,13 +223,10 @@ describe('POST …/accounts/:accountId/reveal — the four gates', () => {
     expect(res.body).not.toContain(KEY);
   });
 
-  it('gate 2 (happy + exact shape): right password + bound v2 store → 200 {status,key}, no-store', async () => {
+  it('gate 2 (happy + exact shape): right password + bound store → 200 {status,key}, no-store', async () => {
     const paths = credPaths();
-    resetCredentialStoreForTests(paths, async () => 'v2.0.15', fetchImpl, {
-      env: {},
-      now: () => 1,
-      openDatabase: fakeDb([keyRow('c1', 'myprov', KEY)]),
-    });
+    resetCredentialStoreForTests(paths, undefined, undefined, { env: {}, now: () => 1 });
+    seedOcr(paths, { myprov: [{ id: 'c1', key: KEY }] });
     const res = await app.inject({
       method: 'POST',
       url: revealUrl('myprov', 'c1'),
@@ -214,13 +241,10 @@ describe('POST …/accounts/:accountId/reveal — the four gates', () => {
     expect(res.headers['set-cookie']).toBeUndefined();
   });
 
-  it('oauth row via the route: 409 capability_unsupported after the password passes', async () => {
+  it('keyless row via the route: 409 capability_unsupported after the password passes', async () => {
     const paths = credPaths();
-    resetCredentialStoreForTests(paths, async () => 'v2.0.15', fetchImpl, {
-      env: {},
-      now: () => 1,
-      openDatabase: fakeDb([oauthRow('c2', 'myprov')]),
-    });
+    resetCredentialStoreForTests(paths, undefined, undefined, { env: {}, now: () => 1 });
+    seedOcr(paths, { myprov: [{ id: 'c2', key: '' }] }); // no raw key material (oauth-shaped equivalent)
     const res = await app.inject({
       method: 'POST',
       url: revealUrl('myprov', 'c2'),
@@ -233,11 +257,8 @@ describe('POST …/accounts/:accountId/reveal — the four gates', () => {
 
   it('cross-provider guard: a real account id under the WRONG provider → 404 (post-auth)', async () => {
     const paths = credPaths();
-    resetCredentialStoreForTests(paths, async () => 'v2.0.15', fetchImpl, {
-      env: {},
-      now: () => 1,
-      openDatabase: fakeDb([keyRow('c1', 'myprov', KEY)]),
-    });
+    resetCredentialStoreForTests(paths, undefined, undefined, { env: {}, now: () => 1 });
+    seedOcr(paths, { myprov: [{ id: 'c1', key: KEY }] });
     const res = await app.inject({
       method: 'POST',
       url: revealUrl('otherprov', 'c1'),
@@ -271,11 +292,8 @@ describe('POST …/accounts/:accountId/reveal — the four gates', () => {
 
   it('gate 2 (throttle): wrong-password failures lock the bucket — 429 + retry-after after MAX_FAILURES strikes', async () => {
     const paths = credPaths();
-    resetCredentialStoreForTests(paths, async () => 'v2.0.15', fetchImpl, {
-      env: {},
-      now: () => 1,
-      openDatabase: fakeDb([keyRow('c1', 'myprov', KEY)]),
-    });
+    resetCredentialStoreForTests(paths, undefined, undefined, { env: {}, now: () => 1 });
+    seedOcr(paths, { myprov: [{ id: 'c1', key: KEY }] });
     let locked: any = null;
     // Loop-until-locked: an earlier 401 test may already have put failures in
     // this process' bucket, so counting from zero here would couple tests.
@@ -324,11 +342,8 @@ describe('POST …/accounts/:accountId/reveal — the four gates', () => {
       recordLoginSuccess('unknown'); // the handler's req.ip fallback key
     }
     const paths = credPaths();
-    resetCredentialStoreForTests(paths, async () => 'v2.0.15', fetchImpl, {
-      env: {},
-      now: () => 1,
-      openDatabase: fakeDb([keyRow('c1', 'myprov', KEY)]),
-    });
+    resetCredentialStoreForTests(paths, undefined, undefined, { env: {}, now: () => 1 });
+    seedOcr(paths, { myprov: [{ id: 'c1', key: KEY }] });
     const bad = await app.inject({
       method: 'POST',
       url: revealUrl('myprov', 'c1'),

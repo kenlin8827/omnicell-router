@@ -5,18 +5,17 @@ import path from 'node:path';
 import { loadConfig } from '../src/config/index.js';
 import { CredentialPaths } from '../src/opencode/credentials/paths.js';
 import { resetCredentialStoreForTests } from '../src/opencode/credentials/factory.js';
-import { DbOpener } from '../src/opencode/credentials/opencode-v2-store.js';
 
 /**
- * Opencode-v2 shaped provider-definition WRITES at the route + boot level.
+ * Provider-definition WRITES at the route + boot level.
  *
- * Layer 1 (routes): console provider create/update/connect pick the emitted
- *  opencode.jsonc shape from the BOUND credential store's version evidence
- *  (kind 'opencode-v2'/'opencode-v2-readonly' → opencode v2 def; 'opencode-v1'/'ocr' → legacy opencode v1 bytes).
- * Layer 2 (boot, task test d): a opencode-v2 shaped def written by upsertCustomProvider
+ * Layer 1 (routes): console provider create/update/connect write the
+ *  opencode.jsonc def and route the KEY to the bound store — always the OCR
+ *  file (the v2 service is a sync client and is never written by these routes).
+ * Layer 2 (boot): an opencode-v2 shaped def written by upsertCustomProvider
  *  resolves the SAME baseURL/headers/wire through boot-direct as the equivalent
- *  opencode-v1 shaped def. boot-direct is NOT edited here — this file only asserts
- *  against it (concurrent P3 edits must keep this contract).
+ *  opencode-v1 shaped def. boot-direct is NOT edited here — this file only
+ *  asserts against it (concurrent P3 edits must keep this contract).
  *
  * Hermetic: XDG_* per-test tmpdir + injected CredentialPaths (same dirs),
  * mocked catalog/fetch — the operator's home is never read (fixtures per
@@ -24,50 +23,6 @@ import { DbOpener } from '../src/opencode/credentials/opencode-v2-store.js';
  */
 
 let catalogRecs: any[] = [];
-// Built-ins ONLY. The id under creation is deliberately NOT pre-seeded, so a test
-// can only pass when the def actually landed first — the real upstream ordering
-// dependency.
-let integrationIds: string[] = ['eq1', 'eq2'];
-
-/**
- * Upstream INTEGRATION-REGISTRATION policy, both sides probed against the live
- * v2 service (2026-10-13):
- *  - hotRegister=true (default) — the PR #40761 model: every GET re-reads the def
- *    file, so a config-declared provider appears immediately after the write.
- *  - hotRegister=false — the OBSERVED 2.0.15 behavior: config-declared providers
- *    register when the service LOADS config (boot snapshot); a just-written def is
- *    absent from GET /api/integration until POST /api/location/reload re-reads it.
- * reloadSupported=false models an older build WITHOUT the reload endpoint (404).
- */
-let hotRegister = true;
-let reloadSupported = true;
-let reloadLag = 0; // GETs that still answer the OLD snapshot after reload (async-swap model)
-let pendingReload: { ids: string[]; after: number } | null = null;
-
-/** Boot snapshot for snapshot mode: pinned at bindV2 (= service start), refreshed by reload. */
-let snapshotIds: string[] | null = null;
-
-function fileIds(): string[] {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(getOpenCodeConfigPath(), 'utf8'));
-    return Object.keys(parsed?.providers ?? {});
-  } catch {
-    return []; // no def file yet — only the built-in catalog is registered
-  }
-}
-
-function servedIntegrations(): string[] {
-  if (hotRegister) return [...new Set([...integrationIds, ...fileIds()])];
-  if (!snapshotIds) snapshotIds = [...new Set([...integrationIds, ...fileIds()])];
-  if (pendingReload) {
-    if (pendingReload.after > 0) pendingReload.after--;
-    else {
-      snapshotIds = pendingReload.ids;
-      pendingReload = null;
-    }
-  }
-  return snapshotIds;
-}
 
 const actualRepository = await import('../src/opencode/catalog/repository.js');
 mock.module('../src/opencode/catalog/repository.js', () => ({
@@ -113,8 +68,6 @@ const { app } = createServer(baseConfig, true);
 // (XDG_*) and the injected CredentialPaths (same directories)
 // ---------------------------------------------------------------------------
 
-const ALL_COLS = ['id', 'integration_id', 'label', 'value', 'active', 'time_created', 'time_updated'];
-
 let tmpDir = '';
 let oldCfg: string | undefined;
 let oldData: string | undefined;
@@ -142,12 +95,6 @@ beforeEach(() => {
   fs.mkdirSync(p.dataDir, { recursive: true });
   fs.writeFileSync(p.serviceJsonCandidates![0]!, JSON.stringify({ password: 'pw', port: 4100 }));
   catalogRecs = [];
-  integrationIds = ['eq1', 'eq2'];
-  hotRegister = true;
-  reloadSupported = true;
-  snapshotIds = null;
-  reloadLag = 0;
-  pendingReload = null;
   pullOutcome = 'ok';
   pullFired = [];
   fetchCalls.length = 0;
@@ -171,19 +118,6 @@ afterEach(() => {
 // store-binding + fetch fixtures (credentials-console-routes.test.ts pattern)
 // ---------------------------------------------------------------------------
 
-function fakeDb(): DbOpener {
-  return async () => ({
-    query(sql: string) {
-      return {
-        all: () => (sql.includes('table_info') ? ALL_COLS.map((c) => ({ name: c })) : []),
-      };
-    },
-    close() {
-      // no-op
-    },
-  });
-}
-
 interface FetchCall {
   url: string;
   method: string;
@@ -197,16 +131,7 @@ const fetchImpl: typeof fetch = async (input, init) => {
   const body = init?.body ? JSON.parse(String(init.body)) : undefined;
   fetchCalls.push({ url, method, body });
   if (method === 'GET') {
-    return new Response(JSON.stringify({ data: servedIntegrations().map((id) => ({ id, connections: [] })) }), {
-      status: 200,
-    });
-  }
-  if (url.endsWith('/api/location/reload')) {
-    if (!reloadSupported) return new Response(JSON.stringify({ error: 'not_found' }), { status: 404 });
-    const fresh = [...new Set([...integrationIds, ...fileIds()])]; // the service re-reads config
-    if (reloadLag > 0) pendingReload = { ids: fresh, after: reloadLag }; // async swap: old answers N more GETs
-    else snapshotIds = fresh;
-    return new Response('', { status: 204 });
+    return new Response(JSON.stringify({ data: [] }), { status: 200 });
   }
   const res = postHandler(url);
   return new Response(JSON.stringify(res.json ?? {}), { status: res.status });
@@ -217,22 +142,8 @@ let postHandler: (url: string) => { status: number; json?: unknown } = () => ({
   json: { credential: { id: 'c-new' } },
 });
 
-function bindV2(paths: CredentialPaths) {
-  snapshotIds = [...new Set(integrationIds)]; // service boot: the def file is only re-read on reload
-  resetCredentialStoreForTests(paths, async () => 'v2.0.15', fetchImpl, {
-    env: {},
-    now: () => 1,
-    sleep: async () => {}, // instant reload-poll backoff
-    openDatabase: fakeDb(),
-  });
-}
-
-function bindV1Machine(paths: CredentialPaths) {
-  resetCredentialStoreForTests(paths, async () => 'v1.4.6', fetchImpl, { env: {}, now: () => 1 });
-}
-
-function bindOcrStandalone(paths: CredentialPaths) {
-  resetCredentialStoreForTests(paths, async () => null, fetchImpl, { env: {}, now: () => 1 });
+function bindStore(paths: CredentialPaths) {
+  resetCredentialStoreForTests(paths, undefined, fetchImpl, { env: {}, now: () => 1 });
 }
 
 function rawJsonc(): any {
@@ -256,69 +167,10 @@ const rec = (id: string, modelIds: string[]) => ({
 // 1. route-level shape selection by bound store kind
 // ---------------------------------------------------------------------------
 
-describe('POST /opencode/providers — shape follows the bound store', () => {
-  it('opencode v2 binding: opencode-v2 shaped node written, key pushed over HTTP, auth.json untouched', async () => {
+describe('POST /opencode/providers — the OCR store is the credential sink', () => {
+  it('ocr binding: v2 shape in the native slot, key via store.connectKey (credentials.json)', async () => {
     const p = credPaths();
-    bindV2(p);
-    const res = await app.inject({
-      method: 'POST',
-      url: '/api/admin/opencode/providers',
-      payload: {
-        id: 'acme',
-        name: 'Acme',
-        npm: '@ai-sdk/anthropic',
-        baseURL: 'https://acme.test/v1',
-        apiKey: 'sk-http-shape-123456',
-        models: { m1: {} },
-      },
-    });
-    expect(res.statusCode).toBe(200);
-    const node = rawJsonc().providers.acme;
-    expect(node.package).toBe('@opencode/ai/providers/anthropic');
-    expect(node.settings.baseURL).toBe('https://acme.test/v1');
-    expect(node.npm).toBeUndefined();
-    expect(node.options).toBeUndefined();
-    // secret lives in the opencode v2 service (HTTP), never in the file or a dead sink
-    expect(JSON.stringify(node)).not.toContain('sk-http-shape-123456');
-    const posts = fetchCalls.filter((c) => c.method === 'POST' && c.url.includes('/connect/key'));
-    expect(posts.some((c) => c.url.includes('/api/integration/acme/connect/key'))).toBe(true);
-    expect(fs.existsSync(p.authJsonPath)).toBe(false);
-    expect(fs.existsSync(path.join(p.ocrHome, 'credentials.json'))).toBe(false);
-  });
-
-  it('opencode v1 machine: NOT supported — OcrStore with a loud badge, auth.json never used as a sink', async () => {
-    const p = credPaths();
-    bindV1Machine(p);
-    const res = await app.inject({
-      method: 'POST',
-      url: '/api/admin/opencode/providers',
-      payload: {
-        id: 'acme',
-        npm: '@ai-sdk/anthropic',
-        baseURL: 'https://acme.test/v1',
-        apiKey: 'sk-v1-unsupported-123456',
-      },
-    });
-    expect(res.statusCode).toBe(200);
-    // One def shape regardless of the machine: the v2 node in the native slot.
-    const node = rawJsonc().providers.acme;
-    expect(node.package).toBe('@opencode/ai/providers/anthropic');
-    expect(node.settings.baseURL).toBe('https://acme.test/v1');
-    expect(node.npm).toBeUndefined();
-    expect(node.options).toBeUndefined();
-    expect(JSON.stringify(node)).not.toContain('sk-v1-unsupported-123456');
-    // The key never lands in auth.json — that file is not a sink on any binding.
-    expect(fs.existsSync(p.authJsonPath)).toBe(false);
-    // …and the store it did land in is the OCR file, badged unsupported.
-    expect(fs.readFileSync(path.join(p.ocrHome, 'credentials.json'), 'utf8')).toContain('acme');
-    const status = await (await import('../src/opencode/credentials/index.js')).getCredentialStoreStatus();
-    expect(status.kind).toBe('ocr');
-    expect(status.degradedCode).toBe('unsupported_version');
-  });
-
-  it('ocr standalone binding: v2 shape in the native slot, key via store.connectKey (credentials.json)', async () => {
-    const p = credPaths();
-    bindOcrStandalone(p);
+    bindStore(p);
     const res = await app.inject({
       method: 'POST',
       url: '/api/admin/opencode/providers',
@@ -331,96 +183,13 @@ describe('POST /opencode/providers — shape follows the bound store', () => {
     const credFile = path.join(p.ocrHome, 'credentials.json');
     expect(fs.existsSync(credFile)).toBe(true);
     expect(fs.readFileSync(credFile, 'utf8')).toContain('acme');
+    expect(fs.readFileSync(credFile, 'utf8')).toContain('sk-ocr-123456');
     expect(fs.existsSync(p.authJsonPath)).toBe(false);
-  });
-
-  it('brand-new custom id with a managed key: the def lands FIRST, so upstream can register it (ordering regression)', async () => {
-    // The mock registry answers from the def file, so this passes ONLY if the route
-    // wrote `providers.brandnew` before pushing the key. Key-first ordering made every
-    // first-time custom-provider creation 409 and left the def unwritten.
-    const p = credPaths();
-    bindV2(p);
-    const res = await app.inject({
-      method: 'POST',
-      url: '/api/admin/opencode/providers',
-      payload: { id: 'brandnew', baseURL: 'https://brandnew.test/v1', apiKey: 'sk-brandnew-123456' },
-    });
-    expect(res.statusCode).toBe(200);
-    expect(rawJsonc().providers.brandnew.package).toBe('@opencode/ai/providers/openai-compatible');
-    // The push itself is the ordering proof: resolveIntegrationId consults the mock
-    // registry, which answers from the def file — a key-first route would have found
-    // no `brandnew` there and answered 409 before the def ever landed.
-    expect(fetchCalls.some((c) => c.method === 'POST' && c.url.includes('/api/integration/brandnew/connect/key'))).toBe(
-      true
-    );
-  });
-
-  it('boot-snapshot upstream: creation stays ONE gesture — unmatched reloads config, the key lands', async () => {
-    // Live-probe 2.0.15: a just-written def is absent from GET /api/integration
-    // until the service re-reads config. The store fires POST /api/location/reload
-    // on the miss itself, so provider def + key completes in a single user action.
-    const p = credPaths();
-    hotRegister = false;
-    bindV2(p);
-    const res = await app.inject({
-      method: 'POST',
-      url: '/api/admin/opencode/providers',
-      payload: { id: 'snap', baseURL: 'https://snap.test/v1', apiKey: 'sk-snap-123456' },
-    });
-    expect(res.statusCode).toBe(200);
-    expect(rawJsonc().providers.snap.package).toBe('@opencode/ai/providers/openai-compatible');
-    expect(fetchCalls.some((c) => c.method === 'POST' && c.url.endsWith('/api/location/reload'))).toBe(true);
-    expect(fetchCalls.some((c) => c.method === 'POST' && c.url.includes('/api/integration/snap/connect/key'))).toBe(true);
-  });
-
-  it('async registry swap after reload: bounded polling heals where a single re-check would false-409', async () => {
-    // Live-caused 2026-10-13 (zhipu3): the service answers reload with 204 BEFORE
-    // the registry actually swaps. The store must poll, not check-once-and-mourn.
-    const p = credPaths();
-    hotRegister = false;
-    reloadLag = 1; // first GET after reload still answers the old snapshot
-    bindV2(p);
-    const res = await app.inject({
-      method: 'POST',
-      url: '/api/admin/opencode/providers',
-      payload: { id: 'lagged', baseURL: 'https://lagged.test/v1', apiKey: 'sk-lagged-123456' },
-    });
-    expect(res.statusCode).toBe(200);
-    expect(fetchCalls.some((c) => c.method === 'POST' && c.url.endsWith('/api/location/reload'))).toBe(true);
-    expect(fetchCalls.some((c) => c.method === 'POST' && c.url.includes('/api/integration/lagged/connect/key'))).toBe(true);
-  });
-
-  it('old build without the reload endpoint: 409 KEEPS the def, the key rides it after a restart', async () => {
-    // No /api/location/reload (404) → the unmatched refusal stands. The def must
-    // survive — it is the prerequisite — and the post-restart key add rides it.
-    const p = credPaths();
-    hotRegister = false;
-    reloadSupported = false;
-    bindV2(p);
-    const res = await app.inject({
-      method: 'POST',
-      url: '/api/admin/opencode/providers',
-      payload: { id: 'oldie', baseURL: 'https://oldie.test/v1', apiKey: 'sk-oldie-123456' },
-    });
-    expect(res.statusCode).toBe(409);
-    expect(res.json().reasonCode).toBe('integration_unmatched');
-    expect(rawJsonc().providers.oldie.package).toBe('@opencode/ai/providers/openai-compatible');
-    expect(fetchCalls.some((c) => c.method === 'POST' && c.url.includes('/api/integration/oldie/connect/key'))).toBe(false);
-    // operator restarts the service: boot re-reads the def file, the plain add-key
-    // path (connect) now resolves the id with no reload available
-    hotRegister = true;
-    const retry = await app.inject({
-      method: 'POST',
-      url: '/api/admin/opencode/providers/oldie/connect',
-      payload: { apiKey: 'sk-oldie-123456' },
-    });
-    expect(retry.statusCode).toBe(200);
-    expect(fetchCalls.some((c) => c.method === 'POST' && c.url.includes('/api/integration/oldie/connect/key'))).toBe(true);
   });
 
   it('create fires the model pull in the background — the response never waits on it', async () => {
     const p = credPaths();
-    bindV2(p);
+    bindStore(p);
     const res = await app.inject({
       method: 'POST',
       url: '/api/admin/opencode/providers',
@@ -436,7 +205,7 @@ describe('POST /opencode/providers — shape follows the bound store', () => {
 
   it('a failed model pull is swallowed — the completed creation stands', async () => {
     const p = credPaths();
-    bindV2(p);
+    bindStore(p);
     pullOutcome = 'throw';
     const res = await app.inject({
       method: 'POST',
@@ -461,7 +230,7 @@ describe('POST /opencode/providers — shape follows the bound store', () => {
 
   it('models.dev-file-shaped model content is WRITTEN, not refused (guard scope)', async () => {
     const p = credPaths();
-    bindV2(p);
+    bindStore(p);
     // Regression for the 'refused: legacy-shaped model def (models.<id>.cost)' breakage:
     // keyed-Record `variants` and flat snake_case cost cache keys are opencode v2's
     // FILE spelling (verified against the v2.0.15 embedded config decoder) — the write
@@ -491,7 +260,7 @@ describe('POST /opencode/providers — shape follows the bound store', () => {
 describe('PATCH /opencode/providers/:id — opencode v2 update preserves the opencode v2 shape', () => {
   it('name edit on an opencode v2 node keeps package/settings/canonical/env/body (P1 reader fields survive the writer)', async () => {
     const p = credPaths();
-    bindV2(p);
+    bindStore(p);
     writeJsoncFile(
       JSON.stringify(
         {
@@ -533,7 +302,7 @@ describe('PATCH /opencode/providers/:id — opencode v2 update preserves the ope
 describe('POST /opencode/providers/:id/connect — baseURL merge keeps node shape on opencode v2', () => {
   it('opencode-v2 shaped node stays opencode-v2 shaped after a connect with baseURL', async () => {
     const p = credPaths();
-    bindV2(p);
+    bindStore(p);
     writeJsoncFile(
       JSON.stringify(
         {
@@ -592,7 +361,7 @@ describe('boot-direct — opencode v2-written def routes identically to the open
     );
     // V1-bound store (auth.json is the sink): boot resolves keys from the store
     // segment identically for both shapes.
-    bindV1Machine(p);
+    bindStore(p);
     catalogRecs = [rec('eq1', ['m1', 'm2']), rec('eq2', ['m1', 'm2'])];
 
     const pool = await buildDirectPool();

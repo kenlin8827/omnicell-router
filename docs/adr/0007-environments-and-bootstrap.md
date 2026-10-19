@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented — 2026-10-15 (facts-side corpus rewrite). Scope: what an "environment" is on disk, how one is chosen, switched, exported, imported, deleted. Credential storage is global-leaning by contrast (ADR-0006 §3/§7); breaker memory is per-env (ADR-0004 §5) — both are deliberate splits documented there.
+Implemented — 2026-10-15 (facts-side corpus rewrite). Scope: what an "environment" is on disk, how one is chosen, switched, exported, imported, deleted. Credential storage is global-leaning by contrast (ADR-0006 §1/§6); breaker memory is per-env (ADR-0004 §5) — both are deliberate splits documented there.
 
 ## Decision
 

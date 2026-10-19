@@ -11,10 +11,8 @@ import { DbOpener, OpencodeV2Store } from '../src/opencode/credentials/opencode-
 import {
   getCredentialStore,
   getCredentialStoreStatus,
-  readCredentialStoreState,
   resetCredentialStoreForTests,
 } from '../src/opencode/credentials/factory.js';
-import { ensureReconciled } from '../src/opencode/credentials/reconcile.js';
 import { WriteFailedError, keyHashPrefix } from '../src/opencode/credentials/types.js';
 
 /**
@@ -24,8 +22,8 @@ import { WriteFailedError, keyHashPrefix } from '../src/opencode/credentials/typ
  *     Decision 1 risk limb: no management route ever receives raw secrets),
  *   - the opencode v2 service's error-response ECHO (an upstream that repeats the
  *     submitted key in its 500 body must not get that key re-served through
- *     the 502 error field, the reconcile reason persisted to state, the push
- *     failed[].reason, or any log line),
+ *     the 502 error field, the sync outcome persisted to credential-sync.json,
+ *     the push failed[].reason, or any log line),
  *   - corrupt-credentials.json probe detail (parse-error token echo),
  *   - Decision 8 honesty: disconnect NEVER leaves a local backup copy.
  * Harness precedents: credentials-store-endpoint.test.ts (real server,
@@ -245,22 +243,6 @@ describe('error-message ECHO containment (write-path leak hunt)', () => {
     expect((err as Error).message).not.toContain(k);
   });
 
-  it('route level: connect 502 body reports write_failed WITHOUT leaking the echoed key', async () => {
-    const paths = sandboxPaths();
-    const { fetchImpl } = echoFetch();
-    resetCredentialStoreForTests(paths, async () => 'v2.0.15', fetchImpl, { env: {}, now: () => 1, openDatabase: fakeDb([]) });
-    const k = 'sk-echo-route-112233';
-    const res = await app.inject({
-      method: 'POST',
-      url: '/api/admin/opencode/providers/anthropic/connect',
-      payload: { apiKey: k },
-    });
-    expect(res.statusCode).toBe(502);
-    expect(res.json().reasonCode).toBe('write_failed');
-    expect(res.body).toContain('HTTP 500'); // still diagnosable
-    expect(res.body).not.toContain(k); // Decision 1 risk limb: management route, raw secret
-  });
-
   it('push route: failed[].reason keeps the local copy loud but the echoed key out of the response', async () => {
     const paths = sandboxPaths();
     const { fetchImpl } = echoFetch();
@@ -278,34 +260,10 @@ describe('error-message ECHO containment (write-path leak hunt)', () => {
     expect(res.body).not.toContain(k);
     // never blind-deleted: the local copy survives the failed push
     expect(JSON.parse(fs.readFileSync(ocrCredentialsFile(paths), 'utf8')).providers.anthropic).toHaveLength(1);
-  });
-
-  it('reconcile: push failure reason in logs, state file and the status endpoint never carries the echoed key', async () => {
-    const paths = sandboxPaths();
-    const k = 'sk-echo-reconcile-889900';
-    fs.writeFileSync(paths.authJsonPath, JSON.stringify({ anthropic: { type: 'api', key: k } }));
-    const { fetchImpl } = echoFetch();
-    resetCredentialStoreForTests(paths, async () => 'v2.0.15', fetchImpl, { env: {}, now: () => 1, openDatabase: fakeDb([]) });
-    const store = await getCredentialStore();
-    const status = await getCredentialStoreStatus();
-    const { log, lines } = captureLog();
-
-    const res = await ensureReconciled(store, status, { paths, log, now: () => 4242 });
-    expect(res.entries).toEqual([{ provider: 'anthropic', action: 'failed', reason: expect.any(String) }]);
-    // the excluded detail is a fixed constant string — no error echo at all
-    expect(status.excluded).toContainEqual({
-      provider: 'anthropic',
-      reasonCode: 'reconcile_push_failed',
-      detail: 'push failed, key present locally',
-    });
-    for (const line of lines) expect(line).not.toContain(k);
-    const state = readCredentialStoreState(paths)!;
-    expect(JSON.stringify(state.reconcile!.entries[0]!.reason)).not.toContain(k);
-
-    const endpoint = await app.inject({ method: 'GET', url: '/api/admin/credential-store' });
-    expect(endpoint.body).not.toContain(k);
-    // the failure is still LOUD: reason is non-empty and names the transport failure
-    expect(state.reconcile!.entries[0]!.reason).toContain('HTTP 500');
+    // the recorded sync outcome (credential-sync.json) is key-free too
+    const syncState = fs.readFileSync(path.join(paths.ocrHome, 'credential-sync.json'), 'utf8');
+    expect(syncState).not.toContain(k);
+    expect(JSON.parse(syncState).clients['opencode-v2'].lastWrite.ok).toBe(false);
   });
 });
 
@@ -384,41 +342,47 @@ describe('redaction-before-truncation boundary (P1-1)', () => {
       }
     });
 
-    it(`echo at offset ${offset}: 502 route body carries no key fragment`, async () => {
+    it(`echo at offset ${offset}: push-route 200 body carries no key fragment`, async () => {
       const paths = sandboxPaths();
+      const store = new OcrStore({ paths, now: () => 1 });
+      await store.connectKey('anthropic', KEY);
       resetCredentialStoreForTests(
         paths,
-        async () => 'v2.0.15',
+        undefined,
         echoAtFetch(offset),
         { env: {}, now: () => 1, openDatabase: fakeDb([]) }
       );
       const res = await app.inject({
         method: 'POST',
-        url: '/api/admin/opencode/providers/anthropic/connect',
-        payload: { apiKey: KEY },
+        url: '/api/admin/credential-store/push',
+        payload: {},
       });
-      expect(res.statusCode).toBe(502);
+      expect(res.statusCode).toBe(200); // per-entry failure, not a route-level 502
       expect(leaked(res.body)).toBe(false);
     });
 
-    it(`echo at offset ${offset}: reconcile-persisted state file stays key-free`, async () => {
+    it(`echo at offset ${offset}: sync-persisted state file stays key-free`, async () => {
       const paths = sandboxPaths();
-      fs.writeFileSync(paths.authJsonPath, JSON.stringify({ anthropic: { type: 'api', key: KEY } }));
+      const store = new OcrStore({ paths, now: () => 1 });
+      await store.connectKey('anthropic', KEY);
       resetCredentialStoreForTests(
         paths,
-        async () => 'v2.0.15',
+        undefined,
         echoAtFetch(offset),
         { env: {}, now: () => 1, openDatabase: fakeDb([]) }
       );
-      const store = await getCredentialStore();
-      const status = await getCredentialStoreStatus();
-      await ensureReconciled(store, status, { paths, log: { info: () => undefined, warn: () => undefined } });
-      const stateFile = fs.readFileSync(path.join(paths.ocrHome, 'credential-store.json'), 'utf8');
-      expect(leaked(stateFile)).toBe(false);
-      // the failure itself must still be loud
-      const state = readCredentialStoreState(paths)!;
-      expect(state.reconcile!.entries.some((e) => e.action === 'failed')).toBe(true);
-      expect(status.excluded.some((e) => e.reasonCode === 'reconcile_push_failed')).toBe(true);
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/admin/credential-store/push',
+        payload: {},
+      });
+      expect(res.statusCode).toBe(200);
+      const syncFile = fs.readFileSync(path.join(paths.ocrHome, 'credential-sync.json'), 'utf8');
+      expect(leaked(syncFile)).toBe(false);
+      // the failure itself must still be loud (recorded, non-empty reasons)
+      const state = JSON.parse(syncFile);
+      expect(state.clients['opencode-v2'].lastWrite.entries.some((e) => e.action === 'failed')).toBe(true);
+      expect(leaked(res.body)).toBe(false);
     });
   }
 });

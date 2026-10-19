@@ -50,6 +50,13 @@ interface OcrFile {
 export interface OcrStoreDeps {
   paths?: CredentialPaths;
   now?: () => number;
+  /**
+   * Mutation notification — fired after every SUCCESSFUL file write
+   * (connectKey/activate/rename/disconnect all funnel through save()).
+   * The credential-sync engine uses this to debounce an auto-write push.
+   * A hook failure is the hook's own problem: save() never throws for it.
+   */
+  onMutate?: () => void;
 }
 
 const OCR_CAPABILITIES: StoreCapabilities = {
@@ -106,11 +113,18 @@ export class OcrStore implements CredentialStore {
   readonly capabilities = OCR_CAPABILITIES;
   private readonly file: string;
   private readonly now: () => number;
+  private mutateHook: (() => void) | null;
 
   constructor(deps: OcrStoreDeps = {}) {
     const paths = deps.paths ?? resolveDefaultPaths();
     this.file = ocrCredentialsFile(paths);
     this.now = deps.now ?? Date.now;
+    this.mutateHook = deps.onMutate ?? null;
+  }
+
+  /** Late-binding mutation hook (the sync engine installs it after boot bind). */
+  setMutationHook(fn: () => void): void {
+    this.mutateHook = fn;
   }
 
   probe(): StoreProbeResult {
@@ -181,7 +195,7 @@ export class OcrStore implements CredentialStore {
   async activate(accountId: string): Promise<AccountMeta> {
     const found = this.findAccount(accountId);
     if (!found) throw new AccountNotFoundError(accountId);
-    const { providerId, account } = found;
+    const { providerId } = found;
     const rows = this.load(providerId).map((a) => ({
       ...a,
       active: a.accountId === accountId,
@@ -315,5 +329,12 @@ export class OcrStore implements CredentialStore {
       // best effort
     }
     fs.renameSync(tmpPath, this.file);
+    // Fire-and-forget notification AFTER the durable write — the sync engine
+    // debounces a push from here. The hook must never break the mutation.
+    try {
+      this.mutateHook?.();
+    } catch {
+      // best effort — a broken hook must not fail the credential write
+    }
   }
 }

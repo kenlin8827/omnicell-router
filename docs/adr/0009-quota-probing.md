@@ -8,7 +8,7 @@ Implemented — 2026-10-15. Scope: how the gateway learns and displays the remai
 
 ### 1. The principle: coverage follows the release, activation follows the credentials
 
-Quota state is tracked per **(providerId, keyHashPrefix)** pair — the same display-safe credential identity pair breakers and account flags anchor on (ADR-0006 §7). Two decoupled axes:
+Quota state is tracked per **(providerId, keyHashPrefix)** pair — the same display-safe credential identity pair breakers and account flags anchor on (ADR-0006 §6). Two decoupled axes:
 
 - **Coverage** — which providers *can* be probed — ships with the release (built-in table §3 + built-in code adapters §4) or with the operator's config (§5). It never snapshots the current account pool: account sets churn daily; the knowledge of a provider's quota endpoint does not.
 - **Activation** — whether a probe is actually scheduled — follows credentials: a covered provider whose credential appears anywhere in the bound store (or the config-baked inference key, chain-less degeneracy) is armed automatically on the next scheduler pass. No account-pool enumeration ever gates coverage.

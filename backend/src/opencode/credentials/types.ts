@@ -142,15 +142,17 @@ export interface AccountOverview {
 }
 
 /**
- * Which evidence the factory used to bind.
- * 'last-known-good' marks hysteresis landings (PATH jitter must not ping-pong);
- * 'db-present' binds OpencodeV2Store-readonly from the db file alone without CLI/file evidence.
+ * Which evidence the bind SAW — diagnostics only, it selects nothing (the
+ * bind is always the OcrStore). The CLI probe is retired: opencode presence
+ * is the sync client's concern (credentials/sync.ts), not a store input.
  */
 export interface VersionEvidence {
-  cli: string | null;
+  /** Always null — the boot CLI probe no longer runs. */
+  cli: null;
   file: string | null;
-  used: 'cli' | 'installed.version' | 'last-known-good' | 'db-present' | 'none';
-  lastKnownGood: string | null;
+  used: 'installed.version' | 'none';
+  /** Always null — hysteresis died with store selection. */
+  lastKnownGood: null;
 }
 
 /**

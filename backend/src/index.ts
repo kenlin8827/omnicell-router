@@ -135,26 +135,18 @@ async function main() {
     if (replayed > 0) console.log(`[OCR] Quota events ledger: SQLite mirror active (${replayed} event(s) replayed)`);
   }
 
-  // 0.6 Bind the credential store and run the one-shot reconcile gate
-  //     BEFORE the direct pool builds —
-  //     auth.json-only keys are pushed into opencode v2 and the auth.json
-  //     write path gets disabled before the store-backed consumer flip makes store
-  //     reads matter. Never crashes boot: failures land as excluded entries
-  //     on StoreStatus and the bind stands. B3: the excluded entries are no
-  //     longer printed here — buildDirectPool merges them into its own
-  //     excluded[] (reasonCode-carrying) and the pool log below prints all.
+  // 0.6 Bind the credential store (ALWAYS the OCR file) and initialize the
+  //     credential-sync engine BEFORE the direct pool builds —
+  //     a one-shot migration pulls opencode-v2-db-only keys into the OCR file
+  //     so the store flip never breaks routing, auto-sync timers arm, and the
+  //     auto-write hook attaches to the bound store. Never crashes boot:
+  //     sync failures land as recorded outcomes on credential-sync.json.
   try {
-    const { getCredentialStore, getCredentialStoreStatus, ensureReconciled } = await import(
-      './opencode/credentials/index.js'
-    );
+    const { getCredentialStore, initCredentialSync } = await import('./opencode/credentials/index.js');
     const credStore = await getCredentialStore();
-    const credStatus = await getCredentialStoreStatus();
-    const reconcileResult = await ensureReconciled(credStore, credStatus);
-    if (reconcileResult.ran) {
-      console.log(`[OCR]   credential reconcile: ${reconcileResult.entries.length} entries processed (auth.json write path disabled)`);
-    }
+    await initCredentialSync(credStore);
   } catch (err: any) {
-    console.warn(`[OCR] credential store bind/reconcile failed (boot continues): ${err?.message ?? err}`);
+    console.warn(`[OCR] credential store bind / sync init failed (boot continues): ${err?.message ?? err}`);
   }
 
   let registry: ProviderRegistry;

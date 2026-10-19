@@ -1,11 +1,9 @@
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { readJsonc, type OpenCodeAuthEntry } from '../user-config.js';
+import type { OpenCodeAuthEntry } from '../user-config.js';
 import {
   CredentialPaths,
   credentialStoreStateFile,
-  defaultEnv,
   ocrCredentialsFile,
   resolveDefaultPaths,
 } from './paths.js';
@@ -24,21 +22,19 @@ import {
   keyHashPrefix,
 } from './types.js';
 import { authSnapshot } from './auth-snapshot.js';
-import { OpencodeV2Store, DbOpener, resolveServiceConfigForPaths } from './opencode-v2-store.js';
+import type { DbOpener } from './opencode-v2-store.js';
 
 /**
- * The factory binds ONE store per boot, gated by
- * version evidence. Primary: `opencode --version` (CLI). Fallback:
- * installed.version FILE, only when the CLI is not on PATH — file existence
- * NEVER selects a store alone. Binding is sticky for the process lifetime;
- * the last-known-good decision is persisted at <ocrHome>/credential-store.json
- * with hysteresis so PATH jitter between boots cannot ping-pong the store.
+ * The factory binds ONE store per boot — always the OcrStore
+ * (<ocrHome>/credentials.json). OCR owns its credential truth and never
+ * anchors on opencode: the opencode v2 db/CLI are a SYNC CLIENT's territory
+ * (credentials/sync.ts), not a store-selection input. Binding is sticky for
+ * the process lifetime; the binding record at <ocrHome>/credential-store.json
+ * keeps the standalone-import marker so auth.json is imported exactly once.
  */
 
+/** Evidence the bind records for diagnostics only — it selects nothing. */
 export type VersionProbe = () => Promise<string | null>;
-
-const defaultSleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
 
 export interface ExcludedCredential {
   provider: string;
@@ -71,7 +67,7 @@ export interface StoreBinding {
   excludedWithReason: ExcludedCredential[];
 }
 
-/** One auth.json snapshot entry processed by the Decision 4 reconcile (per-machine record). */
+/** One auth.json snapshot entry processed by the retired reconcile gate (legacy audit shape). */
 export interface ReconcileEntryRecord {
   provider: string;
   action: 'pushed' | 'deduped' | 'failed';
@@ -101,12 +97,10 @@ export interface StandaloneImportEntryRecord {
 }
 
 /**
- * Completion marker for the STANDALONE landing (last
- * edge: no opencode at all → OcrStore). Fixes the regression where
- * the console kept writing auth.json while the store-backed boot read
- * credentials.json — after the one-shot import the console writes go to
- * OcrStore and auth.json is superseded on this machine (see
- * reconcile.isStandaloneAuthImported for the parallel flag semantics).
+ * Completion marker for the standalone auth.json one-shot import: after it
+ * runs, every console credential write lands on OcrStore and auth.json is
+ * superseded on this machine — the OCR file is the only truth read or
+ * written.
  */
 export interface StandaloneImportRecord {
   doneAt: number;
@@ -131,117 +125,32 @@ export interface CredentialStoreState {
 
 export interface BindOverrides {
   paths?: CredentialPaths;
+  /** Retired: store selection is gone; accepted for signature compatibility, never read. */
   versionProbe?: VersionProbe;
   fetchImpl?: typeof fetch;
   env?: Readonly<Record<string, string | undefined>>;
   now?: () => number;
+  /** Retired: the bind no longer sleeps (no CLI probe retry). */
   sleep?: (ms: number) => Promise<void>;
+  /** sqlite opener seam — consumed by the sync engine's transient v2 store. */
   openDatabase?: DbOpener;
+  /** Retired v2-store-open retry knobs (the bind no longer opens any db). */
   busyAttempts?: number;
   busyBackoffMs?: number;
-  /** Lazy-upgrade poll interval for a readonly-degraded bind (ms). Default 10s. */
+  /** Retired lazy-upgrade poll knobs (there is no degraded v2 bind to upgrade). */
   upgradeIntervalMs?: number;
-  /** Lazy-upgrade attempt cap. Default 12 (2min at the default interval). */
   upgradeMaxAttempts?: number;
 }
 
 const VERSION_REGEX = /v?(\d+)\.(\d+)(?:\.\d+)?/;
 
-export function parseVersionMajor(text: string | null): number | null {
-  if (!text) return null;
-  const m = VERSION_REGEX.exec(text);
-  return m ? Number(m[1]) : null;
-}
-
-/**
- * CLI evidence: `opencode --version`. Uses node:child_process (typed, works
- * under both bun and node test runtimes; backend/src has no Bun global types
- * — same precedent as cli/daemon.ts) instead of bun.spawn; it stays async so
- * the event loop never blocks. Injectable via BindOverrides.versionProbe —
- * tests never spawn.
- */
-export function probeVersionViaCli(timeoutMs = 15000): Promise<string | null> {
-  return new Promise((resolve) => {
-    let settled = false;
-    const done = (v: string | null): void => {
-      if (!settled) {
-        settled = true;
-        resolve(v);
-      }
-    };
-    let child: ReturnType<typeof spawn>;
-    try {
-      child = spawn('opencode', ['--version'], {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        windowsHide: true,
-        shell: process.platform === 'win32', // resolves opencode.cmd shims via PATH on Windows
-      });
-    } catch {
-      done(null);
-      return;
-    }
-    let out = '';
-    child.stdout?.setEncoding('utf8');
-    child.stdout?.on('data', (c) => {
-      out += String(c);
-    });
-    child.stderr?.on('data', () => undefined); // drain so the child can exit
-    child.on('error', (e) => {
-      console.warn(
-        `[credentials] opencode CLI probe spawn error: ${e.message} ` +
-          `(bunBinOnPath=${(process.env.PATH ?? '').includes('D:\\dev\\bun\\bin')} pathLen=${(process.env.PATH ?? '').length})`,
-      );
-      done(null);
-    });
-    child.on('close', (code) => {
-      if (code === 0 && out.trim()) done(out.trim());
-      else {
-        console.warn(
-          `[credentials] opencode CLI probe failed: exit=${code} out="${out.trim().slice(0, 80)}" ` +
-            `(bunBinOnPath=${(process.env.PATH ?? '').includes('D:\\dev\\bun\\bin')} pathLen=${(process.env.PATH ?? '').length})`,
-        );
-        done(null);
-      }
-    });
-    const timer = setTimeout(() => {
-      try {
-        child.kill();
-      } catch {
-        // already gone
-      }
-      console.warn(`[credentials] opencode CLI probe timed out after ${timeoutMs}ms`);
-      done(null);
-    }, timeoutMs);
-    timer.unref();
-  });
-}
-
-/** installed.version is evidence only when its CONTENT parses as a version (existence alone never selects a store). */
+/** installed.version is recorded as diagnostic evidence only (it selects nothing). */
 function readInstalledVersion(paths: CredentialPaths): string | null {
   try {
     const text = fs.readFileSync(paths.installedVersionPath, 'utf8').trim();
     return VERSION_REGEX.test(text) ? text : null;
   } catch {
     return null;
-  }
-}
-
-function authSnapshotProviders(paths: CredentialPaths): string[] {
-  try {
-    const parsed = readJsonc(paths.authJsonPath);
-    if (!parsed || typeof parsed !== 'object') return [];
-    return Object.entries(parsed as Record<string, unknown>)
-      .filter(
-        ([, e]) =>
-          Boolean(e) &&
-          typeof e === 'object' &&
-          (e as Record<string, unknown>).type === 'api' &&
-          typeof (e as Record<string, unknown>).key === 'string' &&
-          Boolean((e as Record<string, unknown>).key)
-      )
-      .map(([id]) => id);
-  } catch {
-    return []; // the snapshot is best-effort evidence for the excluded list only
   }
 }
 
@@ -312,7 +221,7 @@ export function writeCredentialStoreState(paths: CredentialPaths, rec: Credentia
     atomicWriteWithRetry(file, `${JSON.stringify(rec, null, 2)}\n`);
   } catch (e) {
     // persistence is best-effort — hysteresis degrades to "no LKG", the bind itself is unaffected
-    console.warn(`[credentials] failed to persist last-known-good binding: ${e instanceof Error ? e.message : String(e)}`);
+    console.warn(`[credentials] failed to persist the binding record: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -374,7 +283,7 @@ interface StandaloneImportOutcome {
  *  - auth.json stays on disk BYTE-IDENTICAL (never delete an upstream
  *    artifact; cp-dataloss), the marker in credential-store.json records that
  *    it is superseded, and every later console credential write lands on
- *    OcrStore (the store-bound write routing + isStandaloneAuthImported gate).
+ *    OcrStore.
  * Total function: never throws — a crash leaves no marker (next boot retries)
  * and the bind itself stands.
  */
@@ -467,9 +376,12 @@ async function runStandaloneImport(
 }
 
 /**
- * One bind pass. Every branch lands on a store through the total wrapper
- * below (worst case OcrStore, badged when the landing is a degradation,
- * unbadged for normal standalone).
+ * One bind pass: ALWAYS the OcrStore. The standalone auth.json one-shot
+ * import runs here regardless of opencode presence — on a machine with a v2
+ * db, the SYNC subsystem's own migration (credentials/sync.ts) pulls the db's
+ * CURRENT keys, while auth.json-era leftovers land through this import. Both
+ * are marker-gated and keyHash-dedup idempotent. Every branch lands through
+ * the total wrapper below (worst case OcrStore, badged bind_failed).
  */
 export async function bindCredentialStore(overrides: BindOverrides = {}): Promise<StoreBinding> {
   try {
@@ -494,7 +406,7 @@ function bindFailureLanding(overrides: BindOverrides, detail: string): StoreBind
   // Date.now only here, and preserve every persisted marker block.
   const store = new OcrStore({ paths });
   const lkg = readCredentialStoreState(paths);
-  const evidence: VersionEvidence = { cli: null, file: null, used: 'none', lastKnownGood: lkg?.version ?? null };
+  const evidence: VersionEvidence = { cli: null, file: null, used: 'none', lastKnownGood: null };
   const status: StoreStatus = {
     kind: store.kind,
     capabilities: store.capabilities,
@@ -509,7 +421,7 @@ function bindFailureLanding(overrides: BindOverrides, detail: string): StoreBind
   };
   writeCredentialStoreState(paths, {
     bound: store.kind,
-    version: lkg?.version ?? null, // keep the hysteresis pin — a failed bind must not erase LKG
+    version: lkg?.version ?? null,
     evidence,
     degradedCode: 'bind_failed',
     updatedAt: status.boundAt,
@@ -521,220 +433,76 @@ function bindFailureLanding(overrides: BindOverrides, detail: string): StoreBind
 
 async function bindCredentialStoreOnce(overrides: BindOverrides = {}): Promise<StoreBinding> {
   const paths = overrides.paths ?? resolveDefaultPaths();
-  lastBoundPaths = paths; // reconcile + the status endpoint read the state file from the bound paths
-  const env = overrides.env ?? defaultEnv();
+  lastBoundPaths = paths; // the sync engine + status endpoint read state files from the bound paths
   const now = overrides.now ?? Date.now;
-  const versionProbe = overrides.versionProbe ?? probeVersionViaCli;
 
-  let cli: string | null = null;
-  try {
-    cli = await versionProbe();
-    // Boot-contention guard: the 5s probe budget competes with catalog sync
-    // / SQLite opens and can time out even when the CLI is on PATH (observed
-    // on the desktop sidecar: probe timed out at bind, the SAME binary
-    // succeeded post-boot). One delayed retry closes that race. A truly
-    // absent CLI fails the spawn fast, so the retry costs it ~2.5s only.
-    if (!cli) {
-      console.warn(
-        '[credentials] CLI probe empty at bind — retrying once after 2500ms (boot-contention guard)',
-      );
-      await (overrides.sleep ?? defaultSleep)(2500);
-      cli = await versionProbe();
-    }
-  } catch {
-    cli = null; // a broken probe is evidence-free, same as "not on PATH"
-  }
+  const ocr = new OcrStore({ paths, now });
   const fileVersion = readInstalledVersion(paths);
-  const lkg = readCredentialStoreState(paths);
-  const lkgMajor = parseVersionMajor(lkg?.version ?? null);
+  const evidence: VersionEvidence = {
+    cli: null,
+    file: fileVersion,
+    used: fileVersion ? 'installed.version' : 'none',
+    lastKnownGood: null,
+  };
 
-  let effective: string | null;
-  let used: VersionEvidence['used'];
-  if (cli) {
-    effective = cli;
-    used = 'cli';
-  } else if (fileVersion) {
-    effective = fileVersion;
-    used = 'installed.version';
-  } else if (lkg && lkgMajor !== null) {
-    // Hysteresis (Decision 2): live evidence absent but a persisted versioned
-    // binding exists -> keep the degraded landing consistent with the
-    // persisted evidence; PATH jitter must not ping-pong the store.
-    effective = lkg.version;
-    used = 'last-known-good';
-  } else if (fs.existsSync(paths.opencodeDbPath)) {
-    // "CLI absent + db present" — the db file IS the opencode evidence.
-    effective = null;
-    used = 'db-present';
+  // B4 one-shot standalone import (idempotent via the persisted marker).
+  const lkg = readCredentialStoreState(paths);
+  let standaloneImport: StandaloneImportRecord | undefined;
+  let excluded: ExcludedCredential[] = [];
+  if (lkg?.standaloneImport?.doneAt) {
+    standaloneImport = lkg.standaloneImport;
   } else {
-    effective = null;
-    used = 'none';
+    const imported = await runStandaloneImport(ocr, paths, now);
+    standaloneImport = imported.record;
+    excluded = imported.excluded;
   }
 
-  const evidence: VersionEvidence = { cli, file: fileVersion, used, lastKnownGood: lkg?.version ?? null };
-  const major = parseVersionMajor(effective);
-  const isV2 = used === 'db-present' || (major !== null && major >= 2);
-
-  let store: CredentialStore;
-  let degradedCode: StoreDegradedCode | null = null;
-  let excluded: ExcludedCredential[] = [];
-  let detail: string | undefined;
-  let standaloneImport: StandaloneImportRecord | undefined;
-
-  if (isV2) {
-    const writable = used === 'cli'; // CLI evidence => the opencode v2 service API may be written
-    try {
-      store = await OpencodeV2Store.create({
-        paths,
-        writable,
-        fetchImpl: overrides.fetchImpl,
-        env,
-        now,
-        sleep: overrides.sleep,
-        openDatabase: overrides.openDatabase,
-        busyAttempts: overrides.busyAttempts,
-        busyBackoffMs: overrides.busyBackoffMs,
-      });
-      if (!writable) degradedCode = 'cli_absent_db_present';
-      excluded = safeOverview(store)
-        .filter((a) => a.total > 0 && a.routable === 0)
-        .map((a) => ({
-          provider: a.providerId,
-          reasonCode: 'no_routable_credential' as const,
-          detail: 'credential rows exist but none is routable (oauth/unknown value shape)',
-        }));
-      // Security P2-1 surfacing: a non-loopback service target is flagged on
-      // the badge detail (https = allowed + flagged; plaintext http = writes
-      // refused with insecure_remote_target). resolveServiceConfigForPaths
-      // warns LOUD on both; reads unaffected either way.
-      const svc = resolveServiceConfigForPaths(paths, env);
-      if (svc && svc.targetPolicy !== 'loopback') {
-        detail =
-          svc.targetPolicy === 'remote_tls'
-            ? `remote opencode v2 service over https (${svc.baseUrl}) — allowed, flagged by policy`
-            : `remote opencode v2 service over plaintext HTTP (${svc.baseUrl}) — credential writes REFUSED (insecure_remote_target)`;
-      }
-    } catch (e) {
-      if (!(e instanceof StoreUnreadableError)) throw e;
-      // falling back from an opencode v2 machine to the
-      // auth.json snapshot as a live store is FORBIDDEN. On such a machine
-      // auth.json is by definition a stale one-time migration snapshot — serving
-      // keys from it would silently route old credentials. Land loudly on
-      // OcrStore with a badge instead.
-      store = new OcrStore({ paths, now });
-      degradedCode = 'db_unreadable';
-      detail = e.message;
-      const covered = new Set(safeOverview(store).map((a) => a.providerId));
-      excluded = authSnapshotProviders(paths)
-        .filter((p) => !covered.has(p))
-        .map((p) => ({
-          provider: p,
-          reasonCode: 'db_unreadable' as const,
-          detail: 'opencode v2 credential db unreadable; key present in auth.json snapshot — may exist in opencode db only',
-        }));
-    }
-  } else if (major !== null) {
-    // opencode v1 detected — NOT SUPPORTED. auth.json on
-    // such a machine is not a truth OCR may read on every request. Land on OcrStore
-    // with a loud badge, and import the snapshot ONCE so keys that were routing
-    // before do not go silent without a visible reason.
-    const unsupported = new OcrStore({ paths, now });
-    store = unsupported;
-    degradedCode = 'unsupported_version';
-    detail = `opencode ${effective ?? 'v1'} is not supported — OCR requires opencode v2; credentials are managed in the OCR store`;
-    if (lkg?.standaloneImport?.doneAt) {
-      standaloneImport = lkg.standaloneImport;
-    } else {
-      const imported = await runStandaloneImport(unsupported, paths, now);
-      standaloneImport = imported.record;
-      excluded = imported.excluded;
-    }
-  } else {
-    // No opencode at all — OcrStore unbadged: the normal standalone shape.
-    const ocr = new OcrStore({ paths, now });
-    // B4 one-shot standalone import (idempotent via the persisted marker).
-    if (lkg?.standaloneImport?.doneAt) {
-      standaloneImport = lkg.standaloneImport;
-    } else {
-      const imported = await runStandaloneImport(ocr, paths, now);
-      standaloneImport = imported.record;
-      excluded = imported.excluded;
-    }
-    store = ocr;
+  // Non-routable rows are loud (oauth/unknown shapes hold no api key).
+  if (excluded.length === 0) {
+    excluded = safeOverview(ocr)
+      .filter((a) => a.total > 0 && a.routable === 0)
+      .map((a) => ({
+        provider: a.providerId,
+        reasonCode: 'no_routable_credential' as const,
+        detail: 'credential rows exist but none is routable (oauth/unknown value shape)',
+      }));
   }
 
   const status: StoreStatus = {
-    kind: store.kind,
-    capabilities: store.capabilities,
-    degradedCode,
+    kind: ocr.kind,
+    capabilities: ocr.capabilities,
+    degradedCode: null,
     evidence,
     excluded,
-    accounts: safeOverview(store),
-    probeResult: safeProbe(store),
-    credentialFile: credentialFileFor(store.kind, paths),
+    accounts: safeOverview(ocr),
+    probeResult: safeProbe(ocr),
+    credentialFile: credentialFileFor(ocr.kind, paths),
     boundAt: now(),
-    ...(detail !== undefined ? { detail } : {}),
   };
   // Bind write-through preserves the marker blocks (additive schema) — the
   // one-shot records must survive every subsequent rebind.
   writeCredentialStoreState(paths, {
-    bound: store.kind,
-    version: effective,
+    bound: ocr.kind,
+    version: fileVersion,
     evidence,
-    degradedCode,
+    degradedCode: null,
     updatedAt: status.boundAt,
     ...(lkg?.reconcile ? { reconcile: lkg.reconcile } : {}),
     ...(standaloneImport ? { standaloneImport } : {}),
   });
 
-  return { store, status, excludedWithReason: excluded };
+  return { store: ocr, status, excludedWithReason: excluded };
 }
 
 // ---------------------------------------------------------------------------
-// Sticky process-level binding (Decision 2: re-probe happens at next boot).
+// Sticky process-level binding (re-bind happens only via the test seam).
 // ---------------------------------------------------------------------------
 
 let currentBinding: Promise<StoreBinding> | null = null;
 let testOverrides: BindOverrides = {};
 let lastBoundPaths: CredentialPaths | null = null;
-let upgradeTimer: ReturnType<typeof setTimeout> | null = null;
 
-/**
- * Lazy upgrade for a readonly-degraded bind: the CLI probe can time out at
- * boot (Defender first-execution scans block the spawn for 20s+ on the
- * desktop sidecar) even though the CLI is on PATH. Routing works fine on the
- * readonly store, so instead of blocking boot we re-probe in the background
- * and re-bind (upgrading kind to opencode-v2) once the probe succeeds.
- * Single-flight: armed once per degraded bind, cleared on upgrade/cap.
- */
-function maybeScheduleUpgrade(binding: StoreBinding, overrides: BindOverrides): void {
-  if (upgradeTimer !== null) return; // a poll loop is already running
-  if (binding.status.degradedCode !== 'cli_absent_db_present') return;
-  const intervalMs = overrides.upgradeIntervalMs ?? 10_000;
-  const maxAttempts = overrides.upgradeMaxAttempts ?? 60;
-  let attempts = 0;
-  const tick = async (): Promise<void> => {
-    upgradeTimer = null;
-    attempts += 1;
-    if (attempts > maxAttempts) return;
-    currentBinding = null; // drop the degraded binding; re-bind for fresh evidence
-    try {
-      const fresh = await ensureBinding();
-      if (fresh.status.degradedCode === null) {
-        console.log(
-          `[credentials] opencode CLI available again — store upgraded to ${fresh.status.kind} (attempt ${attempts})`,
-        );
-        return; // upgraded: stop polling
-      }
-    } catch {
-      // re-bind failed — keep polling until the cap
-    }
-    upgradeTimer = setTimeout(() => void tick(), intervalMs);
-  };
-  upgradeTimer = setTimeout(() => void tick(), intervalMs);
-}
-
-/** The CredentialPaths the most recent bind used (state-file readers: reconcile, status endpoint). */
+/** The CredentialPaths the most recent bind used (state-file readers: sync engine, status endpoint). */
 export function getBoundCredentialPaths(): CredentialPaths | null {
   return lastBoundPaths;
 }
@@ -749,13 +517,6 @@ function ensureBinding(): Promise<StoreBinding> {
     void pending.catch(() => {
       if (currentBinding === pending) currentBinding = null;
     });
-    // Scheduler hook — two-arg form: a REJECTING bind must not surface an
-    // unhandled rejection through this derived promise; the scheduler only
-    // acts on successful (degraded-but-total) binds.
-    void pending.then(
-      (b) => maybeScheduleUpgrade(b, testOverrides),
-      () => undefined,
-    );
   }
   return currentBinding;
 }
@@ -770,9 +531,9 @@ export function getCredentialStoreStatus(): Promise<StoreStatus> {
 
 /**
  * The overrides the current binding was built with (production: mostly {}).
- * The Decision 2 push endpoint reuses them so a process-wide fetch/db seam
- * (tests) or env (service discovery) applies to the FRESH OpencodeV2Store it builds,
- * not just to the boot-bound store.
+ * The sync endpoints reuse them so a process-wide fetch/db seam (tests) or
+ * env (service discovery) applies to the transient OpencodeV2Store the sync
+ * engine builds, not just to the boot-bound store.
  */
 export function getBindTestOverrides(): BindOverrides {
   return testOverrides;
@@ -780,26 +541,19 @@ export function getBindTestOverrides(): BindOverrides {
 
 /**
  * Test seam: clears the sticky cache and injects the whole world (sandboxed
- * CredentialPaths, version evidence, fetch, sqlite opener, clock). Positional
- * core per task spec; `extra` carries the remaining BindOverrides.
+ * CredentialPaths, fetch, sqlite opener, clock). `versionProbe` is an
+ * accepted-and-IGNORED legacy positional — store selection is gone; the
+ * signature survives so existing call sites keep compiling.
  */
 export function resetCredentialStoreForTests(
   paths?: CredentialPaths,
-  versionProbe?: VersionProbe,
+  _versionProbe?: VersionProbe,
   fetchImpl?: typeof fetch,
   extra?: BindOverrides
 ): void {
   currentBinding = null;
-  upgradeTimer = null; // a pending lazy-upgrade loop must not leak across tests
-  const overrides: BindOverrides = {
-    // Default a no-op sleep so the bind-time probe-retry never costs real
-    // wall time in tests; a test exercising the retry timing injects its
-    // own recording sleep via extra.
-    ...(extra?.sleep ? {} : { sleep: async () => {} }),
-    ...extra,
-  };
+  const overrides: BindOverrides = { ...extra };
   if (paths) overrides.paths = paths;
-  if (versionProbe) overrides.versionProbe = versionProbe;
   if (fetchImpl) overrides.fetchImpl = fetchImpl;
   testOverrides = overrides;
 }
