@@ -26,9 +26,9 @@ export interface DefMaterializeOutcome {
  * (we could not preserve what we cannot parse); a missing jsonc is created —
  * that is the point of the write.
  */
-export function materializeDefs(paths: CredentialPaths): DefMaterializeOutcome {
+export function materializeDefs(paths: CredentialPaths, configPathOverride?: string): DefMaterializeOutcome {
   const providers = readProviderDefsFile(paths)?.providers ?? {};
-  const configPath = path.join(paths.configDir, 'opencode.jsonc');
+  const configPath = configPathOverride ?? path.join(paths.configDir, 'opencode.jsonc');
   if (fs.existsSync(configPath)) {
     if (readJsonc(configPath) === undefined) {
       return {

@@ -60,6 +60,14 @@ export function writeProviderDefs(
   const tmp = `${file}.tmp.${process.pid}.${Date.now()}`;
   fs.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
   fs.renameSync(tmp, file);
+  defsMutationHook?.(); // defs changed → the sync engine's debounced auto-write converges clients
+}
+
+/** Boot seam: the sync engine registers its auto-write debounce here (null = detached). */
+let defsMutationHook: (() => void) | null = null;
+
+export function setProviderDefsMutationHook(hook: (() => void) | null): void {
+  defsMutationHook = hook;
 }
 
 /**

@@ -4,8 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import type { CredentialPaths } from '../src/opencode/credentials/paths.js';
 import { OcrStore } from '../src/opencode/credentials/ocr-store.js';
-import { pushFromOcr } from '../src/opencode/credentials/sync.js';
-import { writeProviderDefs } from '../src/opencode/provider-defs.js';
+import { initCredentialSync, pushFromOcr, setSyncAutoToggle, stopCredentialSync } from '../src/opencode/credentials/sync.js';
+import { readProviderDefsFile, writeProviderDefs } from '../src/opencode/provider-defs.js';
 
 function seedDefs(p: CredentialPaths, providers: Record<string, unknown>): void {
   writeProviderDefs(providers as Record<string, any>, p);
@@ -242,4 +242,47 @@ describe('def materialization (v2 write direction)', () => {
     expect(connectPosts.some((u) => u.includes('/api/integration/newguy/connect/key'))).toBe(true);
     expect(readJsoncRaw(p)).toContain('newguy'); // materialized before the push
   });
+
+  it('defs mutations trigger the debounced auto-write — def changes converge without touching credentials', async () => {
+    const p = withDb(withService(sandboxPaths()));
+    seedDefs(p, {
+      acme: { package: '@opencode/ai/providers/openai-compatible', settings: { baseURL: 'https://acme.test/v1' } },
+    });
+    writeClientJsonc(p, '{}');
+    const fetchCalls: string[] = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      const method = String(init?.method ?? 'GET');
+      if (method === 'GET') {
+        return new Response(JSON.stringify({ data: [{ id: 'acme', connections: [] }] }), { status: 200 });
+      }
+      fetchCalls.push(url);
+      return new Response(JSON.stringify({ credential: { id: 'c-new' } }), { status: 200 });
+    };
+    const ocr = new OcrStore({ paths: p, now: () => 1 });
+
+    await initCredentialSync(ocr, {
+      paths: p,
+      fetchImpl,
+      openDatabase: fakeDb(),
+      now: () => 1,
+      writeDebounceMs: 20,
+    });
+    try {
+      setSyncAutoToggle('opencode-v2', 'write', true, { paths: p });
+      // A DEFS mutation (no credential change) — the defs mutation hook fires
+      // the same debounced auto-write the credential mutation hook uses.
+      writeProviderDefs(
+        {
+          ...readProviderDefsFile(p)!.providers,
+          newguy: { package: '@opencode/ai/providers/openai-compatible', settings: { baseURL: 'https://n.test/v1' } },
+        },
+        p
+      );
+      await new Promise((r) => setTimeout(r, 150)); // debounce + materialize
+      expect(readJsoncRaw(p)).toContain('newguy'); // auto-write materialized the def change
+    } finally {
+      stopCredentialSync();
+    }
+  }, 10000);
 });

@@ -419,9 +419,7 @@ export const enUS: TranslationDict = {
     // ---- Credential sync (client ⇄ OCR file; the OCR file is the single truth) ----
     syncTab: 'Credential Sync',
     syncTitle: 'Credential Sync',
-    syncDesc: 'The OCR file (credentials.json) is the single credential source; this manages two-way sync with each client.',
-    syncDescToggles: 'Read = periodically pull new client keys; Write = auto-push credential changes.',
-    syncDescDefaults: 'The toggles are independent and default OFF — with both off, only manual sync runs.',
+    syncDesc: 'The OCR file (credentials.json) is the single credential source; this manages two-way sync with each client. Read = periodically pull new client keys; Write = auto-push credential changes.',
     syncColClient: 'Client',
     syncColAuto: 'Auto sync',
     syncColLastRead: 'Last read',

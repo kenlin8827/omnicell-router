@@ -10,7 +10,6 @@ import {
   writeProviderDefs,
 } from '../src/opencode/provider-defs.js';
 import { getOpenCodeConfigPath } from '../src/opencode/user-config.js';
-
 /**
  * One-shot jsonc provider-def port (def-ownership decoupling):
  * <ocrHome>/custom-providers.json receives a verbatim copy of the jsonc
@@ -143,5 +142,16 @@ describe('migrateJsoncProviderDefs', () => {
     writeJsonc('{ corrupt');
     expect(migrateJsoncProviderDefs()).toBeUndefined();
     expect(readProviderDefsFile()).toBeNull();
+  });
+
+  it('imports the hook-owned onecast-router node verbatim (the router def is defs truth)', () => {
+    writeJsonc(
+      '{"providers": { "onecast-router": { "name": "OneCastRouter", "package": "@opencode/ai/providers/openai-compatible", "settings": { "baseURL": "http://127.0.0.1:3000/v1", "apiKey": "ocr-local-token" } } }}'
+    );
+    const rec = migrateJsoncProviderDefs();
+    expect(rec!.imported).toBe(1);
+    const node = readProviderDefsFile()!.providers['onecast-router'];
+    expect(node.settings.baseURL).toBe('http://127.0.0.1:3000/v1');
+    expect(node.name).toBe('OneCastRouter');
   });
 });

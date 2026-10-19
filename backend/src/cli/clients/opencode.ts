@@ -13,6 +13,9 @@ import {
   patchJsonc,
   readJsonc,
 } from '../../opencode/user-config.js';
+import { readProviderDefsFile, writeProviderDefs } from '../../opencode/provider-defs.js';
+import { materializeDefs } from '../../opencode/credentials/def-materialize.js';
+import { resolveDefaultPaths } from '../../opencode/credentials/paths.js';
 
 /**
  * OpenCode client adapter.
@@ -209,14 +212,23 @@ export class OpenCodeClientAdapter implements ClientAdapter {
       createBackup(configPath);
     }
 
-    // 2. Inject the router provider under opencode v2's native `providers` node
-    //    using a comment-preserving JSONC edit, and retire a legacy-slot twin left
-    //    by an older build (opencode reads both, but only one may exist).
-    //    Model-profile refs are part of the exposed model set — opencode validates
-    //    `agent.<name>.model` against this provider's `models` map.
+    // 2. Register the router provider as a DEFS entry (OCR-owned truth) and
+    //    materialize the defs file into the client config immediately — setup is
+    //    an explicit user action, so the write bypasses the sync toggles. The
+    //    materialized slot REPLACES the whole `providers` node (the client copy
+    //    of the defs truth), and the legacy-slot twin cleanup stays (opencode
+    //    reads both, but only one may exist). Model-profile refs are part of the
+    //    exposed model set — opencode validates `agent.<name>.model` against
+    //    this provider's `models` map.
     const profileRefs = Object.values(agentModels).map(r => (r || '').trim()).filter(r => r && r !== 'auto');
     const exposedExtras = [...extraModels, ...profileRefs];
-    patchJsonc(configPath, ['providers', ROUTER_PROVIDER_ID], buildRouterProviderNode(port, main, exposedExtras, apiKey));
+    const defsPaths = resolveDefaultPaths();
+    const defs = readProviderDefsFile(defsPaths)?.providers ?? {};
+    writeProviderDefs(
+      { ...defs, [ROUTER_PROVIDER_ID]: buildRouterProviderNode(port, main, exposedExtras, apiKey) },
+      defsPaths
+    );
+    materializeDefs(defsPaths, configPath);
     if (readJsonc(configPath)?.provider?.[ROUTER_PROVIDER_ID]) {
       patchJsonc(configPath, ['provider', ROUTER_PROVIDER_ID], undefined);
     }
@@ -292,6 +304,17 @@ export class OpenCodeClientAdapter implements ClientAdapter {
       return { success: false, message: `Configuration file not found at ${configPath}` };
     }
 
+    // The defs entry must go too — otherwise the next materialization revives
+    // the router node against teardown's intent (defs are the truth the client
+    // copy converges to).
+    const defsPaths = resolveDefaultPaths();
+    const defs = readProviderDefsFile(defsPaths)?.providers ?? {};
+    if (Object.hasOwn(defs, ROUTER_PROVIDER_ID)) {
+      const next = { ...defs };
+      delete next[ROUTER_PROVIDER_ID];
+      writeProviderDefs(next, defsPaths);
+    }
+
     // If backup exists, restore it directly (full revert, comments included)
     if (restoreBackup(configPath)) {
       const meta = readMeta(configPath);
@@ -319,6 +342,11 @@ export class OpenCodeClientAdapter implements ClientAdapter {
     if (data.provider?.[ROUTER_PROVIDER_ID]) {
       patchJsonc(configPath, ['provider', ROUTER_PROVIDER_ID], undefined);
     }
+
+    // Converge the client copy to the defs truth (the router def was removed
+    // above) — the surgical path leaves no drift the next materialization
+    // would resurrect.
+    materializeDefs(defsPaths, configPath);
 
     // Restore the user's original default whenever the current one is any
     // router ref (not just router/auto — re-setups may leave router/auto-pro,

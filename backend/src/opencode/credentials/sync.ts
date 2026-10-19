@@ -13,6 +13,7 @@ import type { OpenCodeAuthEntry } from '../user-config.js';
 import { atomicWriteWithRetry } from './factory.js';
 import { OcrStore } from './ocr-store.js';
 import { materializeDefs } from './def-materialize.js';
+import { setProviderDefsMutationHook } from '../provider-defs.js';
 
 /**
  * Credential sync — per-client credential propagation with the OCR file
@@ -772,6 +773,10 @@ export async function initCredentialSync(store: CredentialStore, overrides: Sync
   if (store instanceof OcrStore) {
     store.setMutationHook(() => scheduleAutoWrite());
   }
+  // Def mutations (console CRUD, hook setup/teardown, the one-shot port) fire
+  // the same debounced write — defs converge to clients through the
+  // materialize step inside the v2 write path.
+  setProviderDefsMutationHook(() => scheduleAutoWrite());
 
   const pollMs = overrides.autoReadPollMs ?? 60_000;
   engine.pollTimer = setInterval(() => void tickAutoPoll(), pollMs);
@@ -784,6 +789,7 @@ export function stopCredentialSync(): void {
   if (!engine) return;
   if (engine.pollTimer) clearInterval(engine.pollTimer);
   if (engine.writeTimer) clearTimeout(engine.writeTimer);
+  setProviderDefsMutationHook(null);
   engine = null;
 }
 

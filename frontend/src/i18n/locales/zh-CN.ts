@@ -417,9 +417,7 @@ export const zhCN: TranslationDict = {
     // ---- Credential sync (client ⇄ OCR file; the OCR file is the single truth) ----
     syncTab: '凭证同步',
     syncTitle: '凭证同步',
-    syncDesc: 'OCR 文件（credentials.json）是唯一凭证源，此处管理它与各客户端的双向同步。',
-    syncDescToggles: '「读」= 定时拉取客户端新增密钥；「写」= 凭证更新后自动推送。',
-    syncDescDefaults: '两个开关独立且默认关闭，全关时仅可手动同步。',
+    syncDesc: 'OCR 文件（credentials.json）是唯一凭证源，此处管理它与各客户端的双向同步。【读】= 定时拉取客户端新增密钥；【写】= 自动推送凭证变更。',
     syncColClient: '客户端',
     syncColAuto: '自动同步模式',
     syncColLastRead: '上次同步读',

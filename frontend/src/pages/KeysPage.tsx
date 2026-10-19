@@ -2233,9 +2233,7 @@ export const KeysPage: React.FC = () => {
         {activeTab === 'sync' && (<>
         {/* ---- Credential sync (client ⇄ OCR file; the OCR file is the single truth) ---- */}
         <div style={{ fontSize: 13, fontWeight: 700, margin: '0 0 8px' }}>{t('op.syncTitle')}</div>
-        <p style={{ color: 'var(--text-dim)', fontSize: 11, margin: '0 0 2px' }}>{t('op.syncDesc')}</p>
-        <p style={{ color: 'var(--text-dim)', fontSize: 11, margin: '0 0 2px' }}>{t('op.syncDescToggles')}</p>
-        <p style={{ color: 'var(--text-dim)', fontSize: 11, margin: '0 0 14px' }}>{t('op.syncDescDefaults')}</p>
+        <p style={{ color: 'var(--text-dim)', fontSize: 11, margin: '0 0 14px' }}>{t('op.syncDesc')}</p>
         <div
           style={{
             display: 'grid',
