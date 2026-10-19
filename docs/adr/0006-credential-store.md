@@ -10,28 +10,36 @@ Implemented — 2026-10-19 (credential-sync rewrite). Supersedes the "two adapte
 
 `<ocrHome>/credentials.json` is the only credential truth. `bindCredentialStore` never selects: no CLI spawn, no version-evidence ladder, no last-known-good hysteresis, no lazy upgrade. The factory is a total function landing on OcrStore with `degradedCode: null`; the only badged landing is `bind_failed` (unexpected crash). `VersionEvidence` records `installed.version` content for diagnostics only (`cli` is always null; it selects nothing). `StoreKind` keeps `'opencode-v2' | 'opencode-v2-readonly' | 'ocr'` — those labels now describe the SYNC CLIENT's adapter, never the bound store. The capability-flag rule stands: callers branch on `capabilities`, never on `kind`; raw keys still exit only through `resolveKey/resolveKeyChain` (boot/pool/sync consumers), `revealKey` (password-gated route), and the sync engine's own HTTP writes.
 
-### 2. auth.json — import source, never a sink (unchanged, broadened)
+### 2. auth.json — v1's credential file: import source, opt-in sync target, never a management sink
 
-The standalone one-shot import (marker `standaloneImport` in `<ocrHome>/credential-store.json`, keyHash-dedup, oauth/wellknown listed-and-badged, auth.json byte-identical) now runs on EVERY landing — v2 machines included. auth.json-era leftovers fold into the OCR file, which is the same data migration the retired reconcile performed, re-targeted at the new truth.
+The standalone one-shot import (marker `standaloneImport` in `<ocrHome>/credential-store.json`, keyHash-dedup, oauth/wellknown listed-and-badged, auth.json untouched by the import) now runs on EVERY landing — v2 machines included. auth.json-era leftovers fold into the OCR file, which is the same data migration the retired reconcile performed, re-targeted at the new truth.
+
+auth.json is still never a management sink (console credential writes never touch it). The ONLY writer is the opencode-v1 sync client under an operator-enabled toggle or an explicit manual run (§4) — and only on a v1-flavored machine.
 
 ### 3. One-time v2 migration — routing continuity for the flip
 
-Machines whose keys lived ONLY in the opencode v2 db must not lose routing when the pool starts reading the OCR file exclusively. `maybeRunV2Migration` (boot, before `buildDirectPool`) pulls every routable api key from the v2 db into the OCR file once; the marker (`migration` in `credential-sync.json`) records `doneAt/pulled/deduped`. Any failed entry or an unreadable db withholds the marker → retried next boot (dedup makes reruns idempotent). A db-absent machine skips at zero cost and stays unmarked (a later opencode install gets migrated on a subsequent boot).
+Machines whose keys lived ONLY in the opencode v2 db must not lose routing when the pool starts reading the OCR file exclusively. `maybeRunV2Migration` (boot, before `buildDirectPool`) pulls every routable api key from the v2 db into the OCR file once; the marker (`migration` in `credential-sync.json`) records `doneAt/pulled/deduped`. Any failed entry or an unreadable db withholds the marker → retried next boot (dedup makes reruns idempotent). A db-absent machine skips at zero cost and stays unmarked (a later opencode install gets migrated on a subsequent boot). The v1 direction needs no one-shot: the standalone import covers first boot and the continuous pull covers the rest.
 
 ### 4. Credential sync — per-client propagation (`credentials/sync.ts`)
 
-One client today: `opencode-v2`.
+Two clients ship in the table by default, both toggles OFF (manual-only until enabled):
 
-- **Read (pull)**: v2 db (readonly sqlite) → OCR file. Routable api rows only; oauth/wellknown never leave the client (OAuth boundary). keyHash dedup makes reruns no-ops.
-- **Write (push)**: OCR file → the opencode v2 service through its HTTP management API (`connectKey`; service discovery + target policy `loopback | remote_tls | insecure_remote` refusal unchanged). Dedup is (provider case-insensitive × keyHash prefix) against the live db. **Local OCR entries are ALWAYS kept** — the push converges the CLIENT toward the OCR file, never the reverse; the legacy "verified convergence removes the local copy" behavior is retired with the single-truth model it served.
+- **opencode-v2**:
+  - **Read (pull)**: the v2 db (readonly sqlite) → OCR file. Routable api rows only; oauth/wellknown never leave the client. keyHash dedup makes reruns no-ops.
+  - **Write (push)**: OCR file → the v2 service through its HTTP management API (`connectKey`; service discovery + target policy `loopback | remote_tls | insecure_remote` refusal unchanged). Dedup is (provider case-insensitive × keyHash prefix) against the live db.
+- **opencode-v1** (the legacy auth.json flavor):
+  - **Read (pull)**: auth.json api-type entries → OCR file; oauth/wellknown never cross; malformed entries are loud failures. The client exists only on a v1-FLAVORED machine — auth.json present WITHOUT v2 evidence (no `opencode.db`, no v2 version pin): on a v2 machine auth.json is by definition a stale one-time migration snapshot and is never pulled or written.
+  - **Write (push)**: merges the chain-head api key of every local provider into auth.json — ONE key per provider (the v1 file shape; the active head wins), api-shaped entries only (an existing oauth/wellknown entry is preserved untouched and reported as `skipped`), no delete propagation, and an unparsable auth.json is refused rather than clobbered. The file is never fabricated on machines without the client.
+
+Write direction invariant for BOTH clients: **local OCR entries are ALWAYS kept** — the push converges the CLIENT toward the OCR file, never the reverse; the legacy "verified convergence removes the local copy" behavior is retired with the single-truth model it served.
 
 ### 5. Auto-sync — toggles, realtime push, polled pull, self-healing
 
-State lives in `<ocrHome>/credential-sync.json` (`{version:1, clients:{'opencode-v2':{autoRead,autoWrite,lastReadAt,lastWriteAt,lastRead,lastWrite}}, migration}`). Display-safe only — timestamps, toggles, masked per-entry records; never key material.
+State lives in `<ocrHome>/credential-sync.json` (`{version:1, clients:{<id>:{autoRead,autoWrite,lastReadAt,lastWriteAt,lastRead,lastWrite}}, migration}`). Display-safe only — timestamps, toggles, masked per-entry records; never key material.
 
-- `autoWrite` ON: every successful OCR mutation (connect/activate/rename/disconnect, via the `OcrStore` mutation hook) schedules a debounced push (~1.5s). The 60s poll tick is the safety net: a failed or never-run write (service down at mutation time) is retried until a recorded-ok outcome exists.
+- `autoWrite` ON: every successful OCR mutation (connect/activate/rename/disconnect, via the `OcrStore` mutation hook) schedules a debounced push (~1.5s) to EVERY enabled client. The 60s poll tick is the safety net: a failed or never-run write (service down at mutation time) is retried until a recorded-ok outcome exists.
 - `autoRead` ON: the 60s poll pulls new client keys into the OCR file.
-- Toggles are checked at fire time (flipping off mid-debounce skips the push); both off = manual only. Manual runs (route `run`) execute either or both directions and record outcomes like the auto paths.
+- Toggles are per client and checked at fire time (flipping off mid-debounce skips the push); both off = manual only. Manual runs (route `run`) execute either or both directions for one client and record outcomes like the auto paths.
 
 ### 6. Account identity (unchanged)
 

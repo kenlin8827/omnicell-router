@@ -457,11 +457,11 @@ export interface TranslationDict {
     syncReadSummary: string;
     syncWriteSummary: string;
     syncFailedCount: string;
+    syncSkippedCount: string;
     syncReadEmpty: string;
     syncWriteEmpty: string;
-    syncPrecDbAbsent: string;
-    syncPrecDbUnreadable: string;
-    syncPrecV2DbUnreadable: string;
+    syncPrecClientAbsent: string;
+    syncPrecClientUnreadable: string;
     syncPrecServiceUnreachable: string;
     syncGenericFailure: string;
     syncEmpty: string;

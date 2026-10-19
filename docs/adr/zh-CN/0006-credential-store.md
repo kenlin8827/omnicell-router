@@ -10,28 +10,36 @@
 
 `<ocrHome>/credentials.json` 是唯一凭证真相。`bindCredentialStore` 不做任何选择：没有 CLI 探测、没有版本证据阶梯、没有 last-known-good 滞回、没有惰性升级。工厂是全函数，落到 OcrStore 且 `degradedCode: null`；唯一带徽标的落点是 `bind_failed`（意外崩溃）。`VersionEvidence` 只记录 `installed.version` 内容作诊断（`cli` 恒为 null，不选择任何东西）。`StoreKind` 保留 `'opencode-v2' | 'opencode-v2-readonly' | 'ocr'`——这些标签现在描述的是**同步客户端**的适配器，永远不是被绑定的 store。能力旗标规则不变：调用方按 `capabilities` 分支、永不按 `kind`；裸密钥依旧只从 `resolveKey/resolveKeyChain`（启动/池/同步消费者）、`revealKey`（密码门控路线）与同步引擎自己的 HTTP 写三处离开。
 
-### 2. auth.json——只进不出的导入源（不变，扩大适用面）
+### 2. auth.json——v1 的凭证文件：导入源、可选的同步目标、永不是管理写入的汇
 
-独立一次性导入（marker 记于 `<ocrHome>/credential-store.json` 的 `standaloneImport`，keyHash 去重，oauth/wellknown 仅列出并打徽标，auth.json 字节不动）如今在**所有**落点上运行——包括 v2 机器。auth.json 时代的遗留密钥并入 OCR 文件：这正是已退役 reconcile 做过的数据迁移，改指向新的真相。
+独立一次性导入（marker 记于 `<ocrHome>/credential-store.json` 的 `standaloneImport`，keyHash 去重，oauth/wellknown 仅列出并打徽标，导入本身不动 auth.json）如今在**所有**落点上运行——包括 v2 机器。auth.json 时代的遗留密钥并入 OCR 文件：这正是已退役 reconcile 做过的数据迁移，改指向新的真相。
+
+auth.json 依旧永不是管理写入的汇（控制台凭证写永不触碰它）。唯一的写入者是 opencode-v1 同步客户端——且仅在操作者开启开关或显式手动运行时（§4），并且只在 v1 味道的机器上。
 
 ### 3. 一次性 v2 迁移——翻转时的路由连续性
 
-密钥只存在于 opencode v2 db 的机器，在池改为只读 OCR 文件时不能丢路由。`maybeRunV2Migration`（启动时、`buildDirectPool` 之前）把 v2 db 中所有可路由 api 密钥拉进 OCR 文件一次；marker（`credential-sync.json` 的 `migration`）记录 `doneAt/pulled/deduped`。任何失败条目或 db 不可读都扣留 marker → 下次启动重试（去重保证幂等）。db 不存在的机器零成本跳过、不写 marker（之后装了 opencode 也会在后续启动被迁移）。
+密钥只存在于 opencode v2 db 的机器，在池改为只读 OCR 文件时不能丢路由。`maybeRunV2Migration`（启动时、`buildDirectPool` 之前）把 v2 db 中所有可路由 api 密钥拉进 OCR 文件一次；marker（`credential-sync.json` 的 `migration`）记录 `doneAt/pulled/deduped`。任何失败条目或 db 不可读都扣留 marker → 下次启动重试（去重保证幂等）。db 不存在的机器零成本跳过、不写 marker（之后装了 opencode 也会在后续启动被迁移）。v1 方向不需要一次性迁移：独立导入覆盖首启，持续拉取覆盖其余。
 
 ### 4. 凭证同步——按客户端传播（`credentials/sync.ts`）
 
-当前唯一客户端：`opencode-v2`。
+表格默认就有两个客户端，开关全部默认关闭（启用前仅手动）：
 
-- **读（拉取）**：v2 db（只读 sqlite）→ OCR 文件。只取可路由 api 行；oauth/wellknown 永不出客户端（OAuth 边界）。keyHash 去重使重跑为零操作。
-- **写（推送）**：OCR 文件 → opencode v2 托管服务 HTTP API（`connectKey`；服务发现与目标策略 `loopback | remote_tls | insecure_remote` 拒绝不变）。去重键为（provider 大小写不敏感 × keyHash 前缀）对活 db。**本地 OCR 条目永远保留**——推送让客户端向 OCR 文件收敛，绝不反向；与单一真相模型配套的「验证收敛后删除本地副本」行为一并退役。
+- **opencode-v2**：
+  - **读（拉取）**：v2 db（只读 sqlite）→ OCR 文件。只取可路由 api 行；oauth/wellknown 永不出客户端。keyHash 去重使重跑为零操作。
+  - **写（推送）**：OCR 文件 → v2 托管服务 HTTP API（`connectKey`；服务发现与目标策略 `loopback | remote_tls | insecure_remote` 拒绝不变）。去重键为（provider 大小写不敏感 × keyHash 前缀）对活 db。
+- **opencode-v1**（legacy auth.json 味道）：
+  - **读（拉取）**：auth.json 的 api 条目 → OCR 文件；oauth/wellknown 永不过界；畸形条目响亮失败。该客户端只存在于 **v1 味道**的机器——auth.json 存在且**没有** v2 证据（无 `opencode.db`、无 v2 版本钉）：在 v2 机器上 auth.json 按定义是一份过期的一次性迁移快照，永不被拉取或写入。
+  - **写（推送）**：把每个本地 provider 的链首 api 密钥合并进 auth.json——每 provider 一把密钥（v1 文件形状；活跃链首优先）、仅 api 形状条目（已有的 oauth/wellknown 条目原样保留并记为 `skipped`）、无删除传播、无法解析的 auth.json 拒绝合并而非覆写。客户端不存在的机器上绝不凭空捏造该文件。
+
+两个客户端共用的写方向不变式：**本地 OCR 条目永远保留**——推送让客户端向 OCR 文件收敛，绝不反向；与单一真相模型配套的「验证收敛后删除本地副本」行为一并退役。
 
 ### 5. 自动同步——开关、实时推送、轮询拉取、自愈
 
-状态在 `<ocrHome>/credential-sync.json`（`{version:1, clients:{'opencode-v2':{autoRead,autoWrite,lastReadAt,lastWriteAt,lastRead,lastWrite}}, migration}`）。仅展示安全内容——时间戳、开关、脱敏的逐条记录；绝无密钥材料。
+状态在 `<ocrHome>/credential-sync.json`（`{version:1, clients:{<id>:{autoRead,autoWrite,lastReadAt,lastWriteAt,lastRead,lastWrite}}, migration}`）。仅展示安全内容——时间戳、开关、脱敏的逐条记录；绝无密钥材料。
 
-- `autoWrite` 开：每次成功的 OCR 变更（connect/activate/rename/disconnect，经 `OcrStore` 变更钩子）排定一次防抖推送（约 1.5s）。60s 轮询 tick 是兜底：失败或从未执行的写（变更时服务不可用）会重试，直到记录到 ok 结果。
+- `autoWrite` 开：每次成功的 OCR 变更（connect/activate/rename/disconnect，经 `OcrStore` 变更钩子）为**每一个**开启开关的客户端排定一次防抖推送（约 1.5s）。60s 轮询 tick 是兜底：失败或从未执行的写（变更时服务不可用）会重试，直到记录到 ok 结果。
 - `autoRead` 开：60s 轮询把客户端新密钥拉进 OCR 文件。
-- 开关在**触发时**检查（防抖期间关掉即跳过）；全关 = 仅手动。手动运行（`run` 路由）执行任一或两个方向，结果与自动路径一样入档。
+- 开关按客户端独立、在**触发时**检查（防抖期间关掉即跳过）；全关 = 仅手动。手动运行（`run` 路由）对单个客户端执行任一或两个方向，结果与自动路径一样入档。
 
 ### 6. 账号身份（不变）
 

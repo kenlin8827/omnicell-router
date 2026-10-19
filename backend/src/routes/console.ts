@@ -14,6 +14,7 @@ import { getOcrHomeDir } from '../cli/paths.js';
 import { getHeadroomSidecarStatus, startHeadroomSidecar, stopHeadroomSidecar } from '../compression/headroom-sidecar.js';
 import { APP_VERSION } from '../version.js';
 import { keyHashPrefix } from '../opencode/credentials/types.js';
+import { isSyncClientId } from '../opencode/credentials/sync.js';
 import { ensureCa } from '../forward-proxy/ca.js';
 import { getForwardProxyStatus } from '../forward-proxy/status.js';
 import { RouterConfig, type AccountLimitConfig, type RateLimitRule } from '../config/types.js';
@@ -732,15 +733,11 @@ async function purgeFailureCode(e: unknown): Promise<PurgeSummary['failed'][numb
   return 'disconnect_failed';
 }
 
-/** Machine-readable precondition failures of the credential-sync write path. */
-const SYNC_PRECONDITION_ERROR: Record<
-  'opencode_v2_service_unreachable' | 'opencode_v2_db_unreadable' | 'db_absent' | 'db_unreadable',
-  string
-> = {
-  opencode_v2_service_unreachable: 'opencode v2 service not reachable now (no service.json/OPENCODE_SERVER_PASSWORD) — retry after starting opencode',
-  opencode_v2_db_unreadable: 'opencode credential db unreadable — cannot dedup or confirm the sync target',
-  db_absent: 'no opencode v2 db on this machine — the client has nothing to sync',
-  db_unreadable: 'opencode credential db unreadable — read sync unavailable',
+/** Machine-readable precondition failures of the credential-sync paths. */
+const SYNC_PRECONDITION_ERROR: Record<'client_absent' | 'client_unreadable' | 'service_unreachable', string> = {
+  client_absent: 'this sync client is not present on this machine (no usable credential file/db for it)',
+  client_unreadable: 'the client credential file/db is unreadable — sync unavailable',
+  service_unreachable: 'opencode v2 service not reachable now (no service.json/OPENCODE_SERVER_PASSWORD) — retry after starting opencode',
 };
 
 /**
@@ -2583,9 +2580,10 @@ export function registerConsoleRoutes(
     },
 
     /**
-     * Push OCR credentials INTO opencode v2 (one direction of the credential
-     * sync). The OCR file is the truth, so local entries are NEVER removed —
-     * a push converges the CLIENT toward the OCR file. Preconditions enforced
+     * Push OCR credentials INTO opencode v2 (the write direction of the
+     * opencode-v2 sync client; opencode v1 goes through the sync endpoints).
+     * The OCR file is the truth, so local entries are NEVER removed — a push
+     * converges the CLIENT toward the OCR file. Preconditions enforced
      * server-side: an opencode v2 service must be reachable NOW and its db
      * readable — otherwise 400 with a machine-readable reason code. Body
      * {provider} optional (absent = every provider with local entries).
@@ -2599,14 +2597,14 @@ export function registerConsoleRoutes(
         getCredentialStore,
         getBoundCredentialPaths,
         getBindTestOverrides,
-        pushOcrIntoV2,
+        pushFromOcr,
         recordSyncOutcome,
       } = await import('../opencode/credentials/index.js');
       try {
         const store = await getCredentialStore();
         const overrides = getBindTestOverrides();
         const paths = getBoundCredentialPaths() ?? undefined;
-        const outcome = await pushOcrIntoV2(store, {
+        const outcome = await pushFromOcr('opencode-v2', store, {
           paths,
           provider,
           fetchImpl: overrides.fetchImpl,
@@ -2624,7 +2622,7 @@ export function registerConsoleRoutes(
             failed: [],
           });
         }
-        recordSyncOutcome('write', outcome, { paths, now: overrides.now });
+        recordSyncOutcome('opencode-v2', 'write', outcome, { paths, now: overrides.now });
         // Every converged (provider, key) pair is a reconnect gesture —
         // its SUSPECT flag lifts here, anchored on the pushed key's hash.
         const cb = registry.getCircuitBreakerManager();
@@ -2668,9 +2666,8 @@ export function registerConsoleRoutes(
     /** Flip one auto-sync direction of one client; persists to credential-sync.json. */
     credentialSyncToggle: async (req: any, reply: any) => {
       const body = (req.body || {}) as { clientId?: string; direction?: string; enabled?: boolean };
-      const clientId = typeof body.clientId === 'string' ? body.clientId : '';
-      if (clientId !== 'opencode-v2') {
-        return reply.status(404).send({ status: 'error', success: false, error: `unknown sync client '${clientId}'` });
+      if (!isSyncClientId(body.clientId)) {
+        return reply.status(404).send({ status: 'error', success: false, error: `unknown sync client '${body.clientId}'` });
       }
       if (body.direction !== 'read' && body.direction !== 'write') {
         return reply.status(400).send({ status: 'error', success: false, error: "direction must be 'read' or 'write'" });
@@ -2682,22 +2679,21 @@ export function registerConsoleRoutes(
         '../opencode/credentials/index.js'
       );
       const overrides = getBindTestOverrides();
-      const client = setSyncAutoToggle(body.direction, body.enabled, {
+      const client = setSyncAutoToggle(body.clientId, body.direction, body.enabled, {
         paths: getBoundCredentialPaths() ?? undefined,
         now: overrides.now,
       });
-      return { status: 'ok', client: { id: clientId, ...client } };
+      return { status: 'ok', client: { id: body.clientId, ...client } };
     },
 
     /**
-     * Manual sync: run one direction ('read' pulls v2 db -> OCR file) or both
-     * and record the outcomes. Write-converged pairs lift their SUSPECT flag.
+     * Manual sync: run one direction or both for one client and record the
+     * outcomes. Write-converged pairs lift their SUSPECT flag.
      */
     credentialSyncRun: async (req: any, reply: any) => {
       const body = (req.body || {}) as { clientId?: string; direction?: string };
-      const clientId = typeof body.clientId === 'string' ? body.clientId : '';
-      if (clientId !== 'opencode-v2') {
-        return reply.status(404).send({ status: 'error', success: false, error: `unknown sync client '${clientId}'` });
+      if (!isSyncClientId(body.clientId)) {
+        return reply.status(404).send({ status: 'error', success: false, error: `unknown sync client '${body.clientId}'` });
       }
       const direction =
         body.direction === 'read' || body.direction === 'write' || body.direction === 'both' ? body.direction : 'both';
@@ -2710,7 +2706,7 @@ export function registerConsoleRoutes(
       try {
         const store = await getCredentialStore();
         const overrides = getBindTestOverrides();
-        const result = await runCredentialSync(direction, store, {
+        const result = await runCredentialSync(body.clientId, direction, store, {
           paths: getBoundCredentialPaths() ?? undefined,
           env: overrides.env,
           fetchImpl: overrides.fetchImpl,

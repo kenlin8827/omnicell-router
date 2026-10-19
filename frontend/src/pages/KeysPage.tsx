@@ -159,20 +159,21 @@ const syncOutcomeText = (o: CredentialSyncOutcome | undefined, t: TFn): string =
   if (!o) return '';
   if (o.precondition) {
     const map: Record<string, string> = {
-      db_absent: 'op.syncPrecDbAbsent',
-      db_unreadable: 'op.syncPrecDbUnreadable',
-      opencode_v2_service_unreachable: 'op.syncPrecServiceUnreachable',
-      opencode_v2_db_unreadable: 'op.syncPrecV2DbUnreadable',
+      client_absent: 'op.syncPrecClientAbsent',
+      client_unreadable: 'op.syncPrecClientUnreadable',
+      service_unreachable: 'op.syncPrecServiceUnreachable',
     };
     return t(map[o.precondition] ?? 'op.syncGenericFailure');
   }
   const failed = o.entries.filter((e) => e.action === 'failed').length;
+  const skipped = o.entries.filter((e) => e.action === 'skipped').length;
   const parts: string[] = [];
   if (o.pulled !== undefined) {
     parts.push(o.entries.length === 0 ? t('op.syncReadEmpty') : t('op.syncReadSummary', { n: o.pulled ?? 0, d: o.deduped ?? 0 }));
   } else {
     parts.push(o.entries.length === 0 ? t('op.syncWriteEmpty') : t('op.syncWriteSummary', { n: o.pushed ?? 0, d: o.deduped ?? 0 }));
   }
+  if (skipped > 0) parts.push(t('op.syncSkippedCount', { n: skipped }));
   if (failed > 0) parts.push(t('op.syncFailedCount', { n: failed }));
   return parts.join(' · ');
 };
@@ -239,14 +240,13 @@ const EXCLUDED_REASON_LABEL: Partial<Record<CredentialExcludedReasonCode, string
   reconcile_push_failed: 'op.exclReconcilePushFailed',
   bind_failed: 'op.exclBindFailed',
 };
-// Push-route 400 preconditions (backend PUSH_PRECONDITION_ERROR). ocJson keeps
+// Sync-path precondition codes (backend SYNC_PRECONDITION_ERROR). ocJson keeps
 // the machine code on the error; only KNOWN codes get a localized claim —
 // unknown codes fall back to the raw string, loud over pretty-but-wrong.
 const PUSH_REASON_LABEL: Partial<Record<CredentialPushReasonCode, string>> = {
-  opencode_v2_service_unreachable: 'op.pushOpencodeV2Unreachable',
-  opencode_v2_db_unreadable: 'op.pushOpencodeV2DbUnreadable',
-  db_absent: 'op.syncPrecDbAbsent',
-  db_unreadable: 'op.syncPrecDbUnreadable',
+  service_unreachable: 'op.pushOpencodeV2Unreachable',
+  client_unreadable: 'op.pushOpencodeV2DbUnreadable',
+  client_absent: 'op.syncPrecClientAbsent',
 };
 /**
  * Credential-store write reasonCodes — the per-account routes AND provider
@@ -2254,7 +2254,7 @@ export const KeysPage: React.FC = () => {
                 {!c.present && (
                   <span style={badgeStyle('var(--accent-amber)', 'transparent')}>{t('op.syncClientAbsent')}</span>
                 )}
-                {c.present && !c.serviceConfigured && (
+                {c.present && !c.writeReady && (
                   <span style={badgeStyle('var(--text-dim)', 'transparent')}>{t('op.syncServiceMissing')}</span>
                 )}
               </div>

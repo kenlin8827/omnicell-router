@@ -2575,17 +2575,13 @@ export interface CredentialPushResponse {
   failed: { provider: string; reason: string }[];
 }
 
-/** 400 precondition codes of the push route — mirrors backend SYNC_PRECONDITION_ERROR keys. */
-export type CredentialPushReasonCode =
-  | 'opencode_v2_service_unreachable'
-  | 'opencode_v2_db_unreadable'
-  | 'db_absent'
-  | 'db_unreadable';
+/** Precondition codes of the sync paths — mirrors backend SyncPrecondition. */
+export type CredentialPushReasonCode = 'client_absent' | 'client_unreadable' | 'service_unreachable';
 
 /** One per-entry record of a sync run (masked metadata only — never key material). */
 export interface CredentialSyncEntry {
   provider: string;
-  action: 'pulled' | 'deduped' | 'failed' | 'pushed';
+  action: 'pulled' | 'deduped' | 'failed' | 'pushed' | 'skipped';
   reason?: string;
 }
 
@@ -2604,10 +2600,10 @@ export interface CredentialSyncOutcome {
 export interface CredentialSyncClientView {
   id: string;
   label: string;
-  /** The opencode v2 db file exists on this machine (read sync is possible). */
+  /** The client's credential file/db exists AND is this machine's active flavor. */
   present: boolean;
-  /** A service.json / env service endpoint is discoverable (write sync is possible). */
-  serviceConfigured: boolean;
+  /** The write path is usable (service endpoint discoverable / local file merge). */
+  writeReady: boolean;
   autoRead: boolean;
   autoWrite: boolean;
   lastReadAt?: number;

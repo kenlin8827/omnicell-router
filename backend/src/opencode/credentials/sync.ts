@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import {
   CredentialPaths,
   credentialSyncFile,
@@ -7,6 +8,8 @@ import {
 } from './paths.js';
 import { CredentialStore, StoreUnreadableError, keyHashPrefix } from './types.js';
 import { DbOpener, OpencodeV2Store, resolveServiceConfigForPaths } from './opencode-v2-store.js';
+import { authSnapshot } from './auth-snapshot.js';
+import type { OpenCodeAuthEntry } from '../user-config.js';
 import { atomicWriteWithRetry } from './factory.js';
 import { OcrStore } from './ocr-store.js';
 
@@ -14,42 +17,52 @@ import { OcrStore } from './ocr-store.js';
  * Credential sync — per-client credential propagation with the OCR file
  * (<ocrHome>/credentials.json) as the single truth.
  *
- * The bound store is ALWAYS the OcrStore (factory decision). opencode v2 is a
- * SYNC CLIENT, not an alternative truth:
- *  - read  ("pull"): opencode v2 db -> OCR file. New api-key rows (keyHash
- *    dedup) land in the OCR file; oauth/wellknown rows never leave the client
- *    (the OAuth boundary — a token is not an api key).
- *  - write ("push"): OCR file -> opencode v2, through its HTTP management API
- *    (never raw sqlite writes). Local OCR entries are KEPT — OCR is the truth,
- *    so a push converges the client toward the OCR file without ever deleting
- *    from it (push-only convergence, minus the legacy local removal).
+ * The bound store is ALWAYS the OcrStore (factory decision). The opencode
+ * flavors are SYNC CLIENTS, not alternative truths. Two clients ship by
+ * default, both toggles OFF (manual-only until the operator enables them):
  *
- * State lives in <ocrHome>/credential-sync.json: per-client autoRead/autoWrite
- * toggles, last read/write timestamps + outcomes, and the one-shot v2
- * migration marker. Display-safe metadata only — no key material anywhere in
- * the state file or in any outcome.
+ *  - opencode-v2: read pulls the v2 db (readonly sqlite) into the OCR file;
+ *    write pushes through the v2 HTTP management API (never raw sqlite).
+ *  - opencode-v1: read pulls the legacy auth.json snapshot into the OCR file;
+ *    write merges the chain-head api key back into auth.json — api-shaped
+ *    entries only, oauth/wellknown entries preserved untouched, one key per
+ *    provider (the v1 file shape), no delete propagation.
+ *
+ * The v1 client is only active on a v1-flavored machine: auth.json present
+ * WITHOUT v2 evidence (no opencode.db, no v2 version pin). On a v2 machine
+ * auth.json is by definition a stale one-time migration snapshot and is never
+ * pulled or written.
+ *
+ * Write direction invariant for BOTH clients: local OCR entries are KEPT —
+ * the push converges the CLIENT toward the OCR file, never the reverse.
  */
 
-export type SyncClientId = 'opencode-v2';
+export type SyncClientId = 'opencode-v1' | 'opencode-v2';
 export type SyncDirection = 'read' | 'write';
 export type SyncDirectionRequest = SyncDirection | 'both';
 
-/** The one client OCR can sync with today. */
-export const SYNC_CLIENT_ID: SyncClientId = 'opencode-v2';
-export const SYNC_CLIENT_LABEL = 'OpenCode V2';
+/** The clients OCR can sync with, in table order. Both default to OFF. */
+export const SYNC_CLIENTS: ReadonlyArray<{ id: SyncClientId; label: string }> = [
+  { id: 'opencode-v2', label: 'OpenCode V2' },
+  { id: 'opencode-v1', label: 'OpenCode V1' },
+];
+
+export function isSyncClientId(value: unknown): value is SyncClientId {
+  return value === 'opencode-v1' || value === 'opencode-v2';
+}
+
+export function syncClientLabel(id: SyncClientId): string {
+  return SYNC_CLIENTS.find((c) => c.id === id)?.label ?? id;
+}
 
 export interface SyncEntryRecord {
   provider: string;
-  action: 'pulled' | 'deduped' | 'failed' | 'pushed';
+  action: 'pulled' | 'deduped' | 'failed' | 'pushed' | 'skipped';
   reason?: string;
 }
 
 /** Machine-readable gate failure for a run that attempted nothing. */
-export type SyncPrecondition =
-  | 'db_absent'
-  | 'db_unreadable'
-  | 'opencode_v2_service_unreachable'
-  | 'opencode_v2_db_unreadable';
+export type SyncPrecondition = 'client_absent' | 'client_unreadable' | 'service_unreachable';
 
 export interface SyncRunOutcome {
   ok: boolean;
@@ -141,8 +154,8 @@ export function writeSyncState(paths: CredentialPaths, rec: SyncStateFile): void
   }
 }
 
-function clientStateOf(rec: SyncStateFile): ClientSyncState {
-  const c = rec.clients[SYNC_CLIENT_ID];
+function clientStateOf(rec: SyncStateFile, clientId: SyncClientId): ClientSyncState {
+  const c = rec.clients[clientId];
   return {
     autoRead: c?.autoRead === true,
     autoWrite: c?.autoWrite === true,
@@ -153,8 +166,9 @@ function clientStateOf(rec: SyncStateFile): ClientSyncState {
   };
 }
 
-/** Merge-write one direction's outcome (timestamps + audit) for the client. */
+/** Merge-write one direction's outcome (timestamps + audit) for one client. */
 export function recordSyncOutcome(
+  clientId: SyncClientId,
   direction: SyncDirection,
   outcome: SyncRunOutcome,
   overrides: SyncOverrides = {}
@@ -162,74 +176,160 @@ export function recordSyncOutcome(
   const paths = overrides.paths ?? resolveDefaultPaths();
   const now = overrides.now ?? Date.now;
   const rec = readSyncState(paths);
-  const client = clientStateOf(rec);
+  const client = clientStateOf(rec, clientId);
   const next: ClientSyncState = {
     ...client,
     ...(direction === 'read'
       ? { lastReadAt: now(), lastRead: outcome }
       : { lastWriteAt: now(), lastWrite: outcome }),
   };
-  writeSyncState(paths, { ...rec, clients: { ...rec.clients, [SYNC_CLIENT_ID]: next } });
+  writeSyncState(paths, { ...rec, clients: { ...rec.clients, [clientId]: next } });
   return next;
 }
 
-/** Persist an auto-sync toggle. Returns the updated client state. */
+/** Persist an auto-sync toggle for one client. Returns the updated client state. */
 export function setSyncAutoToggle(
+  clientId: SyncClientId,
   direction: SyncDirection,
   enabled: boolean,
   overrides: SyncOverrides = {}
 ): ClientSyncState {
   const paths = overrides.paths ?? resolveDefaultPaths();
   const rec = readSyncState(paths);
-  const client = clientStateOf(rec);
+  const client = clientStateOf(rec, clientId);
   const next: ClientSyncState = {
     ...client,
     ...(direction === 'read' ? { autoRead: enabled } : { autoWrite: enabled }),
   };
-  writeSyncState(paths, { ...rec, clients: { ...rec.clients, [SYNC_CLIENT_ID]: next } });
+  writeSyncState(paths, { ...rec, clients: { ...rec.clients, [clientId]: next } });
   return next;
 }
 
-/** Masked status view for the console route — no key material, ever. */
+/** opencode flavor evidence: the version pin's major (diagnostics for the v1 client). */
+function installedMajor(paths: CredentialPaths): number | null {
+  try {
+    const text = fs.readFileSync(paths.installedVersionPath, 'utf8').trim();
+    const m = /v?(\d+)\./.exec(text);
+    return m ? Number(m[1]) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The v1 client only exists where auth.json exists WITHOUT v2 evidence —
+ * on a v2 machine auth.json is a stale migration snapshot, never a sync peer.
+ */
+function v1FlavorActive(paths: CredentialPaths): boolean {
+  return fs.existsSync(paths.authJsonPath) && !fs.existsSync(paths.opencodeDbPath) && installedMajor(paths) !== 2;
+}
+
+/** Masked status view for the console route — every client, defaults OFF. */
 export function credentialSyncStatusView(overrides: SyncOverrides = {}): {
-  clients: Array<ClientSyncState & { id: SyncClientId; label: string; present: boolean; serviceConfigured: boolean }>;
+  clients: Array<ClientSyncState & { id: SyncClientId; label: string; present: boolean; writeReady: boolean }>;
 } {
   const paths = overrides.paths ?? resolveDefaultPaths();
   const env = overrides.env ?? defaultEnv();
-  const client = clientStateOf(readSyncState(paths));
+  const rec = readSyncState(paths);
   return {
-    clients: [
-      {
-        id: SYNC_CLIENT_ID,
-        label: SYNC_CLIENT_LABEL,
-        present: fs.existsSync(paths.opencodeDbPath),
-        serviceConfigured: Boolean(resolveServiceConfigForPaths(paths, env)),
-        ...client,
-      },
-    ],
+    clients: SYNC_CLIENTS.map((c) => {
+      let present = false;
+      let writeReady = false;
+      if (c.id === 'opencode-v1') {
+        present = v1FlavorActive(paths);
+        writeReady = present; // a local file merge is always possible when the client exists
+      } else {
+        present = fs.existsSync(paths.opencodeDbPath);
+        writeReady = present && Boolean(resolveServiceConfigForPaths(paths, env));
+      }
+      return { id: c.id, label: c.label, present, writeReady, ...clientStateOf(rec, c.id) };
+    }),
   };
 }
 
 // ---------------------------------------------------------------------------
-// Read sync (pull): opencode v2 db -> OCR file.
+// Read sync (pull): client -> OCR file.
 // ---------------------------------------------------------------------------
 
-/**
- * Pull every routable (api-key) credential row from the opencode v2 db into
- * the OCR file. keyHash dedup against the OCR file makes reruns idempotent.
- * oauth/wellknown rows never surface here — resolveKeyChain exposes routable
- * api rows only (the OAuth boundary). Never throws: gate failures come back
- * as preconditions, per-entry failures as entries.
- */
-export async function pullV2IntoOcr(
-  ocr: CredentialStore,
-  overrides: SyncOverrides = {}
-): Promise<SyncRunOutcome> {
+/** opencode v1: pull api-type auth.json entries into the OCR file. */
+async function pullV1IntoOcr(ocr: CredentialStore, overrides: SyncOverrides): Promise<SyncRunOutcome> {
+  const log = overrides.log ?? defaultLog;
+  const paths = overrides.paths ?? resolveDefaultPaths();
+  // Flavor guard: on a v2 machine auth.json is a stale migration snapshot —
+  // pulling it would silently resurface old credentials.
+  if (!v1FlavorActive(paths)) {
+    return { ok: false, precondition: 'client_absent', entries: [] };
+  }
+  let snapshot: Record<string, OpenCodeAuthEntry>;
+  try {
+    snapshot = authSnapshot(paths).read();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    log.warn(`${LOG_PREFIX} v1 read: auth.json unreadable — ${msg}`);
+    return { ok: false, precondition: 'client_unreadable', entries: [], detail: msg };
+  }
+
+  const entries: SyncEntryRecord[] = [];
+  let pulled = 0;
+  let deduped = 0;
+  for (const [providerId, entry] of Object.entries(snapshot)) {
+    // oauth/wellknown never leave the client (the OAuth boundary) — and unlike
+    // the v2 db (whose resolveKeyChain filters them), the snapshot exposes them,
+    // so they are skipped here explicitly and silently.
+    if (!entry || typeof entry !== 'object') {
+      entries.push({ provider: providerId, action: 'failed', reason: 'malformed auth.json entry' });
+      continue;
+    }
+    if (entry.type === 'oauth' || entry.type === 'wellknown') continue;
+    if (entry.type !== 'api' || typeof entry.key !== 'string' || !entry.key) {
+      entries.push({
+        provider: providerId,
+        action: 'failed',
+        reason: `unusable auth.json entry (type=${String(entry.type)}, key=${typeof entry.key === 'string' ? 'empty' : 'missing'})`,
+      });
+      continue;
+    }
+    let localPrefixes: Set<string>;
+    try {
+      localPrefixes = new Set(
+        ocr
+          .listAccounts(providerId)
+          .map((a) => a.keyHashPrefix ?? '')
+          .filter(Boolean)
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      entries.push({ provider: providerId, action: 'failed', reason: `local store unreadable: ${msg}` });
+      continue;
+    }
+    const prefix = keyHashPrefix(entry.key);
+    if (localPrefixes.has(prefix)) {
+      entries.push({ provider: providerId, action: 'deduped' });
+      deduped += 1;
+      continue;
+    }
+    try {
+      await ocr.connectKey(providerId, entry.key);
+      entries.push({ provider: providerId, action: 'pulled' });
+      pulled += 1;
+      localPrefixes.add(prefix);
+      log.info(`${LOG_PREFIX} v1 read: ${providerId} pulled (key ${prefix})`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      entries.push({ provider: providerId, action: 'failed', reason: msg });
+      log.warn(`${LOG_PREFIX} v1 read: ${providerId} pull failed — ${msg}`);
+    }
+  }
+  return { ok: !entries.some((e) => e.action === 'failed'), pulled, deduped, entries };
+}
+
+/** opencode v2: pull routable api rows from the readonly db into the OCR file. */
+async function pullV2IntoOcr(ocr: CredentialStore, overrides: SyncOverrides): Promise<SyncRunOutcome> {
   const log = overrides.log ?? defaultLog;
   const paths = overrides.paths ?? resolveDefaultPaths();
 
   if (!fs.existsSync(paths.opencodeDbPath)) {
-    return { ok: false, precondition: 'db_absent', entries: [] };
+    return { ok: false, precondition: 'client_absent', entries: [] };
   }
   let v2: OpencodeV2Store;
   try {
@@ -239,8 +339,8 @@ export async function pullV2IntoOcr(
     v2 = await OpencodeV2Store.create(deps);
   } catch (e) {
     if (e instanceof StoreUnreadableError) {
-      log.warn(`${LOG_PREFIX} read: opencode v2 db unreadable — ${e.message}`);
-      return { ok: false, precondition: 'db_unreadable', entries: [], detail: e.message };
+      log.warn(`${LOG_PREFIX} v2 read: opencode v2 db unreadable — ${e.message}`);
+      return { ok: false, precondition: 'client_unreadable', entries: [], detail: e.message };
     }
     throw e;
   }
@@ -251,8 +351,6 @@ export async function pullV2IntoOcr(
     let deduped = 0;
     for (const overview of v2.accountsOverview()) {
       const providerId = overview.providerId;
-      // P3-1 alignment: own-property guard before the OCR write path —
-      // connectKey re-validates provider ids, this only skips early.
       if (!providerId) continue;
       let localPrefixes: Set<string>;
       try {
@@ -279,11 +377,11 @@ export async function pullV2IntoOcr(
           entries.push({ provider: providerId, action: 'pulled' });
           pulled += 1;
           localPrefixes.add(prefix);
-          log.info(`${LOG_PREFIX} read: ${providerId} pulled (key ${prefix})`);
+          log.info(`${LOG_PREFIX} v2 read: ${providerId} pulled (key ${prefix})`);
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           entries.push({ provider: providerId, action: 'failed', reason: msg });
-          log.warn(`${LOG_PREFIX} read: ${providerId} pull failed — ${msg}`);
+          log.warn(`${LOG_PREFIX} v2 read: ${providerId} pull failed — ${msg}`);
         }
       }
     }
@@ -294,20 +392,105 @@ export async function pullV2IntoOcr(
 }
 
 // ---------------------------------------------------------------------------
-// Write sync (push): OCR file -> opencode v2 (HTTP API, local entries KEPT).
+// Write sync (push): OCR file -> client (local entries KEPT).
 // ---------------------------------------------------------------------------
 
 /**
- * Push every OCR api-key credential into the opencode v2 service. The
- * single-truth direction is OCR -> client: local OCR entries are NEVER
- * removed (a failed push keeps the local copy; a successful one ALSO keeps
- * it — the OCR file remains the truth the console reads and writes).
+ * opencode v1: merge the chain-head api key of every local provider into
+ * auth.json. Rails: api-shaped entries only (an existing oauth/wellknown
+ * entry is preserved and reported as skipped), ONE key per provider (the v1
+ * file shape — the active head wins), no delete propagation, and the file is
+ * never written on a v2-flavored machine (stale snapshot territory).
+ */
+async function pushOcrIntoV1(
+  ocr: CredentialStore,
+  overrides: SyncOverrides & { provider?: string }
+): Promise<SyncRunOutcome> {
+  const log = overrides.log ?? defaultLog;
+  const paths = overrides.paths ?? resolveDefaultPaths();
+  if (!v1FlavorActive(paths)) {
+    return { ok: false, precondition: 'client_absent', entries: [] };
+  }
+  // Collect + parse BEFORE any write: an unparsable auth.json is refused, never
+  // clobbered with a merged rewrite (we could not preserve what we cannot parse).
+  let existing: Record<string, OpenCodeAuthEntry>;
+  try {
+    existing = authSnapshot(paths).read();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    log.warn(`${LOG_PREFIX} v1 write: auth.json unreadable — refusing to merge: ${msg}`);
+    return { ok: false, precondition: 'client_unreadable', entries: [], detail: msg };
+  }
+  const existingKeys = new Map(Object.keys(existing).map((k) => [k.toLowerCase(), k]));
+
+  const providerIds = overrides.provider
+    ? [overrides.provider]
+    : ocr.accountsOverview().map((a) => a.providerId);
+
+  const entries: SyncEntryRecord[] = [];
+  const pushedKeys: { provider: string; keyHashPrefix: string }[] = [];
+  let pushed = 0;
+  let deduped = 0;
+  const next: Record<string, OpenCodeAuthEntry> = { ...existing };
+  for (const providerId of providerIds) {
+    const head = ocr.resolveKeyChain(providerId).find((c) => c.key); // active head, routable only
+    if (!head) continue; // nothing to push for this provider
+    const existingKey = existingKeys.get(providerId.toLowerCase());
+    const current = existingKey !== undefined ? existing[existingKey] : undefined;
+    if (current && typeof current === 'object' && current.type && current.type !== 'api') {
+      // An oauth/wellknown entry holds tokens an api key must not overwrite.
+      entries.push({
+        provider: providerId,
+        action: 'skipped',
+        reason: `existing auth.json entry is type '${current.type}' — preserved untouched`,
+      });
+      continue;
+    }
+    const prefix = keyHashPrefix(head.key);
+    if (current?.type === 'api' && current.key === head.key) {
+      entries.push({ provider: providerId, action: 'deduped' });
+      deduped += 1;
+      pushedKeys.push({ provider: providerId, keyHashPrefix: prefix });
+      continue;
+    }
+    next[existingKey ?? providerId] = { ...(typeof current === 'object' ? current : {}), type: 'api', key: head.key };
+    entries.push({ provider: providerId, action: 'pushed' });
+    pushed += 1;
+    pushedKeys.push({ provider: providerId, keyHashPrefix: prefix });
+    log.info(`${LOG_PREFIX} v1 write: ${providerId} pushed (key ${prefix})`);
+  }
+  if (pushed === 0) {
+    return { ok: true, pushed: 0, deduped, entries, pushedKeys };
+  }
+
+  // Atomic write into the opencode data dir (the file may not exist yet on a
+  // fresh v1 install — creating it is the point of the write).
+  try {
+    fs.mkdirSync(path.dirname(paths.authJsonPath), { recursive: true });
+    const tmp = `${paths.authJsonPath}.tmp.${process.pid}.${Date.now()}`;
+    fs.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+    try {
+      fs.chmodSync(tmp, 0o600);
+    } catch {
+      // best effort (Windows chmod semantics)
+    }
+    fs.renameSync(tmp, paths.authJsonPath);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    entries.push({ provider: overrides.provider ?? '*', action: 'failed', reason: `auth.json write failed: ${msg}` });
+    return { ok: false, pushed, deduped, entries, pushedKeys, detail: msg };
+  }
+  return { ok: !entries.some((e) => e.action === 'failed'), pushed, deduped, entries, pushedKeys };
+}
+
+/**
+ * opencode v2: push every local api-key credential into the v2 service.
  * Dedup is (provider case-insensitive × keyHash prefix) against the live v2
  * db, so reruns are idempotent. Never throws.
  */
-export async function pushOcrIntoV2(
+async function pushOcrIntoV2(
   ocr: CredentialStore,
-  overrides: SyncOverrides & { provider?: string } = {}
+  overrides: SyncOverrides & { provider?: string }
 ): Promise<SyncRunOutcome> {
   const log = overrides.log ?? defaultLog;
   const paths = overrides.paths ?? resolveDefaultPaths();
@@ -325,7 +508,7 @@ export async function pushOcrIntoV2(
   if (local.length === 0) return { ok: true, pushed: 0, deduped: 0, entries: [], pushedKeys: [] };
 
   if (!resolveServiceConfigForPaths(paths, env)) {
-    return { ok: false, precondition: 'opencode_v2_service_unreachable', entries: [] };
+    return { ok: false, precondition: 'service_unreachable', entries: [] };
   }
 
   let v2: OpencodeV2Store;
@@ -337,8 +520,8 @@ export async function pushOcrIntoV2(
     v2 = await OpencodeV2Store.create(createDeps);
   } catch (e) {
     if (e instanceof StoreUnreadableError) {
-      log.warn(`${LOG_PREFIX} write: opencode v2 db unreadable — ${e.message}`);
-      return { ok: false, precondition: 'opencode_v2_db_unreadable', entries: [], detail: e.message };
+      log.warn(`${LOG_PREFIX} v2 write: opencode v2 db unreadable — ${e.message}`);
+      return { ok: false, precondition: 'client_unreadable', entries: [], detail: e.message };
     }
     throw e;
   }
@@ -363,11 +546,11 @@ export async function pushOcrIntoV2(
         entries.push({ provider: cred.providerId, action: 'pushed' });
         pushed += 1;
         pushedKeys.push({ provider: cred.providerId, keyHashPrefix: prefix });
-        log.info(`${LOG_PREFIX} write: ${cred.providerId} pushed (key ${prefix})`);
+        log.info(`${LOG_PREFIX} v2 write: ${cred.providerId} pushed (key ${prefix})`);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         entries.push({ provider: cred.providerId, action: 'failed', reason: msg });
-        log.warn(`${LOG_PREFIX} write: ${cred.providerId} push failed — ${msg}; local entry kept`);
+        log.warn(`${LOG_PREFIX} v2 write: ${cred.providerId} push failed — ${msg}; local entry kept`);
       }
     }
     return { ok: !entries.some((e) => e.action === 'failed'), pushed, deduped, entries, pushedKeys };
@@ -395,17 +578,44 @@ function indexV2KeyHashes(v2: CredentialStore, log: SyncLogSink): Map<string, Se
 }
 
 // ---------------------------------------------------------------------------
-// One-shot v2 migration — routing continuity for the store flip.
+// Client dispatch — the one seam the routes and the engine call through.
 // ---------------------------------------------------------------------------
 
-/**
- * First boot after the flip on a machine whose keys lived ONLY in the
- * opencode v2 db: pull them into the OCR file ONCE so routing continues
- * uninterrupted (the pool now reads the OCR file exclusively). Marker-gated
- * in credential-sync.json. Idempotent via keyHash dedup; any failed entry (or
- * an unreadable db) withholds the marker so the next boot retries. Total
- * function — never throws.
- */
+/** Pull one client's credentials into the OCR file. Never throws. */
+export async function pullIntoOcr(
+  clientId: SyncClientId,
+  ocr: CredentialStore,
+  overrides: SyncOverrides = {}
+): Promise<SyncRunOutcome> {
+  try {
+    return clientId === 'opencode-v1'
+      ? await pullV1IntoOcr(ocr, overrides)
+      : await pullV2IntoOcr(ocr, overrides);
+  } catch (e) {
+    return { ok: false, entries: [], detail: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** Push the OCR file's credentials into one client. Never throws. */
+export async function pushFromOcr(
+  clientId: SyncClientId,
+  ocr: CredentialStore,
+  overrides: SyncOverrides & { provider?: string } = {}
+): Promise<SyncRunOutcome> {
+  try {
+    return clientId === 'opencode-v1'
+      ? await pushOcrIntoV1(ocr, overrides)
+      : await pushOcrIntoV2(ocr, overrides);
+  } catch (e) {
+    return { ok: false, entries: [], detail: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// One-shot v2 migration — routing continuity for the store flip (v2 only; the
+// v1 direction is covered by the standalone import + the continuous pull).
+// ---------------------------------------------------------------------------
+
 export async function maybeRunV2Migration(
   ocr: CredentialStore,
   overrides: SyncOverrides = {}
@@ -417,7 +627,7 @@ export async function maybeRunV2Migration(
   if (rec.migration?.doneAt) return;
 
   const outcome = await pullV2IntoOcr(ocr, overrides);
-  if (outcome.precondition === 'db_absent') return; // nothing to migrate (yet) — no marker, zero cost
+  if (outcome.precondition === 'client_absent') return; // nothing to migrate (yet) — no marker, zero cost
   if (!outcome.ok) {
     log.warn(
       `${LOG_PREFIX} v2 migration incomplete (${outcome.precondition ?? 'entry failures'}) — marker withheld, retried next boot`
@@ -453,34 +663,23 @@ export interface SyncRunResult {
   write?: SyncRunOutcome;
 }
 
-/** Execute a direction (or both) and persist the outcomes. Never throws. */
+/** Execute a direction (or both) for one client and persist the outcomes. Never throws. */
 export async function runCredentialSync(
+  clientId: SyncClientId,
   direction: SyncDirectionRequest,
   ocr: CredentialStore,
   overrides: SyncOverrides = {}
 ): Promise<SyncRunResult> {
   const result: SyncRunResult = {};
   if (direction === 'read' || direction === 'both') {
-    result.read = await safeRun(() => pullV2IntoOcr(ocr, overrides));
-    recordSyncOutcome('read', result.read, overrides);
+    result.read = await pullIntoOcr(clientId, ocr, overrides);
+    recordSyncOutcome(clientId, 'read', result.read, overrides);
   }
   if (direction === 'write' || direction === 'both') {
-    result.write = await safeRun(() => pushOcrIntoV2(ocr, overrides));
-    recordSyncOutcome('write', result.write, overrides);
+    result.write = await pushFromOcr(clientId, ocr, overrides);
+    recordSyncOutcome(clientId, 'write', result.write, overrides);
   }
   return result;
-}
-
-async function safeRun(run: () => Promise<SyncRunOutcome>): Promise<SyncRunOutcome> {
-  try {
-    return await run();
-  } catch (e) {
-    return {
-      ok: false,
-      entries: [],
-      detail: e instanceof Error ? e.message : String(e),
-    };
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -492,8 +691,8 @@ interface SyncEngine {
   overrides: SyncOverrides;
   pollTimer: ReturnType<typeof setInterval> | null;
   writeTimer: ReturnType<typeof setTimeout> | null;
-  reading: boolean;
-  writing: boolean;
+  reading: Set<SyncClientId>;
+  writing: Set<SyncClientId>;
 }
 
 let engine: SyncEngine | null = null;
@@ -501,12 +700,19 @@ let engine: SyncEngine | null = null;
 /** Boot hook: migration one-shot + auto timers + the OCR mutation hook. */
 export async function initCredentialSync(store: CredentialStore, overrides: SyncOverrides = {}): Promise<void> {
   stopCredentialSync();
-  engine = { store, overrides, pollTimer: null, writeTimer: null, reading: false, writing: false };
+  engine = {
+    store,
+    overrides,
+    pollTimer: null,
+    writeTimer: null,
+    reading: new Set(),
+    writing: new Set(),
+  };
 
   await maybeRunV2Migration(store, overrides);
 
-  // Auto-write: OCR mutation -> debounced push. The toggle is checked at FIRE
-  // time, so toggling off between the mutation and the debounce elapse skips.
+  // Auto-write: OCR mutation -> debounced push (every client with the toggle
+  // on, checked at FIRE time so toggling off mid-debounce skips).
   if (store instanceof OcrStore) {
     store.setMutationHook(() => scheduleAutoWrite());
   }
@@ -526,8 +732,8 @@ export function stopCredentialSync(): void {
 }
 
 /**
- * The periodic tick drives BOTH directions:
- *  - autoRead  → pull the client db into the OCR file (periodic read-sync);
+ * The periodic tick drives BOTH directions for EVERY client:
+ *  - autoRead  → pull the client's credentials into the OCR file (periodic read-sync);
  *  - autoWrite → the realtime path is the mutation debounce, and this tick is
  *    its periodic SAFETY NET: a write that failed (service down at mutation
  *    time) or never ran is retried here, so the client converges without a
@@ -535,30 +741,33 @@ export function stopCredentialSync(): void {
  *    nothing to do until the next OCR mutation.
  */
 async function tickAutoPoll(): Promise<void> {
-  if (!engine || engine.reading || engine.writing) return;
+  if (!engine) return;
   const { store, overrides } = engine;
   const paths = overrides.paths ?? resolveDefaultPaths();
-  const client = clientStateOf(readSyncState(paths));
-  if (client.autoRead) {
-    engine.reading = true;
-    try {
-      const outcome = await safeRun(() => pullV2IntoOcr(store, overrides));
-      recordSyncOutcome('read', outcome, overrides);
-    } finally {
-      if (engine) engine.reading = false;
+  const rec = readSyncState(paths);
+  for (const client of SYNC_CLIENTS) {
+    const state = clientStateOf(rec, client.id);
+    if (state.autoRead && !engine.reading.has(client.id)) {
+      engine.reading.add(client.id);
+      void pullIntoOcr(client.id, store, overrides)
+        .then((outcome) => recordSyncOutcome(client.id, 'read', outcome, overrides))
+        .catch(() => undefined)
+        .finally(() => {
+          if (engine) engine.reading.delete(client.id);
+        });
     }
-  }
-  if (client.autoWrite && !engine.writing) {
-    // Re-read after the pull: a fresh pull that added keys is exactly the
-    // state a lagging write retry should converge (dedup keeps it idempotent).
-    const fresh = clientStateOf(readSyncState(paths));
-    if (!fresh.lastWrite || !fresh.lastWrite.ok) {
-      engine.writing = true;
-      try {
-        const outcome = await safeRun(() => pushOcrIntoV2(store, overrides));
-        recordSyncOutcome('write', outcome, overrides);
-      } finally {
-        if (engine) engine.writing = false;
+    if (state.autoWrite && !engine.writing.has(client.id)) {
+      // Re-read per client: a fresh pull that added keys is exactly the state a
+      // lagging write retry should converge (dedup keeps it idempotent).
+      const fresh = clientStateOf(readSyncState(paths), client.id);
+      if (!fresh.lastWrite || !fresh.lastWrite.ok) {
+        engine.writing.add(client.id);
+        void pushFromOcr(client.id, store, overrides)
+          .then((outcome) => recordSyncOutcome(client.id, 'write', outcome, overrides))
+          .catch(() => undefined)
+          .finally(() => {
+            if (engine) engine.writing.delete(client.id);
+          });
       }
     }
   }
@@ -572,20 +781,21 @@ function scheduleAutoWrite(): void {
   engine.writeTimer.unref?.();
 }
 
+/** The realtime auto-write path: push to EVERY client whose toggle is on. */
 async function tickAutoWrite(): Promise<void> {
-  if (!engine || engine.writing) return;
+  if (!engine) return;
   const { store, overrides } = engine;
-  const client = clientStateOf(readSyncState(overrides.paths ?? resolveDefaultPaths()));
-  if (!client.autoWrite) return;
-  engine.writing = true;
-  if (engine.writeTimer) {
-    clearTimeout(engine.writeTimer);
-    engine.writeTimer = null;
-  }
-  try {
-    const outcome = await safeRun(() => pushOcrIntoV2(store, overrides));
-    recordSyncOutcome('write', outcome, overrides);
-  } finally {
-    if (engine) engine.writing = false;
+  const paths = overrides.paths ?? resolveDefaultPaths();
+  const rec = readSyncState(paths);
+  for (const client of SYNC_CLIENTS) {
+    const state = clientStateOf(rec, client.id);
+    if (!state.autoWrite || engine.writing.has(client.id)) continue;
+    engine.writing.add(client.id);
+    void pushFromOcr(client.id, store, overrides)
+      .then((outcome) => recordSyncOutcome(client.id, 'write', outcome, overrides))
+      .catch(() => undefined)
+      .finally(() => {
+        if (engine) engine.writing.delete(client.id);
+      });
   }
 }

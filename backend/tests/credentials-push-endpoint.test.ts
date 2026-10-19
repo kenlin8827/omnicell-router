@@ -196,7 +196,7 @@ describe('POST /api/admin/credential-store/push', () => {
     expect(posts).toBe(postsBefore);
   });
 
-  it('no opencode v2 service (no service.json, no env): 400 opencode_v2_service_unreachable, locals untouched', async () => {
+  it('no opencode v2 service (no service.json, no env): 400 service_unreachable, locals untouched', async () => {
     const paths = sandboxPaths(false);
     await seedLocal(paths, [['anthropic', 'sk-orphan-key']]);
     const { calls, fetchImpl } = makeFetch(() => ({ status: 200 }));
@@ -204,7 +204,7 @@ describe('POST /api/admin/credential-store/push', () => {
     const res = await app.inject({ method: 'POST', url: '/api/admin/credential-store/push', payload: {} });
     expect(res.statusCode).toBe(400);
     const body = res.json();
-    expect(body.reasonCode).toBe('opencode_v2_service_unreachable');
+    expect(body.reasonCode).toBe('service_unreachable');
     expect(body.status).toBe('error');
     expect(body.pushed).toEqual([]);
     expect(body.failed).toEqual([]);
@@ -212,14 +212,14 @@ describe('POST /api/admin/credential-store/push', () => {
     expect(readLocalFile(paths).providers.anthropic).toHaveLength(1);
   });
 
-  it('opencode v2 db unreadable (service up, db down): 400 opencode_v2_db_unreadable before any push', async () => {
+  it('opencode v2 db unreadable (service up, db down): 400 client_unreadable before any push', async () => {
     const paths = sandboxPaths();
     await seedLocal(paths, [['anthropic', 'sk-not-yet']]);
     const { calls, fetchImpl } = makeFetch(() => ({ status: 200 }));
     bindOcr(paths, fetchImpl, throwingOpener);
     const res = await app.inject({ method: 'POST', url: '/api/admin/credential-store/push', payload: {} });
     expect(res.statusCode).toBe(400);
-    expect(res.json().reasonCode).toBe('opencode_v2_db_unreadable');
+    expect(res.json().reasonCode).toBe('client_unreadable');
     expect(calls.filter((c) => c.method === 'POST')).toHaveLength(0);
     expect(readLocalFile(paths).providers.anthropic).toHaveLength(1);
   });
