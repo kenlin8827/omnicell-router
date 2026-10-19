@@ -502,10 +502,10 @@ export const CombosPage: React.FC = () => {
         setMeta(byId);
         setCombos((comboRes.combos || []).map(toDraft));
         // Registered physical models only — virtual auto-* entries and combos
-        // are owned_by 'opencode-router'. Tier presence is deliberately NOT
+        // are owned_by 'onecast-router'. Tier presence is deliberately NOT
         // the criterion: combos are the sanctioned way to call pool-less
         // (unclassified) models, so those must stay selectable here.
-        const registered = models.filter(m => m.owned_by !== 'opencode-router');
+        const registered = models.filter(m => m.owned_by !== 'onecast-router');
         const connected = new Set((provRes.providers || []).filter(p => p.auth?.connected).map(p => p.id));
         setRegisteredIds(new Set(registered.map(m => m.id)));
         setModelOptions(registered.filter(m => connected.has(m.owned_by)).map(m => ({ value: m.id, label: m.id })));

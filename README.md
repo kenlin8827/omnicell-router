@@ -1,4 +1,4 @@
-# OpenCode Router (OCR)
+# OneCastRouter (OCR)
 
 <div align="center">
 
@@ -15,11 +15,11 @@
 
 ---
 
-## What is OpenCode Router (OCR)?
+## What is OneCastRouter (OCR)?
 
-**OpenCode Router (OCR)** is a high-performance, local-first LLM API cascading router and FinOps orchestration gateway. It connects seamlessly to your local **OpenCode v2** daemon, enabling keyless upstream proxying with zero API key exposure across clients.
+**OneCastRouter (OCR)** is a high-performance, local-first LLM API cascading router and FinOps orchestration gateway. It connects seamlessly to your local **OpenCode v2** daemon, enabling keyless upstream proxying with zero API key exposure across clients.
 
-By combining **hierarchical 3-layer model-driven routing**, **monotonic session ratcheting**, **upstream KV prompt cache protection**, and **local schema static assertions**, OpenCode Router (OCR) reduces LLM API expenditures by **70% to 90%** with zero degradation in conversational intellect.
+By combining **hierarchical 3-layer model-driven routing**, **monotonic session ratcheting**, **upstream KV prompt cache protection**, and **local schema static assertions**, OneCastRouter (OCR) reduces LLM API expenditures by **70% to 90%** with zero degradation in conversational intellect.
 
 ---
 
@@ -40,14 +40,14 @@ By combining **hierarchical 3-layer model-driven routing**, **monotonic session 
 ## Quick Start
 
 ### 1. Requirements
-* **OpenCode v2** — required. OCR targets opencode v2 (provider config in the `providers` node, credentials in `opencode.db` + its HTTP service). **opencode v1 is not supported**: on a v1 install OCR keeps working but degrades — providers and keys are managed in OCR's own store (`~/.opencode-router/credentials.json`), which opencode v1 cannot read, so they serve OCR's gateway only. The console badges this with an explicit warning. Upgrade opencode to v2 to share one credential truth.
+* **OpenCode v2** — required. OCR targets opencode v2 (provider config in the `providers` node, credentials in `opencode.db` + its HTTP service). **opencode v1 is not supported**: on a v1 install OCR keeps working but degrades — providers and keys are managed in OCR's own store (`~/.onecast-router/credentials.json`), which opencode v1 cannot read, so they serve OCR's gateway only. The console badges this with an explicit warning. Upgrade opencode to v2 to share one credential truth.
 * **Bun** (Recommended for peak performance): `>= 1.0`, or **Node.js**: `>= 18`.
 
 ### 2. Installation
 ```bash
 # Clone the repository
-git clone https://github.com/kenlin8827/opencode-router.git
-cd opencode-router
+git clone https://github.com/kenlin8827/onecast-router.git
+cd onecast-router
 
 # Using Bun (Recommended)
 bun install
@@ -57,16 +57,16 @@ npm install
 ```
 
 ### 3. Configuration
-Each environment owns its own configuration — the default one lives at `~/.opencode-router/envs/default/config.yaml`. The first boot creates it automatically from a self-documenting template; to start from the annotated example instead, copy it there:
+Each environment owns its own configuration — the default one lives at `~/.onecast-router/envs/default/config.yaml`. The first boot creates it automatically from a self-documenting template; to start from the annotated example instead, copy it there:
 ```bash
-mkdir -p ~/.opencode-router/envs/default
-cp config.example.yaml ~/.opencode-router/envs/default/config.yaml
+mkdir -p ~/.onecast-router/envs/default
+cp config.example.yaml ~/.onecast-router/envs/default/config.yaml
 ```
 > 💡 **Tip**: Upstream models and credentials are automatically discovered from OpenCode. `config.yaml` works out of the box with zero manual API keys required!
 
-> 📦 **Environments**: keep separate book-sets (config, keys, sessions, captures, flywheel data) under `~/.opencode-router/envs/<name>/` — `ocr env create <name>` / `ocr env use <name>`, or the console `/environments` page. Switching restarts the gateway.
+> 📦 **Environments**: keep separate book-sets (config, keys, sessions, captures, flywheel data) under `~/.onecast-router/envs/<name>/` — `ocr env create <name>` / `ocr env use <name>`, or the console `/environments` page. Switching restarts the gateway.
 
-> ⚙️ **Bootstrap levers**: `OCR_ENV` (which environment boots) and `OCR_HOME` (state root, default `~/.opencode-router`) are read from the **process environment only** — OCR has no `.env` file loader. To run a scratch instance: `OCR_HOME=/tmp/ocr-scratch bun run ocr start`. Selecting the environment day-to-day is `ocr env use <name>` (or the console page), which writes `~/.opencode-router/envs/current`.
+> ⚙️ **Bootstrap levers**: `OCR_ENV` (which environment boots) and `OCR_HOME` (state root, default `~/.onecast-router`) are read from the **process environment only** — OCR has no `.env` file loader. To run a scratch instance: `OCR_HOME=/tmp/ocr-scratch bun run ocr start`. Selecting the environment day-to-day is `ocr env use <name>` (or the console page), which writes `~/.onecast-router/envs/current`.
 
 ### 4. Start the Gateway
 ```bash
@@ -97,7 +97,7 @@ Example response:
 
 ## Client Integrations
 
-OpenCode Router (OCR) is fully compatible with OpenAI API standards. Simply point your client's **API Base URL** to this gateway.
+OneCastRouter (OCR) is fully compatible with OpenAI API standards. Simply point your client's **API Base URL** to this gateway.
 
 ### 1. Cursor IDE
 1. Open Cursor Settings: `Settings` -> `Models`.
@@ -172,7 +172,7 @@ curl http://127.0.0.1:3000/v1/chat/completions \
 
 ## Available Virtual Models
 
-In addition to exposing all registered upstream physical models, OpenCode Router (OCR) provides virtual cascading models:
+In addition to exposing all registered upstream physical models, OneCastRouter (OCR) provides virtual cascading models:
 
 | Model ID | Purpose & Behavior | Cost Profile |
 | :--- | :--- | :--- |
@@ -294,24 +294,24 @@ curl -X POST http://127.0.0.1:3000/v1/health/circuit-breakers/reset
 
 ## FAQ
 
-### Q1: Do I need to enter provider API keys into OpenCode Router?
-**No**. OpenCode Router (OCR) connects directly to your local OpenCode v2 daemon. All credentials, active providers, and pricing tables configured in OpenCode are automatically synchronized and utilized.
+### Q1: Do I need to enter provider API keys into OneCastRouter?
+**No**. OneCastRouter (OCR) connects directly to your local OpenCode v2 daemon. All credentials, active providers, and pricing tables configured in OpenCode are automatically synchronized and utilized.
 
 ### Q2: Why won't conversations become "dumber" mid-dialogue?
-Standard stateless routers dispatch short follow-ups (e.g. "thanks", "fix line 3") to cheap micro-models based on short character length, causing severe hallucinations over 10k+ token histories. OpenCode Router (OCR) enforces a **Monotonic Session Ratchet**: once a dialogue reaches higher tiers (plus/pro/ultra), it locks strictly to that tier and pins to the exact same model instance, safeguarding intellect and preserving upstream KV Cache.
+Standard stateless routers dispatch short follow-ups (e.g. "thanks", "fix line 3") to cheap micro-models based on short character length, causing severe hallucinations over 10k+ token histories. OneCastRouter (OCR) enforces a **Monotonic Session Ratchet**: once a dialogue reaches higher tiers (plus/pro/ultra), it locks strictly to that tier and pins to the exact same model instance, safeguarding intellect and preserving upstream KV Cache.
 
 ### Q3: Does the initial untrained micro-model misclassify requests?
 **Never**. The zero-weight base model scaffold ($W=\mathbf{0}, b=\mathbf{0}$) produces a uniform Softmax probability of $0.25$ across the 4 tiers, strictly below the $0.85$ confidence threshold. This guarantees 100% deterministic cascade to Layer 2 until training samples accumulate.
 
 ### Q4: How does the router handle upstream outages or quota exhaustion?
-**OpenCode Router (OCR) provides enterprise-grade resilience & failover (ADR-0004)**:
+**OneCastRouter (OCR) provides enterprise-grade resilience & failover (ADR-0004)**:
 - **Quota / Balance Exhaustion (HTTP 402)**: Hard-trips immediately into OPEN (default 12h cooldown), bypassing the model with zero latency.
 - **Service Outages (5xx / Timeouts)**: Tripped upon consecutive failures or sliding window error rates, applying exponential backoff up to 5 hours max.
 - **Transparent Same-Tier Failover**: Automatically retries across candidate models within the same tier in milliseconds; the client receives a seamless 200 response.
 - **Session-Pin Eviction**: A bound session is hard-switched onto a healthy landing (write-back included) when the pinned model leaves its pool — config edit, denylist, removal — or reads fully `unavailable` (model breaker open, or every credential down); cross-tier landing is allowed when the tier is empty, and with no healthy landing the session keeps serving on its pin (safe fail, retried next turn).
 
 ### Q5: Does model switching cause KV prompt cache invalidation and 10x cost explosion?
-**Never**. OpenCode Router (OCR) implements a **Cost-Aware Two-Tier Retry Engine (ADR-0005)**:
+**Never**. OneCastRouter (OCR) implements a **Cost-Aware Two-Tier Retry Engine (ADR-0005)**:
 - **Tier 1: In-Place Retry**: Transient 5xx / timeout glitches trigger a quick (200ms + 100ms jitter) retry on the *same model*, resolving ~70% of cloud gateway blips while **saving 100% of the warmed KV prompt cache** (preserving the 90% discount on 50k+ tokens).
 - **Tier 2: Failover & Anti-Downgrade**: If in-place retry is exhausted, the router fails over across same-tier models. If all lite models fail, it permits controlled upward escalation to plus/pro/ultra; **downward downgrades from higher tiers to lite are strictly prohibited** to prevent hallucinations from polluting production code.
 

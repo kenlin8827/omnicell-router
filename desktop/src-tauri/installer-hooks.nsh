@@ -4,13 +4,13 @@
 ; fresh build afterwards.
 
 !macro NSIS_HOOK_PREINSTALL
-  nsExec::Exec 'taskkill /F /T /IM "OpenCode Router.exe"'
+  nsExec::Exec 'taskkill /F /T /IM "OneCastRouter.exe"'
   nsExec::Exec 'taskkill /F /T /IM ocr-backend.exe'
   Sleep 1500
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
-  Exec '"$INSTDIR\OpenCode Router.exe"'
+  Exec '"$INSTDIR\OneCastRouter.exe"'
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL

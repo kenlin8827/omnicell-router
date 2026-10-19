@@ -58,7 +58,7 @@ export interface ExtractedFeatures {
 export const DEFAULT_BASE_MODEL: Layer1ModelWeights = {
   version: '1.1.0',
   modelType: 'linear_softmax_classifier',
-  description: 'Language-agnostic micro CPU classifier scaffold for OCR (OpenCode Router) Layer 1 (4-tier: lite/plus/pro/ultra)',
+  description: 'Language-agnostic micro CPU classifier scaffold for OCR (OneCastRouter) Layer 1 (4-tier: lite/plus/pro/ultra)',
   isBaseModel: true,
   sampleCount: 0,
   lastTrainedAt: null,

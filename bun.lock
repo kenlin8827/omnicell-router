@@ -3,7 +3,7 @@
   "configVersion": 0,
   "workspaces": {
     "": {
-      "name": "opencode-router",
+      "name": "onecast-router-monorepo",
       "devDependencies": {
         "@types/node": "^22.13.9",
         "tsx": "^4.19.3",
@@ -11,7 +11,7 @@
       },
     },
     "backend": {
-      "name": "@opencode-router/backend",
+      "name": "@onecast-router/backend",
       "version": "0.0.1",
       "dependencies": {
         "@fastify/cors": "^11.0.0",
@@ -32,7 +32,7 @@
       },
     },
     "frontend": {
-      "name": "@opencode-router/frontend",
+      "name": "@onecast-router/frontend",
       "version": "0.0.1",
       "dependencies": {
         "@codemirror/lang-yaml": "^6.1.3",
@@ -212,9 +212,9 @@
 
     "@napi-rs/lzma-linux-x64-gnu": ["@napi-rs/lzma-linux-x64-gnu@1.5.1", "https://registry.npmmirror.com/@napi-rs/lzma-linux-x64-gnu/-/lzma-linux-x64-gnu-1.5.1.tgz", { "os": "linux", "cpu": "x64" }, "sha512-oTXEIha4SsuXdTA4Iyskj0kpdx2yVXdhd75c2v3xGrHFfVMsbhTPZU/nMPL4sWKo4pBHm3aucLaqGlF696dTyQ=="],
 
-    "@opencode-router/backend": ["@opencode-router/backend@workspace:backend"],
+    "@onecast-router/backend": ["@onecast-router/backend@workspace:backend"],
 
-    "@opencode-router/frontend": ["@opencode-router/frontend@workspace:frontend"],
+    "@onecast-router/frontend": ["@onecast-router/frontend@workspace:frontend"],
 
     "@pinojs/redact": ["@pinojs/redact@0.4.0", "https://registry.npmmirror.com/@pinojs/redact/-/redact-0.4.0.tgz", {}, "sha512-k2ENnmBugE/rzQfEcdWHcCY+/FM3VLzH9cYEsbdsoqrvzAKRhUZeRNhAZvB8OitQJ1TBed3yqWtdjzS6wJKBwg=="],
 

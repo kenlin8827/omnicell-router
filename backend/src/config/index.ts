@@ -695,7 +695,7 @@ export function saveConfig(newConfig: Partial<RouterConfig>): { success: boolean
 // whatever comments the user typed.
 
 const YAML_FILE_HEADER = [
-  'OpenCode Router 网关配置（config.yaml）',
+  'OneCastRouter 网关配置（config.yaml）',
   '可视化编辑：控制台「可视化配置」页；手写编辑：「配置文件」页（原文保存，注释保留）',
   '注意：大部分配置保存即时生效（代理/捕捉/梯队/组合/熔断/限流等，逐项见注释）；标注「重启网关生效」的段落需重启；价格单位均为 美元/百万 tokens',
 ].join('\n');
@@ -838,7 +838,7 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'forwardProxy.port': '代理监听端口（默认 4555；客户端 HTTP_PROXY/HTTPS_PROXY 指向 http://127.0.0.1:4555）',
   'forwardProxy.host': '代理监听地址（默认 127.0.0.1，仅本机）',
   'forwardProxy.bypassHosts': '例外主机（glob）：纯字符串 = 直连隧道；{ host, viaProxy: true } = 经出站代理隧道（逐主机勾选）；loopback 永远绕过',
-  'forwardProxy.caDir': 'MITM CA 存放目录（默认 ~/.opencode-router/forward-proxy）',
+  'forwardProxy.caDir': 'MITM CA 存放目录（默认 ~/.onecast-router/forward-proxy）',
   'forwardProxy.viaOutboundProxy': '非例外主机的转发请求（未被拦截接管的 GET 等）是否经出站代理；例外主机的出站方式在 bypassHosts 逐行勾选',
   compression: 'Token 压缩（rtk 工具输出压缩 + headroom 上下文压缩 + caveman 输出风格注入；全部失败时放行原文，重启网关生效）',
   'compression.rtk.enabled': 'rtk 工具输出压缩：git/grep/ls/tree/日志/构建输出等工具结果文本压缩 60-90%（本地确定性压缩器，不破坏上游前缀缓存）',

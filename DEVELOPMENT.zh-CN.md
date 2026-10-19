@@ -1,4 +1,4 @@
-# OpenCode Router (OCR) 开发者与架构深度指南 (Developer Guide)
+# OneCastRouter (OCR) 开发者与架构深度指南 (Developer Guide)
 
 [![Runtime](https://img.shields.io/badge/Runtime-Bun%20%7C%20Node.js-blue.svg)](https://bun.sh)
 [![Architecture](https://img.shields.io/badge/Architecture-Three--Layer%20Model--Driven-purple.svg)]()
@@ -6,7 +6,7 @@
 
 [English Version](DEVELOPMENT.md) | [简体中文](DEVELOPMENT.zh-CN.md) | [返回用户文档 (User README)](README.zh-CN.md)
 
-> 本文档面向参与 **OpenCode Router (OCR)** 核心研发、二次开发、私有化部署调优以及算法研究的开发者。  
+> 本文档面向参与 **OneCastRouter (OCR)** 核心研发、二次开发、私有化部署调优以及算法研究的开发者。  
 > 涵盖三层全模型驱动流水线架构设计、微张量冷启动数学证明、单调棘轮状态机原理、数据飞轮蒸馏训练流程及测试矩阵。
 
 ---
@@ -26,7 +26,7 @@
 
 ## 一、全局流水线与架构设计
 
-OpenCode Router (OCR) 摒弃了行业内常见的字符长度规则（如 `prompt.length < 20 -> 小模型`）和词表匹配，构建了严格的三层分级流水线：
+OneCastRouter (OCR) 摒弃了行业内常见的字符长度规则（如 `prompt.length < 20 -> 小模型`）和词表匹配，构建了严格的三层分级流水线：
 
 ```
                       客户端请求 (Cursor / Chatbox / NextChat / WebUI / 各种官方 SDK)
@@ -107,7 +107,7 @@ Layer 1 分类器提取的 8 维连续特征向量 $x = [x_1, x_2, \dots, x_8]^T
 | $x_8$ | `punctuation_density` | 通用标点符号 (`?!,.:;`) 出现频次密度 |
 
 ### 3. 零 Header 前缀链哈希抗碰撞证明
-在无显式 Session ID 的情况下，OpenCode Router (OCR) 采用前缀链哈希（Prefix-Chain Hash）追踪多轮对话：
+在无显式 Session ID 的情况下，OneCastRouter (OCR) 采用前缀链哈希（Prefix-Chain Hash）追踪多轮对话：
 $$\mathcal{H}_{\text{session}} = \text{SHA256}(\text{CanonicalJSON}(\text{messages}[0 \dots n-2]))$$
 
 **抗碰撞性分析**：
@@ -121,7 +121,7 @@ $$P(\text{collision}) \le \frac{k^2}{2 \times 2^{256}} \approx 0$$
 ## 三、核心模块职责与工程目录结构
 
 ```
-opencode-router/
+onecast-router/
 ├── src/
 │   ├── router/                    # 三层路由仲裁引擎
 │   │   ├── layer1-classifier.ts   # Layer 1: CPU 微张量特征分类器与原地训练引擎
@@ -201,7 +201,7 @@ Layer 2 专职裁决 / Layer 1 Schema 校验失败
    ```
    训练输出示例：
    ```
-   🧠 OCR (OpenCode Router) Layer 1 Classifier Trainer (Active Learning)
+   🧠 OCR (OneCastRouter) Layer 1 Classifier Trainer (Active Learning)
    📊 Successfully loaded flywheel dataset: 58 records
    🎯 Valid training samples: 58 (including 6 fallback-corrected negative samples)
    ⏳ Running micro-tensor Softmax cross-entropy gradient descent (with L2 regularization)...

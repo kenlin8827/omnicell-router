@@ -234,7 +234,7 @@ async function main() {
     // the old (now-exiting) gateway, and nobody else rewrites them.
     if (isRestartChild) writeDaemonFiles(process.pid, config.port, config.host);
     console.log('\n============================================================');
-    console.log(`🚀 OCR Gateway (OpenCode Router) is ready! (OpenAI API Compatible)`);
+    console.log(`🚀 OCR Gateway (OneCastRouter) is ready! (OpenAI API Compatible)`);
     console.log(`👉 API Base URL     : http://127.0.0.1:${config.port}/v1`);
     console.log(`👉 Default Model    : auto (Virtual models: auto, auto-lite, auto-plus, auto-pro, auto-ultra)`);
     console.log(`👉 Chat Completions : http://127.0.0.1:${config.port}/v1/chat/completions`);

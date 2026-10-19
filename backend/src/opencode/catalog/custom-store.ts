@@ -5,7 +5,7 @@ import { getOcrStorePath } from './ocr-store.js';
 import { matchesGlobPattern } from '../user-config.js';
 
 /**
- * Custom-pull store (~/.opencode-router/catalog/custom.json).
+ * Custom-pull store (~/.onecast-router/catalog/custom.json).
  *
  * Models pulled for CREDENTIAL-ONLY providers (auth.json entry without an
  * opencode.jsonc definition) — they have no jsonc node to write into, so the

@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 
 const backendPort = process.env.PORT || '3000';
-console.log(`🚀 Starting OpenCode Router (OCR) Full-Stack Development Services...`);
+console.log(`🚀 Starting OneCastRouter (OCR) Full-Stack Development Services...`);
 console.log(`   ├─ Backend API:  http://127.0.0.1:${backendPort}`);
 console.log(`   └─ Frontend App: http://127.0.0.1:5173\n`);
 

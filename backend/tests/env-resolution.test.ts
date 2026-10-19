@@ -26,7 +26,7 @@ import { applyConfig as applyDecisionCaptureConfig } from '../src/flywheel/decis
  *
  * Every test runs against a FRESH temp OCR_HOME (plus a chdir'd sandbox cwd
  * that no config resolution consults anymore), so neither the operator's real
- * ~/.opencode-router nor the repo's real config can leak into a run. The
+ * ~/.onecast-router nor the repo's real config can leak into a run. The
  * env module caches its resolution per process, so each phase of a test
  * calls __resetEnvResolutionForTests() after mutating OCR_ENV / OCR_HOME /
  * the pointer / the cwd — the same restart-semantics the design assumes,

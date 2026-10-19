@@ -2,7 +2,7 @@
 // itself is a GUI binary; keep the console in dev for logs).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-// OpenCode Router desktop shell (Tauri v2).
+// OneCastRouter desktop shell (Tauri v2).
 //
 // Lifecycle: (optionally) spawn the gateway sidecar next to this binary,
 // wait for its /health, then open a window on the console UI the gateway
@@ -230,7 +230,7 @@ fn build_tray(app: &tauri::App, close_to_tray: bool) -> tauri::Result<()> {
                 .expect("bundle provides a window icon")
                 .clone(),
         )
-        .tooltip("OpenCode Router")
+        .tooltip("OneCastRouter")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
@@ -288,11 +288,11 @@ fn shell_log(home: &std::path::Path, msg: &str) {
 }
 
 /// Same data root `ocr desktop` / the daemon tooling already assume
-/// (%LOCALAPPDATA%\opencode-router).
+/// (%LOCALAPPDATA%\onecast-router).
 #[cfg(windows)]
 fn default_ocr_home(resource_dir: &std::path::Path) -> std::path::PathBuf {
     std::env::var("LOCALAPPDATA")
-        .map(|d| std::path::PathBuf::from(d).join("opencode-router"))
+        .map(|d| std::path::PathBuf::from(d).join("onecast-router"))
         .unwrap_or_else(|_| resource_dir.join("data"))
 }
 
@@ -357,15 +357,15 @@ fn registry_user_path() -> Option<String> {
 fn default_ocr_home(resource_dir: &std::path::Path) -> std::path::PathBuf {
     if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
         if !xdg.trim().is_empty() {
-            return std::path::PathBuf::from(xdg).join("opencode-router");
+            return std::path::PathBuf::from(xdg).join("onecast-router");
         }
     }
     if let Ok(home) = std::env::var("HOME") {
         if !home.trim().is_empty() {
             if cfg!(target_os = "macos") {
-                return std::path::PathBuf::from(home).join("Library/Application Support/opencode-router");
+                return std::path::PathBuf::from(home).join("Library/Application Support/onecast-router");
             }
-            return std::path::PathBuf::from(home).join(".local/share/opencode-router");
+            return std::path::PathBuf::from(home).join(".local/share/onecast-router");
         }
     }
     resource_dir.join("data")
@@ -447,7 +447,7 @@ fn boot(app: &tauri::App) -> Result<(), String> {
     // NOTE: not WebviewWindowBuilder::center() — that centers on the WORK
     // AREA (excluding the taskbar); we center on the full monitor below.
     WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-        .title("OpenCode Router")
+        .title("OneCastRouter")
         .inner_size(default_w, default_h)
         .build()
         .map_err(|e| format!("failed to open the app window:\n{e}"))?;
@@ -585,10 +585,10 @@ fn main() {
                 shell_log(&log_home, &format!("boot failed: {msg}"));
                 app.dialog()
                     .message(format!(
-                        "OpenCode Router failed to start:\n\n{msg}\n\nShell log: {}",
+                        "OneCastRouter failed to start:\n\n{msg}\n\nShell log: {}",
                         log_home.join("desktop.log").display()
                     ))
-                    .title("OpenCode Router")
+                    .title("OneCastRouter")
                     .blocking_show();
                 if let Some(home) = home {
                     kill_gateway_tree(&home);

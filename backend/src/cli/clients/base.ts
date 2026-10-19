@@ -6,7 +6,7 @@ import { loadConfig } from '../../config/index.js';
 export const OCR_DEFAULT_PORT = 4000;
 export const OCR_DEFAULT_URL = `http://127.0.0.1:${OCR_DEFAULT_PORT}`;
 export const OCR_DEFAULT_V1_URL = `${OCR_DEFAULT_URL}/v1`;
-export const OCR_WATERMARK = 'opencode-router-managed';
+export const OCR_WATERMARK = 'onecast-router-managed';
 
 /**
  * Port the gateway actually listens on — config.yaml `port` is the single

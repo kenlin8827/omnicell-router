@@ -24,7 +24,7 @@ import { ClientHookStatus, VIRTUAL_AUTO_IDS } from '../types.js';
  * setup hooks every profile directory that exists; none exist → create the
  * canonical `web`. Status is hooked when ANY profile carries the route.
  */
-const DSH_PROVIDER_KEY = 'opencode-router';
+const DSH_PROVIDER_KEY = 'onecast-router';
 
 /** Patch entry selectors accepted when locating the pi-ai adapter section. */
 const PIAI_SELECTORS = new Set(['llm-pi-ai', '@deepseek-ai/dsh-llm-pi-ai']);
@@ -130,7 +130,7 @@ export class DshClientAdapter implements ClientAdapter {
       // change → re-apply hint); the hooked state itself is key + URL presence.
       details = stalePort
         ? `Routed via OCR gateway in profile(s) ${hookedProfiles.join(', ')} — current port is :${defaultGatewayPort()}, re-apply setup to refresh`
-        : `Routed to OpenCode Router gateway (${hookedProfiles.join(', ')})`;
+        : `Routed to OneCastRouter gateway (${hookedProfiles.join(', ')})`;
     }
 
     const models: any[] = route && Array.isArray(route.models) ? route.models : [];
@@ -197,7 +197,7 @@ export class DshClientAdapter implements ClientAdapter {
     const names: string[] = [];
     for (const [file, entries] of parsed) {
       const route = {
-        displayName: 'OpenCode Router',
+        displayName: 'OneCastRouter',
         api: 'openai-completions',
         baseURL: targetUrl,
         // Credentials never live as apiKeyEnv literals — dsh resolves refs per

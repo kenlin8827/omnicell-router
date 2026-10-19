@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@opencode-router/desktop",
+      "name": "@onecast-router/desktop",
       "devDependencies": {
         "@tauri-apps/cli": "^2.12.3",
       },

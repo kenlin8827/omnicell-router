@@ -27,7 +27,7 @@ function record(name: string, passed: boolean, start: number, details: string) {
 
 async function run() {
   console.log('\n========================================================================');
-  console.log('🧪 Starting 100% End-to-End Full System Verification for OpenCode Router (OCR)');
+  console.log('🧪 Starting 100% End-to-End Full System Verification for OneCastRouter (OCR)');
   console.log('========================================================================\n');
 
   const TEST_PORT = 3100;

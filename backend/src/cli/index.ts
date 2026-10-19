@@ -30,7 +30,7 @@ const C = {
 
 function printBanner(): void {
   console.log(`
-${C.cyan}${C.bold}  ⚡ OpenCode Router (OCR)${C.reset} ${C.dim}v${APP_VERSION}${C.reset}
+${C.cyan}${C.bold}  ⚡ OneCastRouter (OCR)${C.reset} ${C.dim}v${APP_VERSION}${C.reset}
   ${C.dim}High-Performance FinOps & Cascading Gateway for AI Coding Agents${C.reset}
 `);
 }
@@ -39,7 +39,7 @@ function printHelp(): void {
   printBanner();
   console.log(`${C.bold}USAGE:${C.reset}
   ocr <command> [options]
-  opencode-router <command> [options]
+  onecast-router <command> [options]
 
 ${C.bold}LIFECYCLE COMMANDS:${C.reset}
   ${C.green}ocr start${C.reset}               Start OCR background gateway daemon (port: config.yaml port, fallback 4000)
@@ -48,7 +48,7 @@ ${C.bold}LIFECYCLE COMMANDS:${C.reset}
   ${C.green}ocr status${C.reset}              Inspect daemon status, memory, health & client hooks
 
 ${C.bold}USER INTERFACE:${C.reset}
-  ${C.cyan}ocr web${C.reset} (or ${C.cyan}ocr ui${C.reset})     Open OpenCode Router Web Console in default browser
+  ${C.cyan}ocr web${C.reset} (or ${C.cyan}ocr ui${C.reset})     Open OneCastRouter Web Console in default browser
   ${C.cyan}ocr desktop${C.reset}             Open native desktop window (falls back to web if not installed)
 
 ${C.bold}CLIENT INTEGRATIONS (SETUP & TEARDOWN):${C.reset}
@@ -66,14 +66,14 @@ ${C.bold}CLIENT INTEGRATIONS (SETUP & TEARDOWN):${C.reset}
   ${C.yellow}ocr teardown pi${C.reset}         Unhook Pi and remove the OCR provider entry
   ${C.yellow}ocr teardown dsh${C.reset}        Unhook DeepSeek Harness and remove the OCR provider route
 
-${C.bold}ENVIRONMENTS (book-sets under ~/.opencode-router/envs/):${C.reset}
+${C.bold}ENVIRONMENTS (book-sets under ~/.onecast-router/envs/):${C.reset}
   ${C.cyan}ocr env list${C.reset}                List environments (current = next boot picks)
   ${C.cyan}ocr env use <name>${C.reset}       Pin the active environment (or ${C.cyan}default${C.reset}); takes effect on restart
   ${C.cyan}ocr env create <name>${C.reset}     New environment [--sandbox]
   ${C.cyan}ocr env reset <name>${C.reset}      Reset a sandbox env (wipe data/traces/capture, keep config)
 
 ${C.bold}SYSTEM COMMANDS:${C.reset}
-  ocr install-shims       Register global \`ocr\` and \`opencode-router\` commands to PATH
+  ocr install-shims       Register global \`ocr\` and \`onecast-router\` commands to PATH
   ocr --version, -v       Show current OCR version
   ocr --help, -h          Display this help manual
 `);
@@ -217,7 +217,7 @@ async function main(): Promise<void> {
   }
 
   if (args.includes('--version') || args.includes('-v') || action === 'version') {
-    console.log(`opencode-router (ocr) v${APP_VERSION}`);
+    console.log(`onecast-router (ocr) v${APP_VERSION}`);
     return;
   }
 
@@ -243,7 +243,7 @@ async function main(): Promise<void> {
   switch (action) {
     case 'start': {
       printBanner();
-      console.log('[OCR] Starting OpenCode Router gateway...');
+      console.log('[OCR] Starting OneCastRouter gateway...');
       const res = await startDaemon({ port, envName });
       if (res.success) {
         console.log(`${C.green}✔ ${res.message}${C.reset}`);
@@ -270,7 +270,7 @@ async function main(): Promise<void> {
 
     case 'restart': {
       printBanner();
-      console.log('[OCR] Restarting OpenCode Router gateway...');
+      console.log('[OCR] Restarting OneCastRouter gateway...');
       const res = await restartDaemon({ port, envName });
       if (res.success) {
         console.log(`${C.green}✔ ${res.message}${C.reset}`);
@@ -343,7 +343,7 @@ async function main(): Promise<void> {
       const res = registerGlobalShims();
       if (res.success) {
         console.log(`${C.green}✔ ${res.message}${C.reset}`);
-        console.log(`  Commands \`ocr\` and \`opencode-router\` are now globally registered.`);
+        console.log(`  Commands \`ocr\` and \`onecast-router\` are now globally registered.`);
       } else {
         console.error(`${C.red}✗ ${res.message}${C.reset}`);
         process.exit(1);

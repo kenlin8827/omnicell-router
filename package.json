@@ -1,7 +1,7 @@
 {
-  "name": "opencode-router-monorepo",
+  "name": "onecast-router-monorepo",
   "version": "0.0.1",
-  "description": "High-performance OpenCode Router (OCR) & Cascading Gateway",
+  "description": "High-performance OneCastRouter (OCR) & Cascading Gateway",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -12,8 +12,8 @@
     "ocr": "bun --no-env-file backend/src/cli/index.ts",
     "setup": "bun install && bun run build",
     "dev": "bun --no-env-file scripts/dev.ts",
-    "dev:backend": "bun --filter @opencode-router/backend dev",
-    "dev:frontend": "bun --filter @opencode-router/frontend dev",
+    "dev:backend": "bun --filter @onecast-router/backend dev",
+    "dev:frontend": "bun --filter @onecast-router/frontend dev",
     "build": "tsc -p backend && vite build frontend",
     "build:backend": "tsc -p backend",
     "build:frontend": "vite build frontend",
@@ -49,6 +49,6 @@
   },
   "bin": {
     "ocr": "./bin/ocr",
-    "opencode-router": "./bin/opencode-router"
+    "onecast-router": "./bin/onecast-router"
   }
 }

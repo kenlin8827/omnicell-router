@@ -1,4 +1,5 @@
 import { writeCacheFile, readCacheFile } from '../cache.js';
+import { CATALOG_USER_AGENT } from '../constants.js';
 import type { CatalogModel, CatalogProviderRecord } from '../types.js';
 
 /**
@@ -65,7 +66,7 @@ export async function syncOpenRouter(
   try {
     const res = await fetch(url, {
       signal: AbortSignal.timeout(10000),
-      headers: { 'User-Agent': 'OpenCode-Router/1.0' },
+      headers: { 'User-Agent': CATALOG_USER_AGENT },
     });
     if (!res.ok) throw new Error(`openrouter HTTP ${res.status}`);
     const models = normalizeOpenRouter((await res.json()) as { data?: any[] });

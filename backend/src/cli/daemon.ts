@@ -599,10 +599,10 @@ export async function launchDesktop(options: { port?: number } = {}): Promise<vo
   // install dir and the bundled exe name).
   const localAppData = process.env.LOCALAPPDATA || '';
   const candidates = [
-    // installed layout (NSIS, currentUser): %LOCALAPPDATA%\OpenCode Router\OpenCode Router.exe
-    path.join(localAppData, 'OpenCode Router', 'OpenCode Router.exe'),
+    // installed layout (NSIS, currentUser): %LOCALAPPDATA%\OneCastRouter\OneCastRouter.exe
+    path.join(localAppData, 'OneCastRouter', 'OneCastRouter.exe'),
     // dev bare-run layout: cargo keeps the package name for target/release
-    path.join(getRepoRootDir(), 'desktop', 'src-tauri', 'target', 'release', 'opencode-router-desktop.exe'),
+    path.join(getRepoRootDir(), 'desktop', 'src-tauri', 'target', 'release', 'onecast-router-desktop.exe'),
   ];
 
   let desktopBin: string | null = null;
@@ -619,7 +619,7 @@ export async function launchDesktop(options: { port?: number } = {}): Promise<vo
   } else {
     console.log('[OCR] 💡 Native desktop client (Tauri) package not found.');
     console.log('      Seamlessly opening Web Console in your browser...');
-    console.log('      (Download native desktop installers at https://github.com/kenlin8827/opencode-router/releases)');
+    console.log('      (Download native desktop installers at https://github.com/kenlin8827/onecast-router/releases)');
     await launchWeb(options);
   }
 }

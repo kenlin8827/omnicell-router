@@ -156,7 +156,7 @@ export function expandEnvTemplate(value?: string): string {
 // Provider definitions (opencode.jsonc `provider` node)
 // ---------------------------------------------------------------------------
 
-export const ROUTER_PROVIDER_ID = 'opencode-router';
+export const ROUTER_PROVIDER_ID = 'onecast-router';
 const DEFAULT_NPM = '@ai-sdk/openai-compatible';
 
 /**

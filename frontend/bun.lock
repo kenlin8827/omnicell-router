@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "opencode-router-dashboard",
+      "name": "@onecast-router/frontend",
       "dependencies": {
         "clsx": "^2.1.1",
         "lucide-react": "^0.474.0",

@@ -296,7 +296,7 @@ export const RulesPage: React.FC = () => {
 
   /** Model picker (mirrors the API-key access picker): registered models only. */
   const pickerModels = () =>
-    gatewayModels.filter((m) => m.owned_by !== 'opencode-router'); // virtual auto* ids are not real members
+    gatewayModels.filter((m) => m.owned_by !== 'onecast-router'); // virtual auto* ids are not real members
 
   const openModelPicker = (tier: Tier) => {
     setPickerTier(tier);

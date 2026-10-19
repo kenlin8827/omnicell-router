@@ -18,7 +18,7 @@ import { FLYWHEEL_TIERS } from '../backend/src/flywheel/schema.js';
 
 async function main() {
   console.log('============================================================');
-  console.log('🧠 OCR (OpenCode Router) Layer 1 Classifier Trainer (Learning Flywheel)');
+  console.log('🧠 OCR (OneCastRouter) Layer 1 Classifier Trainer (Learning Flywheel)');
   console.log('============================================================\n');
 
   const config = loadConfig();

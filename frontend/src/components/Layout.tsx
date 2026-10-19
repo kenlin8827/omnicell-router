@@ -277,7 +277,7 @@ export const Layout: React.FC = () => {
   };
 
   const currentRouteMeta = ROUTE_META_KEYS[location.pathname] || {
-    groupKey: 'OpenCode Router',
+    groupKey: 'OneCastRouter',
     titleKey: 'Dashboard',
   };
 
@@ -344,7 +344,7 @@ export const Layout: React.FC = () => {
             <Zap size={18} strokeWidth={2.5} fill="currentColor" />
           </div>
           <div>
-            <div style={{ fontSize: '15px', fontWeight: 800, letterSpacing: '-0.02em' }}>OpenCode Router</div>
+            <div style={{ fontSize: '15px', fontWeight: 800, letterSpacing: '-0.02em' }}>OneCastRouter</div>
             {/* Tagline + static runtime version. The version used to trail at
                 the far end of the sidebar footer, where long env names pushed
                 it off-screen; it belongs with the product identity instead.
@@ -493,7 +493,7 @@ export const Layout: React.FC = () => {
             The static runtime version used to trail here at the far right
             but moved up to the brand header tagline, where long env names
             can no longer push it off-screen. Replaces the old hardcoded
-            "OpenCode Router Gateway Console" tagline, which duplicated the
+            "OneCastRouter Gateway Console" tagline, which duplicated the
             brand header and skipped i18n. */}
         {(() => {
           const gatewayOnline = Boolean(status) && !statusError;

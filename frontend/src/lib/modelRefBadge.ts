@@ -3,7 +3,7 @@
  *
  * `/api/admin/gateway-models` tags every id with a `kind` (auto / combo /
  * model / variant) because `owned_by` cannot distinguish them: auto* and
- * combos share the 'opencode-router' owner, variants share their base
+ * combos share the 'onecast-router' owner, variants share their base
  * model's provider. Model pickers render the kind as a tiny outline chip;
  * plain registered models get NO chip — absence is the default state.
  */

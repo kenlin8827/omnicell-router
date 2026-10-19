@@ -18,7 +18,7 @@ import type { CircuitBreakerConfig, ErrorDiagnosis } from '../src/resilience/typ
  * flags, model aggregation, prober per-model budget.
  *
  * State root is sandboxed the same way the credential tests sandbox theirs —
- * the operator's ~/.opencode-router is never touched.
+ * the operator's ~/.onecast-router is never touched.
  */
 
 function sandboxPaths(): CredentialPaths {

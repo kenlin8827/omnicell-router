@@ -855,9 +855,9 @@ export function registerConsoleRoutes(
     return reply.type('text/html').send(`
       <!DOCTYPE html>
       <html>
-        <head><title>OpenCode Router Gateway Console</title></head>
+        <head><title>OneCastRouter Gateway Console</title></head>
         <body style="background:#09090b;color:#f4f4f5;font-family:sans-serif;padding:40px;text-align:center;">
-          <h2>⚡ OpenCode Router Gateway Console</h2>
+          <h2>⚡ OneCastRouter Gateway Console</h2>
           <p style="color:#a1a1aa;">The web console assets have not been built yet.</p>
           <p>Please run <code style="color:#06b6d4;background:rgba(255,255,255,0.1);padding:4px 8px;border-radius:4px;">npm run build:frontend</code> to build the React application.</p>
         </body>
@@ -3167,7 +3167,7 @@ export function registerConsoleRoutes(
     // `auto` needs an allowed model in ANY tier, auto-X in tier X.
     const virtual = ['auto', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra'].map((id) => ({
       id,
-      provider: 'opencode-router',
+      provider: 'onecast-router',
       tier: tierFromVirtualEntry(id),
       virtual: true,
       allowed: isAutoEntryUsable(id, policy, tierAllowed),
@@ -3178,7 +3178,7 @@ export function registerConsoleRoutes(
     // entry gate; no silent composition change).
     const combos = registry.getCombos().map((c) => ({
       id: c.id,
-      provider: 'opencode-router',
+      provider: 'onecast-router',
       tier: '',
       virtual: false,
       allowed: registry.resolveCombo(c.id).every((mem) => isModelAllowed(mem.id, policy, mem.tier)),
@@ -3210,12 +3210,12 @@ export function registerConsoleRoutes(
     // `kind` tags the addressable-id namespace (virtual auto* / combo /
     // registered model / variant) so console pickers can badge each row —
     // owned_by alone cannot distinguish them (auto* and combos share
-    // 'opencode-router'; variants share their base model's provider).
+    // 'onecast-router'; variants share their base model's provider).
     const models = [
       ...['auto', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra'].map((id) => ({
         id,
         kind: 'auto' as const,
-        owned_by: 'opencode-router',
+        owned_by: 'onecast-router',
         tier: '',
       })),
       // Order mirrors /v1/models: auto* → combos → registered → variants, so
@@ -3224,7 +3224,7 @@ export function registerConsoleRoutes(
       // `unclassified` is the live membership truth; m.tier on those models is
       // a stale registration-time classification (legacy boot classifier).
       // Reporting it let console pickers badge models that belong to NO pool.
-      ...registry.getCombos().map((c) => ({ id: c.id, kind: 'combo' as const, owned_by: 'opencode-router', tier: '' })),
+      ...registry.getCombos().map((c) => ({ id: c.id, kind: 'combo' as const, owned_by: 'onecast-router', tier: '' })),
       ...registry.getAllModels().map((m) => ({
         id: m.id,
         kind: 'model' as const,
@@ -3265,7 +3265,7 @@ export function registerConsoleRoutes(
   };
   app.post('/api/admin/restart', handleRestart);
 
-  // 11. Process-log tail viewer — reads ~/.opencode-router/ocr.log (only
+  // 11. Process-log tail viewer — reads ~/.onecast-router/ocr.log (only
   //     written when the gateway runs under `ocr start`; a manual `bun
   //     backend/src/index.ts` writes to its own console instead).
   //     Reads at most 1 MiB from the tail so huge files never blow up memory.

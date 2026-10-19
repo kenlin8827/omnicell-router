@@ -26,7 +26,7 @@ export interface CredentialPaths {
   opencodeDbPath: string;
   /** opencode v2 lagging version marker — <configDir>/installed.version. */
   installedVersionPath: string;
-  /** OCR state root — OCR_HOME || ~/.opencode-router. */
+  /** OCR state root — OCR_HOME || ~/.onecast-router. */
   ocrHome: string;
   /**
    * Service.json locations for opencode v2 -path Basic auth. Ordered: XDG-aware
@@ -48,7 +48,7 @@ export function resolveDefaultPaths(
   // OCR_HOME empty/whitespace = unset (cli/paths.ts semantics, no mkdir here —
   // OcrStore creates the directory on first write).
   const ocrOverride = env.OCR_HOME?.trim();
-  const ocrHome = ocrOverride ? path.resolve(ocrOverride) : path.join(homedir, '.opencode-router');
+  const ocrHome = ocrOverride ? path.resolve(ocrOverride) : path.join(homedir, '.onecast-router');
   return {
     configDir,
     dataDir,

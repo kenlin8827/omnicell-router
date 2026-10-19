@@ -14,7 +14,7 @@ import {
  * auto-returns. Cooldown expiry un-trips the pair breakers; only an explicit clear
  * (console reconnect / Push / admin REST) lifts the flag.
  *
- * Persistence is the OCR GLOBAL state root (`<OCR_HOME|~/.opencode-router>/
+ * Persistence is the OCR GLOBAL state root (`<OCR_HOME|~/.onecast-router>/
  * suspect-credentials.json`), not per-environment — an credential is an credential
  * wherever it is used. Payload is display-safe (provider id + sha256 prefix),
  * so nothing sensitive sits in a file that survives restarts.

@@ -1,4 +1,4 @@
-# OpenCode Router (OCR) Developer & Architecture Guide
+# OneCastRouter (OCR) Developer & Architecture Guide
 
 [![Runtime](https://img.shields.io/badge/Runtime-Bun%20%7C%20Node.js-blue.svg)](https://bun.sh)
 [![Architecture](https://img.shields.io/badge/Architecture-Three--Layer%20Model--Driven-purple.svg)]()
@@ -6,7 +6,7 @@
 
 [English Version](DEVELOPMENT.md) | [Chinese Version](DEVELOPMENT.zh-CN.md) | [User README](README.md)
 
-> This document is designed for developers, contributors, and researchers working on **OpenCode Router (OCR)** core algorithms, extensions, private deployments, and architecture.  
+> This document is designed for developers, contributors, and researchers working on **OneCastRouter (OCR)** core algorithms, extensions, private deployments, and architecture.  
 > It covers the 3-layer model-driven pipeline architecture, mathematical fallthrough proofs, monotonic session ratcheting, active learning data flywheel workflows, and testing matrices.
 
 ---
@@ -26,7 +26,7 @@
 
 ## 1. Global Pipeline & Architecture
 
-OpenCode Router (OCR) replaces simplistic character length rules (e.g., `prompt.length < 20 -> small model`) and natural language lexicons with a 3-layer hierarchical arbitration pipeline:
+OneCastRouter (OCR) replaces simplistic character length rules (e.g., `prompt.length < 20 -> small model`) and natural language lexicons with a 3-layer hierarchical arbitration pipeline:
 
 ```
                       Client Requests (Cursor / Chatbox / NextChat / WebUI / Official SDKs)
@@ -76,7 +76,7 @@ OpenCode Router (OCR) replaces simplistic character length rules (e.g., `prompt.
 ## 2. Mathematical Principles & Deterministic Proofs
 
 ### 1. Base Model Scaffold & Softmax Fallthrough Proof
-To achieve cold-start operation without heuristic bypasses, OpenCode Router (OCR) auto-initializes the active environment's `models/layer1-classifier.json` (under `~/.opencode-router/envs/<env>/`) with zero-initialized weights and biases upon boot:
+To achieve cold-start operation without heuristic bypasses, OneCastRouter (OCR) auto-initializes the active environment's `models/layer1-classifier.json` (under `~/.onecast-router/envs/<env>/`) with zero-initialized weights and biases upon boot:
 $$W \in \mathbb{R}^{8 \times 3} = \mathbf{0}, \quad b \in \mathbb{R}^3 = \mathbf{0}$$
 
 **Forward Propagation Proof**:
@@ -107,7 +107,7 @@ The 8-dimensional normalized feature vector $x = [x_1, x_2, \dots, x_8]^T \in [0
 | $x_8$ | `punctuation_density` | Density of universal punctuation (`?!,.:;`) |
 
 ### 3. Zero-Header Prefix-Chain Hash Collision Resistance
-In standard API clients without explicit session headers, OpenCode Router (OCR) tracks dialogues using Prefix-Chain Hashing:
+In standard API clients without explicit session headers, OneCastRouter (OCR) tracks dialogues using Prefix-Chain Hashing:
 $$\mathcal{H}_{\text{session}} = \text{SHA256}(\text{CanonicalJSON}(\text{messages}[0 \dots n-2]))$$
 
 **Collision Resistance Analysis**:
@@ -121,7 +121,7 @@ Hash collisions are mathematically negligible, delivering completely stable zero
 ## 3. Core Module Responsibilities & Directory Structure
 
 ```
-opencode-router/
+onecast-router/
 ├── src/
 │   ├── router/                    # Three-layer arbitration engine
 │   │   ├── layer1-classifier.ts   # Layer 1: CPU micro-tensor feature classifier and in-place trainer

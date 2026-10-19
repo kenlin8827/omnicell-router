@@ -21,7 +21,7 @@ function main() {
   const s = dataset.summary();
 
   console.log(`\n======================================================`);
-  console.log(`📊 OCR (OpenCode Router) — Learning Flywheel Analytics`);
+  console.log(`📊 OCR (OneCastRouter) — Learning Flywheel Analytics`);
   console.log(`======================================================`);
   console.log(`📂 Dataset : ${s.datasetPath}`);
   console.log(`🏷️  Labels  : ${s.labelsPath}`);

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Remote one-line installer for OpenCode Router (OCR)
+# Remote one-line installer for OneCastRouter (OCR)
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/kenlin8827/opencode-router/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/kenlin8827/onecast-router/main/install.sh | bash
 #
 set -e
 
-REPO="kenlin8827/opencode-router"
-INSTALL_DIR="$HOME/.local/share/opencode-router"
+REPO="kenlin8827/onecast-router"
+INSTALL_DIR="$HOME/.local/share/onecast-router"
 BIN_DIR="$HOME/.local/bin"
 
 if [ -t 1 ]; then
@@ -22,17 +22,17 @@ else
 fi
 
 echo -e "${CYAN}${BOLD}"
-echo "  ⚡ OpenCode Router (OCR) - One-Click Installer"
+echo "  ⚡ OneCastRouter (OCR) - One-Click Installer"
 echo "  High-Performance FinOps & Cascading Gateway for AI Coding Agents"
 echo -e "${NC}"
 
 # 1. Local checkout detection
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")"
-if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/package.json" ] && grep -q "opencode-router" "$SCRIPT_DIR/package.json" 2>/dev/null; then
+if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/package.json" ] && grep -q "onecast-router" "$SCRIPT_DIR/package.json" 2>/dev/null; then
   echo -e "${GREEN}✔ Detected local repository checkout at: ${SCRIPT_DIR}${NC}"
   TARGET_REPO="$SCRIPT_DIR"
 else
-  echo -e "📦 Installing OpenCode Router into ${INSTALL_DIR}..."
+  echo -e "📦 Installing OneCastRouter into ${INSTALL_DIR}..."
   mkdir -p "$INSTALL_DIR"
   if [ -d "$INSTALL_DIR/.git" ]; then
     echo "Updating existing installation..."
@@ -62,8 +62,8 @@ fi
 # 3. Register global shims
 mkdir -p "$BIN_DIR"
 cp -f "$TARGET_REPO/bin/ocr" "$BIN_DIR/ocr"
-cp -f "$TARGET_REPO/bin/opencode-router" "$BIN_DIR/opencode-router"
-chmod +x "$BIN_DIR/ocr" "$BIN_DIR/opencode-router"
+cp -f "$TARGET_REPO/bin/onecast-router" "$BIN_DIR/onecast-router"
+chmod +x "$BIN_DIR/ocr" "$BIN_DIR/onecast-router"
 
 # 4. PATH detection & export
 case ":$PATH:" in
@@ -81,7 +81,7 @@ case ":$PATH:" in
     ;;
 esac
 
-echo -e "\n${GREEN}${BOLD}🎉 OpenCode Router (OCR) installed successfully!${NC}\n"
+echo -e "\n${GREEN}${BOLD}🎉 OneCastRouter (OCR) installed successfully!${NC}\n"
 echo -e "You can now run:"
 echo -e "  ${CYAN}ocr start${NC}             # Start the gateway daemon"
 echo -e "  ${CYAN}ocr web${NC}               # Open the Web Console Dashboard"

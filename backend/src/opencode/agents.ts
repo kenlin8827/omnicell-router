@@ -17,7 +17,7 @@ import { OpenCodeConnector } from './connector.js';
  *     spelling drift between v1 `agent` / v2 `agents` can never mislead us.
  *  2. FILE SCAN (fallback, e.g. service not running while the gateway is up):
  *     built-in roster + `agent(s)/*.md` + config nodes (v2 `agents` > v1 `agent`).
- * `model` strips the `opencode-router/` prefix (undefined = inherit default);
+ * `model` strips the `onecast-router/` prefix (undefined = inherit default);
  * a non-router id is reported verbatim (what the agent currently points at).
  */
 

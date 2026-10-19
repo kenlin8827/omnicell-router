@@ -7,6 +7,7 @@ import { readCacheFile, writeCacheFile } from './cache.js';
 import { readCustomStore, getCustomStorePath } from './custom-store.js';
 import { readOverridesStore, getOverridesStorePath } from './overrides-store.js';
 import { proxiedFetch } from '../../utils/proxy.js';
+import { CATALOG_USER_AGENT } from './constants.js';
 import { loadConfig, getConfigPath } from '../../config/index.js';
 import { readOcrStore, writeOcrStore, getOcrStorePath } from './ocr-store.js';
 import fs from 'node:fs';
@@ -264,7 +265,7 @@ export class CatalogRepository {
   }
 
   private async syncRemote(def: RemoteSourceDef, force = false): Promise<void> {
-    // Per-source cache: ~/.cache/opencode-router/catalog/<sourceId>.json
+    // Per-source cache: ~/.cache/onecast-router/catalog/<sourceId>.json
     const cacheName = `catalog/${def.id}`;
     let cached = readCacheFile<ParsedSource>(cacheName);
     // One-shot migration from the pre-restructure flat names
@@ -292,7 +293,7 @@ export class CatalogRepository {
     try {
       const res = await proxiedFetch(def.url, {
         signal: AbortSignal.timeout(15000),
-        headers: { 'User-Agent': 'OpenCode-Router/1.0' },
+        headers: { 'User-Agent': CATALOG_USER_AGENT },
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const parsed = parseByType(def.type, await res.json(), def.map);

@@ -17,7 +17,7 @@ import type { RouterConfig } from '../src/config/types.js';
  *
  * The suspect store is sandboxed through OCR_HOME before the server is built
  * (the default store resolves lazily, never at import time), so the operator's
- * real ~/.opencode-router is never written.
+ * real ~/.onecast-router is never written.
  */
 
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-pairs-rest-'));

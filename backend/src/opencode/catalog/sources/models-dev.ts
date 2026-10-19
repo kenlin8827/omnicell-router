@@ -1,4 +1,5 @@
 import { writeCacheFile, readCacheFile } from '../cache.js';
+import { CATALOG_USER_AGENT } from '../constants.js';
 import type { CatalogModel, CatalogProviderRecord, CatalogSourceState } from '../types.js';
 
 /**
@@ -102,7 +103,7 @@ export async function syncModelsDev(
   try {
     const res = await fetch(url, {
       signal: AbortSignal.timeout(10000),
-      headers: { 'User-Agent': 'OpenCode-Router/1.0' },
+      headers: { 'User-Agent': CATALOG_USER_AGENT },
     });
     if (!res.ok) throw new Error(`models.dev HTTP ${res.status}`);
     const providers = normalizeModelsDev((await res.json()) as Record<string, any>);

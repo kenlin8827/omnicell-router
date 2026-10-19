@@ -1,5 +1,5 @@
 # ==============================================================================
-# OpenCode Router (OCR) & FinOps Gateway Configuration
+# OneCastRouter (OCR) & FinOps Gateway Configuration
 # ==============================================================================
 # Notice: Upstream providers, model catalogs, credentials, and pricing models
 # are dynamically synchronized in real-time from the local OpenCode v2 daemon!
@@ -52,7 +52,7 @@ opencode:
 #     - "*.internal"                #   bare string → tunnel DIRECT
 #     - host: "api.openai.com"      #   object form → per-host egress choice
 #       viaProxy: true              #   tunnel VIA the outbound proxy policy
-#   caDir: ""                       # default: ~/.opencode-router/forward-proxy
+#   caDir: ""                       # default: ~/.onecast-router/forward-proxy
 #   viaOutboundProxy: false         # non-bypass forwards (non-intercepted GETs etc.) egress via config.proxy
 
 # Tier membership  — each tier's candidate pool is an EXPLICIT

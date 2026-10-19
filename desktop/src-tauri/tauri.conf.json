@@ -1,9 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "OpenCode Router",
-  "mainBinaryName": "OpenCode Router",
+  "productName": "OneCastRouter",
+  "mainBinaryName": "OneCastRouter",
   "version": "0.0.1",
-  "identifier": "com.kenlin8827.opencode-router",
+  "identifier": "com.kenlin8827.onecast-router",
   "build": {
     "frontendDist": "stub"
   },

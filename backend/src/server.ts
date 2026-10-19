@@ -740,11 +740,11 @@ export function createServer(
     // anonymous → legacy full listing; 401 for invalid keys already handled).
     const policy = getModelAccessPolicy((req as any).authInfo?.keyConfig);
     const virtualModels = [
-      { id: 'auto', object: 'model', created: 1700000000, owned_by: 'opencode-router', description: 'Intelligent multi-tier cascading auto-router (Recommended Default)' },
-      { id: 'auto-lite', object: 'model', created: 1700000000, owned_by: 'opencode-router', description: 'Force Lite & low-cost layer (~$0.2/M)' },
-      { id: 'auto-plus', object: 'model', created: 1700000000, owned_by: 'opencode-router', description: 'Force Plus workhorse layer (~$3-$15/M)' },
-      { id: 'auto-pro', object: 'model', created: 1700000000, owned_by: 'opencode-router', description: 'Force Pro thinking-effort specialist tier (~$3-$8/M)' },
-      { id: 'auto-ultra', object: 'model', created: 1700000000, owned_by: 'opencode-router', description: 'Force Ultra frontier-tier layer (~$60+/M)' },
+      { id: 'auto', object: 'model', created: 1700000000, owned_by: 'onecast-router', description: 'Intelligent multi-tier cascading auto-router (Recommended Default)' },
+      { id: 'auto-lite', object: 'model', created: 1700000000, owned_by: 'onecast-router', description: 'Force Lite & low-cost layer (~$0.2/M)' },
+      { id: 'auto-plus', object: 'model', created: 1700000000, owned_by: 'onecast-router', description: 'Force Plus workhorse layer (~$3-$15/M)' },
+      { id: 'auto-pro', object: 'model', created: 1700000000, owned_by: 'onecast-router', description: 'Force Pro thinking-effort specialist tier (~$3-$8/M)' },
+      { id: 'auto-ultra', object: 'model', created: 1700000000, owned_by: 'onecast-router', description: 'Force Ultra frontier-tier layer (~$60+/M)' },
     ];
 
     const registered = registry.getAllModels().map(m => ({
@@ -764,7 +764,7 @@ export function createServer(
       id: c.id,
       object: 'model',
       created: 1700000000,
-      owned_by: 'opencode-router',
+      owned_by: 'onecast-router',
       description: `Custom model combo (${c.models.length} members, ${c.selection || 'priority'} selection)`,
     }));
 
@@ -789,7 +789,7 @@ export function createServer(
     if (policy) {
       // Variant ids inherit their base model's verdict via metadata.parent
       // (checked first — a base provider could theoretically be named
-      // 'opencode-router'). Virtual auto* ids stay visible only while at least
+      // 'onecast-router'). Virtual auto* ids stay visible only while at least
       // one registered model is routable under the policy (otherwise they are
       // dead entries). Combos pass only when EVERY member is allowed —
       // mirrors the inference entry gate (no silent composition change).
@@ -800,7 +800,7 @@ export function createServer(
         if (registry.isCombo(m.id)) {
           return registry.resolveCombo(m.id).every((mem) => isModelAllowed(mem.id, policy, mem.tier));
         }
-        if (m.owned_by === 'opencode-router') {
+        if (m.owned_by === 'onecast-router') {
           // Virtual auto* rows honor runtime viability: bare `auto` needs an
           // allowed model in ANY tier, auto-X in tier X — in BOTH modes.
           return isAutoEntryUsable(m.id, policy, tierAllowed);
@@ -861,7 +861,7 @@ export function createServer(
       id: model,
       object: 'model',
       created: 1700000000,
-      owned_by: specific ? specific.provider : variantRef ? variantRef.base.provider : 'opencode-router',
+      owned_by: specific ? specific.provider : variantRef ? variantRef.base.provider : 'onecast-router',
       ...(variantRef
         ? {
             metadata: {

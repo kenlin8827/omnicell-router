@@ -1,4 +1,4 @@
-# OpenCode Router (OCR)
+# OneCastRouter (OCR)
 
 <div align="center">
 
@@ -15,9 +15,9 @@
 
 ---
 
-## 什么是 OpenCode Router (OCR)？
+## 什么是 OneCastRouter (OCR)？
 
-**OpenCode Router (OCR)** 是一个高性能、本地优先的智能 LLM API 级联路由网关。它与本地运行的 **OpenCode v2** 原生联动，让您无需在任何客户端中硬编码或暴露上游供应商的 API Key，同时通过**智能模型分层、多轮会话单调递增锁、上游 KV 缓存保护以及本地语法断言**，在不牺牲回答质量的前提下，将大模型 API 开销降低 **70% 至 90%**。
+**OneCastRouter (OCR)** 是一个高性能、本地优先的智能 LLM API 级联路由网关。它与本地运行的 **OpenCode v2** 原生联动，让您无需在任何客户端中硬编码或暴露上游供应商的 API Key，同时通过**智能模型分层、多轮会话单调递增锁、上游 KV 缓存保护以及本地语法断言**，在不牺牲回答质量的前提下，将大模型 API 开销降低 **70% 至 90%**。
 
 ---
 
@@ -38,14 +38,14 @@
 ## 快速上手
 
 ### 1. 环境依赖
-* **OpenCode v2**：必需。OCR 面向 opencode v2（provider 配置写在 `providers` 节点，凭证存放在 `opencode.db` 及其 HTTP 服务）。**不支持 opencode v1**：在 v1 机器上 OCR 仍可运行，但会降级——provider 与密钥由 OCR 自有凭证库（`~/.opencode-router/credentials.json`）管理，而 opencode v1 读不到它，因此这些配置只服务于 OCR 网关。控制台会显示明确的告警徽章。升级到 opencode v2 即可共享同一份凭证真相。
+* **OpenCode v2**：必需。OCR 面向 opencode v2（provider 配置写在 `providers` 节点，凭证存放在 `opencode.db` 及其 HTTP 服务）。**不支持 opencode v1**：在 v1 机器上 OCR 仍可运行，但会降级——provider 与密钥由 OCR 自有凭证库（`~/.onecast-router/credentials.json`）管理，而 opencode v1 读不到它，因此这些配置只服务于 OCR 网关。控制台会显示明确的告警徽章。升级到 opencode v2 即可共享同一份凭证真相。
 * **Bun**（推荐，极致速度）：`>= 1.0`，或 **Node.js**：`>= 18`。
 
 ### 2. 安装
 ```bash
 # 克隆仓库
-git clone https://github.com/kenlin8827/opencode-router.git
-cd opencode-router
+git clone https://github.com/kenlin8827/onecast-router.git
+cd onecast-router
 
 # 使用 Bun 安装依赖 (推荐)
 bun install
@@ -55,16 +55,16 @@ npm install
 ```
 
 ### 3. 配置
-每个环境拥有自己的配置文件——默认环境位于 `~/.opencode-router/envs/default/config.yaml`。首次启动会自动写入一份带注释的模板；如果想用完整示例配置起步，复制到该位置即可：
+每个环境拥有自己的配置文件——默认环境位于 `~/.onecast-router/envs/default/config.yaml`。首次启动会自动写入一份带注释的模板；如果想用完整示例配置起步，复制到该位置即可：
 ```bash
-mkdir -p ~/.opencode-router/envs/default
-cp config.example.yaml ~/.opencode-router/envs/default/config.yaml
+mkdir -p ~/.onecast-router/envs/default
+cp config.example.yaml ~/.onecast-router/envs/default/config.yaml
 ```
 > 💡 **提示**：上游模型和密钥完全由本地 OpenCode 自动托管，`config.yaml` 默认开箱即用，无需填入任何模型密钥！
 
-> 📦 **多环境**：`~/.opencode-router/envs/<name>/` 下每套环境都是完全独立的一整套（配置、密钥、会话、抓包、飞轮数据互不共享）。用 `ocr env create <name>` / `ocr env use <name>`，或控制台 `/environments` 页面管理；切换环境会重启网关。
+> 📦 **多环境**：`~/.onecast-router/envs/<name>/` 下每套环境都是完全独立的一整套（配置、密钥、会话、抓包、飞轮数据互不共享）。用 `ocr env create <name>` / `ocr env use <name>`，或控制台 `/environments` 页面管理；切换环境会重启网关。
 
-> ⚙️ **引导开关**：`OCR_ENV`（启动哪套环境）与 `OCR_HOME`（状态根目录，默认 `~/.opencode-router`）**只从进程环境变量读取**——OCR 没有 `.env` 文件加载机制。需要临时隔离实例时：`OCR_HOME=/tmp/ocr-scratch bun run ocr start`。日常切换环境请用 `ocr env use <name>`（或控制台页面），它写入 `~/.opencode-router/envs/current` 指针。
+> ⚙️ **引导开关**：`OCR_ENV`（启动哪套环境）与 `OCR_HOME`（状态根目录，默认 `~/.onecast-router`）**只从进程环境变量读取**——OCR 没有 `.env` 文件加载机制。需要临时隔离实例时：`OCR_HOME=/tmp/ocr-scratch bun run ocr start`。日常切换环境请用 `ocr env use <name>`（或控制台页面），它写入 `~/.onecast-router/envs/current` 指针。
 
 ### 4. 启动网关
 ```bash
@@ -95,7 +95,7 @@ curl http://127.0.0.1:3000/health
 
 ## 客户端配置接入
 
-OpenCode Router (OCR) 完全兼容 OpenAI 协议标准，只需将客户端的 **API Base URL** 指向本网关即可。
+OneCastRouter (OCR) 完全兼容 OpenAI 协议标准，只需将客户端的 **API Base URL** 指向本网关即可。
 
 ### 1. Cursor IDE
 在 Cursor 中接入无需任何额外插件：
@@ -172,7 +172,7 @@ curl http://127.0.0.1:3000/v1/chat/completions \
 
 ## 虚拟模型列表
 
-OpenCode Router (OCR) 在暴露上游全部原生模型的同时，提供了开箱即用的**虚拟级联模型**：
+OneCastRouter (OCR) 在暴露上游全部原生模型的同时，提供了开箱即用的**虚拟级联模型**：
 
 | 模型名称 | 定位与适用场景 | 计费成本区间 |
 | :--- | :--- | :--- |
@@ -312,23 +312,23 @@ curl -X POST http://127.0.0.1:3000/v1/health/circuit-breakers/reset
 ## 常见问题 (FAQ)
 
 ### Q1: 我需要自己注册模型供应商并充值 API Key 吗？
-**不需要**。OpenCode Router (OCR) 原生直连您本地已经配置并运行良好的 OpenCode v2 实例。OpenCode 中已配置好的所有可用模型和配额，OpenCode Router 会自动同步并直接代理。
+**不需要**。OneCastRouter (OCR) 原生直连您本地已经配置并运行良好的 OpenCode v2 实例。OpenCode 中已配置好的所有可用模型和配额，OneCastRouter 会自动同步并直接代理。
 
 ### Q2: 为什么多轮对话中途不会变笨？
-传统基于单条请求的无状态路由器，在面对超长上下文中的简短追问（如“好的谢谢”、“改下第3行”）时，常因字数极短而错误分发给 Lite 轻量小模型，导致小模型面对超万 Token 严重幻觉。OpenCode Router (OCR) 采用**单调递增棘轮状态机（Monotonic Session Ratchet）**，一旦会话进入深度旗舰状态，后续轮次被单向锁死、只升不降，且物理固定同一模型实例，保障智力持续高水平并锁定上游 KV Cache。
+传统基于单条请求的无状态路由器，在面对超长上下文中的简短追问（如“好的谢谢”、“改下第3行”）时，常因字数极短而错误分发给 Lite 轻量小模型，导致小模型面对超万 Token 严重幻觉。OneCastRouter (OCR) 采用**单调递增棘轮状态机（Monotonic Session Ratchet）**，一旦会话进入深度旗舰状态，后续轮次被单向锁死、只升不降，且物理固定同一模型实例，保障智力持续高水平并锁定上游 KV Cache。
 
 ### Q3: 本地分类小模型冷启动时会误判吗？
 **绝不会**。系统默认附带的未训练微张量底座经过严密数学设计（$W=\mathbf{0}, b=\mathbf{0}$），Softmax 理论概率均匀分布为 $\approx 0.334$，必然小于 $0.85$ 门控阈值。在积累足够生产飞轮数据并执行蒸馏微调前，100% 确定性优雅穿透至 Layer 2 专职裁决模型。
 
 ### Q4: 上游某个模型突然欠费或宕机 5 小时怎么办？
-**OpenCode Router (OCR) 拥有顶级工业级弹性熔断与故障转移能力 (ADR-0004)**：
+**OneCastRouter (OCR) 拥有顶级工业级弹性熔断与故障转移能力 (ADR-0004)**：
 - **欠费 / 额度耗尽 (HTTP 402)**：系统即刻将其硬熔断（默认避让 12 小时），后续请求零耗时绕开，绝不会反复冲击上游导致超时；
 - **服务雪崩 / 宕机**：连续失败或滑动窗口超限后触发熔断并以指数退避（最高 5 小时封顶）；冷却结束后以微量 Canary 试探探活；
 - **同 Tier 透明故障转移 (Failover)**：若 Primary 模型挂了，系统在同一次请求内毫秒级自动切换至同 Tier 的 Backup 备用模型，客户端无感获得 200 响应；
 - **会话钉扎驱逐 (Session-Pin Eviction)**：钉扎模型被移出模型池（配置编辑/黑名单/删除）或彻底不可用（模型断路器硬开、或全部凭证下架）时，系统将会话硬切至健康着陆模型并回写绑定（同级已空允许跨级着陆）；若无健康着陆点则保留原钉扎继续服务（安全兜底，下轮重试），根除死锁。
 
 ### Q5: 遇到云厂商网关偶发 503 报错，随便切模型会导致 KV 缓存失效和成本暴增吗？
-**绝不会**。OpenCode Router (OCR) 采用**经济感知型两层重试架构 (ADR-0005)**：
+**绝不会**。OneCastRouter (OCR) 采用**经济感知型两层重试架构 (ADR-0005)**：
 - **第一层：原地微退避重试 (In-Place Retry)**：针对瞬时 5xx/超时网关毛刺，执行 200ms (+100ms 随机抖动) 的极速原地重试，1 次重试即可化解 ~70% 边缘偶发抖动，**100% 挽救上游已预热的 KV Cache**，彻底避免跨模型切换导致的 10 倍冷启动账单惩罚；
 - **第二层：同级优先故障转移与防降级 (Failover & Anti-Downgrade)**：若原地重试耗尽，系统同级优先切换；若 Fast 模型全量故障，允许受控向上升档至 Flagship 兜底保活；**严禁任何将 Flagship 降级至 Fast 的危险操作**，宁可返回 503 绝不以残缺智力生成代码污染生产。
 

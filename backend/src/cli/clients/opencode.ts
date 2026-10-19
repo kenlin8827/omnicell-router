@@ -107,7 +107,7 @@ function buildRouterProviderNode(port: number, model?: string, extraModels?: str
     if (id && !models[id]) models[id] = modelEntry(id);
   }
   return {
-    name: 'OpenCode Router',
+    name: 'OneCastRouter',
     package: '@opencode/ai/providers/openai-compatible',
     settings: {
       baseURL: targetUrl,
@@ -141,7 +141,7 @@ export class OpenCodeClientAdapter implements ClientAdapter {
         const routerEntry = data.providers?.[ROUTER_PROVIDER_ID];
         if (routerEntry?.settings?.baseURL) {
           hooked = true;
-          details = `Routed to OpenCode Router gateway (${routerEntry.settings.baseURL})`;
+          details = `Routed to OneCastRouter gateway (${routerEntry.settings.baseURL})`;
         } else {
           details = 'Active with native providers';
         }
@@ -152,7 +152,7 @@ export class OpenCodeClientAdapter implements ClientAdapter {
       details = 'No OpenCode configuration detected';
     }
 
-    // Current slot values: strip the `opencode-router/` namespace prefix
+    // Current slot values: strip the `onecast-router/` namespace prefix
     const hookedData = hooked ? ((readJsonc(configPath) as any) || {}) : null;
     const stripPrefix = (v: any): string | undefined =>
       typeof v === 'string' && v.startsWith(`${ROUTER_PROVIDER_ID}/`)
