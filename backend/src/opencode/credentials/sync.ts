@@ -12,6 +12,7 @@ import { authSnapshot } from './auth-snapshot.js';
 import type { OpenCodeAuthEntry } from '../user-config.js';
 import { atomicWriteWithRetry } from './factory.js';
 import { OcrStore } from './ocr-store.js';
+import { materializeDefs } from './def-materialize.js';
 
 /**
  * Credential sync — per-client credential propagation with the OCR file
@@ -73,6 +74,8 @@ export interface SyncRunOutcome {
   entries: SyncEntryRecord[];
   /** write runs only — (provider, keyHashPrefix) pairs that converged (SUSPECT lift). */
   pushedKeys?: { provider: string; keyHashPrefix: string }[];
+  /** write runs only — provider nodes rendered into the client's providers slot. */
+  defsMaterialized?: number;
   detail?: string;
 }
 
@@ -484,9 +487,12 @@ async function pushOcrIntoV1(
 }
 
 /**
- * opencode v2: push every local api-key credential into the v2 service.
- * Dedup is (provider case-insensitive × keyHash prefix) against the live v2
- * db, so reruns are idempotent. Never throws.
+ * opencode v2: push the OCR file's state into the v2 service — the def half
+ * (materialize the defs file into the client's `providers` slot, REPLACE) runs
+ * FIRST and gated on the v2 client being present (db on disk); the key half
+ * follows through the HTTP management API. Dedup is (provider
+ * case-insensitive × keyHash prefix) against the live v2 db, so reruns are
+ * idempotent. Never throws.
  */
 async function pushOcrIntoV2(
   ocr: CredentialStore,
@@ -496,7 +502,7 @@ async function pushOcrIntoV2(
   const paths = overrides.paths ?? resolveDefaultPaths();
   const env = overrides.env ?? defaultEnv();
 
-  // Collect BEFORE the service gate: "nothing to push" is a plain ok even when
+  // Collect BEFORE any gate: "nothing to push" is a plain ok even when
   // opencode is down — a manual sync with an empty OCR file must not fake-fail.
   const providerIds = overrides.provider
     ? [overrides.provider]
@@ -505,10 +511,53 @@ async function pushOcrIntoV2(
   for (const id of providerIds) {
     for (const cred of ocr.resolveKeyChain(id)) local.push({ cred });
   }
-  if (local.length === 0) return { ok: true, pushed: 0, deduped: 0, entries: [], pushedKeys: [] };
+
+  // Def materialization — converge the client's `providers` slot BEFORE any
+  // key push, so a brand-new custom provider's id is registered (via the
+  // resolveIntegrationId reload self-heal reading the freshly rendered jsonc)
+  // by the time its first key pushes. Gated on the v2 client being present
+  // (db on disk): a machine without one gains no jsonc providers slot from the
+  // v2 client's write path. Runs even with zero keys to push — an emptied defs
+  // map must still REPLACE the client slot (def delete propagation). No
+  // explicit reload here: the first unmatched resolve triggers the single-flight
+  // reload self-heal against the freshly materialized jsonc.
+  let defsMaterialized: number | undefined;
+  if (fs.existsSync(paths.opencodeDbPath)) {
+    const mat = materializeDefs(paths);
+    if (!mat.ok) {
+      return {
+        ok: false,
+        entries: [
+          {
+            provider: overrides.provider ?? '*',
+            action: 'failed',
+            reason: `def materialization failed: ${mat.detail}`,
+          },
+        ],
+        detail: mat.detail,
+      };
+    }
+    defsMaterialized = mat.rendered;
+  }
+
+  if (local.length === 0) {
+    return {
+      ok: true,
+      pushed: 0,
+      deduped: 0,
+      entries: [],
+      pushedKeys: [],
+      ...(defsMaterialized !== undefined ? { defsMaterialized } : {}),
+    };
+  }
 
   if (!resolveServiceConfigForPaths(paths, env)) {
-    return { ok: false, precondition: 'service_unreachable', entries: [] };
+    return {
+      ok: false,
+      precondition: 'service_unreachable',
+      entries: [],
+      ...(defsMaterialized !== undefined ? { defsMaterialized } : {}),
+    };
   }
 
   let v2: OpencodeV2Store;
@@ -553,7 +602,14 @@ async function pushOcrIntoV2(
         log.warn(`${LOG_PREFIX} v2 write: ${cred.providerId} push failed — ${msg}; local entry kept`);
       }
     }
-    return { ok: !entries.some((e) => e.action === 'failed'), pushed, deduped, entries, pushedKeys };
+    return {
+      ok: !entries.some((e) => e.action === 'failed'),
+      pushed,
+      deduped,
+      entries,
+      pushedKeys,
+      ...(defsMaterialized !== undefined ? { defsMaterialized } : {}),
+    };
   } finally {
     v2.close();
   }

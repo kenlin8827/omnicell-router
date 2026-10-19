@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
-import path from 'node:path';
 import type { OpenCodeServiceConfig } from '../connector.js';
-import { maskSecret, readJsonc } from '../user-config.js';
+import { maskSecret } from '../user-config.js';
+import { readProviderDefsFile } from '../provider-defs.js';
 import { CredentialPaths, defaultEnv, resolveDefaultPaths, serviceJsonCandidates } from './paths.js';
 import {
   CredentialMeta,
@@ -755,11 +755,11 @@ export class OpencodeV2Store implements CredentialStore {
 
   /**
    * The provider ids this sink will accept a credential write for — the registry
-   * `resolveIntegrationId()` consults, UNIONED with the config-declared providers
-   * in our own `opencode.jsonc`: an unmatched write self-heals via
-   * `POST /api/location/reload` (boot-registered ids become resolvable), so a
-   * declared id IS writable and the gate must say so — the "gates can never
-   * disagree with the 409" contract holds through the reload path, not despite it.
+   * `resolveIntegrationId()` consults, UNIONED with the ids declared in the OCR
+   * defs file: an unmatched write self-heals via the materialize → reload path
+   * (boot-registered ids become resolvable), so a declared id IS writable and
+   * the gate must say so — the "gates can never disagree with the 409" contract
+   * holds through the reload path, not despite it.
    * Empty array = the registry itself was unreachable: callers must read that as
    * UNKNOWN and not disable anything (a false refusal is worse than a real 409).
    */
@@ -772,16 +772,12 @@ export class OpencodeV2Store implements CredentialStore {
   }
 
   /**
-   * Provider ids declared in the `providers` node of our config file — the ids a
-   * reload can register upstream. Read errors (no file, junk) = empty, never fatal.
+   * Provider ids declared in the OCR defs file's `providers` map — the ids a
+   * materialization + reload can register upstream. Read errors (no file,
+   * junk) = empty, never fatal.
    */
   private declaredProviderIds(): string[] {
-    try {
-      const cfg = readJsonc(path.join(this.paths.configDir, 'opencode.jsonc'));
-      return Object.keys((cfg?.providers ?? {}) as Record<string, unknown>);
-    } catch {
-      return [];
-    }
+    return Object.keys(readProviderDefsFile(this.paths)?.providers ?? {});
   }
 
   private reloadInFlight: Promise<boolean> | null = null;
