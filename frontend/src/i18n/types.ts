@@ -1223,6 +1223,7 @@ hiddenBadge: string;
     msgSystem: string;
     injectedContext: string;
     backToTop: string;
+    scrollToBottom: string;
     injectedSegments: string;
     expandSectionsBtn: string;
     expandSectionsHint: string;

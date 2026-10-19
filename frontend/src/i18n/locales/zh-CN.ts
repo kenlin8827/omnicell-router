@@ -1152,6 +1152,7 @@ export const zhCN: TranslationDict = {
     msgSystem: '系统提示词',
     injectedContext: '注入上下文',
     backToTop: '回到顶部',
+    scrollToBottom: '滚到底部',
     injectedSegments: '段',
     expandSectionsBtn: '展开所有',
     expandSectionsHint: '勾选要展开的内容类别',

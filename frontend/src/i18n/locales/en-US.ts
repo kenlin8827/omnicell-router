@@ -1158,6 +1158,7 @@ export const enUS: TranslationDict = {
     msgSystem: 'System prompt',
     injectedContext: 'Injected context',
     backToTop: 'Back to top',
+    scrollToBottom: 'Scroll to bottom',
     injectedSegments: 'segments',
     expandSectionsBtn: 'Expand all',
     expandSectionsHint: 'Pick which section kinds to open',

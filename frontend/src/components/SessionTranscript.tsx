@@ -12,7 +12,7 @@ import remarkGfm from 'remark-gfm';
 import { AlertTriangle, Bot, ChevronDown, ChevronRight, ChevronsUpDown, Image as ImageIcon, Maximize2, Minimize2, User, Wrench } from 'lucide-react';
 import { useI18n } from '../i18n/I18nContext';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
-import { BackToTop } from './BackToTop';
+import { BackToTop, ScrollToBottom } from './BackToTop';
 import { Dialog } from './Dialog';
 import type { CaptureTurn } from '../lib/api';
 import {
@@ -1140,37 +1140,22 @@ const FocusRoundView: React.FC<{
           onOpenTurn={onOpenTurn}
         />
       ))}
-      {/* Conclusion bar — sticky to the overlay's bottom edge. Why sticky and
-          not a flex footer outside the scroll layer: a short round has no
-          scrollbar, and a hard-pinned bar would float at the screen bottom
-          with a dead gap under the steps; sticky keeps it IN FLOW (right
-          below the steps) until the waterfall actually overflows, then it
-          rides the bottom edge so the answer stays readable while the steps
-          scroll behind it — the same "answer always visible" contract the
-          expanded card gets from its footer sitting outside the 60vh panel.
-          Opaque bg + hairline rule read as a bar. --bg-elev alone is a
-          translucent TINT (content scrolls through it) — composite it over
-          the opaque --bg base so the bar matches the page fill AND hides
-          what passes behind. This bar owns the bottom gap (20px, its own
-          padding — the scroll container's is 0 so the two never stack);
-          paddingLeft 2 puts the rail RoundTail draws on the steps' rails. */}
+      {/* Conclusion — plain in-flow tail of the waterfall, right after the
+          steps (was sticky-pinned to the overlay's bottom edge; that kept the
+          answer visible while the steps scrolled behind it, but read as a
+          floating bar and hid where the page actually ends). The hairline top
+          rule keeps the visual break from the steps; no opaque background is
+          needed anymore — nothing scrolls past it. paddingLeft 2 puts the
+          rail RoundTail draws on the steps' rails. It still owns the 20px
+          bottom gap (its own padding — the page frame and the scroll
+          container both end with 0, so the two never stack). */}
       <div
         style={{
-          position: 'sticky',
-          bottom: 0,
           marginTop: 12,
           paddingTop: 12,
           paddingBottom: 20,
           paddingLeft: 2,
-          background: 'linear-gradient(var(--bg-elev), var(--bg-elev)), var(--bg)',
           borderTop: '1px solid var(--divider)',
-          // Ceiling: the tail prose is clamped to 6 lines, so this never
-          // engages by default. Only a hand-expanded long answer hits it —
-          // then the bar scrolls instead of pushing its own label off the
-          // top of the viewport. Upgrade path if it ever bothers anyone:
-          // cap the clamp inside the bar.
-          maxHeight: '55vh',
-          overflowY: 'auto',
         }}
       >
         <RoundTail round={round} />
@@ -1318,8 +1303,9 @@ export const SessionTranscript: React.FC<{
                 flex: 1,
                 minHeight: 0,
                 overflowY: 'auto',
-                // Bottom inset 0: the conclusion bar inside carries the 20px
-                // gap itself, so pinned and in-flow states measure the same.
+                // Bottom inset 0: the in-flow conclusion tail inside carries
+                // the 20px bottom gap itself (its own padding), so the page
+                // frame's fill ends exactly where the content ends.
                 padding: '16px 24px 0',
               }}
             >
@@ -1356,8 +1342,9 @@ export const SessionTranscript: React.FC<{
                 </div>
               </ExpandCtx.Provider>
             </div>
-            {/* Sibling of the scroll layer, absolute against the fixed root. */}
+            {/* Siblings of the scroll layer, absolute against the fixed root. */}
             <BackToTop scrollRef={focusScrollRef} />
+            <ScrollToBottom scrollRef={focusScrollRef} />
           </div>,
           document.body
         )}
