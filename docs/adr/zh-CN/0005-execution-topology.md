@@ -12,7 +12,7 @@
 
 ### 2. 启动池的三个真源
 
-`providers/boot-direct.ts`：(a) `opencode.jsonc` 的 provider 节点——**只认现行形状**（唯一 `providers` slot；节点级 `npm/options` 旧形状丢弃并上报；`env:[VAR]` 名单物化为 `{env:X}` 模板）；(b) 启动绑定的 CredentialStore 凭证链（ADR-0006）——`resolveKey/resolveKeyChain`，链头不变量 `chain[0].key === config.apiKey`，内联 key 前插于 store key 之前，裸 key 只驻**进程内**、永不序列化；(c) 目录（wire + 定价）。
+`providers/boot-direct.ts`：(a) OCR 定义文件的 provider 节点（`<ocrHome>/custom-providers.json`；ADR-0010——原 `opencode.jsonc` 读取：同形状同解析器，boot 一次性移植；节点级 `npm/options` 旧形状丢弃并上报；`env:[VAR]` 名单物化为 `{env:X}` 模板）；(b) 启动绑定的 CredentialStore 凭证链（ADR-0006）——`resolveKey/resolveKeyChain`，链头不变量 `chain[0].key === config.apiKey`，内联 key 前插于 store key 之前，裸 key 只驻**进程内**、永不序列化；(c) 目录（wire + 定价）。
 
 失败教义：不可路由的 provider 被**排除并上报**（`db_unreadable | no_credential | no_baseURL | 全模型不可路由`），永不炸启动；OAuth 行列示挂牌、永不进链、永不被路由（`:163-209,323-326`）。线型派发**数据驱动**：npm 包优先级 `model > catalog entry > provider def > recommendation`——协议真身在目录数据里，不在代码表里（`wire.ts:1-11`）；每 provider 基座：openai-compatible / anthropic / responses / google；System One 不建 chat 执行器（决策协议直调，ADR-0008）。
 

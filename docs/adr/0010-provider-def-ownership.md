@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — 2026-10-19. Implementation pending: this record is the design contract for the provider-def ownership migration. Until the code lands, ADR-0005 §2(a) still describes today's boot source (the `opencode.jsonc` `providers` node) and remains governing for current behavior; this file flips to Implemented in the same commit that swaps the source, and AGENTS.md's provider-defs pointer re-aims here at the same time.
+Implemented — 2026-10-20 (stages: the defs store + one-shot jsonc port; the funnel swap across CRUD/boot/view; materialize-then-push sync with REPLACE semantics; the CLI hook rework). Amends the boot source in ADR-0005 §2(a).
 
 ## Decision
 

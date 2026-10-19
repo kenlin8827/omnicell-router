@@ -244,7 +244,7 @@ export const enUS: TranslationDict = {
     saveCheckDeadCombo: 'Dead combo ref: {tier} · {combo} (unknown / disabled / no registered members)',
   },
   op: {
-    title: 'OpenCode Provider Management',
+    title: 'Provider Management',
     desc: 'Provider definitions read/write custom-providers.json; credentials read/write {sink}.',
     connectedTitle: 'Connected Providers',
     connectedDesc: 'custom-providers.json provider definitions ∪ {sink} credentials',
@@ -454,7 +454,7 @@ export const enUS: TranslationDict = {
     reasonCredentialNotFound: 'That credential is gone — the credential store changed underneath us. Refresh the page.',
     reasonCapabilityUnsupported: 'The bound credential store does not support this operation.',
     reasonIntegrationUnmatched: 'opencode has no integration for this id, so the write was refused (existing keys still route). The automatic config reload did not help either — usually a service build without the reload endpoint: restart the opencode service and add the key again, or switch to an inline key.',
-    integrationMissingTip: 'No opencode integration for this id: keys cannot be added or rotated here (existing ones keep routing). If the provider is not declared in opencode.jsonc, create its definition first (the key write asks the service to reload config automatically); or switch to an inline key.',
+    integrationMissingTip: 'No opencode integration for this id: keys cannot be added or rotated here (existing ones keep routing). If the provider is not defined yet, create its definition first (the key write materializes it and asks the service to reload config automatically); or switch to an inline key.',
     reasonInvalidLabel: 'Invalid label: use a non-empty name of at most 80 characters.',
     reasonNoKeyIdentity: 'This record carries no API key (OAuth / wellknown), so there is no key fingerprint to anchor a takedown on.',
     reasonInvalidReason: 'Invalid note: keep the reason under 200 characters.',

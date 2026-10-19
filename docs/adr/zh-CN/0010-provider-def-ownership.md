@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — 2026-10-19。实现待落地：本记录是 provider 定义归属迁移的设计契约。代码落地前，ADR-0005 §2(a) 仍描述当前 boot 数据源（`opencode.jsonc` 的 `providers` 节点）并对现行行为保持有效；换源的同一个 commit 里本文件翻为 Implemented，AGENTS.md 的 provider-defs 指针同commit改指本文。
+Implemented — 2026-10-20（阶段：定义库 + 一次性 jsonc 移植；CRUD/boot/视图漏斗换源；先物化后推 key 的同步 REPLACE 语义；CLI 钩子改道）。修订 ADR-0005 §2(a) 的 boot 数据源。
 
 ## Decision
 

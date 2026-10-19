@@ -244,7 +244,7 @@ export const zhCN: TranslationDict = {
     saveCheckDeadCombo: '组合引用未生效：{tier} · {combo}（组合不存在 / 已停用 / 无已注册成员）',
   },
   op: {
-    title: 'OpenCode Provider 管理',
+    title: 'Provider 管理',
     desc: 'Provider 定义读写 custom-providers.json，凭证读写 {sink}。',
     connectedTitle: '已连接 Providers',
     connectedDesc: 'custom-providers.json 的 provider 定义 ∪ {sink} 的凭证',
@@ -452,7 +452,7 @@ export const zhCN: TranslationDict = {
     reasonCredentialNotFound: '该凭证已不存在——凭证库在操作期间发生变化，请刷新页面。',
     reasonCapabilityUnsupported: '当前绑定的凭证库不支持该操作。',
     reasonIntegrationUnmatched: 'opencode 无此 integration，写入被拒（现有密钥照常路由）。自动触发配置重载后仍未识别——通常是不支持重载的旧服务版本，请重启 opencode 服务后重新添加密钥，或改用内联密钥。',
-    integrationMissingTip: 'opencode 无此 integration：不能新增或轮换密钥（现有密钥照常路由）。若该 provider 未在 opencode.jsonc 声明，先创建定义（写入密钥时会自动请求服务重载配置）；也可改用内联密钥。',
+    integrationMissingTip: 'opencode 无此 integration：不能新增或轮换密钥（现有密钥照常路由）。若该 provider 尚未定义，先创建定义（写入密钥时会自动物化并请求服务重载配置）；也可改用内联密钥。',
     reasonInvalidLabel: '标签无效：请使用不超过 80 个字符的非空名称。',
     reasonNoKeyIdentity: '该记录不含 API 密钥（OAuth/wellknown），没有可用于停用标记的密钥指纹。',
     reasonInvalidReason: '停用说明无效：请使用不超过 200 个字符。',
