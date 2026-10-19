@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useLayoutEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { Zap, Scale, Brain, Sparkles, Save, RefreshCw, Plus, X, Eye, GripVertical, Search, ArrowUpToLine, ArrowUp, ArrowDown, ArrowRightLeft, Trash2, AlertTriangle } from 'lucide-react';
-import { api, opencodeApi, type TierPoolInfo } from '../lib/api';
+import { api, opencodeApi, type TierPoolInfo, type ComboView } from '../lib/api';
 import { useConfirm } from '../components/ConfirmProvider';
 import { Combobox } from '../components/Combobox';
 import { ProviderLogo } from '../components/ProviderLogo';
@@ -130,6 +130,8 @@ export const RulesPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [savingTier, setSavingTier] = useState<Tier | null>(null);
   const [pendingSaveTier, setPendingSaveTier] = useState<Tier | null>(null);
+  const [savingAll, setSavingAll] = useState(false);
+  const [pendingSaveAll, setPendingSaveAll] = useState(false);
   const [memberDrafts, setMemberDrafts] = useState<Record<Tier, string>>({ lite: '', plus: '', pro: '', ultra: '' });
   const [mapTarget, setMapTarget] = useState<{ tier: Tier; index: number } | null>(null);
   const [saveWarnings, setSaveWarnings] = useState<
@@ -141,11 +143,8 @@ export const RulesPage: React.FC = () => {
   // behaviour); dragMember tracks the in-flight row for live reorder.
   const [armedDrag, setArmedDrag] = useState<string | null>(null);
   const [dragMember, setDragMember] = useState<{ tier: Tier; index: number } | null>(null);
-  const [pickerTier, setPickerTier] = useState<Tier | null>(null);
-  const [pickerQuery, setPickerQuery] = useState('');
-  const [pickerSelected, setPickerSelected] = useState<string[]>([]);
-  const [pickerTierFilter, setPickerTierFilter] = useState('');
-  const [gatewayModels, setGatewayModels] = useState<{ id: string; owned_by: string; tier?: string }[]>([]);
+  const [gatewayModels, setGatewayModels] = useState<{ id: string; kind?: string; owned_by: string; tier?: string }[]>([]);
+  const [comboCatalog, setComboCatalog] = useState<ComboView[]>([]);
   const [pools, setPools] = useState<Record<string, TierPoolInfo>>({});
   const [poolsLive, setPoolsLive] = useState<Record<string, TierPoolInfo>>({});
   const [poolsError, setPoolsError] = useState<string | null>(null);
@@ -156,7 +155,7 @@ export const RulesPage: React.FC = () => {
   const [poolsLoadingMode, setPoolsLoadingMode] = useState<'preview' | 'live' | null>(null);
   const [poolsAt, setPoolsAt] = useState<number | null>(null);
   const [poolsLiveAt, setPoolsLiveAt] = useState<number | null>(null);
-  useBodyScrollLock(!!poolModalTier || !!mapTarget || !!saveWarnings || !!pickerTier);
+  useBodyScrollLock(!!poolModalTier || !!mapTarget || !!saveWarnings);
 
   const buildTiersPayload = useCallback((): Record<string, unknown> => {
     const tiers: Record<string, unknown> = {};
@@ -240,6 +239,10 @@ export const RulesPage: React.FC = () => {
         setGlobalExclude((tiers.exclude || []).join('\n'));
         await loadPools();
         await loadLivePools();
+        // Member-picker catalogs (registered models + combos); non-blocking,
+        // failures just leave the lists empty.
+        api.listGatewayModels().then(setGatewayModels).catch(() => {});
+        api.getCombos().then((r) => setComboCatalog(r.combos || [])).catch(() => {});
       } catch (err: any) {
         toast.error(t('common.failed') + err.message);
       } finally {
@@ -294,34 +297,39 @@ export const RulesPage: React.FC = () => {
     return pos;
   };
 
-  /** Model picker (mirrors the API-key access picker): registered models only. */
-  const pickerModels = () =>
-    gatewayModels.filter((m) => m.owned_by !== 'onecast-router'); // virtual auto* ids are not real members
-
-  const openModelPicker = (tier: Tier) => {
-    setPickerTier(tier);
-    setPickerQuery('');
-    setPickerSelected([]);
-    setPickerTierFilter('');
-    if (gatewayModels.length === 0) {
-      api.listGatewayModels().then(setGatewayModels).catch(() => {});
-    }
+  /** Member-picker dropdown options: active combos first (a pick adds ONE
+      `combo:<id>` rule — an indirection the backend expands at every commit
+      point, so pools follow later combo edits), then registered models. Only
+      real registrations may enter pools — virtual auto* ids and variant
+      sibling ids are not registrations. */
+  const memberPickOptions = (tier: Tier) => {
+    const existing = new Set(forms[tier].members.map((x) => x.pattern));
+    const comboOptions = comboCatalog
+      .filter((c) => c.active !== false && c.disabled !== true)
+      .filter((c) => !existing.has(`combo:${c.id}`))
+      .map((c) => ({
+        value: `combo:${c.id}`,
+        label: c.id,
+        badge: t('tierPolicy.comboBadge'),
+        meta: t('tierPolicy.comboMemberCount', { n: (c.members || []).filter((m) => m.registered).length }),
+      }));
+    const modelOptions = gatewayModels
+      .filter((m) => m.kind === 'model' && !existing.has(m.id))
+      .map((m) => {
+        const meta = TIERS.find((x) => x.key === m.tier);
+        return { value: m.id, label: m.id, meta: meta ? t(meta.labelKey) : m.tier };
+      });
+    return [...comboOptions, ...modelOptions];
   };
 
-  const togglePickedModel = (id: string) =>
-    setPickerSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
-
-  const confirmModelPicker = () => {
-    const tier = pickerTier;
-    const selected = pickerSelected;
-    setPickerTier(null);
-    if (!tier || selected.length === 0) return;
+  const addMemberRules = (tier: Tier, ids: string[]) =>
     setForms((prev) => {
-      const existing = new Set(prev[tier].members.map((m) => m.pattern));
-      const additions = selected.filter((id) => !existing.has(id)).map((id) => ({ pattern: id, effortMap: {} }));
+      const additions = ids
+        .filter((id) => !prev[tier].members.some((x) => x.pattern === id))
+        .map((id) => ({ pattern: id, effortMap: {} }));
+      if (additions.length === 0) return prev;
       return { ...prev, [tier]: { ...prev[tier], members: [...prev[tier].members, ...additions] } };
     });
-  };
 
   const removeMember = (tier: Tier, index: number) =>
     setForms((prev) => ({
@@ -431,11 +439,49 @@ export const RulesPage: React.FC = () => {
     const warnings = await runCheck();
     setSavingTier(null);
     if (warnings.length > 0) {
+      setPendingSaveAll(false);
       setPendingSaveTier(tier);
       setSaveWarnings(warnings);
       return;
     }
     await doSaveTier(tier);
+  };
+
+  /** Save ALL tiers at once: every tier's draft is committed (explicit empty
+   *  lists included — a cleared list IS the intent), merged over the LATEST
+   *  disk state for any fields this page does not own. */
+  const doSaveAll = async () => {
+    setSavingAll(true);
+    try {
+      const latest = await api.getConfig();
+      const tiersPayload: Record<string, unknown> = { ...(latest?.tiers || {}) };
+      for (const { key } of TIERS) tiersPayload[key] = buildTierPolicy(forms[key]);
+      const ex = splitPatterns(globalExclude);
+      if (ex.length) tiersPayload.exclude = ex;
+      else delete tiersPayload.exclude;
+      await api.saveConfig({ tiers: tiersPayload });
+      toast.success(t('tierPolicy.savedAll'));
+      setSaveWarnings(null);
+      await loadPools();
+      await loadLivePools();
+    } catch (err: any) {
+      toast.error(t('common.saveFailed') + err.message);
+    } finally {
+      setSavingAll(false);
+    }
+  };
+
+  const saveAll = async () => {
+    setSavingAll(true);
+    const warnings = await runCheck();
+    setSavingAll(false);
+    if (warnings.length > 0) {
+      setPendingSaveTier(null);
+      setPendingSaveAll(true);
+      setSaveWarnings(warnings);
+      return;
+    }
+    await doSaveAll();
   };
 
   const openPoolModal = (tier: Tier) => {
@@ -533,9 +579,22 @@ export const RulesPage: React.FC = () => {
               </button>
             ))}
           </div>
-          
         </div>
-        <p style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: '1.6', margin: 0, marginBottom: '6px', whiteSpace: 'pre-line' }}>{t('tierPolicy.desc')}</p>
+        {/* Page-level commit action shares the description row — desc left,
+            save-all right (deliberately out of the nav-chip row: navigation
+            and "commit everything" are different intents). */}
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: '16px', marginTop: '8px' }}>
+          <p style={{ flex: 1, fontSize: '13px', color: 'var(--text-muted)', lineHeight: '1.6', margin: 0, whiteSpace: 'pre-line' }}>{t('tierPolicy.desc')}</p>
+          <button
+            className="btn btn-primary"
+            style={{ padding: '5px 14px', fontSize: '11px', flexShrink: 0, marginTop: '2px' }}
+            disabled={loading || savingAll}
+            onClick={() => void saveAll()}
+          >
+            <Save size={12} />
+            <span>{savingAll ? t('common.loading') : t('tierPolicy.saveAllBtn')}</span>
+          </button>
+        </div>
         <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginTop: '6px' }}>{t('tierPolicy.defaultsHint')}</div>
       </div>
 
@@ -699,6 +758,7 @@ export const RulesPage: React.FC = () => {
                       const occ = seen.get(m.pattern) ?? 0;
                       seen.set(m.pattern, occ + 1);
                       const mapped = Object.values(m.effortMap).filter(Boolean).length;
+                      const isComboRef = m.pattern.startsWith('combo:');
                       return (
                       <div
                         key={`${m.pattern}#${occ}`}
@@ -769,20 +829,42 @@ export const RulesPage: React.FC = () => {
                             fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                             fontSize: '12px',
                             fontWeight: 600,
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 6,
                           }}
                         >
-                          {m.pattern}
+                          {isComboRef && (
+                            <span
+                              style={{
+                                fontSize: 9.5,
+                                fontWeight: 700,
+                                flexShrink: 0,
+                                padding: '0 6px',
+                                borderRadius: 999,
+                                color: 'var(--accent-violet)',
+                                border: '1px solid color-mix(in srgb, var(--accent-violet) 45%, transparent)',
+                              }}
+                            >
+                              {t('tierPolicy.comboBadge')}
+                            </span>
+                          )}
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {isComboRef ? m.pattern.slice('combo:'.length) : m.pattern}
+                          </span>
                         </span>
-                        <input
-                          type="number"
-                          min={1}
-                          step={1}
-                          className="input"
-                          data-tip={t('tierPolicy.memberWeightHint')}
-                          style={{ width: '52px', padding: '3px 6px', fontSize: '11px', textAlign: 'center', flexShrink: 0 }}
-                          value={m.weight ?? 1}
-                          onChange={(e) => updateWeight(tier, i, e.target.value)}
-                        />
+                        {!isComboRef && (
+                          <input
+                            type="number"
+                            min={1}
+                            step={1}
+                            className="input"
+                            data-tip={t('tierPolicy.memberWeightHint')}
+                            style={{ width: '52px', padding: '3px 6px', fontSize: '11px', textAlign: 'center', flexShrink: 0 }}
+                            value={m.weight ?? 1}
+                            onChange={(e) => updateWeight(tier, i, e.target.value)}
+                          />
+                        )}
                         <button
                           className="btn"
                           style={{ padding: '2px 8px', fontSize: '10px', display: 'inline-flex', alignItems: 'center', gap: 4, flexShrink: 0 }}
@@ -854,11 +936,20 @@ export const RulesPage: React.FC = () => {
                     <Plus size={11} />
                     <span>{t('tierPolicy.addMemberBtn')}</span>
                   </button>
-                  <button className="btn" style={{ padding: '4px 10px', fontSize: '11px' }} onClick={() => openModelPicker(tier)}>
-                    <Search size={11} />
-                    <span>{t('tierPolicy.pickModelBtn')}</span>
-                  </button>
                 </div>
+                <Combobox
+                  value=""
+                  onChange={(v) => {
+                    // combo:<id> options store the ref verbatim — the backend
+                    // expands it at every commit point (pools follow combo edits)
+                    if (v) addMemberRules(tier, [v]);
+                  }}
+                  options={memberPickOptions(tier)}
+                  placeholder={t('tierPolicy.pickModelBtn')}
+                  panelMinWidth={320}
+                  forceFilter
+                  style={{ width: '100%', fontSize: '11px', padding: '4px 8px', marginTop: '6px' }}
+                />
                 <div style={{ fontSize: '10px', color: 'var(--text-dim)', lineHeight: 1.5, marginTop: '6px' }}>{t('tierPolicy.membersHint')}</div>
               </div>
 
@@ -1322,134 +1413,6 @@ export const RulesPage: React.FC = () => {
           document.body
         )}
 
-      {/* Model picker — add registered models (exact ids) as member rules. */}
-      {pickerTier &&
-        createPortal(
-          <div
-            style={{
-              position: 'fixed',
-              inset: 0,
-              background: 'var(--scrim)',
-              zIndex: 100,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              padding: '16px',
-            }}
-            onClick={() => setPickerTier(null)}
-          >
-            <div
-              className="card"
-              style={{
-                width: '100%',
-                maxWidth: '560px',
-                maxHeight: '78vh',
-                padding: '22px',
-                boxShadow: '0 20px 40px rgba(0,0,0,0.6)',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '12px',
-              }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <h3 style={{ fontSize: '14px', fontWeight: 800, color: 'var(--text-main)', margin: 0 }}>{t('tierPolicy.pickModelTitle')}</h3>
-                <button
-                  onClick={() => setPickerTier(null)}
-                  style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', fontSize: '18px', cursor: 'pointer', lineHeight: 1 }}
-                >
-                  ✕
-                </button>
-              </div>
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <input
-                  type="text"
-                  className="input"
-                  style={{ fontSize: '12px', flex: 1, minWidth: 0 }}
-                  placeholder={t('tierPolicy.pickModelSearch')}
-                  value={pickerQuery}
-                  onChange={(e) => setPickerQuery(e.target.value)}
-                />
-                {/* Tier filter labels follow the tier cards (t(labelKey));
-                    row badges below use the same mapping so filter and rows
-                    stay visually consistent. */}
-                <Combobox
-                  value={pickerTierFilter}
-                  onChange={setPickerTierFilter}
-                  options={[
-                    { value: '', label: t('tierPolicy.pickModelTierAll') },
-                    ...TIERS.map((x) => ({ value: x.key as string, label: t(x.labelKey) })),
-                  ]}
-                  style={{ width: '128px', fontSize: '12px', padding: '5px 10px', flexShrink: 0 }}
-                />
-              </div>
-              <div style={{ overflowY: 'auto', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                {(() => {
-                  const q = pickerQuery.trim().toLowerCase();
-                  const models = pickerModels().filter(
-                    (m) => (!pickerTierFilter || m.tier === pickerTierFilter) && (!q || m.id.toLowerCase().includes(q)),
-                  );
-                  if (models.length === 0) {
-                    return <div style={{ fontSize: '12px', color: 'var(--text-dim)', padding: '8px 2px' }}>{t('common.noResults')}</div>;
-                  }
-                  return models.map((m) => {
-                    const already = forms[pickerTier].members.some((x) => x.pattern === m.id);
-                    const selected = pickerSelected.includes(m.id);
-                    const rowTierMeta = TIERS.find((x) => x.key === m.tier);
-                    return (
-                      <button
-                        key={m.id}
-                        type="button"
-                        disabled={already}
-                        onClick={() => togglePickedModel(m.id)}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '8px',
-                          padding: '6px 10px',
-                          borderRadius: 6,
-                          border: selected ? '1px solid var(--accent)' : '1px solid transparent',
-                          background: selected ? 'var(--card-border)' : 'transparent',
-                          color: already ? 'var(--text-dim)' : 'var(--text-main)',
-                          cursor: already ? 'default' : 'pointer',
-                          textAlign: 'left',
-                          fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
-                          fontSize: '12px',
-                          opacity: already ? 0.55 : 1,
-                        }}
-                      >
-                        <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.id}</span>
-                        {m.tier && (
-                          <span style={{ fontSize: '10px', color: 'var(--text-dim)', flexShrink: 0 }}>
-                            {rowTierMeta ? t(rowTierMeta.labelKey) : m.tier}
-                          </span>
-                        )}
-                        <span style={{ fontSize: '10px', color: 'var(--text-dim)', flexShrink: 0 }}>
-                          {already ? t('tierPolicy.pickModelAlreadyAdded') : selected ? '✓' : ''}
-                        </span>
-                      </button>
-                    );
-                  });
-                })()}
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
-                <button className="btn" style={{ padding: '5px 14px', fontSize: '12px' }} onClick={() => setPickerTier(null)}>
-                  {t('common.cancel')}
-                </button>
-                <button
-                  className="btn btn-primary"
-                  style={{ padding: '5px 14px', fontSize: '12px' }}
-                  disabled={pickerSelected.length === 0}
-                  onClick={confirmModelPicker}
-                >
-                  {t('tierPolicy.pickModelAdd', { n: pickerSelected.length })}
-                </button>
-              </div>
-            </div>
-          </div>,
-          document.body,
-        )}
-
       {/* thinking-level map editor — one row per client level. */}
       {mapTarget &&
         (() => {
@@ -1643,7 +1606,9 @@ export const RulesPage: React.FC = () => {
                   <li key={i} style={{ fontSize: '12px', color: 'var(--accent-amber, var(--accent))', lineHeight: 1.5 }}>
                     {w.kind === 'overlap'
                       ? t('tierPolicy.saveCheckOverlap', { count: w.count ?? 0, tiers: (w.tiers || []).join(' ↔ ') })
-                      : t('tierPolicy.saveCheckOrphan', { tier: w.tier ?? '', pattern: w.pattern ?? '' })}
+                      : w.kind === 'deadCombo'
+                        ? t('tierPolicy.saveCheckDeadCombo', { tier: w.tier ?? '', combo: (w.pattern ?? '').slice('combo:'.length) })
+                        : t('tierPolicy.saveCheckOrphan', { tier: w.tier ?? '', pattern: w.pattern ?? '' })}
                   </li>
                 ))}
               </ul>
@@ -1655,9 +1620,13 @@ export const RulesPage: React.FC = () => {
                   className="btn btn-primary"
                   style={{ padding: '5px 14px', fontSize: '12px' }}
                   onClick={() => {
-                    const target = pendingSaveTier;
+                    const tier = pendingSaveTier;
+                    const all = pendingSaveAll;
                     setSaveWarnings(null);
-                    if (target) void doSaveTier(target);
+                    setPendingSaveTier(null);
+                    setPendingSaveAll(false);
+                    if (all) void doSaveAll();
+                    else if (tier) void doSaveTier(tier);
                   }}
                 >
                   {t('tierPolicy.saveCheckContinue')}

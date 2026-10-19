@@ -1,16 +1,22 @@
 import { globMatch } from '../utils/glob.js';
 import { EFFORT_LADDER, type EffortMap, type ReasoningEffort, type TierLevel } from '../types/router.js';
-import type { TiersConfig, TierMemberRule } from '../config/types.js';
+import type { ComboConfig, TiersConfig, TierMemberRule } from '../config/types.js';
 
 /**
  * member-list membership + inline effort translation.
  *
- * Tier membership has exactly ONE source: the explicit `tiers[t].members`
+ * Tier membership has exactly ONE config source: the explicit `tiers[t].members`
  * rule list. A model is claimed by the FIRST rule (tier order lite → plus →
  * pro → ultra, then list order within a tier) whose glob matches its FULL id
  * (`provider/model`); nothing matched → `'unclassified'` (fourth state, no
  * pool). List order IS priority: the first rule's models lead the tier's
  * failover chain.
+ *
+ * `combo:<id>` rules are the one sanctioned indirection: declared references
+ * that expand IN PLACE into the combo's registered members at every commit /
+ * read point (expandComboRefs) — pools stay physical-model lists, the request
+ * path never resolves refs, and later combo edits follow into the tier at the
+ * next commit.
  *
  * The classifier (tier-match.ts) stays alive as the SUGGESTION engine —
  * it feeds catalog-page recommendations, the /tiers ephemeral preview and
@@ -76,11 +82,118 @@ export function resolveTierMembers(policies: TiersConfig | undefined): ResolvedM
   return { tiers, configured };
 }
 
+/** Reserved member-rule prefix marking a combo indirection — never a glob. */
+export const COMBO_REF_PREFIX = 'combo:';
+
+export const isComboRef = (pattern: string): boolean => pattern.startsWith(COMBO_REF_PREFIX);
+
+/** Virtual model ids that routing already owns — a combo may never take one
+    (registry applyCombos ignores such definitions with a warn), so combo
+    expansion treats them as dead refs everywhere (commit AND boot views). */
+export const RESERVED_COMBO_IDS = new Set(['auto', 'default', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra']);
+
+/** Registered member refs of one combo id, config order, deduped; empty = nothing live. */
+export type ComboRefLookup = (comboId: string) => { id: string; weight: number }[] | null;
+
+/** Normalized registered member refs of one combo definition (bare string |
+    {id, weight} entries → {id, weight>=1}; unregistered dropped, duplicates
+    collapse to first). Shared by the registry lookup and the boot lookup. */
+export function comboMemberRefsOf(
+  combo: ComboConfig,
+  isRegistered: (modelId: string) => boolean,
+): { id: string; weight: number }[] {
+  const seen = new Set<string>();
+  const refs: { id: string; weight: number }[] = [];
+  for (const entry of combo.models || []) {
+    const ref = typeof entry === 'string' ? { id: entry, weight: 1 } : { id: entry.id, weight: Math.max(1, Number(entry.weight) || 1) };
+    if (!ref.id || seen.has(ref.id) || !isRegistered(ref.id)) continue;
+    seen.add(ref.id);
+    refs.push(ref);
+  }
+  return refs;
+}
+
+/** One-shot lookup over the raw combo config (boot path — no registry yet):
+    pre-resolves every combo's refs against the registration universe. */
+export function comboRefLookupFromConfig(
+  combos: ComboConfig[] | undefined,
+  isRegistered: (modelId: string) => boolean,
+): ComboRefLookup {
+  const map = new Map<string, { id: string; weight: number }[]>();
+  for (const combo of combos || []) {
+    // disabled = operator takedown; a model registered over the combo id
+    // shadows it; reserved ids (auto*) were never registered as combos —
+    // all three leave the combo unable to serve, so all are dead refs.
+    if (!combo?.id || combo.disabled === true || isRegistered(combo.id) || RESERVED_COMBO_IDS.has(combo.id)) continue;
+    map.set(combo.id, comboMemberRefsOf(combo, isRegistered));
+  }
+  return (comboId) => map.get(comboId) ?? null;
+}
+
+export interface ExpandedMembers {
+  tiers: Record<TierLevel, TierMemberRule[]>;
+  /** Combo refs that contributed nothing (unknown / disabled / shadowed / zero registered members). */
+  dead: { tier: TierLevel; ref: string }[];
+}
+
+/**
+ * Replace `combo:<id>` member rules IN PLACE with the combo's registered
+ * members: config order preserved (the ref's list position decides chain
+ * order), per-member weight carried, the ref rule's effortMap applied
+ * block-wide to every expanded member. Duplicate/unregistered ids are dropped;
+ * a ref that yields nothing is reported dead. Pools stay physical-model lists
+ * — the request path never sees a ref. Exact-id claims from earlier rules
+ * dedupe the expansion (first-claim-wins hygiene); glob overlap is left to the
+ * save-time check.
+ */
+export function expandComboRefs(tiers: Record<TierLevel, TierMemberRule[]>, lookup: ComboRefLookup): ExpandedMembers {
+  const out: Record<TierLevel, TierMemberRule[]> = { lite: [], plus: [], pro: [], ultra: [] };
+  const dead: { tier: TierLevel; ref: string }[] = [];
+  for (const tier of MEMBER_TIER_ORDER) {
+    const claimed = new Set<string>();
+    for (const rule of tiers[tier]) {
+      if (!isComboRef(rule.pattern)) {
+        out[tier].push(rule);
+        // exact-id hygiene only — substring/glob patterns claim wider sets
+        // that only the runtime first-claim resolution knows about
+        if (!/[*?]/.test(rule.pattern)) claimed.add(rule.pattern.toLowerCase());
+        continue;
+      }
+      const members = lookup(rule.pattern.slice(COMBO_REF_PREFIX.length));
+      if (!members || members.length === 0) {
+        dead.push({ tier, ref: rule.pattern });
+        continue;
+      }
+      let added = 0;
+      for (const { id, weight } of members) {
+        if (claimed.has(id.toLowerCase())) continue;
+        claimed.add(id.toLowerCase());
+        // exact pin: a member's full id must not substring-claim longer
+        // sibling ids (p/v4 vs p/v4-pro)
+        const expanded: TierMemberRule = { pattern: id, exact: true };
+        if (weight > 1) expanded.weight = weight;
+        if (rule.effortMap) expanded.effortMap = { ...rule.effortMap };
+        out[tier].push(expanded);
+        added++;
+      }
+      if (added === 0) dead.push({ tier, ref: rule.pattern });
+    }
+  }
+  return { tiers: out, dead };
+}
+
 export interface MemberClaim {
   tier: TierLevel;
   rule: TierMemberRule;
   /** Rule position within the tier's list — becomes the chain priority. */
   index: number;
+}
+
+/** One rule against one model id: `exact` rules pin the full id (combo
+    expansion); everything else keeps the glob semantics (substring / wildcards). */
+function ruleMatches(rule: TierMemberRule, modelId: string): boolean {
+  if (rule.exact) return rule.pattern.trim().toLowerCase() === modelId.toLowerCase();
+  return globMatch(rule.pattern, modelId);
 }
 
 /** Claim ONE model id against the member lists (tier order → list order, first hit wins). */
@@ -91,7 +204,7 @@ export function claimModel(
   for (const tier of MEMBER_TIER_ORDER) {
     const rules = tiers[tier];
     for (let i = 0; i < rules.length; i++) {
-      if (globMatch(rules[i].pattern, modelId)) return { tier, rule: rules[i], index: i };
+      if (ruleMatches(rules[i], modelId)) return { tier, rule: rules[i], index: i };
     }
   }
   return 'unclassified';
@@ -101,7 +214,7 @@ export function claimModel(
 export function matchingTiers(modelId: string, tiers: Record<TierLevel, TierMemberRule[]>): TierLevel[] {
   const hits: TierLevel[] = [];
   for (const tier of MEMBER_TIER_ORDER) {
-    if (tiers[tier].some((r) => globMatch(r.pattern, modelId))) hits.push(tier);
+    if (tiers[tier].some((r) => ruleMatches(r, modelId))) hits.push(tier);
   }
   return hits;
 }

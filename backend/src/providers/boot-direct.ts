@@ -3,7 +3,7 @@ import type { CatalogModel } from '../opencode/catalog/types.js';
 import { PoolMembership, TierLevel, EFFORT_LADDER, type ReasoningEffort } from '../types/router.js';
 import { loadConfig } from '../config/index.js';
 import { resolveTierMatch, classifyTier } from './tier-match.js';
-import { resolveTierMembers, claimModel } from './member-match.js';
+import { resolveTierMembers, claimModel, comboRefLookupFromConfig, expandComboRefs } from './member-match.js';
 import { catalogRepository } from '../opencode/catalog/repository.js';
 import {
   getProviderNodeById,
@@ -388,7 +388,16 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
   // List order IS chain order (priority = rule index + 1), list index 0 is
   // the tier representative. Members are edited on the console /tiers page
   // (hot-applied by the registry; no restart, no persistence from boot).
-  const resolved = resolveTierMembers(loadConfig().tiers);
+  const cfgTiers = loadConfig().tiers;
+  const registeredIds = new Set(models.map((m) => m.id));
+  const lookup = comboRefLookupFromConfig(loadConfig().combos, (id) => registeredIds.has(id));
+  const resolved = expandComboRefs(resolveTierMembers(cfgTiers).tiers, lookup);
+  for (const d of resolved.dead) {
+    console.warn(
+      `[Boot] Tier '${d.tier}' references combo '${d.ref.slice('combo:'.length)}' that contributes no members ` +
+        `(unknown / disabled / shadowed / zero registered models) — check it on the /tiers page.`,
+    );
+  }
   let claimed = 0;
   for (const m of models) {
     const claim = claimModel(m.id, resolved.tiers);

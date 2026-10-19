@@ -32,10 +32,11 @@
 - 双轴活性：BOOT 快照拥有模型宇宙（provider/凭证/wire）；成员资格+链优先序+effortMap 是**文件派生的活投影**——控制台两条保存路径即时提交 `applyTierConfigNow`（+ `applyCombos`），另有 2 秒懒惰重放兜手改 YAML（`registry.ts:375-425`，`routes/console.ts:1076-1077,1100-1101`）。
 - 非捕获模型（无 `tierMatch`）永不重分类——其显式梯队是永久的，成员表编辑动不了它们（`projectedClaim` 返回 undefined → 跳过，`registry.ts:405-411`）。
 - 全局 denylist `tiers.exclude` 是唯一剩下的池否决——无条件，"连显式钉扎都压过"（`registry.ts:271-281`）；梯队侧 `match.exclude/excludeTiers` 只是分类闸口的否决（仅建议路径）。
+- Combo 间接引用：成员规则 `pattern: 'combo:<id>'` 是**声明的引用**，不是 glob——每个提交/读取点（boot 认领、`applyTierConfigNow`、2 秒懒惰重放、`resolveTierPool` 预览、保存检查）都经 `expandComboRefs` **原位展开**为 combo 的已注册成员：配置序保留（引用所处的列表位置决定链序）、逐成员 weight 携带、引用级 `effortMap` 整块作用于全部展开成员、重复与未注册 id 丢弃、与先前规则的精确 id 认领去重，且每个展开成员都是**精确钉**（`exact: true`——成员全 id 绝不子串认领更长的兄弟 id，如 `p/v4-pro`）。池永远是物理模型列表——请求路径**绝不**解析引用。这是唯一获准的自动跟随通道：此后 combo 的编辑在下一次提交时流入梯队，因为操作者已按引用逐个选择加入；死引用（未知 / 保留字 / 已停用 / 被遮蔽 / 零已注册成员）展开为空，以 `deadCombo` 保存检查警告呈现（boot 同样告警）。引用自身的 `weight` 字段无效——权重住在 combo 的成员条目上。
 
 ### 3. Combo
 
-`ComboConfig = {id, disabled?, selection?, models:(string|ComboModelRef)[], note?}`——`selection` 只决定 **leader**；failover 永远按配置序走；无跨梯升档（组合本身即契约）；尝试上限 = 链长（ADR-0005）。`disabled: true` 是运维下线开关：combo 仍保持注册，好让请求路径区分「已禁用」与「未知名字」，但它从所有目录隐藏（`/v1/models` 列表与详情 404、控制台模型选择器），请求显式点名它则快速失败返回 404——与空成员场景同一条「绝不静默降级」契约，绝不回落分类器路由（`orchestrator.ts:442-453`）。`resolveCombo` 逐调用现场解析：配置序保留、未注册 id 丢弃、重复折叠到首次出现——迟到注册的模型自然加入（`registry.ts:737-752`）。id 命名空间冲突单向且响亮：combo 撞已存在模型 id → combo 被忽略 + 告警；模型后注册盖住 combo → 遮蔽（告警 + 从 `/v1/models` 隐藏）（`:698-724`、`:161-163`）。`combos` 列表顺序即控制台展示顺序——可在 UI 中重排，按原顺序写回配置。
+`ComboConfig = {id, disabled?, selection?, models:(string|ComboModelRef)[], note?}`——`selection` 只决定 **leader**；failover 永远按配置序走；无跨梯升档（组合本身即契约）；尝试上限 = 链长（ADR-0005）。梯队成员表可经 `combo:<id>` 规则引用 combo（§2）——组合保持自持，引用只在提交点镜像成员资格。`disabled: true` 是运维下线开关：combo 仍保持注册，好让请求路径区分「已禁用」与「未知名字」，但它从所有目录隐藏（`/v1/models` 列表与详情 404、控制台模型选择器），请求显式点名它则快速失败返回 404——与空成员场景同一条「绝不静默降级」契约，绝不回落分类器路由（`orchestrator.ts:442-453`）。`resolveCombo` 逐调用现场解析：配置序保留、未注册 id 丢弃、重复折叠到首次出现——迟到注册的模型自然加入（`registry.ts:737-752`）。id 命名空间冲突单向且响亮：combo 撞已存在模型 id → combo 被忽略 + 告警；模型后注册盖住 combo → 遮蔽（告警 + 从 `/v1/models` 隐藏）（`:698-724`、`:161-163`）。`combos` 列表顺序即控制台展示顺序——可在 UI 中重排，按原顺序写回配置。
 
 ### 4. 按 key 的模型策略
 
@@ -47,6 +48,6 @@
 
 ## 后果
 
-- 成员资格、顺序、思考翻译 100% 显式、单处可审；目录动荡经由未入池/孤儿视图与保存期重叠告警变得可见，不再被静默吸收。
+- 成员资格、顺序、思考翻译 100% 显式、单处可审；目录动荡经由未入池/孤儿视图与保存期重叠告警变得可见，不再被静默吸收。Combo 引用可两级审阅——config.yaml 里的引用本身、每个池预览 / 保存检查里的展开结果（`deadCombo` 警告）；请求路径内不做任何展开。
 - 命名诚实：没有任何类型顶着代码从未落地的 `Identity`/`Ref` 契约；本篇的阶梯就是解析契约。
-- 测试：`tier-membership`、`tier-pools*`、`combos`、`variants`、`model-access`、`tier-match`（建议路径）。
+- 测试：`tier-membership`、`tier-combo-members`、`tier-pools*`、`combos`、`variants`、`model-access`、`tier-match`（建议路径）。

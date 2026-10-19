@@ -245,12 +245,12 @@ export interface TranslationDict {
     membersCount: string;
     filterPlaceholder: string;
     memberWeightHint: string;
+    saveAllBtn: string;
+    savedAll: string;
     pickModelBtn: string;
-    pickModelTitle: string;
-    pickModelSearch: string;
-    pickModelTierAll: string;
-    pickModelAdd: string;
-    pickModelAlreadyAdded: string;
+    comboBadge: string;
+    comboMemberCount: string;
+    saveCheckDeadCombo: string;
   };
   op: {
     title: string;
@@ -258,6 +258,7 @@ export interface TranslationDict {
     connectedTitle: string;
     connectedDesc: string;
     badgeCustom: string;
+    badgeCustomTip: string;
     badgeAuth: string;
     badgeInline: string;
     badgeOauth: string;

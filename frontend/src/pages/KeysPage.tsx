@@ -1851,7 +1851,7 @@ export const KeysPage: React.FC = () => {
                   {p.name && <span style={{ fontSize: 11, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>}
                 </div>
                 <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                  {p.custom && <span style={badgeStyle('var(--accent)', 'var(--accent-bg)')}>{t('op.badgeCustom')}</span>}
+                  {p.custom && <span style={badgeStyle('var(--accent)', 'var(--accent-bg)')} title={t('op.badgeCustomTip')}>{t('op.badgeCustom')}</span>}
                   {p.auth.inline && (
                     <span style={{ ...badgeStyle('var(--accent-amber)', 'color-mix(in srgb, var(--accent-amber) 12%, transparent)'), display: 'inline-flex', alignItems: 'center', gap: 3 }}>
                       <Key size={9} />

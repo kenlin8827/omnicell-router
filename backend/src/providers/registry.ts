@@ -9,7 +9,7 @@ import { ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.j
 import { CircuitBreakerManager, UpstreamError, type ModelAvailability, type ModelHealthView } from '../resilience/index.js';
 import { globMatchAny } from '../utils/glob.js';
 import { loadConfig } from '../config/index.js';
-import { resolveTierMembers, claimModel, applyEffortMap, MEMBER_TIER_ORDER, TIER_DESCENDING_ORDER, type MemberClaim } from './member-match.js';
+import { resolveTierMembers, claimModel, applyEffortMap, MEMBER_TIER_ORDER, TIER_DESCENDING_ORDER, type MemberClaim, comboMemberRefsOf, expandComboRefs, RESERVED_COMBO_IDS, type ExpandedMembers } from './member-match.js';
 import { createChunkAccumulator, type StreamRelay } from '../utils/chat-stream.js';
 
 /**
@@ -294,7 +294,7 @@ export class ProviderRegistry {
 
   /** Weight of a model inside a tier: from the claiming member rule, default 1. */
   private weightFor(policies: TiersConfig | undefined, tier: TierLevel, modelId: string): number {
-    const claim = claimModel(modelId, resolveTierMembers(policies).tiers);
+    const claim = claimModel(modelId, this.expandedMemberRules(policies).tiers);
     if (claim !== 'unclassified' && claim.tier === tier) return Math.max(1, Number(claim.rule.weight) || 1);
     return 1;
   }
@@ -350,7 +350,7 @@ export class ProviderRegistry {
    * probability / rotation share under `weighted` / `round_robin`.
    */
   private sortForChain(models: ModelRegistration[], tier: TierLevel, policies: TiersConfig | undefined): ModelRegistration[] {
-    const members = resolveTierMembers(policies).tiers;
+    const members = this.expandedMemberRules(policies).tiers;
     const weightOf = new Map<string, number>();
     for (const m of models) {
       const claim = claimModel(m.id, members);
@@ -381,7 +381,7 @@ export class ProviderRegistry {
     try {
       const tiers = loadConfig().tiers || {};
       this.tierPolicies = tiers; // the global denylist lives here too
-      this.reclassifyTiers(resolveTierMembers(tiers).tiers);
+      this.reclassifyTiers(this.expandedMemberRules(tiers).tiers);
     } catch {
       // transient config/IO error — keep the current classification
     }
@@ -411,6 +411,25 @@ export class ProviderRegistry {
     return claimModel(m.id, members);
   }
 
+  /** Registered member refs of one combo (config order, deduped, unregistered
+      dropped) — null when the ref is dead: unknown id, operator-disabled, or
+      shadowed by a registered model. */
+  private comboMemberRefs(comboId: string): { id: string; weight: number }[] | null {
+    const combo = this.combos.get(comboId);
+    if (!combo || combo.disabled === true || this.models.has(comboId)) return null;
+    return comboMemberRefsOf(combo, (id) => this.models.has(id));
+  }
+
+  /**
+   * The ONE member-rule read view: `tiers.<t>.members` with `combo:<id>` refs
+   * expanded in place. Every membership consumer (claims, weights, pools,
+   * boot, save checks) must read through this so pools stay physical-model
+   * lists while config keeps the operator's declared references.
+   */
+  public expandedMemberRules(policies: TiersConfig | undefined): ExpandedMembers {
+    return expandComboRefs(resolveTierMembers(policies).tiers, (id) => this.comboMemberRefs(id));
+  }
+
   /**
    * COMMIT path — the only one that rewrites live pool membership. Called on
    * every config-save event (console routes) so edits take effect immediately;
@@ -422,7 +441,7 @@ export class ProviderRegistry {
     const tiers = loadConfig().tiers || {};
     this.tierPolicies = tiers;
     this.lastMatchRefreshAt = Date.now(); // the file was just read — skip the TTL replay
-    this.reclassifyTiers(resolveTierMembers(tiers).tiers);
+    this.reclassifyTiers(this.expandedMemberRules(tiers).tiers);
   }
 
   /** Replays the member lists over every reclassifiable model 
@@ -643,7 +662,7 @@ export class ProviderRegistry {
       if (
         this.models.has(siblingId) ||
         this.variantIndex.has(siblingId) ||
-        ProviderRegistry.RESERVED_COMBO_IDS.has(siblingId)
+        RESERVED_COMBO_IDS.has(siblingId)
       ) {
         continue;
       }
@@ -692,16 +711,13 @@ export class ProviderRegistry {
 
   // ─── Custom model combos ────────────────────────────────────────────────
 
-  /** Virtual model ids that routing already owns — a combo must never shadow them. */
-  private static readonly RESERVED_COMBO_IDS = new Set(['auto', 'default', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra']);
-
   /** (Re)register combo definitions — used at boot and for hot-apply on console config saves. */
   public applyCombos(combos?: ComboConfig[]): void {
     this.combos.clear();
     this.comboRrCursor.clear();
     for (const combo of combos || []) {
       if (!combo?.id || !Array.isArray(combo.models) || combo.models.length === 0) continue;
-      if (ProviderRegistry.RESERVED_COMBO_IDS.has(combo.id)) {
+      if (RESERVED_COMBO_IDS.has(combo.id)) {
         console.warn(`[Registry] Combo id '${combo.id}' is a reserved virtual model name — combo ignored.`);
         continue;
       }
@@ -823,7 +839,7 @@ export class ProviderRegistry {
     excluded: { id: string; reason: string }[];
   } {
     const policies = policiesOverride ?? this.tierPolicies;
-    const members = resolveTierMembers(policies).tiers;
+    const members = this.expandedMemberRules(policies).tiers;
     const pool: { model: ModelRegistration; weight: number; rank: number }[] = [];
     const excluded: { id: string; reason: string }[] = [];
     for (const m of this.models.values()) {

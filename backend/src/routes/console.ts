@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getAllClientStatuses, setupClient, teardownClient } from '../cli/clients/index.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import { resolveTierMembers, matchingTiers, MEMBER_TIER_ORDER } from '../providers/member-match.js';
+import { matchingTiers, MEMBER_TIER_ORDER } from '../providers/member-match.js';
 import { globMatchAny } from '../utils/glob.js';
 import { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import { getRawConfig, loadConfig, saveConfig, saveRawConfig, getRuntimeConfigRef } from '../config/index.js';
@@ -1339,12 +1339,16 @@ export function registerConsoleRoutes(
   // silent — warn on every commit.
   const warnOnEmptyTierPools = () => {
     const tiers = loadConfig().tiers;
-    const resolved = resolveTierMembers(tiers);
+    const resolved = registry.expandedMemberRules(tiers);
     for (const tier of MEMBER_TIER_ORDER) {
       const { pool } = registry.resolveTierPool(tier, tiers);
       if (pool.length === 0) {
-        const cause =
-          resolved.tiers[tier].length === 0 ? 'the member list is empty' : 'no rule matches a registered model';
+        const deadRef = resolved.dead.some((d) => d.tier === tier);
+        const cause = deadRef
+          ? 'its combo reference(s) contribute no members'
+          : resolved.tiers[tier].length === 0
+            ? 'the member list is empty'
+            : 'no rule matches a registered model';
         console.warn(
           `[Console] Tier '${tier}' has an EMPTY candidate pool (${cause}) — its requests will degrade to another tier. ` +
             `Add models to tiers.${tier}.members on the /tiers page.`,
@@ -1360,7 +1364,7 @@ export function registerConsoleRoutes(
     return {
       status: 'ok',
       pools: await projectTierPools(freshTiers),
-      members: resolveTierMembers(freshTiers).tiers,
+      members: registry.expandedMemberRules(freshTiers).tiers,
     };
   };
   app.get('/api/admin/tier-pools', handleTierPools);
@@ -1411,18 +1415,21 @@ export function registerConsoleRoutes(
       status: 'ok',
       preview: true,
       pools: await projectTierPools(tiers),
-      members: resolveTierMembers(tiers as any).tiers,
+      members: registry.expandedMemberRules(tiers as any).tiers,
     };
   };
   app.post('/api/admin/tier-pools/preview', handleTierPoolsPreview);
 
   // Check: dry-run validation of a DRAFT tiers config — non-blocking warnings:
-  //   overlap — a model claimable by 2+ tiers (runtime resolves by tier order)
-  //   orphan  — a rule matching no registered model (rename / typo / removed)
+  //   overlap   — a model claimable by 2+ tiers (runtime resolves by tier order)
+  //   orphan    — a rule matching no registered model (rename / typo / removed)
+  //   deadCombo — a combo:<id> ref contributing nothing (unknown / disabled /
+  //               shadowed / zero registered members)
   const handleTiersCheck = async (req: any) => {
     const body = req.body as { tiers?: unknown };
     const tiers = (body?.tiers ?? loadConfig().tiers ?? {}) as any;
-    const members = resolveTierMembers(tiers).tiers;
+    const expanded = registry.expandedMemberRules(tiers);
+    const members = expanded.tiers;
     const modelIds = registry
       .getAllModels()
       .filter((m) => m.tierMatch)
@@ -1440,6 +1447,10 @@ export function registerConsoleRoutes(
     const orphans: { tier: string; pattern: string }[] = [];
     for (const tier of MEMBER_TIER_ORDER) {
       for (const rule of members[tier]) {
+        // exact rules = combo-expanded ids: registered by construction, and a
+        // hand-configured member (no tierMatch) is not in modelIds — flagging
+        // them here would be a false positive; ref liveness is deadCombo's job
+        if (rule.exact) continue;
         if (!modelIds.some((id) => globMatchAny([rule.pattern], id))) orphans.push({ tier, pattern: rule.pattern });
       }
     }
@@ -1453,6 +1464,7 @@ export function registerConsoleRoutes(
           sampleIds: g.sampleIds,
         })),
         ...orphans.map((o) => ({ kind: 'orphan' as const, tier: o.tier, pattern: o.pattern })),
+        ...expanded.dead.map((d) => ({ kind: 'deadCombo' as const, tier: d.tier, pattern: d.ref })),
       ],
     };
   };

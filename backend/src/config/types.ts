@@ -179,6 +179,13 @@ export interface TierMemberRule {
    * afterwards (downgradeReasoning) keep the honesty contract.
    */
   effortMap?: EffortMap;
+  /**
+   * Runtime-projection-only flag (combo expansion sets it; config sanitize
+   * never reads it): match the pattern as an EXACT id instead of a substring
+   * glob — expanded combo members must not claim longer sibling ids
+   * (`p/v4` must not pool `p/v4-pro`).
+   */
+  exact?: boolean;
 }
 
 export interface TierPolicy {
