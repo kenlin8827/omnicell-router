@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Key, Check, RefreshCw, Trash2, Plug, Plus, Lock, Cpu, Zap, Upload, AlertTriangle, Star, Pencil, Unplug, Clock, ShieldAlert, Ban, PowerOff, Power, Copy, Gauge } from 'lucide-react';
+import { Key, Check, RefreshCw, Trash2, Plug, Plus, Lock, Cpu, Zap, Upload, Download, AlertTriangle, Star, Pencil, Unplug, Clock, ShieldAlert, Ban, PowerOff, Power, Copy, Gauge } from 'lucide-react';
 import {
   opencodeApi,
   api,
@@ -1438,7 +1438,9 @@ export const KeysPage: React.FC = () => {
 
   // ---- credential sync (client ⇄ OCR file) ---------------------------------
   const [syncClients, setSyncClients] = useState<CredentialSyncClientView[]>([]);
-  const [syncBusyId, setSyncBusyId] = useState<string | null>(null);
+  // `${clientId}:${direction}` of the in-flight manual run — one direction at a
+  // time per client; both of the client's buttons disable while it runs.
+  const [syncBusyKey, setSyncBusyKey] = useState<string | null>(null);
 
   const loadCredentialSync = async (): Promise<void> => {
     try {
@@ -1463,21 +1465,34 @@ export const KeysPage: React.FC = () => {
     }
   };
 
-  const handleSyncRun = async (clientId: string, direction: 'read' | 'write' | 'both') => {
-    setSyncBusyId(clientId);
+  const handleSyncRun = async (clientId: string, direction: 'read' | 'write') => {
+    setSyncBusyKey(`${clientId}:${direction}`);
     const started = Date.now();
     try {
-      await opencodeApi.runCredentialSync(clientId, direction);
+      const res = await opencodeApi.runCredentialSync(clientId, direction);
       // Perceptible-click floor, same contract as the rest of this page.
       const elapsed = Date.now() - started;
       if (elapsed < MIN_SPIN_MS) await sleep(MIN_SPIN_MS - elapsed);
       await loadCredentialSync();
+      // The run reports gate/entry failures in-band (HTTP 200) — surface them.
+      // Wording mirrors the "last synced" cell so toast and table agree.
+      const outcome = direction === 'read' ? res.read : res.write;
+      const failed = outcome?.entries.filter((e) => e.action === 'failed').length ?? 0;
+      const label = t(direction === 'read' ? 'op.syncPull' : 'op.syncPush');
+      const summary = outcome ? syncOutcomeText(outcome, t) : t('op.syncGenericFailure');
+      if (!outcome || outcome.precondition || failed > 0) {
+        toast.error(t('op.syncToastFail', { label, summary }));
+      } else if (outcome.entries.length === 0) {
+        toast.info(t('op.syncToastOk', { label, summary }));
+      } else {
+        toast.success(t('op.syncToastOk', { label, summary }));
+      }
     } catch (err: any) {
-      showNotice(err?.message ?? String(err), 'err');
+      toast.error(reasonError(err));
       await sleep(MIN_SPIN_MS); // the spinner must stay perceptible on failure too
       loadCredentialSync();
     } finally {
-      setSyncBusyId(null);
+      setSyncBusyKey(null);
     }
   };
 
@@ -1501,10 +1516,10 @@ export const KeysPage: React.FC = () => {
   };
 
   useEffect(() => {
-    loadOpenCodeProviders();
-    loadCredentialStore();
+    // Catalog + auth session are mount-once. The provider/credential-store
+    // rosters moved to the tab-entry effect below — the initial 'connected'
+    // tab triggers them there, without a duplicate mount fetch.
     loadCatalog();
-    loadCredentialSync();
     api
       .getAuthSession()
       .then((s) => setWebAuthActive(Boolean(s.webAuth?.active)))
@@ -1512,20 +1527,26 @@ export const KeysPage: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // The sync table refreshes on every entry — outcomes move without page reloads
-  // (auto-sync runs on the gateway) and a stale table would invite wrong toggles.
+  // Every tab entry re-pulls that tab's own data — outcomes and rosters move
+  // without page reloads (auto-sync runs on the gateway; other surfaces mutate
+  // credentials) and a stale view invites wrong actions. The catalog tab is
+  // deliberately absent: its loader resets the list to empty on failure and the
+  // tab carries an explicit refresh button instead.
   useEffect(() => {
-    if (activeTab === 'sync') loadCredentialSync();
+    if (activeTab === 'connected' || activeTab === 'custom') refreshAll();
+    else if (activeTab === 'sync') loadCredentialSync();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
 
-  // Deep link from /models: /providers?openModels=<id> opens the maintenance
-  // dialog for that config-defined provider once the list has loaded.
+  // Deep link from /models: /providers?openModels=<id> opens the model
+  // maintenance dialog once the list has loaded — gated on runtime
+  // manageability (defs node / custom-store models), not the catalog-relative
+  // custom badge.
   useEffect(() => {
     const target = searchParams.get('openModels');
     if (!target || ocProviders.length === 0) return;
     const p = ocProviders.find((x) => x.id === target);
-    if (p?.custom) setModelsPanelId(target);
+    if (p?.modelsManageable) setModelsPanelId(target);
     setSearchParams({}, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ocProviders, searchParams]);
@@ -1612,9 +1633,22 @@ export const KeysPage: React.FC = () => {
     // Decision 8: the OCR file is the credential truth — the purge deletes its
     // rows, so the confirm names the sink. If the key is also synced into
     // opencode, the client keeps its copy until the next sync run.
+    // Three-layer honesty about the def-node judgment: the view's `defNode`
+    // is a list-load snapshot; the backend re-checks the file at DELETE time
+    // (its runtime check is the only actor). Between those moments a def node
+    // can appear or vanish (concurrent sessions edit the defs file), so the
+    // confirm wording re-checks right before the dialog, and the success
+    // toast follows the response's runtime `defRemoved` — never a snapshot.
+    let hasDefNode = p.defNode;
+    try {
+      const fresh = (await opencodeApi.listProviders()).providers.find((x) => x.id === p.id);
+      if (fresh) hasDefNode = fresh.defNode;
+    } catch {
+      // keep the snapshot — an unreachable list endpoint must not block the dialog
+    }
     const ok = await confirmDialog({
-      title: t('op.deleteConfirm', { id: p.id }),
-      description: t('op.deletePurge', { sink: sinkLabel }),
+      title: hasDefNode ? t('op.deleteConfirm', { id: p.id }) : t('op.deleteConfirmCredOnly', { id: p.id }),
+      description: t(hasDefNode ? 'op.deletePurge' : 'op.deletePurgeCredOnly', { sink: sinkLabel }),
       danger: true,
       confirmLabel: t('common.delete'),
     });
@@ -1632,7 +1666,10 @@ export const KeysPage: React.FC = () => {
           failed.map((f) => `${f.credentialId}: ${f.reason}`).join('; ') || t('op.purgeFailedUnknown');
         toast.error(t('op.purgeFailed', { detail }));
       } else {
-        showNotice(t('op.deleted'));
+        // Runtime truth wins: a def that appeared/vanished after the pre-dialog
+        // re-check is reported as it actually happened.
+        const defRemoved = res.defRemoved ?? hasDefNode;
+        showNotice(t(defRemoved ? 'op.deleted' : 'op.deletedCredOnly'));
       }
       await refreshAll();
     } catch (err: any) {
@@ -2024,11 +2061,11 @@ export const KeysPage: React.FC = () => {
                       className="btn btn-sm"
                       style={modelsPanelId === p.id ? { borderColor: 'var(--accent)', color: 'var(--accent)' } : undefined}
                       disabled={busy}
-                      title={t(p.custom ? 'op.pmManage' : 'op.pmView')}
+                      title={t(p.modelsManageable ? 'op.pmManage' : 'op.pmView')}
                       onClick={() => setModelsPanelId(p.id)}
                     >
                       <Cpu size={12} />
-                      <span>{t(p.custom ? 'op.pmManage' : 'op.pmView')}</span>
+                      <span>{t(p.modelsManageable ? 'op.pmManage' : 'op.pmView')}</span>
                     </button>
                     {localOnlyProviders.has(p.id) && (
                       <button
@@ -2049,7 +2086,7 @@ export const KeysPage: React.FC = () => {
                 <ProviderModelsDialog
                   providerId={p.id}
                   providerName={p.name}
-                  readOnly={!p.custom}
+                  readOnly={!p.modelsManageable}
                   onClose={() => setModelsPanelId(null)}
                   onChanged={loadOpenCodeProviders}
                 />
@@ -2248,7 +2285,11 @@ export const KeysPage: React.FC = () => {
           <div style={syncHeadCell}>{t('op.syncColLastRead')}</div>
           <div style={syncHeadCell}>{t('op.syncColLastWrite')}</div>
           <div style={{ ...syncHeadCell, textAlign: 'right' }}>{t('op.syncColAction')}</div>
-          {syncClients.map((c) => (
+          {syncClients.map((c) => {
+            const readBusy = syncBusyKey === `${c.id}:read`;
+            const writeBusy = syncBusyKey === `${c.id}:write`;
+            const clientBusy = readBusy || writeBusy;
+            return (
             <React.Fragment key={c.id}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', paddingTop: 2 }}>
                 <span style={{ fontSize: 12.5, fontWeight: 600 }}>{c.label}</span>
@@ -2269,7 +2310,6 @@ export const KeysPage: React.FC = () => {
                   <Switch
                     size="sm"
                     checked={c.autoRead}
-                    disabled={!c.present}
                     onChange={(v) => handleSyncToggle(c.id, 'read', v)}
                   />
                   <span>{t('op.syncAutoRead')}</span>
@@ -2281,7 +2321,6 @@ export const KeysPage: React.FC = () => {
                   <Switch
                     size="sm"
                     checked={c.autoWrite}
-                    disabled={!c.present}
                     onChange={(v) => handleSyncToggle(c.id, 'write', v)}
                   />
                   <span>{t('op.syncAutoWrite')}</span>
@@ -2303,21 +2342,36 @@ export const KeysPage: React.FC = () => {
                   </div>
                 )}
               </div>
-              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
+                {/* Manual sync is per-direction: pull = client → OCR, push = OCR → client. */}
                 <button
                   className="btn btn-sm"
-                  disabled={syncBusyId === c.id}
-                  onClick={() => handleSyncRun(c.id, 'both')}
+                  title={t('op.syncPullTip')}
+                  disabled={clientBusy}
+                  onClick={() => handleSyncRun(c.id, 'read')}
                 >
-                  <RefreshCw
+                  <Download
                     size={12}
-                    style={syncBusyId === c.id ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined}
+                    style={readBusy ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined}
                   />
-                  <span>{syncBusyId === c.id ? t('op.syncRunning') : t('op.syncNow')}</span>
+                  <span>{t('op.syncPull')}</span>
+                </button>
+                <button
+                  className="btn btn-sm"
+                  title={t('op.syncPushTip')}
+                  disabled={clientBusy}
+                  onClick={() => handleSyncRun(c.id, 'write')}
+                >
+                  <Upload
+                    size={12}
+                    style={writeBusy ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined}
+                  />
+                  <span>{t('op.syncPush')}</span>
                 </button>
               </div>
             </React.Fragment>
-          ))}
+            );
+          })}
         </div>
         {syncClients.length === 0 && (
           <div style={{ color: 'var(--text-dim)', fontSize: 12, marginTop: 10 }}>{t('op.syncEmpty')}</div>

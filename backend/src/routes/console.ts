@@ -1850,10 +1850,11 @@ export function registerConsoleRoutes(
 
   const ocHandlers = {
     list: async () => {
-      const { getOpenCodeAuthPath } = await import('../opencode/user-config.js');
+      const { getOpenCodeAuthPath, getProviderNodeById } = await import('../opencode/user-config.js');
       const { getProviderDefsPath } = await import('../opencode/provider-defs.js');
       const { getCredentialStore } = await import('../opencode/credentials/index.js');
       const { catalogRepository } = await import('../opencode/catalog/repository.js');
+      const { getCustomProviderModels } = await import('../opencode/catalog/custom-store.js');
       const store = await getCredentialStore();
       // B4: credentials come from the BOUND store on every binding — the masked store
       // credentials merge into the config views, so a stale auth.json entry can never
@@ -1868,8 +1869,21 @@ export function registerConsoleRoutes(
         catalogSync: catalogRepository.lastSyncOrigin,
         providers: views.map((v) => {
           const u = byId.get(v.id);
+          const hasDefNode = getProviderNodeById(v.id) !== undefined;
           return {
             ...v,
+            // Precise delete-branch signal: an explicit defs-file node is the
+            // ONLY case where DELETE removes a definition — credential-only rows
+            // (catalog connects, private relays) purge credentials alone. The
+            // `custom` flag is broader (catalog coverage counts) and must not
+            // drive the delete confirm wording.
+            defNode: hasDefNode,
+            // Runtime capability for console editing — the SAME rule modelsGet
+            // applies when serving a manage view (defs node OR pulled
+            // custom-store models). The catalog-relative `custom` flag must not
+            // gate editing: third-party sources drift and would flip the gate
+            // without any local change.
+            modelsManageable: hasDefNode || getCustomProviderModels(v.id).length > 0,
             // upgraded custom: an explicit defs-file definition OR not covered by
             // the remote catalog (credential-only zhipu, private relays, …)
             custom: u?.custom ?? v.custom,
@@ -2352,15 +2366,17 @@ export function registerConsoleRoutes(
           const purge = purgeAuth ? await purgeProviderCredentials(store, id) : null;
           const outcome = purge ? purgeOutcomeMessage(purge, id, true) : null;
           // Clean purge (or no purge requested): legacy response bytes kept.
-          if (!outcome || outcome.success) return { status: 'ok', ...result, ...(purge ? { purge } : {}) };
+          // defRemoved is the runtime truth — the console success toast follows
+          // it, never the (possibly stale) pre-dialog snapshot.
+          if (!outcome || outcome.success) return { status: 'ok', ...result, defRemoved: true, ...(purge ? { purge } : {}) };
           // P1-3 flip: config node is gone but credentials REMAIN — the
           // response must say so (success:false + honest message + failed[]).
-          return { status: 'ok', ...result, ...outcome, purge };
+          return { status: 'ok', ...result, ...outcome, defRemoved: true, purge };
         }
         // Credential-only entry: provider-wide disconnect = the UI-level
         // credential loop (Decision 1), never a direct upstream-file edit.
         const purge = await purgeProviderCredentials(store, id);
-        return { status: 'ok', ...purgeOutcomeMessage(purge, id, false), purge };
+        return { status: 'ok', defRemoved: false, ...purgeOutcomeMessage(purge, id, false), purge };
       } catch (err: any) {
         const failure = await mapStoreWriteFailure(err);
         if (failure) return reply.status(failure.status).send(failure.body);

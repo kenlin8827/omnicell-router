@@ -278,6 +278,9 @@ export interface TranslationDict {
     deleteBtn: string;
     deleteConfirm: string;
     deletePurge: string;
+    deleteConfirmCredOnly: string;
+    deletePurgeCredOnly: string;
+    deletedCredOnly: string;
     deleted: string;
     connectTitle: string;
     connectDesc: string;
@@ -446,8 +449,10 @@ export interface TranslationDict {
     syncAutoWrite: string;
     syncAutoReadTip: string;
     syncAutoWriteTip: string;
-    syncNow: string;
-    syncRunning: string;
+    syncPull: string;
+    syncPush: string;
+    syncPullTip: string;
+    syncPushTip: string;
     syncNever: string;
     syncJustNow: string;
     syncMinutesAgo: string;
@@ -465,6 +470,8 @@ export interface TranslationDict {
     syncPrecClientUnreadable: string;
     syncPrecServiceUnreachable: string;
     syncGenericFailure: string;
+    syncToastOk: string;
+    syncToastFail: string;
     syncEmpty: string;
     /** gap #8 tail: 'bind_failed' badge (degraded status + exclusion row). */
     storeDegradedBind: string;

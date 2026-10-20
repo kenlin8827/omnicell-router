@@ -2023,6 +2023,10 @@ export interface OpenCodeProviderView {
   baseURL?: string;
   models: string[];
   custom: boolean;
+  /** Explicit node in custom-providers.json — the delete-confirm branch signal; narrower than `custom` (catalog absence also sets custom). */
+  defNode: boolean;
+  /** Runtime edit capability: defs-file node OR pulled custom-store models — the same rule the backend applies when serving model mutations. */
+  modelsManageable: boolean;
   logo?: string;
   priceFrom?: number;
   modelsCount?: number;
@@ -3006,7 +3010,7 @@ export const opencodeApi = {
   async deleteProvider(
     id: string,
     purgeAuth = false
-  ): Promise<{ status: string; success: boolean; message?: string; purge?: ProviderPurgeResult }> {
+  ): Promise<{ status: string; success: boolean; message?: string; purge?: ProviderPurgeResult; defRemoved?: boolean }> {
     return ocJson(
       await fetch(`/api/admin/opencode/providers/${encodeURIComponent(id)}${purgeAuth ? '?purgeAuth=1' : ''}`, {
         method: 'DELETE',
