@@ -673,6 +673,11 @@ export interface ClientProfileMemoryEntry {
    *  API key's effective access, 'custom' keeps the manual picker. UI-only —
    *  the hook still writes a static snapshot. */
   modelMode?: 'none' | 'custom' | 'follow';
+  /** Last-written gateway key id (apiKeys[].id). The client-hook setup ALWAYS
+   *  writes the selected key (client config backups cover regrets); the form
+   *  re-seeds the picker from this id, and a stale id (key deleted since)
+   *  seeds nothing. */
+  apiKeyId?: string;
 }
 
 /**

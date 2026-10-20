@@ -44,7 +44,9 @@ export const ClientsPage: React.FC = () => {
   const [models, setModels] = useState<{ id: string; tier?: string; kind?: string }[]>([]);
   /** Gateway API keys (Claude auth token writer) */
   const [apiKeys, setApiKeys] = useState<ApiKeyItem[]>([]);
-  /** Per-client selected API key ('' = keep current token) */
+  /** Per-client selected API key (raw key token) — setup ALWAYS writes the
+   *  picked key into the client config (client config backups cover regrets);
+   *  the picker is mandatory. */
   const [apiKeySel, setApiKeySel] = useState<Record<string, string>>({});
   /** Per-client context window in tokens (claude compaction envs; default 256K) */
   const [ctxSel, setCtxSel] = useState<Record<string, string>>({});
@@ -138,6 +140,19 @@ export const ClientsPage: React.FC = () => {
    *  clobbers in-page edits. */
   useEffect(() => {
     if (mem === null || !profilesReady) return;
+    // API-key form memory: the last-written key re-seeds the picker (resolved
+    // by stable id, never the raw token). A stale id (deleted/disabled key)
+    // seeds nothing — setup then demands a fresh pick.
+    setApiKeySel(prev => {
+      const next = { ...prev };
+      for (const c of clients) {
+        if (next[c.name] !== undefined) continue;
+        const id = mem[c.name]?.apiKeyId;
+        const k = id ? apiKeys.find(x => x.id === id) : undefined;
+        if (k) next[c.name] = k.key;
+      }
+      return next;
+    });
     setProfileSel(prev => {
       const next = { ...prev };
       for (const c of clients) {
@@ -168,20 +183,36 @@ export const ClientsPage: React.FC = () => {
       }
       return next;
     });
-  }, [clients, mem, profilesReady, profiles]);
+  }, [clients, mem, profilesReady, profiles, apiKeys]);
 
   /** Write-through form memory into the ACTIVE environment's config.yaml
    *  (book-set scoped — switching envs switches the memory too). */
-  const persistMem = (clientName: string, profile: string, bindings: Record<string, string>, modelMode?: 'none' | 'custom' | 'follow') => {
+  const persistMem = (clientName: string, profile: string, bindings: Record<string, string>, modelMode?: 'none' | 'custom' | 'follow', apiKeyIdOverride?: string) => {
     const mode = modelMode ?? modeSel[clientName] ?? 'none';
     // Pure updater required: computing `next` (and firing the POST) inside the
     // setMem updater would double-invoke under StrictMode / concurrent render.
-    const next = { ...(mem || {}), [clientName]: { profile, bindings, modelMode: mode } };
+    const next = {
+      ...(mem || {}),
+      [clientName]: {
+        profile,
+        bindings,
+        modelMode: mode,
+        // Key memory follows the same draft-snapshot rule as modelMode;
+        // `apiKeyIdOverride` covers callers that just reset/committed the form
+        // (setState would not be visible to this closure yet).
+        apiKeyId: apiKeyIdOverride ?? keyIdOf(apiKeySel[clientName] || ''),
+      },
+    };
     setMem(next);
     api.saveClientProfileMemory(next).catch(e => console.warn('profile memory save failed:', e));
   };
 
-  /** The key object behind a client's apiKey selection ('' = keep token → none). */
+  /** Gateway key id behind a selected key token ('' = nothing picked) — the
+   *  form memory stores the STABLE id, never the raw token. */
+  const keyIdOf = (keyValue: string): string =>
+    apiKeys.find(k => k.key === keyValue)?.id || '';
+
+  /** The key object behind a client's apiKey selection (undefined = nothing picked). */
   const followKeyOf = (clientName: string): ApiKeyItem | undefined =>
     apiKeys.find(k => k.key === (apiKeySel[clientName] || ''));
 
@@ -235,9 +266,15 @@ export const ClientsPage: React.FC = () => {
           extras = view.models.filter(m => !m.virtual && m.allowed).map(m => m.id);
         }
       }
+      // The picker is mandatory: without an explicit key there is nothing to
+      // write — refuse rather than silently keep the previous token.
+      if (action === 'setup' && !(apiKeySel[clientName] || '')) {
+        toast.error(t('clients.apiKeyRequired'));
+        return;
+      }
       const res = await api.toggleClient(clientName, action, action === 'setup' ? {
         models: modelSel[clientName] || {},
-        apiKey: apiKeySel[clientName] || undefined,
+        apiKey: apiKeySel[clientName],
         contextWindow: Number(ctxSel[clientName] || '262144'),
         extraModels: extras,
         ...opencodeProfilePayload(clientName),
@@ -247,7 +284,9 @@ export const ClientsPage: React.FC = () => {
       // setup just applied — never half-edited drafts (per-click config
       // writes would storm the hot-apply pipeline for a UI nicety).
       if (action === 'setup') {
-        persistMem(clientName, profileSel[clientName] || '', bindSel[clientName] || {});
+        // Memory records what THIS setup wrote — the key's stable id, never a
+        // draft pick or the raw token.
+        persistMem(clientName, profileSel[clientName] || '', bindSel[clientName] || {}, undefined, keyIdOf(apiKeySel[clientName] || ''));
       }
       // Refresh the agent inventory cache so the binding table's "current model"
       // column reflects what this apply just wrote (the lazy-load effect refetches).
@@ -288,7 +327,12 @@ export const ClientsPage: React.FC = () => {
     setProfileSel(prev => ({ ...prev, [clientName]: '' }));
     setBindSel(prev => ({ ...prev, [clientName]: {} }));
     setModeSel(prev => ({ ...prev, [clientName]: 'none' }));
-    persistMem(clientName, '', {}, 'none');
+    setApiKeySel(prev => {
+      const { [clientName]: _dropped, ...rest } = prev;
+      return rest;
+    });
+    // Override param: the setState above is invisible to persistMem's closure.
+    persistMem(clientName, '', {}, 'none', '');
     if (clients.find(c => c.name === clientName)?.hooked) {
       setLoading(true);
       try {
@@ -543,10 +587,8 @@ export const ClientsPage: React.FC = () => {
                     <Combobox
                       value={apiKeySel[c.name] || ''}
                       onChange={v => setApiKeySel(prev => ({ ...prev, [c.name]: v }))}
-                      options={[
-                        { value: '', label: t('clients.apiKeyKeep') },
-                        ...apiKeys.map(k => ({ value: k.key, label: k.name, meta: k.key.length > 12 ? `${k.key.slice(0, 8)}…${k.key.slice(-4)}` : undefined })),
-                      ]}
+                      options={apiKeys.map(k => ({ value: k.key, label: k.name, meta: k.key.length > 12 ? `${k.key.slice(0, 8)}…${k.key.slice(-4)}` : undefined }))}
+                      placeholder={t('clients.apiKeySelect')}
                     />
                   </div>
                 )}

@@ -867,7 +867,7 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'modelProfiles.*.name': '方案显示名',
   'modelProfiles.*.slots': '槽位表：槽位名 → modelRef（注册模型 id / 组合 id / auto / auto-lite / auto-plus / auto-pro / auto-ultra）',
   'modelProfiles.*.note': '备注：仅控制台展示的自由文本，不参与路由',
-  clientProfileMemory: '控制台表单记忆（按环境保存）：各客户端挂接表单上次选择的模型方案、槽位映射与模型列表模式（none=不设置（默认）/ custom=自定义 / follow=跟随所选 API Key 的权限），仅用于页面回填，不参与路由、也不影响实际接管配置',
+  clientProfileMemory: '控制台表单记忆（按环境保存）：各客户端挂接表单上次选择的模型方案、槽位映射与模型列表模式（none=不设置（默认）/ custom=自定义 / follow=跟随所选 API Key 的权限），以及上次写入的 API Key id（apiKeyId；挂接总是写入所选 Key，不存明文），仅用于页面回填，不参与路由、也不影响实际接管配置',
   session: '会话粘性（棘轮：会话内模型不漂移）',
   'session.strategy': '会话策略：monotonic 单调棘轮 / sticky 粘性 / stateless 无状态',
   'session.ttlSeconds': '会话保持时长（秒）',

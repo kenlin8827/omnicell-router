@@ -65,7 +65,8 @@ export interface OpenCodeAgentView {
 }
 
 /** Mirrors backend ClientProfileMemoryEntry — per-client console form memory
- *  (config.yaml `clientProfileMemory`): last profile + agent→slot selections.
+ *  (config.yaml `clientProfileMemory`): last profile + agent→slot selections,
+ *  model-list source and token-write behavior.
  *  UI-only: never consulted by routing or by the hook itself. */
 export interface ClientProfileMemoryEntry {
   profile: string;
@@ -74,6 +75,9 @@ export interface ClientProfileMemoryEntry {
    *  'follow' = mirror the selected API key's effective model access,
    *  'custom' = manual picker. Mirrors backend. */
   modelMode?: 'none' | 'custom' | 'follow';
+  /** Last-written gateway key id (apiKeys[].id); a stale id (deleted key)
+   *  seeds nothing. Mirrors backend. */
+  apiKeyId?: string;
 }
 
 // Mirrors backend CircuitBreakerSnapshot (backend/src/resilience/types.ts)
