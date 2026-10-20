@@ -25,7 +25,9 @@ const TIER_RANK: Record<string, number> = { lite: 1, plus: 2, pro: 3, ultra: 4 }
 /**
  * How the client addressed a session's turns, derived from persisted traces
  * (observability reconstruction — never routing state):
- * - 'auto'    : every turn named bare auto/default — the ratchet owns the tier.
+ * - 'auto'    : every turn named an auto alias (bare auto/default or a
+ *               tier-forced auto-lite/plus/pro/ultra) — the ratchet owns the
+ *               tier.
  * - 'explicit': every turn named a concrete registered model — the client owns
  *               the choice, the tier column has no lock to show.
  * - 'combo'   : every turn went through a combo — the composition IS the
@@ -36,6 +38,11 @@ export type SessionEntryMode = 'auto' | 'explicit' | 'combo' | 'mixed';
 
 /** Classify a session from its traces (chronological order irrelevant). */
 export function deriveSessionEntryMode(traces: ExecutionTrace[]): SessionEntryMode {
+  // Virtual auto aliases: bare auto/default plus the four tier-forced ids.
+  // Routing runs these through the ratchet path (the tier ids rewrite
+  // force_tier before routing), so a tier-forced session owns a tier lock —
+  // classifying it as explicit would strip the tier badge.
+  const AUTO_ALIAS_MODELS = new Set(['auto', 'default', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra']);
   let sawAuto = false;
   let sawExplicit = false;
   let sawCombo = false;
@@ -43,8 +50,14 @@ export function deriveSessionEntryMode(traces: ExecutionTrace[]): SessionEntryMo
     // Combo turns are the only ones carrying this reasonCode (the orchestrator
     // sets it on the bypass decision and the trace copies it verbatim).
     if (t.routing?.reasonCode === 'combo') sawCombo = true;
-    else if (!t.request?.model || t.request.model === 'auto' || t.request.model === 'default') sawAuto = true;
-    else sawExplicit = true;
+    else {
+      // Routing-name matching trims once while request.model is stored
+      // verbatim (surface contract) — reconstruct the routing view, not the
+      // bytes: a padded alias routed as the alias must classify as the alias.
+      const requested = (t.request?.model ?? '').trim();
+      if (!requested || AUTO_ALIAS_MODELS.has(requested)) sawAuto = true;
+      else sawExplicit = true;
+    }
   }
   if (Number(sawAuto) + Number(sawExplicit) + Number(sawCombo) !== 1) return 'mixed';
   return sawCombo ? 'combo' : sawExplicit ? 'explicit' : 'auto';
