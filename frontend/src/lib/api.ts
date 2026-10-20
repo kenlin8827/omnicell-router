@@ -33,9 +33,8 @@ export interface ClientStatus {
   backupExists: boolean;
   /** Extra concrete models exposed in the client's model switcher (opencode) */
   extraModels?: string[];
-  /** This client's model slots; value undefined = auto (intelligent routing).
-   *  Optional: legacy backend responses (pre-modelSlots) omit the field entirely. */
-  modelSlots?: { key: string; value?: string; default?: string }[];
+  /** This client's model slots; value undefined = auto (intelligent routing). */
+  modelSlots: { key: string; value?: string; default?: string }[];
   /** Last-linked model profile (opencode): profile id + agent→slot-key tags
    *  (the linked rows — their effective models resolve from the profile). */
   profile?: ModelProfileBinding;

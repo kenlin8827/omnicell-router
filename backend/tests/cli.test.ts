@@ -157,7 +157,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(status.profile).toBeUndefined();
   });
 
-  it('OpenCode profile writes land in the existing agent home and sweep the legacy twin', async () => {
+  it('OpenCode agent writes always land in the v2 agents home; the singular ghost node is swept', async () => {
     const configPath = path.join(tmpDir, 'opencode.json');
     fs.writeFileSync(
       configPath,
@@ -194,6 +194,31 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(cfg.agents.scout.model).toBe('onecast-router/auto-lite');
     // …the legacy ghost is swept, and user-owned non-router values survive.
     expect(cfg.agent.general.model).toBeUndefined();
+    expect(cfg.agent.keeper.model).toBe('zhipuai/glm-5.3');
+  });
+
+  it('OpenCode writes to the v2 agents home even when the config only has the singular v1 node', async () => {
+    const configPath = path.join(tmpDir, 'opencode.json');
+    // Legacy-only file: singular `agent` node, no plural home at all.
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ model: 'anthropic/claude-sonnet-4', agent: { keeper: { model: 'zhipuai/glm-5.3' } } }, null, 2),
+      'utf8'
+    );
+    const adapter = new OpenCodeClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    const res = await adapter.setup({
+      port: 4000,
+      models: { main: 'auto' },
+      agentModels: { scout: 'auto-lite' },
+    });
+    expect(res.success).toBe(true);
+
+    const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    // The binding lands in the v2 home (never forks into the singular node)…
+    expect(cfg.agents.scout.model).toBe('onecast-router/auto-lite');
+    // …and the user's own singular-node entry survives untouched.
     expect(cfg.agent.keeper.model).toBe('zhipuai/glm-5.3');
   });
 

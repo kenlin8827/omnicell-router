@@ -12,14 +12,9 @@ import { useToast } from '../components/ToastProvider';
 /**
  * Slots to render for a client. An explicit `[]` means the client is
  * slot-less by design (opencode-proxy routes traffic transparently and keeps
- * opencode-native models — no model picker). A MISSING field means the
- * backend predates modelSlots (old gateway process) — fall back to a single
- * `main` slot so the selector never disappears from the UI.
+ * opencode-native models — no model picker).
  */
-const clientSlots = (c: ClientStatus): { key: string; value?: string; default?: string }[] => {
-  if (c.modelSlots === undefined) return [{ key: 'main', default: 'auto' }];
-  return c.modelSlots;
-};
+const clientSlots = (c: ClientStatus): { key: string; value?: string; default?: string }[] => c.modelSlots;
 
 /**
  * Clients whose adapter honors `extraModels` (setup writes main + extras as a

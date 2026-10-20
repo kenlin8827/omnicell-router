@@ -60,25 +60,20 @@ function isValidAgentName(name: string): boolean {
 }
 
 /**
- * The agent node a config actually uses — same slot doctrine as the
- * provider/providers decision (opencode v2's native spelling is PLURAL
- * `agents`; singular `agent` is the retired v1 home). Reads/writes must land
- * in the home the user's install uses, or opencode never sees the override.
- * Fresh files get the v2 home; a legacy-only file keeps its singular home
- * (never silently fork definitions into a second node).
+ * Agent-node homes in opencode.jsonc. Writes ALWAYS land in the v2-native
+ * plural `agents` — the singular `agent` node is the retired v1 home, and a
+ * v1 binary could not use this hook anyway (the defs materialization writes
+ * the v2 plural `providers`, which v1 never reads). The singular node appears
+ * in sweeps only as GHOST CLEANUP: older OCR builds wrote it, and setup /
+ * teardown remove exactly those router-owned values while leaving the user's
+ * own entries untouched.
  */
-const AGENT_SLOT_NATIVE = 'agents';
-const AGENT_SLOT_LEGACY = 'agent';
-
-function existingAgentSlot(data: any): string {
-  if (data?.[AGENT_SLOT_NATIVE] && typeof data[AGENT_SLOT_NATIVE] === 'object') return AGENT_SLOT_NATIVE;
-  if (data?.[AGENT_SLOT_LEGACY] && typeof data[AGENT_SLOT_LEGACY] === 'object') return AGENT_SLOT_LEGACY;
-  return AGENT_SLOT_NATIVE;
-}
+const AGENT_SLOT = 'agents';
+const AGENT_SLOT_GHOST = 'agent';
 
 /** Drop every router-owned `agent(s).<name>.model` override in BOTH nodes. */
 function sweepRouterAgentModels(configPath: string): void {
-  for (const slot of [AGENT_SLOT_NATIVE, AGENT_SLOT_LEGACY]) {
+  for (const slot of [AGENT_SLOT, AGENT_SLOT_GHOST]) {
     const node = (readJsonc(configPath) as any)?.[slot];
     if (!node || typeof node !== 'object') continue;
     for (const [name, def] of Object.entries(node as Record<string, unknown>)) {
@@ -257,11 +252,10 @@ export class OpenCodeClientAdapter implements ClientAdapter {
     let applied = 0;
     if (hasAgentPayload) {
       sweepRouterAgentModels(configPath);
-      const slot = existingAgentSlot(readJsonc(configPath));
       for (const [name, ref] of Object.entries(agentModels || {})) {
         const r = (ref || '').trim();
         if (!isValidAgentName(name) || !r || r === 'auto') continue; // 'auto' = inherit the default model
-        patchJsonc(configPath, [slot, name, 'model'], `${ROUTER_PROVIDER_ID}/${r}`);
+        patchJsonc(configPath, [AGENT_SLOT, name, 'model'], `${ROUTER_PROVIDER_ID}/${r}`);
         applied++;
       }
     }
@@ -345,8 +339,8 @@ export class OpenCodeClientAdapter implements ClientAdapter {
     }
 
     // Remove every agent model override that points at the router — both node
-    // spellings (v2 `agents` / v1 `agent`), covering the legacy subagent slot
-    // ('general') and all model-profile bindings.
+    // spellings (v2 `agents` / the singular `agent` ghost home) and every
+    // binding source (manual links and profile links alike).
     sweepRouterAgentModels(configPath);
     const meta = readMeta(configPath);
     if (meta.profile) {
@@ -403,7 +397,7 @@ export class OpenCodeClientAdapter implements ClientAdapter {
       typeof v === 'string' && v.startsWith(`${ROUTER_PROVIDER_ID}/`)
         ? v.slice(ROUTER_PROVIDER_ID.length + 1)
         : '';
-    const slot = existingAgentSlot(data);
+    const slot = AGENT_SLOT;
     const current: Record<string, string> = {};
     const node = data?.[slot];
     if (node && typeof node === 'object') {
@@ -424,10 +418,9 @@ export class OpenCodeClientAdapter implements ClientAdapter {
 
     createBackup(configPath);
     sweepRouterAgentModels(configPath);
-    const liveSlot = existingAgentSlot(readJsonc(configPath));
     let applied = 0;
     for (const [name, ref] of Object.entries(desired)) {
-      patchJsonc(configPath, [liveSlot, name, 'model'], `${ROUTER_PROVIDER_ID}/${ref}`);
+      patchJsonc(configPath, [AGENT_SLOT, name, 'model'], `${ROUTER_PROVIDER_ID}/${ref}`);
       applied++;
     }
     // Keep the provider-def models map a superset of the linked refs —
