@@ -6,6 +6,7 @@ import { PruneOptions, deleteRecordsById, pruneDataset, resetDataset } from '../
 import { FLYWHEEL_TIERS, FlywheelLabelSource, isTier } from '../flywheel/schema.js';
 import { TierLevel } from '../types/router.js';
 import { getEnvRootDir } from '../config/env.js';
+import { loadConfig, saveConfig } from '../config/index.js';
 import path from 'node:path';
 
 /**
@@ -61,9 +62,33 @@ export function registerFlywheelRoutes(app: FastifyInstance, orchestrator: Pipel
       ...dataset.summary(),
       process: orchestrator.getFlywheel().getStats(),
       tiers: FLYWHEEL_TIERS,
+      // Live collection gate — the page renders its toggle from this.
+      collectionEnabled: orchestrator.getFlywheel().isEnabled(),
       // Additive block (§3.4): effective retention knobs + last sweep outcome.
       retention: orchestrator.getFlywheel().getRetentionState(),
     };
+  });
+
+  // Collection gate toggle — persists through saveConfig so every writer
+  // (console toggle, config editor, raw YAML) shares one hot-apply routine;
+  // the flip takes effect immediately, no restart. datasetPath and the
+  // retention knobs stay restart-scoped (collector construction).
+  app.post('/api/admin/flywheel/enabled', async (req, reply) => {
+    const body = asObjectBody(req.body);
+    if (!body) return reply.status(400).send({ error: 'Body must be a JSON object' });
+    if (typeof body.enabled !== 'boolean') {
+      return reply.status(400).send({ error: '"enabled" must be a boolean' });
+    }
+    // Base the payload on the DISK-current section: saveConfig is a top-level
+    // shallow merge, so spreading the boot snapshot here would silently roll
+    // back datasetPath/knob edits an operator made via the raw YAML editor
+    // after boot. Re-read-before-spread, same pattern as the catalog routes.
+    const current = loadConfig().flywheel ?? {};
+    const outcome = saveConfig({
+      flywheel: { ...current, enabled: body.enabled },
+    });
+    if (!outcome.success) return reply.status(500).send({ error: outcome.error });
+    return { ok: true, collectionEnabled: orchestrator.getFlywheel().isEnabled() };
   });
 
   app.get('/api/admin/flywheel/samples', async (req) => {

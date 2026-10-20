@@ -188,8 +188,9 @@ classifier:
 
 # Active Learning Data Flywheel
 flywheel:
-  enabled: false                    # OPT-IN — the learning flywheel's dataset collection (default: off)
-  datasetPath: "./data/flywheel.jsonl" # Path to JSONL dataset
+  enabled: false                    # OPT-IN — the learning flywheel's dataset collection (default: off).
+                                    # Hot-applied on save (console collection toggle / config editor) — no restart.
+  datasetPath: "./data/flywheel.jsonl" # Path to JSONL dataset (resolved against the active env root; restart-scoped)
   logUserPrompt: true               # Set to false if prompt logging should be omitted for privacy
 
 # ==============================================================================

@@ -9,6 +9,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Copy,
+  Info,
   XCircle,
   Trash2,
   Scissors,
@@ -106,6 +107,8 @@ export const FlywheelPage: React.FC = () => {
   const [pruneDuplicates, setPruneDuplicates] = useState(true);
   const [prunePreview, setPrunePreview] = useState<FlywheelPruneResult | null>(null);
   const [pruneBusy, setPruneBusy] = useState(false);
+
+  const [collectionBusy, setCollectionBusy] = useState(false);
 
   const [resetOpen, setResetOpen] = useState(false);
   const [resetWord, setResetWord] = useState('');
@@ -280,6 +283,25 @@ export const FlywheelPage: React.FC = () => {
 
   const toggleAllOnPage = () => {
     setSelectedIds(allSelected ? new Set() : new Set(rows.map(r => r.id)));
+  };
+
+  // Collection gate — hot-applies server-side through the config save path
+  // (no restart). Optimistic flip; the server receipt is authoritative and a
+  // failed save rolls the switch back.
+  const handleCollectionToggle = async (next: boolean) => {
+    if (collectionBusy || !summary) return;
+    setCollectionBusy(true);
+    setSummary(prev => (prev ? { ...prev, collectionEnabled: next } : prev));
+    try {
+      const resp = await api.setFlywheelEnabled(next);
+      setSummary(prev => (prev ? { ...prev, collectionEnabled: resp.collectionEnabled } : prev));
+      toast.success(t(resp.collectionEnabled ? 'flywheel.collectionOn' : 'flywheel.collectionOff'));
+    } catch (err: any) {
+      setSummary(prev => (prev ? { ...prev, collectionEnabled: !next } : prev));
+      toast.error(t('flywheel.collectionToggleFailed') + ' ' + err.message);
+    } finally {
+      setCollectionBusy(false);
+    }
   };
 
   const toggleRow = (id: string) => {
@@ -558,6 +580,14 @@ export const FlywheelPage: React.FC = () => {
             {summary ? `${summary.total} ${t('flywheel.rows')} · ${fmtBytes(summary.fileBytes)}` : '—'}
           </span>
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, color: 'var(--text-muted)' }}>
+              <Switch
+                checked={summary?.collectionEnabled ?? false}
+                onChange={handleCollectionToggle}
+                disabled={collectionBusy || !summary}
+              />
+              {t('flywheel.collectionToggle')}
+            </label>
             <button
               className="btn btn-sm"
               onClick={() => {
@@ -623,6 +653,15 @@ export const FlywheelPage: React.FC = () => {
             ))}
           </div>
         </div>
+
+        {/* Collection gate hint — the "why is there no data" answer sits on
+            the page itself instead of only in config.yaml. */}
+        {summary && !summary.collectionEnabled && (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 11, color: 'var(--accent-amber)' }}>
+            <Info size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+            <span>{t('flywheel.collectionOffHint')}</span>
+          </div>
+        )}
 
         {/* Retention knobs (§3.4): only rendered when a sweep is actually armed. */}
         {summary?.retention?.enabled && (

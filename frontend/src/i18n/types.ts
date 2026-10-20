@@ -1177,6 +1177,11 @@ hiddenBadge: string;
     resetFailed: string;
     retentionActive: string;
     retentionLastSweep: string;
+    collectionToggle: string;
+    collectionOn: string;
+    collectionOff: string;
+    collectionOffHint: string;
+    collectionToggleFailed: string;
   };
 
   captures: {

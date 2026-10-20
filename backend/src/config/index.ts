@@ -655,6 +655,17 @@ function syncRuntimeAuthView(fresh: RouterConfig): void {
     // arm never fires because loadConfig always resolves the section), so
     // without this line the grace knob would silently ignore every save.
     runtimeConfigRef.rateLimit = fresh.rateLimit;
+    // flywheel collection gate: the collector holds the SECTION OBJECT by
+    // reference (captured at orchestrator construction) and reads `enabled`
+    // off it per record, so the gate hot-applies through this in-place write
+    // (console toggle / config editor / raw YAML — every save path). Do NOT
+    // replace the section object: that would strand the collector on the
+    // boot snapshot. datasetPath and the retention knobs stay restart-scoped
+    // (resolved once in the constructor), so only the gate is synced —
+    // syncing them too would promise a hot-apply that never happens.
+    if (runtimeConfigRef.flywheel && fresh.flywheel) {
+      runtimeConfigRef.flywheel.enabled = fresh.flywheel.enabled;
+    }
   }
   getRateLimiter().reload(fresh);
   // Rebuild the effective quota plan right after the ref sync (the prober
@@ -735,7 +746,7 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'classifier.layer2.timeoutMs': '判定超时（毫秒，超时放行 Layer1 结果）',
   'classifier.layer2.decisionCache': '判定决策缓存（相同上下文复用判定结果）',
   'classifier.layer2.collectEnabled': 'L2 裁判决策样本采集开关（默认 false 关闭）：单键门控，落盘 data/layer2-decisions.jsonl（不进捕捉页），64MB 封顶后停写并告警一次；热生效',
-  flywheel: '学习飞轮（路由决策样本沉淀，用于训练分类器；默认关闭）',
+  flywheel: '学习飞轮（路由决策样本沉淀，用于训练分类器；默认关闭）。enabled 开关保存后即时生效（控制台开关/配置编辑器），datasetPath 与保留参数需重启生效',
   'flywheel.datasetPath': '样本数据集路径（JSONL）',
   'flywheel.maxSamples': '样本条数上限',
   'flywheel.logUserPrompt': '是否记录用户提示词原文（隐私敏感）',

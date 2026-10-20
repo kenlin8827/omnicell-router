@@ -1112,6 +1112,11 @@ export const zhCN: TranslationDict = {
     resetFailed: '重置失败：',
     retentionActive: '自动保留：{days} 天 / 上限 {mb} MB',
     retentionLastSweep: '上次清理 {time} — 删除 {n} 条',
+    collectionToggle: '数据采集',
+    collectionOn: '数据采集已开启——新的路由决策会实时写入数据集',
+    collectionOff: '数据采集已关闭',
+    collectionOffHint: '数据采集未开启——用右上角开关即可即时开启（立即生效，无需重启）；历史请求不会补录。',
+    collectionToggleFailed: '切换失败：',
   },
 
   captures: {
@@ -1335,7 +1340,7 @@ export const zhCN: TranslationDict = {
     flywheelPath: '采样数据集保存路径',
     flywheelRetentionDays: '样本保留天数（0 = 永久保留）',
     flywheelMaxFileSizeMB: '数据集大小上限 MB（0 = 不限制）',
-    flywheelRestartHint: '飞轮设置在重启网关后生效。',
+    flywheelRestartHint: '启用开关保存后即时生效；数据集路径与保留参数变更需重启网关生效。',
     capTitle: '请求捕捉归档',
     capEnable: '启用完整请求/响应捕捉（落盘）',
     capSystemoneGroup: '决策面（/v1/systemone）',

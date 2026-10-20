@@ -851,6 +851,8 @@ export interface FlywheelSummary {
   firstTimestamp: string | null;
   lastTimestamp: string | null;
   tiers: TierName[];
+  /** Live collection gate (flywheel.enabled) — hot-applied on config save. */
+  collectionEnabled: boolean;
   /** Additive block (§3.4): effective retention knobs + last sweep outcome; absent on older backends. */
   retention?: FlywheelRetentionState;
 }
@@ -1139,6 +1141,16 @@ export const api = {
   async getFlywheelStats(): Promise<FlywheelSummary> {
     const res = await fetch('/api/admin/flywheel/stats');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async setFlywheelEnabled(enabled: boolean): Promise<{ ok: boolean; collectionEnabled: boolean }> {
+    const res = await fetch('/api/admin/flywheel/enabled', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    });
+    if (!res.ok) await throwFor(res);
     return res.json();
   },
 

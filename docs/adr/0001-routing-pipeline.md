@@ -40,7 +40,7 @@ Eight structural features only (`layer1-classifier.ts:66-75,192-278`): token cou
 
 ### 5. Dual flywheel — strict two-namespace separation
 
-- **Execution flywheel** (`flywheel.enabled` opt-in, `flywheel.datasetPath` default `data/flywheel.jsonl`): records featureVector + decision + execution + derived label — "what actually SERVED, not what the router asked for" (`flywheel/collector.ts:144-236`). Feeds the L1 trainer and catalog validation.
+- **Execution flywheel** (`flywheel.enabled` opt-in, `flywheel.datasetPath` default `data/flywheel.jsonl`): records featureVector + decision + execution + derived label — "what actually SERVED, not what the router asked for" (`flywheel/collector.ts:144-236`). Feeds the L1 trainer and catalog validation. The `enabled` gate hot-applies on save (console collection toggle / config editor / raw YAML share `saveConfig`; the collector reads the gate off the live section object and lazily arms directory + retention on first record) — `datasetPath` and the retention knobs stay restart-scoped.
 - **Judge dataset sampler** (`classifier.layer2.collectEnabled`, single key, default OFF because state carries user conversation content): (state, tier, confidence, latency, model, native/converted) → fixed `data/layer2-decisions.jsonl` under the ACTIVE env root, 64 MB cap then pause + one warn per process, delete/rotate to resume, hot-applied (`flywheel/decision-capture.ts:39-132`).
 - Guard rail: `collectEnabled` (dataset sampling) ≠ `requestCapture.systemone.l2DecisionEnabled` (HTTP-exchange capture, ADR-0008) — one namespace for logs, one for training data; retired keys (`capture:`, `decisionCapture`, vendor `provider/baseUrl/apiKey` judge keys) are load-stripped and never rewritten on save.
 

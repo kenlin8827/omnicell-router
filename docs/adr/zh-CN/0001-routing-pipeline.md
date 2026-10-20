@@ -40,7 +40,7 @@ Auto 路由必须按轮从结构信号中选择 `lite|plus|pro|ultra`——语�
 
 ### 5. 双飞轮——严格两个命名空间
 
-- **执行飞轮**（`flywheel.enabled` opt-in，`flywheel.datasetPath` 默认 `data/flywheel.jsonl`）：记录 featureVector + decision + execution + 派生 label——"实际服务的，而非路由所请求的"（`flywheel/collector.ts:144-236`）。供 L1 训练器与目录校验。
+- **执行飞轮**（`flywheel.enabled` opt-in，`flywheel.datasetPath` 默认 `data/flywheel.jsonl`）：记录 featureVector + decision + execution + 派生 label——"实际服务的，而非路由所请求的"（`flywheel/collector.ts:144-236`）。供 L1 训练器与目录校验。`enabled` 闸门保存后热应用（控制台采集开关 / 配置编辑器 / raw YAML 共用 `saveConfig`；collector 从活动 section 对象上读取闸门，并在首条记录时惰性建目录与武装保留清理）——`datasetPath` 与保留参数仍为重启生效。
 - **裁决数据集采样器**（`classifier.layer2.collectEnabled`，单键，默认 OFF——state 含用户对话内容）：(state, tier, confidence, latency, model, native/converted) → 固定路径 `data/layer2-decisions.jsonl`（相对**活动环境**根），64 MB 封顶后停写 + 每进程恰好一条告警，删除/轮转即恢复，热应用（`flywheel/decision-capture.ts:39-132`）。
 - 防歧义护栏：`collectEnabled`（数据集采样）≠ `requestCapture.systemone.l2DecisionEnabled`（HTTP 交换捕获，ADR-0008）——日志一个命名空间，训练数据另一个；退役键（顶层 `capture:`、`decisionCapture`、裁决者 vendor `provider/baseUrl/apiKey`）加载即剥离、保存永不写回。
 

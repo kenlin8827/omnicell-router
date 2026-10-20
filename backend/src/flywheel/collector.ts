@@ -53,6 +53,7 @@ export class FlywheelCollector {
     lastSweepAt: null,
     lastRemoved: null,
   };
+  private runtimeArmed = false;
   private stats: FlywheelStats = {
     totalSamples: 0,
     tierDistribution: {},
@@ -80,6 +81,32 @@ export class FlywheelCollector {
       this.runRetentionSweep();
       this.startRetentionTimer();
     }
+    // Booted enabled = the runtime side effects above are already armed;
+    // booted disabled they arm lazily on the first record() after a
+    // hot-applied config save flips the gate (see armRuntime).
+    this.runtimeArmed = this.config.enabled === true;
+  }
+
+  /** Live collection gate — a config-save flip applies without a restart. */
+  public isEnabled(): boolean {
+    return this.config.enabled === true;
+  }
+
+  /**
+   * One-shot lazy arming for a collector that booted disabled and was
+   * hot-enabled through the config save path (the console collection
+   * toggle): create the dataset directory and arm the retention sweep +
+   * timer exactly as the constructor would have. Idempotent; no-op when
+   * booted enabled.
+   */
+  private armRuntime(): void {
+    if (this.runtimeArmed) return;
+    this.runtimeArmed = true;
+    this.ensureDirectory();
+    if (this.retentionActive()) {
+      this.runRetentionSweep();
+      this.startRetentionTimer();
+    }
   }
 
   private retentionActive(): boolean {
@@ -94,6 +121,11 @@ export class FlywheelCollector {
    * trainingSamples() (design doc D5).
    */
   private runRetentionSweep(): void {
+    // Hot-applied gate: a hot-disabled collector pauses retention too. The
+    // sweep must never keep deleting while getRetentionState() reports the
+    // retention block as disabled — and this matches the boot-disabled
+    // posture (zero fs writes) the constructor promises.
+    if (!this.config.enabled) return;
     try {
       const outcome = applyRetention(this.datasetPath, {
         retentionDays: this.retentionDays,
@@ -154,6 +186,10 @@ export class FlywheelCollector {
     synthetic?: boolean;
   }): Promise<void> {
     if (!this.config.enabled) return;
+
+    // Hot-applied enable (booted disabled, gate flipped via a config save):
+    // arm the directory + retention side effects on first use.
+    this.armRuntime();
 
     // Redaction and truncation only affect the human-readable copy — the
     // feature vector below is what training actually consumes, so a redacted

@@ -1118,6 +1118,11 @@ export const enUS: TranslationDict = {
     resetFailed: 'Reset failed: ',
     retentionActive: 'Retention: {days}d / {mb}MB cap',
     retentionLastSweep: 'Last sweep {time} — {n} removed',
+    collectionToggle: 'Collection',
+    collectionOn: 'Collection enabled — new routing decisions are recorded live',
+    collectionOff: 'Collection disabled',
+    collectionOffHint: 'Collection is off — flip the toggle above to enable it instantly (no restart needed); past requests are not backfilled.',
+    collectionToggleFailed: 'Failed to toggle collection: ',
   },
 
   captures: {
@@ -1341,7 +1346,7 @@ export const enUS: TranslationDict = {
     flywheelPath: 'Dataset File Path',
     flywheelRetentionDays: 'Sample retention (days, 0 = keep forever)',
     flywheelMaxFileSizeMB: 'Dataset size cap (MB, 0 = uncapped)',
-    flywheelRestartHint: 'Flywheel settings apply after a gateway restart.',
+    flywheelRestartHint: 'The enable toggle applies instantly on save; datasetPath and retention knob changes need a gateway restart.',
     capTitle: 'Request Capture Archive',
     capEnable: 'Enable full request/response capture (to disk)',
     capSystemoneGroup: 'Decision surface (/v1/systemone)',
