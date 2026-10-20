@@ -8,6 +8,8 @@ import { getProviderDefsPath, writeProviderDefs } from '../src/opencode/provider
 import { mergeModels, CatalogRepository } from '../src/opencode/catalog/repository.js';
 import { readCacheFile, writeCacheFile } from '../src/opencode/catalog/cache.js';
 import { readOcrStore, writeOcrStore } from '../src/opencode/catalog/ocr-store.js';
+import { ocrCredentialsFile, resolveDefaultPaths } from '../src/opencode/credentials/paths.js';
+import { resetCredentialStoreForTests } from '../src/opencode/credentials/factory.js';
 import { isAllowedLogoUrl, localLogoApiPath, getLogoCached, writeLogoCache } from '../src/opencode/catalog/logos.js';
 import { resolveSources, parseByType, normalizeOpenAICompatible, normalizeMapped } from '../src/opencode/catalog/sources/registry.js';
 import { effortLadderFor } from '../src/providers/boot-direct.js';
@@ -515,6 +517,72 @@ describe('CatalogRepository source management', () => {
       try {
         fs.rmSync(tmpCfg, { recursive: true, force: true });
         fs.rmSync(tmpData, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
+    }
+  });
+
+  it('bound-store credentials mark the provider connected in the aggregation', async () => {
+    // A provider with no auth.json entry and no inline defs key reads
+    // disconnected from the sourced layers alone — the credential store is the
+    // single truth, so its credential presence must flip the flag (and its
+    // file mtime must drift the aggregation signature, or the rebuild never
+    // happens until restart).
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => Response.json({ data: [{ id: 'peek-vendor/peek-model', pricing: { prompt: '0.000001' } }] }),
+    });
+    const tmpCfg = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-catalog-cfg-'));
+    const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-catalog-data-'));
+    const oldCfg = process.env.XDG_CONFIG_HOME;
+    const oldData = process.env.XDG_DATA_HOME;
+    const oldOcrHome = process.env.OCR_HOME;
+    const credHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-catalog-cred-'));
+    process.env.XDG_CONFIG_HOME = tmpCfg;
+    process.env.XDG_DATA_HOME = tmpData;
+    process.env.OCR_HOME = credHome; // ocrCredentialsFile() resolves at call time
+    const seed = (providers: Record<string, unknown>) => {
+      fs.writeFileSync(
+        ocrCredentialsFile(),
+        JSON.stringify({ version: 1, providers })
+      );
+    };
+    try {
+      // The binding is PROCESS-STICKY and earlier tests in this file already
+      // bound a store (aggregate step 4b calls getCredentialStore) against
+      // THEIR env — rebind onto this test's sandbox before anything lists.
+      resetCredentialStoreForTests(resolveDefaultPaths());
+      const repo = new CatalogRepository();
+      await repo.addSource({ id: 'peek', type: 'model-list', url: `http://127.0.0.1:${server.port}/v1/models`, priority: 40 });
+
+      // No credential anywhere → sourced layers alone → disconnected
+      expect((await repo.list()).find((p) => p.id === 'peek')?.connected).toBe(false);
+
+      // A store credential for the provider → connected, without any other change
+      await Bun.sleep(2); // file mtime drives the signature — never write twice in one tick
+      seed({ peek: [{ credentialId: 'c1', label: 'k', key: 'sk-test', timeCreated: 1, timeUpdated: 1, active: true }] });
+      expect((await repo.list()).find((p) => p.id === 'peek')?.connected).toBe(true);
+
+      // Credential removed → the same drift path restores the sourced flag
+      await Bun.sleep(2);
+      seed({});
+      expect((await repo.list()).find((p) => p.id === 'peek')?.connected).toBe(false);
+    } finally {
+      server.stop(true);
+      // Leave no sticky binding pointed at the deleted sandbox — later tests
+      // (auto-pull describe) bind their own world.
+      resetCredentialStoreForTests();
+      if (oldCfg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = oldCfg;
+      if (oldData === undefined) delete process.env.XDG_DATA_HOME;
+      else process.env.XDG_DATA_HOME = oldData;
+      if (oldOcrHome === undefined) delete process.env.OCR_HOME;
+      else process.env.OCR_HOME = oldOcrHome;
+      try {
+        fs.rmSync(tmpCfg, { recursive: true, force: true });
+        fs.rmSync(tmpData, { recursive: true, force: true });
+        fs.rmSync(credHome, { recursive: true, force: true });
       } catch {
         // ignore
       }

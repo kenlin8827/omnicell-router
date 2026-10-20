@@ -28,7 +28,7 @@ The opencode v2 client's write direction materializes BOTH artifact classes: key
 
 ### 6. Console + UI de-opencode-ization
 
-Provider CRUD rewrites onto the defs store (`upsertCustomProvider`/`getProviderNodeById` become defs-file operations). The connected view = defs file ∪ bound-store credentials; grid order reads defs-file sequence (jsonc order dies with the coupling). The page retitles to "Provider Management"; `opencode.jsonc` appears only inside the sync-client panel. The catalog needs no de-coupling — models.dev is fetched directly (sources/models-dev.ts), no opencode involvement.
+Provider CRUD rewrites onto the defs store (`upsertCustomProvider`/`getProviderNodeById` become defs-file operations). The connected view = defs file ∪ bound-store credentials; grid order reads defs-file sequence (jsonc order dies with the coupling). The page retitles to "Provider Management"; `opencode.jsonc` appears only inside the sync-client panel. The catalog needs no de-coupling — models.dev is fetched directly (sources/models-dev.ts), no opencode involvement. The same connected union governs the catalog aggregation (model list): each aggregated provider's `connected` ORs in bound-store credential presence (and the credentials file mtime joins the aggregation signature, so key add/remove rebuilds without a restart).
 
 ## Consequences
 

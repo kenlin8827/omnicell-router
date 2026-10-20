@@ -11,6 +11,7 @@ import { proxiedFetch } from '../../utils/proxy.js';
 import { CATALOG_USER_AGENT } from './constants.js';
 import { loadConfig, getConfigPath } from '../../config/index.js';
 import { readOcrStore, writeOcrStore, getOcrStorePath } from './ocr-store.js';
+import { ocrCredentialsFile } from '../credentials/paths.js';
 import fs from 'node:fs';
 import { localLogoApiPath } from './logos.js';
 import type { CatalogModel, CatalogProviderRecord, CatalogSourceId } from './types.js';
@@ -570,9 +571,12 @@ async setSourceEnabled(id: string, enabled: boolean): Promise<CatalogSourceView>
     const overridesMtime = mtime(getOverridesStorePath());
     // The defs file replaced opencode.jsonc as the def truth: its mtime drives
     // the rebuild, and the jsonc mtime stays OUT — a materialization rewrite
-    // must not look like a source change.
+    // must not look like a source change. The credentials file is IN: `connected`
+    // is derived from bound-store credential presence (see aggregate step 4b),
+    // so a key add/remove must drift the signature or the store serves the old
+    // connected flags until restart.
     const defsMtime = mtime(getProviderDefsPath());
-    return `${defsMtime}:${mtime(getConfigPath())}:${srcs}:${fetched}:${locked}:${customMtime}:${overridesMtime}`;
+    return `${defsMtime}:${mtime(getConfigPath())}:${srcs}:${fetched}:${locked}:${customMtime}:${overridesMtime}:${mtime(ocrCredentialsFile())}`;
   }
 
   private ocrLoadOrigin = 'not-built';
@@ -834,6 +838,25 @@ async setSourceEnabled(id: string, enabled: boolean): Promise<CatalogSourceView>
         rec.baseURL = rec.baseURL || baseURL;
         rec.sources = addSource(rec.sources, 'service');
       }
+    }
+
+    // 4b. bound-store credential presence → `connected`. The store is the single
+    // credential truth; auth.json is a frozen migration snapshot and inline defs
+    // keys are the exception, so steps 1/1b/2 systematically under-report — a
+    // provider routing fine on a store credential would read disconnected here.
+    // Any stored credential (same rule the provider grid applies) marks the
+    // provider connected; an unreadable store degrades to the sourced flag.
+    try {
+      const { getCredentialStore } = await import('../credentials/index.js');
+      const store = await getCredentialStore();
+      const storeConnected = new Set(store.credentialsOverview().map((o) => o.providerId));
+      if (storeConnected.size > 0) {
+        for (const rec of unified.values()) {
+          if (storeConnected.has(rec.id)) rec.connected = true;
+        }
+      }
+    } catch {
+      // store unreadable / not bound yet — keep the auth.json + inline-derived flag
     }
 
     // 5. serve logos through the local disk-cache proxy (offline-safe page loads)
