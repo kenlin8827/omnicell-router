@@ -300,6 +300,9 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
         // Tri-state sampling-parameter capability flag — the provider layer
         // strips params for temperature:false models.
         temperature: catModel?.temperature,
+        // Tri-state developer-role capability flag (override-only; default =
+        // the openai wire rewrites `developer` → `system`).
+        supportsDeveloperRole: catModel?.supportsDeveloperRole,
         supportsPromptCaching: wire === 'anthropic' || (catModel?.cost?.cache_read != null ? true : undefined),
         // Variants become routable sibling ids (`<id>-<variant>`) + `#variant`
         // syntax; the jsonc def is the source (catalog records may mirror it).

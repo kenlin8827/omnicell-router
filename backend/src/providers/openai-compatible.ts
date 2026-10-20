@@ -19,6 +19,27 @@ import {
  */
 const STREAM_CAPTURE_CAP = 256 * 1024;
 
+/**
+ * Role-compatibility rewrite for this wire. The OpenAI `developer` role
+ * (introduced with the o1 series) is accepted by OpenAI official endpoints,
+ * but the long tail of OpenAI-compatible servers (DeepSeek, Qwen, Kimi,
+ * vLLM, llama.cpp, Gemini-compat, ...) only knows `system` and answers a
+ * `developer` message with a 400 invalid role. No catalog source publishes
+ * per-model role support, so the SAFE DEFAULT is to rewrite
+ * `developer` → `system` — semantically lossless: `developer` IS the renamed
+ * `system` per the OpenAI model spec (gpt-4o even auto-converts it
+ * server-side), and every current OpenAI chat model accepts `system`.
+ * A model opts out via `supportsDeveloperRole: true` (overrides.json) when an
+ * upstream rejects `system` or must see the role verbatim. Message order and
+ * content are preserved; only the role tag changes.
+ */
+function normalizeDeveloperRole(
+  messages: ChatCompletionRequest['messages']
+): ChatCompletionRequest['messages'] {
+  if (!Array.isArray(messages) || !messages.some((m) => m?.role === 'developer')) return messages;
+  return messages.map((m) => (m && m.role === 'developer' ? { ...m, role: 'system' as const } : m));
+}
+
 export class OpenAICompatibleProvider implements LLMProvider {
   public name: string;
   private config: ProviderConfig;
@@ -64,6 +85,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
     // sampling params — strip them from the passthrough payload to avoid an
     // upstream 400 invalid_request_error.
     if (model.temperature === false) delete payload.temperature;
+    // Role compatibility: unless the model is declared to accept the OpenAI
+    // `developer` role, rewrite it to `system` (see normalizeDeveloperRole).
+    if (model.supportsDeveloperRole !== true) payload.messages = normalizeDeveloperRole(payload.messages);
     // reasoning_effort is the OpenAI-standard field; forwarded verbatim.
     // `max` (Anthropic's top tier) is not a valid OpenAI value — the
     // orchestrator's downgrade step collapses it to `xhigh` (or lower)
@@ -210,6 +234,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
     delete payload.router_options;
     // Models the catalog marks temperature:false — strip the param (same as the non-streaming path).
     if (model.temperature === false) delete payload.temperature;
+    // Role compatibility: same rewrite as the buffered path (see normalizeDeveloperRole).
+    if (model.supportsDeveloperRole !== true) payload.messages = normalizeDeveloperRole(payload.messages);
     // reasoning_effort is the OpenAI-standard field; forwarded verbatim.
     if (request.reasoning_effort) payload.reasoning_effort = request.reasoning_effort;
 

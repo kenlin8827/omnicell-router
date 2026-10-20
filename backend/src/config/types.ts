@@ -54,6 +54,18 @@ export interface ModelRegistration {
    */
   temperature?: boolean;
   /**
+   * Tri-state developer-role capability flag. The OpenAI `developer` role
+   * (introduced with the o1 series) is accepted by OpenAI official endpoints
+   * but rejected with a 400 by the long tail of OpenAI-compatible servers
+   * (DeepSeek, Qwen, Kimi, vLLM, llama.cpp, Gemini-compat, ...) — and no
+   * catalog source publishes role support. The SAFE DEFAULT is therefore
+   * conversion: undefined / false → the openai wire rewrites
+   * `role:'developer'` messages to `system` (semantically equivalent);
+   * true = passthrough verbatim, for upstreams that reject `system` or must
+   * see the role unmodified (declare via overrides.json).
+   */
+  supportsDeveloperRole?: boolean;
+  /**
    * Model-default thinking level — pinned when the client OMITS
    * `reasoning_effort` entirely (explicit values, 'none' included, always
    * win). Sourced from overrides.json / def `settings.reasoningEffort`.

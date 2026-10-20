@@ -66,6 +66,12 @@ export interface CatalogModel {
   tool_call?: boolean;
   temperature?: boolean;
   /**
+   * Override-only capability flag (no catalog source publishes role support):
+   * `supportsDeveloperRole` — see ModelRegistration for the semantics. The
+   * default (undefined) is the safe convert-to-`system` behavior.
+   */
+  supportsDeveloperRole?: boolean;
+  /**
    * Hidden from the model catalog — kept in the aggregate (the catalog viewer
    * still lists it) but excluded from the boot-direct routing pool, so
    * `/v1/models` omits it and nothing can be pinned to it. Written by the

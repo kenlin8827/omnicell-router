@@ -812,6 +812,7 @@ async setSourceEnabled(id: string, enabled: boolean): Promise<CatalogSourceView>
         if (entry.tool_call !== undefined) model.tool_call = entry.tool_call;
         if (entry.reasoning !== undefined) model.reasoning = entry.reasoning;
         if (entry.temperature !== undefined) model.temperature = entry.temperature;
+        if (entry.supportsDeveloperRole !== undefined) model.supportsDeveloperRole = entry.supportsDeveloperRole;
         if (entry.disabled !== undefined) model.disabled = entry.disabled;
         if (entry.reasoningEfforts !== undefined) {
           model.reasoningOptions =

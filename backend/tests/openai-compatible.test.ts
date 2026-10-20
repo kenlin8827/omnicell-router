@@ -284,4 +284,101 @@ describe('OpenAICompatibleProvider payload shaping', () => {
       server.stop(true);
     }
   });
+
+  /**
+   * The OpenAI `developer` role (o1-era) is 400-rejected by the long tail of
+   * OpenAI-compatible servers. Default on this wire: rewrite to `system`
+   * (order + content preserved); `supportsDeveloperRole: true` opts out.
+   */
+  test('createCompletion rewrites developer role to system by default, passthrough when opted in', async () => {
+    let received: any = null;
+    const server = serve({
+      port: 0,
+      async fetch(req) {
+        received = await req.json();
+        return Response.json({
+          id: 'chatcmpl-test',
+          object: 'chat.completion',
+          created: 1700000000,
+          model: 'upstream-model-id',
+          choices: [
+            { index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' },
+          ],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        });
+      },
+    });
+
+    try {
+      const config: ProviderConfig = {
+        name: 'test-provider',
+        type: 'openai',
+        baseUrl: `http://localhost:${server.port}`,
+        apiKey: 'sk-test',
+      };
+      const provider = new OpenAICompatibleProvider(config);
+      const request: ChatCompletionRequest = {
+        model: 'test-provider/test-model',
+        messages: [
+          { role: 'developer', content: 'instructions' },
+          { role: 'user', content: 'hi' },
+          { role: 'developer', content: 'more instructions' },
+        ],
+      } as ChatCompletionRequest;
+
+      // undefined (safe default) and false → rewritten to system
+      await provider.createCompletion(request, makeModel());
+      expect(received.messages).toEqual([
+        { role: 'system', content: 'instructions' },
+        { role: 'user', content: 'hi' },
+        { role: 'system', content: 'more instructions' },
+      ]);
+
+      // true → passthrough verbatim
+      await provider.createCompletion(request, { ...makeModel(), supportsDeveloperRole: true });
+      expect(received.messages).toEqual(request.messages);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test('createStream rewrites developer role to system by default', async () => {
+    let received: any = null;
+    const server = serve({
+      port: 0,
+      async fetch(req) {
+        received = await req.json();
+        const body = `data: ${JSON.stringify({
+          id: 'chatcmpl-test',
+          object: 'chat.completion.chunk',
+          created: 1700000000,
+          model: 'upstream-model-id',
+          choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: null }],
+        })}\n\ndata: [DONE]\n\n`;
+        return new Response(body, {
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      },
+    });
+
+    try {
+      const config: ProviderConfig = {
+        name: 'test-provider',
+        type: 'openai',
+        baseUrl: `http://localhost:${server.port}`,
+        apiKey: 'sk-test',
+      };
+      const provider = new OpenAICompatibleProvider(config);
+      const request: ChatCompletionRequest = {
+        model: 'test-provider/test-model',
+        messages: [{ role: 'developer', content: 'instructions' }],
+      } as ChatCompletionRequest;
+
+      const stream = await provider.createStream(request, makeModel());
+      for await (const _ of stream) { /* drain */ }
+      expect(received.messages).toEqual([{ role: 'system', content: 'instructions' }]);
+    } finally {
+      server.stop(true);
+    }
+  });
 });

@@ -33,6 +33,13 @@ export interface OverrideEntry {
   /** Manual correction of the tri-state sampling-parameter capability flag (real behavior of a reseller's custom models, which catalog sources cannot cover). */
   temperature?: boolean;
   /**
+   * Tri-state developer-role capability override (`true` = the upstream
+   * accepts OpenAI `developer` messages — passthrough verbatim; undefined /
+   * false = the openai wire rewrites `developer` → `system`). No catalog
+   * source publishes role support, so this is override-only.
+   */
+  supportsDeveloperRole?: boolean;
+  /**
    * Explicit thinking-level list (subset of EFFORT_LADDER). Materialized at
    * aggregation into `reasoningOptions=[{type:'effort',values}]` (empty array
    * → `[{type:'toggle'}]` = no explicit level control), which boot-direct's
@@ -95,6 +102,7 @@ export function upsertOverride(providerId: string, modelId: string, entry: Overr
     if (entry.tool_call !== undefined) merged.tool_call = entry.tool_call;
     if (entry.reasoning !== undefined) merged.reasoning = entry.reasoning;
     if (entry.temperature !== undefined) merged.temperature = entry.temperature;
+    if (entry.supportsDeveloperRole !== undefined) merged.supportsDeveloperRole = entry.supportsDeveloperRole;
     if (entry.disabled !== undefined) merged.disabled = entry.disabled;
     if (entry.reasoningEfforts !== undefined) merged.reasoningEfforts = entry.reasoningEfforts;
     if (entry.npm !== undefined) merged.npm = entry.npm;
