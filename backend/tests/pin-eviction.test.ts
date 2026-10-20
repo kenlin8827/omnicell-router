@@ -115,6 +115,10 @@ function makeFixture(mode: 'both' | 'm1only' = 'both', extras: Record<string, un
     registry.registerProvider('p2', stub2.provider, chainP2);
     registry.registerModel(m2);
   }
+  // Member lists are the ONLY pool source — commit the plus pool explicitly
+  // (the production contract: pools are the per-tier projection of
+  // tiers[t].members; a stored tier alone never joins a model).
+  commitMembers(registry, { plus: [{ pattern: 'p1/*' }, { pattern: 'p2/*' }] });
   const orchestrator = new PipelineOrchestrator(config, registry, new FinOpsTracker());
   return { registry, orchestrator, stub1, stub2, m1, m2 };
 }

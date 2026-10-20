@@ -18,6 +18,15 @@ export interface ModelRegistration {
   id: string; // e.g., 'gpt-4o-mini', 'claude-3-5-haiku-20241022', 'deepseek-chat'
   provider: string; // matches ProviderConfig.name
   upstreamModel: string; // actual model name sent to upstream
+  /**
+   * DERIVED home tier — the first claim in tier order lite→plus→pro→ultra
+   * over `tiers[t].members` (recomputed on every commit; hand-configured
+   * models keep their explicit registration tier). Single-tier consumers
+   * read it (pinned force_tier, tier-keyed reporting, model-access tier
+   * expansion); POOL MEMBERSHIP never does — pools are the per-tier
+   * projection of the member lists, so a model may serve in several tiers
+   * at once.
+   */
   tier: TierLevel;
   pricing: ModelPricing;
   /** resolved wire for direct execution (model-level npm beats provider npm). */
@@ -68,16 +77,18 @@ export interface ModelRegistration {
   /** Explicit tier from the defs-file model definition (catalog overrides are read live) */
   configTier?: TierLevel;
   /**
-   * Fourth state: the model matched no tier's positive conditions
-   * (no residual fallback any more). It joins NO candidate pool. Kept as a
-   * flag rather than widening `tier` so TIER_RANK / failover chains / session
-   * ratchet keep operating on the strict four-state TierLevel.
+   * Fourth state: no tier's member list claims the model. It joins NO
+   * candidate pool. Kept as a flag rather than widening `tier` so
+   * TIER_RANK / failover chains / session ratchet keep operating on the
+   * strict four-state TierLevel.
    */
   unclassified?: boolean;
   /**
-   * The effective thinking-level translation inherited from the
-   * claiming member rule (re-applied on every reclassify). Undefined = no
-   * translation (passthrough).
+   * The home tier's thinking-level translation (the first claiming member
+   * rule's effortMap, re-applied on every commit). Pools carry their OWN
+   * claiming rule's translation per entry; this stored value is the
+   * fallback for paths without a pool context (e.g. the systemone
+   * conversion path). Undefined = no translation (passthrough).
    */
   effortMap?: EffortMap;
 }
@@ -165,8 +176,9 @@ export interface FallbackConfig {
  * wildcards, case-insensitive; NO wildcard = substring match (a full id
  * therefore pins a single model). The list order IS priority: within a tier
  * the first matching rule claims the model, and the first rule's models lead
- * the tier's failover chain. Across tiers the claim order is
- * lite → plus → pro → ultra (first claim wins; overlaps are warned at save).
+ * the tier's failover chain. Membership is a PER-TIER projection — the same
+ * model may be claimed by several tiers at once (legal, never warned), and
+ * each tier's chain order / weight / effortMap follow THAT tier's own rule.
  */
 export interface TierMemberRule {
   pattern: string;

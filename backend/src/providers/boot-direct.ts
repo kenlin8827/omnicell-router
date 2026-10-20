@@ -398,9 +398,12 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
   // no `tiers:` section). Every install starts pool-less — the all-empty
   // warning below fires until the operator adds members on the console
   // /tiers page; every model stays directly callable by id.
-  // List order IS chain order (priority = rule index + 1), list index 0 is
-  // the tier representative. Members are edited on the console /tiers page
-  // (hot-applied by the registry; no restart, no persistence from boot).
+  // Membership itself is a per-tier projection computed live at every pool
+  // build (registry.buildTierPoolEntries) — a model may join several tiers.
+  // What is written here is the DERIVED HOME view for single-tier consumers
+  // (first claim in tier order lite→plus→pro→ultra: tier, chain priority,
+  // list-leader flag, home effortMap). Members are edited on the console
+  // /tiers page (hot-applied by the registry; no restart, no persistence).
   const cfgTiers = loadConfig().tiers;
   const registeredIds = new Set(models.map((m) => m.id));
   const lookup = comboRefLookupFromConfig(loadConfig().combos, (id) => registeredIds.has(id));
@@ -413,17 +416,17 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
   }
   let claimed = 0;
   for (const m of models) {
-    const claim = claimModel(m.id, resolved.tiers);
-    if (claim === 'unclassified') {
+    const home = claimModel(m.id, resolved.tiers);
+    if (home === 'unclassified') {
       m.unclassified = true;
       continue;
     }
     claimed++;
     delete m.unclassified;
-    m.tier = claim.tier;
-    m.priority = claim.index + 1; // member-list order IS the chain order
-    m.isDefaultInTier = claim.index === 0; // the list leader
-    if (claim.rule.effortMap) m.effortMap = claim.rule.effortMap;
+    m.tier = home.tier;
+    m.priority = home.index + 1; // home list order (derived view)
+    m.isDefaultInTier = home.index === 0; // the home list leader
+    if (home.rule.effortMap) m.effortMap = home.rule.effortMap;
   }
   // Warn only when models exist but none is claimed — with zero registered
   // models (no provider credentials yet) the actionable gap is "add models",

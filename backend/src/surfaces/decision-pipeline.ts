@@ -85,7 +85,7 @@ export async function runDecisionSurface(
       );
       return;
     }
-    const allowed = pool.filter((m) => isModelAllowed(m.id, policy, m.tier));
+    const allowed = pool.filter((m) => isModelAllowed(m.id, policy, tier));
     if (allowed.length === 0) {
       // Unreachable under an 'exempt' gate: undefined policy admits the whole
       // pool (allowed.length ≥ 1 after the 404 check), hence `policy!` is the
@@ -101,12 +101,12 @@ export async function runDecisionSurface(
       return;
     }
     // Chain head of the healthy allowed pool (weight/priority order from
-    // sortForChain) — deterministic per pool state. The chat pool's
+    // buildTierPoolEntries) — deterministic per pool state. The chat pool's
     // weighted/round-robin strategies are a chat-surface nicety, not a
     // decision-surface one.
     const healthyAllowed = registry
       .getCandidateModelsForTier(tier, true)
-      .filter((m) => isModelAllowed(m.id, policy, m.tier));
+      .filter((m) => isModelAllowed(m.id, policy, tier));
     if (healthyAllowed.length === 0) {
       t.sendJson(
         503,

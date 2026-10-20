@@ -4,12 +4,12 @@ import { AnthropicProvider } from './anthropic.js';
 import { ResponsesProvider } from './responses.js';
 import { GoogleProvider } from './google.js';
 import { ModelRegistration, ModelVariant, ProviderConfig, RouterConfig, TiersConfig, TierMemberRule, ComboConfig, ComboModelRef } from '../config/types.js';
-import { PoolMembership, ReasoningEffort, TierLevel, EFFORT_LADDER, downgradeReasoning, modelSupportsEfforts } from '../types/router.js';
+import { PoolMembership, ReasoningEffort, TierLevel, EFFORT_LADDER, downgradeReasoning, modelSupportsEfforts, type EffortMap } from '../types/router.js';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
 import { CircuitBreakerManager, UpstreamError, type ModelAvailability, type ModelHealthView } from '../resilience/index.js';
 import { globMatchAny } from '../utils/glob.js';
 import { loadConfig } from '../config/index.js';
-import { resolveTierMembers, claimModel, applyEffortMap, MEMBER_TIER_ORDER, TIER_DESCENDING_ORDER, type MemberClaim, comboMemberRefsOf, expandComboRefs, RESERVED_COMBO_IDS, type ExpandedMembers } from './member-match.js';
+import { resolveTierMembers, claimModel, claimInTier, matchingTiers, applyEffortMap, MEMBER_TIER_ORDER, TIER_DESCENDING_ORDER, comboMemberRefsOf, expandComboRefs, RESERVED_COMBO_IDS, type ExpandedMembers } from './member-match.js';
 import { createChunkAccumulator, type StreamRelay } from '../utils/chat-stream.js';
 
 /**
@@ -47,6 +47,14 @@ export class ProviderRegistry {
   private tierDefaults = new Map<TierLevel, ModelRegistration>();
   private circuitBreakerManager: CircuitBreakerManager;
   private tierPolicies: TiersConfig;
+  /**
+   * The COMMITTED member-list view pools read: `tiers.<t>.members` with
+   * `combo:<id>` refs expanded, stored by reclassifyTiers (the one commit
+   * point) and initialized from the boot config. Every pool read — candidates,
+   * weights, effort translation, membership sets — goes through this snapshot,
+   * so what routing sees is always exactly what was last committed.
+   */
+  private committedMembers: Record<TierLevel, TierMemberRule[]> = { lite: [], plus: [], pro: [], ultra: [] };
   private rrCursor = new Map<TierLevel, number>();
   private combos = new Map<string, ComboConfig>();
   private comboRrCursor = new Map<string, number>();
@@ -111,6 +119,11 @@ export class ProviderRegistry {
     // Initialize custom model combos (after models so member resolution at
     // request time can find them; membership itself is resolved lazily)
     this.applyCombos(config.combos);
+
+    // Initial committed member view (boot config; re-expanded so pools exist
+    // before the first save-commit). All models are registered by now, so
+    // combo-ref expansion sees the full universe.
+    this.committedMembers = this.expandedMemberRules(this.tierPolicies).tiers;
 
     // In mock testing mode, if no models provided, populate mock tier models
     if (this.mockMode && this.models.size === 0) {
@@ -286,17 +299,12 @@ export class ProviderRegistry {
     return '';
   }
 
-  /** Hot-path candidate filter — see policyRejectionReason. */
-  private applyTierPolicy(policies: TiersConfig | undefined, models: ModelRegistration[]): ModelRegistration[] {
-    if (!policies?.exclude?.length) return models;
-    return models.filter((m) => !this.policyRejectionReason(policies, m));
-  }
-
-  /** Weight of a model inside a tier: from the claiming member rule, default 1. */
-  private weightFor(policies: TiersConfig | undefined, tier: TierLevel, modelId: string): number {
-    const claim = claimModel(modelId, this.expandedMemberRules(policies).tiers);
-    if (claim !== 'unclassified' && claim.tier === tier) return Math.max(1, Number(claim.rule.weight) || 1);
-    return 1;
+  /** Weight of a model inside a tier: from THIS tier's claiming member rule
+   *  in the committed view (per-tier claim — a model in several tiers carries
+   *  a weight per pool), default 1. */
+  private weightFor(tier: TierLevel, modelId: string): number {
+    const claim = claimInTier(tier, modelId, this.committedMembers);
+    return claim ? Math.max(1, Number(claim.rule.weight) || 1) : 1;
   }
 
   /** Effective selection strategy: explicit config wins; default priority (legacy weights retired). */
@@ -308,7 +316,7 @@ export class ProviderRegistry {
   private pickRoundRobin(models: ModelRegistration[], tier: TierLevel): ModelRegistration {
     const slots: ModelRegistration[] = [];
     for (const m of models) {
-      const w = this.weightFor(this.tierPolicies, tier, m.id);
+      const w = this.weightFor(tier, m.id);
       for (let i = 0; i < w; i++) slots.push(m);
     }
     if (slots.length === 0) return models[0];
@@ -324,14 +332,15 @@ export class ProviderRegistry {
    * - weighted: weighted random draw over the healthy pool (claiming member
    *   rule's weight, default 1)
    * - round_robin: rotating weighted slots for even distribution over time
-   * The failover chain order is strategy-independent (see sortForChain).
+   * The failover chain order is strategy-independent (buildTierPoolEntries:
+   * rule weight desc, then rule list order).
    */
   private pickPrimary(models: ModelRegistration[], tier: TierLevel): ModelRegistration {
     if (models.length <= 1) return models[0];
     const strategy = this.selectionStrategy(tier);
     if (strategy === 'round_robin') return this.pickRoundRobin(models, tier);
     if (strategy === 'weighted') {
-      const weights = models.map((m) => this.weightFor(this.tierPolicies, tier, m.id));
+      const weights = models.map((m) => this.weightFor(tier, m.id));
       const total = weights.reduce((a, b) => a + b, 0);
       let r = Math.random() * total;
       for (let i = 0; i < models.length; i++) {
@@ -344,25 +353,71 @@ export class ProviderRegistry {
   }
 
   /**
-   * Chain order (dual-purpose weight): higher member weight ranks first,
-   * ties follow list order (claim index persisted as `priority`; the list
-   * leader carries `isDefaultInTier`). The same weight drives the draw
-   * probability / rotation share under `weighted` / `round_robin`.
+   * Per-tier pool construction — the ONE membership read for a single tier.
+   * Membership is a PER-TIER projection of the member lists: every rule in
+   * THIS tier's list claims models independently of the other tiers, so a
+   * model (or a combo's expanded members) may join several pools at once.
+   * Hand-configured models (no tierMatch) are reclassification-immune: they
+   * join exactly their explicit tier, with weight from this tier's matching
+   * rule when one exists (default 1). Chain order = claiming-rule weight
+   * (desc) then rule list position (asc); entries carry the claiming rule's
+   * weight and effortMap — the translation that applies when the model
+   * serves from THIS pool.
    */
-  private sortForChain(models: ModelRegistration[], tier: TierLevel, policies: TiersConfig | undefined): ModelRegistration[] {
-    const members = this.expandedMemberRules(policies).tiers;
-    const weightOf = new Map<string, number>();
-    for (const m of models) {
-      const claim = claimModel(m.id, members);
-      weightOf.set(
-        m.id,
-        claim !== 'unclassified' && claim.tier === tier ? Math.max(1, Number(claim.rule.weight) || 1) : 1
-      );
+  private buildTierPoolEntries(
+    tier: TierLevel,
+    members: Record<TierLevel, TierMemberRule[]>,
+  ): { model: ModelRegistration; weight: number; effortMap?: EffortMap; rank: number }[] {
+    const entries: { model: ModelRegistration; weight: number; effortMap?: EffortMap; rank: number }[] = [];
+    for (const m of this.models.values()) {
+      if (!m.tierMatch) {
+        // Hand-configured model: explicit tier, member rules never move it.
+        if (m.unclassified || m.tier !== tier) continue;
+        const claim = claimInTier(tier, m.id, members);
+        entries.push({
+          model: m,
+          weight: claim ? Math.max(1, Number(claim.rule.weight) || 1) : 1,
+          effortMap: m.effortMap,
+          rank: m.isDefaultInTier ? 0 : m.priority ?? 10,
+        });
+        continue;
+      }
+      const claim = claimInTier(tier, m.id, members);
+      if (!claim) continue;
+      entries.push({
+        model: m,
+        weight: Math.max(1, Number(claim.rule.weight) || 1),
+        effortMap: claim.rule.effortMap,
+        rank: claim.index,
+      });
     }
-    const prio = (m: ModelRegistration) => (m.isDefaultInTier ? 0 : m.priority ?? 10);
-    return [...models].sort(
-      (a, b) => (weightOf.get(b.id) ?? 1) - (weightOf.get(a.id) ?? 1) || prio(a) - prio(b)
-    );
+    entries.sort((a, b) => b.weight - a.weight || a.rank - b.rank);
+    return entries;
+  }
+
+  /**
+   * The effort translation that applies when `model` serves from `tier`'s
+   * pool: the claiming rule's effortMap in THAT tier (a model holding
+   * membership in several tiers translates differently per pool).
+   * Hand-configured models keep their stored translation
+   * (reclassification-immune); a model absent from this tier (escalation-tail
+   * resolution) falls back to the stored home-tier translation.
+   */
+  public effortMapFor(model: ModelRegistration, tier: TierLevel): EffortMap | undefined {
+    if (!model.tierMatch) return model.effortMap;
+    const claim = claimInTier(tier, model.id, this.committedMembers);
+    if (claim) return claim.rule.effortMap; // this pool's rule is authoritative (undefined = passthrough)
+    return model.effortMap; // serving outside its pools — home-tier translation
+  }
+
+  /**
+   * Every tier whose member list claims the model — the multi-membership
+   * view behind the catalog's `tiers` array and tier-expanded model-access
+   * checks. Hand-configured models expose exactly their explicit tier.
+   */
+  public tiersOf(model: ModelRegistration): TierLevel[] {
+    if (!model.tierMatch) return model.unclassified ? [] : [model.tier];
+    return matchingTiers(model.id, this.committedMembers);
   }
 
   /**
@@ -395,20 +450,6 @@ export class ProviderRegistry {
   /** Test hook: silence the lazy config re-read (explicit reclassifyTiers still works). */
   public setAutoRefreshTierMatch(on: boolean): void {
     this.autoRefreshTierMatch = on;
-  }
-
-  /**
-   * PURE projection of one model's pool membership under the given member
-   * lists (; never mutates). Hand-configured models (no captured
-   * tierMatch) are exempt — their explicit tier is permanent. Returns the
-   * full claim (tier + rule + index), `'unclassified'`, or undefined.
-   */
-  private projectedClaim(
-    m: ModelRegistration,
-    members: Record<TierLevel, TierMemberRule[]>
-  ): MemberClaim | 'unclassified' | undefined {
-    if (!m.tierMatch) return undefined;
-    return claimModel(m.id, members);
   }
 
   /** Registered member refs of one combo (config order, deduped, unregistered
@@ -444,33 +485,38 @@ export class ProviderRegistry {
     this.reclassifyTiers(this.expandedMemberRules(tiers).tiers);
   }
 
-  /** Replays the member lists over every reclassifiable model 
-   * membership, chain priority (= rule index + 1) and the inline effortMap
-   * are all file-derived and re-applied on every commit. Representatives are
-   * refreshed AFTER memberships settle — the list leader leads each tier. */
+  /** Replays the member lists over every reclassifiable model and stores
+   * them as the committed pool view (buildTierPoolEntries reads exactly this
+   * snapshot). What is stored per model is the DERIVED HOME view used by
+   * single-tier consumers (pinned force_tier, tier-keyed reporting,
+   * model-access tier expansion): `tier` = first claim in tier order
+   * lite→plus→pro→ultra, with that claim's chain data and effortMap.
+   * Representatives are refreshed from the per-tier pools afterwards. */
   public reclassifyTiers(members: Record<TierLevel, TierMemberRule[]>): void {
     if (this.mockMode) return;
+    this.committedMembers = members;
     for (const m of this.models.values()) {
-      const claim = this.projectedClaim(m, members);
-      if (claim === undefined) continue; // hand-configured: never moved
-      if (claim === 'unclassified') {
+      if (!m.tierMatch) continue; // hand-configured: never moved
+      const home = claimModel(m.id, members);
+      if (home === 'unclassified') {
         m.unclassified = true;
+        m.isDefaultInTier = false;
         delete m.effortMap;
         continue;
       }
       m.unclassified = false;
-      m.tier = claim.tier;
-      m.priority = claim.index + 1; // member-list order IS the chain order
-      m.isDefaultInTier = claim.index === 0; // the list leader
-      if (claim.rule.effortMap) m.effortMap = claim.rule.effortMap;
+      m.tier = home.tier;
+      m.priority = home.index + 1; // home list order (derived view)
+      m.isDefaultInTier = home.index === 0; // the home list leader
+      if (home.rule.effortMap) m.effortMap = home.rule.effortMap;
       else delete m.effortMap;
     }
-    const live = Array.from(this.models.values());
+    // Representatives = chain head of each tier's per-tier pool (weight desc,
+    // then rule-list order) — a model leading tier X need not lead its home
+    // tier's list once pools can overlap.
     for (const tier of MEMBER_TIER_ORDER) {
-      const first = live
-        .filter((x) => x.tier === tier && !x.unclassified)
-        .sort((a, b) => (a.isDefaultInTier ? 0 : a.priority ?? 10) - (b.isDefaultInTier ? 0 : b.priority ?? 10))[0];
-      if (first) this.tierDefaults.set(tier, first);
+      const head = this.buildTierPoolEntries(tier, members)[0]?.model;
+      if (head) this.tierDefaults.set(tier, head);
       else this.tierDefaults.delete(tier);
     }
   }
@@ -480,25 +526,12 @@ export class ProviderRegistry {
    * (member-list order). If healthyOnly is true, only returns models
    * where the circuit breaker allows execution. The global denylist
    * (tiers.exclude) is applied first; unclaimed (`unclassified`) models join no
-   * pool. Membership + everything file-derived is replayed live (see
-   * reclassifyTiers).
+   * pool. Membership is the per-tier projection (buildTierPoolEntries) —
+   * a model may serve in several tiers at once.
    */
   public getCandidateModelsForTier(tier: TierLevel, healthyOnly = true): ModelRegistration[] {
     this.maybeRefreshTierMatch();
-    let list = this.applyTierPolicy(
-      this.tierPolicies,
-      Array.from(this.models.values()).filter((m) => m.tier === tier && !m.unclassified),
-    );
-    list = this.sortForChain(list, tier, this.tierPolicies);
-
-    if (healthyOnly) {
-      // Decision 6 aggregate — a model is healthy iff at least one of its
-      // credentials still serves (pair breaker not OPEN, credential not SUSPECT) and the
-      // model itself is not down. Single-chain/chain-less providers behave
-      // exactly like the old isAvailable read (no pair breakers exist to be open).
-      return list.filter((m) => this.modelAvailable(m).available);
-    }
-    return list;
+    return this.tierPoolEntries(tier, healthyOnly).map(({ model }) => model);
   }
 
   /**
@@ -533,9 +566,9 @@ export class ProviderRegistry {
       // No thinking requested. Legacy pass-through (any model) UNLESS a
       // member rule maps `none` to a real level (e.g. none→high):
       // then the mapped candidates compete and the mapped level is served.
-      const candidates = this.getCandidateModelsForTier(tier, healthyOnly);
-      if (candidates.some((m) => applyEffortMap(m.effortMap, 'none') !== 'none')) {
-        const mapped = this.bestEffortMatch(candidates, requested);
+      const entries = this.tierPoolEntries(tier, healthyOnly);
+      if (entries.some((e) => applyEffortMap(e.effortMap, 'none') !== 'none')) {
+        const mapped = this.bestEffortMatch(entries, requested);
         if (mapped) return mapped;
       }
       const m = this.getModelForTier(tier, healthyOnly);
@@ -544,9 +577,8 @@ export class ProviderRegistry {
     }
 
     // Pass 1: pick from the requested tier (each candidate is first translated
-    // by its own effortMap, then capability-clamped — see bestEffortMatch).
-    const tierCandidates = this.getCandidateModelsForTier(tier, healthyOnly);
-    const tierPick = this.bestEffortMatch(tierCandidates, requested);
+    // by ITS pool's effortMap, then capability-clamped — see bestEffortMatch).
+    const tierPick = this.bestEffortMatch(this.tierPoolEntries(tier, healthyOnly), requested);
     if (tierPick) return tierPick;
 
     // Pass 2: cross-tier fallback — search all tiers in tier-rank order
@@ -556,31 +588,39 @@ export class ProviderRegistry {
     const tierOrder = TIER_DESCENDING_ORDER;
     for (const t of tierOrder) {
       if (t === tier) continue;
-      const pool = this.getCandidateModelsForTier(t, healthyOnly);
-      const pick = this.bestEffortMatch(pool, requested);
+      const pick = this.bestEffortMatch(this.tierPoolEntries(t, healthyOnly), requested);
       if (pick) return pick;
     }
     return null;
   }
 
+  /** Denylist- and health-filtered per-tier pool entries (see
+   *  buildTierPoolEntries); the effortMap on each entry is the translation
+   *  that applies when the model serves from THIS tier's pool. */
+  private tierPoolEntries(tier: TierLevel, healthyOnly: boolean) {
+    return this.buildTierPoolEntries(tier, this.committedMembers)
+      .filter(({ model }) => !this.policyRejectionReason(this.tierPolicies, model))
+      .filter(({ model }) => !healthyOnly || this.modelAvailable(model).available);
+  }
+
   /**
    * Best candidate for `requested` under the translation contract:
-   * each candidate is first TRANSLATED by its own effortMap, then clamped by
-   * its declared capability (downgradeReasoning). Candidates whose clamp
-   * yields `'none'` while the mapped target was a real level are skipped —
-   * the honesty contract still forbids silently dropping requested thinking.
-   * Ordering: smallest gap = rank(requested) − rank(actual) first (a
+   * each candidate is first TRANSLATED by its pool entry's effortMap, then
+   * clamped by its declared capability (downgradeReasoning). Candidates whose
+   * clamp yields `'none'` while the mapped target was a real level are
+   * skipped — the honesty contract still forbids silently dropping requested
+   * thinking. Ordering: smallest gap = rank(requested) − rank(actual) first (a
    * mapped-UP candidate has a negative gap and wins; a mapped-down one loses
    * to a native server); ties fall to pool order.
    */
   private bestEffortMatch(
-    pool: ModelRegistration[],
+    pool: { model: ModelRegistration; effortMap?: EffortMap }[],
     requested: ReasoningEffort,
   ): { model: ModelRegistration; actualEffort: ReasoningEffort; degraded: boolean } | null {
     const reqRank = EFFORT_LADDER.indexOf(requested);
     let best: { model: ModelRegistration; actualEffort: ReasoningEffort; gap: number } | null = null;
-    for (const m of pool) {
-      const target = applyEffortMap(m.effortMap, requested);
+    for (const { model: m, effortMap } of pool) {
+      const target = applyEffortMap(effortMap, requested);
       if (target === 'none') {
         // Explicit translation to none (or an unmapped `none` request):
         // serves without thinking. NOT skipped on requested !== 'none' —
@@ -828,8 +868,10 @@ export class ProviderRegistry {
    * projection over (model id × tiers.members) — `policiesOverride` carries
    * freshly-edited form state for previews without committing; runtime
    * callers omit it and get the construction-time snapshot. Pool order =
-   * member-list order (claim index; leader first); entries carry the claiming
-   * rule's weight (default 1).
+   * rule weight (desc) then member-list order; entries carry the claiming
+   * rule's weight (default 1). `unclassified` is the diagnostic fourth state:
+   * models claimed by NO tier (it is never hidden by the denylist — the
+   * console must show it for the unpooled view / one-click join).
    */
   public resolveTierPool(
     tier: PoolMembership,
@@ -839,41 +881,29 @@ export class ProviderRegistry {
     excluded: { id: string; reason: string }[];
   } {
     const policies = policiesOverride ?? this.tierPolicies;
-    const members = this.expandedMemberRules(policies).tiers;
-    const pool: { model: ModelRegistration; weight: number; rank: number }[] = [];
-    const excluded: { id: string; reason: string }[] = [];
-    for (const m of this.models.values()) {
-      let membership: PoolMembership;
-      let weight = 1;
-      let rank: number = m.isDefaultInTier ? -1 : m.priority ?? 10;
-      if (!m.tierMatch) {
-        // Hand-configured model: explicit tier, never member-claimed.
-        membership = m.unclassified ? 'unclassified' : m.tier;
-      } else {
-        const claim = claimModel(m.id, members);
-        if (claim === 'unclassified') membership = 'unclassified';
-        else {
-          membership = claim.tier;
-          weight = Math.max(1, Number(claim.rule.weight) || 1);
-          rank = claim.index; // draft order only — committed isDefaultInTier must not leak into previews
+    // Preview (override) re-derives from the DRAFT; the committed view reads
+    // exactly what reclassifyTiers last committed.
+    const members = policiesOverride ? this.expandedMemberRules(policiesOverride).tiers : this.committedMembers;
+    if (tier === 'unclassified') {
+      const pool: { model: ModelRegistration; weight: number }[] = [];
+      for (const m of this.models.values()) {
+        if (!m.tierMatch) {
+          // Hand-configured model: unclassified exactly when registered so.
+          if (m.unclassified) pool.push({ model: m, weight: 1 });
+          continue;
         }
+        if (claimModel(m.id, members) === 'unclassified') pool.push({ model: m, weight: 1 });
       }
-      if (membership !== tier) continue;
-      if (tier === 'unclassified') {
-        // fourth state: nothing claimed it. It is NOT hidden by the
-        // denylist — the console must show it (unpooled view / one-click join).
-        pool.push({ model: m, weight: 1, rank });
-        continue;
-      }
-      const reason = this.policyRejectionReason(policies, m);
-      if (reason) excluded.push({ id: m.id, reason });
-      else pool.push({ model: m, weight, rank });
+      return { pool, excluded: [] };
     }
-    pool.sort((a, b) => b.weight - a.weight || a.rank - b.rank);
-    return {
-      pool: pool.map(({ model, weight }) => ({ model, weight: tier === 'unclassified' ? 1 : weight })),
-      excluded,
-    };
+    const pool: { model: ModelRegistration; weight: number }[] = [];
+    const excluded: { id: string; reason: string }[] = [];
+    for (const entry of this.buildTierPoolEntries(tier, members)) {
+      const reason = this.policyRejectionReason(policies, entry.model);
+      if (reason) excluded.push({ id: entry.model.id, reason });
+      else pool.push({ model: entry.model, weight: entry.weight });
+    }
+    return { pool, excluded };
   }
 
   /**

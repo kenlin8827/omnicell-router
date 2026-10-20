@@ -86,6 +86,27 @@ export function isModelAllowed(modelId: string, policy?: ModelAccessConfig, tier
 }
 
 /**
+ * Multi-membership variant of `isModelAllowed`: the model may belong to
+ * SEVERAL tier pools (`tiers` = every tier claiming it). Allow mode admits
+ * when the id matches an entry OR any membership tier matches an auto-*
+ * entry; deny mode rejects when the id matches an entry OR any membership
+ * tier is denied — one denied pool is enough to veto the model.
+ */
+export function isModelAllowedInTiers(
+  modelId: string,
+  policy: ModelAccessConfig | undefined,
+  tiers: readonly (string | undefined)[]
+): boolean {
+  if (!policy) return true;
+  const idHit = policy.models.some((e) => compileEntryMatcher(e)(modelId));
+  const tierHit = policy.models.some(
+    (e) => tiers.some((t) => t !== undefined && t !== '' && tierFromVirtualEntry(e) === t)
+  );
+  if (policy.mode === 'deny') return !(idHit || tierHit);
+  return idHit || tierHit;
+}
+
+/**
  * Entry-point check for a client-requested model name. Reduces the gateway's
  * accepted indirection layers to physical model ids, then applies `policy`:
  * - variant ids (`base-variant`, `base#variant`) → resolved via `variantBase`

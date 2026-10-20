@@ -6,17 +6,20 @@ import type { ComboConfig, TiersConfig, TierMemberRule } from '../config/types.j
  * member-list membership + inline effort translation.
  *
  * Tier membership has exactly ONE config source: the explicit `tiers[t].members`
- * rule list. A model is claimed by the FIRST rule (tier order lite → plus →
- * pro → ultra, then list order within a tier) whose glob matches its FULL id
- * (`provider/model`); nothing matched → `'unclassified'` (fourth state, no
- * pool). List order IS priority: the first rule's models lead the tier's
- * failover chain.
+ * rule list. Membership is a PER-TIER projection: each tier's list independently
+ * claims every model its rules match — a model (or a combo's expanded members)
+ * MAY join several tiers at once, and each tier's chain order / weight /
+ * effortMap come from THAT tier's own rules (`claimInTier`). For consumers that
+ * need a single tier value (pinned-model force_tier, tier-keyed reporting,
+ * model-access tier expansion) `claimModel` derives the home tier: the first
+ * claim in tier order lite → plus → pro → ultra. Nothing matched →
+ * `'unclassified'` (fourth state, no pool).
  *
  * `combo:<id>` rules are the one sanctioned indirection: declared references
  * that expand IN PLACE into the combo's registered members at every commit /
  * read point (expandComboRefs) — pools stay physical-model lists, the request
  * path never resolves refs, and later combo edits follow into the tier at the
- * next commit.
+ * next commit. A combo may be referenced by any number of tiers.
  *
  * The classifier (tier-match.ts) stays alive as the SUGGESTION engine —
  * it feeds catalog-page recommendations, the /tiers ephemeral preview and
@@ -142,9 +145,9 @@ export interface ExpandedMembers {
  * order), per-member weight carried, the ref rule's effortMap applied
  * block-wide to every expanded member. Duplicate/unregistered ids are dropped;
  * a ref that yields nothing is reported dead. Pools stay physical-model lists
- * — the request path never sees a ref. Exact-id claims from earlier rules
- * dedupe the expansion (first-claim-wins hygiene); glob overlap is left to the
- * save-time check.
+ * — the request path never sees a ref. Exact-id claims from earlier rules in
+ * the SAME tier dedupe the expansion (per-tier hygiene; cross-tier overlap is
+ * legal by contract); glob overlap is left to the pool projection.
  */
 export function expandComboRefs(tiers: Record<TierLevel, TierMemberRule[]>, lookup: ComboRefLookup): ExpandedMembers {
   const out: Record<TierLevel, TierMemberRule[]> = { lite: [], plus: [], pro: [], ultra: [] };
@@ -155,7 +158,7 @@ export function expandComboRefs(tiers: Record<TierLevel, TierMemberRule[]>, look
       if (!isComboRef(rule.pattern)) {
         out[tier].push(rule);
         // exact-id hygiene only — substring/glob patterns claim wider sets
-        // that only the runtime first-claim resolution knows about
+        // that only the per-tier pool projection knows about
         if (!/[*?]/.test(rule.pattern)) claimed.add(rule.pattern.toLowerCase());
         continue;
       }
@@ -210,7 +213,26 @@ export function claimModel(
   return 'unclassified';
 }
 
-/** Every tier whose list matches the id (save-time overlap check; runtime uses first-claim). */
+/**
+ * Per-tier membership claim: the rule (if any) by which `modelId` joins THIS
+ * tier's pool. Independent of every other tier — one model may hold a claim
+ * in several tiers simultaneously; each tier's chain order / weight /
+ * effortMap follow the claiming rule found here. null = not a member.
+ */
+export function claimInTier(
+  tier: TierLevel,
+  modelId: string,
+  tiers: Record<TierLevel, TierMemberRule[]>
+): MemberClaim | null {
+  const rules = tiers[tier];
+  for (let i = 0; i < rules.length; i++) {
+    if (ruleMatches(rules[i], modelId)) return { tier, rule: rules[i], index: i };
+  }
+  return null;
+}
+
+/** Every tier whose list matches the id (the multi-membership view behind the
+ *  catalog's `tiers` array and tier-expanded model-access checks). */
 export function matchingTiers(modelId: string, tiers: Record<TierLevel, TierMemberRule[]>): TierLevel[] {
   const hits: TierLevel[] = [];
   for (const tier of MEMBER_TIER_ORDER) {

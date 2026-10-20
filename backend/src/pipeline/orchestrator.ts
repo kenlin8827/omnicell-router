@@ -41,7 +41,7 @@ import { emitClientRequest, captureKeyIdentity, setClientExchangeContext, type C
 import { resolveTraceId } from '../observability/trace-id.js';
 import { getWarnThrottle } from '../observability/warn-throttle.js';
 import { ActiveHealthProber, CircuitBreakerManager, ErrorClassifier } from '../resilience/index.js';
-import { ModelAccessConfig, isModelAllowed } from '../auth/model-access.js';
+import { ModelAccessConfig, isModelAllowed, isModelAllowedInTiers } from '../auth/model-access.js';
 import {
   DEFAULT_CREDENTIAL_AFFINITY_CACHE_TTL_MS,
   selectCredential,
@@ -503,14 +503,16 @@ export class PipelineOrchestrator {
 
     // Defense in depth: an explicitly named model outside the key's model
     // policy fails loud here (HTTP routes entry-check this too; direct
-    // orchestrator callers might not). `tier` is passed so TIER-level deny
-    // entries (auto-lite/auto-plus/...) match here exactly as they do in the
-    // execution pool filter (executeCandidatePool) — a tier-denied explicit
-    // model must not slip through the bare-name/variant resolution paths.
+    // orchestrator callers might not). The model's FULL membership set is
+    // passed so TIER-level entries (auto-lite/auto-plus/...) match exactly
+    // as they do in the execution pool filter (executeCandidatePool) — a
+    // tier-denied explicit model must not slip through the bare-name/variant
+    // resolution paths, and a multi-pool model is admitted when any of its
+    // memberships passes.
     if (
       explicitModel &&
       context?.modelAccess &&
-      !isModelAllowed(explicitModel.id, context.modelAccess, explicitModel.tier)
+      !isModelAllowedInTiers(explicitModel.id, context.modelAccess, this.registry.tiersOf(explicitModel))
     ) {
       throw Object.assign(
         new Error(`API key model policy denies model '${explicitModel.id}'`),
@@ -673,8 +675,9 @@ export class PipelineOrchestrator {
       //   head below every turn without ever writing the pin back), it reads
       //   `unclassified` (removed from every tier member list / no glob
       //   claims it any more), or the global denylist (tiers.exclude) vetoes
-      //   it. A model MOVED to another tier is NOT evicted: reclassifyTiers
-      //   rewrites m.tier in place, so it still joins "its own" tier's pool.
+      //   it. A model MOVED to another tier is NOT evicted: the new tier's
+      //   member list claims it, so it still joins that pool (multi-membership
+      //   included — eviction fires only when NO pool claims the id).
       //   Hand-configured models (no tierMatch) are reclassification-immune —
       //   member-list edits never evict them; only the denylist or a registry
       //   removal can. Checked with healthyOnly=false so health never
@@ -808,9 +811,9 @@ export class PipelineOrchestrator {
       }
     } else if (preferredModel) {
       // Explicit model choice / session pin: never re-route, but translate by
-      // the model's effortMap first (none included), then clamp to what it
-      // can serve and write back the truth.
-      const target = applyEffortMap(preferredModel.effortMap, requestedEffort ?? 'none');
+      // the model's pool effortMap first (none included), then clamp to what
+      // it can serve and write back the truth.
+      const target = applyEffortMap(this.registry.effortMapFor(preferredModel, actualTier), requestedEffort ?? 'none');
       if (target === 'none') {
         actualEffort = requestedEffort; // nothing in play — mirror exactly
       } else {
@@ -888,7 +891,7 @@ export class PipelineOrchestrator {
           // may have served a model whose translation/capability differs from
           // the tier-pick prediction (helper: map → clamp → mirror).
           {
-            const r = this.resolveServedEffort(actualModel, requestedEffort);
+            const r = this.resolveServedEffort(actualModel, requestedEffort, actualTier);
             actualEffort = r.actualEffort;
             reasoningDegraded = r.degraded;
           }
@@ -948,7 +951,7 @@ export class PipelineOrchestrator {
         // Recompute effort against the actually-served model (same contract
         // as the direct path).
         {
-          const r = this.resolveServedEffort(actualModel, requestedEffort);
+          const r = this.resolveServedEffort(actualModel, requestedEffort, actualTier);
           actualEffort = r.actualEffort;
           reasoningDegraded = r.degraded;
         }
@@ -966,6 +969,7 @@ export class PipelineOrchestrator {
       let attemptCap: number;
       let allowEscalate: boolean;
       let poolLabel: string | undefined;
+      let accessTierMode: 'pool' | 'member-home' = 'pool';
 
       if (comboId) {
         // Combo: the configured member list IS the chain — leader chosen by
@@ -979,6 +983,9 @@ export class PipelineOrchestrator {
         attemptCap = Math.max(1, chain.length);
         allowEscalate = false;
         poolLabel = `combo '${comboId}'`;
+        // Members are judged by their own home tier for model access / effort
+        // translation — the composition spans tiers by design.
+        accessTierMode = 'member-home';
       } else {
         // Auto & explicit: tier pool (peek-filtered; fall back to the full
         // pool when everything is tripped — the loop force-tries the last
@@ -996,9 +1003,12 @@ export class PipelineOrchestrator {
         const isBareAuto = !normalizedRequest.model || normalizedRequest.model === 'auto' || normalizedRequest.model === 'default';
         if (accessPolicy && isBareAuto && !explicitModel && !comboId) {
           const rank = TIER_RANK;
+          // Multi-membership admit: allowed when the id or ANY membership
+          // tier passes (allow mode); denied when the id or ANY membership
+          // tier is denied (deny mode).
           const widened = this.registry
             .getAllModels()
-            .filter((m) => isModelAllowed(m.id, accessPolicy, m.tier))
+            .filter((m) => isModelAllowedInTiers(m.id, accessPolicy, this.registry.tiersOf(m)))
             .sort(
               (a, b) =>
                 Math.abs((rank[a.tier] ?? 9) - (rank[actualTier] ?? 9)) - Math.abs((rank[b.tier] ?? 9) - (rank[actualTier] ?? 9)) ||
@@ -1022,6 +1032,7 @@ export class PipelineOrchestrator {
         {
           chain,
           tier: actualTier,
+          accessTierMode,
           allowEscalate,
           attemptCap,
           label: poolLabel,
@@ -1068,7 +1079,7 @@ export class PipelineOrchestrator {
       // one `pickModelForEffort` originally picked, with a different effort
       // translation/ceiling. The header / ExecutionResult must reflect reality.
       {
-        const r = this.resolveServedEffort(actualModel, requestedEffort);
+        const r = this.resolveServedEffort(actualModel, requestedEffort, actualTier);
         actualEffort = r.actualEffort;
         reasoningDegraded = r.degraded;
       }
@@ -1329,17 +1340,19 @@ export class PipelineOrchestrator {
 
   /**
    * Post-execution contract: translate the client ask through the
-   * SERVED model's effortMap (`none` included), clamp to its declared
-   * capability, and mirror the client exactly when nothing is in play.
-   * `degraded` compares the final value against what the client asked
-   * (`undefined` / `'none'` count as the none level).
+   * SERVED model's effort translation for the pool it served from
+   * (`none` included), clamp to its declared capability, and mirror the
+   * client exactly when nothing is in play. `degraded` compares the final
+   * value against what the client asked (`undefined` / `'none'` count as the
+   * none level).
    */
   private resolveServedEffort(
     model: ModelRegistration,
-    requestedEffort: ReasoningEffort | undefined
+    requestedEffort: ReasoningEffort | undefined,
+    servedTier: TierLevel
   ): { actualEffort: ReasoningEffort | undefined; degraded: boolean } {
     const ask = requestedEffort ?? 'none';
-    const target = applyEffortMap(model.effortMap, ask);
+    const target = applyEffortMap(this.registry.effortMapFor(model, servedTier), ask);
     if (target === 'none' && ask === 'none') return { actualEffort: requestedEffort, degraded: false };
     const supported = model.supportedReasoningEfforts ?? (model.supportsReasoningEffort ? EFFORT_LADDER : []);
     const actual = target === 'none' ? 'none' : downgradeReasoning(target, supported);
@@ -1390,6 +1403,15 @@ export class PipelineOrchestrator {
     opts: {
       chain: ModelRegistration[];
       tier: TierLevel;
+      /**
+       * How each chain entry derives its model-access tier and effort
+       * translation: 'pool' (default) = every entry is judged against THIS
+       * tier — virtual auto-* access rules apply pool-wide and the pool's
+       * claiming rule supplies the effortMap. 'member-home' = each member is
+       * judged by its OWN home tier with its home translation (combo chains:
+       * the composition spans tiers by design).
+       */
+      accessTierMode?: 'pool' | 'member-home';
       allowEscalate: boolean;
       attemptCap: number;
       label?: string;
@@ -1459,14 +1481,24 @@ export class PipelineOrchestrator {
     //    choke point: auto routing, explicit models, combos, schema-assertion
     //    escalation and failover all execute through this pool, so filtering here
     //    covers every entry mode — including tier escalation into denied models.
-    let candidateList = [...opts.chain];
+    //    Each entry carries its ACCESS tier (pool tier vs member home tier, see
+    //    accessTierMode) and the effort translation that applies to it — a model
+    //    holding membership in several tiers translates per serving pool.
+    const accessTierOf = (m: ModelRegistration): TierLevel =>
+      opts.accessTierMode === 'member-home' ? m.tier : tier;
+    let candidateList = opts.chain.map((m) => ({
+      model: m,
+      accessTier: accessTierOf(m),
+      effortMap: this.registry.effortMapFor(m, accessTierOf(m)),
+    }));
     if (allowEscalate) {
       for (const m of this.registry.getCandidateModelsForTier('plus', true)) {
-        if (!candidateList.some(c => c.id === m.id)) candidateList.push(m);
+        if (!candidateList.some(c => c.model.id === m.id))
+          candidateList.push({ model: m, accessTier: 'plus' as TierLevel, effortMap: this.registry.effortMapFor(m, 'plus') });
       }
     }
     if (opts.modelAccess) {
-      candidateList = candidateList.filter((m) => isModelAllowed(m.id, opts.modelAccess, m.tier));
+      candidateList = candidateList.filter((e) => isModelAllowed(e.model.id, opts.modelAccess, e.accessTier));
       if (candidateList.length === 0) {
         return {
           success: false,
@@ -1495,7 +1527,7 @@ export class PipelineOrchestrator {
       this.config.circuitBreaker?.credentialAffinity?.cacheTtlMs ?? DEFAULT_CREDENTIAL_AFFINITY_CACHE_TTL_MS;
 
     for (let ci = 0; ci < candidateList.length; ci++) {
-      const candidate = candidateList[ci];
+      const { model: candidate, accessTier: candidateAccessTier, effortMap: candidateEffortMap } = candidateList[ci];
 
       if (failoverAttempts >= attemptCap) {
         break;
@@ -1665,7 +1697,7 @@ export class PipelineOrchestrator {
       let candidateReq = request;
       {
         const ask = opts.requestedEffort ?? 'none';
-        const target = applyEffortMap(candidate.effortMap, ask);
+        const target = applyEffortMap(candidateEffortMap, ask);
         if (!(target === 'none' && ask === 'none')) {
           const supported =
             candidate.supportedReasoningEfforts ?? (candidate.supportsReasoningEffort ? EFFORT_LADDER : []);
@@ -1681,7 +1713,7 @@ export class PipelineOrchestrator {
       // that actually proceeds can commit any (earlier attempts never got that
       // far, and each later attempt simply overwrites the staged set).
       if (opts.relay) {
-        opts.relay.stageRouting({ ...opts.streamRouting, modelUsed: candidate.id, tierUsed: candidate.tier });
+        opts.relay.stageRouting({ ...opts.streamRouting, modelUsed: candidate.id, tierUsed: candidateAccessTier });
       }
 
       // In-place retry loop on the SAME candidate model
@@ -1807,7 +1839,7 @@ export class PipelineOrchestrator {
           success: true,
           response: candidateResponse,
           modelUsed: candidate,
-          tierUsed: candidate.tier,
+          tierUsed: candidateAccessTier,
           failoverOccurred: failoverAttempts > 1,
           failoverAttempts,
           failoverPath,

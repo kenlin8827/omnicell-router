@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getAllClientStatuses, refreshClientProfileBindings, setupClient, teardownClient } from '../cli/clients/index.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import { matchingTiers, MEMBER_TIER_ORDER } from '../providers/member-match.js';
+import { MEMBER_TIER_ORDER } from '../providers/member-match.js';
 import { globMatchAny } from '../utils/glob.js';
 import { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import { getRawConfig, loadConfig, saveConfig, saveRawConfig, getRuntimeConfigRef } from '../config/index.js';
@@ -32,7 +32,7 @@ import {
   validateApiKey,
   validateModelAccess,
 } from '../auth/api-keys.js';
-import { getModelAccessPolicy, isAutoEntryUsable, isModelAllowed, tierFromVirtualEntry } from '../auth/model-access.js';
+import { getModelAccessPolicy, isAutoEntryUsable, isModelAllowed, isModelAllowedInTiers, tierFromVirtualEntry } from '../auth/model-access.js';
 import { validateRateLimitRules, getRateLimiter, credentialSubject } from '../ratelimit/rate-limiter.js';
 import { getQuotaProber } from '../quota/prober.js';
 import { getQuotaStore } from '../quota/store.js';
@@ -1445,10 +1445,11 @@ export function registerConsoleRoutes(
   app.post('/api/admin/tier-pools/preview', handleTierPoolsPreview);
 
   // Check: dry-run validation of a DRAFT tiers config — non-blocking warnings:
-  //   overlap   — a model claimable by 2+ tiers (runtime resolves by tier order)
   //   orphan    — a rule matching no registered model (rename / typo / removed)
   //   deadCombo — a combo:<id> ref contributing nothing (unknown / disabled /
   //               shadowed / zero registered members)
+  // Cross-tier overlap is NOT warned: membership is a per-tier projection, a
+  // model (or combo ref) joining several tiers is legal by contract.
   const handleTiersCheck = async (req: any) => {
     const body = req.body as { tiers?: unknown };
     const tiers = (body?.tiers ?? loadConfig().tiers ?? {}) as any;
@@ -1458,16 +1459,6 @@ export function registerConsoleRoutes(
       .getAllModels()
       .filter((m) => m.tierMatch)
       .map((m) => m.id);
-    const overlapGroups = new Map<string, { tiers: string[]; count: number; sampleIds: string[] }>();
-    for (const id of modelIds) {
-      const hits = matchingTiers(id, members);
-      if (hits.length < 2) continue;
-      const key = hits.join('|');
-      const g = overlapGroups.get(key) ?? { tiers: hits, count: 0, sampleIds: [] };
-      g.count++;
-      if (g.sampleIds.length < 5) g.sampleIds.push(id);
-      overlapGroups.set(key, g);
-    }
     const orphans: { tier: string; pattern: string }[] = [];
     for (const tier of MEMBER_TIER_ORDER) {
       for (const rule of members[tier]) {
@@ -1481,12 +1472,6 @@ export function registerConsoleRoutes(
     return {
       status: 'ok',
       warnings: [
-        ...[...overlapGroups.values()].map((g) => ({
-          kind: 'overlap' as const,
-          tiers: g.tiers,
-          count: g.count,
-          sampleIds: g.sampleIds,
-        })),
         ...orphans.map((o) => ({ kind: 'orphan' as const, tier: o.tier, pattern: o.pattern })),
         ...expanded.dead.map((d) => ({ kind: 'deadCombo' as const, tier: d.tier, pattern: d.ref })),
       ],
@@ -3262,14 +3247,14 @@ export function registerConsoleRoutes(
     const registered = registry.getAllModels().map((m) => ({
       id: m.id,
       provider: m.provider,
-      // Unclassified = not in any pool; m.tier there is a stale boot-time
-      // classification. Never report it, or `tierAllowed` counts models no
-      // pool can route toward auto-X viability.
-      tier: m.unclassified ? undefined : (m.tier as string),
+      // FULL membership set (pools are a per-tier projection — a model may
+      // belong to several tiers): tierAllowed counts every pool the model can
+      // route toward, so auto-X viability never misses a multi-pool member.
+      tiers: registry.tiersOf(m) as string[],
       virtual: false,
-      allowed: isModelAllowed(m.id, policy, m.tier),
+      allowed: isModelAllowedInTiers(m.id, policy, registry.tiersOf(m)),
     }));
-    const tierAllowed = (t: string) => registered.some((m) => m.tier === t && m.allowed);
+    const tierAllowed = (t: string) => registered.some((m) => m.tiers.includes(t) && m.allowed);
     // Virtual auto* rows honor runtime viability (mirrors /v1/models): bare
     // `auto` needs an allowed model in ANY tier, auto-X in tier X.
     const virtual = ['auto', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra'].map((id) => ({
@@ -3296,9 +3281,9 @@ export function registerConsoleRoutes(
     const variants = registry.getVariantExposures().map(({ id, base }) => ({
       id,
       provider: base.provider,
-      tier: base.unclassified ? undefined : (base.tier as string),
+      tiers: registry.tiersOf(base) as string[],
       virtual: false,
-      allowed: isModelAllowed(base.id, policy, base.tier),
+      allowed: isModelAllowedInTiers(base.id, policy, registry.tiersOf(base)),
     }));
     // Order mirrors /v1/models: virtual auto* → combos → registered → variants.
     return {
@@ -3318,31 +3303,31 @@ export function registerConsoleRoutes(
     // registered model / variant) so console pickers can badge each row —
     // owned_by alone cannot distinguish them (auto* and combos share
     // 'onecast-router'; variants share their base model's provider).
+    // `tiers` is the model's FULL membership set (pools are a per-tier
+    // projection — a model may belong to several tiers, or none): no single
+    // fixed tier is reported for any row.
     const models = [
       ...['auto', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra'].map((id) => ({
         id,
         kind: 'auto' as const,
         owned_by: 'onecast-router',
-        tier: '',
+        tiers: [] as string[],
       })),
       // Order mirrors /v1/models: auto* → combos → registered → variants, so
       // console pickers surface the short virtual ids before the long physical
       // list.
-      // `unclassified` is the live membership truth; m.tier on those models is
-      // a stale registration-time classification (legacy boot classifier).
-      // Reporting it let console pickers badge models that belong to NO pool.
-      ...registry.getCombos().map((c) => ({ id: c.id, kind: 'combo' as const, owned_by: 'onecast-router', tier: '' })),
+      ...registry.getCombos().map((c) => ({ id: c.id, kind: 'combo' as const, owned_by: 'onecast-router', tiers: [] as string[] })),
       ...registry.getAllModels().map((m) => ({
         id: m.id,
         kind: 'model' as const,
         owned_by: m.provider,
-        tier: m.unclassified ? undefined : (m.tier as string),
+        tiers: registry.tiersOf(m) as string[],
       })),
       ...registry.getVariantExposures().map(({ id, base }) => ({
         id,
         kind: 'variant' as const,
         owned_by: base.provider,
-        tier: base.unclassified ? undefined : (base.tier as string),
+        tiers: registry.tiersOf(base) as string[],
       })),
     ];
     return { status: 'ok', models };

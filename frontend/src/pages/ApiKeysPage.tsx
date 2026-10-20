@@ -1494,11 +1494,11 @@ curl http://127.0.0.1:3000/v1/systemone \\
             ) : (
               (() => {
                 const q = viewFilter.trim().toLowerCase();
-                const matches = (m: { id: string; provider: string; tier: string }) =>
+                const matches = (m: { id: string; provider: string; tiers: string[] }) =>
                   !q ||
                   m.id.toLowerCase().includes(q) ||
                   m.provider.toLowerCase().includes(q) ||
-                  (m.tier || '').toLowerCase().includes(q);
+                  m.tiers.some((t) => t.toLowerCase().includes(q));
                 const allowed = viewModels.models.filter((m) => m.allowed && matches(m));
                 const denied = viewModels.models.filter((m) => !m.allowed && matches(m));
                 // Grid columns: id takes the remaining width; tier & result are
@@ -1512,8 +1512,9 @@ curl http://127.0.0.1:3000/v1/systemone \\
                   padding: '5px 8px',
                   borderBottom: '1px solid var(--divider)',
                 };
-                const renderRow = (m: { id: string; provider: string; tier: string; virtual: boolean }) => {
+                const renderRow = (m: { id: string; provider: string; tiers: string[]; virtual: boolean }) => {
                   const st = testState[m.id];
+                  const tierLabel = m.tiers.map((tier) => t(TIER_LABEL_KEYS[tier] ?? '') || tier).join(' / ');
                   return (
                     <div key={m.id} style={rowGrid}>
                       <span
@@ -1530,7 +1531,7 @@ curl http://127.0.0.1:3000/v1/systemone \\
                         {m.id}
                       </span>
                       <span
-                        title={m.tier ? t('apiKeys.modelsTierTitle', { tier: m.tier }) : undefined}
+                        title={tierLabel ? t('apiKeys.modelsTierTitle', { tier: tierLabel }) : undefined}
                         style={{
                           fontSize: '10px',
                           color: 'var(--text-dim)',
@@ -1539,7 +1540,7 @@ curl http://127.0.0.1:3000/v1/systemone \\
                           whiteSpace: 'nowrap',
                         }}
                       >
-                        {m.tier ? `${m.tier}·${t(TIER_LABEL_KEYS[m.tier] ?? '')}` : ''}
+                        {tierLabel}
                       </span>
                       <span
                         title={testResult[m.id]}

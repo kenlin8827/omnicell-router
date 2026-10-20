@@ -337,7 +337,7 @@ describe('Per-key model access policy (auth/model-access.ts)', () => {
       const ids: string[] = body.models.map((m: any) => m.id);
       assert.ok(ids.includes('auto') && ids.includes('mock-plus'), 'console picker sees the full catalog');
       const mockPlus = body.models.find((m: any) => m.id === 'mock-plus');
-      assert.strictEqual(mockPlus.tier, 'plus', 'tier included for picker meta');
+      assert.ok(Array.isArray(mockPlus.tiers) && mockPlus.tiers.includes('plus'), 'membership set included for picker meta (no single fixed tier)');
     });
 
     it('GET /api/admin/api-keys/:id/models mirrors /v1/models: combo rows carry the all-members gate', async () => {

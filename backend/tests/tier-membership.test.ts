@@ -3,14 +3,17 @@ import { ProviderRegistry } from '../src/providers/registry.js';
 import type { RouterConfig } from '../src/config/types.js';
 import type { ModelRegistration, TierMemberRule } from '../src/config/types.js';
 import type { TierLevel } from '../src/types/router.js';
+import { COMBO_REF_PREFIX } from '../src/providers/member-match.js';
 
 /**
  * registry-level membership: the explicit `members` lists are the
- * ONLY pool-membership source. Claim order = tier lite→plus→pro→ultra, then
- * list order; the list leader leads the chain; unclaimed models become
- * 'unclassified' (no pool, still registered/directly callable); the claiming
- * rule's inline effortMap rides along. NON-mock mode: reclassifyTiers() is a
- * no-op under mockMode by design.
+ * ONLY pool-membership source, projected PER TIER — each tier's list
+ * independently claims what it matches, so a model (or combo) may join
+ * several tiers at once; each pool's chain order / weight / effortMap come
+ * from THAT tier's rules. `claimModel` still derives the home tier (first
+ * claim in tier order lite→plus→pro→ultra) for single-tier consumers;
+ * unclaimed models become 'unclassified' (no pool, still registered/directly
+ * callable). NON-mock mode: reclassifyTiers() is a no-op under mockMode.
  */
 
 const model = (id: string, tier: ModelRegistration['tier'], extra: Partial<ModelRegistration> = {}): ModelRegistration => ({
@@ -22,7 +25,7 @@ const model = (id: string, tier: ModelRegistration['tier'], extra: Partial<Model
   ...extra,
 });
 
-function makeRegistry(models: ModelRegistration[], tiers: RouterConfig['tiers'] = {}): ProviderRegistry {
+function makeRegistry(models: ModelRegistration[], tiers: RouterConfig['tiers'] = {}, combos: RouterConfig['combos'] = []): ProviderRegistry {
   const config = {
     port: 3000,
     host: '127.0.0.1',
@@ -30,6 +33,7 @@ function makeRegistry(models: ModelRegistration[], tiers: RouterConfig['tiers'] 
     circuitBreaker: { enabled: false },
     models,
     tiers,
+    combos,
   } as unknown as RouterConfig;
   const registry = new ProviderRegistry(config, false);
   registry.setAutoRefreshTierMatch(false); // no disk re-reads in tests
@@ -44,6 +48,8 @@ const members = (
 ): Record<TierLevel, TierMemberRule[]> => ({ lite, plus, pro, ultra });
 
 const rule = (pattern: string, extra: Omit<TierMemberRule, 'pattern'> = {}): TierMemberRule => ({ pattern, ...extra });
+
+const ref = (comboId: string): TierMemberRule => ({ pattern: `${COMBO_REF_PREFIX}${comboId}` });
 
 describe('tier membership commit (member lists)', () => {
   it('claims by full id / substring; unclaimed models leave every pool but stay registered', () => {
@@ -89,11 +95,58 @@ describe('tier membership commit (member lists)', () => {
     expect(registry.getCandidateModelsForTier('plus', false).map((m) => m.id)).toEqual(['p/b', 'p/a']);
   });
 
-  it('cross-tier claim: the lighter tier wins when both lists match', () => {
+  it('a model may join several tiers at once (per-tier membership projection)', () => {
     const registry = makeRegistry([model('p/both', 'plus', { tierMatch: { reasoningFlag: false } })]);
     registry.reclassifyTiers(members([rule('p/both')], [rule('p/both')], [], []));
     expect(registry.getCandidateModelsForTier('lite', false).map((m) => m.id)).toEqual(['p/both']);
-    expect(registry.getCandidateModelsForTier('plus', false)).toHaveLength(0);
+    expect(registry.getCandidateModelsForTier('plus', false).map((m) => m.id)).toEqual(['p/both']);
+    // The stored tier stays the DERIVED home tier: first claim in tier order.
+    expect(registry.getModel('p/both')!.tier).toBe('lite');
+    // Removing one membership leaves the other pool untouched.
+    registry.reclassifyTiers(members([], [rule('p/both')], [], []));
+    expect(registry.getCandidateModelsForTier('lite', false)).toHaveLength(0);
+    expect(registry.getCandidateModelsForTier('plus', false).map((m) => m.id)).toEqual(['p/both']);
+  });
+
+  it('each tier carries its own chain order, weight and effortMap for a shared member', () => {
+    const registry = makeRegistry(
+      [model('p/shared', 'plus', { tierMatch: { reasoningFlag: false } }), model('p/b', 'plus', { tierMatch: { reasoningFlag: false } })],
+      {
+        lite: { members: [rule('p/shared', { effortMap: { none: 'high' } })] },
+        pro: { members: [rule('p/b'), rule('p/shared', { weight: 5 })] },
+      },
+    );
+    registry.reclassifyTiers(
+      members(
+        [rule('p/shared', { effortMap: { none: 'high' } })],
+        [],
+        [rule('p/b'), rule('p/shared', { weight: 5 })],
+        []
+      )
+    );
+    // lite: the shared model is the sole member (chain head).
+    expect(registry.getCandidateModelsForTier('lite', false).map((m) => m.id)).toEqual(['p/shared']);
+    // pro: weight 5 lifts it over the earlier-listed b.
+    expect(registry.getCandidateModelsForTier('pro', false).map((m) => m.id)).toEqual(['p/shared', 'p/b']);
+    // effort translation follows the SERVING pool, not the home tier.
+    expect(registry.effortMapFor(registry.getModel('p/shared')!, 'lite')).toEqual({ none: 'high' });
+    expect(registry.effortMapFor(registry.getModel('p/shared')!, 'pro')).toBeUndefined();
+  });
+
+  it('a combo ref may be referenced by several tiers (each pool expands independently)', () => {
+    const registry = makeRegistry(
+      [
+        model('p/a', 'plus', { tierMatch: { reasoningFlag: false } }),
+        model('p/b', 'plus', { tierMatch: { reasoningFlag: false } }),
+      ],
+      { lite: { members: [ref('c1')] }, ultra: { members: [ref('c1')] } },
+      [{ id: 'c1', models: ['p/a', 'p/b'] }],
+    );
+    const commit = () =>
+      registry.reclassifyTiers(registry.expandedMemberRules({ lite: { members: [ref('c1')] }, ultra: { members: [ref('c1')] } } as any).tiers);
+    commit();
+    expect(registry.getCandidateModelsForTier('lite', false).map((m) => m.id)).toEqual(['p/a', 'p/b']);
+    expect(registry.getCandidateModelsForTier('ultra', false).map((m) => m.id)).toEqual(['p/a', 'p/b']);
   });
 
   it('an unclassified model can never be a tier representative', () => {

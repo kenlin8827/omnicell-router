@@ -1288,7 +1288,7 @@ export const api = {
     return res.json();
   },
 
-  /** Live (committed) pool snapshot — the registry's m.tier after the last applyTierConfigNow. */
+  /** Live (committed) pool snapshot — the registry's committed member projection after the last applyTierConfigNow. */
   async getLiveTierPools(): Promise<TierPoolsResponse> {
     const res = await fetch('/api/admin/tier-pools/live');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -1436,15 +1436,16 @@ export const api = {
 
   /** All models the gateway can route to: virtual (auto/auto-lite/…), combos,
    *  registered models and variant exposures — `kind` tags which one each id is.
+   *  `tiers` = the full membership set (a model may belong to several tiers).
    *  Reads the console endpoint — /v1/models requires a key like every surface. */
-  async listGatewayModels(): Promise<{ id: string; owned_by: string; tier?: string; kind?: string }[]> {
+  async listGatewayModels(): Promise<{ id: string; owned_by: string; tiers?: string[]; kind?: string }[]> {
     const res = await fetch('/api/admin/gateway-models');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
     return (json?.models || []).map((m: any) => ({
       id: m.id,
       owned_by: m.owned_by || '',
-      tier: m.tier || undefined,
+      tiers: Array.isArray(m.tiers) ? m.tiers : [],
       kind: m.kind || undefined,
     }));
   },
@@ -1916,7 +1917,7 @@ export const api = {
     status: string;
     mode: 'none' | 'allow' | 'deny';
     policyModels: string[];
-    models: { id: string; provider: string; tier: string; virtual: boolean; allowed: boolean }[];
+    models: { id: string; provider: string; tiers: string[]; virtual: boolean; allowed: boolean }[];
   }> {
     const res = await fetch(`/api/admin/api-keys/${encodeURIComponent(id)}/models`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);

@@ -244,7 +244,6 @@ export interface TranslationDict {
     membersEmpty: string;
     saveCheckTitle: string;
     saveCheckIntro: string;
-    saveCheckOverlap: string;
     saveCheckOrphan: string;
     saveCheckContinue: string;
     saveCheckBack: string;

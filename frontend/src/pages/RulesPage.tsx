@@ -135,7 +135,7 @@ export const RulesPage: React.FC = () => {
   const [memberDrafts, setMemberDrafts] = useState<Record<Tier, string>>({ lite: '', plus: '', pro: '', ultra: '' });
   const [mapTarget, setMapTarget] = useState<{ tier: Tier; index: number } | null>(null);
   const [saveWarnings, setSaveWarnings] = useState<
-    { kind: string; tiers?: string[]; count?: number; tier?: string; pattern?: string }[] | null
+    { kind: string; tier?: string; pattern?: string }[] | null
   >(null);
   const [memberFilters, setMemberFilters] = useState<Record<Tier, string>>({ lite: '', plus: '', pro: '', ultra: '' });
   // Per-tier end-to-end test (POST /api/admin/tiers/:tier/test): latest result
@@ -148,7 +148,7 @@ export const RulesPage: React.FC = () => {
   // behaviour); dragMember tracks the in-flight row for live reorder.
   const [armedDrag, setArmedDrag] = useState<string | null>(null);
   const [dragMember, setDragMember] = useState<{ tier: Tier; index: number } | null>(null);
-  const [gatewayModels, setGatewayModels] = useState<{ id: string; kind?: string; owned_by: string; tier?: string }[]>([]);
+  const [gatewayModels, setGatewayModels] = useState<{ id: string; kind?: string; owned_by: string; tiers?: string[] }[]>([]);
   const [comboCatalog, setComboCatalog] = useState<ComboView[]>([]);
   const [pools, setPools] = useState<Record<string, TierPoolInfo>>({});
   const [poolsLive, setPoolsLive] = useState<Record<string, TierPoolInfo>>({});
@@ -196,7 +196,7 @@ export const RulesPage: React.FC = () => {
     }
   }, [buildTiersPayload]);
 
-  /** Live (committed) pool snapshot — the registry's m.tier after the last applyTierConfigNow. */
+  /** Live (committed) pool snapshot — the registry's committed member projection after the last applyTierConfigNow. */
   const loadLivePools = useCallback(async () => {
     setPoolsLoadingMode('live');
     try {
@@ -321,8 +321,10 @@ export const RulesPage: React.FC = () => {
     const modelOptions = gatewayModels
       .filter((m) => m.kind === 'model' && !existing.has(m.id))
       .map((m) => {
-        const meta = TIERS.find((x) => x.key === m.tier);
-        return { value: m.id, label: m.id, meta: meta ? t(meta.labelKey) : m.tier };
+        // Full membership set (a model may belong to several tiers) — never a
+        // single fixed tier.
+        const meta = (m.tiers ?? []).map((tier) => t(TIERS.find((x) => x.key === tier)?.labelKey ?? '') || tier).join(' / ');
+        return { value: m.id, label: m.id, meta };
       });
     return [...comboOptions, ...modelOptions];
   };
@@ -1687,11 +1689,9 @@ export const RulesPage: React.FC = () => {
               <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 {saveWarnings.map((w, i) => (
                   <li key={i} style={{ fontSize: '12px', color: 'var(--accent-amber, var(--accent))', lineHeight: 1.5 }}>
-                    {w.kind === 'overlap'
-                      ? t('tierPolicy.saveCheckOverlap', { count: w.count ?? 0, tiers: (w.tiers || []).join(' ↔ ') })
-                      : w.kind === 'deadCombo'
-                        ? t('tierPolicy.saveCheckDeadCombo', { tier: w.tier ?? '', combo: (w.pattern ?? '').slice('combo:'.length) })
-                        : t('tierPolicy.saveCheckOrphan', { tier: w.tier ?? '', pattern: w.pattern ?? '' })}
+                    {w.kind === 'deadCombo'
+                      ? t('tierPolicy.saveCheckDeadCombo', { tier: w.tier ?? '', combo: (w.pattern ?? '').slice('combo:'.length) })
+                      : t('tierPolicy.saveCheckOrphan', { tier: w.tier ?? '', pattern: w.pattern ?? '' })}
                   </li>
                 ))}
               </ul>

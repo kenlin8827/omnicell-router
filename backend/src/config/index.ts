@@ -713,7 +713,7 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'webAuth.username': '控制台登录用户名',
   'webAuth.passwordHash': '登录密码的 scrypt 哈希（格式 scrypt$<saltHex>$<hashHex>，绝不存明文；在控制台「系统设置」页修改，勿手写）',
   tiers: '梯队成员策略：候选池唯一依据 = 各梯队显式 members 成员列表 + 全局排除名单；出厂默认为四个空梯队（不内置任何成员 glob，运行时也不自动生成种子），首次启动所有候选池为空、`auto` 无法路由，需在控制台 /tiers 页或本文件添加 members；无任何规则命中的模型=未分类，不进任何池；主选策略只影响池内用法（控制台 /tiers 页可视化编辑，保存即时生效；删除整个 tiers 段会在下次加载时恢复这套空默认）',
-  'tiers.*.members': '成员列表（顺序=优先级/failover 链）：每项 { pattern, weight?, effortMap? } —— pattern 匹配完整模型 id（provider/model），glob 通配（* 任意 / ? 单字符，不区分大小写），不带通配符=子串匹配、写完整 id=单项；pattern 亦可写 combo:<组合id> 引用模型组合——每次提交/保存时原位展开为该组合已注册成员（组合编辑后梯队池自动跟随；权重取自组合成员条目；死引用=组合不存在/已停用/无已注册成员，展开为空并在保存检查告警）；effortMap=思考级别翻译（如 { none: high, low: high }，未配置的级别原样透传），组合引用上的 effortMap 作用于其全部展开成员；同一模型只归属一个梯队（跨档重叠按 lite→plus→pro→ultra 先得，保存时提示）',
+  'tiers.*.members': '成员列表（顺序=优先级/failover 链）：每项 { pattern, weight?, effortMap? } —— pattern 匹配完整模型 id（provider/model），glob 通配（* 任意 / ? 单字符，不区分大小写），不带通配符=子串匹配、写完整 id=单项；pattern 亦可写 combo:<组合id> 引用模型组合——每次提交/保存时原位展开为该组合已注册成员（组合编辑后梯队池自动跟随；权重取自组合成员条目；死引用=组合不存在/已停用/无已注册成员，展开为空并在保存检查告警）；effortMap=思考级别翻译（如 { none: high, low: high }，未配置的级别原样透传），组合引用上的 effortMap 作用于其全部展开成员；同一模型/组合可加入多个梯队——各梯队成员资格独立计算，链序/权重/effortMap 均取自本梯队自己的规则',
   'tiers.exclude': '全局排除名单（在原始 YAML 页编辑；/tiers 页保存时原样回传）：命中的模型不进入任何梯队候选池（无条件；仅可按 id 直连或经组合调用）',
   'tiers.*.selection': '主选策略：priority 优先级 / weighted 加权随机 / round_robin 轮询',
   'tiers.*.match': '【仅匹配建议引擎】不参与路由、不再生成成员列表：用于模型目录页推荐、/tiers 页预览与保存时检查；候选池唯一依据是上方 members（出厂默认为空，无内置 glob），请在控制台 /tiers 页增删成员（保存即时生效）',
