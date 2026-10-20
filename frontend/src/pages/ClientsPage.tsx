@@ -741,7 +741,31 @@ export const ClientsPage: React.FC = () => {
                   const selProfileId = profileSel[c.name] || '';
                   const profile = profiles.find(p => p.id === selProfileId);
                   return (
-                    <div style={{ gridColumn: '1 / -1' }}>
+                    <div style={{ gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <div style={{ fontSize: '11px', color: 'var(--text-dim)', flexShrink: 0 }}>{t('clients.profileTitle')}</div>
+                        <div style={{ width: '280px' }}>
+                          <Combobox
+                            value={selProfileId}
+                            onChange={v => setProfileSel(prev => ({ ...prev, [c.name]: v }))}
+                            options={[
+                              { value: '', label: t('clients.profileNone') },
+                              ...profiles.map(p => ({ value: p.id, label: p.name || p.id, meta: p.name ? p.id : undefined })),
+                            ]}
+                          />
+                        </div>
+                        {profiles.length === 0 && (
+                          <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+                            {t('clients.profileEmpty')}{' '}
+                            <Link to="/model-profiles" style={{ color: 'var(--accent)', textDecoration: 'none' }}>{t('clients.profileManage')}</Link>
+                          </span>
+                        )}
+                      </div>
+                      {selProfileId && (
+                        <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
+                          {t('clients.profileLinkedHint', { name: profile?.name || selProfileId })}
+                        </div>
+                      )}
                       <ProfileLinkTable
                         rows={clientSlots(c).filter(s => s.key !== 'main').map(s => ({ name: s.key, current: s.value }))}
                         emptyText={t('clients.profileAgentsEmpty')}
