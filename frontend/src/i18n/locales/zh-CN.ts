@@ -1155,6 +1155,7 @@ export const zhCN: TranslationDict = {
     tabUpstreamResponse: '上游响应',
     gatewayLatency: '网关延迟',
     upstreamLatency: '上游延迟',
+    timingTip: 'TTFT：请求 → 本腿首个流式 chunk。tok/s：completion tokens ÷ 解码窗口（首 chunk → 流结束）。缓冲应答与早于逐 chunk 计时的事件无此数据。',
     copy: '复制',
     copied: '已复制',
     formatJson: '格式化',

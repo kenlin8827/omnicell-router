@@ -624,6 +624,30 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
     assert.equal(t.gatewayResponse?.id, 'd');
     assert.equal(t.upstreamLatencyMs, 1500 - 1005);
     assert.equal(t.gatewayLatencyMs, 1520 - 1000);
+    // No firstByteTs on the events → no TTFT/decode split is synthesized.
+    assert.equal(t.upstreamTtftMs, undefined);
+    assert.equal(t.upstreamGenMs, undefined);
+    assert.equal(t.gatewayTtftMs, undefined);
+    assert.equal(t.gatewayGenMs, undefined);
+  });
+
+  it('derives TTFT and decode window from firstByteTs (TTFT/TPS split)', () => {
+    const traceId = 'trace_grp_2';
+    const events = [
+      { eventType: 'http-exchange', direction: 'client', phase: 'request', traceId, sessionId: 's', model: 'auto', status: 'ok', spanId: 'w1', id: 'a', ts: 1000, wire: emptyWire() } as any,
+      { eventType: 'http-exchange', direction: 'upstream', phase: 'request', traceId, sessionId: 's', model: 'auto', status: 'ok', spanId: 'w2', id: 'b', ts: 1005, wire: emptyWire() } as any,
+      // Upstream response: first chunk at 1150, fully received at 1500
+      // → upstream TTFT = 145, decode window = 350.
+      { eventType: 'http-exchange', direction: 'upstream', phase: 'response', traceId, sessionId: 's', model: 'auto', status: 'ok', spanId: 'w2', id: 'c', ts: 1500, firstByteTs: 1150, wire: emptyWire() } as any,
+      // Gateway response: first chunk to the client at 1180, finalized 1520
+      // → gateway TTFT = 180, decode window = 340.
+      { eventType: 'http-exchange', direction: 'client', phase: 'response', traceId, sessionId: 's', model: 'auto', status: 'ok', spanId: 'w1', id: 'd', ts: 1520, firstByteTs: 1180, wire: emptyWire() } as any,
+    ];
+    const t = CaptureRecorder.groupEventsIntoTurns(events)[0];
+    assert.equal(t.upstreamTtftMs, 1150 - 1005);
+    assert.equal(t.upstreamGenMs, 1500 - 1150);
+    assert.equal(t.gatewayTtftMs, 1180 - 1000);
+    assert.equal(t.gatewayGenMs, 1520 - 1180);
   });
 
   it('records request event BEFORE response event (request-event independence)', async () => {

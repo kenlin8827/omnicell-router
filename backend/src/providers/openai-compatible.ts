@@ -318,7 +318,12 @@ export class OpenAICompatibleProvider implements LLMProvider {
         let captured = false;
         let sawDone = false;
         let sawFinishReason = false;
+        // First streamed body chunk — the capture plane's TTFT anchor (the
+        // event ts is response-received, so without this stamp the wait and
+        // decode phases of a stream are indistinguishable).
+        let firstByteTs: number | undefined;
         const appendRaw = (piece: string): void => {
+          if (firstByteTs === undefined && piece.length > 0) firstByteTs = Date.now();
           if (rawCapped) return;
           raw += piece;
           if (raw.length > STREAM_CAPTURE_CAP) {
@@ -338,6 +343,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
             statusText: res.statusText,
             responseHeaders: res.headers,
             responseBody: raw,
+            firstByteTs,
             model: model.upstreamModel,
           };
           if (error) emitUpstreamFailureOnce(upstreamEventContext, { ...base, error });

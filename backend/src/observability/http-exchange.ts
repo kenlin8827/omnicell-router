@@ -251,6 +251,14 @@ export interface ClientExchangeContext {
      * memory — the recorder truncates further down to maxBodyBytes.
      */
     responseBody?: string;
+    /**
+     * Epoch ms of the FIRST streamed response chunk — stamped by the SSE
+     * transport on its first `writeSseChunk` (never by `sendJson`: a buffered
+     * single-shot response has no separate first-token phase). Travels onto
+     * the gateway-response event so the turn derives the client-leg TTFT /
+     * decode window. Undefined for buffered replies.
+     */
+    firstByteTs?: number;
     /** Set once the response event has been emitted — guards against a
      *  double-emit when both the terminal send and the abort listener try
      *  to finalize. */
@@ -270,6 +278,16 @@ export function appendGatewayResponseChunk(ctx: ClientExchangeContext, chunk: st
   const cur = ctx.pending.responseBody ?? '';
   if (cur.length >= GATEWAY_RESPONSE_BODY_CAP) return;
   ctx.pending.responseBody = (cur + chunk).slice(0, GATEWAY_RESPONSE_BODY_CAP);
+}
+
+/**
+ * Stamp the pending gateway response with the stream's first-byte moment.
+ * Called by the SSE transports on their first chunk write (per-chunk after
+ * that, no-op). `sendJson` never calls this — a buffered reply has no
+ * separate first-token phase and stays stamp-less.
+ */
+export function markGatewayResponseStreamStart(ctx: ClientExchangeContext): void {
+  if (ctx.pending.firstByteTs === undefined) ctx.pending.firstByteTs = Date.now();
 }
 
 /**
@@ -421,6 +439,7 @@ export function emitGatewayResponse(
     model: ctx.pending.model,
     status: reply.statusCode >= 200 && reply.statusCode < 400 ? 'ok' : 'error',
     wire: responseWire,
+    ...(ctx.pending.firstByteTs !== undefined ? { firstByteTs: ctx.pending.firstByteTs } : {}),
     ...(ctx.pending.conversationKey ? { conversationKey: ctx.pending.conversationKey } : {}),
     ...(ctx.pending.apiKey ? { apiKey: ctx.pending.apiKey } : {}),
   });
@@ -507,6 +526,8 @@ export function emitUpstreamResponse(args: {
   statusText: string;
   responseHeaders: Headers;
   responseBody: string;
+  /** Epoch ms of the first streamed body chunk (streamed exchanges only). */
+  firstByteTs?: number;
   sessionId: string;
   traceId: string;
   model: string;
@@ -542,6 +563,7 @@ export function emitUpstreamResponse(args: {
     },
     ...(args.routing ? { routing: args.routing } : {}),
     ...(args.error ? { error: args.error } : {}),
+    ...(args.firstByteTs !== undefined ? { firstByteTs: args.firstByteTs } : {}),
     ...(args.purpose ? { purpose: args.purpose } : {}),
     ...(args.conversationKey ? { conversationKey: args.conversationKey } : {}),
     ...(args.apiKey ? { apiKey: args.apiKey } : {}),

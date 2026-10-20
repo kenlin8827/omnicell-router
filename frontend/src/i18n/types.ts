@@ -1222,6 +1222,8 @@ hiddenBadge: string;
     tabUpstreamResponse: string;
     gatewayLatency: string;
     upstreamLatency: string;
+    /** Tooltip for the capture chips' TTFT + tok/s segments (decode-TPS basis). */
+    timingTip: string;
     copy: string;
     copied: string;
     formatJson: string;

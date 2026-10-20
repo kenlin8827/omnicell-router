@@ -78,6 +78,8 @@ export function emitUpstreamResponseOnce(
     statusText: string;
     responseHeaders: Headers;
     responseBody: string;
+    /** Epoch ms of the first streamed body chunk (streamed exchanges only). */
+    firstByteTs?: number;
     model?: string;
   }
 ): void {
@@ -90,6 +92,7 @@ export function emitUpstreamResponseOnce(
     statusText: args.statusText,
     responseHeaders: args.responseHeaders,
     responseBody: args.responseBody,
+    firstByteTs: args.firstByteTs,
     sessionId: ctx.sessionId,
     traceId: ctx.traceId,
     model: args.model ?? ctx.model,
@@ -116,6 +119,8 @@ export function emitUpstreamFailureOnce(
     statusText: string;
     responseHeaders?: Headers;
     responseBody?: string;
+    /** Epoch ms of the first streamed body chunk (a stream that died mid-body still carries it). */
+    firstByteTs?: number;
     error: string;
     model?: string;
   }
@@ -129,6 +134,7 @@ export function emitUpstreamFailureOnce(
     statusText: args.statusText,
     responseHeaders: args.responseHeaders ?? new Headers(),
     responseBody: args.responseBody ?? '',
+    firstByteTs: args.firstByteTs,
     sessionId: ctx.sessionId,
     traceId: ctx.traceId,
     model: args.model ?? ctx.model,

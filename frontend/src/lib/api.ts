@@ -603,6 +603,8 @@ export interface HttpExchangeEvent {
    * (bodies=none) still render per-turn tok/s chips without the body.
    */
   completionTokens?: number;
+  /** Epoch ms of the first streamed body chunk (streamed exchanges only). */
+  firstByteTs?: number;
 }
 
 export interface CaptureTurn {
@@ -616,6 +618,13 @@ export interface CaptureTurn {
   error?: string;
   gatewayLatencyMs?: number;
   upstreamLatencyMs?: number;
+  /** TTFT / decode window per leg, derived from firstByteTs at read time
+   *  (backend CaptureTurnSummary). Undefined when the leg was not streamed
+   *  or the event predates the stamp. */
+  gatewayTtftMs?: number;
+  gatewayGenMs?: number;
+  upstreamTtftMs?: number;
+  upstreamGenMs?: number;
 }
 
 // Mirrors backend ConversationSession (backend/src/session/session-manager.ts) + traceCount

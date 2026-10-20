@@ -243,6 +243,15 @@ export interface HttpExchangeEvent {
    * Absent for hex/binary bodies or bodies without a usage block.
    */
   completionTokens?: number;
+  /**
+   * Epoch ms of the FIRST streamed body chunk of this response — stamped at
+   * the wire reader (upstream SSE loop / gateway SSE write) when the first
+   * chunk crosses. Paired with the event `ts` (response received / finalized)
+   * it yields the TTFT and the decode window (see CaptureTurnSummary).
+   * Undefined for buffered single-shot responses and for events recorded
+   * before the stamp existed.
+   */
+  firstByteTs?: number;
 }
 
 /** Label for capture events that carry a non-default call purpose. */
@@ -276,6 +285,16 @@ export interface CaptureTurnSummary {
   gatewayLatencyMs?: number;
   /** Upstream cycle latency (upstream-resp.ts - upstream-req.ts). */
   upstreamLatencyMs?: number;
+  /**
+   * TTFT / decode window, derived from the response event's firstByteTs and
+   * the matching request event's ts — the industry TTFT/TPS split, measured
+   * at the wire on EACH leg. Undefined when the leg was not streamed
+   * (buffered exchange) or the event predates the stamp.
+   */
+  gatewayTtftMs?: number;
+  gatewayGenMs?: number;
+  upstreamTtftMs?: number;
+  upstreamGenMs?: number;
 }
 
 interface CaptureDateRow {
@@ -1183,6 +1202,27 @@ export class CaptureRecorder {
       }
       if (t.upstreamRequest && t.upstreamResponse) {
         t.upstreamLatencyMs = t.upstreamResponse.ts - t.upstreamRequest.ts;
+      }
+      // TTFT / decode window per leg: the response event's firstByteTs splits
+      // the cycle latency into wait-for-first-token and decode phases. Derived
+      // only when the stamp exists (streamed legs; pre-stamp events stay
+      // undefined so the console shows '—' instead of a synthesized split).
+      const derive = (req: HttpExchangeEvent, resp: HttpExchangeEvent): { ttft?: number; gen?: number } => {
+        if (resp.firstByteTs === undefined) return {};
+        return {
+          ttft: Math.max(0, resp.firstByteTs - req.ts),
+          gen: Math.max(0, resp.ts - resp.firstByteTs),
+        };
+      };
+      if (t.clientRequest && t.gatewayResponse) {
+        const d = derive(t.clientRequest, t.gatewayResponse);
+        t.gatewayTtftMs = d.ttft;
+        t.gatewayGenMs = d.gen;
+      }
+      if (t.upstreamRequest && t.upstreamResponse) {
+        const d = derive(t.upstreamRequest, t.upstreamResponse);
+        t.upstreamTtftMs = d.ttft;
+        t.upstreamGenMs = d.gen;
       }
     }
     return all.sort((a, b) => {

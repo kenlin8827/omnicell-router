@@ -1,6 +1,7 @@
 import type http from 'node:http';
 import {
   appendGatewayResponseChunk,
+  markGatewayResponseStreamStart,
   emitGatewayResponse,
   type ClientExchangeContext,
 } from '../observability/http-exchange.js';
@@ -194,7 +195,10 @@ export function createNodeHttpTransport(
       // C-5: per-chunk write parity with the Fastify leg (byte streams stay
       // identical; the capture stash accumulates the same frames).
       try {
-        if (clientCtx) appendGatewayResponseChunk(clientCtx, chunk);
+        if (clientCtx) {
+          markGatewayResponseStreamStart(clientCtx);
+          appendGatewayResponseChunk(clientCtx, chunk);
+        }
         res.write(chunk);
       } catch (err) {
         logWriteError(err, 'node-http writeSseChunk failed');

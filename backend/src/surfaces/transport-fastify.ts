@@ -3,6 +3,7 @@ import { getModelAccessPolicy, makeModelAccessGuard } from '../auth/model-access
 import type { ClientExchangeContext } from '../observability/http-exchange.js';
 import {
   appendGatewayResponseChunk,
+  markGatewayResponseStreamStart,
   emitGatewayResponse,
   getClientExchangeContext,
 } from '../observability/http-exchange.js';
@@ -176,6 +177,7 @@ export function createFastifyTransport(
       // per chunk, exactly like the old handler (the [DONE] frame is the
       // last chunk, so it lands in the capture too, same as before).
       if (sseCtx) {
+        markGatewayResponseStreamStart(sseCtx);
         appendGatewayResponseChunk(sseCtx, chunk);
       }
       try {

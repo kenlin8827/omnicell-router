@@ -1161,6 +1161,7 @@ export const enUS: TranslationDict = {
     tabUpstreamResponse: 'Upstream Response',
     gatewayLatency: 'Gateway latency',
     upstreamLatency: 'Upstream latency',
+    timingTip: 'TTFT: request → first streamed chunk of this leg. tok/s: completion tokens ÷ decode window (first chunk → stream end). Absent on buffered replies and events recorded before per-chunk timing existed.',
     copy: 'Copy',
     copied: 'Copied',
     formatJson: 'Format',

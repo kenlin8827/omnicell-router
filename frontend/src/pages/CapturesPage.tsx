@@ -16,7 +16,7 @@ import { useToast } from '../components/ToastProvider';
 import { Switch } from '../components/Switch';
 import { Combobox } from '../components/Combobox';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
-import { copyToClipboard, shortId, formatRate, fmtDur } from '../lib/format';
+import { copyToClipboard, shortId, decodeRate, formatRate, fmtDur } from '../lib/format';
 import { useSplitterWidth, VSplitter } from '../components/Splitter';
 import { strToU8, zipSync } from 'fflate';
 import { SessionTranscript } from '../components/SessionTranscript';
@@ -43,28 +43,32 @@ const completionTokensFrom = (event?: HttpExchangeEvent): number | null => {
 };
 
 /**
- * Per-turn output throughput, capture domain: completion tokens ÷ the FULL
- * request latency of the exchange. Capture events carry no per-chunk timing,
- * so no decode window (first chunk → stream end) exists on this plane — the
- * trace-domain decode-TPS (`decodeRate` in lib/format) is deliberately NOT
- * shared here; this denominator includes queueing, routing and retries.
- * Prefers the upstream exchange (excludes gateway overhead); falls back to
- * the client leg. The `side` marks which latency chip the rate belongs to.
+ * Per-turn streaming timing per leg, capture domain — the SAME TTFT /
+ * decode-TPS vocabulary the trace domain uses, measured at the wire: the
+ * response event's firstByteTs splits the leg's cycle latency into
+ * wait-for-first-token (TTFT) and decode phases. Null when the leg never
+ * streamed (buffered exchange) or the events predate the stamp — the chip
+ * then renders its latency only, never a synthesized rate.
  */
-const turnToksRate = (turn: CaptureTurn): { rate: number; side: 'upstream' | 'gateway' } | null => {
-  const rate = (tokens: number | null, latencyMs: number | undefined): number | null =>
-    tokens !== null && tokens > 0 && latencyMs !== undefined && latencyMs > 0
-      ? (tokens / latencyMs) * 1000
-      : null;
-  if (turn.upstreamLatencyMs !== undefined) {
-    const r = rate(completionTokensFrom(turn.upstreamResponse), turn.upstreamLatencyMs);
-    if (r !== null) return { rate: r, side: 'upstream' };
-  }
-  if (turn.gatewayLatencyMs !== undefined) {
-    const r = rate(completionTokensFrom(turn.gatewayResponse), turn.gatewayLatencyMs);
-    if (r !== null) return { rate: r, side: 'gateway' };
-  }
-  return null;
+const legTiming = (
+  turn: CaptureTurn,
+  side: 'upstream' | 'gateway'
+): { ttftMs?: number; rate: number | null } | null => {
+  const genMs = side === 'upstream' ? turn.upstreamGenMs : turn.gatewayGenMs;
+  if (genMs === undefined) return null;
+  const resp = side === 'upstream' ? turn.upstreamResponse : turn.gatewayResponse;
+  const ttftMs = side === 'upstream' ? turn.upstreamTtftMs : turn.gatewayTtftMs;
+  const tokens = completionTokensFrom(resp);
+  return { ttftMs, rate: tokens !== null && tokens > 0 ? decodeRate(tokens, genMs) : null };
+};
+
+/** Timing segments for one leg's chip: `· TTFT 412 ms · 52 tok/s`, each part optional. */
+const legTimingText = (turn: CaptureTurn, side: 'upstream' | 'gateway'): string => {
+  const tr = legTiming(turn, side);
+  if (!tr) return '';
+  const ttft = tr.ttftMs !== undefined ? ` · TTFT ${tr.ttftMs} ms` : '';
+  const rate = tr.rate !== null ? ` · ${formatRate(tr.rate)} tok/s` : '';
+  return ttft + rate;
 };
 
 // Left-rail splitter bounds + persistence (captures page session list).
@@ -401,10 +405,7 @@ const CaptureDrawer: React.FC<{
               style={{ fontSize: '12px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
             >
               ↳ {turn.gatewayLatencyMs} ms
-              {(() => {
-                const tr = turnToksRate(turn);
-                return tr?.side === 'gateway' ? ` · ${formatRate(tr.rate)} tok/s` : '';
-              })()}
+              <span title={t('captures.timingTip')}>{legTimingText(turn, 'gateway')}</span>
             </span>
           )}
           {turn.upstreamLatencyMs !== undefined && (
@@ -413,10 +414,7 @@ const CaptureDrawer: React.FC<{
               style={{ fontSize: '12px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
             >
               ↗ {turn.upstreamLatencyMs} ms
-              {(() => {
-                const tr = turnToksRate(turn);
-                return tr?.side === 'upstream' ? ` · ${formatRate(tr.rate)} tok/s` : '';
-              })()}
+              <span title={t('captures.timingTip')}>{legTimingText(turn, 'upstream')}</span>
             </span>
           )}
           <button className="btn btn-sm" style={{ marginLeft: 'auto' }} onClick={onClose} aria-label={t('common.close')}>
@@ -1814,19 +1812,13 @@ export const CapturesPage: React.FC = () => {
                                 {turn.gatewayLatencyMs !== undefined && (
                                   <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", flexShrink: 0 }}>
                                     ↳ {turn.gatewayLatencyMs} ms
-                                    {(() => {
-                                      const tr = turnToksRate(turn);
-                                      return tr?.side === 'gateway' ? ` · ${formatRate(tr.rate)} tok/s` : '';
-                                    })()}
+                                    <span title={t('captures.timingTip')}>{legTimingText(turn, 'gateway')}</span>
                                   </span>
                                 )}
                                 {turn.upstreamLatencyMs !== undefined && (
                                   <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", flexShrink: 0 }}>
                                     ↗ {turn.upstreamLatencyMs} ms
-                                    {(() => {
-                                      const tr = turnToksRate(turn);
-                                      return tr?.side === 'upstream' ? ` · ${formatRate(tr.rate)} tok/s` : '';
-                                    })()}
+                                    <span title={t('captures.timingTip')}>{legTimingText(turn, 'upstream')}</span>
                                   </span>
                                 )}
                               </div>
