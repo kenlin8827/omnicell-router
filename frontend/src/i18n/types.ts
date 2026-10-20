@@ -34,7 +34,6 @@ export interface TranslationDict {
     kindAuto: string;
     kindCombo: string;
     kindVariant: string;
-    kindProfileSlot: string;
   };
   common: {
     loading: string;
@@ -1347,8 +1346,8 @@ hiddenBadge: string;
     profileAgentsRetry: string;
     profileAgentsEmpty: string;
     profileBindNone: string;
-    /** Row picker label for a profile-slot link entry (slot name interpolated). */
-    profileSlotLabel: string;
+    /** Row picker far-right chip marking a profile-slot link entry. */
+    profileSlotBadge: string;
     /** Profile switch carry-over: slot missing on the row + summary line. */
     profileSlotMissing: string;
     profileSlotCarry: string;
@@ -1368,6 +1367,8 @@ hiddenBadge: string;
     profileSortHint: string;
     profileCurrentModel: string;
     profileApplyHint: string;
+    /** pi variant: write-through lands in settings.json agentOverrides; presets are the default. */
+    profileApplyHintPi: string;
     /** Static "Other clients" row: manual hookup guide for non-hooked clients. */
     otherTitle: string;
     otherBadge: string;

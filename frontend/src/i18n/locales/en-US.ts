@@ -28,7 +28,7 @@ export const enUS: TranslationDict = {
     kindAuto: 'auto',
     kindCombo: 'combo',
     kindVariant: 'variant',
-    kindProfileSlot: 'profile',
+
   },
   common: {
     loading: 'Loading...',
@@ -1279,7 +1279,7 @@ export const enUS: TranslationDict = {
     profileAgentsRetry: 'Retry',
     profileAgentsEmpty: 'No agents detected.',
     profileBindNone: '— unlinked (inherit default model) —',
-    profileSlotLabel: 'Slot:{slot}',
+    profileSlotBadge: 'slot',
     profileSlotMissing: 'slot "{slot}" not in this profile',
     profileSlotCarry: '{kept} row(s) linked to a slot; {missing} row(s) point at slots this profile lacks and fall back to the default model on apply.',
     profileFilter: 'Filter agents…',
@@ -1296,6 +1296,7 @@ export const enUS: TranslationDict = {
     profileSortHint: 'Row order: alphabetical by agent name, or cluster by the name suffix (segment after the last "-") / prefix (segment before the first "-") so same-kind agents sit together for batch linking',
     profileCurrentModel: 'Current model in opencode config',
     profileApplyHint: 'Two row modes: rows linked via "Slot:" follow the profile — a saved profile change writes through automatically (agent.<name>.model), no re-apply needed; rows with a manually picked model are never touched by profile changes. Unlinked rows inherit the default model.',
+    profileApplyHintPi: 'Two row modes: roles linked via "Slot:" follow the profile — a saved profile change writes through to settings.json agentOverrides automatically, no re-apply needed; roles with a manually picked model are never touched by profile changes. Unlinked roles use the tier-preset default.',
     otherTitle: 'Other clients',
     otherBadge: 'Manual',
     otherHint: 'Any OpenAI / Anthropic-compatible client',

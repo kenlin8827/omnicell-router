@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Terminal, Check, X, RefreshCw, Undo2, ArrowUpRight, RotateCcw, ChevronDown, Puzzle, Eraser } from 'lucide-react';
+import { Terminal, Check, X, RefreshCw, Undo2, ArrowUpRight, RotateCcw, ChevronDown, Puzzle } from 'lucide-react';
 import { BrandIcon } from '../components/BrandIcons';
 import { Combobox } from '../components/Combobox';
 import { InfoTip } from '../components/InfoTip';
+import { ProfileLinkTable } from '../components/ProfileLinkTable';
 import { api, type ClientStatus, type ApiKeyItem, type ModelProfileView, type OpenCodeAgentView, type ClientProfileMemoryEntry } from '../lib/api';
 import { modelRefBadge } from '../lib/modelRefBadge';
 import { useI18n } from '../i18n/I18nContext';
@@ -73,12 +74,6 @@ export const ClientsPage: React.FC = () => {
   const [profileSel, setProfileSel] = useState<Record<string, string>>({});
   /** Per-client agent-name → slot-key bindings (model profile application) */
   const [bindSel, setBindSel] = useState<Record<string, Record<string, string>>>({});
-  /** Agent inventory filter box (binding table gets long with 25+ agents) */
-  const [agentFilter, setAgentFilter] = useState('');
-  // Binding-table row order: 'name' = alphabetical (default); 'suffix'/'prefix'
-  // cluster rows by the agent name's last / first hyphen segment so same-kind
-  // agents (java-dev, node-dev, …) sit adjacent for batch binding.
-  const [agentSort, setAgentSort] = useState<'name' | 'suffix' | 'prefix'>('name');
   /** Environment-persisted form memory (config.yaml `clientProfileMemory`) */
   const [mem, setMem] = useState<Record<string, ClientProfileMemoryEntry> | null>(null);
 
@@ -117,6 +112,23 @@ export const ClientsPage: React.FC = () => {
             }
             next[c.name] = slots;
           }
+        }
+        return next;
+      });
+      // pi role rows live in the same link-table draft shape as opencode's:
+      // seeded from the slot echo (bare ref / native pin verbatim), then the
+      // profile-link echo re-tags linked roles to `slot:<key>`.
+      setBindSel(prev => {
+        const next = { ...prev };
+        for (const c of data.clients || []) {
+          if (c.name !== 'pi' || next[c.name] !== undefined) continue;
+          const tags = c.profile?.bindings || {};
+          const rows: Record<string, string> = {};
+          for (const s of clientSlots(c)) {
+            if (s.key === 'main') continue;
+            rows[s.key] = tags[s.key] ? `slot:${tags[s.key]}` : (s.value || '');
+          }
+          next[c.name] = rows;
         }
         return next;
       });
@@ -175,9 +187,10 @@ export const ClientsPage: React.FC = () => {
     setBindSel(prev => {
       const next = { ...prev };
       for (const c of clients) {
-        // opencode seeds from the live agent inventory instead (see the
-        // agents effect below) — its draft values carry slot links, not just refs.
-        if (c.name === 'opencode') continue;
+        // opencode seeds from the live agent inventory and pi from its role
+        // slots (see loadClients) — their draft values carry slot links, not
+        // just refs.
+        if (c.name === 'opencode' || c.name === 'pi') continue;
         if (next[c.name] === undefined) next[c.name] = c.profile?.bindings || mem[c.name]?.bindings || {};
       }
       return next;
@@ -245,7 +258,7 @@ export const ClientsPage: React.FC = () => {
   /** Flip the model-list source and write it through to the form memory. */
   const setModelMode = (clientName: string, mode: 'none' | 'custom' | 'follow') => {
     setModeSel(prev => ({ ...prev, [clientName]: mode }));
-    persistMem(clientName, profileSel[clientName] || '', linkTagsOf(clientName === 'pi' ? modelSel[clientName] : bindSel[clientName]), mode);
+    persistMem(clientName, profileSel[clientName] || '', linkTagsOf(bindSel[clientName]), mode);
   };
 
   /** Lazy-load the effective-model view when a follow selection has a key picked. */
@@ -324,6 +337,7 @@ export const ClientsPage: React.FC = () => {
         apiKey: apiKeySel[clientName],
         contextWindow: Number(ctxSel[clientName] || '262144'),
         extraModels: extras,
+        ...(piPayload.agentModels ? { agentModels: piPayload.agentModels } : {}),
         profile: piPayload.profile,
         ...opencodeAgentPayload(clientName),
       } : undefined);
@@ -334,13 +348,13 @@ export const ClientsPage: React.FC = () => {
       if (action === 'setup') {
         // Memory records what THIS setup wrote — the key's stable id, never a
         // draft pick or the raw token.
-        persistMem(clientName, profileSel[clientName] || '', linkTagsOf(clientName === 'pi' ? modelSel[clientName] : bindSel[clientName]), undefined, keyIdOf(apiKeySel[clientName] || ''));
+        persistMem(clientName, profileSel[clientName] || '', linkTagsOf(bindSel[clientName]), undefined, keyIdOf(apiKeySel[clientName] || ''));
       }
       // Refresh the agent inventory cache and drop the link draft so the
       // table re-seeds from the committed config (the lazy-load effect
       // refetches; the seed effect re-tags linked rows from the fresh echo).
-      if (clientName === 'opencode') {
-        setAgents(null);
+      if (clientName === 'opencode') setAgents(null);
+      if (clientName === 'opencode' || clientName === 'pi') {
         setBindSel(prev => {
           const { [clientName]: _dropped, ...rest } = prev;
           return rest;
@@ -453,50 +467,31 @@ export const ClientsPage: React.FC = () => {
     return [{ value: v, label: v }, ...modelOptions];
   };
 
-  /** pi role-slot options: plain model picks for main; role slots additionally
-   *  get 「槽位:」 link shortcuts from the selected profile — operations first
-   *  (auto / links), models after, an echoed foreign pin kept visible. */
-  const piSlotOptions = (clientName: string, s: { key: string; value?: string }) => {
-    if (clientName !== 'pi' || s.key === 'main') return slotOptions(s);
-    const current = modelSel[clientName]?.[s.key] || 'auto';
-    const profile = profiles.find(p => p.id === (profileSel[clientName] || ''));
-    const opts: { value: string; label: string; meta?: string; badge?: string; badgeColor?: string }[] = [
-      { value: 'auto', label: t('clients.modelAuto') },
-    ];
-    if (profile) {
-      for (const [k, ref] of Object.entries(profile.slots || {})) {
-        opts.push({
-          value: `slot:${k}`,
-          label: t('clients.profileSlotLabel', { slot: k }),
-          badge: t('modelRef.kindProfileSlot'),
-          badgeColor: 'var(--accent-emerald)',
-          meta: ref,
-        });
-      }
-    }
-    opts.push(...modelOptions.filter(o => o.value !== 'auto'));
-    if (current && !opts.some(o => o.value === current)) opts.splice(1, 0, { value: current, label: current });
-    return opts;
-  };
-
-  /** pi payload: role slot drafts split into explicit models and profile-link
-   *  tags (`slot:<key>` values; main stays a plain model pick). Other clients
-   *  pass their slot map through unchanged. */
-  const piLinkPayload = (clientName: string): { models: Record<string, string>; profile?: { id: string; bindings: Record<string, string> } } => {
+  /** pi payload: main stays a plain model pick; the role-link table's drafts
+   *  split into manual refs (agentModels) and profile-link tags (`slot:<key>`,
+   *  resolved server-side). Native pins echoed verbatim are never re-sent.
+   *  Other clients pass their slot map through unchanged. */
+  const piLinkPayload = (clientName: string): { models: Record<string, string>; agentModels?: Record<string, string>; profile?: { id: string; bindings: Record<string, string> } } => {
     if (clientName !== 'pi') return { models: modelSel[clientName] || {} };
-    const sel = profileSel[clientName] || '';
-    const models: Record<string, string> = {};
+    const known = new Set(models.map(m => m.id));
+    const manual: Record<string, string> = {};
     const tags: Record<string, string> = {};
-    for (const [role, raw] of Object.entries(modelSel[clientName] || {})) {
+    for (const [role, raw] of Object.entries(bindSel[clientName] || {})) {
       const v = (raw || '').trim();
+      if (!v || v === 'auto') continue;
       if (v.startsWith('slot:')) {
         const k = v.slice(5);
-        if (k && role !== 'main') tags[role] = k;
+        if (k) tags[role] = k;
         continue;
       }
-      models[role] = v || 'auto';
+      if (!known.has(v)) continue;
+      manual[role] = v;
     }
-    return { models, profile: { id: sel, bindings: tags } };
+    return {
+      models: { main: modelSel[clientName]?.main || 'auto' },
+      agentModels: manual,
+      profile: { id: profileSel[clientName] || '', bindings: tags },
+    };
   };
 
   const addExtraModel = (clientName: string, id: string) => {
@@ -756,7 +751,7 @@ export const ClientsPage: React.FC = () => {
                     </div>
                   );
                 })()}
-                {clientSlots(c).map(s => (
+                {clientSlots(c).filter(s => c.name !== 'pi' || s.key === 'main').map(s => (
                         <div key={s.key}>
                           <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '6px' }}>
                             {slotLabels[s.key] || s.key}
@@ -769,11 +764,30 @@ export const ClientsPage: React.FC = () => {
                                 [c.name]: { ...(prev[c.name] || {}), [s.key]: v || 'auto' },
                               }))
                             }
-                            options={piSlotOptions(c.name, s)}
+                            options={slotOptions(s)}
                             panelMinWidth={360}
                           />
                         </div>
                       ))}
+                {c.name === 'pi' && (() => {
+                  const selProfileId = profileSel[c.name] || '';
+                  const profile = profiles.find(p => p.id === selProfileId);
+                  return (
+                    <div style={{ gridColumn: '1 / -1' }}>
+                      <ProfileLinkTable
+                        rows={clientSlots(c).filter(s => s.key !== 'main').map(s => ({ name: s.key, current: s.value }))}
+                        emptyText={t('clients.profileAgentsEmpty')}
+                        profile={profile}
+                        gatewayOptions={modelOptions}
+                        drafts={bindSel[c.name] || {}}
+                        appliedTags={c.profile?.bindings || {}}
+                        onDraft={(name, v) => setBindSel(prev => ({ ...prev, [c.name]: { ...(prev[c.name] || {}), [name]: v } }))}
+                        onClear={() => setBindSel(prev => ({ ...prev, [c.name]: {} }))}
+                        hint={t('clients.profileApplyHintPi')}
+                      />
+                    </div>
+                  );
+                })()}
                 {supportsExtraModels(c.name) && (() => {
                         const mode = modeSel[c.name] ?? 'none';
                         const follow = mode === 'follow';
@@ -840,44 +854,6 @@ export const ClientsPage: React.FC = () => {
                 {c.name === 'opencode' && (() => {
                   const selProfileId = profileSel[c.name] || '';
                   const profile = profiles.find(p => p.id === selProfileId);
-                  const bindings = bindSel[c.name] || {};
-                  // Already-applied links (server echo) — used only for row
-                  // ordering. Draft `bindings` must NEVER drive the sort: a row
-                  // would jump to the top the instant it is picked mid-edit.
-                  const appliedBindings = c.profile?.bindings || {};
-                  // Row modes: `slot:<key>` = profile-linked (follows the profile —
-                  // a saved profile change writes through automatically), a
-                  // gateway ref = manual, '' / 'auto' = inherit the default model.
-                  const linkedEntries = Object.entries(bindings).filter(
-                    ([, v]) => typeof v === 'string' && v.startsWith('slot:')
-                  );
-                  const keptCount = profile ? linkedEntries.filter(([, v]) => !!(profile.slots || {})[v.slice(5)]).length : 0;
-                  const missingCount = linkedEntries.length - keptCount;
-                  // Row options: operations first — inherit / profile-slot link
-                  // shortcuts (only while a profile is selected) — then the
-                  // gateway model list, with a foreign native pin echoed
-                  // verbatim kept visible near the top.
-                  const rowOptions = (current: string) => {
-                    const opts: { value: string; label: string; meta?: string; badge?: string; badgeColor?: string }[] = [
-                      { value: '', label: t('clients.profileBindNone') },
-                    ];
-                    if (profile) {
-                      for (const [k, ref] of Object.entries(profile.slots || {})) {
-                        opts.push({
-                          value: `slot:${k}`,
-                          // Bare slot name — the far-right emerald chip carries
-                          // the "slot" kind; meta shows the ref it points at.
-                          label: k,
-                          badge: t('clients.profileSlotBadge'),
-                          badgeColor: 'var(--accent-emerald)',
-                          meta: ref,
-                        });
-                      }
-                    }
-                    opts.push(...modelOptions);
-                    if (current && !opts.some(o => o.value === current)) opts.splice(1, 0, { value: current, label: current });
-                    return opts;
-                  };
                   return (
                     <div style={{ borderTop: '1px solid var(--divider)', paddingTop: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '12px', alignItems: 'end' }}>
@@ -904,164 +880,24 @@ export const ClientsPage: React.FC = () => {
                           {t('clients.profileLinkedHint', { name: profiles.find(p => p.id === selProfileId)?.name || selProfileId })}
                         </div>
                       )}
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                          <div style={{ fontSize: '11px', color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: '10px' }}>
-                            <span style={{ flexShrink: 0 }}>{t('clients.profileAgents')}</span>
-                            <input
-                              className="input"
-                              value={agentFilter}
-                              onChange={e => setAgentFilter(e.target.value)}
-                              placeholder={t('clients.profileFilter')}
-                              style={{ flex: 1, maxWidth: '260px', fontSize: '12px', padding: '3px 8px' }}
-                            />
-                            <span style={{ flex: 1 }} />
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }} title={t('clients.profileSortHint')}>
-                              <span style={{ fontSize: '11px', color: 'var(--text-dim)', marginRight: '2px' }}>{t('clients.profileSortLabel')}</span>
-                              {([
-                                ['name', t('clients.profileSortName')],
-                                ['suffix', t('clients.profileSortSuffix')],
-                                ['prefix', t('clients.profileSortPrefix')],
-                              ] as const).map(([k, label]) => (
-                                <button
-                                  key={k}
-                                  type="button"
-                                  className="btn btn-sm"
-                                  style={{ fontSize: '11px', padding: '3px 8px', ...(agentSort === k ? { borderColor: 'var(--accent)', color: 'var(--accent)' } : {}) }}
-                                  onClick={() => setAgentSort(k)}
-                                >
-                                  {label}
-                                </button>
-                              ))}
-                            </div>
-                            {Object.values(bindings).some(Boolean) && (
-                              <button
-                                type="button"
-                                className="btn btn-sm"
-                                style={{ flexShrink: 0, fontSize: '11px' }}
-                                title={t('clients.profileClearBindingsHint')}
-                                onClick={() => setBindSel(prev => ({ ...prev, [c.name]: {} }))}
-                              >
-                                <Eraser size={11} />
-                                <span>{t('clients.profileClearBindings')}</span>
-                              </button>
-                            )}
-                            <Link to="/model-profiles" style={{ color: 'var(--accent)', textDecoration: 'none', flexShrink: 0 }}>{t('clients.profileManage')}</Link>
-                          </div>
-                          {agents === null ? (
-                            agentsError ? (
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '12px', color: 'var(--accent-amber)' }}>
-                                <span>{t('clients.profileAgentsError')}</span>
-                                <button
-                                  type="button"
-                                  className="btn btn-sm"
-                                  style={{ fontSize: '11px' }}
-                                  onClick={() => setAgentsError(false)}
-                                >
-                                  {t('clients.profileAgentsRetry')}
-                                </button>
-                              </div>
-                            ) : (
-                              <div style={{ fontSize: '12px', color: 'var(--text-dim)' }}>{t('clients.profileAgentsLoading')}</div>
-                            )
-                          ) : agents.length === 0 ? (
-                            <div style={{ fontSize: '12px', color: 'var(--text-dim)' }}>{t('clients.profileAgentsEmpty')}</div>
-                          ) : (() => {
-                            const q = agentFilter.trim().toLowerCase();
-                            const visible = agents.filter(a => !q || a.name.toLowerCase().includes(q));
-                            // Primary first — few agents, biggest blast radius; subagents next;
-                            // 'all' last. Inside a group already-applied bound rows lead, so the
-                            // eye lands on decisions already made — under the default 'name' sort;
-                            // with suffix/prefix clustering the cluster key leads instead and
-                            // applied-first drops to the secondary tiebreak. In-page picks keep
-                            // the order stable and only reshuffle after the next apply refresh.
-                            const groups: [OpenCodeAgentView['mode'], string][] = [
-                              ['primary', t('clients.profileGroupPrimary')],
-                              ['subagent', t('clients.profileGroupSubagent')],
-                              ['all', t('clients.profileGroupAll')],
-                            ];
-                            // Name clustering key: 'suffix' = segment after the last '-'
-                            // (java-dev / node-dev cluster together), 'prefix' = segment
-                            // before the first '-'. Names without a hyphen use the full name.
-                            const nameKey = (a: OpenCodeAgentView): string => {
-                              const n = a.name;
-                              if (agentSort === 'prefix') {
-                                const i = n.indexOf('-');
-                                return i === -1 ? n : n.slice(0, i);
-                              }
-                              const i = n.lastIndexOf('-');
-                              return i === -1 ? n : n.slice(i + 1);
-                            };
-                            return (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                              {visible.length === 0 && (
-                                <div style={{ fontSize: '12px', color: 'var(--text-dim)' }}>{t('clients.profileAgentsNoMatch')}</div>
-                              )}
-                              {groups.map(([mode, label]) => {
-                                const rows = visible
-                                  .filter(a => a.mode === mode)
-                                  .sort((x, y) => (agentSort !== 'name' ? nameKey(x).localeCompare(nameKey(y)) : 0)
-                                    || (appliedBindings[y.name] ? 1 : 0) - (appliedBindings[x.name] ? 1 : 0)
-                                    || x.name.localeCompare(y.name));
-                                if (rows.length === 0) return null;
-                                const boundN = rows.filter(a => !!bindings[a.name]).length;
-                                return (
-                                  <div key={mode}>
-                                    <div style={{ fontSize: '10px', color: 'var(--text-dim)', letterSpacing: '0.5px', textTransform: 'uppercase', marginBottom: '4px' }}>
-                                      {label} · {boundN}/{rows.length}
-                                    </div>
-                                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(430px, 1fr))', gap: '6px 18px' }}>
-                                      {rows.map(a => {
-                                        const bound = bindings[a.name] || '';
-                                        const linked = bound.startsWith('slot:');
-                                        const missing = linked && !(profile?.slots || {})[bound.slice(5)];
-                                        return (
-                                        <div key={a.name} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                                          <span style={{ width: '140px', flexShrink: 0, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: '12px' }}>{a.name}</span>
-                                          {a.model && (
-                                            <span
-                                              title={`${t('clients.profileCurrentModel')}: ${a.model}`}
-                                              style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: '11px', color: 'var(--text-dim)' }}
-                                            >
-                                              {/* de-noise: the provider prefix repeats on every row — show the tail, full id in the tooltip */}
-                                              {a.model.includes('/') ? a.model.slice(a.model.lastIndexOf('/') + 1) : a.model}
-                                            </span>
-                                          )}
-                                          <div style={{ width: '230px', flexShrink: 0 }}>
-                                            <Combobox
-                                              value={bound}
-                                              onChange={v => {
-                                                const nb = { ...(bindSel[c.name] || {}), [a.name]: v };
-                                                setBindSel(prev => ({ ...prev, [c.name]: nb }));
-                                              }}
-                                              options={rowOptions(bound)}
-                                              panelMinWidth={300}
-                                            />
-                                          </div>
-                                          {missing && (
-                                            <span style={{ flexShrink: 0, fontSize: '10px', color: 'var(--accent-amber)' }}>
-                                              {t('clients.profileSlotMissing', { slot: bound.slice(5) })}
-                                            </span>
-                                          )}
-                                        </div>
-                                        );
-                                      })}
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                            );
-                          })()}
-                          {(keptCount > 0 || missingCount > 0) && (
-                            <div style={{ fontSize: '11px', color: missingCount > 0 ? 'var(--accent-amber)' : 'var(--text-dim)' }}>
-                              {t('clients.profileSlotCarry', { kept: keptCount, missing: missingCount })}
-                            </div>
-                          )}
-                          <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>{t('clients.profileApplyHint')}</div>
-                        </div>
-                      </div>
-                    );
-                  })()}
+                      <ProfileLinkTable
+                        rows={(agents || []).map(a => ({ name: a.name, mode: a.mode, current: a.model }))}
+                        loading={agents === null}
+                        error={agentsError}
+                        onRetry={() => setAgentsError(false)}
+                        emptyText={t('clients.profileAgentsEmpty')}
+                        profile={profile}
+                        gatewayOptions={modelOptions}
+                        drafts={bindSel[c.name] || {}}
+                        appliedTags={c.profile?.bindings || {}}
+                        onDraft={(name, v) => setBindSel(prev => ({ ...prev, [c.name]: { ...(prev[c.name] || {}), [name]: v } }))}
+                        onClear={() => setBindSel(prev => ({ ...prev, [c.name]: {} }))}
+                        hint={t('clients.profileApplyHint')}
+                        showSort
+                      />
+                    </div>
+                  );
+                })()}
 
                 <div style={{ display: 'flex', gap: '8px' }}>
                   {renderActionButtons(c, true)}

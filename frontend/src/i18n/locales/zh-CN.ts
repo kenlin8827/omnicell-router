@@ -28,7 +28,7 @@ export const zhCN: TranslationDict = {
     kindAuto: '自动',
     kindCombo: '组合',
     kindVariant: '变体',
-    kindProfileSlot: '方案',
+
   },
   common: {
     loading: '加载中...',
@@ -1273,7 +1273,7 @@ export const zhCN: TranslationDict = {
     profileAgentsRetry: '重试',
     profileAgentsEmpty: '未检测到任何 agent。',
     profileBindNone: '— 不关联（继承默认模型） —',
-    profileSlotLabel: '槽位:{slot}',
+    profileSlotBadge: '槽位',
     profileSlotMissing: '方案无槽位「{slot}」',
     profileSlotCarry: '已关联槽位的行 {kept} 个；{missing} 个行指向的槽位当前方案不存在，应用时回落为继承默认模型。',
     profileFilter: '过滤 agent…',
@@ -1290,6 +1290,7 @@ export const zhCN: TranslationDict = {
     profileSortHint: '排序方式：按 agent 名称字母序，或按名称的后缀（最后一个 "-" 之后的段）/ 前缀（第一个 "-" 之前的段）聚簇，同类 agent 相邻，便于批量关联',
     profileCurrentModel: 'opencode 配置中的当前模型',
     profileApplyHint: '行级两种模式：「槽位:」关联的行跟随方案——方案保存时自动回写（agent.<name>.model），无需重新应用；手动选择具体模型的行不受方案变更影响。未关联的行继承默认模型。',
+    profileApplyHintPi: '行级两种模式：「槽位:」关联的角色跟随方案——方案保存时自动回写 settings.json 的 agentOverrides，无需重新应用；手动选择具体模型的角色不受方案变更影响。未关联的角色使用梯队预设默认。',
     otherTitle: '其他客户端',
     otherBadge: '手动接入',
     otherHint: '任何 OpenAI / Anthropic 协议兼容的客户端',
