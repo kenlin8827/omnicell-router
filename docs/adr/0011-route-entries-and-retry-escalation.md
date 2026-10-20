@@ -31,7 +31,7 @@ Priority: `human > correction > l2_confident` — a row never loses certainty (`
 
 ### 4. Retry ladder — three conditions, monotonic steps
 
-Detection (all three, `retry-escalation.ts`): the previous COMPLETED turn succeeded + the prompt is ≥ 20 normalized chars + the hash matches. Failed turns leave no retry-state trace, so technical resends never count.
+Detection (all three, `retry-escalation.ts`): the previous COMPLETED turn succeeded + the prompt is ≥ 20 normalized chars + the hash matches. Failed turns leave no retry-state trace, so technical resends never count. Scope boundary: detection is SESSION-scoped — a bare turn-1-shaped resend (`[A]` alone, no history) deliberately mints a fresh session (the session manager's anti-false-merge rule), so stateless single-shot clients sit outside the ladder; accumulated-history clients (chat UIs, agents, `metadata.user_id` senders) are exactly the clients it serves.
 
 Ladder (from what ACTUALLY served last turn):
 

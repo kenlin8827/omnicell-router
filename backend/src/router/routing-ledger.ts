@@ -33,6 +33,7 @@ export interface RoutingLedgerEvent {
 const MAX_LEDGER_BYTES = 64 * 1024 * 1024;
 let capWarned = false;
 let ledgerPath: string | null = null;
+let dirEnsured = false;
 
 function path_(): string {
   if (!ledgerPath) ledgerPath = path.join(getEnvPaths().dataDir, 'routing-ledger.jsonl');
@@ -43,11 +44,18 @@ function path_(): string {
 export function resetRoutingLedgerForTests(): void {
   ledgerPath = null;
   capWarned = false;
+  dirEnsured = false;
 }
 
 export function appendRoutingLedger(event: Omit<RoutingLedgerEvent, 'ts'>): void {
   try {
     const file = path_();
+    // The data/ dir may not exist yet on a fresh environment — create it once
+    // per process (decision-capture does the same before its sink writes).
+    if (!dirEnsured) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      dirEnsured = true;
+    }
     if (fs.existsSync(file) && fs.statSync(file).size > MAX_LEDGER_BYTES) {
       if (!capWarned) {
         capWarned = true;
