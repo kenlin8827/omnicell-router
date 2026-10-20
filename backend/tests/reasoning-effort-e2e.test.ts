@@ -119,6 +119,40 @@ describe('End-to-End: orchestrator surfaces the resolved thinking effort', () =>
     assert.strictEqual(result.reasoningDegraded, false);
   });
 
+  it('the turn trace records requested/actual effort and the degraded flag', async () => {
+    // The console's session detail reads the effort columns from the trace
+    // record, not from ExecutionResult — this guards that plumbing (the
+    // record() call must carry the same values the headers get).
+    const cfg = configWithEffortTiers([
+      { id: 'pro-only-high', tier: 'pro', supportedReasoningEfforts: ['high'] },
+    ]);
+    const reg = new ProviderRegistry(cfg, true);
+    const orch = new PipelineOrchestrator(cfg, reg, new FinOpsTracker());
+
+    const result = await orch.process({
+      model: 'auto',
+      messages: [{ role: 'user', content: 'explain something hard' }],
+      reasoning_effort: 'xhigh',
+    } as ChatCompletionRequest);
+
+    const traces = orch.getTraceTracker().getTracesBySession(result.sessionId!);
+    assert.strictEqual(traces.length, 1);
+    assert.strictEqual(traces[0].execution.requestedEffort, 'xhigh');
+    assert.strictEqual(traces[0].execution.actualEffort, 'high');
+    assert.strictEqual(traces[0].execution.reasoningDegraded, true);
+
+    // An omitted reasoning_effort must stay absent on the trace too (never
+    // synthesized as 'none' — the same distinction ExecutionResult keeps).
+    const plain = await orch.process({
+      model: 'auto',
+      messages: [{ role: 'user', content: 'hi there' }],
+    } as ChatCompletionRequest);
+    const plainTrace = orch.getTraceTracker().getTracesBySession(plain.sessionId!)[0];
+    assert.strictEqual(plainTrace.execution.requestedEffort, undefined);
+    assert.strictEqual(plainTrace.execution.actualEffort, undefined);
+    assert.strictEqual(plainTrace.execution.reasoningDegraded, false);
+  });
+
   it('explicit model choice bypasses the effort picker (preferredModel is honored)', async () => {
     // Client pinned `pro-only-high` and asked for xhigh. The orchestrator
     // must NOT re-route to a different model — explicit pin is the user's

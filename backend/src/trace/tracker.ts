@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { ReasonParams, TierLevel } from '../types/router.js';
+import { ReasoningEffort, ReasonParams, TierLevel } from '../types/router.js';
 import { getEnvPaths } from '../config/env.js';
 import type { TracePersistConfig } from '../config/types.js';
 import type { CaptureKeyIdentity } from '../capture/recorder.js';
@@ -86,6 +86,18 @@ export interface ExecutionTrace {
     failoverAttempts?: number;
     failoverPath?: string[];
     inplaceRetries?: number;
+    /**
+     * Thinking-effort observability (mirrors ExecutionResult):
+     * `requestedEffort` = the level the client sent (undefined = the field
+     * was omitted — distinct from the real 'none' value); `actualEffort` =
+     * what the gateway actually served after effortMap translation +
+     * capability clamp; `reasoningDegraded` = served-rank < asked-rank.
+     * Forgiving forward-compat: traces replayed from disk before these
+     * fields existed deserialize with all three undefined.
+     */
+    requestedEffort?: ReasoningEffort;
+    actualEffort?: ReasoningEffort;
+    reasoningDegraded?: boolean;
   };
   finops: {
     inputTokens: number;

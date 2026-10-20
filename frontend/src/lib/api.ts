@@ -420,6 +420,16 @@ export interface TraceRecord {
     failoverAttempts?: number;
     failoverPath?: string[];
     inplaceRetries?: number;
+    /**
+     * Thinking-effort observability (mirrors backend ExecutionTrace):
+     * the level the client asked for (absent = field omitted), the level
+     * actually served after translation/capability clamp, and the
+     * served-below-asked flag. Absent on traces recorded before these
+     * fields existed.
+     */
+    requestedEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    actualEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    reasoningDegraded?: boolean;
   };
   finops: {
     inputTokens: number;

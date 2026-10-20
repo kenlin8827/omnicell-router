@@ -5,6 +5,7 @@ import { api } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { Switch } from '../components/Switch';
+import { Combobox } from '../components/Combobox';
 
 /**
  * /auto — Auto virtual-model routing (decision layer).
@@ -17,12 +18,19 @@ export const AutoPage: React.FC = () => {
   const [config, setConfig] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [savedNotice, setSavedNotice] = useState(false);
+  const [modelOptions, setModelOptions] = useState<{ value: string; label: string }[]>([]);
 
   useEffect(() => {
     api.getConfig().then(data => {
       setConfig(data);
       setLoading(false);
     }).catch(console.error);
+    // Registered physical models only (kind 'model') — the judge resolves ids
+    // through registry.getModel, so virtual aliases/combos/variants would
+    // leave it permanently inert.
+    api.listGatewayModels().then(ms =>
+      setModelOptions(ms.filter(m => m.kind === 'model').map(m => ({ value: m.id, label: m.id })))
+    ).catch(() => {});
   }, []);
 
   const handleSave = async () => {
@@ -44,6 +52,12 @@ export const AutoPage: React.FC = () => {
     setConfig({ ...config, classifier: { ...config.classifier, layer2: { ...layer2, ...patch } } });
   const decisionCache = layer2.decisionCache || {};
   const setDecisionCache = (patch: any) => setLayer2({ decisionCache: { ...decisionCache, ...patch } });
+  const setSystemone = (patch: any) =>
+    setConfig({ ...config, systemone: { ...(config.systemone || {}), ...patch } });
+  // What the judge would actually call: its own model wins, else the System
+  // One surface default. Both unset = the judge never answers (warns once,
+  // every auto request serves the plus baseline, no experience is recorded).
+  const effectiveJudgeModel: string = (layer2.model || config.systemone?.defaultModel || '').trim();
 
   // Surface = global .sub-card; only the flex layout stays local.
   const cardStyle: React.CSSProperties = {
@@ -127,6 +141,49 @@ export const AutoPage: React.FC = () => {
                 onChange={v => setLayer2({ enabled: v })}
               />
             </label>
+            {/* Decision-model resolution (ADR-0001 cascade): a judge that
+                names nothing can never answer — classifier.layer2.model wins,
+                else systemone.defaultModel, else inert with a one-time warn.
+                Surfacing the resolution here is the console-side fix for
+                "enabled but silently dead". */}
+            <div>
+              <label style={labelStyle}>{t('auto.l2ModelLabel')}</label>
+              <Combobox
+                value={layer2.model ?? ''}
+                onChange={(v: string) => setLayer2({ model: v || undefined })}
+                options={modelOptions}
+                clearable
+                placeholder={t('auto.l2ModelFollow')}
+              />
+              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '4px' }}>
+                {t('auto.l2ModelHint')}
+              </div>
+            </div>
+            <div>
+              <label style={labelStyle}>{t('auto.sysoneModelLabel')}</label>
+              <Combobox
+                value={config.systemone?.defaultModel ?? ''}
+                onChange={(v: string) => setSystemone({ defaultModel: v || undefined })}
+                options={modelOptions}
+                clearable
+                placeholder={t('auto.sysoneModelUnset')}
+              />
+              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '4px' }}>
+                {t('auto.sysoneModelHint')}
+              </div>
+            </div>
+            {(layer2.enabled ?? false) && effectiveJudgeModel && (
+              <div style={{ fontSize: '11px', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Check size={13} />
+                <span>{t('auto.l2ModelEffective', { model: effectiveJudgeModel })}</span>
+              </div>
+            )}
+            {(layer2.enabled ?? false) && !effectiveJudgeModel && (
+              <div style={{ fontSize: '11px', color: 'var(--accent-amber)', display: 'flex', alignItems: 'center', gap: '6px', lineHeight: 1.6 }}>
+                <TriangleAlert size={13} style={{ flexShrink: 0 }} />
+                <span>{t('auto.l2ModelUnset')}</span>
+              </div>
+            )}
             {/* Distillation dataset — NOT the request-capture leg (that moved to
                 requestCapture.systemone.l2DecisionEnabled on the Settings page).
                 Opt-in: the recorded state carries user conversation content.

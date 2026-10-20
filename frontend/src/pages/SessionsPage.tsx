@@ -156,6 +156,34 @@ const PinnedModelCell: React.FC<{ model: string }> = ({ model }) => {
   );
 };
 
+/**
+ * Thinking-level cell for the per-request detail grid: shows the level the
+ * gateway actually served. `requested→actual` in amber when the turn was
+ * degraded below the ask (the same signal X-OCR-Thinking-Degraded carries);
+ * '—' when no explicit level was in play or the trace predates the fields.
+ */
+const EffortCell: React.FC<{ tr: TraceRecord }> = ({ tr }) => {
+  const { t } = useI18n();
+  const req = tr.execution.requestedEffort;
+  const act = tr.execution.actualEffort;
+  if (!req && !act) {
+    return (
+      <span title={t('sessions.colThinkTip')} style={{ color: 'var(--text-dim)' }}>
+        —
+      </span>
+    );
+  }
+  const degraded = tr.execution.reasoningDegraded === true;
+  return (
+    <span
+      title={t('sessions.colThinkTip')}
+      style={{ color: degraded ? 'var(--accent-amber)' : 'var(--text-muted)' }}
+    >
+      {degraded && req && act && req !== act ? `${req}→${act}` : act ?? req}
+    </span>
+  );
+};
+
 type SwitchKind = 'first' | 'ratchet' | 'fallback' | 'switch';
 
 interface SwitchEvent {
@@ -1036,7 +1064,7 @@ export const SessionsPage: React.FC = () => {
                 <div
                   style={{
                     display: 'grid',
-                    gridTemplateColumns: '64px 64px 30px minmax(160px, 1fr) 56px 56px 60px 86px 52px 44px 44px',
+                    gridTemplateColumns: '64px 64px 30px minmax(160px, 1fr) 56px 56px 56px 60px 86px 52px 44px 44px',
                     columnGap: '8px',
                     rowGap: '6px',
                     fontSize: '11px',
@@ -1048,6 +1076,7 @@ export const SessionsPage: React.FC = () => {
                     t('sessions.colEnd'),
                     '#',
                     t('sessions.colModel'),
+                    t('sessions.colThink'),
                     t('sessions.colIn'),
                     t('sessions.colOut'),
                     t('sessions.colCached'),
@@ -1071,6 +1100,7 @@ export const SessionsPage: React.FC = () => {
                       </span>
                       <span style={{ color: 'var(--text-dim)' }}>#{tr.turnNumber}</span>
                       <span style={{ color: 'var(--text-main)', wordBreak: 'break-all' }}>{tr.execution.modelUsed}</span>
+                      <EffortCell tr={tr} />
                       <span>{tr.finops.inputTokens.toLocaleString()}</span>
                       <span>{tr.finops.outputTokens.toLocaleString()}</span>
                       <span style={{ color: tr.finops.cachedTokens > 0 ? 'var(--accent-emerald)' : 'var(--text-dim)' }}>

@@ -1466,6 +1466,12 @@ export class PipelineOrchestrator {
         failoverAttempts,
         failoverPath,
         inplaceRetries,
+        // Thinking-effort observability — the same values ExecutionResult
+        // carries onto the X-OCR-Thinking-* headers; recorded per turn so
+        // the console's session detail can show requested vs served levels.
+        requestedEffort,
+        actualEffort,
+        reasoningDegraded,
       },
       finops: {
         inputTokens: finalResponse!.usage?.prompt_tokens || 0,

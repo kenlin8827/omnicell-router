@@ -108,6 +108,47 @@ describe('TraceTracker SQLite persistence (write-through + boot replay)', () => 
     }
   });
 
+  it('thinking-effort observability fields survive the disk round-trip', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-traces-'));
+    const opened: TraceTracker[] = [];
+    try {
+      const a = new TraceTracker(100, { ...PERSIST, dir });
+      opened.push(a);
+      await a.whenReady;
+      if (!a.isPersisted()) return; // runtime without bun:sqlite — nothing to assert
+
+      a.record(
+        mkTrace({
+          sessionId: 'effort-s',
+          timestamp: Date.now(),
+          execution: {
+            modelUsed: 'm-1',
+            provider: 'p-1',
+            tierUsed: 'pro',
+            latencyMs: 10,
+            fallbackOccurred: false,
+            requestedEffort: 'xhigh',
+            actualEffort: 'high',
+            reasoningDegraded: true,
+          },
+        })
+      );
+
+      // Tracker B: "the gateway restarted" — the replayed trace must carry
+      // the effort columns verbatim (the store keeps the whole JSON blob).
+      const b = new TraceTracker(100, { ...PERSIST, dir });
+      opened.push(b);
+      await b.whenReady;
+      const [tr] = b.getTracesBySession('effort-s');
+      assert.ok(tr, 'boot replay should restore the trace');
+      assert.strictEqual(tr.execution.requestedEffort, 'xhigh');
+      assert.strictEqual(tr.execution.actualEffort, 'high');
+      assert.strictEqual(tr.execution.reasoningDegraded, true);
+    } finally {
+      await cleanup(dir, opened);
+    }
+  });
+
   it('retention sweep drops rows older than the cutoff', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-traces-'));
     const opened: TraceTracker[] = [];

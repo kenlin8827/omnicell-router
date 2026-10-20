@@ -703,6 +703,8 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   classifier: '意图分类器（smart 模式的 lite/pro/ultra 判定）',
   'classifier.layer2.enabled': 'Layer2 判定开关（经本机 System One 协议调用已注册模型）',
   'classifier.layer2.model': '判定模型 id（已注册的模型；留空则用 systemone.defaultModel）',
+  systemone: 'System One 决策面（POST /v1/systemone）：本机协议直连已注册模型，其余模型走 chat-model 转换；此节的 defaultModel 为未指定 model 的请求兜底，同时在 classifier.layer2.model 留空时充当 L2 判定器的决策模型',
+  'systemone.defaultModel': 'System One 默认模型（已注册模型 id）：为未指定 model（或 model=auto）的 /v1/systemone 请求兜底，不经梯队级联；classifier.layer2.model 留空时 L2 判定器也用它。重启网关生效',
   'classifier.layer2.timeoutMs': '判定超时（毫秒，超时回落到默认 plus 梯队）',
   'classifier.layer2.decisionCache': '判定决策缓存（相同上下文复用判定结果）',
   'classifier.layer2.collectEnabled': 'L2 裁判决策样本采集开关（默认 false 关闭）：单键门控，落盘 data/layer2-decisions.jsonl（不进捕捉页），64MB 封顶后停写并告警一次；热生效',
