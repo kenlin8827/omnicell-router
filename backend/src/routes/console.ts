@@ -9,6 +9,9 @@ import { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import { getRawConfig, loadConfig, saveConfig, saveRawConfig, getRuntimeConfigRef } from '../config/index.js';
 import { getEnvPaths, resolveEnvName } from '../config/env.js';
 import { applyConfig as applyDecisionCaptureConfig } from '../capture/decision-capture.js';
+import { applyRouteEntriesConfig, getRouteEntryStore, routeEntriesGate } from '../router/route-entries.js';
+import { appendRoutingLedger } from '../router/routing-ledger.js';
+import { EFFORT_LADDER, ReasoningEffort, TierLevel } from '../types/router.js';
 import { initProxyConfig } from '../utils/proxy.js';
 import { getOcrHomeDir } from '../cli/paths.js';
 import { getHeadroomSidecarStatus, startHeadroomSidecar, stopHeadroomSidecar } from '../compression/headroom-sidecar.js';
@@ -1015,6 +1018,63 @@ export function registerConsoleRoutes(
     return { status: 'ok', http: getQuotaStore().getLastHttp(`${providerId}#${keyHashPrefix}`) ?? null };
   });
 
+  // 3D. Route-entry experience table (ADR-0011): browse, hand-edit (lands as
+  // an immutable human row), delete. The 16-hex prompt hash identifies rows;
+  // snippets (when enabled) are the human-readable aid.
+  app.get('/api/admin/route-entries', async (req) => {
+    const query = req.query as { limit?: string; offset?: string; q?: string };
+    const limit = query.limit !== undefined ? Math.min(parseInt(query.limit, 10) || 100, 500) : 100;
+    const offset = Math.max(parseInt(query.offset ?? '0', 10) || 0, 0);
+    const { rows, total } = getRouteEntryStore().list({ limit, offset, q: query.q });
+    return {
+      status: 'ok',
+      rows: rows.map((e) => ({
+        promptHash: e.promptHash,
+        snippet: e.snippet,
+        tier: e.tier,
+        effort: e.effort,
+        source: e.source,
+        confidence: e.confidence,
+        hitCount: e.hitCount,
+        sessionCount: e.sessions.length,
+        createdAt: e.createdAt,
+        updatedAt: e.updatedAt,
+      })),
+      total,
+      offset,
+      limit,
+      gate: routeEntriesGate(),
+    };
+  });
+
+  app.patch('/api/admin/route-entries/:hash', async (req, reply) => {
+    const { hash } = req.params as { hash: string };
+    const body = req.body as { tier?: string; effort?: string | null };
+    const tier = body?.tier;
+    if (!tier || !['lite', 'plus', 'pro', 'ultra'].includes(tier)) {
+      return reply.status(400).send({ success: false, message: "tier must be one of lite|plus|pro|ultra" });
+    }
+    const effort =
+      body?.effort === null || body?.effort === undefined || body?.effort === ''
+        ? undefined
+        : EFFORT_LADDER.includes(body.effort as any)
+          ? (body.effort as ReasoningEffort)
+          : undefined;
+    if (body?.effort !== null && body?.effort !== undefined && body?.effort !== '' && !EFFORT_LADDER.includes(body.effort as any)) {
+      return reply.status(400).send({ success: false, message: `effort must be one of ${EFFORT_LADDER.join('|')} (or null to clear)` });
+    }
+    const entry = getRouteEntryStore().humanEdit(hash, tier as TierLevel, effort);
+    if (!entry) return reply.status(404).send({ success: false, message: `no route entry '${hash}'` });
+    appendRoutingLedger({ kind: 'entry_write', detail: { source: 'human', tier: entry.tier, effort: entry.effort, promptHash: hash } });
+    return { status: 'ok', entry: { promptHash: entry.promptHash, tier: entry.tier, effort: entry.effort, source: entry.source, confidence: entry.confidence } };
+  });
+
+  app.delete('/api/admin/route-entries/:hash', async (req) => {
+    const { hash } = req.params as { hash: string };
+    const removed = getRouteEntryStore().remove(hash);
+    return { status: 'ok', removed };
+  });
+
   // 4. Client Interception Setup / Teardown
   const handleSetup = async (req: any, reply: any) => {
     const { client } = req.params as { client: string };
@@ -1270,6 +1330,7 @@ export function registerConsoleRoutes(
     initProxyConfig(loadConfig().proxy);
     orchestrator.getCaptureRecorder().applyConfig(loadConfig().requestCapture);
     applyDecisionCaptureConfig(loadConfig().classifier?.layer2); // L2 dataset sampling: single-key gate classifier.layer2.collectEnabled, hot too
+    applyRouteEntriesConfig(loadConfig().routeEntries); // experience-table gate: hot-applies lookup/writes/escalation
     orchestrator.getRegistry().applyCombos(loadConfig().combos);
     orchestrator.getRegistry().applyTierConfigNow(); // tier member lists commit immediately (no restart)
     warnOnEmptyTierPools(); // no residual tier → an empty pool is now possible
@@ -1298,6 +1359,7 @@ export function registerConsoleRoutes(
     initProxyConfig(loadConfig().proxy); // hot-apply proxy policy (see handleSaveConfig)
     orchestrator.getCaptureRecorder().applyConfig(loadConfig().requestCapture); // hot-apply capture too
     applyDecisionCaptureConfig(loadConfig().classifier?.layer2); // hot-apply the L2 dataset-sampling gate too (classifier.layer2.collectEnabled)
+    applyRouteEntriesConfig(loadConfig().routeEntries); // hot-apply the experience-table gate too
     orchestrator.getRegistry().applyCombos(loadConfig().combos); // hot-apply combos too
     orchestrator.getRegistry().applyTierConfigNow(); // hot-commit tier member lists too
     warnOnEmptyTierPools(); // no residual tier → an empty pool is now possible

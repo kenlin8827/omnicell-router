@@ -3,7 +3,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ChatCompletionRequest } from '../types/openai.js';
 import { RoutingDecision, SessionLookupType, TierLevel, TierModelConfig, TIER_RANK } from '../types/router.js';
+import { ReasoningEffort } from '../types/router.js';
 import { SessionConfig } from '../config/types.js';
+import { SessionRetryState } from '../router/retry-escalation.js';
+import { EFFORT_LADDER } from '../types/router.js';
+
+/** EFFORT_LADDER rank helper (module-local; -1 for unknown levels). */
+function EFFORT_RANK_OF(e: ReasoningEffort): number {
+  return EFFORT_LADDER.indexOf(e);
+}
 
 export interface ConversationSession {
   id: string;
@@ -14,6 +22,18 @@ export interface ConversationSession {
   lastActiveAt: number;
   turnCount: number;
   historyTiers: TierLevel[];
+  /**
+   * Peak reasoning-effort actually served this session (EFFORT_LADDER rank;
+   * observability + the retry-escalation baseline — never a client-intent
+   * clamp: explicit client efforts always win their own turn).
+   */
+  maxEffort?: ReasoningEffort;
+  /**
+   * Retry-detection state (ADR-0011) — the last COMPLETED turn's prompt hash
+   * + outcome + what served, so the next turn can recognize "same question
+   * asked again" without trusting anything that never completed.
+   */
+  retry?: SessionRetryState;
   /** Birth metadata — attached once on the first turn, immutable afterwards. */
   origin?: {
     wire?: string;
@@ -548,8 +568,9 @@ export class SessionManager {
           reason: `[Session Sticky] Kept this conversation at ${session.maxTier} (model: ${session.pinnedModel})`,
           // Session rewrites overwrite code+params so post-rewrite traces
           // carry the session.* vocabulary, not the pre-rewrite layer code.
+          // Pre-existing params (retry attribution etc.) merge through.
           reasonCode: 'session.sticky',
-          reasonParams: { tier: session.maxTier, model: session.pinnedModel },
+          reasonParams: { ...(proposedDecision.reasonParams ?? {}), tier: session.maxTier, model: session.pinnedModel },
         },
         session,
         ratchetApplied: proposedDecision.targetTier !== session.maxTier,
@@ -573,7 +594,7 @@ export class SessionManager {
           ...proposedDecision,
           reason: `[Session Escalated: ${oldTier} -> ${session.maxTier}] ${proposedDecision.reason}`,
           reasonCode: 'session.escalated',
-          reasonParams: { from: oldTier, to: session.maxTier },
+          reasonParams: { ...(proposedDecision.reasonParams ?? {}), from: oldTier, to: session.maxTier },
         },
         session,
         ratchetApplied: true,
@@ -600,8 +621,8 @@ export class SessionManager {
           reason: ratchetReason,
           reasonCode: isDowngradeAttempt ? 'session.ratchet' : 'session.preserved',
           reasonParams: isDowngradeAttempt
-            ? { from: session.maxTier, to: proposedDecision.targetTier }
-            : { tier: session.maxTier },
+            ? { ...(proposedDecision.reasonParams ?? {}), from: session.maxTier, to: proposedDecision.targetTier }
+            : { ...(proposedDecision.reasonParams ?? {}), tier: session.maxTier },
         },
         session,
         ratchetApplied: isDowngradeAttempt,
@@ -721,6 +742,36 @@ export class SessionManager {
 
   public getSession(sessionId: string): ConversationSession | undefined {
     return this.sessions.get(sessionId);
+  }
+
+  /**
+   * Post-turn retry-state update (ADR-0011): called ONCE per completed
+   * (successful) turn with what actually served. Failed turns never reach
+   * this — a technical resend therefore sees the last SUCCESSFUL turn's
+   * state, exactly the "previous response completed" detection contract.
+   * `maxEffort` tracks the peak served effort for the session (observability
+   * + escalation baseline; not a client-intent clamp).
+   */
+  public recordTurnOutcome(
+    sessionId: string,
+    state: { promptHash?: string; tierUsed: TierLevel; effortUsed?: ReasoningEffort; escalated: boolean; retryCount: number }
+  ): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    session.retry = {
+      lastPromptHash: state.promptHash,
+      lastOutcomeOk: true,
+      lastTierUsed: state.tierUsed,
+      lastEffortUsed: state.effortUsed,
+      retryCount: state.retryCount,
+      escalated: state.escalated,
+    };
+    if (state.effortUsed) {
+      const rank = EFFORT_RANK_OF(state.effortUsed);
+      const cur = session.maxEffort ? EFFORT_RANK_OF(session.maxEffort) : -1;
+      if (rank > cur) session.maxEffort = state.effortUsed;
+    }
+    this.markDirty();
   }
 
   /**

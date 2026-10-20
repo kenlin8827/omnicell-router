@@ -161,7 +161,7 @@ export interface RoutingDecision {
   reason: string;
   reasonCode?: string;
   reasonParams?: ReasonParams;
-  layerUsed?: 'layer0' | 'layer2';
+  layerUsed?: 'layer0' | 'entry' | 'layer2';
   needsSchemaValidation: boolean;
   sessionId?: string;
   sessionRatchetApplied?: boolean;
@@ -173,7 +173,7 @@ export interface ExecutionResult {
   response: ChatCompletionResponse;
   tierUsed: TierLevel;
   modelUsed: string;
-  layerUsed?: 'layer0' | 'layer2';
+  layerUsed?: 'layer0' | 'entry' | 'layer2';
   fallbackOccurred: boolean;
   fallbackReason?: string;
   sessionId?: string;

@@ -14,6 +14,9 @@ export type Translate = (path: string, params?: Record<string, string | number>)
 const REASON_KEY: Record<string, string> = {
   forced: 'routing.reason.forced',
   default: 'routing.reason.default',
+  'entry.hit': 'routing.reason.entryHit',
+  'retry.effort': 'routing.reason.retryEffort',
+  'retry.tier': 'routing.reason.retryTier',
   'l2.system_one': 'routing.reason.l2SystemOne',
   'l2.system_one_uncalibrated': 'routing.reason.l2SystemOneUncalibrated',
   'session.escalated': 'routing.reason.sessionEscalated',

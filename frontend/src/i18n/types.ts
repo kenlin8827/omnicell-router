@@ -57,6 +57,7 @@ export interface TranslationDict {
   nav: {
     overview: string;
     rules: string;
+    routeEntries: string;
     providers: string;
     models: string;
     apiKeys: string;
@@ -932,6 +933,9 @@ hiddenBadge: string;
     reason: {
       forced: string;
       default: string;
+      entryHit: string;
+      retryEffort: string;
+      retryTier: string;
       l2SystemOne: string;
       l2SystemOneUncalibrated: string;
       sessionEscalated: string;
@@ -1061,6 +1065,36 @@ hiddenBadge: string;
     lastProbeCopied: string;
     lastProbeCopyFailed: string;
   };
+  routeEntries: {
+    pageTitle: string;
+    pageSubtitle: string;
+    searchPlaceholder: string;
+    refresh: string;
+    colPrompt: string;
+    colTier: string;
+    colEffort: string;
+    colSource: string;
+    colHits: string;
+    colSessions: string;
+    colUpdated: string;
+    source_human: string;
+    source_correction: string;
+    source_l2_confident: string;
+    effortDefault: string;
+    noSnippet: string;
+    empty: string;
+    loading: string;
+    loadFailed: string;
+    savedOk: string;
+    saveFailed: string;
+    deleteOk: string;
+    deleteFailed: string;
+    delete: string;
+    gateDisabled: string;
+    shadowMode: string;
+    totalLine: string;
+  };
+
   captures: {
     title: string;
     refresh: string;

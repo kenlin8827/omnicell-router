@@ -396,7 +396,7 @@ export interface TraceRecord {
     hasToolsOrSchema: boolean;
   };
   routing: {
-    layerUsed: 'layer0' | 'layer2';
+    layerUsed: 'layer0' | 'entry' | 'layer2';
     targetTier: 'lite' | 'plus' | 'pro' | 'ultra';
     confidence: number;
     reason: string;
@@ -836,6 +836,40 @@ export interface LogsResponse {
 
 export type TierName = 'lite' | 'plus' | 'pro' | 'ultra';
 
+/* ─── Route-entry experience table (ADR-0011, admin API client) ─────────── */
+
+export type RouteEntrySource = 'l2_confident' | 'correction' | 'human';
+
+export interface RouteEntryRow {
+  promptHash: string;
+  /** First 200 chars of the prompt (absent when snippetEnabled=off). */
+  snippet?: string;
+  tier: TierName;
+  effort?: string;
+  source: RouteEntrySource;
+  confidence: number;
+  hitCount: number;
+  sessionCount: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface RouteEntriesGateState {
+  enabled?: boolean;
+  snippetEnabled?: boolean;
+  escalateOnRetry?: boolean;
+  maxEntries?: number;
+}
+
+export interface RouteEntriesListResponse {
+  status: 'ok';
+  rows: RouteEntryRow[];
+  total: number;
+  offset: number;
+  limit: number;
+  gate: RouteEntriesGateState;
+}
+
 /* ─── Environments ("book-sets" — admin API client) ────────────── */
 
 export type AdminEnvType = 'regular' | 'sandbox';
@@ -996,6 +1030,33 @@ export const api = {
     const res = await fetch('/api/admin/status');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
+  },
+
+  async getRouteEntries(params: { limit?: number; offset?: number; q?: string } = {}): Promise<RouteEntriesListResponse> {
+    const qs = new URLSearchParams();
+    if (params.limit !== undefined) qs.set('limit', String(params.limit));
+    if (params.offset !== undefined) qs.set('offset', String(params.offset));
+    if (params.q) qs.set('q', params.q);
+    const res = await fetch(`/api/admin/route-entries?${qs.toString()}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async updateRouteEntry(hash: string, body: { tier: string; effort?: string | null }): Promise<void> {
+    const res = await fetch(`/api/admin/route-entries/${encodeURIComponent(hash)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err?.message || `HTTP ${res.status}`);
+    }
+  },
+
+  async deleteRouteEntry(hash: string): Promise<void> {
+    const res = await fetch(`/api/admin/route-entries/${encodeURIComponent(hash)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
   },
 
   async getConfig(): Promise<any> {

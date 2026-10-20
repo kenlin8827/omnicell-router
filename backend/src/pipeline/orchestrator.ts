@@ -6,6 +6,16 @@ import { ModelRegistration, RouterConfig } from '../config/types.js';
 import { PromptOptimizer } from './prompt-optimizer.js';
 import { applyCompression } from '../compression/index.js';
 import { RouterEngine, routingModeForceTier } from '../router/index.js';
+import { hasToolsOrSchema } from '../router/request-traits.js';
+import {
+  getRouteEntryStore,
+  routeEntriesGate,
+  promptHashOf,
+  normalizePrompt,
+  L2_CONFIDENT_THRESHOLD,
+} from '../router/route-entries.js';
+import { detectRetry, planEscalation, RETRY_MIN_PROMPT_CHARS } from '../router/retry-escalation.js';
+import { appendRoutingLedger } from '../router/routing-ledger.js';
 import { SchemaAssertion } from '../validator/schema-assertion.js';
 import { FallbackContextBuilder } from '../validator/parser.js';
 import { ProviderRegistry } from '../providers/registry.js';
@@ -208,6 +218,60 @@ export class PipelineOrchestrator {
 
   public getCircuitBreakerManager(): CircuitBreakerManager {
     return this.registry.getCircuitBreakerManager();
+  }
+
+  /**
+   * Auto-request routing with the experience table in front of the judge
+   * (ADR-0011): an entry hit short-circuits L2 entirely — the table IS a
+   * prior judgment. Explicit request tiers (`force_tier`, incl. the
+   * mode-forced ones resolved in 1B) skip the table: an explicit choice is a
+   * layer0 decision by definition. On an L2 judgment the router behaves
+   * exactly as before (judge → plus baseline).
+   */
+  private async routeAutoDecision(
+    request: ChatCompletionRequest,
+    judgeCapture: UpstreamEventContext | undefined,
+    sessionId: string,
+    promptHash: string | undefined
+  ): Promise<RoutingDecision> {
+    const gate = routeEntriesGate();
+    if (gate.enabled !== false && promptHash && !request.router_options?.force_tier) {
+      const entry = getRouteEntryStore().hit(promptHash, sessionId);
+      if (entry) {
+        // The entry's effort is part of the experience; a client-explicit
+        // effort always outranks it.
+        if (entry.effort && request.reasoning_effort === undefined) {
+          request.reasoning_effort = entry.effort;
+        }
+        appendRoutingLedger({
+          kind: 'entry_hit',
+          sessionId,
+          promptHash,
+          detail: { tier: entry.tier, source: entry.source, hits: entry.hitCount },
+        });
+        return {
+          targetTier: entry.tier,
+          confidence: entry.confidence,
+          reason: `Experience table hit — this prompt previously served at ${entry.tier}`,
+          reasonCode: 'entry.hit',
+          reasonParams: { tier: entry.tier, source: entry.source, hits: entry.hitCount },
+          layerUsed: 'entry',
+          needsSchemaValidation: hasToolsOrSchema(request),
+        };
+      }
+    }
+    return RouterEngine.routeAsync(
+      request,
+      this.config.classifier,
+      this.registry,
+      this.config.systemone?.defaultModel,
+      // Judge-call capture identity: the outer turn's trace/session (only
+      // exists while the capture master is on). The LAYER 2 JUDGE applies
+      // the surface-master chain (systemone.enabled master × l2Decision-
+      // Enabled sub) — when off it
+      // passes nothing further, so this arg alone changes nothing today.
+      judgeCapture
+    );
   }
 
   public startProber(): void {
@@ -536,7 +600,62 @@ export class PipelineOrchestrator {
     }));
     await applyCompression(normalizedRequest, this.config.compression, sessionId);
 
-    // 3. Multi-Layer Hierarchical Router (Layer 0 request rules -> Layer 2 System One decision)
+    // 2C. Route-entry experience + retry detection (ADR-0011). One normalized
+    // prompt hash feeds everything downstream: the experience-table lookup,
+    // the repeated-prompt ladder and the ledger. Detection gates on the
+    // ≥20-char floor (single-word re-sends are noise); correction observation
+    // runs at detection time because it reads the PREVIOUS turn's state
+    // before this turn overwrites it.
+    const routeGate = routeEntriesGate();
+    const routeEntriesOn = routeGate.enabled !== false;
+    const lastUserMsgEarly = normalizedRequest.messages.filter((m) => m.role === 'user').pop();
+    const lastUserText = typeof lastUserMsgEarly?.content === 'string'
+      ? lastUserMsgEarly.content
+      : Array.isArray(lastUserMsgEarly?.content)
+        ? (lastUserMsgEarly.content.map((p) => (p as any).text || '').join(' ')).trim()
+        : '';
+    const normalizedPrompt = normalizePrompt(lastUserText ?? '');
+    const promptHash = routeEntriesOn && normalizedPrompt ? promptHashOf(normalizedPrompt) : undefined;
+    const prevRetryState = this.sessionManager.getSession(sessionId)?.retry;
+    const detection =
+      routeEntriesOn && normalizedPrompt.length >= RETRY_MIN_PROMPT_CHARS
+        ? detectRetry(prevRetryState, promptHash)
+        : { isRetry: false, attempt: 0 };
+    if (detection.isRetry) {
+      appendRoutingLedger({ kind: 'retry_detected', sessionId, promptHash, detail: { attempt: detection.attempt } });
+    }
+    // Correction write-back: the previous turn escalated, succeeded, and the
+    // user moved on to a DIFFERENT prompt — that is the strongest "the
+    // escalation worked" signal available (satisfied-and-left never writes
+    // back: accepted bounded loss). Human rows are immune inside the store.
+    if (
+      routeEntriesOn &&
+      prevRetryState?.escalated &&
+      prevRetryState.lastOutcomeOk === true &&
+      prevRetryState.lastPromptHash &&
+      promptHash !== prevRetryState.lastPromptHash
+    ) {
+      getRouteEntryStore().upsert(
+        {
+          promptHash: prevRetryState.lastPromptHash,
+          tier: prevRetryState.lastTierUsed ?? 'plus',
+          effort: prevRetryState.lastEffortUsed,
+          source: 'correction',
+          confidence: 1.0,
+          snippet: undefined,
+        },
+        sessionId
+      );
+      appendRoutingLedger({
+        kind: 'correction',
+        sessionId,
+        promptHash: prevRetryState.lastPromptHash,
+        detail: { tier: prevRetryState.lastTierUsed, effort: prevRetryState.lastEffortUsed },
+      });
+    }
+
+    // 3. Multi-Layer Hierarchical Router (Layer 0 rules -> experience table ->
+    // Layer 2 System One decision -> plus baseline)
     // Combo requests bypass the classifier entirely: the combo id IS the
     // explicit routing decision; targetTier here is a placeholder — the
     // executed member's real tier overwrites it after the pool run.
@@ -550,18 +669,60 @@ export class PipelineOrchestrator {
           layerUsed: 'layer0',
           needsSchemaValidation: false,
         }
-      : await RouterEngine.routeAsync(
-          normalizedRequest,
-          this.config.classifier,
-          this.registry,
-          this.config.systemone?.defaultModel,
-          // Judge-call capture identity: the outer turn's trace/session (only
-          // exists while the capture master is on). The LAYER 2 JUDGE applies
-          // the surface-master chain (systemone.enabled master × l2Decision-
-          // Enabled sub) — when off it
-          // passes nothing further, so this arg alone changes nothing today.
-          upstreamEventContext
-        );
+      : await this.routeAutoDecision(normalizedRequest, upstreamEventContext, sessionId, promptHash);
+
+    // 3B. Retry-escalation proposal (ADR-0011): the repeated-prompt ladder
+    // rides ON TOP of the base decision BEFORE the ratchet validates it — a
+    // tier step flows through the normal monotonic-ratchet path (upgrade =
+    // sanctioned re-pin), an effort step is written into the request's
+    // reasoning_effort and clamped by the existing effort machinery. Explicit
+    // choices are never escalated (force_tier / named model / combo): the
+    // client (or the mode lever) already decided.
+    let appliedEscalation = false;
+    if (
+      routeEntriesOn &&
+      routeGate.escalateOnRetry !== false &&
+      detection.isRetry &&
+      promptHash &&
+      !comboId &&
+      !explicitModel &&
+      !normalizedRequest.router_options?.force_tier
+    ) {
+      const pinned = (() => {
+        const pinnedId = this.sessionManager.getSession(sessionId)?.pinnedModel;
+        return pinnedId ? this.registry.getModel(pinnedId) : undefined;
+      })();
+      const supported = pinned
+        ? pinned.supportedReasoningEfforts ?? (pinned.supportsReasoningEffort ? EFFORT_LADDER : undefined)
+        : undefined;
+      const plan = planEscalation({
+        attempt: detection.attempt,
+        lastTierUsed: prevRetryState?.lastTierUsed ?? initialDecision.targetTier,
+        lastEffortUsed: prevRetryState?.lastEffortUsed,
+        pinnedSupportedEfforts: supported,
+      });
+      if (plan.action === 'effort' && plan.effort) {
+        // Same tier, deeper thinking. normalizedRequest.reasoning_effort is
+        // read by the effort machinery BELOW — this write must land first.
+        normalizedRequest.reasoning_effort = plan.effort;
+        initialDecision.reasonParams = { ...(initialDecision.reasonParams ?? {}), retry: 'effort', ...plan.reasonParams };
+        appliedEscalation = true;
+      } else if (plan.action === 'tier' && plan.tier && (TIER_RANK[plan.tier] ?? 0) > (TIER_RANK[initialDecision.targetTier] ?? 0)) {
+        initialDecision.targetTier = plan.tier;
+        initialDecision.reason = plan.reason;
+        initialDecision.reasonCode = plan.reasonCode;
+        initialDecision.reasonParams = { ...(initialDecision.reasonParams ?? {}), retry: 'tier', ...plan.reasonParams };
+        appliedEscalation = true;
+      }
+      if (appliedEscalation) {
+        appendRoutingLedger({
+          kind: 'escalation',
+          sessionId,
+          promptHash,
+          detail: { action: plan.action, tier: plan.tier, effort: plan.effort, attempt: detection.attempt },
+        });
+      }
+    }
 
     // 4. Apply Monotonic Session Ratchet — three session-interaction modes,
     // resolved once here (the unified policy seam for all entry modes):
@@ -1212,6 +1373,45 @@ export class PipelineOrchestrator {
         servedCredentialPrefix ?? this.registry.getCredentialChain(actualModel.provider)?.[0]?.keyHashPrefix;
       if (servedUsagePrefix) rl.recordUsage(credentialSubject(actualModel.provider, servedUsagePrefix), rlUsage);
       usageCredentialPrefix = servedUsagePrefix;
+    }
+
+    // 7B. Experience-table writes + retry-state bookkeeping (ADR-0011) —
+    // post-success only: a failed turn leaves no trace in either, so a
+    // technical resend never reads as a repeated prompt. The l2_confident
+    // write records what ACTUALLY served (failover/cascade truth), skipping
+    // schema-cascade turns where the lite lead owns the tier decision.
+    if (routeEntriesOn && promptHash) {
+      const entryStore = getRouteEntryStore();
+      if (
+        decision.layerUsed === 'layer2' &&
+        (decision.confidence ?? 0) >= L2_CONFIDENT_THRESHOLD &&
+        !decision.needsSchemaValidation
+      ) {
+        entryStore.upsert(
+          {
+            promptHash,
+            tier: actualTier,
+            effort: actualEffort,
+            source: 'l2_confident',
+            confidence: decision.confidence,
+            snippet: lastUserText ? lastUserText.slice(0, 200) : undefined, // same 200-char display-aid precedent as session attachOrigin
+          },
+          sessionId
+        );
+        appendRoutingLedger({
+          kind: 'entry_write',
+          sessionId,
+          promptHash,
+          detail: { source: 'l2_confident', tier: actualTier, confidence: decision.confidence },
+        });
+      }
+      this.sessionManager.recordTurnOutcome(sessionId, {
+        promptHash,
+        tierUsed: actualTier,
+        effortUsed: actualEffort,
+        escalated: appliedEscalation,
+        retryCount: detection.attempt,
+      });
     }
 
     // 8. Session Trajectory Recording — the traceId is shared with the

@@ -63,11 +63,16 @@ OneCastRouter (OCR) replaces simplistic character length rules (e.g., `prompt.le
 1. **Layer 0 (Request Rules)**:
    - Explicit client choices decide immediately: `router_options.force_tier`, auto-tier aliases, combos, and the global `routing.mode` lever.
    - Structured-output requests (`response_format` / `tools`) arm the lite-first schema-assertion cascade at execution time, whatever tier was decided.
-2. **Layer 2 (Context-Aware Judge Model)**:
+2. **Route-entry Experience Table (ADR-0011)**:
+   - Before consulting the judge, an auto request checks the persistent experience table: a hit short-circuits L2 with the tier (and effort) that served this prompt before.
+   - Human-editable from the console `/route-entries` page; writes come only from the whitelist (judge ≥0.85, accepted retry corrections, human edits).
+3. **Layer 2 (Context-Aware Judge Model)**:
    - Evaluates recent conversational context using a dedicated judge model for authoritative semantic intent and difficulty rating.
    - Any judge miss (disabled, unresolvable, timeout, upstream failure) degrades gracefully.
-3. **Default (Quality-First Baseline)**:
+4. **Default (Quality-First Baseline)**:
    - With no judge decision, requests land on the hardcoded `plus` tier — zero-config never silently routes cheap.
+5. **Retry Escalation (ADR-0011)**:
+   - The same prompt re-sent in a session (≥20 chars, previous turn succeeded) escalates: attempt 1 raises reasoning effort, attempt 2+ raises the tier (cap `ultra`, capability-ceiling jumps straight to tier+1).
 
 ---
 
@@ -92,6 +97,9 @@ onecast-router/
 ├── src/
 │   ├── router/                    # Cascaded arbitration engine
 │   │   ├── request-traits.ts      # Rule-based request facts (structured-output gate)
+│   │   ├── route-entries.ts       # Persistent per-prompt experience table (ADR-0011)
+│   │   ├── retry-escalation.ts    # Repeated-prompt detection + escalation ladder (ADR-0011)
+│   │   ├── routing-ledger.ts      # Append-only hash-only audit trail
 │   │   ├── layer2-judge.ts        # Layer 2: Dedicated context-aware semantic judge model
 │   │   └── index.ts               # Central hierarchical arbitration pipeline (RouterEngine)
 │   ├── session/                   # Session lifecycle & state machine

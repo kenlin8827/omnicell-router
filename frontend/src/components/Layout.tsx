@@ -21,6 +21,7 @@ import {
   Zap,
   Activity,
   Shuffle,
+  Waypoints,
   BrainCircuit,
   Layers,
   ClipboardList,
@@ -87,6 +88,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     icon: Shuffle,
     items: [
       { to: '/tiers', labelKey: 'nav.rules', icon: Network },
+      { to: '/route-entries', labelKey: 'nav.routeEntries', icon: Waypoints },
       { to: '/auto', labelKey: 'nav.auto', icon: BrainCircuit },
       { to: '/combos', labelKey: 'nav.combos', icon: Layers },
       { to: '/model-profiles', labelKey: 'nav.modelProfiles', icon: ClipboardList },
@@ -141,6 +143,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
 const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = {
   '/': { groupKey: 'nav.grpOverview', titleKey: 'nav.overview' },
   '/tiers': { groupKey: 'nav.grpTraffic', titleKey: 'nav.rules' },
+  '/route-entries': { groupKey: 'nav.grpTraffic', titleKey: 'nav.routeEntries' },
   '/auto': { groupKey: 'nav.grpTraffic', titleKey: 'nav.auto' },
   '/combos': { groupKey: 'nav.grpTraffic', titleKey: 'nav.combos' },
   '/model-profiles': { groupKey: 'nav.grpTraffic', titleKey: 'nav.modelProfiles' },

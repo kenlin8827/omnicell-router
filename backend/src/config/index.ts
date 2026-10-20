@@ -54,6 +54,12 @@ const DEFAULT_CONFIG: RouterConfig = {
       collectEnabled: false, // dataset sampling: judged decisions → data/layer2-decisions.jsonl (single-key gate, opt-in)
     },
   },
+  routeEntries: {
+    enabled: true, // experience table: lookup + whitelisted writes + ledger
+    snippetEnabled: true, // store first 200 prompt chars for the console (opt-out)
+    escalateOnRetry: true, // false = shadow mode: detect + ledger, never act
+    maxEntries: 5000,
+  },
   proxy: {
     enabled: false, // opt-in: proxying only when explicitly enabled
     url: 'http://127.0.0.1:7890',
@@ -466,6 +472,7 @@ export function loadConfig(configPath?: string): RouterConfig {
         classifier: {
           layer2: sanitizeLayer2Input(parsed?.classifier?.layer2),
         },
+        routeEntries: { ...DEFAULT_CONFIG.routeEntries, ...parsed?.routeEntries },
         proxy: { ...DEFAULT_CONFIG.proxy, ...parsed?.proxy },
         forwardProxy: { ...DEFAULT_CONFIG.forwardProxy, ...parsed?.forwardProxy },
         compression: {
@@ -699,6 +706,11 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'classifier.layer2.timeoutMs': '判定超时（毫秒，超时回落到默认 plus 梯队）',
   'classifier.layer2.decisionCache': '判定决策缓存（相同上下文复用判定结果）',
   'classifier.layer2.collectEnabled': 'L2 裁判决策样本采集开关（默认 false 关闭）：单键门控，落盘 data/layer2-decisions.jsonl（不进捕捉页），64MB 封顶后停写并告警一次；热生效',
+  routeEntries: '路由经验表（ADR-0011）：按归一化 prompt 记忆历史路由档位，重复提问自动升档；enabled 关闭即整个子系统停用（查询/写入/审计台账全停）',
+  'routeEntries.enabled': '经验表总开关（查询、白名单写入与审计台账）；保存后即时生效',
+  'routeEntries.snippetEnabled': '是否存 prompt 前 200 字符片段供控制台浏览/人工识别（隐私敏感，默认开；关闭只影响新写入，不删除已存片段）',
+  'routeEntries.escalateOnRetry': '重试升档动作开关：同会话重复同一问题≥20字符时第1次抬思考档、第2次起升梯队（封顶 ultra）；关闭=影子模式（只检测与记录台账，不做任何动作）',
+  'routeEntries.maxEntries': '经验条目上限（按最后活动时间 LRU 淘汰）',
   'circuitBreaker': '熔断器（按模型统计失败并自动摘除，见 /guardrails 页）；规则组 rules 可逐条开关并覆写参数，保存后即时生效（无需重启；仅 persistence.debounceMs 需重启）',
   'circuitBreaker.failureThreshold': '窗口内失败次数阈值（达到即熔断）；rules.trip.consecutiveFailures.threshold 未设置时的全局默认值',
   'circuitBreaker.slidingWindowSize': '滑动窗口样本数；rules.trip.failureRate.windowSize 未设置时的全局默认值',

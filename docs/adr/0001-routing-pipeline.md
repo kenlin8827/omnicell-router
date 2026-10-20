@@ -14,9 +14,10 @@ The retired Layer 1 (a local micro-tensor classifier trained by an execution fly
 
 ### 1. Layer vocabulary and cascade
 
-`layerUsed: 'layer0' | 'layer2'` (`types/router.ts`), reasonCode set locked beside it (`forced`, `default`, `combo`, `l2.*`, `session.*`).
+`layerUsed: 'layer0' | 'entry' | 'layer2'` (`types/router.ts`), reasonCode set locked beside it (`forced`, `default`, `combo`, `entry.hit`, `l2.*`, `session.*`; `retry.*` attribution rides reasonParams — ADR-0011).
 
 - **Layer 0 = never consult a model.** Explicit choices are decisions: `router_options.force_tier`, auto-tier aliases (`auto-lite/plus/pro/ultra` rewrite `force_tier` before routing), combo (reasonCode `combo`), and the global mode lever `routing.mode`: `cost`→lite, `quality`→pro, `smart`→cascade; a client-named model or forced tier always outranks the mode (`routingModeForceTier`, `router/index.ts`).
+- **Experience lookup = the persistent prior.** Before consulting the judge, an auto request checks the RouteEntry table (ADR-0011): a hit short-circuits L2 with `layerUsed: 'entry'`.
 - **Layer 2 = remote judge.** Any judge miss (disabled, unresolvable, timeout, upstream failure) returns null → graceful fallback (`layer2-judge.ts`). Routing never hard-fails because the judge failed.
 - **Default = plus baseline.** With no judge decision the cascade ends at a hardcoded `plus` with reasonCode `default` and `layerUsed: 'layer0'` (`router/index.ts`) — never a guess at lite.
 

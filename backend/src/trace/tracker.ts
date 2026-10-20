@@ -42,7 +42,7 @@ export interface ExecutionTrace {
     };
   };
   routing: {
-    layerUsed: 'layer0' | 'layer2';
+    layerUsed: 'layer0' | 'entry' | 'layer2';
     targetTier: TierLevel;
     confidence: number;
     reason: string;

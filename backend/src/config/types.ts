@@ -350,6 +350,21 @@ export interface ClassifierConfig {
   layer2?: Layer2JudgeConfig;
 }
 
+/**
+ * RouteEntry experience table (ADR-0011): the persistent "this prompt routed
+ * well at X" memory + the retry-escalation policy. `enabled` gates the whole
+ * subsystem (lookup, writes, ledger); `snippetEnabled` gates the 200-char
+ * prompt snippet stored for console browsing (privacy-sensitive, opt-out);
+ * `escalateOnRetry: false` demotes the retry ladder to shadow mode (events
+ * are still detected and ledgered, nothing acts on them).
+ */
+export interface RouteEntriesConfig {
+  enabled?: boolean; // default true
+  snippetEnabled?: boolean; // default true
+  escalateOnRetry?: boolean; // default true (false = shadow-only)
+  maxEntries?: number; // default 5000
+}
+
 export interface SessionConfig {
   enabled: boolean;
   strategy?: 'monotonic' | 'sticky' | 'stateless';
@@ -743,6 +758,7 @@ export interface RouterConfig {
    * serving wire can stream.
    */
   streaming?: StreamingConfig;
+  routeEntries?: RouteEntriesConfig;
   session?: SessionConfig;
   circuitBreaker?: CircuitBreakerConfig;
   retry?: RetryConfig;

@@ -181,6 +181,22 @@ classifier:
                                     # (Moved from the retired classifier.layer2.decisionCapture — old key ignored.)
 
 # ==============================================================================
+# Route-entry Experience Table (ADR-0011)
+# ==============================================================================
+# Persistent "this prompt routed well at X" memory + the repeated-prompt
+# escalation ladder. One entry per normalized prompt hash; writes come ONLY
+# from the whitelist (high-confidence judge turns, accepted retry corrections,
+# console edits). Audit trail: <env>/data/routing-ledger.jsonl (hashes only).
+routeEntries:
+  enabled: true                    # Master switch (lookup + writes + ledger)
+  snippetEnabled: true             # Store the first 200 prompt chars for console browsing
+                                   # (privacy-sensitive, opt-out; only gates NEW snippets)
+  escalateOnRetry: true            # Repeated-prompt ladder: attempt 1 raises effort,
+                                   # attempt 2+ raises the tier (cap ultra). false = shadow
+                                   # mode: detect + ledger only, never act.
+  maxEntries: 5000                 # LRU cap (evicts lowest-updatedAt rows)
+
+# ==============================================================================
 # Request Capture (full request/response body audit log, OPT-IN)
 # ==============================================================================
 # Archives every orchestrated turn (success AND failure) as append-only JSONL:

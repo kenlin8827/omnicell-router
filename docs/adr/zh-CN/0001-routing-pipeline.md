@@ -14,9 +14,10 @@
 
 ### 1. 层词汇与级联
 
-`layerUsed: 'layer0' | 'layer2'`（`types/router.ts`），reasonCode 集合随之一同锁定（`forced`、`default`、`combo`、`l2.*`、`session.*`）。
+`layerUsed: 'layer0' | 'entry' | 'layer2'`（`types/router.ts`），reasonCode 集合随之一同锁定（`forced`、`default`、`combo`、`entry.hit`、`l2.*`、`session.*`；`retry.*` 归因走 reasonParams——见 ADR-0011）。
 
 - **第 0 层 = 绝不咨询模型。** 显式选择即决策：`router_options.force_tier`、auto 梯队别名（`auto-lite/plus/pro/ultra` 在路由前改写 `force_tier`）、组合（reasonCode `combo`）、以及全局模式杆 `routing.mode`：`cost`→lite、`quality`→pro、`smart`→级联；客户端点名模型或强制梯队永远压过模式（`routingModeForceTier`，`router/index.ts`）。
+- **经验查询 = 持久化的既有判定。** 咨询判定器之前，auto 请求先查 RouteEntry 表（ADR-0011）：命中即以 `layerUsed: 'entry'` 短路 L2。
 - **第 2 层 = 远程判定器。** 任何判定失手（未启用、模型不可解析、超时、上游失败）都返回 null → 优雅兜底（`layer2-judge.ts`）。路由绝不因判定器失败而硬失败。
 - **默认 = plus 基线。** 无判定结果时级联落在硬编码 `plus`，reasonCode `default`、`layerUsed: 'layer0'`（`router/index.ts`）——绝不瞎猜到 lite。
 

@@ -20,3 +20,4 @@
 | [ADR-0008](./0008-protocol-surfaces-and-capture.md) | 接入面与捕获 | **已实现** | 2026-10-15 | 一张派发表双传输；入站别名恰四个；MITM 全捕获姿态；requestCapture = HTTP 交换事件（每轮 2–4 条）、凭证值掩码、默认关字节同一；systemone 两腿闸树 + 概率诚实措辞；responses.persist 失忆边界 |
 | [ADR-0009](./0009-quota-probing.md) | 额度跟踪——分层知识、声明式探测 | **已实现** | 2026-10-15 | 覆盖随 release、激活随凭据；四层（头收割预留 / 声明表 / 代码 adapter / 用户表）；12 构件 DSL、五类禁例结构上写不出；铁律只约束用户配置；探测失败≠额度失败；只展示不门控路由；熔断汇聚点写 quota_events 账本 |
 | [ADR-0010](./0010-provider-def-ownership.md) | Provider 定义归属——OCR 定义文件，opencode.jsonc 物化目标 | **已实现** | 2026-10-19 | 连接定义真相落于 `<ocrHome>/custom-providers.json`（jsonc 保形移植、解析器不动）；opencode.jsonc 退出真相链——同步客户端物化目标（推定义只写不读，reload 自愈存活）；boot pool 换源；一次性 jsonc 导入带 marker；v1 只推 key；页面去 opencode 化 |
+| [ADR-0011](./0011-route-entries-and-retry-escalation.md) | 路由经验表与重试升档 | **已实现** | 2026-10-21 | 持久化按 prompt 记忆（可人工编辑、片段可关）；写入白名单 human > correction > l2_confident；经验命中短路判定器；重复提问阶梯思考档+1 → 梯队+1（A3 能力上限跳步）；routing-ledger 仅哈希审计；escalateOnRetry=false 即影子模式 |

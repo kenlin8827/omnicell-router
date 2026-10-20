@@ -24,6 +24,7 @@ import { SettingsPage } from './pages/SettingsPage';
 import { AutoPage } from './pages/AutoPage';
 import { CombosPage } from './pages/CombosPage';
 import { ModelProfilesPage } from './pages/ModelProfilesPage';
+import { RouteEntriesPage } from './pages/RouteEntriesPage';
 import { YamlPage } from './pages/YamlPage';
 import { ConfirmProvider } from './components/ConfirmProvider';
 import { ToastProvider } from './components/ToastProvider';
@@ -70,6 +71,7 @@ export const App: React.FC = () => {
       <Route path="/" element={<Layout />}>
         <Route index element={<OverviewPage />} />
         <Route path="tiers" element={<RulesPage />} />
+        <Route path="route-entries" element={<RouteEntriesPage />} />
         <Route path="auto" element={<AutoPage />} />
         <Route path="combos" element={<CombosPage />} />
         <Route path="model-profiles" element={<ModelProfilesPage />} />
