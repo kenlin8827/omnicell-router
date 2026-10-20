@@ -1273,7 +1273,6 @@ export const enUS: TranslationDict = {
     profileEmpty: 'No model profiles yet — create one first: ',
     profileManage: 'Manage profiles',
     profileLinkedHint: 'Linked to profile "{name}" — rows linked via "Slot:" write through automatically when the profile is saved; no re-apply needed.',
-    profileAgents: 'Agent model links',
     profileAgentsLoading: 'Loading agent inventory…',
     profileAgentsError: 'Agent inventory failed to load — setup will not touch any agent binding until it loads.',
     profileAgentsRetry: 'Retry',

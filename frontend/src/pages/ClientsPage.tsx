@@ -719,38 +719,6 @@ export const ClientsPage: React.FC = () => {
                     />
                   </div>
                 )}
-                {c.name === 'pi' && (() => {
-                  const selProfileId = profileSel[c.name] || '';
-                  const linkedProfile = profiles.find(p => p.id === selProfileId);
-                  return (
-                    <div style={{ gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        <div style={{ fontSize: '11px', color: 'var(--text-dim)', flexShrink: 0 }}>{t('clients.profileTitle')}</div>
-                        <div style={{ width: '280px' }}>
-                          <Combobox
-                            value={selProfileId}
-                            onChange={v => setProfileSel(prev => ({ ...prev, [c.name]: v }))}
-                            options={[
-                              { value: '', label: t('clients.profileNone') },
-                              ...profiles.map(p => ({ value: p.id, label: p.name || p.id, meta: p.name ? p.id : undefined })),
-                            ]}
-                          />
-                        </div>
-                        {profiles.length === 0 && (
-                          <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
-                            {t('clients.profileEmpty')}{' '}
-                            <Link to="/model-profiles" style={{ color: 'var(--accent)', textDecoration: 'none' }}>{t('clients.profileManage')}</Link>
-                          </span>
-                        )}
-                      </div>
-                      {linkedProfile && (
-                        <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
-                          {t('clients.profileLinkedHint', { name: linkedProfile.name || linkedProfile.id })}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()}
                 {clientSlots(c).filter(s => c.name !== 'pi' || s.key === 'main').map(s => (
                         <div key={s.key}>
                           <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '6px' }}>

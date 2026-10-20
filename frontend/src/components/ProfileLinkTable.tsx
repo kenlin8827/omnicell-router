@@ -116,7 +116,6 @@ export const ProfileLinkTable: React.FC<Props> = ({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
       <div style={{ fontSize: '11px', color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: '10px' }}>
-        <span style={{ flexShrink: 0 }}>{t('clients.profileAgents')}</span>
         {rows.length > 8 && (
           <input
             className="input"

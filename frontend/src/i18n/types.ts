@@ -1339,7 +1339,6 @@ hiddenBadge: string;
     profileManage: string;
     /** Shown while a profile is linked: save-time write-through notice. */
     profileLinkedHint: string;
-    profileAgents: string;
     profileAgentsLoading: string;
     /** Inventory fetch failed: explanatory line + retry button. */
     profileAgentsError: string;
