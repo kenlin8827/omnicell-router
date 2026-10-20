@@ -5,6 +5,7 @@ import { ProviderRegistry } from '../src/providers/registry.js';
 import { FinOpsTracker } from '../src/metrics/finops-tracker.js';
 import { PipelineOrchestrator } from '../src/pipeline/orchestrator.js';
 import { ChatCompletionRequest } from '../src/types/openai.js';
+import type { StreamRelay } from '../src/utils/chat-stream.js';
 
 describe('End-to-End Pipeline & FinOps Orchestration', () => {
   const config = loadConfig();
@@ -60,6 +61,46 @@ describe('End-to-End Pipeline & FinOps Orchestration', () => {
     assert.strictEqual(result.fallbackOccurred, true);
     assert.strictEqual(result.tierUsed, 'plus');
     assert.ok(result.fallbackReason?.includes('Missing required key'));
+  });
+
+  it('3b. Mock mode ignores the relay: cascade turns stay buffered with no timing stamps', async () => {
+    // Pins the registry's mock short-circuit (registry.execute answers before
+    // the relay is ever consulted): even with a relay handed in, the cascade
+    // escalation's frames stay empty and ttftMs/genMs are absent — mock turns
+    // are buffered by construction, not streamed.
+    const frames: unknown[] = [];
+    const relay: StreamRelay = {
+      stageRouting: () => {},
+      onChunk: (chunk) => frames.push(chunk),
+      get committed() {
+        return frames.length > 0;
+      },
+    };
+    const req: ChatCompletionRequest = {
+      model: 'auto',
+      messages: [{ role: 'user', content: 'Strict schema extraction.' }],
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'StrictTest',
+          schema: {
+            type: 'object',
+            required: ['mandatory_key_that_fails_on_fast_tier'],
+            properties: {
+              mandatory_key_that_fails_on_fast_tier: { type: 'string' },
+            },
+          },
+        },
+      },
+    };
+
+    const result = await orchestrator.process(req, {}, relay);
+    assert.strictEqual(result.fallbackOccurred, true);
+    assert.strictEqual(result.tierUsed, 'plus');
+    assert.strictEqual(frames.length, 0, 'mock execution must never feed the relay');
+    const trace = orchestrator.getTraceTracker().getRecentTraces().data[0];
+    assert.equal(trace?.execution.ttftMs, undefined);
+    assert.equal(trace?.execution.genMs, undefined);
   });
 
   it('4. FinOpsTracker correctly aggregates requests and token counters', () => {

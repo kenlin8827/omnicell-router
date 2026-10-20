@@ -306,3 +306,277 @@ describe('true streaming through the candidate pool', () => {
     }
   });
 });
+
+/**
+ * Schema-assertion cascade × streaming. The lite lead must stay buffered (its
+ * output can be discarded wholesale on assertion failure — no byte may commit),
+ * but the escalation leg's response IS the final answer (no re-assertion), so
+ * it streams under the direct path's commit-point contract and stamps
+ * ttftMs/genMs. Before the escalation leg carried the relay, these turns left
+ * the client in silence for the whole generation and showed '—' in the console.
+ */
+describe('schema-assertion cascade streaming', () => {
+  /** JSON body → routing: lite attempt answers non-JSON prose, plus streams. */
+  function cascadeServer() {
+    const plusHits: string[] = [];
+    let liteHits = 0;
+    const server = serve({
+      port: 0,
+      async fetch(req) {
+        const body = JSON.parse(await req.text());
+        if (body.model === 'up-lite') {
+          liteHits++;
+          return new Response(
+            JSON.stringify({
+              id: 'chatcmpl-lite',
+              object: 'chat.completion',
+              created: 1700000000,
+              model: 'up-lite',
+              choices: [{ index: 0, message: { role: 'assistant', content: '我是散文，不是 JSON' }, finish_reason: 'stop' }],
+              usage: { prompt_tokens: 5, completion_tokens: 4, total_tokens: 9 },
+            }),
+            { headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        // Escalation leg: SSE only when the upstream was ASKED to stream —
+        // with streaming.enabled=false the rollback path calls createCompletion
+        // (stream stripped), so the fake must answer a buffered JSON body.
+        plusHits.push(body.model);
+        if ((body.stream ?? false) !== true) {
+          return new Response(
+            JSON.stringify({
+              id: 'chatcmpl-plus',
+              object: 'chat.completion',
+              created: 1700000000,
+              model: 'up-plus',
+              choices: [{ index: 0, message: { role: 'assistant', content: '{"ok":"yes"}' }, finish_reason: 'stop' }],
+              usage: { prompt_tokens: 11, completion_tokens: 4, total_tokens: 15 },
+            }),
+            { headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        let pulled = 0;
+        const stream = new ReadableStream({
+          async pull(c) {
+            if (pulled++ === 0) {
+              c.enqueue(chunkLine({ role: 'assistant', content: '{"ok":' }, null, 'up-plus'));
+              return;
+            }
+            await new Promise((r) => setTimeout(r, 60));
+            c.enqueue(chunkLine({ content: '"yes"}' }, 'stop', 'up-plus'));
+            c.enqueue(
+              `data: ${JSON.stringify({
+                id: 'chatcmpl-plus',
+                object: 'chat.completion.chunk',
+                created: 1,
+                model: 'up-plus',
+                choices: [],
+                usage: { prompt_tokens: 11, completion_tokens: 4, total_tokens: 15 },
+              })}\n\n`
+            );
+            c.enqueue('data: [DONE]\n\n');
+            c.close();
+          },
+        });
+        return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } });
+      },
+    });
+    return { server, plusHits, liteHits: () => liteHits };
+  }
+
+  const schemaRequest = () =>
+    ({
+      model: 'auto',
+      stream: true,
+      messages: [{ role: 'user', content: 'extract' }],
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'Strict',
+          schema: { type: 'object', required: ['ok'], properties: { ok: { type: 'string' } } },
+        },
+      },
+    }) as any;
+
+  /** Lite + plus registry: the cascade gate needs fallback.enabled=true. */
+  function cascadeConfig(baseUrl: string, extra: Partial<RouterConfig> = {}): RouterConfig {
+    return makeConfig(
+      baseUrl,
+      {
+        fallback: { enabled: true, maxRetries: 1, escalateTier: 'plus', injectErrorContext: false },
+        models: [
+          { id: 'stub/one', provider: 'stub', upstreamModel: 'up-lite', tier: 'lite', priority: 1, isDefaultInTier: true, pricing: { input: 0.1, cacheRead: 0.01, output: 0.2 } },
+          { id: 'stub/plus', provider: 'stub', upstreamModel: 'up-plus', tier: 'plus', priority: 1, isDefaultInTier: true, pricing: { input: 0.1, cacheRead: 0.01, output: 0.2 } },
+        ],
+        ...extra,
+      } as Partial<RouterConfig>
+    );
+  }
+
+  function makeFactsSink() {
+    const sink = makeRelaySink();
+    const staged: any[] = [];
+    const relay: StreamRelay = {
+      stageRouting: (facts) => staged.push({ ...facts }),
+      onChunk: sink.relay.onChunk,
+      get committed() {
+        return sink.relay.committed;
+      },
+    };
+    return { relay, frames: sink.frames, staged };
+  }
+
+  it('escalation leg streams the final answer and stamps ttftMs/genMs', async () => {
+    const { server, plusHits, liteHits } = cascadeServer();
+    const base = `http://localhost:${server.port}/v1`;
+    const { orchestrator } = boot(cascadeConfig(base));
+    const { relay, frames, staged } = makeFactsSink();
+    try {
+      const result = await orchestrator.process(schemaRequest(), {}, relay);
+      // The lite attempt ran and failed the assertion; the escalation served.
+      assert.equal(liteHits(), 1);
+      assert.equal(result.fallbackOccurred, true);
+      assert.ok(result.fallbackReason?.includes('not valid JSON'));
+      assert.equal(result.tierUsed, 'plus');
+      assert.equal(result.response.choices[0].message.content, '{"ok":"yes"}');
+      // THE fix: the escalation output reached the relay progressively.
+      assert.ok(frames.length >= 2, `expected relayed frames, got ${frames.length}`);
+      assert.equal(relay.committed, true);
+      assert.equal(plusHits.length, 1, 'post-commit failure would re-issue; a clean stream hits once');
+      // Trace: the industry TTFT/TPS split must now exist for cascade turns.
+      const trace = orchestrator.getTraceTracker().getRecentTraces().data[0];
+      assert.ok(trace, 'the turn must be traced');
+      assert.equal(trace.execution.modelUsed, 'stub/plus');
+      assert.ok(typeof trace.execution.ttftMs === 'number' && trace.execution.ttftMs >= 0);
+      assert.ok(trace.execution.genMs! >= 55, `decode window should cover the 60ms stall, got ${trace.execution.genMs}`);
+      assert.ok(trace.execution.ttftMs! <= trace.execution.latencyMs);
+      // Routing facts staged on the first forwarded chunk name the ESCALATED
+      // model/tier (the pool's per-attempt stageRouting overwrites), and the
+      // decision layer stays the original classifier's.
+      const last = staged[staged.length - 1];
+      assert.equal(last.modelUsed, 'stub/plus');
+      assert.equal(last.tierUsed, 'plus');
+      assert.equal(last.layerUsed, 'layer1');
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  it('lite-success cascade turns stay buffered — no frames, timing undefined', async () => {
+    const server = serve({
+      port: 0,
+      async fetch(req) {
+        const body = JSON.parse(await req.text());
+        if (body.model === 'up-lite') {
+          // Buffered JSON body: the lite lead executes WITHOUT the relay, so
+          // registry falls to createCompletion which strips `stream` — the
+          // upstream never even sees a streaming ask. Buffering here is the
+          // gateway's assertion discipline, not the wire's.
+          return new Response(
+            JSON.stringify({
+              id: 'chatcmpl-lite',
+              object: 'chat.completion',
+              created: 1700000000,
+              model: 'up-lite',
+              choices: [{ index: 0, message: { role: 'assistant', content: '{"ok":"valid"}' }, finish_reason: 'stop' }],
+              usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
+            }),
+            { headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        throw new Error('escalation must not run when the lite assertion passes');
+      },
+    });
+    const base = `http://localhost:${server.port}/v1`;
+    const { orchestrator } = boot(cascadeConfig(base));
+    const { relay, frames } = makeFactsSink();
+    try {
+      const result = await orchestrator.process(schemaRequest(), {}, relay);
+      assert.equal(result.fallbackOccurred, false);
+      assert.equal(result.tierUsed, 'lite');
+      assert.equal(result.response.choices[0].message.content, '{"ok":"valid"}');
+      assert.equal(frames.length, 0, 'a discardable lite attempt must never commit relay bytes');
+      assert.equal(relay.committed, false);
+      const trace = orchestrator.getTraceTracker().getRecentTraces().data[0];
+      assert.ok(trace, 'the turn must be traced');
+      assert.equal(trace.execution.ttftMs, undefined);
+      assert.equal(trace.execution.genMs, undefined);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  it('streaming.enabled=false rolls the escalation leg back to buffered', async () => {
+    const { server, plusHits } = cascadeServer();
+    const base = `http://localhost:${server.port}/v1`;
+    const { orchestrator } = boot(cascadeConfig(base, { streaming: { enabled: false } }));
+    const { relay, frames } = makeFactsSink();
+    try {
+      const result = await orchestrator.process(schemaRequest(), {}, relay);
+      assert.equal(result.fallbackOccurred, true);
+      assert.equal(result.tierUsed, 'plus');
+      assert.equal(result.response.choices[0].message.content, '{"ok":"yes"}');
+      assert.equal(frames.length, 0, 'the rollback switch must keep the escalation leg buffered too');
+      assert.equal(plusHits.length, 1);
+      const trace = orchestrator.getTraceTracker().getRecentTraces().data[0];
+      assert.equal(trace?.execution.ttftMs, undefined);
+      assert.equal(trace?.execution.genMs, undefined);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  it('escalation leg that breaks after committed bytes is not re-issued', async () => {
+    const plusHits: string[] = [];
+    let liteHits = 0;
+    const server = serve({
+      port: 0,
+      async fetch(req) {
+        const body = JSON.parse(await req.text());
+        if (body.model === 'up-lite') {
+          liteHits++;
+          return new Response(
+            JSON.stringify({
+              id: 'chatcmpl-lite',
+              object: 'chat.completion',
+              created: 1700000000,
+              model: 'up-lite',
+              choices: [{ index: 0, message: { role: 'assistant', content: 'not json' }, finish_reason: 'stop' }],
+              usage: { prompt_tokens: 5, completion_tokens: 4, total_tokens: 9 },
+            }),
+            { headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        // Escalation leg: one committed frame, then the body dies.
+        plusHits.push(body.model);
+        let pulled = 0;
+        const stream = new ReadableStream({
+          async pull(c) {
+            if (pulled++ === 0) {
+              c.enqueue(chunkLine({ content: 'halfway' }, null, 'up-plus'));
+              return;
+            }
+            await new Promise((r) => setTimeout(r, 60));
+            c.error(new Error('upstream reset'));
+          },
+        });
+        return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } });
+      },
+    });
+    const base = `http://localhost:${server.port}/v1`;
+    const { orchestrator } = boot(cascadeConfig(base));
+    const { relay, frames } = makeFactsSink();
+    try {
+      let rejected = false;
+      await orchestrator.process(schemaRequest(), {}, relay).catch(() => {
+        rejected = true;
+      });
+      assert.ok(rejected, 'a broken escalation stream must surface as a failed turn');
+      assert.ok(liteHits >= 1, 'the lite lead must have run and failed the assertion');
+      assert.ok(frames.length >= 1, 'the first escalation frame must have been relayed before the break');
+      assert.equal(plusHits.length, 1, 'post-commit: no second candidate, no re-issue');
+    } finally {
+      server.stop(true);
+    }
+  });
+});

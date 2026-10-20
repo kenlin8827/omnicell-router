@@ -24,7 +24,7 @@
 
 - **原地微退避**（同候选再来一次：默认 1 次，200ms + 100ms 抖动）：瞬时网络/5xx 抖动原地重试保住 prompt-cache 位置（10 倍代价的重试好过一次全量重 prefill 的 failover）；按因白名单放行（`retryOnCauses`——`server_internal_error` 刻意默认除外：含糊的 500 可能已执行）；短 RA 429 突发合格；401/402 **永不**原地（无法归属/配额——绕行）。
 - **Failover 链走**：auto 用 `retry.failover.maxAttempts` 预算；显式/combo 上限 = 链长（其组合即契约）；`tierCrossPolicy: same_tier_only | allow_escalate`——升档模式**只**给 lite 链附健康 plus 尾巴；严格防降级：高梯队链永不附低梯队尾巴（`:1227-1229,1311-1315`）。
-- 结构断言级联（仅 auto + 结构化输出）：lite 冲锋 → **本地静态断言**（零额外 LLM；JSON 语法/required/type/enum）→ 失败则携失败输出 + `[System Assertion Error]` 纠正消息升 `fallback.escalateTier`（plus|pro|ultra）、temperature 压 0.1——显式模型、combo、`router_options.disable_fallback` 全部跳过。降级是诚实的（因果入 `reasonParams`），不是静默兜底。
+- 结构断言级联（仅 auto + 结构化输出）：lite 冲锋 → **本地静态断言**（零额外 LLM；JSON 语法/required/type/enum）→ 失败则携失败输出 + `[System Assertion Error]` 纠正消息升 `fallback.escalateTier`（plus|pro|ultra）、temperature 压 0.1——显式模型、combo、`router_options.disable_fallback` 全部跳过。降级是诚实的（因果入 `reasonParams`），不是静默兜底。lite 冲锋腿保持缓冲（其字节可能整轮作废）；升档腿的响应即终答（不再二次断言），按直连路径的提交点契约照常流式并同规记账 `ttftMs`/`genMs`（ADR-0008 §3）。
 
 ### 5. 流式 = 只朝下游的重分块
 

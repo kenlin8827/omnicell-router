@@ -884,7 +884,7 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'session.ttlSeconds': '会话保持时长（秒）',
   'session.maxSessions': '会话表容量上限',
   streaming: '推理流式（上游 SSE 逐帧转发，而非整段缓冲后再分块）',
-  'streaming.enabled': '默认 true。仅对具备流式执行器的线型生效（当前为 OpenAI chat/completions；Anthropic/Google/Responses 仍走缓冲路径），需要先看完整正文再做 Schema 断言/升档级联的请求也始终走缓冲路径。置 false 为回滚开关：恢复"上游非流式 + 网关重新分块"的旧行为，客户端首字节时间重新等于上游整段生成时间。修改后需重启生效',
+  'streaming.enabled': '默认 true。仅对具备流式执行器的线型生效（当前为 OpenAI chat/completions；Anthropic/Google/Responses 仍走缓冲路径）。Schema 断言级联中，lite 冲锋腿始终缓冲（正文先过本地断言、可能整轮作废重问）；断言失败后的升档终答腿与直连路径一样照常流式。置 false 为回滚开关：上述全部恢复"上游非流式 + 网关重新分块"的旧行为，客户端首字节时间重新等于上游整段生成时间。修改后需重启生效',
   responses: 'Responses 协议面（POST /v1/responses）：网关侧 previous_response_id 会话链',
   'responses.persist': '会话链磁盘恢复（默认 false）：开启后每轮增量以 JSONL 恢复日志写入本环境数据目录（文件权限 0600），启动时自动重放，24 小时过期自动清理——网关重启后长对话仍可续接；关闭时重启即断链（返回 400，客户端需重发完整 input）。日志含对话原文，属敏感数据落盘，与请求捕获（requestCapture）同级隐私考量；磁盘写入失败绝不影响请求本身',
 };

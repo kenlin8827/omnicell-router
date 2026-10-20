@@ -843,8 +843,12 @@ export class PipelineOrchestrator {
     // undefined = legacy no-prefix path (chain-less provider or single key).
     let servedCredentialPrefix: string | undefined = undefined;
     // Streaming decode timing of the committed attempt (pool stamps, converted
-    // to ttftMs/genMs below). Only the direct path passes a relay — the
-    // schema-assertion cascade executes relay-less, so its turns stay undefined.
+    // to ttftMs/genMs below). Two relay-less turns remain: the cascade's lite
+    // lead (its output may be discarded wholesale on assertion failure, so no
+    // byte may commit) and lite-success cascade turns — their timing stays
+    // undefined and the console renders '—'. The escalation leg's response IS
+    // the final answer (no re-assertion follows), so it streams exactly like
+    // the direct path and stamps timing the same way.
     let poolTiming: { firstChunkAt: number; streamEndAt: number } | undefined = undefined;
 
     // 5. Execution with Cascading Fallback & Schema Assertion
@@ -931,6 +935,18 @@ export class PipelineOrchestrator {
             modelAccess: context?.modelAccess,
             requestedEffort,
             sessionId,
+            // The escalation response is final (no re-assertion below), so it
+            // streams under the same commit-point contract as the direct path.
+            relay: this.config.streaming?.enabled === false ? undefined : relay,
+            streamRouting: {
+              layerUsed: decision.layerUsed || 'layer0',
+              sessionId,
+              sessionRatchetApplied: ratchetApplied,
+              sessionLookupType: sessionResolve.lookupType,
+              traceId: traceId ?? 'unknown',
+              requestedEffort,
+              variantUsed,
+            },
           },
           upstreamEventContext
         );
@@ -960,6 +976,7 @@ export class PipelineOrchestrator {
         failoverPath = plusResult.failoverPath;
         inplaceRetries += plusResult.inplaceRetries;
         servedCredentialPrefix = plusResult.servedCredentialPrefix;
+        poolTiming = plusResult.timing;
       }
     } else {
       // Unified candidate-chain resolution for the direct path. One shape for
@@ -1039,11 +1056,11 @@ export class PipelineOrchestrator {
           modelAccess: context?.modelAccess,
           requestedEffort,
           sessionId,
-          // Streaming is offered ONLY on this direct path. The schema-assertion
-          // cascade above must inspect the full `message.content` before any byte
-          // may reach the client (its verdict can re-ask the whole turn on a
-          // bigger tier), so relaying there would commit output the cascade is
-          // about to throw away.
+          // Streaming here and on the cascade's escalation leg (whose response
+          // is final). The cascade's LITE lead stays relay-less: it must inspect
+          // the full `message.content` before its verdict, and that verdict can
+          // re-ask the whole turn on a bigger tier — relaying it would commit
+          // output the cascade is about to throw away.
           relay: this.config.streaming?.enabled === false ? undefined : relay,
           streamRouting: {
             layerUsed: decision.layerUsed || 'layer0',
