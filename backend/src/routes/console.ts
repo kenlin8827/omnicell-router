@@ -1042,7 +1042,8 @@ export function registerConsoleRoutes(
     //    A wrong write to opencode.jsonc is harder to undo than a refused
     //    setup, so every merged ref must be routable (fail-fast).
     const allowedRefs = new Set<string>([
-      'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra',
+      // 'auto' is a legal slot ref (inherit-the-default): the adapter skips it.
+      'auto', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra',
       ...registry.getAllModels().map(m => m.id),
       ...registry.getCombos().map(c => c.id),
       ...registry.getVariantExposures().map(v => v.id),
@@ -1279,7 +1280,7 @@ export function registerConsoleRoutes(
     // Profile-link write-through: an edited profile re-resolves into every
     // hooked client linked to it (diff-guarded — no-op when unchanged).
     const profileNote = await refreshClientProfileBindings(loadConfig().modelProfiles || []);
-    if (profileNote) return { ...result, message: profileNote.trim().replace(/^; /, '') };
+    if (profileNote) return { ...result, message: `Saved. ${profileNote.trim().replace(/^; /, '')}` };
     return result;
   };
   app.post('/api/admin/config', handleSaveConfig);
@@ -1306,7 +1307,7 @@ export function registerConsoleRoutes(
       .applyConfig(loadConfig().circuitBreaker, loadConfig().retry); // hot-apply breaker rules too (see handleSaveConfig)
     // Profile-link write-through on the raw path too (same diff guard).
     const profileNote = await refreshClientProfileBindings(loadConfig().modelProfiles || []);
-    if (profileNote) return { ...result, message: profileNote.trim().replace(/^; /, '') };
+    if (profileNote) return { ...result, message: `Saved. ${profileNote.trim().replace(/^; /, '')}` };
     return result;
   };
   app.post('/api/admin/config/raw', handleSaveRawYaml);

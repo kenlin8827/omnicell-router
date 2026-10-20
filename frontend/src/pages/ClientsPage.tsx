@@ -64,6 +64,11 @@ export const ClientsPage: React.FC = () => {
   const [profilesReady, setProfilesReady] = useState(false);
   /** OpenCode agent inventory (lazy: loaded when the opencode form expands) */
   const [agents, setAgents] = useState<OpenCodeAgentView[] | null>(null);
+  /** Inventory fetch failed. `agents` deliberately STAYS null: the setup
+   *  payload omits agent bindings whenever the inventory has not loaded, and
+   *  an empty-list fallback here would let a plain Apply sweep every binding
+   *  off the config. Retry re-arms the lazy-load effect. */
+  const [agentsError, setAgentsError] = useState(false);
   /** Selected profile id per client ('' = no profile / un-apply) */
   const [profileSel, setProfileSel] = useState<Record<string, string>>({});
   /** Per-client agent-name → slot-key bindings (model profile application) */
@@ -246,10 +251,10 @@ export const ClientsPage: React.FC = () => {
   /** Lazy-load the OpenCode agent inventory when the opencode form first expands. */
   const opencodeOpen = !!expanded['opencode'];
   useEffect(() => {
-    if (opencodeOpen && agents === null) {
-      api.listOpencodeAgents().then(setAgents).catch(() => setAgents([]));
+    if (opencodeOpen && agents === null && !agentsError) {
+      api.listOpencodeAgents().then(setAgents).catch(() => setAgentsError(true));
     }
-  }, [opencodeOpen, agents]);
+  }, [opencodeOpen, agents, agentsError]);
 
   /** Seed opencode's agent-link draft once the inventory loads: each row
    *  mirrors the config's current agent model (router-owned values arrive
@@ -852,7 +857,21 @@ export const ClientsPage: React.FC = () => {
                             <Link to="/model-profiles" style={{ color: 'var(--accent)', textDecoration: 'none', flexShrink: 0 }}>{t('clients.profileManage')}</Link>
                           </div>
                           {agents === null ? (
-                            <div style={{ fontSize: '12px', color: 'var(--text-dim)' }}>{t('clients.profileAgentsLoading')}</div>
+                            agentsError ? (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '12px', color: 'var(--accent-amber)' }}>
+                                <span>{t('clients.profileAgentsError')}</span>
+                                <button
+                                  type="button"
+                                  className="btn btn-sm"
+                                  style={{ fontSize: '11px' }}
+                                  onClick={() => setAgentsError(false)}
+                                >
+                                  {t('clients.profileAgentsRetry')}
+                                </button>
+                              </div>
+                            ) : (
+                              <div style={{ fontSize: '12px', color: 'var(--text-dim)' }}>{t('clients.profileAgentsLoading')}</div>
+                            )
                           ) : agents.length === 0 ? (
                             <div style={{ fontSize: '12px', color: 'var(--text-dim)' }}>{t('clients.profileAgentsEmpty')}</div>
                           ) : (() => {

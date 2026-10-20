@@ -94,5 +94,8 @@ export async function refreshClientProfileBindings(
     success: false,
     message: err instanceof Error ? err.message : String(err),
   }));
-  return r.success && !r.message.includes('already up to date') ? `; ${r.message}` : '';
+  // Failures surface in the save response (cp-failfast) — a silently dropped
+  // write-through would leave the client config stale with no signal.
+  if (!r.success) return `; warning: opencode profile refresh FAILED: ${r.message}`;
+  return r.message.includes('already up to date') ? '' : `; ${r.message}`;
 }

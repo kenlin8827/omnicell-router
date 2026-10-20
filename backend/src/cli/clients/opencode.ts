@@ -378,13 +378,36 @@ export class OpenCodeClientAdapter implements ClientAdapter {
       return { success: false, message: 'OpenCode is not hooked — nothing to refresh' };
     }
 
-    // Resolve tags → desired refs; missing slots drop out (skipped count is
-    // reported, the tag itself survives so a re-added slot re-links).
+    // Current router-owned agent values (native pins never appear here). Read
+    // FIRST: manual rows — agents bound outside the profile — must survive the
+    // sweep below byte-identical, and the diff guard needs them to tell an
+    // unchanged mixed state from a change.
+    const stripPrefix = (v: any): string =>
+      typeof v === 'string' && v.startsWith(`${ROUTER_PROVIDER_ID}/`)
+        ? v.slice(ROUTER_PROVIDER_ID.length + 1)
+        : '';
+    const current: Record<string, string> = {};
+    const node = data?.[AGENT_SLOT];
+    if (node && typeof node === 'object') {
+      for (const [name, def] of Object.entries(node as Record<string, unknown>)) {
+        const v = stripPrefix((def as any)?.model);
+        if (v) current[name] = v;
+      }
+    }
+
+    // Resolve tags → desired refs. Missing slots — and slot refs of 'auto'
+    // (inherit-the-default, same semantics as the setup path) — drop out: the
+    // sweep removes their override and the agent inherits. MANUAL rows (agents
+    // absent from the tags map) keep their current router-owned value: a
+    // profile save must never touch them.
     const desired: Record<string, string> = {};
+    for (const [name, ref] of Object.entries(current)) {
+      if (!(name in (tags || {}))) desired[name] = ref;
+    }
     let skipped = 0;
     for (const [name, slotKey] of Object.entries(tags || {})) {
       const ref = (slots || {})[slotKey];
-      if (!ref || !isValidAgentName(name)) {
+      if (!ref || ref === 'auto' || !isValidAgentName(name)) {
         skipped++;
         continue;
       }
@@ -392,28 +415,32 @@ export class OpenCodeClientAdapter implements ClientAdapter {
     }
 
     // Diff guard: compare desired refs against the live agent node values —
-    // an unrelated config save must not rewrite this file.
-    const stripPrefix = (v: any): string =>
-      typeof v === 'string' && v.startsWith(`${ROUTER_PROVIDER_ID}/`)
-        ? v.slice(ROUTER_PROVIDER_ID.length + 1)
-        : '';
-    const slot = AGENT_SLOT;
-    const current: Record<string, string> = {};
-    const node = data?.[slot];
-    if (node && typeof node === 'object') {
-      for (const [name, def] of Object.entries(node as Record<string, unknown>)) {
-        const v = stripPrefix((def as any)?.model);
-        if (v) current[name] = v;
-      }
-    }
-    const names = new Set([...Object.keys(current), ...Object.keys(desired)]);
-    const changed = [...names].some(n => (desired[n] || '') !== (current[n] || ''));
+    // an unrelated config save must not rewrite this file. The echo compare
+    // sorts keys so an equal-but-reordered bindings map still counts as same.
+    const changed = [...new Set([...Object.keys(current), ...Object.keys(desired)])]
+      .some(n => (desired[n] || '') !== (current[n] || ''));
     const meta = readMeta(configPath);
+    const stableEcho = (o: Record<string, string>) =>
+      JSON.stringify(Object.keys(o).sort().map(k => [k, o[k]]));
     const echoSame =
-      meta.profile?.id === profileId &&
-      JSON.stringify(meta.profile?.bindings || {}) === JSON.stringify(tags || {});
+      meta.profile?.id === profileId && stableEcho(meta.profile?.bindings || {}) === stableEcho(tags || {});
     if (!changed && echoSame) {
       return { success: true, message: 'opencode profile links already up to date' };
+    }
+
+    // The provider-def models map must be a superset of the linked refs —
+    // opencode validates agent.<name>.model against the client's provider
+    // models map, so writing refs the map lacks would corrupt the config.
+    // A missing def entry means the hook state is inconsistent: refuse before
+    // touching anything (re-apply setup to repair).
+    const defsPaths = resolveDefaultPaths();
+    const defs = readProviderDefsFile(defsPaths)?.providers ?? {};
+    const entry = defs[ROUTER_PROVIDER_ID];
+    if (!entry?.models || typeof entry.models !== 'object') {
+      return {
+        success: false,
+        message: 'opencode provider def entry is missing — re-apply the client setup first',
+      };
     }
 
     createBackup(configPath);
@@ -423,26 +450,20 @@ export class OpenCodeClientAdapter implements ClientAdapter {
       patchJsonc(configPath, [AGENT_SLOT, name, 'model'], `${ROUTER_PROVIDER_ID}/${ref}`);
       applied++;
     }
-    // Keep the provider-def models map a superset of the linked refs —
-    // opencode validates agent.<name>.model against it. Existing entries
-    // (main pin, user extras) are never removed here; the materialized client
-    // copy converges immediately so the new refs validate right away.
-    const defsPaths = resolveDefaultPaths();
-    const defs = readProviderDefsFile(defsPaths)?.providers ?? {};
-    const entry = defs[ROUTER_PROVIDER_ID];
-    if (entry?.models && typeof entry.models === 'object') {
-      const modelsMap = { ...(entry.models as Record<string, unknown>) };
-      let added = 0;
-      for (const ref of Object.values(desired)) {
-        if (!modelsMap[ref]) {
-          modelsMap[ref] = { name: ref };
-          added++;
-        }
+    // Extend the def models map with the linked refs (existing entries — main
+    // pin, user extras — are never removed) and materialize the client copy
+    // immediately so the new refs validate right away.
+    const modelsMap = { ...(entry.models as Record<string, unknown>) };
+    let added = 0;
+    for (const ref of Object.values(desired)) {
+      if (!modelsMap[ref]) {
+        modelsMap[ref] = { name: ref };
+        added++;
       }
-      if (added > 0) {
-        writeProviderDefs({ ...defs, [ROUTER_PROVIDER_ID]: { ...entry, models: modelsMap } }, defsPaths);
-        materializeDefs(defsPaths, configPath);
-      }
+    }
+    if (added > 0) {
+      writeProviderDefs({ ...defs, [ROUTER_PROVIDER_ID]: { ...entry, models: modelsMap } }, defsPaths);
+      materializeDefs(defsPaths, configPath);
     }
     meta.profile = { id: profileId, bindings: tags || {} };
     writeMeta(configPath, meta);

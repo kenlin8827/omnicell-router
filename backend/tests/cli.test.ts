@@ -325,6 +325,44 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(unhooked.success).toBe(false);
   });
 
+  it('refreshProfileBindings preserves manual rows, treats auto slots as inherit, and no-ops on mixed-state saves', async () => {
+    const configPath = path.join(tmpDir, 'opencode.json');
+    fs.writeFileSync(configPath, JSON.stringify({ model: 'anthropic/claude-sonnet-4' }, null, 2));
+    const adapter = new OpenCodeClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    // Mixed state: 'scout' is profile-linked (tag flash), 'explore' is a
+    // manual row (agentModels only — absent from the link tags).
+    await adapter.setup({
+      port: 4000,
+      models: { main: 'auto' },
+      agentModels: { scout: 'auto-lite', explore: 'glm-5.3' },
+      profile: { id: 'p1', bindings: { scout: 'flash' } },
+    });
+
+    // Profile save re-points 'flash': the linked row follows, the manual row
+    // keeps its binding byte-identical.
+    const res = await adapter.refreshProfileBindings('p1', { scout: 'flash' }, { flash: 'qwen-max' });
+    expect(res.success).toBe(true);
+    let cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(cfg.agents.scout.model).toBe('onecast-router/qwen-max');
+    expect(cfg.agents.explore.model).toBe('onecast-router/glm-5.3');
+
+    // An unchanged save on the mixed state is a no-op (the manual row in the
+    // diff guard must not count as a change).
+    const again = await adapter.refreshProfileBindings('p1', { scout: 'flash' }, { flash: 'qwen-max' });
+    expect(again.message).toContain('already up to date');
+
+    // A slot ref of 'auto' means inherit-the-default: the override is swept,
+    // and no literal `onecast-router/auto` pin is ever written.
+    const inherit = await adapter.refreshProfileBindings('p1', { scout: 'autoSlot' }, { autoSlot: 'auto' });
+    expect(inherit.success).toBe(true);
+    cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(cfg.agents.scout?.model).toBeUndefined();
+    expect(JSON.stringify(cfg.agents)).not.toContain('"onecast-router/auto"');
+    expect(cfg.agents.explore.model).toBe('onecast-router/glm-5.3');
+  });
+
   it('teardown restores the ORIGINAL model even after re-setup with a different main', async () => {
     const configPath = path.join(tmpDir, 'opencode.json');
     fs.writeFileSync(configPath, JSON.stringify({ model: 'anthropic/claude-sonnet-4' }, null, 2));

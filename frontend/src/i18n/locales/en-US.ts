@@ -1275,6 +1275,8 @@ export const enUS: TranslationDict = {
     profileLinkedHint: 'Linked to profile "{name}" — rows linked via "Slot:" write through automatically when the profile is saved; no re-apply needed.',
     profileAgents: 'Agent model links',
     profileAgentsLoading: 'Loading agent inventory…',
+    profileAgentsError: 'Agent inventory failed to load — setup will not touch any agent binding until it loads.',
+    profileAgentsRetry: 'Retry',
     profileAgentsEmpty: 'No agents detected.',
     profileBindNone: '— unlinked (inherit default model) —',
     profileSlotLabel: 'Slot:{slot}',

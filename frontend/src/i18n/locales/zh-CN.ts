@@ -1269,6 +1269,8 @@ export const zhCN: TranslationDict = {
     profileLinkedHint: '已关联方案「{name}」——方案保存时，本表「槽位:」关联的行会自动回写，无需重新应用。',
     profileAgents: 'Agent 模型关联',
     profileAgentsLoading: '正在加载 agent 清单…',
+    profileAgentsError: 'agent 清单加载失败——清单未加载前接管不会改动任何 agent 绑定。',
+    profileAgentsRetry: '重试',
     profileAgentsEmpty: '未检测到任何 agent。',
     profileBindNone: '— 不关联（继承默认模型） —',
     profileSlotLabel: '槽位:{slot}',

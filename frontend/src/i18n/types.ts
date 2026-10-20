@@ -1342,6 +1342,9 @@ hiddenBadge: string;
     profileLinkedHint: string;
     profileAgents: string;
     profileAgentsLoading: string;
+    /** Inventory fetch failed: explanatory line + retry button. */
+    profileAgentsError: string;
+    profileAgentsRetry: string;
     profileAgentsEmpty: string;
     profileBindNone: string;
     /** Row picker label for a profile-slot link entry (slot name interpolated). */
