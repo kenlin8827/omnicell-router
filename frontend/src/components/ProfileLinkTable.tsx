@@ -136,7 +136,8 @@ export const ProfileLinkTable: React.FC<Props> = ({
 
   // Switch OFF: the whole table collapses to one switch row — the form
   // declares "not configuring subagents" (setup omits the agent payload).
-  // The linked count stays visible so existing links never go dark.
+  // The linked count stays visible so existing links never go dark; the
+  // semantics ride an InfoTip instead of a text line.
   if (on === false) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
@@ -148,8 +149,8 @@ export const ProfileLinkTable: React.FC<Props> = ({
               {(linkedCount || 0) > 0 ? ` · ${linkedCount}` : ''}
             </span>
           </label>
+          <InfoTip text={t('clients.profileRowsOffHint')} />
           <span style={{ flex: 1 }} />
-          <span>{t('clients.profileRowsOffHint')}</span>
         </div>
       </div>
     );
@@ -166,19 +167,21 @@ export const ProfileLinkTable: React.FC<Props> = ({
         ) : (
           label && <span style={{ flexShrink: 0 }}>{label}</span>
         )}
+        <InfoTip text={hint} />
         {rows.length > 8 && (
           <input
             className="input"
             value={filter}
             onChange={e => setFilter(e.target.value)}
             placeholder={t('clients.profileFilter')}
-            style={{ flex: 1, maxWidth: '260px' }}
+            style={{ flex: 1, maxWidth: '260px', fontSize: '12px', padding: '5px 10px' }}
           />
         )}
         <div style={{ width: '280px', flexShrink: 0 }}>
           <Combobox
             value={profileId}
             onChange={onProfileChange}
+            style={{ fontSize: '12px', padding: '5px 10px' }}
             options={[
               { value: '', label: t('clients.profileNone') },
               ...profiles.map(p => ({ value: p.id, label: p.name || p.id, meta: p.name ? p.id : undefined })),
@@ -187,8 +190,8 @@ export const ProfileLinkTable: React.FC<Props> = ({
         </div>
         <span style={{ flex: 1 }} />
         {showSort && rows.length > 8 && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }} title={t('clients.profileSortHint')}>
-            <span style={{ fontSize: '11px', color: 'var(--text-dim)', marginRight: '2px' }}>{t('clients.profileSortLabel')}</span>
+          <div style={{ display: 'flex', alignItems: 'stretch', gap: '4px', flexShrink: 0 }} title={t('clients.profileSortHint')}>
+            <span style={{ fontSize: '11px', color: 'var(--text-dim)', marginRight: '2px', alignSelf: 'center' }}>{t('clients.profileSortLabel')}</span>
             {([
               ['name', t('clients.profileSortName')],
               ['suffix', t('clients.profileSortSuffix')],
@@ -198,7 +201,7 @@ export const ProfileLinkTable: React.FC<Props> = ({
                 key={k}
                 type="button"
                 className="btn btn-sm"
-                style={{ fontSize: '11px', padding: '3px 8px', ...(sort === k ? { borderColor: 'var(--accent)', color: 'var(--accent)' } : {}) }}
+                style={{ fontSize: '11px', padding: '3px 8px', display: 'inline-flex', alignItems: 'center', ...(sort === k ? { borderColor: 'var(--accent)', color: 'var(--accent)' } : {}) }}
                 onClick={() => setSort(k)}
               >
                 {label}

@@ -1269,7 +1269,7 @@ export const enUS: TranslationDict = {
     proxyHint: 'Proxy mode does NOT rewrite opencode.json. It persists OpenCode opencode v2 service env: HTTPS_PROXY/HTTP_PROXY → the OCR forward proxy, NO_PROXY → loopback (required for the opencode CLI↔service local traffic), NODE_EXTRA_CA_CERTS → the OCR MITM CA. Only LLM endpoints (/v1/chat/completions, /v1/messages, /v1/responses) enter the routing pipeline — all other traffic forwards transparently, and models/keys stay opencode-native. Requires forwardProxy.enabled in config.yaml and OpenCode v2. NOTE: `opencode --standalone` / `serve` and shell-launched CLIs read their own process environment — set the same variables there manually. Teardown restores the previous values.',
     nameOpencodeProxy: 'OpenCode (Proxy Mode)',
     profileTitle: 'Profile Link',
-    profileNone: 'No profile — link models manually per row',
+    profileNone: 'No profile',
     profileEmpty: 'No model profiles yet — create one first: ',
     profileManage: 'Manage profiles',
     profileLinkedHint: 'Linked to profile "{name}" — rows linked via "Slot:" write through automatically when the profile is saved; no re-apply needed.',

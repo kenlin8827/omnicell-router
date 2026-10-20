@@ -1263,7 +1263,7 @@ export const zhCN: TranslationDict = {
     proxyHint: '代理模式不改动 opencode.json，而是持久化 OpenCode v2 服务环境变量：HTTPS_PROXY/HTTP_PROXY 指向 OCR 入站代理，NO_PROXY 排除本机回环（opencode CLI↔service 本地通信必需），NODE_EXTRA_CA_CERTS 信任 OCR 的 MITM CA。仅 LLM 端点（/v1/chat/completions、/v1/messages、/v1/responses）被接管进路由管线，其余流量透明转发，模型与密钥保持 opencode 原生配置。需要 config.yaml 开启 forwardProxy.enabled，且 OpenCode 为 v2。注意：`opencode --standalone` / `serve` 与 shell 直启的 CLI 读取自身进程环境，如需使用请在对应环境手动设置相同变量。Teardown 会还原之前的值。',
     nameOpencodeProxy: 'OpenCode（代理模式）',
     profileTitle: '方案关联',
-    profileNone: '不启用方案（各行手动关联模型）',
+    profileNone: '不启用方案',
     profileEmpty: '还没有模型方案，先创建一个：',
     profileManage: '管理方案',
     profileLinkedHint: '已关联方案「{name}」——方案保存时，本表「槽位:」关联的行会自动回写，无需重新应用。',
