@@ -406,6 +406,10 @@ export interface TraceRecord {
     provider: string;
     tierUsed: 'lite' | 'plus' | 'pro' | 'ultra';
     latencyMs: number;
+    /** Time to first forwarded chunk of the committed attempt; undefined = turn never streamed. */
+    ttftMs?: number;
+    /** Decode window (first chunk → stream drained) — the decode-TPS denominator; undefined as above. */
+    genMs?: number;
     fallbackOccurred: boolean;
     fallbackReason?: string;
     failoverOccurred?: boolean;
@@ -651,9 +655,14 @@ export interface SessionRecord {
   cachedTokens?: number;
   /** Cumulative recorded actual cost (USD) across the session's traces. Optional as above. */
   costUsd?: number;
-  /** Summed end-to-end latency (ms) across the session's traces — the
-   *  denominator of the average output-rate stat. Optional as above. */
+  /** Summed end-to-end latency (ms) across the session's traces. Optional as above. */
   totalLatencyMs?: number;
+  /** Output tokens summed over STREAMED traces only — decode-TPS numerator.
+   *  Optional: absent when the frontend is served by a pre-aggregates backend. */
+  genOutputTokens?: number;
+  /** Summed decode window (ms) over the same streamed traces — decode-TPS
+   *  denominator, paired with genOutputTokens. Optional as above. */
+  genMsSum?: number;
   /** First user prompt of the session (backend-capped summary). */
   firstUserMessage?: string;
   /** Distinct client API-key identities (applications) seen on this
@@ -674,6 +683,10 @@ export interface KeyUsageRow {
   cachedTokens: number;
   latencyMsSum: number;
   costUsd: number;
+  /** Output tokens over STREAMED turns only — decode-TPS numerator. */
+  genOutputTokens: number;
+  /** Summed decode window (ms) over the same turns — decode-TPS denominator. */
+  genMsSum: number;
 }
 
 export interface UsageStatsResponse {
@@ -685,6 +698,9 @@ export interface UsageStatsResponse {
     cachedTokens: number;
     avgLatencyMs: number;
     costUsd: number;
+    /** Same streamed-turns-only pairing as KeyUsageRow, window-wide. */
+    genOutputTokens: number;
+    genMsSum: number;
   };
   keys: KeyUsageRow[];
 }

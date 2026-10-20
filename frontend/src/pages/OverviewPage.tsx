@@ -10,7 +10,7 @@ import {
   ArrowRight,
 } from 'lucide-react';
 import { api, type GatewayStatusResponse, type UsageStatsResponse } from '../lib/api';
-import { outputRate, formatRate, fmtLatency } from '../lib/format';
+import { decodeRate, formatRate, fmtLatency } from '../lib/format';
 import { BrandIcon } from '../components/BrandIcons';
 import { Combobox } from '../components/Combobox';
 import { useI18n } from '../i18n/I18nContext';
@@ -65,12 +65,11 @@ export const OverviewPage: React.FC = () => {
   // Latency stays windowed when available; the cumulative FinOps average is
   // the in-flight fallback (semantics identical, just wider window).
   const latency = totals ? totals.avgLatencyMs : Math.round(metrics?.latency.avgMs || 0);
-  // Effective output throughput over the trace window: completion tokens ÷
-  // summed per-key latencies (same population as the cards). Null while the
-  // first window fetch is pending or when the window has no output tokens.
-  const toksRate = totals
-    ? outputRate(totals.outputTokens, (usage?.keys ?? []).reduce((a, r) => a + r.latencyMsSum, 0))
-    : null;
+  // Decode throughput (industry TPS) over the trace window: the backend
+  // totals already pair output tokens and decode window over streamed turns
+  // only. Null while the first window fetch is pending or when the window
+  // has no streamed turns.
+  const toksRate = totals ? decodeRate(totals.genOutputTokens, totals.genMsSum) : null;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>

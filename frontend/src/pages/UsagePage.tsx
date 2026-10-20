@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useSearchParams, useNavigate, useNavigationType } from 'react-router-dom';
 import { BarChart3, X, ArrowLeft } from 'lucide-react';
 import { api, type UsageStatsResponse, type KeyUsageRow, type TraceRecord } from '../lib/api';
-import { formatCost, shortId, outputRate, formatRate, fmtLatency } from '../lib/format';
+import { formatCost, shortId, decodeRate, formatRate, fmtLatency } from '../lib/format';
 import { Combobox } from '../components/Combobox';
 import { useI18n } from '../i18n/I18nContext';
 
@@ -33,6 +33,8 @@ const sumRows = (rows: KeyUsageRow[]): UsageStatsResponse['totals'] => {
   let cachedTokens = 0;
   let latencyMsSum = 0;
   let costUsd = 0;
+  let genOutputTokens = 0;
+  let genMsSum = 0;
   for (const r of rows) {
     requests += r.requests;
     inputTokens += r.inputTokens;
@@ -40,6 +42,8 @@ const sumRows = (rows: KeyUsageRow[]): UsageStatsResponse['totals'] => {
     cachedTokens += r.cachedTokens;
     latencyMsSum += r.latencyMsSum;
     costUsd += r.costUsd;
+    genOutputTokens += r.genOutputTokens;
+    genMsSum += r.genMsSum;
   }
   return {
     requests,
@@ -48,6 +52,8 @@ const sumRows = (rows: KeyUsageRow[]): UsageStatsResponse['totals'] => {
     cachedTokens,
     avgLatencyMs: requests > 0 ? Math.round(latencyMsSum / requests) : 0,
     costUsd: Number(costUsd.toFixed(6)),
+    genOutputTokens,
+    genMsSum,
   };
 };
 
@@ -92,12 +98,19 @@ export const UsagePage: React.FC = () => {
     let cachedTokens = 0;
     let latencyMsSum = 0;
     let costUsd = 0;
+    let genOutputTokens = 0;
+    let genMsSum = 0;
     for (const r of tr) {
       inputTokens += r.finops.inputTokens;
       outputTokens += r.finops.outputTokens;
       cachedTokens += r.finops.cachedTokens;
       latencyMsSum += r.execution.latencyMs;
       costUsd += r.finops.costUsd;
+      // Decode-TPS pairing: both sides accumulate over streamed turns only.
+      if (typeof r.execution.genMs === 'number') {
+        genOutputTokens += r.finops.outputTokens;
+        genMsSum += r.execution.genMs;
+      }
     }
     return {
       requests: tr.length,
@@ -106,6 +119,8 @@ export const UsagePage: React.FC = () => {
       cachedTokens,
       avgLatencyMs: tr.length > 0 ? Math.round(latencyMsSum / tr.length) : 0,
       costUsd: Number(costUsd.toFixed(6)),
+      genOutputTokens,
+      genMsSum,
     };
   };
 
@@ -144,11 +159,11 @@ export const UsagePage: React.FC = () => {
     setSearchParams(next, { replace: true });
   };
 
-  // Effective output throughput over the *displayed* population: scoped views
-  // sum per-trace latencies, key/overall views sum the per-row latencyMsSum.
-  const toksRate = scoped
-    ? outputRate(totals?.outputTokens ?? 0, scopedTraces.reduce((a, r) => a + r.execution.latencyMs, 0))
-    : outputRate(totals?.outputTokens ?? 0, rows.reduce((a, r) => a + r.latencyMsSum, 0));
+  // Decode throughput (industry TPS) over the *displayed* population —
+  // `totals` already pairs numerator and denominator over streamed turns only
+  // in all three branches (sumTraces / sumRows / backend totals), so the
+  // quotient is a pure decode rate; '—' when nothing streamed.
+  const toksRate = decodeRate(totals?.genOutputTokens ?? 0, totals?.genMsSum ?? 0);
 
   const cards: { label: string; value: string; color: string; tip?: string; sub?: string }[] = totals
     ? [
@@ -336,7 +351,7 @@ export const UsagePage: React.FC = () => {
                     </span>
                     <span style={{ color: 'var(--accent-amber)' }}>{formatCost(tr.finops.costUsd)}</span>
                     <span title={`${tr.execution.latencyMs} ms`}>{fmtLatency(tr.execution.latencyMs)}</span>
-                    <span title={t('usage.toksTip')}>{formatRate(outputRate(tr.finops.outputTokens, tr.execution.latencyMs))}</span>
+                    <span title={t('usage.toksTip')}>{formatRate(decodeRate(tr.finops.outputTokens, tr.execution.genMs))}</span>
                   </React.Fragment>
                 ))}
               </div>
@@ -412,7 +427,7 @@ export const UsagePage: React.FC = () => {
                       {fmtLatency(r.requests > 0 ? r.latencyMsSum / r.requests : 0)}
                     </td>
                     <td style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-dim)' }}>
-                      {formatRate(outputRate(r.outputTokens, r.latencyMsSum))}
+                      {formatRate(decodeRate(r.genOutputTokens, r.genMsSum))}
                     </td>
                   </tr>
                 ))}

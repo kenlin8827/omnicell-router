@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowDownWideNarrow, ArrowUpNarrowWide, Users, RefreshCw, Archive, BarChart3, ChevronDown, ChevronRight, Eye, GitBranch, X, Search, Trash2 } from 'lucide-react';
 import { api, type SessionRecord, type TraceRecord } from '../lib/api';
 import { formatReason, type Translate } from '../lib/reason';
-import { copyToClipboard, formatCost, formatSessionId, outputRate, formatRate, fmtLatency } from '../lib/format';
+import { copyToClipboard, formatCost, formatSessionId, decodeRate, formatRate, fmtLatency } from '../lib/format';
 import { clientDisplayName } from '../lib/clientDetect';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
@@ -688,18 +688,19 @@ export const SessionsPage: React.FC = () => {
                           }
                           color="var(--text-dim)"
                         />
-                        {/* Session-level effective output rate: total output
-                            tokens over the summed end-to-end latency. Same
-                            semantics as the per-request rate in the detail
-                            grid (queueing + routing + retries included).
-                            Spans the full grid width — a 5th row would
-                            otherwise strand an empty right half-column. */}
+                        {/* Session-level decode rate (industry TPS): output
+                            tokens summed over STREAMED turns only, divided by
+                            their summed decode window (first chunk → stream
+                            end). Same semantics as the per-request rate in
+                            the detail grid; '—' when the session never
+                            streamed. Spans the full grid width — a 5th row
+                            would otherwise strand an empty right half-column. */}
                         <TokenStatRow
                           span
                           label={t('sessions.tokenRate')}
                           value={
-                            (s.outputTokens ?? 0) > 0 && (s.totalLatencyMs ?? 0) > 0
-                              ? `${formatRate(outputRate(s.outputTokens!, s.totalLatencyMs!))} ${t('usage.thToks')}`
+                            (s.genOutputTokens ?? 0) > 0 && (s.genMsSum ?? 0) > 0
+                              ? `${formatRate(decodeRate(s.genOutputTokens!, s.genMsSum!))} ${t('usage.thToks')}`
                               : '—'
                           }
                           title={t('usage.toksTip')}
@@ -1035,7 +1036,7 @@ export const SessionsPage: React.FC = () => {
                 <div
                   style={{
                     display: 'grid',
-                    gridTemplateColumns: '64px 64px 30px minmax(160px, 1fr) 56px 56px 60px 86px 52px 44px',
+                    gridTemplateColumns: '64px 64px 30px minmax(160px, 1fr) 56px 56px 60px 86px 52px 44px 44px',
                     columnGap: '8px',
                     rowGap: '6px',
                     fontSize: '11px',
@@ -1052,6 +1053,7 @@ export const SessionsPage: React.FC = () => {
                     t('sessions.colCached'),
                     t('sessions.colCost'),
                     t('sessions.colMs'),
+                    t('usage.ttft'),
                     t('usage.thToks'),
                   ].map((label, i) => (
                     <span
@@ -1076,7 +1078,10 @@ export const SessionsPage: React.FC = () => {
                       </span>
                       <span style={{ color: 'var(--accent-amber)' }}>{formatCost(tr.finops.costUsd)}</span>
                       <span title={`${tr.execution.latencyMs} ms`}>{fmtLatency(tr.execution.latencyMs)}</span>
-                      <span title={t('usage.toksTip')}>{formatRate(outputRate(tr.finops.outputTokens, tr.execution.latencyMs))}</span>
+                      <span title={tr.execution.ttftMs != null ? `${tr.execution.ttftMs} ms` : t('usage.ttftTip')}>
+                        {tr.execution.ttftMs != null ? fmtLatency(tr.execution.ttftMs) : '—'}
+                      </span>
+                      <span title={t('usage.toksTip')}>{formatRate(decodeRate(tr.finops.outputTokens, tr.execution.genMs))}</span>
                     </React.Fragment>
                   ))}
                 </div>

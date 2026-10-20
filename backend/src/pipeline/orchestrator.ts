@@ -839,6 +839,10 @@ export class PipelineOrchestrator {
     // the credential (keyHash prefix) that actually served;
     // undefined = legacy no-prefix path (chain-less provider or single key).
     let servedCredentialPrefix: string | undefined = undefined;
+    // Streaming decode timing of the committed attempt (pool stamps, converted
+    // to ttftMs/genMs below). Only the direct path passes a relay — the
+    // schema-assertion cascade executes relay-less, so its turns stay undefined.
+    let poolTiming: { firstChunkAt: number; streamEndAt: number } | undefined = undefined;
 
     // 5. Execution with Cascading Fallback & Schema Assertion
     // (lite-lead cascade is skipped for explicit model choices and combos —
@@ -1058,6 +1062,7 @@ export class PipelineOrchestrator {
       finalResponse = execResult.response;
       actualModel = execResult.modelUsed!;
       actualTier = execResult.tierUsed!;
+      poolTiming = execResult.timing;
       // Recompute `actualEffort` against the model that ACTUALLY served the
       // request — failover may have shifted to a different model than the
       // one `pickModelForEffort` originally picked, with a different effort
@@ -1108,6 +1113,16 @@ export class PipelineOrchestrator {
 
     // 7. Post-turn observability
     const latencyMs = Date.now() - startTime;
+
+    // Streaming decode timing (industry TTFT/TPS split), from the committed
+    // attempt's stamps: ttftMs = process start → first forwarded chunk (the
+    // user-perceived time to first token — routing, queueing, prefill AND any
+    // failed attempt that preceded the commit all belong here), genMs = first
+    // chunk → fully drained stream (the decode window that console decode-TPS
+    // divides by). Both undefined when the turn never streamed (buffered
+    // execution, relay off, or a relay whose wire had no streaming executor).
+    const ttftMs = poolTiming ? poolTiming.firstChunkAt - startTime : undefined;
+    const genMs = poolTiming ? poolTiming.streamEndAt - poolTiming.firstChunkAt : undefined;
 
     // Thinking-level observability. Two cases that warrant a warn:
     //   1. Client asked for thinking but the actually-served model can't do
@@ -1256,6 +1271,8 @@ export class PipelineOrchestrator {
         credentialKeyHashPrefix: usageCredentialPrefix,
         tierUsed: actualTier,
         latencyMs,
+        ttftMs,
+        genMs,
         fallbackOccurred,
         fallbackReason,
         failoverOccurred,
@@ -1419,6 +1436,13 @@ export class PipelineOrchestrator {
     policyDenied?: boolean;
     /** Display-safe keyHash prefix of the credential that served (undefined = baked-key path). */
     servedCredentialPrefix?: string;
+    /**
+     * Wall-clock stamps (epoch ms) of the committed attempt's stream, present
+     * only when that attempt streamed through the relay: firstChunkAt = first
+     * forwarded chunk, streamEndAt = stream fully drained. The orchestrator
+     * converts them into the trace's ttftMs/genMs (industry TTFT/TPS split).
+     */
+    timing?: { firstChunkAt: number; streamEndAt: number };
   }> {
     const { tier, allowEscalate, attemptCap, label } = opts;
     const cbManager = this.registry.getCircuitBreakerManager();
@@ -1663,6 +1687,29 @@ export class PipelineOrchestrator {
       // In-place retry loop on the SAME candidate model
       let candidateSucceeded = false;
       let candidateResponse: ChatCompletionResponse | undefined = undefined;
+      // Streaming decode timing, per candidate attempt: `firstChunkAt` stamps
+      // the first chunk THIS attempt forwards, `streamEndAt` when
+      // registry.execute resolves — the SSE body is fully drained by then.
+      // The variables need no per-retry reset: any forwarded content chunk has
+      // already committed the caller's relay, so a failure after that returns
+      // before an in-place retry could run — a retrying attempt always starts
+      // with both stamps unset. The wrapper delegates to the caller's relay
+      // verbatim; the `committed` getter stays on the ORIGINAL relay (the
+      // bytes-to-client boundary).
+      let firstChunkAt: number | undefined;
+      let streamEndAt: number | undefined;
+      const timingRelay: StreamRelay | undefined = opts.relay
+        ? {
+            stageRouting: (facts) => opts.relay!.stageRouting(facts),
+            onChunk: (chunk) => {
+              firstChunkAt ??= Date.now();
+              opts.relay!.onChunk(chunk);
+            },
+            get committed() {
+              return opts.relay!.committed;
+            },
+          }
+        : undefined;
 
       for (let attempt = 0; attempt <= maxInplaceAttempts; attempt++) {
         try {
@@ -1671,8 +1718,9 @@ export class PipelineOrchestrator {
             candidate,
             upstreamEventContext,
             credentialPrefix,
-            opts.relay
+            timingRelay
           );
+          if (firstChunkAt !== undefined) streamEndAt = Date.now();
           // Scope-aware success: undefined prefix degenerates to the exact
           // model recordSuccess of the pre-P3 path.
           cbManager.recordSuccessScoped(candidate.id, credentialPrefix, candidate.provider);
@@ -1765,6 +1813,10 @@ export class PipelineOrchestrator {
           failoverPath,
           inplaceRetries: totalInplaceRetries,
           servedCredentialPrefix: credentialPrefix,
+          timing:
+            firstChunkAt !== undefined && streamEndAt !== undefined
+              ? { firstChunkAt, streamEndAt }
+              : undefined,
         };
       }
     }

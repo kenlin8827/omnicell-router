@@ -829,7 +829,12 @@ hiddenBadge: string;
     thRequests: string;
     thAvgMs: string;
     thToks: string;
+    /** Decode-TPS tooltip: generation-window denominator, streamed turns only. */
     toksTip: string;
+    /** Detail-grid column label for time-to-first-token. */
+    ttft: string;
+    /** TTFT tooltip: user-perceived first-token wait, failed attempts included. */
+    ttftTip: string;
     anonymous: string;
     empty: string;
     windowHint: string;

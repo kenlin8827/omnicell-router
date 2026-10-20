@@ -65,6 +65,21 @@ export interface ExecutionTrace {
     credentialKeyHashPrefix?: string;
     tierUsed: TierLevel;
     latencyMs: number;
+    /**
+     * Time to first token, user-perceived: process start → the committed
+     * attempt's first forwarded upstream chunk. Includes routing, queueing,
+     * prefill AND any failed attempt that preceded the commit. Undefined for
+     * turns that never streamed (buffered execution / relay off) — the
+     * console renders '—' rather than inventing a number.
+     */
+    ttftMs?: number;
+    /**
+     * Decode window: first forwarded chunk → stream fully drained. The
+     * denominator of the console's decode-TPS (output tokens ÷ genMs),
+     * matching the industry split where throughput excludes TTFT. Undefined
+     * alongside ttftMs for non-streamed turns.
+     */
+    genMs?: number;
     fallbackOccurred: boolean;
     fallbackReason?: string;
     failoverOccurred?: boolean;
@@ -112,6 +127,14 @@ export interface KeyUsageRow {
   latencyMsSum: number;
   /** Sum of the per-request actual costs (USD) — data-only, not rendered yet. */
   costUsd: number;
+  /**
+   * Output tokens summed over STREAMED turns only (genMs present) — the
+   * numerator paired with genMsSum for the decode-TPS aggregate. Rows from
+   * before the field existed replay as 0.
+   */
+  genOutputTokens: number;
+  /** Summed decode window (ms) over the same streamed turns; 0 = no data. */
+  genMsSum: number;
 }
 
 export interface UsageStatsSummary {
@@ -122,6 +145,9 @@ export interface UsageStatsSummary {
     cachedTokens: number;
     avgLatencyMs: number;
     costUsd: number;
+    /** Same streamed-turns-only pairing as KeyUsageRow, window-wide. */
+    genOutputTokens: number;
+    genMsSum: number;
   };
   keys: KeyUsageRow[];
 }
@@ -295,6 +321,8 @@ export class TraceTracker {
     let cachedTokens = 0;
     let latencyMsSum = 0;
     let costUsdSum = 0;
+    let genOutputTokens = 0;
+    let genMsSum = 0;
 
     for (const t of this.traces.values()) {
       if (sinceTs !== undefined && t.timestamp < sinceTs) continue;
@@ -305,6 +333,13 @@ export class TraceTracker {
       cachedTokens += f.cachedTokens;
       latencyMsSum += t.execution.latencyMs;
       costUsdSum += f.costUsd;
+      // Decode-TPS pairing: accumulate BOTH sides only when the turn streamed,
+      // so the quotient never mixes a streamed numerator into a full-window
+      // denominator (that would be the effective-rate confusion again).
+      if (typeof t.execution.genMs === 'number') {
+        genOutputTokens += f.outputTokens;
+        genMsSum += t.execution.genMs;
+      }
 
       const keyId = t.apiKey?.id ?? '';
       let row = byKey.get(keyId);
@@ -318,6 +353,8 @@ export class TraceTracker {
           cachedTokens: 0,
           latencyMsSum: 0,
           costUsd: 0,
+          genOutputTokens: 0,
+          genMsSum: 0,
         };
         byKey.set(keyId, row);
       }
@@ -327,6 +364,10 @@ export class TraceTracker {
       row.cachedTokens += f.cachedTokens;
       row.latencyMsSum += t.execution.latencyMs;
       row.costUsd += f.costUsd;
+      if (typeof t.execution.genMs === 'number') {
+        row.genOutputTokens += f.outputTokens;
+        row.genMsSum += t.execution.genMs;
+      }
     }
 
     return {
@@ -337,6 +378,8 @@ export class TraceTracker {
         cachedTokens,
         avgLatencyMs: requests > 0 ? Math.round(latencyMsSum / requests) : 0,
         costUsd: Number(costUsdSum.toFixed(6)),
+        genOutputTokens,
+        genMsSum,
       },
       keys: [...byKey.values()].sort((a, b) => b.inputTokens - a.inputTokens),
     };
@@ -386,8 +429,11 @@ export class TraceTracker {
    * Per-session aggregates for the console's session table, computed in one
    * pass over the session's chronological traces: request count, model
    * switches (adjacent modelUsed changes), cumulative token consumption
-   * (input / output / cached), cumulative recorded cost and the summed
-   * end-to-end latency (denominator of the console's average output-rate).
+   * (input / output / cached), cumulative recorded cost, the summed
+   * end-to-end latency, and the decode-TPS pairing (genOutputTokens over
+   * genMsSum) accumulated ONLY over streamed traces — a session mixing
+   * streamed and buffered turns still yields a pure decode rate, never a
+   * blended one.
    */
   public getSessionAggregates(sessionId: string): {
     traceCount: number;
@@ -397,6 +443,8 @@ export class TraceTracker {
     cachedTokens: number;
     costUsd: number;
     totalLatencyMs: number;
+    genOutputTokens: number;
+    genMsSum: number;
   } {
     const traces = this.getTracesBySession(sessionId);
     let switchCount = 0;
@@ -405,6 +453,8 @@ export class TraceTracker {
     let cachedTokens = 0;
     let costUsd = 0;
     let totalLatencyMs = 0;
+    let genOutputTokens = 0;
+    let genMsSum = 0;
     let prevModel: string | null = null;
     for (const t of traces) {
       if (prevModel !== null && t.execution.modelUsed !== prevModel) switchCount++;
@@ -414,6 +464,10 @@ export class TraceTracker {
       cachedTokens += t.finops.cachedTokens;
       costUsd += t.finops.costUsd;
       totalLatencyMs += t.execution.latencyMs;
+      if (typeof t.execution.genMs === 'number') {
+        genOutputTokens += t.finops.outputTokens;
+        genMsSum += t.execution.genMs;
+      }
     }
     return {
       traceCount: traces.length,
@@ -423,6 +477,8 @@ export class TraceTracker {
       cachedTokens,
       costUsd: Number(costUsd.toFixed(6)),
       totalLatencyMs,
+      genOutputTokens,
+      genMsSum,
     };
   }
 

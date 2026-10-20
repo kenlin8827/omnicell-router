@@ -127,6 +127,17 @@ describe('true streaming through the candidate pool', () => {
       assert.equal(hits, 1);
       // Credentialing saw usage, so the turn is billed exactly like a buffered one.
       assert.equal(relay.committed, true);
+      // Industry TTFT/TPS split on the trace row: ttftMs = process start →
+      // first forwarded chunk (user-perceived), genMs = first chunk → drained
+      // stream — here the upstream's 60 ms stall must appear in the decode
+      // window, NOT in the effective-rate sense. Both are bounded by latencyMs.
+      const trace = orchestrator.getTraceTracker().getRecentTraces().data[0];
+      assert.ok(trace, 'the turn must be traced');
+      assert.equal(trace.execution.modelUsed, 'stub/one');
+      assert.ok(typeof trace.execution.ttftMs === 'number' && trace.execution.ttftMs >= 0);
+      assert.ok(trace.execution.genMs! >= 55, `decode window should cover the 60ms stall, got ${trace.execution.genMs}`);
+      assert.ok(trace.execution.ttftMs! <= trace.execution.latencyMs);
+      assert.ok(trace.execution.genMs! <= trace.execution.latencyMs);
     } finally {
       server.stop(true);
     }
@@ -262,5 +273,36 @@ describe('true streaming through the candidate pool', () => {
     const result = await orchestrator.process(request('stub/one'), {}, relay);
     assert.ok(result.response.choices.length >= 1);
     assert.equal(frames.length, 0);
+  });
+
+  it('a buffered (stream:false) turn records no ttftMs/genMs — no synthesized decode rate', async () => {
+    const server = serve({
+      port: 0,
+      async fetch() {
+        return new Response(
+          JSON.stringify({
+            id: 'chatcmpl-buf',
+            object: 'chat.completion',
+            created: 1,
+            model: 'up-1',
+            choices: [{ index: 0, message: { role: 'assistant', content: 'buffered' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5 },
+          }),
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+      },
+    });
+    const base = `http://localhost:${server.port}/v1`;
+    const { orchestrator } = boot(makeConfig(base));
+    try {
+      const result = await orchestrator.process(request('stub/one', false), {}, undefined);
+      assert.equal(result.response.choices[0].message.content, 'buffered');
+      const trace = orchestrator.getTraceTracker().getRecentTraces().data[0];
+      assert.ok(trace, 'the turn must be traced');
+      assert.equal(trace.execution.ttftMs, undefined);
+      assert.equal(trace.execution.genMs, undefined);
+    } finally {
+      server.stop(true);
+    }
   });
 });
