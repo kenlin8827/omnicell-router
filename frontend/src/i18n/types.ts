@@ -1374,6 +1374,8 @@ hiddenBadge: string;
     profileApplyHint: string;
     /** pi variant: write-through lands in settings.json agentOverrides; presets are the default. */
     profileApplyHintPi: string;
+    /** pi form hint: models.json entries are written with full model metadata. */
+    piMetaHint: string;
     /** Short header-row label naming what the table binds (子Agent). */
     profileRowsLabel: string;
     /** Switch-OFF explanatory line. */

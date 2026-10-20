@@ -852,6 +852,11 @@ export const ClientsPage: React.FC = () => {
                               />
                             </>
                           )}
+                          {c.name === 'pi' && (
+                            <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '8px' }}>
+                              {t('clients.piMetaHint')}
+                            </div>
+                          )}
                         </div>
                         );
                       })()}

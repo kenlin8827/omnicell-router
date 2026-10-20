@@ -3,6 +3,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { PiClientAdapter } from '../src/cli/clients/pi.js';
+import { setGatewayMetaDeps, type GatewayMetaDeps } from '../src/cli/clients/model-meta.js';
+import type { ProviderRegistry } from '../src/providers/registry.js';
+import type { CatalogProviderRecord } from '../src/opencode/catalog/types.js';
 
 /**
  * Pi adapter: profile-link layer (sidecar echo, write-through, unlink,
@@ -144,5 +147,169 @@ describe('Pi client adapter — profile links', () => {
     expect(res.success).toBe(true);
     expect(fs.existsSync(`${configPath}.ocr-meta.json`)).toBe(false);
     expect((await adapter.getStatus()).profile).toBeUndefined();
+  });
+});
+
+/**
+ * Pi adapter: model-metadata completeness. pi's /thinking picker reads
+ * `reasoning` + `thinkingLevelMap` from each models.json entry — absent, the
+ * model reads as non-thinking and no thinking level can be set (the bug this
+ * suite pins). Registry/catalog truth comes through the GatewayMetaDeps seam;
+ * without it (standalone CLI) aliases still carry their static declaration
+ * and concrete ids stay bare.
+ */
+describe('Pi client adapter — model metadata', () => {
+  let tmpDir: string;
+  let configPath: string;
+  let adapter: PiClientAdapter;
+  let deps: GatewayMetaDeps | undefined;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-pi-meta-test-'));
+    configPath = path.join(tmpDir, 'models.json');
+    adapter = new PiClientAdapter();
+    adapter.getConfigPath = () => configPath;
+  });
+
+  afterEach(() => {
+    setGatewayMetaDeps(undefined);
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  });
+
+  const readJson = (p: string): any => JSON.parse(fs.readFileSync(p, 'utf8'));
+  const entryOf = (cfg: any, id: string): any =>
+    cfg.providers['onecast-router'].models.find((m: any) => m.id === id);
+
+  const injectDeps = (overrides: {
+    models?: Record<string, any>;
+    combos?: string[];
+    variants?: string[];
+    catalog?: CatalogProviderRecord[];
+  }) => {
+    const models = overrides.models ?? {};
+    const stub = {
+      getModel: (id: string) => models[id],
+      getCombos: () => (overrides.combos ?? []).map((id) => ({ id, models: [] })),
+      getVariantExposures: () => (overrides.variants ?? []).map((id) => ({
+        id, base: models[id.split('-').slice(0, -1).join('-')] ?? Object.values(models)[0], variant: { id: 'xhigh', reasoningEffort: 'xhigh' },
+      })),
+    } as unknown as ProviderRegistry;
+    deps = {
+      registry: stub,
+      catalogList: async () => overrides.catalog ?? [],
+    };
+    setGatewayMetaDeps(() => deps);
+  };
+
+  it('aliases carry the static full-ladder thinking declaration even without injected deps (CLI path)', async () => {
+    await adapter.setup({ port: 4000, models: { main: 'auto' }, extraModels: ['auto-pro'] });
+    const cfg = readJson(configPath);
+    for (const id of ['auto', 'auto-pro']) {
+      const e = entryOf(cfg, id);
+      expect(e.reasoning).toBe(true);
+      expect(e.thinkingLevelMap).toEqual({
+        off: 'none', minimal: null, low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max',
+      });
+      expect(typeof e.name).toBe('string');
+    }
+  });
+
+  it('concrete registered models resolve effort support, pricing and catalog display fields', async () => {
+    injectDeps({
+      models: {
+        'prov/thinker': {
+          id: 'prov/thinker', provider: 'prov', upstreamModel: 'thinker', tier: 'pro',
+          pricing: { input: 2, output: 8, cacheRead: 0.5, cacheWrite: 1.25 },
+          supportedReasoningEfforts: ['none', 'low', 'high'],
+        },
+      },
+      catalog: [{
+        id: 'prov', custom: false, connected: true, sources: [],
+        models: [{
+          id: 'thinker', name: 'Thinker 5', reasoning: true,
+          cost: { input: 2, output: 8, cache_read: 0.5, cache_write: 1.25 },
+          limit: { context: 200000, output: 32000 },
+          modalities: { input: ['text', 'image'], output: ['text'] },
+        }],
+      }],
+    });
+    await adapter.setup({ port: 4000, models: { main: 'auto' }, extraModels: ['prov/thinker'] });
+    const e = entryOf(readJson(configPath), 'prov/thinker');
+    expect(e).toEqual({
+      id: 'prov/thinker',
+      name: 'Thinker 5',
+      contextWindow: 200000,
+      maxTokens: 32000,
+      reasoning: true,
+      thinkingLevelMap: {
+        off: 'none', minimal: null, low: 'low', medium: null, high: 'high', xhigh: null, max: null,
+      },
+      input: ['text', 'image'],
+      cost: { input: 2, output: 8, cacheRead: 0.5, cacheWrite: 1.25 },
+    });
+  });
+
+  it('models without explicit effort control declare reasoning:false; combos stay permissive; variants pin silently', async () => {
+    injectDeps({
+      models: {
+        'prov/toggle': {
+          id: 'prov/toggle', provider: 'prov', upstreamModel: 'toggle', tier: 'lite',
+          pricing: { input: 1, output: 4, cacheRead: 0.25 },
+          supportedReasoningEfforts: [],
+        },
+      },
+      combos: ['my-combo'],
+      variants: ['prov/toggle-xhigh'],
+    });
+    await adapter.setup({
+      port: 4000,
+      models: { main: 'auto' },
+      extraModels: ['prov/toggle', 'my-combo', 'prov/toggle-xhigh'],
+    });
+    const cfg = readJson(configPath);
+    expect(entryOf(cfg, 'prov/toggle').reasoning).toBe(false);
+    expect(entryOf(cfg, 'prov/toggle').thinkingLevelMap).toBeUndefined();
+    expect(entryOf(cfg, 'my-combo').reasoning).toBe(true);
+    expect(entryOf(cfg, 'my-combo').thinkingLevelMap.off).toBe('none');
+    expect(entryOf(cfg, 'prov/toggle-xhigh').reasoning).toBe(false);
+  });
+
+  it('unresolvable ids fall back to the bare entry with the user context window', async () => {
+    injectDeps({});
+    await adapter.setup({ port: 4000, models: { main: 'auto' }, extraModels: ['obscure/model-x'], contextWindow: 262144 });
+    const e = entryOf(readJson(configPath), 'obscure/model-x');
+    expect(e).toEqual({ id: 'obscure/model-x', contextWindow: 262144 });
+  });
+
+  it('refreshProfileBindings adds missing refs with metadata and never rewrites existing entries', async () => {
+    injectDeps({
+      models: {
+        'prov/thinker': {
+          id: 'prov/thinker', provider: 'prov', upstreamModel: 'thinker', tier: 'pro',
+          pricing: { input: 2, output: 8, cacheRead: 0.5 },
+          supportedReasoningEfforts: ['low', 'medium', 'high'],
+        },
+      },
+    });
+    await adapter.setup({ port: 4000, models: { main: 'auto' } });
+    // Hand-edited existing record must survive the write-through untouched.
+    const handEdited = { id: 'legacy', contextWindow: 999, maxTokens: 123 };
+    const cfg0 = readJson(configPath);
+    cfg0.providers['onecast-router'].models.push(handEdited);
+    fs.writeFileSync(configPath, JSON.stringify(cfg0));
+
+    const res = await adapter.refreshProfileBindings('p1', { scout: 'slot' }, { slot: 'prov/thinker' });
+    expect(res.success).toBe(true);
+    const cfg = readJson(configPath);
+    const added = entryOf(cfg, 'prov/thinker');
+    expect(added.reasoning).toBe(true);
+    expect(added.thinkingLevelMap.high).toBe('high');
+    expect(added.thinkingLevelMap.xhigh).toBeNull();
+    // existing entries — including the hand-edited one — untouched
+    expect(cfg.providers['onecast-router'].models.find((m: any) => m.id === 'legacy')).toEqual(handEdited);
   });
 });

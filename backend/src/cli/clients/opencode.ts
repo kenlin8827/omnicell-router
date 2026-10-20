@@ -89,11 +89,11 @@ function buildRouterProviderNode(port: number, model?: string, extraModels?: str
   const targetUrl = `http://127.0.0.1:${port}/v1`;
   const modelEntry = (label: string) => ({ name: label });
   const models: Record<string, { name: string }> = {
-    auto: modelEntry('Auto (intelligent multi-tier routing)'),
-    'auto-lite': modelEntry('Force Lite tier'),
-    'auto-plus': modelEntry('Force Plus tier'),
-    'auto-pro': modelEntry('Force Pro tier'),
-    'auto-ultra': modelEntry('Force Ultra tier'),
+    auto: modelEntry('Auto'),
+    'auto-lite': modelEntry('Lite'),
+    'auto-plus': modelEntry('Plus'),
+    'auto-pro': modelEntry('Pro'),
+    'auto-ultra': modelEntry('Ultra'),
   };
   // Pin a concrete registered model: expose it in the client's model picker.
   if (model && model !== 'auto' && !model.startsWith('auto-')) {

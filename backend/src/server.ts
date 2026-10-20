@@ -17,6 +17,7 @@ import { ProviderRegistry } from './providers/registry.js';
 import { FinOpsTracker } from './metrics/finops-tracker.js';
 import { APP_VERSION } from './version.js';
 import { TraceTracker, type ExecutionTrace } from './trace/tracker.js';
+import { setGatewayMetaDeps } from './cli/clients/model-meta.js';
 import type { TripScope } from './resilience/types.js';
 import type { CaptureKeyIdentity } from './capture/recorder.js';
 
@@ -234,6 +235,14 @@ export function createServer(
   });
 
   const registry = customRegistry || new ProviderRegistry(config, mockMode);
+  // Client-hook metadata seam: adapters that write rich model records (pi's
+  // models.json) resolve per-model truth (effort support, pricing, limits)
+  // from the live registry + catalog. Re-injected per createServer — last
+  // boot wins; the standalone CLI never injects and falls back to bare entries.
+  setGatewayMetaDeps(() => ({
+    registry,
+    catalogList: async () => (await import('./opencode/catalog/repository.js')).catalogRepository.list(),
+  }));
   // Key writes (UI / API) sync this snapshot so the auth preHandler — which
   // prefers config.apiKeys over a disk re-read — sees edits immediately.
   registerRuntimeConfigRef(config);

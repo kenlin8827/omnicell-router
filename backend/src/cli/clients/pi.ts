@@ -10,6 +10,7 @@ import {
   defaultGatewayPort,
 } from './base.js';
 import { ClientHookStatus, ClientModelSlot, ModelProfileBinding, VIRTUAL_AUTO_IDS } from '../types.js';
+import { piThinkingLevelMap, resolveClientModelMeta } from './model-meta.js';
 
 /**
  * Provider key written into pi's `~/.pi/agent/models.json` — the key name
@@ -103,6 +104,64 @@ function removeMeta(configPath: string): void {
   } catch {
     // best effort
   }
+}
+
+/**
+ * Static declarations for the fixed auto* alias block. The aliases are
+ * dynamic targets — the actual model (and its real effort support) is
+ * resolved per request by the gateway, which clamps to what it can serve and
+ * reports the truth via the X-OCR-Thinking-* headers — so the declaration is
+ * the permissive full ladder, never a per-model subset.
+ */
+const PI_ALIAS_META: Record<string, { name: string }> = {
+  auto: { name: 'Auto' },
+  'auto-lite': { name: 'Lite' },
+  'auto-plus': { name: 'Plus' },
+  'auto-pro': { name: 'Pro' },
+  'auto-ultra': { name: 'Ultra' },
+};
+
+/**
+ * One models.json entry, with metadata completeness as the point: pi's
+ * `/thinking` picker reads `reasoning` + `thinkingLevelMap` (absent → the
+ * model reads as non-thinking and no thinking level can be set), the
+ * `/model` picker reads `name`, compaction reads `contextWindow` /
+ * `maxTokens`, and the cost footer reads `cost`. Sources, in order:
+ *  - the fixed auto* aliases: static full-ladder declaration (see
+ *    PI_ALIAS_META) + the caller's context window (there is no per-alias
+ *    catalog truth);
+ *  - concrete ids: resolved against the live gateway registry/catalog
+ *    (model-meta.ts) — per-model context window/maxTokens/cost/name beat the
+ *    caller's single context window, which stays the fallback for ids with
+ *    no catalog record;
+ *  - anything unresolved (standalone CLI — no registry to consult): the
+ *    bare `{id, contextWindow?}` entry of legacy setups.
+ */
+async function buildModelEntries(ids: string[], contextWindow?: number): Promise<Record<string, unknown>[]> {
+  const meta = await resolveClientModelMeta(ids.filter((id) => !VIRTUAL_AUTO_IDS.has(id)));
+  return ids.map((id) => {
+    if (VIRTUAL_AUTO_IDS.has(id)) {
+      const alias = PI_ALIAS_META[id];
+      return {
+        id,
+        ...(alias?.name ? { name: alias.name } : {}),
+        ...(contextWindow ? { contextWindow } : {}),
+        reasoning: true,
+        thinkingLevelMap: piThinkingLevelMap(),
+      };
+    }
+    const m = meta[id];
+    if (!m) return { id, ...(contextWindow ? { contextWindow } : {}) };
+    return {
+      id,
+      name: m.name ?? id,
+      ...(m.contextWindow ? { contextWindow: m.contextWindow } : contextWindow ? { contextWindow } : {}),
+      ...(m.maxTokens ? { maxTokens: m.maxTokens } : {}),
+      ...(m.reasoning ? { reasoning: true, thinkingLevelMap: m.thinkingLevelMap ?? piThinkingLevelMap() } : { reasoning: false }),
+      ...(m.input ? { input: m.input } : {}),
+      ...(m.cost ? { cost: m.cost } : {}),
+    };
+  });
 }
 
 export class PiClientAdapter implements ClientAdapter {
@@ -233,7 +292,7 @@ export class PiClientAdapter implements ClientAdapter {
       baseUrl: targetUrl,
       api: 'openai-completions',
       apiKey,
-      models: ids.map(id => (contextWindow ? { id, contextWindow } : { id })),
+      models: await buildModelEntries(ids, contextWindow),
     };
 
     safeWriteJson(configPath, data);
@@ -442,15 +501,18 @@ export class PiClientAdapter implements ClientAdapter {
 
     // Expose the linked refs in the pi provider models list (idempotent add —
     // pi resolves an override's model against the provider's declared ids).
+    // Only MISSING ids are added, with full metadata; existing entries are
+    // never rewritten — a profile save must not stomp hand-edited records.
     const refs = [...new Set(Object.values(desired).filter((v): v is string => !!v))];
     if (refs.length > 0) {
       const providerModels: any[] = Array.isArray(data.providers[PI_PROVIDER_KEY].models)
         ? data.providers[PI_PROVIDER_KEY].models
         : [];
+      const entries = await buildModelEntries(refs);
       let added = 0;
-      for (const id of refs) {
-        if (!providerModels.some((m: any) => m?.id === id)) {
-          providerModels.push({ id });
+      for (const entry of entries) {
+        if (!providerModels.some((m: any) => m?.id === entry.id)) {
+          providerModels.push(entry);
           added++;
         }
       }
