@@ -19,8 +19,9 @@ import { readProviderDefsFile, writeProviderDefs } from './provider-defs.js';
  *    provider-defs.ts) — the single def truth. opencode.jsonc is a sync-client
  *    materialization target, never read or written here as truth; the one-shot
  *    port from jsonc lives in provider-defs.ts.
- *  - Credentials           -> ~/.local/share/opencode/auth.json is a READ-ONLY legacy
- *    snapshot; the bound CredentialStore owns all credential writes.
+ *  - Credentials           -> OUT of this module entirely. The bound CredentialStore
+ *    owns every credential write; the legacy auth.json snapshot is read ONLY by the
+ *    credentials layer (one-shot import / v1 sync client) and feeds no view here.
  *
  * Hard rules:
  *  - The remaining JSONC writes here (patchJsonc) serve CLIENT integration surfaces
@@ -50,11 +51,6 @@ export function getOpenCodeConfigPath(): string {
     if (fs.existsSync(p)) return p;
   }
   return candidates[0]; // default target when nothing exists yet
-}
-
-export function getOpenCodeAuthPath(): string {
-  const xdgData = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
-  return path.join(xdgData, 'opencode', 'auth.json');
 }
 
 // ---------------------------------------------------------------------------
@@ -124,26 +120,8 @@ export function patchJsonc(
 }
 
 // ---------------------------------------------------------------------------
-// auth.json — READ-ONLY legacy snapshot (migration source, never a sink).
-// OCR writes credentials exclusively through the bound CredentialStore —
-// the writers that used to live here are gone.
+// Shared masking / env-template helpers (management-safe views + def readers)
 // ---------------------------------------------------------------------------
-
-export interface OpenCodeAuthEntry {
-  type: 'api' | 'oauth' | 'wellknown';
-  key?: string;
-  access?: string;
-  refresh?: string;
-  expires?: number;
-  account_id?: string;
-}
-
-export function readAuthEntries(): Record<string, OpenCodeAuthEntry> {
-  const authPath = getOpenCodeAuthPath();
-  const parsed = readJsonc(authPath);
-  if (!parsed || typeof parsed !== 'object') return {};
-  return parsed as Record<string, OpenCodeAuthEntry>;
-}
 
 /** Never expose a full secret through management APIs. */
 export function maskSecret(secret?: string): string {
@@ -204,12 +182,11 @@ export interface OpenCodeProviderView {
   baseURL?: string;
   models: string[];
   custom: boolean;
-  /** credential summary from auth.json / inline options (masked) */
+  /** credential summary — defs-file inline options ∪ bound-store credentials (masked) */
   auth: {
     connected: boolean;
-    type?: OpenCodeAuthEntry['type'];
+    type?: 'api' | 'oauth' | 'wellknown';
     keyMasked?: string;
-    expires?: number;
     inline?: boolean;
   };
 }
@@ -755,36 +732,3 @@ export function clearProviderModels(
   }
 }
 
-/**
- * Merge defs-file provider definitions with auth.json credentials into
- * a single management-safe view (one entry per provider id across both stores).
- */
-export function listOpenCodeProviders(): OpenCodeProviderView[] {
-  const configProviders = listConfigProviders();
-  const authEntries = readAuthEntries();
-  const byId = new Map<string, OpenCodeProviderView>();
-
-  for (const p of configProviders) byId.set(p.id, p);
-
-  for (const [id, entry] of Object.entries(authEntries)) {
-    const existing = byId.get(id);
-    const auth = {
-      connected: true,
-      type: entry.type,
-      keyMasked: maskSecret(entry.key || entry.access),
-      expires: entry.expires,
-    };
-    if (existing) {
-      existing.auth = { ...existing.auth, ...auth, inline: existing.auth.inline && !entry.key };
-    } else {
-      byId.set(id, {
-        id,
-        models: [],
-        custom: false, // credential-only (catalog provider connected via auth)
-        auth,
-      });
-    }
-  }
-
-  return Array.from(byId.values());
-}

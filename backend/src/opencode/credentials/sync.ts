@@ -9,7 +9,7 @@ import {
 import { CredentialStore, StoreUnreadableError, keyHashPrefix } from './types.js';
 import { DbOpener, OpencodeV2Store, resolveServiceConfigForPaths } from './opencode-v2-store.js';
 import { authSnapshot } from './auth-snapshot.js';
-import type { OpenCodeAuthEntry } from '../user-config.js';
+import type { OpenCodeAuthEntry } from './auth-snapshot.js';
 import { atomicWriteWithRetry } from './factory.js';
 import { OcrStore } from './ocr-store.js';
 import { materializeDefs } from './def-materialize.js';

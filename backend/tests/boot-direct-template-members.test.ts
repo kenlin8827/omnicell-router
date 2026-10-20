@@ -55,7 +55,7 @@ mock.module('../src/opencode/user-config.js', () => ({
 
 /**
  * Boot-direct resolves credentials through the bound
- * CredentialStore (NOT readAuthEntries anymore). In-memory single-credential store
+ * CredentialStore. In-memory single-credential store
  * double: one key per provider, no activate/rename, which is what the OCR file
  * store also gives a one-key provider.
  */

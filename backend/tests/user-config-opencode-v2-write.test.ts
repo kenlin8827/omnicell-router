@@ -8,8 +8,8 @@ import {
   upsertCustomProvider,
   upsertProviderModel,
   opencodeV2PackageFor,
-  getOpenCodeAuthPath,
 } from '../src/opencode/user-config.js';
+import { resolveDefaultPaths } from '../src/opencode/credentials/paths.js';
 import { readProviderDefsFile, writeProviderDefs, getProviderDefsPath } from '../src/opencode/provider-defs.js';
 import { wireFor } from '../src/providers/wire.js';
 
@@ -88,7 +88,7 @@ describe('upsertCustomProvider — opencode v2 shape emission', () => {
     // {env:X} translated to env:["X"], the fake inline key dropped (task test c)
     expect(node.settings.apiKey).toBeUndefined();
     expect(JSON.stringify(node)).not.toContain('{env:');
-    expect(fs.existsSync(getOpenCodeAuthPath())).toBe(false);
+    expect(fs.existsSync(resolveDefaultPaths().authJsonPath)).toBe(false);
   });
 
   it('preserves sibling defs map-level — the defs file is pure JSON (jsonc byte semantics died with the jsonc truth)', () => {
@@ -132,7 +132,7 @@ describe('upsertCustomProvider — opencode v2 shape emission', () => {
     expect(res.error).toContain('credential store');
     expect(JSON.stringify(readProviderDefsFile() ?? {})).not.toContain('sk-live-secret-0001');
     expect(readRaw().providers.acme).toBeUndefined();
-    expect(fs.existsSync(getOpenCodeAuthPath())).toBe(false);
+    expect(fs.existsSync(resolveDefaultPaths().authJsonPath)).toBe(false);
   });
 
   it('explicit apiKeyInline=true opts the literal INTO settings.apiKey (and nowhere else)', () => {
@@ -147,7 +147,7 @@ describe('upsertCustomProvider — opencode v2 shape emission', () => {
     expect(res.success).toBe(true);
     const node = readRaw().providers.acme;
     expect(node.settings.apiKey).toBe('sk-explicit-inline-2');
-    expect(fs.existsSync(getOpenCodeAuthPath())).toBe(false);
+    expect(fs.existsSync(resolveDefaultPaths().authJsonPath)).toBe(false);
   });
 
   it('options passthrough: template apiKey → env translation, literal apiKey preserved, headers hoisted', () => {

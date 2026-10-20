@@ -1,5 +1,5 @@
 import { OpenCodeConnector } from '../connector.js';
-import { listOpenCodeProviders, getProviderNodeById } from '../user-config.js';
+import { listConfigProviders, getProviderNodeById } from '../user-config.js';
 import { getProviderDefsPath } from '../provider-defs.js';
 import { BUILTIN_SOURCE_ID, type CatalogConfig, type CatalogSourceConfig, type SourceMapConfig } from '../../config/types.js';
 import { resolveSources, parseByType, isKnownSourceType, type RemoteSourceDef, type ParsedSource } from './sources/registry.js';
@@ -630,8 +630,13 @@ async setSourceEnabled(id: string, enabled: boolean): Promise<CatalogSourceView>
     };
     const unified = new Map<string, CatalogProviderRecord>();
 
-    // 1. opencode user data (config definitions + credentials) — real-time, top precedence
-    for (const v of listOpenCodeProviders()) {
+    // 1. defs-file provider definitions — real-time, top precedence.
+    //    `connected` here means "inline key present"; bound-store credential
+    //    presence ORs in at step 4b. The frozen auth.json snapshot feeds NO
+    //    view — its only readers live in the credentials layer (one-shot
+    //    import / v1 sync client), so a stale snapshot can never masquerade
+    //    as a connected provider.
+    for (const v of listConfigProviders()) {
       unified.set(v.id, {
         id: v.id,
         name: v.name,

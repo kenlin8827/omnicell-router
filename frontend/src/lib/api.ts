@@ -2038,7 +2038,6 @@ export interface OpenCodeProviderView {
     connected: boolean;
     type?: 'api' | 'oauth' | 'wellknown';
     keyMasked?: string;
-    expires?: number;
     inline?: boolean;
   };
 }
@@ -2692,7 +2691,6 @@ export const opencodeApi = {
   async listProviders(): Promise<{
     status: string;
     configPath: string;
-    authPath: string;
     providers: OpenCodeProviderView[];
   }> {
     return ocJson(await fetch('/api/admin/opencode/providers'));

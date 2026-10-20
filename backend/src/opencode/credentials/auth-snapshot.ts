@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { readJsonc, type OpenCodeAuthEntry } from '../user-config.js';
+import { readJsonc } from '../user-config.js';
 import { CredentialPaths } from './paths.js';
 import { StoreUnreadableError } from './types.js';
 
@@ -10,16 +10,27 @@ import { StoreUnreadableError } from './types.js';
  * back, and opencode v1 is not supported — so auth.json is never a credential SINK
  * for OCR. What remains is the migration read: keys that exist only in the snapshot
  * are pushed into the bound store once, then the file is left alone on disk (OCR
- * never deletes upstream files).
+ * never deletes upstream files). This module is the snapshot's ONLY reader — no
+ * view layer derives provider state from it.
  */
+
+export interface OpenCodeAuthEntry {
+  type: 'api' | 'oauth' | 'wellknown';
+  key?: string;
+  access?: string;
+  refresh?: string;
+  expires?: number;
+  account_id?: string;
+}
+
 export interface AuthSnapshot {
   read: () => Record<string, OpenCodeAuthEntry>;
 }
 
 /**
- * Snapshot accessor bound to an injected path. Byte-identical parse semantics to
- * user-config's readAuthEntries, but never falling back to the operator's real home
- * (OCR_HOME alone does not sandbox opencode paths).
+ * Snapshot accessor bound to an injected path. The single auth.json reader in
+ * the codebase; never falls back to the operator's real home (OCR_HOME alone
+ * does not sandbox opencode paths).
  */
 export function authSnapshot(paths: CredentialPaths): AuthSnapshot {
   return {

@@ -54,7 +54,7 @@ mock.module('../src/opencode/catalog/auto-pull.js', () => ({
 
 const { createServer } = await import('../src/server.js');
 const { buildDirectPool } = await import('../src/providers/boot-direct.js');
-const { upsertCustomProvider, getOpenCodeAuthPath } = await import(
+const { upsertCustomProvider } = await import(
   '../src/opencode/user-config.js'
 );
 const { readProviderDefsFile, writeProviderDefs, getProviderDefsPath } = await import(

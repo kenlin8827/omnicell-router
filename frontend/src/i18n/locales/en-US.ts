@@ -264,8 +264,6 @@ export const enUS: TranslationDict = {
     keyAdded: 'Added as a new credential credential',
     updateKeyTip: 'This store keeps one credential per provider: the new key replaces the existing one.',
     keyAlreadyExists: 'This key already belongs to {label}; nothing added',
-    oauthExpires: 'Token expires {date}',
-    oauthExpired: 'Token EXPIRED',
     deleteBtn: 'Delete',
     deleteConfirm: 'Delete provider "{id}"? (removes its definition from custom-providers.json)',
     deleteConfirmCredOnly: 'Delete the connection of provider "{id}"? (credential-only — definitions file untouched)',

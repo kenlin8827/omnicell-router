@@ -102,7 +102,6 @@ mock.module('../src/config/index.js', () => ({
 }));
 
 const { buildDirectPool } = await import('../src/providers/boot-direct.js');
-const { getOpenCodeAuthPath } = await import('../src/opencode/user-config.js');
 const { writeProviderDefs, getProviderDefsPath } = await import('../src/opencode/provider-defs.js');
 const { resolveDefaultPaths } = await import('../src/opencode/credentials/paths.js');
 const { resetCredentialStoreForTests } = await import('../src/opencode/credentials/factory.js');
@@ -187,7 +186,7 @@ describe('boot-direct — mixed valid / retired-shape nodes in the defs file (re
         )
       ).providers
     );
-    writeJsonc(getOpenCodeAuthPath(), {
+    writeJsonc(resolveDefaultPaths().authJsonPath, {
       v2prov: { type: 'api', key: 'sk-opencode-v2-store' },
       v2unknown: { type: 'api', key: 'sk-v2u' },
       v1prov: { type: 'api', key: 'sk-opencode-v1-store' },

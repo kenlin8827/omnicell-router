@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { OpenCodeAuthEntry } from '../user-config.js';
 import { migrateJsoncProviderDefs, type ProviderDefsImportRecord } from '../provider-defs.js';
+import type { OpenCodeAuthEntry } from './auth-snapshot.js';
 import {
   CredentialPaths,
   credentialStoreStateFile,

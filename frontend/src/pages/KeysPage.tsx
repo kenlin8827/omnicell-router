@@ -991,7 +991,7 @@ export const KeysPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [ocProviders, setOcProviders] = useState<OpenCodeProviderView[]>([]);
-  const [ocPaths, setOcPaths] = useState<{ configPath: string; authPath: string }>({ configPath: '', authPath: '' });
+  const [ocPaths, setOcPaths] = useState<{ configPath: string }>({ configPath: '' });
   const [storeStatus, setStoreStatus] = useState<CredentialStoreStatus | null>(null);
   const [pushingId, setPushingId] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<OpenCodeCatalogProvider[]>([]);
@@ -1412,7 +1412,7 @@ export const KeysPage: React.FC = () => {
     try {
       const res = await opencodeApi.listProviders();
       setOcProviders(res.providers);
-      setOcPaths({ configPath: res.configPath, authPath: res.authPath });
+      setOcPaths({ configPath: res.configPath });
       setOcError('');
       return true;
     } catch (err: any) {
@@ -1731,12 +1731,6 @@ export const KeysPage: React.FC = () => {
     }
   };
 
-  const formatExpiry = (ms: number) => {
-    const d = new Date(ms);
-    const expired = d.getTime() < Date.now();
-    return expired ? t('op.oauthExpired') : t('op.oauthExpires', { date: d.toLocaleDateString() });
-  };
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', height: '100%' }}>
       <div className="card" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column'}}>
@@ -1779,7 +1773,7 @@ export const KeysPage: React.FC = () => {
         {activeTab === 'connected' && (<>
         {/* ---- Connected providers (defs file providers map ∪ bound store) ---- */}
         <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>{t('op.connectedTitle')}</div>
-        <p style={{ color: 'var(--text-dim)', fontSize: 11, margin: '0 0 12px' }} title={`${ocPaths.configPath} | ${ocPaths.authPath}`}>
+        <p style={{ color: 'var(--text-dim)', fontSize: 11, margin: '0 0 12px' }} title={ocPaths.configPath}>
           {t('op.connectedDesc', { sink: sinkLabel })}
         </p>
 
@@ -1920,26 +1914,15 @@ export const KeysPage: React.FC = () => {
               )}
 
               {/* Chain-head key summary. With the per-credential list on screen it
-                  would repeat the first row, so once that list renders only the
-                  OAuth expiry still needs a line of its own — that field lives on
-                  the provider view, never on CredentialMeta. */}
-              {!(caps && credentialList.length > 0) ? (
+                  would repeat the first row, so it renders only when that list
+                  does not. The old OAuth-expiry line is gone: the provider view
+                  never carried a live expiry (store credentials are api keys). */}
+              {!(caps && credentialList.length > 0) && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
                   <Lock size={11} />
                   <span>{p.auth.keyMasked || '—'}</span>
-                  {p.auth.type === 'oauth' && p.auth.expires && (
-                    <span style={{ color: p.auth.expires < Date.now() ? 'var(--accent-rose)' : 'var(--text-dim)' }}>
-                      · {formatExpiry(p.auth.expires)}
-                    </span>
-                  )}
                 </div>
-              ) : p.auth.expires ? (
-                <div
-                  style={{ fontSize: 11, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: p.auth.expires < Date.now() ? 'var(--accent-rose)' : 'var(--text-dim)' }}
-                >
-                  {t('op.badgeOauth')} · {formatExpiry(p.auth.expires)}
-                </div>
-              ) : null}
+              )}
 
               {/* Credential list — always visible, one line per key,
                   capped at 3 rows (more scroll). No expand gesture: per-key state

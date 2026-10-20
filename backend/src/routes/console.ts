@@ -1850,7 +1850,7 @@ export function registerConsoleRoutes(
 
   const ocHandlers = {
     list: async () => {
-      const { getOpenCodeAuthPath, getProviderNodeById } = await import('../opencode/user-config.js');
+      const { getProviderNodeById } = await import('../opencode/user-config.js');
       const { getProviderDefsPath } = await import('../opencode/provider-defs.js');
       const { getCredentialStore } = await import('../opencode/credentials/index.js');
       const { catalogRepository } = await import('../opencode/catalog/repository.js');
@@ -1865,7 +1865,6 @@ export function registerConsoleRoutes(
       return {
         status: 'ok',
         configPath: getProviderDefsPath(),
-        authPath: getOpenCodeAuthPath(),
         catalogSync: catalogRepository.lastSyncOrigin,
         providers: views.map((v) => {
           const u = byId.get(v.id);

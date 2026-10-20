@@ -264,8 +264,6 @@ export const zhCN: TranslationDict = {
     keyAdded: '已添加为新的凭证凭证',
     updateKeyTip: '该凭证库每个服务商只保存一个凭证：新密钥会覆盖现有密钥。',
     keyAlreadyExists: '该密钥已属于凭证 {label}，未重复添加',
-    oauthExpires: '令牌 {date} 过期',
-    oauthExpired: '令牌已过期',
     deleteBtn: '删除',
     deleteConfirm: '确认删除 provider "{id}"？（将从 custom-providers.json 移除其定义）',
     deleteConfirmCredOnly: '确认删除 provider "{id}" 的连接？（纯凭证接入，不涉及定义文件）',

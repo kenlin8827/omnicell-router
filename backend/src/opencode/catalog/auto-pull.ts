@@ -253,17 +253,17 @@ async function enrichFromCatalog(models: CatalogModel[], excludeProviderId: stri
  */
 export async function autoPullProviderModels(): Promise<AutoPullEntry[]> {
   if (loadConfig().catalog?.autoPullModels === false) return [];
-  const { listOpenCodeProviders, expandEnvTemplate, getProviderNodeById } = await import('../user-config.js');
-  // keys from the BOUND store (same rule as pullLiveModels —
-  // inline above the store; the auth.json-direct read missed opencode v2 db and
-  // standalone credentials.json keys).
+  const { listConfigProviders, expandEnvTemplate, getProviderNodeById } = await import('../user-config.js');
+  // keys from the BOUND store (same rule as pullLiveModels — inline above the
+  // store); the store covers every credential flavor (standalone imports, v2
+  // pushes), so no snapshot read is needed here.
   const { getCredentialStore } = await import('../credentials/index.js');
   const credStore = await getCredentialStore();
 
   // Phase 1 — concurrent FETCH (network only, no writes): resolve each
   // provider's candidate model list from its own /v1/models or the catalog.
   const jobs = await Promise.all(
-    listOpenCodeProviders().map(async (v): Promise<{ id: string; mode: AutoPullEntry['mode']; models: CatalogModel[]; error?: string; meta?: { name?: string; npm?: string; api?: string } }> => {
+    listConfigProviders().map(async (v): Promise<{ id: string; mode: AutoPullEntry['mode']; models: CatalogModel[]; error?: string; meta?: { name?: string; npm?: string; api?: string } }> => {
       const def = getProviderNodeById(v.id);
       if (!def) return { id: v.id, mode: 'skipped', models: [] };
       const baseURL = def?.options?.baseURL;

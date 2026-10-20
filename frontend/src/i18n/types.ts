@@ -273,8 +273,6 @@ export interface TranslationDict {
     keyAdded: string;
     updateKeyTip: string;
     keyAlreadyExists: string;
-    oauthExpires: string;
-    oauthExpired: string;
     deleteBtn: string;
     deleteConfirm: string;
     deletePurge: string;
