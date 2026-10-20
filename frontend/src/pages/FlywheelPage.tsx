@@ -31,6 +31,7 @@ import { Combobox } from '../components/Combobox';
 import { Dialog } from '../components/Dialog';
 import { Pagination } from '../components/Pagination';
 import { Switch } from '../components/Switch';
+import { fmtLatency } from '../lib/format';
 
 const TIERS: TierName[] = ['lite', 'plus', 'pro', 'ultra'];
 
@@ -560,7 +561,7 @@ export const FlywheelPage: React.FC = () => {
               {t('flywheel.resultLoss', { n: String(training.lastResult.finalLoss) })}
             </span>
             <span>
-              {t('flywheel.resultDuration', { n: String(training.lastResult.durationMs) })}
+              {t('flywheel.resultDuration', { n: fmtLatency(training.lastResult.durationMs) })}
             </span>
             <span style={{ color: 'var(--text-dim)' }}>
               {t('flywheel.resultClasses', {
@@ -942,7 +943,7 @@ export const FlywheelPage: React.FC = () => {
                     <div>
                       <div style={{ color: 'var(--text-dim)' }}>{t('flywheel.fieldLatency')}</div>
                       <div>
-                        {row.execution.latencyMs}ms · {row.tokenCount}tok
+                        {fmtLatency(row.execution.latencyMs)} · {row.tokenCount}tok
                       </div>
                     </div>
                     <div style={{ gridColumn: '1 / -1' }}>

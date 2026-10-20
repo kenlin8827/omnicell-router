@@ -10,6 +10,7 @@ import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
 import { Combobox } from '../components/Combobox';
 import { Pagination } from '../components/Pagination';
+import { fmtLatency } from '../lib/format';
 
 const BREAKER_PAGE_SIZE = 20;
 const BREAKER_PAGE_SIZES = [10, 20, 50, 100, 200];
@@ -464,7 +465,7 @@ export const GuardrailsPage: React.FC = () => {
                 style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '10px', whiteSpace: 'nowrap', color: res.ok ? 'var(--accent-emerald)' : 'var(--accent-rose)' }}
                 title={res.ok ? `${res.latencyMs} ms` : res.error}
               >
-                {res.ok ? `✓${res.latencyMs}ms` : '✗'}
+                {res.ok ? `✓${fmtLatency(res.latencyMs ?? NaN)}` : '✗'}
               </span>
             )}
           </div>

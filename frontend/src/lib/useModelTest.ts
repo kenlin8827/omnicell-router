@@ -4,6 +4,7 @@ import { runPool } from './runPool';
 import { useI18n } from '../i18n/I18nContext';
 import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
+import { fmtLatency } from './format';
 
 type TFn = (key: string, params?: Record<string, string | number>) => string;
 
@@ -43,7 +44,7 @@ export const composeProbeError = (r: TestProviderResult, t: TFn): string => {
     !r.hintCode && !r.upstreamBody && r.error
   )
     return r.error;
-  if (r.transportCode === 'timeout') return t('op.probeTimeout', { ms: r.timeoutMs ?? 0 });
+  if (r.transportCode === 'timeout') return t('op.probeTimeout', { n: fmtLatency(r.timeoutMs ?? NaN) });
   if (r.transportCode === 'unreachable')
     return t('op.probeUnreachable', { url: r.transportUrl ?? '?', cause: r.transportCause ?? '?' });
   if (r.unroutableCode)
@@ -154,7 +155,7 @@ export const useModelTest = () => {
   /** One probe + toast. Label: requested model → resolved probe model → key. */
   const testOne = async (target: ModelTestTarget) => {
     const r = await runTest(target);
-    if (r.ok) toast.success(t('op.testOkMsg', { model: target.modelId || r.model || target.key, ms: r.latencyMs ?? 0 }));
+    if (r.ok) toast.success(t('op.testOkMsg', { model: target.modelId || r.model || target.key, n: fmtLatency(r.latencyMs ?? NaN) }));
     else toast.error(r.error || t('op.testFailMsg'));
   };
 

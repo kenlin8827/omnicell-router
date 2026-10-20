@@ -37,6 +37,7 @@ import { Pagination } from '../components/Pagination';
 import { Switch } from '../components/Switch';
 import { InfoTip } from '../components/InfoTip';
 import { useModelTest } from '../lib/useModelTest';
+import { fmtLatency } from '../lib/format';
 
 // Nested-card surface (bg/border/radius/padding) is the global .sub-card
 // class in index.css — single source of truth across all pages and themes.
@@ -1985,10 +1986,10 @@ export const KeysPage: React.FC = () => {
                     color: testResults[p.id].ok ? 'var(--accent-emerald)' : 'var(--accent-rose)',
                     wordBreak: 'break-all',
                   }}
-                  title={testResults[p.id].ok ? undefined : testResults[p.id].error}
+                  title={testResults[p.id].ok ? `${testResults[p.id].latencyMs} ms` : testResults[p.id].error}
                 >
                   {testResults[p.id].ok
-                    ? `✓ ${testResults[p.id].model} · ${testResults[p.id].latencyMs} ms`
+                    ? `✓ ${testResults[p.id].model} · ${fmtLatency(testResults[p.id].latencyMs ?? NaN)}`
                     : `✗ ${testResults[p.id].error || t('op.testFailMsg')}`}
                 </div>
               )}

@@ -8,6 +8,7 @@ import { useConfirm } from '../components/ConfirmProvider';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import { Combobox } from '../components/Combobox';
 import { Pagination } from '../components/Pagination';
+import { fmtLatency } from '../lib/format';
 
 type Selection = 'priority' | 'weighted' | 'round_robin';
 
@@ -608,7 +609,7 @@ export const CombosPage: React.FC = () => {
         const res = await api.testCombo(comboId);
         setTestResults(prev => ({ ...prev, [comboId]: res }));
         if (res.ok) {
-          const base = t('combos.testOk', { combo: comboId, model: res.modelUsed || '—', ms: res.latencyMs ?? 0 });
+          const base = t('combos.testOk', { combo: comboId, model: res.modelUsed || '—', n: fmtLatency(res.latencyMs ?? NaN) });
           toast.success(
             res.failoverOccurred && res.failoverPath?.length
               ? base + t('combos.testOkFailover', { path: res.failoverPath.join(' → ') })
@@ -857,7 +858,7 @@ export const CombosPage: React.FC = () => {
                             : testRes.error
                         }
                       >
-                        {testRes.ok ? `✓${testRes.latencyMs ?? '?'}ms` : '✗'}
+                        {testRes.ok ? `✓${fmtLatency(testRes.latencyMs ?? NaN)}` : '✗'}
                       </span>
                     )}
                     <button

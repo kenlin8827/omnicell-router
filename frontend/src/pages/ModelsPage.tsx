@@ -10,6 +10,7 @@ import { Combobox } from '../components/Combobox';
 import { Pagination } from '../components/Pagination';
 import { Chip } from '../components/Chip';
 import { Switch } from '../components/Switch';
+import { fmtLatency } from '../lib/format';
 
 type SortKey = 'default' | 'priceAsc' | 'priceDesc' | 'contextDesc' | 'name';
 
@@ -368,7 +369,7 @@ const toggleHidden = async (m: OpenCodeModelView) => {
                           }}
                           title={res.ok ? `${res.latencyMs} ms` : res.error}
                         >
-                          {res.ok ? `✓${res.latencyMs}ms` : '✗'}
+                          {res.ok ? `✓${fmtLatency(res.latencyMs ?? NaN)}` : '✗'}
                         </span>
                       )}
                       <button

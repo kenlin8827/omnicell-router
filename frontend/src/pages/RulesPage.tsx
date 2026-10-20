@@ -9,6 +9,7 @@ import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import { effortOptionList, EFFORT_UNSET, EFFORT_I18N_KEY } from '../lib/effort';
+import { fmtLatency } from '../lib/format';
 
 type Tier = 'lite' | 'plus' | 'pro' | 'ultra';
 
@@ -424,7 +425,7 @@ export const RulesPage: React.FC = () => {
         const res = await api.testTier(tier);
         setTierTests((prev) => ({ ...prev, [tier]: res }));
         if (res.ok) {
-          const base = t('tierPolicy.testOk', { tier, model: res.modelUsed || '—', ms: res.latencyMs ?? 0 });
+          const base = t('tierPolicy.testOk', { tier, model: res.modelUsed || '—', n: fmtLatency(res.latencyMs ?? NaN) });
           toast.success(
             res.failoverOccurred && res.failoverPath?.length
               ? base + t('tierPolicy.testOkFailover', { path: res.failoverPath.join(' → ') })
@@ -718,7 +719,7 @@ export const RulesPage: React.FC = () => {
                           : testRes.error
                       }
                     >
-                      {testRes.ok ? `✓${testRes.latencyMs ?? '?'}ms` : '✗'}
+                      {testRes.ok ? `✓${fmtLatency(testRes.latencyMs ?? NaN)}` : '✗'}
                     </span>
                   )}
                   <button

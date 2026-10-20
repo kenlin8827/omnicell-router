@@ -12,6 +12,7 @@ import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import { useModelTest, apiErrorText } from '../lib/useModelTest';
 import { Combobox } from '../components/Combobox';
 import { Switch } from './Switch';
+import { fmtLatency } from '../lib/format';
 
 /** Backdrop blur is opt-in per dialog (default: dim only, no blur). */
 const overlayStyle = (blur: boolean): React.CSSProperties => ({
@@ -673,7 +674,7 @@ export const ProviderModelsDialog: React.FC<{
                       }}
                       title={testResults[row.id].ok ? `${testResults[row.id].latencyMs} ms` : testResults[row.id].error}
                     >
-                      {testResults[row.id].ok ? `✓${testResults[row.id].latencyMs}ms` : '✗'}
+                      {testResults[row.id].ok ? `✓${fmtLatency(testResults[row.id].latencyMs ?? NaN)}` : '✗'}
                     </span>
                   )}
                   <div style={{ display: 'flex', gap: 4, marginLeft: d.limit?.context || testResults[row.id] ? 0 : 'auto' }}>

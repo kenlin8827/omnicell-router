@@ -8,6 +8,7 @@ import {
   type RateLimitSnapshotEntry,
 } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
+import { fmtLatency } from '../lib/format';
 import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
 import { Combobox } from '../components/Combobox';
@@ -244,9 +245,9 @@ export const RateLimitPage: React.FC = () => {
   const noteLabel = (n?: string, code?: RateLimitNoteCode, params?: { ms?: number }): string | null => {
     switch (code) {
       case 'grace-exhausted':
-        return t('rateLimitPage.noteGraceExhausted', { ms: params?.ms ?? 0 });
+        return t('rateLimitPage.noteGraceExhausted', { n: fmtLatency(params?.ms ?? NaN) });
       case 'grace-wait':
-        return t('rateLimitPage.noteGraceWait', { ms: params?.ms ?? 0 });
+        return t('rateLimitPage.noteGraceWait', { n: fmtLatency(params?.ms ?? NaN) });
       case 'keep-bound':
         return t('rateLimitPage.noteKeepBound');
       case 'last-candidate':

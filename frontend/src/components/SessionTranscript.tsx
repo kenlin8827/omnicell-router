@@ -30,7 +30,7 @@ import {
   type TranscriptTurn,
   type TurnOutput,
 } from '../lib/transcript';
-import { shortId, fmtDur } from '../lib/format';
+import { shortId, fmtDur, fmtLatency } from '../lib/format';
 
 const MONO = "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace";
 
@@ -694,7 +694,7 @@ const TranscriptBlock: React.FC<{
           )}
         </span>
         {turn.gatewayLatencyMs !== undefined && (
-          <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: MONO }}>↳ {turn.gatewayLatencyMs} ms</span>
+          <span title={`${turn.gatewayLatencyMs} ms`} style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: MONO }}>↳ {fmtLatency(turn.gatewayLatencyMs)}</span>
         )}
         {st.reqTruncated && (
           <span className="badge badge-warning" title={t('captures.reqTruncatedNote')} style={{ flexShrink: 0 }}>

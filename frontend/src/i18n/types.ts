@@ -167,6 +167,7 @@ export interface TranslationDict {
     savedTier: string;
     testBtn: string;
     testBtnHint: string;
+    /** {n} slot receives a fmtLatency duration label ("3.5s"), not raw ms. */
     testOk: string;
     testOkFailover: string;
     testFailed: string;
@@ -298,6 +299,7 @@ export interface TranslationDict {
     oauthHint: string;
     testBtn: string;
     testing: string;
+    /** {n} slot receives a fmtLatency duration label ("3.5s"), not raw ms. */
     testOkMsg: string;
     testFailMsg: string;
     testAllBtn: string;
@@ -314,6 +316,7 @@ export interface TranslationDict {
     probeHintUpstream: string;
     probeHintBusiness: string;
     probeHintNotFound: string;
+    /** {n} slot receives a fmtLatency duration label ("30s"), not raw ms. */
     probeTimeout: string;
     probeUnreachable: string;
     probeUnroutableUnknownPkg: string;
@@ -1007,6 +1010,7 @@ hiddenBadge: string;
     colUsed: string;
     colFill: string;
     fmtKey: string;
+    /** {n} slots receive a fmtLatency duration label ("12s"), not raw ms. */
     noteGraceExhausted: string;
     noteGraceWait: string;
     noteKeepBound: string;
@@ -1095,6 +1099,7 @@ hiddenBadge: string;
     resultSamples: string;
     resultAccuracy: string;
     resultLoss: string;
+    /** {n} slot receives a fmtLatency duration label ("1m 05s"), not raw ms. */
     resultDuration: string;
     resultClasses: string;
     datasetTitle: string;
@@ -1568,6 +1573,7 @@ hiddenBadge: string;
     showMoreMembers: string;
     collapseMembers: string;
     testBtn: string;
+    /** {n} slot receives a fmtLatency duration label ("3.5s"), not raw ms. */
     testOk: string;
     testOkFailover: string;
     testFailed: string;

@@ -10,7 +10,7 @@ import {
   type LastProbeCapture,
 } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
-import { fmtDur } from '../lib/format';
+import { fmtDur, fmtLatency } from '../lib/format';
 import { ProviderLogo } from '../components/ProviderLogo';
 import { Dialog } from '../components/Dialog';
 import { useToast } from '../components/ToastProvider';
@@ -450,7 +450,7 @@ export const QuotaPage: React.FC = () => {
                   {lastProbe.http.status != null ? `HTTP ${lastProbe.http.status}` : t('quotaPage.lastProbeNetwork')}
                 </span>
                 {lastProbe.http.durationMs !== undefined && (
-                  <span style={{ ...MONO, color: 'var(--text-dim)' }}>{lastProbe.http.durationMs}ms</span>
+                  <span style={{ ...MONO, color: 'var(--text-dim)' }} title={`${lastProbe.http.durationMs} ms`}>{fmtLatency(lastProbe.http.durationMs)}</span>
                 )}
               </div>
               <div style={{ ...MONO, color: 'var(--text-dim)', marginBottom: 8, wordBreak: 'break-all' }}>{lastProbe.http.url}</div>

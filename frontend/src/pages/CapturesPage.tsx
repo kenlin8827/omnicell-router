@@ -16,7 +16,7 @@ import { useToast } from '../components/ToastProvider';
 import { Switch } from '../components/Switch';
 import { Combobox } from '../components/Combobox';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
-import { copyToClipboard, shortId, decodeRate, formatRate, fmtDur } from '../lib/format';
+import { copyToClipboard, shortId, decodeRate, formatRate, fmtDur, fmtLatency } from '../lib/format';
 import { useSplitterWidth, VSplitter } from '../components/Splitter';
 import { strToU8, zipSync } from 'fflate';
 import { SessionTranscript } from '../components/SessionTranscript';
@@ -62,13 +62,24 @@ const legTiming = (
   return { ttftMs, rate: tokens !== null && tokens > 0 ? decodeRate(tokens, genMs) : null };
 };
 
-/** Timing segments for one leg's chip: `· TTFT 412 ms · 52 tok/s`, each part optional. */
+/**
+ * Timing segments for one leg's chip: `· TTFT 3.0s · 52 tok/s`, each part
+ * optional. Labels use fmtLatency smart units (sub-second ms → s → m s); the
+ * chip's tooltip carries the exact raw ms (legTimingTip) since labels round.
+ */
 const legTimingText = (turn: CaptureTurn, side: 'upstream' | 'gateway'): string => {
   const tr = legTiming(turn, side);
   if (!tr) return '';
-  const ttft = tr.ttftMs !== undefined ? ` · TTFT ${tr.ttftMs} ms` : '';
+  const ttft = tr.ttftMs !== undefined ? ` · TTFT ${fmtLatency(tr.ttftMs)}` : '';
   const rate = tr.rate !== null ? ` · ${formatRate(tr.rate)} tok/s` : '';
   return ttft + rate;
+};
+
+/** Raw-ms appendix for the timing chip's tooltip: `TTFT 3002 ms`; '' when the
+ *  leg never streamed — the tooltip then stays the static timing gloss. */
+const legTimingTip = (turn: CaptureTurn, side: 'upstream' | 'gateway'): string => {
+  const tr = legTiming(turn, side);
+  return tr?.ttftMs !== undefined ? `TTFT ${tr.ttftMs} ms` : '';
 };
 
 // Left-rail splitter bounds + persistence (captures page session list).
@@ -401,20 +412,24 @@ const CaptureDrawer: React.FC<{
               upstream cycle. Missing when one side never fired. */}
           {turn.gatewayLatencyMs !== undefined && (
             <span
-              title={t('captures.gatewayLatency')}
+              title={`${t('captures.gatewayLatency')} · ${turn.gatewayLatencyMs} ms`}
               style={{ fontSize: '12px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
             >
-              ↳ {turn.gatewayLatencyMs} ms
-              <span title={t('captures.timingTip')}>{legTimingText(turn, 'gateway')}</span>
+              ↳ {fmtLatency(turn.gatewayLatencyMs)}
+              <span title={[t('captures.timingTip'), legTimingTip(turn, 'gateway')].filter(Boolean).join(' · ')}>
+                {legTimingText(turn, 'gateway')}
+              </span>
             </span>
           )}
           {turn.upstreamLatencyMs !== undefined && (
             <span
-              title={t('captures.upstreamLatency')}
+              title={`${t('captures.upstreamLatency')} · ${turn.upstreamLatencyMs} ms`}
               style={{ fontSize: '12px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
             >
-              ↗ {turn.upstreamLatencyMs} ms
-              <span title={t('captures.timingTip')}>{legTimingText(turn, 'upstream')}</span>
+              ↗ {fmtLatency(turn.upstreamLatencyMs)}
+              <span title={[t('captures.timingTip'), legTimingTip(turn, 'upstream')].filter(Boolean).join(' · ')}>
+                {legTimingText(turn, 'upstream')}
+              </span>
             </span>
           )}
           <button className="btn btn-sm" style={{ marginLeft: 'auto' }} onClick={onClose} aria-label={t('common.close')}>
@@ -1810,15 +1825,19 @@ export const CapturesPage: React.FC = () => {
                                   trace:{shortId(turn.traceId)}
                                 </span>
                                 {turn.gatewayLatencyMs !== undefined && (
-                                  <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", flexShrink: 0 }}>
-                                    ↳ {turn.gatewayLatencyMs} ms
-                                    <span title={t('captures.timingTip')}>{legTimingText(turn, 'gateway')}</span>
+                                  <span title={`${turn.gatewayLatencyMs} ms`} style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", flexShrink: 0 }}>
+                                    ↳ {fmtLatency(turn.gatewayLatencyMs)}
+                                    <span title={[t('captures.timingTip'), legTimingTip(turn, 'gateway')].filter(Boolean).join(' · ')}>
+                                      {legTimingText(turn, 'gateway')}
+                                    </span>
                                   </span>
                                 )}
                                 {turn.upstreamLatencyMs !== undefined && (
-                                  <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", flexShrink: 0 }}>
-                                    ↗ {turn.upstreamLatencyMs} ms
-                                    <span title={t('captures.timingTip')}>{legTimingText(turn, 'upstream')}</span>
+                                  <span title={`${turn.upstreamLatencyMs} ms`} style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", flexShrink: 0 }}>
+                                    ↗ {fmtLatency(turn.upstreamLatencyMs)}
+                                    <span title={[t('captures.timingTip'), legTimingTip(turn, 'upstream')].filter(Boolean).join(' · ')}>
+                                      {legTimingText(turn, 'upstream')}
+                                    </span>
                                   </span>
                                 )}
                               </div>
