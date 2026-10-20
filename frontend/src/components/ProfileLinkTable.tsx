@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Eraser } from 'lucide-react';
 import { Combobox, type ComboboxOption } from './Combobox';
+import { InfoTip } from './InfoTip';
 import type { ModelProfileView } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 
@@ -205,12 +206,7 @@ export const ProfileLinkTable: React.FC<Props> = ({
                       <div key={r.name} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                         <span style={{ width: '140px', flexShrink: 0, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: '12px' }}>{r.name}</span>
                         {r.current && (
-                          <span
-                            title={`${t('clients.profileCurrentModel')}: ${r.current}`}
-                            style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: '11px', color: 'var(--text-dim)' }}
-                          >
-                            {r.current.includes('/') ? r.current.slice(r.current.lastIndexOf('/') + 1) : r.current}
-                          </span>
+                          <InfoTip text={`${t('clients.profileCurrentModel')}: ${r.current}`} />
                         )}
                         <div style={{ width: '230px', flexShrink: 0 }}>
                           <Combobox
