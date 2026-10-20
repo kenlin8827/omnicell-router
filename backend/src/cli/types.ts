@@ -49,7 +49,7 @@ export interface ClientHookStatus {
   /** Extra concrete models exposed in the client's model switcher (opencode provider models list) */
   extraModels?: string[];
   /**
-   * Last-applied model profile (opencode only), echoed from the OCR sidecar
+   * Last-linked model profile (opencode, pi), echoed from the OCR sidecar
    * meta: profile id + the agent-name → modelRef map actually written into the
    * config ('' id = no profile; the bindings are informational echo — the
    * config's agent node is the live truth).

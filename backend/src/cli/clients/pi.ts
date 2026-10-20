@@ -9,7 +9,7 @@ import {
   safeWriteJson,
   defaultGatewayPort,
 } from './base.js';
-import { ClientHookStatus, ClientModelSlot, VIRTUAL_AUTO_IDS } from '../types.js';
+import { ClientHookStatus, ClientModelSlot, ModelProfileBinding, VIRTUAL_AUTO_IDS } from '../types.js';
 
 /**
  * Provider key written into pi's `~/.pi/agent/models.json` — the key name
@@ -55,9 +55,55 @@ const PI_SUBAGENT_TIERS: Record<string, string> = {
 /** Namespace prefix marking a subagent override as router-owned (teardown strips these, only these). */
 const SUBAGENT_MODEL_PREFIX = `${PI_PROVIDER_KEY}/`;
 
+/**
+ * Sidecar next to models.json (`models.json.ocr-meta.json`) holding the
+ * profile-link echo (profile id + role → profile-slot key). The echo must
+ * NEVER live in settings.json: a running pi rewrites that file from memory
+ * and silently wipes externally-written keys, so any link labels written
+ * there would be lost between restarts. models.json itself is also unsafe —
+ * pi validates it against a strict schema (unknown top-level keys fail the
+ * whole file). The sidecar is OCR-owned and never read by pi.
+ */
+function metaPathFor(configPath: string): string {
+  return `${configPath}.ocr-meta.json`;
+}
+
+function readMeta(configPath: string): { profile?: ModelProfileBinding } {
+  try {
+    const p = metaPathFor(configPath);
+    if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch {
+    // ignore
+  }
+  return {};
+}
+
+function writeMeta(configPath: string, meta: { profile?: ModelProfileBinding }): void {
+  try {
+    fs.writeFileSync(metaPathFor(configPath), JSON.stringify(meta, null, 2), 'utf8');
+  } catch {
+    // best effort
+  }
+}
+
+/** Shape-guard for an agentOverrides entry: entries are open objects (pi
+ *  stores per-role fields like `thinking` alongside `model`), anything else
+ *  is replaced by a fresh object rather than merged into. */
+function overrideBase(entry: unknown): Record<string, unknown> {
+  return entry && typeof entry === 'object' && !Array.isArray(entry) ? { ...(entry as Record<string, unknown>) } : {};
+}
+
 /** baseUrl of the OCR provider entry, when it is a usable http(s) URL. */
 const hookBaseUrl = (entry: any): string | undefined =>
   typeof entry?.baseUrl === 'string' && /^https?:\/\//.test(entry.baseUrl) ? entry.baseUrl : undefined;
+
+function removeMeta(configPath: string): void {
+  try {
+    fs.rmSync(metaPathFor(configPath), { force: true });
+  } catch {
+    // best effort
+  }
+}
 
 export class PiClientAdapter implements ClientAdapter {
   name = 'pi' as const;
@@ -146,10 +192,13 @@ export class PiClientAdapter implements ClientAdapter {
       // The fixed auto* alias block (see setup) is router-owned, not a user choice —
       // never echo it back as extra entries.
       extraModels: models.slice(1).map((m: any) => String(m.id)).filter(id => id && !VIRTUAL_AUTO_IDS.has(id)),
+      // Profile-link echo from the OCR sidecar (models.json.ocr-meta.json) —
+      // live only while hooked (teardown deletes the sidecar with the hook).
+      profile: url ? readMeta(configPath).profile : undefined,
     };
   }
 
-  async setup(options?: { port?: number; models?: Record<string, string>; apiKey?: string; contextWindow?: number; extraModels?: string[] }): Promise<{ success: boolean; message: string }> {
+  async setup(options?: { port?: number; models?: Record<string, string>; apiKey?: string; contextWindow?: number; extraModels?: string[]; /** Effective role bindings (manual + profile-linked, merged by the console route): role → modelRef. */ agentModels?: Record<string, string>; /** Profile-link echo for the OCR sidecar meta: profile id + role → profile-slot key ('' id = un-link: strip the linked roles' overrides). */ profile?: ModelProfileBinding }): Promise<{ success: boolean; message: string }> {
     const configPath = this.getConfigPath();
 
     // Never overwrite a models.json we cannot read — it likely holds the
@@ -216,13 +265,45 @@ export class PiClientAdapter implements ClientAdapter {
       const sub = settings.subagents;
       if (!sub.agentOverrides || typeof sub.agentOverrides !== 'object' || Array.isArray(sub.agentOverrides)) sub.agentOverrides = {};
       const overrides: Record<string, any> = sub.agentOverrides;
+
+      // Profile un-link ('' id): strip the overrides of roles the sidecar says
+      // were profile-linked — they fall back to the tier preset below. Manual
+      // and foreign pins are never touched.
+      const profileIn = options?.profile;
+      const meta = readMeta(configPath);
+      if (profileIn !== undefined && !profileIn.id && meta.profile?.bindings) {
+        for (const role of Object.keys(meta.profile.bindings)) {
+          const entry = overrides[role];
+          if (
+            entry && typeof entry === 'object' && !Array.isArray(entry) &&
+            typeof entry.model === 'string' && entry.model.startsWith(SUBAGENT_MODEL_PREFIX)
+          ) {
+            if (Object.keys(entry).length === 1) delete overrides[role];
+            else delete entry.model;
+          }
+        }
+      }
+
+      // Effective role map: explicit picks from `models` plus the
+      // console-resolved bindings (`agentModels` — manual + profile-linked
+      // merged). Both are explicit: the tier preset below never fills them.
       const explicitRoles = new Set<string>();
+      const effectiveRoles: Record<string, string> = {};
       for (const [role, raw] of Object.entries(options?.models || {})) {
         if (role === 'main') continue;
         const value = typeof raw === 'string' ? raw.trim() : '';
         // Multi-segment provider paths are legal model refs (openrouter/org/model).
         if (!value || !/^[\w.:-]+(\/[\w.:-]+)*$/.test(value)) continue;
+        effectiveRoles[role] = value;
         explicitRoles.add(role);
+      }
+      for (const [role, raw] of Object.entries(options?.agentModels || {})) {
+        const value = (raw || '').trim();
+        if (!value || !/^[\w.:-]+(\/[\w.:-]+)*$/.test(value)) continue;
+        effectiveRoles[role] = value;
+        explicitRoles.add(role);
+      }
+      for (const [role, value] of Object.entries(effectiveRoles)) {
         const entry = overrides[role];
         const base = entry && typeof entry === 'object' && !Array.isArray(entry) ? entry : {};
         if (base.model === value) continue; // unchanged echo — leave a manual pin byte-identical
@@ -244,6 +325,14 @@ export class PiClientAdapter implements ClientAdapter {
         overrides[role] = { ...base, model: `${PI_PROVIDER_KEY}/${tier}` };
       }
       safeWriteJson(settingsPath, settings);
+      // Profile-link echo: recorded AFTER the writes so the sidecar reflects
+      // what this setup just applied ('' id clears it — the un-link sweep
+      // above already removed the linked roles' overrides).
+      if (profileIn !== undefined) {
+        if (profileIn.id) meta.profile = { id: profileIn.id, bindings: profileIn.bindings || {} };
+        else delete meta.profile;
+        writeMeta(configPath, meta);
+      }
       subagentNote = `; ${Object.keys(overrides).length} subagent role(s) configured in ${settingsPath} (restart pi to pick up — a running pi rewrites this file from memory)`;
     }
 
@@ -253,11 +342,139 @@ export class PiClientAdapter implements ClientAdapter {
     };
   }
 
+  /**
+   * Profile-change write-through: re-resolve the linked roles' slot keys
+   * against the JUST-SAVED profile slots and rewrite the linked roles'
+   * agentOverrides WITHOUT a full setup — a saved profile update propagates
+   * to hooked clients automatically. Only LINKED roles are touched: manual
+   * picks and foreign pins stay byte-identical, and there is no sweep (pi's
+   * per-role override map is additive, unlike opencode's agent node). A slot
+   * ref of 'auto' — or a slot the profile no longer defines — strips the
+   * role's router-owned override (inherit the tier preset / default). A
+   * no-diff save writes nothing.
+   */
+  async refreshProfileBindings(
+    profileId: string,
+    tags: Record<string, string>,
+    slots: Record<string, string>
+  ): Promise<{ success: boolean; message: string }> {
+    const configPath = this.getConfigPath();
+    if (!fs.existsSync(configPath)) {
+      return { success: false, message: `Configuration file not found at ${configPath}` };
+    }
+    const data = safeReadJson(configPath);
+    if (!hookBaseUrl(data?.providers?.[PI_PROVIDER_KEY])) {
+      return { success: false, message: 'Pi is not hooked — nothing to refresh' };
+    }
+    const settingsPath = this.getSettingsPath();
+    const settings = safeReadJson(settingsPath);
+    if (settings === null || typeof settings !== 'object' || Array.isArray(settings)) {
+      return { success: false, message: `Could not parse pi settings at ${settingsPath} — fix it manually, then retry` };
+    }
+    if (!settings.subagents || typeof settings.subagents !== 'object' || Array.isArray(settings.subagents)) settings.subagents = {};
+    const sub = settings.subagents;
+    if (!sub.agentOverrides || typeof sub.agentOverrides !== 'object' || Array.isArray(sub.agentOverrides)) sub.agentOverrides = {};
+    const overrides: Record<string, any> = sub.agentOverrides;
+
+    // Desired end-state per LINKED role: resolved ref, or null = strip the
+    // override (slot missing / 'auto' inherit). Untagged roles never appear
+    // here — write-through cannot see or touch them.
+    const desired: Record<string, string | null> = {};
+    let skipped = 0;
+    for (const [role, slotKey] of Object.entries(tags || {})) {
+      const ref = (slots || {})[slotKey];
+      if (!ref || ref === 'auto') {
+        desired[role] = null;
+        skipped++;
+        continue;
+      }
+      desired[role] = ref;
+    }
+
+    // Diff guard against the live overrides — an unrelated config save must
+    // not rewrite this file.
+    const changed = Object.entries(desired).some(([role, ref]) => {
+      const current = overrides[role]?.model;
+      const currentBare = typeof current === 'string' && current.startsWith(SUBAGENT_MODEL_PREFIX)
+        ? current.slice(SUBAGENT_MODEL_PREFIX.length)
+        : current;
+      return (ref || '') !== (typeof currentBare === 'string' ? currentBare : '');
+    });
+    const meta = readMeta(configPath);
+    const stableEcho = (o: Record<string, string>) =>
+      JSON.stringify(Object.keys(o).sort().map(k => [k, o[k]]));
+    const echoSame =
+      meta.profile?.id === profileId && stableEcho(meta.profile?.bindings || {}) === stableEcho(tags || {});
+    if (!changed && echoSame) {
+      return { success: true, message: 'pi profile links already up to date' };
+    }
+
+    createBackup(settingsPath);
+    let applied = 0;
+    for (const [role, ref] of Object.entries(desired)) {
+      if (ref === null) {
+        const entry = overrides[role];
+        if (
+          entry && typeof entry === 'object' && !Array.isArray(entry) &&
+          typeof entry.model === 'string' && entry.model.startsWith(SUBAGENT_MODEL_PREFIX)
+        ) {
+          if (Object.keys(entry).length === 1) delete overrides[role];
+          else delete entry.model;
+        }
+        continue;
+      }
+      const base = overrideBase(overrides[role]);
+      overrides[role] = { ...base, model: `${PI_PROVIDER_KEY}/${ref}` };
+      applied++;
+    }
+    // Prune emptied nodes (mirrors stripSubagentOverrides).
+    if (Object.keys(overrides).length === 0) delete settings.subagents.agentOverrides;
+    if (settings.subagents && Object.keys(settings.subagents).length === 0) delete settings.subagents;
+    if (Object.keys(settings).length === 0) {
+      try {
+        fs.rmSync(settingsPath, { force: true });
+      } catch {
+        safeWriteJson(settingsPath, settings); // unlink failed (file lock) — at least drop the residue
+      }
+    } else {
+      safeWriteJson(settingsPath, settings);
+    }
+
+    // Expose the linked refs in the pi provider models list (idempotent add —
+    // pi resolves an override's model against the provider's declared ids).
+    const refs = [...new Set(Object.values(desired).filter((v): v is string => !!v))];
+    if (refs.length > 0) {
+      const providerModels: any[] = Array.isArray(data.providers[PI_PROVIDER_KEY].models)
+        ? data.providers[PI_PROVIDER_KEY].models
+        : [];
+      let added = 0;
+      for (const id of refs) {
+        if (!providerModels.some((m: any) => m?.id === id)) {
+          providerModels.push({ id });
+          added++;
+        }
+      }
+      if (added > 0) {
+        data.providers[PI_PROVIDER_KEY].models = providerModels;
+        safeWriteJson(configPath, data);
+      }
+    }
+
+    meta.profile = { id: profileId, bindings: tags || {} };
+    writeMeta(configPath, meta);
+    return {
+      success: true,
+      message: `pi profile links refreshed (${applied} role(s)${skipped > 0 ? `, ${skipped} inherit` : ''})`,
+    };
+  }
+
   async teardown(): Promise<{ success: boolean; message: string }> {
     const configPath = this.getConfigPath();
     // Subagent overrides live in settings.json — cleaned on every teardown
     // path (even when models.json is already gone) so no router residue survives.
     const subagentNote = this.stripSubagentOverrides();
+    // The profile-link sidecar is OCR-owned: it dies with the hook.
+    removeMeta(configPath);
 
     if (!fs.existsSync(configPath)) {
       return { success: false, message: `Configuration file not found at ${configPath}${subagentNote}` };

@@ -88,9 +88,12 @@ export const ClientsPage: React.FC = () => {
     { value: '200000', label: '200K' },
     { value: '1048576', label: '1M' },
   ];
-  /** Accordion: which client's config form is expanded. Starts fully collapsed —
-   *  opening a form is always a deliberate user action. */
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  /** Accordion: the single client whose config form is expanded ('other' = the
+   *  static manual-setup row, null = all collapsed). Single-open by design — the
+   *  forms are tall, and every draft lives in page-level state keyed by client
+   *  name, so collapsing never loses edits and opening a form is always a
+   *  deliberate user action. */
+  const [expanded, setExpanded] = useState<string | null>(null);
   /** Live gateway port for the manual-endpoint guide ('' → fall back to console origin / OCR default). */
   const [port, setPort] = useState<string>('');
   const gwPort = port || window.location.port || '4000';
@@ -106,7 +109,12 @@ export const ClientsPage: React.FC = () => {
         for (const c of data.clients || []) {
           if (next[c.name] === undefined) {
             const slots: Record<string, string> = {};
-            for (const s of clientSlots(c)) slots[s.key] = s.value || s.default || 'auto';
+            // Profile-link echo re-tags non-main slots as `slot:<key>` drafts —
+            // the picker shows the link entry instead of the resolved ref.
+            const tags = c.profile?.bindings || {};
+            for (const s of clientSlots(c)) {
+              slots[s.key] = s.key !== 'main' && tags[s.key] ? `slot:${tags[s.key]}` : (s.value || s.default || 'auto');
+            }
             next[c.name] = slots;
           }
         }
@@ -188,12 +196,14 @@ export const ClientsPage: React.FC = () => {
     });
   }, [clients, mem, profilesReady, profiles, apiKeys]);
 
-  /** Slot-key tags behind the opencode draft — the `slot:<key>` rows only.
-   *  Memory persists these (agent → slot key) so profile links survive reloads. */
-  const linkTagsOf = (bind: Record<string, string> | undefined): Record<string, string> =>
+  /** Slot-key tags behind a client's drafts — the `slot:<key>` values only.
+   *  opencode keeps them in the agent-table draft (bindSel); pi keeps them in
+   *  the role-slot drafts (modelSel). Memory persists tags so links survive
+   *  reloads. */
+  const linkTagsOf = (draft: Record<string, string> | undefined): Record<string, string> =>
     Object.fromEntries(
-      Object.entries(bind || {})
-        .filter(([, v]) => typeof v === 'string' && v.startsWith('slot:'))
+      Object.entries(draft || {})
+        .filter(([k, v]) => k !== 'main' && typeof v === 'string' && v.startsWith('slot:'))
         .map(([a, v]) => [a, v.slice(5)])
     );
 
@@ -235,7 +245,7 @@ export const ClientsPage: React.FC = () => {
   /** Flip the model-list source and write it through to the form memory. */
   const setModelMode = (clientName: string, mode: 'none' | 'custom' | 'follow') => {
     setModeSel(prev => ({ ...prev, [clientName]: mode }));
-    persistMem(clientName, profileSel[clientName] || '', linkTagsOf(bindSel[clientName]), mode);
+    persistMem(clientName, profileSel[clientName] || '', linkTagsOf(clientName === 'pi' ? modelSel[clientName] : bindSel[clientName]), mode);
   };
 
   /** Lazy-load the effective-model view when a follow selection has a key picked. */
@@ -249,7 +259,7 @@ export const ClientsPage: React.FC = () => {
   }, [clients, modeSel, apiKeySel, apiKeys, keyModels]);
 
   /** Lazy-load the OpenCode agent inventory when the opencode form first expands. */
-  const opencodeOpen = !!expanded['opencode'];
+  const opencodeOpen = expanded === 'opencode';
   useEffect(() => {
     if (opencodeOpen && agents === null && !agentsError) {
       api.listOpencodeAgents().then(setAgents).catch(() => setAgentsError(true));
@@ -308,11 +318,13 @@ export const ClientsPage: React.FC = () => {
         toast.error(t('clients.apiKeyRequired'));
         return;
       }
+      const piPayload = piLinkPayload(clientName);
       const res = await api.toggleClient(clientName, action, action === 'setup' ? {
-        models: modelSel[clientName] || {},
+        models: piPayload.models,
         apiKey: apiKeySel[clientName],
         contextWindow: Number(ctxSel[clientName] || '262144'),
         extraModels: extras,
+        profile: piPayload.profile,
         ...opencodeAgentPayload(clientName),
       } : undefined);
       setActionNotice(res.message || 'Updated');
@@ -322,7 +334,7 @@ export const ClientsPage: React.FC = () => {
       if (action === 'setup') {
         // Memory records what THIS setup wrote — the key's stable id, never a
         // draft pick or the raw token.
-        persistMem(clientName, profileSel[clientName] || '', linkTagsOf(bindSel[clientName]), undefined, keyIdOf(apiKeySel[clientName] || ''));
+        persistMem(clientName, profileSel[clientName] || '', linkTagsOf(clientName === 'pi' ? modelSel[clientName] : bindSel[clientName]), undefined, keyIdOf(apiKeySel[clientName] || ''));
       }
       // Refresh the agent inventory cache and drop the link draft so the
       // table re-seeds from the committed config (the lazy-load effect
@@ -402,8 +414,9 @@ export const ClientsPage: React.FC = () => {
           models: cleared,
           extraModels: [],
           // Full unlink: sweep every router-owned agent override + clear the
-          // profile-link echo (the reset semantics for opencode).
-          ...(clientName === 'opencode' ? { agentModels: {}, profile: { id: '', bindings: {} } } : {}),
+          // profile-link echo (the reset semantics for link-capable clients).
+          ...(clientName === 'opencode' ? { agentModels: {} } : {}),
+          ...(clientName === 'opencode' || clientName === 'pi' ? { profile: { id: '', bindings: {} } } : {}),
         });
         setActionNotice(res.message || 'Updated');
         await loadClients();
@@ -438,6 +451,52 @@ export const ClientsPage: React.FC = () => {
     const v = s.value;
     if (!v || v === 'auto' || modelOptions.some(o => o.value === v)) return modelOptions;
     return [{ value: v, label: v }, ...modelOptions];
+  };
+
+  /** pi role-slot options: plain model picks for main; role slots additionally
+   *  get 「槽位:」 link shortcuts from the selected profile — operations first
+   *  (auto / links), models after, an echoed foreign pin kept visible. */
+  const piSlotOptions = (clientName: string, s: { key: string; value?: string }) => {
+    if (clientName !== 'pi' || s.key === 'main') return slotOptions(s);
+    const current = modelSel[clientName]?.[s.key] || 'auto';
+    const profile = profiles.find(p => p.id === (profileSel[clientName] || ''));
+    const opts: { value: string; label: string; meta?: string; badge?: string; badgeColor?: string }[] = [
+      { value: 'auto', label: t('clients.modelAuto') },
+    ];
+    if (profile) {
+      for (const [k, ref] of Object.entries(profile.slots || {})) {
+        opts.push({
+          value: `slot:${k}`,
+          label: t('clients.profileSlotLabel', { slot: k }),
+          badge: t('modelRef.kindProfileSlot'),
+          badgeColor: 'var(--accent-emerald)',
+          meta: ref,
+        });
+      }
+    }
+    opts.push(...modelOptions.filter(o => o.value !== 'auto'));
+    if (current && !opts.some(o => o.value === current)) opts.splice(1, 0, { value: current, label: current });
+    return opts;
+  };
+
+  /** pi payload: role slot drafts split into explicit models and profile-link
+   *  tags (`slot:<key>` values; main stays a plain model pick). Other clients
+   *  pass their slot map through unchanged. */
+  const piLinkPayload = (clientName: string): { models: Record<string, string>; profile?: { id: string; bindings: Record<string, string> } } => {
+    if (clientName !== 'pi') return { models: modelSel[clientName] || {} };
+    const sel = profileSel[clientName] || '';
+    const models: Record<string, string> = {};
+    const tags: Record<string, string> = {};
+    for (const [role, raw] of Object.entries(modelSel[clientName] || {})) {
+      const v = (raw || '').trim();
+      if (v.startsWith('slot:')) {
+        const k = v.slice(5);
+        if (k && role !== 'main') tags[role] = k;
+        continue;
+      }
+      models[role] = v || 'auto';
+    }
+    return { models, profile: { id: sel, bindings: tags } };
   };
 
   const addExtraModel = (clientName: string, id: string) => {
@@ -535,8 +594,8 @@ export const ClientsPage: React.FC = () => {
     );
 
   /** Accordion state for the static "Other clients" manual-setup row ('other' can't collide with adapter names). */
-  const otherOpen = !!expanded['other'];
-  const toggleOther = () => setExpanded(prev => ({ ...prev, other: !otherOpen }));
+  const otherOpen = expanded === 'other';
+  const toggleOther = () => setExpanded(prev => (prev === 'other' ? null : 'other'));
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
@@ -567,8 +626,8 @@ export const ClientsPage: React.FC = () => {
             quick action, expanding reveals the progressive setup form. */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
           {clients.map(c => {
-            const open = !!expanded[c.name];
-            const toggle = () => setExpanded(prev => ({ ...prev, [c.name]: !open }));
+            const open = expanded === c.name;
+            const toggle = () => setExpanded(prev => (prev === c.name ? null : c.name));
             return (
               <div
                 key={c.name}
@@ -665,6 +724,38 @@ export const ClientsPage: React.FC = () => {
                     />
                   </div>
                 )}
+                {c.name === 'pi' && (() => {
+                  const selProfileId = profileSel[c.name] || '';
+                  const linkedProfile = profiles.find(p => p.id === selProfileId);
+                  return (
+                    <div style={{ gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <div style={{ fontSize: '11px', color: 'var(--text-dim)', flexShrink: 0 }}>{t('clients.profileTitle')}</div>
+                        <div style={{ width: '280px' }}>
+                          <Combobox
+                            value={selProfileId}
+                            onChange={v => setProfileSel(prev => ({ ...prev, [c.name]: v }))}
+                            options={[
+                              { value: '', label: t('clients.profileNone') },
+                              ...profiles.map(p => ({ value: p.id, label: p.name || p.id, meta: p.name ? p.id : undefined })),
+                            ]}
+                          />
+                        </div>
+                        {profiles.length === 0 && (
+                          <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+                            {t('clients.profileEmpty')}{' '}
+                            <Link to="/model-profiles" style={{ color: 'var(--accent)', textDecoration: 'none' }}>{t('clients.profileManage')}</Link>
+                          </span>
+                        )}
+                      </div>
+                      {linkedProfile && (
+                        <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
+                          {t('clients.profileLinkedHint', { name: linkedProfile.name || linkedProfile.id })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
                 {clientSlots(c).map(s => (
                         <div key={s.key}>
                           <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '6px' }}>
@@ -678,12 +769,12 @@ export const ClientsPage: React.FC = () => {
                                 [c.name]: { ...(prev[c.name] || {}), [s.key]: v || 'auto' },
                               }))
                             }
-                            options={slotOptions(s)}
+                            options={piSlotOptions(c.name, s)}
                             panelMinWidth={360}
                           />
                         </div>
                       ))}
-                      {supportsExtraModels(c.name) && (() => {
+                {supportsExtraModels(c.name) && (() => {
                         const mode = modeSel[c.name] ?? 'none';
                         const follow = mode === 'follow';
                         const fk = follow ? followKeyOf(c.name) : undefined;
@@ -774,10 +865,10 @@ export const ClientsPage: React.FC = () => {
                       for (const [k, ref] of Object.entries(profile.slots || {})) {
                         opts.push({
                           value: `slot:${k}`,
-                          label: t('clients.profileSlotLabel', { slot: k }),
-                          // Same right-side chip language as the auto* entries —
-                          // emerald marks the profile-linked kind.
-                          badge: t('modelRef.kindProfileSlot'),
+                          // Bare slot name — the far-right emerald chip carries
+                          // the "slot" kind; meta shows the ref it points at.
+                          label: k,
+                          badge: t('clients.profileSlotBadge'),
                           badgeColor: 'var(--accent-emerald)',
                           meta: ref,
                         });

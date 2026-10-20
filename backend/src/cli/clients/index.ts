@@ -73,29 +73,33 @@ export async function teardownClient(name: string): Promise<{ success: boolean; 
 }
 
 /**
- * Profile-change write-through: called after every config save — finds the
- * hooked client (opencode) whose profile link points at a saved profile and
- * re-resolves its linked agents against the NEW slots. The adapter's diff
- * guard makes unrelated saves no-op, so this is cheap to run unconditionally.
- * Returns a note for the save response ('' = nothing to report).
+ * Profile-change write-through: called after every config save — every
+ * adapter that supports profile links (opencode, pi) re-resolves its linked
+ * rows against the NEW slots. Each adapter's diff guard makes unrelated saves
+ * no-op, so this is cheap to run unconditionally. Returns notes for the save
+ * response ('' = nothing to report).
  */
 export async function refreshClientProfileBindings(
   profiles: { id: string; slots?: Record<string, string> }[]
 ): Promise<string> {
-  const adapter = getClientAdapter('opencode');
-  if (!adapter?.refreshProfileBindings) return '';
-  const linked = (await adapter.getStatus()).profile;
-  if (!linked?.id) return '';
-  const profile = profiles.find(p => p.id === linked.id);
-  if (!profile) {
-    return `; note: opencode profile '${linked.id}' no longer exists — its agent links were left as-is`;
+  const notes: string[] = [];
+  for (const adapter of getAllClientAdapters()) {
+    if (!adapter.refreshProfileBindings) continue;
+    const linked = (await adapter.getStatus()).profile;
+    if (!linked?.id) continue;
+    const profile = profiles.find(p => p.id === linked.id);
+    if (!profile) {
+      notes.push(`; note: ${adapter.name} profile '${linked.id}' no longer exists — its links were left as-is`);
+      continue;
+    }
+    const r = await adapter.refreshProfileBindings(linked.id, linked.bindings, profile.slots || {}).catch((err: unknown) => ({
+      success: false,
+      message: err instanceof Error ? err.message : String(err),
+    }));
+    // Failures surface in the save response (cp-failfast) — a silently dropped
+    // write-through would leave the client config stale with no signal.
+    if (!r.success) notes.push(`; warning: ${adapter.name} profile refresh FAILED: ${r.message}`);
+    else if (!r.message.includes('already up to date')) notes.push(`; ${r.message}`);
   }
-  const r = await adapter.refreshProfileBindings(linked.id, linked.bindings, profile.slots || {}).catch((err: unknown) => ({
-    success: false,
-    message: err instanceof Error ? err.message : String(err),
-  }));
-  // Failures surface in the save response (cp-failfast) — a silently dropped
-  // write-through would leave the client config stale with no signal.
-  if (!r.success) return `; warning: opencode profile refresh FAILED: ${r.message}`;
-  return r.message.includes('already up to date') ? '' : `; ${r.message}`;
+  return notes.join('');
 }
