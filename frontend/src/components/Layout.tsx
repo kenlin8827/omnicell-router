@@ -98,7 +98,6 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     icon: ArrowUpRight,
     items: [
       { to: '/providers', labelKey: 'nav.providers', icon: Plug },
-      { to: '/quota', labelKey: 'nav.quota', icon: Wallet },
       { to: '/models', labelKey: 'nav.models', icon: Cpu },
       { to: '/catalog', labelKey: 'nav.catalogSources', icon: CloudDownload },
       { to: '/proxy', labelKey: 'nav.proxy', icon: ArrowLeftRight },
@@ -121,6 +120,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     items: [
       { to: '/sessions', labelKey: 'nav.sessions', icon: Users },
       { to: '/usage', labelKey: 'nav.usage', icon: BarChart3 },
+      { to: '/quota', labelKey: 'nav.quota', icon: Wallet },
       { to: '/rate-limit', labelKey: 'nav.rateLimit', icon: Gauge },
       { to: '/captures', labelKey: 'nav.captures', icon: Archive },
       { to: '/flywheel', labelKey: 'nav.flywheel', icon: BrainCircuit },
@@ -158,7 +158,7 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/sessions': { groupKey: 'nav.grpObservability', titleKey: 'nav.sessions' },
   '/usage': { groupKey: 'nav.grpObservability', titleKey: 'nav.usage' },
   '/rate-limit': { groupKey: 'nav.grpObservability', titleKey: 'nav.rateLimit' },
-  '/quota': { groupKey: 'nav.grpUpstream', titleKey: 'nav.quota' },
+  '/quota': { groupKey: 'nav.grpObservability', titleKey: 'nav.quota' },
   '/logs': { groupKey: 'nav.grpObservability', titleKey: 'nav.logs' },
   '/captures': { groupKey: 'nav.grpObservability', titleKey: 'nav.captures' },
   '/flywheel': { groupKey: 'nav.grpObservability', titleKey: 'nav.flywheel' },
