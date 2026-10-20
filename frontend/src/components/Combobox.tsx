@@ -8,7 +8,8 @@ export interface ComboboxOption {
   label: string;
   /** Right-aligned auxiliary text (e.g. model count, "not connected" marker). */
   meta?: string;
-  /** Tiny outline chip before `meta` (e.g. model-ref kind). Pair with `badgeColor`. */
+  /** Tiny outline chip at the far right, after `meta` — the row's kind tag
+   *  (e.g. model-ref kind). Pair with `badgeColor`. */
   badge?: string;
   /** CSS color for the `badge` chip (text + derived border); defaults to dim text. */
   badgeColor?: string;
@@ -437,6 +438,9 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
                     <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {o.label}
                     </span>
+                    {o.meta && (
+                      <span style={{ fontSize: 10.5, color: 'var(--text-dim)', flexShrink: 0 }}>{o.meta}</span>
+                    )}
                     {o.badge && (
                       <span
                         style={{
@@ -454,9 +458,6 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
                       >
                         {o.badge}
                       </span>
-                    )}
-                    {o.meta && (
-                      <span style={{ fontSize: 10.5, color: 'var(--text-dim)', flexShrink: 0 }}>{o.meta}</span>
                     )}
                     {isSelected && <Check size={12} color="var(--accent)" style={{ flexShrink: 0 }} />}
                   </div>
