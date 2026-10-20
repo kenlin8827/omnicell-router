@@ -24,7 +24,6 @@ import { SettingsPage } from './pages/SettingsPage';
 import { AutoPage } from './pages/AutoPage';
 import { CombosPage } from './pages/CombosPage';
 import { ModelProfilesPage } from './pages/ModelProfilesPage';
-import { FlywheelPage } from './pages/FlywheelPage';
 import { YamlPage } from './pages/YamlPage';
 import { ConfirmProvider } from './components/ConfirmProvider';
 import { ToastProvider } from './components/ToastProvider';
@@ -90,7 +89,6 @@ export const App: React.FC = () => {
         <Route path="quota" element={<QuotaPage />} />
         <Route path="logs" element={<LogsPage />} />
         <Route path="captures" element={<CapturesPage />} />
-        <Route path="flywheel" element={<FlywheelPage />} />
         <Route path="environments" element={<EnvironmentsPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="yaml" element={<YamlPage />} />

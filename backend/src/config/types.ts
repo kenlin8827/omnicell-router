@@ -254,7 +254,7 @@ export interface TiersConfig {
 export type RoutingMode = 'smart' | 'cost' | 'quality';
 
 export interface RoutingConfig {
-  mode: RoutingMode; // smart = Layer1/Layer2 cascade (default); cost = always lite; quality = always pro
+  mode: RoutingMode; // smart = rules/Layer2 judge cascade (default); cost = always lite; quality = always pro
 }
 
 export interface OpenCodeConfig {
@@ -315,13 +315,6 @@ export interface ForwardProxyConfig {
   viaOutboundProxy?: boolean;
 }
 
-export interface Layer1ClassifierConfig {
-  enabled: boolean;
-  modelPath?: string;
-  confidenceThreshold?: number; // e.g., 0.85
-}
-export type LocalModelConfig = Layer1ClassifierConfig;
-
 /**
  * Layer 2 judge configuration. The judge calls a REGISTERED model over the
  * gateway's own System One protocol — there is no vendor endpoint,
@@ -342,10 +335,10 @@ export interface Layer2JudgeConfig {
   };
   /**
    * L2 decision DATASET sampling — single-key gate: records judged decisions
-   * (state + answer + tier) to data/layer2-decisions.jsonl for flywheel
-   * distillation. Default OFF (state carries user conversation content);
-   * hot-applied on config save — no restart; writes pause once the file
-   * exceeds 64 MB. NOT to be confused with requestCapture.systemone.
+   * (state + answer + tier) to data/layer2-decisions.jsonl for future
+   * decision-model distillation. Default OFF (state carries user conversation
+   * content); hot-applied on config save — no restart; writes pause once the
+   * file exceeds 64 MB. NOT to be confused with requestCapture.systemone.
    * l2DecisionEnabled, which captures the judge's HTTP leg instead.
    */
   collectEnabled?: boolean;
@@ -354,28 +347,7 @@ export interface Layer2JudgeConfig {
 export type Layer2DecisionConfig = Layer2JudgeConfig;
 
 export interface ClassifierConfig {
-  layer1?: Layer1ClassifierConfig;
-  localModel?: Layer1ClassifierConfig;
   layer2?: Layer2JudgeConfig;
-}
-
-export interface FlywheelConfig {
-  enabled: boolean;
-  datasetPath?: string; // default: './data/flywheel.jsonl'
-  maxSamples?: number;
-  logUserPrompt?: boolean;
-  /**
-   * Sample retention window in days (drop records older than N by `timestamp`).
-   * 0/unset = never auto-delete. Sweep runs at boot + hourly; deletions write
-   * NO backup. Restart-scoped (no hot applyConfig).
-   */
-  retentionDays?: number;
-  /**
-   * Dataset size cap in MB — after the age pass, trim oldest-first until the
-   * file fits. 0/unset = uncapped; deletions write NO backup. The `MB`
-   * suffix matches `requestCapture.maxTotalMB`. Restart-scoped.
-   */
-  maxFileSizeMB?: number;
 }
 
 export interface SessionConfig {
@@ -771,7 +743,6 @@ export interface RouterConfig {
    * serving wire can stream.
    */
   streaming?: StreamingConfig;
-  flywheel?: FlywheelConfig;
   session?: SessionConfig;
   circuitBreaker?: CircuitBreakerConfig;
   retry?: RetryConfig;

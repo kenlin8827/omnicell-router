@@ -8,7 +8,7 @@ import { globMatchAny } from '../utils/glob.js';
 import { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import { getRawConfig, loadConfig, saveConfig, saveRawConfig, getRuntimeConfigRef } from '../config/index.js';
 import { getEnvPaths, resolveEnvName } from '../config/env.js';
-import { applyConfig as applyDecisionCaptureConfig } from '../flywheel/decision-capture.js';
+import { applyConfig as applyDecisionCaptureConfig } from '../capture/decision-capture.js';
 import { initProxyConfig } from '../utils/proxy.js';
 import { getOcrHomeDir } from '../cli/paths.js';
 import { getHeadroomSidecarStatus, startHeadroomSidecar, stopHeadroomSidecar } from '../compression/headroom-sidecar.js';

@@ -46,10 +46,6 @@ const DEFAULT_CONFIG: RouterConfig = {
     injectErrorContext: true,
   },
   classifier: {
-    localModel: {
-      enabled: false,
-      confidenceThreshold: 0.85,
-    },
     layer2: {
       enabled: false,
       // No model pinned by default — the judge then follows
@@ -95,22 +91,6 @@ const DEFAULT_CONFIG: RouterConfig = {
     enabled: true, // default on: console history survives restarts (pure observability data)
     retentionDays: 7,
     maxTotalMB: 100,
-  },
-  flywheel: {
-    // Opt-in: writing user prompts to disk is not a sensible default, and with
-    // it on, every `bun test` run appends its fixtures to the production
-    // dataset. Existing deployments that set `flywheel.enabled: true` in
-    // config.yaml keep collecting — only the implicit default changes.
-    enabled: false,
-    datasetPath: './data/flywheel.jsonl',
-    maxSamples: 100000,
-    logUserPrompt: true,
-    // Retention knobs default OFF (0 = disabled): a boot + hourly sweep that
-    // silently deletes training history with no backup must be an explicit
-    // operator decision (docs/design/flywheel-deletion.md D4). Backward
-    // compat: deployments without these keys keep never auto-deleting.
-    retentionDays: 0,
-    maxFileSizeMB: 0,
   },
   circuitBreaker: {
     enabled: true,
@@ -442,16 +422,19 @@ export function loadConfig(configPath?: string): RouterConfig {
     try {
       const raw = fs.readFileSync(resolvedPath, 'utf8');
       const parsed = parse(raw);
-      // Removed keys (retired systems: `rules:`, `classifier.layer2.decisionCapture`,
-      // the renamed `capture:` section, key-level `role`) are STRIPPED here so
+      // Removed keys (retired systems: `rules:`, `flywheel:` + `classifier.localModel`
+      // (the learning flywheel and the Layer 1 micro-classifier),
+      // `classifier.layer2.decisionCapture`, the renamed `capture:` section,
+      // key-level `role`) are STRIPPED here so
       // stale keys never re-persist on the next config save. No dual-read, no
       // migration — the config tree is the only source of truth.
       const {
         rules: _removedRules,
         capture: _removedCapture,
+        flywheel: _removedFlywheel,
         ...parsedRest
       } = parsed || {};
-      return applyTestEnvOverrides({
+      return {
         ...DEFAULT_CONFIG,
         ...parsedRest,
         // Explicit PORT env is the bootstrap/deployment lever (same tier as
@@ -475,15 +458,14 @@ export function loadConfig(configPath?: string): RouterConfig {
         tiers: parsed?.tiers || structuredClone(DEFAULT_CONFIG.tiers),
         routing: { ...DEFAULT_CONFIG.routing, ...parsed?.routing },
         fallback: { ...DEFAULT_CONFIG.fallback, ...parsed?.fallback },
+        // Retired classifier keys (`localModel` / `layer1` — the Layer 1
+        // micro-classifier is gone) are stripped alongside the retired Layer 2
+        // vendor keys (`provider` / `baseUrl` / `apiKey` — the judge now calls
+        // a registered model over the System One protocol) so stale values
+        // don't get re-persisted on the next console save.
         classifier: {
-          localModel: { ...DEFAULT_CONFIG.classifier?.localModel, ...parsed?.classifier?.localModel },
-          // Retired Layer 2 vendor keys (`provider` / `baseUrl` / `apiKey` — the
-          // judge now calls a registered model over the System One protocol)
-          // are stripped so stale values don't get re-persisted on
-          // the next console save.
           layer2: sanitizeLayer2Input(parsed?.classifier?.layer2),
         },
-        flywheel: { ...DEFAULT_CONFIG.flywheel, ...parsed?.flywheel },
         proxy: { ...DEFAULT_CONFIG.proxy, ...parsed?.proxy },
         forwardProxy: { ...DEFAULT_CONFIG.forwardProxy, ...parsed?.forwardProxy },
         compression: {
@@ -506,28 +488,12 @@ export function loadConfig(configPath?: string): RouterConfig {
         modelProfiles: parsed?.modelProfiles || [],
         clientProfileMemory: parsed?.clientProfileMemory || {},
         catalog: parsed?.catalog,
-      });
+      };
     } catch (err) {
       console.warn(`[Config] Failed to parse ${resolvedPath}, falling back to defaults:`, err);
     }
   }
-  return applyTestEnvOverrides(DEFAULT_CONFIG);
-}
-
-/**
- * Test-run guard for the flywheel collector.
- *
- * `bun test` sets NODE_ENV=test, and the test process loads the REAL config.yaml
- * — where operators reasonably keep `flywheel.enabled: true` for live traffic.
- * Without this override, every test run appends its fixtures to the production
- * dataset (observed: 6,600+ synthetic rows accumulated alongside 8 real ones).
- * Only the flywheel switch is forced off; every other config value is passed
- * through untouched, and tests that exercise the collector directly construct
- * FlywheelCollector with an explicit config + temp path, bypassing loadConfig.
- */
-function applyTestEnvOverrides(cfg: RouterConfig): RouterConfig {
-  if (process.env.NODE_ENV !== 'test') return cfg;
-  return { ...cfg, flywheel: { ...cfg.flywheel, enabled: false } };
+  return DEFAULT_CONFIG;
 }
 
 /**
@@ -655,17 +621,6 @@ function syncRuntimeAuthView(fresh: RouterConfig): void {
     // arm never fires because loadConfig always resolves the section), so
     // without this line the grace knob would silently ignore every save.
     runtimeConfigRef.rateLimit = fresh.rateLimit;
-    // flywheel collection gate: the collector holds the SECTION OBJECT by
-    // reference (captured at orchestrator construction) and reads `enabled`
-    // off it per record, so the gate hot-applies through this in-place write
-    // (console toggle / config editor / raw YAML — every save path). Do NOT
-    // replace the section object: that would strand the collector on the
-    // boot snapshot. datasetPath and the retention knobs stay restart-scoped
-    // (resolved once in the constructor), so only the gate is synced —
-    // syncing them too would promise a hot-apply that never happens.
-    if (runtimeConfigRef.flywheel && fresh.flywheel) {
-      runtimeConfigRef.flywheel.enabled = fresh.flywheel.enabled;
-    }
   }
   getRateLimiter().reload(fresh);
   // Rebuild the effective quota plan right after the ref sync (the prober
@@ -739,19 +694,11 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'fallback.escalateTier': '兜底升级目标梯队',
   'fallback.injectErrorContext': '兜底请求是否注入上游错误上下文',
   classifier: '意图分类器（smart 模式的 lite/pro/ultra 判定）',
-  'classifier.localModel.enabled': '本地分类模型开关',
-  'classifier.localModel.confidenceThreshold': '置信度阈值（低于则交给 layer2 判定）',
   'classifier.layer2.enabled': 'Layer2 判定开关（经本机 System One 协议调用已注册模型）',
   'classifier.layer2.model': '判定模型 id（已注册的模型；留空则用 systemone.defaultModel）',
-  'classifier.layer2.timeoutMs': '判定超时（毫秒，超时放行 Layer1 结果）',
+  'classifier.layer2.timeoutMs': '判定超时（毫秒，超时回落到默认 plus 梯队）',
   'classifier.layer2.decisionCache': '判定决策缓存（相同上下文复用判定结果）',
   'classifier.layer2.collectEnabled': 'L2 裁判决策样本采集开关（默认 false 关闭）：单键门控，落盘 data/layer2-decisions.jsonl（不进捕捉页），64MB 封顶后停写并告警一次；热生效',
-  flywheel: '学习飞轮（路由决策样本沉淀，用于训练分类器；默认关闭）。enabled 开关保存后即时生效（控制台开关/配置编辑器），datasetPath 与保留参数需重启生效',
-  'flywheel.datasetPath': '样本数据集路径（JSONL）',
-  'flywheel.maxSamples': '样本条数上限',
-  'flywheel.logUserPrompt': '是否记录用户提示词原文（隐私敏感）',
-  'flywheel.retentionDays': '样本保留天数（0 或不填=不自动清理；启用后启动时+每小时自动删除超龄样本；自动清理不生成备份、删除不可恢复，请谨慎设置）',
-  'flywheel.maxFileSizeMB': '数据集文件大小上限 MB（0 或不填=不限制；超出后从最旧样本开始裁剪；在保留天数清理之后执行；自动清理不生成备份）',
   'circuitBreaker': '熔断器（按模型统计失败并自动摘除，见 /guardrails 页）；规则组 rules 可逐条开关并覆写参数，保存后即时生效（无需重启；仅 persistence.debounceMs 需重启）',
   'circuitBreaker.failureThreshold': '窗口内失败次数阈值（达到即熔断）；rules.trip.consecutiveFailures.threshold 未设置时的全局默认值',
   'circuitBreaker.slidingWindowSize': '滑动窗口样本数；rules.trip.failureRate.windowSize 未设置时的全局默认值',

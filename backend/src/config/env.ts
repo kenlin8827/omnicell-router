@@ -312,8 +312,8 @@ export function getEnvPaths(name?: string): EnvPaths {
 }
 
 /**
- * Base directory for relative paths stored in config (flywheel datasetPath,
- * model paths): the env root <home>/envs/<name>, so a default-shaped
+ * Base directory for relative paths stored in config (dataset paths, model
+ * paths): the env root <home>/envs/<name>, so a default-shaped
  * "./data/x.jsonl" always lands inside the environment's own data/ directory.
  */
 export function getEnvRootDir(): string {

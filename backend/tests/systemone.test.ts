@@ -68,7 +68,6 @@ function makeConfig(providers: any[], models: any[], systemone?: any): RouterCon
     models,
     ...(systemone ? { systemone } : {}),
     requestCapture: { ...base.requestCapture, enabled: false },
-    flywheel: { ...base.flywheel, enabled: false },
     session: { ...base.session, enabled: false },
     tracePersist: { ...base.tracePersist, enabled: false },
   } as RouterConfig;

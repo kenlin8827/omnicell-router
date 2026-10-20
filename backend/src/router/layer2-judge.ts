@@ -6,7 +6,7 @@ import { ProviderRegistry } from '../providers/registry.js';
 import type { UpstreamEventContext } from '../providers/base.js';
 import { runSystemoneDecision } from '../protocols/systemone/decide.js';
 import { SystemoneRequest } from '../protocols/systemone/types.js';
-import { captureDecision } from '../flywheel/decision-capture.js';
+import { captureDecision } from '../capture/decision-capture.js';
 
 export interface Layer2JudgeResult {
   targetTier: TierLevel;
@@ -107,7 +107,7 @@ export class Layer2Judge {
    * Evaluate request using the Layer 2 decision model over the System One
    * protocol. Returns null on any miss — a disabled judge, an unresolvable
    * model, an upstream failure or a blown deadline all degrade gracefully to
-   * the caller's Layer 1 decision rather than throwing.
+   * the caller's default (plus baseline) rather than throwing.
    *
    * `judgeCapture` is the OUTER request's capture identity (the orchestrator
    * hands it through routeAsync when the capture master is on; undefined
@@ -140,7 +140,7 @@ export class Layer2Judge {
       this.warnOnce(
         'unconfigured',
         '[Layer2Judge] enabled but no decision model resolves (classifier.layer2.model and ' +
-          'systemone.defaultModel are both unset) — every judgment falls back to Layer 1.'
+          'systemone.defaultModel are both unset) — every judgment falls back to the plus baseline.'
       );
       return null;
     }
@@ -150,7 +150,7 @@ export class Layer2Judge {
       this.warnOnce(
         `missing:${modelId}`,
         `[Layer2Judge] decision model '${modelId}' is not a registered model — every judgment ` +
-          'falls back to Layer 1. Register it, or point classifier.layer2.model at ' +
+          'falls back to the plus baseline. Register it, or point classifier.layer2.model at ' +
           'systemone.defaultModel.'
       );
       return null;
@@ -237,8 +237,8 @@ export class Layer2Judge {
         const tier = this.toTier(answer);
         if (!tier) return null;
         // A native upstream's confidence is taken at face value, so a NaN or
-        // out-of-range value would flow verbatim into RoutingDecision and the
-        // flywheel JSONL (where JSON.stringify(NaN) silently becomes null).
+        // out-of-range value would flow verbatim into RoutingDecision (where
+        // JSON.stringify(NaN) silently becomes null on any serialized sink).
         // The converted path is already clamped by convert.ts.
         const raw = answer?.confidence;
         const confidence = typeof raw === 'number' && Number.isFinite(raw)

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Sliders, Save, Check, Globe, HardDrive, Orbit, Archive, Database, ShieldCheck, LogOut, ChevronDown, ChevronRight } from 'lucide-react';
+import { Sliders, Save, Check, Globe, HardDrive, Archive, Database, ShieldCheck, LogOut, ChevronDown, ChevronRight } from 'lucide-react';
 import { api } from '../lib/api';
 import type { WebAuthConfigView } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
@@ -155,7 +155,6 @@ export const SettingsPage: React.FC = () => {
   const NAV = [
     { key: 'net', label: t('settings.navNet'), icon: Globe, color: 'var(--accent)' },
     { key: 'cache', label: t('settings.navCache'), icon: HardDrive, color: 'var(--accent-emerald)' },
-    { key: 'flywheel', label: t('settings.navFlywheel'), icon: Orbit, color: 'var(--accent-violet)' },
     { key: 'capture', label: t('settings.navCapture'), icon: Archive, color: 'var(--accent)' },
     { key: 'responses', label: t('settings.navResponses'), icon: Database, color: 'var(--accent-emerald)' },
     { key: 'webauth', label: t('settings.navWebAuth'), icon: ShieldCheck, color: 'var(--accent)' },
@@ -279,54 +278,7 @@ export const SettingsPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Section 3: Data Flywheel */}
-          <div id="settings-flywheel" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent-violet)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <Orbit size={14} />
-              {t('settings.flywheelTitle')}
-            </div>
-            <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
-              <span>{t('settings.flywheelEnable')}</span>
-              <Switch
-                checked={config.flywheel?.enabled ?? true}
-                onChange={v => setConfig({ ...config, flywheel: { ...config.flywheel, enabled: v } })}
-              />
-            </label>
-            <div>
-              <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.flywheelPath')}</label>
-              <input
-                type="text"
-                value={config.flywheel?.datasetPath || './data/flywheel.jsonl'}
-                onChange={e => setConfig({ ...config, flywheel: { ...config.flywheel, datasetPath: e.target.value } })}
-                className="input"
-              />
-            </div>
-            <div>
-              <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.flywheelRetentionDays')}</label>
-              <input
-                type="number"
-                min={0}
-                value={config.flywheel?.retentionDays ?? 0}
-                onChange={e => setConfig({ ...config, flywheel: { ...config.flywheel, retentionDays: parseInt(e.target.value) || 0 } })}
-                className="input"
-              />
-            </div>
-            <div>
-              <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.flywheelMaxFileSizeMB')}</label>
-              <input
-                type="number"
-                min={0}
-                value={config.flywheel?.maxFileSizeMB ?? 0}
-                onChange={e => setConfig({ ...config, flywheel: { ...config.flywheel, maxFileSizeMB: parseInt(e.target.value) || 0 } })}
-                className="input"
-              />
-            </div>
-            <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
-              {t('settings.flywheelRestartHint')}
-            </div>
-          </div>
-
-          {/* Section 4: Request Capture (hot-applied — no restart needed) */}
+          {/* Section 3: Request Capture (hot-applied — no restart needed) */}
           <div id="settings-capture" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Archive size={14} />

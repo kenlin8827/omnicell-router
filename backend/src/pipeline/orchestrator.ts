@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
 import { ExecutionResult, ReasoningEffort, EFFORT_LADDER, RoutingDecision, TIER_RANK, TierLevel, downgradeReasoning } from '../types/router.js';
-import { ClassifierConfig, FlywheelConfig, ModelRegistration, RouterConfig } from '../config/types.js';
+import { ModelRegistration, RouterConfig } from '../config/types.js';
 import { PromptOptimizer } from './prompt-optimizer.js';
 import { applyCompression } from '../compression/index.js';
 import { RouterEngine, routingModeForceTier } from '../router/index.js';
@@ -30,7 +30,6 @@ interface ForcedPassRecord {
   noteCode: RateLimitNoteCode;
 }
 import { recordRateLimitEvent, type RateLimitNoteCode } from '../ratelimit/event-log.js';
-import { FlywheelCollector } from '../flywheel/collector.js';
 import { SessionManager, SessionResolveResult } from '../session/session-manager.js';
 import { getEnvPaths } from '../config/env.js';
 import { TraceTracker } from '../trace/tracker.js';
@@ -155,7 +154,6 @@ export class PipelineOrchestrator {
   private config: RouterConfig;
   private registry: ProviderRegistry;
   private tracker: FinOpsTracker;
-  private flywheel: FlywheelCollector;
   private sessionManager: SessionManager;
   private traceTracker: TraceTracker;
   private captureRecorder: CaptureRecorder;
@@ -170,7 +168,6 @@ export class PipelineOrchestrator {
     this.config = config;
     this.registry = registry;
     this.tracker = tracker;
-    this.flywheel = new FlywheelCollector(config.flywheel);
     // Session continuity state (anchors + conversation keys) rides a
     // per-environment snapshot so a gateway restart no longer splits
     // zero-header clients. The file holds content hashes only — no plaintext.
@@ -191,23 +188,6 @@ export class PipelineOrchestrator {
 
   public getTracker(): FinOpsTracker {
     return this.tracker;
-  }
-
-  public getFlywheel(): FlywheelCollector {
-    return this.flywheel;
-  }
-
-  /**
-   * The routing config snapshot this orchestrator was built with. Exposed so
-   * the flywheel training route can resolve the same Layer 1 model path the
-   * classifier actually loads, instead of guessing a second path.
-   */
-  public getClassifierConfig(): ClassifierConfig | undefined {
-    return this.config.classifier;
-  }
-
-  public getFlywheelConfig(): FlywheelConfig | undefined {
-    return this.config.flywheel;
   }
 
   public getSessionManager(): SessionManager {
@@ -356,12 +336,11 @@ export class PipelineOrchestrator {
    * Complete orchestration workflow:
    * 1. Prompt normalization (canonical order)
    * 2. Zero-header session identification & prefix fingerprinting
-   * 3. Multi-Layer hierarchical routing (Layer 0 -> Layer 1 -> Layer 2)
+   * 3. Multi-Layer hierarchical routing (Layer 0 -> Layer 2)
    * 4. Monotonic Ratchet session state enforcement + Session-Pin Eviction
    * 5. Execution with Circuit Breaker, Transparent Failover & Schema Assertion
    * 6. FinOps accounting
-   * 7. Active learning data flywheel logging
-   * 8. Post-turn prefix fingerprint registration
+   * 7. Post-turn prefix fingerprint registration
    */
   private async processInternal(
     request: ChatCompletionRequest,
@@ -557,7 +536,7 @@ export class PipelineOrchestrator {
     }));
     await applyCompression(normalizedRequest, this.config.compression, sessionId);
 
-    // 3. Multi-Layer Hierarchical Router (Layer 1 Local CPU -> Layer 2 System One decision)
+    // 3. Multi-Layer Hierarchical Router (Layer 0 request rules -> Layer 2 System One decision)
     // Combo requests bypass the classifier entirely: the combo id IS the
     // explicit routing decision; targetTier here is a placeholder — the
     // executed member's real tier overwrites it after the pool run.
@@ -570,14 +549,6 @@ export class PipelineOrchestrator {
           reasonParams: { combo: comboId },
           layerUsed: 'layer0',
           needsSchemaValidation: false,
-          features: {
-            tokenCountEstimate: 0,
-            hasCode: false,
-            hasMathOrProof: false,
-            hasMultiTurn: false,
-            hasToolsOrSchema: false,
-            complexityScore: 0,
-          },
         }
       : await RouterEngine.routeAsync(
           normalizedRequest,
@@ -1243,19 +1214,7 @@ export class PipelineOrchestrator {
       usageCredentialPrefix = servedUsagePrefix;
     }
 
-    // 8. Active Learning Data Flywheel Collection
-    await this.flywheel.record({
-      requestId: finalResponse!.id || `req_${Date.now()}`,
-      request: normalizedRequest,
-      decision,
-      tierUsed: actualTier,
-      modelUsed: actualModel.id,
-      fallbackOccurred,
-      fallbackReason,
-      latencyMs,
-    });
-
-    // 9. Session Trajectory Recording — the traceId is shared with the
+    // 8. Session Trajectory Recording — the traceId is shared with the
     // capture event stream (the OTel traceId sourced from the client request
     // — see resolveTraceId). One id now joins capture events and the trace
     // record, so a console reader can pull both streams by traceId.

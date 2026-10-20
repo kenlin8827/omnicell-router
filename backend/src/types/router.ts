@@ -9,7 +9,7 @@ export type TierLevel = 'lite' | 'plus' | 'pro' | 'ultra';
 /**
  * What a model's smart-match classification yields. `TierLevel`
  * is the REQUEST-side four-state vocabulary (targetTier, TIER_RANK,
- * escalateTier, flywheel labels, session ratchet); `'unclassified'` is a
+ * escalateTier, session ratchet); `'unclassified'` is a
  * MODEL-side pool-membership outcome only. Kept as a separate type so the
  * two axes can't be conflated.
  *
@@ -148,10 +148,10 @@ export type SessionLookupType =
 
 /**
  * Machine-readable routing-reason vocabulary carried alongside the English
- * `reason` on every decision, trace and flywheel sample. Producers emit a
- * code from the locked set ('forced', 'l1.*', 'l2.*', 'session.*') plus the
- * params needed to render it; the console localizes from code+params and
- * falls back to the raw `reason` for unknown or legacy values.
+ * `reason` on every decision and trace. Producers emit a code from the locked
+ * set ('forced', 'default', 'combo', 'l2.*', 'session.*') plus the params
+ * needed to render it; the console localizes from code+params and falls back
+ * to the raw `reason` for unknown or legacy values.
  */
 export type ReasonParams = Record<string, string | number | boolean>;
 
@@ -161,27 +161,19 @@ export interface RoutingDecision {
   reason: string;
   reasonCode?: string;
   reasonParams?: ReasonParams;
-  layerUsed?: 'layer0' | 'layer1' | 'layer2';
+  layerUsed?: 'layer0' | 'layer2';
   needsSchemaValidation: boolean;
   sessionId?: string;
   sessionRatchetApplied?: boolean;
   sessionLookupType?: SessionLookupType;
   pinnedModel?: string;
-  features: {
-    tokenCountEstimate: number;
-    hasCode: boolean;
-    hasMathOrProof: boolean;
-    hasMultiTurn: boolean;
-    hasToolsOrSchema: boolean;
-    complexityScore: number;
-  };
 }
 
 export interface ExecutionResult {
   response: ChatCompletionResponse;
   tierUsed: TierLevel;
   modelUsed: string;
-  layerUsed?: 'layer0' | 'layer1' | 'layer2';
+  layerUsed?: 'layer0' | 'layer2';
   fallbackOccurred: boolean;
   fallbackReason?: string;
   sessionId?: string;

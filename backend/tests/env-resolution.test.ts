@@ -18,8 +18,7 @@ import {
   writePointer,
 } from '../src/config/env.js';
 import { getConfigPath } from '../src/config/index.js';
-import { FlywheelCollector } from '../src/flywheel/collector.js';
-import { applyConfig as applyDecisionCaptureConfig } from '../src/flywheel/decision-capture.js';
+import { applyConfig as applyDecisionCaptureConfig } from '../src/capture/decision-capture.js';
 
 /**
  * Phase-1 "environments as book-sets" substrate.
@@ -254,11 +253,8 @@ describe('default env binds envs/default paths', () => {
     expect(getConfigPath()).toBe(path.join(HOME, 'envs', 'default', 'config.yaml'));
   });
 
-  it('flywheel dataset + L2 decision sinks land under the env data dir', () => {
+  it('L2 decision sink lands under the env data dir', () => {
     const dataDir = path.join(HOME, 'envs', 'default', 'data');
-    const collector = new FlywheelCollector({ enabled: false, datasetPath: './data/flywheel.jsonl' });
-    // datasetPath is private — the constructor resolved it; assert via stats file instead:
-    expect((collector as unknown as { datasetPath: string }).datasetPath).toBe(path.resolve(dataDir, 'flywheel.jsonl'));
     const gate = applyDecisionCaptureConfig({ collectEnabled: false });
     expect(gate.datasetPath).toBe(path.resolve(dataDir, 'layer2-decisions.jsonl'));
   });

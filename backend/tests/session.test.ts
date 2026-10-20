@@ -64,14 +64,6 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
       confidence: 0.95,
       reason: 'Simple greeting',
       needsSchemaValidation: false,
-      features: {
-        tokenCountEstimate: 5,
-        hasCode: false,
-        hasMathOrProof: false,
-        hasMultiTurn: false,
-        hasToolsOrSchema: false,
-        complexityScore: 1.0,
-      },
     };
 
     const r1 = sessionManager.applyRatchet(sessionId, decisionTurn1, mockModelFinder);
@@ -85,14 +77,6 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
       confidence: 0.90,
       reason: 'Complex distributed system refactoring',
       needsSchemaValidation: false,
-      features: {
-        tokenCountEstimate: 800,
-        hasCode: true,
-        hasMathOrProof: false,
-        hasMultiTurn: true,
-        hasToolsOrSchema: false,
-        complexityScore: 6.0,
-      },
     };
 
     const r2 = sessionManager.applyRatchet(sessionId, decisionTurn2, mockModelFinder);
@@ -111,14 +95,6 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
       confidence: 0.92,
       reason: 'Casual gratitude',
       needsSchemaValidation: false,
-      features: {
-        tokenCountEstimate: 3,
-        hasCode: false,
-        hasMathOrProof: false,
-        hasMultiTurn: true,
-        hasToolsOrSchema: false,
-        complexityScore: 1.0,
-      },
     };
 
     const r3 = sessionManager.applyRatchet(sessionId, decisionTurn3, mockModelFinder);
@@ -581,14 +557,6 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
       confidence: 0.9,
       reason: 'test',
       needsSchemaValidation: false,
-      features: {
-        tokenCountEstimate: 5,
-        hasCode: false,
-        hasMathOrProof: false,
-        hasMultiTurn: false,
-        hasToolsOrSchema: false,
-        complexityScore: 1.0,
-      },
     }, mockModelFinder);
     sessionManager.attachOrigin(sid, { wire: 'chat', lookupType: r.lookupType }, '1.2.3.4', 'origin test');
     // A later attach with different values must be ignored (no metadata drift).
@@ -614,14 +582,6 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
       confidence: 0.9,
       reason: 'test',
       needsSchemaValidation: false,
-      features: {
-        tokenCountEstimate: 5,
-        hasCode: false,
-        hasMathOrProof: false,
-        hasMultiTurn: false,
-        hasToolsOrSchema: false,
-        complexityScore: 1.0,
-      },
     }, (tier) => ({
       id: `mock-${tier}-model`,
       provider: `provider-${tier}`,

@@ -62,7 +62,7 @@ cp config.example.yaml ~/.onecast-router/envs/default/config.yaml
 ```
 > 💡 **提示**：上游模型和密钥完全由本地 OpenCode 自动托管，`config.yaml` 默认开箱即用，无需填入任何模型密钥！
 
-> 📦 **多环境**：`~/.onecast-router/envs/<name>/` 下每套环境都是完全独立的一整套（配置、密钥、会话、抓包、飞轮数据互不共享）。用 `ocr env create <name>` / `ocr env use <name>`，或控制台 `/environments` 页面管理；切换环境会重启网关。
+> 📦 **多环境**：`~/.onecast-router/envs/<name>/` 下每套环境都是完全独立的一整套（配置、密钥、会话、抓包互不共享）。用 `ocr env create <name>` / `ocr env use <name>`，或控制台 `/environments` 页面管理；切换环境会重启网关。
 
 > ⚙️ **引导开关**：`OCR_ENV`（启动哪套环境）与 `OCR_HOME`（状态根目录，默认 `~/.onecast-router`）**只从进程环境变量读取**——OCR 没有 `.env` 文件加载机制。需要临时隔离实例时：`OCR_HOME=/tmp/ocr-scratch bun run ocr start`。日常切换环境请用 `ocr env use <name>`（或控制台页面），它写入 `~/.onecast-router/envs/current` 指针。
 
@@ -317,8 +317,8 @@ curl -X POST http://127.0.0.1:3000/v1/health/circuit-breakers/reset
 ### Q2: 为什么多轮对话中途不会变笨？
 传统基于单条请求的无状态路由器，在面对超长上下文中的简短追问（如“好的谢谢”、“改下第3行”）时，常因字数极短而错误分发给 Lite 轻量小模型，导致小模型面对超万 Token 严重幻觉。OneCastRouter (OCR) 采用**单调递增棘轮状态机（Monotonic Session Ratchet）**，一旦会话进入深度旗舰状态，后续轮次被单向锁死、只升不降，且物理固定同一模型实例，保障智力持续高水平并锁定上游 KV Cache。
 
-### Q3: 本地分类小模型冷启动时会误判吗？
-**绝不会**。系统默认附带的未训练微张量底座经过严密数学设计（$W=\mathbf{0}, b=\mathbf{0}$），Softmax 理论概率均匀分布为 $\approx 0.334$，必然小于 $0.85$ 门控阈值。在积累足够生产飞轮数据并执行蒸馏微调前，100% 确定性优雅穿透至 Layer 2 专职裁决模型。
+### Q3: 零配置时自动路由会偷偷用便宜模型吗？
+**绝不会**。Layer 2 判定器出厂默认关闭，此时每个 auto 请求都落在硬编码的 **plus** 质量基线上；客户端点名模型或 `force_tier` 永远压过任何自动选择。智能分档是有意识的自选动作（`classifier.layer2.enabled`）。
 
 ### Q4: 上游某个模型突然欠费或宕机 5 小时怎么办？
 **OneCastRouter (OCR) 拥有顶级工业级弹性熔断与故障转移能力 (ADR-0004)**：
@@ -336,9 +336,9 @@ curl -X POST http://127.0.0.1:3000/v1/health/circuit-breakers/reset
 
 ## 开发者与架构进阶
 
-如果您对底层的微张量前向计算数学证明、香农熵特征提取、主动学习数据飞轮原地微调训练、架构决策记录等内容感兴趣，请阅读：
+如果您对路由流水线设计、前缀链会话追踪的数学证明、架构决策记录等内容感兴趣，请阅读：
 
-* 📘 **[开发者深度指南 (DEVELOPMENT.zh-CN.md)](DEVELOPMENT.zh-CN.md)**：包含完整数学推导、数据飞轮训练指令、单元测试套件解析与代码规范。
+* 📘 **[开发者深度指南 (DEVELOPMENT.zh-CN.md)](DEVELOPMENT.zh-CN.md)**：包含完整架构推导、单元测试套件解析与代码规范。
 * 🏛️ **[架构决策记录 (ADR)](docs/adr/zh-CN/README.md)**：记录 ADR-0001 至 ADR-0008 全部架构选型的事实面定稿（中英双语镜像）。
 
 

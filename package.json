@@ -25,10 +25,7 @@
     "check:matrix": "bun --no-env-file scripts/check-guardrails-matrix.ts",
     "test:node": "tsx --test backend/tests/**/*.test.ts",
     "test:system": "bun --no-env-file scripts/full-system-test.ts",
-    "typecheck": "tsc -p backend --noEmit && tsc -p frontend --noEmit",
-    "train:layer1": "bun --no-env-file scripts/train-layer1-classifier.ts",
-    "flywheel:stats": "bun --no-env-file scripts/flywheel-stats.ts",
-    "flywheel:prune": "bun --no-env-file scripts/flywheel-prune.ts"
+    "typecheck": "tsc -p backend --noEmit && tsc -p frontend --noEmit"
   },
   "keywords": [
     "llm",

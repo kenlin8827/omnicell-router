@@ -112,7 +112,7 @@ describe('GET /api/admin/environments (+ /current)', () => {
   it('created envs listed with type/createdAt; sizeBytes counts payload files', async () => {
     await createEnv({ name: 'alpha', type: 'sandbox' });
     fs.mkdirSync(path.join(HOME, 'envs', 'alpha', 'data'), { recursive: true });
-    fs.writeFileSync(path.join(HOME, 'envs', 'alpha', 'data', 'flywheel.jsonl'), 'x'.repeat(120), 'utf8');
+    fs.writeFileSync(path.join(HOME, 'envs', 'alpha', 'data', 'layer2-decisions.jsonl'), 'x'.repeat(120), 'utf8');
     const a = makeApp();
     const body = json(await a.inject({ method: 'GET', url: '/api/admin/environments' }));
     const alpha = body.environments.find((e: any) => e.name === 'alpha');
@@ -151,7 +151,7 @@ describe('POST /api/admin/environments', () => {
     const res = await a.inject({ method: 'POST', url: '/api/admin/environments', payload: { name: 'cp', template: 'copy-current' } });
     expect(res.statusCode).toBe(201);
     expect(fs.readFileSync(getEnvPaths('cp').configPath, 'utf8')).toBe(fs.readFileSync(getEnvPaths(DEFAULT_ENV_NAME).configPath, 'utf8'));
-    expect(fs.existsSync(path.join(HOME, 'envs', 'cp', 'data', 'flywheel.jsonl'))).toBe(false);
+    expect(fs.existsSync(path.join(HOME, 'envs', 'cp', 'data', 'layer2-decisions.jsonl'))).toBe(false);
   });
 
   it('copy-default reads the default env config even while booted on a named env', async () => {
@@ -244,13 +244,13 @@ describe('POST /api/admin/environments/:name/reset', () => {
     await createEnv({ name: 'sb', type: 'sandbox' });
     await createEnv({ name: 'reg' });
     fs.mkdirSync(path.join(HOME, 'envs', 'sb', 'data'), { recursive: true });
-    fs.writeFileSync(path.join(HOME, 'envs', 'sb', 'data', 'flywheel.jsonl'), 'wipe', 'utf8');
+    fs.writeFileSync(path.join(HOME, 'envs', 'sb', 'data', 'layer2-decisions.jsonl'), 'wipe', 'utf8');
     fs.writeFileSync(path.join(HOME, 'envs', 'sb', 'config.yaml'), 'port: 4321\n', 'utf8');
 
     const a = makeApp();
     const res = await a.inject({ method: 'POST', url: '/api/admin/environments/sb/reset', payload: {} });
     expect(res.statusCode).toBe(200);
-    expect(fs.existsSync(path.join(HOME, 'envs', 'sb', 'data', 'flywheel.jsonl'))).toBe(false);
+    expect(fs.existsSync(path.join(HOME, 'envs', 'sb', 'data', 'layer2-decisions.jsonl'))).toBe(false);
     expect(fs.readFileSync(path.join(HOME, 'envs', 'sb', 'config.yaml'), 'utf8')).toBe('port: 4321\n');
 
     expect((await a.inject({ method: 'POST', url: '/api/admin/environments/reg/reset', payload: {} })).statusCode).toBe(400);
@@ -376,7 +376,7 @@ function zipOf(
   } = {}
 ): Buffer {
   const config = opts.config ?? IMPORT_DEFAULT_CFG;
-  const payload = opts.payload ?? { 'data/flywheel.jsonl': 'row\n' };
+  const payload = opts.payload ?? { 'data/layer2-decisions.jsonl': 'row\n' };
   const manifest: Record<string, unknown> = {
     format: 'ocr-env',
     version: 1,
@@ -430,18 +430,18 @@ describe('GET /api/admin/environments/:name/export', () => {
 
   it('?include= selects a payload subset (unknown keys ignored)', async () => {
     await createEnv({ name: 'sel' });
-    fs.mkdirSync(path.dirname(path.join(getEnvPaths('sel').dataDir, 'flywheel.jsonl')), { recursive: true });
-    fs.writeFileSync(path.join(getEnvPaths('sel').dataDir, 'flywheel.jsonl'), 'row\n', 'utf8');
+    fs.mkdirSync(path.dirname(path.join(getEnvPaths('sel').dataDir, 'layer2-decisions.jsonl')), { recursive: true });
+    fs.writeFileSync(path.join(getEnvPaths('sel').dataDir, 'layer2-decisions.jsonl'), 'row\n', 'utf8');
     const a = makeApp();
     const res = await a.inject({
       method: 'GET',
-      url: '/api/admin/environments/sel/export?include=data/flywheel.jsonl,not/a/key',
+      url: '/api/admin/environments/sel/export?include=data/layer2-decisions.jsonl,not/a/key',
     });
     const entries = unzipSync(new Uint8Array(res.rawPayload!));
-    expect(entries['data/flywheel.jsonl']).toBeDefined();
-    expect(entries['models/layer1-classifier.json']).toBeUndefined();
+    expect(entries['data/layer2-decisions.jsonl']).toBeDefined();
+    expect(entries['not/a/key']).toBeUndefined();
     const manifest = JSON.parse(strFromU8(entries['manifest.json']));
-    expect(Object.keys(manifest.checksums)).toEqual(['config', 'data/flywheel.jsonl']);
+    expect(Object.keys(manifest.checksums)).toEqual(['config', 'data/layer2-decisions.jsonl']);
   });
 
   it('unknown env → 404; default env exports fine', async () => {
@@ -468,7 +468,7 @@ describe('POST /api/admin/environments/import', () => {
     const overrides = JSON.stringify({ version: 1, updated: 0, models: { 'p||m': { disabled: true } } });
     const res = await postZip(
       a,
-      zipOf({ payload: { 'data/flywheel.jsonl': 'row\n', 'catalog/overrides.json': overrides } }),
+      zipOf({ payload: { 'data/layer2-decisions.jsonl': 'row\n', 'catalog/overrides.json': overrides } }),
       '?name=imported1'
     );
     expect(res.statusCode).toBe(201);
@@ -476,7 +476,7 @@ describe('POST /api/admin/environments/import', () => {
     expect(cfg).not.toContain('__REDACTED__'); // stripped entirely, not imported as literal
     expect(cfg).not.toContain('passwordHash');
     expect(cfg).toContain('username: admin');
-    expect(fs.readFileSync(path.join(HOME, 'envs', 'imported1', 'data', 'flywheel.jsonl'), 'utf8')).toBe('row\n');
+    expect(fs.readFileSync(path.join(HOME, 'envs', 'imported1', 'data', 'layer2-decisions.jsonl'), 'utf8')).toBe('row\n');
     // Catalog overrides (hide flags etc.) survive the import — the next boot's
     // aggregation reads them from the new env's catalog dir.
     const landed = JSON.parse(
@@ -602,7 +602,7 @@ describe('POST /api/admin/environments/import', () => {
     const a = makeApp();
     const tampered = zipOf({
       config: 'port: 9999\n',
-      checksums: { config: sha(IMPORT_DEFAULT_CFG), 'data/flywheel.jsonl': sha('row\n') },
+      checksums: { config: sha(IMPORT_DEFAULT_CFG), 'data/layer2-decisions.jsonl': sha('row\n') },
     });
     expect((await postZip(a, tampered, '?name=t')).statusCode).toBe(400);
     const unsigned = zipOf({ manifest: { checksums: undefined } });

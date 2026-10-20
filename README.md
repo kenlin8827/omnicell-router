@@ -64,7 +64,7 @@ cp config.example.yaml ~/.onecast-router/envs/default/config.yaml
 ```
 > 💡 **Tip**: Upstream models and credentials are automatically discovered from OpenCode. `config.yaml` works out of the box with zero manual API keys required!
 
-> 📦 **Environments**: keep separate book-sets (config, keys, sessions, captures, flywheel data) under `~/.onecast-router/envs/<name>/` — `ocr env create <name>` / `ocr env use <name>`, or the console `/environments` page. Switching restarts the gateway.
+> 📦 **Environments**: keep separate book-sets (config, keys, sessions, captures) under `~/.onecast-router/envs/<name>/` — `ocr env create <name>` / `ocr env use <name>`, or the console `/environments` page. Switching restarts the gateway.
 
 > ⚙️ **Bootstrap levers**: `OCR_ENV` (which environment boots) and `OCR_HOME` (state root, default `~/.onecast-router`) are read from the **process environment only** — OCR has no `.env` file loader. To run a scratch instance: `OCR_HOME=/tmp/ocr-scratch bun run ocr start`. Selecting the environment day-to-day is `ocr env use <name>` (or the console page), which writes `~/.onecast-router/envs/current`.
 
@@ -300,8 +300,8 @@ curl -X POST http://127.0.0.1:3000/v1/health/circuit-breakers/reset
 ### Q2: Why won't conversations become "dumber" mid-dialogue?
 Standard stateless routers dispatch short follow-ups (e.g. "thanks", "fix line 3") to cheap micro-models based on short character length, causing severe hallucinations over 10k+ token histories. OneCastRouter (OCR) enforces a **Monotonic Session Ratchet**: once a dialogue reaches higher tiers (plus/pro/ultra), it locks strictly to that tier and pins to the exact same model instance, safeguarding intellect and preserving upstream KV Cache.
 
-### Q3: Does the initial untrained micro-model misclassify requests?
-**Never**. The zero-weight base model scaffold ($W=\mathbf{0}, b=\mathbf{0}$) produces a uniform Softmax probability of $0.25$ across the 4 tiers, strictly below the $0.85$ confidence threshold. This guarantees 100% deterministic cascade to Layer 2 until training samples accumulate.
+### Q3: What happens with zero configuration — does auto routing guess cheap?
+**Never**. With the Layer 2 judge disabled (the shipped default), every auto request lands on the hardcoded **plus** quality baseline; a client-named model or `force_tier` always wins over any automatic choice. Intelligent tiering is a conscious opt-in (`classifier.layer2.enabled`).
 
 ### Q4: How does the router handle upstream outages or quota exhaustion?
 **OneCastRouter (OCR) provides enterprise-grade resilience & failover (ADR-0004)**:
@@ -319,7 +319,7 @@ Standard stateless routers dispatch short follow-ups (e.g. "thanks", "fix line 3
 
 ## Developer Guide & Architecture
 
-For deep-dive documentation into micro-tensor forward pass mathematical proofs, active learning flywheel distillation, unit testing suites, and Architecture Decision Records (ADRs):
+For deep-dive documentation into the routing pipeline, unit testing suites, and Architecture Decision Records (ADRs):
 
 * 📘 **[Developer & Architecture Guide (DEVELOPMENT.md)](DEVELOPMENT.md)**
 * 🏛️ **[Architecture Decision Records (ADR)](docs/adr/README.md)** (ADR-0001 through ADR-0008)

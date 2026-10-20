@@ -19,7 +19,7 @@ const mkTrace = (over: { sessionId: string; timestamp: number } & Partial<Execut
     hasToolsOrSchema: false,
   },
   routing: {
-    layerUsed: 'layer1',
+    layerUsed: 'layer0',
     targetTier: 'lite',
     confidence: 0.5,
     reason: 'test',

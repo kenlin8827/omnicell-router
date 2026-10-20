@@ -6,18 +6,14 @@ export type Translate = (path: string, params?: Record<string, string | number>)
 /**
  * Gateway reason vocabulary -> locale key. Codes not listed here, and rows
  * written before the gateway emitted codes at all, fall back to the raw English
- * `reason` so old traces and flywheel samples never render blank.
+ * `reason` so old traces never render blank.
  * `session.sticky` and `combo` are emitted by the gateway too (backend
  * session-manager / orchestrator) even though the original spec listed only the
  * codes above it — kept so those paths are not left in English.
  */
 const REASON_KEY: Record<string, string> = {
   forced: 'routing.reason.forced',
-  'l1.schema_protocol': 'routing.reason.l1SchemaProtocol',
-  'l1.onnx': 'routing.reason.l1Onnx',
-  'l1.base_scaffold': 'routing.reason.l1BaseScaffold',
-  'l1.confident': 'routing.reason.l1Confident',
-  'l1.low_confidence': 'routing.reason.l1LowConfidence',
+  default: 'routing.reason.default',
   'l2.system_one': 'routing.reason.l2SystemOne',
   'l2.system_one_uncalibrated': 'routing.reason.l2SystemOneUncalibrated',
   'session.escalated': 'routing.reason.sessionEscalated',

@@ -474,8 +474,7 @@ const stripBodies = (events: HttpExchangeEvent[]): void => {
  * (maxTotalMB, oldest date first).
  *
  * All I/O fails open: a capture problem must never break an inference request.
- * Mirrors the FlywheelCollector pattern, but keeps full bodies instead of a
- * redacted training summary.
+ * Keeps full bodies (images scrubbed) rather than a redacted summary.
  */
 export class CaptureRecorder {
   private enabled: boolean;

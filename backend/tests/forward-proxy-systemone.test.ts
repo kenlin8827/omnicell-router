@@ -69,7 +69,6 @@ function makeConfig(providers: any[], models: any[], extra: Partial<RouterConfig
     providers,
     models,
     requestCapture: { ...base.requestCapture, enabled: false },
-    flywheel: { ...base.flywheel, enabled: false },
     session: { ...base.session, enabled: false },
     tracePersist: { ...base.tracePersist, enabled: false },
     ...extra,

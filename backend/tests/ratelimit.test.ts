@@ -1304,7 +1304,6 @@ describe('decision-wire metering', () => {
         systemone: { defaultModel: 'dec/model' },
         requestCapture: { enabled: false },
         session: { enabled: false },
-        flywheel: { enabled: false },
         tracePersist: { enabled: false },
         apiKeys: [
           {

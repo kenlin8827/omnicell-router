@@ -1,32 +1,28 @@
 # OneCastRouter (OCR) Developer & Architecture Guide
 
 [![Runtime](https://img.shields.io/badge/Runtime-Bun%20%7C%20Node.js-blue.svg)](https://bun.sh)
-[![Architecture](https://img.shields.io/badge/Architecture-Three--Layer%20Model--Driven-purple.svg)]()
+[![Architecture](https://img.shields.io/badge/Architecture-Cascaded%20Model--Driven-purple.svg)]()
 [![Tests](https://img.shields.io/badge/Tests-37%2F37%20Pass%20(100%25)-brightgreen.svg)]()
 
 [English Version](DEVELOPMENT.md) | [Chinese Version](DEVELOPMENT.zh-CN.md) | [User README](README.md)
 
 > This document is designed for developers, contributors, and researchers working on **OneCastRouter (OCR)** core algorithms, extensions, private deployments, and architecture.  
-> It covers the 3-layer model-driven pipeline architecture, mathematical fallthrough proofs, monotonic session ratcheting, active learning data flywheel workflows, and testing matrices.
+> It covers the cascaded routing pipeline architecture, monotonic session ratcheting, and testing matrices.
 
 ---
 
 ## Table of Contents
 - [1. Global Pipeline & Architecture](#1-global-pipeline--architecture)
 - [2. Mathematical Principles & Deterministic Proofs](#2-mathematical-principles--deterministic-proofs)
-  - [1. Base Model Scaffold & Softmax Fallthrough Proof](#1-base-model-scaffold--softmax-fallthrough-proof)
-  - [2. Language-Agnostic Feature Extraction & Shannon Entropy](#2-language-agnostic-feature-extraction--shannon-entropy)
-  - [3. Zero-Header Prefix-Chain Hash Collision Resistance](#3-zero-header-prefix-chain-hash-collision-resistance)
 - [3. Core Module Responsibilities & Directory Structure](#3-core-module-responsibilities--directory-structure)
-- [4. Active Learning Data Flywheel & Distillation](#4-active-learning-data-flywheel--distillation)
-- [5. Test Matrix & Verification Suites](#5-test-matrix--verification-suites)
-- [6. Code Conventions & Zero Cruft Policy](#6-code-conventions--zero-cruft-policy)
+- [4. Test Matrix & Verification Suites](#4-test-matrix--verification-suites)
+- [5. Code Conventions & Zero Cruft Policy](#5-code-conventions--zero-cruft-policy)
 
 ---
 
 ## 1. Global Pipeline & Architecture
 
-OneCastRouter (OCR) replaces simplistic character length rules (e.g., `prompt.length < 20 -> small model`) and natural language lexicons with a 3-layer hierarchical arbitration pipeline:
+OneCastRouter (OCR) replaces simplistic character length rules (e.g., `prompt.length < 20 -> small model`) and natural language lexicons with a cascaded arbitration pipeline:
 
 ```
                       Client Requests (Cursor / Chatbox / NextChat / WebUI / Official SDKs)
@@ -37,15 +33,18 @@ OneCastRouter (OCR) replaces simplistic character length rules (e.g., `prompt.le
                      - Preserves canonical byte order to maximize upstream Provider KV Cache
                                                    │
                                                    ▼
-                  [Step 2: Three-Layer Model-Driven Hierarchical Classification]
-            ┌──────────────────────────────────────┼──────────────────────────────────────┐
-            ▼                                      ▼                                      ▼
-   [Layer 0: Structural Override]       [Layer 1: Local CPU Model]             [Layer 2: Judge Model]
-    - Explicit JSON Schema / Tools       - 8 Language-Agnostic Features         - Multi-turn context awareness
-    - Deterministic Fast Tier Dispatch   - Untrained base scaffold (W=0, b=0)   - Statistically calibrated tiers
-    - Zero-overhead protocol bypass      - Sub-millisecond CPU execution (<0.1ms)  - Decision labels feed flywheel
-            │                                      │                                      │
-            └──────────────────────────────────────┼──────────────────────────────────────┘
+                  [Step 2: Cascaded Hierarchical Classification]
+            ┌──────────────────────────────────────┐
+            ▼                                      ▼
+   [Layer 0: Request Rules]              [Layer 2: Judge Model]
+    - Explicit tiers / aliases / combos   - Multi-turn context awareness
+    - Global routing mode lever           - Statistically calibrated tiers
+    - Deterministic, zero model cost      - Decision cache over identical contexts
+            │                                      │
+            └──────────────────────────────────────┘
+                        │ (no judge decision)
+                        ▼
+              [Default: plus quality baseline]
                                                    │
                                                    ▼
                     [Step 3: Multi-Turn Monotonic Session Ratchet State Machine]
@@ -54,59 +53,27 @@ OneCastRouter (OCR) replaces simplistic character length rules (e.g., `prompt.le
                                                    │
                                                    ▼
                     [Step 4: Execution & Cascading Schema Assertion (Fallback)]
-                     ├── Fast Lead ─────► [Local AST / JSON Schema Static Assertion]
+                     ├── Lite lead ────► [Local AST / JSON Schema Static Assertion]
                      │                      ├── Passed ────► Direct return (90% cost savings)
                      │                      └── Failed ────► Inject error context & escalate to plus
                      └── Plus / Pro / Ultra ────────► Enforce thinking-token budgets & return
 ```
 
 ### Hierarchical Decision Logic
-1. **Layer 0 (Protocol Constraints)**:
-   - Detects structural requirements (e.g. `response_format: { type: 'json_object' }` or `tools`).
-   - Dispatches deterministically to lite tier models as lead runners, backed by local AST assertion with silent escalation.
-2. **Layer 1 (CPU Micro-Tensor Classifier)**:
-   - Extracts an 8-dimensional language-agnostic feature vector and evaluates linear logits with Softmax on CPU (`<0.1ms`).
-   - When confidence $\ge \theta$ (default $0.85$), routes immediately on CPU. When below threshold, falls through to Layer 2.
-3. **Layer 2 (Context-Aware Judge Model)**:
+1. **Layer 0 (Request Rules)**:
+   - Explicit client choices decide immediately: `router_options.force_tier`, auto-tier aliases, combos, and the global `routing.mode` lever.
+   - Structured-output requests (`response_format` / `tools`) arm the lite-first schema-assertion cascade at execution time, whatever tier was decided.
+2. **Layer 2 (Context-Aware Judge Model)**:
    - Evaluates recent conversational context using a dedicated judge model for authoritative semantic intent and difficulty rating.
-   - Decision records stream into the data flywheel as supervised ground-truth labels.
+   - Any judge miss (disabled, unresolvable, timeout, upstream failure) degrades gracefully.
+3. **Default (Quality-First Baseline)**:
+   - With no judge decision, requests land on the hardcoded `plus` tier — zero-config never silently routes cheap.
 
 ---
 
 ## 2. Mathematical Principles & Deterministic Proofs
 
-### 1. Base Model Scaffold & Softmax Fallthrough Proof
-To achieve cold-start operation without heuristic bypasses, OneCastRouter (OCR) auto-initializes the active environment's `models/layer1-classifier.json` (under `~/.onecast-router/envs/<env>/`) with zero-initialized weights and biases upon boot:
-$$W \in \mathbb{R}^{8 \times 3} = \mathbf{0}, \quad b \in \mathbb{R}^3 = \mathbf{0}$$
-
-**Forward Propagation Proof**:
-For any input feature vector $x \in \mathbb{R}^8$:
-$$z = W^T x + b = \mathbf{0}^T x + \mathbf{0} = \begin{bmatrix} 0 \\ 0 \\ 0 \\ 0 \end{bmatrix}$$
-
-Evaluating Softmax across the four tiers (lite, plus, pro, ultra):
-$$P(\text{tier}_i) = \frac{e^{z_i}}{\sum_{j=1}^4 e^{z_j}} = \frac{e^0}{e^0 + e^0 + e^0 + e^0} = \frac{1}{4} = 0.25$$
-
-**Deterministic Fallthrough Lemma**:
-Given the system confidence threshold $\theta = 0.85$:
-$$\max_{i} P(\text{tier}_i) = 0.25 < 0.85$$
-Therefore, under untrained conditions, `isConfident` evaluates to **strictly `false` with mathematical certainty**.  
-This guarantees zero premature short-circuits on cold start, gracefully cascading 100% of initial requests to Layer 2.
-
-### 2. Language-Agnostic Feature Extraction & Shannon Entropy
-The 8-dimensional normalized feature vector $x = [x_1, x_2, \dots, x_8]^T \in [0, 1]^8$ operates strictly independent of natural language vocabularies:
-
-| Dimension | Feature Name | Normalization & Extraction Formula |
-| :--- | :--- | :--- |
-| $x_1$ | `token_count_normalized` | $\min(1.0, \log_{10}(\max(1, \text{tokens})) / 4.0)$ |
-| $x_2$ | `turn_count_normalized` | $\min(1.0, \text{turns} / 20.0)$ |
-| $x_3$ | `has_system_prompt` | $1.0$ if system prompt present, otherwise $0.0$ |
-| $x_4$ | `code_block_ratio` | Markdown fence characters divided by total prompt characters $\in [0, 1]$ |
-| $x_5$ | `syntax_symbol_density` | Density of universal syntax tokens (`{}[];()=><|&`) |
-| $x_6$ | `has_tools_or_schema` | Boolean flag for JSON Schema or Function calling declarations |
-| $x_7$ | `character_entropy` | Shannon character entropy: $H(X) = -\sum p(c) \log_2 p(c) / 8.0$ |
-| $x_8$ | `punctuation_density` | Density of universal punctuation (`?!,.:;`) |
-
-### 3. Zero-Header Prefix-Chain Hash Collision Resistance
+### Zero-Header Prefix-Chain Hash Collision Resistance
 In standard API clients without explicit session headers, OneCastRouter (OCR) tracks dialogues using Prefix-Chain Hashing:
 $$\mathcal{H}_{\text{session}} = \text{SHA256}(\text{CanonicalJSON}(\text{messages}[0 \dots n-2]))$$
 
@@ -123,14 +90,15 @@ Hash collisions are mathematically negligible, delivering completely stable zero
 ```
 onecast-router/
 ├── src/
-│   ├── router/                    # Three-layer arbitration engine
-│   │   ├── layer1-classifier.ts   # Layer 1: CPU micro-tensor feature classifier and in-place trainer
+│   ├── router/                    # Cascaded arbitration engine
+│   │   ├── request-traits.ts      # Rule-based request facts (structured-output gate)
 │   │   ├── layer2-judge.ts        # Layer 2: Dedicated context-aware semantic judge model
 │   │   └── index.ts               # Central hierarchical arbitration pipeline (RouterEngine)
 │   ├── session/                   # Session lifecycle & state machine
 │   │   └── session-manager.ts     # Multi-turn monotonic ratchet state machine & prefix-chain hashing
-│   ├── flywheel/                  # Active learning flywheel ingestion
-│   │   └── collector.ts           # Asynchronous sample logger to flywheel.jsonl with negative labels
+│   ├── capture/                   # Request/response & decision capture sinks
+│   │   ├── recorder.ts            # Full request/response body archive (opt-in)
+│   │   └── decision-capture.ts    # Layer 2 judge decision dataset sampler (opt-in)
 │   ├── validator/                 # Schema assertion & fallback extraction
 │   │   ├── schema-assertion.ts    # Local AST & JSON Schema static assertion
 │   │   └── parser.ts              # Error context extractor for silent retry
@@ -150,11 +118,7 @@ onecast-router/
 │   │   └── finops-tracker.ts      # Real-time savings, cache hits, and tier volume aggregation
 │   ├── server.ts                  # Fastify HTTP proxy server & endpoint definitions
 │   └── index.ts                   # Gateway application bootstrap entrypoint
-├── models/
-│   └── layer1-classifier.json     # Auto-initialized micro-tensor base model scaffold (W=0, b=0)
 ├── scripts/
-│   ├── train-layer1-classifier.ts # In-place gradient descent flywheel trainer (bun run train:layer1)
-│   ├── flywheel-stats.ts          # Flywheel dataset distribution analyzer (bun run flywheel:stats)
 │   └── full-system-test.ts        # 10-point full system integration test suite
 ├── docs/
 │   └── adr/                       # Architecture Decision Records (ADR-0001 through ADR-0008)
@@ -166,52 +130,15 @@ onecast-router/
 
 ---
 
-## 4. Active Learning Data Flywheel & Distillation
-
-```
-[Production Traffic]
-        │
-        ▼
-Layer 2 Judge Decision / Layer 1 Schema Fallback Event
-        │
-        ▼
-Append to the env's data/flywheel.jsonl (Ground truth tier + negative sample corrections)
-        │
-        ▼
-Run bun run train:layer1
-        │
-        ▼
-Compute Softmax cross-entropy loss with L2 regularization
-        │
-        ▼
-Update <env>/models/layer1-classifier.json in place (isBaseModel: true -> false)
-        │
-        ▼
-Subsequent matching requests execute directly on CPU at <0.1ms with $0 cost
-```
-
-### Running Flywheel Training
-1. **Analyze current sample distributions**:
-   ```bash
-   bun run flywheel:stats
-   ```
-2. **Execute micro-tensor distillation**:
-   ```bash
-   bun run train:layer1
-   ```
-
----
-
-## 5. Test Matrix & Verification Suites
+## 4. Test Matrix & Verification Suites
 
 ### 1. Unit Tests (37/37 Passing)
 ```bash
 bun test
 ```
-* **tests/flywheel.test.ts** (5 tests): Base model auto-initialization, uniform probability cascade, in-place training, negative sample corrections.
 * **tests/session.test.ts** (4 tests): Prefix-chain fingerprinting, monotonic ratchet escalate-only rules, model pinning.
 * **tests/trace.test.ts** (7 tests): Request trajectory recording, per-session trace indexing, global trace pagination, session inspection & deletion.
-* **tests/router.test.ts** (4 tests): Client forced tiers, dynamic regex rules from YAML, default plus quality defense.
+* **tests/router.test.ts**: Client forced tiers, structured-output gate, default plus quality defense.
 * **tests/validator.test.ts** (4 tests): Markdown code fence parsing, JSON SyntaxError interception, JSON schema assertions.
 * **tests/opencode.test.ts** (3 tests): Daemon auto-discovery, live model synchronization, adaptive 4-tier price pyramid.
 * **tests/pipeline.test.ts** (4 tests): End-to-end execution, schema fallback retries, FinOps economics tracking.
@@ -225,7 +152,7 @@ Launches a live gateway instance and executes 10 end-to-end integration tests ag
 
 ---
 
-## 6. Code Conventions & Zero Cruft Policy
+## 5. Code Conventions & Zero Cruft Policy
 
 1. **Zero Cruft Policy**:
    - Refactorings must physically delete legacy files rather than retaining re-export forwarding stubs (`export * from ...`).

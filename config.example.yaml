@@ -163,15 +163,9 @@ fallback:
   injectErrorContext: true          # Injects parsing error context to guide plus-tier model to fix in one shot
 
 # ==============================================================================
-# Multi-Layer Classification & Data Flywheel 
+# Layer 2 Classification (System One judge)
 # ==============================================================================
 classifier:
-  # Layer 1: Local micro-tensor CPU model (Sub-millisecond latency, zero extra API cost)
-  localModel:
-    enabled: true                   # Enable Layer 1 local model scaffold
-    modelPath: "./models/layer1-classifier.json"
-    confidenceThreshold: 0.85       # Confidence threshold: >=0.85 serves locally, <0.85 cascades to Layer 2
-
   # Layer 2: Dedicated context-aware decision model, called over the
   # gateway's OWN System One protocol (POST /v1/systemone) — no vendor SDK,
   # no vendor endpoint. ANY registered model id serves it: a `type: systemone`
@@ -179,19 +173,12 @@ classifier:
   layer2:
     enabled: false                  # Enable Layer 2 dedicated judge model
     model: "auto"                   # Registered model id; 'auto' = systemone.defaultModel
-    timeoutMs: 1500                 # Decision timeout in ms (graceful fallback to Layer 0 on timeout)
+    timeoutMs: 1500                 # Decision timeout in ms (falls back to the plus baseline on timeout)
     collectEnabled: false           # Dataset sampling: judged decisions -> data/layer2-decisions.jsonl for
-                                    # flywheel distillation. SINGLE-key gate (no capture master involved),
-                                    # hot-applied on save. 64MB cap then writes pause with one warning.
+                                    # future decision-model distillation. SINGLE-key gate (no capture master
+                                    # involved), hot-applied on save. 64MB cap then writes pause with one warning.
                                     # state carries user conversation content — off by default.
                                     # (Moved from the retired classifier.layer2.decisionCapture — old key ignored.)
-
-# Active Learning Data Flywheel
-flywheel:
-  enabled: false                    # OPT-IN — the learning flywheel's dataset collection (default: off).
-                                    # Hot-applied on save (console collection toggle / config editor) — no restart.
-  datasetPath: "./data/flywheel.jsonl" # Path to JSONL dataset (resolved against the active env root; restart-scoped)
-  logUserPrompt: true               # Set to false if prompt logging should be omitted for privacy
 
 # ==============================================================================
 # Request Capture (full request/response body audit log, OPT-IN)

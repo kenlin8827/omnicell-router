@@ -1,32 +1,28 @@
 # OneCastRouter (OCR) 开发者与架构深度指南 (Developer Guide)
 
 [![Runtime](https://img.shields.io/badge/Runtime-Bun%20%7C%20Node.js-blue.svg)](https://bun.sh)
-[![Architecture](https://img.shields.io/badge/Architecture-Three--Layer%20Model--Driven-purple.svg)]()
+[![Architecture](https://img.shields.io/badge/Architecture-Cascaded%20Model--Driven-purple.svg)]()
 [![Tests](https://img.shields.io/badge/Tests-37%2F37%20Pass%20(100%25)-brightgreen.svg)]()
 
 [English Version](DEVELOPMENT.md) | [简体中文](DEVELOPMENT.zh-CN.md) | [返回用户文档 (User README)](README.zh-CN.md)
 
 > 本文档面向参与 **OneCastRouter (OCR)** 核心研发、二次开发、私有化部署调优以及算法研究的开发者。  
-> 涵盖三层全模型驱动流水线架构设计、微张量冷启动数学证明、单调棘轮状态机原理、数据飞轮蒸馏训练流程及测试矩阵。
+> 涵盖级联路由流水线架构设计、单调棘轮状态机原理及测试矩阵。
 
 ---
 
 ## 目录
 - [一、全局流水线与架构设计](#一全局流水线与架构设计)
 - [二、核心算法与数学确定性证明](#二核心算法与数学确定性证明)
-  - [1. 空白微张量底座与 Softmax 确定性穿透证明](#1-空白微张量底座与-softmax-确定性穿透证明)
-  - [2. 语言中立多维特征提取与香农熵分析](#2-语言中立多维特征提取与香农熵分析)
-  - [3. 零 Header 前缀链哈希抗碰撞证明](#3-零-header-前缀链哈希抗碰撞证明)
 - [三、核心模块职责与工程目录结构](#三核心模块职责与工程目录结构)
-- [四、主动学习数据飞轮与模型原地蒸馏](#四主动学习数据飞轮与模型原地蒸馏)
-- [五、完整测试矩阵与验证套件](#五完整测试矩阵与验证套件)
-- [六、代码规范与零残留原则 (Zero Cruft)](#六代码规范与零残留原则-zero-cruft)
+- [四、完整测试矩阵与验证套件](#四完整测试矩阵与验证套件)
+- [五、代码规范与零残留原则 (Zero Cruft)](#五代码规范与零残留原则-zero-cruft)
 
 ---
 
 ## 一、全局流水线与架构设计
 
-OneCastRouter (OCR) 摒弃了行业内常见的字符长度规则（如 `prompt.length < 20 -> 小模型`）和词表匹配，构建了严格的三层分级流水线：
+OneCastRouter (OCR) 摒弃了行业内常见的字符长度规则（如 `prompt.length < 20 -> 小模型`）和词表匹配，构建了级联分层流水线：
 
 ```
                       客户端请求 (Cursor / Chatbox / NextChat / WebUI / 各种官方 SDK)
@@ -37,15 +33,18 @@ OneCastRouter (OCR) 摒弃了行业内常见的字符长度规则（如 `prompt.
                      - 保持规范字节序列，最大化利用上游厂商 Provider 的 KV 提示词缓存
                                                    │
                                                    ▼
-                  [Step 2: 三层全模型驱动分层分类流水线]
-            ┌──────────────────────────────────────┼──────────────────────────────────────┐
-            ▼                                      ▼                                      ▼
-   [Layer 0: 协议结构直通]              [Layer 1: 本地 CPU 微模型]              [Layer 2: 专职裁决模型]
-    - 明确 JSON Schema / Tools 约束       - 提取 8 维语言中立统计特征             - 结合多轮完整上下文综合判断
-    - 确定性分发至 Lite 极速层            - 未训练空白底座 (W=0, b=0)             - 统计标定 Plus / Pro / Ultra
-    - 零开销协议旁路直达                  - 极速 CPU 推理 (<0.1ms)                - 裁决真值异步反哺数据飞轮
-            │                                      │                                      │
-            └──────────────────────────────────────┼──────────────────────────────────────┘
+                  [Step 2: 级联分层分类流水线]
+            ┌──────────────────────────────────────┐
+            ▼                                      ▼
+   [Layer 0: 请求规则直通]                [Layer 2: 专职裁决模型]
+    - 显式梯队 / 别名 / 组合直达            - 结合多轮完整上下文综合判断
+    - 全局路由模式拨杆                      - 统计标定 Plus / Pro / Ultra
+    - 确定性分发，零模型开销                - 相同上下文复用决策缓存
+            │                                      │
+            └──────────────────────────────────────┘
+                        │ （无判定结果时）
+                        ▼
+              [默认：plus 质量基线]
                                                    │
                                                    ▼
                     [Step 3: 多轮会话单调递增棘轮状态机 (Monotonic Session Ratchet)]
@@ -61,52 +60,20 @@ OneCastRouter (OCR) 摒弃了行业内常见的字符长度规则（如 `prompt.
 ```
 
 ### 分层裁决逻辑
-1. **Layer 0（协议结构层）**：
-   - 检测请求中是否包含明确的结构化输出要求（如 `response_format: { type: 'json_object' }` 或 `tools`）。
-   - 若命中，确定性交付给 Lite 极速模型先发冲锋，并在后置阶段进行本地静态 AST / Schema 断言检验。
-2. **Layer 1（CPU 微张量分类器）**：
-   - 提取 8 维语言中立特征向量，在 CPU 上执行纯矩阵线性前向运算与 Softmax 计算（耗时 `<0.1ms`）。
-   - 若模型置信度高于设定阈值（默认 $\theta = 0.85$），直接以此层裁决执行；若置信度不足，无感穿透至 Layer 2。
-3. **Layer 2（专职上下文语义裁决者）**：
+1. **Layer 0（请求规则层）**：
+   - 显式客户端选择立即决定：`router_options.force_tier`、auto 梯队别名、组合（combo）与全局 `routing.mode` 拨杆。
+   - 携带结构化输出要求（`response_format` / `tools`）的请求，无论定档如何，执行阶段都会启用 Lite 先发的 Schema 断言级联。
+2. **Layer 2（专职上下文语义裁决者）**：
    - 携带最近 4 轮完整对话上下文，调用专职决策模型执行高精度任务难度与意图评判。
-   - 裁决结果不仅决定当前请求的执行路线，还会异步沉淀为数据飞轮的有监督蒸馏样本。
+   - 任何判定失手（未启用、模型不可解析、超时、上游失败）均优雅降级。
+3. **默认（质量优先基线）**：
+   - 无判定结果时请求落在硬编码 `plus` 梯队——零配置绝不静默走便宜路线。
 
 ---
 
 ## 二、核心算法与数学确定性证明
 
-### 1. 空白微张量底座与 Softmax 确定性穿透证明
-为实现零冷启动硬编码与平滑自演进，网关在初次启动且无模型文件时，自动在当前环境的 `envs/<env>/models/layer1-classifier.json` 落地初始模型，并将初始权重与偏置全部设为零：
-$$W \in \mathbb{R}^{8 \times 3} = \mathbf{0}, \quad b \in \mathbb{R}^3 = \mathbf{0}$$
-
-**前向传播数学推导**：
-对任意输入的 8 维特征向量 $x \in \mathbb{R}^8$：
-$$z = W^T x + b = \mathbf{0}^T x + \mathbf{0} = \begin{bmatrix} 0 \\ 0 \\ 0 \\ 0 \end{bmatrix}$$
-
-经 Softmax 激活函数计算后，四类（lite, plus, pro, ultra）的预测概率为：
-$$P(\text{tier}_i) = \frac{e^{z_i}}{\sum_{j=1}^4 e^{z_j}} = \frac{e^0}{e^0 + e^0 + e^0 + e^0} = \frac{1}{4} = 0.25$$
-
-**确定性穿透引理**：
-由于系统的置信度门限阈值 $\theta = 0.85$：
-$$\max_{i} P(\text{tier}_i) = 0.25 < 0.85$$
-因此，未训练状态下的置信度判定在**数学上严格恒为 `isConfident = false`**。  
-系统由此保证：在任何冷启动与未训练场景下，绝不发生误短路判决，100% 优雅穿透至 Layer 2 专职裁决模型。
-
-### 2. 语言中立多维特征提取与香农熵分析
-Layer 1 分类器提取的 8 维连续特征向量 $x = [x_1, x_2, \dots, x_8]^T \in [0, 1]^8$ 均严格语言中立：
-
-| 维度 | 特征名称 | 提取与归一化逻辑 |
-| :--- | :--- | :--- |
-| $x_1$ | `token_count_normalized` | $\min(1.0, \log_{10}(\max(1, \text{tokens})) / 4.0)$（万 Token 映射至 1.0） |
-| $x_2$ | `turn_count_normalized` | $\min(1.0, \text{turns} / 20.0)$（20 轮上下文映射至 1.0） |
-| $x_3$ | `has_system_prompt` | 存在 System Prompt 设为 1.0，否则 0.0 |
-| $x_4$ | `code_block_ratio` | Markdown 代码围栏文本字符数占总字符数的比例 $\in [0, 1]$ |
-| $x_5$ | `syntax_symbol_density` | 跨语言语法字符集 (`{}[];()=><|&`) 出现频次密度 |
-| $x_6$ | `has_tools_or_schema` | 请求是否声明了 Tools、Functions 或 JSON Schema |
-| $x_7$ | `character_entropy` | 字符香农信息熵归一化：$H(X) = -\sum p(c) \log_2 p(c) / 8.0$ |
-| $x_8$ | `punctuation_density` | 通用标点符号 (`?!,.:;`) 出现频次密度 |
-
-### 3. 零 Header 前缀链哈希抗碰撞证明
+### 零 Header 前缀链哈希抗碰撞证明
 在无显式 Session ID 的情况下，OneCastRouter (OCR) 采用前缀链哈希（Prefix-Chain Hash）追踪多轮对话：
 $$\mathcal{H}_{\text{session}} = \text{SHA256}(\text{CanonicalJSON}(\text{messages}[0 \dots n-2]))$$
 
@@ -123,14 +90,15 @@ $$P(\text{collision}) \le \frac{k^2}{2 \times 2^{256}} \approx 0$$
 ```
 onecast-router/
 ├── src/
-│   ├── router/                    # 三层路由仲裁引擎
-│   │   ├── layer1-classifier.ts   # Layer 1: CPU 微张量特征分类器与原地训练引擎
+│   ├── router/                    # 级联路由仲裁引擎
+│   │   ├── request-traits.ts      # 基于规则的请求事实（结构化输出门）
 │   │   ├── layer2-judge.ts        # Layer 2: 专职上下文感知意图裁决模型
-│   │   └── index.ts               # 三层流水线统一仲裁器 (RouterEngine)
+│   │   └── index.ts               # 级联流水线统一仲裁器 (RouterEngine)
 │   ├── session/                   # 会话生命周期与状态机
 │   │   └── session-manager.ts     # 多轮单调棘轮状态机与前缀链哈希指纹
-│   ├── flywheel/                  # 生产数据飞轮与样本收集
-│   │   └── collector.ts           # 异步写入 flywheel.jsonl，打标负样本
+│   ├── capture/                   # 请求/响应与决策捕捉落盘
+│   │   ├── recorder.ts            # 完整请求/响应体归档（自选开启）
+│   │   └── decision-capture.ts    # Layer 2 裁决决策数据集采样器（自选开启）
 │   ├── validator/                 # 语法断言与降级提取
 │   │   ├── schema-assertion.ts    # 本地 AST 与 JSON Schema 静态语法断言
 │   │   └── parser.ts              # 提取语法解析错误上下文
@@ -150,11 +118,7 @@ onecast-router/
 │   │   └── finops-tracker.ts      # 实时聚合节约金额、各层流量占比与缓存命中率
 │   ├── server.ts                  # Fastify HTTP 代理服务器与路由处理器
 │   └── index.ts                   # 应用程序入口
-├── models/
-│   └── layer1-classifier.json     # 自动初始化的微张量底座模型骨架 (W=0, b=0)
 ├── scripts/
-│   ├── train-layer1-classifier.ts # 飞轮数据集原地蒸馏微调脚本 (bun run train:layer1)
-│   ├── flywheel-stats.ts          # 飞轮样本分布统计分析 (bun run flywheel:stats)
 │   └── full-system-test.ts        # 10 点全链路系统端到端集成测试套件
 ├── docs/
 │   └── adr/                       # 架构决策记录 (ADR-0001 至 ADR-0008)
@@ -166,64 +130,15 @@ onecast-router/
 
 ---
 
-## 四、主动学习数据飞轮与模型原地蒸馏
-
-```
-[在线流量路由]
-      │
-      ▼
-Layer 2 专职裁决 / Layer 1 Schema 校验失败
-      │
-      ▼
-写入当前环境的 envs/<env>/data/flywheel.jsonl (含 Ground Truth 标签与负样本标定)
-      │
-      ▼
-运行 bun run train:layer1
-      │
-      ▼
-计算 Softmax 交叉熵损失与 L2 正则化微梯度
-      │
-      ▼
-原地更新 envs/<env>/models/layer1-classifier.json (isBaseModel: true -> false)
-      │
-      ▼
-后续高频同类请求由 Layer 1 CPU 直接毫秒级命中 (<0.1ms, 零边际成本)
-```
-
-### 执行飞轮训练
-1. **查看当前飞轮样本分布**：
-   ```bash
-   bun run flywheel:stats
-   ```
-2. **执行微张量梯度下降蒸馏**：
-   ```bash
-   bun run train:layer1
-   ```
-   训练输出示例：
-   ```
-   🧠 OCR (OneCastRouter) Layer 1 Classifier Trainer (Active Learning)
-   📊 Successfully loaded flywheel dataset: 58 records
-   🎯 Valid training samples: 58 (including 6 fallback-corrected negative samples)
-   ⏳ Running micro-tensor Softmax cross-entropy gradient descent (with L2 regularization)...
-   👉 Total Trained Samples : 58
-   👉 Final Converged Loss  : 0.4869
-   👉 Training Set Accuracy : 79.3%
-   👉 Model Output Path     : envs/<env>/models/layer1-classifier.json
-   👉 Status Transition     : isBaseModel (true -> false)
-   ```
-
----
-
-## 五、完整测试矩阵与验证套件
+## 四、完整测试矩阵与验证套件
 
 ### 1. 运行所有单元测试（37/37 项全绿）
 ```bash
 bun test
 ```
-* **tests/flywheel.test.ts** (5 tests): 验证底座自动初始化、Softmax 均等概率穿透、原地蒸馏微调与负样本纠偏。
 * **tests/session.test.ts** (4 tests): 验证前缀链指纹、单调棘轮只升不降门禁与模型物理固定。
 * **tests/trace.test.ts** (7 tests): 验证执行轨迹记录、按会话索引追溯、全局分页查询与会话重置清除。
-* **tests/router.test.ts** (4 tests): 验证强制分层覆盖、动态规则评估与质量基线兜底。
+* **tests/router.test.ts**: 验证强制梯队覆盖、结构化输出门与 plus 质量基线兜底。
 * **tests/validator.test.ts** (4 tests): 验证 Markdown JSON 围栏解析、语法异常拦截与 Schema 断言。
 * **tests/opencode.test.ts** (3 tests): 验证 OpenCode 守护进程凭据发现、模型同步与自适应三层金字塔构建。
 * **tests/pipeline.test.ts** (4 tests): 验证端到端流水线执行、静默升档降级与 FinOps 实时损益聚合。
@@ -237,7 +152,7 @@ bun run scripts/full-system-test.ts
 
 ---
 
-## 六、代码规范与零残留原则 (Zero Cruft)
+## 五、代码规范与零残留原则 (Zero Cruft)
 
 1. **绝对物理清理（Zero Cruft）**：
    - 重构时不保留任何转发存根（`export * from ...`）或废弃别名，彻底物理删除旧文件以保持架构极简。

@@ -909,7 +909,6 @@ describe('Embedded UI & Management API Endpoints', () => {
     port: 4000,
     host: '127.0.0.1',
     models: [],
-    classifier: { localModel: false },
     rateLimit: { maxRequestsPerMinute: 1000 },
   };
 

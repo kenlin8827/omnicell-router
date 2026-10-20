@@ -8,7 +8,7 @@ import {
   captureDecision,
   datasetHasCapacity,
   resetDecisionCaptureConfig,
-} from '../src/flywheel/decision-capture.js';
+} from '../src/capture/decision-capture.js';
 
 // ---------------------------------------------------------------------------
 // Dataset-sink gate (config restructure): the L2 judge's decision sink writes

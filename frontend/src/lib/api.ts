@@ -396,7 +396,7 @@ export interface TraceRecord {
     hasToolsOrSchema: boolean;
   };
   routing: {
-    layerUsed: 'layer0' | 'layer1' | 'layer2';
+    layerUsed: 'layer0' | 'layer2';
     targetTier: 'lite' | 'plus' | 'pro' | 'ultra';
     confidence: number;
     reason: string;
@@ -835,141 +835,6 @@ export interface LogsResponse {
 }
 
 export type TierName = 'lite' | 'plus' | 'pro' | 'ultra';
-export type FlywheelLabelSource = 'human' | 'runtime_fallback' | 'observed_execution' | 'unlabeled';
-
-export interface FlywheelSummary {
-  total: number;
-  trainable: number;
-  synthetic: number;
-  humanLabeled: number;
-  unlabeled: number;
-  trainableByTier: Record<string, number>;
-  sourceDistribution: Record<string, number>;
-  datasetPath: string;
-  labelsPath: string;
-  fileBytes: number;
-  firstTimestamp: string | null;
-  lastTimestamp: string | null;
-  tiers: TierName[];
-  /** Live collection gate (flywheel.enabled) — hot-applied on config save. */
-  collectionEnabled: boolean;
-  /** Additive block (§3.4): effective retention knobs + last sweep outcome; absent on older backends. */
-  retention?: FlywheelRetentionState;
-}
-
-export interface FlywheelSample {
-  id: string;
-  timestamp: string;
-  userPrompt: string;
-  tokenCount: number;
-  featureVector: number[] | null;
-  decision: {
-    targetTier: TierName;
-    confidence: number;
-    layerUsed: 'layer0' | 'layer1' | 'layer2';
-    reason: string;
-    /** Machine-readable reason vocabulary; absent on samples recorded before the field existed. */
-    reasonCode?: string;
-    reasonParams?: ReasonParams;
-  };
-  execution: {
-    tierUsed: TierName;
-    modelUsed: string;
-    fallbackOccurred: boolean;
-    fallbackReason?: string;
-    latencyMs: number;
-    isSynthetic: boolean;
-  };
-  label: {
-    tier: TierName | null;
-    source: FlywheelLabelSource;
-    confidence: number;
-    overridden: boolean;
-    isNegativeForLite: boolean;
-    updatedAt?: string;
-  };
-  trainable: boolean;
-}
-
-export interface FlywheelTrainingReport {
-  trainedSamples: number;
-  skipped: Record<string, number>;
-  classDistribution: Record<string, number>;
-  finalLoss: number;
-  accuracy: number;
-  epochs: number;
-  lr: number;
-  l2: number;
-  balanced: boolean;
-  durationMs: number;
-  modelPath: string;
-}
-
-export interface FlywheelTrainingState {
-  status: 'idle' | 'training' | 'success' | 'failed';
-  lastStartedAt: string | null;
-  lastTrainedAt: string | null;
-  lastDurationMs: number | null;
-  lastResult: FlywheelTrainingReport | null;
-  error: string | null;
-  model: {
-    modelPath: string;
-    exists: boolean;
-    isBaseModel: boolean;
-    sampleCount: number;
-    lastTrainedAt: string | null;
-    featureDimensions: number;
-    classes: string[];
-    routingConsumesModel: boolean;
-    previousModelPath: string;
-    previousModelExists: boolean;
-  };
-}
-
-/** §3.4 stats `retention` block — effective knobs + last sweep outcome. */
-export interface FlywheelRetentionState {
-  retentionDays: number;
-  maxFileSizeMB: number;
-  enabled: boolean;
-  lastSweepAt: string | null;
-  lastRemoved: number | null;
-}
-
-/** §3.1 prune body — all optional; defaults replicate the CLI (dry-run). */
-export interface FlywheelPruneRequest {
-  apply?: boolean;
-  dropSynthetic?: boolean;
-  dropDuplicates?: boolean;
-}
-
-export interface FlywheelPruneResult {
-  ok: true;
-  applied: boolean;
-  total: number;
-  kept: number;
-  dropped: { synthetic: number; duplicate: number; malformed: number };
-  removedLabels: number;
-  backupPath: string | null;
-}
-
-/** §3.2 batch delete — partial-success + idempotent: unknown ids are reported, never an error. */
-export interface FlywheelDeleteResult {
-  ok: true;
-  deleted: number;
-  notFound: string[];
-  removedLabels: number;
-  sidecarPath: string;
-}
-
-/** §3.3 reset — dataset + labels overlay archived; model weights are contractually untouched. */
-export interface FlywheelResetResult {
-  ok: true;
-  removedRecords: number;
-  removedLabels: number;
-  backupPath: string | null;
-  labelsBackupPath: string | null;
-  modelUntouched: true;
-}
 
 /* ─── Environments ("book-sets" — admin API client) ────────────── */
 
@@ -1070,11 +935,6 @@ export class EnvApiError extends Error {
   }
 }
 
-async function throwFor(res: Response): Promise<never> {
-  const err = await res.json().catch(() => ({}));
-  throw new Error(err?.error || err?.message || `HTTP ${res.status}`);
-}
-
 /**
  * Read the JSON error body the admin-environments routes emit:
  * `{ status:'error', error, suggestion? }`. `hasErrorBody` records whether the
@@ -1135,113 +995,6 @@ export const api = {
   async getStatus(): Promise<GatewayStatusResponse> {
     const res = await fetch('/api/admin/status');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.json();
-  },
-
-  async getFlywheelStats(): Promise<FlywheelSummary> {
-    const res = await fetch('/api/admin/flywheel/stats');
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.json();
-  },
-
-  async setFlywheelEnabled(enabled: boolean): Promise<{ ok: boolean; collectionEnabled: boolean }> {
-    const res = await fetch('/api/admin/flywheel/enabled', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled }),
-    });
-    if (!res.ok) await throwFor(res);
-    return res.json();
-  },
-
-  async getFlywheelSamples(params: {
-    limit?: number;
-    offset?: number;
-    tier?: string;
-    source?: string;
-    includeSynthetic?: boolean;
-    trainableOnly?: boolean;
-    search?: string;
-  }): Promise<{ rows: FlywheelSample[]; total: number; offset: number; limit: number }> {
-    const qs = new URLSearchParams();
-    for (const [k, v] of Object.entries(params)) {
-      if (v !== undefined && v !== null && v !== '') qs.set(k, String(v));
-    }
-    const res = await fetch(`/api/admin/flywheel/samples?${qs.toString()}`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.json();
-  },
-
-  async setFlywheelLabel(id: string, tier: TierName | null): Promise<void> {
-    const res = await fetch(`/api/admin/flywheel/samples/${encodeURIComponent(id)}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tier }),
-    });
-    if (!res.ok) await throwFor(res);
-  },
-
-  async getFlywheelTraining(): Promise<FlywheelTrainingState> {
-    const res = await fetch('/api/admin/flywheel/training');
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.json();
-  },
-
-  async rollbackFlywheelModel(): Promise<{ ok: boolean; model: FlywheelTrainingState['model'] }> {
-    const res = await fetch('/api/admin/flywheel/model/rollback', { method: 'POST' });
-    if (!res.ok) await throwFor(res);
-    return res.json();
-  },
-
-  async startFlywheelTraining(options: {
-    epochs?: number;
-    balanceClasses?: boolean;
-    minLabelSource?: string;
-  }): Promise<{ started: boolean; state: FlywheelTrainingState; report?: FlywheelTrainingReport }> {
-    const res = await fetch('/api/admin/flywheel/training', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(options),
-    });
-    if (!res.ok) await throwFor(res);
-    return res.json();
-  },
-
-  async clearFlywheelLabels(): Promise<{ cleared: number }> {
-    const res = await fetch('/api/admin/flywheel/labels', { method: 'DELETE' });
-    if (!res.ok) await throwFor(res);
-    return res.json();
-  },
-
-  // ---- dataset lifecycle (§3, frozen contract) ----
-
-  async pruneFlywheel(body: FlywheelPruneRequest): Promise<FlywheelPruneResult> {
-    const res = await fetch('/api/admin/flywheel/prune', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) await throwFor(res);
-    return res.json();
-  },
-
-  async deleteFlywheelSamples(ids: string[]): Promise<FlywheelDeleteResult> {
-    const res = await fetch('/api/admin/flywheel/samples/delete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids }),
-    });
-    if (!res.ok) await throwFor(res);
-    return res.json();
-  },
-
-  async resetFlywheelDataset(confirm: string): Promise<FlywheelResetResult> {
-    const res = await fetch('/api/admin/flywheel/reset', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ confirm }),
-    });
-    if (!res.ok) await throwFor(res);
     return res.json();
   },
 

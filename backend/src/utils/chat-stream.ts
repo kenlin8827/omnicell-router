@@ -11,7 +11,7 @@ import type { ReasoningEffort } from '../types/router.js';
 export interface StreamRoutingFacts {
   modelUsed?: string;
   tierUsed?: string;
-  layerUsed?: 'layer0' | 'layer1' | 'layer2';
+  layerUsed?: 'layer0' | 'layer2';
   sessionId?: string;
   sessionRatchetApplied?: boolean;
   sessionLookupType?: string;

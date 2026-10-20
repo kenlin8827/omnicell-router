@@ -17,8 +17,9 @@ configure({ useWebWorkers: false });
  *
  * A portable { config.yaml text + curated payload files } bundle. NEVER
  * contains: webAuth.passwordHash (dropped in BOTH modes), the session secret,
- * CA material, traces, capture archives, logs. Payload = the four training/
- * catalog files that give a new machine a head start; data starts empty for
+ * CA material, traces, capture archives, logs. Payload = the curated
+ * knowledge files (judge-decision dataset, catalog customizations) that give
+ * a new machine a head start; data starts empty for
  * everything else (book-set intuition: export carries KNOWLEDGE, not state).
  *
  * Redaction (default): values at adminApiKey / providers[*].apiKey /
@@ -72,9 +73,7 @@ export interface EnvEnvelope {
 
 /** Envelope key → on-disk file within the env (relative to the env root). */
 const PAYLOAD_FILES: Array<{ key: string; resolve: (p: ReturnType<typeof getEnvPaths>) => string }> = [
-  { key: 'data/flywheel.jsonl', resolve: (p) => path.join(p.dataDir, 'flywheel.jsonl') },
   { key: 'data/layer2-decisions.jsonl', resolve: (p) => path.join(p.dataDir, 'layer2-decisions.jsonl') },
-  { key: 'models/layer1-classifier.json', resolve: (p) => path.join(p.modelsDir, 'layer1-classifier.json') },
   { key: 'catalog/custom.json', resolve: (p) => path.join(p.catalogDir, 'custom.json') },
   // Field-level catalog overrides (hide/rename/cost edits made in the viewer)
   // — user-authored knowledge, unrecoverable if lost (overrides-store.ts).

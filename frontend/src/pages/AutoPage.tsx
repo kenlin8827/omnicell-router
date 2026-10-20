@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { BrainCircuit, Save, Check, Cpu, Scale, Network, Database, ArrowRight, Zap, TriangleAlert } from 'lucide-react';
+import { BrainCircuit, Save, Check, Scale, Network, Database, ArrowRight, Zap, TriangleAlert } from 'lucide-react';
 import { api } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
@@ -8,7 +8,7 @@ import { Switch } from '../components/Switch';
 
 /**
  * /auto — Auto virtual-model routing (decision layer).
- * Aggregates: routing.mode, Layer1 classifier, Layer2 Judge + decision cache.
+ * Aggregates: routing.mode, Layer 2 Judge + decision cache.
  * Tier composition lives at /tiers; cache stats at /cache; hit traces at /traces.
  */
 export const AutoPage: React.FC = () => {
@@ -114,34 +114,7 @@ export const AutoPage: React.FC = () => {
             <div style={{ fontSize: '10px', color: 'var(--text-dim)' }}>{t('auto.modeHint')}</div>
           </div>
 
-          {/* Card B: Layer 1 classifier */}
-          <div className="sub-card" style={cardStyle}>
-            <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent-amber)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <Cpu size={14} />
-              {t('auto.layer1Title')}
-            </div>
-            <label style={rowStyle}>
-              <span>{t('auto.layer1Enable')}</span>
-              <Switch
-                checked={config.classifier?.localModel?.enabled ?? false}
-                onChange={v => setConfig({ ...config, classifier: { ...config.classifier, localModel: { ...(config.classifier?.localModel || {}), enabled: v } } })}
-              />
-            </label>
-            <div>
-              <label style={labelStyle}>{t('auto.layer1Thresh')}</label>
-              <input
-                type="number"
-                step="0.05"
-                min="0"
-                max="1"
-                value={config.classifier?.localModel?.confidenceThreshold || 0.85}
-                onChange={e => setConfig({ ...config, classifier: { ...config.classifier, localModel: { ...(config.classifier?.localModel || {}), confidenceThreshold: parseFloat(e.target.value) || 0.85 } } })}
-                className="input"
-              />
-            </div>
-          </div>
-
-          {/* Card C: Layer 2 Judge + decision cache */}
+          {/* Card B: Layer 2 Judge + decision cache */}
           <div className="sub-card" style={cardStyle}>
             <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent-violet)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Scale size={14} />

@@ -10,14 +10,14 @@ import { Layer2Judge } from '../src/router/layer2-judge.js';
 import { RouterEngine } from '../src/router/index.js';
 import { SystemoneProvider } from '../src/providers/systemone.js';
 import { CaptureRecorder } from '../src/capture/recorder.js';
-import { resetDecisionCaptureConfig } from '../src/flywheel/decision-capture.js';
+import { resetDecisionCaptureConfig } from '../src/capture/decision-capture.js';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../src/types/openai.js';
 
 // ---------------------------------------------------------------------------
 // Layer 2 rides the gateway's own System One protocol — no vendor
 // SDK. These tests pin the contract: the judge speaks a well-formed System One
 // request to a registered model, reads the tier out of the typed answer, and
-// degrades to null (→ caller falls back to Layer 1) on every failure mode.
+// degrades to null (→ caller falls back to the plus baseline) on every failure mode.
 // Plus: judge-call CAPTURE (three-tier chain: requestCapture.enabled ×
 // systemone.enabled surface master × systemone.l2DecisionEnabled sub
 // → upstream-direction event pair with purpose 'l2-judge' on the OUTER
@@ -59,7 +59,6 @@ function makeConfig(providers: any[], models: any[], systemone?: any): RouterCon
     ...(systemone ? { systemone } : {}),
     classifier: { ...base.classifier, layer2: { ...base.classifier?.layer2, enabled: false } },
     requestCapture: { ...base.requestCapture, enabled: false },
-    flywheel: { ...base.flywheel, enabled: false },
     session: { ...base.session, enabled: false },
     tracePersist: { ...base.tracePersist, enabled: false },
   } as RouterConfig;
@@ -640,13 +639,14 @@ describe('routeAsync wires the Layer 2 judge', () => {
     }
   });
 
-  test('no registry → Layer 1 decision stands (classifier-only callers keep working)', async () => {
+  test('no registry → the default plus baseline stands (judge-less callers keep working)', async () => {
     const request: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: 'hi' }] };
     const decision = await RouterEngine.routeAsync(request, { layer2: { enabled: true } });
-    expect(decision.layerUsed).toBe('layer1');
+    expect(decision.layerUsed).toBe('layer0');
+    expect(decision.targetTier).toBe('plus');
   });
 
-  test('an enabled but unconfigured judge never silently picks a model — Layer 1 answers', async () => {
+  test('an enabled but unconfigured judge never silently picks a model — the default baseline answers', async () => {
     const upstream = serve({
       port: 0,
       async fetch() {
@@ -687,7 +687,7 @@ describe('routeAsync wires the Layer 2 judge', () => {
 
       const decision = await RouterEngine.routeAsync(request, { layer2: { enabled: true } }, registry);
 
-      expect(decision.layerUsed).toBe('layer1');
+      expect(decision.layerUsed).toBe('layer0');
       expect(decision.targetTier).not.toBe('ultra');
     } finally {
       upstream.stop(true);

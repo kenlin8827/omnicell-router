@@ -4,7 +4,6 @@ import { getModelAccessPolicy, isModelAllowed, isAutoEntryUsable } from './auth/
 import { registerRuntimeConfigRef, loadConfig, DEFAULT_INBOUND_GRACE_MS, MAX_INBOUND_GRACE_MS } from './config/index.js';
 import { getRateLimiter, apiKeySubject } from './ratelimit/rate-limiter.js';
 import { getRateLimitEventLog, recordRateLimitEvent } from './ratelimit/event-log.js';
-import { registerFlywheelRoutes } from './routes/flywheel.js';
 import { registerEnvironmentRoutes } from './routes/environments.js';
 import { SURFACES } from './surfaces/table.js';
 import { createFastifyTransport } from './surfaces/transport-fastify.js';
@@ -269,9 +268,6 @@ export function createServer(
   // All protocol endpoints — chat, anthropic, responses, systemone — register
   // through the SURFACES table loop below; there is no per-wire route code
   // left in this file.
-
-  // Flywheel console: dataset browsing, operator relabelling, manual training
-  registerFlywheelRoutes(app, orchestrator);
 
   // Environment administration (book-sets): list/create/rename/trash/switch/
   // reset/export/import. Under /api/admin/* → covered by the webAuth gate.
@@ -905,9 +901,6 @@ export function createServer(
     orchestrator.getTracker().reset();
     return { status: 'ok', message: 'Metrics reset successfully' };
   });
-
-  // Flywheel console endpoints (dataset inspection, relabelling, training) are
-  // registered in routes/flywheel.ts — see registerFlywheelRoutes below.
 
   // 3C. Active Conversation Sessions Inspection (optional limit/offset pagination)
   app.get('/api/admin/sessions', async (req) => {

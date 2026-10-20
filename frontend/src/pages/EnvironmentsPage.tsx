@@ -44,17 +44,15 @@ const BOOTSTRAP_DEFAULT_ENV = 'default';
 
 /**
  * Payload files the export dialog offers as checkboxes. config.yaml is NOT in
- * this list — it is the book-set definition itself and always included. Raw
- * training data (flywheel + layer2 decisions) defaults OFF: conversation-
- * derived and potentially large; the trained model and the custom catalog
- * default ON (small, knowledge-shaped). Keys mirror backend PAYLOAD_KEYS
+ * this list — it is the book-set definition itself and always included. The
+ * judge-decision dataset (layer2 decisions) defaults OFF: conversation-
+ * derived and potentially large; the custom catalog entries default ON
+ * (small, knowledge-shaped). Keys mirror backend PAYLOAD_KEYS
  * (backend/src/config/env-archive.ts) — the backend ignores unknown keys.
  */
 const ARCHIVE_PAYLOAD_OPTIONS: Array<{ key: string; i18nKey: string; defaultOn: boolean }> = [
-  { key: 'models/layer1-classifier.json', i18nKey: 'env.export.payloadClassifier', defaultOn: true },
   { key: 'catalog/custom.json', i18nKey: 'env.export.payloadCustom', defaultOn: true },
   { key: 'catalog/overrides.json', i18nKey: 'env.export.payloadOverrides', defaultOn: true },
-  { key: 'data/flywheel.jsonl', i18nKey: 'env.export.payloadFlywheel', defaultOn: false },
   { key: 'data/layer2-decisions.jsonl', i18nKey: 'env.export.payloadDecisions', defaultOn: false },
 ];
 

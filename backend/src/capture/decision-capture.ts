@@ -5,10 +5,9 @@ import { getEnvRootDir } from '../config/env.js';
 import type { Layer2JudgeConfig } from '../config/types.js';
 
 /**
- * Decision-capture SINK for the Layer 2 System One judge — the missing half
- * of the L2 capability loop. The flywheel records what EXECUTED (so Layer 1
- * can be retrained); nothing records what the JUDGE decided, which is exactly
- * the raw material two future capabilities need:
+ * Decision-capture SINK for the Layer 2 System One judge. Nothing else
+ * records what the JUDGE decided, which is exactly the raw material two
+ * future capabilities need:
  *   - distilling converted chat-model judgments into a native decision model
  *   - calibrating the "uncalibrated self-report" confidence
  *
@@ -31,9 +30,9 @@ import type { Layer2JudgeConfig } from '../config/types.js';
  * classifier.layer2 node) — no restart.
  *
  * Correlation note: rows carry no requestId (the judge sits below the layer
- * that mints one). Join with flywheel rows by timestamp proximity when an
- * accuracy-vs-execution evaluation is built — or thread requestId through
- * routeAsync in a future change.
+ * that mints one). Join with trace records by timestamp proximity when an
+ * accuracy evaluation is built — or thread requestId through routeAsync in a
+ * future change.
  */
 
 export interface DecisionCaptureRecord {

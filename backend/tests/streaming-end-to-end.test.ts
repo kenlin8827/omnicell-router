@@ -452,11 +452,11 @@ describe('schema-assertion cascade streaming', () => {
       assert.ok(trace.execution.ttftMs! <= trace.execution.latencyMs);
       // Routing facts staged on the first forwarded chunk name the ESCALATED
       // model/tier (the pool's per-attempt stageRouting overwrites), and the
-      // decision layer stays the original classifier's.
+      // decision layer stays the original router's.
       const last = staged[staged.length - 1];
       assert.equal(last.modelUsed, 'stub/plus');
       assert.equal(last.tierUsed, 'plus');
-      assert.equal(last.layerUsed, 'layer1');
+      assert.equal(last.layerUsed, 'layer0');
     } finally {
       server.stop(true);
     }

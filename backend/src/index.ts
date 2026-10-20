@@ -6,7 +6,6 @@ import { buildDirectPool } from './providers/boot-direct.js';
 import { FinOpsTracker } from './metrics/finops-tracker.js';
 import { PipelineOrchestrator } from './pipeline/orchestrator.js';
 
-import { Layer1Classifier } from './router/layer1-classifier.js';
 import { catalogRepository } from './opencode/catalog/repository.js';
 import { initProxyConfig } from './utils/proxy.js';
 import { adoptRestartParent, writeDaemonFiles } from './cli/daemon.js';
@@ -79,10 +78,6 @@ async function main() {
   } catch (err: any) {
     console.warn(`[OCR] Catalog sync failed (will retry on interval): ${err.message}`);
   }
-
-  // 0. Auto-initialize Layer 1 model base scaffold
-  await Layer1Classifier.init(config.classifier?.localModel);
-  console.log(`[OCR] Layer 1 classifier ready: ${Layer1Classifier.getModelStatus()}`);
 
   // 0.5 FinOps cumulative-totals persistence — shared SQLite file under
   //     <env.traces>/traces.db (the active environment's traces dir — the

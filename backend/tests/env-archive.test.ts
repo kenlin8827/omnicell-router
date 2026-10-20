@@ -83,9 +83,7 @@ async function seedAlpha(): Promise<void> {
     'utf8'
   );
   fs.mkdirSync(path.join(dir, 'data'), { recursive: true });
-  fs.writeFileSync(path.join(dir, 'data', 'flywheel.jsonl'), '{"v":1}\n{"v":2}\n', 'utf8');
-  fs.mkdirSync(path.join(dir, 'models'), { recursive: true });
-  fs.writeFileSync(path.join(dir, 'models', 'layer1-classifier.json'), '{"isBaseModel":true}', 'utf8');
+  fs.writeFileSync(path.join(dir, 'data', 'layer2-decisions.jsonl'), '{"v":1}\n{"v":2}\n', 'utf8');
   fs.mkdirSync(path.join(dir, 'catalog'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'catalog', 'custom.json'), '{"version":1}', 'utf8');
 }
@@ -125,13 +123,12 @@ describe('buildEnvelope', () => {
 
     expect(Object.keys(env.payload).sort()).toEqual([
       'catalog/custom.json',
-      'data/flywheel.jsonl',
-      'models/layer1-classifier.json',
+      'data/layer2-decisions.jsonl',
     ]);
-    expect(env.payload['data/flywheel.jsonl']).toContain('{"v":2}');
+    expect(env.payload['data/layer2-decisions.jsonl']).toContain('{"v":2}');
     expect(env.checksums.config).toBe(sha(env.config));
-    expect(env.checksums['data/flywheel.jsonl']).toBe(sha(env.payload['data/flywheel.jsonl']));
-    expect(env.checksums['data/layer2-decisions.jsonl']).toBeUndefined(); // only files that exist
+    expect(env.checksums['data/layer2-decisions.jsonl']).toBe(sha(env.payload['data/layer2-decisions.jsonl']));
+    expect(env.checksums['catalog/overrides.json']).toBeUndefined(); // only files that exist
   });
 
   it('secrets=include keeps real values but STILL drops passwordHash', async () => {
@@ -190,7 +187,7 @@ describe('parseAndValidateEnvelope — happy + sanitizing', () => {
     expect(cfg.apiKeys[0].key).toBeUndefined();
     expect(cfg.webAuth.username).toBe('admin');
     expect(v.configWasSanitized).toBe(true);
-    expect(v.payload['data/flywheel.jsonl']).toContain('{"v":1}');
+    expect(v.payload['data/layer2-decisions.jsonl']).toContain('{"v":1}');
   });
 
   it('clean (included-secrets) envelope keeps its exact config text', async () => {
@@ -227,7 +224,7 @@ describe('parseAndValidateEnvelope — guards', () => {
     format: ENVELOPE_FORMAT,
     version: 1,
     name: 'bravo',
-    payload: { 'data/flywheel.jsonl': 'row\n' },
+    payload: { 'data/layer2-decisions.jsonl': 'row\n' },
     config: 'port: 3000\n',
   });
 
@@ -252,10 +249,10 @@ describe('parseAndValidateEnvelope — guards', () => {
 
   it('tampered payload → checksum mismatch naming the entry', () => {
     const env = sign(good());
-    env.payload['data/flywheel.jsonl'] = 'row\nEXTRA\n';
+    env.payload['data/layer2-decisions.jsonl'] = 'row\nEXTRA\n';
     const v = parseAndValidateEnvelope(env);
     expect(v.ok).toBe(false);
-    if (!v.ok) expect(v.error).toMatch(/data\/flywheel.jsonl/);
+    if (!v.ok) expect(v.error).toMatch(/data\/layer2-decisions.jsonl/);
   });
 
   it('tampered config → checksum mismatch on config', () => {
@@ -298,7 +295,7 @@ describe('parseAndValidateEnvelope — guards', () => {
 describe('safeResolveWithin', () => {
   it('accepts env-relative keys, rejects escaping ones, re-verifies prefix', () => {
     const dir = path.resolve(HOME, 'envs', 'x');
-    expect(safeResolveWithin(dir, 'data/flywheel.jsonl')).toBe(path.join(dir, 'data', 'flywheel.jsonl'));
+    expect(safeResolveWithin(dir, 'data/layer2-decisions.jsonl')).toBe(path.join(dir, 'data', 'layer2-decisions.jsonl'));
     expect(safeResolveWithin(dir, '../evil')).toBeNull();
     expect(safeResolveWithin(dir, '..')).toBeNull();
     expect(safeResolveWithin(dir, 'a/../../evil')).toBeNull();
@@ -328,13 +325,12 @@ describe('parseAndValidateEnvelope — payload key whitelist', () => {
       expect(v.ok).toBe(false);
       if (!v.ok) expect(v.error).toMatch(/Unsupported payload key/);
     }
-    // the four known data keys still pass
+    // the known data keys still pass
     const config = 'port: 3000\n';
     const payload = {
-      'data/flywheel.jsonl': 'a\n',
-      'data/layer2-decisions.jsonl': 'b\n',
-      'models/layer1-classifier.json': '{}',
+      'data/layer2-decisions.jsonl': 'a\n',
       'catalog/custom.json': '{}',
+      'catalog/overrides.json': '{}',
     };
     const v = parseAndValidateEnvelope({
       format: ENVELOPE_FORMAT,
@@ -420,7 +416,7 @@ describe('zip transport — buildZipArchive / parseZipArchiveAsync', () => {
     await createEnv({ name: 'zipper' });
     fs.writeFileSync(getEnvPaths('zipper').configPath, 'adminApiKey: sk-live\n', 'utf8');
     fs.mkdirSync(getEnvPaths('zipper').dataDir, { recursive: true });
-    fs.writeFileSync(path.join(getEnvPaths('zipper').dataDir, 'flywheel.jsonl'), 'row\n', 'utf8');
+    fs.writeFileSync(path.join(getEnvPaths('zipper').dataDir, 'layer2-decisions.jsonl'), 'row\n', 'utf8');
 
     const bytes = buildZipArchive('zipper', { includeSecrets: false });
     // The archive itself carries the redacted form...
@@ -432,7 +428,7 @@ describe('zip transport — buildZipArchive / parseZipArchiveAsync', () => {
     expect(v.name).toBe('rezipped'); // override honored over the source name
     // ...while import strips the sentinel wholesale (never a literal value).
     expect(v.config).not.toContain('__REDACTED__');
-    expect(v.payload['data/flywheel.jsonl']).toBe('row\n');
+    expect(v.payload['data/layer2-decisions.jsonl']).toBe('row\n');
   });
 
   it('includePayload subsets the payload (manifest checksums follow)', async () => {
@@ -440,7 +436,7 @@ describe('zip transport — buildZipArchive / parseZipArchiveAsync', () => {
     const bytes = buildZipArchive('subset', { includeSecrets: false, includePayload: [] });
     const entries = unzipSync(bytes);
     expect(entries['config.yaml']).toBeDefined();
-    expect(entries['models/layer1-classifier.json']).toBeUndefined();
+    expect(entries['catalog/overrides.json']).toBeUndefined();
     const manifest = JSON.parse(strFromU8(entries['manifest.json']));
     expect(Object.keys(manifest.checksums)).toEqual(['config']);
   });
@@ -477,12 +473,12 @@ describe('zip transport — buildZipArchive / parseZipArchiveAsync', () => {
       source: { name: 'a', type: 'regular', appVersion: 'x' },
       secrets: 'redacted',
       redactedPaths: [],
-      checksums: { config: sha('port: 1\n'), 'data/flywheel.jsonl': sha(big) },
+      checksums: { config: sha('port: 1\n'), 'data/layer2-decisions.jsonl': sha(big) },
     };
     const bytes = zipSync({
       'manifest.json': strToU8(JSON.stringify(manifest)),
       'config.yaml': strToU8('port: 1\n'),
-      'data/flywheel.jsonl': strToU8(big),
+      'data/layer2-decisions.jsonl': strToU8(big),
     });
     const v = await parseZipArchiveAsync(bytes);
     expect(v.ok).toBe(false);
@@ -547,14 +543,14 @@ describe('encrypted archive — buildEncryptedZipArchive / parseZipArchiveAsync'
     await createEnv({ name: 'encrt' });
     fs.writeFileSync(getEnvPaths('encrt').configPath, 'adminApiKey: sk-live\n', 'utf8');
     fs.mkdirSync(getEnvPaths('encrt').dataDir, { recursive: true });
-    fs.writeFileSync(path.join(getEnvPaths('encrt').dataDir, 'flywheel.jsonl'), 'row\n', 'utf8');
+    fs.writeFileSync(path.join(getEnvPaths('encrt').dataDir, 'layer2-decisions.jsonl'), 'row\n', 'utf8');
     const bytes = await buildEncryptedZipArchive('encrt', { includeSecrets: false, password: 'pw-12345' });
     const v = await parseZipArchiveAsync(bytes, 'enc-override', 'pw-12345');
     expect(v.ok).toBe(true);
     if (!v.ok) return;
     expect(v.name).toBe('enc-override');
     expect(v.config).not.toContain('__REDACTED__'); // sentinel stripped wholesale on import
-    expect(v.payload['data/flywheel.jsonl']).toBe('row\n');
+    expect(v.payload['data/layer2-decisions.jsonl']).toBe('row\n');
   });
 
   it('refuses an empty password at build time', async () => {
