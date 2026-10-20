@@ -1291,6 +1291,7 @@ export const zhCN: TranslationDict = {
     profileApplyHint: '行级两种模式：「槽位:」关联的行跟随方案——方案保存时自动回写（agent.<name>.model），无需重新应用；手动选择具体模型的行不受方案变更影响。未关联的行继承默认模型。',
     profileApplyHintPi: '行级两种模式：「槽位:」关联的角色跟随方案——方案保存时自动回写 settings.json 的 agentOverrides，无需重新应用；手动选择具体模型的角色不受方案变更影响。未关联的角色使用梯队预设默认。',
     profileRowsLabel: '子Agent',
+    profileRowsOffHint: '开关关闭 = 不配置子 Agent；已有的关联保持不变，接管也不会改动它们。',
     otherTitle: '其他客户端',
     otherBadge: '手动接入',
     otherHint: '任何 OpenAI / Anthropic 协议兼容的客户端',

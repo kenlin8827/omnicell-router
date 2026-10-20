@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { Eraser } from 'lucide-react';
 import { Combobox, type ComboboxOption } from './Combobox';
 import { InfoTip } from './InfoTip';
+import { Switch } from './Switch';
 import type { ModelProfileView } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 
@@ -40,6 +41,13 @@ interface Props {
   hint: string;
   /** Short label at the header-row start (e.g. 子Agent). */
   label?: string;
+  /** Link-table switch (opencode, pi): OFF hides the whole table — the form
+   *  declares "not configuring subagents" and setup omits the payload. When
+   *  undefined the table always shows (no switch). */
+  on?: boolean;
+  onToggle?: (v: boolean) => void;
+  /** Linked-row count while OFF — keeps existing links visible at a glance. */
+  linkedCount?: number;
   showSort?: boolean;
 }
 
@@ -68,6 +76,9 @@ export const ProfileLinkTable: React.FC<Props> = ({
   onClear,
   hint,
   label,
+  on,
+  onToggle,
+  linkedCount,
   showSort,
 }) => {
   const { t } = useI18n();
@@ -123,10 +134,38 @@ export const ProfileLinkTable: React.FC<Props> = ({
   const q = filter.trim().toLowerCase();
   const visible = rows.filter(r => !q || r.name.toLowerCase().includes(q));
 
+  // Switch OFF: the whole table collapses to one switch row — the form
+  // declares "not configuring subagents" (setup omits the agent payload).
+  // The linked count stays visible so existing links never go dark.
+  if (on === false) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+        <div style={{ fontSize: '11px', color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            <Switch size="sm" checked={false} onChange={v => onToggle?.(v)} />
+            <span>
+              {label}
+              {(linkedCount || 0) > 0 ? ` · ${linkedCount}` : ''}
+            </span>
+          </label>
+          <span style={{ flex: 1 }} />
+          <span>{t('clients.profileRowsOffHint')}</span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
       <div style={{ fontSize: '11px', color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: '10px' }}>
-        {label && <span style={{ flexShrink: 0 }}>{label}</span>}
+        {on !== undefined ? (
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0 }}>
+            <Switch size="sm" checked onChange={v => onToggle?.(v)} />
+            <span>{label}</span>
+          </label>
+        ) : (
+          label && <span style={{ flexShrink: 0 }}>{label}</span>
+        )}
         {rows.length > 8 && (
           <input
             className="input"

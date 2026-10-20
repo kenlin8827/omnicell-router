@@ -78,6 +78,10 @@ export interface ClientProfileMemoryEntry {
   /** Last-written gateway key id (apiKeys[].id); a stale id (deleted key)
    *  seeds nothing. Mirrors backend. */
   apiKeyId?: string;
+  /** Agent/role link table visibility (opencode, pi). OFF = table hidden and
+   *  setup omits the agent payload entirely. Absent = seed from whether
+   *  links exist. Mirrors backend. */
+  linksOn?: boolean;
 }
 
 // Mirrors backend CircuitBreakerSnapshot (backend/src/resilience/types.ts)

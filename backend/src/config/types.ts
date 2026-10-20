@@ -678,6 +678,11 @@ export interface ClientProfileMemoryEntry {
    *  re-seeds the picker from this id, and a stale id (key deleted since)
    *  seeds nothing. */
   apiKeyId?: string;
+  /** Agent/role link table visibility (opencode, pi). OFF = the form declares
+   *  "not configuring subagents": the table hides and setup OMITS the agent
+   *  payload entirely (no sweep, no writes — existing overrides survive).
+   *  Absent = seed from whether links exist. */
+  linksOn?: boolean;
 }
 
 /**

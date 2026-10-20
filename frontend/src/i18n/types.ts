@@ -1370,6 +1370,8 @@ hiddenBadge: string;
     profileApplyHintPi: string;
     /** Short header-row label naming what the table binds (子Agent). */
     profileRowsLabel: string;
+    /** Switch-OFF explanatory line. */
+    profileRowsOffHint: string;
     /** Static "Other clients" row: manual hookup guide for non-hooked clients. */
     otherTitle: string;
     otherBadge: string;
