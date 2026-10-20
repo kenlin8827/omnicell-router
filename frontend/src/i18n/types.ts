@@ -1368,6 +1368,8 @@ hiddenBadge: string;
     profileApplyHint: string;
     /** pi variant: write-through lands in settings.json agentOverrides; presets are the default. */
     profileApplyHintPi: string;
+    /** Short header-row label naming what the table binds (子Agent). */
+    profileRowsLabel: string;
     /** Static "Other clients" row: manual hookup guide for non-hooked clients. */
     otherTitle: string;
     otherBadge: string;

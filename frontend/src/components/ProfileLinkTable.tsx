@@ -38,6 +38,8 @@ interface Props {
   onClear: () => void;
   /** Per-client apply hint line. */
   hint: string;
+  /** Short label at the header-row start (e.g. 子Agent). */
+  label?: string;
   showSort?: boolean;
 }
 
@@ -65,6 +67,7 @@ export const ProfileLinkTable: React.FC<Props> = ({
   onDraft,
   onClear,
   hint,
+  label,
   showSort,
 }) => {
   const { t } = useI18n();
@@ -123,13 +126,14 @@ export const ProfileLinkTable: React.FC<Props> = ({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
       <div style={{ fontSize: '11px', color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: '10px' }}>
+        {label && <span style={{ flexShrink: 0 }}>{label}</span>}
         {rows.length > 8 && (
           <input
             className="input"
             value={filter}
             onChange={e => setFilter(e.target.value)}
             placeholder={t('clients.profileFilter')}
-            style={{ flex: 1, maxWidth: '260px', fontSize: '12px', padding: '3px 8px' }}
+            style={{ flex: 1, maxWidth: '260px' }}
           />
         )}
         <div style={{ width: '280px', flexShrink: 0 }}>

@@ -1296,6 +1296,7 @@ export const enUS: TranslationDict = {
     profileCurrentModel: 'Current model in the client config',
     profileApplyHint: 'Two row modes: rows linked via "Slot:" follow the profile — a saved profile change writes through automatically (agent.<name>.model), no re-apply needed; rows with a manually picked model are never touched by profile changes. Unlinked rows inherit the default model.',
     profileApplyHintPi: 'Two row modes: roles linked via "Slot:" follow the profile — a saved profile change writes through to settings.json agentOverrides automatically, no re-apply needed; roles with a manually picked model are never touched by profile changes. Unlinked roles use the tier-preset default.',
+    profileRowsLabel: 'Subagents',
     otherTitle: 'Other clients',
     otherBadge: 'Manual',
     otherHint: 'Any OpenAI / Anthropic-compatible client',

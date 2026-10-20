@@ -751,6 +751,7 @@ export const ClientsPage: React.FC = () => {
                       onDraft={(name, v) => setBindSel(prev => ({ ...prev, [c.name]: { ...(prev[c.name] || {}), [name]: v } }))}
                       onClear={() => setBindSel(prev => ({ ...prev, [c.name]: {} }))}
                       hint={t('clients.profileApplyHintPi')}
+                      label={t('clients.profileRowsLabel')}
                     />
                   </div>
                 )}
@@ -834,6 +835,7 @@ export const ClientsPage: React.FC = () => {
                       onDraft={(name, v) => setBindSel(prev => ({ ...prev, [c.name]: { ...(prev[c.name] || {}), [name]: v } }))}
                       onClear={() => setBindSel(prev => ({ ...prev, [c.name]: {} }))}
                       hint={t('clients.profileApplyHint')}
+                      label={t('clients.profileRowsLabel')}
                       showSort
                     />
                   </div>
