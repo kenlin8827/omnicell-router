@@ -304,17 +304,19 @@ const CaptureDrawer: React.FC<{
           animation: 'ocr-slide-in-right 0.18s ease',
         }}
       >
-        {/* Header */}
+        {/* Header — line 1: identity (status / key / time / models / trace),
+            line 2: the per-leg durations so an accidental mid-chip wrap never
+            splits them across rows. */}
         <div
           style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '10px',
             padding: '14px 16px',
             borderBottom: '1px solid var(--divider)',
-            flexWrap: 'wrap',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '8px',
           }}
         >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
           <span
             className="badge"
             style={
@@ -397,29 +399,34 @@ const CaptureDrawer: React.FC<{
           >
             trace:{shortId(turn.traceId)}
           </span>
-          {/* Per-direction latency: gateway = client cycle, upstream =
-              upstream cycle. Missing when one side never fired. */}
-          {turn.gatewayLatencyMs !== undefined && (
-            <span
-              title={t('captures.gatewayLatency')}
-              style={{ fontSize: '12px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
-            >
-              ↳ {turn.gatewayLatencyMs} ms
-              <span title={t('captures.timingTip')}>{legTimingText(turn, 'gateway')}</span>
-            </span>
-          )}
-          {turn.upstreamLatencyMs !== undefined && (
-            <span
-              title={t('captures.upstreamLatency')}
-              style={{ fontSize: '12px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
-            >
-              ↗ {turn.upstreamLatencyMs} ms
-              <span title={t('captures.timingTip')}>{legTimingText(turn, 'upstream')}</span>
-            </span>
-          )}
           <button className="btn btn-sm" style={{ marginLeft: 'auto' }} onClick={onClose} aria-label={t('common.close')}>
             <X size={14} />
           </button>
+          </div>
+          {/* Per-direction latency on its own line: gateway = client cycle,
+              upstream = upstream cycle. Missing when one side never fired. */}
+          {(turn.gatewayLatencyMs !== undefined || turn.upstreamLatencyMs !== undefined) && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
+              {turn.gatewayLatencyMs !== undefined && (
+                <span
+                  title={t('captures.gatewayLatency')}
+                  style={{ fontSize: '12px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
+                >
+                  ↳ {turn.gatewayLatencyMs} ms
+                  <span title={t('captures.timingTip')}>{legTimingText(turn, 'gateway')}</span>
+                </span>
+              )}
+              {turn.upstreamLatencyMs !== undefined && (
+                <span
+                  title={t('captures.upstreamLatency')}
+                  style={{ fontSize: '12px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
+                >
+                  ↗ {turn.upstreamLatencyMs} ms
+                  <span title={t('captures.timingTip')}>{legTimingText(turn, 'upstream')}</span>
+                </span>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Error banner */}
