@@ -74,6 +74,11 @@ export const ClientsPage: React.FC = () => {
   const [profileSel, setProfileSel] = useState<Record<string, string>>({});
   /** Per-client agent-name → slot-key bindings (model profile application) */
   const [bindSel, setBindSel] = useState<Record<string, Record<string, string>>>({});
+  /** Agent/role link table visibility (opencode, pi). OFF = the form declares
+   *  "not configuring subagents": the table hides and the setup payload omits
+   *  the agent bindings entirely (no sweep — existing overrides survive).
+   *  Seeded ON iff links exist (echo or memory); persisted via memory. */
+  const [linksOn, setLinksOn] = useState<Record<string, boolean>>({});
   /** Environment-persisted form memory (config.yaml `clientProfileMemory`) */
   const [mem, setMem] = useState<Record<string, ClientProfileMemoryEntry> | null>(null);
 
@@ -184,6 +189,24 @@ export const ClientsPage: React.FC = () => {
       }
       return next;
     });
+    setLinksOn(prev => {
+      const next = { ...prev };
+      for (const c of clients) {
+        if (c.name !== 'opencode' && c.name !== 'pi') continue;
+        if (next[c.name] !== undefined) continue;
+        // Persisted choice wins; absent → ON iff links already exist (echo or
+        // memory) — a linked client must not wake up looking unconfigured,
+        // a fresh one stays collapsed.
+        const memEntry = mem[c.name];
+        if (memEntry?.linksOn !== undefined) {
+          next[c.name] = memEntry.linksOn;
+          continue;
+        }
+        const tagCount = Object.keys(c.profile?.bindings || memEntry?.bindings || {}).length;
+        next[c.name] = tagCount > 0;
+      }
+      return next;
+    });
     setBindSel(prev => {
       const next = { ...prev };
       for (const c of clients) {
@@ -221,8 +244,10 @@ export const ClientsPage: React.FC = () => {
     );
 
   /** Write-through form memory into the ACTIVE environment's config.yaml
-   *  (book-set scoped — switching envs switches the memory too). */
-  const persistMem = (clientName: string, profile: string, bindings: Record<string, string>, modelMode?: 'none' | 'custom' | 'follow', apiKeyIdOverride?: string) => {
+   *  (book-set scoped — switching envs switches the memory too).
+   *  `linksOnOverride` covers the toggle handler: the setState above it is
+   *  invisible to this closure (same rule as apiKeyIdOverride). */
+  const persistMem = (clientName: string, profile: string, bindings: Record<string, string>, modelMode?: 'none' | 'custom' | 'follow', apiKeyIdOverride?: string, linksOnOverride?: boolean) => {
     const mode = modelMode ?? modeSel[clientName] ?? 'none';
     // Pure updater required: computing `next` (and firing the POST) inside the
     // setMem updater would double-invoke under StrictMode / concurrent render.
@@ -236,6 +261,7 @@ export const ClientsPage: React.FC = () => {
         // `apiKeyIdOverride` covers callers that just reset/committed the form
         // (setState would not be visible to this closure yet).
         apiKeyId: apiKeyIdOverride ?? keyIdOf(apiKeySel[clientName] || ''),
+        linksOn: linksOnOverride ?? linksOn[clientName],
       },
     };
     setMem(next);
@@ -274,10 +300,10 @@ export const ClientsPage: React.FC = () => {
   /** Lazy-load the OpenCode agent inventory when the opencode form first expands. */
   const opencodeOpen = expanded === 'opencode';
   useEffect(() => {
-    if (opencodeOpen && agents === null && !agentsError) {
+    if (opencodeOpen && agents === null && !agentsError && linksOn['opencode'] !== false) {
       api.listOpencodeAgents().then(setAgents).catch(() => setAgentsError(true));
     }
-  }, [opencodeOpen, agents, agentsError]);
+  }, [opencodeOpen, agents, agentsError, linksOn]);
 
   /** Seed opencode's agent-link draft once the inventory loads: each row
    *  mirrors the config's current agent model (router-owned values arrive
@@ -382,7 +408,10 @@ export const ClientsPage: React.FC = () => {
    * must never touch the agent node.
    */
   const opencodeAgentPayload = (clientName: string): { agentModels?: Record<string, string>; profile?: { id: string; bindings: Record<string, string> } } => {
-    if (clientName !== 'opencode' || agents === null) return {};
+    // agents === null: inventory not loaded — a stale/absent draft must never
+    // touch the agent node. Switch OFF: the form declares "not configuring" —
+    // the payload is omitted entirely (no sweep; existing overrides survive).
+    if (clientName !== 'opencode' || agents === null || linksOn[clientName] === false) return {};
     const known = new Set(models.map(m => m.id));
     const manual: Record<string, string> = {};
     const tags: Record<string, string> = {};
@@ -419,7 +448,8 @@ export const ClientsPage: React.FC = () => {
       return rest;
     });
     // Override param: the setState above is invisible to persistMem's closure.
-    persistMem(clientName, '', {}, 'none', '');
+    persistMem(clientName, '', {}, 'none', '', false);
+    setLinksOn(prev => ({ ...prev, [clientName]: false }));
     if (clientName === 'opencode') setAgents(null); // table re-seeds from the swept config
     if (clients.find(c => c.name === clientName)?.hooked) {
       setLoading(true);
@@ -473,6 +503,9 @@ export const ClientsPage: React.FC = () => {
    *  Other clients pass their slot map through unchanged. */
   const piLinkPayload = (clientName: string): { models: Record<string, string>; agentModels?: Record<string, string>; profile?: { id: string; bindings: Record<string, string> } } => {
     if (clientName !== 'pi') return { models: modelSel[clientName] || {} };
+    // Switch OFF = "not configuring roles": main still applies, the role
+    // payload is omitted entirely (no sweep; existing overrides survive).
+    if (linksOn[clientName] === false) return { models: { main: modelSel[clientName]?.main || 'auto' } };
     const known = new Set(models.map(m => m.id));
     const manual: Record<string, string> = {};
     const tags: Record<string, string> = {};
@@ -752,6 +785,12 @@ export const ClientsPage: React.FC = () => {
                       onClear={() => setBindSel(prev => ({ ...prev, [c.name]: {} }))}
                       hint={t('clients.profileApplyHintPi')}
                       label={t('clients.profileRowsLabel')}
+                      on={linksOn[c.name]}
+                      onToggle={v => {
+                        setLinksOn(prev => ({ ...prev, [c.name]: v }));
+                        persistMem(c.name, profileSel[c.name] || '', linkTagsOf(bindSel[c.name]), undefined, undefined, v);
+                      }}
+                      linkedCount={Object.keys(linkTagsOf(bindSel[c.name])).length}
                     />
                   </div>
                 )}
@@ -836,6 +875,12 @@ export const ClientsPage: React.FC = () => {
                       onClear={() => setBindSel(prev => ({ ...prev, [c.name]: {} }))}
                       hint={t('clients.profileApplyHint')}
                       label={t('clients.profileRowsLabel')}
+                      on={linksOn[c.name]}
+                      onToggle={v => {
+                        setLinksOn(prev => ({ ...prev, [c.name]: v }));
+                        persistMem(c.name, profileSel[c.name] || '', linkTagsOf(bindSel[c.name]), undefined, undefined, v);
+                      }}
+                      linkedCount={Object.keys(linkTagsOf(bindSel[c.name])).length}
                       showSort
                     />
                   </div>
