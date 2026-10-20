@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useLayoutEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Zap, Scale, Brain, Sparkles, Save, RefreshCw, Plus, X, Eye, GripVertical, Search, ArrowUpToLine, ArrowUp, ArrowDown, ArrowRightLeft, Trash2, AlertTriangle } from 'lucide-react';
-import { api, opencodeApi, type TierPoolInfo, type ComboView } from '../lib/api';
+import { Zap, Scale, Brain, Sparkles, Save, RefreshCw, Plus, X, Eye, GripVertical, Search, ArrowUpToLine, ArrowUp, ArrowDown, ArrowRightLeft, Trash2, AlertTriangle, Activity, Loader2 } from 'lucide-react';
+import { api, opencodeApi, type TierPoolInfo, type ComboView, type TierTestResult } from '../lib/api';
 import { useConfirm } from '../components/ConfirmProvider';
 import { Combobox } from '../components/Combobox';
 import { ProviderLogo } from '../components/ProviderLogo';
@@ -138,6 +138,11 @@ export const RulesPage: React.FC = () => {
     { kind: string; tiers?: string[]; count?: number; tier?: string; pattern?: string }[] | null
   >(null);
   const [memberFilters, setMemberFilters] = useState<Record<Tier, string>>({ lite: '', plus: '', pro: '', ultra: '' });
+  // Per-tier end-to-end test (POST /api/admin/tiers/:tier/test): latest result
+  // per tier card + in-flight markers. Result shows inline (✓ms / ✗) with the
+  // full detail on hover, mirroring the combo test button.
+  const [tierTests, setTierTests] = useState<Partial<Record<Tier, TierTestResult>>>({});
+  const [testingTiers, setTestingTiers] = useState<Set<Tier>>(new Set());
   // HTML5 drag-sort: armedDrag = `${tier}:${i}` while the grip is held (the
   // row becomes draggable only then, so inputs/buttons keep normal pointer
   // behaviour); dragMember tracks the in-flight row for live reorder.
@@ -399,6 +404,49 @@ export const RulesPage: React.FC = () => {
       return { ...prev, [tier]: { ...prev[tier], members } };
     });
 
+  /** One real minimal completion through the production pipeline, pinned to
+   * the tier via the auto-<tier> virtual entry — the same force_tier path a
+   * client's request takes. Only the SELECTED member (chain head / weighted
+   * pick) is exercised, never the whole pool; an empty tier lands on its
+   * degraded fallback model, which modelUsed surfaces verbatim. Precondition
+   * failures (unknown tier) localize via the reasonCode. */
+  const handleTierTest = useCallback(
+    async (tier: Tier) => {
+      if (testingTiers.has(tier)) return;
+      setTestingTiers((prev) => {
+        const next = new Set(prev);
+        next.add(tier);
+        return next;
+      });
+      try {
+        const res = await api.testTier(tier);
+        setTierTests((prev) => ({ ...prev, [tier]: res }));
+        if (res.ok) {
+          const base = t('tierPolicy.testOk', { tier, model: res.modelUsed || '—', ms: res.latencyMs ?? 0 });
+          toast.success(
+            res.failoverOccurred && res.failoverPath?.length
+              ? base + t('tierPolicy.testOkFailover', { path: res.failoverPath.join(' → ') })
+              : base
+          );
+        } else {
+          toast.error(t('tierPolicy.testFailed', { tier, error: res.error || `HTTP ${res.httpStatus ?? '?'}` }));
+        }
+      } catch (err: any) {
+        const failMsg = err?.reasonCode === 'unknown_tier' ? t('tierPolicy.testUnknownTier') : err?.message || String(err);
+        const failed: TierTestResult = { status: 'ok', ok: false, tier, error: failMsg };
+        setTierTests((prev) => ({ ...prev, [tier]: failed }));
+        toast.error(t('tierPolicy.testFailed', { tier, error: failMsg }));
+      } finally {
+        setTestingTiers((prev) => {
+          const next = new Set(prev);
+          next.delete(tier);
+          return next;
+        });
+      }
+    },
+    [t, toast, testingTiers]
+  );
+
   /** Save ONE tier only: merge over the LATEST disk state so other tiers'
    *  unsaved drafts are never committed by a single-tier save. */
   const doSaveTier = async (tier: Tier) => {
@@ -628,6 +676,8 @@ export const RulesPage: React.FC = () => {
           // state. For the committed (post-save) state, use the detail modal
           // and switch to the live tab.
           const poolInfo = pools[tier] ?? poolsLive[tier];
+          const testRes = tierTests[tier];
+          const isTesting = testingTiers.has(tier);
           return (
             <div
               key={tier}
@@ -647,15 +697,48 @@ export const RulesPage: React.FC = () => {
                   <Icon size={16} />
                   <span>{t(labelKey)}</span>
                 </div>
-                <button
-                  className="btn btn-primary"
-                  style={{ padding: '3px 10px', fontSize: '11px', flexShrink: 0 }}
-                  disabled={savingTier !== null || loading}
-                  onClick={() => void saveTier(tier)}
-                >
-                  <Save size={11} />
-                  <span>{savingTier === tier ? t('common.loading') : t('tierPolicy.saveTierBtn')}</span>
-                </button>
+                <div style={{ marginLeft: 'auto', display: 'flex', gap: '4px', alignItems: 'center' }}>
+                  {testRes && (
+                    <span
+                      style={{
+                        fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                        fontSize: '10px',
+                        whiteSpace: 'nowrap',
+                        color: testRes.ok ? 'var(--accent-emerald)' : 'var(--accent-rose)',
+                      }}
+                      title={
+                        testRes.ok
+                          ? `${testRes.modelUsed || '—'}${
+                              testRes.failoverOccurred && testRes.failoverPath?.length
+                                ? ` (${testRes.failoverPath.join(' → ')})`
+                                : ''
+                            }${testRes.servedCredentialPrefix ? ` · ${testRes.servedCredentialPrefix}` : ''} — ${testRes.latencyMs ?? 0} ms`
+                          : testRes.error
+                      }
+                    >
+                      {testRes.ok ? `✓${testRes.latencyMs ?? '?'}ms` : '✗'}
+                    </span>
+                  )}
+                  <button
+                    className="btn btn-sm"
+                    style={{ padding: '3px 10px', fontSize: '11px', flexShrink: 0 }}
+                    title={t('tierPolicy.testBtnHint')}
+                    disabled={isTesting}
+                    onClick={() => void handleTierTest(tier)}
+                  >
+                    {isTesting ? <Loader2 size={11} style={{ animation: 'ocr-spin 0.8s linear infinite' }} /> : <Activity size={11} />}
+                    <span>{t('tierPolicy.testBtn')}</span>
+                  </button>
+                  <button
+                    className="btn btn-primary"
+                    style={{ padding: '3px 10px', fontSize: '11px', flexShrink: 0 }}
+                    disabled={savingTier !== null || loading}
+                    onClick={() => void saveTier(tier)}
+                  >
+                    <Save size={11} />
+                    <span>{savingTier === tier ? t('common.loading') : t('tierPolicy.saveTierBtn')}</span>
+                  </button>
+                </div>
                 
               </div>
 

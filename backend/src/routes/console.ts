@@ -1494,6 +1494,61 @@ export function registerConsoleRoutes(
   };
   app.post('/api/admin/tiers/check', handleTiersCheck);
 
+  // End-to-end tier test — one REAL minimal completion pinned to the tier via
+  // the `auto-<tier>` virtual entry: the same force_tier path a client's
+  // `model: "auto-pro"` request takes (a BARE tier name is not addressable on
+  // the chat wire — the orchestrator would classifier-route it). One run only
+  // exercises the SELECTED member (the chain head, or the weighted/round-robin
+  // pick), never the whole pool — deep per-model checks stay on the providers
+  // page. An EMPTY tier degrades inside getModelForTier (the session-pin birth
+  // representative falls down the escalate→plus→lite chain, server-warned with
+  // reason=empty-pool) — modelUsed then names the NON-tier landing model, the
+  // same drift a real client request experiences. ok:false is a real test
+  // outcome (chain exhausted / every member rejected); an unknown tier name is
+  // a precondition (400) that never spends an upstream call.
+  app.post('/api/admin/tiers/:tier/test', async (req: any, reply: any) => {
+    const { tier } = req.params as { tier: string };
+    if (!(MEMBER_TIER_ORDER as readonly string[]).includes(tier)) {
+      return reply.status(400).send({ success: false, reasonCode: 'unknown_tier', tier });
+    }
+    try {
+      const result = await orchestrator.process(
+        {
+          model: `auto-${tier}`,
+          messages: [{ role: 'user', content: 'ping' }],
+          max_tokens: 1,
+        },
+        { wire: 'chat', clientIp: req.ip, headers: req.headers, fastifyRequest: req }
+      );
+      return {
+        status: 'ok',
+        ok: true,
+        tier,
+        modelUsed: result.modelUsed,
+        latencyMs: result.latencyMs,
+        failoverOccurred: result.failoverOccurred === true,
+        ...(result.failoverPath?.length ? { failoverPath: result.failoverPath } : {}),
+        ...(result.servedCredentialPrefix ? { servedCredentialPrefix: result.servedCredentialPrefix } : {}),
+      };
+    } catch (err: unknown) {
+      // Same status mapping as the combo test route (identical execution-error
+      // policy): explicit 4xx/5xx pass through, anything else collapses to 500.
+      const e = err as { statusCode?: unknown; message?: string } | null | undefined;
+      const statusCode = e?.statusCode;
+      const status =
+        typeof statusCode === 'number' && Number.isInteger(statusCode) && statusCode >= 400 && statusCode < 600
+          ? statusCode
+          : 500;
+      return reply.status(200).send({
+        status: 'ok',
+        ok: false,
+        tier,
+        httpStatus: status,
+        error: e?.message || 'Tier test failed',
+      });
+    }
+  });
+
   // 6b-2. Catalog source management — view/add/remove/toggle/refresh the remote
   // catalog sources (config.catalog.sources). Mutations apply to the live
   // CatalogRepository immediately (no gateway restart) and are persisted to

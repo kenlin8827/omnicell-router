@@ -800,6 +800,23 @@ export interface ComboTestResult {
   error?: string;
 }
 
+/** Result of the tier end-to-end test (POST /api/admin/tiers/:tier/test).
+ * Same limbs as ComboTestResult but keyed by `tier`. ok:false is a real test
+ * outcome (chain exhausted, every member rejected); an unknown tier name is a
+ * precondition that throws OcApiError with reasonCode instead. */
+export interface TierTestResult {
+  status: string;
+  ok: boolean;
+  tier: string;
+  modelUsed?: string;
+  latencyMs?: number;
+  failoverOccurred?: boolean;
+  failoverPath?: string[];
+  servedCredentialPrefix?: string;
+  httpStatus?: number;
+  error?: string;
+}
+
 export interface LogLine {
   raw: string;
   level?: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
@@ -1301,6 +1318,24 @@ export const api = {
    * composition; a failed test itself answers 200 with ok:false limbs. */
   async testCombo(id: string): Promise<ComboTestResult> {
     const res = await fetch(`/api/admin/combos/${encodeURIComponent(id)}/test`, { method: 'POST' });
+    if (!res.ok) {
+      const e: any = await res.json().catch(() => ({}));
+      throw new OcApiError(
+        e?.error || e?.message || `HTTP ${res.status}`,
+        typeof e?.reasonCode === 'string' ? e.reasonCode : undefined,
+        e
+      );
+    }
+    return res.json();
+  },
+
+  /** One-shot tier end-to-end test — a REAL minimal completion pinned to the
+   * tier via the auto-<tier> virtual entry, the same force_tier path a
+   * client's request takes (burns quota, lands in logs). Unknown tier names
+   * throw OcApiError with the reasonCode; a failed test answers 200 with
+   * ok:false limbs. */
+  async testTier(tier: string): Promise<TierTestResult> {
+    const res = await fetch(`/api/admin/tiers/${encodeURIComponent(tier)}/test`, { method: 'POST' });
     if (!res.ok) {
       const e: any = await res.json().catch(() => ({}));
       throw new OcApiError(

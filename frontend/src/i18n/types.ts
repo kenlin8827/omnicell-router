@@ -165,6 +165,12 @@ export interface TranslationDict {
     desc: string;
     saveTierBtn: string;
     savedTier: string;
+    testBtn: string;
+    testBtnHint: string;
+    testOk: string;
+    testOkFailover: string;
+    testFailed: string;
+    testUnknownTier: string;
     tierLite: string;
     tierPlus: string;
     tierPro: string;
