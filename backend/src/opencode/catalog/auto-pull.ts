@@ -49,9 +49,10 @@ export async function pullLiveModels(id: string, opts: { pattern?: string; dryRu
   if (!baseURL) {
     return { httpStatus: 400, body: { success: false, error: `Provider '${id}' has no baseURL configured` } };
   }
-  // raw key from the BOUND store (opencode v2 db / v1 auth.json / ocr
-  // file) — direct auth.json reads would miss v2-managed and standalone
-  // credentials.json keys. Inline precedence above the store kept (Decision 1).
+  // raw key from the BOUND store (every credential flavor lands there: v2 db
+  // pushes, v1/standalone imports into the ocr file) — direct auth.json reads
+  // would miss v2-managed and standalone credentials.json keys. Inline
+  // precedence above the store kept (Decision 1).
   const { getCredentialStore } = await import('../credentials/index.js');
   const store = await getCredentialStore();
   const inlineKey = expandEnvTemplate(def?.options?.apiKey);
@@ -144,8 +145,8 @@ export async function pullCatalogModels(id: string, opts: { pattern?: string; dr
     return { httpStatus: 200, body: { status: 'ok', matched: matched.length, pullable: pullable.length, models: pullable, hint } };
   }
   // Landing spot: providers with a defs-file node write there; CREDENTIAL-ONLY
-  // providers (auth.json entry without a node) land in catalog/custom.json, which
-  // feeds the aggregation as the 'custom' source.
+  // providers (store credential without a defs-file node) land in
+  // catalog/custom.json, which feeds the aggregation as the 'custom' source.
   const hasNode = Boolean(getProviderNodeById(id));
   let pulled = 0;
   if (hasNode) {

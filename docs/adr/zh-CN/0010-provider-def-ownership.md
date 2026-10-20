@@ -28,7 +28,7 @@ opencode v2 客户端的写方向物化**两类工件**：key（现有 `pushOcrI
 
 ### 6. Console 与 UI 去 opencode 化
 
-Provider CRUD 重写到定义库（`upsertCustomProvider`/`getProviderNodeById` 变为定义文件操作）。connected 视图 = 定义文件 ∪ 绑定 store 凭证；网格顺序读定义文件序列（jsonc 顺序随耦合一同消亡）。页面更名为"Provider 管理"；`opencode.jsonc` 字样只允许出现在同步客户端面板内。catalog 无需去耦——models.dev 本就是直连抓取（sources/models-dev.ts），与 opencode 无涉。
+Provider CRUD 重写到定义库（`upsertCustomProvider`/`getProviderNodeById` 变为定义文件操作）。connected 视图 = 定义文件 ∪ 绑定 store 凭证；网格顺序读定义文件序列（jsonc 顺序随耦合一同消亡）。页面更名为"Provider 管理"；`opencode.jsonc` 字样只允许出现在同步客户端面板内。catalog 无需去耦——models.dev 本就是直连抓取（sources/models-dev.ts），与 opencode 无涉。同一条 connected 并集也治理 catalog 聚合（模型列表）：每个聚合 provider 的 `connected` 并入绑定 store 的凭证存在性（且凭证文件 mtime 参与聚合签名，增删密钥无需重启即触发重建）。聚合只读定义文件——冻结的 auth.json 快照不喂养任何视图；其仅存的读者是凭证层的一次性导入与 v1 同步客户端。
 
 ## Consequences
 
