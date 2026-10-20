@@ -23,8 +23,11 @@ interface Props {
   error?: boolean;
   onRetry?: () => void;
   emptyText: string;
-  /** Selected profile (drives the Slot: shortcut entries). */
-  profile: ModelProfileView | undefined;
+  /** Selected profile id ('' = none) + the profile inventory — the header
+   *  hosts the selector, the rows derive their Slot: shortcuts from it. */
+  profileId: string;
+  profiles: ModelProfileView[];
+  onProfileChange: (v: string) => void;
   /** Gateway-addressable options (auto aliases + registered ids + combos). */
   gatewayOptions: ComboboxOption[];
   /** name → draft value: '' | gateway ref | `slot:<key>`. */
@@ -39,12 +42,13 @@ interface Props {
 }
 
 /**
- * The agent/role link table shared by opencode and pi on the clients page:
- * profile selector lives ABOVE it (caller-owned); each row links either a
- * profile slot (`slot:<key>` draft → follows the profile), a concrete gateway
- * model (manual), or nothing (inherit). Row options: operations first
- * (inherit / Slot: shortcuts with the emerald profile chip), then gateway
- * models, then an echoed native pin kept visible.
+ * The agent/role link table shared by opencode and pi on the clients page.
+ * Self-contained: the header row hosts the profile selector (slots drive the
+ * row shortcuts), the filter box, sort and clear controls; each row links
+ * either a profile slot (`slot:<key>` draft → follows the profile), a
+ * concrete gateway model (manual), or nothing (inherit). Row options:
+ * operations first (inherit / Slot: shortcuts with the emerald profile chip),
+ * then gateway models, then an echoed native pin kept visible.
  */
 export const ProfileLinkTable: React.FC<Props> = ({
   rows,
@@ -52,7 +56,9 @@ export const ProfileLinkTable: React.FC<Props> = ({
   error,
   onRetry,
   emptyText,
-  profile,
+  profileId,
+  profiles,
+  onProfileChange,
   gatewayOptions,
   drafts,
   appliedTags,
@@ -64,6 +70,7 @@ export const ProfileLinkTable: React.FC<Props> = ({
   const { t } = useI18n();
   const [filter, setFilter] = useState('');
   const [sort, setSort] = useState<'name' | 'suffix' | 'prefix'>('name');
+  const profile = profiles.find(p => p.id === profileId);
 
   const rowOptions = (current: string): ComboboxOption[] => {
     const opts: ComboboxOption[] = [{ value: '', label: t('clients.profileBindNone') }];
@@ -125,6 +132,16 @@ export const ProfileLinkTable: React.FC<Props> = ({
             style={{ flex: 1, maxWidth: '260px', fontSize: '12px', padding: '3px 8px' }}
           />
         )}
+        <div style={{ width: '280px', flexShrink: 0 }}>
+          <Combobox
+            value={profileId}
+            onChange={onProfileChange}
+            options={[
+              { value: '', label: t('clients.profileNone') },
+              ...profiles.map(p => ({ value: p.id, label: p.name || p.id, meta: p.name ? p.id : undefined })),
+            ]}
+          />
+        </div>
         <span style={{ flex: 1 }} />
         {showSort && rows.length > 8 && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }} title={t('clients.profileSortHint')}>
@@ -160,6 +177,17 @@ export const ProfileLinkTable: React.FC<Props> = ({
         )}
         <Link to="/model-profiles" style={{ color: 'var(--accent)', textDecoration: 'none', flexShrink: 0 }}>{t('clients.profileManage')}</Link>
       </div>
+      {profiles.length === 0 && (
+        <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+          {t('clients.profileEmpty')}{' '}
+          <Link to="/model-profiles" style={{ color: 'var(--accent)', textDecoration: 'none' }}>{t('clients.profileManage')}</Link>
+        </div>
+      )}
+      {profileId && profile && (
+        <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
+          {t('clients.profileLinkedHint', { name: profile.name || profileId })}
+        </div>
+      )}
       {loading ? (
         error ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '12px', color: 'var(--accent-amber)' }}>

@@ -737,49 +737,23 @@ export const ClientsPage: React.FC = () => {
                           />
                         </div>
                       ))}
-                {c.name === 'pi' && (() => {
-                  const selProfileId = profileSel[c.name] || '';
-                  const profile = profiles.find(p => p.id === selProfileId);
-                  return (
-                    <div style={{ gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        <div style={{ fontSize: '11px', color: 'var(--text-dim)', flexShrink: 0 }}>{t('clients.profileTitle')}</div>
-                        <div style={{ width: '280px' }}>
-                          <Combobox
-                            value={selProfileId}
-                            onChange={v => setProfileSel(prev => ({ ...prev, [c.name]: v }))}
-                            options={[
-                              { value: '', label: t('clients.profileNone') },
-                              ...profiles.map(p => ({ value: p.id, label: p.name || p.id, meta: p.name ? p.id : undefined })),
-                            ]}
-                          />
-                        </div>
-                        {profiles.length === 0 && (
-                          <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
-                            {t('clients.profileEmpty')}{' '}
-                            <Link to="/model-profiles" style={{ color: 'var(--accent)', textDecoration: 'none' }}>{t('clients.profileManage')}</Link>
-                          </span>
-                        )}
-                      </div>
-                      {selProfileId && (
-                        <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
-                          {t('clients.profileLinkedHint', { name: profile?.name || selProfileId })}
-                        </div>
-                      )}
-                      <ProfileLinkTable
-                        rows={clientSlots(c).filter(s => s.key !== 'main').map(s => ({ name: s.key, current: s.value }))}
-                        emptyText={t('clients.profileAgentsEmpty')}
-                        profile={profile}
-                        gatewayOptions={modelOptions}
-                        drafts={bindSel[c.name] || {}}
-                        appliedTags={c.profile?.bindings || {}}
-                        onDraft={(name, v) => setBindSel(prev => ({ ...prev, [c.name]: { ...(prev[c.name] || {}), [name]: v } }))}
-                        onClear={() => setBindSel(prev => ({ ...prev, [c.name]: {} }))}
-                        hint={t('clients.profileApplyHintPi')}
-                      />
-                    </div>
-                  );
-                })()}
+                {c.name === 'pi' && (
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <ProfileLinkTable
+                      rows={clientSlots(c).filter(s => s.key !== 'main').map(s => ({ name: s.key, current: s.value }))}
+                      emptyText={t('clients.profileAgentsEmpty')}
+                      profileId={profileSel[c.name] || ''}
+                      profiles={profiles}
+                      onProfileChange={v => setProfileSel(prev => ({ ...prev, [c.name]: v }))}
+                      gatewayOptions={modelOptions}
+                      drafts={bindSel[c.name] || {}}
+                      appliedTags={c.profile?.bindings || {}}
+                      onDraft={(name, v) => setBindSel(prev => ({ ...prev, [c.name]: { ...(prev[c.name] || {}), [name]: v } }))}
+                      onClear={() => setBindSel(prev => ({ ...prev, [c.name]: {} }))}
+                      hint={t('clients.profileApplyHintPi')}
+                    />
+                  </div>
+                )}
                 {supportsExtraModels(c.name) && (() => {
                         const mode = modeSel[c.name] ?? 'none';
                         const follow = mode === 'follow';
@@ -843,53 +817,27 @@ export const ClientsPage: React.FC = () => {
                       })()}
                     </div>
 
-                {c.name === 'opencode' && (() => {
-                  const selProfileId = profileSel[c.name] || '';
-                  const profile = profiles.find(p => p.id === selProfileId);
-                  return (
-                    <div style={{ borderTop: '1px solid var(--divider)', paddingTop: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '12px', alignItems: 'end' }}>
-                        <div>
-                          <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '6px' }}>{t('clients.profileTitle')}</div>
-                          <Combobox
-                            value={selProfileId}
-                            onChange={v => setProfileSel(prev => ({ ...prev, [c.name]: v }))}
-                            options={[
-                              { value: '', label: t('clients.profileNone') },
-                              ...profiles.map(p => ({ value: p.id, label: p.name || p.id, meta: p.name ? p.id : undefined })),
-                            ]}
-                          />
-                        </div>
-                      </div>
-                      {profiles.length === 0 && (
-                        <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
-                          {t('clients.profileEmpty')}{' '}
-                          <Link to="/model-profiles" style={{ color: 'var(--accent)', textDecoration: 'none' }}>{t('clients.profileManage')}</Link>
-                        </div>
-                      )}
-                      {selProfileId && (
-                        <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
-                          {t('clients.profileLinkedHint', { name: profiles.find(p => p.id === selProfileId)?.name || selProfileId })}
-                        </div>
-                      )}
-                      <ProfileLinkTable
-                        rows={(agents || []).map(a => ({ name: a.name, mode: a.mode, current: a.model }))}
-                        loading={agents === null}
-                        error={agentsError}
-                        onRetry={() => setAgentsError(false)}
-                        emptyText={t('clients.profileAgentsEmpty')}
-                        profile={profile}
-                        gatewayOptions={modelOptions}
-                        drafts={bindSel[c.name] || {}}
-                        appliedTags={c.profile?.bindings || {}}
-                        onDraft={(name, v) => setBindSel(prev => ({ ...prev, [c.name]: { ...(prev[c.name] || {}), [name]: v } }))}
-                        onClear={() => setBindSel(prev => ({ ...prev, [c.name]: {} }))}
-                        hint={t('clients.profileApplyHint')}
-                        showSort
-                      />
-                    </div>
-                  );
-                })()}
+                {c.name === 'opencode' && (
+                  <div style={{ borderTop: '1px solid var(--divider)', paddingTop: '12px' }}>
+                    <ProfileLinkTable
+                      rows={(agents || []).map(a => ({ name: a.name, mode: a.mode, current: a.model }))}
+                      loading={agents === null}
+                      error={agentsError}
+                      onRetry={() => setAgentsError(false)}
+                      emptyText={t('clients.profileAgentsEmpty')}
+                      profileId={profileSel[c.name] || ''}
+                      profiles={profiles}
+                      onProfileChange={v => setProfileSel(prev => ({ ...prev, [c.name]: v }))}
+                      gatewayOptions={modelOptions}
+                      drafts={bindSel[c.name] || {}}
+                      appliedTags={c.profile?.bindings || {}}
+                      onDraft={(name, v) => setBindSel(prev => ({ ...prev, [c.name]: { ...(prev[c.name] || {}), [name]: v } }))}
+                      onClear={() => setBindSel(prev => ({ ...prev, [c.name]: {} }))}
+                      hint={t('clients.profileApplyHint')}
+                      showSort
+                    />
+                  </div>
+                )}
 
                 <div style={{ display: 'flex', gap: '8px' }}>
                   {renderActionButtons(c, true)}
