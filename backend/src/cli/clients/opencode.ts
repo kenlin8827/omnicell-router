@@ -162,9 +162,6 @@ export class OpenCodeClientAdapter implements ClientAdapter {
         ? v.slice(ROUTER_PROVIDER_ID.length + 1)
         : undefined;
 
-    // v2 `agents` wins, legacy `agent` as fallback (same home rule as writes)
-    const generalModel = hookedData?.[existingAgentSlot(hookedData)]?.general?.model;
-
     // Extra concrete models exposed in the provider's switcher (non-virtual entries)
     const mainId = stripPrefix(hookedData?.model);
     const providerModels = hookedData?.providers?.[ROUTER_PROVIDER_ID]?.models;
@@ -181,10 +178,9 @@ export class OpenCodeClientAdapter implements ClientAdapter {
       hooked,
       backupExists,
       details,
-      modelSlots: [
-        { key: 'main', value: mainId, default: 'auto' },
-        { key: 'subagent', value: stripPrefix(generalModel), default: 'auto-lite' },
-      ],
+      // The dedicated subagent slot is retired — every agent (general
+      // included) links through the agent inventory table instead.
+      modelSlots: [{ key: 'main', value: mainId, default: 'auto' }],
       extraModels,
       profile: hooked ? readMeta(configPath).profile : undefined,
     };
@@ -195,9 +191,9 @@ export class OpenCodeClientAdapter implements ClientAdapter {
     models?: Record<string, string>;
     extraModels?: string[];
     apiKey?: string;
-    /** Model profile application: agent name → modelRef ('auto'/'' = inherit default model). */
+    /** Effective agent bindings (manual picks + profile-resolved links, merged by the console route): agent name → modelRef ('auto'/'' = inherit default). */
     agentModels?: Record<string, string>;
-    /** Profile echo for the sidecar meta; id '' applies an empty profile (sweep router-owned overrides). */
+    /** Profile-link echo for the sidecar meta: profile id + agent → profile-slot key ('' id = un-link). */
     profile?: ModelProfileBinding;
   }): Promise<{ success: boolean; message: string }> {
     const configPath = this.getConfigPath();
@@ -205,7 +201,7 @@ export class OpenCodeClientAdapter implements ClientAdapter {
     const main = options?.models?.main?.trim() || 'auto';
     const extraModels = (options?.extraModels || []).map(s => (s || '').trim()).filter(Boolean);
     const apiKey = options?.apiKey?.trim() || undefined;
-    const agentModels = options?.agentModels || {};
+    const agentModels = options?.agentModels;
 
     // 1. Safety backup (single rolling .bak.ocr, restorable via teardown)
     if (fs.existsSync(configPath)) {
@@ -220,8 +216,8 @@ export class OpenCodeClientAdapter implements ClientAdapter {
     //    reads both, but only one may exist). Model-profile refs are part of the
     //    exposed model set — opencode validates `agent.<name>.model` against
     //    this provider's `models` map.
-    const profileRefs = Object.values(agentModels).map(r => (r || '').trim()).filter(r => r && r !== 'auto');
-    const exposedExtras = [...extraModels, ...profileRefs];
+    const agentRefs = Object.values(agentModels || {}).map(r => (r || '').trim()).filter(r => r && r !== 'auto');
+    const exposedExtras = [...extraModels, ...agentRefs];
     const defsPaths = resolveDefaultPaths();
     const defs = readProviderDefsFile(defsPaths)?.providers ?? {};
     writeProviderDefs(
@@ -246,45 +242,33 @@ export class OpenCodeClientAdapter implements ClientAdapter {
     }
     patchJsonc(configPath, ['model'], targetModel);
 
-    // 4. Subagent slot (OpenCode's default subagent is "general"); 'auto' removes the override.
-    //    Written into the config's existing agent HOME (v2 `agents` / v1 `agent`).
-    //    SKIPPED when a profile payload is present: the profile owns the agent
-    //    node exclusively (its sweep would erase this write anyway — silently
-    //    dropping the slot choice when 'general' stays unmapped). The console
-    //    disables the slot in that mode; "general" then binds via the table.
+    // 4. Agent bindings — either payload present (even empty) means the
+    //    console form is engaged: sweep router-owned overrides first (both
+    //    node spellings, so a re-apply leaves no ghosts), then write each
+    //    binding into the agent home (the config node overrides same-name
+    //    agents defined in agent(s)/\*.md). `agentModels` carries the
+    //    effective refs; `profile` is the link echo (agent → profile-slot
+    //    key) that powers profile-change write-throughs. A bare
+    //    `ocr setup opencode` (CLI) passes neither and never touches the
+    //    agent node — manually pinned native models are never stolen.
     let profileNote = '';
     const profileIn = options?.profile;
-    const subagent = options?.models?.subagent?.trim();
-    const subagentApplied = Boolean(subagent && subagent !== 'auto' && profileIn === undefined);
-    if (subagent !== undefined && profileIn === undefined) {
-      const slot = existingAgentSlot(readJsonc(configPath));
-      const agentModel = (readJsonc(configPath) as any)?.[slot]?.general?.model;
-      if (subagent && subagent !== 'auto') {
-        patchJsonc(configPath, [slot, 'general', 'model'], `${ROUTER_PROVIDER_ID}/${subagent}`);
-      } else if (agentModel) {
-        patchJsonc(configPath, [slot, 'general', 'model'], undefined);
-      }
-    }
-
-    // 5. Model profile application — ONLY when a profile payload is present (a
-    //    bare `ocr setup opencode` never touches agent bindings). Sweep first
-    //    (both node spellings, so a profile swap leaves no ghosts), then write
-    //    each binding into the agent home: the config node overrides same-name
-    //    agents defined in agent(s)/*.md, which is what makes profiles work for
-    //    every agent.
-    if (profileIn !== undefined) {
+    const hasAgentPayload = agentModels !== undefined || profileIn !== undefined;
+    let applied = 0;
+    if (hasAgentPayload) {
       sweepRouterAgentModels(configPath);
       const slot = existingAgentSlot(readJsonc(configPath));
-      let applied = 0;
-      for (const [name, ref] of Object.entries(agentModels)) {
+      for (const [name, ref] of Object.entries(agentModels || {})) {
         const r = (ref || '').trim();
         if (!isValidAgentName(name) || !r || r === 'auto') continue; // 'auto' = inherit the default model
         patchJsonc(configPath, [slot, name, 'model'], `${ROUTER_PROVIDER_ID}/${r}`);
         applied++;
       }
+    }
+    if (profileIn !== undefined) {
       if (profileIn.id) {
         meta.profile = { id: profileIn.id, bindings: profileIn.bindings || {} };
-        profileNote = `, profile: ${profileIn.id} (${applied} agents)`;
+        profileNote = `, profile: ${profileIn.id} (${applied} agent(s))`;
       } else {
         delete meta.profile;
       }
@@ -293,7 +277,7 @@ export class OpenCodeClientAdapter implements ClientAdapter {
 
     return {
       success: true,
-      message: `OpenCode routed to OCR gateway (http://127.0.0.1:${port}/v1, main: ${targetModel}${subagentApplied ? `, subagent: ${subagent}` : ''}${profileNote}). Backup at ${configPath}.bak.ocr`,
+      message: `OpenCode routed to OCR gateway (http://127.0.0.1:${port}/v1, main: ${targetModel}${hasAgentPayload ? `, agents: ${applied}` : ''}${profileNote}). Backup at ${configPath}.bak.ocr`,
     };
   }
 
@@ -373,6 +357,105 @@ export class OpenCodeClientAdapter implements ClientAdapter {
     return {
       success: true,
       message: 'OpenCode configuration reverted successfully. OCR gateway decoupled.',
+    };
+  }
+
+  /**
+   * Profile-change write-through: re-resolve the linked agents' slot keys
+   * against the JUST-SAVED profile slots and rewrite the config's agent node
+   * (plus the provider-def models map) WITHOUT a full setup — a saved profile
+   * update propagates to hooked clients automatically. Only router-owned
+   * values are touched (sweep-then-write); the user's native pins survive.
+   * Tags whose slot the profile no longer defines drop out (their override is
+   * swept → the agent inherits the default model). A no-diff save writes
+   * nothing (backup churn guard).
+   */
+  async refreshProfileBindings(
+    profileId: string,
+    tags: Record<string, string>,
+    slots: Record<string, string>
+  ): Promise<{ success: boolean; message: string }> {
+    const configPath = this.getConfigPath();
+    if (!fs.existsSync(configPath)) {
+      return { success: false, message: `Configuration file not found at ${configPath}` };
+    }
+    const data = readJsonc(configPath) as any;
+    if (!data?.providers?.[ROUTER_PROVIDER_ID]?.settings?.baseURL) {
+      return { success: false, message: 'OpenCode is not hooked — nothing to refresh' };
+    }
+
+    // Resolve tags → desired refs; missing slots drop out (skipped count is
+    // reported, the tag itself survives so a re-added slot re-links).
+    const desired: Record<string, string> = {};
+    let skipped = 0;
+    for (const [name, slotKey] of Object.entries(tags || {})) {
+      const ref = (slots || {})[slotKey];
+      if (!ref || !isValidAgentName(name)) {
+        skipped++;
+        continue;
+      }
+      desired[name] = ref;
+    }
+
+    // Diff guard: compare desired refs against the live agent node values —
+    // an unrelated config save must not rewrite this file.
+    const stripPrefix = (v: any): string =>
+      typeof v === 'string' && v.startsWith(`${ROUTER_PROVIDER_ID}/`)
+        ? v.slice(ROUTER_PROVIDER_ID.length + 1)
+        : '';
+    const slot = existingAgentSlot(data);
+    const current: Record<string, string> = {};
+    const node = data?.[slot];
+    if (node && typeof node === 'object') {
+      for (const [name, def] of Object.entries(node as Record<string, unknown>)) {
+        const v = stripPrefix((def as any)?.model);
+        if (v) current[name] = v;
+      }
+    }
+    const names = new Set([...Object.keys(current), ...Object.keys(desired)]);
+    const changed = [...names].some(n => (desired[n] || '') !== (current[n] || ''));
+    const meta = readMeta(configPath);
+    const echoSame =
+      meta.profile?.id === profileId &&
+      JSON.stringify(meta.profile?.bindings || {}) === JSON.stringify(tags || {});
+    if (!changed && echoSame) {
+      return { success: true, message: 'opencode profile links already up to date' };
+    }
+
+    createBackup(configPath);
+    sweepRouterAgentModels(configPath);
+    const liveSlot = existingAgentSlot(readJsonc(configPath));
+    let applied = 0;
+    for (const [name, ref] of Object.entries(desired)) {
+      patchJsonc(configPath, [liveSlot, name, 'model'], `${ROUTER_PROVIDER_ID}/${ref}`);
+      applied++;
+    }
+    // Keep the provider-def models map a superset of the linked refs —
+    // opencode validates agent.<name>.model against it. Existing entries
+    // (main pin, user extras) are never removed here; the materialized client
+    // copy converges immediately so the new refs validate right away.
+    const defsPaths = resolveDefaultPaths();
+    const defs = readProviderDefsFile(defsPaths)?.providers ?? {};
+    const entry = defs[ROUTER_PROVIDER_ID];
+    if (entry?.models && typeof entry.models === 'object') {
+      const modelsMap = { ...(entry.models as Record<string, unknown>) };
+      let added = 0;
+      for (const ref of Object.values(desired)) {
+        if (!modelsMap[ref]) {
+          modelsMap[ref] = { name: ref };
+          added++;
+        }
+      }
+      if (added > 0) {
+        writeProviderDefs({ ...defs, [ROUTER_PROVIDER_ID]: { ...entry, models: modelsMap } }, defsPaths);
+        materializeDefs(defsPaths, configPath);
+      }
+    }
+    meta.profile = { id: profileId, bindings: tags || {} };
+    writeMeta(configPath, meta);
+    return {
+      success: true,
+      message: `opencode profile links refreshed (${applied} agent(s)${skipped > 0 ? `, ${skipped} slot(s) missing` : ''})`,
     };
   }
 }

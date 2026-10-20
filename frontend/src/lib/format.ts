@@ -43,21 +43,11 @@ export const copyToClipboard = async (text: string): Promise<boolean> => {
  * generation window — first forwarded chunk → stream fully drained. TTFT,
  * prefill and any failed attempts before the commit are excluded, matching
  * OpenRouter's throughput definition ("output tokens per second after
- * generation starts"). Null when the turn never streamed (genMs missing on a
- * buffered turn or a replayed pre-field row) — callers render '—', never a
- * synthesized number.
+ * generation starts"). Null when the turn never streamed (genMs undefined) —
+ * callers render '—', never a synthesized number.
  */
-export const decodeRate = (outputTokens: number, genMs: number | undefined | null): number | null =>
+export const decodeRate = (outputTokens: number, genMs: number | undefined): number | null =>
   outputTokens > 0 && typeof genMs === 'number' && genMs > 0 ? (outputTokens / genMs) * 1000 : null;
-
-/**
- * Effective end-to-end rate, CAPTURE DOMAIN ONLY (CapturesPage): completion
- * tokens per second of the full request latency. Trace-domain surfaces use
- * `decodeRate` instead — this denominator includes queueing, routing and
- * retries, and capture turns carry no decode timing to divide by.
- */
-export const outputRate = (outputTokens: number, latencyMs: number): number | null =>
-  outputTokens > 0 && latencyMs > 0 ? (outputTokens / latencyMs) * 1000 : null;
 
 /** Compact tok/s label: whole number at ≥ 10, one decimal below; null → '—'. */
 export const formatRate = (rate: number | null): string =>

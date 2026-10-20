@@ -71,3 +71,28 @@ export async function teardownClient(name: string): Promise<{ success: boolean; 
   }
   return adapter.teardown();
 }
+
+/**
+ * Profile-change write-through: called after every config save — finds the
+ * hooked client (opencode) whose profile link points at a saved profile and
+ * re-resolves its linked agents against the NEW slots. The adapter's diff
+ * guard makes unrelated saves no-op, so this is cheap to run unconditionally.
+ * Returns a note for the save response ('' = nothing to report).
+ */
+export async function refreshClientProfileBindings(
+  profiles: { id: string; slots?: Record<string, string> }[]
+): Promise<string> {
+  const adapter = getClientAdapter('opencode');
+  if (!adapter?.refreshProfileBindings) return '';
+  const linked = (await adapter.getStatus()).profile;
+  if (!linked?.id) return '';
+  const profile = profiles.find(p => p.id === linked.id);
+  if (!profile) {
+    return `; note: opencode profile '${linked.id}' no longer exists — its agent links were left as-is`;
+  }
+  const r = await adapter.refreshProfileBindings(linked.id, linked.bindings, profile.slots || {}).catch((err: unknown) => ({
+    success: false,
+    message: err instanceof Error ? err.message : String(err),
+  }));
+  return r.success && !r.message.includes('already up to date') ? `; ${r.message}` : '';
+}

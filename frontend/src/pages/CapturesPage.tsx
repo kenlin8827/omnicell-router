@@ -16,7 +16,7 @@ import { useToast } from '../components/ToastProvider';
 import { Switch } from '../components/Switch';
 import { Combobox } from '../components/Combobox';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
-import { copyToClipboard, shortId, outputRate, formatRate, fmtDur } from '../lib/format';
+import { copyToClipboard, shortId, formatRate, fmtDur } from '../lib/format';
 import { useSplitterWidth, VSplitter } from '../components/Splitter';
 import { strToU8, zipSync } from 'fflate';
 import { SessionTranscript } from '../components/SessionTranscript';
@@ -43,17 +43,25 @@ const completionTokensFrom = (event?: HttpExchangeEvent): number | null => {
 };
 
 /**
- * Per-turn effective output throughput. Prefers the upstream exchange
- * (excludes gateway overhead); falls back to the client leg. The `side`
- * marks which latency chip the rate belongs to.
+ * Per-turn output throughput, capture domain: completion tokens ÷ the FULL
+ * request latency of the exchange. Capture events carry no per-chunk timing,
+ * so no decode window (first chunk → stream end) exists on this plane — the
+ * trace-domain decode-TPS (`decodeRate` in lib/format) is deliberately NOT
+ * shared here; this denominator includes queueing, routing and retries.
+ * Prefers the upstream exchange (excludes gateway overhead); falls back to
+ * the client leg. The `side` marks which latency chip the rate belongs to.
  */
 const turnToksRate = (turn: CaptureTurn): { rate: number; side: 'upstream' | 'gateway' } | null => {
+  const rate = (tokens: number | null, latencyMs: number | undefined): number | null =>
+    tokens !== null && tokens > 0 && latencyMs !== undefined && latencyMs > 0
+      ? (tokens / latencyMs) * 1000
+      : null;
   if (turn.upstreamLatencyMs !== undefined) {
-    const r = outputRate(completionTokensFrom(turn.upstreamResponse) ?? 0, turn.upstreamLatencyMs);
+    const r = rate(completionTokensFrom(turn.upstreamResponse), turn.upstreamLatencyMs);
     if (r !== null) return { rate: r, side: 'upstream' };
   }
   if (turn.gatewayLatencyMs !== undefined) {
-    const r = outputRate(completionTokensFrom(turn.gatewayResponse) ?? 0, turn.gatewayLatencyMs);
+    const r = rate(completionTokensFrom(turn.gatewayResponse), turn.gatewayLatencyMs);
     if (r !== null) return { rate: r, side: 'gateway' };
   }
   return null;

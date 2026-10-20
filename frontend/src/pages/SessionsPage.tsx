@@ -641,13 +641,13 @@ export const SessionsPage: React.FC = () => {
                         fontWeight: 600,
                         // Color = signal: blue only when switches actually
                         // happened; a zero row stays quiet gray.
-                        color: (s.switchCount ?? 0) > 0 ? 'var(--accent)' : 'var(--text-dim)',
+                        color: s.switchCount > 0 ? 'var(--accent)' : 'var(--text-dim)',
                       }}
                       onMouseEnter={e => (e.currentTarget.style.textDecoration = 'underline')}
                       onMouseLeave={e => (e.currentTarget.style.textDecoration = 'none')}
                     >
                       <GitBranch size={12} />
-                      ×{s.switchCount ?? 0}
+                      ×{s.switchCount}
                     </span>
                   </td>
                   <td style={{ padding: '10px 14px' }}>{s.turnCount}</td>
@@ -664,26 +664,26 @@ export const SessionsPage: React.FC = () => {
                       <div className="tokens-stat-grid">
                         <TokenStatRow
                           label={t('sessions.tokenIn')}
-                          value={tokenDisplay(s.inputTokens ?? 0)}
-                          title={(s.inputTokens ?? 0).toLocaleString()}
+                          value={tokenDisplay(s.inputTokens)}
+                          title={s.inputTokens.toLocaleString()}
                         />
                         <TokenStatRow
                           label={t('sessions.tokenCached')}
-                          value={tokenDisplay(s.cachedTokens ?? 0)}
-                          title={(s.cachedTokens ?? 0).toLocaleString()}
-                          color={(s.cachedTokens ?? 0) > 0 ? 'var(--accent-emerald)' : 'var(--text-dim)'}
+                          value={tokenDisplay(s.cachedTokens)}
+                          title={s.cachedTokens.toLocaleString()}
+                          color={s.cachedTokens > 0 ? 'var(--accent-emerald)' : 'var(--text-dim)'}
                         />
                         <TokenStatRow
                           label={t('sessions.tokenOut')}
-                          value={tokenDisplay(s.outputTokens ?? 0)}
-                          title={(s.outputTokens ?? 0).toLocaleString()}
+                          value={tokenDisplay(s.outputTokens)}
+                          title={s.outputTokens.toLocaleString()}
                           color="var(--text-muted)"
                         />
                         <TokenStatRow
                           label={t('sessions.tokenHit')}
                           value={
-                            (s.inputTokens ?? 0) > 0
-                              ? `${(((s.cachedTokens ?? 0) / s.inputTokens!) * 100).toFixed(1)}%`
+                            s.inputTokens > 0
+                              ? `${((s.cachedTokens / s.inputTokens) * 100).toFixed(1)}%`
                               : '—'
                           }
                           color="var(--text-dim)"
@@ -699,8 +699,8 @@ export const SessionsPage: React.FC = () => {
                           span
                           label={t('sessions.tokenRate')}
                           value={
-                            (s.genOutputTokens ?? 0) > 0 && (s.genMsSum ?? 0) > 0
-                              ? `${formatRate(decodeRate(s.genOutputTokens!, s.genMsSum!))} ${t('usage.thToks')}`
+                            s.genOutputTokens > 0 && s.genMsSum > 0
+                              ? `${formatRate(decodeRate(s.genOutputTokens, s.genMsSum))} ${t('usage.thToks')}`
                               : '—'
                           }
                           title={t('usage.toksTip')}
@@ -717,7 +717,7 @@ export const SessionsPage: React.FC = () => {
                       fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                     }}
                   >
-                    {formatCost(s.costUsd ?? 0)}
+                    {formatCost(s.costUsd)}
                   </td>
                   <td style={{ padding: '10px 14px', color: 'var(--text-dim)' }}>
                     {new Date(s.lastActiveAt).toLocaleTimeString()}

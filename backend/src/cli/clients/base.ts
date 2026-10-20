@@ -88,6 +88,13 @@ export interface ClientAdapter {
    * (the plain `ocr setup` CLI command passes no models). apiKey (optional):
    * gateway-issued key to write into the client's auth field.
    */
-  setup(options?: { port?: number; models?: Record<string, string>; apiKey?: string; /** Context window tokens written to the client's context-management envs (claude: MAX_CONTEXT_TOKENS + AUTO_COMPACT_WINDOW) */ contextWindow?: number; /** Extra concrete models to expose in the client's model switcher (models list for adapters that honor it: opencode/dsh/pi) */ extraModels?: string[]; /** Model profile application (opencode): agent name → resolved modelRef ('auto' = clear the override). */ agentModels?: Record<string, string>; /** Profile echo written to the OCR sidecar meta when defined; id '' sweeps router-owned agent overrides. */ profile?: ModelProfileBinding }): Promise<{ success: boolean; message: string }>;
+  setup(options?: { port?: number; models?: Record<string, string>; apiKey?: string; /** Context window tokens written to the client's context-management envs (claude: MAX_CONTEXT_TOKENS + AUTO_COMPACT_WINDOW) */ contextWindow?: number; /** Extra concrete models to expose in the client's model switcher (models list for adapters that honor it: opencode/dsh/pi) */ extraModels?: string[]; /** Effective agent bindings (opencode): agent name → resolved modelRef ('auto' = inherit the default model). */ agentModels?: Record<string, string>; /** Profile-link echo written to the OCR sidecar meta when defined: agent → profile-slot key; id '' un-links. */ profile?: ModelProfileBinding }): Promise<{ success: boolean; message: string }>;
+  /**
+   * Profile-change write-through (opencode only): re-resolve the linked
+   * agents' slot keys against the just-saved profile slots and rewrite the
+   * client config without a full setup. Absent on adapters without profile
+   * links.
+   */
+  refreshProfileBindings?(profileId: string, tags: Record<string, string>, slots: Record<string, string>): Promise<{ success: boolean; message: string }>;
   teardown(): Promise<{ success: boolean; message: string }>;
 }

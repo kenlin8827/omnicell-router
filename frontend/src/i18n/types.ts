@@ -34,6 +34,7 @@ export interface TranslationDict {
     kindAuto: string;
     kindCombo: string;
     kindVariant: string;
+    kindProfileSlot: string;
   };
   common: {
     loading: string;
@@ -1306,7 +1307,6 @@ hiddenBadge: string;
     slotSonnet: string;
     slotHaiku: string;
     slotFable: string;
-    slotSubagent: string;
     apiKey: string;
     apiKeySelect: string;
     apiKeyRequired: string;
@@ -1331,15 +1331,19 @@ hiddenBadge: string;
     reset: string;
     proxyHint: string;
     nameOpencodeProxy: string;
-    /** Model-profile binding UI (opencode setup) */
+    /** Model-profile link UI (opencode setup) */
     profileTitle: string;
     profileNone: string;
     profileEmpty: string;
     profileManage: string;
+    /** Shown while a profile is linked: save-time write-through notice. */
+    profileLinkedHint: string;
     profileAgents: string;
     profileAgentsLoading: string;
     profileAgentsEmpty: string;
     profileBindNone: string;
+    /** Row picker label for a profile-slot link entry (slot name interpolated). */
+    profileSlotLabel: string;
     /** Profile switch carry-over: slot missing on the row + summary line. */
     profileSlotMissing: string;
     profileSlotCarry: string;

@@ -36,11 +36,12 @@ export interface ClientStatus {
   /** This client's model slots; value undefined = auto (intelligent routing).
    *  Optional: legacy backend responses (pre-modelSlots) omit the field entirely. */
   modelSlots?: { key: string; value?: string; default?: string }[];
-  /** Applied model profile (opencode): profile id + agent→slot-key bindings. */
+  /** Last-linked model profile (opencode): profile id + agent→slot-key tags
+   *  (the linked rows — their effective models resolve from the profile). */
   profile?: ModelProfileBinding;
 }
 
-/** Mirrors backend ModelProfileBinding (applied model-profile echo from the OCR sidecar meta). */
+/** Mirrors backend ModelProfileBinding (profile-link echo from the OCR sidecar meta). */
 export interface ModelProfileBinding {
   id: string;
   bindings: Record<string, string>;
@@ -65,8 +66,8 @@ export interface OpenCodeAgentView {
 }
 
 /** Mirrors backend ClientProfileMemoryEntry — per-client console form memory
- *  (config.yaml `clientProfileMemory`): last profile + agent→slot selections,
- *  model-list source and token-write behavior.
+ *  (config.yaml `clientProfileMemory`): last linked profile + agent→slot-key
+ *  tags for profile-linked rows, model-list source and token-write behavior.
  *  UI-only: never consulted by routing or by the hook itself. */
 export interface ClientProfileMemoryEntry {
   profile: string;
@@ -644,25 +645,23 @@ export interface SessionRecord {
   boundKeyHashPrefix?: string;
   /** Epoch ms of the bind/rebind. */
   boundAt?: number;
-  /** Requests whose model differs from the previous request (chronological).
-   *  Optional: absent when the frontend is served by a pre-aggregates backend. */
-  switchCount?: number;
-  /** Cumulative input tokens across the session's traces. Optional as above. */
-  inputTokens?: number;
-  /** Cumulative output tokens across the session's traces. Optional as above. */
-  outputTokens?: number;
-  /** Cumulative cache-read input tokens across the session's traces. Optional as above. */
-  cachedTokens?: number;
-  /** Cumulative recorded actual cost (USD) across the session's traces. Optional as above. */
-  costUsd?: number;
-  /** Summed end-to-end latency (ms) across the session's traces. Optional as above. */
-  totalLatencyMs?: number;
-  /** Output tokens summed over STREAMED traces only — decode-TPS numerator.
-   *  Optional: absent when the frontend is served by a pre-aggregates backend. */
-  genOutputTokens?: number;
+  /** Requests whose model differs from the previous request (chronological). */
+  switchCount: number;
+  /** Cumulative input tokens across the session's traces. */
+  inputTokens: number;
+  /** Cumulative output tokens across the session's traces. */
+  outputTokens: number;
+  /** Cumulative cache-read input tokens across the session's traces. */
+  cachedTokens: number;
+  /** Cumulative recorded actual cost (USD) across the session's traces. */
+  costUsd: number;
+  /** Summed end-to-end latency (ms) across the session's traces. */
+  totalLatencyMs: number;
+  /** Output tokens summed over STREAMED traces only — decode-TPS numerator. */
+  genOutputTokens: number;
   /** Summed decode window (ms) over the same streamed traces — decode-TPS
-   *  denominator, paired with genOutputTokens. Optional as above. */
-  genMsSum?: number;
+   *  denominator, paired with genOutputTokens. */
+  genMsSum: number;
   /** First user prompt of the session (backend-capped summary). */
   firstUserMessage?: string;
   /** Distinct client API-key identities (applications) seen on this
@@ -1370,7 +1369,9 @@ export const api = {
       apiKey?: string;
       contextWindow?: number;
       extraModels?: string[];
-      /** Model profile application (opencode): id + agent→slot bindings; id '' un-applies (sweep). */
+      /** Manual agent bindings (opencode): agent name → modelRef. */
+      agentModels?: Record<string, string>;
+      /** Profile-linked rows (opencode): id + agent→slot-key tags, resolved server-side; id '' un-links (sweep). */
       profile?: { id: string; bindings: Record<string, string> };
     }
   ): Promise<{ status: string; message: string }> {

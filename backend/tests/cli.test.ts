@@ -229,30 +229,75 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(status.profile).toBeUndefined();
   });
 
-  it('profile payload owns the agent node: the subagent slot write is skipped while a profile is applied', async () => {
+  it('OpenCode agent bindings apply standalone (no profile payload); the retired subagent slot is ignored', async () => {
     const configPath = path.join(tmpDir, 'opencode.json');
     fs.writeFileSync(configPath, JSON.stringify({ model: 'anthropic/claude-sonnet-4' }, null, 2));
     const adapter = new OpenCodeClientAdapter();
     adapter.getConfigPath = () => configPath;
 
-    // With a profile payload present (even an un-apply), step 4 must NOT write
-    // the slot value — the profile owns 'general' exclusively (sweep would
-    // erase the slot write anyway).
-    const withProfile = await adapter.setup({
+    // Manual agent bindings without any profile payload — the agent node is
+    // still swept + written (the console form is engaged). The retired
+    // `models.subagent` key must NOT write anything.
+    const res = await adapter.setup({
       port: 4000,
       models: { main: 'auto', subagent: 'auto-pro' },
-      agentModels: {},
-      profile: { id: '', bindings: {} },
+      agentModels: { general: 'auto-lite' },
     });
-    expect(withProfile.success).toBe(true);
-    expect(withProfile.message).not.toContain('subagent');
+    expect(res.success).toBe(true);
     let cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(cfg.agents.general.model).toBe('onecast-router/auto-lite');
+    expect(Object.keys(cfg.agents)).toEqual(['general']); // retired subagent slot wrote nothing
+
+    // Engaged-but-empty agent bindings ({}): sweep router-owned overrides only.
+    await adapter.setup({ port: 4000, models: { main: 'auto' }, agentModels: {} });
+    cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     expect(cfg.agents?.general?.model).toBeUndefined();
 
-    // Without a profile payload, the legacy slot behavior is untouched.
-    await adapter.setup({ port: 4000, models: { main: 'auto', subagent: 'auto-pro' } });
+    // Bare setup (CLI shape — no agent payloads) never touches the agent node.
+    fs.writeFileSync(configPath, JSON.stringify({ model: 'x', agents: { keeper: { model: 'onecast-router/auto-plus' } } }, null, 2));
+    await adapter.setup({ port: 4000, models: { main: 'auto' } });
     cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    expect(cfg.agents.general.model).toBe('onecast-router/auto-pro');
+    expect(cfg.agents.keeper.model).toBe('onecast-router/auto-plus');
+  });
+
+  it('refreshProfileBindings rewrites linked agents on profile change without a full setup', async () => {
+    const configPath = path.join(tmpDir, 'opencode.json');
+    fs.writeFileSync(configPath, JSON.stringify({ model: 'anthropic/claude-sonnet-4' }, null, 2));
+    const adapter = new OpenCodeClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    // Hook + link via a normal setup (sidecar echo records the slot tags).
+    await adapter.setup({
+      port: 4000,
+      models: { main: 'auto' },
+      agentModels: { scout: 'auto-lite' },
+      profile: { id: 'p1', bindings: { scout: 'flash' } },
+    });
+
+    // The profile's 'flash' slot re-points → write-through updates the agent node.
+    const res = await adapter.refreshProfileBindings('p1', { scout: 'flash' }, { flash: 'glm-5.3' });
+    expect(res.success).toBe(true);
+    const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(cfg.agents.scout.model).toBe('onecast-router/glm-5.3');
+    // The new ref is exposed in the provider models map — opencode validates
+    // agent.<name>.model against it.
+    expect(cfg.providers['onecast-router'].models['glm-5.3']).toBeDefined();
+    expect((await adapter.getStatus()).profile?.bindings).toEqual({ scout: 'flash' });
+
+    // A no-diff refresh writes nothing new (still hooked, values identical).
+    const again = await adapter.refreshProfileBindings('p1', { scout: 'flash' }, { flash: 'glm-5.3' });
+    expect(again.message).toContain('already up to date');
+
+    // Slot removed from the profile → override swept (inherit the default model).
+    const dropped = await adapter.refreshProfileBindings('p1', { scout: 'flash' }, {});
+    expect(dropped.success).toBe(true);
+    const after = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(after.agents.scout.model).toBeUndefined();
+
+    // Un-hooked config → refused, nothing written.
+    fs.writeFileSync(configPath, JSON.stringify({ model: 'anthropic/claude-sonnet-4' }, null, 2));
+    const unhooked = await adapter.refreshProfileBindings('p1', { scout: 'flash' }, { flash: 'glm-5.3' });
+    expect(unhooked.success).toBe(false);
   });
 
   it('teardown restores the ORIGINAL model even after re-setup with a different main', async () => {

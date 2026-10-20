@@ -167,6 +167,9 @@ export const ClientsPage: React.FC = () => {
     setBindSel(prev => {
       const next = { ...prev };
       for (const c of clients) {
+        // opencode seeds from the live agent inventory instead (see the
+        // agents effect below) — its draft values carry slot links, not just refs.
+        if (c.name === 'opencode') continue;
         if (next[c.name] === undefined) next[c.name] = c.profile?.bindings || mem[c.name]?.bindings || {};
       }
       return next;
@@ -184,6 +187,15 @@ export const ClientsPage: React.FC = () => {
       return next;
     });
   }, [clients, mem, profilesReady, profiles, apiKeys]);
+
+  /** Slot-key tags behind the opencode draft — the `slot:<key>` rows only.
+   *  Memory persists these (agent → slot key) so profile links survive reloads. */
+  const linkTagsOf = (bind: Record<string, string> | undefined): Record<string, string> =>
+    Object.fromEntries(
+      Object.entries(bind || {})
+        .filter(([, v]) => typeof v === 'string' && v.startsWith('slot:'))
+        .map(([a, v]) => [a, v.slice(5)])
+    );
 
   /** Write-through form memory into the ACTIVE environment's config.yaml
    *  (book-set scoped — switching envs switches the memory too). */
@@ -223,7 +235,7 @@ export const ClientsPage: React.FC = () => {
   /** Flip the model-list source and write it through to the form memory. */
   const setModelMode = (clientName: string, mode: 'none' | 'custom' | 'follow') => {
     setModeSel(prev => ({ ...prev, [clientName]: mode }));
-    persistMem(clientName, profileSel[clientName] || '', bindSel[clientName] || {}, mode);
+    persistMem(clientName, profileSel[clientName] || '', linkTagsOf(bindSel[clientName]), mode);
   };
 
   /** Lazy-load the effective-model view when a follow selection has a key picked. */
@@ -243,6 +255,30 @@ export const ClientsPage: React.FC = () => {
       api.listOpencodeAgents().then(setAgents).catch(() => setAgents([]));
     }
   }, [opencodeOpen, agents]);
+
+  /** Seed opencode's agent-link draft once the inventory loads: each row
+   *  mirrors the config's current agent model (router-owned values arrive
+   *  stripped to the bare ref; native pins verbatim), then the profile-link
+   *  echo/memory re-tags linked rows to `slot:<key>` so they keep following
+   *  the profile. One draft per inventory load — after an apply the cache is
+   *  dropped (setAgents(null)) and the draft entry is cleared so the fresh
+   *  committed truth re-seeds; the guard keeps in-page edits alive across
+   *  unrelated clients-load refreshes. */
+  useEffect(() => {
+    if (agents === null) return;
+    const c = clients.find(x => x.name === 'opencode');
+    if (!c) return;
+    setBindSel(prev => {
+      if (prev['opencode'] !== undefined) return prev; // in-page edits win until the next apply commit
+      const tags = c.profile?.bindings || mem?.['opencode']?.bindings || {};
+      const next: Record<string, string> = {};
+      for (const a of agents) next[a.name] = a.model || '';
+      for (const [agent, slotKey] of Object.entries(tags)) {
+        if (typeof slotKey === 'string' && slotKey && agent in next) next[agent] = `slot:${slotKey}`;
+      }
+      return { ...prev, opencode: next };
+    });
+  }, [agents, clients, mem]);
 
   const handleToggle = async (clientName: string, action: 'setup' | 'teardown') => {
     setLoading(true);
@@ -277,7 +313,7 @@ export const ClientsPage: React.FC = () => {
         apiKey: apiKeySel[clientName],
         contextWindow: Number(ctxSel[clientName] || '262144'),
         extraModels: extras,
-        ...opencodeProfilePayload(clientName),
+        ...opencodeAgentPayload(clientName),
       } : undefined);
       setActionNotice(res.message || 'Updated');
       // Commit-point memory: the environment remembers the selection THIS
@@ -286,11 +322,18 @@ export const ClientsPage: React.FC = () => {
       if (action === 'setup') {
         // Memory records what THIS setup wrote — the key's stable id, never a
         // draft pick or the raw token.
-        persistMem(clientName, profileSel[clientName] || '', bindSel[clientName] || {}, undefined, keyIdOf(apiKeySel[clientName] || ''));
+        persistMem(clientName, profileSel[clientName] || '', linkTagsOf(bindSel[clientName]), undefined, keyIdOf(apiKeySel[clientName] || ''));
       }
-      // Refresh the agent inventory cache so the binding table's "current model"
-      // column reflects what this apply just wrote (the lazy-load effect refetches).
-      if (clientName === 'opencode') setAgents(null);
+      // Refresh the agent inventory cache and drop the link draft so the
+      // table re-seeds from the committed config (the lazy-load effect
+      // refetches; the seed effect re-tags linked rows from the fresh echo).
+      if (clientName === 'opencode') {
+        setAgents(null);
+        setBindSel(prev => {
+          const { [clientName]: _dropped, ...rest } = prev;
+          return rest;
+        });
+      }
       await loadClients();
       setTimeout(() => setActionNotice(null), 3000);
     } catch (err: any) {
@@ -301,19 +344,34 @@ export const ClientsPage: React.FC = () => {
   };
 
   /**
-   * Model-profile payload for the opencode setup call. Rules:
-   *  - a selected profile id  → apply it with the current bindings;
-   *  - profile id cleared while one was applied → explicit un-apply (id ''
-   *    sweeps router-owned agent overrides);
-   *  - never selected anything → omit `profile` entirely (bare setup keeps the
-   *    legacy subagent-slot behavior and never touches agent bindings).
+   * Agent-binding payload for the opencode setup call. Draft row values:
+   *  - '' / 'auto'         → omitted (inherit the default model);
+   *  - `slot:<key>`        → profile-linked row: tag travels via `profile.bindings`
+   *                          and resolves server-side against the profile's slots;
+   *  - a gateway-known ref → manual row, sent via `agentModels`;
+   *  - anything else       → a native (non-router) pin echoed from the config —
+   *                          never re-sent (re-sending would re-route it through
+   *                          the gateway).
+   * Omitted entirely until the agent inventory has loaded: a stale/absent draft
+   * must never touch the agent node.
    */
-  const opencodeProfilePayload = (clientName: string): { profile?: { id: string; bindings: Record<string, string> } } => {
-    if (clientName !== 'opencode') return {};
-    const sel = profileSel[clientName] ?? '';
-    if (sel) return { profile: { id: sel, bindings: bindSel[clientName] || {} } };
-    const applied = clients.find(c => c.name === clientName)?.profile?.id;
-    return applied ? { profile: { id: '', bindings: {} } } : {};
+  const opencodeAgentPayload = (clientName: string): { agentModels?: Record<string, string>; profile?: { id: string; bindings: Record<string, string> } } => {
+    if (clientName !== 'opencode' || agents === null) return {};
+    const known = new Set(models.map(m => m.id));
+    const manual: Record<string, string> = {};
+    const tags: Record<string, string> = {};
+    for (const [agent, raw] of Object.entries(bindSel[clientName] || {})) {
+      const v = (raw || '').trim();
+      if (!v || v === 'auto') continue;
+      if (v.startsWith('slot:')) {
+        const k = v.slice(5);
+        if (k) tags[agent] = k;
+        continue;
+      }
+      if (!known.has(v)) continue;
+      manual[agent] = v;
+    }
+    return { agentModels: manual, profile: { id: profileSel[clientName] || '', bindings: tags } };
   };
 
   /** Reset ALL slots to their role-recommended defaults; re-apply immediately when currently hooked. */
@@ -325,7 +383,10 @@ export const ClientsPage: React.FC = () => {
     setModelSel(prev => ({ ...prev, [clientName]: cleared }));
     setExtraSel(prev => ({ ...prev, [clientName]: [] }));
     setProfileSel(prev => ({ ...prev, [clientName]: '' }));
-    setBindSel(prev => ({ ...prev, [clientName]: {} }));
+    setBindSel(prev => {
+      const { [clientName]: _dropped, ...rest } = prev;
+      return rest;
+    });
     setModeSel(prev => ({ ...prev, [clientName]: 'none' }));
     setApiKeySel(prev => {
       const { [clientName]: _dropped, ...rest } = prev;
@@ -333,13 +394,16 @@ export const ClientsPage: React.FC = () => {
     });
     // Override param: the setState above is invisible to persistMem's closure.
     persistMem(clientName, '', {}, 'none', '');
+    if (clientName === 'opencode') setAgents(null); // table re-seeds from the swept config
     if (clients.find(c => c.name === clientName)?.hooked) {
       setLoading(true);
       try {
         const res = await api.toggleClient(clientName, 'setup', {
           models: cleared,
           extraModels: [],
-          ...(clientName === 'opencode' && clients.find(c => c.name === clientName)?.profile?.id ? { profile: { id: '', bindings: {} } } : {}),
+          // Full unlink: sweep every router-owned agent override + clear the
+          // profile-link echo (the reset semantics for opencode).
+          ...(clientName === 'opencode' ? { agentModels: {}, profile: { id: '', bindings: {} } } : {}),
         });
         setActionNotice(res.message || 'Updated');
         await loadClients();
@@ -358,7 +422,6 @@ export const ClientsPage: React.FC = () => {
     sonnet: t('clients.slotSonnet'),
     haiku: t('clients.slotHaiku'),
     fable: t('clients.slotFable'),
-    subagent: t('clients.slotSubagent'),
   };
 
   const modelOptions = [
@@ -617,8 +680,6 @@ export const ClientsPage: React.FC = () => {
                             }
                             options={slotOptions(s)}
                             panelMinWidth={360}
-                            // while a profile owns the agent node, 'general' binds via the mapping table
-                            disabled={c.name === 'opencode' && s.key === 'subagent' && !!(profileSel[c.name] || '')}
                           />
                         </div>
                       ))}
@@ -688,17 +749,44 @@ export const ClientsPage: React.FC = () => {
                 {c.name === 'opencode' && (() => {
                   const selProfileId = profileSel[c.name] || '';
                   const profile = profiles.find(p => p.id === selProfileId);
-                  const slotKeys = profile ? Object.keys(profile.slots || {}) : [];
                   const bindings = bindSel[c.name] || {};
-                  // Already-applied bindings (server echo) — used only for row
+                  // Already-applied links (server echo) — used only for row
                   // ordering. Draft `bindings` must NEVER drive the sort: a row
                   // would jump to the top the instant it is picked mid-edit.
                   const appliedBindings = c.profile?.bindings || {};
-                  // Switching profiles keeps the agent→slot-name selections; same-name
-                  // slots carry over silently (the point of stable slot naming), stale
-                  // references are surfaced here and SKIPPED by the backend at apply.
-                  const keptCount = agents?.filter(a => bindings[a.name] && slotKeys.includes(bindings[a.name])).length ?? 0;
-                  const missingCount = agents?.filter(a => bindings[a.name] && !slotKeys.includes(bindings[a.name])).length ?? 0;
+                  // Row modes: `slot:<key>` = profile-linked (follows the profile —
+                  // a saved profile change writes through automatically), a
+                  // gateway ref = manual, '' / 'auto' = inherit the default model.
+                  const linkedEntries = Object.entries(bindings).filter(
+                    ([, v]) => typeof v === 'string' && v.startsWith('slot:')
+                  );
+                  const keptCount = profile ? linkedEntries.filter(([, v]) => !!(profile.slots || {})[v.slice(5)]).length : 0;
+                  const missingCount = linkedEntries.length - keptCount;
+                  // Row options: operations first — inherit / profile-slot link
+                  // shortcuts (only while a profile is selected) — then the
+                  // gateway model list, with a foreign native pin echoed
+                  // verbatim kept visible near the top.
+                  const rowOptions = (current: string) => {
+                    const opts: { value: string; label: string; meta?: string; badge?: string; badgeColor?: string }[] = [
+                      { value: '', label: t('clients.profileBindNone') },
+                    ];
+                    if (profile) {
+                      for (const [k, ref] of Object.entries(profile.slots || {})) {
+                        opts.push({
+                          value: `slot:${k}`,
+                          label: t('clients.profileSlotLabel', { slot: k }),
+                          // Same right-side chip language as the auto* entries —
+                          // emerald marks the profile-linked kind.
+                          badge: t('modelRef.kindProfileSlot'),
+                          badgeColor: 'var(--accent-emerald)',
+                          meta: ref,
+                        });
+                      }
+                    }
+                    opts.push(...modelOptions);
+                    if (current && !opts.some(o => o.value === current)) opts.splice(1, 0, { value: current, label: current });
+                    return opts;
+                  };
                   return (
                     <div style={{ borderTop: '1px solid var(--divider)', paddingTop: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '12px', alignItems: 'end' }}>
@@ -721,7 +809,11 @@ export const ClientsPage: React.FC = () => {
                         </div>
                       )}
                       {selProfileId && (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
+                          {t('clients.profileLinkedHint', { name: profiles.find(p => p.id === selProfileId)?.name || selProfileId })}
+                        </div>
+                      )}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                           <div style={{ fontSize: '11px', color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: '10px' }}>
                             <span style={{ flexShrink: 0 }}>{t('clients.profileAgents')}</span>
                             <input
@@ -815,7 +907,8 @@ export const ClientsPage: React.FC = () => {
                                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(430px, 1fr))', gap: '6px 18px' }}>
                                       {rows.map(a => {
                                         const bound = bindings[a.name] || '';
-                                        const missing = !!bound && !slotKeys.includes(bound);
+                                        const linked = bound.startsWith('slot:');
+                                        const missing = linked && !(profile?.slots || {})[bound.slice(5)];
                                         return (
                                         <div key={a.name} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                                           <span style={{ width: '140px', flexShrink: 0, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: '12px' }}>{a.name}</span>
@@ -830,21 +923,18 @@ export const ClientsPage: React.FC = () => {
                                           )}
                                           <div style={{ width: '230px', flexShrink: 0 }}>
                                             <Combobox
-                                              value={missing ? '' : bound}
+                                              value={bound}
                                               onChange={v => {
                                                 const nb = { ...(bindSel[c.name] || {}), [a.name]: v };
                                                 setBindSel(prev => ({ ...prev, [c.name]: nb }));
                                               }}
-                                              options={[
-                                                { value: '', label: t('clients.profileBindNone') },
-                                                ...slotKeys.map(k => ({ value: k, label: `${k} → ${profile?.slots?.[k] ?? '?'}` })),
-                                              ]}
+                                              options={rowOptions(bound)}
                                               panelMinWidth={300}
                                             />
                                           </div>
                                           {missing && (
                                             <span style={{ flexShrink: 0, fontSize: '10px', color: 'var(--accent-amber)' }}>
-                                              {t('clients.profileSlotMissing', { slot: bound })}
+                                              {t('clients.profileSlotMissing', { slot: bound.slice(5) })}
                                             </span>
                                           )}
                                         </div>
@@ -864,10 +954,9 @@ export const ClientsPage: React.FC = () => {
                           )}
                           <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>{t('clients.profileApplyHint')}</div>
                         </div>
-                      )}
-                    </div>
-                  );
-                })()}
+                      </div>
+                    );
+                  })()}
 
                 <div style={{ display: 'flex', gap: '8px' }}>
                   {renderActionButtons(c, true)}

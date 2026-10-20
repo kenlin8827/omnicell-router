@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getAllClientStatuses, setupClient, teardownClient } from '../cli/clients/index.js';
+import { getAllClientStatuses, refreshClientProfileBindings, setupClient, teardownClient } from '../cli/clients/index.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { matchingTiers, MEMBER_TIER_ORDER } from '../providers/member-match.js';
 import { globMatchAny } from '../utils/glob.js';
@@ -1018,11 +1018,12 @@ export function registerConsoleRoutes(
   // 4. Client Interception Setup / Teardown
   const handleSetup = async (req: any, reply: any) => {
     const { client } = req.params as { client: string };
-    const { models, apiKey, contextWindow, extraModels, profile } = (req.body || {}) as {
+    const { models, apiKey, contextWindow, extraModels, agentModels, profile } = (req.body || {}) as {
       models?: Record<string, string>;
       apiKey?: string;
       contextWindow?: number;
       extraModels?: string[];
+      agentModels?: Record<string, string>;
       profile?: { id?: string; bindings?: Record<string, string> };
     };
     const cleaned = models && typeof models === 'object'
@@ -1033,35 +1034,49 @@ export function registerConsoleRoutes(
       : undefined;
     const cw = Number(contextWindow);
 
-    // Model profile resolution (opencode hook): profile id + agent→slot bindings
-    // resolve to agent→modelRef through the saved config. Slot keys missing
-    // from the selected profile leave the agent unbound; a slot whose modelRef
-    // is not routable fails the request cp-failfast (a wrong write to
-    // opencode.jsonc is harder to undo than a refused setup).
-    let agentModels: Record<string, string> | undefined;
+    // Agent-binding payloads (opencode hook):
+    //  - agentModels: manual rows, agent name → modelRef (''/'auto' dropped);
+    //  - profile: profile-linked rows — bindings are agent → profile-slot key,
+    //    resolved here against the saved profile's slots; slots the profile
+    //    no longer defines drop out (the row falls back to inherit).
+    //    A wrong write to opencode.jsonc is harder to undo than a refused
+    //    setup, so every merged ref must be routable (fail-fast).
+    const allowedRefs = new Set<string>([
+      'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra',
+      ...registry.getAllModels().map(m => m.id),
+      ...registry.getCombos().map(c => c.id),
+      ...registry.getVariantExposures().map(v => v.id),
+    ]);
+    const manual: Record<string, string> = {};
+    if (agentModels !== undefined) {
+      if (!agentModels || typeof agentModels !== 'object' || Array.isArray(agentModels)) {
+        return reply.status(400).send({ success: false, message: 'agentModels must be an object of agent name → modelRef' });
+      }
+      // The admin surface is still a trust boundary: shape-check before
+      // iterating (Object.entries over a string would iterate per character).
+      const manualEntries = Object.entries(agentModels);
+      if (manualEntries.length > 100) {
+        return reply.status(400).send({ success: false, message: 'agentModels exceeds 100 entries' });
+      }
+      for (const [agentName, raw] of manualEntries) {
+        const ref = String(raw ?? '').trim();
+        if (!ref || ref === 'auto') continue; // inherit the default model
+        manual[agentName] = ref;
+      }
+    }
+    const resolvedRefs: Record<string, string> = {};
+    const resolvedTags: Record<string, string> = {};
     let profileEcho: { id: string; bindings: Record<string, string> } | undefined;
     if (profile !== undefined) {
       const profileId = (profile.id || '').trim();
       if (!profileId) {
-        // Empty id = explicit un-apply: sweep router-owned agent overrides + clear echo
-        agentModels = {};
+        // Empty id = explicit un-link: sweep router-owned agent overrides + clear echo
         profileEcho = { id: '', bindings: {} };
       } else {
         const p = (loadConfig().modelProfiles || []).find(x => x.id === profileId);
         if (!p) {
           return reply.status(400).send({ success: false, message: `Model profile '${profileId}' not found in config` });
         }
-        const allowedRefs = new Set<string>([
-          'auto', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra',
-          ...registry.getAllModels().map(m => m.id),
-          ...registry.getCombos().map(c => c.id),
-          ...registry.getVariantExposures().map(v => v.id),
-        ]);
-        const resolved: Record<string, string> = {};
-        const bindings: Record<string, string> = {};
-        const invalid: string[] = [];
-        // The admin surface is still a trust boundary: shape-check before
-        // iterating (Object.entries over a string would iterate per character).
         const bindingsIn = profile.bindings;
         if (bindingsIn && (typeof bindingsIn !== 'object' || Array.isArray(bindingsIn))) {
           return reply.status(400).send({ success: false, message: 'profile.bindings must be an object of agent name → slot key' });
@@ -1072,32 +1087,33 @@ export function registerConsoleRoutes(
         }
         for (const [agentName, slotRaw] of bindingEntries) {
           const slotKey = String(slotRaw || '').trim();
-          if (!slotKey) continue; // unbound
+          if (!slotKey) continue; // unlinked
           const ref = (p.slots || {})[slotKey];
-          if (!ref) continue; // slot not defined in this profile — stays unbound
-          if (!allowedRefs.has(ref)) invalid.push(`${agentName}→${slotKey} (${ref})`);
-          else {
-            resolved[agentName] = ref;
-            bindings[agentName] = slotKey;
-          }
+          if (!ref) continue; // slot gone from the profile — row falls back to inherit
+          resolvedTags[agentName] = slotKey;
+          resolvedRefs[agentName] = ref;
         }
-        if (invalid.length > 0) {
-          return reply.status(400).send({
-            success: false,
-            message: `Model profile '${profileId}' has unresolvable refs: ${invalid.join(', ')} — register the model / combo first`,
-          });
-        }
-        agentModels = resolved;
-        profileEcho = { id: profileId, bindings };
+        profileEcho = { id: profileId, bindings: resolvedTags };
       }
     }
+    // Merge both sources (disjoint per row; manual wins defensively) and
+    // fail-fast on any ref the gateway cannot resolve.
+    const merged: Record<string, string> = { ...resolvedRefs, ...manual };
+    const invalid = Object.entries(merged).filter(([, ref]) => !allowedRefs.has(ref)).map(([name, ref]) => `${name}→${ref}`);
+    if (invalid.length > 0) {
+      return reply.status(400).send({
+        success: false,
+        message: `Agent model refs not routable: ${invalid.join(', ')} — register the model / combo first`,
+      });
+    }
+    const agentModelsPayload = agentModels !== undefined || profileEcho !== undefined ? merged : undefined;
 
     const result = await setupClient(client, {
       ...(cleaned ? { models: cleaned } : {}),
       ...(apiKey?.trim() ? { apiKey: apiKey.trim() } : {}),
       ...(Number.isFinite(cw) && cw > 0 ? { contextWindow: Math.floor(cw) } : {}),
       ...(cleanedExtra ? { extraModels: cleanedExtra } : {}),
-      ...(agentModels ? { agentModels } : {}),
+      ...(agentModelsPayload ? { agentModels: agentModelsPayload } : {}),
       ...(profileEcho ? { profile: profileEcho } : {}),
     });
     if (!result.success) return reply.status(400).send(result);
@@ -1260,6 +1276,10 @@ export function registerConsoleRoutes(
       .getRegistry()
       .getCircuitBreakerManager()
       .applyConfig(loadConfig().circuitBreaker, loadConfig().retry); // breaker rules hot-apply (next-decision-point semantics)
+    // Profile-link write-through: an edited profile re-resolves into every
+    // hooked client linked to it (diff-guarded — no-op when unchanged).
+    const profileNote = await refreshClientProfileBindings(loadConfig().modelProfiles || []);
+    if (profileNote) return { ...result, message: profileNote.trim().replace(/^; /, '') };
     return result;
   };
   app.post('/api/admin/config', handleSaveConfig);
@@ -1284,6 +1304,9 @@ export function registerConsoleRoutes(
       .getRegistry()
       .getCircuitBreakerManager()
       .applyConfig(loadConfig().circuitBreaker, loadConfig().retry); // hot-apply breaker rules too (see handleSaveConfig)
+    // Profile-link write-through on the raw path too (same diff guard).
+    const profileNote = await refreshClientProfileBindings(loadConfig().modelProfiles || []);
+    if (profileNote) return { ...result, message: profileNote.trim().replace(/^; /, '') };
     return result;
   };
   app.post('/api/admin/config/raw', handleSaveRawYaml);

@@ -129,8 +129,7 @@ export interface KeyUsageRow {
   costUsd: number;
   /**
    * Output tokens summed over STREAMED turns only (genMs present) — the
-   * numerator paired with genMsSum for the decode-TPS aggregate. Rows from
-   * before the field existed replay as 0.
+   * numerator paired with genMsSum for the decode-TPS aggregate.
    */
   genOutputTokens: number;
   /** Summed decode window (ms) over the same streamed turns; 0 = no data. */
@@ -389,7 +388,7 @@ export class TraceTracker {
    * Aggregate raw token usage over the in-memory trace ring buffer grouped by
    * the SERVED credential pair (provider × keyHashPrefix) — the quota
    * tracking foundation. Turns without credential attribution (chain-less
-   * providers, replayed pre-field rows) are skipped: the per-pair view only
+   * providers) are skipped: the per-pair view only
    * speaks for rows it can actually name. `sinceTs` narrows the window the
    * same way as getUsageStats.
    */

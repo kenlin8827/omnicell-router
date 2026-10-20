@@ -49,13 +49,15 @@ export interface ClientHookStatus {
   /** Extra concrete models exposed in the client's model switcher (opencode provider models list) */
   extraModels?: string[];
   /**
-   * Applied model profile (opencode only), echoed from the OCR sidecar meta:
-   * profile id + agent-name → slot-key bindings ('' id = no profile applied).
+   * Last-applied model profile (opencode only), echoed from the OCR sidecar
+   * meta: profile id + the agent-name → modelRef map actually written into the
+   * config ('' id = no profile; the bindings are informational echo — the
+   * config's agent node is the live truth).
    */
   profile?: ModelProfileBinding;
 }
 
-/** Sidecar echo of the applied model profile: which profile and which agent got which slot. */
+/** Sidecar echo of the last-applied model profile: which profile filled which agent with which modelRef. */
 export interface ModelProfileBinding {
   id: string;
   bindings: Record<string, string>;
@@ -76,7 +78,7 @@ export const VIRTUAL_AUTO_IDS: ReadonlySet<string> = new Set([
 ]);
 
 export interface ClientModelSlot {
-  /** Slot key: 'main' | 'opus' | 'sonnet' | 'haiku' | 'fable' | 'subagent' (frontend labels via i18n clients.slot*) */
+  /** Slot key: 'main' | 'opus' | 'sonnet' | 'haiku' | 'fable' (claude), role names (pi subagents); frontend labels via i18n clients.slot* */
   key: string;
   /** Currently pinned model id read from the client config; undefined = auto */
   value?: string;
