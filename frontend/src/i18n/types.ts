@@ -1382,7 +1382,7 @@ hiddenBadge: string;
     profileApplyHintPi: string;
     /** pi form hint: models.json entries are written with full model metadata. */
     piMetaHint: string;
-    /** Short header-row label naming what the table binds (子Agent). */
+    /** Short header-row label naming what the table binds (Subagent). */
     profileRowsLabel: string;
     /** Switch-OFF explanatory line. */
     profileRowsOffHint: string;

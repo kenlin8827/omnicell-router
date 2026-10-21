@@ -37,7 +37,7 @@ assert.equal(
 );
 assert.equal(String(ENV_ARCHIVE_VERSION), beNum(backend.archive, 'ENVELOPE_VERSION'), 'envelope version');
 assert.equal(`'${ENV_ARCHIVE_FORMAT}'`, beNum(backend.archive, 'ENVELOPE_FORMAT'), 'envelope format');
-assert.equal(`'${ENV_ARCHIVE_SUFFIX}'`, beNum(backend.archive, 'ENVELOPE_SUFFIX'), 'envelope suffix');
+assert.equal(`'${ENV_ARCHIVE_SUFFIX}'`, beNum(backend.archive, 'ARCHIVE_SUFFIX'), 'envelope suffix');
 
 const beRe = backend.env.match(/const ENV_NAME_RE = (\/.*\/[a-z]*);/)?.[1];
 const feRe = read('../frontend/src/pages/EnvironmentsPage.tsx').match(/const ENV_NAME_RE = (\/.*\/[a-z]*);/)?.[1];

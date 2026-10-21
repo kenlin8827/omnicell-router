@@ -63,7 +63,7 @@ onecast-router/
 │   │   ├── index.ts                     # Application bootstrap & lifecycle management
 │   │   └── server.ts                    # Fastify HTTP server & admin API registrations
 │   └── tests/                           # 121 isolated backend test suites
-├── frontend/                            # Web Administration Console (Vite + React + Tailwind)
+├── frontend/                            # Web Administration Console (Vite + React + Vanilla CSS)
 │   └── src/
 │       ├── components/                  # UI components (Combobox, tables, modal dialogs)
 │       ├── pages/                       # Console views (Combos, Failures, RouteEntries, etc.)

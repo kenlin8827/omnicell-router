@@ -7,7 +7,7 @@ import { createPortal } from 'react-dom';
  * with a long OS delay, cannot be themed, and get clipped by card overflow).
  * Mount <TooltipProvider> once near the app root, then on any element:
  *
- *   <button data-tip={t('some.hint')}>…</button>
+ *   <button data-tip={t('common.clear')}>…</button>
  *
  * Delegation model: document-level mouseover/focusin picks the closest
  * `[data-tip]` ancestor; the bubble portals to <body> (same pattern as the

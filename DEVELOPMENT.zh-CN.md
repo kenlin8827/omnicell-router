@@ -63,7 +63,7 @@ onecast-router/
 │   │   ├── index.ts                     # 网关服务引导与全局生命周期管理
 │   │   └── server.ts                    # Fastify HTTP 服务初始化与 Admin 接口暴露
 │   └── tests/                           # 121 个完全沙箱隔离的后端单元测试套件
-├── frontend/                            # Web 运维控制台 (Vite + React + Tailwind)
+├── frontend/                            # Web 运维控制台 (Vite + React + Vanilla CSS)
 │   └── src/
 │       ├── components/                  # UI 组件（主题 Combobox 下拉框、数据表格、弹窗）
 │       ├── pages/                       # 运维页面（模型组合、调用失败账本、经验表等）

@@ -300,8 +300,24 @@ export class DshClientAdapter implements ClientAdapter {
   private writeEntries(configPath: string, entries: any[]): void {
     const dir = path.dirname(configPath);
     fs.mkdirSync(dir, { recursive: true });
-    const tmpPath = `${configPath}.tmp.${Date.now()}`;
+    const tmpPath = `${configPath}.tmp.${process.pid}.${Date.now()}`;
     fs.writeFileSync(tmpPath, stringify(entries), 'utf8');
-    fs.renameSync(tmpPath, configPath);
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        fs.renameSync(tmpPath, configPath);
+        return;
+      } catch (e) {
+        lastError = e;
+        if (attempt < 4) {
+          const until = Date.now() + (attempt + 1) * 10;
+          while (Date.now() < until) {}
+        }
+      }
+    }
+    try {
+      fs.unlinkSync(tmpPath);
+    } catch {}
+    throw lastError;
   }
 }

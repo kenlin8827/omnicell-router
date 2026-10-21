@@ -48,9 +48,25 @@ export function safeWriteJson(filePath: string, data: any): void {
     fs.mkdirSync(dir, { recursive: true });
   }
   const content = JSON.stringify(data, null, 2) + '\n';
-  const tmpPath = `${filePath}.tmp.${Date.now()}`;
+  const tmpPath = `${filePath}.tmp.${process.pid}.${Date.now()}`;
   fs.writeFileSync(tmpPath, content, 'utf8');
-  fs.renameSync(tmpPath, filePath);
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      fs.renameSync(tmpPath, filePath);
+      return;
+    } catch (e) {
+      lastError = e;
+      if (attempt < 4) {
+        const until = Date.now() + (attempt + 1) * 10;
+        while (Date.now() < until) {}
+      }
+    }
+  }
+  try {
+    fs.unlinkSync(tmpPath);
+  } catch {}
+  throw lastError;
 }
 
 export function createBackup(filePath: string): string | null {

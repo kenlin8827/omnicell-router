@@ -39,7 +39,7 @@ interface Props {
   onClear: () => void;
   /** Per-client apply hint line. */
   hint: string;
-  /** Short label at the header-row start (e.g. 子Agent). */
+  /** Short label at the header-row start (e.g. Subagent). */
   label?: string;
   /** Link-table switch (opencode, pi): OFF hides the whole table — the form
    *  declares "not configuring subagents" and setup omits the payload. When

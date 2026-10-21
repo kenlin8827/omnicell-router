@@ -426,7 +426,7 @@ function leadingJsonObjectEnd(s: string): number {
  *   A) the whole content IS a JSON envelope → use its content/text/prompt field;
  *   B) a leading JSON metadata object, then a newline, then the real text →
  *      drop the envelope, keep the human tail (the screenshot case:
- *      `{"message_id":…,"agent":"coder"}\n继续处理中…`).
+ *      `{"message_id":…,"agent":"coder"}\nProcessing continues...`).
  * Anything else stays verbatim (never swallow unknown content).
  */
 export function unwrapHarnessText(text: string): string {
