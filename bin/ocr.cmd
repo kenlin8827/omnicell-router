@@ -1,7 +1,20 @@
 @echo off
 setlocal
 set "CLI_TS=%~dp0..\backend\src\cli\index.ts"
-set "DIST_JS=%~dp0..\dist\cli\index.js"
+set "DIST_JS=%~dp0..\backend\dist\cli\index.js"
+if not exist "%DIST_JS%" (
+  set "DIST_JS=%~dp0..\dist\cli\index.js"
+)
+
+if not exist "%CLI_TS%" (
+  if exist "%LOCALAPPDATA%\onecast-router\backend\src\cli\index.ts" (
+    set "CLI_TS=%LOCALAPPDATA%\onecast-router\backend\src\cli\index.ts"
+    set "DIST_JS=%LOCALAPPDATA%\onecast-router\backend\dist\cli\index.js"
+    if not exist "!DIST_JS!" (
+      set "DIST_JS=%LOCALAPPDATA%\onecast-router\dist\cli\index.js"
+    )
+  )
+)
 
 where bun >nul 2>nul
 if %ERRORLEVEL% equ 0 (
@@ -9,8 +22,8 @@ if %ERRORLEVEL% equ 0 (
   exit /b %ERRORLEVEL%
 )
 
-if exist "D:\dev\bun\bin\bun.exe" (
-  "D:\dev\bun\bin\bun.exe" run "%CLI_TS%" %*
+if exist "%USERPROFILE%\.bun\bin\bun.exe" (
+  "%USERPROFILE%\.bun\bin\bun.exe" run "%CLI_TS%" %*
   exit /b %ERRORLEVEL%
 )
 

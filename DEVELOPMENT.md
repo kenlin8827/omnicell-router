@@ -7,7 +7,7 @@
 [![Tests](https://img.shields.io/badge/Backend%20Suites-121%20Suites%20Pass-brightgreen.svg)]()
 [![ADR](https://img.shields.io/badge/ADR-0001%20through%200014-blue.svg)](docs/adr/README.md)
 
-[English Version](DEVELOPMENT.md) | [Chinese Version](DEVELOPMENT.zh-CN.md) | [User README](README.md)
+[English Version](DEVELOPMENT.md) | [Chinese Version](DEVELOPMENT.zh-CN.md) | [User README](README.md) | [Release Guide](RELEASING.md)
 
 </div>
 

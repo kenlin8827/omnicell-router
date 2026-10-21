@@ -135,26 +135,38 @@ export function resolveRuntimeBinary(): { bin: string; args: string[] } {
   if (compiledSnapshotExe()) return { bin: process.execPath, args: [] };
   const repoDir = getRepoRootDir();
   const entryTs = path.join(repoDir, 'backend', 'src', 'index.ts');
-  const entryJs = path.join(repoDir, 'dist', 'index.js');
-
-  // Candidate bun locations; PATH lookup first, then the common Windows homes.
-  // NOTE: BUN_INSTALL is deliberately NOT consulted here (an earlier `bunPath`
-  // computed it and no candidate list ever used it) — adding it is a behavior
-  // change to daemon spawn resolution, tracked separately.
-  const candidates = [
-    'bun',
-    'D:\\dev\\bun\\bin\\bun.exe',
-    path.join(process.env.USERPROFILE || '', '.bun', 'bin', 'bun.exe'),
+  const entryJsCandidates = [
+    path.join(repoDir, 'backend', 'dist', 'index.js'),
+    path.join(repoDir, 'dist', 'index.js'),
   ];
+  const entryJs = entryJsCandidates.find((p) => fs.existsSync(p));
 
-  for (const c of candidates) {
-    if (fs.existsSync(c)) {
-      return { bin: c, args: ['run', '--no-env-file', entryTs] };
+  if (fs.existsSync(entryTs)) {
+    const bunExe = process.platform === 'win32' ? 'bun.exe' : 'bun';
+    const fallbackLocations = [
+      process.env.BUN_INSTALL ? path.join(process.env.BUN_INSTALL, 'bin', bunExe) : '',
+      path.join(process.env.USERPROFILE || process.env.HOME || '', '.bun', 'bin', bunExe),
+    ].filter(Boolean);
+
+    const candidates = ['bun', ...fallbackLocations];
+    for (const c of candidates) {
+      if (c === 'bun') {
+        try {
+          const probe = spawnSync('bun', ['--version'], { encoding: 'utf8', windowsHide: true });
+          if (probe.status === 0) {
+            return { bin: 'bun', args: ['run', '--no-env-file', entryTs] };
+          }
+        } catch {
+          // not on PATH
+        }
+      } else if (fs.existsSync(c)) {
+        return { bin: c, args: ['run', '--no-env-file', entryTs] };
+      }
     }
   }
 
   // Fallback to node
-  if (fs.existsSync(entryJs)) {
+  if (entryJs) {
     return { bin: 'node', args: [entryJs] };
   }
   return { bin: 'npx', args: ['tsx', entryTs] };

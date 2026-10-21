@@ -18,7 +18,7 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   desktop:
@@ -76,11 +76,8 @@ jobs:
         run: bun run build
 
       - name: Cross-compile gateway sidecar (${{ matrix.bunTarget }})
-        run: >
-          bun build --compile --external onnxruntime-node
-          --target ${{ matrix.bunTarget }}
-          backend/src/index.ts
-          --outfile desktop/src-tauri/bin/ocr-backend-${{ matrix.target }}${{ matrix.ext }}
+        working-directory: desktop
+        run: bun scripts/build-sidecar.ts ${{ matrix.target }} ${{ matrix.bunTarget }}
 
       - name: Build desktop shell + bundles
         working-directory: desktop
@@ -108,3 +105,45 @@ jobs:
           path: |
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
+
+  release:
+    needs: desktop
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Build prebuilt distribution archives
+        run: |
+          bun install
+          bun run build
+          mkdir -p release-assets
+          tar -czf release-assets/onecast-router-dist.tar.gz bin backend/dist frontend/dist package.json README.md README.zh-CN.md LICENSE
+          zip -r release-assets/onecast-router-dist.zip bin backend/dist frontend/dist package.json README.md README.zh-CN.md LICENSE
+
+      - name: Download desktop installer artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: desktop-*
+          merge-multiple: true
+
+      - name: Publish GitHub Release with Desktop & CLI Distributions
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-assets/*-setup.exe
+            release-assets/*.dmg
+            release-assets/*.AppImage
+            release-assets/*.deb
+            release-assets/onecast-router-dist.zip
+            release-assets/onecast-router-dist.tar.gz
+          generate_release_notes: true
+          draft: false
+          prerelease: false

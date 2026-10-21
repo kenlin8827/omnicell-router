@@ -2,7 +2,21 @@
 $ErrorActionPreference = 'Stop'
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $CliTs = Join-Path $ScriptDir "..\backend\src\cli\index.ts"
-$DistJs = Join-Path $ScriptDir "..\dist\cli\index.js"
+$DistJs = Join-Path $ScriptDir "..\backend\dist\cli\index.js"
+if (-not (Test-Path $DistJs)) {
+  $DistJs = Join-Path $ScriptDir "..\dist\cli\index.js"
+}
+
+if (-not (Test-Path $CliTs)) {
+  $FallbackCliTs = Join-Path $env:LOCALAPPDATA "onecast-router\backend\src\cli\index.ts"
+  if (Test-Path $FallbackCliTs) {
+    $CliTs = $FallbackCliTs
+    $DistJs = Join-Path $env:LOCALAPPDATA "onecast-router\backend\dist\cli\index.js"
+    if (-not (Test-Path $DistJs)) {
+      $DistJs = Join-Path $env:LOCALAPPDATA "onecast-router\dist\cli\index.js"
+    }
+  }
+}
 
 $bun = Get-Command bun -ErrorAction SilentlyContinue
 if ($bun) {
@@ -10,8 +24,9 @@ if ($bun) {
   exit $LASTEXITCODE
 }
 
-if (Test-Path "D:\dev\bun\bin\bun.exe") {
-  & "D:\dev\bun\bin\bun.exe" run $CliTs @args
+$bunDefault = Join-Path $env:USERPROFILE ".bun\bin\bun.exe"
+if (Test-Path $bunDefault) {
+  & $bunDefault run $CliTs @args
   exit $LASTEXITCODE
 }
 

@@ -37,11 +37,13 @@ export function registerGlobalShims(customRepoDir?: string, customBinDir?: strin
 
       // Script that invokes Bun or Node to run backend/src/cli/index.ts
       const cliEntry = path.join(repoDir, 'backend', 'src', 'cli', 'index.ts');
-      const distEntry = path.join(repoDir, 'dist', 'cli', 'index.js');
+      const distEntry = fs.existsSync(path.join(repoDir, 'backend', 'dist', 'cli', 'index.js'))
+        ? path.join(repoDir, 'backend', 'dist', 'cli', 'index.js')
+        : path.join(repoDir, 'dist', 'cli', 'index.js');
 
-      const cmdContent = `@echo off\r\nrem ${SHIM_MARKER}\r\nsetlocal\r\nwhere bun >nul 2>nul\r\nif %ERRORLEVEL% equ 0 (\r\n  bun run "${cliEntry}" %*\r\n  exit /b %ERRORLEVEL%\r\n)\r\nif exist "D:\\dev\\bun\\bin\\bun.exe" (\r\n  "D:\\dev\\bun\\bin\\bun.exe" run "${cliEntry}" %*\r\n  exit /b %ERRORLEVEL%\r\n)\r\nwhere node >nul 2>nul\r\nif %ERRORLEVEL% equ 0 (\r\n  if exist "${distEntry}" (\r\n    node "${distEntry}" %*\r\n    exit /b %ERRORLEVEL%\r\n  )\r\n  npx tsx "${cliEntry}" %*\r\n  exit /b %ERRORLEVEL%\r\n)\r\necho [OCR ERROR] Neither bun nor node found on PATH.\r\nexit /b 1\r\n`;
+      const cmdContent = `@echo off\r\nrem ${SHIM_MARKER}\r\nsetlocal\r\nwhere bun >nul 2>nul\r\nif %ERRORLEVEL% equ 0 (\r\n  bun run "${cliEntry}" %*\r\n  exit /b %ERRORLEVEL%\r\n)\r\nif exist "%USERPROFILE%\\.bun\\bin\\bun.exe" (\r\n  "%USERPROFILE%\\.bun\\bin\\bun.exe" run "${cliEntry}" %*\r\n  exit /b %ERRORLEVEL%\r\n)\r\nwhere node >nul 2>nul\r\nif %ERRORLEVEL% equ 0 (\r\n  if exist "${distEntry}" (\r\n    node "${distEntry}" %*\r\n    exit /b %ERRORLEVEL%\r\n  )\r\n  npx tsx "${cliEntry}" %*\r\n  exit /b %ERRORLEVEL%\r\n)\r\necho [OCR ERROR] Neither bun nor node found on PATH.\r\nexit /b 1\r\n`;
 
-      const ps1Content = `# ${SHIM_MARKER}\r\n$cliEntry = "${cliEntry.replace(/\\/g, '\\\\')}"\r\n$distEntry = "${distEntry.replace(/\\/g, '\\\\')}"\r\n$bun = Get-Command bun -ErrorAction SilentlyContinue\r\nif ($bun) {\r\n  & bun run $cliEntry @args\r\n  exit $LASTEXITCODE\r\n}\r\nif (Test-Path "D:\\dev\\bun\\bin\\bun.exe") {\r\n  & "D:\\dev\\bun\\bin\\bun.exe" run $cliEntry @args\r\n  exit $LASTEXITCODE\r\n}\r\n$node = Get-Command node -ErrorAction SilentlyContinue\r\nif ($node) {\r\n  if (Test-Path $distEntry) {\r\n    & node $distEntry @args\r\n  } else {\r\n    & npx tsx $cliEntry @args\r\n  }\r\n  exit $LASTEXITCODE\r\n}\r\nWrite-Error "[OCR ERROR] Neither bun nor node found in PATH."\r\nexit 1\r\n`;
+      const ps1Content = `# ${SHIM_MARKER}\r\n$cliEntry = "${cliEntry.replace(/\\/g, '\\\\')}"\r\n$distEntry = "${distEntry.replace(/\\/g, '\\\\')}"\r\n$bun = Get-Command bun -ErrorAction SilentlyContinue\r\nif ($bun) {\r\n  & bun run $cliEntry @args\r\n  exit $LASTEXITCODE\r\n}\r\n$bunDefault = Join-Path $env:USERPROFILE ".bun\\bin\\bun.exe"\r\nif (Test-Path $bunDefault) {\r\n  & $bunDefault run $cliEntry @args\r\n  exit $LASTEXITCODE\r\n}\r\n$node = Get-Command node -ErrorAction SilentlyContinue\r\nif ($node) {\r\n  if (Test-Path $distEntry) {\r\n    & node $distEntry @args\r\n  } else {\r\n    & npx tsx $cliEntry @args\r\n  }\r\n  exit $LASTEXITCODE\r\n}\r\nWrite-Error "[OCR ERROR] Neither bun nor node found in PATH."\r\nexit 1\r\n`;
 
       fs.writeFileSync(targetCmd, cmdContent, 'utf8');
       fs.writeFileSync(targetPs1, ps1Content, 'utf8');

@@ -1,9 +1,24 @@
 {
-  "name": "onecast-router-monorepo",
+  "name": "onecast-router",
   "version": "0.0.1",
   "description": "High-performance OneCastRouter (OCR) & Cascading Gateway",
-  "private": true,
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "bin",
+    "backend/dist",
+    "frontend/dist",
+    "README.md",
+    "README.zh-CN.md",
+    "RELEASING.md",
+    "RELEASING.zh-CN.md",
+    "LICENSE"
+  ],
   "workspaces": [
     "backend",
     "frontend"
@@ -25,7 +40,8 @@
     "check:matrix": "bun --no-env-file scripts/check-guardrails-matrix.ts",
     "test:node": "tsx --test backend/tests/**/*.test.ts",
     "test:system": "bun --no-env-file scripts/full-system-test.ts",
-    "typecheck": "tsc -p backend --noEmit && tsc -p frontend --noEmit"
+    "typecheck": "tsc -p backend --noEmit && tsc -p frontend --noEmit",
+    "prepublishOnly": "bun run build"
   },
   "keywords": [
     "llm",
@@ -37,15 +53,34 @@
     "deepseek",
     "anthropic"
   ],
-  "author": "",
+  "author": "Ken Lin",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kenlin8827/onecast-router.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kenlin8827/onecast-router/issues"
+  },
+  "homepage": "https://github.com/kenlin8827/onecast-router#readme",
+  "dependencies": {
+    "@fastify/cors": "^11.0.0",
+    "@zip.js/zip.js": "^2.23.0",
+    "fastify": "^5.2.1",
+    "fflate": "^0.8.3",
+    "jsonc-parser": "^3.3.1",
+    "node-forge": "^1.4.0",
+    "yaml": "^2.7.0",
+    "zod": "^3.24.2",
+    "zod-to-json-schema": "^3.24.3"
+  },
   "devDependencies": {
     "@types/node": "^22.13.9",
     "tsx": "^4.19.3",
     "typescript": "^5.7.3"
   },
   "bin": {
-    "ocr": "./bin/ocr",
-    "onecast-router": "./bin/onecast-router"
+    "ocr": "./bin/ocr.js",
+    "onecast-router": "./bin/ocr.js"
   }
 }
