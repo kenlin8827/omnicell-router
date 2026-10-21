@@ -154,17 +154,40 @@ export const BUILTIN_QUOTA_DECLARATIONS: QuotaProbeEntry[] = [
     // inference base https://api.kimi.com/coding/v1. The usage endpoint takes
     // the key in `x-api-key` (disclosed above; the chat leg sends the
     // combined form).
+    //
+    // Response carries TWO windows: the weekly quota in the top-level `usage`
+    // object, and the rolling 5-hour session cap as the first `limits[]` row
+    // — `{ window: { duration: 300, timeUnit: "TIME_UNIT_MINUTE" }, detail:
+    // { limit, used, remaining, resetTime } }` (values may be decimal
+    // strings). The 5h window is read through the array-index path
+    // `limits.0.*` (static form binds item = whole document, and resolvePath
+    // hops arrays by ordinal key); the `where` equality gate on
+    // `window.duration == 300` is the identity check — a limits row that is
+    // not the 300-minute session window never wears the session name. A
+    // fresh window can arrive descriptor-only (no `detail` fields): every
+    // field then resolves null and the window drops by the no-values rule —
+    // honest absence, never a fabricated bar.
     url: 'https://api.kimi.com/coding/v1/usages',
     auth: 'x-api-key',
     windows: {
       form: 'static',
       windows: [
         {
+          name: 'Session (5h)',
+          nameCode: 'session5h',
+          where: { path: 'limits.0.window.duration', eq: 300 },
+          used: { path: 'limits.0.detail.used' },
+          total: { path: 'limits.0.detail.limit' },
+          remaining: { path: 'limits.0.detail.remaining' },
+          resetAt: { path: 'limits.0.detail.resetTime', time: true },
+        },
+        {
           name: 'Weekly',
           nameCode: 'weekly',
-          // usage is an OBJECT on the response (limits is the sibling array);
-          // the DSL path walks it directly. `where` gates on a real cap so a
-          // limit-less free credential does not read as an unlimited 100% window.
+          // usage is an OBJECT on the response (limits is the sibling array,
+          // read by the session window above); the DSL path walks it
+          // directly. `where` gates on a real cap so a limit-less free
+          // credential does not read as an unlimited 100% window.
           where: { path: 'usage.limit', exists: true },
           used: { path: 'usage.used' },
           total: { path: 'usage.limit' },

@@ -5,7 +5,7 @@ import { Wallet } from 'lucide-react';
 import { api, type QuotaOverview, type QuotaWindow } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { fmtDur } from '../lib/format';
-import { byQuotaUrgency } from '../lib/quotaRank';
+import { byQuotaUrgency, headlineWindow } from '../lib/quotaRank';
 
 /**
  * Sidebar-resident quota peek — the wallet chip in the footer's right slot.
@@ -17,7 +17,7 @@ import { byQuotaUrgency } from '../lib/quotaRank';
  *
  * Row anatomy (a compact usage-meter card per covered pair — the standard
  * quota-widget pattern where the burn bar spans the full row width, so every
- * meter shares the exact same track): line 1 = provider + the scarcest
+ * meter shares the exact same track): line 1 = provider + the headline
  * window's percentage (or the cash balance); line 2 = the bar; line 3 = a
  * quiet caption under the bar (window label left, reset countdown right).
  * Rows are hover tiles (.quota-peek-row in index.css), not table lines.
@@ -28,24 +28,13 @@ import { byQuotaUrgency } from '../lib/quotaRank';
  * Data: polls GET /api/admin/quota every 60s (the snapshot is written by the
  * probe scheduler, so a minute-granularity lamp is the freshest honest view)
  * and re-fetches whenever the panel opens. The chip lamp mirrors the
- * scarcest window across all pairs (rose <10%, amber <25%).
+ * scarcest headline window across all pairs (rose <10%, amber <25%).
  */
 
 const MONO: React.CSSProperties = { fontFamily: "'JetBrains Mono', monospace" };
 
 const pctColor = (p: number): string =>
   p < 10 ? 'var(--accent-rose)' : p < 25 ? 'var(--accent-amber)' : 'var(--accent)';
-
-/** The scarcest capped percentage window of a pair (cash balances and
- *  unlimited windows carry no burn signal and are skipped). */
-function worstWindow(windows: QuotaWindow[]): QuotaWindow | null {
-  let worst: QuotaWindow | null = null;
-  for (const w of windows) {
-    if (w.unlimited || w.remainingPct === null || w.nameCode === 'balance') continue;
-    if (worst === null || (w.remainingPct as number) < (worst.remainingPct as number)) worst = w;
-  }
-  return worst;
-}
 
 export const QuotaPeek: React.FC = () => {
   const { t } = useI18n();
@@ -99,7 +88,7 @@ export const QuotaPeek: React.FC = () => {
   const globalWorst = useMemo(() => {
     let m: number | null = null;
     for (const r of rows) {
-      const w = worstWindow(r.quota?.windows ?? []);
+      const w = headlineWindow(r.quota?.windows ?? []);
       if (w && w.remainingPct !== null && (m === null || w.remainingPct < m)) m = w.remainingPct;
     }
     return m;
@@ -150,9 +139,10 @@ export const QuotaPeek: React.FC = () => {
         }}
       >
         <Wallet size={13} color={lamp} style={{ flexShrink: 0 }} />
-        {/* Text readout: the scarcest percentage across all pairs (the chip
-            itself is the at-a-glance alarm); falls back to the panel name
-            while data is absent (loading, gateway down, or no pairs). */}
+        {/* Text readout: the scarcest headline percentage across all pairs
+            (the chip itself is the at-a-glance alarm); falls back to the
+            panel name while data is absent (loading, gateway down, or no
+            pairs). */}
         <span style={{ ...MONO, fontSize: '11px', fontWeight: 700, color: lamp, whiteSpace: 'nowrap' }}>
           {globalWorst === null ? t('nav.quotaPeekTitle') : `${Math.round(globalWorst)}%`}
         </span>
@@ -216,7 +206,7 @@ export const QuotaPeek: React.FC = () => {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                   {rows.map((r) => {
                     const windows = r.quota?.windows ?? [];
-                    const w = worstWindow(windows);
+                    const w = headlineWindow(windows);
                     const balance = w ? undefined : windows.find((x) => x.nameCode === 'balance');
                     let headValue: React.ReactNode;
                     let subLabel = '';

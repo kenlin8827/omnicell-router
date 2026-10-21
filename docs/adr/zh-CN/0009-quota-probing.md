@@ -49,6 +49,8 @@ host + auth 披露（此表是可信 release 代码；内置条目允许绝对 U
 
 入表前核对规则（每条内置条目出货前执行）：在 `catalog/ocr.json` 找到该 provider → 核对额度端点 origin 同属该服务商自家域 → 才进表。核对不过关者（例如 `qoder`——根本不在 OCR catalog）剔除。
 
+kimi 条目从同一次响应中读取两个窗口：顶层 `usage` 对象给出每周额度，滚动 5 小时会话上限取自首个 `limits[]` 行（`{ window: { duration: 300, timeUnit }, detail: { limit, used, remaining, resetTime } }`）——会话窗口以 `window.duration = 300` 做身份门控（`where` 等值判断，非会话行绝不会冒用会话名）；仅含描述符的行（新窗口不带 `detail` 字段）按无值规则丢弃，绝不凭空造条。
+
 ### 4. L-c：内置代码 adapter（一家一文件）
 
 语义无法声明式表达的 provider 落为代码 adapter（`quota/adapters/`，仿 `providers/` 目录）。v1 只有一个：**MiniMax**（`minimax`、`minimax-cn`、`minimax-coding-plan`、`minimax-cn-coding-plan`）。原因：两级 URL 回退链且成员语义**互为反义**（`/coding_plan/` 端点的计数读作 REMAINING，`/token_plan/` 读作 USED），外加相对/绝对两种重置字段与纯百分比共享桶——“per-URL 反义映射”是禁列的表类（§6），且条目单 URL 是铁律。adapter 事实（各地区 URL 序、信封 `base_resp.status_code`、snake/camel 字段对、回退触发码 404/405/5xx、密钥无效判定 401/403/1004）**先自录进文件头部事实清单再动笔**；代码照清单，不照参考项目。待办（列名，暂缓）：Copilot / Zed / Kimi-OAuth 通道——其认证需要铸造/设备流程（非推理形态头），因此永远不能进配置表；只能走 adapter，按需实现。

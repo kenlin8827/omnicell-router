@@ -38,6 +38,7 @@ import { Switch } from '../components/Switch';
 import { InfoTip } from '../components/InfoTip';
 import { useModelTest } from '../lib/useModelTest';
 import { fmtLatency } from '../lib/format';
+import { byWindowClass, headlineWindow } from '../lib/quotaRank';
 
 // Nested-card surface (bg/border/radius/padding) is the global .sub-card
 // class in index.css — single source of truth across all pages and themes.
@@ -288,7 +289,7 @@ function formatCountdown(ms: number): string {
 
 /**
  * Per-credential quota badge — four states, display-only (never
- * gates routing). Compact label = the tightest window's remaining percent
+ * gates routing). Compact label = the headline window's remaining percent
  * (probed) or a one-word state (declared / unverified); the tooltip lists every
  * window with its reset countdown, plus provenance (plan / entry / verified).
  * Staleness is honest: a probe failure keeps the last values and dims the
@@ -297,12 +298,11 @@ function formatCountdown(ms: number): string {
 function QuotaBadge({ quota }: { quota: CredentialQuotaView }) {
   const { t } = useI18n();
   const now = Date.now();
-  // Balance pools are excluded from the tightest-window pick: their percent is
-  // a flattening artifact (always 100), never a real remaining allowance.
-  const pctWindows = quota.windows.filter((w) => w.remainingPct !== null && w.nameCode !== 'balance');
-  const tightest = pctWindows.length > 0
-    ? pctWindows.reduce((a, b) => ((a.remainingPct ?? 101) <= (b.remainingPct ?? 101) ? a : b))
-    : undefined;
+  // The badge headlines the shortest-period capped window (a 5h session leads
+  // over a weekly even when the weekly is tighter — it throttles the next
+  // request). Balance pools carry no burn signal (their percent is a
+  // flattening artifact, always 100) and never headline.
+  const tightest = headlineWindow(quota.windows) ?? undefined;
 
   let color = 'var(--text-dim)';
   let label = '';
@@ -329,7 +329,7 @@ function QuotaBadge({ quota }: { quota: CredentialQuotaView }) {
   if (quota.windows.length === 0) {
     lines.push(t('op.quotaNoData'));
   } else {
-    for (const w of quota.windows) {
+    for (const w of [...quota.windows].sort(byWindowClass)) {
       let desc: string;
       if (w.nameCode === 'balance' && w.total !== null) desc = t('op.quotaBalance', { amount: fmtNum(Math.max(0, (w.total ?? 0) - (w.used ?? 0))) });
       else if (w.unlimited || w.total === null) desc = t('op.quotaNoCap');

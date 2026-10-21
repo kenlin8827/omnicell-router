@@ -182,6 +182,48 @@ describe('quota DSL constructs', () => {
     assert.equal(weekly.remainingPct, 60);
   });
 
+  it('kimi: limits[0] yields the 5h session window (string values, ISO reset)', () => {
+    const r = run('kimi-code-plan-cn', {
+      usage: { limit: '2048', used: '214', remaining: '1834', resetTime: '2026-01-09T15:23:13.716Z' },
+      limits: [
+        {
+          window: { duration: 300, timeUnit: 'TIME_UNIT_MINUTE' },
+          detail: { limit: '200', used: '139', remaining: '61', resetTime: '2026-01-06T13:33:02.717Z' },
+        },
+      ],
+      user: { membership: { level: 'LEVEL_BASIC' } },
+    });
+    const session = r.windows.find((x) => x.nameCode === 'session5h')!;
+    assert.ok(session, 'the 300-minute limits row surfaces as the 5h session window');
+    assert.equal(session.used, 139);
+    assert.equal(session.total, 200);
+    assert.equal(session.remainingPct, 30.5);
+    assert.equal(session.resetAt, Date.parse('2026-01-06T13:33:02.717Z'));
+    // The weekly window still resolves alongside it (string values coerce).
+    const weekly = r.windows.find((x) => x.nameCode === 'weekly')!;
+    assert.equal(weekly.total, 2048);
+  });
+
+  it('kimi: a non-300-minute limits row never wears the session name', () => {
+    const r = run('kimi-code-plan-cn', {
+      usage: { limit: 100, used: 10 },
+      limits: [
+        { window: { duration: 10080, timeUnit: 'TIME_UNIT_MINUTE' }, detail: { limit: 50, used: 5 } },
+      ],
+    });
+    assert.equal(r.windows.length, 1, 'only the weekly window resolves');
+    assert.equal(r.windows[0].nameCode, 'weekly');
+  });
+
+  it('kimi: descriptor-only 5h row (no detail) drops instead of fabricating', () => {
+    const r = run('kimi-code-plan-cn', {
+      usage: { limit: 100, used: 10 },
+      limits: [{ window: { duration: 300, timeUnit: 'TIME_UNIT_MINUTE' } }],
+    });
+    assert.equal(r.windows.length, 1, 'no usable fields -> no window, honest absence');
+    assert.equal(r.windows[0].nameCode, 'weekly');
+  });
+
   it('vercel: total_used + balance -> derived total, percent bar', () => {
     const r = run('vercel', { total_used: '4.50', balance: '95.50' });
     const w = r.windows[0];

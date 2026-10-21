@@ -14,7 +14,7 @@ import { fmtDur, fmtLatency } from '../lib/format';
 import { ProviderLogo } from '../components/ProviderLogo';
 import { Dialog } from '../components/Dialog';
 import { useToast } from '../components/ToastProvider';
-import { byQuotaUrgency } from '../lib/quotaRank';
+import { byQuotaUrgency, byWindowClass } from '../lib/quotaRank';
 
 /**
  * Quota tracking overview — every CONNECTED (provider × credential) pair of a
@@ -368,9 +368,11 @@ export const QuotaPage: React.FC = () => {
                       )}
                     </div>
                   </div>
-                  {/* One usage meter per tracked window */}
+                  {/* One usage meter per tracked window — session-class
+                      (short-period) caps lead, credit pools sink; class ties
+                      keep declaration order (byWindowClass). */}
                   {row.quota && row.quota.windows.length > 0 ? (
-                    row.quota.windows.map((w) => <WindowMeter key={w.name} w={w} t={t} />)
+                    [...row.quota.windows].sort(byWindowClass).map((w) => <WindowMeter key={w.name} w={w} t={t} />)
                   ) : (
                     <div style={{ marginTop: '10px', fontSize: '11.5px', color: 'var(--text-dim)' }}>—</div>
                   )}
