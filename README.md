@@ -4,12 +4,14 @@
 
 **Production-ready intelligent cascading router & FinOps gateway for [OpenCode](https://opencode.ai) and standard LLM clients.**
 
+[![npm](https://img.shields.io/npm/v/onecast-router.svg?color=blue)](https://www.npmjs.com/package/onecast-router)
+[![Desktop Release](https://img.shields.io/github/v/release/kenlin8827/onecast-router?color=purple)](https://github.com/kenlin8827/onecast-router/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Runtime](https://img.shields.io/badge/Runtime-Bun%20%7C%20Node.js-blue.svg)](https://bun.sh)
 [![OpenAI Compatible](https://img.shields.io/badge/API-OpenAI%20Compatible-green.svg)](https://platform.openai.com/docs/api-reference)
 [![FinOps](https://img.shields.io/badge/Cost%20Optimization-70%25%20~%2090%25-orange.svg)]()
 
-**[Quick Start](#quick-start)** · **[Client Integrations](#client-integrations)** · **[Architecture & Features](#features)** · **[Developer Guide](DEVELOPMENT.md)** · **[Release Guide](RELEASING.md)** · **[Chinese Version](README.zh-CN.md)**
+**[Quick Start](#quick-start)** · **[CLI Usage](#command-line-interface-cli)** · **[Client Integrations](#client-integrations)** · **[Architecture & Features](#features)** · **[Developer Guide](DEVELOPMENT.md)** · **[Release Guide](RELEASING.md)** · **[Chinese Version](README.zh-CN.md)**
 
 </div>
 
@@ -42,69 +44,87 @@ By orchestrating **rule-based fast paths**, a persistent **RouteEntry experience
 
 ## Quick Start
 
+### 1. Install via npm (Recommended)
+
+```bash
+# Global installation
+npm install -g onecast-router
+
+# Launch the gateway & open Web Console in your default browser
+ocr web
+
+# Or run directly without installing
+npx onecast-router web
+```
+
+### 2. Windows / macOS / Linux One-Line Installer
+
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/kenlin8827/onecast-router/main/install.ps1 | iex
+```
+
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/kenlin8827/onecast-router/main/install.sh | bash
+```
+
+### 3. Standalone Desktop App (GUI)
+
+Download native standalone installers from [GitHub Releases](https://github.com/kenlin8827/onecast-router/releases/latest):
+* **Windows**: `OneCastRouter_0.0.1_x64-setup.exe` (NSIS)
+* **macOS (Apple Silicon)**: `OneCastRouter_0.0.1_aarch64.dmg`
+* **macOS (Intel)**: `OneCastRouter_0.0.1_x64.dmg`
+
+---
+
+## Command Line Interface (CLI)
+
+Once installed, manage the gateway daemon and client integrations directly from your terminal:
+
+```bash
+# Lifecycle commands
+ocr start               # Start OCR background daemon (port: config.yaml port, default 4000)
+ocr web                 # Launch Web Console Dashboard in default browser
+ocr status              # Check daemon PID, health, FinOps metrics, and client hooks
+ocr stop                # Stop running gateway daemon
+ocr restart             # Restart gateway daemon
+
+# Client integrations (one-command setup)
+ocr setup opencode      # Hook OpenCode to route via OCR
+ocr setup claude        # Hook Claude Code / Desktop to route via OCR
+ocr setup codex         # Hook Codex / OpenAI CLI to route via OCR
+ocr setup pi            # Hook Pi coding agent to route via OCR
+
+# Teardown hooks
+ocr teardown opencode   # Restore OpenCode to direct connection
+ocr teardown claude     # Restore Claude to direct connection
+```
+
+---
+
+## Manual Build from Source
+
 ### 1. Requirements
 * **Bun** (Recommended for peak performance): `>= 1.0`, or **Node.js**: `>= 18`.
 * **OpenCode v2** (Optional but recommended): Seamlessly syncs provider credentials, pricing catalogs, and active models.
 
-### 2. Installation
+### 2. Setup & Build
 ```bash
-# Clone the repository
 git clone https://github.com/kenlin8827/onecast-router.git
 cd onecast-router
-
-# Install dependencies using Bun
-bun install
-
-# Or using npm
-npm install
+bun install && bun run build
 ```
 
-### 3. Build & Setup
+### 3. Configuration & Start
 ```bash
-# Build backend and frontend
-bun run build
+# Start background daemon
+bun run ocr start
 
-# Or using npm
-npm run build
-```
-
-### 4. Configuration
-Each environment manages its own isolated book-set (configuration, credentials, sessions, and logs). The default environment resides at `~/.onecast-router/envs/default/config.yaml`. The gateway creates it automatically upon first boot from a self-documenting template. To inspect or customize:
-```bash
-mkdir -p ~/.onecast-router/envs/default
-cp config.example.yaml ~/.onecast-router/envs/default/config.yaml
-```
-
-> 📦 **Environments**: Switch environments via the CLI (`bin/ocr env use <name>`) or via the web console under `/environments`. Controlled gateway restart applies changes safely.
-
-> ⚙️ **Runtime Variables**: Set `OCR_HOME` to customize the root state directory (defaults to `~/.onecast-router`) and `OCR_ENV` to select the active environment.
-
-### 5. Start the Gateway
-```bash
-# Start with Bun (recommended)
+# Or start in foreground
 bun run start:bun
-
-# Or start using Node.js
-npm run start
-
-# Development mode with hot reloading
-bun run dev
 ```
-The gateway listens on `http://127.0.0.1:3000` by default. Access the Web Admin Console at `http://127.0.0.1:3000/admin`.
-
-### 6. Verify Health
-```bash
-curl http://127.0.0.1:3000/health
-```
-Example response:
-```json
-{
-  "status": "healthy",
-  "version": "0.0.1",
-  "modelsCount": 94,
-  "timestamp": 1727622400000
-}
-```
+The gateway listens on `http://127.0.0.1:4000` by default. Access the Web Admin Console at `http://127.0.0.1:4000/admin`.
 
 ---
 

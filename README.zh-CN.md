@@ -4,12 +4,14 @@
 
 **面向 [OpenCode](https://opencode.ai) 与通用大模型客户端的生产级智能级联路由器与 FinOps 网关。**
 
+[![npm](https://img.shields.io/npm/v/onecast-router.svg?color=blue)](https://www.npmjs.com/package/onecast-router)
+[![Desktop Release](https://img.shields.io/github/v/release/kenlin8827/onecast-router?color=purple)](https://github.com/kenlin8827/onecast-router/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Runtime](https://img.shields.io/badge/Runtime-Bun%20%7C%20Node.js-blue.svg)](https://bun.sh)
 [![OpenAI Compatible](https://img.shields.io/badge/API-OpenAI%20Compatible-green.svg)](https://platform.openai.com/docs/api-reference)
 [![FinOps](https://img.shields.io/badge/Cost%20Optimization-70%25%20~%2090%25-orange.svg)]()
 
-**[快速开始](#快速开始)** · **[客户端接入](#客户端接入)** · **[架构与核心特性](#核心特性)** · **[开发者指南](DEVELOPMENT.zh-CN.md)** · **[版本发布指南](RELEASING.zh-CN.md)** · **[English Version](README.md)**
+**[快速开始](#快速开始)** · **[命令行 CLI](#命令行-cli-使用指南)** · **[客户端接入](#客户端接入)** · **[架构与核心特性](#核心特性)** · **[开发者指南](DEVELOPMENT.zh-CN.md)** · **[版本发布指南](RELEASING.zh-CN.md)** · **[English Version](README.md)**
 
 </div>
 
@@ -42,69 +44,89 @@
 
 ## 快速开始
 
+### 1. npm 安装（推荐）
+
+```bash
+# 全局安装
+npm install -g onecast-router
+
+# 启动后台网关并在默认浏览器打开管理控制台
+ocr web
+
+# 或者无需全局安装直接运行
+npx onecast-router web
+```
+
+### 2. Windows / macOS / Linux 一键安装脚本
+
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/kenlin8827/onecast-router/main/install.ps1 | iex
+```
+
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/kenlin8827/onecast-router/main/install.sh | bash
+```
+
+### 3. 原生独立桌面应用 (GUI)
+
+直接从 [GitHub Releases](https://github.com/kenlin8827/onecast-router/releases/latest) 下载开箱即用的安装包：
+* **Windows**: `OneCastRouter_0.0.1_x64-setup.exe` (NSIS 安装包)
+* **macOS (Apple Silicon)**: `OneCastRouter_0.0.1_aarch64.dmg`
+* **macOS (Intel)**: `OneCastRouter_0.0.1_x64.dmg`
+
+---
+
+## 命令行 CLI 使用指南
+
+安装完成后，可以在任意终端直接管理后台守护进程与客户端接入：
+
+```bash
+# 网关生命周期管理
+ocr start               # 启动 OCR 后台守护进程（默认端口 4000）
+ocr web                 # 在默认浏览器中启动并打开 Web 管理控制台
+ocr status              # 查看运行状态、PID、内存、FinOps 节省指标与客户端挂载
+ocr stop                # 停止后台网关守护进程
+ocr restart             # 重启后台网关
+
+# 一键挂载各大客户端代理
+ocr setup opencode      # 将 OpenCode 路由无缝接入 OCR
+ocr setup claude        # 将 Claude Code / Claude Desktop 接入 OCR
+ocr setup codex         # 将 Codex / OpenAI CLI 接入 OCR
+ocr setup pi            # 将 Pi 接入 OCR
+
+# 卸载客户端代理挂载
+ocr teardown opencode   # 恢复 OpenCode 直连
+ocr teardown claude     # 恢复 Claude 直连
+```
+
+---
+
+## 从源码手动编译
+
 ### 1. 环境依赖
 * **Bun**（推荐）：`>= 1.0`，或 **Node.js**：`>= 18`。
 * **OpenCode v2**（可选但推荐）：自动同步本地上游服务商配置、密钥及计费目录。
 
-### 2. 源码下载与依赖安装
+### 2. 源码下载与编译
 ```bash
-# 克隆仓库
 git clone https://github.com/kenlin8827/onecast-router.git
 cd onecast-router
-
-# 使用 Bun 安装依赖（推荐）
-bun install
-
-# 或使用 npm
-npm install
+bun install && bun run build
 ```
 
-### 3. 项目编译
+### 3. 环境配置与启动
+每个环境管理独立的配置账本（配置、凭据、会话与日志）。默认环境目录位于 `~/.onecast-router/envs/default/config.yaml`。初次启动网关将自动根据自解释模板创建该文件。
+
 ```bash
-# 编译前后端
-bun run build
+# 启动后台守护进程
+bun run ocr start
 
-# 或使用 npm
-npm run build
-```
-
-### 4. 环境配置
-每个环境管理独立的配置账本（配置、凭据、会话与日志）。默认环境目录位于 `~/.onecast-router/envs/default/config.yaml`。初次启动网关将自动根据自解释模板创建该文件。若需手动配置：
-```bash
-mkdir -p ~/.onecast-router/envs/default
-cp config.example.yaml ~/.onecast-router/envs/default/config.yaml
-```
-
-> 📦 **多环境管理**：通过命令行（`bin/ocr env use <name>`）或 Web 控制台 `/environments` 页面自由切换独立配置账本。切换时执行受控热重启。
-
-> ⚙️ **运行期环境变量**：通过 `OCR_HOME` 自定义根数据目录（默认 `~/.onecast-router`），通过 `OCR_ENV` 指定启动的目标环境。
-
-### 5. 启动网关
-```bash
-# 使用 Bun 启动（推荐）
+# 或前台启动（便于查看日志）
 bun run start:bun
-
-# 或使用 Node.js 启动
-npm run start
-
-# 热重载开发模式
-bun run dev
 ```
-网关默认监听于 `http://127.0.0.1:3000`。浏览器访问 `http://127.0.0.1:3000/admin` 打开管理控制台。
-
-### 6. 健康检查验证
-```bash
-curl http://127.0.0.1:3000/health
-```
-响应示例：
-```json
-{
-  "status": "healthy",
-  "version": "0.0.1",
-  "modelsCount": 94,
-  "timestamp": 1727622400000
-}
-```
+网关默认监听于 `http://127.0.0.1:4000`。浏览器访问 `http://127.0.0.1:4000/admin` 打开管理控制台。
 
 ---
 
