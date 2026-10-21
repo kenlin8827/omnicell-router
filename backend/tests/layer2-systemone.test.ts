@@ -11,6 +11,7 @@ import { RouterEngine } from '../src/router/index.js';
 import { SystemoneProvider } from '../src/providers/systemone.js';
 import { CaptureRecorder } from '../src/capture/recorder.js';
 import { resetDecisionCaptureConfig } from '../src/capture/decision-capture.js';
+import { getRouteEntryStore, normalizePrompt, promptHashOf } from '../src/router/route-entries.js';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../src/types/openai.js';
 
 // ---------------------------------------------------------------------------
@@ -239,6 +240,58 @@ describe('Layer 2 judge speaks the System One protocol', () => {
       expect(Object.keys(received.questions.tier.criteria).sort()).toEqual(['lite', 'plus', 'pro', 'ultra']);
       expect(String(received.questions.tier.instructions)).toContain('NEVER judge difficulty by character length');
       expect(received.model).toBe('jev-latest');
+    } finally {
+      upstream.stop(true);
+    }
+  });
+
+  test('records the last wire-attempt outcome (fail → ok; cache hits never overwrite)', async () => {
+    let fail = true;
+    const upstream = serve({
+      port: 0,
+      async fetch() {
+        if (fail) return new Response('{"error":{"message":"quota exhausted"}}', { status: 429 });
+        return Response.json({
+          answers: { tier: { type: 'choice', choice: 'plus', confidence: 0.9 } },
+        });
+      },
+    });
+    try {
+      const config = makeConfig(
+        [{ name: 'l2-native', type: 'systemone', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
+        [
+          {
+            id: 'l2-native/jev',
+            provider: 'l2-native',
+            upstreamModel: 'jev-latest',
+            tier: 'plus',
+            pricing: { input: 0, output: 0, cacheRead: 0 },
+          },
+        ]
+      );
+      const { registry } = createServer(config);
+      const request: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: PROOF }] };
+      const judgeConfig = { enabled: true, model: 'l2-native/jev', timeoutMs: 5000 } as const;
+
+      // Wire attempt fails → the console surface gets a failure record.
+      expect(await Layer2Judge.evaluate(request, judgeConfig, registry)).toBeNull();
+      const failed = Layer2Judge.getLastOutcome();
+      expect(failed).not.toBeNull();
+      expect(failed!.ok).toBe(false);
+      expect(failed!.modelId).toBe('l2-native/jev');
+      expect(String(failed!.error)).toContain('429');
+
+      // Next attempt succeeds → the failure record is replaced.
+      fail = false;
+      expect(await Layer2Judge.evaluate(request, judgeConfig, registry)).not.toBeNull();
+      const okOutcome = Layer2Judge.getLastOutcome();
+      expect(okOutcome!.ok).toBe(true);
+      expect(okOutcome!.latencyMs).toBeGreaterThanOrEqual(0);
+
+      // A cache hit is NOT a wire attempt: the record must stay untouched.
+      const before = Layer2Judge.getLastOutcome()!.ts;
+      expect(await Layer2Judge.evaluate(request, judgeConfig, registry)).not.toBeNull();
+      expect(Layer2Judge.getLastOutcome()!.ts).toBe(before);
     } finally {
       upstream.stop(true);
     }
@@ -886,5 +939,247 @@ describe('judge-call capture (systemone.enabled × systemone.l2DecisionEnabled, 
   test('native SystemoneProvider judge OFF: silent — HTTP-surface semantics byte-identical', async () => {
     const { events } = await routedTurn({ judgeKind: 'native', l2DecisionEnabled: false });
     expect(events.filter((e) => e.purpose === 'l2-judge').length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ADR-0012: judge-emitted thinking effort. With classifier.layer2.
+// effortDecision ON and a client-omitted reasoning_effort, the judge's ONE
+// System One call asks tier AND effort (6-level ladder). Pinned here:
+// the question shape on the wire, client-explicit suppression, tolerant
+// parse (a garbled effort never sinks a good tier), the cache-namespace
+// split on the gate, and the full chain (injection → serving payload →
+// trace effortSource → experience-table learning).
+// ---------------------------------------------------------------------------
+describe('judge-emitted thinking effort (ADR-0012)', () => {
+  const PRICING = { input: 1, output: 1, cacheRead: 0 };
+
+  /** Native System One judge upstream answering the given answers body. */
+  function judgeUpstream(answers: any, onBody?: (body: any) => void) {
+    return serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      async fetch(req) {
+        const body = await req.json();
+        onBody?.(body);
+        return Response.json({ answers });
+      },
+    });
+  }
+
+  function judgeOnlyConfig(port: number, name = 'je') {
+    return makeConfig(
+      [{ name, type: 'systemone', baseUrl: `http://127.0.0.1:${port}`, apiKey: 'sk-je', timeoutMs: 5000 }],
+      [{ id: `${name}/jev`, provider: name, upstreamModel: 'jev', tier: 'ultra', pricing: PRICING }]
+    );
+  }
+
+  test('gate ON + client omitted: the effort question rides the same call and parses into the result', async () => {
+    let body: any = null;
+    const upstream = judgeUpstream(
+      {
+        tier: { type: 'choice', choice: 'pro', confidence: 0.95 },
+        effort: { type: 'choice', choice: 'high', confidence: 0.88 },
+      },
+      (b) => (body = b)
+    );
+    try {
+      const { registry } = createServer(judgeOnlyConfig(upstream.port));
+      const result = await Layer2Judge.evaluate(
+        { model: 'auto', messages: [{ role: 'user', content: PROOF }] },
+        { enabled: true, model: 'je/jev', timeoutMs: 5000, effortDecision: true },
+        registry
+      );
+      expect(result).not.toBeNull();
+      expect(result!.targetTier).toBe('pro');
+      expect(result!.effort).toBe('high');
+      expect(result!.effortConfidence).toBeCloseTo(0.88, 10);
+      expect(result!.reasonParams?.effort).toBe('high');
+      // The wire carried BOTH questions; the effort answer space is the
+      // full 6-level ladder, 'none' included.
+      expect(Object.keys(body.questions).sort()).toEqual(['effort', 'tier']);
+      expect(Object.keys(body.questions.effort.criteria)).toEqual(['none', 'low', 'medium', 'high', 'xhigh', 'max']);
+      expect(body.questions.effort.type).toBe('choice');
+    } finally {
+      upstream.stop(true);
+    }
+  });
+
+  test('client-explicit reasoning_effort suppresses the effort question entirely', async () => {
+    let body: any = null;
+    const upstream = judgeUpstream(
+      { tier: { type: 'choice', choice: 'plus', confidence: 0.9 } },
+      (b) => (body = b)
+    );
+    try {
+      const { registry } = createServer(judgeOnlyConfig(upstream.port, 'je2'));
+      const result = await Layer2Judge.evaluate(
+        { model: 'auto', messages: [{ role: 'user', content: PROOF }], reasoning_effort: 'low' },
+        { enabled: true, model: 'je2/jev', timeoutMs: 5000, effortDecision: true },
+        registry
+      );
+      // Never second-guess the client: the question was not even asked.
+      expect(Object.keys(body.questions)).toEqual(['tier']);
+      expect(result!.effort).toBeUndefined();
+    } finally {
+      upstream.stop(true);
+    }
+  });
+
+  test('gate OFF (default): no effort question, no effort in the result — even when the upstream volunteers one', async () => {
+    let body: any = null;
+    const upstream = judgeUpstream(
+      {
+        tier: { type: 'choice', choice: 'plus', confidence: 0.9 },
+        effort: { type: 'choice', choice: 'max', confidence: 0.99 }, // ignored
+      },
+      (b) => (body = b)
+    );
+    try {
+      const { registry } = createServer(judgeOnlyConfig(upstream.port, 'je3'));
+      const result = await Layer2Judge.evaluate(
+        { model: 'auto', messages: [{ role: 'user', content: PROOF }] },
+        { enabled: true, model: 'je3/jev', timeoutMs: 5000 },
+        registry
+      );
+      expect(Object.keys(body.questions)).toEqual(['tier']);
+      expect(result!.effort).toBeUndefined();
+    } finally {
+      upstream.stop(true);
+    }
+  });
+
+  test('a garbled effort answer never sinks a good tier decision', async () => {
+    const upstream = judgeUpstream({
+      tier: { type: 'choice', choice: 'pro', confidence: 0.93 },
+      effort: { type: 'choice', choice: 'banana', confidence: 0.7 },
+    });
+    try {
+      const { registry } = createServer(judgeOnlyConfig(upstream.port, 'je4'));
+      const result = await Layer2Judge.evaluate(
+        { model: 'auto', messages: [{ role: 'user', content: PROOF }] },
+        { enabled: true, model: 'je4/jev', timeoutMs: 5000, effortDecision: true },
+        registry
+      );
+      expect(result).not.toBeNull();
+      expect(result!.targetTier).toBe('pro');
+      expect(result!.effort).toBeUndefined();
+    } finally {
+      upstream.stop(true);
+    }
+  });
+
+  test('the decision cache namespaces on the gate: effort answers never leak across modes', async () => {
+    let calls = 0;
+    const upstream = judgeUpstream(
+      {
+        tier: { type: 'choice', choice: 'pro', confidence: 0.9 },
+        effort: { type: 'choice', choice: 'low', confidence: 0.9 },
+      },
+      () => calls++
+    );
+    try {
+      const { registry } = createServer(judgeOnlyConfig(upstream.port, 'je5'));
+      const req: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: PROOF }] };
+      const on = { enabled: true, model: 'je5/jev', timeoutMs: 5000, effortDecision: true };
+
+      const first = await Layer2Judge.evaluate(req, on, registry);
+      expect(first!.effort).toBe('low');
+      const second = await Layer2Judge.evaluate(req, on, registry);
+      expect(second!.reason).toContain('[Decision Cache]');
+      expect(second!.effort).toBe('low'); // the effort answer survives the cache round-trip
+      expect(calls).toBe(1); // the second judgment was served from cache
+
+      // Gate OFF: same state, different namespace → a fresh judge call, no effort.
+      const off = await Layer2Judge.evaluate(req, { enabled: true, model: 'je5/jev', timeoutMs: 5000 }, registry);
+      expect(off!.effort).toBeUndefined();
+      expect(off!.reason).not.toContain('[Decision Cache]');
+      expect(calls).toBe(2);
+    } finally {
+      upstream.stop(true);
+    }
+  });
+
+  test('full chain: judge effort reaches the serving payload, the X-OCR headers, the trace, and the experience table', async () => {
+    const execSeen: any[] = [];
+    const judge = judgeUpstream({
+      tier: { type: 'choice', choice: 'pro', confidence: 0.95 },
+      effort: { type: 'choice', choice: 'high', confidence: 0.88 },
+    });
+    const exec = serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      async fetch(req) {
+        execSeen.push(await req.json());
+        return Response.json(fakeChat('served with judge effort'));
+      },
+    });
+    try {
+      const config = makeConfig(
+        [
+          { name: 'fc-judge', type: 'systemone', baseUrl: `http://127.0.0.1:${judge.port}`, apiKey: 'sk-j', timeoutMs: 5000 },
+          { name: 'fc-exec', type: 'openai-compatible', baseUrl: `http://127.0.0.1:${exec.port}`, apiKey: 'sk-e', timeoutMs: 5000 },
+        ],
+        [
+          // ULTRA keeps the judge model out of the pro pool it selects.
+          { id: 'fc-judge/jev', provider: 'fc-judge', upstreamModel: 'jev', tier: 'ultra', pricing: PRICING },
+          {
+            id: 'fc-exec/pro-chat',
+            provider: 'fc-exec',
+            upstreamModel: 'pro-chat',
+            tier: 'pro',
+            pricing: PRICING,
+            supportedReasoningEfforts: ['low', 'medium', 'high'],
+          },
+        ]
+      );
+      config.classifier = {
+        ...config.classifier,
+        layer2: { enabled: true, model: 'fc-judge/jev', timeoutMs: 5000, effortDecision: true },
+      };
+      const { app, orchestrator } = createServer(config);
+      try {
+        const res = await app.inject({
+          method: 'POST',
+          url: '/v1/chat/completions',
+          headers: { 'content-type': 'application/json' },
+          payload: { model: 'auto', messages: [{ role: 'user', content: PROOF }] },
+        });
+        expect(res.statusCode).toBe(200);
+
+        // 1. The serving upstream received the judge-decided level.
+        expect(execSeen.length).toBe(1);
+        expect(execSeen[0].reasoning_effort).toBe('high');
+
+        // 2. The client sees the effective ask AND its author.
+        expect(res.headers['x-ocr-tier']).toBe('pro');
+        expect(res.headers['x-ocr-thinking-requested']).toBe('high');
+        expect(res.headers['x-ocr-thinking-actual']).toBe('high');
+        expect(res.headers['x-ocr-thinking-degraded']).toBe('false');
+        expect(res.headers['x-ocr-thinking-source']).toBe('judge');
+
+        // 3. The trace attributes the ask to the judge (ADR-0012 §2).
+        const sessionId = String(res.headers['x-ocr-session-id']);
+        const traces = orchestrator.getTraceTracker().getTracesBySession(sessionId);
+        expect(traces.length).toBe(1);
+        expect(traces[0].execution.requestedEffort).toBe('high');
+        expect(traces[0].execution.actualEffort).toBe('high');
+        expect(traces[0].execution.reasoningDegraded).toBe(false);
+        expect(traces[0].execution.effortSource).toBe('judge');
+
+        // 4. The experience table learned the level with the tier
+        //    (l2_confident write-back — confidence 0.95 ≥ 0.85).
+        const entry = getRouteEntryStore().peek(promptHashOf(normalizePrompt(PROOF)));
+        expect(entry).toBeDefined();
+        expect(entry!.tier).toBe('pro');
+        expect(entry!.effort).toBe('high');
+        expect(entry!.source).toBe('l2_confident');
+      } finally {
+        await app.close();
+      }
+    } finally {
+      judge.stop(true);
+      exec.stop(true);
+    }
   });
 });

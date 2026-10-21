@@ -54,6 +54,20 @@ export const EFFORT_LADDER = ['none', 'low', 'medium', 'high', 'xhigh', 'max'] a
 export type ReasoningEffort = (typeof EFFORT_LADDER)[number];
 
 /**
+ * WHO authored the effective effort ask (ADR-0012). Every value except
+ * 'client' is a gateway decision injected after the client's wire value was
+ * snapshotted:
+ *   client     — the request's own `reasoning_effort` field
+ *   judge      — the L2 judge's effort answer (classifier.layer2.effortDecision)
+ *   entry      — a route-entry experience hit (ADR-0011)
+ *   escalation — the retry-escalation ladder (ADR-0011)
+ *   default    — the served model's `defaultEffort` pin
+ * `requestedEffort` stays the EFFECTIVE ask the machinery served against;
+ * this field says whose ask it was. undefined = no level in play at all.
+ */
+export type EffortSource = 'client' | 'judge' | 'entry' | 'escalation' | 'default';
+
+/**
  * Returns the highest effort level `supported` is allowed to substitute
  * for `requested`. "Degraded or equal": a `medium` request can be served
  * by anything `≤ medium`, never above. `undefined` `supported` → the full
@@ -167,6 +181,16 @@ export interface RoutingDecision {
   sessionRatchetApplied?: boolean;
   sessionLookupType?: SessionLookupType;
   pinnedModel?: string;
+  /**
+   * Judge-decided thinking level (ADR-0012): set only by the L2 judge when
+   * the client omitted `reasoning_effort` and `effortDecision` is on. The
+   * orchestrator injects it into the request (the same precedence as a
+   * route-entry hit — below a client-explicit value, below a retry
+   * escalation). Per-turn and unratcheted by design.
+   */
+  effort?: ReasoningEffort;
+  /** The judge's self-reported confidence in `effort` — trace metadata only. */
+  effortConfidence?: number;
 }
 
 export interface ExecutionResult {
@@ -210,6 +234,12 @@ export interface ExecutionResult {
   requestedEffort?: ReasoningEffort;
   actualEffort?: ReasoningEffort;
   reasoningDegraded?: boolean;
+  /**
+   * WHO authored the effective ask (ADR-0012): 'client' = the request's own
+   * field; anything else is a gateway decision (judge / entry / escalation /
+   * model default). Surfaced as `X-OCR-Thinking-Source`.
+   */
+  effortSource?: EffortSource;
 }
 
 

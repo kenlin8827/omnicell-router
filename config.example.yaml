@@ -179,6 +179,13 @@ classifier:
                                     # involved), hot-applied on save. 64MB cap then writes pause with one warning.
                                     # state carries user conversation content — off by default.
                                     # (Moved from the retired classifier.layer2.decisionCapture — old key ignored.)
+    effortDecision: false           # ADR-0012: the judge's ONE call also answers "how deep to think"
+                                    # (6-level ladder) for requests that OMIT reasoning_effort — the
+                                    # gateway then decides {where, how deep}. Client-explicit values always
+                                    # win; per-turn judgment, never ratcheted; feeds the experience table.
+                                    # Default OFF: a judge-decided level spends thinking tokens nobody
+                                    # explicitly ordered. Every served level is attributed via the
+                                    # X-OCR-Thinking-Source header and the trace's effortSource field.
 
 # ==============================================================================
 # Route-entry Experience Table (ADR-0011)

@@ -342,6 +342,15 @@ export interface Layer2JudgeConfig {
    * l2DecisionEnabled, which captures the judge's HTTP leg instead.
    */
   collectEnabled?: boolean;
+  /**
+   * Judge-decided thinking level (ADR-0012): the judge's System One call
+   * also asks for an effort level (6-level ladder) for requests that omit
+   * `reasoning_effort`. Default FALSE — a judge-decided level spends
+   * thinking tokens nobody explicitly ordered, so it is opt-in. The
+   * decision cache namespaces on this flag, so toggling never resurrects
+   * stale effort answers.
+   */
+  effortDecision?: boolean;
   // Retired keys `decisionCapture` (pre-collectEnabled) are stripped at load.
 }
 export type Layer2DecisionConfig = Layer2JudgeConfig;

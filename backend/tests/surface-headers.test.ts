@@ -45,6 +45,10 @@ const BASE13 = [
   'x-ocr-latency-ms',
 ];
 const THINKING3 = ['x-ocr-thinking-requested', 'x-ocr-thinking-actual', 'x-ocr-thinking-degraded'];
+// ADR-0012: the real pipeline attributes every effort ask to its author —
+// legs served by a REAL orchestrator (fastify rows) gain the source header;
+// stub-fed harnesses (mitm rows) keep the 3-key set.
+const THINKING4 = [...THINKING3, 'x-ocr-thinking-source'];
 const sortedKeys = (...extra: string[]): string[] => [...BASE13, ...extra].sort();
 
 type Leg = 'fastify' | 'mitm';
@@ -93,7 +97,7 @@ const bodies = {
 const HEADER_ROWS: Row[] = [
   { name: 'chat json/fastify', leg: 'fastify', path: '/v1/chat/completions', body: bodies.chat(), expected: sortedKeys() },
   { name: 'chat stream/fastify', leg: 'fastify', path: '/v1/chat/completions', body: { ...bodies.chat(), stream: true }, expected: sortedKeys() },
-  { name: 'chat + effort/fastify', leg: 'fastify', path: '/v1/chat/completions', body: { ...bodies.chat(), reasoning_effort: 'high' }, expected: sortedKeys(...THINKING3) },
+  { name: 'chat + effort/fastify', leg: 'fastify', path: '/v1/chat/completions', body: { ...bodies.chat(), reasoning_effort: 'high' }, expected: sortedKeys(...THINKING4) },
   { name: 'anthropic json/fastify', leg: 'fastify', path: '/v1/messages', body: bodies.anthropic(), expected: sortedKeys() },
   { name: 'anthropic stream/fastify', leg: 'fastify', path: '/v1/messages', body: { ...bodies.anthropic(), stream: true }, expected: sortedKeys() },
   { name: 'responses json/fastify', leg: 'fastify', path: '/v1/responses', body: bodies.responses(), expected: sortedKeys() },

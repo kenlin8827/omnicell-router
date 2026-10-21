@@ -28,6 +28,8 @@ import type { StreamRoutingFacts } from '../utils/chat-stream.js';
  *   downgraded. The same record goes to non-stream and SSE wires, so the
  *   Thinking-* headers reach the stream too (unlike the pre-builder code,
  *   where the SSE spread omitted them).
+ * - X-OCR-Thinking-Source (ADR-0012): alongside the Thinking-* block when
+ *   the ask's author is known — 'client' or a gateway decision.
  * - X-OCR-Variant: only when a sibling / `#variant` id was resolved.
  *
  * @param fallbackModel gate model of the surface (requested model name), used
@@ -53,6 +55,10 @@ export function buildChatOcrHeaders(result: ExecutionResult, fallbackModel: stri
     headers['X-OCR-Thinking-Requested'] = result.requestedEffort;
     headers['X-OCR-Thinking-Actual'] = result.actualEffort ?? result.requestedEffort;
     headers['X-OCR-Thinking-Degraded'] = result.reasoningDegraded ? 'true' : 'false';
+    // ADR-0012: WHO authored the ask — 'client' or a gateway decision
+    // (judge / entry / escalation / default). Emitted only when known;
+    // pre-ADR executions simply omit it.
+    if (result.effortSource) headers['X-OCR-Thinking-Source'] = result.effortSource;
   }
   if (result.variantUsed) {
     headers['X-OCR-Variant'] = result.variantUsed;

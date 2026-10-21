@@ -1,5 +1,5 @@
 import { ChatCompletionRequest } from '../types/openai.js';
-import { TierLevel, ReasonParams } from '../types/router.js';
+import { EFFORT_LADDER, ReasoningEffort, TierLevel, ReasonParams } from '../types/router.js';
 import { Layer2JudgeConfig } from '../config/types.js';
 import { RoutingDecisionCache, type RoutingCacheStats } from './decision-cache.js';
 import { ProviderRegistry } from '../providers/registry.js';
@@ -16,6 +16,14 @@ export interface Layer2JudgeResult {
   reasonParams?: ReasonParams;
   provider: string;
   model: string;
+  /**
+   * Judge-decided thinking level (ADR-0012) — present only when the
+   * `effort` question was asked (effortDecision on + client omitted the
+   * field) AND the answer parsed. A missing/garbled effort answer never
+   * sinks a good tier decision (partial success).
+   */
+  effort?: ReasoningEffort;
+  effortConfidence?: number;
   rawResponse?: any;
 }
 
@@ -35,10 +43,37 @@ const TIERS: TierLevel[] = ['lite', 'plus', 'pro', 'ultra'];
  * the `reason` records which upstream class answered so
  * a consumer reading a trace can tell the two apart.
  */
+/**
+ * Outcome of the judge's last real wire attempt (ADR-0011 observability):
+ * the /auto page surfaces a failure until a later attempt succeeds. Cache
+ * hits are NOT attempts and never overwrite this record.
+ */
+export interface JudgeLastOutcome {
+  ts: number;
+  modelId: string;
+  ok: boolean;
+  /** Timeout / upstream error / unparseable payload — human-readable, short. */
+  error?: string;
+  latencyMs?: number;
+}
+
 export class Layer2Judge {
   private static readonly TIER_INSTRUCTIONS =
     'Classify the computational task difficulty tier. NEVER judge difficulty by character length: ' +
     'short prompts like "P=NP?" or "Prove Fermat\'s Last Theorem" are high-difficulty.';
+
+  /**
+   * Outcome of the LAST real wire attempt (console /auto surface). Cache
+   * hits never touch it: a cached serve is not a wire attempt and must not
+   * hide a persisting wire problem. In-memory only — a gateway restart
+   * starts blank, and the first attempt after boot re-records it.
+   */
+  private static lastOutcome: JudgeLastOutcome | null = null;
+
+  /** Console read accessor (GET /api/admin/judge/outcome). */
+  public static getLastOutcome(): JudgeLastOutcome | null {
+    return Layer2Judge.lastOutcome;
+  }
 
   private static readonly TIER_CRITERIA: Record<TierLevel, string> = {
     lite: 'trivial QA, simple calculation, basic translation, shallow extraction, casual greetings',
@@ -48,8 +83,31 @@ export class Layer2Judge {
     ultra: 'frontier-tier, hour-long autonomous agent tasks, hardest open-ended thinking',
   };
 
+  private static readonly EFFORT_INSTRUCTIONS =
+    'Pick the thinking depth this task actually needs. Deeper thinking costs more time and tokens — ' +
+    'choose the LOWEST level that can produce a correct, complete answer.';
+
+  private static readonly EFFORT_CRITERIA: Record<ReasoningEffort, string> = {
+    none: 'no thinking needed — direct answer suffices (greeting, lookup, trivial rewrite)',
+    low: 'light reasoning — simple Q&A, basic translation, shallow extraction',
+    medium: 'moderate reasoning — typical coding, summarization with judgment calls',
+    high: 'deep reasoning — system design, multi-step debugging, nuanced analysis',
+    xhigh: 'very deep reasoning — hard algorithmic work, formal proofs, research-grade problems',
+    max: 'maximum effort — frontier open-ended tasks where cost is no object',
+  };
+
   /** Stable label for the decision-cache key namespace. */
   private static readonly CACHE_SOURCE = 'systemone';
+
+  /**
+   * Cache-namespace split on the effortDecision gate (ADR-0012 §3): entries
+   * recorded with the effort question in play must never be served to a
+   * caller running with it off (or vice versa) — the stored answer set
+   * differs, so the namespace differs.
+   */
+  private static cacheSource(askEffort: boolean): string {
+    return askEffort ? `${this.CACHE_SOURCE}+effort` : this.CACHE_SOURCE;
+  }
 
   /** One-shot warnings: a misconfigured judge is a per-REQUEST condition, so
    *  a plain console.warn would flood the log once per uncached request. */
@@ -82,25 +140,51 @@ export class Layer2Judge {
   }
 
   /** Build the System One request that asks for a difficulty tier. */
-  private static buildRequest(state: string, modelId: string): SystemoneRequest {
+  private static buildRequest(state: string, modelId: string, askEffort: boolean): SystemoneRequest {
     const criteria: Record<string, string> = {};
     for (const tier of TIERS) criteria[tier] = this.TIER_CRITERIA[tier];
+    const questions: SystemoneRequest['questions'] = {
+      tier: {
+        type: 'choice',
+        instructions: this.TIER_INSTRUCTIONS,
+        criteria,
+      },
+    };
+    if (askEffort) {
+      // ADR-0012 §1: the SAME call also judges the thinking depth — a
+      // choice over the full 6-level ladder, 'none' included (a legitimate
+      // "do not think" judgment). Asked only for client-omitted requests.
+      questions!.effort = {
+        type: 'choice',
+        instructions: this.EFFORT_INSTRUCTIONS,
+        criteria: { ...this.EFFORT_CRITERIA },
+      };
+    }
     return {
       model: modelId,
       state,
-      questions: {
-        tier: {
-          type: 'choice',
-          instructions: this.TIER_INSTRUCTIONS,
-          criteria,
-        },
-      },
+      questions,
     };
   }
 
   private static toTier(answer: any): TierLevel | null {
     const choice = typeof answer?.choice === 'string' ? answer.choice.trim().toLowerCase() : '';
     return (TIERS as string[]).includes(choice) ? (choice as TierLevel) : null;
+  }
+
+  /**
+   * Tolerant effort-answer parse: anything outside the 6-level ladder
+   * (garbled choice, missing answer object) yields undefined — never an
+   * error. A bad effort answer must not sink a good tier decision.
+   */
+  private static toEffort(answer: any): { effort: ReasoningEffort; confidence: number } | undefined {
+    const choice = typeof answer?.choice === 'string' ? answer.choice.trim().toLowerCase() : '';
+    if (!(EFFORT_LADDER as readonly string[]).includes(choice)) return undefined;
+    const raw = answer?.confidence;
+    const confidence = typeof raw === 'number' && Number.isFinite(raw)
+      ? Math.min(1, Math.max(0, raw))
+      : 0.9;
+    return { effort: choice as ReasoningEffort, confidence };
   }
 
   /**
@@ -156,6 +240,11 @@ export class Layer2Judge {
       return null;
     }
 
+    // ADR-0012: the effort question rides the same call only when the gate
+    // is on AND the client omitted `reasoning_effort` (an explicit client
+    // value is never second-guessed — asking would be a wasted answer).
+    const askEffort = config.effortDecision === true && request.reasoning_effort === undefined;
+
     // Extract recent conversational context for multi-turn awareness (last 4 turns)
     const messages = request.messages || [];
     const recentMessages = messages.length > 4 ? messages.slice(-4) : messages;
@@ -177,7 +266,7 @@ export class Layer2Judge {
 
     // reuse a prior identical-context decision before calling out
     const decisionCache = this.getDecisionCache(config);
-    const cacheKey = RoutingDecisionCache.buildCacheKey(this.CACHE_SOURCE, model.id, state);
+    const cacheKey = RoutingDecisionCache.buildCacheKey(this.cacheSource(askEffort), model.id, state);
     const cached = decisionCache.get(cacheKey);
     if (cached) {
       // Propagate the cached decision's code+params untouched; the cache hit
@@ -191,6 +280,8 @@ export class Layer2Judge {
         reasonParams: { ...cached.reasonParams, cached: true },
         provider: model.provider,
         model: model.id,
+        effort: cached.effort as ReasoningEffort | undefined,
+        effortConfidence: cached.effortConfidence,
       };
     }
 
@@ -207,6 +298,10 @@ export class Layer2Judge {
     // mid-flight) must never reach the capture sink — the deadline flag is
     // the only reliable "this answer was consumed" signal.
     let timedOut = false;
+    // Wire-attempt failure reason (console /auto surface): cache hits never
+    // reach this path and never overwrite the record — a cached serve does
+    // not heal the underlying wire problem, so the warning must stay.
+    let failureReason: string | undefined;
     const deadline = new Promise<null>((resolve) => {
       timer = setTimeout(() => {
         timedOut = true;
@@ -228,14 +323,22 @@ export class Layer2Judge {
         : undefined;
     const pending = runSystemoneDecision(
       registry,
-      this.buildRequest(state, model.id),
+      this.buildRequest(state, model.id, askEffort),
       model,
       { signal: controller.signal, upstreamEventContext: judgeCaptureCtx }
     )
       .then((decision) => {
         const answer = (decision.response as any)?.answers?.tier;
         const tier = this.toTier(answer);
-        if (!tier) return null;
+        if (!tier) {
+          failureReason = 'unparseable decision payload';
+          return null;
+        }
+        // Partial success (ADR-0012 §1): the effort answer parses
+        // tolerantly — a garbled/missing one never sinks a good tier.
+        const effortAnswer = askEffort
+          ? this.toEffort((decision.response as any)?.answers?.effort)
+          : undefined;
         // A native upstream's confidence is taken at face value, so a NaN or
         // out-of-range value would flow verbatim into RoutingDecision (where
         // JSON.stringify(NaN) silently becomes null on any serialized sink).
@@ -271,23 +374,46 @@ export class Layer2Judge {
           confidence,
           reason,
           reasonCode,
-          reasonParams: { model: model.id, tier },
+          reasonParams: { model: model.id, tier, ...(effortAnswer ? { effort: effortAnswer.effort } : {}) },
           provider: model.provider,
           model: model.id,
+          effort: effortAnswer?.effort,
+          effortConfidence: effortAnswer?.confidence,
           rawResponse: decision.response,
         } satisfies Layer2JudgeResult;
       })
-      .catch(() => null);
+      .catch((err: unknown) => {
+        failureReason = err instanceof Error ? err.message : String(err);
+        return null;
+      });
 
     try {
       const outcome = await Promise.race([pending, deadline]);
-      if (!outcome) return null;
+      if (!outcome) {
+        // Console-visible last-wire-attempt record (ADR-0011 observability):
+        // the /auto page shows the failure until a later attempt succeeds.
+        Layer2Judge.lastOutcome = {
+          ts: Date.now(),
+          modelId: model.id,
+          ok: false,
+          error: timedOut ? `timeout after ${timeoutMs}ms` : failureReason || 'decision failed',
+        };
+        return null;
+      }
+      Layer2Judge.lastOutcome = {
+        ts: Date.now(),
+        modelId: model.id,
+        ok: true,
+        latencyMs: Date.now() - startedAt,
+      };
       decisionCache.set(cacheKey, {
         targetTier: outcome.targetTier,
         confidence: outcome.confidence,
         reason: outcome.reason,
         reasonCode: outcome.reasonCode,
         reasonParams: outcome.reasonParams,
+        effort: outcome.effort,
+        effortConfidence: outcome.effortConfidence,
       });
       return outcome;
     } finally {

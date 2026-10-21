@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
-import { ExecutionResult, ReasoningEffort, EFFORT_LADDER, RoutingDecision, TIER_RANK, TierLevel, downgradeReasoning } from '../types/router.js';
+import { EffortSource, ExecutionResult, ReasoningEffort, EFFORT_LADDER, RoutingDecision, TIER_RANK, TierLevel, downgradeReasoning } from '../types/router.js';
 import { ModelRegistration, RouterConfig } from '../config/types.js';
 import { PromptOptimizer } from './prompt-optimizer.js';
 import { applyCompression } from '../compression/index.js';
@@ -659,6 +659,13 @@ export class PipelineOrchestrator {
     // Combo requests bypass the classifier entirely: the combo id IS the
     // explicit routing decision; targetTier here is a placeholder — the
     // executed member's real tier overwrites it after the pool run.
+    //
+    // ADR-0012 honesty snapshot: the CLIENT's wire value is captured before
+    // ANY gateway injection (routeAutoDecision's entry hit, the judge
+    // injection below, retry escalation, model defaultEffort). The local
+    // `requestedEffort` read later is the EFFECTIVE ask the machinery served
+    // against; `effortSource` says whose ask it was.
+    const clientEffort = normalizedRequest.reasoning_effort;
     const initialDecision: RoutingDecision = comboId
       ? {
           targetTier: 'plus',
@@ -670,6 +677,37 @@ export class PipelineOrchestrator {
           needsSchemaValidation: false,
         }
       : await this.routeAutoDecision(normalizedRequest, upstreamEventContext, sessionId, promptHash);
+
+    // ADR-0012 §1: judge-decided effort joins the request exactly like a
+    // route-entry hit — only into an omitted field (the judge is only ASKED
+    // when the client omitted it, so the guard is belt-and-braces), below a
+    // retry escalation (which fires later and overwrites).
+    if (
+      !comboId &&
+      initialDecision.layerUsed === 'layer2' &&
+      initialDecision.effort &&
+      normalizedRequest.reasoning_effort === undefined
+    ) {
+      normalizedRequest.reasoning_effort = initialDecision.effort;
+      initialDecision.reasonParams = {
+        ...(initialDecision.reasonParams ?? {}),
+        effort: initialDecision.effort,
+        ...(initialDecision.effortConfidence !== undefined ? { effortConfidence: initialDecision.effortConfidence } : {}),
+      };
+    }
+
+    // Provenance (ADR-0012 §2): whoever first filled the field after the
+    // snapshot owns the ask. The entry hit mutates the request INSIDE
+    // routeAutoDecision; the judge injection lands just above. Escalation
+    // and model-default writes re-attribute at their own sites below.
+    let effortSource: EffortSource | undefined =
+      clientEffort !== undefined
+        ? 'client'
+        : normalizedRequest.reasoning_effort !== undefined
+          ? initialDecision.layerUsed === 'entry'
+            ? 'entry'
+            : 'judge'
+          : undefined;
 
     // 3B. Retry-escalation proposal (ADR-0011): the repeated-prompt ladder
     // rides ON TOP of the base decision BEFORE the ratchet validates it — a
@@ -705,6 +743,7 @@ export class PipelineOrchestrator {
         // Same tier, deeper thinking. normalizedRequest.reasoning_effort is
         // read by the effort machinery BELOW — this write must land first.
         normalizedRequest.reasoning_effort = plan.effort;
+        effortSource = 'escalation'; // ADR-0012: failure-driven overwrite owns the ask
         initialDecision.reasonParams = { ...(initialDecision.reasonParams ?? {}), retry: 'effort', ...plan.reasonParams };
         appliedEscalation = true;
       } else if (plan.action === 'tier' && plan.tier && (TIER_RANK[plan.tier] ?? 0) > (TIER_RANK[initialDecision.targetTier] ?? 0)) {
@@ -909,6 +948,7 @@ export class PipelineOrchestrator {
     // X-OCR-Thinking-* observability) treats it as a normal request.
     if (normalizedRequest.reasoning_effort === undefined && actualModel.defaultEffort) {
       normalizedRequest.reasoning_effort = actualModel.defaultEffort;
+      effortSource = 'default'; // ADR-0012: the model pin owns the ask
     }
     const requestedEffort: ReasoningEffort | undefined = normalizedRequest.reasoning_effort;
     let actualEffort: ReasoningEffort | undefined;
@@ -1469,9 +1509,11 @@ export class PipelineOrchestrator {
         // Thinking-effort observability — the same values ExecutionResult
         // carries onto the X-OCR-Thinking-* headers; recorded per turn so
         // the console's session detail can show requested vs served levels.
+        // effortSource attributes the ask to its author (ADR-0012).
         requestedEffort,
         actualEffort,
         reasoningDegraded,
+        effortSource,
       },
       finops: {
         inputTokens: finalResponse!.usage?.prompt_tokens || 0,
@@ -1514,6 +1556,7 @@ export class PipelineOrchestrator {
       requestedEffort,
       actualEffort,
       reasoningDegraded,
+      effortSource,
       // Variant observability — route handlers read this to set the
       // X-OCR-Variant header (sibling `base-variant` / `base#variant`).
       variantUsed,

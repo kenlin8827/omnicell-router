@@ -19,6 +19,7 @@ export const AutoPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [savedNotice, setSavedNotice] = useState(false);
   const [modelOptions, setModelOptions] = useState<{ value: string; label: string }[]>([]);
+  const [judgeOutcome, setJudgeOutcome] = useState<{ ts: number; modelId: string; ok: boolean; error?: string } | null>(null);
 
   useEffect(() => {
     api.getConfig().then(data => {
@@ -31,6 +32,13 @@ export const AutoPage: React.FC = () => {
     api.listGatewayModels().then(ms =>
       setModelOptions(ms.filter(m => m.kind === 'model').map(m => ({ value: m.id, label: m.id })))
     ).catch(() => {});
+    // Last judge wire attempt — a failure stays visible until a real attempt
+    // succeeds (cache hits never clear it). Light poll so the warning tracks
+    // reality (e.g. a rate-limit reset makes it disappear on its own).
+    const poll = () => api.getJudgeOutcome().then(setJudgeOutcome).catch(() => {});
+    poll();
+    const t = setInterval(poll, 30_000);
+    return () => clearInterval(t);
   }, []);
 
   const handleSave = async () => {
@@ -169,6 +177,17 @@ export const AutoPage: React.FC = () => {
               <div style={{ fontSize: '11px', color: 'var(--accent-amber)', display: 'flex', alignItems: 'center', gap: '6px', lineHeight: 1.6 }}>
                 <TriangleAlert size={13} style={{ flexShrink: 0 }} />
                 <span>{t('auto.l2ModelUnset')}</span>
+              </div>
+            )}
+            {(layer2.enabled ?? false) && judgeOutcome && !judgeOutcome.ok && (
+              <div style={{ fontSize: '11px', color: 'var(--accent-red, #f87171)', display: 'flex', alignItems: 'flex-start', gap: '6px', lineHeight: 1.6, padding: '6px 8px', borderRadius: 6, border: '1px solid color-mix(in srgb, var(--accent-red, #f87171) 30%, transparent)', background: 'color-mix(in srgb, var(--accent-red, #f87171) 8%, transparent)' }}>
+                <TriangleAlert size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+                <span>
+                  {t('auto.judgeLastFail', {
+                    error: judgeOutcome.error || 'unknown',
+                    time: new Date(judgeOutcome.ts).toLocaleTimeString(),
+                  })}
+                </span>
               </div>
             )}
             {/* Distillation dataset — NOT the request-capture leg (that moved to

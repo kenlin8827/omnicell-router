@@ -79,6 +79,10 @@ export class RouterEngine {
           reasonCode: decisionResult.reasonCode,
           reasonParams: decisionResult.reasonParams,
           needsSchemaValidation,
+          // ADR-0012: the judge's effort answer (present only when the
+          // client omitted the field) — the orchestrator injects it.
+          effort: decisionResult.effort,
+          effortConfidence: decisionResult.effortConfidence,
         };
       }
     }

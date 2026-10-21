@@ -19,7 +19,7 @@ With Layer 1 and the flywheel deleted, the gateway had no memory between convers
 
 ### 2. Write whitelist — three producers, nothing else
 
-- `l2_confident`: a Layer 2 judgment at/above 0.85 confidence, recorded POST-success with the tier that ACTUALLY served (failover/cascade truth beats intent). Schema-cascade turns are skipped — the lite lead owns those tier outcomes.
+- `l2_confident`: a Layer 2 judgment at/above 0.85 confidence, recorded POST-success with the tier that ACTUALLY served (failover/cascade truth beats intent). Schema-cascade turns are skipped — the lite lead owns those tier outcomes. When the judge also decided the effort (ADR-0012), the SERVED `actualEffort` rides this same write — the table learns `{tier, effort}` bidirectionally (a fresh confident judgment overwrites a stale same-source row DOWN as readily as up).
 - `correction`: an escalated retry that the user ACCEPTED. Acceptance is observable exactly one way: a LATER message with a different prompt hash ("moved on"). Satisfied-and-left never writes back — accepted bounded loss. Confidence 1.0 (executed evidence).
 - `human`: a console edit. Confidence 1.0 and IMMUNE to automatic rewrite — operator intent outranks observed evidence; delete the row instead.
 

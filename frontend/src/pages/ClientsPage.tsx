@@ -792,6 +792,9 @@ export const ClientsPage: React.FC = () => {
                       }}
                       linkedCount={Object.keys(linkTagsOf(bindSel[c.name])).length}
                     />
+                    <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '8px' }}>
+                      {t('clients.piMetaHint')}
+                    </div>
                   </div>
                 )}
                 {supportsExtraModels(c.name) && (() => {

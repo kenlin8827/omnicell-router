@@ -161,24 +161,43 @@ const PinnedModelCell: React.FC<{ model: string }> = ({ model }) => {
  * gateway actually served. `requested→actual` in amber when the turn was
  * degraded below the ask (the same signal X-OCR-Thinking-Degraded carries);
  * '—' when no explicit level was in play or the trace predates the fields.
+ * A gateway-decided ask (ADR-0012: judge / experience entry / retry
+ * escalation / model default) carries the localized `auto·` prefix and a
+ * source line in the tooltip — a client ask renders bare.
  */
+const EFFORT_SOURCE_KEY = {
+  client: 'sessions.thinkSrcClient',
+  judge: 'sessions.thinkSrcJudge',
+  entry: 'sessions.thinkSrcEntry',
+  escalation: 'sessions.thinkSrcEscalation',
+  default: 'sessions.thinkSrcDefault',
+} as const;
+
 const EffortCell: React.FC<{ tr: TraceRecord }> = ({ tr }) => {
   const { t } = useI18n();
   const req = tr.execution.requestedEffort;
   const act = tr.execution.actualEffort;
+  const src = tr.execution.effortSource;
+  const tip =
+    t('sessions.colThinkTip') +
+    (src ? `\n${t('sessions.thinkSource', { source: t(EFFORT_SOURCE_KEY[src]) })}` : '');
   if (!req && !act) {
     return (
-      <span title={t('sessions.colThinkTip')} style={{ color: 'var(--text-dim)' }}>
+      <span title={tip} style={{ color: 'var(--text-dim)' }}>
         —
       </span>
     );
   }
   const degraded = tr.execution.reasoningDegraded === true;
+  const gatewayDecided = src !== undefined && src !== 'client';
   return (
     <span
-      title={t('sessions.colThinkTip')}
+      title={tip}
       style={{ color: degraded ? 'var(--accent-amber)' : 'var(--text-muted)' }}
     >
+      {gatewayDecided && (
+        <span style={{ color: 'var(--text-dim)' }}>{t('sessions.thinkAutoMark')}</span>
+      )}
       {degraded && req && act && req !== act ? `${req}→${act}` : act ?? req}
     </span>
   );

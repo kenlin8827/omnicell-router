@@ -430,6 +430,9 @@ export interface TraceRecord {
     requestedEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
     actualEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
     reasoningDegraded?: boolean;
+    /** WHO authored the ask (ADR-0012): 'client' or a gateway decision
+     *  (judge / entry / escalation / model default). Absent on old rows. */
+    effortSource?: 'client' | 'judge' | 'entry' | 'escalation' | 'default';
   };
   finops: {
     inputTokens: number;
@@ -1067,6 +1070,20 @@ export const api = {
   async deleteRouteEntry(hash: string): Promise<void> {
     const res = await fetch(`/api/admin/route-entries/${encodeURIComponent(hash)}`, { method: 'DELETE' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  },
+
+  /** Last REAL judge wire attempt (cache hits never overwrite it). */
+  async getJudgeOutcome(): Promise<{
+    ts: number;
+    modelId: string;
+    ok: boolean;
+    error?: string;
+    latencyMs?: number;
+  } | null> {
+    const res = await fetch('/api/admin/judge/outcome');
+    if (!res.ok) return null;
+    const json = await res.json();
+    return json?.outcome ?? null;
   },
 
   async getConfig(): Promise<any> {

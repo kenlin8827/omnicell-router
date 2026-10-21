@@ -7,6 +7,14 @@ export interface RoutingDecisionCacheEntry {
   reason: string;
   reasonCode: string;
   reasonParams?: ReasonParams;
+  /**
+   * Judge-decided effort answer (ADR-0012) — present only on entries
+   * recorded while `effortDecision` was on AND the client omitted the
+   * field. The cache key namespace splits on that flag, so an entry
+   * recorded under one mode is never served under the other.
+   */
+  effort?: string;
+  effortConfidence?: number;
   cachedAt: number;
   hits: number;
 }
@@ -75,7 +83,7 @@ export class RoutingDecisionCache {
     return entry;
   }
 
-  public set(key: string, value: { targetTier: string; confidence: number; reason: string; reasonCode: string; reasonParams?: ReasonParams }): void {
+  public set(key: string, value: { targetTier: string; confidence: number; reason: string; reasonCode: string; reasonParams?: ReasonParams; effort?: string; effortConfidence?: number }): void {
     if (!this.config.enabled) return;
     while (this.entries.size >= this.config.maxEntries) {
       const oldest = this.entries.keys().next().value;

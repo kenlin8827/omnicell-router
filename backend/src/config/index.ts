@@ -52,6 +52,7 @@ const DEFAULT_CONFIG: RouterConfig = {
       // `systemone.defaultModel`.
       timeoutMs: 1500,
       collectEnabled: false, // dataset sampling: judged decisions → data/layer2-decisions.jsonl (single-key gate, opt-in)
+      effortDecision: false, // judge also decides the thinking level (ADR-0012) — spends thinking tokens, opt-in
     },
   },
   routeEntries: {
@@ -708,6 +709,7 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'classifier.layer2.timeoutMs': '判定超时（毫秒，超时回落到默认 plus 梯队）',
   'classifier.layer2.decisionCache': '判定决策缓存（相同上下文复用判定结果）',
   'classifier.layer2.collectEnabled': 'L2 裁判决策样本采集开关（默认 false 关闭）：单键门控，落盘 data/layer2-decisions.jsonl（不进捕捉页），64MB 封顶后停写并告警一次；热生效',
+  'classifier.layer2.effortDecision': 'L2 裁判思考级别判定开关（默认 false 关闭，ADR-0012）：开启后裁判在同一次调用中同时判定梯队与思考级别，仅对省略 reasoning_effort 的请求补位（客户端显式值永远优先），判定结果逐轮浮动不进会话棘轮；注意裁判抬档会多花思考 token 费用',
   routeEntries: '路由经验表（ADR-0011）：按归一化 prompt 记忆历史路由档位，重复提问自动升档；enabled 关闭即整个子系统停用（查询/写入/审计台账全停）',
   'routeEntries.enabled': '经验表总开关（查询、白名单写入与审计台账）；保存后即时生效',
   'routeEntries.snippetEnabled': '是否存 prompt 前 200 字符片段供控制台浏览/人工识别（隐私敏感，默认开；关闭只影响新写入，不删除已存片段）',
