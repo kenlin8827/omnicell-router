@@ -2,14 +2,14 @@
 
 <div align="center">
 
-**面向 [OpenCode](https://opencode.ai) 的生产级智能级联路由与 FinOps 成本优化网关。**
+**面向 [OpenCode](https://opencode.ai) 与通用大模型客户端的生产级智能级联路由器与 FinOps 网关。**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Runtime](https://img.shields.io/badge/Runtime-Bun%20%7C%20Node.js-blue.svg)](https://bun.sh)
 [![OpenAI Compatible](https://img.shields.io/badge/API-OpenAI%20Compatible-green.svg)](https://platform.openai.com/docs/api-reference)
-[![FinOps](https://img.shields.io/badge/成本优化-70%25%20~%2090%25-orange.svg)]()
+[![FinOps](https://img.shields.io/badge/Cost%20Optimization-70%25%20~%2090%25-orange.svg)]()
 
-**[快速上手](#快速上手)** · **[客户端配置接入](#客户端配置接入)** · **[核心特性](#特性)** · **[开发者深度指南](DEVELOPMENT.zh-CN.md)** · **[English](README.md)**
+**[快速开始](#快速开始)** · **[客户端接入](#客户端接入)** · **[架构与核心特性](#核心特性)** · **[开发者指南](DEVELOPMENT.zh-CN.md)** · **[English Version](README.md)**
 
 </div>
 
@@ -17,75 +17,90 @@
 
 ## 什么是 OneCastRouter (OCR)？
 
-**OneCastRouter (OCR)** 是一个高性能、本地优先的智能 LLM API 级联路由网关。它与本地运行的 **OpenCode v2** 原生联动，让您无需在任何客户端中硬编码或暴露上游供应商的 API Key，同时通过**智能模型分层、多轮会话单调递增锁、上游 KV 缓存保护以及本地语法断言**，在不牺牲回答质量的前提下，将大模型 API 开销降低 **70% 至 90%**。
+**OneCastRouter (OCR)** 是一个高性能、本地优先的 LLM API 级联路由、韧性编排与 FinOps 治理网关。它将不同上游服务商（OpenAI、Anthropic、DeepSeek、Moonshot/Kimi、阿里云百炼 DashScope、Ollama 及兼容 OpenAI 协议的私有服务）统一整合为多梯队智能级联资源池。
+
+通过编排**规则直通快道**、**RouteEntry 持久化经验表**、可选的 **System One 语义裁判模型**、**单调会话棘轮**、**两阶段抖动就地重试与上游 KV Cache 保护**以及 **Token Saver 压缩套件**，OneCastRouter 在保障多轮复杂开发长对话逻辑质量零劣化的前提下，降低 **70% 至 90%** 的 API 费用支出。
 
 ---
 
-## 特性
+## 核心特性
 
-- **💸 70% ~ 90% 成本削减**：简单指令与模式抽取毫秒级由轻量模型承接；复杂编程与高难度逻辑自动、无感升档至顶配旗舰模型。
-- **⚡ 免密钥上游代理**：秒级直连本地 OpenCode v2 守护进程，自动拉取已配置的 90+ 活跃模型、凭据与 Token 计费阶梯，客户端完全免配 API Key。
-- **🔒 多轮对话单调递增锁（只升不降）**：会话一旦升级至旗舰模型，后续轮次绝不降级至低阶小模型，根除模型乱切带来的“智力骤降”与幻觉。
-- **🛡️ 工业级模型熔断与透明容灾 (Circuit Breaker & Failover)**：精准错误解构（402 余额不足硬熔断 12 小时、5xx 连续宕机阶梯退避最高 5 小时、429 频控自适应退避），同 Tier 备选模型毫秒级透明自动故障转移，会话钉扎按配置/健康双力驱逐迁移（Session-Pin Eviction），保障 99.99% 企业级高可用。
-- **🚀 经济感知型两层重试与 KV Cache 极致保护 (In-Place Retry & Failover - ADR-0005)**：针对瞬时 5xx 网关毛刺执行原地抖动重试，100% 挽救上游 KV 缓存状态并避免 10x 账单暴涨；同级优先遍历、向上升档保活与严格反向防降级（Anti-Downgrade），兼顾系统高可用与产研代码智力底线。
-- **💾 上游 KV Cache 极致保护**：多轮会话物理锁定在完全相同的模型实例上，大幅提高 OpenAI、Anthropic、DeepSeek 等上游厂商的 Prefill 缓存命中率（80%~95%），极速响应并节省缓存开销。
-- **🎯 零 Header 前缀链指纹识别**：无需客户端传递任何自定义 Header，基于历史对话前缀链哈希，自动精准追踪多轮会话生命周期。
-- **🛡️ 本地静态 Schema 断言与静默重试**：结构化 JSON 输出任务由轻量模型先发执行，若本地 AST / Schema 校验不通过，自动携带报错上下文静默升档至旗舰模型修复重试。
-- **🔌 100% 兼容 OpenAI 协议**：无缝作为 Cursor、VS Code、Chatbox、NextChat、LobeChat、LangChain 及各种官方 SDK 的代理中转。
+- **💸 降低 70% ~ 90% API 支出**：琐碎、简短、结构化提取类请求毫秒级直通轻量 micro 级模型；复杂工程架构与算法逻辑自动升阶至 plus/pro/ultra 主力模型。
+- **⚡ 原生 OpenCode v2 集成与免密透传**：无缝连接本地 OpenCode 守护进程或 OCR 凭证中心，自动同步 90+ 模型目录与凭证，客户端零手动配置。
+- **🧠 经验驱动智能分发 (ADR-0011)**：持久化提示词级经验表（`data/route-entries.json`），高频复现提示词直接命中经验短路判决，节省裁判模型开销。
+- **🎯 System One 裁判与推理强度联合判决 (ADR-0012)**：上下文感知语义裁判单次调用同时决策目标层级与思考预算（`{tier, effort}`），并提供完整的决策溯源标头。
+- **🔒 单调会话棘轮与接入模式自治 (ADR-0002, ADR-0014)**：多轮对话“只升不降”，防止上下文被轻量模型污染导致逻辑降智。仅 `auto` 系列支持网关智能调级，强制层级与具体模型指令严格忠实执行。
+- **📈 重复重试递进升级阶梯 (ADR-0011)**：会话中重复发送相同 Prompt 被识别为结果未满足，自动启动阶梯升级：第 1 次重试追加 reasoning effort，第 2+ 次重试跨梯队升阶模型。
+- **🛡️ 两阶段就地重试与 KV 缓存屏障 (ADR-0005)**：面对上游 5xx 与超时偶发波动，优先在原模型实例就地抖动重试，保护 100% 预热 KV 缓存，避免上下文重建引发 10 倍费用骤增。
+- **🩺 分层韧性熔断治理体系 (ADR-0004)**：精准分类 7 大上游故障（`quota`, `auth`, `rate_limit`, `server_error`, `timeout`, `network`, `bad_request`），在 `model`、`credential` 与 `(model, credential)` 对维度实现隔离熔断。
+- **📊 实时调用故障事件账本 (ADR-0013)**：环形缓冲区与 SQLite 持久化镜像记录所有上游调用失败，具备 10 秒风暴聚合能力，并在 Web 控制台提供可视化治理。
+- **🗜️ Token Saver 压缩管道**：内置工具输出确定性截断压缩（`rtk`）、神经语义上下文压缩 Sidecar（`headroom`）以及精简系统提示注入（`caveman`）。
+- **🔍 声明式 Quota 额度探测 (ADR-0009)**：内置包含 12 项语法的 DSL 引擎，非阻塞异步探测上游服务商余额与额度窗口。
+- **🔌 多协议全面兼容 (ADR-0008)**：即插即用兼容 OpenAI Chat Completions、Anthropic Messages 以及 OpenAI Responses API 规范。
 
 ---
 
-## 快速上手
+## 快速开始
 
 ### 1. 环境依赖
-* **OpenCode v2**：必需。OCR 面向 opencode v2（provider 配置写在 `providers` 节点，凭证存放在 `opencode.db` 及其 HTTP 服务）。**不支持 opencode v1**：在 v1 机器上 OCR 仍可运行，但会降级——provider 与密钥由 OCR 自有凭证库（`~/.onecast-router/credentials.json`）管理，而 opencode v1 读不到它，因此这些配置只服务于 OCR 网关。控制台会显示明确的告警徽章。升级到 opencode v2 即可共享同一份凭证真相。
-* **Bun**（推荐，极致速度）：`>= 1.0`，或 **Node.js**：`>= 18`。
+* **Bun**（推荐）：`>= 1.0`，或 **Node.js**：`>= 18`。
+* **OpenCode v2**（可选但推荐）：自动同步本地上游服务商配置、密钥及计费目录。
 
-### 2. 安装
+### 2. 源码下载与依赖安装
 ```bash
 # 克隆仓库
 git clone https://github.com/kenlin8827/onecast-router.git
 cd onecast-router
 
-# 使用 Bun 安装依赖 (推荐)
+# 使用 Bun 安装依赖（推荐）
 bun install
 
-# 或使用 npm 安装
+# 或使用 npm
 npm install
 ```
 
-### 3. 配置
-每个环境拥有自己的配置文件——默认环境位于 `~/.onecast-router/envs/default/config.yaml`。首次启动会自动写入一份带注释的模板；如果想用完整示例配置起步，复制到该位置即可：
+### 3. 项目编译
+```bash
+# 编译前后端
+bun run build
+
+# 或使用 npm
+npm run build
+```
+
+### 4. 环境配置
+每个环境管理独立的配置账本（配置、凭据、会话与日志）。默认环境目录位于 `~/.onecast-router/envs/default/config.yaml`。初次启动网关将自动根据自解释模板创建该文件。若需手动配置：
 ```bash
 mkdir -p ~/.onecast-router/envs/default
 cp config.example.yaml ~/.onecast-router/envs/default/config.yaml
 ```
-> 💡 **提示**：上游模型和密钥完全由本地 OpenCode 自动托管，`config.yaml` 默认开箱即用，无需填入任何模型密钥！
 
-> 📦 **多环境**：`~/.onecast-router/envs/<name>/` 下每套环境都是完全独立的一整套（配置、密钥、会话、抓包互不共享）。用 `ocr env create <name>` / `ocr env use <name>`，或控制台 `/environments` 页面管理；切换环境会重启网关。
+> 📦 **多环境管理**：通过命令行（`bin/ocr env use <name>`）或 Web 控制台 `/environments` 页面自由切换独立配置账本。切换时执行受控热重启。
 
-> ⚙️ **引导开关**：`OCR_ENV`（启动哪套环境）与 `OCR_HOME`（状态根目录，默认 `~/.onecast-router`）**只从进程环境变量读取**——OCR 没有 `.env` 文件加载机制。需要临时隔离实例时：`OCR_HOME=/tmp/ocr-scratch bun run ocr start`。日常切换环境请用 `ocr env use <name>`（或控制台页面），它写入 `~/.onecast-router/envs/current` 指针。
+> ⚙️ **运行期环境变量**：通过 `OCR_HOME` 自定义根数据目录（默认 `~/.onecast-router`），通过 `OCR_ENV` 指定启动的目标环境。
 
-### 4. 启动网关
+### 5. 启动网关
 ```bash
-# 使用 Bun 运行 (开发/生产均可，带热重载)
-bun run dev:bun
+# 使用 Bun 启动（推荐）
+bun run start:bun
 
-# 或使用 Node.js 运行
-npm run dev
+# 或使用 Node.js 启动
+npm run start
+
+# 热重载开发模式
+bun run dev
 ```
-网关默认监听在 `http://127.0.0.1:3000`。
+网关默认监听于 `http://127.0.0.1:3000`。浏览器访问 `http://127.0.0.1:3000/admin` 打开管理控制台。
 
-### 5. 探活验证
-打开终端执行以下命令，验证服务状态与 OpenCode 模型同步情况：
+### 6. 健康检查验证
 ```bash
 curl http://127.0.0.1:3000/health
 ```
-返回示例：
+响应示例：
 ```json
 {
   "status": "healthy",
-  "version": "1.0.0",
+  "version": "0.0.1",
   "modelsCount": 94,
   "timestamp": 1727622400000
 }
@@ -93,46 +108,44 @@ curl http://127.0.0.1:3000/health
 
 ---
 
-## 客户端配置接入
+## 客户端接入
 
-OneCastRouter (OCR) 完全兼容 OpenAI 协议标准，只需将客户端的 **API Base URL** 指向本网关即可。
+OneCastRouter 提供标准的 OpenAI 与 Anthropic 兼容端点，配置极为简单：
 
 ### 1. Cursor IDE
-在 Cursor 中接入无需任何额外插件：
-1. 打开 Cursor 设置：`Settings` -> `Models`。
-2. 开启 `OpenAI API Key` 选项，密钥填入任意字符串（如 `sk-ocr`）。
+1. 打开设置：`Settings` -> `Models`。
+2. 开启 `OpenAI API Key`，输入任意占位符字符串（如 `sk-ocr`）。
 3. 展开 `Override OpenAI Base URL`，填入：
    ```
    http://127.0.0.1:3000/v1
    ```
-4. 在模型列表输入并勾选推荐虚拟模型：`auto`。
+4. 在模型选择列表中，添加并选中虚拟模型：`auto`。
 
-### 2. Chatbox / NextChat / LobeChat
-以 NextChat (ChatGPT-Next-Web) 或 Chatbox 为例：
-1. **接口地址 (API URL)**：`http://127.0.0.1:3000`（或 `http://127.0.0.1:3000/v1`）。
-2. **API Key**：填入任意内容（若在 `config.yaml` 中配置了 `adminApiKey`，则填入该密钥）。
-3. **模型 (Model)**：选择或自定义输入 `auto`。
+### 2. Claude Code / OpenCode CLI / Chatbox
+1. **API Base URL**: `http://127.0.0.1:3000/v1`
+2. **API Key**: 任意占位符字符串（或已配置的 `adminApiKey`）。
+3. **Model**: 输入 `auto`（或显式层级别名如 `auto-plus`）。
 
-### 3. Python 官方 SDK
+### 3. Python SDK
 ```python
 from openai import OpenAI
 
 client = OpenAI(
     base_url="http://127.0.0.1:3000/v1",
-    api_key="sk-ocr"  # 任意占位符
+    api_key="sk-ocr"
 )
 
 response = client.chat.completions.create(
-    model="auto",  # 智能四步级联自动路由
+    model="auto",
     messages=[
-        {"role": "user", "content": "请写一个通用的 TypeScript 防抖函数并附带单元测试。"}
+        {"role": "user", "content": "请用 TypeScript 实现一个支持防抖与取消的通用泛型函数，并附带单元测试。"}
     ]
 )
 
 print(response.choices[0].message.content)
 ```
 
-### 4. Node.js / TypeScript 官方 SDK
+### 4. Node.js / TypeScript SDK
 ```typescript
 import OpenAI from 'openai';
 
@@ -142,13 +155,13 @@ const openai = new OpenAI({
 });
 
 async function main() {
-  const completion = await openai.chat.completions.create({
+  const stream = await openai.chat.completions.create({
     model: 'auto',
-    messages: [{ role: 'user', content: '解释量子计算的基本原理。' }],
+    messages: [{ role: 'user', content: '详细解释分布式系统中的 Paxos 与 Raft 协议差异。' }],
     stream: true,
   });
 
-  for await (const chunk of completion) {
+  for await (const chunk of stream) {
     process.stdout.write(chunk.choices[0]?.delta?.content || '');
   }
 }
@@ -156,194 +169,134 @@ async function main() {
 main();
 ```
 
-### 5. cURL 命令行直接调用
-```bash
-curl http://127.0.0.1:3000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "auto",
-    "messages": [
-      {"role": "user", "content": "9.11 和 9.8 哪个数字更大？简要解释理由。"}
-    ]
-  }'
-```
-
 ---
 
-## 虚拟模型列表
+## 模型寻址与虚拟梯队
 
-OneCastRouter (OCR) 在暴露上游全部原生模型的同时，提供了开箱即用的**虚拟级联模型**：
+网关支持四类寻址模态（ADR-0003, ADR-0014）：
 
-| 模型名称 | 定位与适用场景 | 计费成本区间 |
+| 模型标识 (ModelRef) | 类别 | 路由行为与 FinOps 特征 |
 | :--- | :--- | :--- |
-| **`auto`** <br>*(强烈推荐默认)* | **全自动智能级联路由**：自动识别任务复杂度、语法规范及多轮对话历史，动态分派最合适且最具性价比的模型。 | 节省 70% ~ 90% |
-| **`auto-lite`** | **强制指定极速低成本层**：针对大批量浅层信息抽取、日常问候、简单翻译。 | 约 $0.10 ~ $0.50 / M Tokens |
-| **`auto-plus`** | **强制指定中坚全能主力层**：针对常规系统架构设计、长代码生成与严谨业务分析。 | 约 $2.00 ~ $3.00 / M Tokens |
-| **`auto-pro`** | **强制指定高阶推理专家层**：针对高难度形式化逻辑证明、深思考难题与长时程 agent 任务。 | 约 $3.00 ~ $8.00 / M Tokens |
-| **`auto-ultra`** | **强制指定旗舰之上顶级档**：小时级自治 agent 任务、旗舰推理极限挑战。 | ≥ $8.00 / M Tokens |
-| *上游物理模型名* | 直接透传调用上游的具体物理模型（如 `kimi-k2.7-code`, `deepseek-chat`）。 | 按上游标准定价实报实销 |
-| *自定义模型组合* | **用户自由编排的虚拟模型**（`config.combos`）：直接以 combo id 作为 model 调用，网关按主选策略（priority / weighted / round_robin）选首选，故障转移严格限制在配置成员内。每个成员独立享有熔断/重试语义；不参与会话棘轮，绝不跨组合扩员。 | 成员定价加总 |
+| **`auto`** / **`default`** | 智能级联模型 | **完整级联管线**：分析输入特征、检索 RouteEntry 经验表、可选调用裁判模型，并受单调会话棘轮保护，节约 70%~90% 成本。 |
+| **`auto-lite`** | 强制轻量梯队 | 强制路由至 `lite` 微模型池（~$0.10 ~ $0.50 / M tokens），适合简单翻译、代码补全、格式化提取。 |
+| **`auto-plus`** | 强制主力梯队 | 强制路由至 `plus` 标准主力池（~$2.00 ~ $3.00 / M tokens），默认通用工程代码主力基准线。 |
+| **`auto-pro`** | 强制专家梯队 | 强制路由至 `pro` 深度推理专家池（~$3.00 ~ $8.00 / M tokens），解决数学推演、长上下文架构重构。 |
+| **`auto-ultra`** | 强制前沿梯队 | 强制路由至 `ultra` 前沿顶尖池（≥ $8.00 / M tokens），支撑多文件全自主智能体长循环。 |
+| *Custom Combos* | 自定义组合池 | 依照设定策略（`priority`, `weighted`, `round_robin`）在组合成员内分发，成员故障严格在池内故障转移。 |
+| *物理模型* | 直连穿透调用 | 任意已注册物理模型名（如 `deepseek-chat`, `kimi-k2.7-code`），绕过梯队仲裁直接透传上游。 |
 
-组合在 `config.yaml` 中定义（也可在控制台 `/combos` 页可视化编辑，保存后即时生效）：
+---
 
-```yaml
-combos:
-  - id: my-combo            # 客户端可见的虚拟模型名
-    selection: weighted     # priority 配置顺序 | weighted 加权随机 | round_robin 轮询
-    models:
-      - kimi-k2.7-code      # 简写字符串 = weight 1
-      - id: deepseek-chat
-        weight: 3           # weighted/round_robin 份额
+## 级联仲裁管道架构
+
+请求调度分四个严密步骤执行：
+
+```
+                      客户端请求 (Chat Completions / Anthropic Messages / Responses)
+                                                    │
+                                                    ▼
+                     [Step 1: 特征解析与会话前缀指纹识别]
+                      - 基于 SHA-256 前缀链式哈希的零 Header 会话识别
+                      - 保证规范字节序，最大化上游服务商 KV Prompt Cache
+                                                    │
+                                                    ▼
+                     [Step 2: 级联梯队与思考强度决策管道]
+             ┌───────────────────────────────────────────────────────────────┐
+             │ Layer 0: 明确规则与请求级直通                                 │
+             │  - 客户端 force_tier / combo / auto-* 强制层级 / 模式杠杆    │
+             └───────────────────────────────┬───────────────────────────────┘
+                                             │ (无显式规则直通)
+                                             ▼
+             ┌───────────────────────────────────────────────────────────────┐
+             │ RouteEntry 持久化经验表检索 (ADR-0011)                        │
+             │  - SHA-256 提示词哈希命中直接短路判决                         │
+             │  - 写入权重：人工编辑 > 重试纠偏 > 高置信度裁判               │
+             └───────────────────────────────┬───────────────────────────────┘
+                                             │ (未命中经验表)
+                                             ▼
+             ┌───────────────────────────────────────────────────────────────┐
+             │ Layer 2: System One 语义裁判模型 (ADR-0012, 默认关闭需开启)   │
+             │  - 上下文感知意图难度评估                                     │
+             │  - 单次调用联合判决 {tier, effort}                            │
+             └───────────────────────────────┬───────────────────────────────┘
+                                             │ (裁判未启用 / 缺失 / 超时故障)
+                                             ▼
+             ┌───────────────────────────────────────────────────────────────┐
+             │ 兜底基准线：硬编码 'plus' 梯队（防降智质量防线）               │
+             └───────────────────────────────────────────────────────────────┘
+                                                    │
+                                                    ▼
+                     [Step 3: 多轮对话单调会话棘轮 (ADR-0002)]
+                      - 只升不降策略：会话严禁中途向廉价层级降级
+                      - 锁定物理模型实例，确保高命中率 KV 缓存
+                                                    │
+                                                    ▼
+                     [Step 4: 直接池化执行与故障转移 (ADR-0005)]
+                      - 遭遇 5xx/超时优先原实例就地抖动重试
+                      - 同层级候选故障转移，受控向上升级
+                      - 失败事件记录至环形缓冲与 SQLite 持久化账本
 ```
 
 ---
 
-## 运维观测与 FinOps 大盘
+## 可观测性与 FinOps 诊断
 
-### 1. 响应诊断头（Response Headers）
-每次 API 调用均会在 HTTP 响应头中注入详细的 FinOps 性能与成本诊断信息：
-* `X-OCR-Tier`：本次实际承接调用的模型层级（`lite`, `plus`, `pro`, `ultra`）。
-* `X-OCR-Model`：实际承接推理的上游模型 ID（例如 `volcengine/kimi-k2.7-code`）。
-* `X-OCR-Failover`：是否触发了同 Tier 上游故障自动转移（`true` / `false`）。
-* `X-OCR-Failover-Attempts`：本次请求尝试调用的模型候选数量（如 `1` 为首次直接成功，`2` 为主模型故障后备用模型成功接管）。
-* `X-OCR-Failover-Path`：故障转移的完整模型调用链路（例如 `primary-plus -> secondary-plus`）。
-* `X-OCR-Breaker-State`：承接模型当前的熔断器健康状态（`CLOSED`, `HALF_OPEN`）。
-* `X-OCR-Session-ID`：自动计算出的会话唯一哈希指纹。
-* `X-OCR-Session-Ratchet`：是否触发了多轮只升不降棘轮锁死（`true` / `false`）。
-* `X-OCR-Trace-ID`：本次请求在网关中记录的唯一轨迹 ID（例如 `trace_8df3e29a...`）。
-* `X-OCR-Cost-USD`：本次调用实际产生的费用。
-* `X-OCR-Saved-USD`：相比全程使用旗舰基准模型所**节约的金额**。
-* `X-OCR-Latency-MS`：端到端整体网关路由与执行耗时。
+### 1. HTTP 响应诊断标头
+每次网关调用均返回完整的调用链路诊断标头：
+* `X-OCR-Trace-ID`: 本轮请求的全局唯一跟踪 ID。
+* `X-OCR-Tier`: 实际调用的目标梯队（`lite`, `plus`, `pro`, `ultra`）。
+* `X-OCR-Model`: 最终调用的物理模型标识。
+* `X-OCR-Thinking-Effort`: 生效的思考预算（`low`, `medium`, `high`, `max`）。
+* `X-OCR-Thinking-Source`: 思考预算决策来源（`client`, `judge`, `entry`, `escalation`, `default`）。
+* `X-OCR-Failover`: 是否触发了故障转移（`true` / `false`）。
+* `X-OCR-Failover-Attempts`: 取得成功前尝试的模型次数。
+* `X-OCR-Breaker-State`: 执行实例的熔断器状态（`CLOSED`, `HALF_OPEN`）。
+* `X-OCR-Session-ID`: 计算出的零标头会话 ID。
+* `X-OCR-Session-Ratchet`: 本轮是否被单调棘轮锁定（`true` / `false`）。
+* `X-OCR-Cost-USD`: 本次请求实际花费金额（美元）。
+* `X-OCR-Saved-USD`: 相较于 plus 基准模型所节约的金额。
+* `X-OCR-Latency-MS`: 网关端到端处理耗时（毫秒）。
 
-### 2. 会话状态与轨迹观测端点
+### 2. 核心管理接口一览
 
-#### 🔍 查看所有活跃会话 `GET /v1/sessions`
-```bash
-curl http://127.0.0.1:3000/v1/sessions
-```
-
-#### 📌 查看单个会话详情 `GET /v1/sessions/:id`
-查询指定会话当前的最高锁定层级、物理固定模型、交互轮数与最近 5 轮轨迹摘要：
-```bash
-curl http://127.0.0.1:3000/v1/sessions/sess_8df3e29a...
-```
-
-#### 📜 按会话查询完整调用轨迹 `GET /v1/sessions/:id/traces`
-获取该会话自开始以来**每一轮的完整调用轨迹**（含每轮意图、路由判定层级、实际承接模型、耗时及 FinOps 损益）：
-```bash
-curl http://127.0.0.1:3000/v1/sessions/sess_8df3e29a.../traces
-```
-
-#### 🌐 全局请求轨迹查询 `GET /v1/traces`
-支持通过 `?session_id=...` 过滤特定会话，或通过 `?limit=50&offset=0` 分页查询全网关最近的路由决策日志：
-```bash
-curl "http://127.0.0.1:3000/v1/traces?limit=20"
-```
-
-#### 🔬 单次请求轨迹透视 `GET /v1/traces/:id`
-根据响应头中的 `X-OCR-Trace-ID` 查询单次请求的深度调用轨迹：
-```bash
-curl http://127.0.0.1:3000/v1/traces/trace_8df3e29a...
-```
-
-#### 🗑️ 重置/清除特定会话 `DELETE /v1/sessions/:id`
-清除指定会话状态及其轨迹记录，方便客户端从头开启全新上下文：
-```bash
-curl -X DELETE http://127.0.0.1:3000/v1/sessions/sess_8df3e29a...
-```
-
-### 3. 实时经济学大盘 `GET /v1/metrics`
-实时查看整个网关当前的累计调用量、节约成本百分比、各层级流量分布及缓存命中率：
-```bash
-curl http://127.0.0.1:3000/v1/metrics
-```
-```json
-{
-  "totalRequests": 1280,
-  "cacheHits": 420,
-  "cacheHitRatePct": 32.8,
-  "fallbackCount": 18,
-  "tierDistribution": {
-    "lite": { "count": 960, "pct": 75.0 },
-    "plus": { "count": 270, "pct": 21.09 },
-    "pro": { "count": 50, "pct": 3.91 }
-  },
-  "economics": {
-    "actualCostUsd": 0.512,
-    "baselineCostUsd": 4.620,
-    "totalSavingsUsd": 4.108,
-    "savingsPct": 88.92
-  }
-}
-```
-
-### 4. 熔断器状态大盘与管理
-#### 🩺 查询所有模型熔断状态 `GET /v1/health/circuit-breakers`
-实时查看所有已注册模型的健康态、熔断原因、剩余冷却时长与调用计数：
-```bash
-curl http://127.0.0.1:3000/v1/health/circuit-breakers
-```
-```json
-{
-  "object": "circuit_breaker_summary",
-  "total": 3,
-  "healthy": 2,
-  "tripped": 1,
-  "breakers": [
-    {
-      "modelId": "claude-3-5-sonnet",
-      "state": "OPEN",
-      "reason": "Quota or balance exhausted for model 'claude-3-5-sonnet'",
-      "category": "QUOTA_EXHAUSTED",
-      "remainingCooldownMs": 43190000
-    }
-  ]
-}
-```
-
-#### 🔄 管理员手动复位熔断器 `POST /v1/health/circuit-breakers/reset`
-在上游账户完成充值或厂商故障排除后，立即复位熔断器重回 CLOSED 健康状态（支持通过 `?model=...` 复位特定模型）：
-```bash
-curl -X POST http://127.0.0.1:3000/v1/health/circuit-breakers/reset
-```
+| 接口端点 | 方法 | 作用说明 |
+| :--- | :--- | :--- |
+| `/api/admin/status` | `GET` | 网关综合状态：熔断器、已注册模型、实时统计、环境账本。 |
+| `/api/admin/usage` | `GET` | 聚合 Token 使用量与分 API 密钥消耗详情。 |
+| `/api/admin/quota` | `GET` | 实时额度探测计划、各服务商凭据额度快照及额度事件账本。 |
+| `/api/admin/quota/refresh` | `POST` | 使凭据额度缓存失效并立刻触发重新探测。 |
+| `/api/admin/route-entries` | `GET` | 分页浏览持久化 RouteEntry 经验表。 |
+| `/api/admin/route-entries/:hash` | `PATCH` | 人工手动覆盖指定提示词哈希的目标层级与思考预算。 |
+| `/api/admin/route-entries/:hash` | `DELETE` | 删除经验表中的指定条目。 |
+| `/api/admin/failure-events` | `GET` | 查询上游物理模型调用失败事件账本（支持过滤）。 |
+| `/api/admin/failure-events/clear` | `POST` | 清空内存环与 SQLite 持久化故障事件记录。 |
+| `/api/admin/health/circuit-breakers/reset` | `POST` | 手动重置处于熔断状态的模型、凭据或对熔断器。 |
+| `/v1/sessions` | `GET` | 查看活跃多轮会话状态、锁定梯队与绑定模型。 |
+| `/v1/traces` | `GET` | 分页查询请求执行轨迹。 |
+| `/v1/metrics` | `GET` | 查看实时 FinOps 统计、梯队流量占比与累计成本节约。 |
 
 ---
 
-## 常见问题 (FAQ)
+## 常见问题
 
-### Q1: 我需要自己注册模型供应商并充值 API Key 吗？
-**不需要**。OneCastRouter (OCR) 原生直连您本地已经配置并运行良好的 OpenCode v2 实例。OpenCode 中已配置好的所有可用模型和配额，OneCastRouter 会自动同步并直接代理。
+### Q1: OneCastRouter 需要在配置文件中重复填写各大厂商 API Key 吗？
+**不需要**。OneCastRouter 以 `<ocrHome>/custom-providers.json` 和 `credentials.json` 为统一真实源，并与本地 OpenCode v2 双向自动同步。下游客户端调用时仅需使用任意占位 Key 或管理控制台配置的密钥即可。
 
-### Q2: 为什么多轮对话中途不会变笨？
-传统基于单条请求的无状态路由器，在面对超长上下文中的简短追问（如“好的谢谢”、“改下第3行”）时，常因字数极短而错误分发给 Lite 轻量小模型，导致小模型面对超万 Token 严重幻觉。OneCastRouter (OCR) 采用**单调递增棘轮状态机（Monotonic Session Ratchet）**，一旦会话进入深度旗舰状态，后续轮次被单向锁死、只升不降，且物理固定同一模型实例，保障智力持续高水平并锁定上游 KV Cache。
+### Q2: 为什么对话在长轮次中绝不会“降智”？
+市面上的朴素无状态路由器常将简短回复（如“好”、“修复第 5 行”）误判为简单任务而分发至微模型，导致数十万字长代码上下文被轻量模型破坏。OneCastRouter 执行**单调会话棘轮（Monotonic Session Ratchet）**：一旦会话由于复杂任务进入较高梯队（`plus`/`pro`/`ultra`），后续轮次绝不允许反向降级，严格锁定原模型实例。
 
-### Q3: 零配置时自动路由会偷偷用便宜模型吗？
-**绝不会**。Layer 2 判定器出厂默认关闭，此时每个 auto 请求都落在硬编码的 **plus** 质量基线上；客户端点名模型或 `force_tier` 永远压过任何自动选择。智能分档是有意识的自选动作（`classifier.layer2.enabled`）。
+### Q3: 频繁切换模型会导致 KV Cache 失效引起费用暴涨吗？
+**绝不会**。OneCastRouter 会话严格绑定物理模型实例，并内置**两阶段就地抖动重试机制**：遇到上游 5xx 临时抖动或超时，网关优先在原物理模型就地重试，最大化保全 80%~95% 的已预热上游 Prompt Cache，避免重新上传百万 Token 导致账单翻倍。
 
-### Q4: 上游某个模型突然欠费或宕机 5 小时怎么办？
-**OneCastRouter (OCR) 拥有顶级工业级弹性熔断与故障转移能力 (ADR-0004)**：
-- **欠费 / 额度耗尽 (HTTP 402)**：系统即刻将其硬熔断（默认避让 12 小时），后续请求零耗时绕开，绝不会反复冲击上游导致超时；
-- **服务雪崩 / 宕机**：连续失败或滑动窗口超限后触发熔断并以指数退避（最高 5 小时封顶）；冷却结束后以微量 Canary 试探探活；
-- **同 Tier 透明故障转移 (Failover)**：若 Primary 模型挂了，系统在同一次请求内毫秒级自动切换至同 Tier 的 Backup 备用模型，客户端无感获得 200 响应；
-- **会话钉扎驱逐 (Session-Pin Eviction)**：钉扎模型被移出模型池（配置编辑/黑名单/删除）或彻底不可用（模型断路器硬开、或全部凭证下架）时，系统将会话硬切至健康着陆模型并回写绑定（同级已空允许跨级着陆）；若无健康着陆点则保留原钉扎继续服务（安全兜底，下轮重试），根除死锁。
-
-### Q5: 遇到云厂商网关偶发 503 报错，随便切模型会导致 KV 缓存失效和成本暴增吗？
-**绝不会**。OneCastRouter (OCR) 采用**经济感知型两层重试架构 (ADR-0005)**：
-- **第一层：原地微退避重试 (In-Place Retry)**：针对瞬时 5xx/超时网关毛刺，执行 200ms (+100ms 随机抖动) 的极速原地重试，1 次重试即可化解 ~70% 边缘偶发抖动，**100% 挽救上游已预热的 KV Cache**，彻底避免跨模型切换导致的 10 倍冷启动账单惩罚；
-- **第二层：同级优先故障转移与防降级 (Failover & Anti-Downgrade)**：若原地重试耗尽，系统同级优先切换；若 Fast 模型全量故障，允许受控向上升档至 Flagship 兜底保活；**严禁任何将 Flagship 降级至 Fast 的危险操作**，宁可返回 503 绝不以残缺智力生成代码污染生产。
-
----
-
-## 开发者与架构进阶
-
-如果您对路由流水线设计、前缀链会话追踪的数学证明、架构决策记录等内容感兴趣，请阅读：
-
-* 📘 **[开发者深度指南 (DEVELOPMENT.zh-CN.md)](DEVELOPMENT.zh-CN.md)**：包含完整架构推导、单元测试套件解析与代码规范。
-* 🏛️ **[架构决策记录 (ADR)](docs/adr/zh-CN/README.md)**：记录 ADR-0001 至 ADR-0008 全部架构选型的事实面定稿（中英双语镜像）。
-
+### Q4: 上游服务商宕机或余额欠费如何处置？
+OneCastRouter 提供工业级 7 类故障响应：
+- **HTTP 402（余额欠费/超额）**：立即对该凭据或对熔断 12 小时，后续请求直接跳过，零延迟损耗。
+- **HTTP 5xx / 超时**：触发指数退避，并在毫秒级内自动无缝重定向到同层级备选候选模型，保障客户端 200 成功率。
+- **HTTP 429（速率限制）**：依据上游 `Retry-After` 进行自适应退避。
+- **全面可观测性**：每次失败即刻被收录至 failure-events 账本，管理员可在 Web 端直观查看。
 
 ---
 
 ## 开源协议
 
-本项目基于 [MIT 许可证](LICENSE) 开源。
+基于 [MIT License](LICENSE) 开源发布。
