@@ -52,10 +52,9 @@ export const AutoPage: React.FC = () => {
     setConfig({ ...config, classifier: { ...config.classifier, layer2: { ...layer2, ...patch } } });
   const decisionCache = layer2.decisionCache || {};
   const setDecisionCache = (patch: any) => setLayer2({ decisionCache: { ...decisionCache, ...patch } });
-  const setSystemone = (patch: any) =>
-    setConfig({ ...config, systemone: { ...(config.systemone || {}), ...patch } });
   // What the judge would actually call: its own model wins, else the System
-  // One surface default. Both unset = the judge never answers (warns once,
+  // One surface default (systemone.defaultModel, edited on the Settings page
+  // — read-only here). Both unset = the judge never answers (warns once,
   // every auto request serves the plus baseline, no experience is recorded).
   const effectiveJudgeModel: string = (layer2.model || config.systemone?.defaultModel || '').trim();
 
@@ -143,9 +142,10 @@ export const AutoPage: React.FC = () => {
             </label>
             {/* Decision-model resolution (ADR-0001 cascade): a judge that
                 names nothing can never answer — classifier.layer2.model wins,
-                else systemone.defaultModel, else inert with a one-time warn.
-                Surfacing the resolution here is the console-side fix for
-                "enabled but silently dead". */}
+                else systemone.defaultModel (configured on the Settings page —
+                it is the /v1/systemone surface default, not a routing knob),
+                else inert with a one-time warn. Surfacing the resolution here
+                is the console-side fix for "enabled but silently dead". */}
             <div>
               <label style={labelStyle}>{t('auto.l2ModelLabel')}</label>
               <Combobox
@@ -157,19 +157,6 @@ export const AutoPage: React.FC = () => {
               />
               <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '4px' }}>
                 {t('auto.l2ModelHint')}
-              </div>
-            </div>
-            <div>
-              <label style={labelStyle}>{t('auto.sysoneModelLabel')}</label>
-              <Combobox
-                value={config.systemone?.defaultModel ?? ''}
-                onChange={(v: string) => setSystemone({ defaultModel: v || undefined })}
-                options={modelOptions}
-                clearable
-                placeholder={t('auto.sysoneModelUnset')}
-              />
-              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '4px' }}>
-                {t('auto.sysoneModelHint')}
               </div>
             </div>
             {(layer2.enabled ?? false) && effectiveJudgeModel && (

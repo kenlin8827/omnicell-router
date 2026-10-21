@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Sliders, Save, Check, Globe, HardDrive, Archive, Database, ShieldCheck, LogOut, ChevronDown, ChevronRight } from 'lucide-react';
+import { Sliders, Save, Check, Globe, HardDrive, Archive, Database, ShieldCheck, LogOut, ChevronDown, ChevronRight, Cpu } from 'lucide-react';
 import { api } from '../lib/api';
 import type { WebAuthConfigView } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
 import { Switch } from '../components/Switch';
+import { Combobox } from '../components/Combobox';
 
 export const SettingsPage: React.FC = () => {
   const { t } = useI18n();
@@ -16,6 +17,8 @@ export const SettingsPage: React.FC = () => {
   const [savedNotice, setSavedNotice] = useState(false);
   // Archive-policy collapsible — set-once values, collapsed by default
   const [policyOpen, setPolicyOpen] = useState(false);
+  // Registered physical models for the System One default-model picker
+  const [modelOptions, setModelOptions] = useState<{ value: string; label: string }[]>([]);
 
   // Console webAuth (dedicated endpoints, NOT part of the whole-config save —
   // the password is hashed server-side and never round-trips through the UI)
@@ -36,6 +39,11 @@ export const SettingsPage: React.FC = () => {
       setWaEnabled(res.webAuth.enabled);
       setWaUsername(res.webAuth.username);
     }).catch(console.error);
+    // Registered physical models only (kind 'model') — systemone.defaultModel
+    // resolves through registry.getModel at request time.
+    api.listGatewayModels().then(ms =>
+      setModelOptions(ms.filter(m => m.kind === 'model').map(m => ({ value: m.id, label: m.id })))
+    ).catch(() => {});
   }, []);
 
   const handleWebAuthSave = async () => {
@@ -107,7 +115,8 @@ export const SettingsPage: React.FC = () => {
 
   // requestCapture master gates the whole System One sub-group; the System
   // One surface master (`enabled`) additionally gates the L2 decision
-  // sub-switch. Dim (never disable) so the operator can pre-set in one save.
+  // sub-switch. Subordinate sections render ONLY while the master is on —
+  // the off state stays a single compact row.
   const captureOn = config.requestCapture?.enabled ?? false;
   const systemoneOn = config.requestCapture?.systemone?.enabled ?? true;
 
@@ -139,6 +148,13 @@ export const SettingsPage: React.FC = () => {
       ...(config.requestCapture?.systemone || {}),
       ...patch,
     },
+  });
+  // The TOP-LEVEL `systemone` surface node (SystemoneSurfaceConfig) — a
+  // different node from requestCapture.systemone above; same whole-node
+  // discipline (spread-preserve, replace wholesale on write).
+  const patchSystemoneSurface = (patch: Record<string, unknown>) => setConfig({
+    ...config,
+    systemone: { ...(config.systemone || {}), ...patch },
   });
   // Same whole-node discipline for `responses`: the
   // section is one flat boolean today, spread-preserve it so future keys
@@ -292,16 +308,17 @@ export const SettingsPage: React.FC = () => {
               />
             </label>
 
-            {/* System One sub-group: `enabled` is the surface master — off
-                silences both capture legs. The L2 decision sub-switch is
-                effective only while it is on. Inactive rows render dimmed,
-                still clickable (pre-set pattern). */}
+            {/* System One sub-group + archive policy render only while the
+                master is on (off = compact single row). Within the sub-group,
+                `enabled` is the surface master — off silences both capture
+                legs; the L2 decision sub-switch dims while it is off. */}
+            {captureOn && (<>
             <div style={{ borderTop: '1px solid var(--divider)', paddingTop: '12px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <div style={{ fontWeight: 700, fontSize: '12px', color: 'var(--text-main)' }}>
                 {t('settings.capSystemoneGroup')}
               </div>
               <div>
-                <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer', color: captureOn ? undefined : 'var(--text-dim)' }}>
+                <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
                   <span>{t('settings.capSystemoneEnable')}</span>
                   <Switch
                     checked={systemoneOn}
@@ -313,7 +330,7 @@ export const SettingsPage: React.FC = () => {
                 </div>
               </div>
               <div>
-                <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer', color: (captureOn && systemoneOn) ? undefined : 'var(--text-dim)' }}>
+                <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer', color: systemoneOn ? undefined : 'var(--text-dim)' }}>
                   <span>{t('settings.capL2DecisionEnable')}</span>
                   <Switch
                     checked={config.requestCapture?.systemone?.l2DecisionEnabled ?? true}
@@ -335,10 +352,12 @@ export const SettingsPage: React.FC = () => {
                 onClick={() => setPolicyOpen(v => !v)}
                 style={{ display: 'flex', alignItems: 'center', gap: '6px', width: '100%', background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontSize: '12px', fontWeight: 700, color: 'var(--text-main)', fontFamily: 'inherit', textAlign: 'left' }}
               >
-                {policyOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                <span>{t('settings.capPolicyGroup')}</span>
+                {policyOpen ? <ChevronDown size={14} style={{ flexShrink: 0 }} /> : <ChevronRight size={14} style={{ flexShrink: 0 }} />}
+                <span style={{ whiteSpace: 'nowrap', flexShrink: 0 }}>{t('settings.capPolicyGroup')}</span>
                 {!policyOpen && (
-                  <span style={{ marginLeft: 'auto', fontWeight: 400, fontSize: '11px', color: 'var(--text-dim)' }}>
+                  // Summary truncates with ellipsis when the card is narrow;
+                  // the group title above never wraps (no orphan second line).
+                  <span style={{ marginLeft: 'auto', fontWeight: 400, fontSize: '11px', color: 'var(--text-dim)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>
                     {t('settings.capPolicySummary', {
                       days: config.requestCapture?.retentionDays ?? 7,
                       mb: config.requestCapture?.maxTotalMB ?? 2048,
@@ -402,6 +421,7 @@ export const SettingsPage: React.FC = () => {
                 </div>
               )}
             </div>
+            </>)}
             <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
               {t('settings.capPrivacyHint')}
               <br />
@@ -424,6 +444,35 @@ export const SettingsPage: React.FC = () => {
             </label>
             <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
               {t('settings.respPersistHint')}
+              <br />
+              {t('settings.respRestartHint')}
+            </div>
+          </div>
+
+          {/* Section 5: System One decision surface — `systemone.defaultModel`
+              backs /v1/systemone requests sent without a model, and doubles as
+              the L2 judge's fallback decision model (classifier.layer2.model
+              unset). Deliberately NOT on /auto: it is a protocol-surface
+              default, not a routing knob. */}
+          <div id="settings-sysone" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent-violet)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <Cpu size={14} />
+              {t('settings.sysoneTitle')}
+            </div>
+            <div>
+              <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
+                {t('settings.sysoneModelLabel')}
+              </label>
+              <Combobox
+                value={config.systemone?.defaultModel ?? ''}
+                onChange={(v: string) => patchSystemoneSurface({ defaultModel: v || undefined })}
+                options={modelOptions}
+                clearable
+                placeholder={t('settings.sysoneModelUnset')}
+              />
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
+              {t('settings.sysoneModelHint')}
               <br />
               {t('settings.respRestartHint')}
             </div>
