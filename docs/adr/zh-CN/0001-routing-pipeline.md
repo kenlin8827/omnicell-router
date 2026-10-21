@@ -31,7 +31,7 @@
 
 ### 4. Layer 2 判定器——共享执行器、诚实契约、决策缓存
 
-- 判定器经网关自身的 System One 协议调用一个已注册模型（`runSystemoneDecision`；与 `/v1/systemone` 面共享执行器，ADR-0008）。模型取 `classifier.layer2.model`，缺省回落 `systemone.defaultModel`；超时 `timeoutMs` 默认 1500。
+- 判定器经网关自身的 System One 协议调用一个已注册模型（`runSystemoneDecision`；与 `/v1/systemone` 面共享执行器，ADR-0008）。模型取 `classifier.layer2.model`，缺省回落 `systemone.defaultModel`；超时 `timeoutMs` 默认 3000。
 - 校准诚实：原生决策上游 → `l2.system_one`；聊天模型转换 → `l2.system_one_uncalibrated`，reason 中含「（自报分数，尚未校准）」。
 - 判定器是请求之下的内部腿：绝不经过候选池、熔断或限流拒绝——它自己的 HTTP 腿可并入外层 trace（`purpose:'l2-judge'`，ADR-0008）。
 - 决策缓存（缓存决策，绝不缓存响应）：键 `systemone::<modelId>::sha256(state)`，state = 最近 4 轮 `role: content` 拼接、截至 4000 字符；内存 LRU+TTL，默认 500 条 / 1800 秒 / 开启（`decision-cache.ts`，配置 `classifier.layer2.decisionCache.*`）。只存成功决策；竞态胜者写入。命中标记：reason 前缀 `"[Decision Cache] "` + `reasonParams.cached=true`——不设独立 reasonCode，不加响应头。

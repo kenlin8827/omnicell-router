@@ -1624,6 +1624,8 @@ export const zhCN: TranslationDict = {
     l2ModelHint: '判定器经 System One 协议调用的已注册模型 id；留空则回落到 System One 默认模型（设置页 → System One 决策面）。重启网关后生效。',
     l2ModelEffective: '实际生效判定模型：{model}',
     l2ModelUnset: '未解析出判定模型——判定器不生效：所有 auto 请求都回落 plus 基线，且不会沉淀任何路由经验。可在此直接选择判定模型，或到「设置 → System One 决策面」配置默认模型。',
+    l2TimeoutLabel: '判定超时（毫秒）',
+    l2TimeoutHint: '未命中缓存的新上下文会先等判定再放行（串行计价——每个新提问都付出这段等待）；超时即回落 plus 基线。经 chat 转换的判定模型 1.5 秒内很少能答完，3000-8000 是合理区间。重启网关后生效。',
     judgeLastFail: '判定器最后一次调用失败：{error} · {time}——成功之前，auto 请求都回落 plus 基线。',
     l2CollectEnable: 'L2 决策样本采集',
     l2CollectHint: '把 (状态, 答案, 梯队) 三元组采集到独立数据集文件 data/layer2-decisions.jsonl，供模型蒸馏；不出现在「请求捕捉」页；超过 64MB 自动停写；样本含用户对话内容，默认不采集，需手动开启，保存即热生效。',

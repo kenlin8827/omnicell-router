@@ -167,6 +167,21 @@ export const AutoPage: React.FC = () => {
                 {t('auto.l2ModelHint')}
               </div>
             </div>
+            <div>
+              <label style={labelStyle}>{t('auto.l2TimeoutLabel')}</label>
+              <input
+                type="number"
+                min={500}
+                step={500}
+                value={layer2.timeoutMs ?? 3000}
+                onChange={e => setLayer2({ timeoutMs: parseInt(e.target.value, 10) || undefined })}
+                className="input"
+                style={{ width: 140 }}
+              />
+              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '4px' }}>
+                {t('auto.l2TimeoutHint')}
+              </div>
+            </div>
             {(layer2.enabled ?? false) && effectiveJudgeModel && (
               <div style={{ fontSize: '11px', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '6px' }}>
                 <Check size={13} />

@@ -31,7 +31,7 @@ The retired Layer 1 (a local micro-tensor classifier trained by an execution fly
 
 ### 4. Layer 2 judge — shared executor, honesty contract, decision cache
 
-- The judge calls a REGISTERED model over the gateway's own System One protocol (`runSystemoneDecision`; executor shared with the `/v1/systemone` surface, ADR-0008). Model: `classifier.layer2.model`, falling back to `systemone.defaultModel`; timeout `timeoutMs` default 1500.
+- The judge calls a REGISTERED model over the gateway's own System One protocol (`runSystemoneDecision`; executor shared with the `/v1/systemone` surface, ADR-0008). Model: `classifier.layer2.model`, falling back to `systemone.defaultModel`; timeout `timeoutMs` default 3000.
 - Calibration honesty: native decision upstreams → `l2.system_one`; chat-model conversion → `l2.system_one_uncalibrated` with "(self-reported, not yet calibrated)" in the reason.
 - The judge is a below-request internal leg: never routed through the candidate pool, breakers, or rate-limit rejection — its own HTTP leg can join the OUTER trace (`purpose:'l2-judge'`, ADR-0008).
 - Decision cache (decisions, never responses): key `systemone::<modelId>::sha256(state)`, state = last 4 turns' `role: content` joined, sliced to 4000 chars; in-memory LRU+TTL, defaults 500 entries / 1800s / enabled (`decision-cache.ts`, config `classifier.layer2.decisionCache.*`). Only successful decisions stored; race-winner writes. Hit marker: reason prefix `"[Decision Cache] "` + `reasonParams.cached=true` — no separate reasonCode, no header.

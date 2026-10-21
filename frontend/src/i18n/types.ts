@@ -1715,6 +1715,8 @@ hiddenBadge: string;
     l2ModelHint: string;
     l2ModelEffective: string;
     l2ModelUnset: string;
+    l2TimeoutLabel: string;
+    l2TimeoutHint: string;
     judgeLastFail: string;
     l2CollectEnable: string;
     l2CollectHint: string;

@@ -1631,6 +1631,8 @@ export const enUS: TranslationDict = {
     l2ModelHint: 'Registered model id the judge calls over the System One protocol. Empty = fall back to the System One default model (Settings → System One Decision Surface). Takes effect after a gateway restart.',
     l2ModelEffective: 'Effective decision model: {model}',
     l2ModelUnset: 'No decision model resolves — the judge is inert: every auto request falls back to the plus baseline and no route experience is recorded. Pick a model here, or set the System One default model on the Settings page.',
+    l2TimeoutLabel: 'Decision timeout (ms)',
+    l2TimeoutHint: 'A cache-miss context waits for the judge BEFORE its real work starts (serial cost — every novel prompt pays this). On timeout the turn falls back to the plus baseline. Chat-converted judges rarely answer inside 1.5s; 3000-8000 is the sane range. Takes effect after a gateway restart.',
     judgeLastFail: 'Last judge call FAILED: {error} · {time} — auto requests fall back to the plus baseline until a call succeeds.',
     l2CollectEnable: 'Collect L2 decision samples',
     l2CollectHint: 'Writes the (state, answer, tier) triples to a separate dataset file, data/layer2-decisions.jsonl, for model distillation — they never appear on the Request Capture page. Writing stops automatically past 64MB. The state carries user conversation content, so collection is opt-in and stays off until you switch it on; applies immediately after saving.',

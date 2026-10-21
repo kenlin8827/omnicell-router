@@ -285,7 +285,7 @@ export class Layer2Judge {
       };
     }
 
-    const timeoutMs = config.timeoutMs || 1500;
+    const timeoutMs = config.timeoutMs || 3000;
     const startedAt = Date.now();
     // The judge's own deadline wins over the upstream's: System One is a fast
     // decision surface, and a stale answer is worthless to a routing cascade.

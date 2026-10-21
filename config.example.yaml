@@ -173,7 +173,7 @@ classifier:
   layer2:
     enabled: false                  # Enable Layer 2 dedicated judge model
     model: "auto"                   # Registered model id; 'auto' = systemone.defaultModel
-    timeoutMs: 1500                 # Decision timeout in ms (falls back to the plus baseline on timeout)
+    timeoutMs: 3000                 # Decision timeout in ms (falls back to the plus baseline on timeout)
     collectEnabled: false           # Dataset sampling: judged decisions -> data/layer2-decisions.jsonl for
                                     # future decision-model distillation. SINGLE-key gate (no capture master
                                     # involved), hot-applied on save. 64MB cap then writes pause with one warning.
