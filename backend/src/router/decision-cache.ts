@@ -58,6 +58,19 @@ export class RoutingDecisionCache {
     };
   }
 
+  /**
+   * Hot-apply console knob changes (enabled/ttl/maxEntries). Existing entries
+   * survive: TTL is read live per get, maxEntries re-enforces on the next
+   * set, and disabling just mutes get/set without destroying the map.
+   */
+  public applyConfig(config?: Partial<DecisionCacheConfig>): void {
+    this.config = {
+      enabled: config?.enabled ?? DEFAULTS.enabled,
+      ttlSeconds: config?.ttlSeconds ?? DEFAULTS.ttlSeconds,
+      maxEntries: config?.maxEntries ?? DEFAULTS.maxEntries,
+    };
+  }
+
   public static buildCacheKey(provider: string, model: string, userText: string): string {
     const digest = createHash('sha256').update(userText).digest('hex');
     return `${provider}::${model}::${digest}`;

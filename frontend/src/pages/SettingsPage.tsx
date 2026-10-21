@@ -473,8 +473,6 @@ export const SettingsPage: React.FC = () => {
             </div>
             <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
               {t('settings.sysoneModelHint')}
-              <br />
-              {t('settings.respRestartHint')}
             </div>
           </div>
         </div>

@@ -50,7 +50,7 @@ const DEFAULT_CONFIG: RouterConfig = {
       enabled: false,
       // No model pinned by default — the judge then follows
       // `systemone.defaultModel`.
-      timeoutMs: 3000,
+      timeoutMs: 5000,
       collectEnabled: false, // dataset sampling: judged decisions → data/layer2-decisions.jsonl (single-key gate, opt-in)
       effortDecision: false, // judge also decides the thinking level (ADR-0012) — spends thinking tokens, opt-in
     },
@@ -629,6 +629,15 @@ function syncRuntimeAuthView(fresh: RouterConfig): void {
     // arm never fires because loadConfig always resolves the section), so
     // without this line the grace knob would silently ignore every save.
     runtimeConfigRef.rateLimit = fresh.rateLimit;
+    // classifier / routing / systemone hot-apply too (per-request reads only —
+    // the judge resolves model/timeout/effortDecision per evaluate, the mode
+    // lever per processInternal, the System One defaultModel per decision):
+    // the /auto page's "restart to apply" era is over for everything it edits.
+    // Sections with boot-time consumers (streaming executors, providers,
+    // models, tiers bootstrap) deliberately stay restart-only.
+    runtimeConfigRef.classifier = fresh.classifier;
+    runtimeConfigRef.routing = fresh.routing;
+    runtimeConfigRef.systemone = fresh.systemone;
   }
   getRateLimiter().reload(fresh);
   // Rebuild the effective quota plan right after the ref sync (the prober
@@ -706,7 +715,7 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'classifier.layer2.model': '判定模型 id（已注册的模型；留空则用 systemone.defaultModel）',
   systemone: 'System One 决策面（POST /v1/systemone）：本机协议直连已注册模型，其余模型走 chat-model 转换；此节的 defaultModel 为未指定 model 的请求兜底，同时在 classifier.layer2.model 留空时充当 L2 判定器的决策模型',
   'systemone.defaultModel': 'System One 默认模型（已注册模型 id）：为未指定 model（或 model=auto）的 /v1/systemone 请求兜底，不经梯队级联；classifier.layer2.model 留空时 L2 判定器也用它。重启网关生效',
-  'classifier.layer2.timeoutMs': '判定超时（毫秒，默认 3000）：未命中缓存的新上下文先等判定再放行（串行计价），超时回落默认 plus 梯队；经 chat 转换的判定模型 1.5 秒内很少答完，建议 3000-8000。重启网关生效',
+  'classifier.layer2.timeoutMs': '判定超时（毫秒，默认 5000）：未命中缓存的新上下文先等判定再放行（串行计价），超时回落默认 plus 梯队；经 chat 转换的判定模型 1.5 秒内很少答完，建议 3000-10000。保存后即时生效',
   'classifier.layer2.decisionCache': '判定决策缓存（相同上下文复用判定结果）',
   'classifier.layer2.collectEnabled': 'L2 裁判决策样本采集开关（默认 false 关闭）：单键门控，落盘 data/layer2-decisions.jsonl（不进捕捉页），64MB 封顶后停写并告警一次；热生效',
   'classifier.layer2.effortDecision': 'L2 裁判思考级别判定开关（默认 false 关闭，ADR-0012）：开启后裁判在同一次调用中同时判定梯队与思考级别，仅对省略 reasoning_effort 的请求补位（客户端显式值永远优先），判定结果逐轮浮动不进会话棘轮；注意裁判抬档会多花思考 token 费用',

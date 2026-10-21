@@ -1697,7 +1697,6 @@ hiddenBadge: string;
   };
   auto: {
     title: string;
-    restartNotice: string;
     famAuto: string;
     famLite: string;
     famPlus: string;

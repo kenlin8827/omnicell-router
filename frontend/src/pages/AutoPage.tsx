@@ -95,12 +95,6 @@ export const AutoPage: React.FC = () => {
             <span>{t('settings.savedNotice')}</span>
           </div>
         )}
-        {savedNotice && (
-          <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'color-mix(in srgb, var(--accent-amber) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-amber) 30%, transparent)', color: 'var(--accent-amber)', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
-            <TriangleAlert size={14} />
-            <span>{t('auto.restartNotice')}</span>
-          </div>
-        )}
 
         {/* Alias family overview */}
         <div style={{ padding: '14px', borderRadius: '10px', border: '1px dashed var(--card-border)', display: 'flex', flexWrap: 'wrap', gap: '10px', marginBottom: '16px' }}>
@@ -173,7 +167,7 @@ export const AutoPage: React.FC = () => {
                 type="number"
                 min={500}
                 step={500}
-                value={layer2.timeoutMs ?? 3000}
+                value={layer2.timeoutMs ?? 5000}
                 onChange={e => setLayer2({ timeoutMs: parseInt(e.target.value, 10) || undefined })}
                 className="input"
                 style={{ width: 140 }}

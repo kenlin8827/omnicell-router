@@ -123,10 +123,12 @@ export class Layer2Judge {
   private static decisionCache: RoutingDecisionCache | null = null;
 
   private static getDecisionCache(config?: Layer2JudgeConfig): RoutingDecisionCache {
-    // Orchestrator snapshots config at construction, so runtime config is stable;
-    // lazily initialize once with the first-seen config.
+    // Singleton instance; the console's knob changes (enabled/ttl/maxEntries)
+    // hot-apply through applyConfig on every evaluate — no restart needed.
     if (!this.decisionCache) {
       this.decisionCache = new RoutingDecisionCache(config?.decisionCache);
+    } else {
+      this.decisionCache.applyConfig(config?.decisionCache);
     }
     return this.decisionCache;
   }
@@ -285,7 +287,7 @@ export class Layer2Judge {
       };
     }
 
-    const timeoutMs = config.timeoutMs || 3000;
+    const timeoutMs = config.timeoutMs || 5000;
     const startedAt = Date.now();
     // The judge's own deadline wins over the upstream's: System One is a fast
     // decision surface, and a stale answer is worthless to a routing cascade.
