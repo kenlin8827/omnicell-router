@@ -15,12 +15,12 @@ With Layer 1 and the flywheel deleted, the gateway had no memory between convers
 
 ### 1. RouteEntry — one row per normalized prompt
 
-`{ promptHash, tier, effort?, source, confidence, sessions[≤20 LRU], hitCount, createdAt, updatedAt, snippet? }`, persisted whole-file at `<envRoot>/data/route-entries.json` (2s debounced save; crash loses at most the debounce window). `promptHash` = sha256 prefix (16 hex) of the whitespace-collapsed prompt — the same normalization feeds the retry detector. `snippet` = first 200 chars of the prompt, display/edit aid only, gated by `routeEntries.snippetEnabled` (default ON — the same default-visible + explicit-opt-out privacy stance as session `attachOrigin` and the retired flywheel's `logUserPrompt`; the flag gates NEW snippets, never deletes stored ones). Storage bound: `maxEntries` (default 5000), LRU eviction by `updatedAt`.
+`{ promptHash, tier, effort?, source, confidence, sessions[≤20 LRU], hitCount, createdAt, updatedAt, snippet? }`, persisted whole-file at `<envRoot>/data/route-entries.json` (2s debounced save; crash loses at most the debounce window). `promptHash` = sha256 prefix (16 hex) of the whitespace-collapsed prompt — the same normalization feeds the retry detector. `snippet` = first 200 chars of the prompt, display/edit aid only, gated by `routeEntries.snippetEnabled` (default ON — the same default-visible + explicit-opt-out privacy stance as session `attachOrigin` and the retired flywheel's `logUserPrompt`; the flag gates NEW snippets, never deletes stored ones). Storage bound: `maxEntries` (default 5000), LRU eviction by `updatedAt` — **human rows are exempt** (operator intent outranks capacity pressure; delete them explicitly; if every row is human the table may sit above the cap until pruned).
 
 ### 2. Write whitelist — three producers, nothing else
 
 - `l2_confident`: a Layer 2 judgment at/above 0.85 confidence, recorded POST-success with the tier that ACTUALLY served (failover/cascade truth beats intent). Schema-cascade turns are skipped — the lite lead owns those tier outcomes. When the judge also decided the effort (ADR-0012), the SERVED `actualEffort` rides this same write — the table learns `{tier, effort}` bidirectionally (a fresh confident judgment overwrites a stale same-source row DOWN as readily as up).
-- `correction`: an escalated retry that the user ACCEPTED. Acceptance is observable exactly one way: a LATER message with a different prompt hash ("moved on"). Satisfied-and-left never writes back — accepted bounded loss. Confidence 1.0 (executed evidence).
+- `correction`: an escalated retry that the user ACCEPTED. Acceptance is observable exactly one way: a LATER message with a different prompt hash ("moved on"). Satisfied-and-left never writes back — accepted bounded loss. Confidence 1.0 (executed evidence). The write carries the escalated turn's prompt snippet (stored on the session retry state under the same `snippetEnabled` gate) so the row is human-readable on the console instead of a bare hash.
 - `human`: a console edit. Confidence 1.0 and IMMUNE to automatic rewrite — operator intent outranks observed evidence; delete the row instead.
 
 Priority: `human > correction > l2_confident` — a row never loses certainty (`route-entries.ts` SOURCE_RANK).
@@ -45,15 +45,15 @@ Capability ceiling (frozen decision A3): when the pinned model cannot serve the 
 
 ### 5. Shadow mode and the ledger
 
-`routeEntries.escalateOnRetry: false` = shadow mode: detection and recording continue, nothing acts. The `routing-ledger` (`<envRoot>/data/routing-ledger.jsonl`, append-only, prompt HASHES only, 64 MB cap + one warn) records every lifecycle event: `retry_detected`, `entry_hit`, `entry_write`, `escalation`, `correction`. It is the flywheel's replacement as audit trail — pure observability, never read back for routing.
+`routeEntries.escalateOnRetry: false` = shadow mode: detection and recording continue, nothing acts. The `routing-ledger` (`<envRoot>/data/routing-ledger.jsonl`, append-only, prompt HASHES only, 64 MB cap + one warn) records every lifecycle event: `retry_detected`, `retry_skipped`, `entry_hit`, `entry_write`, `escalation`, `correction`. `retry_skipped` makes a NON-escalation auditable — detail.cause is one of `too_short` (prompt below the 20-char detection floor), `ceiling` (ladder out of rungs at ultra), `judge_higher` (the base decision already placed the turn at/above the proposal), `shadow` (shadow mode swallowed the action). It is the flywheel's replacement as audit trail — pure observability, never read back for routing.
 
 ### 6. Config
 
-`routeEntries: { enabled (default true), snippetEnabled (default true), escalateOnRetry (default true), maxEntries (default 5000) }` — hot-applied on every console save (decision-capture pattern). `enabled: false` freezes the subsystem: no lookup, no writes, no ledger.
+`routeEntries: { enabled (default true), snippetEnabled (default true), escalateOnRetry (default true), maxEntries (default 5000) }` — hot-applied on every console save (decision-capture pattern). `enabled: false` freezes the subsystem: no lookup, no writes, no ledger. `maxEntries` is clamped at load: non-positive/invalid values fall back to the default (an unclamped zero/negative cap would LRU-evict every non-human learned row on the next write).
 
 ## Consequences
 
 - Repeated dissatisfaction self-heals within one conversation; the fix persists across conversations (and survives restarts via the JSON file).
-- The console `/route-entries` page makes every learned row browsable and hand-editable — the "memory is observable and human-editable" requirement, verbatim.
+- The console `/route-entries` page makes every learned row browsable and hand-editable — the "memory is observable and human-editable" requirement, verbatim. Listing supports a `q` text filter (snippet / hash / tier / session ids) and `sort=updatedAt|hitCount|sessionCount` (default `updatedAt` DESC, updatedAt tiebreak). Bulk clear (`DELETE /api/admin/route-entries`, confirmed dialog) wipes all rows in one operator action and logs a single `entry_write` ledger line.
 - Honesty edges: a satisfied user who leaves writes nothing back (the table keeps the pre-escalation tier until a correction lands); a user who rephrases instead of repeating still counts as acceptance.
 - Tests: `route-entries` (store semantics), `retry-escalation` (detection + ladder), plus the existing ratchet/orchestrator suites for the integration seams.

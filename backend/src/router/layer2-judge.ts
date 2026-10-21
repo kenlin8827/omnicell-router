@@ -7,6 +7,9 @@ import type { UpstreamEventContext } from '../providers/base.js';
 import { runSystemoneDecision } from '../protocols/systemone/decide.js';
 import { SystemoneRequest } from '../protocols/systemone/types.js';
 import { captureDecision } from '../capture/decision-capture.js';
+import { ErrorClassifier } from '../resilience/index.js';
+import { recordFailureEvent } from '../observability/failure-events.js';
+import { getWarnThrottle } from '../observability/warn-throttle.js';
 
 export interface Layer2JudgeResult {
   targetTier: TierLevel;
@@ -209,7 +212,10 @@ export class Layer2Judge {
     config: Layer2JudgeConfig | undefined,
     registry: ProviderRegistry,
     defaultModel?: string,
-    judgeCapture?: UpstreamEventContext
+    judgeCapture?: UpstreamEventContext,
+    /** Owning turn's conversation session — threaded by the orchestrator so
+     *  judge failures attribute to the conversation that suffered them. */
+    sessionId?: string
   ): Promise<Layer2JudgeResult | null> {
     if (!config?.enabled) return null;
 
@@ -386,20 +392,60 @@ export class Layer2Judge {
       })
       .catch((err: unknown) => {
         failureReason = err instanceof Error ? err.message : String(err);
+        // Failure-ledger emission (judge role): the wire call itself failed.
+        // A rejection landing after the deadline already fired the race is
+        // skipped — the timeout branch owns that observation; recording both
+        // would double-count one abandoned call.
+        if (!timedOut) {
+          const diagnosis = ErrorClassifier.classify(err, model.id, model.provider);
+          recordFailureEvent({
+            model: model.id,
+            provider: model.provider,
+            errorClass: diagnosis.category,
+            status: diagnosis.statusCode,
+            message: failureReason,
+            role: 'judge',
+            sessionId,
+          });
+        }
         return null;
       });
 
     try {
       const outcome = await Promise.race([pending, deadline]);
       if (!outcome) {
+        const error = timedOut ? `timeout after ${timeoutMs}ms` : failureReason || 'decision failed';
         // Console-visible last-wire-attempt record (ADR-0011 observability):
         // the /auto page shows the failure until a later attempt succeeds.
         Layer2Judge.lastOutcome = {
           ts: Date.now(),
           modelId: model.id,
           ok: false,
-          error: timedOut ? `timeout after ${timeoutMs}ms` : failureReason || 'decision failed',
+          error,
         };
+        // Failure-ledger emission for the deadline case: an abandoned wire
+        // request has no error object to classify, so it records as TIMEOUT
+        // (the catch handler skips its own row when this branch already
+        // fired — one abandoned call, one row).
+        if (timedOut) {
+          recordFailureEvent({
+            model: model.id,
+            provider: model.provider,
+            errorClass: 'TIMEOUT',
+            message: error,
+            role: 'judge',
+            sessionId,
+          });
+        }
+        // Throttled warn over the formerly silent failure modes: a dead
+        // judge used to produce nothing but a missing tier decision. One
+        // throttled line per failing model keeps the log honest without a
+        // QPS flood; the /auto last-outcome record above still carries the
+        // always-fresh single verdict.
+        getWarnThrottle().warn(
+          `judge-wire:${model.id}`,
+          `[ocr] judge wire call failed on ${model.id}: ${error}`
+        );
         return null;
       }
       Layer2Judge.lastOutcome = {

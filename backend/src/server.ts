@@ -4,6 +4,7 @@ import { getModelAccessPolicy, isModelAllowed, isAutoEntryUsable } from './auth/
 import { registerRuntimeConfigRef, loadConfig, DEFAULT_INBOUND_GRACE_MS, MAX_INBOUND_GRACE_MS } from './config/index.js';
 import { getRateLimiter, apiKeySubject } from './ratelimit/rate-limiter.js';
 import { getRateLimitEventLog, recordRateLimitEvent } from './ratelimit/event-log.js';
+import { getFailureEventLog } from './observability/failure-events.js';
 import { registerEnvironmentRoutes } from './routes/environments.js';
 import { SURFACES } from './surfaces/table.js';
 import { createFastifyTransport } from './surfaces/transport-fastify.js';
@@ -636,6 +637,40 @@ export function createServer(
   app.post('/api/admin/ratelimit/events/clear', async () => {
     getRateLimitEventLog().clear();
     return { status: 'ok', cleared: true };
+  });
+
+  // 1B⁗. Failure-event ledger — every failed upstream MODEL CALL (serving
+  // pool attempts + judge wire calls), newest first, coalesced repeats,
+  // bounded ring + traces.db mirror (survives restarts). Optional equality
+  // filters narrow server-side; display-only plane, never gates routing.
+  app.get('/api/admin/failure-events', async (req) => {
+    const query = req.query as { model?: string; provider?: string; errorClass?: string; role?: string; limit?: string };
+    const limit = query.limit !== undefined ? Math.min(Math.max(parseInt(query.limit, 10) || 200, 0), 500) : 200;
+    const events = getFailureEventLog().list({
+      model: query.model || undefined,
+      provider: query.provider || undefined,
+      errorClass: query.errorClass || undefined,
+      role: query.role || undefined,
+      limit,
+    });
+    return { status: 'ok', events };
+  });
+
+  // Wipe the failure ledger — ring AND its durable mirror (history cleanup
+  // only; breaker state, rules and windows untouched). Same contract as
+  // POST /api/admin/ratelimit/events/clear.
+  app.post('/api/admin/failure-events/clear', async () => {
+    getFailureEventLog().clear();
+    return { status: 'ok', cleared: true };
+  });
+
+  // Delete ONE failure event by id — ring row + durable mirror row go
+  // together (a coalesced ×N observation is one row and dies whole). Same
+  // response contract as DELETE /api/admin/route-entries/:hash.
+  app.delete('/api/admin/failure-events/:id', async (req) => {
+    const { id } = req.params as { id: string };
+    const removed = getFailureEventLog().remove(id);
+    return { status: 'ok', removed };
   });
 
   // 1C. Reset Tripped Circuit Breakers (Admin recovery after quota top-up)

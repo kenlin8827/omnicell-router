@@ -11,6 +11,7 @@ import { PipelineOrchestrator } from '../src/pipeline/orchestrator.js';
 import { registerConsoleRoutes } from '../src/routes/console.js';
 import { ChatCompletionRequest, ChatCompletionMessage } from '../src/types/openai.js';
 import { promptHashOf, getRouteEntryStore } from '../src/router/route-entries.js';
+import { flushRoutingLedgerForTests } from '../src/router/routing-ledger.js';
 
 /**
  * Retry-escalation ladder, end to end through the REAL orchestrator in mock
@@ -46,6 +47,12 @@ describe('Retry escalation — orchestrator end to end (mock mode)', () => {
   const store = getRouteEntryStore();
   const hashA = promptHashOf(PROMPT_A);
   let sessionId = '';
+
+  // The isolated runner shares ONE sandbox (one data dir) across ALL test
+  // files: earlier files may already have appended ledger rows. Reset the
+  // file here so the lifecycle counts and ordering below see ONLY this
+  // file's events.
+  fs.rmSync(path.join(getEnvPaths().dataDir, 'routing-ledger.jsonl'), { force: true });
 
   it('turn 1: fresh prompt serves the plus baseline and records retry state', async () => {
     const r = await turn(user(PROMPT_A));
@@ -126,7 +133,10 @@ describe('Retry escalation — orchestrator end to end (mock mode)', () => {
   });
 
   it('routing ledger recorded the whole lifecycle (hash-only, append-only)', async () => {
-    await new Promise((resolve) => setTimeout(resolve, 60)); // fire-and-forget appends
+    // Appends are fire-and-forget by contract — await the write chain (a
+    // blind sleep loses the race under full-suite disk pressure).
+    await flushRoutingLedgerForTests();
+    await new Promise((resolve) => setTimeout(resolve, 60));
     const file = path.join(getEnvPaths().dataDir, 'routing-ledger.jsonl');
     const kinds = fs
       .readFileSync(file, 'utf8')

@@ -754,7 +754,7 @@ export class SessionManager {
    */
   public recordTurnOutcome(
     sessionId: string,
-    state: { promptHash?: string; tierUsed: TierLevel; effortUsed?: ReasoningEffort; escalated: boolean; retryCount: number }
+    state: { promptHash?: string; tierUsed: TierLevel; effortUsed?: ReasoningEffort; escalated: boolean; retryCount: number; snippet?: string }
   ): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
@@ -763,6 +763,7 @@ export class SessionManager {
       lastOutcomeOk: true,
       lastTierUsed: state.tierUsed,
       lastEffortUsed: state.effortUsed,
+      lastSnippet: state.snippet,
       retryCount: state.retryCount,
       escalated: state.escalated,
     };

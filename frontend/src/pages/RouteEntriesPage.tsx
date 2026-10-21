@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Waypoints as RouteIcon, RefreshCw, Search, Trash2 } from 'lucide-react';
+import { Waypoints as RouteIcon, RefreshCw, Search, Trash2, Copy, X, Eraser } from 'lucide-react';
 import { api, type RouteEntryRow } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
+import { useConfirm } from '../components/ConfirmProvider';
 import { Combobox } from '../components/Combobox';
 
 /**
@@ -15,6 +16,7 @@ import { Combobox } from '../components/Combobox';
 
 const TIERS = ['lite', 'plus', 'pro', 'ultra'];
 const EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
+type SortKey = 'updatedAt' | 'hitCount' | 'sessionCount';
 
 const MONO: React.CSSProperties = { fontFamily: "'JetBrains Mono', monospace", fontSize: '11.5px' };
 
@@ -27,17 +29,19 @@ const SOURCE_COLORS: Record<string, string> = {
 export const RouteEntriesPage: React.FC = () => {
   const { t } = useI18n();
   const toast = useToast();
+  const confirmDialog = useConfirm();
   const [rows, setRows] = useState<RouteEntryRow[]>([]);
   const [total, setTotal] = useState(0);
   const [gate, setGate] = useState<{ enabled?: boolean; escalateOnRetry?: boolean; snippetEnabled?: boolean } | null>(null);
   const [q, setQ] = useState('');
+  const [sort, setSort] = useState<SortKey>('updatedAt');
   const [loading, setLoading] = useState(false);
   const [limit] = useState(200);
 
-  const load = useCallback(async (search: string) => {
+  const load = useCallback(async (search: string, sortBy?: SortKey) => {
     setLoading(true);
     try {
-      const res = await api.getRouteEntries({ limit, q: search || undefined });
+      const res = await api.getRouteEntries({ limit, q: search || undefined, sort: sortBy ?? sort });
       setRows(res.rows);
       setTotal(res.total);
       setGate(res.gate);
@@ -46,7 +50,7 @@ export const RouteEntriesPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [limit, t, toast]);
+  }, [limit, sort, t, toast]);
 
   useEffect(() => {
     load('');
@@ -84,14 +88,90 @@ export const RouteEntriesPage: React.FC = () => {
     }
   };
 
-  const tierOptions = TIERS.map((v) => ({ value: v, label: v }));
-  const effortOptions = EFFORTS.map((v) => ({ value: v, label: v }));
+  // Copy the stored snippet (first 200 chars of the prompt — the row's whole
+  // human-readable content; the hash above is selectable as-is). Disabled
+  // when the row has no snippet (snippet capture off at write time).
+  const handleCopyPrompt = async (row: RouteEntryRow) => {
+    if (!row.snippet) return;
+    try {
+      await navigator.clipboard.writeText(row.snippet);
+      toast.success(t('routeEntries.copyPromptOk'));
+    } catch (err: any) {
+      toast.error(t('routeEntries.copyPromptFailed') + ' ' + (err?.message || err));
+    }
+  };
+
+  // Editor option labels: the wire identifier stays the anchor (it is the
+  // stored fact — route-entry rows, model ids like auto-lite, and the
+  // X-OCR-Thinking-* headers all speak it verbatim); the localized gloss is
+  // appended when the locale has one (zh), and dropped when it doesn't (en).
+  const tierOptionLabel = (v: string): string => {
+    const gloss =
+      v === 'lite'
+        ? t('routeEntries.glossTierLite')
+        : v === 'plus'
+          ? t('routeEntries.glossTierPlus')
+          : v === 'pro'
+            ? t('routeEntries.glossTierPro')
+            : v === 'ultra'
+              ? t('routeEntries.glossTierUltra')
+              : '';
+    return gloss ? `${v} · ${gloss}` : v;
+  };
+  const effortOptionLabel = (v: string): string => {
+    const gloss =
+      v === 'none'
+        ? t('routeEntries.glossEffortNone')
+        : v === 'low'
+          ? t('routeEntries.glossEffortLow')
+          : v === 'medium'
+            ? t('routeEntries.glossEffortMedium')
+            : v === 'high'
+              ? t('routeEntries.glossEffortHigh')
+              : v === 'xhigh'
+                ? t('routeEntries.glossEffortXhigh')
+                : v === 'max'
+                  ? t('routeEntries.glossEffortMax')
+                  : '';
+    return gloss ? `${v} · ${gloss}` : v;
+  };
+  const handleClearAll = async () => {
+    const ok = await confirmDialog({
+      title: t('routeEntries.clearConfirmTitle'),
+      description: t('routeEntries.clearConfirmDesc'),
+      danger: true,
+      confirmLabel: t('routeEntries.clearAll'),
+    });
+    if (!ok) return;
+    try {
+      await api.clearRouteEntries();
+      toast.success(t('routeEntries.clearDone'));
+      setRows([]);
+      setTotal(0);
+    } catch (err: any) {
+      toast.error(t('routeEntries.clearFailed') + ' ' + (err?.message || err));
+    }
+  };
+
+  const tierOptions = TIERS.map((v) => ({ value: v, label: tierOptionLabel(v) }));
+  const effortOptions = EFFORTS.map((v) => ({ value: v, label: effortOptionLabel(v) }));
 
   const thStyle: React.CSSProperties = {
     textAlign: 'left', fontSize: '10.5px', textTransform: 'uppercase', letterSpacing: '0.5px',
     color: 'var(--text-dim)', padding: '8px 10px', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap',
   };
-  const tdStyle: React.CSSProperties = { padding: '8px 10px', borderBottom: '1px solid var(--border)', verticalAlign: 'top', fontSize: '12px' };
+  const tdStyle: React.CSSProperties = { padding: '8px 10px', borderBottom: '1px solid var(--border)', verticalAlign: 'middle', fontSize: '12px' };
+
+  const sortTh = (labelKey: string, key: SortKey) => (
+    <th
+      style={{ ...thStyle, cursor: 'pointer', userSelect: 'none' }}
+      onClick={() => { setSort(key); load(q, key); }}
+      aria-sort={sort === key ? 'descending' : 'none'}
+      title={t('routeEntries.sortBy')}
+    >
+      {t(`routeEntries.${labelKey}`)}{sort === key ? ' ▾' : ''}
+    </th>
+  );
 
   return (
     <div className="page">
@@ -105,18 +185,32 @@ export const RouteEntriesPage: React.FC = () => {
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <div style={{ position: 'relative' }}>
-            <Search size={13} style={{ position: 'absolute', left: 8, top: 8, color: 'var(--text-dim)' }} />
+            <Search size={13} style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)' }} />
             <input
               className="input"
               placeholder={t('routeEntries.searchPlaceholder')}
               value={q}
               onChange={(e) => setQ(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && load(q)}
-              style={{ paddingLeft: 26, width: 260 }}
+              style={{ paddingLeft: 26, paddingRight: q ? 26 : 10, width: 340 }}
             />
+            {q && (
+              <span
+                role="button"
+                aria-label={t('routeEntries.clearSearch')}
+                title={t('routeEntries.clearSearch')}
+                onClick={() => { setQ(''); load(''); }}
+                style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', cursor: 'pointer', color: 'var(--text-dim)', display: 'inline-flex' }}
+              >
+                <X size={14} />
+              </span>
+            )}
           </div>
           <button className="btn" onClick={() => load(q)} disabled={loading} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <RefreshCw size={13} /> {t('routeEntries.refresh')}
+          </button>
+          <button className="btn" onClick={handleClearAll} disabled={total === 0} title={t('routeEntries.clearConfirmTitle')} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Eraser size={13} /> {t('routeEntries.clearAll')}
           </button>
         </div>
       </div>
@@ -140,9 +234,9 @@ export const RouteEntriesPage: React.FC = () => {
               <th style={thStyle}>{t('routeEntries.colTier')}</th>
               <th style={thStyle}>{t('routeEntries.colEffort')}</th>
               <th style={thStyle}>{t('routeEntries.colSource')}</th>
-              <th style={thStyle}>{t('routeEntries.colHits')}</th>
-              <th style={thStyle}>{t('routeEntries.colSessions')}</th>
-              <th style={thStyle}>{t('routeEntries.colUpdated')}</th>
+              {sortTh('colHits', 'hitCount')}
+              {sortTh('colSessions', 'sessionCount')}
+              {sortTh('colUpdated', 'updatedAt')}
               <th style={thStyle}></th>
             </tr>
           </thead>
@@ -158,8 +252,19 @@ export const RouteEntriesPage: React.FC = () => {
               <tr key={row.promptHash}>
                 <td style={{ ...tdStyle, maxWidth: 420 }}>
                   <div style={{ ...MONO, color: 'var(--text-dim)', marginBottom: 2 }}>{row.promptHash}</div>
-                  <div style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={row.snippet ?? undefined}>
-                    {row.snippet ?? <span style={{ color: 'var(--text-dim)' }}>{t('routeEntries.noSnippet')}</span>}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <div style={{ flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={row.snippet ?? undefined}>
+                      {row.snippet ?? <span style={{ color: 'var(--text-dim)' }}>{t('routeEntries.noSnippet')}</span>}
+                    </div>
+                    <button
+                      className="btn"
+                      onClick={() => handleCopyPrompt(row)}
+                      disabled={!row.snippet}
+                      title={t('routeEntries.copyPrompt')}
+                      style={{ padding: '2px 6px', flexShrink: 0, color: 'var(--text-dim)' }}
+                    >
+                      <Copy size={12} />
+                    </button>
                   </div>
                 </td>
                 <td style={tdStyle}>
@@ -167,7 +272,7 @@ export const RouteEntriesPage: React.FC = () => {
                     value={row.tier}
                     onChange={(v) => handleTier(row, v)}
                     options={tierOptions}
-                    style={{ width: 110 }}
+                    style={{ width: 132 }}
                   />
                 </td>
                 <td style={tdStyle}>
@@ -177,19 +282,21 @@ export const RouteEntriesPage: React.FC = () => {
                     options={effortOptions}
                     clearable
                     placeholder={t('routeEntries.effortDefault')}
-                    style={{ width: 120 }}
+                    style={{ width: 152 }}
                   />
                 </td>
                 <td style={tdStyle}>
-                  <span style={{
-                    fontSize: 10.5, padding: '2px 8px', borderRadius: 999,
-                    color: SOURCE_COLORS[row.source] ?? 'var(--text-dim)',
-                    border: `1px solid ${SOURCE_COLORS[row.source] ?? 'var(--border)'}`,
-                    whiteSpace: 'nowrap',
-                  }}>
-                    {t(`routeEntries.source_${row.source}`)}
-                  </span>
-                  <div style={{ ...MONO, color: 'var(--text-dim)', marginTop: 2 }}>{Math.round((row.confidence ?? 0) * 100)}%</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
+                    <span style={{
+                      fontSize: 10.5, padding: '2px 8px', borderRadius: 999,
+                      color: SOURCE_COLORS[row.source] ?? 'var(--text-dim)',
+                      border: `1px solid ${SOURCE_COLORS[row.source] ?? 'var(--border)'}`,
+                      whiteSpace: 'nowrap',
+                    }}>
+                      {t(`routeEntries.source_${row.source}`)}
+                    </span>
+                    <span style={{ ...MONO, color: 'var(--text-dim)' }}>{Math.round((row.confidence ?? 0) * 100)}%</span>
+                  </div>
                 </td>
                 <td style={{ ...tdStyle, ...MONO }}>{row.hitCount}</td>
                 <td style={{ ...tdStyle, ...MONO }}>{row.sessionCount}</td>

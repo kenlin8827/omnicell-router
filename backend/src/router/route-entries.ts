@@ -247,25 +247,47 @@ export class RouteEntryStore {
     return removed;
   }
 
-  /** LRU eviction: drop lowest-updatedAt rows until within the cap. */
+  /** Console bulk clear: wipe every learned row in one operator action (human rows included). */
+  public clearAll(): number {
+    this.ensureLoaded();
+    const count = this.entries.size;
+    this.entries.clear();
+    if (count > 0) this.scheduleSave();
+    return count;
+  }
+
+  /**
+   * LRU eviction: drop lowest-updatedAt rows until within the cap. HUMAN rows
+   * are exempt — operator intent outranks capacity pressure (ADR-0011 §2);
+   * delete them explicitly instead. If every row is human the table may sit
+   * above the cap until the operator prunes it — accepted trade-off.
+   */
   private evictToCap(): void {
     const cap = gate().maxEntries ?? 5000;
     if (this.entries.size <= cap) return;
-    const byAge = [...this.entries.values()].sort((a, b) => a.updatedAt - b.updatedAt);
+    const byAge = [...this.entries.values()]
+      .filter((e) => e.source !== 'human')
+      .sort((a, b) => a.updatedAt - b.updatedAt);
     for (const e of byAge) {
       if (this.entries.size <= cap) break;
       this.entries.delete(e.promptHash);
     }
   }
 
-  /** Console listing (newest activity first) with optional text filter. */
-  public list(opts?: { limit?: number; offset?: number; q?: string }): { rows: RouteEntry[]; total: number } {
+  /** Console listing: text filter (snippet / hash / tier / session ids) + sort key — all DESC with updatedAt tiebreak. */
+  public list(opts?: { limit?: number; offset?: number; q?: string; sort?: 'updatedAt' | 'hitCount' | 'sessionCount' }): { rows: RouteEntry[]; total: number } {
     this.ensureLoaded();
-    let all = [...this.entries.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+    const sort = opts?.sort ?? 'updatedAt';
+    const score = (e: RouteEntry): number => (sort === 'sessionCount' ? e.sessions.length : e[sort]);
+    let all = [...this.entries.values()].sort((a, b) => score(b) - score(a) || b.updatedAt - a.updatedAt);
     const q = opts?.q?.trim().toLowerCase();
     if (q) {
       all = all.filter(
-        (e) => (e.snippet ?? '').toLowerCase().includes(q) || e.promptHash.includes(q) || e.tier.includes(q)
+        (e) =>
+          (e.snippet ?? '').toLowerCase().includes(q) ||
+          e.promptHash.includes(q) ||
+          e.tier.includes(q) ||
+          e.sessions.some((s) => s.toLowerCase().includes(q))
       );
     }
     const total = all.length;

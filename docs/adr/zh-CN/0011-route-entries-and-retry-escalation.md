@@ -15,12 +15,12 @@ Layer 1 与飞轮删除后，网关在对话之间没有任何记忆：每个 au
 
 ### 1. RouteEntry——每条归一化 prompt 一行
 
-`{ promptHash, tier, effort?, source, confidence, sessions[≤20 LRU], hitCount, createdAt, updatedAt, snippet? }`，整体 JSON 持久化在 `<envRoot>/data/route-entries.json`（2 秒防抖落盘；崩溃最多丢防抖窗口内的计数）。`promptHash` = 空白折叠后 prompt 的 sha256 前缀（16 hex）——同一归一化同时喂给重试检测器。`snippet` = prompt 前 200 字符，仅作展示/编辑辅助，由 `routeEntries.snippetEnabled` 门控（默认开——与会话 `attachOrigin`、已退役飞轮 `logUserPrompt` 相同的「默认可见 + 显式脱敏开关」隐私口径；开关只影响新写入，绝不删除已存片段）。容量上限：`maxEntries`（默认 5000），按 `updatedAt` LRU 淘汰。
+`{ promptHash, tier, effort?, source, confidence, sessions[≤20 LRU], hitCount, createdAt, updatedAt, snippet? }`，整体 JSON 持久化在 `<envRoot>/data/route-entries.json`（2 秒防抖落盘；崩溃最多丢防抖窗口内的计数）。`promptHash` = 空白折叠后 prompt 的 sha256 前缀（16 hex）——同一归一化同时喂给重试检测器。`snippet` = prompt 前 200 字符，仅作展示/编辑辅助，由 `routeEntries.snippetEnabled` 门控（默认开——与会话 `attachOrigin`、已退役飞轮 `logUserPrompt` 相同的「默认可见 + 显式脱敏开关」隐私口径；开关只影响新写入，绝不删除已存片段）。容量上限：`maxEntries`（默认 5000），按 `updatedAt` LRU 淘汰——**human 行豁免**（操作者意图高于容量压力；想删就显式删；若整表都是 human 行，条目数可停在上限之上直到人工清理）。
 
 ### 2. 写入白名单——三个生产者，别无分号
 
 - `l2_confident`：置信度 ≥ 0.85 的 Layer 2 判定，在**成功执行后**落盘，记录实际服务的档位（failover/级联的真实高于意图）。Schema 级联轮次跳过——那类轮次的档位由 lite 先发拥有。当裁判同时判定了思考级别（ADR-0012）时，实际服务的 `actualEffort` 随同一次写入落盘——经验表**双向**学习 `{tier, effort}`（新的高置信判断覆盖陈旧的同源行，向下修订与向上同样容易）。
-- `correction`：被用户**接受**的升档重试。「接受」只有一种可观测形态：之后的请求换了不同的 prompt hash（「换了个话题」）。满意即走永不写回——已接受的有界损耗。置信度 1.0（实际执行证据）。
+- `correction`：被用户**接受**的升档重试。「接受」只有一种可观测形态：之后的请求换了不同的 prompt hash（「换了个话题」）。满意即走永不写回——已接受的有界损耗。置信度 1.0（实际执行证据）。写入携带升档轮次的 prompt 片段（存在会话重试状态上，同受 `snippetEnabled` 门控），让该行在控制台上可读而非裸哈希。
 - `human`：控制台编辑。置信度 1.0 且**对自动写入免疫**——操作者意图高于观测证据；想改就删行重录。
 
 优先级：`human > correction > l2_confident`——条目绝不丢失确定性（`route-entries.ts` 的 SOURCE_RANK）。
@@ -45,11 +45,11 @@ Layer 1 与飞轮删除后，网关在对话之间没有任何记忆：每个 au
 
 ### 5. 影子模式与台账
 
-`routeEntries.escalateOnRetry: false` = 影子模式：检测与记录照跑，任何动作不发生。`routing-ledger`（`<envRoot>/data/routing-ledger.jsonl`，纯追加，仅含 prompt **哈希**，64 MB 封顶 + 单次告警）记录每个生命周期事件：`retry_detected`、`entry_hit`、`entry_write`、`escalation`、`correction`。它是飞轮之后的新审计旁路——纯观测，绝不回读参与路由。
+`routeEntries.escalateOnRetry: false` = 影子模式：检测与记录照跑，任何动作不发生。`routing-ledger`（`<envRoot>/data/routing-ledger.jsonl`，纯追加，仅含 prompt **哈希**，64 MB 封顶 + 单次告警）记录每个生命周期事件：`retry_detected`、`retry_skipped`、`entry_hit`、`entry_write`、`escalation`、`correction`。`retry_skipped` 让「未升档」也可审计——detail.cause 取值：`too_short`（prompt 低于 20 字符检测下限）、`ceiling`（阶梯在 ultra 见顶）、`judge_higher`（基础判定本轮已置于提议档位之上）、`shadow`（影子模式吞掉动作）。它是飞轮之后的新审计旁路——纯观测，绝不回读参与路由。
 
 ### 6. 配置
 
-`routeEntries: { enabled（默认 true）, snippetEnabled（默认 true）, escalateOnRetry（默认 true）, maxEntries（默认 5000） }`——每次控制台保存即热应用（decision-capture 模式）。`enabled: false` 冻结整个子系统：不查询、不写入、无台账。
+`routeEntries: { enabled（默认 true）, snippetEnabled（默认 true）, escalateOnRetry（默认 true）, maxEntries（默认 5000） }`——每次控制台保存即热应用（decision-capture 模式）。`enabled: false` 冻结整个子系统：不查询、不写入、无台账。`maxEntries` 在加载时钳制：非正数/非法值回落默认（未钳制的 0/负上限会在下一次写入时把全部非 human 学习行 LRU 驱逐）。
 
 ## 后果
 

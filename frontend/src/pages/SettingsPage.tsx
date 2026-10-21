@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Sliders, Save, Check, Globe, HardDrive, Archive, Database, ShieldCheck, LogOut, ChevronDown, ChevronRight, Cpu } from 'lucide-react';
+import { Sliders, Save, Check, Globe, HardDrive, Archive, Database, ShieldCheck, LogOut, ChevronDown, ChevronRight, Cpu, Waypoints } from 'lucide-react';
 import { api } from '../lib/api';
 import type { WebAuthConfigView } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
@@ -164,6 +164,19 @@ export const SettingsPage: React.FC = () => {
     ...config,
     responses: { ...(config.responses || {}), ...patch },
   });
+  // Same whole-node discipline for `routeEntries` (ADR-0011 experience table
+  // gate) — hot-applied server-side via applyRouteEntriesConfig on every save.
+  const patchRouteEntries = (patch: Record<string, unknown>) => setConfig({
+    ...config,
+    routeEntries: {
+      enabled: true,
+      snippetEnabled: true,
+      escalateOnRetry: true,
+      maxEntries: 5000,
+      ...(config.routeEntries || {}),
+      ...patch,
+    },
+  });
 
   // In-page nav — same pattern as /tiers (RulesPage): chips sit in the header
   // card and the content below is its own scroll region, so the chips stay
@@ -173,6 +186,8 @@ export const SettingsPage: React.FC = () => {
     { key: 'cache', label: t('settings.navCache'), icon: HardDrive, color: 'var(--accent-emerald)' },
     { key: 'capture', label: t('settings.navCapture'), icon: Archive, color: 'var(--accent)' },
     { key: 'responses', label: t('settings.navResponses'), icon: Database, color: 'var(--accent-emerald)' },
+    { key: 'sysone', label: t('settings.navSysone'), icon: Cpu, color: 'var(--accent-violet)' },
+    { key: 'routeentries', label: t('settings.navRouteEntries'), icon: Waypoints, color: 'var(--accent-violet)' },
     { key: 'webauth', label: t('settings.navWebAuth'), icon: ShieldCheck, color: 'var(--accent)' },
   ];
   const jumpTo = (key: string) => {
@@ -475,8 +490,66 @@ export const SettingsPage: React.FC = () => {
               {t('settings.sysoneModelHint')}
             </div>
           </div>
+          {/* Route experience table (routeEntries.*) — hot-applied on save. */}
+          <div id="settings-routeentries" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent-violet)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <Waypoints size={14} />
+              {t('settings.reTitle')}
+            </div>
+            <div>
+              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
+                <span>{t('settings.reEnable')}</span>
+                <Switch
+                  checked={config.routeEntries?.enabled ?? true}
+                  onChange={v => patchRouteEntries({ enabled: v })}
+                />
+              </label>
+              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '6px' }}>
+                {t('settings.reEnableHint')}
+              </div>
+            </div>
+            <div>
+              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
+                <span>{t('settings.reSnippet')}</span>
+                <Switch
+                  checked={config.routeEntries?.snippetEnabled ?? true}
+                  onChange={v => patchRouteEntries({ snippetEnabled: v })}
+                />
+              </label>
+              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '6px' }}>
+                {t('settings.reSnippetHint')}
+              </div>
+            </div>
+            <div>
+              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
+                <span>{t('settings.reEscalate')}</span>
+                <Switch
+                  checked={config.routeEntries?.escalateOnRetry ?? true}
+                  onChange={v => patchRouteEntries({ escalateOnRetry: v })}
+                />
+              </label>
+              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '6px' }}>
+                {t('settings.reEscalateHint')}
+              </div>
+            </div>
+            <div>
+              <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.reMaxEntries')}</label>
+              <input
+                type="number"
+                min="1"
+                value={config.routeEntries?.maxEntries ?? 5000}
+                onChange={e => patchRouteEntries({ maxEntries: parseInt(e.target.value, 10) || 5000 })}
+                className="input"
+              />
+              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '6px' }}>
+                {t('settings.reMaxEntriesHint')}
+              </div>
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
+              {t('settings.reHotHint')}
+            </div>
+          </div>
         </div>
-
         {/* Console Access (webAuth) — dedicated save flow, see handleWebAuthSave */}
         <div id="settings-webauth" className="card">
         <div className="card-header">

@@ -41,7 +41,10 @@ export class RouterEngine {
     classifierConfig?: ClassifierConfig,
     registry?: ProviderRegistry,
     systemoneDefaultModel?: string,
-    judgeCapture?: UpstreamEventContext
+    judgeCapture?: UpstreamEventContext,
+    /** Owning turn's session — threaded to the judge so its failure rows
+     *  (failure_events ledger) attribute to the suffering conversation. */
+    sessionId?: string
   ): Promise<RoutingDecision> {
     // Structured-output requests arm the orchestrator's lite-first
     // schema-assertion cascade regardless of the decided tier.
@@ -68,7 +71,8 @@ export class RouterEngine {
         classifierConfig.layer2,
         registry,
         systemoneDefaultModel,
-        judgeCapture
+        judgeCapture,
+        sessionId
       );
       if (decisionResult) {
         return {

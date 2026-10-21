@@ -39,6 +39,14 @@ export interface SessionRetryState {
   /** What actually served: tier (post-failover truth) and effective effort. */
   lastTierUsed?: TierLevel;
   lastEffortUsed?: ReasoningEffort;
+  /**
+   * Display snippet of the last turn's prompt (ADR-0011): carried solely so a
+   * later `correction` write-back can produce a READABLE route-entry row —
+   * without it the entry is a bare 16-hex hash nobody can identify on the
+   * console. Same privacy stance as the store's snippet: written only when
+   * `routeEntries.snippetEnabled` is on.
+   */
+  lastSnippet?: string;
   /** Consecutive same-prompt attempts observed so far (0 = not a retry). */
   retryCount?: number;
   /** Whether THAT turn applied an escalation (feeds correction write-back). */

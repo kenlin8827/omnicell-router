@@ -19,6 +19,10 @@ const TH_STYLE: React.CSSProperties = {
   // no sticky needed; solid fill keeps the card look consistent.
   background: 'color-mix(in srgb, var(--card-bg), var(--bg))',
 };
+// The tables default to centered (badges / numbers / icons read better in
+// narrow fixed-width columns); only session id and Tokens stay left — both
+// header and body opt back out with this / an inline textAlign:'left'.
+const TH_LEFT: React.CSSProperties = { ...TH_STYLE, textAlign: 'left' };
 
 /** Tier display: show the tier's own name (Lite / Plus / Pro / Ultra), not opaque numbers. */
 const TIER_LABEL: Record<SessionRecord['maxTier'], string> = {
@@ -97,18 +101,19 @@ const tokenDisplay = (v: number): string => (v >= 100_000 ? COMPACT_FMT.format(v
  */
 const TierCell: React.FC<{ s: SessionRecord }> = ({ s }) => {
   const { t } = useI18n();
+  const effortTip = lastEffortTip(s, t);
   if (s.entryMode === 'combo') {
     return (
-      <span className="badge badge-info" title={t('sessions.entryModeComboHint')}>
+      <span className="badge badge-info" title={t('sessions.entryModeComboHint') + effortTip}>
         {t('sessions.entryModeCombo')}
       </span>
     );
   }
   if (s.entryMode === 'explicit') {
-    return <span style={{ color: 'var(--text-dim)' }} title={t('sessions.entryModeExplicitHint')}>—</span>;
+    return <span style={{ color: 'var(--text-dim)' }} title={t('sessions.entryModeExplicitHint') + effortTip}>—</span>;
   }
   return (
-    <span className={`badge ${TIER_BADGE[s.maxTier]}`} title={t(TIER_FULL_LABEL[s.maxTier])}>
+    <span className={`badge ${TIER_BADGE[s.maxTier]}`} title={t(TIER_FULL_LABEL[s.maxTier]) + effortTip}>
       {t(TIER_LABEL[s.maxTier])}
     </span>
   );
@@ -157,6 +162,31 @@ const PinnedModelCell: React.FC<{ model: string }> = ({ model }) => {
 };
 
 /**
+ * Shared-provider chip (trail + request-detail fold headers): printed once
+ * above rows that omit the `provider/` prefix; the tooltip explains the
+ * omission and the rows' own tooltips carry the full refs.
+ */
+const PROVIDER_CHIP_STYLE: React.CSSProperties = {
+  fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+  fontSize: '10px',
+  fontWeight: 500,
+  color: 'var(--text-dim)',
+  background: 'var(--chip-bg)',
+  border: '1px solid var(--card-border)',
+  padding: '1px 8px',
+  borderRadius: '4px',
+  wordBreak: 'break-all',
+};
+const ProviderNsChip: React.FC<{ ns: string }> = ({ ns }) => {
+  const { t } = useI18n();
+  return (
+    <span title={t('sessions.switchProviderTip')} style={PROVIDER_CHIP_STYLE}>
+      {ns}/
+    </span>
+  );
+};
+
+/**
  * Thinking-level cell for the per-request detail grid: shows the level the
  * gateway actually served. `requested→actual` in amber when the turn was
  * degraded below the ask (the same signal X-OCR-Thinking-Degraded carries);
@@ -172,6 +202,29 @@ const EFFORT_SOURCE_KEY = {
   escalation: 'sessions.thinkSrcEscalation',
   default: 'sessions.thinkSrcDefault',
 } as const;
+
+/**
+ * Tier-cell tooltip suffix: the LATEST turn's thinking-effort sample, lifted
+ * from the session aggregates (`last*Effort*` fields). Effort floats per
+ * turn and is never ratcheted (ADR-0012), so the line is explicitly worded
+ * "last turn" — it must never read as a session lock next to the tier
+ * ceiling. '' when the last trace predates the effort fields. Mirrors
+ * EffortCell's rendering rules (gateway prefix, degraded `req→act`).
+ */
+const lastEffortTip = (s: SessionRecord, t: Translate): string => {
+  const req = s.lastRequestedEffort;
+  const act = s.lastActualEffort;
+  if (!req && !act) return '';
+  const src = s.lastEffortSource;
+  const degraded = s.lastReasoningDegraded === true;
+  const gatewayDecided = src !== undefined && src !== 'client';
+  const level = degraded && req && act && req !== act ? `${req}→${act}` : act ?? req;
+  const marked = `${gatewayDecided ? t('sessions.thinkAutoMark') : ''}${level}`;
+  return (
+    `\n${t('sessions.thinkLast', { effort: marked })}` +
+    (src ? `\n${t('sessions.thinkSource', { source: t(EFFORT_SOURCE_KEY[src]) })}` : '')
+  );
+};
 
 const EffortCell: React.FC<{ tr: TraceRecord }> = ({ tr }) => {
   const { t } = useI18n();
@@ -211,6 +264,12 @@ interface SwitchEvent {
   to: string;
   kind: SwitchKind;
   detail?: string;
+  /** When the reason template carries a `{tier}` slot: the localized text
+   *  around it, plus the raw tier id for badge lookup (TIER_BADGE/TIER_LABEL).
+   *  The trail row renders pre + tier badge + post; `detail` stays the clean
+   *  plain string for the tooltip. `model` (l2 judge codes only) joins the
+   *  tooltip as a suffix line — never inline. */
+  tieredDetail?: { tier: string; pre: string; post: string; model?: string };
 }
 
 const SWITCH_BADGE: Record<SwitchKind, string> = {
@@ -236,24 +295,72 @@ const SWITCH_DOT: Record<SwitchKind, string> = {
 };
 
 /**
- * Provider namespace shared by every model in the timeline, when all from/to
- * refs carry the same `provider/` prefix. The modal then prints the prefix
- * once as a header chip and keeps rows short (`glm-5.3-flash → glm-5.3`
- * instead of repeating a 30-char ref per name). Mixed or prefix-less models
- * return null and rows fall back to full refs.
+ * Provider namespace shared by EVERY ref in the list, when all carry the
+ * same `provider/` prefix. The modal prints the prefix once as a header
+ * chip and keeps rows short (`glm-5.3-flash` instead of repeating a
+ * 30-char ref per row); the rows' own tooltips carry the full refs.
+ * Mixed or prefix-less models return null and rows fall back to full refs.
  */
-const commonProviderOf = (events: SwitchEvent[]): string | null => {
+const commonProviderOf = (models: ReadonlyArray<string | null | undefined>): string | null => {
   let ns: string | null = null;
-  for (const ev of events) {
-    for (const m of [ev.from, ev.to]) {
-      if (!m) continue;
-      const slash = m.indexOf('/');
-      const p = slash < 0 ? '' : m.slice(0, slash);
-      if (ns === null) ns = p;
-      else if (ns !== p) return null;
-    }
+  for (const m of models) {
+    if (!m) continue;
+    const slash = m.indexOf('/');
+    const p = slash < 0 ? '' : m.slice(0, slash);
+    if (ns === null) ns = p;
+    else if (ns !== p) return null;
   }
   return ns ? ns : null;
+};
+
+/**
+ * Split a tier-bearing reason text around its `{tier}` slot: rebuilds the
+ * localized string with a sentinel in the slot, then cuts. The trail row
+ * renders pre + tier badge + post, borrowing the sessions-table badge hues
+ * (TIER_BADGE/TIER_LABEL) so a tier judgment pops out of the gray detail
+ * line. Undefined when the code carries no `tier` param or the sentinel
+ * did not survive the rebuild (unknown code -> raw-reason fallback) — the
+ * guard is structural, no code allowlist needed.
+ *
+ * The l2 judge's model id never renders inline (it reads like the tier was
+ * inferred FROM the model — it is not; the judge is a dedicated decision
+ * leg): it rides back as `model` for a tooltip suffix line instead.
+ */
+const TIER_SENTINEL = '\u0000';
+const tieredDetailOf = (
+  tr: TraceRecord,
+  t: Translate
+): { tier: string; pre: string; post: string; model?: string } | undefined => {
+  const params = tr.routing?.reasonParams;
+  const tier = params?.tier;
+  if (!params || typeof tier !== 'string') return undefined;
+  const withSentinel = formatReason(
+    tr.routing?.reasonCode,
+    {
+      ...params,
+      tier: TIER_SENTINEL,
+      // Decision confidence as a 0-100 integer for the l2 templates — the
+      // number is the judge's own (self-reported on the converted path,
+      // which is exactly what the "uncalibrated" caveat marks). Other
+      // {tier} templates have no {confidence} slot and ignore it.
+      confidence: Math.round((tr.routing?.confidence ?? 0) * 100),
+    },
+    tr.routing?.reason,
+    t
+  );
+  const cut = withSentinel.indexOf(TIER_SENTINEL);
+  if (cut < 0) return undefined;
+  const code = tr.routing?.reasonCode;
+  return {
+    tier,
+    pre: withSentinel.slice(0, cut),
+    post: withSentinel.slice(cut + TIER_SENTINEL.length),
+    model:
+      (code === 'l2.system_one' || code === 'l2.system_one_uncalibrated') &&
+      typeof params.model === 'string'
+        ? params.model
+        : undefined,
+  };
 };
 
 /**
@@ -268,9 +375,18 @@ const buildSwitchTimeline = (traces: TraceRecord[], t: Translate): SwitchEvent[]
   let prev: string | null = null;
   for (const tr of traces) {
     const model = tr.execution.modelUsed;
-    const routingDetail = formatReason(tr.routing?.reasonCode, tr.routing?.reasonParams, tr.routing?.reason, t);
+    // Merge decision confidence (0-100) into the params so the l2 templates'
+    // {confidence} slot renders on this path too — the backend reasonParams
+    // carry only {model, tier} (+{effort}). Other templates have no
+    // {confidence} slot and ignore it, so this is safe for every code.
+    const routingDetail = formatReason(
+      tr.routing?.reasonCode,
+      { ...tr.routing?.reasonParams, confidence: Math.round((tr.routing?.confidence ?? 0) * 100) },
+      tr.routing?.reason,
+      t
+    );
     if (prev === null) {
-      events.push({ at: tr.timestamp, from: null, to: model, kind: 'first', detail: routingDetail });
+      events.push({ at: tr.timestamp, from: null, to: model, kind: 'first', detail: routingDetail, tieredDetail: tieredDetailOf(tr, t) });
     } else if (model !== prev) {
       const code = tr.routing?.reasonCode;
       // Structured code is authoritative; sessionRatchetApplied covers rows written before codes existed.
@@ -291,7 +407,16 @@ const buildSwitchTimeline = (traces: TraceRecord[], t: Translate): SwitchEvent[]
       const failoverStory =
         tr.execution.failoverOccurred && fp && fp.length > 1 ? fp.join(' → ') : undefined;
       const detail = tr.execution.fallbackReason || failoverStory || routingDetail;
-      events.push({ at: tr.timestamp, from: prev, to: model, kind, detail });
+      events.push({
+        at: tr.timestamp,
+        from: prev,
+        to: model,
+        kind,
+        detail,
+        // A badge only matches when the displayed text IS the reason template
+        // — a fallbackReason / failover story has no {tier} slot to cut into.
+        tieredDetail: detail === routingDetail ? tieredDetailOf(tr, t) : undefined,
+      });
     }
     prev = model;
   }
@@ -480,14 +605,28 @@ export const SessionsPage: React.FC = () => {
   // Detail holds two side-by-side icons — 7 units keeps them on one line
   // (flex nowrap below also guarantees rows never grow a second line here).
   // Active is a bare clock time — 6.5.
+  // Alignment: the tables default to textAlign:center (badges / numbers /
+  // icons read better in these narrow fixed columns); only session id (mono
+  // copy target) and Tokens (2×2 stat grid with its own internal layout)
+  // opt back out to left — see TH_LEFT and the two body cells.
   const colWeights = [15, 11, 13.5, 6.5, 5.5, 4.5, 5, 16.5, 6.5, 6.5, 7, 5, ...(captureOn ? [4] : [])];
   const colSum = colWeights.reduce((a, b) => a + b, 0);
   const colWidths = colWeights.map(w => `${((w / colSum) * 100).toFixed(3)}%`);
   // Switch-timeline modal: when every event shares one provider prefix, print
   // that prefix once as a header chip and show bare model ids in the rows.
-  const providerNs = timeline ? commonProviderOf(timeline.events) : null;
-  const shortModel = (m: string): string =>
-    providerNs && m.startsWith(`${providerNs}/`) ? m.slice(providerNs.length + 1) : m;
+  // Only pays off across MULTIPLE events — a single-row trail renders the
+  // full ref inline instead of a dangling "ns/" fragment. Same dedup for the
+  // request-detail grid (gated on >1 turn for the same reason).
+  const providerNs =
+    timeline && timeline.events.length > 1
+      ? commonProviderOf(timeline.events.flatMap(ev => [ev.from, ev.to]))
+      : null;
+  const detailNs =
+    timeline && timeline.traces.length > 1
+      ? commonProviderOf(timeline.traces.map(tr => tr.execution.modelUsed))
+      : null;
+  const shortModel = (ns: string | null, m: string): string =>
+    ns && m.startsWith(`${ns}/`) ? m.slice(ns.length + 1) : m;
 
   return (
     <div className="card" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -542,18 +681,25 @@ export const SessionsPage: React.FC = () => {
           same gutter on both so the body's scrollbar never desyncs widths. */}
       <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
         <div style={{ scrollbarGutter: 'stable' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '12px', tableLayout: 'fixed' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'center', fontSize: '12px', tableLayout: 'fixed' }}>
             <colgroup>{colWidths.map((w, i) => <col key={i} style={{ width: w }} />)}</colgroup>
             <thead>
               <tr style={{ borderBottom: '1px solid var(--divider)', color: 'var(--text-dim)' }}>
-                <th style={TH_STYLE}>{t('sessions.thSessionId')}</th>
+                <th style={TH_LEFT}>{t('sessions.thSessionId')}</th>
                 <th style={TH_STYLE}>{t('sessions.thApps')}</th>
                 <th style={TH_STYLE}>{t('sessions.thPinned')}</th>
-                <th style={TH_STYLE}>{t('sessions.thTier')}</th>
+                <th style={TH_STYLE}>
+                  {/* Always two stacked lines: the 6.5-unit tier column is
+                      sized for the badge, and whether the 5-char header fits
+                      one line depends on window width — pin the wrap so the
+                      header shape is width-independent. inline-block +
+                      max-width wraps CJK every 2 chars, English per word. */}
+                  <span style={{ display: 'inline-block', maxWidth: '2.5em' }}>{t('sessions.thTier')}</span>
+                </th>
                 <th style={TH_STYLE}>{t('sessions.thSwitches')}</th>
                 <th style={TH_STYLE}>{t('sessions.thTurns')}</th>
                 <th style={TH_STYLE}>{t('sessions.thRequests')}</th>
-                <th style={TH_STYLE}>{t('sessions.thTokens')}</th>
+                <th style={TH_LEFT}>{t('sessions.thTokens')}</th>
                 <th style={TH_STYLE}>{t('sessions.thCost')}</th>
                 <th style={TH_STYLE}>{t('sessions.thActive')}</th>
                 <th style={TH_STYLE}>{t('sessions.thDetail')}</th>
@@ -564,7 +710,7 @@ export const SessionsPage: React.FC = () => {
           </table>
         </div>
         <div style={{ overflowY: 'auto', flex: 1, minHeight: 0, scrollbarGutter: 'stable' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '12px', tableLayout: 'fixed' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'center', fontSize: '12px', tableLayout: 'fixed' }}>
             <colgroup>{colWidths.map((w, i) => <col key={i} style={{ width: w }} />)}</colgroup>
             <tbody>
             {sessions.length > 0 ? (
@@ -573,6 +719,7 @@ export const SessionsPage: React.FC = () => {
                   <td
                     style={{
                       padding: '10px 14px',
+                      textAlign: 'left',
                       fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                       color: 'var(--text-main)',
                       wordBreak: 'break-all',
@@ -592,7 +739,7 @@ export const SessionsPage: React.FC = () => {
                   </td>
                   <td style={{ padding: '10px 14px' }}>
                     {(s.apiKeys && s.apiKeys.length > 0) || (s.clients && s.clients.length > 0) ? (
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '4px' }}>
                         {s.apiKeys?.map(k => (
                           <span
                             key={k.id}
@@ -701,7 +848,7 @@ export const SessionsPage: React.FC = () => {
                   <td style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
                     {s.traceCount.toLocaleString()}
                   </td>
-                  <td style={{ padding: '10px 14px' }}>
+                  <td style={{ padding: '10px 14px', textAlign: 'left' }}>
                     {/* Grid auto-placement fills row-major, so the child order
                         below yields: In|Cached on row 1, Out|Hit on row 2, and
                         the Rate row bleeding across both columns (2×2 grid +
@@ -772,7 +919,7 @@ export const SessionsPage: React.FC = () => {
                   <td style={{ padding: '10px 14px' }}>
                     {/* Flex row: the two icons must never wrap — a wrapped pair
                         doubles every row's height. */}
-                    <span style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '12px' }}>
                     <span
                       role="button"
                       aria-label={t('sessions.viewDetail')}
@@ -938,24 +1085,7 @@ export const SessionsPage: React.FC = () => {
               </span>
               {/* Shared provider prefix, printed once: rows below show bare
                   model ids; hover reveals the full ref. */}
-              {providerNs && (
-                <span
-                  title={t('sessions.switchProviderTip')}
-                  style={{
-                    fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
-                    fontSize: '10px',
-                    fontWeight: 500,
-                    color: 'var(--text-dim)',
-                    background: 'var(--chip-bg)',
-                    border: '1px solid var(--card-border)',
-                    padding: '1px 8px',
-                    borderRadius: '4px',
-                    wordBreak: 'break-all',
-                  }}
-                >
-                  {providerNs}/
-                </span>
-              )}
+              {providerNs && <ProviderNsChip ns={providerNs} />}
             </div>
             {timeline.trailOpen &&
               (timeline.events.length === 0 ? (
@@ -978,6 +1108,12 @@ export const SessionsPage: React.FC = () => {
                   // raw reason can be the bare target ref) is pure noise.
                   const detail =
                     ev.detail && ev.detail !== ev.to && ev.detail !== `${ev.from} → ${ev.to}` ? ev.detail : undefined;
+                  // Judge identity lives in the tooltip only (suffix line) —
+                  // an inline model id reads like reverse inference.
+                  const detailTip =
+                    ev.tieredDetail?.model && detail
+                      ? `${detail}\n${t('routing.reason.judgeModel', { model: ev.tieredDetail.model })}`
+                      : detail;
                   return (
                     <div
                       key={i}
@@ -1015,15 +1151,30 @@ export const SessionsPage: React.FC = () => {
                         title={providerNs ? (ev.from ? `${ev.from} → ${ev.to}` : ev.to) : undefined}
                         style={{ fontWeight: 600, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
                       >
-                        {ev.from ? <><span style={{ color: 'var(--text-dim)' }}>{shortModel(ev.from)}</span>{' → '}</> : null}
-                        {shortModel(ev.to)}
+                        {ev.from ? <><span style={{ color: 'var(--text-dim)' }}>{shortModel(providerNs, ev.from)}</span>{' → '}</> : null}
+                        {shortModel(providerNs, ev.to)}
                       </span>
                       {detail && (
                         <span
                           style={{ color: 'var(--text-dim)', fontSize: '11px', flexBasis: '100%', wordBreak: 'break-word' }}
-                          title={detail}
+                          title={detailTip}
                         >
-                          {detail}
+                          {ev.tieredDetail ? (
+                            <>
+                              {ev.tieredDetail.pre}
+                              <span
+                                className={`badge ${TIER_BADGE[ev.tieredDetail.tier as SessionRecord['maxTier']] ?? ''}`}
+                                style={{ margin: '0 3px' }}
+                              >
+                                {TIER_LABEL[ev.tieredDetail.tier as SessionRecord['maxTier']]
+                                  ? t(TIER_LABEL[ev.tieredDetail.tier as SessionRecord['maxTier']])
+                                  : ev.tieredDetail.tier}
+                              </span>
+                              {ev.tieredDetail.post}
+                            </>
+                          ) : (
+                            detail
+                          )}
                         </span>
                       )}
                     </div>
@@ -1054,6 +1205,9 @@ export const SessionsPage: React.FC = () => {
                 >
                   {timeline.detailOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                   <span>{t('sessions.requestsTitle', { count: timeline.traces.length })}</span>
+                  {/* Same shared-prefix dedup as the trail: rows below show
+                      bare ids; hover reveals the full ref. */}
+                  {detailNs && <ProviderNsChip ns={detailNs} />}
                   {/* Sort toggle: icon-only ghost button (same language as
                       RoundCard's header icons — a boxed btn read too heavy
                       on the 11px fold row). Title = what a click switches
@@ -1083,17 +1237,25 @@ export const SessionsPage: React.FC = () => {
                 <div
                   style={{
                     display: 'grid',
-                    gridTemplateColumns: '64px 64px 30px minmax(160px, 1fr) 56px 56px 56px 60px 86px 52px 44px 44px',
+                    // Think column is 96px: worst case = the localized
+                    // gateway-decided prefix (sessions.thinkAutoMark) plus a
+                    // degraded req->act span like "xhigh->high" ~= 92px at
+                    // 11px mono; 56px let it bleed into the In column.
+                    gridTemplateColumns: '30px 64px 64px minmax(160px, 1fr) 96px 56px 56px 60px 86px 52px 44px 44px',
                     columnGap: '8px',
                     rowGap: '6px',
+                    // The model cell renders two stacked lines (name over
+                    // provider) and sets the row height — center every cell
+                    // vertically so the single-line cells don't hug the top.
+                    alignItems: 'center',
                     fontSize: '11px',
                     fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
                   }}
                 >
                   {[
+                    '#',
                     t('sessions.colStart'),
                     t('sessions.colEnd'),
-                    '#',
                     t('sessions.colModel'),
                     t('sessions.colThink'),
                     t('sessions.colIn'),
@@ -1113,12 +1275,28 @@ export const SessionsPage: React.FC = () => {
                   ))}
                   {(detailDesc ? [...timeline.traces].reverse() : timeline.traces).map(tr => (
                     <React.Fragment key={tr.traceId}>
+                      <span style={{ color: 'var(--text-dim)' }}>#{tr.turnNumber}</span>
                       <span style={{ color: 'var(--text-dim)' }}>{new Date(tr.timestamp).toLocaleTimeString()}</span>
                       <span style={{ color: 'var(--text-dim)' }}>
                         {new Date(tr.timestamp + tr.execution.latencyMs).toLocaleTimeString()}
                       </span>
-                      <span style={{ color: 'var(--text-dim)' }}>#{tr.turnNumber}</span>
-                      <span style={{ color: 'var(--text-main)', wordBreak: 'break-all' }}>{tr.execution.modelUsed}</span>
+                      {/* Model name over provider, same split as the pinned
+                          cell — full refs wrap badly in the mono grid. When
+                          every turn shares one provider prefix (chip up in
+                          the fold header) rows show the bare id and the
+                          tooltip carries the full ref. */}
+                      {detailNs ? (
+                        <span
+                          title={tr.execution.modelUsed}
+                          style={{ ...PINNED_LINE_STYLE, color: 'var(--text-main)' }}
+                        >
+                          {shortModel(detailNs, tr.execution.modelUsed)}
+                        </span>
+                      ) : (
+                        <span style={{ color: 'var(--text-main)' }}>
+                          <PinnedModelCell model={tr.execution.modelUsed} />
+                        </span>
+                      )}
                       <EffortCell tr={tr} />
                       <span>{tr.finops.inputTokens.toLocaleString()}</span>
                       <span>{tr.finops.outputTokens.toLocaleString()}</span>

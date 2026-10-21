@@ -15,6 +15,7 @@ import { BreakerRulesPage } from './pages/BreakerRulesPage';
 import { SessionsPage } from './pages/SessionsPage';
 import { UsagePage } from './pages/UsagePage';
 import { RateLimitPage } from './pages/RateLimitPage';
+import { FailuresPage } from './pages/FailuresPage';
 import { QuotaPage } from './pages/QuotaPage';
 import { LogsPage } from './pages/LogsPage';
 import { CapturesPage } from './pages/CapturesPage';
@@ -88,6 +89,7 @@ export const App: React.FC = () => {
         <Route path="sessions" element={<SessionsPage />} />
         <Route path="usage" element={<UsagePage />} />
         <Route path="rate-limit" element={<RateLimitPage />} />
+        <Route path="failures" element={<FailuresPage />} />
         <Route path="quota" element={<QuotaPage />} />
         <Route path="logs" element={<LogsPage />} />
         <Route path="captures" element={<CapturesPage />} />

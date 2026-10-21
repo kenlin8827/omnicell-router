@@ -8,7 +8,7 @@ Implemented — 2026-10-21 (Layer 1 micro-classifier and the learning flywheel r
 
 Auto routing must choose `lite|plus|pro|ultra` per turn — cheap, deterministic in its fallbacks, and never thrashing a conversation (the session ratchet rides this decision, ADR-0002). The founding boundary of this repo: **response caching of any kind is banned** — semantic/response caches contaminated both routing (system-prompt weight dominance) and answers (cross-session bleed) while defeating the provider-side KV caching the gateway exists to maximize. The decision path may cache *decisions*, never *content* (`decision-cache.ts:4-12` states the boundary against "the response cache banned earlier").
 
-The retired Layer 1 (a local micro-tensor classifier trained by an execution flywheel) never earned its keep: with the shipped base scaffold its confidence stayed below threshold on every request, so every decision already cascaded — the layer added a trainer, a dataset pipeline and a console page while contributing zero routing outcomes. It is deleted, not deprecated: the cascade is now L0 rules → L2 judge → hardcoded plus baseline.
+The retired Layer 1 (a local micro-tensor classifier trained by the learning flywheel) never earned its keep: with the shipped base scaffold its confidence stayed below threshold on every request, so every decision already cascaded — the layer added a trainer, a dataset pipeline and a console page while contributing zero routing outcomes. It is deleted, not deprecated: the cascade is now L0 rules → L2 judge → hardcoded plus baseline.
 
 ## Decision
 
@@ -32,7 +32,8 @@ The retired Layer 1 (a local micro-tensor classifier trained by an execution fly
 ### 4. Layer 2 judge — shared executor, honesty contract, decision cache
 
 - The judge calls a REGISTERED model over the gateway's own System One protocol (`runSystemoneDecision`; executor shared with the `/v1/systemone` surface, ADR-0008). Model: `classifier.layer2.model`, falling back to `systemone.defaultModel`; timeout `timeoutMs` default 5000.
-- Calibration honesty: native decision upstreams → `l2.system_one`; chat-model conversion → `l2.system_one_uncalibrated` with "(self-reported, not yet calibrated)" in the reason.
+- Calibration honesty: native decision upstreams → `l2.system_one`; chat-model conversion → `l2.system_one_uncalibrated` with an explicit "(uncalibrated)" caveat in the reason.
+- Explicit-model honesty: naming a registered model (full id / variant / bare name) never renders as a tier decision — the resolver's injected `force_tier` is rewritten to `explicit.model` ("routed to the named model, no tier judgment"), so the console never badges a tier inferred from the registration table.
 - The judge is a below-request internal leg: never routed through the candidate pool, breakers, or rate-limit rejection — its own HTTP leg can join the OUTER trace (`purpose:'l2-judge'`, ADR-0008).
 - Decision cache (decisions, never responses): key `systemone::<modelId>::sha256(state)`, state = last 4 turns' `role: content` joined, sliced to 4000 chars; in-memory LRU+TTL, defaults 500 entries / 1800s / enabled (`decision-cache.ts`, config `classifier.layer2.decisionCache.*`). Only successful decisions stored; race-winner writes. Hit marker: reason prefix `"[Decision Cache] "` + `reasonParams.cached=true` — no separate reasonCode, no header.
 

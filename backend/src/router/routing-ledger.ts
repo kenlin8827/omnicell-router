@@ -5,8 +5,12 @@ import { getEnvPaths } from '../config/env.js';
 /**
  * Routing ledger — the append-only audit trail that replaced the learning
  * flywheel's dataset. One JSONL line per experience-table lifecycle event
- * (retry detected, entry hit, entry write, escalation applied, correction
- * observed). Pure observability: nothing reads it back for routing, rows
+ * (retry detected, retry skipped, entry hit, entry write, escalation
+ * applied, correction observed). `retry_skipped` exists so a non-escalation
+ * is auditable too — the three silent drop points (prompt below the length
+ * floor, ultra ceiling reached, judge already higher) would otherwise leave
+ * the operator staring at "nothing happened" with no trace. Pure
+ * observability: nothing reads it back for routing, rows
  * carry prompt HASHES only (never prompt text), and every write failure
  * degrades to a warn — the ledger must never touch a live request.
  *
@@ -16,6 +20,7 @@ import { getEnvPaths } from '../config/env.js';
 
 export type RoutingLedgerKind =
   | 'retry_detected'
+  | 'retry_skipped'
   | 'entry_hit'
   | 'entry_write'
   | 'escalation'
@@ -34,6 +39,11 @@ const MAX_LEDGER_BYTES = 64 * 1024 * 1024;
 let capWarned = false;
 let ledgerPath: string | null = null;
 let dirEnsured = false;
+/** FIFO write chain: fire-and-forget appendFile promises complete out of
+ *  order under load, which would scramble the audit trail's event order
+ *  (e.g. a correction racing the entry hit it fed). Chaining serializes
+ *  completion to call order while keeping appends off the request path. */
+let writeChain: Promise<void> = Promise.resolve();
 
 function path_(): string {
   if (!ledgerPath) ledgerPath = path.join(getEnvPaths().dataDir, 'routing-ledger.jsonl');
@@ -45,6 +55,14 @@ export function resetRoutingLedgerForTests(): void {
   ledgerPath = null;
   capWarned = false;
   dirEnsured = false;
+  writeChain = Promise.resolve();
+}
+
+/** Test seam: resolves when every append issued so far has hit the disk.
+ *  A blind sleep cannot bound the chain tail under load (fresh-dir creation
+ *  + AV scanning on Windows routinely exceeds 60ms) — await this instead. */
+export function flushRoutingLedgerForTests(): Promise<void> {
+  return writeChain;
 }
 
 export function appendRoutingLedger(event: Omit<RoutingLedgerEvent, 'ts'>): void {
@@ -66,9 +84,11 @@ export function appendRoutingLedger(event: Omit<RoutingLedgerEvent, 'ts'>): void
       return;
     }
     const line = JSON.stringify({ ts: new Date().toISOString(), ...event } satisfies RoutingLedgerEvent) + '\n';
-    fs.promises.appendFile(file, line, 'utf8').catch(() => {
-      /* append failures are swallowed — observability never breaks routing */
-    });
+    writeChain = writeChain
+      .then(() => fs.promises.appendFile(file, line, 'utf8'))
+      .catch(() => {
+        /* append failures are swallowed — observability never breaks routing */
+      });
   } catch {
     /* stat/exists failures ditto */
   }

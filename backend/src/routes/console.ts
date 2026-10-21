@@ -1023,10 +1023,14 @@ export function registerConsoleRoutes(
   // an immutable human row), delete. The 16-hex prompt hash identifies rows;
   // snippets (when enabled) are the human-readable aid.
   app.get('/api/admin/route-entries', async (req) => {
-    const query = req.query as { limit?: string; offset?: string; q?: string };
+    const query = req.query as { limit?: string; offset?: string; q?: string; sort?: string };
     const limit = query.limit !== undefined ? Math.min(parseInt(query.limit, 10) || 100, 500) : 100;
     const offset = Math.max(parseInt(query.offset ?? '0', 10) || 0, 0);
-    const { rows, total } = getRouteEntryStore().list({ limit, offset, q: query.q });
+    const SORTS = ['updatedAt', 'hitCount', 'sessionCount'] as const;
+    const sort = (SORTS as readonly string[]).includes(query.sort ?? '')
+      ? (query.sort as (typeof SORTS)[number])
+      : 'updatedAt';
+    const { rows, total } = getRouteEntryStore().list({ limit, offset, q: query.q, sort });
     return {
       status: 'ok',
       rows: rows.map((e) => ({
@@ -1073,6 +1077,14 @@ export function registerConsoleRoutes(
   app.delete('/api/admin/route-entries/:hash', async (req) => {
     const { hash } = req.params as { hash: string };
     const removed = getRouteEntryStore().remove(hash);
+    return { status: 'ok', removed };
+  });
+
+  // Bulk clear (console confirm dialog guards it): wipes every learned row,
+  // human rows included — the table starts empty by design. One ledger line.
+  app.delete('/api/admin/route-entries', async () => {
+    const removed = getRouteEntryStore().clearAll();
+    if (removed > 0) appendRoutingLedger({ kind: 'entry_write', detail: { source: 'human', clearAll: true, count: removed } });
     return { status: 'ok', removed };
   });
 

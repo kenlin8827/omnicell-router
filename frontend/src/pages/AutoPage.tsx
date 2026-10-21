@@ -176,6 +176,18 @@ export const AutoPage: React.FC = () => {
                 {t('auto.l2TimeoutHint')}
               </div>
             </div>
+            <div>
+              <label style={rowStyle}>
+                <span>{t('auto.l2EffortDecision')}</span>
+                <Switch
+                  checked={layer2.effortDecision ?? false}
+                  onChange={v => setLayer2({ effortDecision: v })}
+                />
+              </label>
+              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '6px' }}>
+                {t('auto.l2EffortDecisionHint')}
+              </div>
+            </div>
             {(layer2.enabled ?? false) && effectiveJudgeModel && (
               <div style={{ fontSize: '11px', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '6px' }}>
                 <Check size={13} />

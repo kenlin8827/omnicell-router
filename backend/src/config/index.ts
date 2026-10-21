@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { isMap, parse, parseDocument, stringify } from 'yaml';
-import { Layer2JudgeConfig, RequestCaptureConfig, RouterConfig, WebAuthConfig, CircuitBreakerConfig, RateLimitConfig } from './types.js';
+import { Layer2JudgeConfig, RequestCaptureConfig, RouteEntriesConfig, RouterConfig, WebAuthConfig, CircuitBreakerConfig, RateLimitConfig } from './types.js';
 import { DEFAULT_RETRIABLE_CAUSES } from '../resilience/types.js';
 import { ensureEnvScaffold, getEnvPaths, resolveEnvName } from './env.js';
 import { getRateLimiter } from '../ratelimit/rate-limiter.js';
@@ -217,6 +217,22 @@ function sanitizeLayer2Input(input: unknown): Layer2JudgeConfig {
   delete merged.baseUrl;
   delete merged.apiKey;
   delete merged.decisionCapture;
+  return merged;
+}
+
+/**
+ * RouteEntries sanitizer: same trust-boundary clamp as resolveRequestCapture's
+ * pickPositive — a non-positive `maxEntries` would make the LRU eviction
+ * delete every non-human learned row on the next write (silent learned-memory
+ * wipe). Finite positive values floor at 1; zero/negative/garbage (including
+ * the empty string, which Number() maps to 0) falls back to the default.
+ */
+function sanitizeRouteEntriesInput(input: unknown): RouteEntriesConfig {
+  const base = DEFAULT_CONFIG.routeEntries as RouteEntriesConfig;
+  const merged = { ...base, ...(input as RouteEntriesConfig) };
+  const cap = Number(merged.maxEntries ?? base.maxEntries);
+  merged.maxEntries =
+    Number.isFinite(cap) && cap > 0 ? Math.max(1, Math.round(cap)) : (base.maxEntries ?? 5000);
   return merged;
 }
 
@@ -473,7 +489,7 @@ export function loadConfig(configPath?: string): RouterConfig {
         classifier: {
           layer2: sanitizeLayer2Input(parsed?.classifier?.layer2),
         },
-        routeEntries: { ...DEFAULT_CONFIG.routeEntries, ...parsed?.routeEntries },
+        routeEntries: sanitizeRouteEntriesInput(parsed?.routeEntries),
         proxy: { ...DEFAULT_CONFIG.proxy, ...parsed?.proxy },
         forwardProxy: { ...DEFAULT_CONFIG.forwardProxy, ...parsed?.forwardProxy },
         compression: {
@@ -718,12 +734,12 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'classifier.layer2.timeoutMs': '判定超时（毫秒，默认 5000）：未命中缓存的新上下文先等判定再放行（串行计价），超时回落默认 plus 梯队；经 chat 转换的判定模型 1.5 秒内很少答完，建议 3000-10000。保存后即时生效',
   'classifier.layer2.decisionCache': '判定决策缓存（相同上下文复用判定结果）',
   'classifier.layer2.collectEnabled': 'L2 裁判决策样本采集开关（默认 false 关闭）：单键门控，落盘 data/layer2-decisions.jsonl（不进捕捉页），64MB 封顶后停写并告警一次；热生效',
-  'classifier.layer2.effortDecision': 'L2 裁判思考级别判定开关（默认 false 关闭，ADR-0012）：开启后裁判在同一次调用中同时判定梯队与思考级别，仅对省略 reasoning_effort 的请求补位（客户端显式值永远优先），判定结果逐轮浮动不进会话棘轮；注意裁判抬档会多花思考 token 费用',
-  routeEntries: '路由经验表（ADR-0011）：按归一化 prompt 记忆历史路由档位，重复提问自动升档；enabled 关闭即整个子系统停用（查询/写入/审计台账全停）',
+  'classifier.layer2.effortDecision': 'L2 裁判思考级别判定开关（默认 false 关闭）：开启后裁判在同一次调用中同时判定梯队与思考级别，仅对省略 reasoning_effort 的请求补位（客户端显式值永远优先），判定结果逐轮浮动不进会话棘轮；注意裁判抬档会多花思考 token 费用',
+  routeEntries: '路由经验表：按归一化 prompt 记忆历史路由档位，重复提问自动升档；enabled 关闭即整个子系统停用（查询/写入/审计台账全停）',
   'routeEntries.enabled': '经验表总开关（查询、白名单写入与审计台账）；保存后即时生效',
   'routeEntries.snippetEnabled': '是否存 prompt 前 200 字符片段供控制台浏览/人工识别（隐私敏感，默认开；关闭只影响新写入，不删除已存片段）',
   'routeEntries.escalateOnRetry': '重试升档动作开关：同会话重复同一问题≥20字符时第1次抬思考档、第2次起升梯队（封顶 ultra）；关闭=影子模式（只检测与记录台账，不做任何动作）',
-  'routeEntries.maxEntries': '经验条目上限（按最后活动时间 LRU 淘汰）',
+  'routeEntries.maxEntries': '经验条目上限（按最后活动时间 LRU 淘汰；人工编辑条目豁免淘汰；非正数/非法值加载时回落默认 5000）',
   'circuitBreaker': '熔断器（按模型统计失败并自动摘除，见 /guardrails 页）；规则组 rules 可逐条开关并覆写参数，保存后即时生效（无需重启；仅 persistence.debounceMs 需重启）',
   'circuitBreaker.failureThreshold': '窗口内失败次数阈值（达到即熔断）；rules.trip.consecutiveFailures.threshold 未设置时的全局默认值',
   'circuitBreaker.slidingWindowSize': '滑动窗口样本数；rules.trip.failureRate.windowSize 未设置时的全局默认值',

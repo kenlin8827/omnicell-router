@@ -38,6 +38,7 @@ import {
   Settings2,
   Gauge,
   Wallet,
+  AlertOctagon,
   type LucideIcon,
 } from 'lucide-react';
 import { api, type GatewayStatusResponse } from '../lib/api';
@@ -124,6 +125,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
       { to: '/usage', labelKey: 'nav.usage', icon: BarChart3 },
       { to: '/quota', labelKey: 'nav.quota', icon: Wallet },
       { to: '/rate-limit', labelKey: 'nav.rateLimit', icon: Gauge },
+      { to: '/failures', labelKey: 'nav.failures', icon: AlertOctagon },
       { to: '/captures', labelKey: 'nav.captures', icon: Archive },
       { to: '/logs', labelKey: 'nav.logs', icon: ScrollText },
     ],
@@ -160,6 +162,7 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/sessions': { groupKey: 'nav.grpObservability', titleKey: 'nav.sessions' },
   '/usage': { groupKey: 'nav.grpObservability', titleKey: 'nav.usage' },
   '/rate-limit': { groupKey: 'nav.grpObservability', titleKey: 'nav.rateLimit' },
+  '/failures': { groupKey: 'nav.grpObservability', titleKey: 'nav.failures' },
   '/quota': { groupKey: 'nav.grpObservability', titleKey: 'nav.quota' },
   '/logs': { groupKey: 'nav.grpObservability', titleKey: 'nav.logs' },
   '/captures': { groupKey: 'nav.grpObservability', titleKey: 'nav.captures' },

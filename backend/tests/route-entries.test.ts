@@ -116,9 +116,60 @@ describe('RouteEntryStore', () => {
     applyRouteEntriesConfig({ maxEntries: 5000 });
   });
 
+  it('LRU eviction exempts human rows (operator intent outranks capacity)', () => {
+    applyRouteEntriesConfig({ maxEntries: 2 });
+    const store = newStore();
+    store.upsert({ promptHash: 'h-human', tier: 'pro', source: 'human', confidence: 1.0 });
+    // The human row is the OLDEST — naive LRU would evict it first.
+    store.peek('h-human')!.updatedAt = 1;
+    store.upsert({ promptHash: 'h-a', tier: 'plus', source: 'l2_confident', confidence: 0.9 });
+    store.peek('h-a')!.updatedAt = 2;
+    store.upsert({ promptHash: 'h-b', tier: 'plus', source: 'l2_confident', confidence: 0.9 });
+    store.peek('h-b')!.updatedAt = 3;
+    store.upsert({ promptHash: 'h-c', tier: 'plus', source: 'l2_confident', confidence: 0.9 });
+    store.peek('h-c')!.updatedAt = 4;
+    assert.equal(store.list().total, 2); // cap=2: the exempt human row + newest auto row
+    assert.ok(store.peek('h-human') !== undefined, 'human row must survive eviction');
+    assert.ok(store.peek('h-a') === undefined); // oldest auto rows evicted first
+    assert.ok(store.peek('h-b') === undefined);
+    assert.ok(store.peek('h-c') !== undefined);
+    applyRouteEntriesConfig({ maxEntries: 5000 });
+  });
+
   it('humanEdit on an unknown hash is a no-op (no ghost rows from the console)', () => {
     const store = newStore();
     assert.equal(store.humanEdit('missing', 'pro'), undefined);
     assert.equal(store.list().total, 0);
+  });
+
+  it('list() q filter matches session ids (LRU list), case-insensitively', () => {
+    const store = newStore();
+    store.upsert({ promptHash: 'h-sess', tier: 'plus', source: 'l2_confident', confidence: 0.9, snippet: 'deploy notes' }, 'ses_abc123');
+    store.upsert({ promptHash: 'h-other', tier: 'pro', source: 'l2_confident', confidence: 0.9, snippet: 'unrelated' });
+    assert.equal(store.list({ q: 'ses_abc123' }).total, 1);
+    assert.equal(store.list({ q: 'ABC123' }).total, 1); // session match is case-insensitive
+    assert.equal(store.list({ q: 'ses_fff000' }).total, 0);
+  });
+
+  it('clearAll wipes every row (human rows included) and returns the count', () => {
+    const store = newStore();
+    store.upsert({ promptHash: 'h1', tier: 'plus', source: 'l2_confident', confidence: 0.9 });
+    store.upsert({ promptHash: 'h2', tier: 'pro', source: 'human', confidence: 1.0 });
+    assert.equal(store.clearAll(), 2);
+    assert.equal(store.list().total, 0);
+    assert.equal(store.peek('h1'), undefined);
+    assert.equal(store.clearAll(), 0); // idempotent on an empty table
+  });
+
+  it('list() sort keys: updatedAt default, hitCount / sessionCount — all DESC with updatedAt tiebreak', () => {
+    const store = newStore();
+    for (const [h, u, hc, sc] of [['a', 1000, 5, 1], ['b', 3000, 1, 2], ['c', 2000, 3, 3]] as const) {
+      store.upsert({ promptHash: h, tier: 'plus', source: 'l2_confident', confidence: 0.9 });
+      const e = store.peek(h)!;
+      e.updatedAt = u; e.hitCount = hc; e.sessions = Array.from({ length: sc }, (_, i) => `s${i}`);
+    }
+    assert.deepEqual(store.list().rows.map((r) => r.promptHash), ['b', 'c', 'a']);
+    assert.deepEqual(store.list({ sort: 'hitCount' }).rows.map((r) => r.promptHash), ['a', 'c', 'b']);
+    assert.deepEqual(store.list({ sort: 'sessionCount' }).rows.map((r) => r.promptHash), ['c', 'b', 'a']);
   });
 });

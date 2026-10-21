@@ -12,6 +12,7 @@ import { adoptRestartParent, writeDaemonFiles } from './cli/daemon.js';
 import { openFinOpsStore } from './trace/persist.js';
 import { openRateLimitEventStore, getRateLimitEventLog } from './ratelimit/event-log.js';
 import { openQuotaEventStore, getQuotaEventLog } from './quota/events.js';
+import { openFailureEventStore, getFailureEventLog } from './observability/failure-events.js';
 import { QuotaProber, setQuotaProber, getQuotaProber } from './quota/prober.js';
 import { getQuotaStore } from './quota/store.js';
 import { getEnvPaths, resolveEnvName } from './config/env.js';
@@ -128,6 +129,16 @@ async function main() {
   if (quotaEventStore) {
     const replayed = getQuotaEventLog().attachStore(quotaEventStore);
     if (replayed > 0) console.log(`[OCR] Quota events ledger: SQLite mirror active (${replayed} event(s) replayed)`);
+  }
+
+  // 0.5d Failure-events ledger: attach the durable mirror (same traces.db,
+  //     independent handle — the quota_events precedent) and replay last
+  //     lifetime's failures into the ring BEFORE traffic. Memory-only when
+  //     bun:sqlite is unavailable: observability, never a boot dependency.
+  const failureEventStore = await openFailureEventStore(getEnvPaths().tracesDir);
+  if (failureEventStore) {
+    const replayed = getFailureEventLog().attachStore(failureEventStore);
+    if (replayed > 0) console.log(`[OCR] Failure events ledger: SQLite mirror active (${replayed} event(s) replayed)`);
   }
 
   // 0.6 Bind the credential store (ALWAYS the OCR file) and initialize the

@@ -214,7 +214,7 @@ describe('config eviction: removed from tier members', () => {
   });
 
   it('a model MOVED to another tier is NOT config-evicted (cross-tier move != removal)', async () => {
-    const { orchestrator, registry, m1 } = makeFixture();
+    const { orchestrator, registry, m1, m2 } = makeFixture();
     const sessionId = 'sess-ev-move';
     await orchestrator.process(turn('first hello'), sessCtx(sessionId));
 
@@ -222,7 +222,10 @@ describe('config eviction: removed from tier members', () => {
     commitMembers(registry, { plus: [{ pattern: 'p2/*' }], pro: [{ pattern: 'p1/*' }] });
 
     const r2 = await orchestrator.process(turn('second hello'), sessCtx(sessionId));
-    expect(r2.modelUsed).toBe(m1.id); // pin kept — it still joins "its own" tier's pool
+    // Forced-plus turn (ADR-0014): the pin (now pro-tier) is neither followed
+    // nor rewritten — the plus pool serves its head, and the pin STAYS m1 (a
+    // cross-tier MOVE is not an eviction: no repin away happened).
+    expect(r2.modelUsed).toBe(m2.id);
     expect(orchestrator.getSessionManager().getSession(sessionId)!.pinnedModel).toBe(m1.id);
   });
 

@@ -4,6 +4,7 @@ import { RouterConfig } from '../src/config/types.js';
 import { ProviderRegistry } from '../src/providers/registry.js';
 import { FinOpsTracker } from '../src/metrics/finops-tracker.js';
 import { PipelineOrchestrator } from '../src/pipeline/orchestrator.js';
+import { getRouteEntryStore, promptHashOf } from '../src/router/route-entries.js';
 import { createServer } from '../src/server.js';
 import { ErrorClassifier, UpstreamError } from '../src/resilience/index.js';
 import { loadConfig } from '../src/config/index.js';
@@ -261,7 +262,39 @@ describe('Resilience: Hierarchical Failover & Tier Crossing Policies ', () => {
     ],
   };
 
-  it('should escalate from lite to plus when all lite candidates fail under allow_escalate policy', async () => {
+  it('auto (entry-hit lite) escalates to plus when all lite candidates fail under allow_escalate policy', async () => {
+    const registry = new ProviderRegistry(crossTierConfig, true);
+    const tracker = new FinOpsTracker();
+    const orchestrator = new PipelineOrchestrator(crossTierConfig, registry, tracker);
+
+    // Trip both lite-1 and lite-2 to simulate total outage in Lite Tier
+    registry.getCircuitBreakerManager().getBreaker('lite-1')?.trip('503 outage', 'SERVICE_UNAVAILABLE', 3600000);
+    registry.getCircuitBreakerManager().getBreaker('lite-2')?.trip('503 outage', 'SERVICE_UNAVAILABLE', 3600000);
+
+    // Genuine-AUTO lite decision: seed the experience table so the entry
+    // layer (auto-only) places the prompt at lite — the only way an auto
+    // request lands at lite without a judge. The cross-tier escalation tail
+    // is an AUTO-routing policy (ADR-0014); this is the path that may cross.
+    getRouteEntryStore().upsert({
+      promptHash: promptHashOf('Tail escalation greeting'),
+      tier: 'lite',
+      source: 'human',
+      confidence: 1.0,
+    });
+
+    const req: any = {
+      model: 'auto',
+      messages: [{ role: 'user', content: 'Tail escalation greeting' }],
+    };
+
+    const result = await orchestrator.process(req);
+
+    // Under allow_escalate, should escalate up to plus-1 to preserve user uptime!
+    assert.equal(result.tierUsed, 'plus');
+    assert.equal(result.modelUsed, 'plus-1');
+  });
+
+  it('auto-lite (forced tier) must NEVER cross tiers — all-lite outage fails cleanly', async () => {
     const registry = new ProviderRegistry(crossTierConfig, true);
     const tracker = new FinOpsTracker();
     const orchestrator = new PipelineOrchestrator(crossTierConfig, registry, tracker);
@@ -273,13 +306,20 @@ describe('Resilience: Hierarchical Failover & Tier Crossing Policies ', () => {
     const req: any = {
       model: 'auto-lite',
       messages: [{ role: 'user', content: 'Quick greeting' }],
+      // Breaker OPEN alone only skips candidates (the last one is force-tried
+      // and the mock serves it) — simulate real wire failures so the chain
+      // genuinely exhausts with no plus tail to fall into.
+      __simulate_error_all__: true,
+      __simulate_status__: 503,
     };
 
-    const result = await orchestrator.process(req);
-
-    // Under allow_escalate, should escalate up to plus-1 to preserve user uptime!
-    assert.equal(result.tierUsed, 'plus');
-    assert.equal(result.modelUsed, 'plus-1');
+    // A forced tier is a contract (ADR-0014): no plus tail, fail loud.
+    await assert.rejects(async () => {
+      await orchestrator.process(req);
+    }, (err: any) => {
+      assert.ok(err.message.includes('503'));
+      return true;
+    });
   });
 
   it('should refuse to cross tiers and fail cleanly when tierCrossPolicy is same_tier_only', async () => {

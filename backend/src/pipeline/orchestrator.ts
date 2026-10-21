@@ -49,6 +49,7 @@ import type { StreamRelay, StreamRoutingFacts } from '../utils/chat-stream.js';
 import { emitClientRequest, captureKeyIdentity, setClientExchangeContext, type CaptureClientRequest, type ClientExchangeContext } from '../observability/http-exchange.js';
 import { resolveTraceId } from '../observability/trace-id.js';
 import { getWarnThrottle } from '../observability/warn-throttle.js';
+import { recordFailureEvent } from '../observability/failure-events.js';
 import { ActiveHealthProber, CircuitBreakerManager, ErrorClassifier } from '../resilience/index.js';
 import { ModelAccessConfig, isModelAllowed, isModelAllowedInTiers } from '../auth/model-access.js';
 import {
@@ -270,7 +271,10 @@ export class PipelineOrchestrator {
       // the surface-master chain (systemone.enabled master × l2Decision-
       // Enabled sub) — when off it
       // passes nothing further, so this arg alone changes nothing today.
-      judgeCapture
+      judgeCapture,
+      // Failure attribution: judge wire failures land in the failure_events
+      // ledger tagged with THIS conversation, whatever the capture switch.
+      sessionId
     );
   }
 
@@ -623,6 +627,22 @@ export class PipelineOrchestrator {
         : { isRetry: false, attempt: 0 };
     if (detection.isRetry) {
       appendRoutingLedger({ kind: 'retry_detected', sessionId, promptHash, detail: { attempt: detection.attempt } });
+    } else if (
+      routeEntriesOn &&
+      normalizedPrompt.length > 0 &&
+      normalizedPrompt.length < RETRY_MIN_PROMPT_CHARS &&
+      promptHash &&
+      prevRetryState?.lastOutcomeOk === true &&
+      prevRetryState.lastPromptHash === promptHash
+    ) {
+      // A would-be retry silenced by the length floor (ADR-0011): ledger the
+      // skip so a repeated short prompt stops reading as "nothing happened".
+      appendRoutingLedger({
+        kind: 'retry_skipped',
+        sessionId,
+        promptHash,
+        detail: { cause: 'too_short', chars: normalizedPrompt.length },
+      });
     }
     // Correction write-back: the previous turn escalated, succeeded, and the
     // user moved on to a DIFFERENT prompt — that is the strongest "the
@@ -642,7 +662,10 @@ export class PipelineOrchestrator {
           effort: prevRetryState.lastEffortUsed,
           source: 'correction',
           confidence: 1.0,
-          snippet: undefined,
+          // Carried from the escalated turn's retry state so the correction
+          // row is human-readable on the console (snippet gate applied at
+          // recordTurnOutcome time).
+          snippet: prevRetryState.lastSnippet,
         },
         sessionId
       );
@@ -677,6 +700,18 @@ export class PipelineOrchestrator {
           needsSchemaValidation: false,
         }
       : await this.routeAutoDecision(normalizedRequest, upstreamEventContext, sessionId, promptHash);
+
+    // Explicit-model honesty: the engine's 'forced' code here reflects the
+    // force_tier the 1B resolver INJECTED from the named model's registration
+    // (full id / variant / bare name) — the client named a model, not a tier.
+    // A dedicated code keeps the trace truthful: `tier` stays in params for
+    // tooltips, but the console template carries no {tier} slot, so no tier
+    // badge is ever inferred from a registration-table lookup.
+    if (explicitModel && initialDecision.reasonCode === 'forced') {
+      initialDecision.reasonCode = 'explicit.model';
+      initialDecision.reason = `Explicit model '${explicitModel.id}' — routed to the named model, no tier judgment`;
+      initialDecision.reasonParams = { model: explicitModel.id, tier: explicitModel.tier };
+    }
 
     // ADR-0012 §1: judge-decided effort joins the request exactly like a
     // route-entry hit — only into an omitted field (the judge is only ASKED
@@ -717,15 +752,24 @@ export class PipelineOrchestrator {
     // choices are never escalated (force_tier / named model / combo): the
     // client (or the mode lever) already decided.
     let appliedEscalation = false;
-    if (
-      routeEntriesOn &&
-      routeGate.escalateOnRetry !== false &&
+    const retryEligible = Boolean(
       detection.isRetry &&
       promptHash &&
       !comboId &&
       !explicitModel &&
       !normalizedRequest.router_options?.force_tier
-    ) {
+    );
+    if (routeEntriesOn && retryEligible && routeGate.escalateOnRetry === false) {
+      // Shadow mode: detection still ran — ledger the would-be escalation so
+      // the operator can see what the ladder WOULD have done.
+      appendRoutingLedger({
+        kind: 'retry_skipped',
+        sessionId,
+        promptHash,
+        detail: { cause: 'shadow', attempt: detection.attempt },
+      });
+    }
+    if (routeEntriesOn && routeGate.escalateOnRetry !== false && retryEligible) {
       const pinned = (() => {
         const pinnedId = this.sessionManager.getSession(sessionId)?.pinnedModel;
         return pinnedId ? this.registry.getModel(pinnedId) : undefined;
@@ -752,6 +796,24 @@ export class PipelineOrchestrator {
         initialDecision.reasonCode = plan.reasonCode;
         initialDecision.reasonParams = { ...(initialDecision.reasonParams ?? {}), retry: 'tier', ...plan.reasonParams };
         appliedEscalation = true;
+      } else {
+        // No ladder step landed — ledger WHY instead of staying silent:
+        // 'ceiling' = the planner is out of rungs (ultra); 'judge_higher' =
+        // the base decision already placed this turn at/above the proposal.
+        appendRoutingLedger({
+          kind: 'retry_skipped',
+          sessionId,
+          promptHash,
+          detail:
+            plan.action === 'none'
+              ? { cause: 'ceiling', attempt: detection.attempt }
+              : {
+                  cause: 'judge_higher',
+                  attempt: detection.attempt,
+                  proposedTier: plan.tier,
+                  currentTier: initialDecision.targetTier,
+                },
+        });
       }
       if (appliedEscalation) {
         appendRoutingLedger({
@@ -767,15 +829,18 @@ export class PipelineOrchestrator {
     // resolved once here (the unified policy seam for all entry modes):
     // - 'ratchet'  : auto routing — full monotonic ratchet (upgrade allowed,
     //                downgrade intercepted, pin honored)
-    // - 'explicit' : client named a registered model — turn recorded and a
-    //                higher tier still escalates the ceiling, but the session
-    //                NEVER rewrites the proposed tier (explicit user choice
-    //                always wins)
+    // - 'explicit' : a client-authored choice — a named model OR a forced
+    //                tier (auto-* aliases / the global mode lever /
+    //                router_options.force_tier). Turn recorded, a higher
+    //                proposal still escalates the ceiling, but the session
+    //                NEVER rewrites the proposal and the pin is neither
+    //                read nor followed — a forced lite must serve lite even
+    //                mid-conversation at a plus peak (ADR-0014).
     // - 'bypass'   : combo — no pin read/write, no ceiling raise, the combo
     //                composition IS the decision
     const sessionMode: 'ratchet' | 'explicit' | 'bypass' = comboId
       ? 'bypass'
-      : explicitModel
+      : explicitModel || normalizedRequest.router_options?.force_tier
         ? 'explicit'
         : 'ratchet';
     let decision: RoutingDecision;
@@ -911,6 +976,53 @@ export class PipelineOrchestrator {
           // would pick an credential the model was never verified against.
         }
       }
+    } else if (sessionMode === 'explicit' && !explicitModel && normalizedRequest.router_options?.force_tier) {
+      // Forced-tier turn (ADR-0014): the session pin is followed ONLY when it
+      // lives in the forced tier — then following is pure KV affinity (the
+      // pin IS a model of the tier the client forced, so serving it cannot
+      // cross the contract). A pin in any other tier is neither followed nor
+      // rewritten (a forced lite must not be dragged to a plus/ultra pin,
+      // and the session's own pin state stays untouched for later auto
+      // turns); a zombie id repairs to the forced tier's healthy head.
+      const pinnedId = this.sessionManager.getSession(sessionId)?.pinnedModel;
+      preferredModel = pinnedId ? this.registry.getModel(pinnedId) ?? null : null;
+      // Follow gates: a same-tier pin (pure KV affinity — serving it cannot
+      // cross the contract), the EMPTY-tier degraded landing (the pin IS the
+      // model getModelForTier degrades to), or a zombie id (repair to the
+      // forced tier's healthy head). Anything else — a pin in another tier
+      // while the forced pool has members — is neither followed nor
+      // rewritten (ADR-0014).
+      const tierPool = this.registry.getCandidateModelsForTier(actualTier, false);
+      const degradeLanding =
+        preferredModel !== null &&
+        tierPool.length === 0 &&
+        this.registry.getModelForTier(actualTier).id === preferredModel.id;
+      if (pinnedId && (preferredModel === null || preferredModel.tier === actualTier || degradeLanding)) {
+        const configEvicted =
+          preferredModel === null ||
+          !this.registry.getCandidateModelsForTier(preferredModel.tier, false).some((m) => m.id === pinnedId);
+        const healthEvicted =
+          preferredModel !== null && this.registry.modelHealthView(preferredModel) === 'unavailable';
+        if (configEvicted || healthEvicted) {
+          const healthyReplacement = this.registry.getModelForTier(actualTier, true);
+          if (
+            healthyReplacement &&
+            healthyReplacement.id !== pinnedId &&
+            this.registry.modelAvailable(healthyReplacement).available
+          ) {
+            this.sessionManager.repinModel(sessionId, healthyReplacement);
+            preferredModel = healthyReplacement;
+            decision.reasonParams = {
+              ...(decision.reasonParams ?? {}),
+              repin: configEvicted ? 'config' : 'health',
+              repinFrom: pinnedId,
+              repinTo: healthyReplacement.id,
+            };
+          }
+        }
+      } else {
+        preferredModel = null; // pin outside the forced tier — never followed
+      }
     }
 
     let finalResponse: ChatCompletionResponse;
@@ -1024,14 +1136,23 @@ export class PipelineOrchestrator {
     let poolTiming: { firstChunkAt: number; streamEndAt: number } | undefined = undefined;
 
     // 5. Execution with Cascading Fallback & Schema Assertion
-    // (lite-lead cascade is skipped for explicit model choices and combos —
-    // the client named exactly what to run and must not be silently rerouted)
+    // (lite-lead cascade is skipped for explicit model choices, combos AND
+    // forced tiers — the client named exactly what to run. A forced tier is
+    // a contract in BOTH directions: no lite-lead downgrade of a forced
+    // plus/pro/ultra, no plus escape of a forced lite. ADR-0014.)
     const retryConfig = this.config.retry;
     const failoverEnabled = retryConfig?.enabled !== false && retryConfig?.failover?.enabled !== false;
     const maxFailoverCandidates = failoverEnabled ? (retryConfig?.failover?.maxAttempts ?? 2) : 1;
     const tierCrossPolicy = retryConfig?.failover?.tierCrossPolicy ?? 'allow_escalate';
 
-    if (decision.needsSchemaValidation && this.config.fallback.enabled && !request.router_options?.disable_fallback && !explicitModel && !comboId) {
+    if (
+      decision.needsSchemaValidation &&
+      this.config.fallback.enabled &&
+      !request.router_options?.disable_fallback &&
+      !explicitModel &&
+      !comboId &&
+      !normalizedRequest.router_options?.force_tier
+    ) {
       // 5A: Lite Tier lead - Deploy Lite Tier first with resilience
       const litePool = this.registry.getCandidateModelsForTier('lite', true);
       const liteResult = await this.executeCandidatePool(
@@ -1209,10 +1330,15 @@ export class PipelineOrchestrator {
         chain = head ? [head, ...pool.filter(m => m.id !== head.id)] : pool;
         // Auto keeps the configured failover budget; explicit/combo are
         // bounded by their own chain length (failover.maxAttempts governs
-        // auto routing only). Cross-tier escalation is an auto-routing
-        // policy — an explicit model fails over within its tier by contract.
+        // auto routing only). Cross-tier escalation is an AUTO-routing
+        // policy — forced tiers (auto-* / mode lever) and explicit models
+        // fail over within their tier by contract (ADR-0014).
         attemptCap = explicitModel ? Math.max(1, chain.length) : maxFailoverCandidates;
-        allowEscalate = !explicitModel && tierCrossPolicy === 'allow_escalate' && actualTier === 'lite';
+        allowEscalate =
+          !explicitModel &&
+          !normalizedRequest.router_options?.force_tier &&
+          tierCrossPolicy === 'allow_escalate' &&
+          actualTier === 'lite';
       }
 
       // Standard Direct Model Execution with Multi-Model Failover & Circuit Breaker
@@ -1451,6 +1577,13 @@ export class PipelineOrchestrator {
         effortUsed: actualEffort,
         escalated: appliedEscalation,
         retryCount: detection.attempt,
+        // Carried so a later correction write-back lands as a READABLE row;
+        // same privacy gate as the store's own snippet handling.
+        snippet: routeGate.snippetEnabled === false
+          ? undefined
+          : lastUserText
+            ? lastUserText.slice(0, 200)
+            : undefined,
       });
     }
 
@@ -1997,6 +2130,21 @@ export class PipelineOrchestrator {
           // diagnosed blast radius when a prefix attributes it, and routes the
           // bare model breaker when not (today's semantics).
           cbManager.recordFailureScoped(candidate.id, diagnosis, candidate.provider, credentialPrefix);
+
+          // Failure-ledger emission (serving role): the attempt's classifier
+          // verdict is in hand — record the failed call regardless of whether
+          // a later candidate rescues the turn (failover outcome is routing;
+          // a failed call is fact). Repeats coalesce in the ledger, so a 429
+          // storm lands as one growing row instead of hundreds.
+          recordFailureEvent({
+            model: candidate.id,
+            provider: candidate.provider,
+            errorClass: diagnosis.category,
+            status: diagnosis.statusCode,
+            message: err?.message ?? String(err),
+            role: 'serving',
+            sessionId: opts.sessionId,
+          });
 
           // COMMIT POINT: bytes already reached the client on this attempt.
           // Neither an in-place retry nor a failover is legal any more — either

@@ -19,6 +19,7 @@ const REASON_KEY: Record<string, string> = {
   'retry.tier': 'routing.reason.retryTier',
   'l2.system_one': 'routing.reason.l2SystemOne',
   'l2.system_one_uncalibrated': 'routing.reason.l2SystemOneUncalibrated',
+  'explicit.model': 'routing.reason.explicitModel',
   'session.escalated': 'routing.reason.sessionEscalated',
   'session.ratchet': 'routing.reason.sessionRatchet',
   'session.preserved': 'routing.reason.sessionPreserved',

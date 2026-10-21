@@ -463,6 +463,17 @@ export class TraceTracker {
     totalLatencyMs: number;
     genOutputTokens: number;
     genMsSum: number;
+    /**
+     * Latest turn's thinking-effort snapshot (with ADR-0012 provenance),
+     * lifted from the chronologically last trace. Display-only: effort
+     * floats per turn and is NEVER a session-level lock — the console shows
+     * it as a tooltip sample, worded as "last turn". All four absent when
+     * the session has no traces or the last trace predates the fields.
+     */
+    lastRequestedEffort?: ReasoningEffort;
+    lastActualEffort?: ReasoningEffort;
+    lastEffortSource?: EffortSource;
+    lastReasoningDegraded?: boolean;
   } {
     const traces = this.getTracesBySession(sessionId);
     let switchCount = 0;
@@ -487,6 +498,7 @@ export class TraceTracker {
         genMsSum += t.execution.genMs;
       }
     }
+    const last = traces[traces.length - 1];
     return {
       traceCount: traces.length,
       switchCount,
@@ -497,6 +509,10 @@ export class TraceTracker {
       totalLatencyMs,
       genOutputTokens,
       genMsSum,
+      lastRequestedEffort: last?.execution.requestedEffort,
+      lastActualEffort: last?.execution.actualEffort,
+      lastEffortSource: last?.execution.effortSource,
+      lastReasoningDegraded: last?.execution.reasoningDegraded,
     };
   }
 

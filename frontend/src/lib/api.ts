@@ -689,6 +689,16 @@ export interface SessionRecord {
   genMsSum: number;
   /** First user prompt of the session (backend-capped summary). */
   firstUserMessage?: string;
+  /**
+   * Latest turn's thinking-effort snapshot (ADR-0012 provenance included).
+   * Display-only: effort floats per turn and is never a session-level lock,
+   * so the UI words it as a "last turn" sample. Absent when the session has
+   * no traces or the last trace predates the fields.
+   */
+  lastRequestedEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  lastActualEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  lastEffortSource?: 'client' | 'judge' | 'entry' | 'escalation' | 'default';
+  lastReasoningDegraded?: boolean;
   /** Distinct client API-key identities (applications) seen on this
    *  session's traces, write order — first element is the display anchor. */
   apiKeys?: CaptureKeyIdentity[];
@@ -1045,11 +1055,12 @@ export const api = {
     return res.json();
   },
 
-  async getRouteEntries(params: { limit?: number; offset?: number; q?: string } = {}): Promise<RouteEntriesListResponse> {
+  async getRouteEntries(params: { limit?: number; offset?: number; q?: string; sort?: 'updatedAt' | 'hitCount' | 'sessionCount' } = {}): Promise<RouteEntriesListResponse> {
     const qs = new URLSearchParams();
     if (params.limit !== undefined) qs.set('limit', String(params.limit));
     if (params.offset !== undefined) qs.set('offset', String(params.offset));
     if (params.q) qs.set('q', params.q);
+    if (params.sort) qs.set('sort', params.sort);
     const res = await fetch(`/api/admin/route-entries?${qs.toString()}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
@@ -1070,6 +1081,13 @@ export const api = {
   async deleteRouteEntry(hash: string): Promise<void> {
     const res = await fetch(`/api/admin/route-entries/${encodeURIComponent(hash)}`, { method: 'DELETE' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  },
+
+  async clearRouteEntries(): Promise<number> {
+    const res = await fetch(`/api/admin/route-entries`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    return json.removed ?? 0;
   },
 
   /** Last REAL judge wire attempt (cache hits never overwrite it). */
@@ -1651,6 +1669,45 @@ export const api = {
   /** Wipe the event ledger (ring + durable mirror). Windows and rules untouched. */
   async clearRateLimitEvents(): Promise<{ status: string; cleared: boolean }> {
     const res = await fetch('/api/admin/ratelimit/events/clear', { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /**
+   * Failure-event ledger — every failed upstream model call (serving pool
+   * attempts + judge wire calls), newest first (bounded ring, repeats
+   * coalesce). Optional equality filters narrow server-side; the console
+   * page loads the whole ring and filters client-side.
+   */
+  async getFailureEvents(params?: {
+    model?: string;
+    provider?: string;
+    errorClass?: string;
+    role?: string;
+    limit?: number;
+  }): Promise<{ status: string; events: FailureEvent[] }> {
+    const qs = new URLSearchParams();
+    if (params?.model) qs.set('model', params.model);
+    if (params?.provider) qs.set('provider', params.provider);
+    if (params?.errorClass) qs.set('errorClass', params.errorClass);
+    if (params?.role) qs.set('role', params.role);
+    if (params?.limit !== undefined) qs.set('limit', String(params.limit));
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    const res = await fetch(`/api/admin/failure-events${suffix}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /** Wipe the failure ledger (ring + durable mirror). Breaker state untouched. */
+  async clearFailureEvents(): Promise<{ status: string; cleared: boolean }> {
+    const res = await fetch('/api/admin/failure-events/clear', { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /** Delete ONE failure event by id (ring + durable mirror die together). */
+  async deleteFailureEvent(id: string): Promise<{ status: string; removed: boolean }> {
+    const res = await fetch(`/api/admin/failure-events/${encodeURIComponent(id)}`, { method: 'DELETE' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },
@@ -2380,6 +2437,41 @@ export interface RateLimitEvent {
   note?: string;
   noteCode?: RateLimitNoteCode;
   noteParams?: { ms?: number };
+}
+
+/**
+ * One failed upstream MODEL CALL — mirrors backend `FailureEvent`
+ * (GET /api/admin/failure-events). `role` splits serving-pool attempts from
+ * judge wire calls; repeats of the same model+provider+errorClass+role fold
+ * into one entry (`count`, `lastTs`) within the 10s coalescing window.
+ */
+export type FailureEventRole = 'serving' | 'judge' | 'probe';
+
+/** Mirrors backend `FailureErrorClass`: the breaker classifier's category
+ *  vocabulary plus TIMEOUT (judge deadline — no HTTP status to classify). */
+export type FailureErrorClass =
+  | 'QUOTA_EXHAUSTED'
+  | 'AUTHENTICATION_ERROR'
+  | 'RATE_LIMITED'
+  | 'SERVICE_UNAVAILABLE'
+  | 'CLIENT_ERROR'
+  | 'MANUAL'
+  | 'UNKNOWN'
+  | 'TIMEOUT';
+
+export interface FailureEvent {
+  /** Stable row key (the durable mirror's UPSERT target) — display ignores it. */
+  id: string;
+  ts: number;
+  lastTs: number;
+  count: number;
+  model: string;
+  provider: string;
+  errorClass: FailureErrorClass;
+  status?: number;
+  message: string;
+  role: FailureEventRole;
+  sessionId?: string;
 }
 
 /**

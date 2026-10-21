@@ -8,7 +8,7 @@
 
 自动路由必须逐轮在 `lite|plus|pro|ultra` 中选择——廉价、兜底确定、且绝不让会话抖动（会话棘轮建立在此决策之上，ADR-0002）。本仓库的创始边界：**禁止任何形式的响应缓存**——语义/响应缓存既污染路由（系统提示词权重主导）又污染答案（跨会话串扰），还破坏了本网关存在意义所系的上游 KV 缓存。决策路径可以缓存*决策*，绝不缓存*内容*（`decision-cache.ts:4-12` 申明了这条边界）。
 
-已退役的第 1 层（由执行飞轮训练的本地微张量分类器）从未兑现收益：出厂 base scaffold 的置信度在所有请求上都低于阈值，每个决策本就级联而下——这一层白带着训练器、数据集管线和一个控制台页面，对路由结果的贡献为零。它是删除而非弃用：级联现在是 L0 规则 → L2 判定器 → 硬编码 plus 基线。
+已退役的第 1 层（由学习飞轮训练的本地微张量分类器）从未兑现收益：出厂 base scaffold 的置信度在所有请求上都低于阈值，每个决策本就级联而下——这一层白带着训练器、数据集管线和一个控制台页面，对路由结果的贡献为零。它是删除而非弃用：级联现在是 L0 规则 → L2 判定器 → 硬编码 plus 基线。
 
 ## 决策
 
@@ -32,7 +32,8 @@
 ### 4. Layer 2 判定器——共享执行器、诚实契约、决策缓存
 
 - 判定器经网关自身的 System One 协议调用一个已注册模型（`runSystemoneDecision`；与 `/v1/systemone` 面共享执行器，ADR-0008）。模型取 `classifier.layer2.model`，缺省回落 `systemone.defaultModel`；超时 `timeoutMs` 默认 5000。
-- 校准诚实：原生决策上游 → `l2.system_one`；聊天模型转换 → `l2.system_one_uncalibrated`，reason 中含「（自报分数，尚未校准）」。
+- 校准诚实：原生决策上游 → `l2.system_one`；聊天模型转换 → `l2.system_one_uncalibrated`，reason 中含「（未校准）」标注。
+- 显式模型诚实：显式命名注册模型（完整 id / 变体 / 裸名）不渲染为梯队判定——解析器注入的 force_tier 改写为 `explicit.model`（「路由到所指定模型，无梯队判定」），控制台不会给注册表推导出的梯队加徽章。
 - 判定器是请求之下的内部腿：绝不经过候选池、熔断或限流拒绝——它自己的 HTTP 腿可并入外层 trace（`purpose:'l2-judge'`，ADR-0008）。
 - 决策缓存（缓存决策，绝不缓存响应）：键 `systemone::<modelId>::sha256(state)`，state = 最近 4 轮 `role: content` 拼接、截至 4000 字符；内存 LRU+TTL，默认 500 条 / 1800 秒 / 开启（`decision-cache.ts`，配置 `classifier.layer2.decisionCache.*`）。只存成功决策；竞态胜者写入。命中标记：reason 前缀 `"[Decision Cache] "` + `reasonParams.cached=true`——不设独立 reasonCode，不加响应头。
 
