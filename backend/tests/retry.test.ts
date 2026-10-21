@@ -262,14 +262,10 @@ describe('Resilience: Hierarchical Failover & Tier Crossing Policies ', () => {
     ],
   };
 
-  it('auto (entry-hit lite) escalates to plus when all lite candidates fail under allow_escalate policy', async () => {
+  it('auto (entry-hit lite) escalates to plus via the allow_escalate pool tail when every lite attempt fails', async () => {
     const registry = new ProviderRegistry(crossTierConfig, true);
     const tracker = new FinOpsTracker();
     const orchestrator = new PipelineOrchestrator(crossTierConfig, registry, tracker);
-
-    // Trip both lite-1 and lite-2 to simulate total outage in Lite Tier
-    registry.getCircuitBreakerManager().getBreaker('lite-1')?.trip('503 outage', 'SERVICE_UNAVAILABLE', 3600000);
-    registry.getCircuitBreakerManager().getBreaker('lite-2')?.trip('503 outage', 'SERVICE_UNAVAILABLE', 3600000);
 
     // Genuine-AUTO lite decision: seed the experience table so the entry
     // layer (auto-only) places the prompt at lite — the only way an auto
@@ -282,9 +278,17 @@ describe('Resilience: Hierarchical Failover & Tier Crossing Policies ', () => {
       confidence: 1.0,
     });
 
+    // Wire failure on lite-1 (execution-level) plus a trip on lite-2 (skip).
+    // The session pin (lite-1, born healthy) is followed and stays healthy —
+    // the pin-eviction repair path CANNOT be what serves plus: with both
+    // lite attempts gone, the allow_escalate tail is the only route to plus-1.
+    registry.getCircuitBreakerManager().getBreaker('lite-2')?.trip('503 outage', 'SERVICE_UNAVAILABLE', 3600000);
+
     const req: any = {
       model: 'auto',
       messages: [{ role: 'user', content: 'Tail escalation greeting' }],
+      __simulate_error_model__: 'lite-1',
+      __simulate_status__: 503,
     };
 
     const result = await orchestrator.process(req);

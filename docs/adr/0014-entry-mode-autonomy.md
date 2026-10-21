@@ -20,7 +20,7 @@ corrected matrix as a contract.
 | Entry mode | Tier may move by gateway judgment? | Effort may be inferred? | Session interaction |
 | :--- | :--- | :--- | :--- |
 | `auto` / `default` / unregistered names (classifier) | **YES** — full autonomy | YES (judge, entry table, retry ladder) | `'ratchet'` — upgrade, downgrade interception, pin read/follow |
-| Forced tier: `auto-*` alias, `routing.mode` lever, `router_options.force_tier` | **NO** — the forced tier is a contract | NO inference (client value / variant pin / model spec only) | `'explicit'` — recorded, ceiling may rise, proposal NEVER rewritten; the session pin is followed ONLY when it lives in the forced tier (pure KV affinity — serving it cannot cross the contract); a pin in any other tier is neither followed nor rewritten (untouched for later auto turns); zombie ids repair to the forced tier's healthy head; the empty-tier degraded landing still follows |
+| Forced tier: `auto-*` alias, `routing.mode` lever, `router_options.force_tier` | **NO** — the forced tier is a contract | NO inference (client value / variant pin / model spec only) | `'explicit'` — recorded, proposal NEVER rewritten downward; a forced tier ABOVE the peak is a sanctioned ceiling rise (re-pins the session, as any upgrade); at/below the peak the pin in another tier is neither followed nor rewritten (untouched for later auto turns); zombie ids repair to the forced tier's healthy head; the empty-tier degraded landing still follows |
 | Explicit model (full id / `#variant` / bare name) | **NO** — the named model serves; failover within its tier only | NO inference (same as forced tier) | `'explicit'` — plus pin write-back when the named model served |
 | Combo | **NO** — the composition is authoritative | NO | `'bypass'` — no session entity, no pin, no ceiling |
 
@@ -53,8 +53,9 @@ corrected matrix as a contract.
    (ADR-0003) — in BOTH directions: a forced plus must not be lite-led into cheaper models, and
    a forced lite must not escape into plus on an outage or a schema failure. Fail loud instead.
 2. **The ratchet protects auto conversations, not client-authored choices.** A forced alias
-   mid-conversation is a one-turn override: the session peak is untouched (a later bare `auto`
-   turn still ratchets back to it), but the override itself must serve what it named.
+   mid-conversation is a one-turn override: at or below the session peak it never downgrades
+   or rewrites anything (a later bare `auto` turn still rides the peak); a forced tier ABOVE
+   the peak is a sanctioned ceiling rise (re-pins like any upgrade).
 3. **Observability stays honest.** Forced turns carry the `explicit.model` / `forced` reason
    vocabulary — never a tier-judgment code with a badge (ADR-0001 §4 explicit-model honesty).
 
