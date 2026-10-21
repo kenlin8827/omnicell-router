@@ -10,6 +10,7 @@ import { useToast } from '../components/ToastProvider';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import { effortOptionList, EFFORT_UNSET, EFFORT_I18N_KEY } from '../lib/effort';
 import { fmtLatency } from '../lib/format';
+import { sortModelOptions } from '../lib/model-options';
 
 type Tier = 'lite' | 'plus' | 'pro' | 'ultra';
 
@@ -327,7 +328,7 @@ export const RulesPage: React.FC = () => {
         const meta = (m.tiers ?? []).map((tier) => t(TIERS.find((x) => x.key === tier)?.labelKey ?? '') || tier).join(' / ');
         return { value: m.id, label: m.id, meta };
       });
-    return [...comboOptions, ...modelOptions];
+    return [...comboOptions, ...sortModelOptions(modelOptions)];
   };
 
   const addMemberRules = (tier: Tier, ids: string[]) =>

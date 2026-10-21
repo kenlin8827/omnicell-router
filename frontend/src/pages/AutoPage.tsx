@@ -6,6 +6,7 @@ import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { Switch } from '../components/Switch';
 import { Combobox } from '../components/Combobox';
+import { sortModelOptions } from '../lib/model-options';
 
 /**
  * /auto — Auto virtual-model routing (decision layer).
@@ -30,7 +31,7 @@ export const AutoPage: React.FC = () => {
     // through registry.getModel, so virtual aliases/combos/variants would
     // leave it permanently inert.
     api.listGatewayModels().then(ms =>
-      setModelOptions(ms.filter(m => m.kind === 'model').map(m => ({ value: m.id, label: m.id })))
+      setModelOptions(sortModelOptions(ms.filter(m => m.kind === 'model').map(m => ({ value: m.id, label: m.id }))))
     ).catch(() => {});
     // Last judge wire attempt — a failure stays visible until a real attempt
     // succeeds (cache hits never clear it). Light poll so the warning tracks

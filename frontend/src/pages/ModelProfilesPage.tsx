@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { ClipboardList, Plus, Trash2, ArrowUp, ArrowDown, Pencil } from 'lucide-react';
 import { api, type ModelProfileView } from '../lib/api';
 import { modelRefBadge } from '../lib/modelRefBadge';
+import { sortModelOptions } from '../lib/model-options';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
@@ -212,12 +213,13 @@ export const ModelProfilesPage: React.FC = () => {
         // APPLY time (the console route refuses unresolvable refs cp-failfast).
         // The backend `kind` tags which namespace each id lives in; pickers
         // badge it (a prefix test on ids would misclassify autoglm-* etc.).
-        setRefOptions(models.map(m => ({
+        setRefOptions(sortModelOptions(models.map(m => ({
           value: m.id,
           label: m.id,
+          kind: (m as { kind?: string }).kind,
           meta: m.owned_by || undefined,
           ...modelRefBadge(m.kind, t),
-        })));
+        }))));
       })
       .catch(err => {
         console.error('Failed to load model profiles:', err);

@@ -7,6 +7,7 @@ import { InfoTip } from '../components/InfoTip';
 import { ProfileLinkTable } from '../components/ProfileLinkTable';
 import { api, type ClientStatus, type ApiKeyItem, type ModelProfileView, type OpenCodeAgentView, type ClientProfileMemoryEntry } from '../lib/api';
 import { modelRefBadge } from '../lib/modelRefBadge';
+import { sortModelOptions } from '../lib/model-options';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 
@@ -481,12 +482,13 @@ export const ClientsPage: React.FC = () => {
     fable: t('clients.slotFable'),
   };
 
-  const modelOptions = [
-    { value: 'auto', label: t('clients.modelAuto') },
-    ...models
-      .filter(m => m.id !== 'auto')
-      .map(m => ({ value: m.id, label: m.id, ...modelRefBadge(m.kind, t) })),
-  ];
+  const modelOptions = sortModelOptions(models
+    .map(m => ({
+      value: m.id,
+      label: m.id === 'auto' ? t('clients.modelAuto') : m.id,
+      kind: m.kind,
+      ...modelRefBadge(m.kind, t),
+    })));
 
   /** Slot options with an echoed-but-unlisted value (e.g. a manual foreign pin
    *  like `anthropic/claude-x`) kept visible at the top — the trigger would

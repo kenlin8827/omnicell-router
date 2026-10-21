@@ -9,6 +9,7 @@ import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import { Combobox } from '../components/Combobox';
 import { Pagination } from '../components/Pagination';
 import { fmtLatency } from '../lib/format';
+import { sortModelOptions } from '../lib/model-options';
 
 type Selection = 'priority' | 'weighted' | 'round_robin';
 
@@ -509,7 +510,7 @@ export const CombosPage: React.FC = () => {
         const registered = models.filter(m => m.owned_by !== 'onecast-router');
         const connected = new Set((provRes.providers || []).filter(p => p.auth?.connected).map(p => p.id));
         setRegisteredIds(new Set(registered.map(m => m.id)));
-        setModelOptions(registered.filter(m => connected.has(m.owned_by)).map(m => ({ value: m.id, label: m.id })));
+        setModelOptions(sortModelOptions(registered.filter(m => connected.has(m.owned_by)).map(m => ({ value: m.id, label: m.id }))));
       })
       .catch(err => {
         console.error('Failed to load combos:', err);

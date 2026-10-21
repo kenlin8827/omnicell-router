@@ -18,6 +18,7 @@ import {
 import { InfoTip } from '../components/InfoTip';
 import { api, type ApiKeyItem, type ApiKeyModelAccess } from '../lib/api';
 import { modelRefBadge } from '../lib/modelRefBadge';
+import { sortModelOptions } from '../lib/model-options';
 import {
   LimitsEditor,
   compileLimitDrafts,
@@ -119,7 +120,7 @@ const ModelAccessPicker: React.FC<{
             style={{ cursor: 'pointer' }}
             value={models}
             onChange={onModelsChange}
-            options={gatewayModels.map((o) => ({ value: o.id, label: o.id, meta: o.owned_by, ...modelRefBadge(o.kind, t) }))}
+            options={sortModelOptions(gatewayModels.map((o) => ({ value: o.id, label: o.id, kind: o.kind, meta: o.owned_by, ...modelRefBadge(o.kind, t) })))}
             placeholder={t('apiKeys.accessAddPlaceholder')}
           />
           <div style={{ display: 'flex', gap: '6px', marginTop: '8px' }}>

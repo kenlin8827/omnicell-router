@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Sliders, Save, Check, Globe, HardDrive, Archive, Database, ShieldCheck, LogOut, ChevronDown, ChevronRight, Cpu, Waypoints } from 'lucide-react';
 import { api } from '../lib/api';
+import { sortModelOptions } from '../lib/model-options';
 import type { WebAuthConfigView } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
@@ -42,7 +43,7 @@ export const SettingsPage: React.FC = () => {
     // Registered physical models only (kind 'model') — systemone.defaultModel
     // resolves through registry.getModel at request time.
     api.listGatewayModels().then(ms =>
-      setModelOptions(ms.filter(m => m.kind === 'model').map(m => ({ value: m.id, label: m.id })))
+      setModelOptions(sortModelOptions(ms.filter(m => m.kind === 'model').map(m => ({ value: m.id, label: m.id }))))
     ).catch(() => {});
   }, []);
 
