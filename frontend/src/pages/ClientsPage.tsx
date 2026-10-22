@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Terminal, Check, X, RefreshCw, Undo2, ArrowUpRight, RotateCcw, ChevronDown, Puzzle } from 'lucide-react';
+import { Terminal, Check, X, RefreshCw, Undo2, ArrowUpRight, RotateCcw, ChevronDown, Puzzle, Eraser } from 'lucide-react';
 import { BrandIcon } from '../components/BrandIcons';
 import { Combobox } from '../components/Combobox';
 import { InfoTip } from '../components/InfoTip';
@@ -550,10 +550,14 @@ export const ClientsPage: React.FC = () => {
       .filter(m => m.kind !== 'auto' && !(extraSel[clientName] || []).includes(m.id))
       .map(m => ({ value: m.id, label: m.id, ...modelRefBadge(m.kind, t) }));
 
+  /** Clear the whole custom model draft in one click (chips are per-model; bulk reset needs its own affordance). */
+  const clearExtraModels = (clientName: string) =>
+    setExtraSel(prev => ({ ...prev, [clientName]: [] }));
+
   /** Chip wall for the model-list editor (follow snapshot / custom picks).
    *  Long lists truncate to the first MODEL_CHIP_LIMIT chips with a "+N more"
    *  toggle — 85 flat chips bury the rest of the card (user escalation). */
-  const renderModelChips = (clientName: string, ids: string[], onRemove?: (id: string) => void) => {
+  const renderModelChips = (clientName: string, ids: string[], onRemove?: (id: string) => void, trailing?: React.ReactNode) => {
     const open = !!extrasOpen[clientName];
     const truncated = !open && ids.length > MODEL_CHIP_LIMIT;
     const shown = truncated ? ids.slice(0, MODEL_CHIP_LIMIT) : ids;
@@ -595,6 +599,7 @@ export const ClientsPage: React.FC = () => {
             {t('clients.modelsCollapse')}
           </button>
         )}
+        {trailing}
       </div>
     );
   };
@@ -847,7 +852,22 @@ export const ClientsPage: React.FC = () => {
                           ) : (
                             <>
                               {(extraSel[c.name] || []).length > 0 &&
-                                renderModelChips(c.name, extraSel[c.name] || [], id => removeExtraModel(c.name, id))}
+                                renderModelChips(
+                                  c.name,
+                                  extraSel[c.name] || [],
+                                  id => removeExtraModel(c.name, id),
+                                  <button
+                                    type="button"
+                                    className="btn btn-sm"
+                                    style={{ fontSize: '11px' }}
+                                    onClick={() => clearExtraModels(c.name)}
+                                    disabled={loading}
+                                    title={t('clients.modelsClearHint')}
+                                  >
+                                    <Eraser size={11} />
+                                    <span>{t('clients.modelsClear')}</span>
+                                  </button>
+                                )}
                               <Combobox
                                 value={extraDraft[c.name] || ''}
                                 onChange={v => addExtraModel(c.name, v)}

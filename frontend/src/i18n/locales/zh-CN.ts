@@ -1254,6 +1254,8 @@ export const zhCN: TranslationDict = {
     followCount: '该 key 当前可用 {n} 个模型',
     followSnapshot: '跟随模式在挂接时把该 key 的可用模型快照写入客户端配置；之后调整 key 权限策略需重新挂接才会刷新。',
     modelsMore: '更多',
+    modelsClear: '全部清空',
+    modelsClearHint: '移除全部自定义模型（下次应用时生效）',
     modelsShowAll: '展开全部 {n} 个模型',
     modelsCollapse: '收起',
     reset: '重置',

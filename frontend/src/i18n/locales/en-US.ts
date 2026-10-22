@@ -1261,6 +1261,8 @@ export const enUS: TranslationDict = {
     followCount: '{n} models currently available to this key',
     followSnapshot: 'Follow mode snapshots the key\'s usable models into the client config at setup; later policy changes need a re-setup to refresh.',
     modelsMore: 'more',
+    modelsClear: 'Clear all',
+    modelsClearHint: 'Remove every custom model from the draft (applies on next setup)',
     modelsShowAll: 'Show all {n} models',
     modelsCollapse: 'Collapse',
     reset: 'Reset',

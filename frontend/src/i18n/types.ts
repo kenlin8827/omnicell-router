@@ -1339,6 +1339,8 @@ hiddenBadge: string;
     followSnapshot: string;
     /** Truncation toggle for long model-chip walls (follow/custom lists) */
     modelsMore: string;
+    modelsClear: string;
+    modelsClearHint: string;
     modelsShowAll: string;
     modelsCollapse: string;
     reset: string;
