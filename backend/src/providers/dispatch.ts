@@ -22,7 +22,12 @@ export class DispatchingProvider implements LLMProvider {
   constructor(config: ProviderConfig, wireBases: Partial<Record<WireKind, string>>) {
     this.name = config.name;
     for (const [w, base] of Object.entries(wireBases) as [WireKind, string][]) {
-      if (w === 'unroutable') continue;
+      if (w === 'unroutable' || w === 'systemone') continue;
+      // 'systemone' is intentionally NOT a chat executor (ADR-0008 §7): the
+      // decision protocol is served natively by protocols/systemone/native.ts,
+      // and decision-wire models never enter a chat pool (registry
+      // tierPoolEntries filter), so exec() below never reaches a chat call —
+      // its throw is the honest leftover for any direct misuse.
       const wireCfg: ProviderConfig = { ...config, type: w as ProviderConfig['type'], baseUrl: base };
       if (w === 'anthropic') this.execs.set(w, new AnthropicProvider(wireCfg));
       else if (w === 'responses') this.execs.set(w, new ResponsesProvider(wireCfg));

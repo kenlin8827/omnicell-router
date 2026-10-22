@@ -36,7 +36,8 @@ import type { TransportContext } from './types.js';
  * so the OFF path still produces zero events, byte-identical to the
  * structural capture exemption.
  * The FULL CHAIN is emitted: the client exchange AND — through the ctx passed
- * to the executor — the synthesized conversion call (the upstream leg). FinOps
+ * to the executor — the upstream leg, whichever limb serves it (native
+ * vendor passthrough or the synthesized conversion call). FinOps
  * rows and trace records stay excluded.
  */
 export async function runDecisionSurface(
@@ -72,7 +73,7 @@ export async function runDecisionSurface(
     // admits nothing" (403). Candidates are access-filtered BEFORE the
     // pick — mirroring the chat orchestrator — so a denied member never
     // blocks an allowed sibling in the same tier.
-    const pool = registry.getCandidateModelsForTier(tier, false);
+    const pool = registry.getCandidateModelsForTier(tier, false, { decisionSurface: true });
     if (pool.length === 0) {
       t.sendJson(
         404,
@@ -104,7 +105,7 @@ export async function runDecisionSurface(
     // weighted/round-robin strategies are a chat-surface nicety, not a
     // decision-surface one.
     const healthyAllowed = registry
-      .getCandidateModelsForTier(tier, true)
+      .getCandidateModelsForTier(tier, true, { decisionSurface: true })
       .filter((m) => isModelAllowed(m.id, policy, tier));
     if (healthyAllowed.length === 0) {
       t.sendJson(
@@ -169,7 +170,8 @@ export async function runDecisionSurface(
   // gate is off: zero events, byte-identical to the pre-capture path. The
   // client leg covers the gateway's OWN inbound exchange; the SAME identity
   // (trace/session) also seeds an UpstreamEventContext passed to the
-  // executor, so the provider leg (the synthesized conversion chat call)
+  // executor, so the provider leg (the native vendor call or the synthesized
+  // conversion chat call, per the model's wire)
   // emits its request/response pair too — the full chain is visible
   // on one turn. No `purpose`: within this surface's own turn the upstream
   // events are unambiguous (unlike the judge leg inside a CHAT turn).

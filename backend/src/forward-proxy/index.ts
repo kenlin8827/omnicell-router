@@ -2,6 +2,7 @@ import path from 'node:path';
 import { getOcrHomeDir } from '../cli/paths.js';
 import type { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import type { ForwardProxyConfig } from '../config/types.js';
+import { DEFAULT_FORWARD_PROXY_PORT } from '../config/defaults.js';
 import { createForwardProxyServer, type ForwardProxyHandle } from './server.js';
 import { createProxyInterceptor } from './interceptor.js';
 
@@ -18,7 +19,7 @@ export async function startForwardProxy(
   const caDir = cfg.caDir?.trim() || path.join(getOcrHomeDir(), 'forward-proxy');
   const intercept = createProxyInterceptor(orchestrator);
   const handle = await createForwardProxyServer({
-    port: cfg.port ?? 4555,
+    port: cfg.port ?? DEFAULT_FORWARD_PROXY_PORT,
     host,
     caDir,
     bypassHosts: cfg.bypassHosts || [],

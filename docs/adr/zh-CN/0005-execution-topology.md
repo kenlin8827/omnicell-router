@@ -2,7 +2,7 @@
 
 ## 状态
 
-已实现 — 2026-10-15（事实面语料重写）。范围：决策如何变成上游调用；启动池由什么构成；重试/failover 语义；流式；token-saver 压缩；成本真相。健康语义 = ADR-0004；寻址/成员制 = ADR-0003；凭证选择/亲和 = ADR-0002。2026-10-21 修订：手写 `config.yaml` `providers[]` 配置面退役——chat provider 仅来自定义文件 + 凭证库（ADR-0010）；原生 System One 上游支路（`systemoneUpstreams[]`、厂商直通）整体退役（ADR-0008 修订）——决策面仅经协议转换服务；`buildDirectPool` 失败不再回退到 config 内联 provider（注册表仅以 mock 模式启动）。
+已实现 — 2026-10-15（事实面语料重写）。范围：决策如何变成上游调用；启动池由什么构成；重试/failover 语义；流式；token-saver 压缩；成本真相。健康语义 = ADR-0004；寻址/成员制 = ADR-0003；凭证选择/亲和 = ADR-0002。2026-10-21 修订：手写 `config.yaml` `providers[]` 配置面退役——chat provider 仅来自定义文件 + 凭证库（ADR-0010）；原生 System One 上游支路（`systemoneUpstreams[]`、厂商直通）整体退役（ADR-0008 修订）——决策面仅经协议转换服务；`buildDirectPool` 失败不再回退到 config 内联 provider（注册表仅以 mock 模式启动）。2026-10-22 修订：原生支路以定义文件驱动的 wire 形式恢复（ADR-0008 §7）——解析 wire 为 `systemone` 的模型（定义 `npm '@ai-sdk/typesafe-ai'`）由厂商直通服务（`protocols/systemone/native.ts`）；`systemoneUpstreams[]` 仍保持退役。
 
 ## 决策
 
@@ -14,7 +14,7 @@
 
 `providers/boot-direct.ts`：(a) OCR 定义文件的 provider 节点（`<ocrHome>/custom-providers.json`；ADR-0010——原 `opencode.jsonc` 读取：同形状同解析器，boot 一次性移植；节点级 `npm/options` 旧形状丢弃并上报；`env:[VAR]` 名单物化为 `{env:X}` 模板）；(b) 启动绑定的 CredentialStore 凭证链（ADR-0006）——`resolveKey/resolveKeyChain`，链头不变量 `chain[0].key === config.apiKey`，内联 key 前插于 store key 之前，裸 key 只驻**进程内**、永不序列化；(c) 目录（wire + 定价）。
 
-失败教义：不可路由的 provider 被**排除并上报**（`db_unreadable | no_credential | no_baseURL | 全模型不可路由`），永不炸启动；OAuth 行列示挂牌、永不进链、永不被路由（`:163-209,323-326`）。线型派发**数据驱动**：npm 包优先级 `model > catalog entry > provider def > recommendation`——协议真身在目录数据里，不在代码表里（`wire.ts:1-11`）；每 provider 基座：openai-compatible / anthropic / responses / google；System One 不建 chat 执行器（决策协议直调，ADR-0008）。
+失败教义：不可路由的 provider 被**排除并上报**（`db_unreadable | no_credential | no_baseURL | 全模型不可路由`），永不炸启动；OAuth 行列示挂牌、永不进链、永不被路由（`:163-209,323-326`）。线型派发**数据驱动**：npm 包优先级 `model > catalog entry > provider def > recommendation`——协议真身在目录数据里，不在代码表里（`wire.ts:1-11`）；每 provider 基座：openai-compatible / anthropic / responses / google / systemone（System One wire 是 decision 协议执行器，**不是** chat 执行器——原生服务决策面，ADR-0008 §7，且被排除在 chat 池之外）。
 
 ### 3. 唯一的候选咽喉
 

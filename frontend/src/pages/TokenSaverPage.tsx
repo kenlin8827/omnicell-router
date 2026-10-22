@@ -6,6 +6,7 @@ import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { Switch } from '../components/Switch';
 import { Combobox } from '../components/Combobox';
+import { DEFAULT_HEADROOM_URL } from '../lib/defaults';
 
 const CAVEMAN_LEVELS = ['lite', 'full', 'ultra', 'wenyan-lite', 'wenyan', 'wenyan-ultra'] as const;
 
@@ -193,7 +194,7 @@ export const TokenSaverPage: React.FC = () => {
 
   const rtk = compression.rtk || {};
   const headroom = compression.headroom || {};
-  const headroomBase = (headroom.url || 'http://127.0.0.1:8787').replace(/\/+$/, '');
+  const headroomBase = (headroom.url || DEFAULT_HEADROOM_URL).replace(/\/+$/, '');
   const caveman = compression.caveman || {};
 
   return (
@@ -318,7 +319,7 @@ export const TokenSaverPage: React.FC = () => {
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                 <input
                   type="text"
-                  placeholder="http://127.0.0.1:8787"
+                  placeholder={DEFAULT_HEADROOM_URL}
                   value={headroom.url || ''}
                   onChange={e => setCompression({ ...compression, headroom: { ...headroom, url: e.target.value } })}
                   className="input"

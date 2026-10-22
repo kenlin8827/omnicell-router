@@ -7,6 +7,7 @@ import { parseClientHelloSNI } from './sni.js';
 import { splice } from './relay.js';
 import { matchBypass, type BypassEntry } from './bypass.js';
 import { resolveProxyUrl } from '../utils/proxy.js';
+import { FORWARD_PROXY_HANG_TIMEOUT_MS } from '../config/defaults.js';
 
 /**
  * Inbound forward proxy (the HTTP_PROXY / HTTPS_PROXY server).
@@ -224,7 +225,7 @@ function forwardDirect(req: http.IncomingMessage, res: http.ServerResponse, t: F
     // Hang protection: a blackholed upstream (packets dropped, no RST — e.g. a
     // blocked host) would otherwise stall the client forever. Applies only
     // until response headers arrive.
-    upstream.setTimeout(60000, () => {
+    upstream.setTimeout(FORWARD_PROXY_HANG_TIMEOUT_MS, () => {
       upstream.destroy(new Error('upstream timeout'));
     });
     upstream.on('error', (err: any) => {
@@ -306,7 +307,7 @@ function forwardSecureViaProxy(
               });
             }
           );
-          upstream.setTimeout(60000, () => {
+          upstream.setTimeout(FORWARD_PROXY_HANG_TIMEOUT_MS, () => {
             upstream.destroy(new Error('upstream timeout'));
           });
           upstream.on('error', (err: any) => {
@@ -370,7 +371,7 @@ function forwardPlainViaProxy(
         });
       }
     );
-    upstream.setTimeout(60000, () => {
+    upstream.setTimeout(FORWARD_PROXY_HANG_TIMEOUT_MS, () => {
       upstream.destroy(new Error('upstream timeout'));
     });
     upstream.on('error', (err: any) => {

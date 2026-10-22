@@ -4,6 +4,7 @@ import { api, type GatewayStatusResponse } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { Switch } from '../components/Switch';
+import { DEFAULT_FORWARD_PROXY_PORT } from '../lib/defaults';
 
 /**
  * Proxy Access — the inbound forward proxy (HTTP_PROXY / HTTPS_PROXY server)
@@ -116,7 +117,7 @@ export const ProxyAccessPage: React.FC = () => {
     return <div style={{ color: 'var(--text-dim)' }}>Loading...</div>;
   }
 
-  const port = fp.port || 4555;
+  const port = fp.port || DEFAULT_FORWARD_PROXY_PORT;
 
   // ── status chip ──
   const fpStatus = status?.forwardProxy;
@@ -228,7 +229,7 @@ export const ProxyAccessPage: React.FC = () => {
             <input
               type="text"
               inputMode="numeric"
-              placeholder="4555"
+              placeholder={String(DEFAULT_FORWARD_PROXY_PORT)}
               value={fp.port ?? ''}
               onChange={e => {
                 const digits = e.target.value.replace(/[^0-9]/g, '');

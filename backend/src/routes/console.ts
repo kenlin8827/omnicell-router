@@ -1980,6 +1980,13 @@ export function registerConsoleRoutes(
   };
 
   const ocHandlers = {
+    /** The npm SDK vocabulary — ONE backend-owned table (providers/vocabulary.ts)
+     * served to every UI surface that renders npm choices or display names. */
+    npmVocabulary: async () => {
+      const { NPM_VOCABULARY } = await import('../providers/vocabulary.js');
+      return { status: 'ok', entries: NPM_VOCABULARY };
+    },
+
     list: async () => {
       const { getProviderNodeById } = await import('../opencode/user-config.js');
       const { getProviderDefsPath } = await import('../opencode/provider-defs.js');
@@ -1999,7 +2006,8 @@ export function registerConsoleRoutes(
         catalogSync: catalogRepository.lastSyncOrigin,
         providers: views.map((v) => {
           const u = byId.get(v.id);
-          const hasDefNode = getProviderNodeById(v.id) !== undefined;
+          const defNode = getProviderNodeById(v.id);
+          const hasDefNode = defNode !== undefined;
           return {
             ...v,
             // Precise delete-branch signal: an explicit defs-file node is the
@@ -2018,9 +2026,15 @@ export function registerConsoleRoutes(
             // the remote catalog (credential-only zhipu, private relays, …)
             custom: u?.custom ?? v.custom,
             logo: u?.logo,
+            npm: v.npm ?? u?.npm,
+            // Def-level custom headers (non-secret metadata — the edit dialog
+            // prefills from this; secrets live in the bound store, never here).
+            headers: defNode?.headers ?? defNode?.options?.headers,
             // auth-only providers have no config baseURL — fall back to the
-            // catalog's effective base (config override → live service hint)
-            baseURL: v.baseURL || u?.baseURL,
+            // catalog's effective base. Precedence mirrors boot-direct's
+            // wire-base chain (def baseURL > models.dev `api` > live service
+            // hint) so the card shows the SAME endpoint inference routes to.
+            baseURL: v.baseURL || u?.baseURL || u?.api,
             priceFrom: u ? catalogRepository.minInputPrice(u) : undefined,
             modelsCount: u?.models.length ?? v.models.length,
           };
@@ -2185,6 +2199,7 @@ export function registerConsoleRoutes(
       // B4: same implicit auth.json side-write as create (apiKey + !inline) —
       // routed to the bound store when auth.json is not the sink (Decision 4).
       const store = await getCredentialStore();
+      const { sanitizeExtraHeaders } = await import('../utils/http-headers.js');
       const inline = body.apiKeyInline ?? Boolean(existing.options?.apiKey);
       const keyToStore = Boolean(body?.apiKey) && !inline;
       let keyMeta: CredentialMeta | undefined;
@@ -2204,7 +2219,9 @@ export function registerConsoleRoutes(
         baseURL: body.baseURL ?? existing.options?.baseURL,
         apiKey: keyToStore ? undefined : body.apiKey,
         apiKeyInline: inline,
-        headers: body.headers ?? existing.options?.headers,
+        // Explicit `headers` (even {}) fully replaces; absent falls back to the
+        // existing def — an emptied editor clears every custom header.
+        headers: body.headers === undefined ? existing.options?.headers : sanitizeExtraHeaders(body.headers),
         models: body.models ?? existing.models,
         options: existing.options,
         // Single def generation (v2 shape). The v2-only slots ride the NORMALIZED
@@ -2406,6 +2423,7 @@ export function registerConsoleRoutes(
       }
       const { probeProvider, probeKindFor } = await import('../opencode/probe.js');
       const { baseForWire } = await import('../providers/wire.js');
+      const { sanitizeExtraHeaders } = await import('../utils/http-headers.js');
       // Rotation loop: a model-scoped failure (upstream ANSWERED and rejected
       // only that model) advances to the next candidate; one green proves the
       // provider works. Connection-level failures (auth, network, gateway 404)
@@ -2424,7 +2442,7 @@ export function registerConsoleRoutes(
           model: modelId,
           provider: id,
           kind,
-          headers: def?.options?.headers,
+          headers: sanitizeExtraHeaders(def?.options?.headers),
         });
         if (result.ok || !result.modelScoped) break;
       }
@@ -3145,6 +3163,7 @@ export function registerConsoleRoutes(
     app.get(`${prefix}/credential-sync`, ocHandlers.credentialSyncStatus);
     app.post(`${prefix}/credential-sync/toggle`, ocHandlers.credentialSyncToggle);
     app.post(`${prefix}/credential-sync/run`, ocHandlers.credentialSyncRun);
+    app.get(`${prefix}/opencode/npm-vocabulary`, ocHandlers.npmVocabulary);
     app.get(`${prefix}/opencode/providers`, ocHandlers.list);
     app.get(`${prefix}/opencode/catalog`, ocHandlers.catalog);
     app.get(`${prefix}/opencode/models`, ocHandlers.models);

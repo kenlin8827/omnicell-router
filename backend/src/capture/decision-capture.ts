@@ -41,8 +41,8 @@ export interface DecisionCaptureRecord {
   source: 'layer2_judge';
   model: string;
   provider: string;
-  /** Kept for dataset-schema stability — only 'converted' can occur. */
-  upstreamKind: 'converted';
+  /** Which limb served the judge call ('native' passthrough or 'converted'). */
+  upstreamKind: 'converted' | 'native';
   /** The exact System One state the judge evaluated (user content — opt-in). */
   state: unknown;
   tier: string;

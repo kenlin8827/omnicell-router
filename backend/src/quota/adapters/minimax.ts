@@ -1,4 +1,5 @@
 import type { LastProbeCapture, QuotaCodeAdapter, QuotaAdapterContext, QuotaProbeOutcome, QuotaWindow } from '../types.js';
+import { LAST_BODY_MAX_CHARS, LAST_BODY_MAX_JSON_CHARS } from '../engine.js';
 
 /**
  * MiniMax quota — built-in code adapter (L-c).
@@ -57,11 +58,6 @@ const CHINA_URLS = [
   'https://www.minimaxi.com/v1/api/openplatform/coding_plan/remains',
   'https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains',
 ];
-
-/** Last-probe body caps (mirrors engine.ts — local copy avoids the
- *  declarations→adapter→engine import cycle). */
-const LAST_BODY_MAX_CHARS = 32_768;
-const LAST_BODY_MAX_JSON_CHARS = 262_144;
 
 /** On coding_plan endpoints the *_usage_count fields count REMAINING. */
 function countMeansRemaining(url: string): boolean {

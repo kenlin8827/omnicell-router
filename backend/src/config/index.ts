@@ -3,7 +3,16 @@ import path from 'node:path';
 import { isMap, parse, parseDocument, stringify } from 'yaml';
 import { Layer2JudgeConfig, RequestCaptureConfig, RouteEntriesConfig, RouterConfig, WebAuthConfig, CircuitBreakerConfig, RateLimitConfig } from './types.js';
 import { DEFAULT_RETRIABLE_CAUSES } from '../resilience/types.js';
+import { DEFAULT_CREDENTIAL_AFFINITY_CACHE_TTL_MS } from '../pipeline/credential-selection.js';
 import { ensureEnvScaffold, getEnvPaths, resolveEnvName } from './env.js';
+import {
+  DEFAULT_FORWARD_PROXY_PORT,
+  DEFAULT_HEADROOM_TIMEOUT_MS,
+  DEFAULT_HEADROOM_URL,
+  DEFAULT_LAYER2_TIMEOUT_MS,
+  DEFAULT_MAX_BODY_BYTES,
+  DEFAULT_ROUTE_ENTRIES_MAX,
+} from './defaults.js';
 import { getRateLimiter } from '../ratelimit/rate-limiter.js';
 import { getQuotaProber } from '../quota/prober.js';
 
@@ -50,7 +59,7 @@ const DEFAULT_CONFIG: RouterConfig = {
       enabled: false,
       // No model pinned by default — the judge then follows
       // `systemone.defaultModel`.
-      timeoutMs: 5000,
+      timeoutMs: DEFAULT_LAYER2_TIMEOUT_MS,
       collectEnabled: false, // dataset sampling: judged decisions → data/layer2-decisions.jsonl (single-key gate, opt-in)
       effortDecision: false, // judge also decides the thinking level (ADR-0012) — spends thinking tokens, opt-in
     },
@@ -59,7 +68,7 @@ const DEFAULT_CONFIG: RouterConfig = {
     enabled: true, // experience table: lookup + whitelisted writes + ledger
     snippetEnabled: true, // store first 200 prompt chars for the console (opt-out)
     escalateOnRetry: true, // false = shadow mode: detect + ledger, never act
-    maxEntries: 5000,
+    maxEntries: DEFAULT_ROUTE_ENTRIES_MAX,
   },
   proxy: {
     enabled: false, // opt-in: proxying only when explicitly enabled
@@ -67,14 +76,14 @@ const DEFAULT_CONFIG: RouterConfig = {
   },
   forwardProxy: {
     enabled: false, // opt-in: full-capture MITM proxy must be enabled consciously
-    port: 4555,
+    port: DEFAULT_FORWARD_PROXY_PORT,
     host: '127.0.0.1',
     bypassHosts: [],
     viaOutboundProxy: false, // opt-in: transit egress via the outbound proxy policy
   },
   compression: {
     rtk: { enabled: false },
-    headroom: { enabled: false, url: 'http://127.0.0.1:8787', timeoutMs: 3000, autoStart: false },
+    headroom: { enabled: false, url: DEFAULT_HEADROOM_URL, timeoutMs: DEFAULT_HEADROOM_TIMEOUT_MS, autoStart: false },
     caveman: { enabled: false, level: 'full' },
   },
   requestCapture: {
@@ -85,7 +94,7 @@ const DEFAULT_CONFIG: RouterConfig = {
     // cap (16 MB) is sized for a fully-loaded 2M-token context (~13 MB worst
     // case text+JSON after image scrubbing).
     maxTotalMB: 2048,
-    maxBodyBytes: 16777216,
+    maxBodyBytes: DEFAULT_MAX_BODY_BYTES,
     maxSessionMB: 512,
     storeMedia: true,
     // System One group: surface master + judge-leg sub-switch, both default
@@ -117,7 +126,7 @@ const DEFAULT_CONFIG: RouterConfig = {
       // a session keeps its credential while its pair breaker is up;
       // idle past this window it re-spreads like a new session (the upstream
       // prompt cache is gone by then anyway). 300000 = Anthropic cache TTL.
-      cacheTtlMs: 300000,
+      cacheTtlMs: DEFAULT_CREDENTIAL_AFFINITY_CACHE_TTL_MS,
     },
     // Shadow mode (spec docs/design/circuit-breaker-rules-config.md): rules
     // evaluate and record fully but the gate never denies; manual trips,
@@ -231,7 +240,7 @@ function sanitizeRouteEntriesInput(input: unknown): RouteEntriesConfig {
   const merged = { ...base, ...(input as RouteEntriesConfig) };
   const cap = Number(merged.maxEntries ?? base.maxEntries);
   merged.maxEntries =
-    Number.isFinite(cap) && cap > 0 ? Math.max(1, Math.round(cap)) : (base.maxEntries ?? 5000);
+    Number.isFinite(cap) && cap > 0 ? Math.max(1, Math.round(cap)) : (base.maxEntries ?? DEFAULT_ROUTE_ENTRIES_MAX);
   return merged;
 }
 

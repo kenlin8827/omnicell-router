@@ -134,7 +134,8 @@ export interface ChatSurface {
  * System One surface master — off silences BOTH legs) are
  * true (master default OFF), and emission lives after
  * every gate. A captured surface request is FULL-CHAIN: client exchange
- * plus the upstream leg (the synthesized conversion call,
+ * plus the upstream leg (the native vendor passthrough or the synthesized
+ * conversion call, per the model's resolved wire — ADR-0008 §7;
  * no purpose tag — unambiguous within its own turn). FinOps/trace stay
  * excluded; the default-off path is
  * pinned zero-event by forward-proxy-systemone.test.ts.

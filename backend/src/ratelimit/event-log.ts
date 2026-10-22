@@ -1,5 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import {
+  EventRing,
+  EVENT_COALESCE_WINDOW_MS,
+  EVENT_MESSAGE_MAX_CHARS,
+  nextRingEventId,
+  truncateEventMessage,
+} from '../utils/event-ring.js';
 
 /**
  * Ledger of TRIGGERED rate-limit decisions — the "did a cap actually fire,
@@ -23,18 +30,18 @@ import path from 'node:path';
  * NOT recorded: upstream (provider-side) 429s — those are the circuit
  * breaker's domain and already observable via breaker state / guardrails.
  *
- * Storage: an in-process ring capped at MAX_EVENTS, MIRRORED to SQLite
+ * Storage: an in-process ring capped at EVENT_RING_CAPACITY, MIRRORED to SQLite
  * (`rateLimit.persist`, same traces.db file as the trace/FinOps stores but an
  * independent handle — the FinOpsStore precedent) so "what fired before the
  * restart" survives the restart. The store is the ring's durable mirror, not
- * an archive: rows are trimmed to the same MAX_EVENTS on every insert, and
- * boot replays the newest MAX_EVENTS back into the ring (index.ts wires the
- * store — the log stays memory-only until attached, which is what tests and
- * non-bun runtimes get). Fail-open everywhere: an observability write must
- * never break the request path.
+ * an archive: rows are trimmed to the same capacity on every insert, and
+ * boot replays the newest EVENT_RING_CAPACITY back into the ring (index.ts
+ * wires the store — the log stays memory-only until attached, which is what
+ * tests and non-bun runtimes get). Fail-open everywhere: an observability
+ * write must never break the request path.
  *
  * Coalescing: consecutive repeats of the SAME subject+kind+rule within
- * COALESCE_WINDOW_MS fold into one entry with a bumped `count` (a denied
+ * EVENT_COALESCE_WINDOW_MS fold into one entry with a bumped `count` (a denied
  * retry storm would otherwise evict the whole history within seconds — the
  * storm is one observation, not 500). A repeat UPSERTs the same row by `id`.
  * KNOWN, ACCEPTED: a restart inside the coalesce window replays the entry,
@@ -87,16 +94,7 @@ export interface RateLimitEvent {
   noteParams?: { ms?: number };
 }
 
-/** Ring capacity (and, mirrored, the durable row budget). */
-const MAX_EVENTS = 500;
-/** Repeats of the same subject+kind+rule inside this window coalesce into one entry. */
-const COALESCE_WINDOW_MS = 10_000;
-
-let nextEventId = 0;
-/** Process-unique row key: boot epoch + counter — collision-free across restarts. */
-function makeEventId(now: number): string {
-  return `${now.toString(36)}-${(nextEventId++).toString(36)}`;
-}
+/** Ring capacity, coalesce window and note bound: shared ring skeleton. */
 
 /** Machine-readable discriminator for `note` — one code per producer call
  *  site. The console renders codes through its i18n table; the English `note`
@@ -143,38 +141,33 @@ export interface RateLimitEventStore {
 }
 
 export class RateLimitEventLog {
-  /** Oldest first — `list()` reverses for display. */
-  private events: RateLimitEvent[] = [];
-  private store: RateLimitEventStore | undefined;
+  private ring = new EventRing<RateLimitEvent>();
 
   /**
    * Attach the durable mirror and replay its history into the ring
    * (boot-time only, before traffic). Returns the replayed count.
    */
   attachStore(store: RateLimitEventStore): number {
-    this.store = store;
-    const replayed = store.loadRecent(MAX_EVENTS);
-    if (replayed.length > 0) this.events = replayed;
-    return replayed.length;
+    return this.ring.attachStore(store);
   }
 
   record(input: RateLimitEventInput, now: number = Date.now()): void {
-    const last = this.events[this.events.length - 1];
+    const last = this.ring.last();
     if (
       last &&
       last.subject === input.subject &&
       last.kind === input.kind &&
       last.rule === input.rule &&
-      now - last.lastTs <= COALESCE_WINDOW_MS
+      now - last.lastTs <= EVENT_COALESCE_WINDOW_MS
     ) {
       last.count++;
       last.lastTs = now;
       last.retryAfterMs = input.retryAfterMs;
-      this.store?.upsert(last);
+      this.ring.touchCoalesced(last);
       return;
     }
-    const event: RateLimitEvent = {
-      id: makeEventId(now),
+    this.ring.append({
+      id: nextRingEventId('', now),
       ts: now,
       lastTs: now,
       count: 1,
@@ -188,28 +181,19 @@ export class RateLimitEventLog {
       provider: input.provider,
       keyHashPrefix: input.keyHashPrefix,
       model: input.model,
-      note: input.note,
+      note: input.note !== undefined ? truncateEventMessage(input.note, EVENT_MESSAGE_MAX_CHARS) : undefined,
       noteCode: input.noteCode,
       noteParams: input.noteParams,
-    };
-    this.events.push(event);
-    this.store?.upsert(event);
-    if (this.events.length > MAX_EVENTS) {
-      this.events.splice(0, this.events.length - MAX_EVENTS);
-      // Trim AFTER the upsert so the fresh row is inside the kept window and
-      // the durable count converges on MAX_EVENTS (upsert-then-trim order).
-      this.store?.trim(MAX_EVENTS);
-    }
+    });
   }
 
   /** Newest first. */
   list(): RateLimitEvent[] {
-    return [...this.events].reverse();
+    return this.ring.rows().reverse();
   }
 
   clear(): void {
-    this.events = [];
-    this.store?.clearAll();
+    this.ring.clear();
   }
 }
 

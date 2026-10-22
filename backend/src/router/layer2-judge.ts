@@ -1,6 +1,7 @@
 import { ChatCompletionRequest } from '../types/openai.js';
 import { EFFORT_LADDER, ReasoningEffort, TierLevel, ReasonParams } from '../types/router.js';
 import { Layer2JudgeConfig } from '../config/types.js';
+import { DEFAULT_LAYER2_TIMEOUT_MS } from '../config/defaults.js';
 import { RoutingDecisionCache, type RoutingCacheStats } from './decision-cache.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import type { UpstreamEventContext } from '../providers/base.js';
@@ -291,7 +292,7 @@ export class Layer2Judge {
       };
     }
 
-    const timeoutMs = config.timeoutMs || 5000;
+    const timeoutMs = config.timeoutMs || DEFAULT_LAYER2_TIMEOUT_MS;
     const startedAt = Date.now();
     // The judge's own deadline wins over the upstream's: System One is a fast
     // decision surface, and a stale answer is worthless to a routing cascade.
@@ -353,8 +354,13 @@ export class Layer2Judge {
         const confidence = typeof raw === 'number' && Number.isFinite(raw)
           ? Math.min(1, Math.max(0, raw))
           : 0.9;
-        const reason = `System One model ${model.id} classified this as ${tier} (self-reported, not yet calibrated)`;
-        const reasonCode = 'l2.system_one_uncalibrated';
+        // Calibration honesty (ADR-0001 §4): a vendor-calibrated native answer
+        // is `l2.system_one`; a chat-model conversion stays `..._uncalibrated`.
+        const reason =
+          decision.upstreamKind === 'native'
+            ? `System One model ${model.id} classified this as ${tier}`
+            : `System One model ${model.id} classified this as ${tier} (self-reported, not yet calibrated)`;
+        const reasonCode = decision.upstreamKind === 'native' ? 'l2.system_one' : 'l2.system_one_uncalibrated';
         // Opt-in dataset sink (classifier.layer2.collectEnabled, gated inside
         // decision-capture): the judged pair is the raw material for distilling
         // a dedicated decision model. Recorded ONLY on the race-winner path — an

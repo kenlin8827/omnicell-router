@@ -5,7 +5,8 @@ import { ChatCompletionRequest, ChatCompletionResponse, ToolCall } from '../type
 import type { ReasoningEffort } from '../types/router.js';
 import { UpstreamError } from '../resilience/error-classifier.js';
 import { proxiedFetch, resolveProxyUrl } from '../utils/proxy.js';
-import { anthropicMessagesUrl } from './wire.js';
+import { DEFAULT_PROVIDER_TIMEOUT_MS } from '../config/defaults.js';
+import { anthropicMessagesUrl, DATA_URL_RE } from './wire.js';
 import {
   emitUpstreamRequestOnce,
   emitUpstreamResponseOnce,
@@ -36,8 +37,6 @@ function parseArgs(raw: unknown): Record<string, any> {
 function contentToText(content: ChatCompletionRequest['messages'][number]['content']): string {
   return typeof content === 'string' ? content : JSON.stringify(content);
 }
-
-const DATA_URL_RE = /^data:(.+?);base64,(.*)$/;
 
 /**
  * Chat content parts → Anthropic content blocks. Text passes through; images
@@ -263,7 +262,7 @@ export class AnthropicProvider implements LLMProvider {
     // Wall-clock cap on the non-streaming upstream execution — see the
     // openai-compatible provider: agent coding traffic legitimately runs past
     // a minute, so the default is 300 s.
-    const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs || 300000);
+    const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs || DEFAULT_PROVIDER_TIMEOUT_MS);
 
     try {
       // The guard emits a paired failure response event on ANY thrown error

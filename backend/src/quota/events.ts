@@ -49,13 +49,8 @@ export interface QuotaEventInput {
   reason: string;
 }
 
-/** Ring capacity (and, mirrored, the durable row budget). */
-const MAX_EVENTS = 500;
-
-let nextEventId = 0;
-function makeEventId(now: number): string {
-  return `q-${now.toString(36)}-${(nextEventId++).toString(36)}`;
-}
+/** Ring capacity: shared ring skeleton (no coalescing on this ledger). */
+import { EventRing, nextRingEventId, truncateEventMessage } from '../utils/event-ring.js';
 
 export interface QuotaEventStore {
   upsert(ev: QuotaEvent): void;
@@ -67,45 +62,33 @@ export interface QuotaEventStore {
 }
 
 export class QuotaEventLog {
-  /** Oldest first — `list()` reverses for display. */
-  private events: QuotaEvent[] = [];
-  private store: QuotaEventStore | undefined;
+  private ring = new EventRing<QuotaEvent>();
 
   /** Attach the durable mirror and replay its history into the ring. */
   attachStore(store: QuotaEventStore): number {
-    this.store = store;
-    const replayed = store.loadRecent(MAX_EVENTS);
-    if (replayed.length > 0) this.events = replayed;
-    return replayed.length;
+    return this.ring.attachStore(store);
   }
 
   record(input: QuotaEventInput, now: number = Date.now()): void {
-    const ev: QuotaEvent = {
-      id: makeEventId(now),
+    this.ring.append({
+      id: nextRingEventId('q-', now),
       ts: now,
       providerId: input.providerId,
       keyHashPrefix: input.keyHashPrefix,
       modelId: input.modelId,
       statusCode: input.statusCode,
-      reason: input.reason,
+      reason: truncateEventMessage(input.reason),
       reasonCode: 'quota-exhausted',
-    };
-    this.events.push(ev);
-    this.store?.upsert(ev);
-    if (this.events.length > MAX_EVENTS) {
-      this.events.splice(0, this.events.length - MAX_EVENTS);
-      this.store?.trim(MAX_EVENTS);
-    }
+    });
   }
 
   /** Newest first. */
   list(): QuotaEvent[] {
-    return [...this.events].reverse();
+    return this.ring.rows().reverse();
   }
 
   clear(): void {
-    this.events = [];
-    this.store?.clearAll();
+    this.ring.clear();
   }
 }
 

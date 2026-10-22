@@ -696,6 +696,23 @@ const TranscriptBlock: React.FC<{
         {turn.gatewayLatencyMs !== undefined && (
           <span title={`${turn.gatewayLatencyMs} ms`} style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: MONO }}>↳ {fmtLatency(turn.gatewayLatencyMs)}</span>
         )}
+        {turn.judgeRequest && (
+          <span
+            className="badge"
+            title={`${t('captures.judgeBadge')} · ${turn.judgeRequest.model}${turn.judgeLatencyMs !== undefined ? ` · ${turn.judgeLatencyMs} ms` : ''}`}
+            style={{
+              background: 'color-mix(in srgb, var(--accent) 12%, transparent)',
+              color: 'var(--accent)',
+              fontFamily: MONO,
+              fontSize: '10px',
+              flexShrink: 0,
+            }}
+          >
+            ⚖ {t('captures.judgeBadge')}
+            {turn.judgeLatencyMs !== undefined && ` · ${fmtLatency(turn.judgeLatencyMs)}`}
+            {turn.judgeRequest.model !== turn.model && ` · ${turn.judgeRequest.model}`}
+          </span>
+        )}
         {st.reqTruncated && (
           <span className="badge badge-warning" title={t('captures.reqTruncatedNote')} style={{ flexShrink: 0 }}>
             <AlertTriangle size={10} />

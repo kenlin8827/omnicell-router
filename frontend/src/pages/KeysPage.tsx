@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
 import { Key, Check, RefreshCw, Trash2, Plug, Plus, Lock, Cpu, Zap, Upload, Download, AlertTriangle, Star, Pencil, Unplug, Clock, ShieldAlert, Ban, PowerOff, Power, Copy, Gauge } from 'lucide-react';
 import {
@@ -20,6 +21,7 @@ import {
   type CredentialRevealReasonCode,
   type RateLimitSnapshotEntry,
   type CredentialQuotaView,
+  type NpmVocabularyEntry,
 } from '../lib/api';
 import {
   LimitsEditor,
@@ -58,18 +60,92 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const CONNECTED_PAGE_SIZES = [12, 24, 48];
 const CATALOG_PAGE_SIZES = [10, 20, 50, 100, 200];
 
-/** Fallback npm packages when the models.dev catalog is unavailable. */
+/**
+ * Offline fallback ONLY (the npm-vocabulary endpoint lives in the same gateway
+ * process, so this list is practically unreachable — it keeps the form usable
+ * if the fetch fails). Source of truth = backend providers/vocabulary.ts,
+ * served over /api/admin/opencode/npm-vocabulary.
+ */
 const FALLBACK_NPM_PACKAGES = [
   '@ai-sdk/openai-compatible',
   '@ai-sdk/anthropic',
   '@ai-sdk/openai',
   '@ai-sdk/google',
+  '@ai-sdk/typesafe-ai',
   '@ai-sdk/azure',
   '@ai-sdk/amazon-bedrock',
   '@ai-sdk/xai',
   '@ai-sdk/mistral',
 ];
 const CUSTOM_NPM = '__custom__';
+
+/** One editable header row (2-column editor state). */
+interface HeaderRow {
+  name: string;
+  value: string;
+}
+const rowsToHeaders = (rows: HeaderRow[]): Record<string, string> | undefined => {
+  const h: Record<string, string> = {};
+  for (const r of rows) {
+    const k = r.name.trim();
+    const v = r.value.trim();
+    if (k && v) h[k] = v;
+  }
+  return Object.keys(h).length > 0 ? h : undefined;
+};
+const headersToRows = (headers?: Record<string, string>): HeaderRow[] =>
+  Object.entries(headers ?? {}).map(([name, value]) => ({ name, value }));
+
+/** Two-column header rows editor: name | value | remove, plus an add-row
+ *  affordance. Blank rows are ignored on serialize. */
+const HeadersEditor: React.FC<{
+  rows: HeaderRow[];
+  onChange: (rows: HeaderRow[]) => void;
+  disabled?: boolean;
+}> = ({ rows, onChange, disabled }) => {
+  const { t } = useI18n();
+  const setRow = (i: number, patch: Partial<HeaderRow>) =>
+    onChange(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {rows.map((r, i) => (
+        <div key={i} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 3fr) auto', gap: 6, alignItems: 'center' }}>
+          <input
+            className="input"
+            style={{ fontSize: 12, fontFamily: "'JetBrains Mono', monospace" }}
+            placeholder={t('op.headerNamePh')}
+            value={r.name}
+            disabled={disabled}
+            onChange={e => setRow(i, { name: e.target.value })}
+          />
+          <input
+            className="input"
+            style={{ fontSize: 12, fontFamily: "'JetBrains Mono', monospace" }}
+            placeholder={t('op.headerValuePh')}
+            value={r.value}
+            disabled={disabled}
+            onChange={e => setRow(i, { value: e.target.value })}
+          />
+          <button
+            className="btn btn-sm"
+            style={{ color: 'var(--accent-rose)', flexShrink: 0 }}
+            disabled={disabled}
+            title={t('op.headerRemove')}
+            onClick={() => onChange(rows.filter((_, j) => j !== i))}
+          >
+            <Trash2 size={12} />
+          </button>
+        </div>
+      ))}
+      <div>
+        <button className="btn btn-sm" disabled={disabled} onClick={() => onChange([...rows, { name: '', value: '' }])}>
+          <Plus size={12} />
+          <span>{t('op.headerAdd')}</span>
+        </button>
+      </div>
+    </div>
+  );
+};
 
 /** Custom-provider form cell: a real label sits above the control and the
  *  placeholder is free to show an example — a typed field must not lose its
@@ -1035,8 +1111,40 @@ export const KeysPage: React.FC = () => {
   const [limitsBusy, setLimitsBusy] = useState(false);
 
   // Custom provider create form
-  const [form, setForm] = useState({ id: '', name: '', baseURL: '', npm: '', apiKey: '', inline: false });
+  const [form, setForm] = useState<{ id: string; name: string; baseURL: string; npm: string; apiKey: string; inline: boolean; headerRows: HeaderRow[] }>({ id: '', name: '', baseURL: '', npm: '', apiKey: '', inline: false, headerRows: [] });
   const [npmChoice, setNpmChoice] = useState<string>('');
+  /** Provider-def edit dialog (connected card pencil): def-node providers only. */
+  const [editDef, setEditDef] = useState<{ id: string; name: string; baseURL: string; npm: string; headerRows: HeaderRow[] } | null>(null);
+  const [savingDef, setSavingDef] = useState(false);
+  const openDefEdit = (p: OpenCodeProviderView) =>
+    setEditDef({
+      id: p.id,
+      name: p.name ?? '',
+      baseURL: p.baseURL ?? '',
+      npm: displayNpm(p.npm) ?? '',
+      headerRows: headersToRows(p.headers),
+    });
+  const saveDefEdit = async () => {
+    if (!editDef) return;
+    setSavingDef(true);
+    try {
+      await opencodeApi.updateProvider(editDef.id, {
+        name: editDef.name.trim() || undefined,
+        baseURL: editDef.baseURL.trim() || undefined,
+        npm: editDef.npm.trim() || undefined,
+        // Always sent: an emptied editor CLEARS the def's headers (the
+        // backend contract is presence = full replace).
+        headers: rowsToHeaders(editDef.headerRows) ?? {},
+      });
+      showNotice(t('op.saveDefDone'));
+      setEditDef(null);
+      await refreshAll();
+    } catch (err: any) {
+      toast.error(reasonError(err));
+    } finally {
+      setSavingDef(false);
+    }
+  };
   const [activeTab, setActiveTab] = useState<'connected' | 'catalog' | 'custom' | 'sync'>('connected');
   // Default OFF (show connected providers): a connected provider is exactly where
   // a SECOND credential is added, so hiding connected rows made multi-credential
@@ -1052,9 +1160,27 @@ export const KeysPage: React.FC = () => {
   const [connectedPageSize, setConnectedPageSize] = useState(CONNECTED_PAGE_SIZE);
   const [refreshingConnected, setRefreshingConnected] = useState(false);
   const [refreshingCatalog, setRefreshingCatalog] = useState(false);
+  // The backend-owned npm SDK vocabulary (providers/vocabulary.ts) — dropdown
+  // order AND the v2-package → v1-alias display mapping come from here, so the
+  // gateway's wire truth and the UI never drift apart.
+  const [npmVocabulary, setNpmVocabulary] = useState<NpmVocabularyEntry[]>([]);
+  useEffect(() => {
+    opencodeApi.getNpmVocabulary().then(setNpmVocabulary).catch(() => {
+      /* fail-open: the form falls back to the curated list below */
+    });
+  }, []);
 
-  // npm dropdown options: aggregate from models.dev catalog (usage-sorted),
-  // always led by the openai-compatible default; offline → curated fallback.
+  /** v2 `package` / v1 alias → the display alias (vocabulary-driven). */
+  const displayNpm = useCallback((npm?: string): string | undefined => {
+    if (!npm) return undefined;
+    const hit = npmVocabulary.find((e) => e.package === npm || e.alias === npm);
+    return hit ? hit.alias : npm;
+  }, [npmVocabulary]);
+
+  // npm dropdown options: the vocabulary's ordered aliases ARE the list — the
+  // wire truth is backend data, not a frontend copy. models.dev catalog
+  // packages that the vocabulary does not know ride through after it (they
+  // resolve through wireFor's openai default anyway).
   const npmOptions = useMemo(() => {
     const counts = new Map<string, number>();
     for (const c of catalog) {
@@ -1062,9 +1188,10 @@ export const KeysPage: React.FC = () => {
       counts.set(c.npm, (counts.get(c.npm) || 0) + 1);
     }
     const fromCatalog = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]).map(([pkg]) => pkg);
-    const merged = ['@ai-sdk/openai-compatible', ...fromCatalog.filter((p) => p !== '@ai-sdk/openai-compatible')];
-    return merged.length > 1 ? merged : FALLBACK_NPM_PACKAGES;
-  }, [catalog]);
+    const known = npmVocabulary.length > 0 ? npmVocabulary.map((e) => e.alias) : FALLBACK_NPM_PACKAGES;
+    const extra = fromCatalog.filter((p) => !known.includes(p));
+    return [...known, ...extra];
+  }, [catalog, npmVocabulary]);
 
   const connectedIds = useMemo(() => new Set(ocProviders.map((p) => p.id)), [ocProviders]);
 
@@ -1715,11 +1842,12 @@ export const KeysPage: React.FC = () => {
         name: form.name.trim() || undefined,
         baseURL: form.baseURL.trim(),
         npm: form.npm.trim() || undefined,
+        headers: rowsToHeaders(form.headerRows),
         apiKey: form.apiKey.trim() || undefined,
         apiKeyInline: form.inline,
       });
       showNotice(t('op.customTitle') + ' ✓');
-      setForm({ id: '', name: '', baseURL: '', npm: '', apiKey: '', inline: false });
+      setForm({ id: '', name: '', baseURL: '', npm: '', apiKey: '', inline: false, headerRows: [] });
       setNpmChoice('');
       await refreshAll();
     } catch (err: any) {
@@ -1883,6 +2011,14 @@ export const KeysPage: React.FC = () => {
                   {p.name && <span style={{ fontSize: 11, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>}
                 </div>
                 <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                  {displayNpm(p.npm) && (
+                    <span
+                      style={{ ...badgeStyle('var(--text-dim)', 'var(--chip-bg)'), fontFamily: "'JetBrains Mono', monospace", fontSize: 9.5 }}
+                      title={`${displayNpm(p.npm)} — ${t('catalogPage.ocrEditNpmHint')}`}
+                    >
+                      {displayNpm(p.npm)!.replace('@ai-sdk/', '')}
+                    </span>
+                  )}
                   {p.custom && <span style={badgeStyle('var(--accent)', 'var(--accent-bg)')} title={t('op.badgeCustomTip')}>{t('op.badgeCustom')}</span>}
                   {p.auth.inline && (
                     <span style={{ ...badgeStyle('var(--accent-amber)', 'color-mix(in srgb, var(--accent-amber) 12%, transparent)'), display: 'inline-flex', alignItems: 'center', gap: 3 }}>
@@ -1891,10 +2027,22 @@ export const KeysPage: React.FC = () => {
                     </span>
                   )}
                   {p.auth.type === 'oauth' && <span style={badgeStyle('var(--hue-violet)', 'var(--hue-violet-soft)')}>{t('op.badgeOauth')}</span>}
-                  {p.auth.type === 'api' && !p.auth.inline && (
-                    <span style={badgeStyle('var(--text-dim)', 'var(--chip-bg)')}>{t('op.badgeAuth', { sink: sinkLabel })}</span>
-                  )}
+                  {/* The api-key sink badge ("credentials.json") was removed:
+                      the bound store is PAGE-level truth (stated in the tab
+                      descriptions), identical on every card — a per-card
+                      repetition carried zero information. */}
                 </div>
+                {p.defNode && (
+                  <button
+                    className="btn btn-sm"
+                    style={{ flexShrink: 0 }}
+                    disabled={busy}
+                    title={t('op.editDefTitle')}
+                    onClick={() => openDefEdit(p)}
+                  >
+                    <Pencil size={12} />
+                  </button>
+                )}
                 {keyEditId !== p.id && (
                   <button
                     className="btn btn-sm"
@@ -2135,6 +2283,25 @@ export const KeysPage: React.FC = () => {
                     <span style={{ fontWeight: 700, fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</span>
                     <span style={{ fontSize: 10, color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.id}</span>
                   </div>
+                  {c.npm && (
+                    <span style={{ fontSize: 9.5, color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', monospace", flexShrink: 0, border: '1px solid var(--chip-bg)', borderRadius: 4, padding: '1px 4px' }} title={t('catalogPage.ocrEditNpmHint')}>
+                      {(displayNpm(c.npm) || '').replace('@ai-sdk/', '')}
+                    </span>
+                  )}
+                  {(c.baseURL || c.api) && (
+                    <button
+                      className="btn btn-sm"
+                      style={{ flexShrink: 0, padding: '2px 4px' }}
+                      title={`${c.baseURL || c.api} — ${t('op.copyBaseUrl')}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        navigator.clipboard.writeText(c.baseURL || c.api!);
+                        showNotice(t('op.baseUrlCopied'), 'ok');
+                      }}
+                    >
+                      <Copy size={11} />
+                    </button>
+                  )}
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--text-dim)' }}>
                   <span>{t('op.modelsCount', { n: c.modelCount })}</span>
@@ -2241,6 +2408,9 @@ export const KeysPage: React.FC = () => {
                 ]}
               />
             )}
+          </FormField>
+          <FormField label={t('op.fHeaders')} style={{ gridColumn: '1 / -1' }}>
+            <HeadersEditor rows={form.headerRows} onChange={headerRows => setForm({ ...form, headerRows })} />
           </FormField>
         </div>
         <div style={{ maxWidth: 720, marginTop: 14 }}>
@@ -2417,6 +2587,44 @@ export const KeysPage: React.FC = () => {
             onCancel={() => setLimitsTarget(null)}
             onSave={handleSaveCredentialLimits}
           />
+        )}
+
+        {/* Provider-def edit dialog — same fixed-overlay mount rule as the
+            reveal gate (a tab switch must not orphan it). */}
+        {editDef && createPortal(
+          <div
+            style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}
+            onClick={() => { if (!savingDef) setEditDef(null); }}
+          >
+            <div
+              className="card"
+              style={{ width: 'min(560px, 100%)', maxHeight: '90vh', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 12 }}
+              onClick={e => e.stopPropagation()}
+            >
+              <div style={{ fontSize: 14, fontWeight: 700 }}>{t('op.editDefTitle')} — {editDef.id}</div>
+              <FormField label={t('op.fName')}>
+                <input className="input" style={{ fontSize: 12 }} value={editDef.name} onChange={e => setEditDef({ ...editDef, name: e.target.value })} />
+              </FormField>
+              <FormField label={t('op.fBaseUrl')}>
+                <input className="input" style={{ fontSize: 12, fontFamily: "'JetBrains Mono', monospace" }} value={editDef.baseURL} onChange={e => setEditDef({ ...editDef, baseURL: e.target.value })} />
+              </FormField>
+              <FormField label={t('op.fNpmLabel')}>
+                <input className="input" style={{ fontSize: 12, fontFamily: "'JetBrains Mono', monospace" }} value={editDef.npm} onChange={e => setEditDef({ ...editDef, npm: e.target.value })} />
+              </FormField>
+              <FormField label={t('op.fHeaders')}>
+                <HeadersEditor rows={editDef.headerRows} onChange={headerRows => setEditDef({ ...editDef, headerRows })} disabled={savingDef} />
+                <span style={{ fontSize: 10.5, color: 'var(--text-dim)' }}>{t('op.fHeadersTip')}</span>
+              </FormField>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                <button className="btn btn-sm" disabled={savingDef} onClick={() => setEditDef(null)}>{t('op.cancelDefEdit')}</button>
+                <button className="btn btn-primary btn-sm" disabled={savingDef} onClick={saveDefEdit}>
+                  <Check size={12} />
+                  <span>{savingDef ? t('op.savingDef') : t('op.saveDef')}</span>
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
         )}
       </div>
     </div>

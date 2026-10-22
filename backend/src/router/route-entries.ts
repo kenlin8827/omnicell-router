@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { TierLevel, ReasoningEffort } from '../types/router.js';
+import { DEFAULT_ROUTE_ENTRIES_MAX } from '../config/defaults.js';
 import { RouteEntriesConfig } from '../config/types.js';
 import { getEnvPaths } from '../config/env.js';
 import { loadConfig } from '../config/index.js';
@@ -263,7 +264,7 @@ export class RouteEntryStore {
    * above the cap until the operator prunes it — accepted trade-off.
    */
   private evictToCap(): void {
-    const cap = gate().maxEntries ?? 5000;
+    const cap = gate().maxEntries ?? DEFAULT_ROUTE_ENTRIES_MAX;
     if (this.entries.size <= cap) return;
     const byAge = [...this.entries.values()]
       .filter((e) => e.source !== 'human')

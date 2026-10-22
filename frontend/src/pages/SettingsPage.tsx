@@ -8,6 +8,7 @@ import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
 import { Switch } from '../components/Switch';
 import { Combobox } from '../components/Combobox';
+import { DEFAULT_MAX_BODY_BYTES } from '../lib/defaults';
 
 export const SettingsPage: React.FC = () => {
   const { t } = useI18n();
@@ -132,7 +133,7 @@ export const SettingsPage: React.FC = () => {
     requestCapture: {
       retentionDays: 7,
       maxTotalMB: 2048,
-      maxBodyBytes: 16777216,
+      maxBodyBytes: DEFAULT_MAX_BODY_BYTES,
       maxSessionMB: 512,
       storeMedia: true,
       ...(config.requestCapture || {}),
@@ -378,7 +379,7 @@ export const SettingsPage: React.FC = () => {
                       days: config.requestCapture?.retentionDays ?? 7,
                       mb: config.requestCapture?.maxTotalMB ?? 2048,
                       ses: config.requestCapture?.maxSessionMB ?? 512,
-                      bytes: config.requestCapture?.maxBodyBytes ?? 16777216,
+                      bytes: config.requestCapture?.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES,
                     })}
                   </span>
                 )}
@@ -421,8 +422,8 @@ export const SettingsPage: React.FC = () => {
                       type="number"
                       min="1024"
                       step="1024"
-                      value={config.requestCapture?.maxBodyBytes ?? 16777216}
-                      onChange={e => patchRequestCapture({ maxBodyBytes: parseInt(e.target.value) || 16777216 })}
+                      value={config.requestCapture?.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES}
+                      onChange={e => patchRequestCapture({ maxBodyBytes: parseInt(e.target.value) || DEFAULT_MAX_BODY_BYTES })}
                       className="input"
                     />
                   </div>

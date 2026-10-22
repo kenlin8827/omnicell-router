@@ -1,7 +1,7 @@
 /**
  * System One protocol wire types. Reference vendors speaking this wire
  * (TypeSafe Jev, Alibaba Bailian decision models) may later be integrated as
- * ordinary providers — the gateway itself only ever serves via conversion.
+ * ordinary providers — native wire support for them lives in native.ts.
  *
  * A request evaluates one `state` against a map of typed `questions`
  * (`choice` / `noul` / `score`); the response carries one typed `answers`

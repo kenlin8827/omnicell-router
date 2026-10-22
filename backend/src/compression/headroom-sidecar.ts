@@ -24,6 +24,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import { getHeadroomPidFilePath } from '../cli/paths.js';
+import { DEFAULT_HEADROOM_PORT } from '../config/defaults.js';
 
 /** Machine-readable failure codes — the console maps them to localized UI text. */
 export type HeadroomSidecarErrorCode =
@@ -124,7 +125,7 @@ export function isLoopbackUrl(url: string | undefined): boolean {
 function derivePort(url: string): number {
   const parsed = new URL(url);
   const port = Number(parsed.port);
-  return Number.isInteger(port) && port > 0 ? port : 8787;
+  return Number.isInteger(port) && port > 0 ? port : DEFAULT_HEADROOM_PORT;
 }
 
 /* ─── Probe ──────────────────────────────────────────────────────────────── */

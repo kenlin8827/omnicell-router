@@ -1,11 +1,12 @@
 /**
  * System One decision execution — ONE implementation shared by every caller.
  *
- * Every resolved model serves via protocol conversion: one JSON-constrained
- * chat completion carries all questions; the reply is normalized back into
- * the System One answers shape (probabilities are best-effort estimates).
- * The former native passthrough limb (TypeSafe Jev / Bailian wire) is
- * retired — ADR-0008 §7.
+ * Limb selection is wire-driven (ADR-0008 §7): wire 'systemone' models
+ * (npm '@ai-sdk/typesafe-ai') serve via NATIVE vendor passthrough
+ * (native.ts); every chat-wire model serves via protocol conversion — one
+ * JSON-constrained chat completion carries all questions; the reply is
+ * normalized back into the System One answers shape (probabilities are
+ * best-effort estimates).
  *
  * Shared by the /v1/systemone route (client-facing) and the Layer 2 router
  * judge (internal). Keeping one executor means the vendor-error effort
@@ -17,6 +18,7 @@ import { ModelRegistration } from '../../config/types.js';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../../types/openai.js';
 import { EFFORT_LADDER, ReasoningEffort } from '../../types/router.js';
 import { SystemoneRequest, SystemoneResponse } from './types.js';
+import { nativeSystemoneDecision } from './native.js';
 import {
   buildDecisionChatRequest,
   decisionReasoningEffort,
@@ -28,8 +30,12 @@ const CONVERSION_REPAIR_ATTEMPTS = 1;
 
 export interface SystemoneDecision {
   response: SystemoneResponse;
-  /** Kept for capture/header schema stability — only 'converted' can occur. */
-  upstreamKind: 'converted';
+  /**
+   * Which limb served the call: 'native' = wire 'systemone' vendor passthrough
+   * (npm '@ai-sdk/typesafe-ai', ADR-0008 §7); 'converted' = chat-model
+   * protocol conversion. Rides X-OCR-Systemone-Upstream.
+   */
+  upstreamKind: 'converted' | 'native';
 }
 
 /**
@@ -202,9 +208,10 @@ export interface SystemoneDecisionOptions {
 }
 
 /**
- * Run one System One request against the named model via protocol
- * conversion. Callers own their own error envelope: `conversion_failed`
- * errors carry `statusCode: 502`.
+ * Run one System One request against the named model. The limb is selected by
+ * the model's RESOLVED wire, never by config: wire 'systemone' → native vendor
+ * passthrough; every chat wire → protocol conversion. Callers own their own
+ * error envelope: `conversion_failed` errors carry `statusCode: 502`.
  */
 export async function runSystemoneDecision(
   registry: ProviderRegistry,
@@ -212,6 +219,12 @@ export async function runSystemoneDecision(
   model: ModelRegistration,
   options?: SystemoneDecisionOptions
 ): Promise<SystemoneDecision> {
+  if (model.wire === 'systemone') {
+    return {
+      response: await nativeSystemoneDecision(registry, body, model, options?.upstreamEventContext, options?.signal),
+      upstreamKind: 'native',
+    };
+  }
   const response = await convertViaChatModel(
     registry,
     body,

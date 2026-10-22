@@ -2,7 +2,7 @@
 
 ## 状态
 
-已实现 — 2026-10-15（事实面语料重写）。2026-10-21 修订：原生 System One 上游支路（`systemoneUpstreams[]`、厂商直通）**退役**——该面仅经 chat 模型协议转换服务；未来 Jev/Bailian 集成以普通 provider 形式经定义文件接入（ADR-0010）。范围：入站协议面（原生路由 + MITM 代理）、共享派发接缝、System One 决策网关、请求捕获平面。trace/捕获持久化分界 = ADR-0005；数据集采样（**不是**捕获）= ADR-0001；决策面的寻址 = ADR-0003。
+已实现 — 2026-10-15（事实面语料重写）。2026-10-21 修订：原生 System One 上游支路（`systemoneUpstreams[]`、厂商直通）**退役**——该面仅经 chat 模型协议转换服务；未来 Jev/Bailian 集成以普通 provider 形式经定义文件接入（ADR-0010）。2026-10-22 修订：原生 decision 支路**以 wire 驱动方式复职**——解析出的 npm 为 `@ai-sdk/typesafe-ai`（或 opencode v2 segment `typesafe`）的 provider 定义解析到 wire `systemone`，在决策面上以**原生直通调用**服务（§7）；所有 chat wire 模型仍走转换。范围：入站协议面（原生路由 + MITM 代理）、共享派发接缝、System One 决策网关、请求捕获平面。trace/捕获持久化分界 = ADR-0005；数据集采样（**不是**捕获）= ADR-0001；决策面的寻址 = ADR-0003。
 
 ## 决策
 
@@ -30,11 +30,18 @@
 
 ### 6. System One 面——两腿 opt-in 闸树
 
-`requestCapture.enabled`（总闸，默认 OFF）× `requestCapture.systemone.enabled`（面闸，默认 ON；关掉则**两腿同哑**——客户端一对与 surface 自己的上游一对（合成转换调用），无 purpose 标签）。发射严格晚于全部 400/403/404/503 闸。Layer-2 裁决者的内部调用构成第三闸：`isSystemoneJudgeCaptureEnabled = 总闸 × 面闸 × systemone.l2DecisionEnabled`（默认 ON）——子闸只能**增记**事件（裁决者自己的 HTTP 腿，挂外层被路由请求，upstream 方向，`purpose:'l2-judge'`，唯一的 ExchangePurpose 值），永不越过面闸。OFF 的隐私姿态：`captureProcessContext()` 答 `{}`，该面路径与无捕获构建字节同一（专测钉住）。
+`requestCapture.enabled`（总闸，默认 OFF）× `requestCapture.systemone.enabled`（面闸，默认 ON；关掉则**两腿同哑**——客户端一对与 surface 自己的上游一对（按解析 wire 的原生直通或合成转换调用），无 purpose 标签）。发射严格晚于全部 400/403/404/503 闸。Layer-2 裁决者的内部调用构成第三闸：`isSystemoneJudgeCaptureEnabled = 总闸 × 面闸 × systemone.l2DecisionEnabled`（默认 ON）——子闸只能**增记**事件（裁决者自己的 HTTP 腿，挂外层被路由请求，upstream 方向，`purpose:'l2-judge'`，唯一的 ExchangePurpose 值），永不越过面闸。OFF 的隐私姿态：`captureProcessContext()` 答 `{}`，该面路径与无捕获构建字节同一（专测钉住）。
 
-### 7. 决策网关（/v1/systemone）——统一协议转换，诚实写进措辞
+### 7. 决策网关（/v1/systemone）——wire 驱动，诚实写进措辞
 
-PROTOCOL CONVERSION for every model——一条 JSON 受限的 chat completion 携全部问题；由此产生的概率是"自报估计、未经校准"（措辞长在协议类型与 reasonCode 分叉里，ADR-0001 §4）。该面的模型语义：点名模型 = 所点即所得；auto 梯队别名按**纯池投影**解析到访问过滤后池的链头——404 未知/无池、403 被禁、503 解析不出，**绝不**静默回退；裸 `auto`/省略 → `systemone.defaultModel`；所有模型均经协议转换由 chat 池应答；决策线限流计数但永不本地拒绝（裁决者是请求下腿）。响应头恰三个（冻结契约）：`X-OCR-Model / X-OCR-Systemone-Upstream / X-OCR-Latency-MS`。**同一执行器**同时服务 HTTP 面与 Layer-2 路由裁决——一个实现，两个调用方。
+该面的模型语义：点名模型 = 所点即所得；auto 梯队别名按**纯池投影**解析到访问过滤后池的链头——404 未知/无池、403 被禁、503 解析不出，**绝不**静默回退；裸 `auto`/省略 → `systemone.defaultModel`；决策线限流计数但永不本地拒绝（裁决者是请求下腿）。响应头恰三个（冻结契约）：`X-OCR-Model / X-OCR-Systemone-Upstream / X-OCR-Latency-MS`。**同一执行器**同时服务 HTTP 面与 Layer-2 路由裁决——一个实现，两个调用方。
+
+两条执行支路，由解析出的模型 wire 选择（永不由配置表选择）：
+
+- **原生直通（wire `systemone`）**——2026-10-22 修订。解析 npm 为 `@ai-sdk/typesafe-ai`（opencode v1 字符串或 opencode v2 segment `typesafe`）的 provider 定义经共享 `wireFor()` 解析到 wire `systemone`；模型以 `wire: 'systemone'` 进入启动池，决策执行器**直接调用**厂商决策端点：`POST {baseUrl}/systemone`，Bearer 鉴权取自 provider 凭证链，请求体 = 客户端 `{model, state, questions, …}` 形状、model id 改写为 `upstreamModel`，响应 answers **原样透传**（未知 answer 类型如 `box` 不做二次猜测）。chat 池**永不见**这些模型（`getCandidateModelsForTier` 默认排除 `wire === 'systemone'`，仅决策面显式传入时包含）——decision 协议无法应答 chat，把 chat 路由到其上只会把网关自身的错配归咎于上游。厂商 npm 契约由 `@ai-sdk/typesafe-ai` SDK 本体钉死（v3）：`languageModel` 直接 throw `NoSuchModelError`；只有 decision 模型存在，端点 `POST {baseURL}/systemone`，`{model, state, questions}` + Bearer `TYPESAFE_AI_API_KEY`。
+- **协议转换（其余所有 chat wire）**——一条 JSON 受限的 chat completion 携全部问题；由此产生的概率是"自报估计、未经校准"（措辞长在协议类型与 reasonCode 分叉里，ADR-0001 §4）。
+
+`X-OCR-Systemone-Upstream` 携带实际采取的支路（`native` / `converted`）——让两条路径在线上可分辨的诚实标记。2026-10-21 退役的 `systemoneUpstreams[]` 配置支路保持退役：原生支路以**数据**（defs 文件的 npm，ADR-0010）回归，而非配置节。
 
 ### 8. Responses 续接状态（`responses.persist`）
 

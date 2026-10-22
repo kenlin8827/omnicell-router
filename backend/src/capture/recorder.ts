@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { RequestCaptureConfig } from '../config/types.js';
 import { getEnvPaths } from '../config/env.js';
+import { DEFAULT_MAX_BODY_BYTES } from '../config/defaults.js';
 
 /**
  * One captured turn — a single JSONL line in the per-session archive file.
@@ -279,12 +280,26 @@ export interface CaptureTurnSummary {
   gatewayResponse?: HttpExchangeEvent;
   upstreamRequest?: HttpExchangeEvent;
   upstreamResponse?: HttpExchangeEvent;
+  /**
+   * The Layer 2 judge's HTTP leg when one fired inside this turn
+   * (`purpose: 'l2-judge'` upstream events). Kept in SEPARATE slots — never
+   * merged into the serving upstream pair — so the console can show both
+   * calls and tell them apart (the judge call precedes candidate execution
+   * and would otherwise be overwritten by the last-write-wins serving leg).
+   */
+  judgeRequest?: HttpExchangeEvent;
+  judgeResponse?: HttpExchangeEvent;
   /** Any of the four events with an error field set; "first error wins". */
   error?: string;
+  /** Judge-leg cycle latency (judge-resp.ts - judge-req.ts). */
+  judgeLatencyMs?: number;
   /** Gateway cycle latency (client-resp.ts - client-req.ts). */
   gatewayLatencyMs?: number;
   /** Upstream cycle latency (upstream-resp.ts - upstream-req.ts). */
   upstreamLatencyMs?: number;
+  /** TTFT / decode window for the judge leg (same derivation as upstream). */
+  judgeTtftMs?: number;
+  judgeGenMs?: number;
   /**
    * TTFT / decode window, derived from the response event's firstByteTs and
    * the matching request event's ts — the industry TTFT/TPS split, measured
@@ -505,7 +520,7 @@ export class CaptureRecorder {
     // 16 MB per body) — a bare `new CaptureRecorder()` must not enforce
     // looser limits than the config.
     this.maxTotalBytes = (config?.maxTotalMB ?? 2048) * 1024 * 1024;
-    this.maxBodyBytes = config?.maxBodyBytes ?? 16777216;
+    this.maxBodyBytes = config?.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
     this.maxSessionBytes = (config?.maxSessionMB ?? 512) * 1024 * 1024;
     this.storeMedia = config?.storeMedia ?? true;
     this.rootDir = path.resolve(config?.dir || getEnvPaths().captureDir);
@@ -1125,7 +1140,7 @@ export class CaptureRecorder {
     const subset = events.filter(e => e.traceId === anchor.traceId);
     const turns = CaptureRecorder.groupEventsIntoTurns(subset);
     const turn = turns.find(t =>
-      [t.clientRequest, t.gatewayResponse, t.upstreamRequest, t.upstreamResponse].some(
+      [t.clientRequest, t.gatewayResponse, t.upstreamRequest, t.upstreamResponse, t.judgeRequest, t.judgeResponse].some(
         e => e?.id === eventId
       )
     );
@@ -1179,6 +1194,19 @@ export class CaptureRecorder {
         }
         if (!t) t = newTurn(ev); // response whose request fell outside the read window
         t.gatewayResponse = ev;
+      } else if (ev.purpose === 'l2-judge') {
+        // The L2 judge's HTTP leg shares the routed turn's trace but is NOT
+        // failover traffic — route it to dedicated slots so the serving
+        // leg's last-write-wins below never overwrites it. The judge fires
+        // BEFORE candidate execution, so a plain upstream merge would erase
+        // it and the console would only ever show one upstream call.
+        t = activeByTrace.get(ev.traceId);
+        if (!t) {
+          t = newTurn(ev);
+          activeByTrace.set(ev.traceId, t);
+        }
+        if (ev.phase === 'request') t.judgeRequest = ev;
+        else t.judgeResponse = ev;
       } else {
         // Upstream events attach to the trace's active turn. Failover hops
         // overwrite each other (last-write-wins) — the final attempt is
@@ -1202,6 +1230,9 @@ export class CaptureRecorder {
       if (t.upstreamRequest && t.upstreamResponse) {
         t.upstreamLatencyMs = t.upstreamResponse.ts - t.upstreamRequest.ts;
       }
+      if (t.judgeRequest && t.judgeResponse) {
+        t.judgeLatencyMs = t.judgeResponse.ts - t.judgeRequest.ts;
+      }
       // TTFT / decode window per leg: the response event's firstByteTs splits
       // the cycle latency into wait-for-first-token and decode phases. Derived
       // only when the stamp exists (streamed legs; pre-stamp events stay
@@ -1222,6 +1253,11 @@ export class CaptureRecorder {
         const d = derive(t.upstreamRequest, t.upstreamResponse);
         t.upstreamTtftMs = d.ttft;
         t.upstreamGenMs = d.gen;
+      }
+      if (t.judgeRequest && t.judgeResponse) {
+        const d = derive(t.judgeRequest, t.judgeResponse);
+        t.judgeTtftMs = d.ttft;
+        t.judgeGenMs = d.gen;
       }
     }
     return all.sort((a, b) => {

@@ -631,6 +631,36 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
     assert.equal(t.gatewayGenMs, undefined);
   });
 
+  it('keeps the l2-judge leg in separate slots (not overwritten by the serving leg)', () => {
+    // One routed turn with an L2 judge leg: judge req/resp fire FIRST, then
+    // the serving upstream pair. The judge pair must survive in its own
+    // judgeRequest/judgeResponse slots — the serving leg's last-write-wins
+    // merge must never erase it, and neither pair may pollute the other.
+    const traceId = 'trace_grp_judge';
+    const events = [
+      { eventType: 'http-exchange', direction: 'client', phase: 'request', traceId, sessionId: 's', model: 'auto', status: 'ok', spanId: 'w1', id: 'a', ts: 1000, wire: emptyWire() } as any,
+      // judge req/resp (purpose l2-judge, its own spanId)
+      { eventType: 'http-exchange', direction: 'upstream', phase: 'request', traceId, sessionId: 's', model: 'judge-model', status: 'ok', spanId: 'w2', id: 'j1', ts: 1005, purpose: 'l2-judge', wire: emptyWire() } as any,
+      { eventType: 'http-exchange', direction: 'upstream', phase: 'response', traceId, sessionId: 's', model: 'judge-model', status: 'ok', spanId: 'w2', id: 'j2', ts: 1300, firstByteTs: 1200, purpose: 'l2-judge', wire: emptyWire() } as any,
+      // serving upstream req/resp
+      { eventType: 'http-exchange', direction: 'upstream', phase: 'request', traceId, sessionId: 's', model: 'auto', status: 'ok', spanId: 'w3', id: 'b', ts: 1310, wire: emptyWire() } as any,
+      { eventType: 'http-exchange', direction: 'upstream', phase: 'response', traceId, sessionId: 's', model: 'auto', status: 'ok', spanId: 'w3', id: 'c', ts: 1500, wire: emptyWire() } as any,
+      { eventType: 'http-exchange', direction: 'client', phase: 'response', traceId, sessionId: 's', model: 'auto', status: 'ok', spanId: 'w1', id: 'd', ts: 1520, wire: emptyWire() } as any,
+    ];
+    const t = CaptureRecorder.groupEventsIntoTurns(events)[0];
+    assert.equal(t.judgeRequest?.id, 'j1');
+    assert.equal(t.judgeResponse?.id, 'j2');
+    // Serving slots keep the serving leg, not the judge leg.
+    assert.equal(t.upstreamRequest?.id, 'b');
+    assert.equal(t.upstreamResponse?.id, 'c');
+    assert.equal(t.judgeLatencyMs, 1300 - 1005);
+    assert.equal(t.judgeTtftMs, 1200 - 1005);
+    assert.equal(t.judgeGenMs, 1300 - 1200);
+    assert.equal(t.upstreamLatencyMs, 1500 - 1310);
+    // Still ONE logical turn — the judge leg must not inflate turn counts.
+    assert.equal(CaptureRecorder.groupEventsIntoTurns(events).length, 1);
+  });
+
   it('derives TTFT and decode window from firstByteTs (TTFT/TPS split)', () => {
     const traceId = 'trace_grp_2';
     const events = [

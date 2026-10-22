@@ -321,6 +321,9 @@ const AI_SDK_TO_OPENCODE_V2_PACKAGE: Record<string, string> = {
   '@ai-sdk/google-vertex': '@opencode/ai/providers/google-vertex',
   '@ai-sdk/bedrock': '@opencode/ai/providers/bedrock',
   '@ai-sdk/amazon-bedrock': '@opencode/ai/providers/amazon-bedrock',
+  // TypeSafe decision wire — segment maps to wire 'systemone' on the read side
+  // (wire.ts OPENCODE_V2_SEGMENT_WIRES), pinned by the same-name test.
+  '@ai-sdk/typesafe-ai': '@opencode/ai/providers/typesafe',
 };
 
 /** npm string → the opencode v2 `package` value (mapped table, already-v2 passthrough, unknown passthrough). */
@@ -448,8 +451,15 @@ function buildV2ProviderNode(def: CustomProviderDef): { node?: Record<string, an
       };
   }
 
+  // Explicit `def.headers` (even {}) fully replaces — presence = the whole truth,
+  // so an empty map CLEARS (and never falls back to legacy `options.headers`).
+  // Absent `headers` keeps a legacy `options.headers` passthrough if one exists.
   const headers =
-    def.headers && Object.keys(def.headers).length > 0 ? def.headers : passthroughHeaders;
+    def.headers !== undefined
+      ? Object.keys(def.headers).length > 0
+        ? def.headers
+        : undefined
+      : passthroughHeaders;
 
   const node: Record<string, any> = {};
   if (def.name) node.name = def.name;

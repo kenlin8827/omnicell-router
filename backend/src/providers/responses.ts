@@ -10,6 +10,7 @@ import {
 import { ChatCompletionRequest, ChatCompletionResponse, ChatMessageContentPart, ToolCall } from '../types/openai.js';
 import { UpstreamError } from '../resilience/error-classifier.js';
 import { proxiedFetch, resolveProxyUrl } from '../utils/proxy.js';
+import { DEFAULT_PROVIDER_TIMEOUT_MS } from '../config/defaults.js';
 
 /**
  * OpenAI Responses API wire (`@ai-sdk/openai`) — POST {base}/responses.
@@ -203,7 +204,7 @@ export class ResponsesProvider implements LLMProvider {
     // Wall-clock cap on the non-streaming upstream execution — see the
     // openai-compatible provider: agent coding traffic legitimately runs past
     // a minute, so the default is 300 s.
-    const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs || 300000);
+    const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs || DEFAULT_PROVIDER_TIMEOUT_MS);
 
     try {
       const res = await withUpstreamFailureGuard(

@@ -14,6 +14,7 @@ import {
 } from '../opencode/user-config.js';
 import { getCredentialStore, getCredentialStoreStatus } from '../opencode/credentials/index.js';
 import { keyHashPrefix } from '../opencode/credentials/types.js';
+import { sanitizeExtraHeaders } from '../utils/http-headers.js';
 import type { CallCredential, RawCred, ResolvedCredential } from '../opencode/credentials/types.js';
 import { WireKind, wireFor, unroutableReason, baseForWire } from './wire.js';
 
@@ -355,7 +356,7 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
         // credential. Per-call selection reads the chain below; the baked key
         // remains the no-selector default.
         apiKey,
-        headers: def?.options?.headers,
+        headers: sanitizeExtraHeaders(def?.options?.headers),
       },
       wires: [...wires],
       wireBases: Object.fromEntries(wireBases) as Partial<Record<WireKind, string>>,

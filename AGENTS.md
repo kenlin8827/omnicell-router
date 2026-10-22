@@ -37,6 +37,32 @@ rg -n '[\x{4e00}-\x{9fff}]' docs/adr/*.md docs/design/*.md docs/reviews/*.md REA
 - `frontend/src/lib/api.ts` mirrors backend response types 1:1 **by the backend contract name** (`CredentialMeta`, `CredentialHealth`, …). Never weld a consuming page/panel prefix onto the wire type; module prefixes are reserved for genuinely different entities (`CredentialStore*` = the key repository).
 - **Dropdowns: always `Combobox`, never native `<select>`** (native popups can't be themed). Use `frontend/src/components/Combobox.tsx`: `value: string`, `onChange: (v: string) => void`, `options: { value, label, meta?, swatch? }[]`, optional `placeholder` / `clearable`; filter input only appears when `options.length > 8`.
 
+## Single-source constants — no drift twins
+
+A runtime default or cross-cutting magic number is declared **exactly once** and imported
+everywhere else. Re-declaring the same literal locally (config fallback + runtime fallback,
+backend + frontend mirror, provider × provider) is a drift twin: identical today, silently
+divergent after the next edit.
+
+- Backend defaults live in `backend/src/config/defaults.ts` (provider timeout, forward-proxy
+  port, headroom port/timeout, maxBodyBytes, layer2 timeout, route-entries cap, forward-proxy
+  hang guard). Config defaults, runtime fallbacks and CLI fallbacks all import from there.
+- Frontend mirrors of backend defaults live in `frontend/src/lib/defaults.ts`; when a backend
+  default changes, update the mirror in the **same** commit (header of that file says so).
+- The three observation ledgers (failure / ratelimit / quota events) share the ring skeleton
+  in `backend/src/utils/event-ring.ts` (capacity, coalesce window, message bound, id scheme,
+  upsert-then-trim order) — never re-declare `MAX_EVENTS`-style constants per module.
+- Shared wire/payload helpers (e.g. `DATA_URL_RE`) live in `backend/src/providers/wire.ts`.
+- Exception: defaults baked into prose (`YAML_FIELD_COMMENTS`, i18n strings) are sanctioned
+  copy — changing a constant means sweeping those strings in the same pass (cleanup contract
+  below).
+
+Spot-check for regressions:
+
+```bash
+rg -n '\|\| *300000|\|\| *4555|\|\| *8787|\?\? *16777216|setTimeout\(60000' backend/src -g '*.ts'
+```
+
 ## Cleanup contract — code, comments and ADRs move together
 
 Deleting or renaming a symbol is **not finished** until every reference to the removed
@@ -55,9 +81,8 @@ and doc together, never a later "docs follow-up".
 `noUnusedLocals` / `noUnusedParameters`. Audit before claiming any cleanup is complete:
 
 ```bash
-npx tsc -p backend --noEmit --noUnusedLocals --noUnusedParameters   # 19 hits as of 2026-10-13
-npx tsc -p frontend --noEmit --noUnusedLocals                       # 9 hits
+npx tsc -p backend --noEmit --noUnusedLocals --noUnusedParameters   # 0 hits as of 2026-12
+npx tsc -p frontend --noEmit --noUnusedLocals                       # 0 hits
 ```
 
-Treat a green typecheck as necessary, not sufficient. The listed hits are pre-existing and
-out of scope for unrelated tasks — but a PR that adds a new one is a review finding.
+Treat a green typecheck as necessary, not sufficient. Any new hit is a review finding.

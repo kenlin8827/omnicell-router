@@ -12,7 +12,7 @@ import type { QuotaProbeConfigEntry } from '../quota/types.js';
  */
 export interface ProviderConfig {
   name: string;
-  type: 'openai-compatible' | 'anthropic' | 'google' | 'responses' | 'dispatch';
+  type: 'openai-compatible' | 'anthropic' | 'google' | 'responses' | 'systemone' | 'dispatch';
   baseUrl: string;
   apiKey: string;
   organization?: string;
@@ -36,7 +36,7 @@ export interface ModelRegistration {
   tier: TierLevel;
   pricing: ModelPricing;
   /** resolved wire for direct execution (model-level npm beats provider npm). */
-  wire?: 'openai' | 'anthropic' | 'google' | 'responses';
+  wire?: 'openai' | 'anthropic' | 'google' | 'responses' | 'systemone';
   priority?: number; // lower number = higher priority within the tier (e.g. 1 is primary, 2 is backup)
   isDefaultInTier?: boolean;
   /**

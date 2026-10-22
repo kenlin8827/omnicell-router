@@ -22,6 +22,7 @@ import { strToU8, zipSync } from 'fflate';
 import { SessionTranscript } from '../components/SessionTranscript';
 import { BackToTop } from '../components/BackToTop';
 import { findMediaTokens, unwrapHarnessText } from '../lib/transcript';
+import { DEFAULT_MAX_BODY_BYTES } from '../lib/defaults';
 
 /**
  * Best-effort completion-token extraction from a captured response wire body.
@@ -217,7 +218,7 @@ function JsonBlock({ value }: { value: unknown }) {
   );
 }
 
-type DrawerTab = 'clientRequest' | 'gatewayResponse' | 'upstreamRequest' | 'upstreamResponse';
+type DrawerTab = 'clientRequest' | 'gatewayResponse' | 'upstreamRequest' | 'upstreamResponse' | 'judgeRequest' | 'judgeResponse';
 
 /**
  * Right-side detail drawer for one captured turn (portal, Esc/overlay close).
@@ -234,8 +235,11 @@ const CaptureDrawer: React.FC<{
   loading?: boolean;
   /** Turn's bodies fall outside the read window (long archive, tail kept). */
   outOfWindow?: boolean;
+  /** Tab to land on when the drawer opens (e.g. the judge tab when opened
+   *  from the judge sub-row); defaults to the inbound request view. */
+  initialTab?: DrawerTab;
   onClose: () => void;
-}> = ({ turn, loading, outOfWindow, onClose }) => {
+}> = ({ turn, loading, outOfWindow, initialTab, onClose }) => {
   const { t } = useI18n();
   const toast = useToast();
   const [tab, setTab] = useState<DrawerTab>('clientRequest');
@@ -250,25 +254,33 @@ const CaptureDrawer: React.FC<{
   }, [onClose]);
 
   useEffect(() => {
-    setTab('clientRequest');
+    setTab(initialTab ?? 'clientRequest');
     // Keyed by the client-request event id, not the traceId: a client that
     // reuses one traceId produces multiple turns sharing it.
-  }, [turn.clientRequest?.id ?? turn.traceId]);
+  }, [turn.clientRequest?.id ?? turn.traceId, initialTab]);
 
-  // 4 wire-side tabs, one per HTTP exchange phase. The naming is symmetric:
+  // Wire-side tabs, one per HTTP exchange phase. The naming is symmetric:
   // direction (client | upstream) × phase (request | response) — the same
   // shape as the W3C / OpenTelemetry span model. Clicking a tab shows the
   // full wire dump (request line + headers + body OR response line + headers
   // + body) of that side. Empty tab = the corresponding exchange never
   // fired (e.g. gateway-response is missing when the gateway times out
-  // before sending a reply).
+  // before sending a reply). The judge pair is a 5th/6th tab that only
+  // appears when an L2 judge leg fired inside this turn — it shares the
+  // trace but is a distinct upstream call from the serving one.
   const tabs: { key: DrawerTab; label: string; ev?: HttpExchangeEvent }[] = [
     { key: 'clientRequest',    label: t('captures.tabClientRequest'),    ev: turn.clientRequest },
     { key: 'gatewayResponse',  label: t('captures.tabGatewayResponse'),  ev: turn.gatewayResponse },
     { key: 'upstreamRequest',  label: t('captures.tabUpstreamRequest'),  ev: turn.upstreamRequest },
     { key: 'upstreamResponse', label: t('captures.tabUpstreamResponse'), ev: turn.upstreamResponse },
+    ...(turn.judgeRequest || turn.judgeResponse
+      ? [
+          { key: 'judgeRequest' as DrawerTab,  label: t('captures.tabJudgeRequest'),  ev: turn.judgeRequest },
+          { key: 'judgeResponse' as DrawerTab, label: t('captures.tabJudgeResponse'), ev: turn.judgeResponse },
+        ]
+      : []),
   ];
-  const active = tabs.find(x => x.key === tab)!;
+  const active = tabs.find(x => x.key === tab) ?? tabs[0];
 
   // The single timestamp the drawer shows in the header: pick the EARLIEST
   // event ts (client-request fires synchronously, upstream events may
@@ -432,6 +444,24 @@ const CaptureDrawer: React.FC<{
               </span>
             </span>
           )}
+          {/* L2 judge leg badge: latency chip + the judge model, so the two
+              upstream calls of one turn are distinguishable at a glance. */}
+          {turn.judgeRequest && (
+            <span
+              className="badge"
+              title={`${t('captures.judgeBadge')} · ${turn.judgeRequest.model}${turn.judgeLatencyMs !== undefined ? ` · ${turn.judgeLatencyMs} ms` : ''}`}
+              style={{
+                background: 'var(--hue-purple-soft, color-mix(in srgb, var(--accent) 12%, transparent))',
+                color: 'var(--hue-purple, var(--accent))',
+                fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                fontSize: '10px',
+              }}
+            >
+              ⚖ {t('captures.judgeBadge')}
+              {turn.judgeLatencyMs !== undefined && ` · ${fmtLatency(turn.judgeLatencyMs)}`}
+              {turn.judgeRequest.model !== turn.model && ` · ${turn.judgeRequest.model}`}
+            </span>
+          )}
           <button className="btn btn-sm" style={{ marginLeft: 'auto' }} onClick={onClose} aria-label={t('common.close')}>
             <X size={14} />
           </button>
@@ -458,7 +488,7 @@ const CaptureDrawer: React.FC<{
           </div>
         )}
 
-        {/* Tabs — 4 wire-side views */}
+        {/* Tabs — wire-side views (4 base + judge pair when present) */}
         <div style={{ display: 'flex', gap: '4px', padding: '12px 16px 0', borderBottom: '1px solid var(--divider)', flexWrap: 'wrap' }}>
           {tabs.map(x => {
             const empty = !x.ev;
@@ -757,6 +787,13 @@ export const CapturesPage: React.FC = () => {
   const [totalTurns, setTotalTurns] = useState(0);
   const [fileTruncated, setFileTruncated] = useState(false);
   const [selectedTurnIdx, setSelectedTurnIdx] = useState<number | null>(null);
+  // Tab the drawer should land on ("judgeRequest" when opened from the
+  // judge sub-row); reset to undefined when the selection changes.
+  const [initialDrawerTab, setInitialDrawerTab] = useState<DrawerTab | undefined>(undefined);
+  const openTurn = (idx: number, tab?: DrawerTab) => {
+    setInitialDrawerTab(tab);
+    setSelectedTurnIdx(idx);
+  };
   // Main-pane view mode: wire timeline (default) or the reconstructed
   // conversation replay. Always starts on the timeline — the chat lens
   // parses + renders every round, so it should cost nothing until the
@@ -1071,7 +1108,7 @@ export const CapturesPage: React.FC = () => {
         requestCapture: {
           retentionDays: 7,
           maxTotalMB: 2048,
-          maxBodyBytes: 16777216,
+          maxBodyBytes: DEFAULT_MAX_BODY_BYTES,
           maxSessionMB: 512,
           ...(cfg.requestCapture || {}),
           enabled: next,
@@ -1730,14 +1767,15 @@ export const CapturesPage: React.FC = () => {
                             const turnStart = turn.clientRequest?.ts
                               ?? turn.upstreamRequest?.ts
                               ?? turn.gatewayResponse?.ts
-                              ?? turn.upstreamResponse?.ts;
+                              ?? turn.upstreamResponse?.ts
+                              ?? turn.judgeRequest?.ts;
                             const errEvent = turn.upstreamResponse?.status === 'error'
                               || turn.gatewayResponse?.status === 'error'
                               || !!turn.error;
                             return (
                               <div
                                 key={`${turn.traceId}-${idx}`}
-                                onClick={() => setSelectedTurnIdx(idx)}
+                                onClick={() => openTurn(idx)}
                                 style={{
                                   position: 'relative',
                                   display: 'flex',
@@ -1840,6 +1878,26 @@ export const CapturesPage: React.FC = () => {
                                     </span>
                                   </span>
                                 )}
+                                {/* L2 judge leg: one compact badge — latency inline,
+                                    model + explanation in the tooltip. Click opens
+                                    the drawer's judge tabs (full wire). */}
+                                {turn.judgeRequest && (
+                                  <span
+                                    className="badge"
+                                    onClick={() => openTurn(idx, 'judgeRequest')}
+                                    title={`${t('captures.judgeBadge')} · ${turn.judgeRequest.model}${turn.judgeLatencyMs !== undefined ? ` · ${turn.judgeLatencyMs} ms` : ''} · ${t('captures.judgeSubRowHint')}`}
+                                    style={{
+                                      background: 'color-mix(in srgb, var(--accent) 12%, transparent)',
+                                      color: 'var(--accent)',
+                                      fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                                      fontSize: '10px',
+                                      flexShrink: 0,
+                                      cursor: 'pointer',
+                                    }}
+                                  >
+                                    ⚖ {turn.judgeLatencyMs !== undefined ? fmtLatency(turn.judgeLatencyMs) : t('captures.judgeBadge')}
+                                  </span>
+                                )}
                               </div>
                             );
                           })}
@@ -1861,6 +1919,7 @@ export const CapturesPage: React.FC = () => {
           turn={drawerTurn ?? turns[selectedTurnIdx]}
           loading={drawerLoading}
           outOfWindow={drawerMiss}
+          initialTab={initialDrawerTab}
           onClose={() => setSelectedTurnIdx(null)}
         />
       )}

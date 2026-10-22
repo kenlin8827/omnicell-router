@@ -4,6 +4,7 @@ import path from 'node:path';
 import { ClientAdapter } from './base.js';
 import { ClientHookStatus } from '../types.js';
 import { loadConfig, getRuntimeConfigRef } from '../../config/index.js';
+import { DEFAULT_FORWARD_PROXY_PORT } from '../../config/defaults.js';
 import { getOcrHomeDir } from '../paths.js';
 
 /**
@@ -62,7 +63,7 @@ function resolveForwardProxyEndpoint(): ForwardProxyEndpoint | null {
   }
   const fp = cfg?.forwardProxy;
   if (!fp || fp.enabled !== true) return null;
-  const port = Number.isFinite(fp.port) && (fp.port as number) > 0 ? (fp.port as number) : 4555;
+  const port = Number.isFinite(fp.port) && (fp.port as number) > 0 ? (fp.port as number) : DEFAULT_FORWARD_PROXY_PORT;
   // `host` is a LISTEN address — the client-facing URL must stay reachable
   // from opencode on the same machine, so wildcard binds normalize to loopback.
   const host = !fp.host || fp.host === '0.0.0.0' || fp.host === '::' ? '127.0.0.1' : fp.host;

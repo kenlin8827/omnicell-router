@@ -3,6 +3,7 @@ import { ModelRegistration, ProviderConfig } from '../config/types.js';
 import { ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
 import { UpstreamError } from '../resilience/error-classifier.js';
 import { proxiedFetch, resolveProxyUrl } from '../utils/proxy.js';
+import { DEFAULT_PROVIDER_TIMEOUT_MS } from '../config/defaults.js';
 import {
   emitUpstreamRequestOnce,
   emitUpstreamResponseOnce,
@@ -114,7 +115,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
     // run past a minute — 60 s used to cut healthy streams mid-flight and pay for
     // them again on retry. The streamed leg applies the same cap across the whole
     // SSE body (see createStream).
-    const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs || 300000);
+    const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs || DEFAULT_PROVIDER_TIMEOUT_MS);
 
     try {
       // The guard emits a paired failure response event on ANY thrown error
@@ -256,7 +257,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
     // MID-STREAM when generation runs long: by then the relay has committed
     // bytes to the client, so the pipeline closes the SSE without `[DONE]`
     // rather than failing over (re-issuing upstream would duplicate output).
-    const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs || 300000);
+    const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs || DEFAULT_PROVIDER_TIMEOUT_MS);
 
     let res: Response;
     try {

@@ -1,10 +1,11 @@
 /**
  * One-shot upstream probe behind the console "Test" buttons.
  *
- * Speaks the three wire shapes users actually configure in their provider defs:
- *   - openai    → POST {base}/chat/completions              (default / OpenAI-compatible gateways)
- *   - anthropic → POST {base}/messages                      (x-api-key)
- *   - google    → POST {base}/models/{model}:generateContent
+ * Speaks the wire shapes users actually configure in their provider defs:
+ *   - openai      → POST {base}/chat/completions              (default / OpenAI-compatible gateways)
+ *   - anthropic   → POST {base}/messages                      (x-api-key)
+ *   - google      → POST {base}/models/{model}:generateContent
+ *   - systemone   → POST {base}/systemone                     (TypeSafe decision wire)
  *
  * A probe sends a tiny "ping" completion (max_tokens 16) and reports latency.
  * Real cost is a fraction of a cent; the value is catching dead keys / wrong
@@ -18,7 +19,7 @@ import { proxiedFetch } from '../utils/proxy.js';
 import { wireFor, unroutableInfo, anthropicMessagesUrl } from '../providers/wire.js';
 import { redactBodySecrets } from './credentials/opencode-v2-store.js';
 
-export type ProbeKind = 'openai' | 'anthropic' | 'google' | 'responses' | 'unroutable';
+export type ProbeKind = 'openai' | 'anthropic' | 'google' | 'responses' | 'systemone' | 'unroutable';
 
 /** Machine codes of the status/body-derived CLASSIFICATION — short category
  * labels only (i18n contract). Product rule 2026-10-14: classify, never
@@ -161,6 +162,10 @@ export async function probeProvider(opts: ProbeOptions): Promise<ProbeResult> {
     // OpenAI Responses API wire (@ai-sdk/openai) — input, not messages.
     url = `${base}/responses`;
     headers['authorization'] = `Bearer ${opts.apiKey}`;
+  } else if (kind === 'systemone') {
+    // TypeSafe decision wire (@ai-sdk/typesafe-ai): one minimal noul question.
+    url = `${base}/systemone`;
+    headers['authorization'] = `Bearer ${opts.apiKey}`;
   } else {
     url = `${base}/chat/completions`;
     headers['authorization'] = `Bearer ${opts.apiKey}`;
@@ -175,7 +180,9 @@ export async function probeProvider(opts: ProbeOptions): Promise<ProbeResult> {
         ? { contents: [{ parts: [{ text: 'ping' }] }], generationConfig: { maxOutputTokens: 16 } }
         : kind === 'responses'
           ? { model: opts.model, input: 'ping', stream: false }
-          : { model: opts.model, max_tokens: 16, stream: false, messages: [{ role: 'user', content: 'ping' }] };
+          : kind === 'systemone'
+            ? { model: opts.model, state: 'ping', questions: { probe: { type: 'noul', instructions: 'ping' } } }
+            : { model: opts.model, max_tokens: 16, stream: false, messages: [{ role: 'user', content: 'ping' }] };
 
   const started = Date.now();
   try {

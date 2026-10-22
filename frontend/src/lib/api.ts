@@ -601,6 +601,8 @@ export interface HttpExchangeEvent {
   error?: string;
   /** Redacted proxy origin when the upstream call went through a proxy (upstream events only). */
   proxy?: string;
+  /** Why this exchange happened when it is NOT ordinary turn traffic. 'l2-judge' = the Layer 2 judge's decision-model call. Absent = ordinary traffic. */
+  purpose?: 'l2-judge';
   truncated?: boolean;
   /**
    * Completion-token total derived at read time from the response body (last
@@ -620,9 +622,14 @@ export interface CaptureTurn {
   gatewayResponse?: HttpExchangeEvent;
   upstreamRequest?: HttpExchangeEvent;
   upstreamResponse?: HttpExchangeEvent;
+  /** The L2 judge's HTTP leg when one fired inside this turn (kept in separate slots — never merged into the serving upstream pair). */
+  judgeRequest?: HttpExchangeEvent;
+  judgeResponse?: HttpExchangeEvent;
   error?: string;
   gatewayLatencyMs?: number;
   upstreamLatencyMs?: number;
+  /** Judge-leg cycle latency (judge-resp.ts - judge-req.ts). */
+  judgeLatencyMs?: number;
   /** TTFT / decode window per leg, derived from firstByteTs at read time
    *  (backend CaptureTurnSummary). Undefined when the leg was not streamed
    *  or the event predates the stamp. */
@@ -630,6 +637,9 @@ export interface CaptureTurn {
   gatewayGenMs?: number;
   upstreamTtftMs?: number;
   upstreamGenMs?: number;
+  /** TTFT / decode window for the judge leg (same derivation as upstream). */
+  judgeTtftMs?: number;
+  judgeGenMs?: number;
 }
 
 // Mirrors backend ConversationSession (backend/src/session/session-manager.ts) + traceCount
@@ -1992,11 +2002,26 @@ export interface WebAuthConfigView extends WebAuthStatus {
 // Provider management (defs file `providers` map + bound credential store)
 // ---------------------------------------------------------------------------
 
+export interface NpmVocabularyEntry {
+  /** The v1 alias users type (`@ai-sdk/<x>`). */
+  alias: string;
+  /** The opencode v2 `package` shape stored in the defs file (ADR-0010). */
+  package: string;
+  /** Resolved wire — informational; authoritative in the backend's wireFor(). */
+  wire: string;
+  /** UI dropdown order (ascending). */
+  order: number;
+}
+/** Process-lifetime cache — the vocabulary is boot-scoped backend data. */
+let npmVocabularyCache: NpmVocabularyEntry[] | null = null;
+
 export interface OpenCodeProviderView {
   id: string;
   name?: string;
   npm?: string;
   baseURL?: string;
+  /** Def-level custom headers (options.headers) — edit-dialog prefill; never secrets. */
+  headers?: Record<string, string>;
   models: string[];
   custom: boolean;
   /** Explicit node in custom-providers.json — the delete-confirm branch signal; narrower than `custom` (catalog absence also sets custom). */
@@ -2143,7 +2168,7 @@ export type ProbeHintCode =
 export interface TestProviderResult {
   status: string;
   ok: boolean;
-  kind?: 'openai' | 'anthropic' | 'google' | 'responses' | 'unroutable';
+  kind?: 'openai' | 'anthropic' | 'google' | 'responses' | 'systemone' | 'unroutable';
   model?: string;
   latencyMs?: number;
   authHint?: boolean;
@@ -2701,6 +2726,16 @@ export const opencodeApi = {
     providers: OpenCodeProviderView[];
   }> {
     return ocJson(await fetch('/api/admin/opencode/providers'));
+  },
+
+  /** One entry of the backend-owned npm SDK vocabulary (providers/vocabulary.ts). */
+  async getNpmVocabulary(): Promise<NpmVocabularyEntry[]> {
+    if (npmVocabularyCache) return npmVocabularyCache;
+    const res = await ocJson<{ status: string; entries: NpmVocabularyEntry[] }>(
+      await fetch('/api/admin/opencode/npm-vocabulary')
+    );
+    npmVocabularyCache = res.entries;
+    return res.entries;
   },
 
   /** Bound credential-store status (kind, capabilities, exclusions, masked credentials). */

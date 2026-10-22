@@ -102,6 +102,18 @@ export class ProviderRegistry {
         this.providers.set(pConfig.name, new ResponsesProvider(pConfig));
       } else if (pConfig.type === 'google') {
         this.providers.set(pConfig.name, new GoogleProvider(pConfig));
+      } else if (pConfig.type === 'systemone') {
+        // Decision-wire providers have NO chat executor (ADR-0008 §7) — the
+        // native decision limb calls them through protocols/systemone/native.ts.
+        // Register a placeholder that fails any chat dispatch honestly.
+        this.providers.set(pConfig.name, {
+          name: pConfig.name,
+          createCompletion: async () => {
+            throw new Error(
+              `Provider '${pConfig.name}' is on the System One decision wire — it serves /v1/systemone natively and cannot answer chat completions`
+            );
+          },
+        });
       } else {
         this.providers.set(pConfig.name, new OpenAICompatibleProvider(pConfig));
       }
@@ -162,9 +174,23 @@ export class ProviderRegistry {
     }
   }
 
-  public registerProvider(name: string, provider: LLMProvider, credentialChain?: CallCredential[]): void {
+  public registerProvider(
+    name: string,
+    provider: LLMProvider,
+    credentialChain?: CallCredential[],
+    /** Boot config for the provider (baseUrl/headers/…). Required for wires
+     *  whose executors read provider config at CALL time — the native System
+     *  One decision limb reads baseUrl + custom headers from here. Chat-wire
+     *  executors bake their config into the LLMProvider instance, so for them
+     *  this is informational (still recorded for the host index). */
+    config?: ProviderConfig
+  ): void {
     this.providers.set(name, provider);
     if (credentialChain?.length) this.credentialChains.set(name, credentialChain);
+    if (config) {
+      this.providerConfigs.set(name, config);
+      this.providerHosts.set(name, hostOfBaseUrl(config.baseUrl));
+    }
   }
 
   public registerModel(model: ModelRegistration, isDefault = false): void {
@@ -529,9 +555,13 @@ export class ProviderRegistry {
    * pool. Membership is the per-tier projection (buildTierPoolEntries) —
    * a model may serve in several tiers at once.
    */
-  public getCandidateModelsForTier(tier: TierLevel, healthyOnly = true): ModelRegistration[] {
+  public getCandidateModelsForTier(
+    tier: TierLevel,
+    healthyOnly = true,
+    opts?: { decisionSurface?: boolean }
+  ): ModelRegistration[] {
     this.maybeRefreshTierMatch();
-    return this.tierPoolEntries(tier, healthyOnly).map(({ model }) => model);
+    return this.tierPoolEntries(tier, healthyOnly, opts).map(({ model }) => model);
   }
 
   /**
@@ -596,9 +626,19 @@ export class ProviderRegistry {
 
   /** Denylist- and health-filtered per-tier pool entries (see
    *  buildTierPoolEntries); the effortMap on each entry is the translation
-   *  that applies when the model serves from THIS tier's pool. */
-  private tierPoolEntries(tier: TierLevel, healthyOnly: boolean) {
+   *  that applies when the model serves from THIS tier's pool.
+   *  DECISION-WIRE EXCLUSION (ADR-0008 §7): models on wire 'systemone' can
+   *  only answer the decision protocol — they are filtered out of every CHAT
+   *  pool read (the default) so routing never pins one and blames the
+   *  upstream for the gateway's own wire mismatch; the decision surface
+   *  passes `decisionSurface: true` to see them. */
+  private tierPoolEntries(
+    tier: TierLevel,
+    healthyOnly: boolean,
+    opts?: { decisionSurface?: boolean }
+  ) {
     return this.buildTierPoolEntries(tier, this.committedMembers)
+      .filter(({ model }) => opts?.decisionSurface === true || model.wire !== 'systemone')
       .filter(({ model }) => !this.policyRejectionReason(this.tierPolicies, model))
       .filter(({ model }) => !healthyOnly || this.modelAvailable(model).available);
   }

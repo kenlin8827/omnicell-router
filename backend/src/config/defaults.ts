@@ -1,0 +1,36 @@
+/**
+ * Single source of truth for magic defaults that previously lived as
+ * independently-declared literals in multiple modules (config defaults,
+ * runtime fallbacks, CLI fallbacks, cross-cutting guards). Import from here;
+ * never re-declare the literal locally.
+ */
+
+/** Provider upstream request timeout when `provider.timeoutMs` is unset. */
+export const DEFAULT_PROVIDER_TIMEOUT_MS = 300_000;
+
+/** Forward-proxy listen port when `forwardProxy.port` is unset. */
+export const DEFAULT_FORWARD_PROXY_PORT = 4555;
+
+/** Headroom sidecar port (and base URL) when `compression.headroom.url` is unset. */
+export const DEFAULT_HEADROOM_PORT = 8787;
+export const DEFAULT_HEADROOM_URL = `http://127.0.0.1:${DEFAULT_HEADROOM_PORT}`;
+
+/** Headroom call timeout when `compression.headroom.timeoutMs` is unset. */
+export const DEFAULT_HEADROOM_TIMEOUT_MS = 3000;
+
+/** Per-body capture cap when `requestCapture.maxBodyBytes` is unset (16 MB —
+ * sized for a fully-loaded 2M-token context). */
+export const DEFAULT_MAX_BODY_BYTES = 16_777_216;
+
+/** Forward-proxy hang protection: upstream socket timeout applied until
+ * response headers arrive (blackholed-peer guard). */
+export const FORWARD_PROXY_HANG_TIMEOUT_MS = 60_000;
+
+/** Layer-2 judge timeout when `classifier.layer2.timeoutMs` is unset. */
+export const DEFAULT_LAYER2_TIMEOUT_MS = 5000;
+
+/** Native System One decision passthrough timeout when `provider.timeoutMs` is unset. */
+export const DEFAULT_SYSTEMONE_NATIVE_TIMEOUT_MS = 120_000;
+
+/** Route-entries LRU capacity when `routeEntries.maxEntries` is unset. */
+export const DEFAULT_ROUTE_ENTRIES_MAX = 5000;

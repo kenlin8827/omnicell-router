@@ -14,9 +14,9 @@ import type { DecisionSurface } from './types.js';
  * silences BOTH legs; default ON, while the capture master is default OFF —
  * the decision payload is the client's internal state snapshot) are true,
  * and the pipeline emits only past every gate. A captured surface request
- * is FULL-CHAIN: the client exchange plus its upstream leg (the synthesized
- * conversion call) via the ctx handed to the
- * executor; a judge leg inside a routed chat turn is captured separately by
+ * is FULL-CHAIN: the client exchange plus its upstream leg (the native
+ * passthrough or the synthesized conversion call, per the resolved wire)
+ * via the ctx handed to the executor; a judge leg inside a routed chat turn is captured separately by
  * requestCapture.systemone.l2DecisionEnabled (sub-switch, effective only
  * when the surface master is on).
  */

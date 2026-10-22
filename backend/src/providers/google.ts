@@ -5,6 +5,8 @@ import { ChatCompletionRequest, ChatCompletionResponse, ToolCall } from '../type
 import type { ReasoningEffort } from '../types/router.js';
 import { UpstreamError } from '../resilience/error-classifier.js';
 import { proxiedFetch, resolveProxyUrl } from '../utils/proxy.js';
+import { DEFAULT_PROVIDER_TIMEOUT_MS } from '../config/defaults.js';
+import { DATA_URL_RE } from './wire.js';
 import {
   emitUpstreamRequestOnce,
   emitUpstreamResponseOnce,
@@ -40,8 +42,6 @@ function wrapResponse(v: Record<string, any>): Record<string, any> {
   // Gemini functionResponse.response must be a structured object.
   return Object.keys(v).length ? v : { result: 'ok' };
 }
-
-const DATA_URL_RE = /^data:(.+?);base64,(.*)$/;
 
 /** Pure payload builder: chat-completions request → Gemini generateContent payload. */
 export function buildGooglePayload(request: ChatCompletionRequest, model: ModelRegistration): Record<string, any> {
@@ -253,7 +253,7 @@ export class GoogleProvider implements LLMProvider {
     // Wall-clock cap on the non-streaming upstream execution — see the
     // openai-compatible provider: agent coding traffic legitimately runs past
     // a minute, so the default is 300 s.
-    const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs || 300000);
+    const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs || DEFAULT_PROVIDER_TIMEOUT_MS);
 
     try {
       const res = await withUpstreamFailureGuard(

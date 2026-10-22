@@ -167,7 +167,8 @@ async function main() {
       registry.registerProvider(
         inst.name,
         new DispatchingProvider(inst.config, inst.wireBases),
-        inst.credentialChain
+        inst.credentialChain,
+        inst.config
       );
     }
     console.log(

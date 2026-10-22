@@ -12,6 +12,7 @@ import {
   RetryConfig,
 } from './types.js';
 import { ReasonParams, TierLevel } from '../types/router.js';
+import { DEFAULT_CREDENTIAL_AFFINITY_CACHE_TTL_MS } from '../pipeline/credential-selection.js';
 
 export const DEFAULT_CIRCUIT_BREAKER_CONFIG: Required<Omit<CircuitBreakerConfig, 'rules' | 'shadow' | 'persistence'>> = {
   enabled: true,
@@ -30,7 +31,7 @@ export const DEFAULT_CIRCUIT_BREAKER_CONFIG: Required<Omit<CircuitBreakerConfig,
   // Carried like activeProbing (the breaker itself never probes): the
   // affinity window is read by the selection layer from RouterConfig.
   credentialAffinity: {
-    cacheTtlMs: 300_000,
+    cacheTtlMs: DEFAULT_CREDENTIAL_AFFINITY_CACHE_TTL_MS,
   },
 };
 

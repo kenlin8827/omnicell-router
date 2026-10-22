@@ -1177,7 +1177,8 @@ print(message.content[0].text)`
 
           {connectTab === 'systemone-curl' && (
 `# System One 决策协议端点：state + 类型化问题 → 类型化答案（不走 chat 级联）
-# 上游：任意已注册模型，网关自动做协议转换（chat 模型包裹 JSON 决策载荷）
+# 上游：解析 wire 为 systemone 的模型走厂商原生直通，其余自动做协议转换
+# （chat 模型包裹 JSON 决策载荷）
 # model 填已注册模型 ID；配置了 systemone.defaultModel 后可直接用 auto
 curl http://127.0.0.1:3000/v1/systemone \\
   -H "Content-Type: application/json" \\

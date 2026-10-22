@@ -5,8 +5,9 @@ import { createServer } from '../../src/server.js';
 /**
  * Shared test seam for the post-`providers[]`-retirement world (ADR-0010):
  * production chat providers enter via `registerProvider` post-boot, so tests
- * reassemble them through the `createServer` provider-config seam. The System
- * One surface is conversion-only — there are no native decision upstreams.
+ * reassemble them through the `createServer` provider-config seam. Native
+ * decision upstreams (wire 'systemone') use the same seam — see
+ * tests/systemone-native-wire.test.ts.
  */
 const CHAT_PROVIDERS = new WeakMap<object, any[]>();
 

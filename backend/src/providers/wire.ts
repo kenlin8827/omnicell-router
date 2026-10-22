@@ -10,7 +10,7 @@
  * is known.
  */
 
-export type WireKind = 'openai' | 'anthropic' | 'google' | 'responses' | 'unroutable';
+export type WireKind = 'openai' | 'anthropic' | 'google' | 'responses' | 'systemone' | 'unroutable';
 
 /**
  * Npm packages that need SDK-side URL construction or request signing beyond a
@@ -45,6 +45,11 @@ const OPENCODE_V2_SEGMENT_WIRES: Record<string, WireKind> = {
   'google-vertex': 'unroutable',
   bedrock: 'unroutable', // SigV4
   'amazon-bedrock': 'unroutable',
+  // TypeSafe decision protocol (@ai-sdk/typesafe-ai): the SDK exposes ONLY a
+  // decisionModel on POST {baseURL}/systemone — languageModel throws
+  // NoSuchModelError — so this wire serves the /v1/systemone decision surface
+  // natively and is NEVER a chat-pool member (ADR-0008 §7).
+  typesafe: 'systemone',
 };
 
 /** opencode v2 package segment of an npm string, or null when it is not opencode-v2 shaped. */
@@ -75,6 +80,7 @@ export function wireFor(npm?: string, baseHint?: string): WireKind {
       return known ?? 'unroutable';
     }
     if (isUnroutable(n)) return 'unroutable';
+    if (n.includes('typesafe')) return 'systemone';
     if (n.includes('anthropic')) return 'anthropic';
     if (n.includes('google')) return 'google';
     // `@ai-sdk/openai` (NOT -compatible) = OpenAI Responses API wire.
@@ -135,3 +141,9 @@ export function anthropicMessagesUrl(base: string): string {
   const clean = base.replace(/\/+$/, '');
   return clean.endsWith('/v1') ? `${clean}/messages` : `${clean}/v1/messages`;
 }
+
+/**
+ * `data:<mime>;base64,<payload>` image URL — shared by the Anthropic and
+ * Google payload builders (both inline base64 data URLs as image blocks).
+ */
+export const DATA_URL_RE = /^data:(.+?);base64,(.*)$/;

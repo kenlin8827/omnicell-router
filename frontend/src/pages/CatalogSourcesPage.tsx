@@ -9,6 +9,7 @@ import {
   type CatalogSourceDataProviderRecord,
   type CatalogSourceDataModelRecord,
   type OcrCatalogProvider,
+  type NpmVocabularyEntry,
 } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
@@ -836,6 +837,13 @@ const OcrEditModal: React.FC<{
   });
   const [efforts, setEfforts] = useState<string[]>(effectiveEffortLadder(cur));
   const [npm, setNpm] = useState(cur.npm ?? '');
+  // npm options come from the backend-owned vocabulary (single source of
+  // truth with wireFor; api.ts caches the fetch process-lifetime). The
+  // hardcoded list below is only the fetch-failed fallback.
+  const [npmVocab, setNpmVocab] = useState<NpmVocabularyEntry[]>([]);
+  useEffect(() => {
+    opencodeApi.getNpmVocabulary().then(setNpmVocab).catch(() => {});
+  }, []);
   const [cacheRead, setCacheRead] = useState(cur.cost?.cache_read != null ? String(cur.cost.cache_read) : '');
   const [cacheWrite, setCacheWrite] = useState(cur.cost?.cache_write != null ? String(cur.cost.cache_write) : '');
   const [modIn, setModIn] = useState<string[]>(cur.modalities?.input ?? []);
@@ -1107,10 +1115,15 @@ const OcrEditModal: React.FC<{
               onChange={(v) => setNpm(v)}
               options={[
                 { value: '', label: t('catalogPage.ocrEditNpmFollow') },
-                { value: '@ai-sdk/openai-compatible', label: '@ai-sdk/openai-compatible', meta: 'OpenAI Chat' },
-                { value: '@ai-sdk/openai', label: '@ai-sdk/openai', meta: 'OpenAI Responses' },
-                { value: '@ai-sdk/anthropic', label: '@ai-sdk/anthropic', meta: 'Anthropic' },
-                { value: '@ai-sdk/google', label: '@ai-sdk/google', meta: 'Gemini' },
+                ...(npmVocab.length > 0
+                  ? npmVocab.map((e) => ({ value: e.alias, label: e.alias, meta: e.wire }))
+                  : [
+                      { value: '@ai-sdk/openai-compatible', label: '@ai-sdk/openai-compatible', meta: 'OpenAI Chat' },
+                      { value: '@ai-sdk/openai', label: '@ai-sdk/openai', meta: 'OpenAI Responses' },
+                      { value: '@ai-sdk/anthropic', label: '@ai-sdk/anthropic', meta: 'Anthropic' },
+                      { value: '@ai-sdk/google', label: '@ai-sdk/google', meta: 'Gemini' },
+                      { value: '@ai-sdk/typesafe-ai', label: '@ai-sdk/typesafe-ai', meta: 'TypeSafe Decision' },
+                    ]),
               ]}
             />
           </Field>

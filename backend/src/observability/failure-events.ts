@@ -1,5 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
+
+/** Ring capacity, coalesce window and message bound: shared ring skeleton. */
+import {
+  EventRing,
+  EVENT_COALESCE_WINDOW_MS,
+  EVENT_MESSAGE_MAX_CHARS,
+  nextRingEventId,
+  truncateEventMessage,
+} from '../utils/event-ring.js';
 import type { ErrorCategory } from '../resilience/types.js';
 
 /**
@@ -29,8 +38,8 @@ import type { ErrorCategory } from '../resilience/types.js';
  * insert, replayed into the ring at boot. Fail-open everywhere: a failure
  * event must never break the request path it observes.
  *
- * Coalescing: consecutive repeats of the same model+provider+errorClass+
- * role within COALESCE_WINDOW_MS fold into one entry with a bumped `count`
+ * Coalescing: consecutive repeats of the same model+provider+errorClass+role
+ * within EVENT_COALESCE_WINDOW_MS fold into one entry with a bumped `count`
  * (a 429 storm is one observation, not 500) — the rate-limit ledger's
  * exact rule. A repeat UPSERTs the same row by `id`.
  */
@@ -61,7 +70,7 @@ export interface FailureEvent {
   errorClass: FailureErrorClass;
   /** Upstream HTTP status when the error carried one (absent for timeouts / network tears). */
   status?: number;
-  /** Raw English error text, log-grade, truncated to MESSAGE_MAX_CHARS. */
+  /** Raw English error text, log-grade, truncated to EVENT_MESSAGE_MAX_CHARS. */
   message: string;
   role: FailureEventRole;
   /** Conversation session the failure belongs to — the serving pool's owning
@@ -81,19 +90,6 @@ export interface FailureEventInput {
   sessionId?: string;
 }
 
-/** Ring capacity (and, mirrored, the durable row budget). */
-const MAX_EVENTS = 500;
-/** Repeats of the same model+provider+errorClass+role inside this window coalesce. */
-const COALESCE_WINDOW_MS = 10_000;
-/** Error text bound — a row is an observation, not an archive of the wire body. */
-const MESSAGE_MAX_CHARS = 400;
-
-let nextEventId = 0;
-/** Process-unique row key: boot epoch + counter — collision-free across restarts. */
-function makeEventId(now: number): string {
-  return `f-${now.toString(36)}-${(nextEventId++).toString(36)}`;
-}
-
 export interface FailureEventStore {
   /** Insert or replace the row for `ev.id` (coalesced repeats UPSERT). */
   upsert(ev: FailureEvent): void;
@@ -109,38 +105,33 @@ export interface FailureEventStore {
 }
 
 export class FailureEventLog {
-  /** Oldest first — `list()` reverses for display. */
-  private events: FailureEvent[] = [];
-  private store: FailureEventStore | undefined;
+  private ring = new EventRing<FailureEvent>();
 
   /**
    * Attach the durable mirror and replay its history into the ring
    * (boot-time only, before traffic). Returns the replayed count.
    */
   attachStore(store: FailureEventStore): number {
-    this.store = store;
-    const replayed = store.loadRecent(MAX_EVENTS);
-    if (replayed.length > 0) this.events = replayed;
-    return replayed.length;
+    return this.ring.attachStore(store);
   }
 
   record(input: FailureEventInput, now: number = Date.now()): void {
-    const last = this.events[this.events.length - 1];
+    const last = this.ring.last();
     if (
       last &&
       last.model === input.model &&
       last.provider === input.provider &&
       last.errorClass === input.errorClass &&
       last.role === input.role &&
-      now - last.lastTs <= COALESCE_WINDOW_MS
+      now - last.lastTs <= EVENT_COALESCE_WINDOW_MS
     ) {
       last.count++;
       last.lastTs = now;
-      this.store?.upsert(last);
+      this.ring.touchCoalesced(last);
       return;
     }
-    const event: FailureEvent = {
-      id: makeEventId(now),
+    this.ring.append({
+      id: nextRingEventId('f-', now),
       ts: now,
       lastTs: now,
       count: 1,
@@ -148,21 +139,10 @@ export class FailureEventLog {
       provider: input.provider,
       errorClass: input.errorClass,
       status: input.status,
-      message:
-        input.message.length > MESSAGE_MAX_CHARS
-          ? `${input.message.slice(0, MESSAGE_MAX_CHARS)}…`
-          : input.message,
+      message: truncateEventMessage(input.message, EVENT_MESSAGE_MAX_CHARS),
       role: input.role,
       sessionId: input.sessionId,
-    };
-    this.events.push(event);
-    this.store?.upsert(event);
-    if (this.events.length > MAX_EVENTS) {
-      this.events.splice(0, this.events.length - MAX_EVENTS);
-      // Trim AFTER the upsert so the fresh row is inside the kept window and
-      // the durable count converges on MAX_EVENTS (upsert-then-trim order).
-      this.store?.trim(MAX_EVENTS);
-    }
+    });
   }
 
   /**
@@ -178,7 +158,7 @@ export class FailureEventLog {
     role?: string;
     limit?: number;
   }): FailureEvent[] {
-    let rows = [...this.events].reverse();
+    let rows = this.ring.rows().reverse();
     if (filter?.model) rows = rows.filter((e) => e.model === filter.model);
     if (filter?.provider) rows = rows.filter((e) => e.provider === filter.provider);
     if (filter?.errorClass) rows = rows.filter((e) => e.errorClass === filter.errorClass);
@@ -193,16 +173,11 @@ export class FailureEventLog {
    * Returns true when a row was found and removed.
    */
   remove(id: string): boolean {
-    const idx = this.events.findIndex((e) => e.id === id);
-    if (idx < 0) return false;
-    this.events.splice(idx, 1);
-    this.store?.delete(id);
-    return true;
+    return this.ring.remove(id);
   }
 
   clear(): void {
-    this.events = [];
-    this.store?.clearAll();
+    this.ring.clear();
   }
 }
 
