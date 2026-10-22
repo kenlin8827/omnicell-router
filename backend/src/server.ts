@@ -917,8 +917,16 @@ export function createServer(
   for (const m of allModels) {
     const provider = ensureProvider(m.provider);
     const cat = catById.get(m.id);
-    provider.models[m.upstreamModel] = {
-      id: m.upstreamModel,
+    // A federated upstream whose provider id collides with the virtual
+    // provider namespace (a `onecast-router` def pointing at ANOTHER
+    // instance) can register upstreamModel === 'auto'/'lite'/... — writing
+    // that key would clobber the virtual alias block and erase the gateway's
+    // own cascade entry. The two are different models: key the concrete row
+    // by its globally-unique registered id instead, which is also its
+    // addressable id (ocr.model), so both entries coexist.
+    const key = provider.models[m.upstreamModel] === undefined ? m.upstreamModel : m.id;
+    provider.models[key] = {
+      id: key,
       ...(cat
         ? modelsDevBlock(cat)
         : {
@@ -936,8 +944,15 @@ export function createServer(
     const upstreamBase = base.id.includes('/') ? base.id.split('/').slice(1).join('/') : base.id;
     const provider = ensureProvider(base.provider);
     const cat = catById.get(base.id);
-    provider.models[`${upstreamBase}-${variant.id}`] = {
-      id: `${upstreamBase}-${variant.id}`,
+    // Same anti-clobber rule as the concrete loop: if the natural
+    // `<upstream>-<variant>` key is taken (virtual alias / sibling model),
+    // fall back to the globally-unique registered sibling id.
+    const vKey =
+      provider.models[`${upstreamBase}-${variant.id}`] === undefined
+        ? `${upstreamBase}-${variant.id}`
+        : `${base.id}-${variant.id}`;
+    provider.models[vKey] = {
+      id: vKey,
       ...(cat ? modelsDevBlock(cat) : {}),
       reasoning: false,
       reasoning_options: [{ type: 'effort', values: [variant.reasoningEffort] }],
