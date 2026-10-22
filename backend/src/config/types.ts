@@ -343,8 +343,9 @@ export interface Layer2DecisionConfig {
    * (state + answer + tier) to data/layer2-decisions.jsonl for future
    * decision-model distillation. Default OFF (state carries user conversation
    * content); hot-applied on config save — no restart; writes pause once the
-   * file exceeds 64 MB. NOT to be confused with requestCapture.systemone.
-   * l2DecisionEnabled, which captures the decision layer's HTTP leg instead.
+   * file exceeds 64 MB. NOT to be confused with the requestCapture audit
+   * log, which captures the decision layer's HTTP leg under the single
+   * capture master instead.
    */
   collectEnabled?: boolean;
   /**
@@ -596,31 +597,6 @@ export interface CompressionConfig {
 }
 
 /**
- * System One group inside the request-capture section — master/sub chain.
- * The whole group only matters under `requestCapture.enabled` (the privacy
- * master). `enabled` is the System One SURFACE MASTER (off silences BOTH
- * legs); `l2DecisionEnabled` is a SUB-switch beneath it (adds the decision layer-
- * internal decision-call leg only). Both default TRUE, so enabling the
- * capture master discloses the whole decision surface.
- */
-export interface RequestCaptureSystemoneConfig {
-  /** System One surface MASTER — off silences BOTH legs: client-leg capture
-   *  of /v1/systemone decision traffic AND the decision-call sub-leg below.
-   *  When on, client-leg capture records the request that arrives at the
-   *  gateway + the gateway's answer. Default true. */
-  enabled?: boolean;
-  /** Decision-call capture SUB-switch (effective only when `enabled` is true):
-   *  adds capture of the decision-model HTTP leg the Layer 2 decision layer fires
-   *  INSIDE a routed chat turn, recorded as upstream-direction events
-   *  (attached to the outer request's trace/session, purpose 'l2-decision').
-   *  Default true. Subject-orthogonal to the client leg — it adds the
-   *  decision layer's own wire call, never re-filters client traffic. This is NOT
-   *  the dataset-sampling switch — that is the single-key
-   *  `classifier.layer2.collectEnabled` (data/layer2-decisions.jsonl). */
-  l2DecisionEnabled?: boolean;
-}
-
-/**
  * Request capture (full request/response body audit log). Every orchestrated
  * turn — successes AND failures — is appended as one JSONL line, archived by
  * local-date directory and session id:
@@ -652,7 +628,6 @@ export interface RequestCaptureConfig {
    * stores binary bytes.
    */
   storeMedia?: boolean;
-  systemone?: RequestCaptureSystemoneConfig;
 }
 
 export interface TracePersistConfig {

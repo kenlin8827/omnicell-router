@@ -13,9 +13,9 @@ import type { Layer2DecisionConfig } from '../config/types.js';
  *
  * Deferred data cannot be recovered, so the sink exists from day one — but it
  * is OPT-IN behind a SINGLE-KEY gate: `classifier.layer2.collectEnabled`. The
- * old three-tier chain (capture.enabled × systemoneEnabled × l2DecisionEnabled)
- * is retired — the capture master switch no longer involves this sink; the
- * capture page never shows these rows either. `state` carries user
+ * old capture-tree gates (the audit log's master/sub switches) are gone
+ * entirely — the audit log is single-master now, and it never involves this
+ * sink; the capture page never shows these rows either. `state` carries user
  * conversation content, so the default stays OFF. Nothing consumes the file
  * yet by design; the trainer for native decision models is deliberately out
  * of scope until real traffic exists to train on.

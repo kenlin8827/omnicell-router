@@ -86,15 +86,15 @@ function logWriteError(err: unknown, message: string): void {
 
 /**
  * Build the MITM-leg transport. `captureEnabled` is the SURFACE capture
- * policy threaded in by the caller: `true` (chat family) and `'configurable'`
- * (decision family) both wire the captureProcessContext() trio —
- * who actually emits is the pipeline's decision. `false` answers {} and so
+ * policy threaded in by the caller: `true` wires the
+ * captureProcessContext() trio — who actually emits is the pipeline's
+ * decision (it consults the recorder master). `false` answers {} and so
  * structurally disables client events on that leg.
  */
 export function createNodeHttpTransport(
   req: http.IncomingMessage,
   res: http.ServerResponse,
-  captureEnabled: boolean | 'configurable'
+  captureEnabled: boolean
 ): TransportContext {
   // Capture plumbing for the MITM leg: hand the ORIGINAL request line +
   // headers to the capture (they are otherwise empty on this path — no

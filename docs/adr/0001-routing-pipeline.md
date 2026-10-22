@@ -40,7 +40,7 @@ The retired Layer 1 (a local micro-tensor classifier trained by the learning fly
 ### 5. L2 decision dataset sampler (the surviving capture leg)
 
 - (`classifier.layer2.collectEnabled`, single key, default OFF because state carries user conversation content): (state, tier, confidence, latency, model, native/converted) → fixed `data/layer2-decisions.jsonl` under the ACTIVE env root, 64 MB cap then pause + one warn per process, delete/rotate to resume, hot-applied (`capture/decision-capture.ts`).
-- Guard rail: `collectEnabled` (dataset sampling) ≠ `requestCapture.systemone.l2DecisionEnabled` (HTTP-exchange capture, ADR-0008) — one namespace for logs, one for training data; retired keys (`capture:`, `decisionCapture`, `flywheel:`, `classifier.localModel`, vendor `provider/baseUrl/apiKey` decision layer keys) are load-stripped and never rewritten on save.
+- Guard rail: `collectEnabled` (dataset sampling) ≠ the requestCapture HTTP-exchange audit log (ADR-0008) — one namespace for logs, one for training data; retired keys (`capture:`, `decisionCapture`, `flywheel:`, `classifier.localModel`, the `requestCapture.systemone` two-gate subtree, vendor `provider/baseUrl/apiKey` decision layer keys) are load-stripped and never rewritten on save.
 
 ## Consequences
 

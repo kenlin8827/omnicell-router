@@ -7,23 +7,21 @@ import type { DecisionSurface } from './types.js';
  *
  * Stateless decision wire: the named model is the model served (tier aliases
  * resolve to the access-filtered chain head; bare 'auto'/omit falls
- * back to `systemone.defaultModel`). `capture: 'configurable'` is the
+ * back to `systemone.defaultModel`). `capture: true` is the
  * protocol-level policy: the CLIENT leg may enter the
- * http-exchange capture only when `requestCapture.enabled` AND
- * `requestCapture.systemone.enabled` (the System One surface MASTER — off
- * silences BOTH legs; default ON, while the capture master is default OFF —
- * the decision payload is the client's internal state snapshot) are true,
+ * http-exchange capture only when `requestCapture.enabled` (the single
+ * master — default OFF, while capture is the privacy opt-in — the
+ * decision payload is the client's internal state snapshot) is true,
  * and the pipeline emits only past every gate. A captured surface request
  * is FULL-CHAIN: the client exchange plus its upstream leg (the native
  * passthrough or the synthesized conversion call, per the resolved wire)
- * via the ctx handed to the executor; a decision model leg inside a routed chat turn is captured separately by
- * requestCapture.systemone.l2DecisionEnabled (sub-switch, effective only
- * when the surface master is on).
+ * via the ctx handed to the executor; a decision model leg inside a routed chat turn is captured
+ * under the same master (purpose 'l2-decision').
  */
 export const systemoneSurface: DecisionSurface = {
   wire: 'systemone',
   exec: 'decision-pipeline',
-  capture: 'configurable',
+  capture: true,
   routePath: '/v1/systemone',
 
   /**

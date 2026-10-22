@@ -256,69 +256,29 @@ describe('CaptureRecorder', () => {
     }
   });
 
-  it('isSystemoneEnabled / isSystemoneDecisionCaptureEnabled: master/sub truth tables', () => {
+  it('systemone capture collapses into the single master: isEnabled is the only gate', () => {
     const dir5 = makeTmpDir();
-    type Sys = { enabled?: boolean; l2DecisionEnabled?: boolean };
-    const mk = (enabled?: boolean, systemone?: Sys): CaptureRecorder =>
-      new CaptureRecorder({ dir: dir5, retentionDays: 7, maxTotalMB: 512, maxBodyBytes: 1024, enabled, systemone });
+    const mk = (enabled?: boolean): CaptureRecorder =>
+      new CaptureRecorder({ dir: dir5, retentionDays: 7, maxTotalMB: 512, maxBodyBytes: 1024, enabled });
     try {
-      // CLIENT-leg truth table — 4-combo over (requestCapture.enabled ×
-      // systemone.enabled). Neither flag alone turns capture on (the privacy
-      // master wins); under capture-master=true an ABSENT surface master
-      // defaults ON (master/sub contract: the privacy posture is held by
-      // requestCapture.enabled alone).
-      const clientCases: Array<[boolean | undefined, boolean | undefined, boolean]> = [
-        [undefined, undefined, false], // capture master absent → OFF
-        [false, true, false], // capture master OFF silences the surface too
-        [true, undefined, true], // absent surface master = default ON
-        [true, false, false], // surface master explicitly OFF
-      ];
-      // DECISION-leg truth table — full 8-combo over (requestCapture.enabled ×
-      // systemone.enabled × systemone.l2DecisionEnabled). THE MASTER-SEMANTICS
-      // PIN: systemone.enabled=false silences the L2 decision leg even when
-      // l2DecisionEnabled=true — the sub-switch only ever ADDS beneath the
-      // surface master, it can never override it.
-      const decisionCases: Array<[boolean, boolean, boolean, boolean]> = [
-        [true, true, true, true], // the only ON cell
-        [true, true, false, false], // sub OFF exempts the L2 decision leg only
-        [true, false, true, false], // surface master OFF → decision layer SILENCED despite sub=true
-        [true, false, false, false],
-        [false, true, true, false], // capture master OFF wins everywhere
-        [false, true, false, false],
-        [false, false, true, false],
-        [false, false, false, false],
-      ];
-      for (const [enabled, sysEnabled, expected] of clientCases) {
-        const r = mk(enabled, sysEnabled === undefined ? undefined : { enabled: sysEnabled });
-        assert.equal(r.isSystemoneEnabled(), expected, `client: enabled=${String(enabled)} sysEnabled=${String(sysEnabled)}`);
-        r.stop();
-      }
-      for (const [enabled, sysEnabled, sub, expected] of decisionCases) {
-        const r = mk(enabled, { enabled: sysEnabled, l2DecisionEnabled: sub });
-        assert.equal(r.isSystemoneDecisionCaptureEnabled(), expected, `decision: enabled=${String(enabled)} sysEnabled=${String(sysEnabled)} sub=${String(sub)}`);
-        r.stop();
-      }
+      // SINGLE-MASTER PIN (the retired requestCapture.systemone.{enabled,
+      // l2DecisionEnabled} two-gate subtree is load-stripped): the capture
+      // master alone gates every leg — the /v1/systemone client pair, its
+      // upstream pair and the L2 decision-call leg. Absent = default OFF
+      // (the privacy opt-in); there is no per-surface override anymore.
+      assert.equal(mk(undefined).isEnabled(), false);
+      assert.equal(mk(false).isEnabled(), false);
+      assert.equal(mk(true).isEnabled(), true);
 
       // applyConfig hot-swap: ON ↔ OFF both ways, and absent keeps the
-      // current value (nullish-merge, like every other field — a partial
-      // systemone node must not stomp the sibling flag).
-      const hot = mk(true);
-      assert.equal(hot.isSystemoneEnabled(), true); // surface master default ON under the capture master
-      assert.equal(hot.isSystemoneDecisionCaptureEnabled(), true); // sub default ON too
-      hot.applyConfig({ systemone: { enabled: false } });
-      assert.equal(hot.isSystemoneEnabled(), false);
-      assert.equal(hot.isSystemoneDecisionCaptureEnabled(), false); // master OFF silences BOTH legs, hot
+      // current value (nullish-merge, like every other field).
+      const hot = mk(false);
+      hot.applyConfig({ enabled: true });
+      assert.equal(hot.isEnabled(), true);
       hot.applyConfig({}); // absent → retains
-      assert.equal(hot.isSystemoneEnabled(), false);
-      hot.applyConfig({ systemone: { enabled: true } });
-      assert.equal(hot.isSystemoneEnabled(), true);
-      assert.equal(hot.isSystemoneDecisionCaptureEnabled(), true);
-      hot.applyConfig({ systemone: { l2DecisionEnabled: false } }); // sub exempt; client leg untouched
-      assert.equal(hot.isSystemoneEnabled(), true);
-      assert.equal(hot.isSystemoneDecisionCaptureEnabled(), false);
-      hot.applyConfig({ enabled: false }); // capture master off wins
-      assert.equal(hot.isSystemoneEnabled(), false);
-      assert.equal(hot.isSystemoneDecisionCaptureEnabled(), false);
+      assert.equal(hot.isEnabled(), true);
+      hot.applyConfig({ enabled: false });
+      assert.equal(hot.isEnabled(), false);
       hot.stop();
     } finally {
       rmrf(dir5);

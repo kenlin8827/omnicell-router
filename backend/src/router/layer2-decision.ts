@@ -202,11 +202,9 @@ export class Layer2Decision {
    * `decisionCapture` is the OUTER request's capture identity (the orchestrator
    * hands it through routeAsync when the capture master is on; undefined
    * otherwise). The L2-DECISION-CALL gate is checked HERE, at decision layer entry, via the
-   * recorder accessor — three-tier master/sub chain (requestCapture.enabled
-   * master × systemone.enabled surface master × systemone.l2DecisionEnabled
-   * sub):
+   * recorder accessor (the single requestCapture.enabled master):
    * a false verdict passes undefined down the whole chain — today's silence,
-   * zero behavior change when the flags are off.
+   * zero behavior change when the flag is off.
    */
   public static async evaluate(
     request: ChatCompletionRequest,
@@ -316,16 +314,15 @@ export class Layer2Decision {
         resolve(null);
       }, timeoutMs);
     });
-    // L2-DECISION-CALL CAPTURE gate (three-tier chain: requestCapture.enabled
-    // master × systemone.enabled surface master × systemone.l2DecisionEnabled
-    // sub — checked HERE via the recorder carried by the outer
-    // identity; master off means the orchestrator never even passes a ctx).
+    // L2-DECISION-CALL CAPTURE gate (the single requestCapture.enabled master,
+    // checked HERE via the recorder carried by the outer identity; master off
+    // means the orchestrator never even passes a ctx).
     // ON: reuse the OUTER request's trace/session so the decision layer's wire call
     // joins the routed turn's archive, labeled purpose 'l2-decision' to tell it
     // from candidate-execution events. OFF: undefined = silence, the exact
     // call shape as today.
     const decisionCaptureCtx: UpstreamEventContext | undefined =
-      decisionCapture && decisionCapture.recorder.isSystemoneDecisionCaptureEnabled()
+      decisionCapture && decisionCapture.recorder.isEnabled()
         ? { ...decisionCapture, purpose: 'l2-decision' }
         : undefined;
     const pending = runSystemoneDecision(

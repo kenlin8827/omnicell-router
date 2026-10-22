@@ -54,8 +54,8 @@ export function createProxyInterceptor(
     }
 
     // surface.capture is the PROTOCOL-LEVEL capture policy (chat family:
-    // always true; the decision surface is 'configurable' → its pipeline
-    // wires capture only behind requestCapture.systemone.enabled).
+    // always true; the decision surface wires capture in its pipeline only
+    // behind the requestCapture.enabled master).
     const t = createNodeHttpTransport(req, res, surface.capture);
     try {
       await dispatchSurface(t, surface, orchestrator, body);

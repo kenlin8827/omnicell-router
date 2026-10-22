@@ -268,8 +268,7 @@ export class PipelineOrchestrator {
       this.config.systemone?.defaultModel,
       // Decision-call capture identity: the outer turn's trace/session (only
       // exists while the capture master is on). The LAYER 2 DECISION applies
-      // the surface-master chain (systemone.enabled master × l2Decision-
-      // Enabled sub) — when off it
+      // the recorder master gate (requestCapture.enabled) — when off it
       // passes nothing further, so this arg alone changes nothing today.
       decisionCapture,
       // Failure attribution: decision layer wire failures land in the failure_events

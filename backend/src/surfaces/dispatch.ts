@@ -11,8 +11,8 @@ import type { ProtocolSurface, TransportContext } from './types.js';
  *
  * Capture policy stays SURFACE-owned (protocol-level, not transport-owned):
  * the chat pipeline spreads `t.captureProcessContext()`, and the decision
- * pipeline consults it only behind `recorder.isSystemoneEnabled()`
- * (requestCapture.enabled × systemone.enabled surface master — OFF until the
+ * pipeline consults it only behind `recorder.isEnabled()`
+ * (the single requestCapture.enabled master — OFF until the
  * master is turned on) and strictly after its gates — which is why the
  * decision branch needs the recorder + session-manager accessors, not just
  * the registry. `process` stays chat-family-only.

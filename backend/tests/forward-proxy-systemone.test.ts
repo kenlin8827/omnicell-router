@@ -5,14 +5,12 @@
  *  a) the MITM leg serves /v1/systemone end-to-end — fake chat upstream on
  *     a real 127.0.0.1 listener, converted typed answers, exactly
  *     the 3 X-OCR decision keys on the wire;
- *  b) the CAPTURE EXPLICIT-OFF GUARD — with requestCapture.enabled ON but
- *     requestCapture.systemone.enabled (the System One surface MASTER)
- *     explicitly FALSE, one systemone
- *     request on EACH leg produces ZERO http-exchange events on disk (the
- *     machine guard so the silenced path stays event-free; a live chat control
- *     request proves the recorder itself is on and its files readable);
- *  c) the capture opt-in — with systemone.enabled true (nested default;
- *     hot-applied here), each leg emits the FULL CHAIN: one paired client
+ *  b) the CAPTURE MASTER-OFF GUARD — with requestCapture.enabled FALSE, one
+ *     systemone request on EACH leg produces ZERO http-exchange events on
+ *     disk (the machine guard for the byte-identical off path; both legs
+ *     still ANSWER 200 — only the recording is off);
+ *  c) the capture opt-in — with requestCapture.enabled true (hot-applied
+ *     here), each leg emits the FULL CHAIN: one paired client
  *     request/response event AND one paired upstream request/response event
  *     (the converted decision call — absolute-form line with host, span-
  *     paired, same trace/session, provider credential sanitized; no purpose
@@ -285,7 +283,7 @@ describe('systemone over the MITM leg', () => {
   });
 });
 
-describe('systemone capture explicit-OFF guard (requestCapture.systemone.enabled: false keeps the zero-event exemption)', () => {
+describe('systemone capture master-OFF guard (requestCapture.enabled: false keeps the byte-identical off path)', () => {
   interface ExchangeEvent {
     eventType: string;
     direction: string;
@@ -316,79 +314,40 @@ describe('systemone capture explicit-OFF guard (requestCapture.systemone.enabled
     return out;
   }
 
-  async function waitUntil(pred: () => boolean, timeoutMs = 2500): Promise<void> {
-    const start = Date.now();
-    while (!pred()) {
-      if (Date.now() - start > timeoutMs) throw new Error('capture events did not settle within timeout');
-      await new Promise((r) => setTimeout(r, 25));
-    }
-  }
-
-  // The master/sub tree made the System One surface MASTER default ON under
-  // the capture master, and it silences BOTH legs when off. This block pins
-  // the SILENCED path: the config below sets
-  // systemone.enabled false explicitly, keeping the
-  // zero-events outcome on both legs. Assertions here are frozen by contract
-  // — the opt-in path gets its own suite below (client-leg pair,
+  // SINGLE-MASTER PIN: there is no per-surface silence anymore (the retired
+  // requestCapture.systemone two-gate subtree is load-stripped), so the
+  // zero-event exemption is held by the capture master alone. This block
+  // pins the OFF path: with requestCapture.enabled false, BOTH systemone
+  // legs still ANSWER 200 — only the recording is off, byte-identical to a
+  // build without capture — and zero http-exchange events land on disk.
+  // The opt-in path gets its own suite below (client-leg pair,
   // sanitization, gate ordering).
-  test('requestCapture.enabled ON with systemone.enabled FALSE: zero http-exchange events on disk for BOTH systemone legs', async () => {
+  test('requestCapture.enabled FALSE: zero http-exchange events on disk, both systemone legs still answer 200', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-fp-sys-cap-'));
     const received: any[] = [];
     const upstream = startChatUpstream(received);
     try {
       const { providers, models } = chatProviderConfig(upstream.port);
       const stamp = Date.now();
-      const CHAT_MARKER = `SYSCTL-CHAT-${stamp}`;
       const FASTIFY_MARKER = `SYSCTL-FASTIFY-${stamp}`;
       const MITM_MARKER = `SYSCTL-MITM-${stamp}`;
       // The decision conversion is a REAL registry.execute call now (no native
       // limb to bypass it), so every provider dials the fake upstream for
       // real — chat-dummy rides the same createServer provider-config seam
       // (test-only; production chat providers enter via registerProvider).
-      const config = makeConfig(
-        [
-          ...providers,
-          { name: 'chat-dummy', type: 'openai-compatible', baseUrl: `http://127.0.0.1:${upstream.port}`, apiKey: 'sk-dummy' },
-        ],
-        [
-          ...models,
-          {
-            id: 'test/chat',
-            provider: 'chat-dummy',
-            upstreamModel: 'test-chat',
-            // plus-tier: `auto` starts at the plus default, so the chat
-            // control resolves a real candidate instead of an empty pool.
-            tier: 'plus',
-            pricing: { input: 0, output: 0, cacheRead: 0 },
-          },
-        ],
-        {
-          requestCapture: {
-            enabled: true,
-            dir: tmp,
-            retentionDays: 7,
-            maxTotalMB: 64,
-            maxBodyBytes: 65536,
-            systemone: { enabled: false },
-          },
-        }
-      );
+      const config = makeConfig(providers, models, {
+        requestCapture: {
+          enabled: false,
+          dir: tmp,
+          retentionDays: 7,
+          maxTotalMB: 64,
+          maxBodyBytes: 65536,
+        },
+      });
       const { app, orchestrator } = bootServer(config);
       const mitm = await mitmServer(orchestrator);
       try {
-        // 1. Control: a chat turn MUST capture (2 client events) — proves the
-        //    recorder is live and the on-disk reader works, so the zero below
-        //    is the decision surface's exemption, not a silently off capture.
-        const chat = await app.inject({
-          method: 'POST',
-          url: '/v1/chat/completions',
-          headers: { 'content-type': 'application/json' },
-          payload: { model: 'auto', messages: [{ role: 'user', content: CHAT_MARKER }] },
-        });
-        expect(chat.statusCode).toBe(200);
-        await waitUntil(() => linesFor(tmp, CHAT_MARKER).length >= 2);
-
-        // 2. Fastify leg: /v1/systemone answers 200 with the marker inside state.
+        // 1. Fastify leg: /v1/systemone answers 200 with the marker inside state.
         const fastSys = await app.inject({
           method: 'POST',
           url: '/v1/systemone',
@@ -397,7 +356,7 @@ describe('systemone capture explicit-OFF guard (requestCapture.systemone.enabled
         expect(fastSys.statusCode).toBe(200);
         expect(fastSys.json().answers.department.choice).toBe('billing');
 
-        // 3. MITM leg: same decision wire through the interceptor.
+        // 2. MITM leg: same decision wire through the interceptor.
         const mitmSys = await fetch(`http://127.0.0.1:${mitm.port}/v1/systemone`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -406,20 +365,17 @@ describe('systemone capture explicit-OFF guard (requestCapture.systemone.enabled
         expect(mitmSys.status).toBe(200);
         await mitmSys.text();
 
-        // Settle window past the chat control's events — a decision-surface
-        // event, if one were ever wired, would land in the same timeframe.
+        // Settle window: a wired capture event, if the master were ignored,
+        // would land in this timeframe.
         await new Promise((r) => setTimeout(r, 200));
 
         // ZERO events referencing either systemone request, in ANY direction.
         expect(linesFor(tmp, FASTIFY_MARKER).length).toBe(0);
         expect(linesFor(tmp, MITM_MARKER).length).toBe(0);
 
-        // And machine-guarantee the totals: the chat control pair (2 client
-        // events + its real upstream pair — the converted-era chat control
-        // dials the fake upstream) and ZERO systemone events.
-        const all = readExchangeEvents(tmp).filter((e) => e.eventType === 'http-exchange');
-        expect(all.filter((e) => e.direction === 'client').length).toBe(2);
-        expect(all.filter((e) => e.direction === 'upstream').length).toBe(2);
+        // And machine-guarantee the totals: NOTHING captured — the master is
+        // off, so even the conversion upstream calls went unrecorded.
+        expect(readExchangeEvents(tmp).filter((e) => e.eventType === 'http-exchange').length).toBe(0);
       } finally {
         mitm.close();
         await app.close();
@@ -431,9 +387,9 @@ describe('systemone capture explicit-OFF guard (requestCapture.systemone.enabled
   });
 });
 
-describe('systemone full-chain capture opt-in (requestCapture.systemone.enabled)', () => {
-  // Self-contained readers (the explicit-off guard block above is frozen by
-  // contract, so its helpers stay with it): full parsed events + raw lines.
+describe('systemone full-chain capture opt-in (requestCapture.enabled)', () => {
+  // Self-contained readers (the master-off guard block above keeps its own
+  // helpers): full parsed events + raw lines.
   interface EventRow {
     eventType: string;
     direction: 'client' | 'upstream';
@@ -536,21 +492,21 @@ describe('systemone full-chain capture opt-in (requestCapture.systemone.enabled)
     return { req, resp };
   }
 
-  test('MITM leg, systemone.enabled hot-applied ON: full chain — paired client + paired upstream events', async () => {
+  test('MITM leg, capture master hot-applied ON: full chain — paired client + paired upstream events', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-fp-sys-on-mitm-'));
     const received: any[] = [];
     const upstream = startChatUpstream(received);
     const MARKER = `SYSCTL-ON-MITM-${Date.now()}`;
     try {
       const { providers, models } = chatProviderConfig(upstream.port);
-      const captureCfg = { ...CAPTURE_BASE, enabled: true, dir: tmp };
-      const config = makeConfig(providers, models, { requestCapture: { ...captureCfg, systemone: { enabled: false } } });
+      const captureCfg = { ...CAPTURE_BASE, enabled: false, dir: tmp };
+      const config = makeConfig(providers, models, { requestCapture: { ...captureCfg } });
       const { orchestrator } = bootServer(config);
       const recorder = orchestrator.getCaptureRecorder();
-      // Hot-apply: the client-leg sub-switch flips ON without a restart
-      // (constructed explicit-OFF above — the flip is the whole point).
-      recorder.applyConfig({ ...captureCfg, systemone: { enabled: true } });
-      expect(recorder.isSystemoneEnabled()).toBe(true);
+      // Hot-apply: the capture master flips ON without a restart (constructed
+      // explicit-OFF above — the flip is the whole point).
+      recorder.applyConfig({ ...captureCfg, enabled: true });
+      expect(recorder.isEnabled()).toBe(true);
       const mitm = await mitmServer(orchestrator);
       try {
         const res = await fetch(`http://127.0.0.1:${mitm.port}/v1/systemone`, {
@@ -570,7 +526,7 @@ describe('systemone full-chain capture opt-in (requestCapture.systemone.enabled)
         expect(all.includes(MARKER)).toBe(true);
       } finally {
         mitm.close();
-        recorder.applyConfig({ ...captureCfg, systemone: { enabled: false } }); // restore explicit OFF
+        recorder.applyConfig({ ...captureCfg }); // restore master OFF
       }
     } finally {
       upstream.stop(true);
@@ -578,18 +534,18 @@ describe('systemone full-chain capture opt-in (requestCapture.systemone.enabled)
     }
   });
 
-  test('Fastify leg, systemone.enabled hot-applied ON: full chain — paired client + paired upstream events', async () => {
+  test('Fastify leg, capture master hot-applied ON: full chain — paired client + paired upstream events', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-fp-sys-on-fastify-'));
     const received: any[] = [];
     const upstream = startChatUpstream(received);
     const MARKER = `SYSCTL-ON-FASTIFY-${Date.now()}`;
     try {
       const { providers, models } = chatProviderConfig(upstream.port);
-      const captureCfg = { ...CAPTURE_BASE, enabled: true, dir: tmp };
-      const config = makeConfig(providers, models, { requestCapture: { ...captureCfg, systemone: { enabled: false } } });
+      const captureCfg = { ...CAPTURE_BASE, enabled: false, dir: tmp };
+      const config = makeConfig(providers, models, { requestCapture: { ...captureCfg } });
       const { app, orchestrator } = bootServer(config);
       const recorder = orchestrator.getCaptureRecorder();
-      recorder.applyConfig({ ...captureCfg, systemone: { enabled: true } });
+      recorder.applyConfig({ ...captureCfg, enabled: true });
       try {
         const res = await app.inject({
           method: 'POST',
@@ -606,7 +562,7 @@ describe('systemone full-chain capture opt-in (requestCapture.systemone.enabled)
         expect(all.includes(SECRET)).toBe(false);
         expect(all.includes(MARKER)).toBe(true);
       } finally {
-        recorder.applyConfig({ ...captureCfg, systemone: { enabled: false } }); // restore explicit OFF
+        recorder.applyConfig({ ...captureCfg }); // restore master OFF
         await app.close();
       }
     } finally {
@@ -615,7 +571,7 @@ describe('systemone full-chain capture opt-in (requestCapture.systemone.enabled)
     }
   });
 
-  test('gate-denied 400 with systemone.enabled ON: zero events — emission lives behind ALL gates', async () => {
+  test('gate-denied 400 with the capture master ON: zero events — emission lives behind ALL gates', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-fp-sys-on-400-'));
     const received: any[] = [];
     const upstream = startChatUpstream(received);
@@ -625,11 +581,11 @@ describe('systemone full-chain capture opt-in (requestCapture.systemone.enabled)
     const BAD_MITM = `SYSCTL-ORDER-BAD-M-${Date.now()}`;
     try {
       const { providers, models } = chatProviderConfig(upstream.port);
-      const captureCfg = { ...CAPTURE_BASE, enabled: true, dir: tmp };
-      const config = makeConfig(providers, models, { requestCapture: { ...captureCfg, systemone: { enabled: false } } });
+      const captureCfg = { ...CAPTURE_BASE, enabled: false, dir: tmp };
+      const config = makeConfig(providers, models, { requestCapture: { ...captureCfg } });
       const { app, orchestrator } = bootServer(config);
       const recorder = orchestrator.getCaptureRecorder();
-      recorder.applyConfig({ ...captureCfg, systemone: { enabled: true } });
+      recorder.applyConfig({ ...captureCfg, enabled: true });
       const mitm = await mitmServer(orchestrator);
       try {
         // Controls: valid decisions DO capture (pair each) — so the zero
@@ -678,7 +634,7 @@ describe('systemone full-chain capture opt-in (requestCapture.systemone.enabled)
         expect(exchange.filter((e) => e.direction === 'upstream').length).toBe(4);
       } finally {
         mitm.close();
-        recorder.applyConfig({ ...captureCfg, systemone: { enabled: false } }); // restore explicit OFF
+        recorder.applyConfig({ ...captureCfg }); // restore master OFF
         await app.close();
       }
     } finally {

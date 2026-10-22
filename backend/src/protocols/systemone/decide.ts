@@ -197,12 +197,11 @@ export interface SystemoneDecisionOptions {
   signal?: AbortSignal;
   /**
    * Upstream capture context for L2-DECISION-CALL capture (Layer 2): the caller
-   * has already checked the three-tier chain requestCapture.enabled ×
-   * systemone.enabled (surface master) × systemone.l2DecisionEnabled (sub)
-   * and passes the OUTER request's identity with purpose 'l2-decision' — or
+   * has already checked the requestCapture.enabled master and passes the
+   * OUTER request's identity with purpose 'l2-decision' — or
    * undefined, which keeps both paths silent exactly as before. The
    * /v1/systemone HTTP surface never passes it (its client leg is gated by
-   * systemone.enabled (surface master) in the surface pipeline).
+   * the same master in the surface pipeline).
    */
   upstreamEventContext?: UpstreamEventContext;
 }

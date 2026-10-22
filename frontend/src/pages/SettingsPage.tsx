@@ -115,12 +115,12 @@ export const SettingsPage: React.FC = () => {
     return <div style={{ color: 'var(--text-dim)' }}>Loading...</div>;
   }
 
-  // requestCapture master gates the whole System One sub-group; the System
-  // One surface master (`enabled`) additionally gates the L2 decision
-  // sub-switch. Subordinate sections render ONLY while the master is on —
-  // the off state stays a single compact row.
+  // The capture master (requestCapture.enabled) is the SINGLE gate: on =
+  // full-chain capture everywhere, including /v1/systemone (client pair +
+  // the gateway's upstream pair, plus the L2 decision leg). Subordinate
+  // sections render ONLY while the master is on — the off state stays a
+  // single compact row.
   const captureOn = config.requestCapture?.enabled ?? false;
-  const systemoneOn = config.requestCapture?.systemone?.enabled ?? true;
 
   // saveConfig posts the whole config and the backend shallow-merges each
   // top-level section, so every write rebuilds the COMPLETE requestCapture
@@ -137,17 +137,6 @@ export const SettingsPage: React.FC = () => {
       maxSessionMB: 512,
       storeMedia: true,
       ...(config.requestCapture || {}),
-      ...patch,
-    },
-  });
-  // Same rule one level down: `systemone` is a nested node, so replace it
-  // whole (both keys default to on, matching the backend defaults; anything
-  // omitted from the literal is dropped server-side).
-  const patchSystemone = (patch: Record<string, unknown>) => patchRequestCapture({
-    systemone: {
-      enabled: true,
-      l2DecisionEnabled: true,
-      ...(config.requestCapture?.systemone || {}),
       ...patch,
     },
   });
@@ -325,43 +314,11 @@ export const SettingsPage: React.FC = () => {
               />
             </label>
 
-            {/* System One sub-group + archive policy render only while the
-                master is on (off = compact single row). Within the sub-group,
-                `enabled` is the surface master — off silences both capture
-                legs; the L2 decision sub-switch dims while it is off. */}
+            {/* The archive-policy block renders only while the master is on
+                (off = compact single row). */}
             {captureOn && (<>
-            <div style={{ borderTop: '1px solid var(--divider)', paddingTop: '12px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              <div style={{ fontWeight: 700, fontSize: '12px', color: 'var(--text-main)' }}>
-                {t('settings.capSystemoneGroup')}
-              </div>
-              <div>
-                <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
-                  <span>{t('settings.capSystemoneEnable')}</span>
-                  <Switch
-                    checked={systemoneOn}
-                    onChange={v => patchSystemone({ enabled: v })}
-                  />
-                </label>
-                <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '6px' }}>
-                  {t('settings.capSystemoneHint')}
-                </div>
-              </div>
-              <div>
-                <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer', color: systemoneOn ? undefined : 'var(--text-dim)' }}>
-                  <span>{t('settings.capL2DecisionEnable')}</span>
-                  <Switch
-                    checked={config.requestCapture?.systemone?.l2DecisionEnabled ?? true}
-                    onChange={v => patchSystemone({ l2DecisionEnabled: v })}
-                  />
-                </label>
-                <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '6px' }}>
-                  {t('settings.capL2DecisionHint')}
-                </div>
-              </div>
-            </div>
-
             {/* Archive policy: set-once values — collapsed by default so the
-                capture switches stay the focus. The header summarizes current
+                capture switch stays the focus. The header summarizes current
                 values; the privacy warning below stays always visible. */}
             <div style={{ borderTop: '1px solid var(--divider)', paddingTop: '12px' }}>
               <button

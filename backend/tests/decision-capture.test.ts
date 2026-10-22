@@ -12,9 +12,9 @@ import {
 
 // ---------------------------------------------------------------------------
 // Dataset-sink gate (config restructure): the L2 decision layer's decision sink writes
-// on the SINGLE key classifier.layer2.collectEnabled — the old three-tier
-// chain (capture.enabled × systemoneEnabled × l2DecisionEnabled) is deleted
-// and the capture master no longer involves this sink. Plus: the 64MB size
+// on the SINGLE key classifier.layer2.collectEnabled — the old capture-tree
+// gates (the audit log's master/sub switches) are gone entirely and the
+// capture master no longer involves this sink. Plus: the 64MB size
 // cap, and the load-time migration warns for the retired keys/section.
 // ---------------------------------------------------------------------------
 const originalCwd = process.cwd();

@@ -128,11 +128,9 @@ export interface ChatSurface {
 
 /**
  * Decision-protocol surface (/v1/systemone): single-shot JSON, capture
- * configurable. `capture: 'configurable'` keeps the
- * protocol-level literal encoding — the pipeline only emits when
- * `requestCapture.enabled` AND `requestCapture.systemone.enabled` (the
- * System One surface master — off silences BOTH legs) are
- * true (master default OFF), and emission lives after
+ * `true` like the chat family — the pipeline only emits when
+ * `requestCapture.enabled` (the single master, default OFF — the privacy
+ * opt-in) is true, and emission lives after
  * every gate. A captured surface request is FULL-CHAIN: client exchange
  * plus the upstream leg (the native vendor passthrough or the synthesized
  * conversion call, per the model's resolved wire — ADR-0008 §7;
@@ -143,7 +141,7 @@ export interface ChatSurface {
 export interface DecisionSurface {
   readonly wire: 'systemone';
   readonly exec: 'decision-pipeline';
-  readonly capture: 'configurable';
+  readonly capture: true;
   readonly routePath: '/v1/systemone';
   /** Wider than routePath on purpose — MITM path detection stays tiered. */
   readonly detectSuffix: '/systemone';

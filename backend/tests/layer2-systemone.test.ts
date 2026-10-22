@@ -22,8 +22,7 @@ import { ChatCompletionRequest, ChatCompletionResponse } from '../src/types/open
 // SDK. These tests pin the contract: the decision layer speaks a well-formed System One
 // request to a registered model, reads the tier out of the typed answer, and
 // degrades to null (→ caller falls back to the plus baseline) on every failure mode.
-// Plus: decision-call CAPTURE (three-tier chain: requestCapture.enabled ×
-// systemone.enabled surface master × systemone.l2DecisionEnabled sub
+// Plus: decision-call CAPTURE (the single requestCapture.enabled master
 // → upstream-direction event pair with purpose 'l2-decision' on the OUTER
 // request's trace/session) and the dataset sink's single-key gate
 // (classifier.layer2.collectEnabled).
@@ -684,18 +683,17 @@ describe('routeAsync wires the Layer 2 decision layer', () => {
   });
 });
 // ---------------------------------------------------------------------------
-// L2-DECISION-CALL CAPTURE (new feature): when a routed chat turn cascades into the
+// L2-DECISION-CALL CAPTURE: when a routed chat turn cascades into the
 // Layer 2 decision layer, the decision-model HTTP leg is recorded as an upstream-
 // direction http-exchange PAIR attached to the OUTER request's trace/session,
-// labeled purpose 'l2-decision'. Gate: three-tier chain requestCapture.enabled ×
-// systemone.enabled (surface master) × systemone.l2DecisionEnabled (sub),
-// checked inside the decision layer — when off, the whole chain
-// stays silent (the exact pre-feature call shape) while the turn's own client
-// and candidate-execution events continue unchanged. Both upstream classes
+// labeled purpose 'l2-decision'. Gate: the single requestCapture.enabled
+// master, checked inside the decision layer — when off, EVERYTHING stays
+// silent (the exact pre-feature call shape): the decision leg, the turn's own
+// client and candidate-execution events alike. Both upstream classes
 // are covered: the CONVERTED path (registry.execute plumbing) and the NATIVE
 // Conversion path (registry.execute, fetch wrapped directly).
 // ---------------------------------------------------------------------------
-describe('decision-call capture (systemone.enabled × systemone.l2DecisionEnabled, capture master above them)', () => {
+describe('decision-call capture (requestCapture.enabled master)', () => {
   interface Evt {
     eventType: string;
     direction: 'client' | 'upstream';
@@ -734,7 +732,7 @@ describe('decision-call capture (systemone.enabled × systemone.l2DecisionEnable
 
   /** Route one real /v1/chat/completions turn whose Layer-2 decision layer dials the
    *  given provider kind; returns every http-exchange event written. */
-  async function routedTurn(opts: { l2DecisionEnabled: boolean }): Promise<{ events: Evt[]; marker: string }> {
+  async function routedTurn(opts: { captureEnabled: boolean }): Promise<{ events: Evt[]; marker: string }> {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-l2dec-cap-'));
     const marker = `DECCAP-${Date.now()}`;
     // Decision upstream: answers the System One question as a JSON-constrained
@@ -777,12 +775,11 @@ describe('decision-call capture (systemone.enabled × systemone.l2DecisionEnable
       );
       config.requestCapture = {
         ...config.requestCapture,
-        enabled: true,
+        enabled: opts.captureEnabled,
         dir: tmp,
         retentionDays: 7,
         maxTotalMB: 64,
         maxBodyBytes: 65536,
-        systemone: { enabled: true, l2DecisionEnabled: opts.l2DecisionEnabled },
       };
       config.classifier = {
         ...config.classifier,
@@ -797,15 +794,16 @@ describe('decision-call capture (systemone.enabled × systemone.l2DecisionEnable
           payload: { model: 'auto', messages: [{ role: 'user', content: `${PROOF} ${marker}` }] },
         });
         expect(res.statusCode).toBe(200);
-        // Settle: outer client pair + execution pair, plus the decision layer pair when
-        // the feature is ON (2 vs 3 response events — the count is part of
-        // what the OFF/ON pair pins).
-        const expectedResponses = opts.l2DecisionEnabled ? 3 : 2;
-        await waitUntil(() => readEvents(tmp).filter((e) => e.phase === 'response').length >= expectedResponses);
-        // OFF runs must also give the (absent) L2 decision leg time to show up if
-        // the plumbing leaked — a purpose event would land within the inject
-        // await already; 250ms settle mirrors the guard suite's window.
-        if (!opts.l2DecisionEnabled) await new Promise((r) => setTimeout(r, 250));
+        if (opts.captureEnabled) {
+          // Settle: outer client pair + execution pair + the decision layer
+          // pair (3 response events — the count is part of what the OFF/ON
+          // pair pins).
+          await waitUntil(() => readEvents(tmp).filter((e) => e.phase === 'response').length >= 3);
+        } else {
+          // Master-OFF settle: a leaked capture event would land within the
+          // inject await already; 250ms mirrors the guard suites' window.
+          await new Promise((r) => setTimeout(r, 250));
+        }
         return { events: readEvents(tmp), marker };
       } finally {
         await app.close();
@@ -841,18 +839,14 @@ describe('decision-call capture (systemone.enabled × systemone.l2DecisionEnable
     expect(exec.length).toBeGreaterThanOrEqual(1);
   }
 
-  test('converted decision layer ON: outer turn archives a purpose l2-decision upstream pair on the outer trace', async () => {
-    const { events, marker } = await routedTurn({ l2DecisionEnabled: true });
+  test('capture master ON: outer turn archives a purpose l2-decision upstream pair on the outer trace', async () => {
+    const { events, marker } = await routedTurn({ captureEnabled: true });
     assertDecisionPair(events, marker);
   });
 
-  test('converted decision layer OFF (l2DecisionEnabled false): zero purpose events, turn still captured', async () => {
-    const { events } = await routedTurn({ l2DecisionEnabled: false });
-    expect(events.filter((e) => e.purpose === 'l2-decision').length).toBe(0);
-    // The turn itself is still captured (master ON): client pair + purpose-less
-    // execution pair — only the L2 decision leg went silent.
-    expect(events.filter((e) => e.direction === 'client' && e.phase === 'request').length).toBe(1);
-    expect(events.filter((e) => e.direction === 'upstream' && e.phase === 'request').length).toBe(1);
+  test('capture master OFF: zero events at all — the decision ctx never passes, turn still served', async () => {
+    const { events } = await routedTurn({ captureEnabled: false });
+    expect(events.length).toBe(0);
   });
 
 });

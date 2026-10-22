@@ -25,11 +25,9 @@ import type { TransportContext } from './types.js';
  *
  * CAPTURE: opt-in CLIENT-leg emission, gated AFTER every 400/403/
  * 404/503 return and BEFORE execution — mirroring the chat leg, where
- * orchestrator.process emits only past its own gates. `recorder.isSystemone-
- * Enabled()` is the config gate (requestCapture.enabled master — default OFF,
- * the privacy opt-in — × requestCapture.systemone.enabled
- * surface master — default ON, since the whole group only matters once the
- * master is on; the surface master silences BOTH systemone legs); when it is
+ * orchestrator.process emits only past its own gates. `recorder.isEnabled()`
+ * is the config gate (the single requestCapture.enabled master — default
+ * OFF, the privacy opt-in); when it is
  * false this function never EMITS a capture event — the only accessor call
  * outside the gate is the pure `captureProcessContext()` read the rate-limit
  * key-identity lookup makes (returns the request handle, records nothing),
@@ -180,7 +178,7 @@ export async function runDecisionSurface(
   // leg uses on both transports.
   const recorder = orchestrator.getCaptureRecorder();
   let upstreamEventContext: UpstreamEventContext | undefined;
-  if (recorder.isSystemoneEnabled()) {
+  if (recorder.isEnabled()) {
     // Fail-open by CONTRACT, not just by construction: a broken capture
     // must never 500 the decision itself. Any throw in this block (future
     // callee edits included) is logged and the request proceeds unrecorded.

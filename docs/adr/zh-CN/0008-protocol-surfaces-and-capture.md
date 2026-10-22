@@ -24,13 +24,13 @@
 
 ### 5. requestCapture——HTTP 交换事件，不是轮快照
 
-命名空间：`requestCapture:`——退役的顶层 `capture:`（更名残留）、`classifier.layer2.decisionCapture`、键级 `role` 加载即剥离、保存永不写回；两条控制台保存路径热应用（`routes/console.ts:1074,1098`）。一个命名空间一个含义：**请求/HTTP 交换日志**（训练数据采样是另一个 concern，ADR-0001 §5）。
+命名空间：`requestCapture:`——退役的顶层 `capture:`（更名残留）、`classifier.layer2.decisionCapture`、键级 `role`、以及退役的 `requestCapture.systemone` 双闸子树加载即剥离、保存永不写回；两条控制台保存路径热应用（`routes/console.ts:1074,1098`）。一个命名空间一个含义：**请求/HTTP 交换日志**（训练数据采样是另一个 concern，ADR-0001 §5）。
 
 模型：`HttpExchangeEvent`——每方向每腿一条；一次推理轮产生 2–4 条共享同一 `traceId`：client-request / gateway-response / upstream-request / upstream-response（旧的轮形 `CaptureRecord` @deprecated）。每条事件另带 `conversationKey`（ADR-0002 §1：sha256(apiKey 身份 + 首条用户消息)，内容寻址，无法解析时省略），档案可凭它跨易变 sessionId 重组会话。头部现行制度：**名保留**，凭证形**值** `[REDACTED]`（子串拒单：authorization/api-key/cookie/token/secret/bearer/…-key/key/auth；query 里的 auth 参同遮）。主闸 `enabled:false` 默认——OFF 是**字节同一的零事件姿态**（测试钉死），开是自觉 opt-in（`/api/admin/*` 免鉴权提醒适用）。落盘：`<capture>/<YYYY-MM-DD>/<sanitized-sessionId>.jsonl`，保留 7 天 / 池 2048 MB / 单体上限 16 MB（按“一份满载的 2M-token 上下文能完整落盘”定标） / 单会话封顶 512 MB——触及封顶的会话档案停止追加，并落一条终态 `archive-overflow` 行；该行是元数据，读取侧不得将其计作一轮。封顶的因由：agent 循环每轮重发全量历史，呈 O(turns²) 增长，一个失控会话不得吃掉共享配额；预算为软上限（并发追加最多多出一行）。控制台尾读窗口随单体上限缩放（8 MB 下限 / 48 MB 封顶），完整历史恒可经导出取得（导出不封顶）。读取面（控制台）：`readEvents` 改为**异步**——fs.promises 窗口读 + 按 128 行一批让出事件循环的解析——档案读取不再阻塞网关事件循环；`bodies=none`（控制台元数据优先默认）剥离解析后事件的 wire body，并在读取时给每条响应事件盖上派生的 `completionTokens`（响应体内最后一次 usage 计数），tok/s 速率章在无 body 时照常渲染；完整 body 经 `GET /api/admin/capture/:date/:file/turn?id=<client-request 事件 id>` 按轮取回，或以 `bodies=full` 重读。boot + 逐小时清扫，I/O 全 fail-open。网关响应体 stash 上限 1 MB；客户端断连经传输适配器终结（合成 499）——hang/cancel 也留痕。`/v1/systemone` 面本身永不捕获 FinOps 或 trace 行——捕获只有交换事件。
 
-### 6. System One 面——两腿 opt-in 闸树
+### 6. System One 面——单总闸捕获
 
-`requestCapture.enabled`（总闸，默认 OFF）× `requestCapture.systemone.enabled`（面闸，默认 ON；关掉则**两腿同哑**——客户端一对与 surface 自己的上游一对（按解析 wire 的原生直通或合成转换调用），无 purpose 标签）。发射严格晚于全部 400/403/404/503 闸。Layer-2 决策层的内部调用构成第三闸：`isSystemoneDecisionCaptureEnabled = 总闸 × 面闸 × systemone.l2DecisionEnabled`（默认 ON）——子闸只能**增记**事件（决策层自己的 HTTP 腿，挂外层被路由请求，upstream 方向，`purpose:'l2-decision'`，唯一的 ExchangePurpose 值），永不越过面闸。OFF 的隐私姿态：`captureProcessContext()` 答 `{}`，该面路径与无捕获构建字节同一（专测钉住）。
+退役的双闸树（`requestCapture.systemone.{enabled, l2DecisionEnabled}`——面闸默认 ON，外加决策调用子闸默认 ON）加载即剥离、保存永不写回：两闸默认值都是 TRUE，只会收窄一个本已显式的隐私 opt-in，代价是让捕捉卡片读起来像 System One 面配置（面向操作者的混淆，2026-12 退役）。单一 `requestCapture.enabled` 总闸（默认 OFF）现在门控每条腿——`/v1/systemone` 客户端一对、该面自己的上游一对（按解析 wire 的原生直通或合成转换调用，无 purpose 标签）、以及 Layer-2 决策层的内部调用腿（挂外层被路由请求，upstream 方向，`purpose:'l2-decision'`，唯一的 ExchangePurpose 值；总闸不开时编排器根本不向决策层传捕获 ctx）。发射严格晚于全部 400/403/404/503 闸。OFF 的隐私姿态：`captureProcessContext()` 答 `{}`，该面路径与无捕获构建字节同一（专测钉住）。
 
 ### 7. 决策网关（/v1/systemone）——wire 驱动，诚实写进措辞
 

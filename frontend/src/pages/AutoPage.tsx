@@ -212,11 +212,12 @@ export const AutoPage: React.FC = () => {
                 </span>
               </div>
             )}
-            {/* Distillation dataset — NOT the request-capture leg (that moved to
-                requestCapture.systemone.l2DecisionEnabled on the Settings page).
-                Opt-in: the recorded state carries user conversation content.
-                setLayer2 spreads the full layer2 node, so model / timeoutMs /
-                decisionCache survive this write (save shallow-merges nodes). */}
+            {/* Distillation dataset — NOT the request-capture audit log (that
+                lives under the single requestCapture.enabled master on the
+                Settings page). Opt-in: the recorded state carries user
+                conversation content. setLayer2 spreads the full layer2 node,
+                so model / timeoutMs / decisionCache survive this write (save
+                shallow-merges nodes). */}
             <div>
               <label style={rowStyle}>
                 <span>{t('auto.l2CollectEnable')}</span>

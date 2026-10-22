@@ -493,11 +493,6 @@ const stripBodies = (events: HttpExchangeEvent[]): void => {
  */
 export class CaptureRecorder {
   private enabled: boolean;
-  // System One group (config tree mirrors requestCapture.systemone.{enabled,
-  // l2DecisionEnabled}; both default true — the surface master silences BOTH
-  // legs, the sub-switch only ever adds the L2 decision leg beneath it).
-  private systemoneEnabled: boolean;
-  private systemoneDecisionEnabled: boolean;
   private retentionDays: number;
   private maxTotalBytes: number;
   private maxBodyBytes: number;
@@ -512,9 +507,6 @@ export class CaptureRecorder {
 
   constructor(config?: RequestCaptureConfig) {
     this.enabled = config?.enabled ?? false;
-    // Master/sub sub-tree defaults TRUE — it only matters under the master.
-    this.systemoneEnabled = config?.systemone?.enabled ?? true;
-    this.systemoneDecisionEnabled = config?.systemone?.l2DecisionEnabled ?? true;
     this.retentionDays = config?.retentionDays ?? 7;
     // Fallbacks mirror DEFAULT_CONFIG (2048 MB pool / 512 MB per session /
     // 16 MB per body) — a bare `new CaptureRecorder()` must not enforce
@@ -536,30 +528,6 @@ export class CaptureRecorder {
     return this.enabled;
   }
 
-  /**
-   * System One surface gate for the CLIENT leg: requestCapture.enabled
-   * master × requestCapture.systemone.enabled surface master (default true,
-   * so the capture master alone brings the decision surface in; flipping the
-   * surface master off silences BOTH legs). Both must be literally true.
-   * Hot-applied like every other field: this reads whatever applyConfig last
-   * swapped in.
-   */
-  public isSystemoneEnabled(): boolean {
-    return this.enabled === true && this.systemoneEnabled === true;
-  }
-
-  /**
-   * Decision-call gate — three-tier chain: requestCapture.enabled master ×
-   * requestCapture.systemone.enabled surface master ×
-   * requestCapture.systemone.l2DecisionEnabled sub-switch (default true).
-   * The sub-switch only ever ADDS the decision-model HTTP leg the Layer 2
-   * decision layer fires inside a routed turn (upstream-direction events on the OUTER
-   * request's capture identity); it cannot override the surface master.
-   */
-  public isSystemoneDecisionCaptureEnabled(): boolean {
-    return this.enabled === true && this.systemoneEnabled === true && this.systemoneDecisionEnabled === true;
-  }
-
   public getDir(): string {
     return this.rootDir;
   }
@@ -577,8 +545,6 @@ export class CaptureRecorder {
    */
   public applyConfig(cfg?: RequestCaptureConfig): void {
     this.enabled = cfg?.enabled ?? this.enabled;
-    this.systemoneEnabled = cfg?.systemone?.enabled ?? this.systemoneEnabled;
-    this.systemoneDecisionEnabled = cfg?.systemone?.l2DecisionEnabled ?? this.systemoneDecisionEnabled;
     this.retentionDays = cfg?.retentionDays ?? this.retentionDays;
     this.maxTotalBytes = (cfg?.maxTotalMB ?? this.maxTotalBytes / (1024 * 1024)) * 1024 * 1024;
     this.maxBodyBytes = cfg?.maxBodyBytes ?? this.maxBodyBytes;

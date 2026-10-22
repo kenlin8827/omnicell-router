@@ -40,7 +40,7 @@
 ### 5. 决策层数据集采样器（存活的采集腿）
 
 - （`classifier.layer2.collectEnabled`，单键，默认 OFF——state 含用户对话内容）：(state, tier, confidence, latency, model, native/converted) → 固定路径 `data/layer2-decisions.jsonl`（相对**活动环境**根），64 MB 封顶后停写 + 每进程恰好一条告警，删除/轮转即恢复，热应用（`capture/decision-capture.ts`）。
-- 护栏：`collectEnabled`（数据集采样）≠ `requestCapture.systemone.l2DecisionEnabled`（HTTP 交换捕捉，ADR-0008）——一个命名空间给日志，一个给训练数据；退役键（`capture:`、`decisionCapture`、`flywheel:`、`classifier.localModel`、决策层厂商键 `provider/baseUrl/apiKey`）在加载时剥离，保存时绝不重写。
+- 护栏：`collectEnabled`（数据集采样）≠ requestCapture HTTP 交换审计日志（ADR-0008）——一个命名空间给日志，一个给训练数据；退役键（`capture:`、`decisionCapture`、`flywheel:`、`classifier.localModel`、`requestCapture.systemone` 双闸子树、决策层厂商键 `provider/baseUrl/apiKey`）在加载时剥离，保存时绝不重写。
 
 ## 后果
 
