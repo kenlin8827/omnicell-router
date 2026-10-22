@@ -199,8 +199,8 @@ describe('quota DSL constructs', () => {
     assert.equal(session.total, 200);
     assert.equal(session.remainingPct, 30.5);
     assert.equal(session.resetAt, Date.parse('2026-01-06T13:33:02.717Z'));
-    // The weekly window still resolves alongside it (string values coerce).
-    const weekly = r.windows.find((x) => x.nameCode === 'weekly')!;
+    // The fixed 7-day window still resolves alongside it (string values coerce).
+    const weekly = r.windows.find((x) => x.nameCode === 'weekly7d')!;
     assert.equal(weekly.total, 2048);
   });
 
@@ -212,7 +212,7 @@ describe('quota DSL constructs', () => {
       ],
     });
     assert.equal(r.windows.length, 1, 'only the weekly window resolves');
-    assert.equal(r.windows[0].nameCode, 'weekly');
+    assert.equal(r.windows[0].nameCode, 'weekly7d');
   });
 
   it('kimi: descriptor-only 5h row (no detail) drops instead of fabricating', () => {
@@ -221,7 +221,7 @@ describe('quota DSL constructs', () => {
       limits: [{ window: { duration: 300, timeUnit: 'TIME_UNIT_MINUTE' } }],
     });
     assert.equal(r.windows.length, 1, 'no usable fields -> no window, honest absence');
-    assert.equal(r.windows[0].nameCode, 'weekly');
+    assert.equal(r.windows[0].nameCode, 'weekly7d');
   });
 
   it('vercel: total_used + balance -> derived total, percent bar', () => {

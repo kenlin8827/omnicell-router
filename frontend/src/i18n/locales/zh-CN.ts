@@ -1062,7 +1062,7 @@ export const zhCN: TranslationDict = {
       balance: '余额（{n}）',
       sessionHours: '会话（{n} 小时）',
       session5h: '会话（5 小时）',
-      weekly7d: '每周（{n} 天）',
+      weekly7d: '每周（7 天）',
       limit: '限额（{n}）',
       modelSession: '{n}（会话 5h）',
       modelWeekly: '{n}（每周 7d）',

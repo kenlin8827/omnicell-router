@@ -1069,7 +1069,7 @@ export const enUS: TranslationDict = {
       balance: 'Balance ({n})',
       sessionHours: 'Session ({n}h)',
       session5h: 'Session (5h)',
-      weekly7d: 'Weekly ({n}d)',
+      weekly7d: 'Weekly (7d)',
       limit: 'Limit ({n})',
       modelSession: '{n} (5h)',
       modelWeekly: '{n} (7d)',

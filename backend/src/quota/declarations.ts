@@ -103,7 +103,10 @@ export const BUILTIN_QUOTA_DECLARATIONS: QuotaProbeEntry[] = [
         nameSpec: {
           from: 'unit',
           // GLM window unit codes: 3 = rolling session (number = hours),
-          // 6 = weekly. Other units fall through with the raw number.
+          // 6 = the fixed 7-day cap. Other units fall through with the raw
+          // number. unit 6 never takes its number into the label: real
+          // responses omit the field or disagree on its unit (1 vs 7), and
+          // the window is a fixed 7-day cycle either way.
           enumMap: { '3': 'Session ({number}h)', '6': 'Weekly (7d)' },
           enumCode: { '3': 'sessionHours', '6': 'weekly7d' },
           fallback: 'Limit ({number})',
@@ -183,7 +186,10 @@ export const BUILTIN_QUOTA_DECLARATIONS: QuotaProbeEntry[] = [
         },
         {
           name: 'Weekly',
-          nameCode: 'weekly',
+          // nameCode weekly7d (not the generic `weekly`): the Kimi coding-plan
+          // quota is a fixed 7-day window, so it wears the fixed-period i18n
+          // label rather than a period interpolated from upstream args.
+          nameCode: 'weekly7d',
           // usage is an OBJECT on the response (limits is the sibling array,
           // read by the session window above); the DSL path walks it
           // directly. `where` gates on a real cap so a limit-less free
