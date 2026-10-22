@@ -690,7 +690,13 @@ export const RulesPage: React.FC = () => {
               style={{
                 background: 'var(--card-bg)',
                 border: '1px solid var(--card-border)',
+                // Tier identity: 2px accent top bar + border lightly tinted with
+                // the tier color — separates adjacent cards and makes each
+                // tier's silhouette self-identifying at a glance.
+                borderTop: `2px solid ${color}`,
+                borderColor: `color-mix(in srgb, ${color} 25%, var(--card-border))`,
                 borderRadius: '10px',
+                boxShadow: '0 1px 3px rgba(0, 0, 0, 0.12)',
                 padding: '18px',
                 display: 'flex',
                 flexDirection: 'column',
@@ -1005,6 +1011,21 @@ export const RulesPage: React.FC = () => {
                     <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('common.noResults')}</div>
                   )}
                 </div>
+                {/* Picker first (high-frequency, error-proof path), manual
+                    wildcard input second (advanced fallback). */}
+                <Combobox
+                  value=""
+                  onChange={(v) => {
+                    // combo:<id> options store the ref verbatim — the backend
+                    // expands it at every commit point (pools follow combo edits)
+                    if (v) addMemberRules(tier, [v]);
+                  }}
+                  options={memberPickOptions(tier)}
+                  placeholder={t('tierPolicy.pickModelBtn')}
+                  panelMinWidth={320}
+                  forceFilter
+                  style={{ width: '100%', fontSize: '11px', padding: '4px 8px', marginTop: '6px' }}
+                />
                 <div style={{ display: 'flex', gap: '8px', marginTop: '6px' }}>
                   <input
                     type="text"
@@ -1025,19 +1046,6 @@ export const RulesPage: React.FC = () => {
                     <span>{t('tierPolicy.addMemberBtn')}</span>
                   </button>
                 </div>
-                <Combobox
-                  value=""
-                  onChange={(v) => {
-                    // combo:<id> options store the ref verbatim — the backend
-                    // expands it at every commit point (pools follow combo edits)
-                    if (v) addMemberRules(tier, [v]);
-                  }}
-                  options={memberPickOptions(tier)}
-                  placeholder={t('tierPolicy.pickModelBtn')}
-                  panelMinWidth={320}
-                  forceFilter
-                  style={{ width: '100%', fontSize: '11px', padding: '4px 8px', marginTop: '6px' }}
-                />
                 <div style={{ fontSize: '10px', color: 'var(--text-dim)', lineHeight: 1.5, marginTop: '6px' }}>{t('tierPolicy.membersHint')}</div>
               </div>
 
