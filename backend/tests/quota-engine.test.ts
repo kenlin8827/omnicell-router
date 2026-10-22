@@ -506,6 +506,253 @@ describe('quota prober scheduling', () => {
       fs.rmSync(path.dirname(tmp.ocrHome), { recursive: true, force: true });
     }
   });
+
+  // ─── Manual refresh: bounded probe INSIDE the request ────────────────────
+
+  const okFetch = (onCall: () => void): typeof fetch =>
+    (async () => {
+      onCall();
+      return new Response(JSON.stringify({ balance_infos: [{ currency: 'CNY', total_balance: '1' }] }), { status: 200 });
+    }) as typeof fetch;
+
+  it('refreshNow probes inside the request and lands the snapshot before it resolves', async () => {
+    const tmp = sandboxPaths('quota-refresh-now');
+    const store = new QuotaSnapshotStore({ paths: tmp });
+    setQuotaStoreForTests(store);
+    try {
+      let calls = 0;
+      const prober = new QuotaProber({
+        registry: fakeRegistry({ deepseek: [{ keyHashPrefix: 'K1', key: 'sk-1' }] }),
+        config: () => baseCfg(),
+        fetchImpl: okFetch(() => calls++),
+        now: () => 10_000,
+      });
+      const report = await prober.refreshNow();
+      assert.deepEqual(report, { probed: 1, pending: 0, rateLimited: false, disabled: false, busy: false });
+      assert.equal(calls, 1);
+      assert.ok(store.get('deepseek', 'K1'), 'snapshot already landed when the request answered');
+      // The cycle armed the due date exactly like a tick — no double probe.
+      assert.equal(prober.planProbes(10_100).length, 0);
+      // The user's worst case: manual refresh, then the tick fires one second
+      // later. It plans ZERO candidates — no outbound request, no rate limit.
+      assert.equal((await prober.tick(10_001)).probed, 0, 'the tick right after a manual cycle probes nothing');
+      assert.equal(calls, 1);
+    } finally {
+      setQuotaStoreForTests(undefined);
+      fs.rmSync(path.dirname(tmp.ocrHome), { recursive: true, force: true });
+    }
+  });
+
+  it('refreshNow is uncapped (the per-tick cap only bounds ticks)', async () => {
+    const tmp = sandboxPaths('quota-refresh-uncapped');
+    setQuotaStoreForTests(new QuotaSnapshotStore({ paths: tmp }));
+    try {
+      const chains = Array.from({ length: 7 }, (_, i) => ({ keyHashPrefix: `K${i}`, key: `sk-${i}` }));
+      let calls = 0;
+      const prober = new QuotaProber({
+        registry: fakeRegistry({ deepseek: chains }),
+        config: () => baseCfg(),
+        fetchImpl: okFetch(() => calls++),
+        now: () => 10_000,
+      });
+      assert.equal((await prober.tick(10_000)).probed, 6, 'tick honors MAX_PER_TICK');
+      const report = await prober.refreshNow();
+      assert.equal(report.probed, 7, 'manual refresh probes every covered pair');
+      assert.equal(calls, 13);
+    } finally {
+      setQuotaStoreForTests(undefined);
+      fs.rmSync(path.dirname(tmp.ocrHome), { recursive: true, force: true });
+    }
+  });
+
+  it('refreshNow narrows to ONE pair when an identity is given', async () => {
+    const tmp = sandboxPaths('quota-refresh-pair');
+    setQuotaStoreForTests(new QuotaSnapshotStore({ paths: tmp }));
+    try {
+      let calls = 0;
+      const prober = new QuotaProber({
+        registry: fakeRegistry({
+          deepseek: [
+            { keyHashPrefix: 'K1', key: 'sk-1' },
+            { keyHashPrefix: 'K2', key: 'sk-2' },
+          ],
+        }),
+        config: () => baseCfg(),
+        fetchImpl: okFetch(() => calls++),
+        now: () => 10_000,
+      });
+      const report = await prober.refreshNow({ providerId: 'deepseek', keyHashPrefix: 'K2' });
+      assert.equal(report.probed, 1);
+      assert.equal(calls, 1);
+      assert.equal(prober.planProbes(10_100).length, 1, 'the untouched pair stays due');
+    } finally {
+      setQuotaStoreForTests(undefined);
+      fs.rmSync(path.dirname(tmp.ocrHome), { recursive: true, force: true });
+    }
+  });
+
+  it('refreshNow refuses when the engine-level 429 gate is armed', async () => {
+    const tmp = sandboxPaths('quota-refresh-gate');
+    setQuotaStoreForTests(new QuotaSnapshotStore({ paths: tmp }));
+    try {
+      let calls = 0;
+      const prober = new QuotaProber({
+        registry: fakeRegistry({ deepseek: [{ keyHashPrefix: 'K1', key: 'sk-1' }] }),
+        config: () => baseCfg(),
+        fetchImpl: (async () => {
+          calls++;
+          return new Response('', { status: 429 });
+        }) as typeof fetch,
+        now: () => 10_000,
+      });
+      await prober.tick(10_000);
+      assert.equal(calls, 1);
+      const report = await prober.refreshNow();
+      assert.deepEqual(
+        report,
+        { probed: 0, pending: 0, rateLimited: true, disabled: false, busy: false },
+        'the armed gate refuses the manual cycle without clearing it'
+      );
+      assert.equal(calls, 1, 'no outbound call while gated');
+      assert.equal(prober.planProbes(10_100).length, 0, 'the gate still pauses scheduling');
+    } finally {
+      setQuotaStoreForTests(undefined);
+      fs.rmSync(path.dirname(tmp.ocrHome), { recursive: true, force: true });
+    }
+  });
+
+  it('refreshNow refused by the kill switch leaves the schedule untouched', async () => {
+    const tmp = sandboxPaths('quota-refresh-disabled');
+    setQuotaStoreForTests(new QuotaSnapshotStore({ paths: tmp }));
+    try {
+      let calls = 0;
+      let enabled = true;
+      const prober = new QuotaProber({
+        registry: fakeRegistry({ deepseek: [{ keyHashPrefix: 'K1', key: 'sk-1' }] }),
+        config: () => ({ quota: { enabled } }) as unknown as RouterConfig,
+        fetchImpl: okFetch(() => calls++),
+        now: () => 10_000,
+      });
+      await prober.tick(10_000);
+      assert.equal(calls, 1);
+      // The pair now carries a due date. Turning the prober off and pressing
+      // refresh must answer `disabled` WITHOUT clearing it — otherwise the
+      // whole plan would fall due at once when the switch comes back on.
+      enabled = false;
+      assert.deepEqual(await prober.refreshNow(), {
+        probed: 0,
+        pending: 0,
+        rateLimited: false,
+        disabled: true,
+        busy: false,
+      });
+      enabled = true;
+      assert.equal(prober.planProbes(10_000).length, 0, 'the refused refresh did not rewrite due dates');
+      assert.equal(calls, 1, 'nothing was probed while disabled');
+    } finally {
+      setQuotaStoreForTests(undefined);
+      fs.rmSync(path.dirname(tmp.ocrHome), { recursive: true, force: true });
+    }
+  });
+
+  it('a mid-cycle 429 stops the manual cycle and leaves the rest due', async () => {
+    const tmp = sandboxPaths('quota-refresh-midcycle-429');
+    setQuotaStoreForTests(new QuotaSnapshotStore({ paths: tmp }));
+    try {
+      let calls = 0;
+      const prober = new QuotaProber({
+        registry: fakeRegistry({
+          deepseek: [
+            { keyHashPrefix: 'K1', key: 'sk-1' },
+            { keyHashPrefix: 'K2', key: 'sk-2' },
+            { keyHashPrefix: 'K3', key: 'sk-3' },
+          ],
+        }),
+        config: () => baseCfg(),
+        fetchImpl: (async () => {
+          calls++;
+          return calls === 2
+            ? new Response('', { status: 429 })
+            : new Response(JSON.stringify({ balance_infos: [{ currency: 'CNY', total_balance: '1' }] }), { status: 200 });
+        }) as typeof fetch,
+        now: () => 10_000,
+      });
+      const report = await prober.refreshNow();
+      assert.deepEqual(report, { probed: 2, pending: 1, rateLimited: true, disabled: false, busy: false });
+      assert.equal(calls, 2, 'stopped at the 429 — the third pair was never attempted');
+      assert.ok(prober.getRateLimitedUntil() > 10_000);
+    } finally {
+      setQuotaStoreForTests(undefined);
+      fs.rmSync(path.dirname(tmp.ocrHome), { recursive: true, force: true });
+    }
+  });
+
+  it('a tick firing during a manual refresh SKIPS — the two never run concurrently', async () => {
+    const tmp = sandboxPaths('quota-refresh-exclusive');
+    setQuotaStoreForTests(new QuotaSnapshotStore({ paths: tmp }));
+    try {
+      let calls = 0;
+      const prober = new QuotaProber({
+        registry: fakeRegistry({ deepseek: [{ keyHashPrefix: 'K1', key: 'sk-1' }] }),
+        config: () => baseCfg(),
+        fetchImpl: okFetch(() => calls++),
+        now: () => 10_000,
+      });
+      const manual = prober.refreshNow();
+      // The slot is taken synchronously → the tick must skip, not queue.
+      const skipped = await prober.tick(10_000);
+      assert.equal(skipped.probed, 0, 'tick skipped: due state survives, no queued cycle');
+      assert.deepEqual(await manual, { probed: 1, pending: 0, rateLimited: false, disabled: false, busy: false });
+      assert.equal(calls, 1, 'exactly one probe — no double-probe from the skipped tick');
+    } finally {
+      setQuotaStoreForTests(undefined);
+      fs.rmSync(path.dirname(tmp.ocrHome), { recursive: true, force: true });
+    }
+  });
+
+  it('a manual refresh that finds the slot busy answers busy instead of hanging', async () => {
+    const tmp = sandboxPaths('quota-refresh-busy');
+    setQuotaStoreForTests(new QuotaSnapshotStore({ paths: tmp }));
+    try {
+      let calls = 0;
+      const prober = new QuotaProber({
+        registry: fakeRegistry({ deepseek: [{ keyHashPrefix: 'K1', key: 'sk-1' }] }),
+        config: () => baseCfg(),
+        fetchImpl: okFetch(() => calls++),
+        now: () => 10_000,
+      });
+      const first = prober.refreshNow();
+      // Budget 0 → the waiter must not block on the in-flight cycle.
+      const second = await prober.refreshNow({ budgetMs: 0 });
+      assert.deepEqual(second, { probed: 0, pending: 0, rateLimited: false, disabled: false, busy: true });
+      assert.equal((await first).probed, 1);
+      assert.equal(calls, 1, 'the busy answer probed nothing');
+    } finally {
+      setQuotaStoreForTests(undefined);
+      fs.rmSync(path.dirname(tmp.ocrHome), { recursive: true, force: true });
+    }
+  });
+
+  it('refreshNow stops at its budget and leaves the rest due for the next tick', async () => {
+    const tmp = sandboxPaths('quota-refresh-budget');
+    setQuotaStoreForTests(new QuotaSnapshotStore({ paths: tmp }));
+    try {
+      let calls = 0;
+      const prober = new QuotaProber({
+        registry: fakeRegistry({ deepseek: [{ keyHashPrefix: 'K1', key: 'sk-1' }] }),
+        config: () => baseCfg(),
+        fetchImpl: okFetch(() => calls++),
+        now: () => 10_000,
+      });
+      const report = await prober.refreshNow({ budgetMs: 0 });
+      assert.deepEqual(report, { probed: 0, pending: 1, rateLimited: false, disabled: false, busy: false });
+      assert.equal(calls, 0);
+      assert.equal(prober.planProbes(10_100).length, 1, 'the pair is still due → the tick picks it up');
+    } finally {
+      setQuotaStoreForTests(undefined);
+      fs.rmSync(path.dirname(tmp.ocrHome), { recursive: true, force: true });
+    }
+  });
 });
 
 // ─── Linkage: QUOTA diagnosis -> quota_events (manager join point) ─────────
@@ -600,6 +847,13 @@ describe('quota console surface', () => {
         assert.equal(typeof p.keyHashPrefix, 'string');
         assert.equal(typeof p.covered, 'boolean');
         if (p.quota) assert.ok(['probed', 'declared', 'unverified', 'stale'].includes(p.quota.badge));
+        // A store machine id must never surface as a display name (it used to
+        // leak as a UUID through the credentialId fallback); an unnamed
+        // credential carries the masked key instead.
+        if (p.label !== undefined) {
+          assert.ok(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-/i.test(p.label), `label looks like a credentialId uuid: ${p.label}`);
+        }
+        if (p.maskedKey !== undefined) assert.equal(typeof p.maskedKey, 'string');
       }
     } finally {
       await app.close();

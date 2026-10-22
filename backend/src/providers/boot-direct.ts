@@ -53,9 +53,11 @@ export interface DirectBootResult {
   excluded: { provider: string; model?: string; reason: string; reasonCode?: string }[];
 }
 
-/** Raw key + display identity → the per-call selectable credential (P3 step 1). */
-function toCallCredential(key: string, label: string): CallCredential {
-  return { key, keyHashPrefix: keyHashPrefix(key), label };
+/** Raw key + display identity → the per-call selectable credential (P3 step 1).
+ *  `label` stays absent when the operator never named the credential — the
+ *  store's machine id is NOT a display name (it used to leak as a UUID). */
+function toCallCredential(key: string, label?: string): CallCredential {
+  return { key, keyHashPrefix: keyHashPrefix(key), ...(label ? { label } : {}) };
 }
 
 /**
@@ -339,12 +341,12 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
     // ordered chain rides on the payload (registry-only, raw keys in memory).
     // Single-credential providers get a length-1 chain — behavior byte-identical.
     const credentialChain: CallCredential[] = storeCreds.map((c) =>
-      toCallCredential(c.key, c.label ?? c.credentialId)
+      toCallCredential(c.key, c.label)
     );
     // Defensive fallback consistency: if the chain read was empty but resolveKey
     // supplied the baked key, represent it so head === config.apiKey always holds.
     if (credentialChain.length === 0 && resolved) {
-      credentialChain.push(toCallCredential(resolved.key, resolved.credential.label ?? resolved.credential.id));
+      credentialChain.push(toCallCredential(resolved.key, resolved.credential.label));
     }
     // Inline {env}/options.apiKey outranks the store for the baked default
     // (Decision 1) — it becomes the chain HEAD too, keeping the invariant

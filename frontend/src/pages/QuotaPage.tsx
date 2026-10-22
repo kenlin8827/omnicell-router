@@ -15,6 +15,7 @@ import { ProviderLogo } from '../components/ProviderLogo';
 import { Dialog } from '../components/Dialog';
 import { useToast } from '../components/ToastProvider';
 import { byQuotaUrgency, byWindowClass } from '../lib/quotaRank';
+import { useQuotaRefresh } from '../lib/useQuotaRefresh';
 
 /**
  * Quota tracking overview — every CONNECTED (provider × credential) pair of a
@@ -24,9 +25,10 @@ import { byQuotaUrgency, byWindowClass } from '../lib/quotaRank';
  * real numbers after the first probe. This page is display-only by contract —
  * nothing here gates routing.
  *
- * Layout: a page header with a manual refresh button (re-arms the probe
- * schedule — invalidation only, fresh numbers land on the next scheduler
- * tick), a compact summary strip of aggregate scan-aid chips (covered pairs /
+ * Layout: a page header with a manual refresh button (invalidates the probe
+ * schedule, then the backend runs one bounded probe cycle inside the request —
+ * the page awaits it and re-reads, so pressing it really does show fresh
+ * numbers), a compact summary strip of aggregate scan-aid chips (covered pairs /
  * low-quota windows / sync failures / earliest reset), then a responsive card
  * grid — one usage-meter card per covered pair, the standard quota-widget
  * pattern: identity + provenance badge in the header, one full-width burn bar
@@ -175,7 +177,6 @@ export const QuotaPage: React.FC = () => {
   const { t } = useI18n();
   const [data, setData] = useState<QuotaOverview | null>(null);
   const [q, setQ] = useState('');
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [logoMap, setLogoMap] = useState<Record<string, string>>({});
   const [lastProbe, setLastProbe] = useState<{ title: string; http: LastProbeCapture | null } | null>(null);
@@ -196,15 +197,12 @@ export const QuotaPage: React.FC = () => {
   }, []);
 
   const loadData = useCallback(async () => {
-    setLoading(true);
     try {
       const res = await api.getQuotaOverview();
       setData(res);
       setError(null);
     } catch (err: any) {
       setError(err?.message || String(err));
-    } finally {
-      setLoading(false);
     }
   }, []);
 
@@ -212,20 +210,11 @@ export const QuotaPage: React.FC = () => {
     loadData();
   }, [loadData]);
 
-  // Manual refresh: re-arm the whole probe schedule (POST is invalidation
-  // only — never synchronous), then re-read the snapshot. Fresh numbers
-  // land when the scheduler fires its next tick.
-  const onRefresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      const armed = await api.refreshQuota().catch(() => ({ status: 'ok', success: false }));
-      await loadData();
-      if (armed.success) toast.info(t('quotaPage.refreshQueued'));
-      else toast.error(t('quotaPage.refreshUnavailable'));
-    } finally {
-      setLoading(false);
-    }
-  }, [loadData, t, toast]);
+  // Manual refresh: shared with the sidebar peek (lib/useQuotaRefresh) — the
+  // backend invalidates and runs one bounded probe cycle inside the request,
+  // so the re-read below already carries fresh numbers. Each card passes its
+  // own identity: one upstream request instead of the whole directory.
+  const { refresh, isRefreshing, busy } = useQuotaRefresh(loadData);
 
   const stateWord = useCallback(
     (badge: string): string =>
@@ -237,6 +226,16 @@ export const QuotaPage: React.FC = () => {
             ? t('quotaPage.stateStale')
             : t('quotaPage.stateUnverified'),
     [t]
+  );
+
+  // Human name for a pair: the operator's credential label, else the MASKED
+  // key — the exact string the credentials list shows, so "which key is this"
+  // is answered by what the user actually pasted. The store's machine id is
+  // never rendered (it used to leak here as an unreadable UUID); the
+  // display-safe key hash stays in the tooltip and the search.
+  const pairName = useCallback(
+    (row: QuotaPairRow): string => row.label || row.maskedKey || `#${row.keyHashPrefix.slice(0, 6)}`,
+    []
   );
 
   const filteredPairs = useMemo(() => {
@@ -289,8 +288,8 @@ export const QuotaPage: React.FC = () => {
           {t('quotaPage.pageSubtitle')}
         </span>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px', alignItems: 'center', flexShrink: 0 }}>
-          <button className="btn btn-sm" onClick={onRefresh} disabled={loading} title={t('quotaPage.refreshNow')}>
-            <RefreshCw size={12} style={loading ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
+          <button className="btn btn-sm" onClick={() => void refresh()} disabled={busy} title={t('quotaPage.refreshNow')}>
+            <RefreshCw size={12} style={isRefreshing() ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
           </button>
         </div>
       </div>
@@ -351,8 +350,8 @@ export const QuotaPage: React.FC = () => {
                       <div style={{ fontSize: '13px', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.providerId}>
                         {row.providerId}
                       </div>
-                      <div style={{ ...MONO, fontSize: '11px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.label || row.keyHashPrefix}>
-                        {row.label || row.keyHashPrefix}
+                      <div style={{ ...MONO, fontSize: '11px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${pairName(row)} · #${row.keyHashPrefix}`}>
+                        {pairName(row)}
                       </div>
                     </div>
                     <div style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-end', gap: '3px', flexShrink: 0 }}>
@@ -392,22 +391,43 @@ export const QuotaPage: React.FC = () => {
                     <span style={{ ...MONO, fontSize: '10.5px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }} title={meta || undefined}>
                       {meta}
                     </span>
-                    <button
-                      className="btn btn-sm"
-                      style={{ padding: '3px 6px', flexShrink: 0 }}
-                      title={t('quotaPage.lastProbeBtn')}
-                      onClick={async () => {
-                        const title = `${row.providerId} · ${row.label || row.keyHashPrefix}`;
-                        try {
-                          const res = await api.getLastProbe(row.providerId, row.keyHashPrefix);
-                          setLastProbe({ title, http: res.http });
-                        } catch {
-                          setLastProbe({ title, http: null });
-                        }
-                      }}
-                    >
-                      <FileJson size={13} />
-                    </button>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}>
+                      {/* Per-pair refresh: ONE upstream request instead of the
+                          whole directory — quota is per (provider × credential),
+                          so this is the precise, cheap path. */}
+                      <button
+                        className="btn btn-sm"
+                        style={{ padding: '3px 6px' }}
+                        disabled={isRefreshing({ providerId: row.providerId, keyHashPrefix: row.keyHashPrefix })}
+                        title={t('quotaPage.refreshPair')}
+                        onClick={() => void refresh({ providerId: row.providerId, keyHashPrefix: row.keyHashPrefix })}
+                      >
+                        <RefreshCw
+                          size={13}
+                          style={
+                            isRefreshing({ providerId: row.providerId, keyHashPrefix: row.keyHashPrefix })
+                              ? { animation: 'ocr-spin 0.8s linear infinite' }
+                              : undefined
+                          }
+                        />
+                      </button>
+                      <button
+                        className="btn btn-sm"
+                        style={{ padding: '3px 6px' }}
+                        title={t('quotaPage.lastProbeBtn')}
+                        onClick={async () => {
+                          const title = `${row.providerId} · ${pairName(row)}`;
+                          try {
+                            const res = await api.getLastProbe(row.providerId, row.keyHashPrefix);
+                            setLastProbe({ title, http: res.http });
+                          } catch {
+                            setLastProbe({ title, http: null });
+                          }
+                        }}
+                      >
+                        <FileJson size={13} />
+                      </button>
+                    </div>
                   </div>
                 </div>
               );

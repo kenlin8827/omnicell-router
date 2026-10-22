@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
-import { Wallet } from 'lucide-react';
+import { Wallet, RefreshCw } from 'lucide-react';
 import { api, type QuotaOverview, type QuotaWindow } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { fmtDur } from '../lib/format';
 import { byQuotaUrgency, headlineWindow } from '../lib/quotaRank';
+import { useQuotaRefresh } from '../lib/useQuotaRefresh';
 
 /**
  * Sidebar-resident quota peek — the wallet chip in the footer's right slot.
@@ -27,8 +28,11 @@ import { byQuotaUrgency, headlineWindow } from '../lib/quotaRank';
  *
  * Data: polls GET /api/admin/quota every 60s (the snapshot is written by the
  * probe scheduler, so a minute-granularity lamp is the freshest honest view)
- * and re-fetches whenever the panel opens. The chip lamp mirrors the
- * scarcest headline window across all pairs (rose <10%, amber <25%).
+ * and re-fetches whenever the panel opens; the header's refresh button runs
+ * the same synchronous manual refresh as the quota page (shared
+ * lib/useQuotaRefresh), so a stale number never forces a navigation. The chip
+ * lamp mirrors the scarcest headline window across all pairs (rose <10%,
+ * amber <25%).
  */
 
 const MONO: React.CSSProperties = { fontFamily: "'JetBrains Mono', monospace" };
@@ -81,6 +85,11 @@ export const QuotaPeek: React.FC = () => {
   useEffect(() => {
     if (open) load();
   }, [open, load]);
+
+  // Same manual refresh as the quota page header (one shared hook): the POST
+  // invalidates + probes inside the request, then `load` re-reads the fresh
+  // snapshot — the peek never needs to wait for its own 60 s poll.
+  const { refresh, isRefreshing } = useQuotaRefresh(load);
 
   // Same urgency-first order as the quota page — the scarcest pair leads.
   const rows = useMemo(() => (data?.pairs ?? []).filter((r) => r.covered).sort(byQuotaUrgency), [data]);
@@ -183,18 +192,36 @@ export const QuotaPeek: React.FC = () => {
                     {t('nav.quotaPeekTitle')}
                   </span>
                 </span>
-                <span
-                  style={{
-                    ...MONO,
-                    fontSize: '10.5px',
-                    color: 'var(--text-dim)',
-                    border: '1px solid var(--card-border)',
-                    borderRadius: '999px',
-                    padding: '2px 8px',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  {t('quotaPage.sumPairs', { n: rows.length })}
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                  {/* Manual refresh lives here too: the peek is the at-a-glance
+                      surface, so a stale number must be re-fetchable in place
+                      instead of forcing a trip to /admin/quota. */}
+                  <button
+                    className="btn btn-sm"
+                    style={{ padding: '2px 5px', height: 20 }}
+                    disabled={isRefreshing()}
+                    title={t('quotaPage.refreshNow')}
+                    aria-label={t('quotaPage.refreshNow')}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void refresh();
+                    }}
+                  >
+                    <RefreshCw size={11} style={isRefreshing() ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
+                  </button>
+                  <span
+                    style={{
+                      ...MONO,
+                      fontSize: '10.5px',
+                      color: 'var(--text-dim)',
+                      border: '1px solid var(--card-border)',
+                      borderRadius: '999px',
+                      padding: '2px 8px',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {t('quotaPage.sumPairs', { n: rows.length })}
+                  </span>
                 </span>
               </div>
               {data && !data.enabled && (

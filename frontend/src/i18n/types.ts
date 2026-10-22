@@ -1107,10 +1107,20 @@ hiddenBadge: string;
     pageSubtitle: string;
     disabledBanner: string;
     refreshNow: string;
-    /** Toast after a manual refresh re-armed the scheduler: numbers land on
-     *  the next probe tick (invalidation is never synchronous). */
-    refreshQueued: string;
-    /** Toast when the re-arm call itself failed (prober disabled, network). */
+    /** Tooltip/aria of the per-card refresh: probe THIS pair only. */
+    refreshPair: string;
+    /** Toast after a manual refresh finished: `{n}` pairs probed inside the
+     *  request, the re-read snapshot already carries their fresh numbers. */
+    refreshDone: string;
+    /** Toast when the request budget ran out: `{n}` probed now, `{pending}`
+     *  left due for the regular scheduler tick. */
+    refreshPartial: string;
+    /** Toast when an engine-level 429 gate stopped the cycle (never hammer). */
+    refreshRateLimited: string;
+    /** Toast when another cycle (tick or a second refresh) held the slot past
+     *  the request budget — nothing was probed this time. */
+    refreshBusy: string;
+    /** Toast when the refresh call itself failed (prober disabled, network). */
     refreshUnavailable: string;
     searchPlaceholder: string;
     pairsEmpty: string;

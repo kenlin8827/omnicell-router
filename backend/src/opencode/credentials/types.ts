@@ -102,8 +102,13 @@ export interface ResolvedCredential {
 export interface CallCredential {
   /** Display-safe sha256 prefix — the per-call selector key (Decision 5). */
   keyHashPrefix: string;
-  /** Human-readable credential name (falls back to the store credential id). */
-  label: string;
+  /**
+   * Operator-set credential name. ABSENT = unnamed — never substitute the
+   * store's machine id here (a `credentialId` UUID was leaking into console
+   * surfaces as if it were a human name). Display layers render their own
+   * fallback (the quota page uses the chain ordinal).
+   */
+  label?: string;
   /** Raw key material — in-memory only. */
   key: string;
 }

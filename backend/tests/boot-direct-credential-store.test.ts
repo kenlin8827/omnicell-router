@@ -83,6 +83,8 @@ interface OcrRow {
   key: string;
   active?: boolean;
   timeUpdated?: number;
+  /** Operator-set name — absent = unnamed (never faked from credentialId). */
+  label?: string;
   /** hostiles: a raw row object that fails the store's validation */
   invalid?: boolean;
 }
@@ -108,6 +110,7 @@ function seedOcr(
                   timeCreated: 1,
                   timeUpdated: r.timeUpdated ?? 1,
                   active: r.active ?? false,
+                  ...(r.label ? { label: r.label } : {}),
                 }
           ),
         ])
@@ -175,7 +178,7 @@ describe('(a) OCR-file boot: multi-credential rows', () => {
     bindStore({
       'p-active': [
         { credentialId: 'c1', key: 'sk-active', active: true, timeUpdated: 1 },
-        { credentialId: 'c2', key: 'sk-backup', active: false, timeUpdated: 99 },
+        { credentialId: 'c2', key: 'sk-backup', active: false, timeUpdated: 99, label: '备用账号' },
       ],
     });
     defFixtures['p-active'] = defFor('p-active');
@@ -186,10 +189,13 @@ describe('(a) OCR-file boot: multi-credential rows', () => {
     expect(inst).toHaveLength(1);
     expect(inst[0]!.config.apiKey).toBe('sk-active'); // the ACTIVE-first chain head is what gets baked
     // Per-call selection chain (in-memory, registry-only payload): ordered
-    // active-first, identity prefixes, credentialId fallback labels.
+    // active-first, identity prefixes, operator labels only — an UNNAMED
+    // credential carries NO label (the store's credentialId is a machine id,
+    // never a display name; the console renders a chain ordinal instead).
     expect(inst[0]!.credentialChain.map((c) => c.key)).toEqual(['sk-active', 'sk-backup']);
     expect(inst[0]!.credentialChain[0]!.keyHashPrefix).toBe(keyHashPrefix('sk-active'));
-    expect(inst[0]!.credentialChain[0]!.label).toBe('c1');
+    expect(inst[0]!.credentialChain[0]!.label).toBeUndefined();
+    expect(inst[0]!.credentialChain[1]!.label).toBe('备用账号');
     // The invariant registry attribution relies on: head === the boot-baked key.
     expect(inst[0]!.credentialChain[0]!.key).toBe(inst[0]!.config.apiKey);
   });

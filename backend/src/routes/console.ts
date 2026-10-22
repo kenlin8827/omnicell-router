@@ -26,6 +26,7 @@ import type { CredentialMeta, CredentialStore, RawCred } from '../opencode/crede
 import type { CircuitBreakerManager } from '../resilience/index.js';
 import type { TraceTracker } from '../trace/tracker.js';
 import type { OpenCodeProviderView } from '../opencode/user-config.js';
+import { maskSecret } from '../opencode/user-config.js';
 import { isSelfBaseURL } from '../utils/self-url.js';
 import { listOpenCodeAgentsLive } from '../opencode/agents.js';
 import {
@@ -519,8 +520,13 @@ function quotaViewFor(providerId: string, keyHashPrefix?: string): CredentialQuo
 interface QuotaPairRow {
   providerId: string;
   keyHashPrefix: string;
-  /** Chain label (credential name) or the config provider name for baked keys. */
+  /** Operator-set credential name. ABSENT = unnamed — the console then shows
+   *  the masked key (the same string the credentials list shows). A store
+   *  machine id is never a display name. */
   label?: string;
+  /** `maskSecret()` output for this credential — the sanctioned display-safe
+   *  identity when no label is set (never the raw key). */
+  maskedKey?: string;
   /** Live-plan coverage (built-in table / adapter / config entry). */
   covered: boolean;
   quota?: CredentialQuotaView;
@@ -534,19 +540,22 @@ function buildQuotaPairRows(
   traceTracker: TraceTracker
 ): QuotaPairRow[] {
   const pairs = new Map<string, QuotaPairRow>();
-  const add = (providerId: string, keyHashPrefix: string, label?: string) => {
+  const add = (providerId: string, keyHashPrefix: string, label: string | undefined, maskedKey: string) => {
     const id = `${providerId}#${keyHashPrefix}`;
     if (pairs.has(id)) return;
     pairs.set(id, {
       providerId,
       keyHashPrefix,
-      label,
+      ...(label ? { label } : {}),
+      maskedKey,
       covered: getQuotaProber()?.getPlan().byProvider.has(providerId) ?? false,
       quota: quotaViewFor(providerId, keyHashPrefix),
     });
   };
   for (const m of registry.getAllModels()) {
-    for (const c of registry.getCredentialChain(m.provider) ?? []) add(m.provider, c.keyHashPrefix, c.label);
+    for (const c of registry.getCredentialChain(m.provider) ?? []) {
+      add(m.provider, c.keyHashPrefix, c.label, maskSecret(c.key));
+    }
   }
   // Per-pair usage join (trace ring GROUP BY provider×prefix — the step-1
   // aggregation surface).
@@ -1005,16 +1014,29 @@ export function registerConsoleRoutes(
     };
   });
 
-  // Force a pair due on the next tick (console "reprobe now"). Body carries
-  // the display-safe identity only; nothing is fetched synchronously here —
-  // probing stays on the scheduler (with its engine-level 429 backoff).
+  // Console "refresh now": invalidate (one pair, or the whole schedule), then
+  // run ONE bounded probe cycle INSIDE the request — the page awaits this and
+  // re-reads the snapshot, so fresh numbers land before it repaints. The
+  // interval tick and its due-based cadence are untouched; the engine-level
+  // 429 gate still wins (armed gate refuses, mid-cycle 429 stops the cycle).
   app.post('/api/admin/quota/refresh', async (req) => {
     const body = req.body as { providerId?: string; keyHashPrefix?: string };
     const prober = getQuotaProber();
     if (!prober) return { status: 'ok', success: false, reasonCode: 'quota_disabled', error: 'quota prober is disabled' };
-    if (body?.providerId && body.keyHashPrefix) prober.invalidatePair(body.providerId, body.keyHashPrefix);
-    else prober.resetScheduling();
-    return { status: 'ok', success: true };
+    const report = await prober.refreshNow(
+      body?.providerId && body.keyHashPrefix
+        ? { providerId: body.providerId, keyHashPrefix: body.keyHashPrefix }
+        : {}
+    );
+    return {
+      status: 'ok',
+      success: !report.disabled && !report.busy,
+      ...(report.disabled ? { reasonCode: 'quota_disabled', error: 'quota prober is disabled' } : {}),
+      ...(report.busy ? { reasonCode: 'busy', error: 'another probe cycle is still running' } : {}),
+      probed: report.probed,
+      pending: report.pending,
+      rateLimited: report.rateLimited,
+    };
   });
 
   // Last raw HTTP exchange for one pair (memory-only capture — the quota

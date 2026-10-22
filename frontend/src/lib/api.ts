@@ -1731,9 +1731,19 @@ export const api = {
     return res.json();
   },
 
-  /** Re-arm probing (POST /api/admin/quota/refresh): one pair, or the whole
-   *  schedule when no identity given. Invalidation only — never synchronous. */
-  async refreshQuota(target?: { providerId: string; keyHashPrefix: string }): Promise<{ status: string; success: boolean; reasonCode?: string }> {
+  /** Manual refresh (POST /api/admin/quota/refresh): one pair, or the whole
+   *  schedule when no identity given. The backend invalidates and then runs
+   *  ONE bounded probe cycle inside the request — resolving means the next
+   *  GET already carries fresh numbers, unless an armed 429 gate stopped it
+   *  (`rateLimited`) or the budget ran out (`pending` left for the next tick). */
+  async refreshQuota(target?: { providerId: string; keyHashPrefix: string }): Promise<{
+    status: string;
+    success: boolean;
+    reasonCode?: string;
+    probed?: number;
+    pending?: number;
+    rateLimited?: boolean;
+  }> {
     const res = await fetch('/api/admin/quota/refresh', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2365,7 +2375,11 @@ export interface QuotaPairUsage {
 export interface QuotaPairRow {
   providerId: string;
   keyHashPrefix: string;
+  /** Operator-set credential name; absent = unnamed (render the masked key —
+   *  the store id is never a display name). */
   label?: string;
+  /** `maskSecret()` output — the readable identity when no label is set. */
+  maskedKey?: string;
   covered: boolean;
   quota?: CredentialQuotaView;
   usage?: QuotaPairUsage;

@@ -43,6 +43,21 @@ export interface QuotaRegistryView {
   getProviderBaseUrl(name: string): string | undefined;
 }
 
+/** Outcome of one manual refresh (the console button). */
+export interface QuotaRefreshReport {
+  /** Pairs whose probe ran to completion before the request answered. */
+  probed: number;
+  /** Pairs the budget (or a mid-cycle 429) left due for the next tick. */
+  pending: number;
+  /** A 429 arrived mid-cycle — the engine-level gate is now armed. */
+  rateLimited: boolean;
+  /** The live kill switch (`quota.enabled: false`) refused the cycle. */
+  disabled: boolean;
+  /** Another cycle (timer tick or a second refresh) held the slot past the
+   *  request budget — nothing was probed, the answer is honest, not a hang. */
+  busy: boolean;
+}
+
 /** Per-pair scheduling state — deliberately tiny (no result caching here). */
 interface PairState {
   nextDueAtMs: number;
@@ -57,6 +72,14 @@ const RATE_LIMIT_BACKOFF_BASE_MS = 5 * 60_000;
 const RATE_LIMIT_BACKOFF_CEILING_MS = 3 * 3_600_000;
 /** Per-pair failure backoff before a retry is scheduled (capped, < TTL). */
 const FAILURE_RETRY_BASE_MS = 10 * 60_000;
+/** Manual refresh: total wall-clock budget for one request (bounded on
+ *  purpose — the console awaits the result, so never a second scheduler).
+ *  Invariant: the per-probe timeout below stays well under this budget, so a
+ *  dead endpoint can never consume the whole request. */
+const REFRESH_BUDGET_MS = 12_000;
+/** Manual refresh: per-probe HTTP timeout (the tick path keeps the engine's
+ *  10 s default; the request budget must never be eaten by one dead endpoint). */
+const REFRESH_PROBE_TIMEOUT_MS = 8_000;
 
 export interface QuotaProberDeps {
   registry: QuotaRegistryView;
@@ -75,7 +98,8 @@ export class QuotaProber {
   private readonly nowFn: () => number;
 
   private timer: NodeJS.Timeout | null = null;
-  private running = false;
+  /** The one in-flight cycle — the timer tick and a manual refresh share it. */
+  private current: Promise<unknown> | null = null;
   private plan: EffectiveQuotaPlan;
   /** Pair key (`provider#prefix`) -> scheduling state. */
   private state = new Map<string, PairState>();
@@ -138,25 +162,38 @@ export class QuotaProber {
    * (pairs never probe the world all at once).
    */
   public planProbes(now: number = this.nowFn()): QuotaPairCandidate[] {
-    // Kill switch is honored live, not only at boot: saving quota.enabled:false
-    // must stop outbound probing without a restart (and true must resume it).
-    if (this.configFn().quota?.enabled === false) return [];
+    if (this.probingDisabled()) return [];
     if (now < this.rateLimitedUntilMs) return [];
+    return this.duePairs(now).slice(0, QuotaProber.MAX_PER_TICK);
+  }
+
+  /**
+   * Due pairs in plan order, uncapped (the manual-refresh path uses this —
+   * a human asking for fresh numbers gets all of them, not the tick slice).
+   * First sighting (no state) is always due: activation follows credentials
+   * (the coverage principle). `scope` narrows to ONE pair.
+   */
+  private duePairs(
+    now: number,
+    scope?: { providerId?: string; keyHashPrefix?: string }
+  ): QuotaPairCandidate[] {
     const out: QuotaPairCandidate[] = [];
-    for (const [providerId, target] of this.plan.byProvider) {
+    for (const providerId of this.plan.byProvider.keys()) {
+      if (scope?.providerId && providerId !== scope.providerId) continue;
       for (const pair of this.pairsOf(providerId)) {
-        const key = `${providerId}#${pair.keyHashPrefix}`;
-        const st = this.state.get(key);
+        if (scope?.keyHashPrefix && pair.keyHashPrefix !== scope.keyHashPrefix) continue;
+        const st = this.state.get(`${providerId}#${pair.keyHashPrefix}`);
         if (st && now < st.nextDueAtMs) continue;
-        // First sighting (no state) schedules immediately — activation
-        // follows credentials (the coverage principle).
-        if (out.length >= QuotaProber.MAX_PER_TICK) break;
-        void target; // (targets are resolved again in runOne — one source of truth)
         out.push(pair);
       }
-      if (out.length >= QuotaProber.MAX_PER_TICK) break;
     }
     return out;
+  }
+
+  /** Kill switch honored live, not only at boot: saving quota.enabled:false
+   *  must stop outbound probing without a restart (and true must resume it). */
+  private probingDisabled(): boolean {
+    return this.configFn().quota?.enabled === false;
   }
 
   private static readonly MAX_PER_TICK = 6;
@@ -177,8 +214,11 @@ export class QuotaProber {
 
   /** Plan + run one cycle (the entry point the timer calls; also testable). */
   public async tick(now: number = this.nowFn()): Promise<{ probed: number }> {
-    if (this.running) return { probed: 0 };
-    this.running = true;
+    // A running cycle owns the slot: this tick SKIPS (never queues) — due
+    // state survives, so the next tick re-plans it; queueing would only pile
+    // up ticks behind a slow cycle.
+    if (this.current) return { probed: 0 };
+    const release = this.claim();
     try {
       const candidates = this.planProbes(now);
       let probed = 0;
@@ -188,13 +228,17 @@ export class QuotaProber {
       }
       return { probed };
     } finally {
-      this.running = false;
+      release();
     }
   }
 
-  private async runOne(pair: QuotaPairCandidate, now: number): Promise<void> {
+  private async runOne(
+    pair: QuotaPairCandidate,
+    now: number,
+    timeoutMs?: number
+  ): Promise<{ rateLimited: boolean }> {
     const target = this.plan.byProvider.get(pair.providerId);
-    if (!target) return;
+    if (!target) return { rateLimited: false };
     const key = `${pair.providerId}#${pair.keyHashPrefix}`;
     const result = await probePair(target, {
       providerId: pair.providerId,
@@ -202,6 +246,7 @@ export class QuotaProber {
       prefix: pair.keyHashPrefix,
       fetchImpl: this.fetchImpl,
       now: this.nowFn,
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     });
 
     if (result.rateLimited) {
@@ -228,6 +273,7 @@ export class QuotaProber {
       // Probe failure ≠ quota failure: NO breaker record, NO suspect, NO
       // takedown. staleness lives entirely in the snapshot store.
     }
+    return { rateLimited: result.rateLimited };
   }
 
   /** Test seam: current engine-level 429 gate. */
@@ -240,11 +286,134 @@ export class QuotaProber {
     this.state.delete(`${providerId}#${keyHashPrefix}`);
   }
 
-  /** Full reset of scheduling state (tests + config reload storms). */
+  /** Full reset of scheduling state (tests + config reload storms — note it
+   *  also clears the 429 gate; a manual refresh deliberately does NOT). */
   public resetScheduling(): void {
     this.state.clear();
     this.rateLimitedUntilMs = 0;
     this.rateLimitStreak = 0;
+  }
+
+  /**
+   * Console "refresh now": take the cycle slot, invalidate, then run ONE
+   * bounded probe cycle INSIDE the request so the caller can re-read fresh
+   * numbers the moment it resolves (the page awaits this, then GETs the
+   * snapshot). The interval tick and its due-based cadence are untouched —
+   * this only front-loads a cycle a human explicitly asked for, and the timer
+   * is never restarted (due dates, not tick phase, express the cadence).
+   *
+   * Concurrency: the slot is exclusive with the timer's tick and with any
+   * other manual refresh. Waiting for a busy slot is BOUNDED by the request
+   * budget — a refresh must always answer, so a slot that stays busy past the
+   * budget returns `busy` instead of hanging the HTTP request.
+   *
+   * Bounded on purpose (a manual refresh is not a second scheduler): a total
+   * wall-clock budget plus a per-probe timeout; pairs the budget cannot reach
+   * stay due for the next tick. The 429 rule still wins — an armed global gate
+   * refuses the cycle, and a mid-cycle 429 stops it instead of hammering
+   * shared quota endpoints.
+   */
+  public async refreshNow(
+    opts: { providerId?: string; keyHashPrefix?: string; budgetMs?: number } = {}
+  ): Promise<QuotaRefreshReport> {
+    const deadline = this.nowFn() + (opts.budgetMs ?? REFRESH_BUDGET_MS);
+    const release = await this.tryClaim(deadline);
+    if (!release) return { probed: 0, pending: 0, rateLimited: false, disabled: false, busy: true };
+    try {
+      // Refusals come FIRST, before any invalidation: a refresh that answers
+      // `disabled` or `rateLimited` probed nothing, so it must not rewrite the
+      // schedule either (clearing due dates there would dump the whole plan
+      // onto the next tick at once).
+      if (this.probingDisabled()) return { probed: 0, pending: 0, rateLimited: false, disabled: true, busy: false };
+      const now = this.nowFn();
+      if (now < this.rateLimitedUntilMs) {
+        return { probed: 0, pending: 0, rateLimited: true, disabled: false, busy: false };
+      }
+
+      // Invalidate only once the slot is OURS: doing it under a running cycle
+      // would let that cycle re-arm due dates on top of the reset. Due dates
+      // only — an armed 429 gate must survive a human pressing refresh
+      // (clearing it here would defeat the anti-hammer rule above).
+      if (opts.providerId && opts.keyHashPrefix) {
+        this.invalidatePair(opts.providerId, opts.keyHashPrefix);
+      } else {
+        this.state.clear();
+      }
+
+      const scope =
+        opts.providerId && opts.keyHashPrefix
+          ? { providerId: opts.providerId, keyHashPrefix: opts.keyHashPrefix }
+          : undefined;
+      const candidates = this.duePairs(now, scope);
+      return await this.runManualCycle(candidates, deadline);
+    } finally {
+      release();
+    }
+  }
+
+  private async runManualCycle(
+    candidates: QuotaPairCandidate[],
+    deadline: number
+  ): Promise<QuotaRefreshReport> {
+    // `probed` counts ATTEMPTS (a failed probe keeps its previous snapshot and
+    // is still an attempt — the console toast says "probed", never "refreshed").
+    let probed = 0;
+    let pending = candidates.length;
+    for (const pair of candidates) {
+      const now = this.nowFn();
+      const remaining = deadline - now;
+      if (remaining <= 0) break;
+      const res = await this.runOne(pair, now, Math.min(REFRESH_PROBE_TIMEOUT_MS, remaining));
+      probed++;
+      pending--;
+      // A 429 mid-cycle armed the global gate — stop, never keep hammering.
+      if (res.rateLimited) return { probed, pending, rateLimited: true, disabled: false, busy: false };
+    }
+    return { probed, pending: Math.max(0, pending), rateLimited: false, disabled: false, busy: false };
+  }
+
+  /**
+   * Claim the one cycle slot, waiting for a busy one NO LONGER than `deadline`.
+   * Returns the release function, or null when the slot stayed busy past the
+   * deadline (the caller answers `busy` instead of hanging).
+   *
+   * The wait-then-claim is atomic: the claim happens synchronously after the
+   * last `while` check, so two waiters can never both claim (the loser loops
+   * and sees the winner's gate).
+   */
+  private async tryClaim(deadline: number): Promise<(() => void) | null> {
+    while (this.current) {
+      const remaining = deadline - this.nowFn();
+      if (remaining <= 0) return null;
+      const idle = await new Promise<boolean>((resolve) => {
+        // `done` clears the bound timer on the early (cycle-finished) path;
+        // `unref` keeps the handle from holding the process open either way.
+        let timer: NodeJS.Timeout | undefined;
+        const done = (v: boolean) => {
+          if (timer) clearTimeout(timer);
+          resolve(v);
+        };
+        timer = setTimeout(() => done(false), remaining);
+        timer.unref?.();
+        // A failed previous cycle still frees the slot.
+        this.current!.then(() => done(true), () => done(true));
+      });
+      if (!idle) return null;
+    }
+    return this.claim();
+  }
+
+  /** Synchronous claim (the caller has already checked the slot is free). */
+  private claim(): () => void {
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    this.current = gate;
+    return () => {
+      if (this.current === gate) this.current = null;
+      open();
+    };
   }
 
   /** Read-only view of the live plan (console coverage panel). */

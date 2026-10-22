@@ -78,13 +78,15 @@ kimi 条目从同一次响应中读取两个窗口：顶层 `usage` 对象给出
 
 due-based，形照主动健康 prober（借思路不借代码）：固定 tick（默认 60 秒，`quota.intervalMs` 钳 [10 秒, 1 小时]）先**零副作用**地规划本周期探测（纯 plan 可断言），再顺序执行；每对下次到期 = verifiedAt + 条目 cacheTtl，±15% 抖动；每 tick 至多 6 次探测。被覆盖凭据的首见即排（这就是激活随凭据）。**任何探测吃到 429 即 arm 引擎级全局退避**（指数，5 分钟基、3 小时顶），暂停整个调度器——额度端点是共享基础设施，一次封顶响应意味着全体放慢。总开关 `quota.enabled: false` 停止一切出网探测；盘上快照照常展示（过期逻辑不变）。
 
+控制台的手动刷新**不改变**这个节奏：先失效到期时间（单对或整个调度），再在**请求内**多跑一轮探测，于是 await 该请求的页面可以直接重读到新数字，不必等下一个 tick。这一轮刻意有界——12 秒墙钟预算 + 每探测 8 秒超时，且**不受**每 tick 上限约束（人明确要新数字，就给全部被覆盖配对）——预算来不及的配对仍处于到期态，留给常规 tick。429 规则依然优先：已置位的闸门直接拒绝手动作业，作业中途吃到 429 立即停止。周期互斥——手动与 tick 共用同一个槽位；探测进行中触发的 tick 直接**跳过**（不排队：到期状态仍在，下一次 tick 重新规划即可），而手动刷新若发现槽位被占，只等待到自己的预算为止，随后返回 `busy` 而不是把 HTTP 请求挂住。interval 定时器**永不重启**：节奏由到期时间表达，不由 tick 相位表达——手动刷新与 tick 一样重排到期，于是下一次 tick 自然发现无到期项。
+
 ### 8. 失败语义与路由面防火墙
 
 **探测失败 ≠ 额度失败。** 失败尝试不进熔断器、不标 SUSPECT、不禁用、不进 trace 表：旧快照保留，`lastFailureAt` 把徽章翻成 `stale`。反向额度面消费推理侧证据只有一个方向：在熔断 manager 唯一失败汇聚点（`recordFailureScoped`）记录的每个 `QUOTA_EXHAUSTED` 诊断，在规则门控**之前**落 **`quota_events`** 账本一行（观测不是政策——关掉额度*跳闸*不得蒙住账本）。账本照限流账本纪律：环 500、`traces.db` 镜像（`quota_events` 表、独立 WAL 句柄、fail-open、启动 replay）。分类器新增中文撞顶 marker（额度措辞 + 会话频控措辞进入匹配字面量），使中文服务商的额度烧穿折入 QUOTA_EXHAUSTED（credential 作用域、12 小时下限、不打 SUSPECT——ADR-0004 语义不变）。词汇防火墙成立：`CLOSED/HALF_OPEN/OPEN` 仍是 CircuitBreaker 专属词；额度徽章态（`probed/declared/unverified/stale`）另立一轴，永不复用为健康词汇。撞顶下架继续走既有配对熔断 trip 语义；`resetAt` 对齐冷却整形为二期。
 
 ### 9. 消费面
 
-控制台：`CredentialHealth` 叠加层（每个返回凭证的响应都带，ADR-0006 §9 契约）新增附加键 `quota?: CredentialQuotaView`——四态徽章、逐窗口条 + 重置倒计时、血统（`entryId`、`source`、`plan`、过期态）在 tooltip。该键缺席 = *未覆盖*，与 `unverified` 徽章（已覆盖尚无结果）刻意不同。独立**额度页**（`/admin/quota`）渲染跨服务商目录：服务商被覆盖的每个已连接配对（配对枚举同 status 的 credentialHashes——链上凭据 + config 烘焙 key，仅展示安全前缀；未覆盖服务商不出行），携徽章、窗口条、套餐、血统与其归属用量联查（trace 环上的 `getCredentialPairUsageStats`）。版本覆盖面清单（覆盖/激活二分保持可检视）、被拒的 `quotaProbes:` 条目（校验失败上报，绝不吞）与近期烧穿事件账由 `GET /api/admin/quota` 按诊断契约供给（`coverage / rejected / pairs / events`）——页面本体保持单一目录面，不内嵌这三张清单。`POST /api/admin/quota/refresh` 重排一对或整个调度（只做失效标记——探测留在调度器，绝不在请求路径同步跑）。`frontend/src/lib/api.ts` 按后端契约名 1:1 镜像（`CredentialQuotaView`、`QuotaPairRow`、`QuotaWindow`、`QuotaBadgeState`、`QuotaSource`）。原始密钥在任何界面上都不出现（只有展示安全前缀）；UI 文案全走 `t()`。
+控制台：`CredentialHealth` 叠加层（每个返回凭证的响应都带，ADR-0006 §9 契约）新增附加键 `quota?: CredentialQuotaView`——四态徽章、逐窗口条 + 重置倒计时、血统（`entryId`、`source`、`plan`、过期态）在 tooltip。该键缺席 = *未覆盖*，与 `unverified` 徽章（已覆盖尚无结果）刻意不同。独立**额度页**（`/admin/quota`）渲染跨服务商目录：服务商被覆盖的每个已连接配对（配对枚举同 status 的 credentialHashes——链上凭据 + config 烘焙 key，仅展示安全前缀；未覆盖服务商不出行），携徽章、窗口条、套餐、血统与其归属用量联查（trace 环上的 `getCredentialPairUsageStats`）。版本覆盖面清单（覆盖/激活二分保持可检视）、被拒的 `quotaProbes:` 条目（校验失败上报，绝不吞）与近期烧穿事件账由 `GET /api/admin/quota` 按诊断契约供给（`coverage / rejected / pairs / events`）——页面本体保持单一目录面，不内嵌这三张清单。配对的可读身份是操作员设的凭据 label；**未命名**凭据用其掩码密钥（`maskSecret`，与凭据清单显示同一串——"这是哪把 key"直接用操作员自己贴过的东西回答）——存储机器 id 永远不是展示名（链上 label 曾回退到 `credentialId` UUID），展示安全密钥散列只留在 tooltip 与搜索里。`POST /api/admin/quota/refresh` 重排一对或整个调度，然后在请求内跑**一轮有界**探测（预算见 §7）——页面 await 后重读，手动刷新即可看到新数字，无需等 tick。两种范围都由 UI 提供：页头（整个调度）与每张卡片（仅该配对——额度按 provider × 凭据计，故只需一次上游请求），外加侧边栏 peek 里同一全局动作的副本。`frontend/src/lib/api.ts` 按后端契约名 1:1 镜像（`CredentialQuotaView`、`QuotaPairRow`、`QuotaWindow`、`QuotaBadgeState`、`QuotaSource`）。原始密钥在任何界面上都不出现（只有展示安全前缀）；UI 文案全走 `t()`。
 
 ## IP 纪律（备案约束）
 
