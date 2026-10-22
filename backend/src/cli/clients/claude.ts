@@ -62,10 +62,10 @@ export class ClaudeClientAdapter implements ClientAdapter {
       details,
       modelSlots: [
         { key: 'main', value: envVal('ANTHROPIC_MODEL'), default: 'auto' },
-        { key: 'haiku', value: envVal('ANTHROPIC_DEFAULT_HAIKU_MODEL'), default: 'auto-lite' },
-        { key: 'sonnet', value: envVal('ANTHROPIC_DEFAULT_SONNET_MODEL'), default: 'auto-plus' },
-        { key: 'opus', value: envVal('ANTHROPIC_DEFAULT_OPUS_MODEL'), default: 'auto-pro' },
-        { key: 'fable', value: envVal('ANTHROPIC_DEFAULT_FABLE_MODEL'), default: 'auto-ultra' },
+        { key: 'haiku', value: envVal('ANTHROPIC_DEFAULT_HAIKU_MODEL'), default: 'lite' },
+        { key: 'sonnet', value: envVal('ANTHROPIC_DEFAULT_SONNET_MODEL'), default: 'plus' },
+        { key: 'opus', value: envVal('ANTHROPIC_DEFAULT_OPUS_MODEL'), default: 'pro' },
+        { key: 'fable', value: envVal('ANTHROPIC_DEFAULT_FABLE_MODEL'), default: 'ultra' },
       ],
     };
   }

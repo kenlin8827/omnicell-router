@@ -59,7 +59,7 @@ describe('buildChatOcrHeaders — frozen base set', () => {
         sessionLookupType: 'prefix_chain',
         traceId: 'trace-7',
       }),
-      'auto-lite'
+      'lite'
     );
     assert.equal(headers['X-OCR-Tier'], 'lite-escalated');
     assert.equal(headers['X-OCR-Layer'], 'layer2');

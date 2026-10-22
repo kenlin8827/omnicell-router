@@ -58,14 +58,14 @@ describe('Per-key model access policy (auth/model-access.ts)', () => {
       assert.strictEqual(isModelAllowed('mock-plus', mid), false);
     });
 
-    it('isModelAllowed: virtual auto-* entries expand tier-wide (deny auto-plus ⇒ all plus models)', () => {
-      const denyPlus = { mode: 'deny' as const, models: ['auto-plus'] };
+    it('isModelAllowed: tier-alias entries expand tier-wide (deny plus ⇒ all plus models)', () => {
+      const denyPlus = { mode: 'deny' as const, models: ['plus'] };
       assert.strictEqual(isModelAllowed('mock-plus', denyPlus, 'plus'), false, 'tier expansion blocks plus models');
       assert.strictEqual(isModelAllowed('mock-lite', denyPlus, 'lite'), true);
       assert.strictEqual(isModelAllowed('mock-plus', denyPlus), true, 'without tier hint the entry stays literal (back-compat)');
 
-      const allowPlus = { mode: 'allow' as const, models: ['auto-plus'] };
-      assert.strictEqual(isModelAllowed('mock-plus', allowPlus, 'plus'), true, 'allow auto-plus admits plus tier');
+      const allowPlus = { mode: 'allow' as const, models: ['plus'] };
+      assert.strictEqual(isModelAllowed('mock-plus', allowPlus, 'plus'), true, 'allow plus admits plus tier');
       assert.strictEqual(isModelAllowed('mock-lite', allowPlus, 'lite'), false);
 
       // bare `auto` has no tier meaning — literal (non-)match only
@@ -73,11 +73,11 @@ describe('Per-key model access policy (auth/model-access.ts)', () => {
       assert.strictEqual(isModelAllowed('mock-plus', denyBare, 'plus'), true);
     });
 
-    it('checkRequestedModel: explicit auto-* request denied when its tier entry is listed', () => {
-      const denyUltra = { mode: 'deny' as const, models: ['auto-ultra'] };
-      assert.deepStrictEqual(checkRequestedModel('auto-ultra', denyUltra, () => []), { ok: false, denied: ['auto-ultra'] });
-      assert.deepStrictEqual(checkRequestedModel('auto-pro', denyUltra, () => []), { ok: true });
-      assert.deepStrictEqual(checkRequestedModel('auto-ultra', { mode: 'allow', models: ['auto-ultra'] }, () => []), { ok: true });
+    it('checkRequestedModel: explicit tier-alias request denied when its tier entry is listed', () => {
+      const denyUltra = { mode: 'deny' as const, models: ['ultra'] };
+      assert.deepStrictEqual(checkRequestedModel('ultra', denyUltra, () => []), { ok: false, denied: ['ultra'] });
+      assert.deepStrictEqual(checkRequestedModel('pro', denyUltra, () => []), { ok: true });
+      assert.deepStrictEqual(checkRequestedModel('ultra', { mode: 'allow', models: ['ultra'] }, () => []), { ok: true });
     });
 
     it('checkRequestedModel: auto* passthrough, explicit verdicts, variant→base, combo all-members', () => {
@@ -86,21 +86,21 @@ describe('Per-key model access policy (auth/model-access.ts)', () => {
 
       // Deny mode: unlisted virtual entries pass (pool filter is the backstop)
       const denyNothing = { mode: 'deny' as const, models: ['evil'] };
-      for (const m of ['auto', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra', 'default']) {
+      for (const m of ['auto', 'lite', 'plus', 'pro', 'ultra']) {
         assert.deepStrictEqual(checkRequestedModel(m, denyNothing, () => []), { ok: true });
       }
       // Allow mode: virtual entries must be NAMED by the whitelist
       assert.deepStrictEqual(checkRequestedModel('auto', allow, () => []), { ok: false, denied: ['auto'] });
-      assert.deepStrictEqual(checkRequestedModel('auto-lite', allow, () => []), { ok: false, denied: ['auto-lite'] });
+      assert.deepStrictEqual(checkRequestedModel('lite', allow, () => []), { ok: false, denied: ['lite'] });
       assert.deepStrictEqual(
         checkRequestedModel('auto', { mode: 'allow', models: ['auto', 'base'] }, () => []),
         { ok: true },
         'explicitly listed auto is usable'
       );
       assert.deepStrictEqual(
-        checkRequestedModel('auto-plus', { mode: 'allow', models: ['auto-*'] }, () => []),
+        checkRequestedModel('plus', { mode: 'allow', models: ['plus', 'ultra'] }, () => []),
         { ok: true },
-        'wildcard auto-* admits the whole virtual family'
+        'explicitly listed tier alias is usable'
       );
 
       // Explicit ids
@@ -125,11 +125,11 @@ describe('Per-key model access policy (auth/model-access.ts)', () => {
         checkRequestedModel('my-combo', { mode: 'allow', models: ['member-a', 'member-b'] }, members),
         { ok: true }
       );
-      // tier expansion applies to combo members: deny auto-lite blocks lite member
+      // tier expansion applies to combo members: deny plus blocks lite member
       assert.deepStrictEqual(
-        checkRequestedModel('my-combo', { mode: 'deny', models: ['auto-lite'] }, members),
+        checkRequestedModel('my-combo', { mode: 'deny', models: ['lite'] }, members),
         { ok: false, denied: ['member-b'] },
-        'deny auto-lite tier-denies the lite member'
+        'deny plus tier-denies the lite member'
       );
 
       // No policy → everything passes
@@ -267,9 +267,9 @@ describe('Per-key model access policy (auth/model-access.ts)', () => {
         ...buildConfig(),
         apiKeys: [
           {
-            id: 'key-allow-auto-plus-only',
+            id: 'key-allow-plus-only',
             name: 'Allow auto + plus only',
-            key: 'sk-ocr-test-allow-auto-plus-only',
+            key: 'sk-ocr-test-allow-plus-only',
                 enabled: true,
             createdAt: new Date().toISOString(),
             modelAccess: { mode: 'allow', models: ['auto', 'mock-plus'] },
@@ -282,7 +282,7 @@ describe('Per-key model access policy (auth/model-access.ts)', () => {
       const served = await app2.inject({
         method: 'POST',
         url: '/v1/chat/completions',
-        headers: { authorization: 'Bearer sk-ocr-test-allow-auto-plus-only' },
+        headers: { authorization: 'Bearer sk-ocr-test-allow-plus-only' },
         payload: { model: 'auto', messages: [{ role: 'user', content: 'hi' }] },
       });
       assert.strictEqual(served.statusCode, 200, 'bare auto widens to the whitelisted tier');
@@ -490,27 +490,27 @@ describe('Per-key model access policy (auth/model-access.ts)', () => {
             key: 'sk-ocr-test-deny-tier',
                 enabled: true,
             createdAt: new Date().toISOString(),
-            modelAccess: { mode: 'deny', models: ['auto-ultra'] },
+            modelAccess: { mode: 'deny', models: ['ultra'] },
           },
         ],
       };
       const { app: app2 } = createServer(denyKeyConfig, true);
       const list = await app2.inject({ method: 'GET', url: '/v1/models', headers: { authorization: 'Bearer sk-ocr-test-deny-tier' } });
       const ids: string[] = JSON.parse(list.body).data.map((m: any) => m.id);
-      assert.ok(!ids.includes('auto-ultra'), 'denied-tier virtual row hidden');
-      assert.ok(ids.includes('auto-plus'), 'other virtual tiers untouched');
+      assert.ok(!ids.includes('ultra'), 'denied-tier virtual row hidden');
+      assert.ok(ids.includes('plus'), 'other virtual tiers untouched');
       assert.ok(!ids.includes('mock-ultra'), 'tier expansion hides the ultra physical model too');
 
-      const lookup = await app2.inject({ method: 'GET', url: '/v1/models/auto-ultra', headers: { authorization: 'Bearer sk-ocr-test-deny-tier' } });
+      const lookup = await app2.inject({ method: 'GET', url: '/v1/models/ultra', headers: { authorization: 'Bearer sk-ocr-test-deny-tier' } });
       assert.strictEqual(lookup.statusCode, 404, 'denied virtual id 404s on lookup');
 
       const entry = await app2.inject({
         method: 'POST',
         url: '/v1/chat/completions',
         headers: { authorization: 'Bearer sk-ocr-test-deny-tier' },
-        payload: { model: 'auto-ultra', messages: [{ role: 'user', content: 'hi' }] },
+        payload: { model: 'ultra', messages: [{ role: 'user', content: 'hi' }] },
       });
-      assert.strictEqual(entry.statusCode, 403, 'explicit auto-ultra request rejected at entry');
+      assert.strictEqual(entry.statusCode, 403, 'explicit ultra request rejected at entry');
 
       const served = await app2.inject({
         method: 'POST',

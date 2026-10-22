@@ -1123,7 +1123,7 @@ export function registerConsoleRoutes(
     //    setup, so every merged ref must be routable (fail-fast).
     const allowedRefs = new Set<string>([
       // 'auto' is a legal slot ref (inherit-the-default): the adapter skips it.
-      'auto', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra',
+      'auto', 'lite', 'plus', 'pro', 'ultra',
       ...registry.getAllModels().map(m => m.id),
       ...registry.getCombos().map(c => c.id),
       ...registry.getVariantExposures().map(v => v.id),
@@ -1562,9 +1562,9 @@ export function registerConsoleRoutes(
   app.post('/api/admin/tiers/check', handleTiersCheck);
 
   // End-to-end tier test — one REAL minimal completion pinned to the tier via
-  // the `auto-<tier>` virtual entry: the same force_tier path a client's
-  // `model: "auto-pro"` request takes (a BARE tier name is not addressable on
-  // the chat wire — the orchestrator would classifier-route it). One run only
+  // the bare tier alias: the same force_tier path a client's
+  // `model: "pro"` request takes (tier aliases are reserved gateway ids,
+  // never classifier-routed). One run only
   // exercises the SELECTED member (the chain head, or the weighted/round-robin
   // pick), never the whole pool — deep per-model checks stay on the providers
   // page. An EMPTY tier degrades inside getModelForTier (the session-pin birth
@@ -1581,7 +1581,7 @@ export function registerConsoleRoutes(
     try {
       const result = await orchestrator.process(
         {
-          model: `auto-${tier}`,
+          model: tier,
           messages: [{ role: 'user', content: 'ping' }],
           max_tokens: 1,
         },
@@ -3339,7 +3339,7 @@ export function registerConsoleRoutes(
     const tierAllowed = (t: string) => registered.some((m) => m.tiers.includes(t) && m.allowed);
     // Virtual auto* rows honor runtime viability (mirrors /v1/models): bare
     // `auto` needs an allowed model in ANY tier, auto-X in tier X.
-    const virtual = ['auto', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra'].map((id) => ({
+    const virtual = ['auto', 'lite', 'plus', 'pro', 'ultra'].map((id) => ({
       id,
       provider: 'onecast-router',
       tier: tierFromVirtualEntry(id),
@@ -3389,16 +3389,26 @@ export function registerConsoleRoutes(
     // projection — a model may belong to several tiers, or none): no single
     // fixed tier is reported for any row.
     const models = [
-      ...['auto', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra'].map((id) => ({
+      ...['auto', 'lite', 'plus', 'pro', 'ultra'].map((id) => ({
         id,
-        kind: 'auto' as const,
+        // `auto` keeps its own kind (true auto-routing, cross-tier ratchet);
+        // the four bare tier aliases are pinned-tier entries, tagged 'tier'.
+        kind: (id === 'auto' ? 'auto' : 'tier') as 'auto' | 'tier',
         owned_by: 'onecast-router',
         tiers: [] as string[],
       })),
       // Order mirrors /v1/models: auto* → combos → registered → variants, so
       // console pickers surface the short virtual ids before the long physical
       // list.
-      ...registry.getCombos().map((c) => ({ id: c.id, kind: 'combo' as const, owned_by: 'onecast-router', tiers: [] as string[] })),
+      ...registry.getCombos().map((c) => ({
+        id: c.id,
+        kind: 'combo' as const,
+        owned_by: 'onecast-router',
+        tiers: [] as string[],
+        // Resolved member count (disabled/unregistered members dropped) —
+        // console pickers show it as the combo row's meta.
+        members: registry.resolveCombo(c.id).length,
+      })),
       ...registry.getAllModels().map((m) => ({
         id: m.id,
         kind: 'model' as const,

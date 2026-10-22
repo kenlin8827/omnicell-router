@@ -1305,11 +1305,11 @@ export const api = {
     return res.json();
   },
 
-  /** All models the gateway can route to: virtual (auto/auto-lite/…), combos,
-   *  registered models and variant exposures — `kind` tags which one each id is.
+  /** All models the gateway can route to: virtual (auto/lite/plus/pro/ultra), combos,
+   *  registered models and variant exposures — `kind` tags which one each id is ('auto' = the bare auto alias, 'tier' = the bare tier aliases).
    *  `tiers` = the full membership set (a model may belong to several tiers).
    *  Reads the console endpoint — /v1/models requires a key like every surface. */
-  async listGatewayModels(): Promise<{ id: string; owned_by: string; tiers?: string[]; kind?: string }[]> {
+  async listGatewayModels(): Promise<{ id: string; owned_by: string; tiers?: string[]; kind?: string; members?: number }[]> {
     const res = await fetch('/api/admin/gateway-models');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
@@ -1318,6 +1318,7 @@ export const api = {
       owned_by: m.owned_by || '',
       tiers: Array.isArray(m.tiers) ? m.tiers : [],
       kind: m.kind || undefined,
+      members: typeof m.members === 'number' ? m.members : undefined,
     }));
   },
 

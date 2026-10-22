@@ -38,7 +38,7 @@ export const ClientsPage: React.FC = () => {
   /** Per-client per-slot model selection ('auto' = intelligent routing default) */
   const [modelSel, setModelSel] = useState<Record<string, Record<string, string>>>({});
   /** Gateway-routable models (virtual + registered) from /v1/models */
-  const [models, setModels] = useState<{ id: string; tier?: string; kind?: string }[]>([]);
+  const [models, setModels] = useState<{ id: string; tier?: string; kind?: string; members?: number }[]>([]);
   /** Gateway API keys (Claude auth token writer) */
   const [apiKeys, setApiKeys] = useState<ApiKeyItem[]>([]);
   /** Per-client selected API key (raw key token) — setup ALWAYS writes the
@@ -487,6 +487,9 @@ export const ClientsPage: React.FC = () => {
       value: m.id,
       label: m.id === 'auto' ? t('clients.modelAuto') : m.id,
       kind: m.kind,
+      meta: m.kind === 'combo' && m.members !== undefined
+        ? t('models.memberCount', { n: m.members })
+        : undefined,
       ...modelRefBadge(m.kind, t),
     })));
 

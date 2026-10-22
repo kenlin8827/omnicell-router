@@ -51,7 +51,7 @@ import { resolveTraceId } from '../observability/trace-id.js';
 import { getWarnThrottle } from '../observability/warn-throttle.js';
 import { recordFailureEvent } from '../observability/failure-events.js';
 import { ActiveHealthProber, CircuitBreakerManager, ErrorClassifier } from '../resilience/index.js';
-import { ModelAccessConfig, isModelAllowed, isModelAllowedInTiers } from '../auth/model-access.js';
+import { ModelAccessConfig, isModelAllowed, isModelAllowedInTiers, tierFromVirtualEntry } from '../auth/model-access.js';
 import {
   DEFAULT_CREDENTIAL_AFFINITY_CACHE_TTL_MS,
   selectCredential,
@@ -435,14 +435,9 @@ export class PipelineOrchestrator {
     // /v1/chat handler had before dispatch, and gives both legs (Fastify +
     // MITM, which historically never trimmed) identical matching semantics.
     const modelName = (request.model ?? '').trim();
-    if (modelName === 'auto-lite') {
-      normalizedRequest.router_options = { ...normalizedRequest.router_options, force_tier: 'lite' };
-    } else if (modelName === 'auto-plus') {
-      normalizedRequest.router_options = { ...normalizedRequest.router_options, force_tier: 'plus' };
-    } else if (modelName === 'auto-pro') {
-      normalizedRequest.router_options = { ...normalizedRequest.router_options, force_tier: 'pro' };
-    } else if (modelName === 'auto-ultra') {
-      normalizedRequest.router_options = { ...normalizedRequest.router_options, force_tier: 'ultra' };
+    const bareTier = tierFromVirtualEntry(modelName);
+    if (bareTier) {
+      normalizedRequest.router_options = { ...normalizedRequest.router_options, force_tier: bareTier };
     } else if (modelName && modelName !== 'auto') {
       const specific = this.registry.getModel(modelName);
       if (specific) {
@@ -551,7 +546,7 @@ export class PipelineOrchestrator {
     // Defense in depth: an explicitly named model outside the key's model
     // policy fails loud here (HTTP routes entry-check this too; direct
     // orchestrator callers might not). The model's FULL membership set is
-    // passed so TIER-level entries (auto-lite/auto-plus/...) match exactly
+    // passed so TIER-level entries (lite/plus/pro/ultra) match exactly
     // as they do in the execution pool filter (executeCandidatePool) — a
     // tier-denied explicit model must not slip through the bare-name/variant
     // resolution paths, and a multi-pool model is admitted when any of its
@@ -568,7 +563,7 @@ export class PipelineOrchestrator {
     }
 
     // 1B. Global routing mode (config.routing.mode) — cost/quality force the tier
-    // for auto/default requests; explicit client choices always win.
+    // for auto/tier-alias requests; explicit client choices always win.
     const modeTier = routingModeForceTier(
       normalizedRequest.model,
       normalizedRequest.router_options,
@@ -830,7 +825,7 @@ export class PipelineOrchestrator {
     // - 'ratchet'  : auto routing — full monotonic ratchet (upgrade allowed,
     //                downgrade intercepted, pin honored)
     // - 'explicit' : a client-authored choice — a named model OR a forced
-    //                tier (auto-* aliases / the global mode lever /
+    //                tier (tier aliases / the global mode lever /
     //                router_options.force_tier). Turn recorded, a higher
     //                proposal still escalates the ceiling, but the session
     //                NEVER rewrites the proposal and the pin is neither
@@ -1310,7 +1305,7 @@ export class PipelineOrchestrator {
         // tier proximity) instead of failing with a policy 403. "auto"
         // promises SOME allowed model, not a specific tier.
         const accessPolicy = context?.modelAccess;
-        const isBareAuto = !normalizedRequest.model || normalizedRequest.model === 'auto' || normalizedRequest.model === 'default';
+        const isBareAuto = !normalizedRequest.model || normalizedRequest.model === 'auto';
         if (accessPolicy && isBareAuto && !explicitModel && !comboId) {
           const rank = TIER_RANK;
           // Multi-membership admit: allowed when the id or ANY membership
@@ -1331,7 +1326,7 @@ export class PipelineOrchestrator {
         // Auto keeps the configured failover budget; explicit/combo are
         // bounded by their own chain length (failover.maxAttempts governs
         // auto routing only). Cross-tier escalation is an AUTO-routing
-        // policy — forced tiers (auto-* / mode lever) and explicit models
+        // policy — forced tiers (tier aliases / mode lever) and explicit models
         // fail over within their tier by contract (ADR-0014).
         attemptCap = explicitModel ? Math.max(1, chain.length) : maxFailoverCandidates;
         allowEscalate =
@@ -1764,7 +1759,7 @@ export class PipelineOrchestrator {
       /**
        * How each chain entry derives its model-access tier and effort
        * translation: 'pool' (default) = every entry is judged against THIS
-       * tier — virtual auto-* access rules apply pool-wide and the pool's
+       * tier — virtual tier-alias access rules apply pool-wide and the pool's
        * claiming rule supplies the effortMap. 'member-home' = each member is
        * judged by its OWN home tier with its home translation (combo chains:
        * the composition spans tiers by design).

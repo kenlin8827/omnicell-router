@@ -118,7 +118,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     const setupRes = await adapter.setup({
       port: 4000,
       models: { main: 'auto' },
-      agentModels: { general: 'auto-lite', explore: 'deepseek-v4-flash', build: 'auto', 'bad name': 'auto-lite' },
+      agentModels: { general: 'lite', explore: 'deepseek-v4-flash', build: 'auto', 'bad name': 'lite' },
       profile: { id: 'prof1', bindings: { general: 'flash', explore: 'max', build: 'flash' } },
     });
     expect(setupRes.success).toBe(true);
@@ -126,7 +126,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
 
     // Fresh file (no agent node) → v2-native PLURAL `agents` home.
     const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    expect(cfg.agents.general.model).toBe('onecast-router/auto-lite');
+    expect(cfg.agents.general.model).toBe('onecast-router/lite');
     expect(cfg.agents.explore.model).toBe('onecast-router/deepseek-v4-flash');
     // 'auto' refs inherit the default model (no override); invalid names are skipped.
     expect(cfg.agents.build?.model).toBeUndefined();
@@ -169,7 +169,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
           // …while the retired singular node keeps a router-owned ghost (an older
           // build wrote it) plus the user's own non-router entry.
           agent: {
-            general: { model: 'onecast-router/auto-lite' },
+            general: { model: 'onecast-router/lite' },
             keeper: { model: 'zhipuai/glm-5.3' },
           },
         },
@@ -184,14 +184,14 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     const res = await adapter.setup({
       port: 4000,
       models: { main: 'auto' },
-      agentModels: { scout: 'auto-lite' },
+      agentModels: { scout: 'lite' },
       profile: { id: 'p', bindings: { scout: 'flash' } },
     });
     expect(res.success).toBe(true);
 
     const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     // New binding goes to the plural home…
-    expect(cfg.agents.scout.model).toBe('onecast-router/auto-lite');
+    expect(cfg.agents.scout.model).toBe('onecast-router/lite');
     // …the legacy ghost is swept, and user-owned non-router values survive.
     expect(cfg.agent.general.model).toBeUndefined();
     expect(cfg.agent.keeper.model).toBe('zhipuai/glm-5.3');
@@ -211,13 +211,13 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     const res = await adapter.setup({
       port: 4000,
       models: { main: 'auto' },
-      agentModels: { scout: 'auto-lite' },
+      agentModels: { scout: 'lite' },
     });
     expect(res.success).toBe(true);
 
     const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     // The binding lands in the v2 home (never forks into the singular node)…
-    expect(cfg.agents.scout.model).toBe('onecast-router/auto-lite');
+    expect(cfg.agents.scout.model).toBe('onecast-router/lite');
     // …and the user's own singular-node entry survives untouched.
     expect(cfg.agent.keeper.model).toBe('zhipuai/glm-5.3');
   });
@@ -235,7 +235,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     await adapter.setup({
       port: 4000,
       models: { main: 'auto' },
-      agentModels: { general: 'auto-lite', explore: 'glm-5.3' },
+      agentModels: { general: 'lite', explore: 'glm-5.3' },
       profile: { id: 'prof1', bindings: { general: 'flash', explore: 'max' } },
     });
     // Force the surgical fallback path: drop the rolling backup.
@@ -265,12 +265,12 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     // `models.subagent` key must NOT write anything.
     const res = await adapter.setup({
       port: 4000,
-      models: { main: 'auto', subagent: 'auto-pro' },
-      agentModels: { general: 'auto-lite' },
+      models: { main: 'auto', subagent: 'pro' },
+      agentModels: { general: 'lite' },
     });
     expect(res.success).toBe(true);
     let cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    expect(cfg.agents.general.model).toBe('onecast-router/auto-lite');
+    expect(cfg.agents.general.model).toBe('onecast-router/lite');
     expect(Object.keys(cfg.agents)).toEqual(['general']); // retired subagent slot wrote nothing
 
     // Engaged-but-empty agent bindings ({}): sweep router-owned overrides only.
@@ -279,10 +279,10 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(cfg.agents?.general?.model).toBeUndefined();
 
     // Bare setup (CLI shape — no agent payloads) never touches the agent node.
-    fs.writeFileSync(configPath, JSON.stringify({ model: 'x', agents: { keeper: { model: 'onecast-router/auto-plus' } } }, null, 2));
+    fs.writeFileSync(configPath, JSON.stringify({ model: 'x', agents: { keeper: { model: 'onecast-router/plus' } } }, null, 2));
     await adapter.setup({ port: 4000, models: { main: 'auto' } });
     cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    expect(cfg.agents.keeper.model).toBe('onecast-router/auto-plus');
+    expect(cfg.agents.keeper.model).toBe('onecast-router/plus');
   });
 
   it('refreshProfileBindings rewrites linked agents on profile change without a full setup', async () => {
@@ -295,7 +295,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     await adapter.setup({
       port: 4000,
       models: { main: 'auto' },
-      agentModels: { scout: 'auto-lite' },
+      agentModels: { scout: 'lite' },
       profile: { id: 'p1', bindings: { scout: 'flash' } },
     });
 
@@ -336,7 +336,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     await adapter.setup({
       port: 4000,
       models: { main: 'auto' },
-      agentModels: { scout: 'auto-lite', explore: 'glm-5.3' },
+      agentModels: { scout: 'lite', explore: 'glm-5.3' },
       profile: { id: 'p1', bindings: { scout: 'flash' } },
     });
 
@@ -370,13 +370,13 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     adapter.getConfigPath = () => configPath;
 
     await adapter.setup({ port: 4000, models: { main: 'auto' } });
-    await adapter.setup({ port: 4000, models: { main: 'auto-pro' } }); // router value must not poison previousModel
+    await adapter.setup({ port: 4000, models: { main: 'pro' } }); // router value must not poison previousModel
     fs.rmSync(`${configPath}.bak.ocr`, { force: true }); // force the surgical path
 
     const res = await adapter.teardown();
     expect(res.success).toBe(true);
     const restored = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    expect(restored.model).toBe('anthropic/claude-sonnet-4'); // not router/auto-pro, not a zombie
+    expect(restored.model).toBe('anthropic/claude-sonnet-4'); // not router/pro, not a zombie
   });
 
   it('listOpenCodeAgents merges built-ins, agent/*.md and the config node (config wins)', async () => {
@@ -386,7 +386,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
       JSON.stringify(
         {
           agent: {
-            scout: { mode: 'subagent', model: 'onecast-router/auto-lite' },
+            scout: { mode: 'subagent', model: 'onecast-router/lite' },
             build: { mode: 'primary' },
           },
         },
@@ -407,7 +407,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
 
     expect(byName.general).toMatchObject({ mode: 'subagent', source: 'builtin' });
     expect(byName.reviewer).toMatchObject({ mode: 'subagent', source: 'file', model: 'anthropic/claude-opus' });
-    expect(byName.scout).toMatchObject({ mode: 'subagent', source: 'config', model: 'auto-lite' }); // router prefix stripped
+    expect(byName.scout).toMatchObject({ mode: 'subagent', source: 'config', model: 'lite' }); // router prefix stripped
     expect(byName.build).toMatchObject({ mode: 'primary', source: 'config' });
   });
 
@@ -416,7 +416,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
       isAvailable: () => true,
       getAgents: async () => [
         { id: 'build', name: 'Build', mode: 'primary', model: { providerID: 'alibaba', id: 'x' } }, // display name must NOT leak into the write key
-        { id: 'explore', name: 'explore', mode: 'subagent', model: { providerID: 'onecast-router', id: 'auto-lite' } },
+        { id: 'explore', name: 'explore', mode: 'subagent', model: { providerID: 'onecast-router', id: 'lite' } },
         { id: 'tech-writer', mode: 'subagent', model: { providerID: 'anthropic', id: 'claude-x' } },
         { id: 'compaction', mode: 'primary', hidden: true },
       ],
@@ -424,7 +424,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     const agents = await listOpenCodeAgentsLive({ connector: stub as any, agentDir: path.join(tmpDir, 'missing'), configPath: path.join(tmpDir, 'missing.json') });
     expect(agents.map(a => a.name)).toEqual(['build', 'explore', 'tech-writer']);
     expect(agents[0]).toMatchObject({ mode: 'primary', source: 'service', model: 'alibaba/x' });
-    expect(agents[1]).toMatchObject({ mode: 'subagent', source: 'service', model: 'auto-lite' }); // router prefix stripped
+    expect(agents[1]).toMatchObject({ mode: 'subagent', source: 'service', model: 'lite' }); // router prefix stripped
     expect(agents[2]!.model).toBe('anthropic/claude-x'); // native id reported verbatim
   });
 
@@ -432,7 +432,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     const configPath = path.join(tmpDir, 'opencode.json');
     fs.writeFileSync(
       configPath,
-      JSON.stringify({ agents: { scout2: { mode: 'subagent', model: 'onecast-router/auto-pro' } } }, null, 2)
+      JSON.stringify({ agents: { scout2: { mode: 'subagent', model: 'onecast-router/pro' } } }, null, 2)
     );
     const stub = {
       isAvailable: () => true,
@@ -441,7 +441,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
       },
     };
     const agents = await listOpenCodeAgentsLive({ connector: stub as any, configPath, agentDir: path.join(tmpDir, 'missing') });
-    expect(agents.find(a => a.name === 'scout2')).toMatchObject({ mode: 'subagent', source: 'config', model: 'auto-pro' });
+    expect(agents.find(a => a.name === 'scout2')).toMatchObject({ mode: 'subagent', source: 'config', model: 'pro' });
     expect(agents.find(a => a.name === 'general')).toMatchObject({ source: 'builtin' });
   });
 
@@ -517,13 +517,13 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     let status = await adapter.getStatus();
     expect(status.hooked).toBe(false);
 
-    const setupRes = await adapter.setup({ port: 4000, models: { main: 'auto-pro' }, apiKey: 'sk-test', extraModels: ['gpt-4o'] });
+    const setupRes = await adapter.setup({ port: 4000, models: { main: 'pro' }, apiKey: 'sk-test', extraModels: ['gpt-4o'] });
     expect(setupRes.success).toBe(true);
     expect(fs.existsSync(`${configPath}.bak.ocr`)).toBe(true);
 
     status = await adapter.getStatus();
     expect(status.hooked).toBe(true);
-    expect(status.modelSlots[0].value).toBe('auto-pro');
+    expect(status.modelSlots[0].value).toBe('pro');
     expect(status.extraModels).toEqual(['gpt-4o']);
 
     const updated = JSON.parse(fs.readFileSync(configPath, 'utf8'));
@@ -628,9 +628,9 @@ describe('CLI Client Setup & Teardown Adapters', () => {
 
     const hooked = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
     expect(hooked.theme).toBe('nvim-dark'); // unrelated settings keys survive
-    expect(hooked.subagents.agentOverrides.worker).toEqual({ thinking: 'high', model: 'onecast-router/auto-pro' });
-    expect(hooked.subagents.agentOverrides.scout.model).toBe('onecast-router/auto-lite');
-    expect(hooked.subagents.agentOverrides.oracle.model).toBe('onecast-router/auto-ultra');
+    expect(hooked.subagents.agentOverrides.worker).toEqual({ thinking: 'high', model: 'onecast-router/pro' });
+    expect(hooked.subagents.agentOverrides.scout.model).toBe('onecast-router/lite');
+    expect(hooked.subagents.agentOverrides.oracle.model).toBe('onecast-router/ultra');
     expect(hooked.subagents.agentOverrides.reviewer).toEqual({ model: 'anthropic/claude-x' }); // user-owned override untouched
 
     const status = await adapter.getStatus();
@@ -659,7 +659,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     await adapter.setup({ port: 4000 });
     await adapter.setup({ port: 8000 }); // re-setup: the backup now contains pinned overrides
 
-    expect(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).subagents.agentOverrides.oracle.model).toBe('onecast-router/auto-ultra');
+    expect(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).subagents.agentOverrides.oracle.model).toBe('onecast-router/ultra');
 
     const res = await adapter.teardown();
     expect(res.success).toBe(true);
@@ -705,14 +705,14 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     // Unchanged echo of a manual non-router pin is left byte-identical.
     expect(hooked.subagents.agentOverrides.reviewer.model).toBe('anthropic/claude-x');
     // Roles absent from the payload get the router preset (fill-only-absent).
-    expect(hooked.subagents.agentOverrides.researcher.model).toBe('onecast-router/auto-lite');
+    expect(hooked.subagents.agentOverrides.researcher.model).toBe('onecast-router/lite');
 
     const status = await adapter.getStatus();
     const byKey = Object.fromEntries(status.modelSlots.map(s => [s.key, s]));
     expect(byKey.main).toBeDefined();
-    expect(byKey.scout).toMatchObject({ value: 'auto', default: 'auto-lite' });
-    expect(byKey.oracle).toMatchObject({ value: 'glm-5.3', default: 'auto-ultra' });
-    expect(byKey.researcher).toMatchObject({ value: 'auto-lite' });
+    expect(byKey.scout).toMatchObject({ value: 'auto', default: 'lite' });
+    expect(byKey.oracle).toMatchObject({ value: 'glm-5.3', default: 'ultra' });
+    expect(byKey.researcher).toMatchObject({ value: 'lite' });
     expect(byKey.reviewer).toMatchObject({ value: 'anthropic/claude-x' }); // foreign pin echoed verbatim
 
     // Payload-less re-setup: explicit concrete picks survive; preset-vocabulary
@@ -722,8 +722,8 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(after.oracle.model).toBe('onecast-router/glm-5.3');
     expect(after.worker.model).toBe('onecast-router/my-worker');
     expect(after.reviewer.model).toBe('anthropic/claude-x');
-    expect(after.researcher.model).toBe('onecast-router/auto-lite');
-    expect(after.scout.model).toBe('onecast-router/auto-lite'); // alias pick normalized
+    expect(after.researcher.model).toBe('onecast-router/lite');
+    expect(after.scout.model).toBe('onecast-router/lite'); // alias pick normalized
   });
 
   it('Pi adapter should discover the subagent roster dynamically (package builtins + user agents, launchers skipped)', async () => {
@@ -745,7 +745,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(res.success).toBe(true);
 
     const overrides = JSON.parse(fs.readFileSync(settingsPath, 'utf8')).subagents.agentOverrides;
-    expect(overrides.scout.model).toBe('onecast-router/auto-lite'); // known role → preset tier
+    expect(overrides.scout.model).toBe('onecast-router/lite'); // known role → preset tier
     expect(overrides['custom-helper'].model).toBe('onecast-router/auto'); // discovered custom → auto cascade
     expect(overrides['claude-code']).toBeUndefined(); // external-CLI launcher skipped
     expect(overrides.planner).toBeUndefined(); // preset-only role absent from a discoverable roster
@@ -769,13 +769,13 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(status.exists).toBe(false);
     expect(status.hooked).toBe(false);
 
-    const setupRes = await adapter.setup({ port: 4000, models: { main: 'auto-pro' }, apiKey: 'sk-test', extraModels: ['deepseek-v4-pro'] });
+    const setupRes = await adapter.setup({ port: 4000, models: { main: 'pro' }, apiKey: 'sk-test', extraModels: ['deepseek-v4-pro'] });
     expect(setupRes.success).toBe(true);
     expect(fs.existsSync(webFile)).toBe(true);
 
     status = await adapter.getStatus();
     expect(status.hooked).toBe(true);
-    expect(status.modelSlots[0].value).toBe('auto-pro');
+    expect(status.modelSlots[0].value).toBe('pro');
     expect(status.extraModels).toEqual(['deepseek-v4-pro']);
 
     const data = parseYaml(fs.readFileSync(webFile, 'utf8'));
@@ -785,7 +785,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(route.api).toBe('openai-completions');
     expect(route.headers.Authorization).toBe('Bearer sk-test');
     // Fixed auto* alias block is injected after main (minus main itself), then the user's extras.
-    expect(route.models.map((m: any) => m.id)).toEqual(['auto-pro', 'auto', 'auto-lite', 'auto-plus', 'auto-ultra', 'deepseek-v4-pro']);
+    expect(route.models.map((m: any) => m.id)).toEqual(['pro', 'auto', 'lite', 'plus', 'ultra', 'deepseek-v4-pro']);
 
     const teardownRes = await adapter.teardown();
     expect(teardownRes.success).toBe(true);

@@ -79,7 +79,7 @@ describe('Unified pool: last-candidate force-try', () => {
     }
 
     const result = await orchestrator.process({
-      model: 'auto-lite',
+      model: 'lite',
       messages: [{ role: 'user', content: 'Force try tier' }],
     } as any);
 
@@ -195,7 +195,7 @@ describe('Unified session modes: explicit wins', () => {
     // Turn 2 extends the REAL chain (captured assistant content) so zero-header
     // resolution maps both turns to the same session.
     const baseMessages = [{ role: 'user', content: 'Raise the ceiling' }];
-    const r1 = await orchestrator.process({ model: 'auto-pro', messages: baseMessages } as any);
+    const r1 = await orchestrator.process({ model: 'pro', messages: baseMessages } as any);
     const messages = [
       ...baseMessages,
       { role: 'assistant', content: r1.response!.choices[0]!.message!.content },
@@ -216,7 +216,7 @@ describe('Unified session modes: explicit wins', () => {
     // Turn 1 pins the tier default (lite-1); turn 2 explicitly names the
     // SECONDARY lite model on the SAME session (real chain extension).
     const baseMessages = [{ role: 'user', content: 'Session start' }];
-    const r1 = await orchestrator.process({ model: 'auto-lite', messages: baseMessages } as any);
+    const r1 = await orchestrator.process({ model: 'lite', messages: baseMessages } as any);
     const before = (orchestrator.getSessionManager() as any).sessions.get(r1.sessionId);
     assert.equal(before.maxTier, 'lite');
     assert.equal(before.pinnedModel, 'lite-1');
@@ -244,7 +244,7 @@ describe('429 hard-trip with explicit Retry-After', () => {
     const { registry, orchestrator } = makeOrchestrator(config);
 
     const result = await orchestrator.process({
-      model: 'auto-lite',
+      model: 'lite',
       messages: [{ role: 'user', content: 'Hit the limit' }],
       __simulate_error_model__: 'lite-1',
       __simulate_status__: 429,
@@ -265,7 +265,7 @@ describe('429 hard-trip with explicit Retry-After', () => {
     await new Promise(r => setTimeout(r, 90));
 
     const r2 = await orchestrator.process({
-      model: 'auto-lite',
+      model: 'lite',
       messages: [{ role: 'user', content: 'After cooldown' }],
     } as any);
     assert.equal(r2.modelUsed, 'lite-1'); // canary succeeded → recovered
@@ -330,12 +330,12 @@ describe('P1 hardening: dead combos fail fast, reserved ids never route', () => 
   it('should ignore combos with reserved virtual ids (they cannot shadow routing)', () => {
     const config = makeConfig({
       combos: [
-        { id: 'auto-lite', selection: 'priority', models: ['lite-1'] },
+        { id: 'lite', selection: 'priority', models: ['lite-1'] },
         { id: 'combo-ok', selection: 'priority', models: ['lite-1', 'lite-2'] },
       ],
     });
     const registry = new ProviderRegistry(config, true);
-    assert.equal(registry.isCombo('auto-lite'), false);
+    assert.equal(registry.isCombo('lite'), false);
     assert.equal(registry.isCombo('combo-ok'), true);
   });
 

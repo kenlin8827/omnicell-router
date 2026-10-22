@@ -14,7 +14,7 @@ import { sortModelOptions } from '../lib/model-options';
 type Selection = 'priority' | 'weighted' | 'round_robin';
 
 /** Virtual model ids routing owns — a combo must never shadow them. */
-const RESERVED_COMBO_IDS = new Set(['auto', 'default', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra']);
+const RESERVED_COMBO_IDS = new Set(['auto', 'lite', 'plus', 'pro', 'ultra']);
 const COMBOS_PAGE_SIZE = 12;
 const COMBOS_PAGE_SIZES = [12, 24, 48];
 /** Combo cards show at most this many member chips; longer chains collapse into a "+N more" row. */
@@ -503,7 +503,7 @@ export const CombosPage: React.FC = () => {
         for (const c of comboRes.combos || []) byId[c.id] = c;
         setMeta(byId);
         setCombos((comboRes.combos || []).map(toDraft));
-        // Registered physical models only — virtual auto-* entries and combos
+        // Registered physical models only — virtual tier aliases (auto + bare tier names) and combos
         // are owned_by 'onecast-router'. Tier presence is deliberately NOT
         // the criterion: combos are the sanctioned way to call pool-less
         // (unclassified) models, so those must stay selectable here.

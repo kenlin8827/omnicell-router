@@ -9,7 +9,7 @@ import { ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.j
 import { CircuitBreakerManager, UpstreamError, type ModelAvailability, type ModelHealthView } from '../resilience/index.js';
 import { globMatchAny } from '../utils/glob.js';
 import { loadConfig } from '../config/index.js';
-import { resolveTierMembers, claimModel, claimInTier, matchingTiers, applyEffortMap, MEMBER_TIER_ORDER, TIER_DESCENDING_ORDER, comboMemberRefsOf, expandComboRefs, RESERVED_COMBO_IDS, type ExpandedMembers } from './member-match.js';
+import { resolveTierMembers, claimModel, claimInTier, matchingTiers, applyEffortMap, MEMBER_TIER_ORDER, TIER_DESCENDING_ORDER, comboMemberRefsOf, expandComboRefs, RESERVED_IDS, type ExpandedMembers } from './member-match.js';
 import { createChunkAccumulator, type StreamRelay } from '../utils/chat-stream.js';
 
 /**
@@ -172,6 +172,10 @@ export class ProviderRegistry {
   }
 
   public registerModel(model: ModelRegistration, isDefault = false): void {
+    if (RESERVED_IDS.has(model.id)) {
+      console.warn(`[Registry] Model id '${model.id}' is a reserved virtual model name — registration ignored.`);
+      return;
+    }
     if (this.combos.has(model.id)) {
       console.warn(`[Registry] Model id '${model.id}' shadows an existing combo id — the combo became unreachable.`);
     }
@@ -702,7 +706,7 @@ export class ProviderRegistry {
       if (
         this.models.has(siblingId) ||
         this.variantIndex.has(siblingId) ||
-        RESERVED_COMBO_IDS.has(siblingId)
+        RESERVED_IDS.has(siblingId)
       ) {
         continue;
       }
@@ -757,7 +761,7 @@ export class ProviderRegistry {
     this.comboRrCursor.clear();
     for (const combo of combos || []) {
       if (!combo?.id || !Array.isArray(combo.models) || combo.models.length === 0) continue;
-      if (RESERVED_COMBO_IDS.has(combo.id)) {
+      if (RESERVED_IDS.has(combo.id)) {
         console.warn(`[Registry] Combo id '${combo.id}' is a reserved virtual model name — combo ignored.`);
         continue;
       }

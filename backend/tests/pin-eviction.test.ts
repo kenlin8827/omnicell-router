@@ -124,7 +124,7 @@ function makeFixture(mode: 'both' | 'm1only' = 'both', extras: Record<string, un
 }
 
 const sessCtx = (sessionId: string) => ({ headers: { 'x-session-id': sessionId } });
-const turn = (content: string, model = 'auto-plus'): ChatCompletionRequest => ({
+const turn = (content: string, model = 'plus'): ChatCompletionRequest => ({
   model,
   messages: [{ role: 'user', content }],
 });

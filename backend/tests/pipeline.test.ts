@@ -15,7 +15,7 @@ describe('End-to-End Pipeline & FinOps Orchestration', () => {
 
   it('1. Simple chitchat should execute on Lite tier and record token usage', async () => {
     const req: ChatCompletionRequest = {
-      model: 'auto-lite',
+      model: 'lite',
       messages: [{ role: 'user', content: 'hello there' }],
     };
 
@@ -208,7 +208,7 @@ describe('Bare upstream-name resolution (explicit-model pass-through)', () => {
   });
 
   it('defense-in-depth: bare-name resolution honors a tier-level DENY entry (403)', async () => {
-    // B1: `auto-lite` is a TIER entry — id matching alone cannot see it.
+    // B1: `lite` is a TIER entry — id matching alone cannot see it.
     // The explicit-model check must pass explicitModel.tier so the denied
     // lite-tier model fails closed here (403) instead of being served by
     // the pool filter finding zero candidates.
@@ -219,7 +219,7 @@ describe('Bare upstream-name resolution (explicit-model pass-through)', () => {
             model: 'qwen-test-flash',
             messages: [{ role: 'user', content: 'hello' }],
           } as ChatCompletionRequest,
-          { modelAccess: { mode: 'deny', models: ['auto-lite'] } }
+          { modelAccess: { mode: 'deny', models: ['lite'] } }
         ),
       (err: any) => {
         assert.match(err.message, /API key model policy denies model 'beta\/qwen-test-flash'/);

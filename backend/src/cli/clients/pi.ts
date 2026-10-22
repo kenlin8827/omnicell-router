@@ -28,7 +28,7 @@ const PI_FALLBACK_API_KEY = '***';
 /**
  * Router-owned subagent tier mapping for pi-subagents
  * (`subagents.agentOverrides.<role>.model` in ~/.pi/agent/settings.json).
- * Full four-tier ladder (mirrors the gateway's auto-lite/plus/pro/ultra):
+ * Full four-tier ladder (mirrors the gateway's lite/plus/pro/ultra):
  * lite = recon & web research, plus = verification & delegation,
  * pro = implementation & review, ultra = the oracle second opinion.
  * This is NOT the roster source — roles are discovered from the installed
@@ -42,15 +42,15 @@ const PI_FALLBACK_API_KEY = '***';
  * as `<PI_PROVIDER_KEY>/<alias>` so pi-subagents resolves them exactly.
  */
 const PI_SUBAGENT_TIERS: Record<string, string> = {
-  scout: 'auto-lite',
-  researcher: 'auto-lite',
-  delegate: 'auto-plus',
-  'evidence-auditor': 'auto-plus',
-  'context-builder': 'auto-plus', // legacy builtin (pre-0.7x releases)
-  planner: 'auto-pro', // legacy builtin (pre-0.7x releases)
-  worker: 'auto-pro',
-  reviewer: 'auto-pro',
-  oracle: 'auto-ultra',
+  scout: 'lite',
+  researcher: 'lite',
+  delegate: 'plus',
+  'evidence-auditor': 'plus',
+  'context-builder': 'plus', // legacy builtin (pre-0.7x releases)
+  planner: 'pro', // legacy builtin (pre-0.7x releases)
+  worker: 'pro',
+  reviewer: 'pro',
+  oracle: 'ultra',
 };
 
 /** Namespace prefix marking a subagent override as router-owned (teardown strips these, only these). */
@@ -115,10 +115,10 @@ function removeMeta(configPath: string): void {
  */
 const PI_ALIAS_META: Record<string, { name: string }> = {
   auto: { name: 'Auto' },
-  'auto-lite': { name: 'Lite' },
-  'auto-plus': { name: 'Plus' },
-  'auto-pro': { name: 'Pro' },
-  'auto-ultra': { name: 'Ultra' },
+  'lite': { name: 'Lite' },
+  'plus': { name: 'Plus' },
+  'pro': { name: 'Pro' },
+  'ultra': { name: 'Ultra' },
 };
 
 /**

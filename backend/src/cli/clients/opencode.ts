@@ -90,13 +90,13 @@ function buildRouterProviderNode(port: number, model?: string, extraModels?: str
   const modelEntry = (label: string) => ({ name: label });
   const models: Record<string, { name: string }> = {
     auto: modelEntry('Auto'),
-    'auto-lite': modelEntry('Lite'),
-    'auto-plus': modelEntry('Plus'),
-    'auto-pro': modelEntry('Pro'),
-    'auto-ultra': modelEntry('Ultra'),
+    'lite': modelEntry('Lite'),
+    'plus': modelEntry('Plus'),
+    'pro': modelEntry('Pro'),
+    'ultra': modelEntry('Ultra'),
   };
   // Pin a concrete registered model: expose it in the client's model picker.
-  if (model && model !== 'auto' && !model.startsWith('auto-')) {
+  if (model && model !== 'auto' && !['lite','plus','pro','ultra'].includes(model)) {
     models[model] = modelEntry(`Pinned: ${model}`);
   }
   // Additional concrete models so the user can switch freely inside OpenCode.
@@ -327,7 +327,7 @@ export class OpenCodeClientAdapter implements ClientAdapter {
     materializeDefs(defsPaths, configPath);
 
     // Restore the user's original default whenever the current one is any
-    // router ref (not just router/auto — re-setups may leave router/auto-pro,
+    // router ref (not just router/auto — re-setups may leave router/pro,
     // router/<pinned model> etc.).
     if (typeof data.model === 'string' && data.model.startsWith(`${ROUTER_PROVIDER_ID}/`)) {
       const { previousModel } = readMeta(configPath);

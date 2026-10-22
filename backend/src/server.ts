@@ -26,9 +26,8 @@ const TIER_RANK: Record<string, number> = { lite: 1, plus: 2, pro: 3, ultra: 4 }
 /**
  * How the client addressed a session's turns, derived from persisted traces
  * (observability reconstruction — never routing state):
- * - 'auto'    : every turn named an auto alias (bare auto/default or a
- *               tier-forced auto-lite/plus/pro/ultra) — the ratchet owns the
- *               tier.
+ * - 'auto'    : every turn named an auto alias (bare auto or a tier-forced
+ *               lite/plus/pro/ultra) — the ratchet owns the tier.
  * - 'explicit': every turn named a concrete registered model — the client owns
  *               the choice, the tier column has no lock to show.
  * - 'combo'   : every turn went through a combo — the composition IS the
@@ -39,11 +38,11 @@ export type SessionEntryMode = 'auto' | 'explicit' | 'combo' | 'mixed';
 
 /** Classify a session from its traces (chronological order irrelevant). */
 export function deriveSessionEntryMode(traces: ExecutionTrace[]): SessionEntryMode {
-  // Virtual auto aliases: bare auto/default plus the four tier-forced ids.
-  // Routing runs these through the ratchet path (the tier ids rewrite
-  // force_tier before routing), so a tier-forced session owns a tier lock —
-  // classifying it as explicit would strip the tier badge.
-  const AUTO_ALIAS_MODELS = new Set(['auto', 'default', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra']);
+  // Virtual auto aliases: bare auto plus the four tier-forced aliases
+  // (lite/plus/pro/ultra). Routing runs these through the ratchet path (the
+  // tier aliases rewrite force_tier before routing), so a tier-forced session
+  // owns a tier lock — classifying it as explicit would strip the tier badge.
+  const AUTO_ALIAS_MODELS = new Set(['auto', 'lite', 'plus', 'pro', 'ultra']);
   let sawAuto = false;
   let sawExplicit = false;
   let sawCombo = false;
@@ -794,10 +793,10 @@ export function createServer(
     const policy = getModelAccessPolicy((req as any).authInfo?.keyConfig);
     const virtualModels = [
       { id: 'auto', object: 'model', created: 1700000000, owned_by: 'onecast-router', description: 'Intelligent multi-tier cascading auto-router (Recommended Default)' },
-      { id: 'auto-lite', object: 'model', created: 1700000000, owned_by: 'onecast-router', description: 'Force Lite & low-cost layer (~$0.2/M)' },
-      { id: 'auto-plus', object: 'model', created: 1700000000, owned_by: 'onecast-router', description: 'Force Plus workhorse layer (~$3-$15/M)' },
-      { id: 'auto-pro', object: 'model', created: 1700000000, owned_by: 'onecast-router', description: 'Force Pro thinking-effort specialist tier (~$3-$8/M)' },
-      { id: 'auto-ultra', object: 'model', created: 1700000000, owned_by: 'onecast-router', description: 'Force Ultra frontier-tier layer (~$60+/M)' },
+      { id: 'lite', object: 'model', created: 1700000000, owned_by: 'onecast-router', description: 'Force Lite & low-cost layer (~$0.2/M)' },
+      { id: 'plus', object: 'model', created: 1700000000, owned_by: 'onecast-router', description: 'Force Plus workhorse layer (~$3-$15/M)' },
+      { id: 'pro', object: 'model', created: 1700000000, owned_by: 'onecast-router', description: 'Force Pro thinking-effort specialist tier (~$3-$8/M)' },
+      { id: 'ultra', object: 'model', created: 1700000000, owned_by: 'onecast-router', description: 'Force Ultra frontier-tier layer (~$60+/M)' },
     ];
 
     const registered = registry.getAllModels().map(m => ({
@@ -812,7 +811,7 @@ export function createServer(
     }));
 
     // Custom model combos: user-composed virtual models (config.combos),
-    // routable exactly like the auto-* virtual models above.
+    // routable exactly like the virtual tier aliases above.
     const comboModels = registry.getCombos().map(c => ({
       id: c.id,
       object: 'model',
@@ -880,7 +879,7 @@ export function createServer(
     const variantRef = specific ? null : registry.resolveVariantRef(model);
     const found = specific ||
       variantRef ||
-      ['auto', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra'].includes(model) ||
+      ['auto', 'lite', 'plus', 'pro', 'ultra'].includes(model) ||
       (registry.isCombo(model) && !registry.isComboDisabled(model));
 
     if (!found) {
@@ -894,7 +893,7 @@ export function createServer(
     // their base model's verdict; combos pass only when EVERY member does;
     // virtual auto* ids honor the same runtime viability as the listing.
     if (policy) {
-      const isVirtual = model === 'auto' || model.startsWith('auto-');
+      const isVirtual = model === 'auto' || ['lite', 'plus', 'pro', 'ultra'].includes(model);
       const tierAllowed = (t: string) => all.some((m) => m.tier === t && isModelAllowed(m.id, policy, m.tier));
       const allowed = registry.isCombo(model)
         ? registry.resolveCombo(model).every((mem) => isModelAllowed(mem.id, policy, mem.tier))

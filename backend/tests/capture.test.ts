@@ -592,8 +592,8 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
   it('writes exactly 4 events per inference turn (inbound-req/res + outbound-req/res)', async () => {
     const sessionIdA = 'sess_events_aaa';
     const sessionIdB = 'sess_events_bbb';
-    await emitOneTurn('corr_aaa', sessionIdA, 'auto-lite');
-    await emitOneTurn('corr_bbb', sessionIdB, 'auto-plus');
+    await emitOneTurn('corr_aaa', sessionIdA, 'lite');
+    await emitOneTurn('corr_bbb', sessionIdB, 'plus');
     const dateDir = CaptureRecorder.localDateDir(new Date());
     const contentA = fs.readFileSync(path.join(tmp, dateDir, `${sessionIdA}.jsonl`), 'utf8');
     const linesA = contentA.split('\n').filter(l => l.trim());
@@ -706,8 +706,8 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
   it('readEvents groups by correlationId and computes per-direction latency', async () => {
     const sessionId = 'sess_read_events';
     // Two turns, sequential — same sessionId so both land in one JSONL.
-    await emitOneTurn('corr_read_1', sessionId, 'auto-lite');
-    await emitOneTurn('corr_read_2', sessionId, 'auto-plus');
+    await emitOneTurn('corr_read_1', sessionId, 'lite');
+    await emitOneTurn('corr_read_2', sessionId, 'plus');
     const dateDir = CaptureRecorder.localDateDir(new Date());
     const file = `${sessionId}.jsonl`;
     const result = await recorder.readEvents(dateDir, file, 100);
@@ -728,7 +728,7 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
 
   it('readEvents bodies=none strips wire bodies, keeps lines/status/headers', async () => {
     const sessionId = 'sess_read_none';
-    await emitOneTurn('corr_none_1', sessionId, 'auto-lite');
+    await emitOneTurn('corr_none_1', sessionId, 'lite');
     const dateDir = CaptureRecorder.localDateDir(new Date());
     const file = `${sessionId}.jsonl`;
     const result = await recorder.readEvents(dateDir, file, 100, 'none');
@@ -749,7 +749,7 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
 
   it('readEvents derives completionTokens from the last usage block', async () => {
     const sessionId = 'sess_read_tokens';
-    await emitOneTurn('corr_tok_1', sessionId, 'auto-lite');
+    await emitOneTurn('corr_tok_1', sessionId, 'lite');
     // Streaming-style body: usage repeats per chunk, the LAST occurrence is
     // the cumulative total.
     await recorder.recordEvent({
@@ -759,7 +759,7 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
       spanId: 'wire_tok_2',
       traceId: 'corr_tok_2',
       sessionId,
-      model: 'auto-lite',
+      model: 'lite',
       status: 'ok',
       wire: {
         requestLine: 'POST /v1/chat/completions HTTP/1.1',
@@ -778,7 +778,7 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
       spanId: 'wire_tok_2',
       traceId: 'corr_tok_2',
       sessionId,
-      model: 'auto-lite',
+      model: 'lite',
       status: 'ok',
       wire: {
         requestLine: '',
@@ -800,7 +800,7 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
 
   it('readTurn returns the full turn by client-request id; unknown ids answer null', async () => {
     const sessionId = 'sess_read_turn';
-    await emitOneTurn('corr_turn_1', sessionId, 'auto-lite');
+    await emitOneTurn('corr_turn_1', sessionId, 'lite');
     const dateDir = CaptureRecorder.localDateDir(new Date());
     const file = `${sessionId}.jsonl`;
     const meta = await recorder.readEvents(dateDir, file, 100, 'none');
@@ -1049,7 +1049,7 @@ describe('CaptureRecorder per-session seal (maxSessionMB)', () => {
       spanId: `w_seal_${i}`,
       traceId: `t_seal_${i}`,
       sessionId: SESSION,
-      model: 'auto-lite',
+      model: 'lite',
       status: 'ok',
       wire: {
         requestLine: 'POST /v1/chat/completions HTTP/1.1',

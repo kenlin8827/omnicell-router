@@ -12,7 +12,7 @@ import { createServer } from '../src/server.js';
  */
 /**
  * Fixed test credential — NOT read from disk config.yaml. Real disk keys may
- * carry per-key model-access policies (a deny list hides auto-ultra etc.),
+ * carry per-key model-access policies (a deny list hides ultra etc.),
  * which would make the full-catalog assertions environment-dependent. A
  * policy-less key injected into the boot config sees everything, always.
  */
@@ -62,10 +62,10 @@ describe('Fastify Gateway Server & OpenAI Endpoints', () => {
     assert.strictEqual(body.object, 'list');
     const ids = body.data.map((m: any) => m.id);
     assert.ok(ids.includes('auto'), 'Expected virtual "auto" model');
-    assert.ok(ids.includes('auto-lite'));
-    assert.ok(ids.includes('auto-plus'));
-    assert.ok(ids.includes('auto-pro'));
-    assert.ok(ids.includes('auto-ultra'));
+    assert.ok(ids.includes('lite'));
+    assert.ok(ids.includes('plus'));
+    assert.ok(ids.includes('pro'));
+    assert.ok(ids.includes('ultra'));
 
     const physical = body.data.find((m: any) => m.metadata?.pricing);
     assert.ok(physical, 'Expected physical model with pricing metadata');
@@ -111,7 +111,7 @@ describe('Fastify Gateway Server & OpenAI Endpoints', () => {
     assert.ok(body.choices.length > 0);
   });
 
-  it('POST /v1/chat/completions with a padded " auto-lite " model still force-tiers to lite', async () => {
+  it('POST /v1/chat/completions with a padded " lite " model still force-tiers to lite', async () => {
     // 'P=NP?' is classifier-plus content (see router.test.ts default-baseline
     // case): landing on lite proves the routing fork trimmed the padded
     // auto-alias — the trim tolerance the pre-dispatch server.ts handler had.
@@ -122,13 +122,13 @@ describe('Fastify Gateway Server & OpenAI Endpoints', () => {
       method: 'POST',
       url: '/v1/chat/completions',
       payload: {
-        model: ' auto-lite ',
+        model: ' lite ',
         messages: [{ role: 'user', content: 'P=NP?' }],
       },
     });
 
     assert.strictEqual(res.statusCode, 200);
-    assert.strictEqual(res.headers['x-ocr-tier'], 'lite', 'padded auto-lite must match the force-tier alias');
+    assert.strictEqual(res.headers['x-ocr-tier'], 'lite', 'padded lite must match the force-tier alias');
   });
 
   it('POST /v1/chat/completions with reasoning_effort emits the X-OCR-Thinking-* headers', async () => {

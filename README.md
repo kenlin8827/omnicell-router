@@ -144,7 +144,7 @@ OneCastRouter exposes full OpenAI-compatible and Anthropic-compatible endpoints.
 ### 2. Claude Code / OpenCode CLI / Chatbox
 1. **API Base URL**: `http://127.0.0.1:3000/v1`
 2. **API Key**: Any placeholder string (or your configured `adminApiKey`).
-3. **Model**: `auto` (or explicit tier aliases like `auto-plus`).
+3. **Model**: `auto` (or explicit tier aliases like `plus`).
 
 ### 3. Python SDK
 ```python
@@ -197,11 +197,11 @@ Clients can request models through four distinct addressing modalities (ADR-0003
 
 | Model Reference | Type | Routing Behavior & FinOps Profile |
 | :--- | :--- | :--- |
-| **`auto`** / **`default`** | Dynamic Cascading Model | **Full Cascaded Pipeline**: Evaluates traits, consults the RouteEntry table, optionally calls the System One judge, and respects the session ratchet. Yields 70%~90% cost savings. |
-| **`auto-lite`** | Forced Virtual Tier | Serves exclusively from the `lite` model pool (~$0.10 ~ $0.50 / M tokens). Governed by explicit contract: no dynamic escalation. |
-| **`auto-plus`** | Forced Virtual Tier | Serves exclusively from the `plus` workhorse pool (~$2.00 ~ $3.00 / M tokens). Default general-purpose engineering baseline. |
-| **`auto-pro`** | Forced Virtual Tier | Serves exclusively from the `pro` reasoning specialist pool (~$3.00 ~ $8.00 / M tokens) for deep mathematical proofs and complex refactors. |
-| **`auto-ultra`** | Forced Virtual Tier | Serves from the `ultra` frontier tier (≥ $8.00 / M tokens) for large-scale multi-file codebases and complex autonomous agent loops. |
+| **`auto`** | Dynamic Cascading Model | **Full Cascaded Pipeline**: Evaluates traits, consults the RouteEntry table, optionally calls the System One judge, and respects the session ratchet. Yields 70%~90% cost savings. |
+| **`lite`** | Forced Virtual Tier | Serves exclusively from the `lite` model pool (~$0.10 ~ $0.50 / M tokens). Governed by explicit contract: no dynamic escalation. |
+| **`plus`** | Forced Virtual Tier | Serves exclusively from the `plus` workhorse pool (~$2.00 ~ $3.00 / M tokens). Default general-purpose engineering baseline. |
+| **`pro`** | Forced Virtual Tier | Serves exclusively from the `pro` reasoning specialist pool (~$3.00 ~ $8.00 / M tokens) for deep mathematical proofs and complex refactors. |
+| **`ultra`** | Forced Virtual Tier | Serves from the `ultra` frontier tier (≥ $8.00 / M tokens) for large-scale multi-file codebases and complex autonomous agent loops. |
 | *Custom Combos* | Virtual Model Sets | Composed model groups with configured selection strategies (`priority`, `weighted`, `round_robin`). Fails over strictly within combo members. |
 | *Direct Physical Models* | Direct Passthrough | Any registered upstream physical identifier (e.g. `deepseek-chat`, `claude-3-7-sonnet-20250219`). Bypasses tier arbitration. |
 

@@ -154,7 +154,7 @@ export interface ComboConfig {
  * at request time. It is consumed when a client hook applies — the resolved
  * modelRef is written into the client's own config. `modelRef` is a
  * gateway-visible id: registered model, combo id, or an auto virtual id
- * ('auto' | 'auto-lite' | 'auto-plus' | 'auto-pro' | 'auto-ultra').
+ * ('auto' | 'lite' | 'plus' | 'pro' | 'ultra').
  * Slot keys are free-form per profile (role names like 'flash' / 'pro' /
  * 'max' / 'vision'); an agent bound to a slot the selected profile does not
  * define stays unbound.

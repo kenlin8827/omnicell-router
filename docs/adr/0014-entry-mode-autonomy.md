@@ -7,7 +7,7 @@
 ## Context
 
 A gateway serves several entry modes on one wire: the `auto` cascade, the tier-forced aliases
-(`auto-lite/plus/pro/ultra`), the global routing-mode lever (`routing.mode: cost|quality`),
+(`lite/plus/pro/ultra`), the global routing-mode lever (`routing.mode: cost|quality`),
 client-sent `router_options.force_tier`, explicitly named models (full id / `#variant` / bare
 upstream name), and configured combos. Each mode carries a different client intent — but every
 tier/effort mutation the gateway can perform (session ratchet, retry ladder, schema-assertion
@@ -19,8 +19,8 @@ corrected matrix as a contract.
 
 | Entry mode | Tier may move by gateway judgment? | Effort may be inferred? | Session interaction |
 | :--- | :--- | :--- | :--- |
-| `auto` / `default` / unregistered names (classifier) | **YES** — full autonomy | YES (judge, entry table, retry ladder) | `'ratchet'` — upgrade, downgrade interception, pin read/follow |
-| Forced tier: `auto-*` alias, `routing.mode` lever, `router_options.force_tier` | **NO** — the forced tier is a contract | NO inference (client value / variant pin / model spec only) | `'explicit'` — recorded, proposal NEVER rewritten downward; a forced tier ABOVE the peak is a sanctioned ceiling rise (re-pins the session, as any upgrade); at/below the peak the pin in another tier is neither followed nor rewritten (untouched for later auto turns); zombie ids repair to the forced tier's healthy head; the empty-tier degraded landing still follows |
+| `auto` / tier aliases / unregistered names (classifier) | **YES** — full autonomy | YES (judge, entry table, retry ladder) | `'ratchet'` — upgrade, downgrade interception, pin read/follow |
+| Forced tier: tier alias (`lite`/`plus`/`pro`/`ultra`), `routing.mode` lever, `router_options.force_tier` | **NO** — the forced tier is a contract | NO inference (client value / variant pin / model spec only) | `'explicit'` — recorded, proposal NEVER rewritten downward; a forced tier ABOVE the peak is a sanctioned ceiling rise (re-pins the session, as any upgrade); at/below the peak the pin in another tier is neither followed nor rewritten (untouched for later auto turns); zombie ids repair to the forced tier's healthy head; the empty-tier degraded landing still follows |
 | Explicit model (full id / `#variant` / bare name) | **NO** — the named model serves; failover within its tier only | NO inference (same as forced tier) | `'explicit'` — plus pin write-back when the named model served |
 | Combo | **NO** — the composition is authoritative | NO | `'bypass'` — no session entity, no pin, no ceiling |
 

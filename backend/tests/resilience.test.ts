@@ -422,7 +422,7 @@ describe('Resilience: Transparent Multi-Model Failover & Session Self-Healing', 
 
     // Simulate primary-plus failing with 402 Quota Exhausted
     const request: any = {
-      model: 'auto-plus',
+      model: 'plus',
       messages: [{ role: 'user', content: 'Explain quantum entanglement' }],
       __simulate_error_model__: 'primary-plus',
       __simulate_status__: 402,
@@ -446,9 +446,9 @@ describe('Resilience: Transparent Multi-Model Failover & Session Self-Healing', 
     assert.equal(primaryBreaker?.getState(), 'OPEN');
     assert.equal(primaryBreaker?.getSnapshot().category, 'QUOTA_EXHAUSTED');
 
-    // Next request to auto-plus should immediately route to secondary-plus without touching primary!
+    // Next request to plus should immediately route to secondary-plus without touching primary!
     const req2: any = {
-      model: 'auto-plus',
+      model: 'plus',
       messages: [{ role: 'user', content: 'Follow up question' }],
     };
     const result2 = await orchestrator.process(req2);
@@ -464,7 +464,7 @@ describe('Resilience: Transparent Multi-Model Failover & Session Self-Healing', 
 
     // Turn 1: Normal turn, session pins to primary-plus
     const req1: any = {
-      model: 'auto-plus',
+      model: 'plus',
       messages: [{ role: 'user', content: 'Hello assistant' }],
       router_options: { session_id: sessionId },
     };
@@ -479,7 +479,7 @@ describe('Resilience: Transparent Multi-Model Failover & Session Self-Healing', 
 
     // Turn 2: Follow-up in same session
     const req2: any = {
-      model: 'auto-plus',
+      model: 'plus',
       messages: [
         { role: 'user', content: 'Hello assistant' },
         { role: 'assistant', content: 'Hi there!' },

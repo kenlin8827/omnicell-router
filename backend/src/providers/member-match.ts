@@ -90,10 +90,11 @@ export const COMBO_REF_PREFIX = 'combo:';
 
 export const isComboRef = (pattern: string): boolean => pattern.startsWith(COMBO_REF_PREFIX);
 
-/** Virtual model ids that routing already owns — a combo may never take one
-    (registry applyCombos ignores such definitions with a warn), so combo
+/** Reserved gateway ids that routing already owns — the cross-tier auto
+    alias plus the four bare tier aliases. Registrable by neither models nor
+    combos (registry ignores such definitions with a warn), so combo
     expansion treats them as dead refs everywhere (commit AND boot views). */
-export const RESERVED_COMBO_IDS = new Set(['auto', 'default', 'auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra']);
+export const RESERVED_IDS = new Set(['auto', 'lite', 'plus', 'pro', 'ultra']);
 
 /** Registered member refs of one combo id, config order, deduped; empty = nothing live. */
 export type ComboRefLookup = (comboId: string) => { id: string; weight: number }[] | null;
@@ -125,9 +126,9 @@ export function comboRefLookupFromConfig(
   const map = new Map<string, { id: string; weight: number }[]>();
   for (const combo of combos || []) {
     // disabled = operator takedown; a model registered over the combo id
-    // shadows it; reserved ids (auto*) were never registered as combos —
+    // shadows it; reserved ids were never registered as combos —
     // all three leave the combo unable to serve, so all are dead refs.
-    if (!combo?.id || combo.disabled === true || isRegistered(combo.id) || RESERVED_COMBO_IDS.has(combo.id)) continue;
+    if (!combo?.id || combo.disabled === true || isRegistered(combo.id) || RESERVED_IDS.has(combo.id)) continue;
     map.set(combo.id, comboMemberRefsOf(combo, isRegistered));
   }
   return (comboId) => map.get(comboId) ?? null;

@@ -217,7 +217,9 @@ export const ModelProfilesPage: React.FC = () => {
           value: m.id,
           label: m.id,
           kind: (m as { kind?: string }).kind,
-          meta: m.owned_by || undefined,
+          meta: m.kind === 'combo' && typeof (m as { members?: number }).members === 'number'
+            ? t('models.memberCount', { n: (m as { members?: number }).members! })
+            : (m.owned_by || undefined),
           ...modelRefBadge(m.kind, t),
         }))));
       })

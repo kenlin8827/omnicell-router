@@ -71,10 +71,10 @@ export interface ModelProfileBinding {
  */
 export const VIRTUAL_AUTO_IDS: ReadonlySet<string> = new Set([
   'auto',
-  'auto-lite',
-  'auto-plus',
-  'auto-pro',
-  'auto-ultra',
+  'lite',
+  'plus',
+  'pro',
+  'ultra',
 ]);
 
 export interface ClientModelSlot {
@@ -82,6 +82,6 @@ export interface ClientModelSlot {
   key: string;
   /** Currently pinned model id read from the client config; undefined = auto */
   value?: string;
-  /** Recommended default for this role (e.g. haiku → 'auto-lite', opus → 'auto-pro'); used for UI seeding and reset */
+  /** Recommended default for this role (e.g. haiku → 'lite', opus → 'pro'); used for UI seeding and reset */
   default?: string;
 }

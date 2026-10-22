@@ -318,6 +318,7 @@ export const RulesPage: React.FC = () => {
         value: `combo:${c.id}`,
         label: c.id,
         badge: t('tierPolicy.comboBadge'),
+        badgeColor: 'var(--accent-violet)',
         meta: t('tierPolicy.comboMemberCount', { n: (c.members || []).filter((m) => m.registered).length }),
       }));
     const modelOptions = gatewayModels

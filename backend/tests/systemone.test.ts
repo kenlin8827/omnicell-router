@@ -610,7 +610,7 @@ describe('POST /v1/systemone end-to-end', () => {
   });
 });
 
-describe('System One: auto-* tier alias resolution', () => {
+describe('System One: tier alias resolution', () => {
   /** One native systemone upstream + one model per tier: alias resolution is
    *  observable purely through X-OCR-Model (native passthrough echoes the
    *  upstream body, so the header is the only honest disclosure). */
@@ -651,7 +651,7 @@ describe('System One: auto-* tier alias resolution', () => {
     usage: { input_tokens: 1, output_tokens: 0 },
   };
 
-  test('auto-plus / auto-lite resolve to the chain-head member of the named tier', async () => {
+  test('plus / lite resolve to the chain-head member of the named tier', async () => {
     useSandbox('plain');
     const upstream = serve({
       port: 0,
@@ -661,11 +661,11 @@ describe('System One: auto-* tier alias resolution', () => {
     });
     try {
       const { app } = createServer(tieredConfig(upstream.port));
-      const plus = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'auto-plus' } });
+      const plus = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'plus' } });
       expect(plus.statusCode).toBe(200);
       expect(plus.headers['x-ocr-model']).toBe('native/plus-b'); // first registered plus member
 
-      const lite = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'auto-lite' } });
+      const lite = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'lite' } });
       expect(lite.statusCode).toBe(200);
       expect(lite.headers['x-ocr-model']).toBe('native/lite-a');
     } finally {
@@ -691,7 +691,7 @@ describe('System One: auto-* tier alias resolution', () => {
         method: 'POST',
         url: '/v1/systemone',
         headers: { authorization: 'Bearer sk-skip' },
-        payload: { ...REQ, model: 'auto-plus' },
+        payload: { ...REQ, model: 'plus' },
       });
       expect(res.statusCode).toBe(200);
       expect(res.headers['x-ocr-model']).toBe('native/plus-c');
@@ -710,18 +710,18 @@ describe('System One: auto-* tier alias resolution', () => {
       method: 'POST',
       url: '/v1/systemone',
       headers: { authorization: 'Bearer sk-no-plus' },
-      payload: { ...REQ, model: 'auto-plus' },
+      payload: { ...REQ, model: 'plus' },
     });
     expect(res.statusCode).toBe(403);
     expect(res.json().error.code).toBe('model_not_allowed');
-    expect(String(res.json().error.message)).toContain('auto-plus');
+    expect(String(res.json().error.message)).toContain('plus');
   });
 
   test('tier with no registered members → 404 model_not_found', async () => {
     useSandbox('plain');
     const config = tieredConfig(1); // lite/plus members exist; ultra/pro tiers are empty
     const { app } = createServer(config);
-    const res = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'auto-ultra' } });
+    const res = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'ultra' } });
     expect(res.statusCode).toBe(404);
     expect(res.json().error.code).toBe('model_not_found');
     // Pinned to the tier-pool message so this test discriminates the alias
@@ -740,7 +740,7 @@ describe('System One: auto-* tier alias resolution', () => {
       method: 'POST',
       url: '/v1/systemone',
       headers: { authorization: 'Bearer sk-narrow' },
-      payload: { ...REQ, model: 'auto-plus' },
+      payload: { ...REQ, model: 'plus' },
     });
     expect(res.statusCode).toBe(403);
     expect(res.json().error.code).toBe('model_not_allowed');
@@ -756,16 +756,16 @@ describe('System One: auto-* tier alias resolution', () => {
     });
     try {
       const config = tieredConfig(upstream.port, [
-        { name: 'tier-wide', key: 'sk-tier', modelAccess: { mode: 'allow', models: ['auto-plus'] } },
+        { name: 'tier-wide', key: 'sk-tier', modelAccess: { mode: 'allow', models: ['plus'] } },
       ]);
       const { app } = createServer(config);
-      // 'auto-plus' in the whitelist expands to EVERY plus-tier member, so
+      // 'plus' in the whitelist expands to EVERY plus-tier member, so
       // both plus-b and plus-c are admissible; the chain head serves.
       const res = await app.inject({
         method: 'POST',
         url: '/v1/systemone',
         headers: { authorization: 'Bearer sk-tier' },
-        payload: { ...REQ, model: 'auto-plus' },
+        payload: { ...REQ, model: 'plus' },
       });
       expect(res.statusCode).toBe(200);
       expect(res.headers['x-ocr-model']).toBe('native/plus-b');
@@ -781,7 +781,7 @@ describe('System One: auto-* tier alias resolution', () => {
     const breaker = registry.getCircuitBreakerManager();
     breaker.trip('native/plus-b', { reason: 'test', cooldownMs: 60000 });
     breaker.trip('native/plus-c', { reason: 'test', cooldownMs: 60000 });
-    const res = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'auto-plus' } });
+    const res = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'plus' } });
     expect(res.statusCode).toBe(503);
     expect(res.json().error.code).toBe('no_healthy_model');
   });

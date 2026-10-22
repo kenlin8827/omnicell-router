@@ -179,7 +179,7 @@ describe('self-healing: credential rebind rides the model repin', () => {
     // the (foreign) binding is stale for p2's chain -> forced re-spread.
     registry.getCircuitBreakerManager().trip(m1.id, { reason: 'test outage' }, 'p1');
     // auto mode so the session pin (ratchet) drives the preference:
-    const r2 = await orchestrator.process(turn('hello again', 'auto-plus'), sessCtx(sessionId));
+    const r2 = await orchestrator.process(turn('hello again', 'plus'), sessCtx(sessionId));
     expect(r2.modelUsed).toBe(m2.id);
     const session = orchestrator.getSessionManager().getSession(sessionId)!;
     expect(session.pinnedModel).toBe(m2.id);
@@ -215,7 +215,7 @@ describe('self-healing: credential rebind rides the model repin', () => {
     await orchestrator.process(turn('hello', 'p1/alpha'), sessCtx(sessionId));
     const bound = orchestrator.getSessionManager().getSession(sessionId)!.boundKeyHashPrefix!;
     registry.getCircuitBreakerManager().trip(m1.id, undefined, 'p1');
-    const r2 = await orchestrator.process(turn('hello again', 'auto-plus'), sessCtx(sessionId));
+    const r2 = await orchestrator.process(turn('hello again', 'plus'), sessCtx(sessionId));
     expect(r2.modelUsed).toBe(m2same.id);
     expect(orchestrator.getSessionManager().getSession(sessionId)!.boundKeyHashPrefix).toBe(bound); // continuity
     expect(stub.seen[1]?.keyHashPrefix).toBe(bound); // served on the SAME credential

@@ -9,20 +9,21 @@ export type { ModelAccessConfig };
 export const ENTRY_PATTERN = /^[A-Za-z0-9._:/\-]+(\*[A-Za-z0-9._:/\-]*)*$/;
 
 /**
- * Virtual force-tier id → tier name (`TierLevel | ''`). Policy lists accept
- * these entries as tier-wide rules: `deny auto-plus` blocks EVERY plus-tier
- * model (not just a literal id that happens to be named auto-plus, which
- * matches nothing). Bare `auto` and physical ids return '' (no tier meaning).
+ * Virtual tier alias → tier name (`TierLevel | ''`). The four aliases are the
+ * BARE tier names (`lite`/`plus`/`pro`/`ultra`) — reserved ids, registrable by
+ * neither models nor combos. Policy lists accept them as tier-wide rules:
+ * `deny plus` blocks EVERY plus-tier model. Bare `auto` and physical ids
+ * return '' (no tier meaning).
  */
 export function tierFromVirtualEntry(entry: string): TierLevel | '' {
   switch (entry) {
-    case 'auto-lite':
+    case 'lite':
       return 'lite';
-    case 'auto-plus':
+    case 'plus':
       return 'plus';
-    case 'auto-pro':
+    case 'pro':
       return 'pro';
-    case 'auto-ultra':
+    case 'ultra':
       return 'ultra';
     default:
       return '';
@@ -71,7 +72,7 @@ export function getModelAccessPolicy(keyConfig?: ApiKeyConfig): ModelAccessConfi
 
 /**
  * Does `policy` admit the model? List entries are exact ids, `*` wildcards,
- * OR virtual tier ids (`auto-lite`/`auto-plus`/`auto-pro`/`auto-ultra`) which
+ * OR virtual tier aliases (`lite`/`plus`/`pro`/`ultra`) which
  * match EVERY model of that tier — pass the candidate's `tier` to enable that
  * expansion (undefined tier = entries match by id/wildcard only).
  * Undefined policy (or empty list in deny mode) admits everything.
@@ -88,7 +89,7 @@ export function isModelAllowed(modelId: string, policy?: ModelAccessConfig, tier
 /**
  * Multi-membership variant of `isModelAllowed`: the model may belong to
  * SEVERAL tier pools (`tiers` = every tier claiming it). Allow mode admits
- * when the id matches an entry OR any membership tier matches an auto-*
+ * when the id matches an entry OR any membership tier matches a tier-alias
  * entry; deny mode rejects when the id matches an entry OR any membership
  * tier is denied — one denied pool is enough to veto the model.
  */
@@ -113,10 +114,9 @@ export function isModelAllowedInTiers(
  *   to the base model id that will actually serve
  * - combo ids → allowed only when EVERY member passes (no silent composition
  *   change: a combo with a denied member is rejected outright)
- * - virtual `auto*` entries: deny mode blocks explicitly listed tiers; ALLOW
- *   mode requires the virtual id to be named by the whitelist (exact or
- *   wildcard) — an unnamed entry is not part of the whitelist
- * - `default` behaves like `auto`
+ * - virtual tier aliases: deny mode blocks explicitly listed tiers; ALLOW
+ *   mode requires the alias to be named by the whitelist (exact or wildcard)
+ *   — an unnamed entry is not part of the whitelist
  *
  * Returns { ok: true } or { ok: false, denied } with the denied ids
  * for the 403 error message.
@@ -129,10 +129,10 @@ export function checkRequestedModel(
   modelTier?: (id: string) => string | undefined
 ): { ok: true } | { ok: false; denied: string[] } {
   if (!policy) return { ok: true };
-  const requested = requestedModel === 'default' ? 'auto' : requestedModel;
+  const requested = requestedModel;
   if (!requested) return { ok: true };
 
-  if (requested === 'auto' || requested.startsWith('auto-')) {
+  if (requested === 'auto' || tierFromVirtualEntry(requested) !== '') {
     if (policy.mode === 'deny') {
       const reqTier = tierFromVirtualEntry(requested);
       if (reqTier && policy.models.some((e) => tierFromVirtualEntry(e) === reqTier)) {
@@ -162,15 +162,15 @@ export function checkRequestedModel(
 }
 
 /**
- * Should the virtual auto* entry `id` surface as usable for `policy`?
- * `tierAllowed(tier)` reports whether at least one REGISTERED model of that
- * tier passes the (tier-expanded) policy.
+ * Should the virtual entry `id` (`auto` or a tier alias) surface as usable
+ * for `policy`? `tierAllowed(tier)` reports whether at least one REGISTERED
+ * model of that tier passes the (tier-expanded) policy.
  * - deny mode: usable unless its tier is explicitly denied, while anything
  *   is routable at all.
  * - allow mode: the whitelist must NAME the entry (exact or wildcard), AND
  *   it must be runtime-viable — bare `auto` needs at least one allowed model
- *   in ANY tier, `auto-X` needs one in tier X — otherwise the preview would
- *   promise a 200 that the execution pool turns into a 403.
+ *   in ANY tier, a tier alias needs one in that tier — otherwise the preview
+ *   would promise a 200 that the execution pool turns into a 403.
  */
 export function isAutoEntryUsable(
   id: string,

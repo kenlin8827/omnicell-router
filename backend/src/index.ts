@@ -234,6 +234,26 @@ async function main() {
 
   const { app } = createServer(config, false, registry, orchestrator);
 
+  // Legacy-id migration hint: the tier aliases dropped their `auto-` prefix
+  // and the bare `default` alias was retired. Old ids in persisted config no
+  // longer resolve — point the operator at the exact spots instead of letting
+  // requests 404 silently.
+  const LEGACY_MODEL_IDS = ['auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra', 'default'];
+  const legacySpots: string[] = [];
+  for (const key of config.apiKeys || []) {
+    for (const m of key.modelAccess?.models || []) {
+      if (LEGACY_MODEL_IDS.includes(m)) legacySpots.push(`apiKeys[${key.name}].modelAccess: '${m}'`);
+    }
+  }
+  for (const p of config.modelProfiles || []) {
+    for (const [slot, ref] of Object.entries(p.slots || {})) {
+      if (LEGACY_MODEL_IDS.includes(ref)) legacySpots.push(`modelProfiles[${p.id}].slots.${slot}: '${ref}'`);
+    }
+  }
+  for (const spot of legacySpots) {
+    console.warn(`[OCR] Legacy model id in config — tier aliases are now bare (lite/plus/pro/ultra), 'default' was retired; please update: ${spot}`);
+  }
+
   try {
     await app.listen({ port: config.port, host: config.host });
     // A UI-restart child must self-register: the pid/info files still point at
@@ -242,7 +262,7 @@ async function main() {
     console.log('\n============================================================');
     console.log(`🚀 OCR Gateway (OneCastRouter) is ready! (OpenAI API Compatible)`);
     console.log(`👉 API Base URL     : http://127.0.0.1:${config.port}/v1`);
-    console.log(`👉 Default Model    : auto (Virtual models: auto, auto-lite, auto-plus, auto-pro, auto-ultra)`);
+    console.log(`👉 Default Model    : auto (Virtual models: auto, lite, plus, pro, ultra)`);
     console.log(`👉 Chat Completions : http://127.0.0.1:${config.port}/v1/chat/completions`);
     console.log(`👉 Anthropic Msgs   : http://127.0.0.1:${config.port}/v1/messages`);
     console.log(`👉 Models List      : http://127.0.0.1:${config.port}/v1/models`);

@@ -32,6 +32,7 @@ export interface TranslationDict {
    *  pickers that mix them (lib/modelRefBadge.ts). */
   modelRef: {
     kindAuto: string;
+    kindTier: string;
     kindCombo: string;
     kindVariant: string;
   };
@@ -592,6 +593,7 @@ export interface TranslationDict {
     filterAll: string;
     onlyConnected: string;
     sortDefault: string;
+    memberCount: string;
     sortPriceAsc: string;
     sortPriceDesc: string;
     sortContextDesc: string;

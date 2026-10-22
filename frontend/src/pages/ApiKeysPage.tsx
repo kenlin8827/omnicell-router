@@ -61,7 +61,7 @@ const ENTRY_PATTERN = /^[A-Za-z0-9._:/\-]+(\*[A-Za-z0-9._:/\-]*)*$/;
 const ModelAccessPicker: React.FC<{
   mode: AccessMode;
   models: string[];
-  gatewayModels: { id: string; owned_by: string; kind?: string }[];
+  gatewayModels: { id: string; owned_by: string; kind?: string; members?: number }[];
   onModeChange: (m: AccessMode) => void;
   onModelsChange: (models: string[]) => void;
 }> = ({ mode, models, gatewayModels, onModeChange, onModelsChange }) => {
@@ -120,7 +120,7 @@ const ModelAccessPicker: React.FC<{
             style={{ cursor: 'pointer' }}
             value={models}
             onChange={onModelsChange}
-            options={sortModelOptions(gatewayModels.map((o) => ({ value: o.id, label: o.id, kind: o.kind, meta: o.owned_by, ...modelRefBadge(o.kind, t) })))}
+            options={sortModelOptions(gatewayModels.map((o) => ({ value: o.id, label: o.id, kind: o.kind, meta: o.kind === 'combo' && o.members !== undefined ? t('models.memberCount', { n: o.members }) : o.owned_by, ...modelRefBadge(o.kind, t) })))}
             placeholder={t('apiKeys.accessAddPlaceholder')}
           />
           <div style={{ display: 'flex', gap: '6px', marginTop: '8px' }}>
@@ -289,7 +289,7 @@ export const ApiKeysPage: React.FC = () => {
   };
 
   // Gateway model catalog — lazy-loaded when a picker first needs it.
-  const [gatewayModels, setGatewayModels] = useState<{ id: string; owned_by: string; kind?: string }[]>([]);
+  const [gatewayModels, setGatewayModels] = useState<{ id: string; owned_by: string; kind?: string; members?: number }[]>([]);
 
   useEffect(() => {
     const pickerVisible =
@@ -1047,7 +1047,7 @@ http://127.0.0.1:3000/v1
 ${inlineKey}
 
 # 4. 模型名称选择或添加：
-#    虚拟分流模型：auto / auto-lite / auto-plus / auto-pro / auto-ultra
+#    虚拟分流模型：auto / lite / plus / pro / ultra
 #    或具体模型（完整 ID）：opencode/claude-sonnet-5-5、opencode/gpt-6-sol、opencode/glm-5.3`
           )}
 
@@ -1060,7 +1060,7 @@ client = OpenAI(
 )
 
 response = client.chat.completions.create(
-    model="auto", # 智能分流：auto / auto-lite / auto-plus / auto-pro / auto-ultra
+    model="auto", # 智能分流：auto / lite / plus / pro / ultra
     messages=[{"role": "user", "content": "Hello OCR Gateway!"}]
 )
 
@@ -1082,7 +1082,7 @@ print(response.choices[0].message.content)`
 export ANTHROPIC_BASE_URL=http://127.0.0.1:3000
 export ANTHROPIC_AUTH_TOKEN=${inlineKey}
 
-# 2. 可选：默认模型（auto = 智能分流，也可 auto-lite / auto-plus / auto-pro / auto-ultra）
+# 2. 可选：默认模型（auto = 智能分流，也可 lite / plus / pro / ultra）
 export ANTHROPIC_MODEL=auto
 
 # 3. 正常启动 claude 即可。Claude Code 的请求将自动走网关的
@@ -1099,7 +1099,7 @@ client = Anthropic(
 )
 
 message = client.messages.create(
-    model="auto", # 智能分流：auto / auto-lite / auto-plus / auto-pro / auto-ultra
+    model="auto", # 智能分流：auto / lite / plus / pro / ultra
     max_tokens=1024,
     messages=[{"role": "user", "content": "Hello OCR Gateway!"}]
 )

@@ -102,7 +102,7 @@ export const RouteEntriesPage: React.FC = () => {
   };
 
   // Editor option labels: the wire identifier stays the anchor (it is the
-  // stored fact — route-entry rows, model ids like auto-lite, and the
+  // stored fact — route-entry rows, model ids like lite, and the
   // X-OCR-Thinking-* headers all speak it verbatim); the localized gloss is
   // appended when the locale has one (zh), and dropped when it doesn't (en).
   const tierOptionLabel = (v: string): string => {

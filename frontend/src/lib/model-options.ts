@@ -39,7 +39,7 @@ export function sortModelOptions<T extends SortableOption>(options: readonly T[]
   // order (console.ts): auto* aliases, then combos, then the rest. A `combo:`
   // value prefix counts too (tier member pickers encode combos that way).
   const groupRank = (o: SortableOption): number => {
-    if (o.kind === 'auto' || o.value === 'auto') return 0;
+    if (o.kind === 'auto' || o.kind === 'tier' || o.value === 'auto') return 0;
     if (o.kind === 'combo' || o.value.startsWith('combo:')) return 1;
     return 2;
   };

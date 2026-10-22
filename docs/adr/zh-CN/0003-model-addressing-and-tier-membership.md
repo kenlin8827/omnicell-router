@@ -11,14 +11,14 @@
 解析顺序，精确（chat 路径 `orchestrator.ts:348-467`；决策面镜像同一顺序 `surfaces/decision-pipeline.ts:54-137`）：
 
 1. trim 一次；`request.model` 原文上 wire（surface 契约——转发字节永不改写）。
-2. `auto-lite|plus|pro|ultra` 虚拟 id → `force_tier`（Layer 0，ADR-0001）。这些 id 是 RESERVED——模型与 combo 都不得注册（`RESERVED_COMBO_IDS`，`registry.ts:695`）。
+2. 裸梯队别名 `lite|plus|pro|ultra` → `force_tier`（Layer 0，ADR-0001）。这些 id 是 RESERVED——模型与 combo 都不得注册（`RESERVED_IDS`，`member-match.ts`）。历史备注：这些别名最初带前缀（`auto-lite`…`auto-ultra`）；同一次清理中去掉了前缀，并退役了裸 `default` 别名（它是 `auto` 的同义词）——配置中仍残留旧 id 时启动会告警。
 3. 精确已注册 id → 透明直通：钉扎该模型并强制其梯队（`:364-373`）。
 4. 变体兄弟 `base-variant` / `base#variant` → 路由到 BASE，钉扎变体的 `reasoningEffort`、压过客户端所发思考级别（`ModelVariant = {id, reasoningEffort}`；`:375-387`）。真实注册 id 永远赢过兄弟名；combo 赢过变体引用；`#` 无匹配变体 → **响亮 404，绝不静默转 auto**（`:388-398`）。
 5. 裸上游名（无 provider 前缀——客户端按其自家目录点名模型的方式）：全部命中返回，按输入价、id 定序（`getModelsByUpstreamName`）；MITM 腿额外按被拦截 host 收窄（`upstreamHost` 取自客户端请求 host——原生腿刻意不信 Host，防伪冒；`:106-124,415-418`）。裸命中**绝不**抢占某个仍是活跃 combo id 的名字（`:425`）——该名字的网关自释义是它公布的 combo；同名物理模型仍可用带 provider 前缀的完整 id 直达。
 6. combo id（在精确 id 与变体兄弟分支之后、分类器之前检查——且优先于裸名命中）：成员表**就是**候选池，分类器/会话棘轮/结构断言升档全部旁路；成员全未注册的 combo **快速报错**——绝不静默降级成 `auto`（不可见的计费/模型漂移）（`:439-467`）。管线执行前的占位模型解析（思考档位机制）对 combo 与点名显式模型**不得**咨询梯队池——"无任何梯队规则认领模型"的 pool-less 部署下两条路径必须保持可调用（`:584-591, 705-722`——会话 resolver 与占位模型两处）。
 7. 其余未注册名 → 分类器裁定。这就是智能路由本身（例如 Claude Code 内切模型后送来的原生 `claude-opus-*` 名）。
 
-词汇事实：已解析的物理记录是 `ModelRegistration`（id + provider + wire + tier + pricing…，`config/types.ts:15-80`）；`ComboModelRef {id, weight?}` 是未解析的配置句柄（`:99`）；`modelRef` **措辞**命名网关可见 id 命名空间 = auto 别名 ∪ combo id ∪ 注册 id ∪ 变体兄弟 id（`:120-137`）——即控制台目录为每行打的四种标签（`kind: 'auto'|'combo'|'model'|'variant'`，`/api/admin/gateway-models`，排列顺序与此处命名空间的读法一致）。历史语料的 `ModelRef`/`ModelIdentity` **类型名从未落地代码**——不得复活；`AGENTS.md` 已改指本篇。
+词汇事实：已解析的物理记录是 `ModelRegistration`（id + provider + wire + tier + pricing…，`config/types.ts:15-80`）；`ComboModelRef {id, weight?}` 是未解析的配置句柄（`:99`）；`modelRef` **措辞**命名网关可见 id 命名空间 = auto 别名 ∪ combo id ∪ 注册 id ∪ 变体兄弟 id（`:120-137`）——即控制台目录为每行打的五种标签（`kind: 'auto'|'tier'|'combo'|'model'|'variant'`，`/api/admin/gateway-models`，排列顺序与此处命名空间的读法一致）。历史语料的 `ModelRef`/`ModelIdentity` **类型名从未落地代码**——不得复活；`AGENTS.md` 已改指本篇。
 
 ### 2. 梯队成员制——已提交的成员列表是唯一来源
 
@@ -40,7 +40,7 @@
 
 ### 4. 按 key 的模型策略
 
-`apiKeys[].modelAccess = {mode: 'allow'|'deny', models: string[]}`——条目 = 精确 id、`*` 通配、或**梯队虚拟条目** `auto-*`（整层规则）；缺省 = 不受限（`auth/model-access.ts`）。四层强制，无路可漏：接入面入口闸（进流水线前折叠所有间接：变体→base、combo→**每个**成员、auto*→梯队，`checkRequestedModel` :103-141）、编排器对显式模型的纵深防御（:452-467，403）、执行咽喉对所有候选过滤（`executeCandidatePool`，ADR-0005）含升档尾巴、以及 `/v1/models` + 详情列表（变体按 base 判；combo 仅当所有成员放行才展示）。裸 `auto` 在有策略时**跨层拓宽**到允许池（选层优先、梯队邻近次之）而非 403——"auto"承诺的是**某个**允许的模型，不是某个梯队。
+`apiKeys[].modelAccess = {mode: 'allow'|'deny', models: string[]}`——条目 = 精确 id、`*` 通配、或**梯队虚拟条目** `lite|plus|pro|ultra`（整层规则）；缺省 = 不受限（`auth/model-access.ts`）。四层强制，无路可漏：接入面入口闸（进流水线前折叠所有间接：变体→base、combo→**每个**成员、梯队别名→梯队，`checkRequestedModel` :103-141）、编排器对显式模型的纵深防御（:452-467，403）、执行咽喉对所有候选过滤（`executeCandidatePool`，ADR-0005）含升档尾巴、以及 `/v1/models` + 详情列表（变体按 base 判；combo 仅当所有成员放行才展示）。裸 `auto` 在有策略时**跨层拓宽**到允许池（选层优先、梯队邻近次之）而非 403——"auto"承诺的是**某个**允许的模型，不是某个梯队。
 
 ### 5. 思考级别词汇
 

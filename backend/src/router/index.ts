@@ -3,11 +3,12 @@ import { RoutingDecision, TierLevel } from '../types/router.js';
 import { Layer2Judge } from './layer2-judge.js';
 import { hasToolsOrSchema } from './request-traits.js';
 import { ClassifierConfig, RoutingMode } from '../config/types.js';
+import { tierFromVirtualEntry } from '../auth/model-access.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import type { UpstreamEventContext } from '../providers/base.js';
 
 /**
- * Global routing mode → forced tier for auto/default requests. Returns undefined
+ * Global routing mode → forced tier for auto/tier-alias requests. Returns undefined
  * when the mode is 'smart' (normal cascade), when the client already forced a
  * tier, or when a concrete model was requested — explicit choice always wins.
  */
@@ -18,7 +19,7 @@ export function routingModeForceTier(
 ): TierLevel | undefined {
   if (!mode || mode === 'smart') return undefined;
   if (routerOptions?.force_tier) return undefined;
-  if (model && model !== 'auto' && model !== 'default') return undefined;
+  if (model && model !== 'auto' && tierFromVirtualEntry(model) === '') return undefined;
   return mode === 'cost' ? 'lite' : 'pro';
 }
 

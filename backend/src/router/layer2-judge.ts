@@ -221,9 +221,7 @@ export class Layer2Judge {
 
     const requested = (config.model || '').trim();
     const modelId =
-      requested && requested !== 'auto' && requested !== 'default'
-        ? requested
-        : (defaultModel || '').trim();
+      requested && requested !== 'auto' ? requested : (defaultModel || '').trim();
     // An enabled judge that names nothing can never answer. Say so ONCE
     // instead of degrading silently forever — this is exactly the upgrade
     // path where a legacy `model: 'typesafe/jev'` (never a registered id)

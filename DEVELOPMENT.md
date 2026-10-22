@@ -132,7 +132,7 @@ The decision cascade eliminates crude prompt-length heuristics and replaces them
 
 ### 3.1 Layer 0: Explicit Rules & Fast Paths
 1. **Direct Combo**: If `request.model` names a configured combo (ADR-0003), tier arbitration is bypassed. The combo pool selects a member using its configured strategy (`priority`, `weighted`, `round_robin`) and confines failover strictly within its members.
-2. **Auto-Tier Aliases**: Models named `auto-lite`, `auto-plus`, `auto-pro`, or `auto-ultra` force the target tier directly and lock the session to an `'explicit'` mode contract.
+2. **Auto-Tier Aliases**: Models named `lite`, `plus`, `pro`, or `ultra` force the target tier directly and lock the session to an `'explicit'` mode contract.
 3. **Client Options**: `router_options.force_tier` explicitly overrides automatic tiering.
 4. **Global Mode Lever**: `routing.mode: cost` routes to `lite`; `routing.mode: quality` routes to `pro`.
 
@@ -175,8 +175,8 @@ The gateway enforces strict operational boundaries based on entry mode:
 
 | Entry Mode | Eligible Triggers | Tier Movement by Judgment | Retry Escalation | Ratchet Locked |
 | :--- | :--- | :--- | :--- | :--- |
-| **`auto`** | Bare `auto`, `default`, classifier model names | Allowed (full cascade) | Full ladder (effort $\to$ tier) | Yes |
-| **`explicit`** | Registered physical models, forced `auto-*` aliases | Forbidden (contract verbatim) | Disabled | No (fixed tier) |
+| **`auto`** | Bare `auto`, tier aliases, classifier model names | Allowed (full cascade) | Full ladder (effort $\to$ tier) | Yes |
+| **`explicit`** | Registered physical models, forced tier aliases | Forbidden (contract verbatim) | Disabled | No (fixed tier) |
 | **`combo`** | Configured virtual combo IDs | Forbidden (pool internal) | Disabled | No |
 
 ### 4.4 Guarded Pin Eviction (ADR-0002)

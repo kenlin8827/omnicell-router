@@ -53,10 +53,9 @@ export async function runDecisionSurface(
   const sysBody = verdict.value;
 
   const rawModel = typeof sysBody.model === 'string' ? sysBody.model.trim() : '';
-  // Virtual tier aliases (auto-lite / auto-plus / auto-pro / auto-ultra)
-  // resolve against the tier pool below. Everything else keeps the plain
-  // stateless contract: a named physical id, or bare 'auto'/'default'/omit
-  // falling back to `systemone.defaultModel`.
+  // Virtual tier aliases (lite / plus / pro / ultra) resolve against the tier
+  // pool below. Everything else keeps the plain stateless contract: a named
+  // physical id, or bare 'auto'/omit falling back to `systemone.defaultModel`.
   const virtualTier = tierFromVirtualEntry(rawModel);
 
   let effective: string;
@@ -121,7 +120,7 @@ export async function runDecisionSurface(
     effective = healthyAllowed[0].id;
   } else {
     effective =
-      rawModel && rawModel !== 'auto' && rawModel !== 'default'
+      rawModel && rawModel !== 'auto'
         ? rawModel
         : (loadConfig().systemone?.defaultModel || '').trim();
     if (!effective) {
@@ -139,7 +138,7 @@ export async function runDecisionSurface(
 
   // DOUBLE gate, order preserved from the retired route (alias first, then
   // physical). The PHYSICAL model that will actually serve must always be
-  // admitted: 'auto'/'default' resolve to `systemone.defaultModel`, so
+  // admitted: 'auto' resolves to `systemone.defaultModel`, so
   // checking only the alias would let a key denied for that model reach it
   // via `auto` (tier-alias picks are admitted by construction — the pool was
   // already access-filtered — and re-checked here as the standing invariant).

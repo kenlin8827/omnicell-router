@@ -95,7 +95,7 @@ describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation ', () =>
 
     // Primary plus fails once with 503, then succeeds on in-place retry
     const req: any = {
-      model: 'auto-plus',
+      model: 'plus',
       messages: [{ role: 'user', content: 'Explain distributed consensus algorithms' }],
       __simulate_error_model__: 'primary-plus',
       __simulate_status__: 503,
@@ -134,7 +134,7 @@ describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation ', () =>
     const orchestrator = new PipelineOrchestrator(noInplaceConfig, registry, tracker);
 
     const req: any = {
-      model: 'auto-plus',
+      model: 'plus',
       messages: [{ role: 'user', content: 'Explain Paxos' }],
       __simulate_error_model__: 'primary-plus',
       __simulate_status__: 503,
@@ -156,7 +156,7 @@ describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation ', () =>
     const orchestrator = new PipelineOrchestrator(baseConfig, registry, tracker);
 
     const req: any = {
-      model: 'auto-plus',
+      model: 'plus',
       messages: [{ role: 'user', content: 'Explain Raft' }],
       __simulate_error_model__: 'primary-plus',
       __simulate_status__: 402,
@@ -183,7 +183,7 @@ describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation ', () =>
     const orchestrator = new PipelineOrchestrator(baseConfig, registry, tracker);
 
     const req: any = {
-      model: 'auto-plus',
+      model: 'plus',
       messages: [{ role: 'user', content: 'Super massive prompt' }],
       __simulate_error_model__: 'primary-plus',
       __simulate_status__: 400,
@@ -298,7 +298,7 @@ describe('Resilience: Hierarchical Failover & Tier Crossing Policies ', () => {
     assert.equal(result.modelUsed, 'plus-1');
   });
 
-  it('auto-lite (forced tier) must NEVER cross tiers — all-lite outage fails cleanly', async () => {
+  it('lite (forced tier) must NEVER cross tiers — all-lite outage fails cleanly', async () => {
     const registry = new ProviderRegistry(crossTierConfig, true);
     const tracker = new FinOpsTracker();
     const orchestrator = new PipelineOrchestrator(crossTierConfig, registry, tracker);
@@ -308,7 +308,7 @@ describe('Resilience: Hierarchical Failover & Tier Crossing Policies ', () => {
     registry.getCircuitBreakerManager().getBreaker('lite-2')?.trip('503 outage', 'SERVICE_UNAVAILABLE', 3600000);
 
     const req: any = {
-      model: 'auto-lite',
+      model: 'lite',
       messages: [{ role: 'user', content: 'Quick greeting' }],
       // Breaker OPEN alone only skips candidates (the last one is force-tried
       // and the mock serves it) — simulate real wire failures so the chain
@@ -345,7 +345,7 @@ describe('Resilience: Hierarchical Failover & Tier Crossing Policies ', () => {
 
     // Both lite models fail
     const req: any = {
-      model: 'auto-lite',
+      model: 'lite',
       messages: [{ role: 'user', content: 'Batch task' }],
       __simulate_error_all__: true,
       __simulate_status__: 503,
@@ -368,7 +368,7 @@ describe('Resilience: Hierarchical Failover & Tier Crossing Policies ', () => {
     registry.getCircuitBreakerManager().getBreaker('plus-1')?.trip('Plus down', 'SERVICE_UNAVAILABLE', 3600000);
 
     const req: any = {
-      model: 'auto-plus',
+      model: 'plus',
       messages: [{ role: 'user', content: 'Critical architecture design' }],
       __simulate_error_model__: 'plus-1',
       __simulate_status__: 503,
@@ -553,7 +553,7 @@ describe('Resilience: Fine-Grained Network Jitter Taxonomy & Cause Filtering ', 
     // 503 is GATEWAY_ERROR. Since retryOnCauses only contains 'network_timeout',
     // it must NOT in-place retry on model-a and should immediately failover to model-b!
     const req: any = {
-      model: 'auto-plus',
+      model: 'plus',
       messages: [{ role: 'user', content: 'Test custom cause filtering' }],
       __simulate_error_model__: 'model-a',
       __simulate_status__: 503,

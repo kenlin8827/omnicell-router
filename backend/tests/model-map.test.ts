@@ -9,7 +9,7 @@ describe('routingModeForceTier', () => {
 
   test('cost/quality force tier for auto-ish requests only', () => {
     expect(routingModeForceTier('auto', undefined, 'cost')).toBe('lite');
-    expect(routingModeForceTier('default', undefined, 'quality')).toBe('pro');
+    expect(routingModeForceTier('pro', undefined, 'quality')).toBe('pro');
     expect(routingModeForceTier('gpt-5', undefined, 'cost')).toBeUndefined();
   });
 

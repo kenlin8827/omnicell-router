@@ -39,7 +39,7 @@ describe('Pi client adapter — profile links', () => {
     const res = await adapter.setup({
       port: 4000,
       models: { main: 'auto', worker: 'anthropic/claude-x' }, // worker: manual foreign pin
-      agentModels: { scout: 'auto-lite' }, // scout: profile-linked (resolved)
+      agentModels: { scout: 'lite' }, // scout: profile-linked (resolved)
       profile: { id: 'p1', bindings: { scout: 'flash' } },
     });
     expect(res.success).toBe(true);
@@ -48,15 +48,15 @@ describe('Pi client adapter — profile links', () => {
     // resolve the override against the provider's declared ids.
     const cfg = readJson(configPath);
     expect(cfg.providers['onecast-router'].baseUrl).toBe('http://127.0.0.1:4000/v1');
-    expect(cfg.providers['onecast-router'].models.some((m: any) => m.id === 'auto-lite')).toBe(true);
+    expect(cfg.providers['onecast-router'].models.some((m: any) => m.id === 'lite')).toBe(true);
 
     // settings.json: the linked role is qualified, the manual foreign pin is
     // verbatim, and a preset role (researcher — discoverable roster is empty in
     // the sandbox, so the preset table applies) got its tier default.
     const settings = readJson(path.join(tmpDir, 'settings.json'));
-    expect(settings.subagents.agentOverrides.scout.model).toBe('onecast-router/auto-lite');
+    expect(settings.subagents.agentOverrides.scout.model).toBe('onecast-router/lite');
     expect(settings.subagents.agentOverrides.worker.model).toBe('anthropic/claude-x');
-    expect(settings.subagents.agentOverrides.researcher.model).toBe('onecast-router/auto-lite');
+    expect(settings.subagents.agentOverrides.researcher.model).toBe('onecast-router/lite');
 
     // Sidecar echo (never settings.json — a running pi wipes foreign keys there).
     const meta = readJson(`${configPath}.ocr-meta.json`);
@@ -72,7 +72,7 @@ describe('Pi client adapter — profile links', () => {
     await adapter.setup({
       port: 4000,
       models: { main: 'auto', worker: 'anthropic/claude-x' },
-      agentModels: { scout: 'auto-lite' },
+      agentModels: { scout: 'lite' },
       profile: { id: 'p1', bindings: { scout: 'flash' } },
     });
 
@@ -95,7 +95,7 @@ describe('Pi client adapter — profile links', () => {
     await adapter.setup({
       port: 4000,
       models: { main: 'auto' },
-      agentModels: { scout: 'auto-lite' },
+      agentModels: { scout: 'lite' },
       profile: { id: 'p1', bindings: { scout: 'flash' } },
     });
 
@@ -112,7 +112,7 @@ describe('Pi client adapter — profile links', () => {
     await adapter.setup({
       port: 4000,
       models: { main: 'auto', worker: 'anthropic/claude-x' },
-      agentModels: { scout: 'auto-lite' },
+      agentModels: { scout: 'lite' },
       profile: { id: 'p1', bindings: { scout: 'flash' } },
     });
 
@@ -125,7 +125,7 @@ describe('Pi client adapter — profile links', () => {
 
     const settings = readJson(path.join(tmpDir, 'settings.json'));
     // The linked role's override was stripped and the tier preset refilled it.
-    expect(settings.subagents.agentOverrides.scout.model).toBe('onecast-router/auto-lite');
+    expect(settings.subagents.agentOverrides.scout.model).toBe('onecast-router/lite');
     // The manual foreign pin survived the un-link.
     expect(settings.subagents.agentOverrides.worker.model).toBe('anthropic/claude-x');
 
@@ -138,7 +138,7 @@ describe('Pi client adapter — profile links', () => {
     await adapter.setup({
       port: 4000,
       models: { main: 'auto' },
-      agentModels: { scout: 'auto-lite' },
+      agentModels: { scout: 'lite' },
       profile: { id: 'p1', bindings: { scout: 'flash' } },
     });
     expect(fs.existsSync(`${configPath}.ocr-meta.json`)).toBe(true);
@@ -206,9 +206,9 @@ describe('Pi client adapter — model metadata', () => {
   };
 
   it('aliases carry the static full-ladder thinking declaration even without injected deps (CLI path)', async () => {
-    await adapter.setup({ port: 4000, models: { main: 'auto' }, extraModels: ['auto-pro'] });
+    await adapter.setup({ port: 4000, models: { main: 'auto' }, extraModels: ['pro'] });
     const cfg = readJson(configPath);
-    for (const id of ['auto', 'auto-pro']) {
+    for (const id of ['auto', 'pro']) {
       const e = entryOf(cfg, id);
       expect(e.reasoning).toBe(true);
       expect(e.thinkingLevelMap).toEqual({
