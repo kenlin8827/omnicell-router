@@ -288,7 +288,38 @@ export const QuotaPeek: React.FC = () => {
                           >
                             {r.providerId}
                           </span>
-                          {headValue}
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                            {/* Per-pair refresh, revealed on row hover (opacity,
+                                no layout shift): one upstream request instead of
+                                the whole directory — same action as the quota
+                                page's card footer. */}
+                            <button
+                              className="quota-peek-refresh"
+                              style={{
+                                background: 'none',
+                                border: 'none',
+                                padding: 0,
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                cursor: 'pointer',
+                                color: 'var(--text-dim)',
+                              }}
+                              disabled={isRefreshing({ providerId: r.providerId, keyHashPrefix: r.keyHashPrefix })}
+                              title={t('quotaPage.refreshPair')}
+                              aria-label={t('quotaPage.refreshPair')}
+                              onClick={() => void refresh({ providerId: r.providerId, keyHashPrefix: r.keyHashPrefix })}
+                            >
+                              <RefreshCw
+                                size={10}
+                                style={
+                                  isRefreshing({ providerId: r.providerId, keyHashPrefix: r.keyHashPrefix })
+                                    ? { animation: 'ocr-spin 0.8s linear infinite' }
+                                    : undefined
+                                }
+                              />
+                            </button>
+                            {headValue}
+                          </span>
                         </div>
                         {pct !== null && (
                           // The meter itself: full row width, so every bar shares

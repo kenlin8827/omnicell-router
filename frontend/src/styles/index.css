@@ -1183,6 +1183,17 @@ input[type='checkbox']:not(.switch):disabled {
 .quota-peek-row:hover {
   background: var(--chip-bg);
 }
+/* Per-pair refresh: revealed on row hover (opacity only — the slot keeps its
+   space, so revealing it never shifts the headline percentage). Focus-visible
+   keeps it reachable by keyboard. */
+.quota-peek-refresh {
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.quota-peek-row:hover .quota-peek-refresh,
+.quota-peek-refresh:focus-visible {
+  opacity: 1;
+}
 
 /* Sessions table — merged tokens cell (In/Out + Cached/Hit stat grid). The
    column width is locked by table-layout:fixed and never clips overflow, so
