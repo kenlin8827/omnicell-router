@@ -26,7 +26,7 @@ export const DEFAULT_MAX_BODY_BYTES = 16_777_216;
  * response headers arrive (blackholed-peer guard). */
 export const FORWARD_PROXY_HANG_TIMEOUT_MS = 60_000;
 
-/** Layer-2 judge timeout when `classifier.layer2.timeoutMs` is unset. */
+/** Layer-2 decision layer timeout when `classifier.layer2.timeoutMs` is unset. */
 export const DEFAULT_LAYER2_TIMEOUT_MS = 5000;
 
 /** Native System One decision passthrough timeout when `provider.timeoutMs` is unset. */

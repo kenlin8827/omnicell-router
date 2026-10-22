@@ -191,17 +191,22 @@ const ProviderNsChip: React.FC<{ ns: string }> = ({ ns }) => {
  * gateway actually served. `requested→actual` in amber when the turn was
  * degraded below the ask (the same signal X-OCR-Thinking-Degraded carries);
  * '—' when no explicit level was in play or the trace predates the fields.
- * A gateway-decided ask (ADR-0012: judge / experience entry / retry
+ * A gateway-decided ask (ADR-0012: L2 decision / experience entry / retry
  * escalation / model default) carries the localized `auto·` prefix and a
  * source line in the tooltip — a client ask renders bare.
  */
-const EFFORT_SOURCE_KEY = {
+// Legacy wire values from persisted traces map onto their current
+// equivalents ('judge' was renamed to 'l2-decision'); unknown values fall
+// through to the default label so a stale disk row can never crash the cell.
+const EFFORT_SOURCE_KEY: Record<string, string> = {
   client: 'sessions.thinkSrcClient',
-  judge: 'sessions.thinkSrcJudge',
+  'l2-decision': 'sessions.thinkSrcL2Decision',
+  judge: 'sessions.thinkSrcL2Decision',
   entry: 'sessions.thinkSrcEntry',
   escalation: 'sessions.thinkSrcEscalation',
   default: 'sessions.thinkSrcDefault',
-} as const;
+};
+const effortSourceKey = (src: string): string => EFFORT_SOURCE_KEY[src] ?? 'sessions.thinkSrcDefault';
 
 /**
  * Tier-cell tooltip suffix: the LATEST turn's thinking-effort sample, lifted
@@ -222,7 +227,7 @@ const lastEffortTip = (s: SessionRecord, t: Translate): string => {
   const marked = `${gatewayDecided ? t('sessions.thinkAutoMark') : ''}${level}`;
   return (
     `\n${t('sessions.thinkLast', { effort: marked })}` +
-    (src ? `\n${t('sessions.thinkSource', { source: t(EFFORT_SOURCE_KEY[src]) })}` : '')
+    (src ? `\n${t('sessions.thinkSource', { source: t(effortSourceKey(src)) })}` : '')
   );
 };
 
@@ -233,7 +238,7 @@ const EffortCell: React.FC<{ tr: TraceRecord }> = ({ tr }) => {
   const src = tr.execution.effortSource;
   const tip =
     t('sessions.colThinkTip') +
-    (src ? `\n${t('sessions.thinkSource', { source: t(EFFORT_SOURCE_KEY[src]) })}` : '');
+    (src ? `\n${t('sessions.thinkSource', { source: t(effortSourceKey(src)) })}` : '');
   if (!req && !act) {
     return (
       <span title={tip} style={{ color: 'var(--text-dim)' }}>
@@ -267,7 +272,7 @@ interface SwitchEvent {
   /** When the reason template carries a `{tier}` slot: the localized text
    *  around it, plus the raw tier id for badge lookup (TIER_BADGE/TIER_LABEL).
    *  The trail row renders pre + tier badge + post; `detail` stays the clean
-   *  plain string for the tooltip. `model` (l2 judge codes only) joins the
+   *  plain string for the tooltip. `model` (L2 decision codes only) joins the
    *  tooltip as a suffix line — never inline. */
   tieredDetail?: { tier: string; pre: string; post: string; model?: string };
 }
@@ -322,8 +327,8 @@ const commonProviderOf = (models: ReadonlyArray<string | null | undefined>): str
  * did not survive the rebuild (unknown code -> raw-reason fallback) — the
  * guard is structural, no code allowlist needed.
  *
- * The l2 judge's model id never renders inline (it reads like the tier was
- * inferred FROM the model — it is not; the judge is a dedicated decision
+ * The L2 decision layer's model id never renders inline (it reads like the tier was
+ * inferred FROM the model — it is not; the decision layer is a dedicated decision
  * leg): it rides back as `model` for a tooltip suffix line instead.
  */
 const TIER_SENTINEL = '\u0000';
@@ -340,7 +345,7 @@ const tieredDetailOf = (
       ...params,
       tier: TIER_SENTINEL,
       // Decision confidence as a 0-100 integer for the l2 templates — the
-      // number is the judge's own (self-reported on the converted path,
+      // number is the decision layer's own (self-reported on the converted path,
       // which is exactly what the "uncalibrated" caveat marks). Other
       // {tier} templates have no {confidence} slot and ignore it.
       confidence: Math.round((tr.routing?.confidence ?? 0) * 100),
@@ -1108,11 +1113,11 @@ export const SessionsPage: React.FC = () => {
                   // raw reason can be the bare target ref) is pure noise.
                   const detail =
                     ev.detail && ev.detail !== ev.to && ev.detail !== `${ev.from} → ${ev.to}` ? ev.detail : undefined;
-                  // Judge identity lives in the tooltip only (suffix line) —
+                  // L2 decision identity lives in the tooltip only (suffix line) —
                   // an inline model id reads like reverse inference.
                   const detailTip =
                     ev.tieredDetail?.model && detail
-                      ? `${detail}\n${t('routing.reason.judgeModel', { model: ev.tieredDetail.model })}`
+                      ? `${detail}\n${t('routing.reason.decisionModel', { model: ev.tieredDetail.model })}`
                       : detail;
                   return (
                     <div

@@ -6,7 +6,7 @@ Implemented — 2026-10-21. Scope: the persistent routing memory that replaced t
 
 ## Context
 
-With Layer 1 and the flywheel deleted, the gateway had no memory between conversations: every auto request re-derived its tier from scratch (judge or plus baseline), and a user dissatisfied with an answer had no automatic recourse. Two cheap, honest signals were being discarded:
+With Layer 1 and the flywheel deleted, the gateway had no memory between conversations: every auto request re-derived its tier from scratch (decision layer or plus baseline), and a user dissatisfied with an answer had no automatic recourse. Two cheap, honest signals were being discarded:
 
 1. **Cross-conversation**: "this exact prompt was served at tier X before" — a persistent, hand-editable experience table beats re-judging the same bytes.
 2. **Intra-conversation**: "the user re-sent the SAME prompt" — the only reliable dissatisfaction signal available at the gateway (thumbs-down buttons belong to clients). One repeat = "think deeper"; more repeats = "get a stronger model".
@@ -19,15 +19,15 @@ With Layer 1 and the flywheel deleted, the gateway had no memory between convers
 
 ### 2. Write whitelist — three producers, nothing else
 
-- `l2_confident`: a Layer 2 judgment at/above 0.85 confidence, recorded POST-success with the tier that ACTUALLY served (failover/cascade truth beats intent). Schema-cascade turns are skipped — the lite lead owns those tier outcomes. When the judge also decided the effort (ADR-0012), the SERVED `actualEffort` rides this same write — the table learns `{tier, effort}` bidirectionally (a fresh confident judgment overwrites a stale same-source row DOWN as readily as up).
+- `l2_confident`: a Layer 2 judgment at/above 0.85 confidence, recorded POST-success with the tier that ACTUALLY served (failover/cascade truth beats intent). Schema-cascade turns are skipped — the lite lead owns those tier outcomes. When the decision layer also decided the effort (ADR-0012), the SERVED `actualEffort` rides this same write — the table learns `{tier, effort}` bidirectionally (a fresh confident judgment overwrites a stale same-source row DOWN as readily as up).
 - `correction`: an escalated retry that the user ACCEPTED. Acceptance is observable exactly one way: a LATER message with a different prompt hash ("moved on"). Satisfied-and-left never writes back — accepted bounded loss. Confidence 1.0 (executed evidence). The write carries the escalated turn's prompt snippet (stored on the session retry state under the same `snippetEnabled` gate) so the row is human-readable on the console instead of a bare hash.
 - `human`: a console edit. Confidence 1.0 and IMMUNE to automatic rewrite — operator intent outranks observed evidence; delete the row instead.
 
 Priority: `human > correction > l2_confident` — a row never loses certainty (`route-entries.ts` SOURCE_RANK).
 
-### 3. Cascade position — lookup before the judge
+### 3. Cascade position — lookup before the decision layer
 
-`L0 rules → experience lookup → L2 judge → plus baseline`. An entry hit short-circuits L2 (the table IS a prior judgment; `layerUsed: 'entry'`, reasonCode `entry.hit`) and applies the entry's `effort` unless the client sent an explicit one. Explicit choices (`force_tier` — including the mode-forced ones, named models, combos) skip the table entirely.
+`L0 rules → experience lookup → L2 decision layer → plus baseline`. An entry hit short-circuits L2 (the table IS a prior judgment; `layerUsed: 'entry'`, reasonCode `entry.hit`) and applies the entry's `effort` unless the client sent an explicit one. Explicit choices (`force_tier` — including the mode-forced ones, named models, combos) skip the table entirely.
 
 ### 4. Retry ladder — three conditions, monotonic steps
 
@@ -45,7 +45,7 @@ Capability ceiling (frozen decision A3): when the pinned model cannot serve the 
 
 ### 5. Shadow mode and the ledger
 
-`routeEntries.escalateOnRetry: false` = shadow mode: detection and recording continue, nothing acts. The `routing-ledger` (`<envRoot>/data/routing-ledger.jsonl`, append-only, prompt HASHES only, 64 MB cap + one warn) records every lifecycle event: `retry_detected`, `retry_skipped`, `entry_hit`, `entry_write`, `escalation`, `correction`. `retry_skipped` makes a NON-escalation auditable — detail.cause is one of `too_short` (prompt below the 20-char detection floor), `ceiling` (ladder out of rungs at ultra), `judge_higher` (the base decision already placed the turn at/above the proposal), `shadow` (shadow mode swallowed the action). It is the flywheel's replacement as audit trail — pure observability, never read back for routing.
+`routeEntries.escalateOnRetry: false` = shadow mode: detection and recording continue, nothing acts. The `routing-ledger` (`<envRoot>/data/routing-ledger.jsonl`, append-only, prompt HASHES only, 64 MB cap + one warn) records every lifecycle event: `retry_detected`, `retry_skipped`, `entry_hit`, `entry_write`, `escalation`, `correction`. `retry_skipped` makes a NON-escalation auditable — detail.cause is one of `too_short` (prompt below the 20-char detection floor), `ceiling` (ladder out of rungs at ultra), `decision_higher` (the base decision already placed the turn at/above the proposal), `shadow` (shadow mode swallowed the action). It is the flywheel's replacement as audit trail — pure observability, never read back for routing.
 
 ### 6. Config
 

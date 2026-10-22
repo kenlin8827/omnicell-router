@@ -2,7 +2,7 @@
 
 - **状态**：已实现
 - **日期**：2026-10-21
-- **关联**：ADR-0001（路由管线）、ADR-0002（会话/棘轮）、ADR-0003（模型寻址）、ADR-0011（重试升档）、ADR-0012（裁判思考级别）
+- **关联**：ADR-0001（路由管线）、ADR-0002（会话/棘轮）、ADR-0003（模型寻址）、ADR-0011（重试升档）、ADR-0012（决策层思考级别）
 
 ## 背景
 
@@ -17,7 +17,7 @@
 
 | 入口模式 | 梯队可被网关判定移动？ | 思考级别可被推断？ | 会话交互 |
 | :--- | :--- | :--- | :--- |
-| `auto` / 梯队别名 / 未注册名（分类器） | **可以**——完全自治 | 可以（裁判、经验表、重试阶梯） | `'ratchet'`——升级、降级拦截、pin 读写 |
+| `auto` / 梯队别名 / 未注册名（分类器） | **可以**——完全自治 | 可以（决策层、经验表、重试阶梯） | `'ratchet'`——升级、降级拦截、pin 读写 |
 | 强制梯队：梯队别名（`lite/plus/pro/ultra`）、`routing.mode` 杠杆、`router_options.force_tier` | **不可以**——强制梯队即契约 | 不推断（仅客户端值 / 变体钉扎 / 模型规格） | `'explicit'`——记录轮次、提案**绝不向下改写**；强制梯队**高于**峰值时是合法的天花板上调（与其他升级一样重钉会话）；不高于峰值时，其他梯队的 pin 既不跟随也不改写（留给后续 auto 轮次）；僵尸 id 修复为强制梯队的健康头；空梯队降级落点仍然跟随 |
 | 显式模型（完整 id / `#变体` / 裸名） | **不可以**——所命名模型执行；仅在自身梯队内故障转移 | 不推断（同强制梯队） | `'explicit'`——所命名模型执行成功时回写 pin |
 | 组合（combo） | **不可以**——组合即权威 | 不可以 | `'bypass'`——无会话实体、无 pin、无天花板 |
@@ -57,7 +57,7 @@
 ## 实现锚点
 
 - `orchestrator.ts` §3B `retryEligible`；`routeAutoDecision` 经验表门禁（`!force_tier`）；
-  `RouterEngine.routeAsync` forced 早退（强制梯队到不了裁判）。
+  `RouterEngine.routeAsync` forced 早退（强制梯队到不了决策层）。
 - `orchestrator.ts` §4 `sessionMode` 决议——`explicitModel || force_tier → 'explicit'`。
 - `orchestrator.ts` §5 级联门禁（`!explicitModel ∧ !comboId ∧ !force_tier`）；直连路径
   `allowEscalate` 尾门禁；combo `needsSchemaValidation: false`。

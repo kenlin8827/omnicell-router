@@ -6,7 +6,7 @@
 
 ## 背景
 
-Layer 1 与飞轮删除后，网关在对话之间没有任何记忆：每个 auto 请求都从头推导档位（判定器或 plus 基线），用户对答案不满意也没有任何自动补救。两个廉价且诚实的信号一直被丢弃：
+Layer 1 与飞轮删除后，网关在对话之间没有任何记忆：每个 auto 请求都从头推导档位（决策层或 plus 基线），用户对答案不满意也没有任何自动补救。两个廉价且诚实的信号一直被丢弃：
 
 1. **跨会话**：「这条 prompt 之前在 X 档服务过」——持久化、可人工编辑的经验表胜过对相同字节反复判定。
 2. **会话内**：「用户把同一条 prompt 原样重发了」——这是网关侧唯一可靠的不满意信号（点赞/点踩按钮属于客户端）。重发一次 = 「想得更深」；再重发 = 「换更强的模型」。
@@ -19,15 +19,15 @@ Layer 1 与飞轮删除后，网关在对话之间没有任何记忆：每个 au
 
 ### 2. 写入白名单——三个生产者，别无分号
 
-- `l2_confident`：置信度 ≥ 0.85 的 Layer 2 判定，在**成功执行后**落盘，记录实际服务的档位（failover/级联的真实高于意图）。Schema 级联轮次跳过——那类轮次的档位由 lite 先发拥有。当裁判同时判定了思考级别（ADR-0012）时，实际服务的 `actualEffort` 随同一次写入落盘——经验表**双向**学习 `{tier, effort}`（新的高置信判断覆盖陈旧的同源行，向下修订与向上同样容易）。
+- `l2_confident`：置信度 ≥ 0.85 的 Layer 2 判定，在**成功执行后**落盘，记录实际服务的档位（failover/级联的真实高于意图）。Schema 级联轮次跳过——那类轮次的档位由 lite 先发拥有。当决策层同时判定了思考级别（ADR-0012）时，实际服务的 `actualEffort` 随同一次写入落盘——经验表**双向**学习 `{tier, effort}`（新的高置信判断覆盖陈旧的同源行，向下修订与向上同样容易）。
 - `correction`：被用户**接受**的升档重试。「接受」只有一种可观测形态：之后的请求换了不同的 prompt hash（「换了个话题」）。满意即走永不写回——已接受的有界损耗。置信度 1.0（实际执行证据）。写入携带升档轮次的 prompt 片段（存在会话重试状态上，同受 `snippetEnabled` 门控），让该行在控制台上可读而非裸哈希。
 - `human`：控制台编辑。置信度 1.0 且**对自动写入免疫**——操作者意图高于观测证据；想改就删行重录。
 
 优先级：`human > correction > l2_confident`——条目绝不丢失确定性（`route-entries.ts` 的 SOURCE_RANK）。
 
-### 3. 级联位置——判定器之前查询
+### 3. 级联位置——决策层之前查询
 
-`L0 规则 → 经验查询 → L2 判定器 → plus 基线`。经验命中直接短路 L2（经验表本身就是一次既有判定；`layerUsed: 'entry'`，reasonCode `entry.hit`），并应用条目的 `effort`（客户端显式 effort 永远优先）。显式选择（`force_tier`——含模式强制档、点名模型、组合）完全跳过经验表。
+`L0 规则 → 经验查询 → L2 决策层 → plus 基线`。经验命中直接短路 L2（经验表本身就是一次既有判定；`layerUsed: 'entry'`，reasonCode `entry.hit`），并应用条目的 `effort`（客户端显式 effort 永远优先）。显式选择（`force_tier`——含模式强制档、点名模型、组合）完全跳过经验表。
 
 ### 4. 重试阶梯——三条件，单调步进
 
@@ -45,7 +45,7 @@ Layer 1 与飞轮删除后，网关在对话之间没有任何记忆：每个 au
 
 ### 5. 影子模式与台账
 
-`routeEntries.escalateOnRetry: false` = 影子模式：检测与记录照跑，任何动作不发生。`routing-ledger`（`<envRoot>/data/routing-ledger.jsonl`，纯追加，仅含 prompt **哈希**，64 MB 封顶 + 单次告警）记录每个生命周期事件：`retry_detected`、`retry_skipped`、`entry_hit`、`entry_write`、`escalation`、`correction`。`retry_skipped` 让「未升档」也可审计——detail.cause 取值：`too_short`（prompt 低于 20 字符检测下限）、`ceiling`（阶梯在 ultra 见顶）、`judge_higher`（基础判定本轮已置于提议档位之上）、`shadow`（影子模式吞掉动作）。它是飞轮之后的新审计旁路——纯观测，绝不回读参与路由。
+`routeEntries.escalateOnRetry: false` = 影子模式：检测与记录照跑，任何动作不发生。`routing-ledger`（`<envRoot>/data/routing-ledger.jsonl`，纯追加，仅含 prompt **哈希**，64 MB 封顶 + 单次告警）记录每个生命周期事件：`retry_detected`、`retry_skipped`、`entry_hit`、`entry_write`、`escalation`、`correction`。`retry_skipped` 让「未升档」也可审计——detail.cause 取值：`too_short`（prompt 低于 20 字符检测下限）、`ceiling`（阶梯在 ultra 见顶）、`decision_higher`（基础判定本轮已置于提议档位之上）、`shadow`（影子模式吞掉动作）。它是飞轮之后的新审计旁路——纯观测，绝不回读参与路由。
 
 ### 6. 配置
 

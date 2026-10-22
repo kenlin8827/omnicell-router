@@ -3,7 +3,7 @@ import type { DecisionSurface } from './types.js';
 /**
  * The System One decision surface (wire 'systemone'). Surface DATA only —
  * the execution order lives in decision-pipeline.ts, and the executor
- * (protocols/systemone/decide.ts) is shared with the Layer 2 router judge.
+ * (protocols/systemone/decide.ts) is shared with the Layer 2 decision layer.
  *
  * Stateless decision wire: the named model is the model served (tier aliases
  * resolve to the access-filtered chain head; bare 'auto'/omit falls
@@ -16,7 +16,7 @@ import type { DecisionSurface } from './types.js';
  * and the pipeline emits only past every gate. A captured surface request
  * is FULL-CHAIN: the client exchange plus its upstream leg (the native
  * passthrough or the synthesized conversion call, per the resolved wire)
- * via the ctx handed to the executor; a judge leg inside a routed chat turn is captured separately by
+ * via the ctx handed to the executor; a decision model leg inside a routed chat turn is captured separately by
  * requestCapture.systemone.l2DecisionEnabled (sub-switch, effective only
  * when the surface master is on).
  */

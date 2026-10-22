@@ -61,7 +61,7 @@ export const ClientsPage: React.FC = () => {
   const [keyModels, setKeyModels] = useState<Record<string, Awaited<ReturnType<typeof api.getKeyModels>>>>({});
   /** Model profiles (config.yaml `modelProfiles`) for the opencode agent binding UI */
   const [profiles, setProfiles] = useState<ModelProfileView[]>([]);
-  /** Profiles fetch settled — the seed effect must not judge memory against a
+  /** Profiles fetch settled — the seed effect must not compare memory against a
    *  list that is merely still loading (empty ≠ none). */
   const [profilesReady, setProfilesReady] = useState(false);
   /** OpenCode agent inventory (lazy: loaded when the opencode form expands) */

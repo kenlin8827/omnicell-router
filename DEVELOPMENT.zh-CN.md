@@ -54,7 +54,7 @@ onecast-router/
 │   │   ├── quota/                       # 声明式 DSL 探测器、SQLite quota_events 账本
 │   │   ├── ratelimit/                   # 滑动窗口速率限制器与客户端限流事件日志
 │   │   ├── resilience/                  # 熔断器状态机、作用域熔断状态、健康视图
-│   │   ├── router/                      # RouteEntry 经验表 (ADR-0011)、重试升级阶梯、裁判
+│   │   ├── router/                      # RouteEntry 经验表 (ADR-0011)、重试升级阶梯、决策层
 │   │   ├── routes/                      # Fastify HTTP 路由注册 (控制台、环境管理、协议面)
 │   │   ├── session/                     # 单调会话棘轮状态机、零 Header 哈希
 │   │   ├── surfaces/                    # 统一协议面映射表与分发层 (ADR-0008)
@@ -102,7 +102,7 @@ onecast-router/
                [Step 3: 级联梯队与思考强度决策 (ADR-0001, ADR-0011, ADR-0012)]
                 - Layer 0: 显式规则直通 (force_tier, combos, auto-tier 别名)
                 - RouteEntry 经验表: SHA-256 提示词哈希命中直接短路判决
-                - Layer 2 裁判: System One 远程单次调用联合决策 {tier, effort} (可选)
+                - Layer 2 决策层: System One 远程单次调用联合决策 {tier, effort} (可选)
                 - 默认保底: 硬编码 plus 质量基准线防御
                                       │
                                       ▼
@@ -137,20 +137,20 @@ onecast-router/
 4. **全局模式杠杆**：配置 `routing.mode: cost` 强制默认导向 `lite`，配置 `routing.mode: quality` 导向 `pro`。
 
 ### 3.2 RouteEntry 持久化经验表 (ADR-0011)
-在调用任何远程裁判前，网关计算提示词的 16 进制 SHA-256 哈希：
+在调用任何远程决策调用前，网关计算提示词的 16 进制 SHA-256 哈希：
 $$\mathcal{H}_{\text{prompt}} = \text{SHA256}(\text{normalize}(\text{prompt}))[0 \dots 15]$$
 - 若在 `<envRoot>/data/route-entries.json` 中存在该记录，直接以 `layerUsed: 'entry'` 和 `reasonCode: 'entry.hit'` 短路返回对应层级与思考预算。
-- **写入白名单权威阶梯**：`human`（控制台人工编辑） > `correction`（采纳的重试升级结果） > `l2_confident`（System One 裁判置信度 $\ge 0.85$）。
+- **写入白名单权威阶梯**：`human`（控制台人工编辑） > `correction`（采纳的重试升级结果） > `l2_confident`（System One 决策层置信度 $\ge 0.85$）。
 - 人工编辑的经验条目具备不可覆盖性。
 
-### 3.3 Layer 2: System One 语义裁判模型 (ADR-0012)
+### 3.3 Layer 2: System One 语义决策层 (ADR-0012)
 - 由配置项 `classifier.layer2.enabled: true` 主动开启（默认关闭）。
-- 通过 `runSystemoneDecision` 异步调用轻量级裁判模型（`classifier.layer2.model`）。
-- 开启时，裁判在单次调用中联合返回 `{tier, effort}`，彻底省去两次往返延迟。
+- 通过 `runSystemoneDecision` 异步调用轻量级决策层模型（`classifier.layer2.model`）。
+- 开启时，决策层在单次调用中联合返回 `{tier, effort}`，彻底省去两次往返延迟。
 - 决策缓存在进程内的 LRU+TTL 缓存（`decisionCache`）中。
 
 ### 3.4 质量优先保底基准线
-当裁判未启用、超时或因上游故障未命中时，系统强制回退至硬编码的 **`plus`** 梯队（`layerUsed: 'layer0'`, `reasonCode: 'default'`）。零配置网关绝不会暗中向廉价微模型降级。
+当决策层未启用、超时或因上游故障未命中时，系统强制回退至硬编码的 **`plus`** 梯队（`layerUsed: 'layer0'`, `reasonCode: 'default'`）。零配置网关绝不会暗中向廉价微模型降级。
 
 ### 3.5 重复重试阶梯升级 (ADR-0011)
 若在同一个会话中，相同的 Prompt（$\ge 20$ 字符）在上一轮调用成功后被再次原样发送，网关判定客户端对生成结果不满意，自动激活升级阶梯：
@@ -175,7 +175,7 @@ $$\mathcal{H}_{\text{session}} = \text{SHA256}(\text{CanonicalJSON}(\text{messag
 
 | 接入模式 | 触发标识 | 允许网关决策调级 | 启用重试升级阶梯 | 会话棘轮锁定 |
 | :--- | :--- | :--- | :--- | :--- |
-| **`auto`** | 纯 `auto`, `default`, 裁判模型标识 | 允许（走完整级联） | 完整阶梯 (effort $\to$ tier) | 是 |
+| **`auto`** | 纯 `auto`, `default`, 决策层模型标识 | 允许（走完整级联） | 完整阶梯 (effort $\to$ tier) | 是 |
 | **`explicit`** | 注册的具体物理模型、强制 `auto-*` 别名 | 严禁（合约忠实执行） | 禁用 | 否 (固定执行目标) |
 | **`combo`** | 配置的虚拟组合模型 ID | 严禁（内部自主轮转） | 禁用 | 否 |
 
@@ -219,7 +219,7 @@ $$\mathcal{H}_{\text{session}} = \text{SHA256}(\text{CanonicalJSON}(\text{messag
 ## 6. 调用故障账本与可观测性
 
 依照 **ADR-0013** 构建，专注于物理模型级调用故障的全局审计：
-- **双重发射源**：统一捕获 `serving` 业务候选调用与 `judge` 裁判模型调用中的物理故障。
+- **双重发射源**：统一捕获 `serving` 业务候选调用与 `l2-decision` 决策层模型调用中的物理故障。
 - **10 秒风暴聚合**：10 秒窗口内发生的相同故障（`model × provider × errorClass × role`）自动合并为一条记录，递增计数器 $N$。
 - **存储介质**：内存环形缓冲（500 条）+ SQLite 数据库同步镜像（`traces.db` 的 `failure_events` 表）。
 - **管理路由**：
@@ -268,7 +268,7 @@ $$\mathcal{H}_{\text{session}} = \text{SHA256}(\text{CanonicalJSON}(\text{messag
 
 | ADR 编号 | 决策标题 | 核心摘要 |
 | :--- | :--- | :--- |
-| **[ADR-0001](docs/adr/0001-routing-pipeline.md)** | 路由管道决策 | 级联层级仲裁、裁判模型决策缓存、硬编码 plus 保底基线。 |
+| **[ADR-0001](docs/adr/0001-routing-pipeline.md)** | 路由管道决策 | 级联层级仲裁、决策模型决策缓存、硬编码 plus 保底基线。 |
 | **[ADR-0002](docs/adr/0002-sessions.md)** | 会话与棘轮机制 | 7 层零 Header 会话指纹、单调会话棘轮、受控 Pin 驱逐与落脚点防御。 |
 | **[ADR-0003](docs/adr/0003-model-addressing-and-tier-membership.md)** | 模型寻址与层级归属 | 单一寻址决议阶梯、组合模型自治池、按密钥维度的访问控制策略。 |
 | **[ADR-0004](docs/adr/0004-resilience-and-health.md)** | 韧性与健康状态治理 | 7 类故障分类标准、多作用域隔离熔断、能力状态汇总词汇体系。 |
@@ -279,7 +279,7 @@ $$\mathcal{H}_{\text{session}} = \text{SHA256}(\text{CanonicalJSON}(\text{messag
 | **[ADR-0009](docs/adr/0009-quota-probing.md)** | 声明式额度探测 | 12 项 DSL 语法、5 类封禁行为、只读展示与 quota_events 账本。 |
 | **[ADR-0010](docs/adr/0010-provider-def-ownership.md)** | 服务商定义所有权 | `<ocrHome>/custom-providers.json` 为单一源，`opencode.jsonc` 降为物化目标。 |
 | **[ADR-0011](docs/adr/0011-route-entries-and-retry-escalation.md)** | 经验表与重试递进升级 | 提示词经验表 (`route-entries.json`)、重复重试升级阶梯、路由审计账本。 |
-| **[ADR-0012](docs/adr/0012-judge-emitted-thinking-effort.md)** | 裁判联合思考强度决策 | System One 裁判单次联合决策 `{tier, effort}`、思考预算决策溯源标头。 |
+| **[ADR-0012](docs/adr/0012-l2-decision-emitted-thinking-effort.md)** | 决策层联合思考级别决策 | System One 决策层单次联合决策 `{tier, effort}`、思考预算决策溯源标头。 |
 | **[ADR-0013](docs/adr/0013-failure-events-ledger.md)** | 调用故障事件账本 | 上游物理调用故障记录、10 秒风暴聚合、SQLite 持久化镜像、管理端点。 |
 | **[ADR-0014](docs/adr/0014-entry-mode-autonomy.md)** | 接入模式自治矩阵 | 模式权限矩阵：仅 auto 家族允许网关调级；强制梯队与物理模型忠实直通。 |
 

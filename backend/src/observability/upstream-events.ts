@@ -29,7 +29,7 @@ export interface UpstreamEventContext {
   conversationKey?: string;
   /**
    * Non-default call label forwarded onto every event emitted through this
-   * context. The Layer 2 judge's decision-model leg carries 'l2-judge' so
+   * context. The Layer 2 decision layer's decision-model leg carries 'l2-decision' so
    * the archive can tell it apart from candidate-execution events sharing the
    * SAME trace/session (the outer request's identity).
    */

@@ -9,7 +9,7 @@
  * best-effort estimates).
  *
  * Shared by the /v1/systemone route (client-facing) and the Layer 2 router
- * judge (internal). Keeping one executor means the vendor-error effort
+ * decision layer (internal). Keeping one executor means the vendor-error effort
  * calibration below — the subtle part — is tuned once and benefits both.
  */
 import { ProviderRegistry } from '../../providers/registry.js';
@@ -86,7 +86,7 @@ function plannedEffort(model: ModelRegistration): ReasoningEffort | 'omit' {
  * ('none' → 'low' → omit). Hard-bounded to 3 total attempts; the accepted
  * preference is memoized per model so later calls go straight to it.
  *
- * `upstreamEventContext` is the capture identity for the call (judge
+ * `upstreamEventContext` is the capture identity for the call (decision layer
  * plumbing or the surface pipeline itself), or undefined:
  * every attempt — including the effort-repair re-pin — is a real wire call,
  * so each gets its own event pair through the registry's normal mechanism.
@@ -110,7 +110,7 @@ async function executeDecision(
       // re-pinning the effort buys nothing — an effort calibration is only
       // worth learning for a decision somebody is still waiting on. Without
       // this, a slow-then-400 upstream burns up to 2 more full chat calls
-      // behind a deadline the judge already gave up on.
+      // behind a deadline the decision layer already gave up on.
       if (signal?.aborted) throw err;
       rejections++;
       let next: ReasoningEffort | 'omit';
@@ -163,7 +163,7 @@ async function convertViaChatModel(
     // Never start a repair the caller has already walked away from: the first
     // call's output was unusable AND time is up — a second full chat call
     // would be pure cost. (The route passes no signal; only deadline-bound
-    // callers like the Layer 2 judge do.)
+    // callers like the Layer 2 decision layer do.)
     if (signal?.aborted) break;
     chat = await executeDecision(
       registry,
@@ -196,10 +196,10 @@ export interface SystemoneDecisionOptions {
    */
   signal?: AbortSignal;
   /**
-   * Upstream capture context for JUDGE-CALL capture (Layer 2): the caller
+   * Upstream capture context for L2-DECISION-CALL capture (Layer 2): the caller
    * has already checked the three-tier chain requestCapture.enabled ×
    * systemone.enabled (surface master) × systemone.l2DecisionEnabled (sub)
-   * and passes the OUTER request's identity with purpose 'l2-judge' — or
+   * and passes the OUTER request's identity with purpose 'l2-decision' — or
    * undefined, which keeps both paths silent exactly as before. The
    * /v1/systemone HTTP surface never passes it (its client leg is gated by
    * systemone.enabled (surface master) in the surface pipeline).

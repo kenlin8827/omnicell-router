@@ -182,7 +182,7 @@ describe('(a) rule-toggle matrix: OFF semantics per switch (manager gate)', () =
     expect(manager.canExecute('p/x').allowed).toBe(true);
   });
 
-  it('trip.failureRate off: window keeps filling, rate never judged', () => {
+  it('trip.failureRate off: window keeps filling, rate never decided', () => {
     const { manager } = makeManager({
       trip: { consecutiveFailures: { enabled: false }, failureRate: { enabled: false } },
     });

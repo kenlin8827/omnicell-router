@@ -1,6 +1,6 @@
 import { ChatCompletionRequest } from '../types/openai.js';
 import { EFFORT_LADDER, ReasoningEffort, TierLevel, ReasonParams } from '../types/router.js';
-import { Layer2JudgeConfig } from '../config/types.js';
+import { Layer2DecisionConfig } from '../config/types.js';
 import { DEFAULT_LAYER2_TIMEOUT_MS } from '../config/defaults.js';
 import { RoutingDecisionCache, type RoutingCacheStats } from './decision-cache.js';
 import { ProviderRegistry } from '../providers/registry.js';
@@ -12,7 +12,7 @@ import { ErrorClassifier } from '../resilience/index.js';
 import { recordFailureEvent } from '../observability/failure-events.js';
 import { getWarnThrottle } from '../observability/warn-throttle.js';
 
-export interface Layer2JudgeResult {
+export interface Layer2DecisionResult {
   targetTier: TierLevel;
   confidence: number;
   reason: string;
@@ -21,7 +21,7 @@ export interface Layer2JudgeResult {
   provider: string;
   model: string;
   /**
-   * Judge-decided thinking level (ADR-0012) — present only when the
+   * L2-decided thinking level (ADR-0012) — present only when the
    * `effort` question was asked (effortDecision on + client omitted the
    * field) AND the answer parsed. A missing/garbled effort answer never
    * sinks a good tier decision (partial success).
@@ -34,13 +34,13 @@ export interface Layer2JudgeResult {
 const TIERS: TierLevel[] = ['lite', 'plus', 'pro', 'ultra'];
 
 /**
- * Layer 2: Specialized Context-Aware Decision Judge Model.
+ * Layer 2: Specialized Context-Aware Decision Model.
  *
- * The judge speaks the gateway's OWN System One protocol —
+ * The decision layer speaks the gateway's OWN System One protocol —
  * there is no vendor SDK and no hand-rolled vendor wire here. One `choice`
  * question over the four-tier vocabulary; the same executor that serves
  * `POST /v1/systemone` serves this call — every model (including the
- * decision judge itself) answers through protocol conversion over the chat
+ * the decision layer itself) answers through protocol conversion over the chat
  * pool.
  *
  * Converted probabilities are self-reported estimates, NOT calibrated —
@@ -48,11 +48,11 @@ const TIERS: TierLevel[] = ['lite', 'plus', 'pro', 'ultra'];
  * a consumer reading a trace can tell the two apart.
  */
 /**
- * Outcome of the judge's last real wire attempt (ADR-0011 observability):
+ * Outcome of the decision layer's last real wire attempt (ADR-0011 observability):
  * the /auto page surfaces a failure until a later attempt succeeds. Cache
  * hits are NOT attempts and never overwrite this record.
  */
-export interface JudgeLastOutcome {
+export interface DecisionLastOutcome {
   ts: number;
   modelId: string;
   ok: boolean;
@@ -61,9 +61,9 @@ export interface JudgeLastOutcome {
   latencyMs?: number;
 }
 
-export class Layer2Judge {
+export class Layer2Decision {
   private static readonly TIER_INSTRUCTIONS =
-    'Classify the computational task difficulty tier. NEVER judge difficulty by character length: ' +
+    'Classify the computational task difficulty tier. NEVER decide difficulty by character length: ' +
     'short prompts like "P=NP?" or "Prove Fermat\'s Last Theorem" are high-difficulty.';
 
   /**
@@ -72,11 +72,11 @@ export class Layer2Judge {
    * hide a persisting wire problem. In-memory only — a gateway restart
    * starts blank, and the first attempt after boot re-records it.
    */
-  private static lastOutcome: JudgeLastOutcome | null = null;
+  private static lastOutcome: DecisionLastOutcome | null = null;
 
-  /** Console read accessor (GET /api/admin/judge/outcome). */
-  public static getLastOutcome(): JudgeLastOutcome | null {
-    return Layer2Judge.lastOutcome;
+  /** Console read accessor (GET /api/admin/decider/outcome). */
+  public static getLastOutcome(): DecisionLastOutcome | null {
+    return Layer2Decision.lastOutcome;
   }
 
   private static readonly TIER_CRITERIA: Record<TierLevel, string> = {
@@ -113,7 +113,7 @@ export class Layer2Judge {
     return askEffort ? `${this.CACHE_SOURCE}+effort` : this.CACHE_SOURCE;
   }
 
-  /** One-shot warnings: a misconfigured judge is a per-REQUEST condition, so
+  /** One-shot warnings: a misconfigured decision layer is a per-REQUEST condition, so
    *  a plain console.warn would flood the log once per uncached request. */
   private static warned = new Set<string>();
 
@@ -123,10 +123,10 @@ export class Layer2Judge {
     console.warn(message);
   }
 
-  // routing decision cache (LRU+TTL over judge results)
+  // routing decision cache (LRU+TTL over decision layer results)
   private static decisionCache: RoutingDecisionCache | null = null;
 
-  private static getDecisionCache(config?: Layer2JudgeConfig): RoutingDecisionCache {
+  private static getDecisionCache(config?: Layer2DecisionConfig): RoutingDecisionCache {
     // Singleton instance; the console's knob changes (enabled/ttl/maxEntries)
     // hot-apply through applyConfig on every evaluate — no restart needed.
     if (!this.decisionCache) {
@@ -157,7 +157,7 @@ export class Layer2Judge {
       },
     };
     if (askEffort) {
-      // ADR-0012 §1: the SAME call also judges the thinking depth — a
+      // ADR-0012 §1: the SAME call also decides the thinking depth — a
       // choice over the full 6-level ladder, 'none' included (a legitimate
       // "do not think" judgment). Asked only for client-omitted requests.
       questions!.effort = {
@@ -195,13 +195,13 @@ export class Layer2Judge {
 
   /**
    * Evaluate request using the Layer 2 decision model over the System One
-   * protocol. Returns null on any miss — a disabled judge, an unresolvable
+   * protocol. Returns null on any miss — a disabled decision layer, an unresolvable
    * model, an upstream failure or a blown deadline all degrade gracefully to
    * the caller's default (plus baseline) rather than throwing.
    *
-   * `judgeCapture` is the OUTER request's capture identity (the orchestrator
+   * `decisionCapture` is the OUTER request's capture identity (the orchestrator
    * hands it through routeAsync when the capture master is on; undefined
-   * otherwise). The JUDGE-CALL gate is checked HERE, at judge entry, via the
+   * otherwise). The L2-DECISION-CALL gate is checked HERE, at decision layer entry, via the
    * recorder accessor — three-tier master/sub chain (requestCapture.enabled
    * master × systemone.enabled surface master × systemone.l2DecisionEnabled
    * sub):
@@ -210,27 +210,27 @@ export class Layer2Judge {
    */
   public static async evaluate(
     request: ChatCompletionRequest,
-    config: Layer2JudgeConfig | undefined,
+    config: Layer2DecisionConfig | undefined,
     registry: ProviderRegistry,
     defaultModel?: string,
-    judgeCapture?: UpstreamEventContext,
+    decisionCapture?: UpstreamEventContext,
     /** Owning turn's conversation session — threaded by the orchestrator so
-     *  judge failures attribute to the conversation that suffered them. */
+     *  decision layer failures attribute to the conversation that suffered them. */
     sessionId?: string
-  ): Promise<Layer2JudgeResult | null> {
+  ): Promise<Layer2DecisionResult | null> {
     if (!config?.enabled) return null;
 
     const requested = (config.model || '').trim();
     const modelId =
       requested && requested !== 'auto' ? requested : (defaultModel || '').trim();
-    // An enabled judge that names nothing can never answer. Say so ONCE
+    // An enabled decision layer that names nothing can never answer. Say so ONCE
     // instead of degrading silently forever — this is exactly the upgrade
     // path where a legacy `model: 'typesafe/jev'` (never a registered id)
     // leaves Layer 2 permanently inert with no trace anywhere.
     if (!modelId) {
       this.warnOnce(
         'unconfigured',
-        '[Layer2Judge] enabled but no decision model resolves (classifier.layer2.model and ' +
+        '[Layer2Decision] enabled but no decision model resolves (classifier.layer2.model and ' +
           'systemone.defaultModel are both unset) — every judgment falls back to the plus baseline.'
       );
       return null;
@@ -240,7 +240,7 @@ export class Layer2Judge {
     if (!model) {
       this.warnOnce(
         `missing:${modelId}`,
-        `[Layer2Judge] decision model '${modelId}' is not a registered model — every judgment ` +
+        `[Layer2Decision] decision model '${modelId}' is not a registered model — every judgment ` +
           'falls back to the plus baseline. Register it, or point classifier.layer2.model at ' +
           'systemone.defaultModel.'
       );
@@ -294,7 +294,7 @@ export class Layer2Judge {
 
     const timeoutMs = config.timeoutMs || DEFAULT_LAYER2_TIMEOUT_MS;
     const startedAt = Date.now();
-    // The judge's own deadline wins over the upstream's: System One is a fast
+    // The decision layer's own deadline wins over the upstream's: System One is a fast
     // decision surface, and a stale answer is worthless to a routing cascade.
     // Aborting at the deadline stops the work for real where the transport
     // allows it and at minimum suppresses the follow-up
@@ -316,23 +316,23 @@ export class Layer2Judge {
         resolve(null);
       }, timeoutMs);
     });
-    // JUDGE-CALL CAPTURE gate (three-tier chain: requestCapture.enabled
+    // L2-DECISION-CALL CAPTURE gate (three-tier chain: requestCapture.enabled
     // master × systemone.enabled surface master × systemone.l2DecisionEnabled
     // sub — checked HERE via the recorder carried by the outer
     // identity; master off means the orchestrator never even passes a ctx).
-    // ON: reuse the OUTER request's trace/session so the judge's wire call
-    // joins the routed turn's archive, labeled purpose 'l2-judge' to tell it
+    // ON: reuse the OUTER request's trace/session so the decision layer's wire call
+    // joins the routed turn's archive, labeled purpose 'l2-decision' to tell it
     // from candidate-execution events. OFF: undefined = silence, the exact
     // call shape as today.
-    const judgeCaptureCtx: UpstreamEventContext | undefined =
-      judgeCapture && judgeCapture.recorder.isSystemoneJudgeCaptureEnabled()
-        ? { ...judgeCapture, purpose: 'l2-judge' }
+    const decisionCaptureCtx: UpstreamEventContext | undefined =
+      decisionCapture && decisionCapture.recorder.isSystemoneDecisionCaptureEnabled()
+        ? { ...decisionCapture, purpose: 'l2-decision' }
         : undefined;
     const pending = runSystemoneDecision(
       registry,
       this.buildRequest(state, model.id, askEffort),
       model,
-      { signal: controller.signal, upstreamEventContext: judgeCaptureCtx }
+      { signal: controller.signal, upstreamEventContext: decisionCaptureCtx }
     )
       .then((decision) => {
         const answer = (decision.response as any)?.answers?.tier;
@@ -362,7 +362,7 @@ export class Layer2Judge {
             : `System One model ${model.id} classified this as ${tier} (self-reported, not yet calibrated)`;
         const reasonCode = decision.upstreamKind === 'native' ? 'l2.system_one' : 'l2.system_one_uncalibrated';
         // Opt-in dataset sink (classifier.layer2.collectEnabled, gated inside
-        // decision-capture): the judged pair is the raw material for distilling
+        // decision-capture): the decided pair is the raw material for distilling
         // a dedicated decision model. Recorded ONLY on the race-winner path — an
         // abandoned late result must not pollute the dataset with an answer
         // nobody consumed.
@@ -388,11 +388,11 @@ export class Layer2Judge {
           effort: effortAnswer?.effort,
           effortConfidence: effortAnswer?.confidence,
           rawResponse: decision.response,
-        } satisfies Layer2JudgeResult;
+        } satisfies Layer2DecisionResult;
       })
       .catch((err: unknown) => {
         failureReason = err instanceof Error ? err.message : String(err);
-        // Failure-ledger emission (judge role): the wire call itself failed.
+        // Failure-ledger emission (decision layer role): the wire call itself failed.
         // A rejection landing after the deadline already fired the race is
         // skipped — the timeout branch owns that observation; recording both
         // would double-count one abandoned call.
@@ -404,7 +404,7 @@ export class Layer2Judge {
             errorClass: diagnosis.category,
             status: diagnosis.statusCode,
             message: failureReason,
-            role: 'judge',
+            role: 'l2-decision',
             sessionId,
           });
         }
@@ -417,7 +417,7 @@ export class Layer2Judge {
         const error = timedOut ? `timeout after ${timeoutMs}ms` : failureReason || 'decision failed';
         // Console-visible last-wire-attempt record (ADR-0011 observability):
         // the /auto page shows the failure until a later attempt succeeds.
-        Layer2Judge.lastOutcome = {
+        Layer2Decision.lastOutcome = {
           ts: Date.now(),
           modelId: model.id,
           ok: false,
@@ -433,22 +433,22 @@ export class Layer2Judge {
             provider: model.provider,
             errorClass: 'TIMEOUT',
             message: error,
-            role: 'judge',
+            role: 'l2-decision',
             sessionId,
           });
         }
         // Throttled warn over the formerly silent failure modes: a dead
-        // judge used to produce nothing but a missing tier decision. One
+        // decision layer used to produce nothing but a missing tier decision. One
         // throttled line per failing model keeps the log honest without a
         // QPS flood; the /auto last-outcome record above still carries the
         // always-fresh single verdict.
         getWarnThrottle().warn(
-          `judge-wire:${model.id}`,
-          `[ocr] judge wire call failed on ${model.id}: ${error}`
+          `l2-decision-wire:${model.id}`,
+          `[ocr] decision layer wire call failed on ${model.id}: ${error}`
         );
         return null;
       }
-      Layer2Judge.lastOutcome = {
+      Layer2Decision.lastOutcome = {
         ts: Date.now(),
         modelId: model.id,
         ok: true,

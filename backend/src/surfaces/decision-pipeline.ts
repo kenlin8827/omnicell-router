@@ -174,7 +174,7 @@ export async function runDecisionSurface(
   // conversion chat call, per the model's wire)
   // emits its request/response pair too — the full chain is visible
   // on one turn. No `purpose`: within this surface's own turn the upstream
-  // events are unambiguous (unlike the judge leg inside a CHAT turn).
+  // events are unambiguous (unlike the L2 decision leg inside a CHAT turn).
   // The gateway-response event is finalized by the transport's terminal send
   // once the client ctx is registered — the same lazy-ctx mechanism the chat
   // leg uses on both transports.
@@ -239,7 +239,7 @@ export async function runDecisionSurface(
   // Outbound rate-limit accounting for this pool-free wire. The decision
   // executor bypasses executeCandidatePool (and the breaker) by contract, so
   // the limiter hooks live HERE — at the SURFACE, never in decide.ts (that
-  // executor is shared with the L2 judge, and internal legs stay unmetered
+  // executor is shared with the L2 decision layer, and internal legs stay unmetered
   // by policy). Serving identity: the chain head is the credential
   // registry.execute serves with when no selector is passed (registry
   // invariant), so no chain = nothing addressable = pure no-op degeneracy.

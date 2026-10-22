@@ -9,7 +9,7 @@ import { bootServer, makeConfig as seamMakeConfig } from './helpers/systemone-se
 const makeConfig = (providers: any[], models: any[], systemone?: any): RouterConfig =>
   seamMakeConfig(providers, models, { systemone, disableLayer2Classifier: true });
 import { RouterConfig } from '../src/config/types.js';
-import { Layer2Judge } from '../src/router/layer2-judge.js';
+import { Layer2Decision } from '../src/router/layer2-decision.js';
 import {
   FailureEventLog,
   getFailureEventLog,
@@ -21,7 +21,7 @@ import { ChatCompletionRequest } from '../src/types/openai.js';
 
 // ---------------------------------------------------------------------------
 // The failure_events ledger (observability plane): one event per failed
-// upstream MODEL CALL, from the serving pool and the routing judge. These
+// upstream MODEL CALL, from the serving pool and the routing decision layer. These
 // tests pin the ring/coalescing mechanics, the durable mirror (boot replay),
 // BOTH emitters through their real code paths, and the admin read endpoint.
 // ---------------------------------------------------------------------------
@@ -60,11 +60,11 @@ beforeEach(() => {
   // Fresh memory-only ring per test; the durable store is attached by boot
   // (index.ts) only — server instances in tests stay memory-only by design.
   originalLog = setFailureEventLogForTests(new FailureEventLog());
-  Layer2Judge.clearDecisionCache();
+  Layer2Decision.clearDecisionCache();
 });
 
 afterEach(() => {
-  Layer2Judge.clearDecisionCache();
+  Layer2Decision.clearDecisionCache();
 });
 
 afterAll(() => {
@@ -78,7 +78,7 @@ describe('FailureEventLog — ring, coalescing, filters', () => {
     log.record({ ...base, sessionId: 's1' }, 1000);
     log.record({ ...base, sessionId: 's2' }, 2000); // repeat — coalesces
     log.record({ ...base, errorClass: 'QUOTA_EXHAUSTED', status: 402, message: 'quota', sessionId: 's3' }, 3000);
-    log.record({ ...base, role: 'judge' }, 3500); // different role — own row
+    log.record({ ...base, role: 'l2-decision' }, 3500); // different role — own row
     log.record({ ...base }, 11_500); // outside the 10s window — own row
 
     const rows = log.list(); // newest first
@@ -95,14 +95,14 @@ describe('FailureEventLog — ring, coalescing, filters', () => {
   test('list() narrows by model / provider / errorClass / role and caps by limit', () => {
     const log = new FailureEventLog();
     log.record({ model: 'm1', provider: 'p1', errorClass: 'RATE_LIMITED', status: 429, message: 'a', role: 'serving' }, 1000);
-    log.record({ model: 'm2', provider: 'p1', errorClass: 'TIMEOUT', message: 'b', role: 'judge' }, 2000);
-    log.record({ model: 'm1', provider: 'p2', errorClass: 'TIMEOUT', message: 'c', role: 'judge' }, 3000);
+    log.record({ model: 'm2', provider: 'p1', errorClass: 'TIMEOUT', message: 'b', role: 'l2-decision' }, 2000);
+    log.record({ model: 'm1', provider: 'p2', errorClass: 'TIMEOUT', message: 'c', role: 'l2-decision' }, 3000);
 
     expect(log.list().length).toBe(3);
     expect(log.list({ model: 'm1' }).length).toBe(2);
-    expect(log.list({ role: 'judge' }).length).toBe(2);
+    expect(log.list({ role: 'l2-decision' }).length).toBe(2);
     expect(log.list({ errorClass: 'TIMEOUT' }).map((r) => r.model)).toEqual(['m1', 'm2']); // newest first
-    expect(log.list({ model: 'm1', role: 'judge', limit: 1 }).map((r) => r.model)).toEqual(['m1']);
+    expect(log.list({ model: 'm1', role: 'l2-decision', limit: 1 }).map((r) => r.model)).toEqual(['m1']);
   });
 
   test('oversized error text is truncated to a bounded observation', () => {
@@ -133,7 +133,7 @@ describe('FailureEventLog — ring, coalescing, filters', () => {
   test('remove() deletes ONE row; unknown ids report false', () => {
     const log = new FailureEventLog();
     log.record({ model: 'm1', provider: 'p', errorClass: 'RATE_LIMITED', status: 429, message: 'a', role: 'serving' }, 1000);
-    log.record({ model: 'm2', provider: 'p', errorClass: 'TIMEOUT', message: 'b', role: 'judge' }, 2000);
+    log.record({ model: 'm2', provider: 'p', errorClass: 'TIMEOUT', message: 'b', role: 'l2-decision' }, 2000);
     const rows = log.list(); // newest first
     const victim = rows[0];
     expect(log.remove(victim.id)).toBe(true);
@@ -157,7 +157,7 @@ describe('FailureEventLog durable mirror (traces.db, independent handle)', () =>
       log.attachStore(store!);
       log.record({ model: 'm1', provider: 'p', errorClass: 'RATE_LIMITED', status: 429, message: 'a', role: 'serving' }, 1000);
       log.record({ model: 'm1', provider: 'p', errorClass: 'RATE_LIMITED', status: 429, message: 'a', role: 'serving' }, 2000); // coalesces to ×2
-      log.record({ model: 'm2', provider: 'p', errorClass: 'TIMEOUT', message: 'b', role: 'judge' }, 3000);
+      log.record({ model: 'm2', provider: 'p', errorClass: 'TIMEOUT', message: 'b', role: 'l2-decision' }, 3000);
 
       // A fresh log + fresh handle over the SAME dir — the boot-replay shape.
       store2 = await openFailureEventStore(dir);
@@ -257,8 +257,8 @@ describe('Serving emitter — a real candidate-pool failure lands in the ledger'
   });
 });
 
-describe('Judge emitter — wire failure and deadline land as role=judge rows', () => {
-  test('upstream 500 → classified judge row carrying the triggering session', async () => {
+describe('Decision emitter — wire failure and deadline land as role=l2-decision rows', () => {
+  test('upstream 500 → classified decision layer row carrying the triggering session', async () => {
     const upstream = serve({
       port: 0,
       async fetch() {
@@ -271,25 +271,25 @@ describe('Judge emitter — wire failure and deadline land as role=judge rows', 
         [{ id: 'l2-fail/jev', provider: 'l2-fail', upstreamModel: 'jev', tier: 'plus', pricing: { input: 0, output: 0, cacheRead: 0 } }]
       );
       const { registry } = bootServer(config);
-      const result = await Layer2Judge.evaluate(
+      const result = await Layer2Decision.evaluate(
         { model: 'auto', messages: [{ role: 'user', content: 'Prove Fermat.' }] },
         { enabled: true, model: 'l2-fail/jev', timeoutMs: 5000 },
         registry,
         undefined,
         undefined,
-        'sess-judge-1'
+        'sess-l2dec-1'
       );
       expect(result).toBeNull();
 
       const rows = getFailureEventLog().list();
       expect(rows.length).toBe(1);
       const row = rows[0];
-      expect(row.role).toBe('judge');
+      expect(row.role).toBe('l2-decision');
       expect(row.model).toBe('l2-fail/jev');
       expect(row.provider).toBe('l2-fail');
       expect(row.errorClass).toBe('SERVICE_UNAVAILABLE');
       expect(row.status).toBe(500);
-      expect(row.sessionId).toBe('sess-judge-1');
+      expect(row.sessionId).toBe('sess-l2dec-1');
       expect(row.message).toContain('500');
     } finally {
       upstream.stop(true);
@@ -300,7 +300,7 @@ describe('Judge emitter — wire failure and deadline land as role=judge rows', 
     const upstream = serve({
       port: 0,
       async fetch() {
-        // Valid answer, but slower than the judge deadline — the race fires
+        // Valid answer, but slower than the decision layer deadline — the race fires
         // TIMEOUT first and the abandoned call rejects later.
         await new Promise((r) => setTimeout(r, 400));
         return Response.json({ answers: { tier: { type: 'choice', choice: 'ultra', confidence: 0.99 } } });
@@ -312,13 +312,13 @@ describe('Judge emitter — wire failure and deadline land as role=judge rows', 
         [{ id: 'l2-slow/jev', provider: 'l2-slow', upstreamModel: 'jev', tier: 'plus', pricing: { input: 0, output: 0, cacheRead: 0 } }]
       );
       const { registry } = bootServer(config);
-      const result = await Layer2Judge.evaluate(
+      const result = await Layer2Decision.evaluate(
         { model: 'auto', messages: [{ role: 'user', content: 'Prove Fermat.' }] },
         { enabled: true, model: 'l2-slow/jev', timeoutMs: 150 },
         registry,
         undefined,
         undefined,
-        'sess-judge-2'
+        'sess-l2dec-2'
       );
       expect(result).toBeNull();
 
@@ -328,10 +328,10 @@ describe('Judge emitter — wire failure and deadline land as role=judge rows', 
       const rows = getFailureEventLog().list();
       expect(rows.length).toBe(1); // exactly one observation for one abandoned call
       const row = rows[0];
-      expect(row.role).toBe('judge');
+      expect(row.role).toBe('l2-decision');
       expect(row.errorClass).toBe('TIMEOUT');
       expect(row.status).toBeUndefined(); // no HTTP response ever arrived
-      expect(row.sessionId).toBe('sess-judge-2');
+      expect(row.sessionId).toBe('sess-l2dec-2');
       expect(row.message).toContain('timeout');
     } finally {
       upstream.stop(true);
@@ -356,29 +356,29 @@ describe('GET /api/admin/failure-events — equality filters, newest first', () 
 
       const log = getFailureEventLog();
       log.record({ model: 'a/m1', provider: 'a', errorClass: 'RATE_LIMITED', status: 429, message: 'x', role: 'serving' }, 1000);
-      log.record({ model: 'b/m2', provider: 'b', errorClass: 'TIMEOUT', message: 'y', role: 'judge' }, 2000);
-      log.record({ model: 'c/m3', provider: 'c', errorClass: 'TIMEOUT', message: 'z', role: 'judge' }, 3000);
+      log.record({ model: 'b/m2', provider: 'b', errorClass: 'TIMEOUT', message: 'y', role: 'l2-decision' }, 2000);
+      log.record({ model: 'c/m3', provider: 'c', errorClass: 'TIMEOUT', message: 'z', role: 'l2-decision' }, 3000);
 
       const all = await app.inject({ method: 'GET', url: '/api/admin/failure-events' });
       expect(all.statusCode).toBe(200);
       expect(all.json().events.length).toBe(3);
       expect(all.json().events[0].model).toBe('c/m3'); // newest first
 
-      const filtered = await app.inject({ method: 'GET', url: '/api/admin/failure-events?role=judge&errorClass=TIMEOUT&limit=1' });
+      const filtered = await app.inject({ method: 'GET', url: '/api/admin/failure-events?role=l2-decision&errorClass=TIMEOUT&limit=1' });
       expect(filtered.statusCode).toBe(200);
       const events = filtered.json().events;
       expect(events.length).toBe(1);
       expect(events[0].model).toBe('c/m3');
 
-      // Sanity: the judge path feeds the same ring (real emission, not seeding).
-      await Layer2Judge.evaluate(
+      // Sanity: the decision layer path feeds the same ring (real emission, not seeding).
+      await Layer2Decision.evaluate(
         { model: 'auto', messages: [{ role: 'user', content: 'Prove Fermat.' }] },
         { enabled: true, model: 'l2-ep/jev', timeoutMs: 5000 },
         registry
       );
       const after = await app.inject({ method: 'GET', url: '/api/admin/failure-events?provider=l2-ep' });
       expect(after.json().events.length).toBe(1);
-      expect(after.json().events[0].role).toBe('judge');
+      expect(after.json().events[0].role).toBe('l2-decision');
       expect(after.json().events[0].errorClass).toBe('SERVICE_UNAVAILABLE');
 
       // Single-event DELETE: the seeded row disappears; unknown ids report

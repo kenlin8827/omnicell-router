@@ -45,7 +45,7 @@ const BOOTSTRAP_DEFAULT_ENV = 'default';
 /**
  * Payload files the export dialog offers as checkboxes. config.yaml is NOT in
  * this list — it is the book-set definition itself and always included. The
- * judge-decision dataset (layer2 decisions) defaults OFF: conversation-
+ * L2 decision dataset (layer2 decisions) defaults OFF: conversation-
  * derived and potentially large; the custom catalog entries default ON
  * (small, knowledge-shaped). Keys mirror backend PAYLOAD_KEYS
  * (backend/src/config/env-archive.ts) — the backend ignores unknown keys.

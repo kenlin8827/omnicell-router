@@ -30,11 +30,11 @@
 
 ### 6. System One 面——两腿 opt-in 闸树
 
-`requestCapture.enabled`（总闸，默认 OFF）× `requestCapture.systemone.enabled`（面闸，默认 ON；关掉则**两腿同哑**——客户端一对与 surface 自己的上游一对（按解析 wire 的原生直通或合成转换调用），无 purpose 标签）。发射严格晚于全部 400/403/404/503 闸。Layer-2 裁决者的内部调用构成第三闸：`isSystemoneJudgeCaptureEnabled = 总闸 × 面闸 × systemone.l2DecisionEnabled`（默认 ON）——子闸只能**增记**事件（裁决者自己的 HTTP 腿，挂外层被路由请求，upstream 方向，`purpose:'l2-judge'`，唯一的 ExchangePurpose 值），永不越过面闸。OFF 的隐私姿态：`captureProcessContext()` 答 `{}`，该面路径与无捕获构建字节同一（专测钉住）。
+`requestCapture.enabled`（总闸，默认 OFF）× `requestCapture.systemone.enabled`（面闸，默认 ON；关掉则**两腿同哑**——客户端一对与 surface 自己的上游一对（按解析 wire 的原生直通或合成转换调用），无 purpose 标签）。发射严格晚于全部 400/403/404/503 闸。Layer-2 决策层的内部调用构成第三闸：`isSystemoneDecisionCaptureEnabled = 总闸 × 面闸 × systemone.l2DecisionEnabled`（默认 ON）——子闸只能**增记**事件（决策层自己的 HTTP 腿，挂外层被路由请求，upstream 方向，`purpose:'l2-decision'`，唯一的 ExchangePurpose 值），永不越过面闸。OFF 的隐私姿态：`captureProcessContext()` 答 `{}`，该面路径与无捕获构建字节同一（专测钉住）。
 
 ### 7. 决策网关（/v1/systemone）——wire 驱动，诚实写进措辞
 
-该面的模型语义：点名模型 = 所点即所得；auto 梯队别名按**纯池投影**解析到访问过滤后池的链头——404 未知/无池、403 被禁、503 解析不出，**绝不**静默回退；裸 `auto`/省略 → `systemone.defaultModel`；决策线限流计数但永不本地拒绝（裁决者是请求下腿）。响应头恰三个（冻结契约）：`X-OCR-Model / X-OCR-Systemone-Upstream / X-OCR-Latency-MS`。**同一执行器**同时服务 HTTP 面与 Layer-2 路由裁决——一个实现，两个调用方。
+该面的模型语义：点名模型 = 所点即所得；auto 梯队别名按**纯池投影**解析到访问过滤后池的链头——404 未知/无池、403 被禁、503 解析不出，**绝不**静默回退；裸 `auto`/省略 → `systemone.defaultModel`；决策线限流计数但永不本地拒绝（决策层是请求下腿）。响应头恰三个（冻结契约）：`X-OCR-Model / X-OCR-Systemone-Upstream / X-OCR-Latency-MS`。**同一执行器**同时服务 HTTP 面与 Layer-2 路由决策层——一个实现，两个调用方。
 
 两条执行支路，由解析出的模型 wire 选择（永不由配置表选择）：
 

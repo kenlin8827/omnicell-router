@@ -218,7 +218,7 @@ function JsonBlock({ value }: { value: unknown }) {
   );
 }
 
-type DrawerTab = 'clientRequest' | 'gatewayResponse' | 'upstreamRequest' | 'upstreamResponse' | 'judgeRequest' | 'judgeResponse';
+type DrawerTab = 'clientRequest' | 'gatewayResponse' | 'upstreamRequest' | 'upstreamResponse' | 'decisionRequest' | 'decisionResponse';
 
 /**
  * Right-side detail drawer for one captured turn (portal, Esc/overlay close).
@@ -235,8 +235,8 @@ const CaptureDrawer: React.FC<{
   loading?: boolean;
   /** Turn's bodies fall outside the read window (long archive, tail kept). */
   outOfWindow?: boolean;
-  /** Tab to land on when the drawer opens (e.g. the judge tab when opened
-   *  from the judge sub-row); defaults to the inbound request view. */
+  /** Tab to land on when the drawer opens (e.g. the decision layer tab when opened
+   *  from the decision layer sub-row); defaults to the inbound request view. */
   initialTab?: DrawerTab;
   onClose: () => void;
 }> = ({ turn, loading, outOfWindow, initialTab, onClose }) => {
@@ -265,18 +265,18 @@ const CaptureDrawer: React.FC<{
   // full wire dump (request line + headers + body OR response line + headers
   // + body) of that side. Empty tab = the corresponding exchange never
   // fired (e.g. gateway-response is missing when the gateway times out
-  // before sending a reply). The judge pair is a 5th/6th tab that only
-  // appears when an L2 judge leg fired inside this turn — it shares the
+  // before sending a reply). The decision layer pair is a 5th/6th tab that only
+  // appears when an L2 decision layer leg fired inside this turn — it shares the
   // trace but is a distinct upstream call from the serving one.
   const tabs: { key: DrawerTab; label: string; ev?: HttpExchangeEvent }[] = [
     { key: 'clientRequest',    label: t('captures.tabClientRequest'),    ev: turn.clientRequest },
     { key: 'gatewayResponse',  label: t('captures.tabGatewayResponse'),  ev: turn.gatewayResponse },
     { key: 'upstreamRequest',  label: t('captures.tabUpstreamRequest'),  ev: turn.upstreamRequest },
     { key: 'upstreamResponse', label: t('captures.tabUpstreamResponse'), ev: turn.upstreamResponse },
-    ...(turn.judgeRequest || turn.judgeResponse
+    ...(turn.decisionRequest || turn.decisionResponse
       ? [
-          { key: 'judgeRequest' as DrawerTab,  label: t('captures.tabJudgeRequest'),  ev: turn.judgeRequest },
-          { key: 'judgeResponse' as DrawerTab, label: t('captures.tabJudgeResponse'), ev: turn.judgeResponse },
+          { key: 'decisionRequest' as DrawerTab,  label: t('captures.tabDecisionRequest'),  ev: turn.decisionRequest },
+          { key: 'decisionResponse' as DrawerTab, label: t('captures.tabDecisionResponse'), ev: turn.decisionResponse },
         ]
       : []),
   ];
@@ -444,12 +444,12 @@ const CaptureDrawer: React.FC<{
               </span>
             </span>
           )}
-          {/* L2 judge leg badge: latency chip + the judge model, so the two
+          {/* L2 decision layer leg badge: latency chip + the decision layer model, so the two
               upstream calls of one turn are distinguishable at a glance. */}
-          {turn.judgeRequest && (
+          {turn.decisionRequest && (
             <span
               className="badge"
-              title={`${t('captures.judgeBadge')} · ${turn.judgeRequest.model}${turn.judgeLatencyMs !== undefined ? ` · ${turn.judgeLatencyMs} ms` : ''}`}
+              title={`${t('captures.decisionBadge')} · ${turn.decisionRequest.model}${turn.decisionLatencyMs !== undefined ? ` · ${turn.decisionLatencyMs} ms` : ''}`}
               style={{
                 background: 'var(--hue-purple-soft, color-mix(in srgb, var(--accent) 12%, transparent))',
                 color: 'var(--hue-purple, var(--accent))',
@@ -457,9 +457,9 @@ const CaptureDrawer: React.FC<{
                 fontSize: '10px',
               }}
             >
-              ⚖ {t('captures.judgeBadge')}
-              {turn.judgeLatencyMs !== undefined && ` · ${fmtLatency(turn.judgeLatencyMs)}`}
-              {turn.judgeRequest.model !== turn.model && ` · ${turn.judgeRequest.model}`}
+              ⚖ {t('captures.decisionBadge')}
+              {turn.decisionLatencyMs !== undefined && ` · ${fmtLatency(turn.decisionLatencyMs)}`}
+              {turn.decisionRequest.model !== turn.model && ` · ${turn.decisionRequest.model}`}
             </span>
           )}
           <button className="btn btn-sm" style={{ marginLeft: 'auto' }} onClick={onClose} aria-label={t('common.close')}>
@@ -488,7 +488,7 @@ const CaptureDrawer: React.FC<{
           </div>
         )}
 
-        {/* Tabs — wire-side views (4 base + judge pair when present) */}
+        {/* Tabs — wire-side views (4 base + decision pair when present) */}
         <div style={{ display: 'flex', gap: '4px', padding: '12px 16px 0', borderBottom: '1px solid var(--divider)', flexWrap: 'wrap' }}>
           {tabs.map(x => {
             const empty = !x.ev;
@@ -787,8 +787,8 @@ export const CapturesPage: React.FC = () => {
   const [totalTurns, setTotalTurns] = useState(0);
   const [fileTruncated, setFileTruncated] = useState(false);
   const [selectedTurnIdx, setSelectedTurnIdx] = useState<number | null>(null);
-  // Tab the drawer should land on ("judgeRequest" when opened from the
-  // judge sub-row); reset to undefined when the selection changes.
+  // Tab the drawer should land on ("decisionRequest" when opened from the
+  // decision badge); reset to undefined when the selection changes.
   const [initialDrawerTab, setInitialDrawerTab] = useState<DrawerTab | undefined>(undefined);
   const openTurn = (idx: number, tab?: DrawerTab) => {
     setInitialDrawerTab(tab);
@@ -1768,7 +1768,7 @@ export const CapturesPage: React.FC = () => {
                               ?? turn.upstreamRequest?.ts
                               ?? turn.gatewayResponse?.ts
                               ?? turn.upstreamResponse?.ts
-                              ?? turn.judgeRequest?.ts;
+                              ?? turn.decisionRequest?.ts;
                             const errEvent = turn.upstreamResponse?.status === 'error'
                               || turn.gatewayResponse?.status === 'error'
                               || !!turn.error;
@@ -1878,14 +1878,14 @@ export const CapturesPage: React.FC = () => {
                                     </span>
                                   </span>
                                 )}
-                                {/* L2 judge leg: one compact badge — latency inline,
+                                {/* L2 decision layer leg: one compact badge — latency inline,
                                     model + explanation in the tooltip. Click opens
-                                    the drawer's judge tabs (full wire). */}
-                                {turn.judgeRequest && (
+                                    the drawer's decision tabs (full wire). */}
+                                {turn.decisionRequest && (
                                   <span
                                     className="badge"
-                                    onClick={() => openTurn(idx, 'judgeRequest')}
-                                    title={`${t('captures.judgeBadge')} · ${turn.judgeRequest.model}${turn.judgeLatencyMs !== undefined ? ` · ${turn.judgeLatencyMs} ms` : ''} · ${t('captures.judgeSubRowHint')}`}
+                                    onClick={() => openTurn(idx, 'decisionRequest')}
+                                    title={`${t('captures.decisionBadge')} · ${turn.decisionRequest.model}${turn.decisionLatencyMs !== undefined ? ` · ${turn.decisionLatencyMs} ms` : ''} · ${t('captures.decisionHint')}`}
                                     style={{
                                       background: 'color-mix(in srgb, var(--accent) 12%, transparent)',
                                       color: 'var(--accent)',
@@ -1895,7 +1895,7 @@ export const CapturesPage: React.FC = () => {
                                       cursor: 'pointer',
                                     }}
                                   >
-                                    ⚖ {turn.judgeLatencyMs !== undefined ? fmtLatency(turn.judgeLatencyMs) : t('captures.judgeBadge')}
+                                    ⚖ {turn.decisionLatencyMs !== undefined ? fmtLatency(turn.decisionLatencyMs) : t('captures.decisionBadge')}
                                   </span>
                                 )}
                               </div>

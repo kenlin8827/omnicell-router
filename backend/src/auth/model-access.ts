@@ -150,7 +150,7 @@ export function checkRequestedModel(
 
   const members = comboMembers(requestedModel);
   if (members.length > 0) {
-    // Tier-aware: combo members are judged with their tier so that virtual
+    // Tier-aware: combo members are decided with their tier so that virtual
     // tier entries in the policy apply to them identically to the pool.
     const denied = members.filter((m) => !isModelAllowed(m.id, policy, m.tier));
     return denied.length === 0 ? { ok: true } : { ok: false, denied: denied.map((m) => m.id) };

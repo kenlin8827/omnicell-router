@@ -696,10 +696,10 @@ const TranscriptBlock: React.FC<{
         {turn.gatewayLatencyMs !== undefined && (
           <span title={`${turn.gatewayLatencyMs} ms`} style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: MONO }}>↳ {fmtLatency(turn.gatewayLatencyMs)}</span>
         )}
-        {turn.judgeRequest && (
+        {turn.decisionRequest && (
           <span
             className="badge"
-            title={`${t('captures.judgeBadge')} · ${turn.judgeRequest.model}${turn.judgeLatencyMs !== undefined ? ` · ${turn.judgeLatencyMs} ms` : ''}`}
+            title={`${t('captures.decisionBadge')} · ${turn.decisionRequest.model}${turn.decisionLatencyMs !== undefined ? ` · ${turn.decisionLatencyMs} ms` : ''}`}
             style={{
               background: 'color-mix(in srgb, var(--accent) 12%, transparent)',
               color: 'var(--accent)',
@@ -708,9 +708,9 @@ const TranscriptBlock: React.FC<{
               flexShrink: 0,
             }}
           >
-            ⚖ {t('captures.judgeBadge')}
-            {turn.judgeLatencyMs !== undefined && ` · ${fmtLatency(turn.judgeLatencyMs)}`}
-            {turn.judgeRequest.model !== turn.model && ` · ${turn.judgeRequest.model}`}
+            ⚖ {t('captures.decisionBadge')}
+            {turn.decisionLatencyMs !== undefined && ` · ${fmtLatency(turn.decisionLatencyMs)}`}
+            {turn.decisionRequest.model !== turn.model && ` · ${turn.decisionRequest.model}`}
           </span>
         )}
         {st.reqTruncated && (

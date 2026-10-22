@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Cpu, RefreshCw, Search, Brain, Wrench, Eye, EyeOff, AudioLines, Video, Thermometer, Pencil, Zap, Loader2, Lock, LockOpen } from 'lucide-react';
+import { Cpu, RefreshCw, Search, Brain, Wrench, Eye, EyeOff, AudioLines, Video, Thermometer, Pencil, Zap, Loader2, Lock, LockOpen, Copy } from 'lucide-react';
 import { opencodeApi, type OpenCodeModelView } from '../lib/api';
 import { useModelTest } from '../lib/useModelTest';
 import { useI18n } from '../i18n/I18nContext';
@@ -10,7 +10,7 @@ import { Combobox } from '../components/Combobox';
 import { Pagination } from '../components/Pagination';
 import { Chip } from '../components/Chip';
 import { Switch } from '../components/Switch';
-import { fmtLatency } from '../lib/format';
+import { fmtLatency, copyToClipboard } from '../lib/format';
 
 type SortKey = 'default' | 'priceAsc' | 'priceDesc' | 'contextDesc' | 'name';
 
@@ -358,7 +358,12 @@ const toggleHidden = async (m: OpenCodeModelView) => {
                 <tr key={rowKey} style={m.disabled === true ? { opacity: 0.5, height: 56 } : { height: 56 }}>
                   <td style={tdStyle}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                      <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontWeight: 600, wordBreak: 'break-all' }}>{m.id}</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
+                        {/* The FULL gateway-visible id (`providerId/modelId` — the
+                            registered modelRef): bare ids collide across providers
+                            and are not routable on their own. */}
+                        <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontWeight: 600, wordBreak: 'break-all' }}>{m.providerId}/{m.id}</span>
+                      </div>
                       {res && (
                         <span
                           style={{
@@ -379,6 +384,16 @@ const toggleHidden = async (m: OpenCodeModelView) => {
                         onClick={() => testOne({ key: rowKey, providerId: m.providerId, modelId: m.id })}
                       >
                         {testingIds.has(rowKey) ? <Loader2 size={11} style={{ animation: 'ocr-spin 0.8s linear infinite' }} /> : <Zap size={11} />}
+                      </button>
+                      <button
+                        style={{ color: 'var(--text-dim)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', flexShrink: 0 }}
+                        title={t('models.copyFullId')}
+                        onClick={async () => {
+                          const full = `${m.providerId}/${m.id}`;
+                          (await copyToClipboard(full)) ? toast.success(full) : toast.error(t('common.failed'));
+                        }}
+                      >
+                        <Copy size={11} />
                       </button>
                       <button
                         style={{ color: 'var(--text-dim)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', flexShrink: 0, opacity: m.disabled === true ? 0.6 : 1 }}

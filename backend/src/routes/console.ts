@@ -11,7 +11,7 @@ import { getEnvPaths, resolveEnvName } from '../config/env.js';
 import { applyConfig as applyDecisionCaptureConfig } from '../capture/decision-capture.js';
 import { applyRouteEntriesConfig, getRouteEntryStore, routeEntriesGate } from '../router/route-entries.js';
 import { appendRoutingLedger } from '../router/routing-ledger.js';
-import { Layer2Judge } from '../router/layer2-judge.js';
+import { Layer2Decision } from '../router/layer2-decision.js';
 import { EFFORT_LADDER, ReasoningEffort, TierLevel } from '../types/router.js';
 import { initProxyConfig } from '../utils/proxy.js';
 import { getOcrHomeDir } from '../cli/paths.js';
@@ -1073,11 +1073,11 @@ export function registerConsoleRoutes(
     return { status: 'ok', removed };
   });
 
-  // 3E. Layer 2 judge last wire-attempt outcome — the /auto page surfaces a
+  // 3E. Layer 2 decision layer last wire-attempt outcome — the /auto page surfaces a
   // failure until a later attempt succeeds (cache hits never clear it).
-  app.get('/api/admin/judge/outcome', async () => ({
+  app.get('/api/admin/decider/outcome', async () => ({
     status: 'ok',
-    outcome: Layer2Judge.getLastOutcome(),
+    outcome: Layer2Decision.getLastOutcome(),
   }));
 
   // 4. Client Interception Setup / Teardown

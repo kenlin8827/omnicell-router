@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { isMap, parse, parseDocument, stringify } from 'yaml';
-import { Layer2JudgeConfig, RequestCaptureConfig, RouteEntriesConfig, RouterConfig, WebAuthConfig, CircuitBreakerConfig, RateLimitConfig } from './types.js';
+import { Layer2DecisionConfig, RequestCaptureConfig, RouteEntriesConfig, RouterConfig, WebAuthConfig, CircuitBreakerConfig, RateLimitConfig } from './types.js';
 import { DEFAULT_RETRIABLE_CAUSES } from '../resilience/types.js';
 import { DEFAULT_CREDENTIAL_AFFINITY_CACHE_TTL_MS } from '../pipeline/credential-selection.js';
 import { ensureEnvScaffold, getEnvPaths, resolveEnvName } from './env.js';
@@ -57,11 +57,11 @@ const DEFAULT_CONFIG: RouterConfig = {
   classifier: {
     layer2: {
       enabled: false,
-      // No model pinned by default — the judge then follows
+      // No model pinned by default — the decision layer then follows
       // `systemone.defaultModel`.
       timeoutMs: DEFAULT_LAYER2_TIMEOUT_MS,
-      collectEnabled: false, // dataset sampling: judged decisions → data/layer2-decisions.jsonl (single-key gate, opt-in)
-      effortDecision: false, // judge also decides the thinking level (ADR-0012) — spends thinking tokens, opt-in
+      collectEnabled: false, // dataset sampling: sampled decisions → data/layer2-decisions.jsonl (single-key gate, opt-in)
+      effortDecision: false, // decision layer also decides the thinking level (ADR-0012) — spends thinking tokens, opt-in
     },
   },
   routeEntries: {
@@ -97,10 +97,10 @@ const DEFAULT_CONFIG: RouterConfig = {
     maxBodyBytes: DEFAULT_MAX_BODY_BYTES,
     maxSessionMB: 512,
     storeMedia: true,
-    // System One group: surface master + judge-leg sub-switch, both default
+    // System One group: surface master + decision layer-leg sub-switch, both default
     // ON — they only matter under the capture master, and a user who turns
     // the master on asked for capture; silence BOTH legs by flipping the
-    // group master off, or exempt just the judge leg via the sub-switch.
+    // group master off, or exempt just the L2 decision leg via the sub-switch.
     systemone: { enabled: true, l2DecisionEnabled: true },
   },
   tracePersist: {
@@ -207,15 +207,15 @@ export function sanitizeWebAuthInput(input: unknown): WebAuthConfig | undefined 
 
 /**
  * Layer 2 sanitizer: drops the retired vendor-connection keys (`provider`,
- * `baseUrl`, `apiKey`) left over from the pre-System-One judge, which talked
- * to a hand-configured vendor endpoint. The judge now addresses a REGISTERED
+ * `baseUrl`, `apiKey`) left over from the pre-System-One decision layer, which talked
+ * to a hand-configured vendor endpoint. The decision layer now addresses a REGISTERED
  * model through the gateway's own System One protocol, so those
  * keys are meaningless — and keeping them would re-persist dead settings on
  * every console save. `decisionCapture` joins the drop list after the
  * dataset-sampling move to classifier.layer2.collectEnabled (old key ignored).
  */
-function sanitizeLayer2Input(input: unknown): Layer2JudgeConfig {
-  const merged = { ...DEFAULT_CONFIG.classifier?.layer2, ...(input as Layer2JudgeConfig) } as Layer2JudgeConfig & {
+function sanitizeLayer2Input(input: unknown): Layer2DecisionConfig {
+  const merged = { ...DEFAULT_CONFIG.classifier?.layer2, ...(input as Layer2DecisionConfig) } as Layer2DecisionConfig & {
     provider?: unknown;
     baseUrl?: unknown;
     apiKey?: unknown;
@@ -517,7 +517,7 @@ export function loadConfig(configPath?: string): RouterConfig {
         fallback: { ...DEFAULT_CONFIG.fallback, ...parsed?.fallback },
         // Retired classifier keys (`localModel` / `layer1` — the Layer 1
         // micro-classifier is gone) are stripped alongside the retired Layer 2
-        // vendor keys (`provider` / `baseUrl` / `apiKey` — the judge now calls
+        // vendor keys (`provider` / `baseUrl` / `apiKey` — the decision layer now calls
         // a registered model over the System One protocol) so stale values
         // don't get re-persisted on the next console save.
         classifier: {
@@ -684,7 +684,7 @@ function syncRuntimeAuthView(fresh: RouterConfig): void {
     // without this line the grace knob would silently ignore every save.
     runtimeConfigRef.rateLimit = fresh.rateLimit;
     // classifier / routing / systemone hot-apply too (per-request reads only —
-    // the judge resolves model/timeout/effortDecision per evaluate, the mode
+    // the decision layer resolves model/timeout/effortDecision per evaluate, the mode
     // lever per processInternal, the System One defaultModel per decision):
     // the /auto page's "restart to apply" era is over for everything it edits.
     // Sections with boot-time consumers (streaming executors, models,
@@ -780,12 +780,12 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   classifier: '意图分类器（smart 模式的 lite/pro/ultra 判定）',
   'classifier.layer2.enabled': 'Layer2 判定开关（经本机 System One 协议调用已注册模型）',
   'classifier.layer2.model': '判定模型 id（已注册的模型；留空则用 systemone.defaultModel）',
-  systemone: 'System One 决策面（POST /v1/systemone）：本机协议直连已注册模型，其余模型走 chat-model 转换；此节的 defaultModel 为未指定 model 的请求兜底，同时在 classifier.layer2.model 留空时充当 L2 判定器的决策模型',
-  'systemone.defaultModel': 'System One 默认模型（已注册模型 id）：为未指定 model（或 model=auto）的 /v1/systemone 请求兜底，不经梯队级联；classifier.layer2.model 留空时 L2 判定器也用它。重启网关生效',
+  systemone: 'System One 决策面（POST /v1/systemone）：本机协议直连已注册模型，其余模型走 chat-model 转换；此节的 defaultModel 为未指定 model 的请求兜底，同时在 classifier.layer2.model 留空时充当 L2 决策层的决策模型',
+  'systemone.defaultModel': 'System One 默认模型（已注册模型 id）：为未指定 model（或 model=auto）的 /v1/systemone 请求兜底，不经梯队级联；classifier.layer2.model 留空时 L2 决策层也用它。重启网关生效',
   'classifier.layer2.timeoutMs': '判定超时（毫秒，默认 5000）：未命中缓存的新上下文先等判定再放行（串行计价），超时回落默认 plus 梯队；经 chat 转换的判定模型 1.5 秒内很少答完，建议 3000-10000。保存后即时生效',
   'classifier.layer2.decisionCache': '判定决策缓存（相同上下文复用判定结果）',
-  'classifier.layer2.collectEnabled': 'L2 裁判决策样本采集开关（默认 false 关闭）：单键门控，落盘 data/layer2-decisions.jsonl（不进捕捉页），64MB 封顶后停写并告警一次；热生效',
-  'classifier.layer2.effortDecision': 'L2 裁判思考级别判定开关（默认 false 关闭）：开启后裁判在同一次调用中同时判定梯队与思考级别，仅对省略 reasoning_effort 的请求补位（客户端显式值永远优先），判定结果逐轮浮动不进会话棘轮；注意裁判抬档会多花思考 token 费用',
+  'classifier.layer2.collectEnabled': 'L2 决策样本采集开关（默认 false 关闭）：单键门控，落盘 data/layer2-decisions.jsonl（不进捕捉页），64MB 封顶后停写并告警一次；热生效',
+  'classifier.layer2.effortDecision': 'L2 决策思考级别判定开关（默认 false 关闭）：开启后决策层在同一次调用中同时判定梯队与思考级别，仅对省略 reasoning_effort 的请求补位（客户端显式值永远优先），判定结果逐轮浮动不进会话棘轮；注意决策层抬档会多花思考 token 费用',
   routeEntries: '路由经验表：按归一化 prompt 记忆历史路由档位，重复提问自动升档；enabled 关闭即整个子系统停用（查询/写入/审计台账全停）',
   'routeEntries.enabled': '经验表总开关（查询、白名单写入与审计台账）；保存后即时生效',
   'routeEntries.snippetEnabled': '是否存 prompt 前 200 字符片段供控制台浏览/人工识别（隐私敏感，默认开；关闭只影响新写入，不删除已存片段）',
@@ -870,7 +870,7 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'rateLimit.persist.enabled': '账本持久化开关（默认开）；关闭=仅内存环（重启清零）',
   'rateLimit.inboundGraceMs': '宽限等待（毫秒，默认 1000，上限 2000，0=关闭）：客户端密钥窗口满、但重开等待不超过该值时，网关原地等待窗口重开后复查一次（不循环），复查仍满或等待超限才回 429 + Retry-After——吸收亚秒级突发，避免短限流变成用户可见错误；长窗口维持快速失败：限流契约不变，等待归属客户端自己的退避',
   apiKeys: '客户端接入密钥（sk-ocr-*，见 /keys 页）；每个密钥可配 limits=入站滑动窗口限流，规则项 { window, requests | tokens | costUsd }（window 用时长语法 30s/5m/1h/1d；同一项可写多个维度=各自独立计数；任一窗口满即拒——宽限等待内（rateLimit.inboundGraceMs）先原地等满复查一次，否则 429 + Retry-After；被拒请求不计入窗口；保存即时生效）；requests 维度覆盖全部四条推理线（前向代理 MITM 腿不经该入口、不入站计量）；tokens/costUsd 在 chat 形态线（chat/messages/responses）与 systemone 决策线均于完成时记账（决策线以协议 usage 为准，上游未带 usage 的 native 应答只计 requests）',
-  credentials: '模型凭证限流叠加层（原始 YAML 页编辑，保存即时生效）：按 provider id 分组，每项 { keyHashPrefix, limits } —— keyHashPrefix 是该凭据 sha256 的前 12 位（控制台凭据卡片可见，与凭证增删改名无关；大小写不敏感——编译/匹配时归一，磁盘保留原文）；limits 规则语法同 apiKeys（滑动窗口；requests=请求数、tokens=消耗 token 数、costUsd=费用美元，按完成时刻记账）；出站限流只做整形：超限凭证在 NEW 会话选号时跳过、绝不改动已绑定会话（重绑会烧上游提示缓存）、候选耗尽时末位强制放行，真正的上游 429 仍由熔断器处理决策线例外：/v1/systemone 不经候选池——不做本地跳过/拒绝、也不经熔断，上游错误逐字透传；但该线的出站 dispatch 与完成记账照常计入，凭证窗口会被它填充。内部腿（L2 裁判、健康探测）的上游调用不经任何记账，不会填充窗口',
+  credentials: '模型凭证限流叠加层（原始 YAML 页编辑，保存即时生效）：按 provider id 分组，每项 { keyHashPrefix, limits } —— keyHashPrefix 是该凭据 sha256 的前 12 位（控制台凭据卡片可见，与凭证增删改名无关；大小写不敏感——编译/匹配时归一，磁盘保留原文）；limits 规则语法同 apiKeys（滑动窗口；requests=请求数、tokens=消耗 token 数、costUsd=费用美元，按完成时刻记账）；出站限流只做整形：超限凭证在 NEW 会话选号时跳过、绝不改动已绑定会话（重绑会烧上游提示缓存）、候选耗尽时末位强制放行，真正的上游 429 仍由熔断器处理决策线例外：/v1/systemone 不经候选池——不做本地跳过/拒绝、也不经熔断，上游错误逐字透传；但该线的出站 dispatch 与完成记账照常计入，凭证窗口会被它填充。内部腿（L2 决策、健康探测）的上游调用不经任何记账，不会填充窗口',
   'credentials.*': '该 provider 的凭证规则列表（键=provider id，如 anthropic）；条目 { keyHashPrefix, limits }',
   quota: '额度探测调度：额度覆盖表与代码 adapter 随 release 内置，此处只调调度器；凭据出现即自动探测（激活随凭据），探测失败≠额度失败——保留旧值置 stale，绝不触发熔断/下架；声明上限只展示、不门控路由',
   'quota.enabled': '额度探测总开关（默认 true）；false = 停止一切出网额度探测（已存快照仍可展示，标注 stale 逻辑不变）',
@@ -901,8 +901,8 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'compression.caveman.level': 'caveman 强度：lite / full / ultra / wenyan-lite / wenyan / wenyan-ultra（文言）',
   requestCapture: '请求全量捕获（HTTP 交换审计日志；默认关闭）：请求/响应原文落盘 JSONL，捕获体可能含敏感数据且占用磁盘，按日期目录保留、到期或超容量自动清理；单会话另有 maxSessionMB 封顶（失控的 agent 循环不会吃光共享容量，触顶档案停止追加并落一条 archive-overflow 终态行）',
   'requestCapture.storeMedia': 'base64 图片/文档等二进制载荷转存硬盘（默认 true）：请求体中的 base64 媒体替换为 [MEDIA …sha256=… file=media/…] 占位符，内容寻址去重（同一张图多轮重发只落一份），随日期目录同批清理；关闭或写盘失败时仍替换为无 file= 的占位符（不留 base64 在归档里），对话回放页可直接显示缩略图',
-  'requestCapture.systemone.enabled': 'System One 决策面总闸（默认 true；仅当 requestCapture.enabled 为 true 时生效）：关闭时两腿同哑——/v1/systemone 全链路捕捉（客户端请求/响应 + 网关对上游的调用腿；路由指标仍不捕获）连同下方 L2 裁判 HTTP 腿捕捉一并静默；开启时该面全链路捕捉照常（决策体是客户端状态快照，注意隐私与磁盘占用）',
-  'requestCapture.systemone.l2DecisionEnabled': 'L2 裁判 HTTP 腿捕捉子开关（默认 true；仅当 requestCapture.enabled 与 requestCapture.systemone.enabled 均为 true 时生效）：L2 裁判内部发起的决策模型调用记为上游捕捉事件（挂外层会话/追踪），与客户端请求捕捉主语正交——只增记裁判自己的线路调用，不筛选客户端流量；注意与 classifier.layer2.collectEnabled（数据集采样落盘）是两个不同开关',
+  'requestCapture.systemone.enabled': 'System One 决策面总闸（默认 true；仅当 requestCapture.enabled 为 true 时生效）：关闭时两腿同哑——/v1/systemone 全链路捕捉（客户端请求/响应 + 网关对上游的调用腿；路由指标仍不捕获）连同下方 L2 决策层 HTTP 腿捕捉一并静默；开启时该面全链路捕捉照常（决策体是客户端状态快照，注意隐私与磁盘占用）',
+  'requestCapture.systemone.l2DecisionEnabled': 'L2 决策层 HTTP 腿捕捉子开关（默认 true；仅当 requestCapture.enabled 与 requestCapture.systemone.enabled 均为 true 时生效）：L2 决策层内部发起的决策模型调用记为上游捕捉事件（挂外层会话/追踪），与客户端请求捕捉主语正交——只增记决策层自己的线路调用，不筛选客户端流量；注意与 classifier.layer2.collectEnabled（数据集采样落盘）是两个不同开关',
   catalog: '目录数据源：远程 catalog 源定义与本地锚定（控制台 /catalog 页可视化编辑，改后即时生效）',
   'catalog.syncIntervalMs': '目录自动同步周期（毫秒，默认 86400000 = 24h）',
   'catalog.lockedModels': '本地锚定的模型 id 列表：这些模型的本地定义值（含 0 价）不被任何远程源覆盖',

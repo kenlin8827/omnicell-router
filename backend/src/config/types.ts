@@ -260,7 +260,7 @@ export interface TiersConfig {
 export type RoutingMode = 'smart' | 'cost' | 'quality';
 
 export interface RoutingConfig {
-  mode: RoutingMode; // smart = rules/Layer2 judge cascade (default); cost = always lite; quality = always pro
+  mode: RoutingMode; // smart = rules/Layer2 decision layer cascade (default); cost = always lite; quality = always pro
 }
 
 export interface OpenCodeConfig {
@@ -269,7 +269,7 @@ export interface OpenCodeConfig {
 }
 
 /**
- * Outbound proxy for upstream calls (model providers, Layer2 judge, catalog sync).
+ * Outbound proxy for upstream calls (model providers, Layer2 decision layer, catalog sync).
  * Resolution order: loopback targets are NEVER proxied → excludes (force direct)
  * → includes (non-empty: ONLY matches go through proxy) → proxy.url → direct.
  *
@@ -322,35 +322,35 @@ export interface ForwardProxyConfig {
 }
 
 /**
- * Layer 2 judge configuration. The judge calls a REGISTERED model over the
+ * Layer 2 decision layer configuration. The decision layer calls a REGISTERED model over the
  * gateway's own System One protocol — there is no vendor endpoint,
  * credential or wire format to configure: `provider`, `baseUrl` and `apiKey`
  * are gone. Point `model` at any registered id (any chat model serves via
  * protocol conversion); when it is omitted, `systemone.defaultModel` is used.
  */
-export interface Layer2JudgeConfig {
+export interface Layer2DecisionConfig {
   enabled: boolean;
   /** Registered model id, or 'auto' to fall back to `systemone.defaultModel`. */
   model?: string;
   timeoutMs?: number;
-  decisionCache?: { // reuse prior judge decisions for identical contexts
+  decisionCache?: { // reuse prior decision layer decisions for identical contexts
     enabled?: boolean; // default true
     ttlSeconds?: number; // default 1800
     maxEntries?: number; // default 500
   };
   /**
-   * L2 decision DATASET sampling — single-key gate: records judged decisions
+   * L2 decision DATASET sampling — single-key gate: records sampled decisions
    * (state + answer + tier) to data/layer2-decisions.jsonl for future
    * decision-model distillation. Default OFF (state carries user conversation
    * content); hot-applied on config save — no restart; writes pause once the
    * file exceeds 64 MB. NOT to be confused with requestCapture.systemone.
-   * l2DecisionEnabled, which captures the judge's HTTP leg instead.
+   * l2DecisionEnabled, which captures the decision layer's HTTP leg instead.
    */
   collectEnabled?: boolean;
   /**
-   * Judge-decided thinking level (ADR-0012): the judge's System One call
+   * L2-decided thinking level (ADR-0012): the decision layer's System One call
    * also asks for an effort level (6-level ladder) for requests that omit
-   * `reasoning_effort`. Default FALSE — a judge-decided level spends
+   * `reasoning_effort`. Default FALSE — a decision model-decided level spends
    * thinking tokens nobody explicitly ordered, so it is opt-in. The
    * decision cache namespaces on this flag, so toggling never resurrects
    * stale effort answers.
@@ -358,10 +358,10 @@ export interface Layer2JudgeConfig {
   effortDecision?: boolean;
   // Retired keys `decisionCapture` (pre-collectEnabled) are stripped at load.
 }
-export type Layer2DecisionConfig = Layer2JudgeConfig;
+
 
 export interface ClassifierConfig {
-  layer2?: Layer2JudgeConfig;
+  layer2?: Layer2DecisionConfig;
 }
 
 /**
@@ -585,22 +585,22 @@ export interface CompressionConfig {
  * System One group inside the request-capture section — master/sub chain.
  * The whole group only matters under `requestCapture.enabled` (the privacy
  * master). `enabled` is the System One SURFACE MASTER (off silences BOTH
- * legs); `l2DecisionEnabled` is a SUB-switch beneath it (adds the judge-
+ * legs); `l2DecisionEnabled` is a SUB-switch beneath it (adds the decision layer-
  * internal decision-call leg only). Both default TRUE, so enabling the
  * capture master discloses the whole decision surface.
  */
 export interface RequestCaptureSystemoneConfig {
   /** System One surface MASTER — off silences BOTH legs: client-leg capture
-   *  of /v1/systemone decision traffic AND the judge-call sub-leg below.
+   *  of /v1/systemone decision traffic AND the decision-call sub-leg below.
    *  When on, client-leg capture records the request that arrives at the
    *  gateway + the gateway's answer. Default true. */
   enabled?: boolean;
-  /** Judge-call capture SUB-switch (effective only when `enabled` is true):
-   *  adds capture of the decision-model HTTP leg the Layer 2 judge fires
+  /** Decision-call capture SUB-switch (effective only when `enabled` is true):
+   *  adds capture of the decision-model HTTP leg the Layer 2 decision layer fires
    *  INSIDE a routed chat turn, recorded as upstream-direction events
-   *  (attached to the outer request's trace/session, purpose 'l2-judge').
+   *  (attached to the outer request's trace/session, purpose 'l2-decision').
    *  Default true. Subject-orthogonal to the client leg — it adds the
-   *  judge's own wire call, never re-filters client traffic. This is NOT
+   *  decision layer's own wire call, never re-filters client traffic. This is NOT
    *  the dataset-sampling switch — that is the single-key
    *  `classifier.layer2.collectEnabled` (data/layer2-decisions.jsonl). */
   l2DecisionEnabled?: boolean;

@@ -8,7 +8,7 @@ import { getEnvPaths } from '../config/env.js';
  * (retry detected, retry skipped, entry hit, entry write, escalation
  * applied, correction observed). `retry_skipped` exists so a non-escalation
  * is auditable too — the three silent drop points (prompt below the length
- * floor, ultra ceiling reached, judge already higher) would otherwise leave
+ * floor, ultra ceiling reached, the L2 decision already higher) would otherwise leave
  * the operator staring at "nothing happened" with no trace. Pure
  * observability: nothing reads it back for routing, rows
  * carry prompt HASHES only (never prompt text), and every write failure

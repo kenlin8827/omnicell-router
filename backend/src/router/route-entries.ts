@@ -14,7 +14,7 @@ import { loadConfig } from '../config/index.js';
  * it well, where it was seen, and how the knowledge was earned.
  *
  * Write whitelist (ADR-0011) — exactly three producers, nothing else:
- *   - 'l2_confident': a Layer 2 judge decision at/above the confidence bar,
+ *   - 'l2_confident': a Layer 2 decision at/above the confidence bar,
  *     recorded after the turn actually served (the served tier is the truth).
  *   - 'correction'  : a retry escalation that the user accepted (the next
  *     message differed — see retry-escalation.ts); the escalated tier/effort
@@ -44,7 +44,7 @@ export interface RouteEntry {
   /** Optional reasoning-effort the entry carries (part of the experience). */
   effort?: ReasoningEffort;
   source: RouteEntrySource;
-  /** Judge confidence, or 1.0 for correction/human rows. */
+  /** Decision confidence, or 1.0 for correction/human rows. */
   confidence: number;
   /** Last-touched session ids, most recent first, capped at 20 (LRU bubble). */
   sessions: string[];

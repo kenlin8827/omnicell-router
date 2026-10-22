@@ -11,7 +11,7 @@ import {
 } from '../src/capture/decision-capture.js';
 
 // ---------------------------------------------------------------------------
-// Dataset-sink gate (config restructure): the L2 judge's decision sink writes
+// Dataset-sink gate (config restructure): the L2 decision layer's decision sink writes
 // on the SINGLE key classifier.layer2.collectEnabled — the old three-tier
 // chain (capture.enabled × systemoneEnabled × l2DecisionEnabled) is deleted
 // and the capture master no longer involves this sink. Plus: the 64MB size
@@ -92,7 +92,7 @@ describe('dataset gate truth table (single key classifier.layer2.collectEnabled)
         const rows = fs.readFileSync(DATASET(), 'utf8').trim().split('\n');
         expect(rows.length).toBe(1);
         const row = JSON.parse(rows[0]);
-        expect(row.source).toBe('layer2_judge');
+        expect(row.source).toBe('layer2_decision');
         expect(row.tier).toBe('plus');
       }
     });

@@ -2,7 +2,7 @@
 
 - **Status**: Implemented
 - **Date**: 2026-10-21
-- **Related**: ADR-0001 (routing pipeline), ADR-0002 (sessions/ratchet), ADR-0003 (model addressing), ADR-0011 (retry escalation), ADR-0012 (judge effort)
+- **Related**: ADR-0001 (routing pipeline), ADR-0002 (sessions/ratchet), ADR-0003 (model addressing), ADR-0011 (retry escalation), ADR-0012 (decision layer effort)
 
 ## Context
 
@@ -19,7 +19,7 @@ corrected matrix as a contract.
 
 | Entry mode | Tier may move by gateway judgment? | Effort may be inferred? | Session interaction |
 | :--- | :--- | :--- | :--- |
-| `auto` / tier aliases / unregistered names (classifier) | **YES** — full autonomy | YES (judge, entry table, retry ladder) | `'ratchet'` — upgrade, downgrade interception, pin read/follow |
+| `auto` / tier aliases / unregistered names (classifier) | **YES** — full autonomy | YES (decision layer, entry table, retry ladder) | `'ratchet'` — upgrade, downgrade interception, pin read/follow |
 | Forced tier: tier alias (`lite`/`plus`/`pro`/`ultra`), `routing.mode` lever, `router_options.force_tier` | **NO** — the forced tier is a contract | NO inference (client value / variant pin / model spec only) | `'explicit'` — recorded, proposal NEVER rewritten downward; a forced tier ABOVE the peak is a sanctioned ceiling rise (re-pins the session, as any upgrade); at/below the peak the pin in another tier is neither followed nor rewritten (untouched for later auto turns); zombie ids repair to the forced tier's healthy head; the empty-tier degraded landing still follows |
 | Explicit model (full id / `#variant` / bare name) | **NO** — the named model serves; failover within its tier only | NO inference (same as forced tier) | `'explicit'` — plus pin write-back when the named model served |
 | Combo | **NO** — the composition is authoritative | NO | `'bypass'` — no session entity, no pin, no ceiling |
@@ -62,7 +62,7 @@ corrected matrix as a contract.
 ## Implementation anchors
 
 - `orchestrator.ts` §3B `retryEligible`; `routeAutoDecision` entry gate (`!force_tier`);
-  `RouterEngine.routeAsync` forced early-return (judge unreachable for forced tiers).
+  `RouterEngine.routeAsync` forced early-return (decision layer unreachable for forced tiers).
 - `orchestrator.ts` §4 `sessionMode` resolution — `explicitModel || force_tier → 'explicit'`.
 - `orchestrator.ts` §5 cascade gate (`!explicitModel ∧ !comboId ∧ !force_tier`);
   direct-path `allowEscalate` tail gate; combo `needsSchemaValidation: false`.

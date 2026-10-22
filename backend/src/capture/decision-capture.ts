@@ -2,11 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig } from '../config/index.js';
 import { getEnvRootDir } from '../config/env.js';
-import type { Layer2JudgeConfig } from '../config/types.js';
+import type { Layer2DecisionConfig } from '../config/types.js';
 
 /**
- * Decision-capture SINK for the Layer 2 System One judge. Nothing else
- * records what the JUDGE decided, which is exactly the raw material two
+ * Decision-capture SINK for the Layer 2 System One decision layer. Nothing else
+ * records what the DECISION decided, which is exactly the raw material two
  * future capabilities need:
  *   - distilling converted chat-model judgments into a native decision model
  *   - calibrating the "uncalibrated self-report" confidence
@@ -24,12 +24,12 @@ import type { Layer2JudgeConfig } from '../config/types.js';
  * process) — a runaway jsonl must not fill the operator's disk unnoticed.
  * Deleting/rotating the file resumes writes.
  *
- * Gating lives HERE, not in the judge: callers stay dumb and just hand over
+ * Gating lives HERE, not in the decision layer: callers stay dumb and just hand over
  * the decided row. Console config saves hot-apply via applyConfig (called
  * beside CaptureRecorder.applyConfig in routes/console.ts, fed the
  * classifier.layer2 node) — no restart.
  *
- * Correlation note: rows carry no requestId (the judge sits below the layer
+ * Correlation note: rows carry no requestId (the decision layer sits below the layer
  * that mints one). Join with trace records by timestamp proximity when an
  * accuracy evaluation is built — or thread requestId through routeAsync in a
  * future change.
@@ -38,12 +38,12 @@ import type { Layer2JudgeConfig } from '../config/types.js';
 export interface DecisionCaptureRecord {
   v: 1;
   ts: string;
-  source: 'layer2_judge';
+  source: 'layer2_decision';
   model: string;
   provider: string;
-  /** Which limb served the judge call ('native' passthrough or 'converted'). */
+  /** Which limb served the decision layer call ('native' passthrough or 'converted'). */
   upstreamKind: 'converted' | 'native';
-  /** The exact System One state the judge evaluated (user content — opt-in). */
+  /** The exact System One state the decision layer evaluated (user content — opt-in). */
   state: unknown;
   tier: string;
   confidence: number;
@@ -69,7 +69,7 @@ let capWarned = false;
  * closed). Called by the console save paths and lazily to seed from disk
  * config.
  */
-export function applyConfig(cfg?: Layer2JudgeConfig): { enabled: boolean; datasetPath: string } {
+export function applyConfig(cfg?: Layer2DecisionConfig): { enabled: boolean; datasetPath: string } {
   const enabled = cfg?.collectEnabled === true;
   const datasetPath = path.resolve(getEnvRootDir(), DATASET_PATH);
   captureConfig = { enabled, datasetPath };
@@ -116,7 +116,7 @@ function getConfig(): { enabled: boolean; datasetPath: string } {
   return captureConfig ?? applyConfig(loadConfig().classifier?.layer2);
 }
 
-/** Append one judged decision. Fire-and-forget: capture is observability, so
+/** Append one decided decision. Fire-and-forget: capture is observability, so
  *  every failure degrades to a warn, never an error thrown into routing. */
 export function captureDecision(record: Omit<DecisionCaptureRecord, 'v' | 'ts' | 'source'>): void {
   const config = getConfig();
@@ -125,10 +125,10 @@ export function captureDecision(record: Omit<DecisionCaptureRecord, 'v' | 'ts' |
   // acceptable: the cap bounds disk usage, it is not a hard record ledger.
   if (!datasetHasCapacity(config.datasetPath)) return;
   const line =
-    JSON.stringify({ v: 1, ts: new Date().toISOString(), source: 'layer2_judge', ...record } satisfies DecisionCaptureRecord) + '\n';
+    JSON.stringify({ v: 1, ts: new Date().toISOString(), source: 'layer2_decision', ...record } satisfies DecisionCaptureRecord) + '\n';
   fs.promises
     .appendFile(config.datasetPath, line, 'utf8')
-    .catch((err: any) => console.warn(`[Layer2Judge] decision capture write failed: ${err?.message}`));
+    .catch((err: any) => console.warn(`[Layer2Decision] decision capture write failed: ${err?.message}`));
 }
 
 /** Test seam: drop the cached gate so the next call re-seeds from disk, and

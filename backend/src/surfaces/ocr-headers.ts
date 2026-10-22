@@ -56,7 +56,7 @@ export function buildChatOcrHeaders(result: ExecutionResult, fallbackModel: stri
     headers['X-OCR-Thinking-Actual'] = result.actualEffort ?? result.requestedEffort;
     headers['X-OCR-Thinking-Degraded'] = result.reasoningDegraded ? 'true' : 'false';
     // ADR-0012: WHO authored the ask — 'client' or a gateway decision
-    // (judge / entry / escalation / default). Emitted only when known;
+    // (decision layer / entry / escalation / default). Emitted only when known;
     // pre-ADR executions simply omit it.
     if (result.effortSource) headers['X-OCR-Thinking-Source'] = result.effortSource;
   }

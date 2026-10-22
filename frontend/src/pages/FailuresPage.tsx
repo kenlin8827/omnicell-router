@@ -13,7 +13,7 @@ import { InfoTip } from '../components/InfoTip';
  * observability/failure-events.ts): a per-model aggregation strip (total
  * failed calls, cause breakdown, last seen) and the coalesced event list
  * itself. The ledger records every failed upstream model call from the
- * serving pool and the routing judge; it is a bounded ring durably
+ * serving pool and the L2 decision layer; it is a bounded ring durably
  * mirrored in traces.db, so it survives restarts.
  */
 
@@ -32,7 +32,7 @@ const CLASS_COLORS: Record<FailureErrorClass, string> = {
 
 const ROLE_COLORS: Record<FailureEventRole, string> = {
   serving: 'var(--accent)',
-  judge: '#a855f7',
+  'l2-decision': '#a855f7',
   probe: 'var(--text-dim)',
 };
 
@@ -254,8 +254,8 @@ export const FailuresPage: React.FC = () => {
   const roleLabel = (r: FailureEventRole): string =>
     r === 'serving'
       ? t('failuresPage.roleServing')
-      : r === 'judge'
-        ? t('failuresPage.roleJudge')
+      : r === 'l2-decision'
+        ? t('failuresPage.roleL2Decision')
         : t('failuresPage.roleProbe');
 
   const presentClasses = useMemo(() => {
@@ -383,7 +383,7 @@ export const FailuresPage: React.FC = () => {
             options={[
               { value: '', label: t('failuresPage.roleAll') },
               { value: 'serving', label: t('failuresPage.roleServing') },
-              { value: 'judge', label: t('failuresPage.roleJudge') },
+              { value: 'l2-decision', label: t('failuresPage.roleL2Decision') },
             ]}
           />
           <Combobox

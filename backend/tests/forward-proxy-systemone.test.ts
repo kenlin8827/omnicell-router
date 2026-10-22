@@ -517,7 +517,7 @@ describe('systemone full-chain capture opt-in (requestCapture.systemone.enabled)
 
     // Upstream leg: the native passthrough POST {base}/systemone — absolute-
     // form request line (host visible), span-paired, same trace/session as
-    // the client leg, provider credential redacted. No 'l2-judge' purpose:
+    // the client leg, provider credential redacted. No 'l2-decision' purpose:
     // within this surface's own turn the upstream leg is unambiguous.
     const upReqs = exchange.filter((e) => e.direction === 'upstream' && e.phase === 'request' && (e.wire?.requestBody ?? '').includes(marker));
     const upResps = exchange.filter((e) => e.direction === 'upstream' && e.phase === 'response');

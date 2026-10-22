@@ -21,7 +21,7 @@
 
 **OneCastRouter (OCR)** is a high-performance, local-first LLM API cascading router, resilience orchestrator, and FinOps gateway. It unifies model access across disparate upstream providers (OpenAI, Anthropic, DeepSeek, Moonshot/Kimi, DashScope, Ollama, and OpenAI-compatible endpoints) into an intelligent cascading pool.
 
-By orchestrating **rule-based fast paths**, a persistent **RouteEntry experience table**, an opt-in **System One semantic judge**, a **monotonic session ratchet**, **two-stage jittered retry with upstream KV cache protection**, and a **Token Saver** compression pipeline, OneCastRouter cuts LLM API spending by **70% to 90%** while defending reasoning quality across multi-turn developer sessions.
+By orchestrating **rule-based fast paths**, a persistent **RouteEntry experience table**, an opt-in **System One semantic decision layer**, a **monotonic session ratchet**, **two-stage jittered retry with upstream KV cache protection**, and a **Token Saver** compression pipeline, OneCastRouter cuts LLM API spending by **70% to 90%** while defending reasoning quality across multi-turn developer sessions.
 
 ---
 
@@ -29,8 +29,8 @@ By orchestrating **rule-based fast paths**, a persistent **RouteEntry experience
 
 - **💸 70% ~ 90% FinOps Cost Reduction**: Short, repetitive, or structured prompts resolve instantly to high-efficiency lite models; complex coding and algorithmic reasoning escalate automatically to plus/pro/ultra workhorses.
 - **⚡ Native OpenCode v2 Integration & Keyless Upstream Proxying**: Discovers 90+ models and synchronized credentials from your local OpenCode daemon or OCR credential store with zero manual configuration.
-- **🧠 Experience-Driven Routing (ADR-0011)**: Persistent prompt-level memory table (`data/route-entries.json`) short-circuits expensive judge inference on recurring developer prompts.
-- **🎯 System One Judge with Unified Effort Emission (ADR-0012)**: Context-aware semantic judge evaluates prompt difficulty and emits both target tier and reasoning effort (`{tier, effort}`) in a single wire call.
+- **🧠 Experience-Driven Routing (ADR-0011)**: Persistent prompt-level memory table (`data/route-entries.json`) short-circuits expensive decision layer inference on recurring developer prompts.
+- **🎯 System One Decision Layer with Unified Effort Emission (ADR-0012)**: Context-aware semantic decision layer evaluates prompt difficulty and emits both target tier and reasoning effort (`{tier, effort}`) in a single wire call.
 - **🔒 Monotonic Session Ratchet & Entry-Mode Autonomy (ADR-0002, ADR-0014)**: Mid-conversation downgrades are strictly blocked to prevent reasoning collapse. Only the `auto` family is eligible for dynamic judgment adjustments; forced tiers and explicit models are preserved verbatim.
 - **📈 Retry Escalation Ladder (ADR-0011)**: Re-sending an identical prompt within an active session signals dissatisfaction and automatically climbs the ladder: attempt 1 boosts reasoning effort; attempt 2+ escalates the model tier.
 - **🛡️ Two-Stage In-Place Retry & KV Cache Shield (ADR-0005)**: Jittered in-place retry on transient 5xx/timeout errors preserves 100% of upstream KV prompt cache, avoiding 10x token-cost explosions.
@@ -197,7 +197,7 @@ Clients can request models through four distinct addressing modalities (ADR-0003
 
 | Model Reference | Type | Routing Behavior & FinOps Profile |
 | :--- | :--- | :--- |
-| **`auto`** | Dynamic Cascading Model | **Full Cascaded Pipeline**: Evaluates traits, consults the RouteEntry table, optionally calls the System One judge, and respects the session ratchet. Yields 70%~90% cost savings. |
+| **`auto`** | Dynamic Cascading Model | **Full Cascaded Pipeline**: Evaluates traits, consults the RouteEntry table, optionally calls the System One decision layer, and respects the session ratchet. Yields 70%~90% cost savings. |
 | **`lite`** | Forced Virtual Tier | Serves exclusively from the `lite` model pool (~$0.10 ~ $0.50 / M tokens). Governed by explicit contract: no dynamic escalation. |
 | **`plus`** | Forced Virtual Tier | Serves exclusively from the `plus` workhorse pool (~$2.00 ~ $3.00 / M tokens). Default general-purpose engineering baseline. |
 | **`pro`** | Forced Virtual Tier | Serves exclusively from the `pro` reasoning specialist pool (~$3.00 ~ $8.00 / M tokens) for deep mathematical proofs and complex refactors. |
@@ -229,17 +229,17 @@ The arbitration pipeline executes in four disciplined steps:
                                              ▼
              ┌───────────────────────────────────────────────────────────────┐
              │ RouteEntry Experience Table (ADR-0011)                        │
-             │  - SHA-256 prompt hash hit short-circuits judge inference     │
-             │  - Precedence: human > retry correction > confident judge     │
+             │  - SHA-256 prompt hash hit short-circuits decision layer inference     │
+             │  - Precedence: human > retry correction > confident decision layer     │
              └───────────────────────────────┬───────────────────────────────┘
                                              │ (cache / table miss)
                                              ▼
              ┌───────────────────────────────────────────────────────────────┐
-             │ Layer 2: System One Semantic Judge (ADR-0012, Opt-In)        │
+             │ Layer 2: System One Semantic Decision Layer (ADR-0012, Opt-In)        │
              │  - Context-aware intent evaluation                            │
              │  - Emits {tier, effort} in a single remote call               │
              └───────────────────────────────┬───────────────────────────────┘
-                                             │ (judge disabled / miss / timeout)
+                                             │ (decision layer disabled / miss / timeout)
                                              ▼
              ┌───────────────────────────────────────────────────────────────┐
              │ Baseline Default: Hardcoded 'plus' Tier (Quality Defense)     │
@@ -267,7 +267,7 @@ Every proxied response carries diagnostic metadata:
 * `X-OCR-Tier`: Executed model tier (`lite`, `plus`, `pro`, `ultra`).
 * `X-OCR-Model`: Exact physical model invoked upstream.
 * `X-OCR-Thinking-Effort`: Applied reasoning budget (`low`, `medium`, `high`, `max`).
-* `X-OCR-Thinking-Source`: Origin of the reasoning effort decision (`client`, `judge`, `entry`, `escalation`, `default`).
+* `X-OCR-Thinking-Source`: Origin of the reasoning effort decision (`client`, `l2-decision`, `entry`, `escalation`, `default`).
 * `X-OCR-Failover`: Whether upstream failover occurred (`true` / `false`).
 * `X-OCR-Failover-Attempts`: Number of candidate attempts before success.
 * `X-OCR-Breaker-State`: Health state of the invoked candidate (`CLOSED`, `HALF_OPEN`).

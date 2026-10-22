@@ -8,7 +8,7 @@ export interface RoutingDecisionCacheEntry {
   reasonCode: string;
   reasonParams?: ReasonParams;
   /**
-   * Judge-decided effort answer (ADR-0012) — present only on entries
+   * L2-decided effort answer (ADR-0012) — present only on entries
    * recorded while `effortDecision` was on AND the client omitted the
    * field. The cache key namespace splits on that flag, so an entry
    * recorded under one mode is never served under the other.
@@ -38,9 +38,9 @@ interface DecisionCacheConfig {
 const DEFAULTS: DecisionCacheConfig = { enabled: true, ttlSeconds: 1800, maxEntries: 500 };
 
 /**
- * LRU+TTL cache for Layer 2 judge decisions.
+ * LRU+TTL cache for Layer 2 decision layer decisions.
  * Key = provider::model::sha256(userText). Only successful decisions are
- * stored; a hit skips the external judge call (network + token cost).
+ * stored; a hit skips the external decision layer call (network + token cost).
  * A stale/wrong hit degrades routing quality at worst — it can never
  * contaminate response content (unlike the response cache banned earlier).
  */

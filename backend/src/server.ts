@@ -654,7 +654,7 @@ export function createServer(
   });
 
   // 1B⁗. Failure-event ledger — every failed upstream MODEL CALL (serving
-  // pool attempts + judge wire calls), newest first, coalesced repeats,
+  // pool attempts + decision layer wire calls), newest first, coalesced repeats,
   // bounded ring + traces.db mirror (survives restarts). Optional equality
   // filters narrow server-side; display-only plane, never gates routing.
   app.get('/api/admin/failure-events', async (req) => {

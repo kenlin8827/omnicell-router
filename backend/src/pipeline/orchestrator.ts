@@ -222,16 +222,16 @@ export class PipelineOrchestrator {
   }
 
   /**
-   * Auto-request routing with the experience table in front of the judge
+   * Auto-request routing with the experience table in front of the decision layer
    * (ADR-0011): an entry hit short-circuits L2 entirely — the table IS a
    * prior judgment. Explicit request tiers (`force_tier`, incl. the
    * mode-forced ones resolved in 1B) skip the table: an explicit choice is a
    * layer0 decision by definition. On an L2 judgment the router behaves
-   * exactly as before (judge → plus baseline).
+   * exactly as before (decision layer → plus baseline).
    */
   private async routeAutoDecision(
     request: ChatCompletionRequest,
-    judgeCapture: UpstreamEventContext | undefined,
+    decisionCapture: UpstreamEventContext | undefined,
     sessionId: string,
     promptHash: string | undefined
   ): Promise<RoutingDecision> {
@@ -266,13 +266,13 @@ export class PipelineOrchestrator {
       this.config.classifier,
       this.registry,
       this.config.systemone?.defaultModel,
-      // Judge-call capture identity: the outer turn's trace/session (only
-      // exists while the capture master is on). The LAYER 2 JUDGE applies
+      // Decision-call capture identity: the outer turn's trace/session (only
+      // exists while the capture master is on). The LAYER 2 DECISION applies
       // the surface-master chain (systemone.enabled master × l2Decision-
       // Enabled sub) — when off it
       // passes nothing further, so this arg alone changes nothing today.
-      judgeCapture,
-      // Failure attribution: judge wire failures land in the failure_events
+      decisionCapture,
+      // Failure attribution: decision layer wire failures land in the failure_events
       // ledger tagged with THIS conversation, whatever the capture switch.
       sessionId
     );
@@ -679,7 +679,7 @@ export class PipelineOrchestrator {
     // executed member's real tier overwrites it after the pool run.
     //
     // ADR-0012 honesty snapshot: the CLIENT's wire value is captured before
-    // ANY gateway injection (routeAutoDecision's entry hit, the judge
+    // ANY gateway injection (routeAutoDecision's entry hit, the decision layer
     // injection below, retry escalation, model defaultEffort). The local
     // `requestedEffort` read later is the EFFECTIVE ask the machinery served
     // against; `effortSource` says whose ask it was.
@@ -708,8 +708,8 @@ export class PipelineOrchestrator {
       initialDecision.reasonParams = { model: explicitModel.id, tier: explicitModel.tier };
     }
 
-    // ADR-0012 §1: judge-decided effort joins the request exactly like a
-    // route-entry hit — only into an omitted field (the judge is only ASKED
+    // ADR-0012 §1: L2-decided effort joins the request exactly like a
+    // route-entry hit — only into an omitted field (the decision layer is only ASKED
     // when the client omitted it, so the guard is belt-and-braces), below a
     // retry escalation (which fires later and overwrites).
     if (
@@ -728,7 +728,7 @@ export class PipelineOrchestrator {
 
     // Provenance (ADR-0012 §2): whoever first filled the field after the
     // snapshot owns the ask. The entry hit mutates the request INSIDE
-    // routeAutoDecision; the judge injection lands just above. Escalation
+    // routeAutoDecision; the decision layer injection lands just above. Escalation
     // and model-default writes re-attribute at their own sites below.
     let effortSource: EffortSource | undefined =
       clientEffort !== undefined
@@ -736,7 +736,7 @@ export class PipelineOrchestrator {
         : normalizedRequest.reasoning_effort !== undefined
           ? initialDecision.layerUsed === 'entry'
             ? 'entry'
-            : 'judge'
+            : 'l2-decision'
           : undefined;
 
     // 3B. Retry-escalation proposal (ADR-0011): the repeated-prompt ladder
@@ -793,7 +793,7 @@ export class PipelineOrchestrator {
         appliedEscalation = true;
       } else {
         // No ladder step landed — ledger WHY instead of staying silent:
-        // 'ceiling' = the planner is out of rungs (ultra); 'judge_higher' =
+        // 'ceiling' = the planner is out of rungs (ultra); 'decision_higher' =
         // the base decision already placed this turn at/above the proposal.
         appendRoutingLedger({
           kind: 'retry_skipped',
@@ -803,7 +803,7 @@ export class PipelineOrchestrator {
             plan.action === 'none'
               ? { cause: 'ceiling', attempt: detection.attempt }
               : {
-                  cause: 'judge_higher',
+                  cause: 'decision_higher',
                   attempt: detection.attempt,
                   proposedTier: plan.tier,
                   currentTier: initialDecision.targetTier,
@@ -1288,7 +1288,7 @@ export class PipelineOrchestrator {
         attemptCap = Math.max(1, chain.length);
         allowEscalate = false;
         poolLabel = `combo '${comboId}'`;
-        // Members are judged by their own home tier for model access / effort
+        // Members are decided by their own home tier for model access / effort
         // translation — the composition spans tiers by design.
         accessTierMode = 'member-home';
       } else {
@@ -1758,10 +1758,10 @@ export class PipelineOrchestrator {
       tier: TierLevel;
       /**
        * How each chain entry derives its model-access tier and effort
-       * translation: 'pool' (default) = every entry is judged against THIS
+       * translation: 'pool' (default) = every entry is decided against THIS
        * tier — virtual tier-alias access rules apply pool-wide and the pool's
        * claiming rule supplies the effortMap. 'member-home' = each member is
-       * judged by its OWN home tier with its home translation (combo chains:
+       * decided by its OWN home tier with its home translation (combo chains:
        * the composition spans tiers by design).
        */
       accessTierMode?: 'pool' | 'member-home';

@@ -256,7 +256,7 @@ describe('CaptureRecorder', () => {
     }
   });
 
-  it('isSystemoneEnabled / isSystemoneJudgeCaptureEnabled: master/sub truth tables', () => {
+  it('isSystemoneEnabled / isSystemoneDecisionCaptureEnabled: master/sub truth tables', () => {
     const dir5 = makeTmpDir();
     type Sys = { enabled?: boolean; l2DecisionEnabled?: boolean };
     const mk = (enabled?: boolean, systemone?: Sys): CaptureRecorder =>
@@ -273,15 +273,15 @@ describe('CaptureRecorder', () => {
         [true, undefined, true], // absent surface master = default ON
         [true, false, false], // surface master explicitly OFF
       ];
-      // JUDGE-leg truth table — full 8-combo over (requestCapture.enabled ×
+      // DECISION-leg truth table — full 8-combo over (requestCapture.enabled ×
       // systemone.enabled × systemone.l2DecisionEnabled). THE MASTER-SEMANTICS
-      // PIN: systemone.enabled=false silences the judge leg even when
+      // PIN: systemone.enabled=false silences the L2 decision leg even when
       // l2DecisionEnabled=true — the sub-switch only ever ADDS beneath the
       // surface master, it can never override it.
-      const judgeCases: Array<[boolean, boolean, boolean, boolean]> = [
+      const decisionCases: Array<[boolean, boolean, boolean, boolean]> = [
         [true, true, true, true], // the only ON cell
-        [true, true, false, false], // sub OFF exempts the judge leg only
-        [true, false, true, false], // surface master OFF → judge SILENCED despite sub=true
+        [true, true, false, false], // sub OFF exempts the L2 decision leg only
+        [true, false, true, false], // surface master OFF → decision layer SILENCED despite sub=true
         [true, false, false, false],
         [false, true, true, false], // capture master OFF wins everywhere
         [false, true, false, false],
@@ -293,9 +293,9 @@ describe('CaptureRecorder', () => {
         assert.equal(r.isSystemoneEnabled(), expected, `client: enabled=${String(enabled)} sysEnabled=${String(sysEnabled)}`);
         r.stop();
       }
-      for (const [enabled, sysEnabled, sub, expected] of judgeCases) {
+      for (const [enabled, sysEnabled, sub, expected] of decisionCases) {
         const r = mk(enabled, { enabled: sysEnabled, l2DecisionEnabled: sub });
-        assert.equal(r.isSystemoneJudgeCaptureEnabled(), expected, `judge: enabled=${String(enabled)} sysEnabled=${String(sysEnabled)} sub=${String(sub)}`);
+        assert.equal(r.isSystemoneDecisionCaptureEnabled(), expected, `decision: enabled=${String(enabled)} sysEnabled=${String(sysEnabled)} sub=${String(sub)}`);
         r.stop();
       }
 
@@ -304,21 +304,21 @@ describe('CaptureRecorder', () => {
       // systemone node must not stomp the sibling flag).
       const hot = mk(true);
       assert.equal(hot.isSystemoneEnabled(), true); // surface master default ON under the capture master
-      assert.equal(hot.isSystemoneJudgeCaptureEnabled(), true); // sub default ON too
+      assert.equal(hot.isSystemoneDecisionCaptureEnabled(), true); // sub default ON too
       hot.applyConfig({ systemone: { enabled: false } });
       assert.equal(hot.isSystemoneEnabled(), false);
-      assert.equal(hot.isSystemoneJudgeCaptureEnabled(), false); // master OFF silences BOTH legs, hot
+      assert.equal(hot.isSystemoneDecisionCaptureEnabled(), false); // master OFF silences BOTH legs, hot
       hot.applyConfig({}); // absent → retains
       assert.equal(hot.isSystemoneEnabled(), false);
       hot.applyConfig({ systemone: { enabled: true } });
       assert.equal(hot.isSystemoneEnabled(), true);
-      assert.equal(hot.isSystemoneJudgeCaptureEnabled(), true);
+      assert.equal(hot.isSystemoneDecisionCaptureEnabled(), true);
       hot.applyConfig({ systemone: { l2DecisionEnabled: false } }); // sub exempt; client leg untouched
       assert.equal(hot.isSystemoneEnabled(), true);
-      assert.equal(hot.isSystemoneJudgeCaptureEnabled(), false);
+      assert.equal(hot.isSystemoneDecisionCaptureEnabled(), false);
       hot.applyConfig({ enabled: false }); // capture master off wins
       assert.equal(hot.isSystemoneEnabled(), false);
-      assert.equal(hot.isSystemoneJudgeCaptureEnabled(), false);
+      assert.equal(hot.isSystemoneDecisionCaptureEnabled(), false);
       hot.stop();
     } finally {
       rmrf(dir5);
@@ -631,33 +631,33 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
     assert.equal(t.gatewayGenMs, undefined);
   });
 
-  it('keeps the l2-judge leg in separate slots (not overwritten by the serving leg)', () => {
-    // One routed turn with an L2 judge leg: judge req/resp fire FIRST, then
-    // the serving upstream pair. The judge pair must survive in its own
-    // judgeRequest/judgeResponse slots — the serving leg's last-write-wins
+  it('keeps the l2-decision leg in separate slots (not overwritten by the serving leg)', () => {
+    // One routed turn with an L2 decision leg: decision req/resp fire FIRST, then
+    // the serving upstream pair. The decision pair must survive in its own
+    // decisionRequest/decisionResponse slots — the serving leg's last-write-wins
     // merge must never erase it, and neither pair may pollute the other.
-    const traceId = 'trace_grp_judge';
+    const traceId = 'trace_grp_decision';
     const events = [
       { eventType: 'http-exchange', direction: 'client', phase: 'request', traceId, sessionId: 's', model: 'auto', status: 'ok', spanId: 'w1', id: 'a', ts: 1000, wire: emptyWire() } as any,
-      // judge req/resp (purpose l2-judge, its own spanId)
-      { eventType: 'http-exchange', direction: 'upstream', phase: 'request', traceId, sessionId: 's', model: 'judge-model', status: 'ok', spanId: 'w2', id: 'j1', ts: 1005, purpose: 'l2-judge', wire: emptyWire() } as any,
-      { eventType: 'http-exchange', direction: 'upstream', phase: 'response', traceId, sessionId: 's', model: 'judge-model', status: 'ok', spanId: 'w2', id: 'j2', ts: 1300, firstByteTs: 1200, purpose: 'l2-judge', wire: emptyWire() } as any,
+      // decision req/resp (purpose l2-decision, its own spanId)
+      { eventType: 'http-exchange', direction: 'upstream', phase: 'request', traceId, sessionId: 's', model: 'l2-decision-model', status: 'ok', spanId: 'w2', id: 'j1', ts: 1005, purpose: 'l2-decision', wire: emptyWire() } as any,
+      { eventType: 'http-exchange', direction: 'upstream', phase: 'response', traceId, sessionId: 's', model: 'l2-decision-model', status: 'ok', spanId: 'w2', id: 'j2', ts: 1300, firstByteTs: 1200, purpose: 'l2-decision', wire: emptyWire() } as any,
       // serving upstream req/resp
       { eventType: 'http-exchange', direction: 'upstream', phase: 'request', traceId, sessionId: 's', model: 'auto', status: 'ok', spanId: 'w3', id: 'b', ts: 1310, wire: emptyWire() } as any,
       { eventType: 'http-exchange', direction: 'upstream', phase: 'response', traceId, sessionId: 's', model: 'auto', status: 'ok', spanId: 'w3', id: 'c', ts: 1500, wire: emptyWire() } as any,
       { eventType: 'http-exchange', direction: 'client', phase: 'response', traceId, sessionId: 's', model: 'auto', status: 'ok', spanId: 'w1', id: 'd', ts: 1520, wire: emptyWire() } as any,
     ];
     const t = CaptureRecorder.groupEventsIntoTurns(events)[0];
-    assert.equal(t.judgeRequest?.id, 'j1');
-    assert.equal(t.judgeResponse?.id, 'j2');
-    // Serving slots keep the serving leg, not the judge leg.
+    assert.equal(t.decisionRequest?.id, 'j1');
+    assert.equal(t.decisionResponse?.id, 'j2');
+    // Serving slots keep the serving leg, not the L2 decision leg.
     assert.equal(t.upstreamRequest?.id, 'b');
     assert.equal(t.upstreamResponse?.id, 'c');
-    assert.equal(t.judgeLatencyMs, 1300 - 1005);
-    assert.equal(t.judgeTtftMs, 1200 - 1005);
-    assert.equal(t.judgeGenMs, 1300 - 1200);
+    assert.equal(t.decisionLatencyMs, 1300 - 1005);
+    assert.equal(t.decisionTtftMs, 1200 - 1005);
+    assert.equal(t.decisionGenMs, 1300 - 1200);
     assert.equal(t.upstreamLatencyMs, 1500 - 1310);
-    // Still ONE logical turn — the judge leg must not inflate turn counts.
+    // Still ONE logical turn — the L2 decision leg must not inflate turn counts.
     assert.equal(CaptureRecorder.groupEventsIntoTurns(events).length, 1);
   });
 

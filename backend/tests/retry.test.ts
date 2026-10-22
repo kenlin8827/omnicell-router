@@ -269,7 +269,7 @@ describe('Resilience: Hierarchical Failover & Tier Crossing Policies ', () => {
 
     // Genuine-AUTO lite decision: seed the experience table so the entry
     // layer (auto-only) places the prompt at lite — the only way an auto
-    // request lands at lite without a judge. The cross-tier escalation tail
+    // request lands at lite without a decision model. The cross-tier escalation tail
     // is an AUTO-routing policy (ADR-0014); this is the path that may cross.
     getRouteEntryStore().upsert({
       promptHash: promptHashOf('Tail escalation greeting'),

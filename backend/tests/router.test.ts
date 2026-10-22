@@ -27,8 +27,8 @@ describe('Zero-Hardcoding Model-Driven Semantic Router', () => {
     assert.strictEqual(decision.needsSchemaValidation, true);
   });
 
-  it('should default safely to plus quality when no judge answers, never degrading to lite tier', async () => {
-    // Ultra-short query (P=NP?) with no judge configured
+  it('should default safely to plus quality when no decision layer answers, never degrading to lite tier', async () => {
+    // Ultra-short query (P=NP?) with no decision layer configured
     const req1: ChatCompletionRequest = {
       model: 'auto',
       messages: [{ role: 'user', content: 'P=NP?' }],

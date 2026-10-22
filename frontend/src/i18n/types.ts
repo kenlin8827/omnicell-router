@@ -622,6 +622,7 @@ export interface TranslationDict {
     /** Hint shown under the effort ladder when reasoning is explicitly off. */
     reasoningOffHint: string;
     /** Row action: hide the model from the catalog. */
+    copyFullId: string;
     hideFromCatalog: string;
     /** Row action: show a hidden model in the catalog again. */
     showInCatalog: string;
@@ -900,7 +901,7 @@ hiddenBadge: string;
      *  five author names, and the prefix marking a gateway-decided level. */
     thinkSource: string;
     thinkSrcClient: string;
-    thinkSrcJudge: string;
+    thinkSrcL2Decision: string;
     thinkSrcEntry: string;
     thinkSrcEscalation: string;
     thinkSrcDefault: string;
@@ -969,7 +970,7 @@ hiddenBadge: string;
       l2SystemOne: string;
       l2SystemOneUncalibrated: string;
       explicitModel: string;
-      judgeModel: string;
+      decisionModel: string;
       sessionEscalated: string;
       sessionRatchet: string;
       sessionPreserved: string;
@@ -1050,7 +1051,7 @@ hiddenBadge: string;
     noteFailover: string;
   };
   /** Model-call failure observability page: per-model aggregation strip +
-   *  the failure_events ledger (serving + judge emitters). */
+   *  the failure_events ledger (serving + decision emitters). */
   failuresPage: {
     eventsTitle: string;
     byModelTitle: string;
@@ -1070,7 +1071,7 @@ hiddenBadge: string;
     time7d: string;
     roleAll: string;
     roleServing: string;
-    roleJudge: string;
+    roleL2Decision: string;
     roleProbe: string;
     classAll: string;
     classQuota: string;
@@ -1245,10 +1246,10 @@ hiddenBadge: string;
     tabGatewayResponse: string;
     tabUpstreamRequest: string;
     tabUpstreamResponse: string;
-    tabJudgeRequest: string;
-    tabJudgeResponse: string;
-    judgeBadge: string;
-    judgeSubRowHint: string;
+    tabDecisionRequest: string;
+    tabDecisionResponse: string;
+    decisionBadge: string;
+    decisionHint: string;
     gatewayLatency: string;
     upstreamLatency: string;
     /** Tooltip for the capture chips' TTFT + tok/s segments (decode-TPS basis). */
@@ -1826,7 +1827,7 @@ hiddenBadge: string;
     l2ModelUnset: string;
     l2TimeoutLabel: string;
     l2TimeoutHint: string;
-    judgeLastFail: string;
+    decisionLastFail: string;
     l2EffortDecision: string;
     l2EffortDecisionHint: string;
     l2CollectEnable: string;

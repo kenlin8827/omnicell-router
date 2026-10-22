@@ -130,7 +130,7 @@ describe('TraceTracker SQLite persistence (write-through + boot replay)', () => 
             requestedEffort: 'xhigh',
             actualEffort: 'high',
             reasoningDegraded: true,
-            effortSource: 'judge',
+            effortSource: 'l2-decision',
           },
         })
       );
@@ -145,7 +145,7 @@ describe('TraceTracker SQLite persistence (write-through + boot replay)', () => 
       assert.strictEqual(tr.execution.requestedEffort, 'xhigh');
       assert.strictEqual(tr.execution.actualEffort, 'high');
       assert.strictEqual(tr.execution.reasoningDegraded, true);
-      assert.strictEqual(tr.execution.effortSource, 'judge');
+      assert.strictEqual(tr.execution.effortSource, 'l2-decision');
     } finally {
       await cleanup(dir, opened);
     }

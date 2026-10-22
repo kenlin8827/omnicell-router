@@ -54,7 +54,7 @@ import type { RateLimitRule, RouterConfig } from '../config/types.js';
  *    but never locally refused: its frozen contract is "the named model
  *    answers or the upstream errors pass through" — no peek-admission there,
  *    and no breaker either (by the same contract).
- *  - internal legs (Layer-2 judge calls, breaker health probes) are unmetered
+ *  - internal legs (Layer-2 decision layer calls, breaker health probes) are unmetered
  *    by design — they share the decision EXECUTOR (decide.ts), and the hooks
  *    deliberately live at the HTTP surface, not in the executor.
  */

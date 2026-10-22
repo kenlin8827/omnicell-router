@@ -474,7 +474,7 @@ export function emitUpstreamRequest(args: {
   spanId?: string;
   /** Raw proxy URL when routed via proxy; redacted to origin before persisting. */
   proxy?: string;
-  /** Non-default call label (e.g. 'l2-judge') so UI/log can tell the leg apart. */
+  /** Non-default call label (e.g. 'l2-decision') so UI/log can tell the leg apart. */
   purpose?: HttpExchangeEvent['purpose'];
   /** Client API-key identity of the owning turn (see HttpExchangeEvent.apiKey). */
   apiKey?: CaptureKeyIdentity;
@@ -534,7 +534,7 @@ export function emitUpstreamResponse(args: {
   spanId: string;
   routing?: HttpExchangeEvent['routing'];
   error?: string;
-  /** Non-default call label (e.g. 'l2-judge') so UI/log can tell the leg apart. */
+  /** Non-default call label (e.g. 'l2-decision') so UI/log can tell the leg apart. */
   purpose?: HttpExchangeEvent['purpose'];
   /** Client API-key identity of the owning turn (see HttpExchangeEvent.apiKey). */
   apiKey?: CaptureKeyIdentity;

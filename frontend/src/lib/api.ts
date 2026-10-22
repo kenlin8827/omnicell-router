@@ -419,8 +419,8 @@ export interface TraceRecord {
     actualEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
     reasoningDegraded?: boolean;
     /** WHO authored the ask (ADR-0012): 'client' or a gateway decision
-     *  (judge / entry / escalation / model default). Absent on old rows. */
-    effortSource?: 'client' | 'judge' | 'entry' | 'escalation' | 'default';
+     *  (l2-decision / entry / escalation / model default). Absent on old rows. */
+    effortSource?: 'client' | 'l2-decision' | 'entry' | 'escalation' | 'default';
   };
   finops: {
     inputTokens: number;
@@ -601,8 +601,8 @@ export interface HttpExchangeEvent {
   error?: string;
   /** Redacted proxy origin when the upstream call went through a proxy (upstream events only). */
   proxy?: string;
-  /** Why this exchange happened when it is NOT ordinary turn traffic. 'l2-judge' = the Layer 2 judge's decision-model call. Absent = ordinary traffic. */
-  purpose?: 'l2-judge';
+  /** Why this exchange happened when it is NOT ordinary turn traffic. 'l2-decision' = the L2 decision layer's decision-model call. Absent = ordinary traffic. */
+  purpose?: 'l2-decision';
   truncated?: boolean;
   /**
    * Completion-token total derived at read time from the response body (last
@@ -622,14 +622,14 @@ export interface CaptureTurn {
   gatewayResponse?: HttpExchangeEvent;
   upstreamRequest?: HttpExchangeEvent;
   upstreamResponse?: HttpExchangeEvent;
-  /** The L2 judge's HTTP leg when one fired inside this turn (kept in separate slots — never merged into the serving upstream pair). */
-  judgeRequest?: HttpExchangeEvent;
-  judgeResponse?: HttpExchangeEvent;
+  /** The L2 decision layer's HTTP leg when one fired inside this turn (kept in separate slots — never merged into the serving upstream pair). */
+  decisionRequest?: HttpExchangeEvent;
+  decisionResponse?: HttpExchangeEvent;
   error?: string;
   gatewayLatencyMs?: number;
   upstreamLatencyMs?: number;
-  /** Judge-leg cycle latency (judge-resp.ts - judge-req.ts). */
-  judgeLatencyMs?: number;
+  /** Decision-leg cycle latency (decision-resp.ts - decision-req.ts). */
+  decisionLatencyMs?: number;
   /** TTFT / decode window per leg, derived from firstByteTs at read time
    *  (backend CaptureTurnSummary). Undefined when the leg was not streamed
    *  or the event predates the stamp. */
@@ -637,9 +637,9 @@ export interface CaptureTurn {
   gatewayGenMs?: number;
   upstreamTtftMs?: number;
   upstreamGenMs?: number;
-  /** TTFT / decode window for the judge leg (same derivation as upstream). */
-  judgeTtftMs?: number;
-  judgeGenMs?: number;
+  /** TTFT / decode window for the decision layer leg (same derivation as upstream). */
+  decisionTtftMs?: number;
+  decisionGenMs?: number;
 }
 
 // Mirrors backend ConversationSession (backend/src/session/session-manager.ts) + traceCount
@@ -695,7 +695,7 @@ export interface SessionRecord {
    */
   lastRequestedEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   lastActualEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-  lastEffortSource?: 'client' | 'judge' | 'entry' | 'escalation' | 'default';
+  lastEffortSource?: 'client' | 'l2-decision' | 'entry' | 'escalation' | 'default';
   lastReasoningDegraded?: boolean;
   /** Distinct client API-key identities (applications) seen on this
    *  session's traces, write order — first element is the display anchor. */
@@ -1088,15 +1088,15 @@ export const api = {
     return json.removed ?? 0;
   },
 
-  /** Last REAL judge wire attempt (cache hits never overwrite it). */
-  async getJudgeOutcome(): Promise<{
+  /** Last REAL decision wire attempt (cache hits never overwrite it). */
+  async getDecisionOutcome(): Promise<{
     ts: number;
     modelId: string;
     ok: boolean;
     error?: string;
     latencyMs?: number;
   } | null> {
-    const res = await fetch('/api/admin/judge/outcome');
+    const res = await fetch('/api/admin/decider/outcome');
     if (!res.ok) return null;
     const json = await res.json();
     return json?.outcome ?? null;
@@ -1674,7 +1674,7 @@ export const api = {
 
   /**
    * Failure-event ledger — every failed upstream model call (serving pool
-   * attempts + judge wire calls), newest first (bounded ring, repeats
+   * attempts + decision wire calls), newest first (bounded ring, repeats
    * coalesce). Optional equality filters narrow server-side; the console
    * page loads the whole ring and filters client-side.
    */
@@ -2464,13 +2464,13 @@ export interface RateLimitEvent {
 /**
  * One failed upstream MODEL CALL — mirrors backend `FailureEvent`
  * (GET /api/admin/failure-events). `role` splits serving-pool attempts from
- * judge wire calls; repeats of the same model+provider+errorClass+role fold
+ * decision wire calls; repeats of the same model+provider+errorClass+role fold
  * into one entry (`count`, `lastTs`) within the 10s coalescing window.
  */
-export type FailureEventRole = 'serving' | 'judge' | 'probe';
+export type FailureEventRole = 'serving' | 'l2-decision' | 'probe';
 
 /** Mirrors backend `FailureErrorClass`: the breaker classifier's category
- *  vocabulary plus TIMEOUT (judge deadline — no HTTP status to classify). */
+ *  vocabulary plus TIMEOUT (decision deadline — no HTTP status to classify). */
 export type FailureErrorClass =
   | 'QUOTA_EXHAUSTED'
   | 'AUTHENTICATION_ERROR'

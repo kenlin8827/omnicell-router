@@ -18,7 +18,7 @@ configure({ useWebWorkers: false });
  * A portable { config.yaml text + curated payload files } bundle. NEVER
  * contains: webAuth.passwordHash (dropped in BOTH modes), the session secret,
  * CA material, traces, capture archives, logs. Payload = the curated
- * knowledge files (judge-decision dataset, catalog customizations) that give
+ * knowledge files (decision-layer dataset, catalog customizations) that give
  * a new machine a head start; data starts empty for
  * everything else (book-set intuition: export carries KNOWLEDGE, not state).
  *

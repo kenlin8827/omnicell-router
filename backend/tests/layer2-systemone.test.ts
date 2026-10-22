@@ -10,7 +10,7 @@ import { bootServer, makeConfig as seamMakeConfig } from './helpers/systemone-se
 const makeConfig = (providers: any[], models: any[], systemone?: any): RouterConfig =>
   seamMakeConfig(providers, models, { systemone, disableLayer2Classifier: true });
 import { ModelRegistration, RouterConfig } from '../src/config/types.js';
-import { Layer2Judge } from '../src/router/layer2-judge.js';
+import { Layer2Decision } from '../src/router/layer2-decision.js';
 import { RouterEngine } from '../src/router/index.js';
 import { CaptureRecorder } from '../src/capture/recorder.js';
 import { resetDecisionCaptureConfig } from '../src/capture/decision-capture.js';
@@ -19,12 +19,12 @@ import { ChatCompletionRequest, ChatCompletionResponse } from '../src/types/open
 
 // ---------------------------------------------------------------------------
 // Layer 2 rides the gateway's own System One protocol — no vendor
-// SDK. These tests pin the contract: the judge speaks a well-formed System One
+// SDK. These tests pin the contract: the decision layer speaks a well-formed System One
 // request to a registered model, reads the tier out of the typed answer, and
 // degrades to null (→ caller falls back to the plus baseline) on every failure mode.
-// Plus: judge-call CAPTURE (three-tier chain: requestCapture.enabled ×
+// Plus: decision-call CAPTURE (three-tier chain: requestCapture.enabled ×
 // systemone.enabled surface master × systemone.l2DecisionEnabled sub
-// → upstream-direction event pair with purpose 'l2-judge' on the OUTER
+// → upstream-direction event pair with purpose 'l2-decision' on the OUTER
 // request's trace/session) and the dataset sink's single-key gate
 // (classifier.layer2.collectEnabled).
 // ---------------------------------------------------------------------------
@@ -63,7 +63,7 @@ function fakeChat(content: string): ChatCompletionResponse {
   } as ChatCompletionResponse;
 }
 
-/** Chat completion wrapping a decision-answers body (converted judge path). */
+/** Chat completion wrapping a decision-answers body (converted decision layer path). */
 function chatAnswers(answers: any): ChatCompletionResponse {
   return fakeChat(JSON.stringify({ answers }));
 }
@@ -71,7 +71,7 @@ function chatAnswers(answers: any): ChatCompletionResponse {
 const PROOF = "Prove Fermat's Last Theorem.";
 
 beforeEach(() => {
-  Layer2Judge.clearDecisionCache();
+  Layer2Decision.clearDecisionCache();
   resetDecisionCaptureConfig();
   // Capture tests assert file presence/absence — start each from clean disk.
   try {
@@ -84,7 +84,7 @@ beforeEach(() => {
 describe('Layer 2 decision capture (dataset sink — single-key gate classifier.layer2.collectEnabled)', () => {
   const capturePath = () => path.join(ENV_DIR, 'data', 'layer2-decisions.jsonl');
 
-  test('enabled: a judged decision lands as one parseable row', async () => {
+  test('enabled: a decision-model decision lands as one parseable row', async () => {
     fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'),
       'port: 3000\nhost: 127.0.0.1\napiKeys: []\nmodels: []\nclassifier:\n  layer2:\n    collectEnabled: true\n');
     const upstream = serve({
@@ -101,14 +101,14 @@ describe('Layer 2 decision capture (dataset sink — single-key gate classifier.
       const { registry } = bootServer(config);
       const request: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: PROOF }] };
 
-      const result = await Layer2Judge.evaluate(request, { enabled: true, model: 'l2-cap/jev', timeoutMs: 5000 }, registry);
+      const result = await Layer2Decision.evaluate(request, { enabled: true, model: 'l2-cap/jev', timeoutMs: 5000 }, registry);
       expect(result).not.toBeNull();
       await new Promise((r) => setTimeout(r, 100));
 
       const lines = fs.readFileSync(capturePath(), 'utf8').trim().split('\n');
       expect(lines.length).toBe(1);
       const row = JSON.parse(lines[0]);
-      expect(row.source).toBe('layer2_judge');
+      expect(row.source).toBe('layer2_decision');
       expect(row.model).toBe('l2-cap/jev');
       expect(row.upstreamKind).toBe('converted');
       expect(row.tier).toBe('plus');
@@ -134,7 +134,7 @@ describe('Layer 2 decision capture (dataset sink — single-key gate classifier.
         [{ id: 'l2-cap2/jev', provider: 'l2-cap2', upstreamModel: 'jev', tier: 'plus', pricing: { input: 0, output: 0, cacheRead: 0 } }]
       );
       const { registry } = bootServer(config);
-      await Layer2Judge.evaluate(
+      await Layer2Decision.evaluate(
         { model: 'auto', messages: [{ role: 'user', content: PROOF }] },
         { enabled: true, model: 'l2-cap2/jev', timeoutMs: 5000 },
         registry
@@ -152,7 +152,7 @@ describe('Layer 2 decision capture (dataset sink — single-key gate classifier.
     const upstream = serve({
       port: 0,
       async fetch() {
-        // Valid answer, but slower than the judge deadline.
+        // Valid answer, but slower than the decision layer deadline.
         await new Promise((r) => setTimeout(r, 400));
         return Response.json(chatAnswers({ tier: { type: 'choice', choice: 'ultra', confidence: 0.99 } }));
       },
@@ -163,7 +163,7 @@ describe('Layer 2 decision capture (dataset sink — single-key gate classifier.
         [{ id: 'l2-cap3/jev', provider: 'l2-cap3', upstreamModel: 'jev', tier: 'plus', pricing: { input: 0, output: 0, cacheRead: 0 } }]
       );
       const { registry } = bootServer(config);
-      const result = await Layer2Judge.evaluate(
+      const result = await Layer2Decision.evaluate(
         { model: 'auto', messages: [{ role: 'user', content: PROOF }] },
         { enabled: true, model: 'l2-cap3/jev', timeoutMs: 150 },
         registry
@@ -177,8 +177,8 @@ describe('Layer 2 decision capture (dataset sink — single-key gate classifier.
   });
 });
 
-describe('Layer 2 judge speaks the System One protocol', () => {
-  test('System One judge upstream: typed answers become the routing tier', async () => {
+describe('Layer 2 decision layer speaks the System One protocol', () => {
+  test('System One decision layer upstream: typed answers become the routing tier', async () => {
     let received: any = null;
     const upstream = serve({
       port: 0,
@@ -203,7 +203,7 @@ describe('Layer 2 judge speaks the System One protocol', () => {
       const { registry } = bootServer(config);
       const request: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: PROOF }] };
 
-      const result = await Layer2Judge.evaluate(
+      const result = await Layer2Decision.evaluate(
         request,
         { enabled: true, model: 'l2-native/jev', timeoutMs: 5000 },
         registry
@@ -225,7 +225,7 @@ describe('Layer 2 judge speaks the System One protocol', () => {
       expect(wirePayload.state).toBe(`user: ${PROOF}`);
       expect(wirePayload.questions.tier.type).toBe('choice');
       expect(Object.keys(wirePayload.questions.tier.criteria).sort()).toEqual(['lite', 'plus', 'pro', 'ultra']);
-      expect(String(wirePayload.questions.tier.instructions)).toContain('NEVER judge difficulty by character length');
+      expect(String(wirePayload.questions.tier.instructions)).toContain('NEVER decide difficulty by character length');
     } finally {
       upstream.stop(true);
     }
@@ -255,11 +255,11 @@ describe('Layer 2 judge speaks the System One protocol', () => {
       );
       const { registry } = bootServer(config);
       const request: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: PROOF }] };
-      const judgeConfig = { enabled: true, model: 'l2-native/jev', timeoutMs: 5000 } as const;
+      const decisionConfig = { enabled: true, model: 'l2-native/jev', timeoutMs: 5000 } as const;
 
       // Wire attempt fails → the console surface gets a failure record.
-      expect(await Layer2Judge.evaluate(request, judgeConfig, registry)).toBeNull();
-      const failed = Layer2Judge.getLastOutcome();
+      expect(await Layer2Decision.evaluate(request, decisionConfig, registry)).toBeNull();
+      const failed = Layer2Decision.getLastOutcome();
       expect(failed).not.toBeNull();
       expect(failed!.ok).toBe(false);
       expect(failed!.modelId).toBe('l2-native/jev');
@@ -267,21 +267,21 @@ describe('Layer 2 judge speaks the System One protocol', () => {
 
       // Next attempt succeeds → the failure record is replaced.
       fail = false;
-      expect(await Layer2Judge.evaluate(request, judgeConfig, registry)).not.toBeNull();
-      const okOutcome = Layer2Judge.getLastOutcome();
+      expect(await Layer2Decision.evaluate(request, decisionConfig, registry)).not.toBeNull();
+      const okOutcome = Layer2Decision.getLastOutcome();
       expect(okOutcome!.ok).toBe(true);
       expect(okOutcome!.latencyMs).toBeGreaterThanOrEqual(0);
 
       // A cache hit is NOT a wire attempt: the record must stay untouched.
-      const before = Layer2Judge.getLastOutcome()!.ts;
-      expect(await Layer2Judge.evaluate(request, judgeConfig, registry)).not.toBeNull();
-      expect(Layer2Judge.getLastOutcome()!.ts).toBe(before);
+      const before = Layer2Decision.getLastOutcome()!.ts;
+      expect(await Layer2Decision.evaluate(request, decisionConfig, registry)).not.toBeNull();
+      expect(Layer2Decision.getLastOutcome()!.ts).toBe(before);
     } finally {
       upstream.stop(true);
     }
   });
 
-  test('any registered chat model serves the judge by conversion, flagged uncalibrated', async () => {
+  test('any registered chat model serves the decision layer by conversion, flagged uncalibrated', async () => {
     const seen: any[] = [];
     const upstream = serve({
       port: 0,
@@ -322,7 +322,7 @@ describe('Layer 2 judge speaks the System One protocol', () => {
       const { registry } = bootServer(config);
       const request: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: PROOF }] };
 
-      const result = await Layer2Judge.evaluate(request, { enabled: true, timeoutMs: 5000 }, registry, 'l2-chat/model');
+      const result = await Layer2Decision.evaluate(request, { enabled: true, timeoutMs: 5000 }, registry, 'l2-chat/model');
 
       expect(result).not.toBeNull();
       expect(result!.targetTier).toBe('ultra');
@@ -365,8 +365,8 @@ describe('Layer 2 judge speaks the System One protocol', () => {
       const request: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: PROOF }] };
       const config2 = { enabled: true, model: 'l2-cache/jev', timeoutMs: 5000 };
 
-      const first = await Layer2Judge.evaluate(request, config2, registry);
-      const second = await Layer2Judge.evaluate(request, config2, registry);
+      const first = await Layer2Decision.evaluate(request, config2, registry);
+      const second = await Layer2Decision.evaluate(request, config2, registry);
 
       expect(first!.targetTier).toBe('plus');
       expect(second!.targetTier).toBe('plus');
@@ -413,23 +413,23 @@ describe('Layer 2 judge speaks the System One protocol', () => {
       const { registry } = bootServer(config);
       const request: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: PROOF }] };
 
-      // Judge off.
-      expect(await Layer2Judge.evaluate(request, { enabled: false, model: 'l2-fail/model' }, registry)).toBeNull();
+      // Decision off.
+      expect(await Layer2Decision.evaluate(request, { enabled: false, model: 'l2-fail/model' }, registry)).toBeNull();
       // No model configured anywhere.
-      expect(await Layer2Judge.evaluate(request, { enabled: true }, registry)).toBeNull();
+      expect(await Layer2Decision.evaluate(request, { enabled: true }, registry)).toBeNull();
       // Model not registered.
-      expect(await Layer2Judge.evaluate(request, { enabled: true, model: 'nope/absent' }, registry)).toBeNull();
+      expect(await Layer2Decision.evaluate(request, { enabled: true, model: 'nope/absent' }, registry)).toBeNull();
       // Upstream 500 → upstream_error is swallowed, routing falls back.
-      expect(await Layer2Judge.evaluate(request, { enabled: true, model: 'l2-fail/model', timeoutMs: 5000 }, registry)).toBeNull();
+      expect(await Layer2Decision.evaluate(request, { enabled: true, model: 'l2-fail/model', timeoutMs: 5000 }, registry)).toBeNull();
     } finally {
       upstream.stop(true);
     }
   });
 
-  test('the judge deadline returns null so the cascade keeps moving', async () => {
+  test('the decision layer deadline returns null so the cascade keeps moving', async () => {
     const upstream = serve({
       port: 0,
-      // Never answers — only the judge's own deadline can end this call.
+      // Never answers — only the decision layer's own deadline can end this call.
       fetch() {
         return new Promise<Response>(() => {});
       },
@@ -459,7 +459,7 @@ describe('Layer 2 judge speaks the System One protocol', () => {
       const request: ChatCompletionRequest = { model: 'user', messages: [{ role: 'user', content: PROOF }] };
 
       const started = Date.now();
-      const result = await Layer2Judge.evaluate(request, { enabled: true, model: 'l2-slow/model', timeoutMs: 300 }, registry);
+      const result = await Layer2Decision.evaluate(request, { enabled: true, model: 'l2-slow/model', timeoutMs: 300 }, registry);
       expect(result).toBeNull();
       expect(Date.now() - started).toBeLessThan(3000);
     } finally {
@@ -467,9 +467,9 @@ describe('Layer 2 judge speaks the System One protocol', () => {
     }
   });
   test('a late result after the deadline must not poison the decision cache', async () => {
-    // The judge gives up at 150ms; the upstream answers a VALID tier at 400ms.
+    // The decision layer gives up at 150ms; the upstream answers a VALID tier at 400ms.
     // The abandoned `.then` still runs — but only the race winner may write
-    // the cache, so a second identical-context judge call must go upstream
+    // the cache, so a second identical-context decision layer call must go upstream
     // again (2 calls total). Had the loser written the cache, this would be 1.
     const seen: number[] = [];
     const started = Date.now();
@@ -496,12 +496,12 @@ describe('Layer 2 judge speaks the System One protocol', () => {
       );
       const { registry } = bootServer(config);
       const request: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: PROOF }] };
-      const judge = { enabled: true, model: 'l2-late/jev', timeoutMs: 150 };
+      const decisionCfg = { enabled: true, model: 'l2-late/jev', timeoutMs: 150 };
 
-      expect(await Layer2Judge.evaluate(request, judge, registry)).toBeNull();
-      // Immediate re-judge of the identical context: the abandoned call must
+      expect(await Layer2Decision.evaluate(request, decisionCfg, registry)).toBeNull();
+      // Immediate re-decision of the identical context: the abandoned call must
       // NOT have cached its answer.
-      expect(await Layer2Judge.evaluate(request, judge, registry)).toBeNull();
+      expect(await Layer2Decision.evaluate(request, decisionCfg, registry)).toBeNull();
 
       // Let both abandoned upstream calls finish landing.
       await new Promise((r) => setTimeout(r, 1200));
@@ -511,10 +511,10 @@ describe('Layer 2 judge speaks the System One protocol', () => {
     }
   });
 
-  test('the deadline never fires a repair call after the judge gave up', async () => {
+  test('the deadline never fires a repair call after the decision layer gave up', async () => {
     // Regression guard: an unusable first reply used to trigger the conversion
-    // repair retry EVEN AFTER the judge stopped waiting — a second full chat
-    // call spent for an answer nobody reads. The judge's signal must suppress it.
+    // repair retry EVEN AFTER the decision layer stopped waiting — a second full chat
+    // call spent for an answer nobody reads. The decision layer's signal must suppress it.
     const seen: number[] = [];
     const started = Date.now();
     const upstream = serve({
@@ -550,7 +550,7 @@ describe('Layer 2 judge speaks the System One protocol', () => {
       const { registry } = bootServer(config);
       const request: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: PROOF }] };
 
-      const result = await Layer2Judge.evaluate(request, { enabled: true, model: 'l2-repair/model', timeoutMs: 150 }, registry);
+      const result = await Layer2Decision.evaluate(request, { enabled: true, model: 'l2-repair/model', timeoutMs: 150 }, registry);
       expect(result).toBeNull();
 
       // Wait past the first call's own duration: no repair may have been sent.
@@ -592,8 +592,8 @@ describe('retired Layer 2 vendor keys are stripped at load time', () => {
   });
 });
 
-describe('routeAsync wires the Layer 2 judge', () => {
-  test('an enabled judge answers through routeAsync with layerUsed=layer2', async () => {
+describe('routeAsync wires the Layer 2 decision layer', () => {
+  test('an enabled decision layer answers through routeAsync with layerUsed=layer2', async () => {
     const upstream = serve({
       port: 0,
       async fetch() {
@@ -630,14 +630,14 @@ describe('routeAsync wires the Layer 2 judge', () => {
     }
   });
 
-  test('no registry → the default plus baseline stands (judge-less callers keep working)', async () => {
+  test('no registry → the default plus baseline stands (decision layer-less callers keep working)', async () => {
     const request: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: 'hi' }] };
     const decision = await RouterEngine.routeAsync(request, { layer2: { enabled: true } });
     expect(decision.layerUsed).toBe('layer0');
     expect(decision.targetTier).toBe('plus');
   });
 
-  test('an enabled but unconfigured judge never silently picks a model — the default baseline answers', async () => {
+  test('an enabled but unconfigured decision layer never silently picks a model — the default baseline answers', async () => {
     const upstream = serve({
       port: 0,
       async fetch() {
@@ -646,7 +646,7 @@ describe('routeAsync wires the Layer 2 judge', () => {
     });
     try {
       // Models exist, but NEITHER classifier.layer2.model NOR
-      // systemone.defaultModel names one. The judge must stay inert rather
+      // systemone.defaultModel names one. The decision layer must stay inert rather
       // than cascade into the tier pool — System One serves the model named.
       const config = makeConfig(
         [
@@ -684,18 +684,18 @@ describe('routeAsync wires the Layer 2 judge', () => {
   });
 });
 // ---------------------------------------------------------------------------
-// JUDGE-CALL CAPTURE (new feature): when a routed chat turn cascades into the
-// Layer 2 judge, the decision-model HTTP leg is recorded as an upstream-
+// L2-DECISION-CALL CAPTURE (new feature): when a routed chat turn cascades into the
+// Layer 2 decision layer, the decision-model HTTP leg is recorded as an upstream-
 // direction http-exchange PAIR attached to the OUTER request's trace/session,
-// labeled purpose 'l2-judge'. Gate: three-tier chain requestCapture.enabled ×
+// labeled purpose 'l2-decision'. Gate: three-tier chain requestCapture.enabled ×
 // systemone.enabled (surface master) × systemone.l2DecisionEnabled (sub),
-// checked inside the judge — when off, the whole chain
+// checked inside the decision layer — when off, the whole chain
 // stays silent (the exact pre-feature call shape) while the turn's own client
 // and candidate-execution events continue unchanged. Both upstream classes
 // are covered: the CONVERTED path (registry.execute plumbing) and the NATIVE
 // Conversion path (registry.execute, fetch wrapped directly).
 // ---------------------------------------------------------------------------
-describe('judge-call capture (systemone.enabled × systemone.l2DecisionEnabled, capture master above them)', () => {
+describe('decision-call capture (systemone.enabled × systemone.l2DecisionEnabled, capture master above them)', () => {
   interface Evt {
     eventType: string;
     direction: 'client' | 'upstream';
@@ -732,14 +732,14 @@ describe('judge-call capture (systemone.enabled × systemone.l2DecisionEnabled, 
     }
   }
 
-  /** Route one real /v1/chat/completions turn whose Layer-2 judge dials the
+  /** Route one real /v1/chat/completions turn whose Layer-2 decision layer dials the
    *  given provider kind; returns every http-exchange event written. */
   async function routedTurn(opts: { l2DecisionEnabled: boolean }): Promise<{ events: Evt[]; marker: string }> {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-judge-cap-'));
-    const marker = `JUDGECAP-${Date.now()}`;
-    // Judge upstream: answers the System One question as a JSON-constrained
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-l2dec-cap-'));
+    const marker = `DECCAP-${Date.now()}`;
+    // Decision upstream: answers the System One question as a JSON-constrained
     // chat completion (converted path — the only path).
-    const judgeUpstream = serve({
+    const decisionSrv = serve({
       port: 0,
       hostname: '127.0.0.1',
       async fetch() {
@@ -748,30 +748,30 @@ describe('judge-call capture (systemone.enabled × systemone.l2DecisionEnabled, 
         );
       },
     });
-    // Execution upstream: serves the outer turn after the judge picks plus.
+    // Execution upstream: serves the outer turn after the decision layer picks plus.
     const execUpstream = serve({
       port: 0,
       hostname: '127.0.0.1',
       async fetch() {
-        return Response.json(fakeChat('executed after judge'));
+        return Response.json(fakeChat('executed after decision layer'));
       },
     });
     try {
-      const judgeProvider = { name: 'jc-conv', type: 'openai-compatible', baseUrl: `http://127.0.0.1:${judgeUpstream.port}`, apiKey: 'sk-jc-secret-1', timeoutMs: 5000 };
-      const judgeModel = {
-        id: `${judgeProvider.name}/judge`,
-        provider: judgeProvider.name,
-        upstreamModel: 'judge-upstream',
-        // ULTRA tier keeps the judge model OUT of the plus pool the judge
+      const decisionProvider = { name: 'jc-conv', type: 'openai-compatible', baseUrl: `http://127.0.0.1:${decisionSrv.port}`, apiKey: 'sk-jc-secret-1', timeoutMs: 5000 };
+      const decisionModel = {
+        id: `${decisionProvider.name}/decider`,
+        provider: decisionProvider.name,
+        upstreamModel: 'l2dec-upstream',
+        // ULTRA tier keeps the decision layer model OUT of the plus pool the decision layer
         // itself selects — the outer execution then demonstrably runs a
         // different (purpose-less) call.
         tier: 'ultra',
         pricing: { input: 1, output: 1, cacheRead: 0 },
       };
       const config = makeConfig(
-        [judgeProvider, { name: 'jc-exec', type: 'openai-compatible', baseUrl: `http://127.0.0.1:${execUpstream.port}`, apiKey: 'sk-exec-secret', timeoutMs: 5000 }],
+        [decisionProvider, { name: 'jc-exec', type: 'openai-compatible', baseUrl: `http://127.0.0.1:${execUpstream.port}`, apiKey: 'sk-exec-secret', timeoutMs: 5000 }],
         [
-          judgeModel,
+          decisionModel,
           { id: 'jc-exec/chat', provider: 'jc-exec', upstreamModel: 'exec-upstream', tier: 'plus', pricing: { input: 1, output: 1, cacheRead: 0 } },
         ]
       );
@@ -786,7 +786,7 @@ describe('judge-call capture (systemone.enabled × systemone.l2DecisionEnabled, 
       };
       config.classifier = {
         ...config.classifier,
-        layer2: { enabled: true, model: judgeModel.id, timeoutMs: 5000 },
+        layer2: { enabled: true, model: decisionModel.id, timeoutMs: 5000 },
       };
       const { app } = bootServer(config);
       try {
@@ -797,12 +797,12 @@ describe('judge-call capture (systemone.enabled × systemone.l2DecisionEnabled, 
           payload: { model: 'auto', messages: [{ role: 'user', content: `${PROOF} ${marker}` }] },
         });
         expect(res.statusCode).toBe(200);
-        // Settle: outer client pair + execution pair, plus the judge pair when
+        // Settle: outer client pair + execution pair, plus the decision layer pair when
         // the feature is ON (2 vs 3 response events — the count is part of
         // what the OFF/ON pair pins).
         const expectedResponses = opts.l2DecisionEnabled ? 3 : 2;
         await waitUntil(() => readEvents(tmp).filter((e) => e.phase === 'response').length >= expectedResponses);
-        // OFF runs must also give the (absent) judge leg time to show up if
+        // OFF runs must also give the (absent) L2 decision leg time to show up if
         // the plumbing leaked — a purpose event would land within the inject
         // await already; 250ms settle mirrors the guard suite's window.
         if (!opts.l2DecisionEnabled) await new Promise((r) => setTimeout(r, 250));
@@ -811,17 +811,17 @@ describe('judge-call capture (systemone.enabled × systemone.l2DecisionEnabled, 
         await app.close();
       }
     } finally {
-      judgeUpstream.stop(true);
+      decisionSrv.stop(true);
       execUpstream.stop(true);
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   }
 
-  function assertJudgePair(events: Evt[], marker: string): void {
-    const judge = events.filter((e) => e.purpose === 'l2-judge');
-    expect(judge.length).toBe(2);
-    const req = judge.find((e) => e.phase === 'request')!;
-    const resp = judge.find((e) => e.phase === 'response')!;
+  function assertDecisionPair(events: Evt[], marker: string): void {
+    const decisionEvents = events.filter((e) => e.purpose === 'l2-decision');
+    expect(decisionEvents.length).toBe(2);
+    const req = decisionEvents.find((e) => e.phase === 'request')!;
+    const resp = decisionEvents.find((e) => e.phase === 'response')!;
     expect(req.direction).toBe('upstream');
     expect(resp.direction).toBe('upstream');
     expect(resp.spanId).toBe(req.spanId); // one exchange, two events
@@ -830,7 +830,7 @@ describe('judge-call capture (systemone.enabled × systemone.l2DecisionEnabled, 
     const outer = events.find((e) => e.direction === 'client' && e.phase === 'request')!;
     expect(req.traceId).toBe(outer.traceId);
     expect(req.sessionId).toBe(outer.sessionId);
-    // The judge's decision wire carried the conversation state (marker) and
+    // The decision layer's decision wire carried the conversation state (marker) and
     // the credential header reached disk ONLY redacted.
     expect(req.wire.requestBody).toContain(marker);
     expect(req.wire.requestHeaders.authorization).toBe('[REDACTED]');
@@ -841,16 +841,16 @@ describe('judge-call capture (systemone.enabled × systemone.l2DecisionEnabled, 
     expect(exec.length).toBeGreaterThanOrEqual(1);
   }
 
-  test('converted judge ON: outer turn archives a purpose l2-judge upstream pair on the outer trace', async () => {
+  test('converted decision layer ON: outer turn archives a purpose l2-decision upstream pair on the outer trace', async () => {
     const { events, marker } = await routedTurn({ l2DecisionEnabled: true });
-    assertJudgePair(events, marker);
+    assertDecisionPair(events, marker);
   });
 
-  test('converted judge OFF (l2DecisionEnabled false): zero purpose events, turn still captured', async () => {
+  test('converted decision layer OFF (l2DecisionEnabled false): zero purpose events, turn still captured', async () => {
     const { events } = await routedTurn({ l2DecisionEnabled: false });
-    expect(events.filter((e) => e.purpose === 'l2-judge').length).toBe(0);
+    expect(events.filter((e) => e.purpose === 'l2-decision').length).toBe(0);
     // The turn itself is still captured (master ON): client pair + purpose-less
-    // execution pair — only the judge leg went silent.
+    // execution pair — only the L2 decision leg went silent.
     expect(events.filter((e) => e.direction === 'client' && e.phase === 'request').length).toBe(1);
     expect(events.filter((e) => e.direction === 'upstream' && e.phase === 'request').length).toBe(1);
   });
@@ -858,19 +858,19 @@ describe('judge-call capture (systemone.enabled × systemone.l2DecisionEnabled, 
 });
 
 // ---------------------------------------------------------------------------
-// ADR-0012: judge-emitted thinking effort. With classifier.layer2.
-// effortDecision ON and a client-omitted reasoning_effort, the judge's ONE
+// ADR-0012: L2-emitted thinking effort. With classifier.layer2.
+// effortDecision ON and a client-omitted reasoning_effort, the decision layer's ONE
 // System One call asks tier AND effort (6-level ladder). Pinned here:
 // the question shape on the wire, client-explicit suppression, tolerant
 // parse (a garbled effort never sinks a good tier), the cache-namespace
 // split on the gate, and the full chain (injection → serving payload →
 // trace effortSource → experience-table learning).
 // ---------------------------------------------------------------------------
-describe('judge-emitted thinking effort (ADR-0012)', () => {
+describe('L2-emitted thinking effort (ADR-0012)', () => {
   const PRICING = { input: 1, output: 1, cacheRead: 0 };
 
-  /** System One judge upstream answering the given answers body (converted). */
-  function judgeUpstream(answers: any, onBody?: (body: any) => void) {
+  /** System One decision layer upstream answering the given answers body (converted). */
+  function decisionUpstream(answers: any, onBody?: (body: any) => void) {
     return serve({
       port: 0,
       hostname: '127.0.0.1',
@@ -882,7 +882,7 @@ describe('judge-emitted thinking effort (ADR-0012)', () => {
     });
   }
 
-  function judgeOnlyConfig(port: number, name = 'je') {
+  function decisionOnlyConfig(port: number, name = 'je') {
     return makeConfig(
       [{ name, type: 'openai-compatible', baseUrl: `http://127.0.0.1:${port}`, apiKey: 'sk-je', timeoutMs: 5000 }],
       [{ id: `${name}/jev`, provider: name, upstreamModel: 'jev', tier: 'ultra', pricing: PRICING }]
@@ -891,7 +891,7 @@ describe('judge-emitted thinking effort (ADR-0012)', () => {
 
   test('gate ON + client omitted: the effort question rides the same call and parses into the result', async () => {
     let body: any = null;
-    const upstream = judgeUpstream(
+    const upstream = decisionUpstream(
       {
         tier: { type: 'choice', choice: 'pro', confidence: 0.95 },
         effort: { type: 'choice', choice: 'high', confidence: 0.88 },
@@ -899,8 +899,8 @@ describe('judge-emitted thinking effort (ADR-0012)', () => {
       (b) => (body = b)
     );
     try {
-      const { registry } = bootServer(judgeOnlyConfig(upstream.port));
-      const result = await Layer2Judge.evaluate(
+      const { registry } = bootServer(decisionOnlyConfig(upstream.port));
+      const result = await Layer2Decision.evaluate(
         { model: 'auto', messages: [{ role: 'user', content: PROOF }] },
         { enabled: true, model: 'je/jev', timeoutMs: 5000, effortDecision: true },
         registry
@@ -923,13 +923,13 @@ describe('judge-emitted thinking effort (ADR-0012)', () => {
 
   test('client-explicit reasoning_effort suppresses the effort question entirely', async () => {
     let body: any = null;
-    const upstream = judgeUpstream(
+    const upstream = decisionUpstream(
       { tier: { type: 'choice', choice: 'plus', confidence: 0.9 } },
       (b) => (body = b)
     );
     try {
-      const { registry } = bootServer(judgeOnlyConfig(upstream.port, 'je2'));
-      const result = await Layer2Judge.evaluate(
+      const { registry } = bootServer(decisionOnlyConfig(upstream.port, 'je2'));
+      const result = await Layer2Decision.evaluate(
         { model: 'auto', messages: [{ role: 'user', content: PROOF }], reasoning_effort: 'low' },
         { enabled: true, model: 'je2/jev', timeoutMs: 5000, effortDecision: true },
         registry
@@ -945,7 +945,7 @@ describe('judge-emitted thinking effort (ADR-0012)', () => {
 
   test('gate OFF (default): no effort question, no effort in the result — even when the upstream volunteers one', async () => {
     let body: any = null;
-    const upstream = judgeUpstream(
+    const upstream = decisionUpstream(
       {
         tier: { type: 'choice', choice: 'plus', confidence: 0.9 },
         effort: { type: 'choice', choice: 'max', confidence: 0.99 }, // ignored
@@ -953,8 +953,8 @@ describe('judge-emitted thinking effort (ADR-0012)', () => {
       (b) => (body = b)
     );
     try {
-      const { registry } = bootServer(judgeOnlyConfig(upstream.port, 'je3'));
-      const result = await Layer2Judge.evaluate(
+      const { registry } = bootServer(decisionOnlyConfig(upstream.port, 'je3'));
+      const result = await Layer2Decision.evaluate(
         { model: 'auto', messages: [{ role: 'user', content: PROOF }] },
         { enabled: true, model: 'je3/jev', timeoutMs: 5000 },
         registry
@@ -971,13 +971,13 @@ describe('judge-emitted thinking effort (ADR-0012)', () => {
     // Converted-path semantics: a choice outside the criteria keys cannot
     // survive synthesis — the answer is REPAIRED to the argmax probability
     // ('high' here) and the tier decision stands.
-    const upstream = judgeUpstream({
+    const upstream = decisionUpstream({
       tier: { type: 'choice', choice: 'pro', probabilities: { lite: 0, plus: 0.05, pro: 0.93, ultra: 0.02 }, confidence: 0.93 },
       effort: { type: 'choice', choice: 'banana', probabilities: { none: 0, low: 0, medium: 0, high: 1, xhigh: 0, max: 0 }, confidence: 0.7 },
     });
     try {
-      const { registry } = bootServer(judgeOnlyConfig(upstream.port, 'je4'));
-      const result = await Layer2Judge.evaluate(
+      const { registry } = bootServer(decisionOnlyConfig(upstream.port, 'je4'));
+      const result = await Layer2Decision.evaluate(
         { model: 'auto', messages: [{ role: 'user', content: PROOF }] },
         { enabled: true, model: 'je4/jev', timeoutMs: 5000, effortDecision: true },
         registry
@@ -992,7 +992,7 @@ describe('judge-emitted thinking effort (ADR-0012)', () => {
 
   test('the decision cache namespaces on the gate: effort answers never leak across modes', async () => {
     let calls = 0;
-    const upstream = judgeUpstream(
+    const upstream = decisionUpstream(
       {
         tier: { type: 'choice', choice: 'pro', confidence: 0.9 },
         effort: { type: 'choice', choice: 'low', confidence: 0.9 },
@@ -1000,19 +1000,19 @@ describe('judge-emitted thinking effort (ADR-0012)', () => {
       () => calls++
     );
     try {
-      const { registry } = bootServer(judgeOnlyConfig(upstream.port, 'je5'));
+      const { registry } = bootServer(decisionOnlyConfig(upstream.port, 'je5'));
       const req: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: PROOF }] };
       const on = { enabled: true, model: 'je5/jev', timeoutMs: 5000, effortDecision: true };
 
-      const first = await Layer2Judge.evaluate(req, on, registry);
+      const first = await Layer2Decision.evaluate(req, on, registry);
       expect(first!.effort).toBe('low');
-      const second = await Layer2Judge.evaluate(req, on, registry);
+      const second = await Layer2Decision.evaluate(req, on, registry);
       expect(second!.reason).toContain('[Decision Cache]');
       expect(second!.effort).toBe('low'); // the effort answer survives the cache round-trip
       expect(calls).toBe(1); // the second judgment was served from cache
 
-      // Gate OFF: same state, different namespace → a fresh judge call, no effort.
-      const off = await Layer2Judge.evaluate(req, { enabled: true, model: 'je5/jev', timeoutMs: 5000 }, registry);
+      // Gate OFF: same state, different namespace → a fresh decision layer call, no effort.
+      const off = await Layer2Decision.evaluate(req, { enabled: true, model: 'je5/jev', timeoutMs: 5000 }, registry);
       expect(off!.effort).toBeUndefined();
       expect(off!.reason).not.toContain('[Decision Cache]');
       expect(calls).toBe(2);
@@ -1021,9 +1021,9 @@ describe('judge-emitted thinking effort (ADR-0012)', () => {
     }
   });
 
-  test('full chain: judge effort reaches the serving payload, the X-OCR headers, the trace, and the experience table', async () => {
+  test('full chain: L2-decided effort reaches the serving payload, the X-OCR headers, the trace, and the experience table', async () => {
     const execSeen: any[] = [];
-    const judge = judgeUpstream({
+    const decisionSrv = decisionUpstream({
       tier: { type: 'choice', choice: 'pro', confidence: 0.95 },
       effort: { type: 'choice', choice: 'high', confidence: 0.88 },
     });
@@ -1032,18 +1032,18 @@ describe('judge-emitted thinking effort (ADR-0012)', () => {
       hostname: '127.0.0.1',
       async fetch(req) {
         execSeen.push(await req.json());
-        return Response.json(fakeChat('served with judge effort'));
+        return Response.json(fakeChat('served with L2 decision effort'));
       },
     });
     try {
       const config = makeConfig(
         [
-          { name: 'fc-judge', type: 'openai-compatible', baseUrl: `http://127.0.0.1:${judge.port}`, apiKey: 'sk-j', timeoutMs: 5000 },
+          { name: 'fc-decision', type: 'openai-compatible', baseUrl: `http://127.0.0.1:${decisionSrv.port}`, apiKey: 'sk-j', timeoutMs: 5000 },
           { name: 'fc-exec', type: 'openai-compatible', baseUrl: `http://127.0.0.1:${exec.port}`, apiKey: 'sk-e', timeoutMs: 5000 },
         ],
         [
-          // ULTRA keeps the judge model out of the pro pool it selects.
-          { id: 'fc-judge/jev', provider: 'fc-judge', upstreamModel: 'jev', tier: 'ultra', pricing: PRICING },
+          // ULTRA keeps the decision layer model out of the pro pool it selects.
+          { id: 'fc-decision/jev', provider: 'fc-decision', upstreamModel: 'jev', tier: 'ultra', pricing: PRICING },
           {
             id: 'fc-exec/pro-chat',
             provider: 'fc-exec',
@@ -1056,7 +1056,7 @@ describe('judge-emitted thinking effort (ADR-0012)', () => {
       );
       config.classifier = {
         ...config.classifier,
-        layer2: { enabled: true, model: 'fc-judge/jev', timeoutMs: 5000, effortDecision: true },
+        layer2: { enabled: true, model: 'fc-decision/jev', timeoutMs: 5000, effortDecision: true },
       };
       const { app, orchestrator } = bootServer(config);
       try {
@@ -1068,7 +1068,7 @@ describe('judge-emitted thinking effort (ADR-0012)', () => {
         });
         expect(res.statusCode).toBe(200);
 
-        // 1. The serving upstream received the judge-decided level.
+        // 1. The serving upstream received the L2-decided level.
         expect(execSeen.length).toBe(1);
         expect(execSeen[0].reasoning_effort).toBe('high');
 
@@ -1077,16 +1077,16 @@ describe('judge-emitted thinking effort (ADR-0012)', () => {
         expect(res.headers['x-ocr-thinking-requested']).toBe('high');
         expect(res.headers['x-ocr-thinking-actual']).toBe('high');
         expect(res.headers['x-ocr-thinking-degraded']).toBe('false');
-        expect(res.headers['x-ocr-thinking-source']).toBe('judge');
+        expect(res.headers['x-ocr-thinking-source']).toBe('l2-decision');
 
-        // 3. The trace attributes the ask to the judge (ADR-0012 §2).
+        // 3. The trace attributes the ask to the decision layer (ADR-0012 §2).
         const sessionId = String(res.headers['x-ocr-session-id']);
         const traces = orchestrator.getTraceTracker().getTracesBySession(sessionId);
         expect(traces.length).toBe(1);
         expect(traces[0].execution.requestedEffort).toBe('high');
         expect(traces[0].execution.actualEffort).toBe('high');
         expect(traces[0].execution.reasoningDegraded).toBe(false);
-        expect(traces[0].execution.effortSource).toBe('judge');
+        expect(traces[0].execution.effortSource).toBe('l2-decision');
 
         // 4. The experience table learned the level with the tier
         //    (l2_confident write-back — confidence 0.95 ≥ 0.85).
@@ -1099,7 +1099,7 @@ describe('judge-emitted thinking effort (ADR-0012)', () => {
         await app.close();
       }
     } finally {
-      judge.stop(true);
+      decisionSrv.stop(true);
       exec.stop(true);
     }
   });

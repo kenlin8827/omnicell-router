@@ -1,6 +1,6 @@
 import { ChatCompletionRequest } from '../types/openai.js';
 import { RoutingDecision, TierLevel } from '../types/router.js';
-import { Layer2Judge } from './layer2-judge.js';
+import { Layer2Decision } from './layer2-decision.js';
 import { hasToolsOrSchema } from './request-traits.js';
 import { ClassifierConfig, RoutingMode } from '../config/types.js';
 import { tierFromVirtualEntry } from '../auth/model-access.js';
@@ -28,22 +28,22 @@ export class RouterEngine {
    * Asynchronous Hierarchical Routing
    * Layer 0 (explicit request rules) -> Layer 2 (System One decision model) -> Safe Quality Baseline (plus tier)
    *
-   * `registry` + `systemoneDefaultModel` are the Layer 2 judge's dependencies:
+   * `registry` + `systemoneDefaultModel` are the Layer 2 decision layer's dependencies:
    * it resolves and calls a registered model over the gateway's own System One
    * protocol, so it needs the model pool and the default decision
    * model that backs an unset `classifier.layer2.model`.
    *
-   * `judgeCapture` is the outer request's capture identity, threaded to the
-   * judge so its decision-model HTTP leg can be recorded on the SAME
-   * trace/session (the judge gates it; callers just hand over the identity).
+   * `decisionCapture` is the outer request's capture identity, threaded to the
+   * decision layer so its decision-model HTTP leg can be recorded on the SAME
+   * trace/session (the decision layer gates it; callers just hand over the identity).
    */
   public static async routeAsync(
     request: ChatCompletionRequest,
     classifierConfig?: ClassifierConfig,
     registry?: ProviderRegistry,
     systemoneDefaultModel?: string,
-    judgeCapture?: UpstreamEventContext,
-    /** Owning turn's session — threaded to the judge so its failure rows
+    decisionCapture?: UpstreamEventContext,
+    /** Owning turn's session — threaded to the decision layer so its failure rows
      *  (failure_events ledger) attribute to the suffering conversation. */
     sessionId?: string
   ): Promise<RoutingDecision> {
@@ -65,14 +65,14 @@ export class RouterEngine {
       };
     }
 
-    // 2. Layer 2: Specialized Semantic Decision Judge over the System One protocol
+    // 2. Layer 2: Specialized Semantic Decision over the System One protocol
     if (classifierConfig?.layer2?.enabled && registry) {
-      const decisionResult = await Layer2Judge.evaluate(
+      const decisionResult = await Layer2Decision.evaluate(
         request,
         classifierConfig.layer2,
         registry,
         systemoneDefaultModel,
-        judgeCapture,
+        decisionCapture,
         sessionId
       );
       if (decisionResult) {
@@ -84,7 +84,7 @@ export class RouterEngine {
           reasonCode: decisionResult.reasonCode,
           reasonParams: decisionResult.reasonParams,
           needsSchemaValidation,
-          // ADR-0012: the judge's effort answer (present only when the
+          // ADR-0012: the decision layer's effort answer (present only when the
           // client omitted the field) — the orchestrator injects it.
           effort: decisionResult.effort,
           effortConfidence: decisionResult.effortConfidence,
@@ -93,13 +93,13 @@ export class RouterEngine {
     }
 
     // 3. Default Quality-First Decision (Safe Flagship Baseline): when no
-    // judge produced a decision, route to the plus tier — never degrade to
+    // decision layer produced a decision, route to the plus tier — never degrade to
     // lite on a guess.
     return {
       targetTier: 'plus',
       confidence: 1.0,
       layerUsed: 'layer0',
-      reason: 'No judge decision available — defaulting to the plus quality baseline',
+      reason: 'No decision layer decision available — defaulting to the plus quality baseline',
       reasonCode: 'default',
       needsSchemaValidation,
     };

@@ -54,7 +54,7 @@ onecast-router/
 │   │   ├── quota/                       # Declarative DSL prober, SQLite quota_events ledger
 │   │   ├── ratelimit/                   # Sliding window rate limiter & client event log
 │   │   ├── resilience/                  # Circuit breakers, scoped trip state, health views
-│   │   ├── router/                      # Route entries (ADR-0011), retry escalation, judge
+│   │   ├── router/                      # Route entries (ADR-0011), retry escalation, decision layer
 │   │   ├── routes/                      # Fastify HTTP route definitions (console, envs, surfaces)
 │   │   ├── session/                     # Monotonic ratchet state machine, zero-header hashing
 │   │   ├── surfaces/                    # Protocol surface table & dispatch layer (ADR-0008)
@@ -102,7 +102,7 @@ All inbound traffic is intercepted by the Fastify server, normalized into an int
                [Step 3: Cascaded Tier & Effort Decision (ADR-0001, ADR-0011, ADR-0012)]
                 - Layer 0: Explicit rules (force_tier, combos, auto-tier aliases)
                 - RouteEntry Experience Table: SHA-256 prompt hash short-circuit
-                - Layer 2 Judge: Remote System One emits {tier, effort} (opt-in)
+                - Layer 2 Decision: Remote System One emits {tier, effort} (opt-in)
                 - Fallback: Hardcoded 'plus' baseline defense
                                       │
                                       ▼
@@ -137,20 +137,20 @@ The decision cascade eliminates crude prompt-length heuristics and replaces them
 4. **Global Mode Lever**: `routing.mode: cost` routes to `lite`; `routing.mode: quality` routes to `pro`.
 
 ### 3.2 RouteEntry Experience Table (ADR-0011)
-Before consulting a remote judge, the gateway computes the 16-character hex hash:
+Before consulting a remote decision layer, the gateway computes the 16-character hex hash:
 $$\mathcal{H}_{\text{prompt}} = \text{SHA256}(\text{normalize}(\text{prompt}))[0 \dots 15]$$
 - If an entry exists in `<envRoot>/data/route-entries.json`, the gateway short-circuits Layer 2, setting `layerUsed: 'entry'` and `reasonCode: 'entry.hit'`.
-- **Write Whitelist Precedence**: `human` (manual operator edits via console) > `correction` (accepted retry escalation outcomes) > `l2_confident` (System One judge confidence $\ge 0.85$).
+- **Write Whitelist Precedence**: `human` (manual operator edits via console) > `correction` (accepted retry escalation outcomes) > `l2_confident` (System One decision layer confidence $\ge 0.85$).
 - Human entries are immutable to automated overwrite.
 
-### 3.3 Layer 2: System One Semantic Judge (ADR-0012)
+### 3.3 Layer 2: System One Semantic Decision Layer (ADR-0012)
 - Opt-in via `classifier.layer2.enabled: true` (shipped default is false).
 - Invokes a dedicated lightweight model (`classifier.layer2.model`) via `runSystemoneDecision`.
-- When enabled, the judge resolves both `{tier, effort}` in a single round-trip.
+- When enabled, the decision layer resolves both `{tier, effort}` in a single round-trip.
 - Decisions are cached in an in-memory LRU+TTL store (`decisionCache`) keyed by prefix and prompt content.
 
 ### 3.4 Quality-First Baseline
-When the judge is disabled, times out, or fails to classify, the request immediately defaults to the hardcoded `plus` tier (`layerUsed: 'layer0'`, `reasonCode: 'default'`). The gateway never silently routes to cheap micro-models without explicit intent.
+When the decision layer is disabled, times out, or fails to classify, the request immediately defaults to the hardcoded `plus` tier (`layerUsed: 'layer0'`, `reasonCode: 'default'`). The gateway never silently routes to cheap micro-models without explicit intent.
 
 ### 3.5 Retry Escalation Ladder (ADR-0011)
 If an identical prompt ($\ge 20$ characters) is re-sent within the same active session following a successful completion, the gateway interprets this as operator dissatisfaction and applies the escalation ladder:
@@ -220,7 +220,7 @@ At the health aggregation layer, models report status using capability vocabular
 ## 6. Failure Events Ledger & Observability
 
 Implemented under **ADR-0013**, the failure events ledger provides deep visibility into upstream model calls:
-- **Dual Emitters**: Captures failures from both `serving` candidate execution and `judge` remote calls.
+- **Dual Emitters**: Captures failures from both `serving` candidate execution and `decision layer` remote calls.
 - **Storm Coalescing**: Consecutive identical failures (`model × provider × errorClass × role`) within a 10-second window are coalesced into a single event with an incremented repeat counter ($N$).
 - **Storage**: Bounded in-process ring buffer (500 events) mirrored synchronously into SQLite (`traces.db`, `failure_events` table).
 - **Admin Endpoints**:
@@ -270,7 +270,7 @@ All architectural decisions are codified under `docs/adr/`:
 
 | ADR | Title | Summary |
 | :--- | :--- | :--- |
-| **[ADR-0001](docs/adr/0001-routing-pipeline.md)** | Routing Pipeline | Cascaded tier decisions, System One judge decision cache, hardcoded plus quality baseline. |
+| **[ADR-0001](docs/adr/0001-routing-pipeline.md)** | Routing Pipeline | Cascaded tier decisions, System One decision layer decision cache, hardcoded plus quality baseline. |
 | **[ADR-0002](docs/adr/0002-sessions.md)** | Sessions & Ratchet | 7-layer zero-header identity, monotonic session ratchet, guarded pin eviction. |
 | **[ADR-0003](docs/adr/0003-model-addressing-and-tier-membership.md)** | Model Addressing | Addressing resolution ladder, explicit combo pools, per-key model access controls. |
 | **[ADR-0004](docs/adr/0004-resilience-and-health.md)** | Resilience & Health | 7-class failure taxonomy, scoped circuit breakers, capability health vocabulary. |
@@ -281,7 +281,7 @@ All architectural decisions are codified under `docs/adr/`:
 | **[ADR-0009](docs/adr/0009-quota-probing.md)** | Quota Probing | Declarative 12-construct DSL, 5 banned classes, display-only quota events ledger. |
 | **[ADR-0010](docs/adr/0010-provider-def-ownership.md)** | Provider Def Ownership | `<ocrHome>/custom-providers.json` as single definition truth; `opencode.jsonc` materialized. |
 | **[ADR-0011](docs/adr/0011-route-entries-and-retry-escalation.md)** | Route Entries & Retry Escalation | Persistent prompt experience table (`route-entries.json`), retry ladder, routing ledger. |
-| **[ADR-0012](docs/adr/0012-judge-emitted-thinking-effort.md)** | Judge-Emitted Thinking Effort | System One judge emits `{tier, effort}` in one call; `effortSource` provenance headers. |
+| **[ADR-0012](docs/adr/0012-l2-decision-emitted-thinking-effort.md)** | L2-Decision-Emitted Thinking Effort | System One decision layer emits `{tier, effort}` in one call; `effortSource` provenance headers. |
 | **[ADR-0013](docs/adr/0013-failure-events-ledger.md)** | Failure Events Ledger | Upstream model call failure ledger, 10s storm coalescing, SQLite mirror, admin routes. |
 | **[ADR-0014](docs/adr/0014-entry-mode-autonomy.md)** | Entry-Mode Autonomy | Autonomy matrix: only `auto` family moves tier by judgment; forced tiers served verbatim. |
 

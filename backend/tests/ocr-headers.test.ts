@@ -125,10 +125,10 @@ describe('buildChatOcrHeaders — conditional Thinking-* / Variant', () => {
 
   it('6b. effortSource appends X-OCR-Thinking-Source only when known (ADR-0012)', () => {
     const withSource = buildChatOcrHeaders(
-      chatResult({ requestedEffort: 'high', actualEffort: 'high', effortSource: 'judge' }),
+      chatResult({ requestedEffort: 'high', actualEffort: 'high', effortSource: 'l2-decision' }),
       'auto'
     );
-    assert.equal(withSource['X-OCR-Thinking-Source'], 'judge');
+    assert.equal(withSource['X-OCR-Thinking-Source'], 'l2-decision');
     // No source knowledge → no header (pre-ADR executions stay byte-identical).
     const without = buildChatOcrHeaders(chatResult({ requestedEffort: 'high' }), 'auto');
     assert.equal('X-OCR-Thinking-Source' in without, false);

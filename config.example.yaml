@@ -17,8 +17,7 @@ opencode:
   # url: "http://127.0.0.1:49374"
   # password: "your-service-password"
 
-# Outbound proxy policy (Optional) — applies to upstream model calls, Layer2
-# judge, and catalog/logo sync. Loopback targets (localhost / 127.0.0.1 / ::1)
+# Outbound proxy policy (Optional) — applies to upstream model calls, Layer2 decision model, and catalog/logo sync. Loopback targets (localhost / 127.0.0.1 / ::1)
 # are NEVER proxied. Resolution: excludes (force direct) -> includes (non-empty:
 # only matches proxied) -> url -> direct. With nothing configured,
 # HTTP_PROXY/HTTPS_PROXY env vars still apply (Bun fetch behavior).
@@ -163,7 +162,7 @@ fallback:
   injectErrorContext: true          # Injects parsing error context to guide plus-tier model to fix in one shot
 
 # ==============================================================================
-# Layer 2 Classification (System One judge)
+# Layer 2 Classification (System One decision layer)
 # ==============================================================================
 classifier:
   # Layer 2: Dedicated context-aware decision model, called over the
@@ -171,19 +170,19 @@ classifier:
   # no vendor endpoint. ANY registered model id serves it: a `type: systemone`
   # provider passes through natively, a chat model via protocol conversion.
   layer2:
-    enabled: false                  # Enable Layer 2 dedicated judge model
+    enabled: false                  # Enable Layer 2 dedicated decision model
     model: "auto"                   # Registered model id; 'auto' = systemone.defaultModel
     timeoutMs: 5000                 # Decision timeout in ms (falls back to the plus baseline on timeout)
-    collectEnabled: false           # Dataset sampling: judged decisions -> data/layer2-decisions.jsonl for
+    collectEnabled: false           # Dataset sampling: sampled decisions -> data/layer2-decisions.jsonl for
                                     # future decision-model distillation. SINGLE-key gate (no capture master
                                     # involved), hot-applied on save. 64MB cap then writes pause with one warning.
                                     # state carries user conversation content — off by default.
                                     # (Moved from the retired classifier.layer2.decisionCapture — old key ignored.)
-    effortDecision: false           # ADR-0012: the judge's ONE call also answers "how deep to think"
+    effortDecision: false           # ADR-0012: the decision model's ONE call also answers "how deep to think"
                                     # (6-level ladder) for requests that OMIT reasoning_effort — the
                                     # gateway then decides {where, how deep}. Client-explicit values always
                                     # win; per-turn judgment, never ratcheted; feeds the experience table.
-                                    # Default OFF: a judge-decided level spends thinking tokens nobody
+                                    # Default OFF: a decision-decided level spends thinking tokens nobody
                                     # explicitly ordered. Every served level is attributed via the
                                     # X-OCR-Thinking-Source header and the trace's effortSource field.
 
@@ -192,7 +191,7 @@ classifier:
 # ==============================================================================
 # Persistent "this prompt routed well at X" memory + the repeated-prompt
 # escalation ladder. One entry per normalized prompt hash; writes come ONLY
-# from the whitelist (high-confidence judge turns, accepted retry corrections,
+# from the whitelist (high-confidence decision turns, accepted retry corrections,
 # console edits). Audit trail: <env>/data/routing-ledger.jsonl (hashes only).
 routeEntries:
   enabled: true                    # Master switch (lookup + writes + ledger)
@@ -221,13 +220,13 @@ requestCapture:
   systemone:
     enabled: true                   # System One surface MASTER — off silences BOTH legs at once:
                                     # the surface's own FULL-CHAIN capture below (client pair +
-                                    # upstream pair) AND the judge-call capture
+                                    # upstream pair) AND the decision-model capture
                                     # (sub). Needs requestCapture.enabled.
-    l2DecisionEnabled: true         # JUDGE-CALL capture sub-switch — effective only when systemone.enabled is
-                                    # true: the decision-model HTTP leg the Layer 2 judge
+    l2DecisionEnabled: true         # DECISION-MODEL capture sub-switch — effective only when systemone.enabled is
+                                    # true: the decision-model HTTP leg the Layer 2 decision model
                                     # fires inside a routed chat turn, recorded as upstream-direction
-                                    # events on the OUTER request's session/trace (purpose 'l2-judge').
-                                    # Adds the judge's own wire call; never re-filters client traffic.
+                                    # events on the OUTER request's session/trace (purpose 'l2-decision').
+                                    # Adds the decision model's own wire call; never re-filters client traffic.
                                     # NOT the dataset-sampling switch —
                                     # that is classifier.layer2.collectEnabled (a different setting).
 

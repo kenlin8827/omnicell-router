@@ -16,13 +16,13 @@ import type { ErrorCategory } from '../resilience/types.js';
  * history that no other plane answers. The trace table records executed
  * turns only (failed rounds have no turn to record), the circuit breaker
  * keeps state but no reason/timeline, and the log tail is unaggregated raw
- * text: a chain of 429s or a dead judge was invisible to every one of them.
+ * text: a chain of 429s or a dead decision layer was invisible to every one of them.
  *
  * One event per failed upstream MODEL CALL, from two emitters:
  *  - serving  — each diagnosed candidate failure inside the orchestrator's
  *               candidate pool (the classifier verdict is already in hand
  *               at that point)
- *  - judge    — the routing judge's wire call failing or blowing its
+ *  - decision layer    — the L2 decision layer's wire call failing or blowing its
  *               deadline (a late rejection after the deadline never
  *               double-records — the timeout already owned the observation)
  *
@@ -44,14 +44,14 @@ import type { ErrorCategory } from '../resilience/types.js';
  * exact rule. A repeat UPSERTs the same row by `id`.
  */
 
-export type FailureEventRole = 'serving' | 'judge' | 'probe';
+export type FailureEventRole = 'serving' | 'l2-decision' | 'probe';
 
 /**
  * `errorClass` vocabulary: the error classifier's category (the same words
  * the breaker rules and the /auto surface speak), extended by TIMEOUT for
- * the judge's deadline — an abandoned call has no HTTP status to classify.
+ * the decision layer's deadline — an abandoned call has no HTTP status to classify.
  * `probe` rows (health prober) share the table for one day an emitter
- * lands there; today only serving and judge write.
+ * lands there; today only serving and decision layer write.
  */
 export type FailureErrorClass = ErrorCategory | 'TIMEOUT';
 
@@ -74,7 +74,7 @@ export interface FailureEvent {
   message: string;
   role: FailureEventRole;
   /** Conversation session the failure belongs to — the serving pool's owning
-   *  turn, or (judge rows) the conversation whose routing the judge was
+   *  turn, or (decision layer rows) the conversation whose routing the decision layer was
    *  deciding, threaded by the orchestrator. Undefined for sessionless
    *  callers (direct evaluate() invocations, probes). */
   sessionId?: string;

@@ -48,7 +48,7 @@
 
 ### 5. 思考级别词汇
 
-`EFFORT_LADDER = none|low|medium|high|xhigh|max`——`indexOf` **就是**秩（`types/router.ts:31-52`）。`'none'` 是客户端可显式发送的**真实档位**，与字段省略不同；"5 档 + none 开关"的说法已过时（唯一例外：System One vendor 枚举无 `none`——legacy `true` 在其上映射到五个非 none 档）。诚实规则（`pickModelForEffort`，`registry.ts:484-544`）：永不升过所求（翻译→能力钳制→降档或无果）；超配池（支持集全部高于所求）不算匹配——宁可换路也不静默掉到 none；跨梯回落允许、降序、如实上报实际模型；`degraded` = 实供秩 < 所求秩（经 `X-OCR-Thinking-*` 呈现，ADR-0004；三个值——`requestedEffort` / `actualEffort` / `reasoningDegraded`——同时作为可选增量字段逐轮记入 `ExecutionTrace.execution`：控制台会话明细由此读取，字段引入之前的旧行反序列化为缺失）。所求的**作者**是一等事实：`effortSource`（`'client' | 'judge' | 'entry' | 'escalation' | 'default'`，ADR-0012）把网关注入的级别与客户端自己的字段区分开——网关的决定同样受这些诚实规则约束（裁判决定的级别被能力钳制时与客户端所求同样记为 `degraded`）。成员规则内联 `effortMap`（`map?.[ask] ?? ask`）在**能力钳制之前**作用于全部四站（选择、钉扎模型路径、逐候选拷贝、failover 后重算）；`none→实档` 映射连省略思考请求也生效。`defaultEffort` 仅在客户端省略字段时钉入——显式值含 `none` 永远优先。
+`EFFORT_LADDER = none|low|medium|high|xhigh|max`——`indexOf` **就是**秩（`types/router.ts:31-52`）。`'none'` 是客户端可显式发送的**真实档位**，与字段省略不同；"5 档 + none 开关"的说法已过时（唯一例外：System One vendor 枚举无 `none`——legacy `true` 在其上映射到五个非 none 档）。诚实规则（`pickModelForEffort`，`registry.ts:484-544`）：永不升过所求（翻译→能力钳制→降档或无果）；超配池（支持集全部高于所求）不算匹配——宁可换路也不静默掉到 none；跨梯回落允许、降序、如实上报实际模型；`degraded` = 实供秩 < 所求秩（经 `X-OCR-Thinking-*` 呈现，ADR-0004；三个值——`requestedEffort` / `actualEffort` / `reasoningDegraded`——同时作为可选增量字段逐轮记入 `ExecutionTrace.execution`：控制台会话明细由此读取，字段引入之前的旧行反序列化为缺失）。所求的**作者**是一等事实：`effortSource`（`'client' | 'l2-decision' | 'entry' | 'escalation' | 'default'`，ADR-0012）把网关注入的级别与客户端自己的字段区分开——网关的决定同样受这些诚实规则约束（决策层决定的级别被能力钳制时与客户端所求同样记为 `degraded`）。成员规则内联 `effortMap`（`map?.[ask] ?? ask`）在**能力钳制之前**作用于全部四站（选择、钉扎模型路径、逐候选拷贝、failover 后重算）；`none→实档` 映射连省略思考请求也生效。`defaultEffort` 仅在客户端省略字段时钉入——显式值含 `none` 永远优先。
 
 ## 后果
 

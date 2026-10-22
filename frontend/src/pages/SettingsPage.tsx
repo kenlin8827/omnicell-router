@@ -468,7 +468,7 @@ export const SettingsPage: React.FC = () => {
 
           {/* Section 5: System One decision surface — `systemone.defaultModel`
               backs /v1/systemone requests sent without a model, and doubles as
-              the L2 judge's fallback decision model (classifier.layer2.model
+              the L2 decision layer's fallback decision model (classifier.layer2.model
               unset). Deliberately NOT on /auto: it is a protocol-surface
               default, not a routing knob. */}
           <div id="settings-sysone" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>

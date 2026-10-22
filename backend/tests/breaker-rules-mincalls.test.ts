@@ -69,7 +69,7 @@ const NET_503: ErrorDiagnosis = {
 };
 
 describe('minCalls gate', () => {
-  it('rate is NOT judged below minCalls, and trips the moment it is reached', () => {
+  it('rate is NOT decided below minCalls, and trips the moment it is reached', () => {
     const { manager } = makeManager({
       trip: { failureRate: { windowSize: 4, minCalls: 2, failureRate: 0.5 } },
     });
@@ -89,7 +89,7 @@ describe('minCalls gate', () => {
       trip: { failureRate: { windowSize: 4, minCalls: 2, failureRate: 0.5 } },
     });
     manager.recordFailureScoped('p/x', NET_503, 'p'); // window [F] below the floor
-    manager.recordSuccess('p/x'); // window [F,S] — 50% would cross, but only failures judge
+    manager.recordSuccess('p/x'); // window [F,S] — 50% would cross, but only failures count toward it
 
     expect(manager.getSnapshot('p/x')?.state).toBe('CLOSED');
     manager.recordFailureScoped('p/x', NET_503, 'p'); // window [F,S,F] — 66% >= 50% at 3 samples
@@ -155,7 +155,7 @@ describe('minCalls clamps (sanitizer + resolver defense)', () => {
     expect(c.rules?.trip?.failureRate?.minCalls).toBe(6);
   });
 
-  it('negative minCalls clamps to 0 (rate judged from the first outcome)', () => {
+  it('negative minCalls clamps to 0 (rate decided from the first outcome)', () => {
     const c = cfg('circuitBreaker:\n  rules:\n    trip:\n      failureRate:\n        minCalls: -3\n');
     expect(c.rules?.trip?.failureRate?.minCalls).toBe(0);
   });

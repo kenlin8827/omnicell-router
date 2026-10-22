@@ -10,7 +10,7 @@ import { sortModelOptions } from '../lib/model-options';
 
 /**
  * /auto — Auto virtual-model routing (decision layer).
- * Aggregates: routing.mode, Layer 2 Judge + decision cache.
+ * Aggregates: routing.mode, Layer 2 Decision + decision cache.
  * Tier composition lives at /tiers; cache stats at /cache; hit traces at /traces.
  */
 export const AutoPage: React.FC = () => {
@@ -20,23 +20,23 @@ export const AutoPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [savedNotice, setSavedNotice] = useState(false);
   const [modelOptions, setModelOptions] = useState<{ value: string; label: string }[]>([]);
-  const [judgeOutcome, setJudgeOutcome] = useState<{ ts: number; modelId: string; ok: boolean; error?: string } | null>(null);
+  const [decisionOutcome, setDecisionOutcome] = useState<{ ts: number; modelId: string; ok: boolean; error?: string } | null>(null);
 
   useEffect(() => {
     api.getConfig().then(data => {
       setConfig(data);
       setLoading(false);
     }).catch(console.error);
-    // Registered physical models only (kind 'model') — the judge resolves ids
+    // Registered physical models only (kind 'model') — the decision layer resolves ids
     // through registry.getModel, so virtual aliases/combos/variants would
     // leave it permanently inert.
     api.listGatewayModels().then(ms =>
       setModelOptions(sortModelOptions(ms.filter(m => m.kind === 'model').map(m => ({ value: m.id, label: m.id }))))
     ).catch(() => {});
-    // Last judge wire attempt — a failure stays visible until a real attempt
+    // Last decision wire attempt — a failure stays visible until a real attempt
     // succeeds (cache hits never clear it). Light poll so the warning tracks
     // reality (e.g. a rate-limit reset makes it disappear on its own).
-    const poll = () => api.getJudgeOutcome().then(setJudgeOutcome).catch(() => {});
+    const poll = () => api.getDecisionOutcome().then(setDecisionOutcome).catch(() => {});
     poll();
     const t = setInterval(poll, 30_000);
     return () => clearInterval(t);
@@ -61,11 +61,11 @@ export const AutoPage: React.FC = () => {
     setConfig({ ...config, classifier: { ...config.classifier, layer2: { ...layer2, ...patch } } });
   const decisionCache = layer2.decisionCache || {};
   const setDecisionCache = (patch: any) => setLayer2({ decisionCache: { ...decisionCache, ...patch } });
-  // What the judge would actually call: its own model wins, else the System
+  // What the decision layer would actually call: its own model wins, else the System
   // One surface default (systemone.defaultModel, edited on the Settings page
-  // — read-only here). Both unset = the judge never answers (warns once,
+  // — read-only here). Both unset = the decision layer never answers (warns once,
   // every auto request serves the plus baseline, no experience is recorded).
-  const effectiveJudgeModel: string = (layer2.model || config.systemone?.defaultModel || '').trim();
+  const effectiveDecisionModel: string = (layer2.model || config.systemone?.defaultModel || '').trim();
 
   // Surface = global .sub-card; only the flex layout stays local.
   const cardStyle: React.CSSProperties = {
@@ -130,7 +130,7 @@ export const AutoPage: React.FC = () => {
             <div style={{ fontSize: '10px', color: 'var(--text-dim)' }}>{t('auto.modeHint')}</div>
           </div>
 
-          {/* Card B: Layer 2 Judge + decision cache */}
+          {/* Card B: Layer 2 Decision + decision cache */}
           <div className="sub-card" style={cardStyle}>
             <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent-violet)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Scale size={14} />
@@ -143,7 +143,7 @@ export const AutoPage: React.FC = () => {
                 onChange={v => setLayer2({ enabled: v })}
               />
             </label>
-            {/* Decision-model resolution (ADR-0001 cascade): a judge that
+            {/* Decision-model resolution (ADR-0001 cascade): a decision layer that
                 names nothing can never answer — classifier.layer2.model wins,
                 else systemone.defaultModel (configured on the Settings page —
                 it is the /v1/systemone surface default, not a routing knob),
@@ -189,25 +189,25 @@ export const AutoPage: React.FC = () => {
                 {t('auto.l2EffortDecisionHint')}
               </div>
             </div>
-            {(layer2.enabled ?? false) && effectiveJudgeModel && (
+            {(layer2.enabled ?? false) && effectiveDecisionModel && (
               <div style={{ fontSize: '11px', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '6px' }}>
                 <Check size={13} />
-                <span>{t('auto.l2ModelEffective', { model: effectiveJudgeModel })}</span>
+                <span>{t('auto.l2ModelEffective', { model: effectiveDecisionModel })}</span>
               </div>
             )}
-            {(layer2.enabled ?? false) && !effectiveJudgeModel && (
+            {(layer2.enabled ?? false) && !effectiveDecisionModel && (
               <div style={{ fontSize: '11px', color: 'var(--accent-amber)', display: 'flex', alignItems: 'center', gap: '6px', lineHeight: 1.6 }}>
                 <TriangleAlert size={13} style={{ flexShrink: 0 }} />
                 <span>{t('auto.l2ModelUnset')}</span>
               </div>
             )}
-            {(layer2.enabled ?? false) && judgeOutcome && !judgeOutcome.ok && (
+            {(layer2.enabled ?? false) && decisionOutcome && !decisionOutcome.ok && (
               <div style={{ fontSize: '11px', color: 'var(--accent-red, #f87171)', display: 'flex', alignItems: 'flex-start', gap: '6px', lineHeight: 1.6, padding: '6px 8px', borderRadius: 6, border: '1px solid color-mix(in srgb, var(--accent-red, #f87171) 30%, transparent)', background: 'color-mix(in srgb, var(--accent-red, #f87171) 8%, transparent)' }}>
                 <TriangleAlert size={13} style={{ flexShrink: 0, marginTop: 1 }} />
                 <span>
-                  {t('auto.judgeLastFail', {
-                    error: judgeOutcome.error || 'unknown',
-                    time: new Date(judgeOutcome.ts).toLocaleTimeString(),
+                  {t('auto.decisionLastFail', {
+                    error: decisionOutcome.error || 'unknown',
+                    time: new Date(decisionOutcome.ts).toLocaleTimeString(),
                   })}
                 </span>
               </div>

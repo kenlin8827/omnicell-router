@@ -231,8 +231,8 @@ export interface HttpExchangeEvent {
   proxy?: string;
   /**
    * Why this exchange happened when it is NOT the turn's ordinary client or
-   * candidate-execution traffic. `l2-judge` marks the HTTP leg the Layer 2
-   * judge fires inside a routed turn (upstream direction, attached to the
+   * candidate-execution traffic. `l2-decision` marks the HTTP leg the Layer 2
+   * decision layer fires inside a routed turn (upstream direction, attached to the
    * outer request's trace/session). Absent = ordinary traffic.
    */
   purpose?: ExchangePurpose;
@@ -256,7 +256,7 @@ export interface HttpExchangeEvent {
 }
 
 /** Label for capture events that carry a non-default call purpose. */
-export type ExchangePurpose = 'l2-judge';
+export type ExchangePurpose = 'l2-decision';
 
 /**
  * Stable identity of the client API key that authenticated a turn — the
@@ -281,25 +281,25 @@ export interface CaptureTurnSummary {
   upstreamRequest?: HttpExchangeEvent;
   upstreamResponse?: HttpExchangeEvent;
   /**
-   * The Layer 2 judge's HTTP leg when one fired inside this turn
-   * (`purpose: 'l2-judge'` upstream events). Kept in SEPARATE slots — never
+   * The Layer 2 decision layer's HTTP leg when one fired inside this turn
+   * (`purpose: 'l2-decision'` upstream events). Kept in SEPARATE slots — never
    * merged into the serving upstream pair — so the console can show both
-   * calls and tell them apart (the judge call precedes candidate execution
+   * calls and tell them apart (the decision layer call precedes candidate execution
    * and would otherwise be overwritten by the last-write-wins serving leg).
    */
-  judgeRequest?: HttpExchangeEvent;
-  judgeResponse?: HttpExchangeEvent;
+  decisionRequest?: HttpExchangeEvent;
+  decisionResponse?: HttpExchangeEvent;
   /** Any of the four events with an error field set; "first error wins". */
   error?: string;
-  /** Judge-leg cycle latency (judge-resp.ts - judge-req.ts). */
-  judgeLatencyMs?: number;
+  /** Decision-leg cycle latency (decision-resp.ts - decision-req.ts). */
+  decisionLatencyMs?: number;
   /** Gateway cycle latency (client-resp.ts - client-req.ts). */
   gatewayLatencyMs?: number;
   /** Upstream cycle latency (upstream-resp.ts - upstream-req.ts). */
   upstreamLatencyMs?: number;
-  /** TTFT / decode window for the judge leg (same derivation as upstream). */
-  judgeTtftMs?: number;
-  judgeGenMs?: number;
+  /** TTFT / decode window for the L2 decision leg (same derivation as upstream). */
+  decisionTtftMs?: number;
+  decisionGenMs?: number;
   /**
    * TTFT / decode window, derived from the response event's firstByteTs and
    * the matching request event's ts — the industry TTFT/TPS split, measured
@@ -495,9 +495,9 @@ export class CaptureRecorder {
   private enabled: boolean;
   // System One group (config tree mirrors requestCapture.systemone.{enabled,
   // l2DecisionEnabled}; both default true — the surface master silences BOTH
-  // legs, the sub-switch only ever adds the judge leg beneath it).
+  // legs, the sub-switch only ever adds the L2 decision leg beneath it).
   private systemoneEnabled: boolean;
-  private systemoneJudgeEnabled: boolean;
+  private systemoneDecisionEnabled: boolean;
   private retentionDays: number;
   private maxTotalBytes: number;
   private maxBodyBytes: number;
@@ -514,7 +514,7 @@ export class CaptureRecorder {
     this.enabled = config?.enabled ?? false;
     // Master/sub sub-tree defaults TRUE — it only matters under the master.
     this.systemoneEnabled = config?.systemone?.enabled ?? true;
-    this.systemoneJudgeEnabled = config?.systemone?.l2DecisionEnabled ?? true;
+    this.systemoneDecisionEnabled = config?.systemone?.l2DecisionEnabled ?? true;
     this.retentionDays = config?.retentionDays ?? 7;
     // Fallbacks mirror DEFAULT_CONFIG (2048 MB pool / 512 MB per session /
     // 16 MB per body) — a bare `new CaptureRecorder()` must not enforce
@@ -549,15 +549,15 @@ export class CaptureRecorder {
   }
 
   /**
-   * Judge-call gate — three-tier chain: requestCapture.enabled master ×
+   * Decision-call gate — three-tier chain: requestCapture.enabled master ×
    * requestCapture.systemone.enabled surface master ×
    * requestCapture.systemone.l2DecisionEnabled sub-switch (default true).
    * The sub-switch only ever ADDS the decision-model HTTP leg the Layer 2
-   * judge fires inside a routed turn (upstream-direction events on the OUTER
+   * decision layer fires inside a routed turn (upstream-direction events on the OUTER
    * request's capture identity); it cannot override the surface master.
    */
-  public isSystemoneJudgeCaptureEnabled(): boolean {
-    return this.enabled === true && this.systemoneEnabled === true && this.systemoneJudgeEnabled === true;
+  public isSystemoneDecisionCaptureEnabled(): boolean {
+    return this.enabled === true && this.systemoneEnabled === true && this.systemoneDecisionEnabled === true;
   }
 
   public getDir(): string {
@@ -578,7 +578,7 @@ export class CaptureRecorder {
   public applyConfig(cfg?: RequestCaptureConfig): void {
     this.enabled = cfg?.enabled ?? this.enabled;
     this.systemoneEnabled = cfg?.systemone?.enabled ?? this.systemoneEnabled;
-    this.systemoneJudgeEnabled = cfg?.systemone?.l2DecisionEnabled ?? this.systemoneJudgeEnabled;
+    this.systemoneDecisionEnabled = cfg?.systemone?.l2DecisionEnabled ?? this.systemoneDecisionEnabled;
     this.retentionDays = cfg?.retentionDays ?? this.retentionDays;
     this.maxTotalBytes = (cfg?.maxTotalMB ?? this.maxTotalBytes / (1024 * 1024)) * 1024 * 1024;
     this.maxBodyBytes = cfg?.maxBodyBytes ?? this.maxBodyBytes;
@@ -1140,7 +1140,7 @@ export class CaptureRecorder {
     const subset = events.filter(e => e.traceId === anchor.traceId);
     const turns = CaptureRecorder.groupEventsIntoTurns(subset);
     const turn = turns.find(t =>
-      [t.clientRequest, t.gatewayResponse, t.upstreamRequest, t.upstreamResponse, t.judgeRequest, t.judgeResponse].some(
+      [t.clientRequest, t.gatewayResponse, t.upstreamRequest, t.upstreamResponse, t.decisionRequest, t.decisionResponse].some(
         e => e?.id === eventId
       )
     );
@@ -1194,10 +1194,10 @@ export class CaptureRecorder {
         }
         if (!t) t = newTurn(ev); // response whose request fell outside the read window
         t.gatewayResponse = ev;
-      } else if (ev.purpose === 'l2-judge') {
-        // The L2 judge's HTTP leg shares the routed turn's trace but is NOT
+      } else if (ev.purpose === 'l2-decision') {
+        // The L2 decision layer's HTTP leg shares the routed turn's trace but is NOT
         // failover traffic — route it to dedicated slots so the serving
-        // leg's last-write-wins below never overwrites it. The judge fires
+        // leg's last-write-wins below never overwrites it. The decision layer fires
         // BEFORE candidate execution, so a plain upstream merge would erase
         // it and the console would only ever show one upstream call.
         t = activeByTrace.get(ev.traceId);
@@ -1205,8 +1205,8 @@ export class CaptureRecorder {
           t = newTurn(ev);
           activeByTrace.set(ev.traceId, t);
         }
-        if (ev.phase === 'request') t.judgeRequest = ev;
-        else t.judgeResponse = ev;
+        if (ev.phase === 'request') t.decisionRequest = ev;
+        else t.decisionResponse = ev;
       } else {
         // Upstream events attach to the trace's active turn. Failover hops
         // overwrite each other (last-write-wins) — the final attempt is
@@ -1230,8 +1230,8 @@ export class CaptureRecorder {
       if (t.upstreamRequest && t.upstreamResponse) {
         t.upstreamLatencyMs = t.upstreamResponse.ts - t.upstreamRequest.ts;
       }
-      if (t.judgeRequest && t.judgeResponse) {
-        t.judgeLatencyMs = t.judgeResponse.ts - t.judgeRequest.ts;
+      if (t.decisionRequest && t.decisionResponse) {
+        t.decisionLatencyMs = t.decisionResponse.ts - t.decisionRequest.ts;
       }
       // TTFT / decode window per leg: the response event's firstByteTs splits
       // the cycle latency into wait-for-first-token and decode phases. Derived
@@ -1254,10 +1254,10 @@ export class CaptureRecorder {
         t.upstreamTtftMs = d.ttft;
         t.upstreamGenMs = d.gen;
       }
-      if (t.judgeRequest && t.judgeResponse) {
-        const d = derive(t.judgeRequest, t.judgeResponse);
-        t.judgeTtftMs = d.ttft;
-        t.judgeGenMs = d.gen;
+      if (t.decisionRequest && t.decisionResponse) {
+        const d = derive(t.decisionRequest, t.decisionResponse);
+        t.decisionTtftMs = d.ttft;
+        t.decisionGenMs = d.gen;
       }
     }
     return all.sort((a, b) => {
