@@ -22,13 +22,13 @@ configure({ useWebWorkers: false });
  * a new machine a head start; data starts empty for
  * everything else (book-set intuition: export carries KNOWLEDGE, not state).
  *
- * Redaction (default): values at adminApiKey / providers[*].apiKey /
- * apiKeys[*].key become the sentinel '__REDACTED__' and their paths are
+ * Redaction (default): values at adminApiKey / apiKeys[*].key become the
+ * sentinel '__REDACTED__' and their paths are
  * listed in redactedPaths. `?secrets=include` exports real values instead —
  * an explicit operator decision, never the default.
  *
  * Import HARD guard — sentinel stripping: a redacted archive must not mint
- * providers with the literal apiKey "__REDACTED__", so parseAndValidate
+ * credentials with the literal apiKey "__REDACTED__", so parseAndValidate
  * STRIPS every sentinel-valued key entirely (recursively, regardless of
  * position — a hand-crafted archive cannot smuggle the sentinel in).
  * ------------------------------------------------------------------------- */
@@ -140,6 +140,15 @@ export function buildEnvelope(
   // (both modes — the hash belongs to THIS install's webauth chain).
   if (parsed.webAuth && typeof parsed.webAuth === 'object') delete parsed.webAuth.passwordHash;
 
+  // Retired hand-written def surfaces (ADR-0010) are dead config — strip them
+  // from the envelope entirely. Legacy files may still carry `providers:` /
+  // `systemoneUpstreams:` sections with plaintext API keys, and the redaction
+  // block below no longer knows those shapes; exporting them verbatim (even
+  // in a redacted archive) would leak those keys.
+  for (const retired of ['providers', 'models', 'systemoneUpstreams'] as const) {
+    if (parsed[retired] !== undefined) delete parsed[retired];
+  }
+
   const redactedPaths: string[] = [];
   if (!opts.includeSecrets) {
     // Type-agnostic: redact whenever the key is present with a NON-EMPTY
@@ -154,9 +163,6 @@ export function buildEnvelope(
       }
     };
     redact(parsed, 'adminApiKey', 'adminApiKey');
-    if (Array.isArray(parsed.providers)) {
-      parsed.providers.forEach((p: any, i: number) => redact(p, 'apiKey', `providers[${i}].apiKey`));
-    }
     if (Array.isArray(parsed.apiKeys)) {
       parsed.apiKeys.forEach((k: any, i: number) => redact(k, 'key', `apiKeys[${i}].key`));
     }

@@ -1,10 +1,12 @@
 /**
- * System One protocol wire types (TypeSafe Jev / Alibaba Bailian decision models).
+ * System One protocol wire types. Reference vendors speaking this wire
+ * (TypeSafe Jev, Alibaba Bailian decision models) may later be integrated as
+ * ordinary providers — the gateway itself only ever serves via conversion.
  *
  * A request evaluates one `state` against a map of typed `questions`
  * (`choice` / `noul` / `score`); the response carries one typed `answers`
  * entry per question id. The protocol never generates text — answers are
- * values plus probabilities (calibrated for native upstreams, best-effort
+ * values plus probabilities (best-effort estimates from chat conversion).
  * estimates for chat-model conversion, see convert.ts).
  *
  * Spec references:
@@ -31,7 +33,7 @@ export interface SystemoneRequest {
   /** Content to evaluate: plain text or structured (object/array) state. */
   state?: unknown;
   questions?: Record<string, SystemoneQuestion>;
-  /** Unknown top-level fields are preserved and forwarded to native upstreams. */
+  /** Unknown top-level fields are preserved and echoed back where possible. */
   [key: string]: unknown;
 }
 
@@ -65,10 +67,10 @@ export interface SystemoneScoreAnswer {
 export type SystemoneAnswer = SystemoneChoiceAnswer | SystemoneNoulAnswer | SystemoneScoreAnswer;
 
 export interface SystemoneResponse {
-  /** Model echo: upstream model id for native passthrough, registered id for converted. */
+  /** Model echo: the registered model id. */
   model: string;
   answers: Record<string, SystemoneAnswer>;
   usage?: { input_tokens?: number; output_tokens?: number; [key: string]: unknown };
-  /** Unknown fields from a native upstream are preserved (request_id, latency_ms, …). */
+  /** Unknown fields are preserved (request_id, latency_ms, …). */
   [key: string]: unknown;
 }

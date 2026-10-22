@@ -117,14 +117,12 @@ describe('Bare upstream-name resolution (explicit-model pass-through)', () => {
   // its FinOps assertions) stay untouched.
   const config = loadConfig();
   const registry = new ProviderRegistry(
-    {
-      ...config,
-      providers: [
-        { name: 'alpha', type: 'openai-compatible', baseUrl: 'https://alpha.example.com/v1', apiKey: 'x' },
-        { name: 'beta', type: 'openai-compatible', baseUrl: 'https://beta.example.com/v1', apiKey: 'x' },
-      ],
-    } as any,
-    true // mockMode = true
+    { ...config } as any,
+    true, // mockMode = true
+    [
+      { name: 'alpha', type: 'openai-compatible', baseUrl: 'https://alpha.example.com/v1', apiKey: 'x' },
+      { name: 'beta', type: 'openai-compatible', baseUrl: 'https://beta.example.com/v1', apiKey: 'x' },
+    ]
   );
   const tracker = new FinOpsTracker();
   const orchestrator = new PipelineOrchestrator(config, registry, tracker);

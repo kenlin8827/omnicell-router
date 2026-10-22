@@ -17,7 +17,6 @@ import { initProxyConfig } from '../utils/proxy.js';
 import { getOcrHomeDir } from '../cli/paths.js';
 import { getHeadroomSidecarStatus, startHeadroomSidecar, stopHeadroomSidecar } from '../compression/headroom-sidecar.js';
 import { APP_VERSION } from '../version.js';
-import { keyHashPrefix } from '../opencode/credentials/types.js';
 import { isSyncClientId } from '../opencode/credentials/sync.js';
 import { ensureCa } from '../forward-proxy/ca.js';
 import { getForwardProxyStatus } from '../forward-proxy/status.js';
@@ -531,7 +530,6 @@ interface QuotaPairRow {
 
 function buildQuotaPairRows(
   registry: ProviderRegistry,
-  cfg: RouterConfig,
   traceTracker: TraceTracker
 ): QuotaPairRow[] {
   const pairs = new Map<string, QuotaPairRow>();
@@ -546,9 +544,6 @@ function buildQuotaPairRows(
       quota: quotaViewFor(providerId, keyHashPrefix),
     });
   };
-  for (const p of cfg.providers || []) {
-    if (p.apiKey) add(p.name, keyHashPrefix(p.apiKey), p.name);
-  }
   for (const m of registry.getAllModels()) {
     for (const c of registry.getCredentialChain(m.provider) ?? []) add(m.provider, c.keyHashPrefix, c.label);
   }
@@ -900,12 +895,6 @@ export function registerConsoleRoutes(
     const clients = await getAllClientStatuses();
     const config = loadConfig();
 
-    const maskedProviders = (config.providers || []).map((p) => ({
-      ...p,
-      apiKey: p.apiKey ? `${p.apiKey.slice(0, 4)}••••${p.apiKey.slice(-4)}` : '',
-      rawKeyConfigured: Boolean(p.apiKey),
-    }));
-
     // Runtime credential directory (hash prefixes ONLY — the same display-safe
     // form pair snapshots already carry): lets the guardrails view name an
     // orphan breaker's owner (e.g. the inline config-baked chain head, which
@@ -918,9 +907,6 @@ export function registerConsoleRoutes(
       seenHashes.add(id);
       credentialHashes.push({ provider, keyHashPrefix });
     };
-    for (const p of config.providers || []) {
-      if (p.apiKey) pushHash(p.name, keyHashPrefix(p.apiKey));
-    }
     for (const m of registry.getAllModels()) {
       for (const c of registry.getCredentialChain(m.provider) ?? []) pushHash(m.provider, c.keyHashPrefix);
     }
@@ -943,7 +929,6 @@ export function registerConsoleRoutes(
       metrics,
       circuitBreakers: cbSummary,
       clients,
-      providers: maskedProviders,
       credentialHashes,
       registeredModelsCount: registry.getAllModels().length,
       // Inbound forward-proxy runtime status (see forward-proxy/status.ts) —
@@ -993,7 +978,7 @@ export function registerConsoleRoutes(
       enabled: prober !== undefined && (getRuntimeConfigRef() ?? loadConfig()).quota?.enabled !== false,
       coverage,
       rejected: plan?.rejected ?? [],
-      pairs: buildQuotaPairRows(registry, getRuntimeConfigRef() || loadConfig(), orchestrator.getTraceTracker()),
+      pairs: buildQuotaPairRows(registry, orchestrator.getTraceTracker()),
       events: getQuotaEventLog().list().slice(0, 100),
     };
   });
@@ -3318,7 +3303,10 @@ export function registerConsoleRoutes(
 
   // 9b. Effective model view for ONE key — what this key can actually see &
   //     use right now (mirrors the /v1/models policy filter + the execution
-  //     pool gate). Read-only: no key material in the response.
+  //     pool gate). Read-only: no key material in the response. Each row is
+  //     tagged with `kind` (same vocabulary as /api/admin/gateway-models:
+  //     auto/tier/combo/model/variant) so the console can badge the
+  //     addressable-id namespace a row belongs to.
   const handleGetKeyModels = async (req: any, reply: any) => {
     const { id } = req.params as { id: string };
     const key = listApiKeys(false).find((k) => k.id === id);
@@ -3326,8 +3314,17 @@ export function registerConsoleRoutes(
       return reply.status(404).send({ status: 'error', message: `API Key '${id}' not found` });
     }
     const policy = getModelAccessPolicy(key);
-    const registered = registry.getAllModels().map((m) => ({
+    type KeyModelRow = {
+      id: string;
+      kind: 'auto' | 'tier' | 'combo' | 'model' | 'variant';
+      provider: string;
+      tiers?: string[];
+      virtual: boolean;
+      allowed: boolean;
+    };
+    const registered: KeyModelRow[] = registry.getAllModels().map((m) => ({
       id: m.id,
+      kind: 'model' as const,
       provider: m.provider,
       // FULL membership set (pools are a per-tier projection — a model may
       // belong to several tiers): tierAllowed counts every pool the model can
@@ -3336,11 +3333,12 @@ export function registerConsoleRoutes(
       virtual: false,
       allowed: isModelAllowedInTiers(m.id, policy, registry.tiersOf(m)),
     }));
-    const tierAllowed = (t: string) => registered.some((m) => m.tiers.includes(t) && m.allowed);
+    const tierAllowed = (t: string) => registered.some((m) => m.tiers?.includes(t) && m.allowed);
     // Virtual auto* rows honor runtime viability (mirrors /v1/models): bare
     // `auto` needs an allowed model in ANY tier, auto-X in tier X.
     const virtual = ['auto', 'lite', 'plus', 'pro', 'ultra'].map((id) => ({
       id,
+      kind: (id === 'auto' ? 'auto' : 'tier') as 'auto' | 'tier',
       provider: 'onecast-router',
       tier: tierFromVirtualEntry(id),
       virtual: true,
@@ -3352,6 +3350,7 @@ export function registerConsoleRoutes(
     // entry gate; no silent composition change).
     const combos = registry.getCombos().map((c) => ({
       id: c.id,
+      kind: 'combo' as const,
       provider: 'onecast-router',
       tier: '',
       virtual: false,
@@ -3362,17 +3361,41 @@ export function registerConsoleRoutes(
     // from the base id.
     const variants = registry.getVariantExposures().map(({ id, base }) => ({
       id,
+      kind: 'variant' as const,
       provider: base.provider,
       tiers: registry.tiersOf(base) as string[],
       virtual: false,
       allowed: isModelAllowedInTiers(base.id, policy, registry.tiersOf(base)),
     }));
-    // Order mirrors /v1/models: virtual auto* → combos → registered → variants.
+    // Order mirrors the /v1/models wire body EXACTLY (the console list is a
+    // pure re-rendering of that payload — same rows, same sequence). The wire
+    // builds a provider map whose insertion order IS the display order: the
+    // onecast-router virtual provider (auto alias → tier aliases → combos)
+    // first, then concrete providers in registry first-appearance order, each
+    // carrying its concrete models then its variant siblings.
+    const providerRows = new Map<string, typeof registered>();
+    const ensureProviderRows = (pid: string) => {
+      let rows = providerRows.get(pid);
+      if (!rows) {
+        rows = [];
+        providerRows.set(pid, rows);
+      }
+      return rows;
+    };
+    for (const m of registry.getAllModels()) {
+      ensureProviderRows(m.provider).push(registered.find((r) => r.id === m.id)!);
+    }
+    for (const v of variants) ensureProviderRows(v.provider).push(v);
+    const models = [
+      ...virtual,
+      ...combos,
+      ...[...providerRows.entries()].filter(([pid]) => pid !== 'onecast-router').flatMap(([, rows]) => rows),
+    ];
     return {
       status: 'ok',
       mode: policy?.mode ?? 'none',
       policyModels: policy?.models ?? [],
-      models: [...virtual, ...combos, ...registered, ...variants],
+      models,
     };
   };
   app.get('/api/admin/api-keys/:id/models', handleGetKeyModels);

@@ -11,13 +11,22 @@ import { createFastifyTransport } from './surfaces/transport-fastify.js';
 import { dispatchSurface } from './surfaces/dispatch.js';
 import fastify, { FastifyInstance, LogController } from 'fastify';
 import cors from '@fastify/cors';
-import { RouterConfig } from './config/types.js';
+import { RouterConfig, ProviderConfig } from './config/types.js';
 import { PipelineOrchestrator } from './pipeline/orchestrator.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { FinOpsTracker } from './metrics/finops-tracker.js';
 import { APP_VERSION } from './version.js';
 import { TraceTracker, type ExecutionTrace } from './trace/tracker.js';
 import { setGatewayMetaDeps } from './cli/clients/model-meta.js';
+import {
+  comboEnvelope,
+  findMemberCatalogRecords,
+  modelsDevBlock,
+  tierAliasEnvelope,
+  virtualModelsDevBlock,
+  type VirtualEnvelope,
+} from './providers/virtual-meta.js';
+import { modelSupportsEfforts } from './types/router.js';
 import type { TripScope } from './resilience/types.js';
 import type { CaptureKeyIdentity } from './capture/recorder.js';
 
@@ -208,7 +217,10 @@ export function createServer(
   config: RouterConfig,
   mockMode = false,
   customRegistry?: ProviderRegistry,
-  customOrchestrator?: PipelineOrchestrator
+  customOrchestrator?: PipelineOrchestrator,
+  /** Extra provider configs for the bootstrapped registry (test seam only —
+   *  production chat providers enter via `registerProvider` post-boot). */
+  providerConfigs: ProviderConfig[] = []
 ): {
   app: FastifyInstance;
   orchestrator: PipelineOrchestrator;
@@ -233,7 +245,7 @@ export function createServer(
     req.log.error(err, 'request errored');
   });
 
-  const registry = customRegistry || new ProviderRegistry(config, mockMode);
+  const registry = customRegistry || new ProviderRegistry(config, mockMode, providerConfigs);
   // Client-hook metadata seam: adapters that write rich model records (pi's
   // models.json) resolve per-model truth (effort support, pricing, limits)
   // from the live registry + catalog. Re-injected per createServer — last
@@ -293,9 +305,12 @@ export function createServer(
     return { activeKeys, adminKey, inboundGraceMs };
   };
 
-  /** /v1/models + /v1/models/:model — the anonymous-tolerant models surface. */
+  /** /v1/models + /v1/models/:model + /v1/catalog.json — the anonymous-tolerant
+   *  models surfaces (optional auth: a VALID key narrows the listing, an
+   *  absent/invalid one keeps the legacy behavior of its route). */
   const isModelsSurface = (path: string | null): boolean =>
-    path !== null && (path === '/v1/models' || path.startsWith('/v1/models/'));
+    path !== null &&
+    (path === '/v1/models' || path.startsWith('/v1/models/') || path === '/v1/catalog.json');
 
   /**
    * Inbound limits meter exactly the protocol surfaces — the routePath set of
@@ -783,89 +798,188 @@ export function createServer(
     return { status: 'ok', provider: providerId, credential, cleared };
   });
 
-  // 2. OpenAI-compatible Models list
-  // Optional-auth visibility: with a VALID client key the listing is filtered
-  // through that key's model-access policy; anonymous/invalid tokens keep the
-  // legacy full listing (probe compatibility, keyless deployments).
-  app.get('/v1/models', async (req, reply) => {
-    // Policy comes from the preHandler-attached authInfo (undefined when
-    // anonymous → legacy full listing; 401 for invalid keys already handled).
+  // 2. Model catalog — TWO shapes over the SAME filtered data:
+  //
+  // GET /v1/models — OpenAI-compatible models.list ({object:'list',
+  // data:[{id, object, created, owned_by, metadata}]}): the surface generic
+  // OpenAI SDKs and chat clients hard-code. Row ids are the gateway-visible
+  // modelRef vocabulary (registered id / variant sibling id / auto* alias /
+  // combo id); the full models.dev capability block (plus the namespaced
+  // `ocr` routing extensions) rides under each row's `metadata`.
+  //
+  // GET /v1/catalog.json — models.dev-shaped provider map (aligned with
+  // https://models.opencode.ai/api.json): body keyed by provider id, each
+  // provider carrying `models` as a model-id keyed map of capability blocks
+  // (snake_case: reasoning/tool_call/modalities/limit/cost/reasoning_options).
+  // Consumers that want provider-grouped capability data (opencode-style
+  // clients) read this instead. OCR routing extensions (kind/tier/selection/
+  // members/parent/variant) live under each model's `ocr` key:
+  //  - concrete models: verbatim passthrough of the catalog record's
+  //    capability fields;
+  //  - virtual refs (auto*/combos): the member envelope — safe-min limits,
+  //    intersection capability flags, leader cost, full effort ladder (the
+  //    gateway clamps per request and reports truth via X-OCR-Thinking-*).
+  app.get('/v1/models', async (req) => {
     const policy = getModelAccessPolicy((req as any).authInfo?.keyConfig);
-    const virtualModels = [
-      { id: 'auto', object: 'model', created: 1700000000, owned_by: 'onecast-router', description: 'Intelligent multi-tier cascading auto-router (Recommended Default)' },
-      { id: 'lite', object: 'model', created: 1700000000, owned_by: 'onecast-router', description: 'Force Lite & low-cost layer (~$0.2/M)' },
-      { id: 'plus', object: 'model', created: 1700000000, owned_by: 'onecast-router', description: 'Force Plus workhorse layer (~$3-$15/M)' },
-      { id: 'pro', object: 'model', created: 1700000000, owned_by: 'onecast-router', description: 'Force Pro thinking-effort specialist tier (~$3-$8/M)' },
-      { id: 'ultra', object: 'model', created: 1700000000, owned_by: 'onecast-router', description: 'Force Ultra frontier-tier layer (~$60+/M)' },
-    ];
+    const providers = await catalogProviders(policy);
+    const data = Object.entries(providers).flatMap(([pid, p]) =>
+      Object.entries(p.models as Record<string, any>).map(([mid, block]) => {
+        const ocr = block.ocr as any;
+        // Addressable id: virtual aliases/combos are the map key; concrete
+        // models use the registered id (`ocr.model`); variants reconstruct
+        // the registered sibling id (`parent` + `-variant`).
+        const id = ocr?.kind === 'auto' || ocr?.kind === 'tier' || ocr?.kind === 'combo'
+          ? mid
+          : ocr?.parent && ocr?.variant
+            ? `${ocr.parent}-${ocr.variant.id}`
+            : (ocr?.model ?? mid);
+        return {
+          id,
+          object: 'model',
+          created: 1700000000,
+          owned_by: pid,
+          metadata: block,
+        };
+      })
+    );
+    return { object: 'list', data };
+  });
 
-    const registered = registry.getAllModels().map(m => ({
-      id: m.id,
-      object: 'model',
-      created: 1700000000,
-      owned_by: m.provider,
-      metadata: {
-        tier: m.tier,
-        pricing: m.pricing,
-      },
-    }));
+  app.get('/v1/catalog.json', async (req) =>
+    catalogProviders(getModelAccessPolicy((req as any).authInfo?.keyConfig))
+  );
 
-    // Custom model combos: user-composed virtual models (config.combos),
-    // routable exactly like the virtual tier aliases above.
-    const comboModels = registry.getCombos().map(c => ({
+  const catalogProviders = async (policy: ReturnType<typeof getModelAccessPolicy>) => {
+  const listCatalog = async () => (await import('./opencode/catalog/repository.js')).catalogRepository.list();
+  // One snapshot per request: each list() call rereads config.yaml from disk,
+  // so the anonymous /v1/models + /v1/catalog.json surfaces must not call it
+  // per-consumer. The snapshot also keeps every consumer within a request on
+  // the same catalog generation.
+  const catalogOnce = await listCatalog();
+  const listCatalogOnce = async () => catalogOnce;
+
+  // ── Virtual provider ('onecast-router'): auto*/combos/variants ──
+  const virtualModel = async (envPromise: Promise<VirtualEnvelope>, ocr: Record<string, unknown>) => {
+    const env = await envPromise;
+    return {
+      ...(env.memberCount > 0 ? { memberCount: env.memberCount } : {}),
+      ...virtualModelsDevBlock(env),
+      ocr: { ...ocr, ...(env.memberCount > 0 ? { memberCount: env.memberCount } : {}) },
+    };
+  };
+  const [autoM, liteM, plusM, proM, ultraM] = await Promise.all(
+    ['auto', 'lite', 'plus', 'pro', 'ultra'].map((alias) =>
+      virtualModel(tierAliasEnvelope(registry, listCatalogOnce, alias), {
+        kind: alias === 'auto' ? 'auto' : 'tier',
+        ...(alias !== 'auto' ? { tier: alias } : {}),
+      })
+    )
+  );
+  const virtualModels: Record<string, unknown> = {
+    auto: { id: 'auto', description: 'Intelligent multi-tier cascading auto-router (Recommended Default)', ...autoM },
+    lite: { id: 'lite', description: 'Force Lite & low-cost layer (~$0.2/M)', ...liteM },
+    plus: { id: 'plus', description: 'Force Plus workhorse layer (~$3-$15/M)', ...plusM },
+    pro: { id: 'pro', description: 'Force Pro thinking-effort specialist tier (~$3-$8/M)', ...proM },
+    ultra: { id: 'ultra', description: 'Force Ultra frontier-tier layer (~$60+/M)', ...ultraM },
+  };
+  for (const c of registry.getCombos()) {
+    virtualModels[c.id] = {
       id: c.id,
-      object: 'model',
-      created: 1700000000,
-      owned_by: 'onecast-router',
       description: `Custom model combo (${c.models.length} members, ${c.selection || 'priority'} selection)`,
-    }));
+      ...(await virtualModel(comboEnvelope(registry, listCatalogOnce, c), {
+        kind: 'combo',
+        selection: c.selection || 'priority',
+        members: c.models.map((raw) => (typeof raw === 'string' ? raw : raw?.id)).filter(Boolean),
+      })),
+    };
+  }
 
-    // Model variant siblings: `base-variant` ids that resolve to the base
-    // model with the variant's reasoning effort pinned (registry-built from
-    // boot-direct variants — see providers/registry.ts resolveVariantRef).
-    const variantModels = registry.getVariantExposures().map(({ id, base, variant }) => ({
-      id,
-      object: 'model',
-      created: 1700000000,
-      owned_by: base.provider,
-      description: `Variant '${variant.id}' of ${base.id} (reasoningEffort=${variant.reasoningEffort})`,
-      metadata: {
+  // Provider map insertion order is the display order (JSON object keys are
+  // ordered): the VIRTUAL provider first — its models are auto alias →
+  // tier aliases (ladder order) → combos — then concrete providers in
+  // registry order, variants appended after their provider's base models.
+  const providers: Record<string, any> = {
+    'onecast-router': {
+      id: 'onecast-router',
+      name: 'OneCastRouter',
+      models: virtualModels,
+    },
+  };
+
+  // ── Concrete providers: catalog passthrough, registry fallback ──
+  const allModels = registry.getAllModels();
+  const catById = new Map(
+    (await findMemberCatalogRecords(allModels.map((m) => m.id), listCatalogOnce)).records.map((c) => [c.id, c])
+  );
+  const CATALOG_PROVIDER_NAME = new Map(catalogOnce.map((p) => [p.id, p.name]));
+  const ensureProvider = (id: string) =>
+    (providers[id] ??= { id, ...(CATALOG_PROVIDER_NAME.get(id) ? { name: CATALOG_PROVIDER_NAME.get(id) } : {}), models: {} });
+  for (const m of allModels) {
+    const provider = ensureProvider(m.provider);
+    const cat = catById.get(m.id);
+    provider.models[m.upstreamModel] = {
+      id: m.upstreamModel,
+      ...(cat
+        ? modelsDevBlock(cat)
+        : {
+            reasoning: modelSupportsEfforts(m.supportedReasoningEfforts, m.supportsReasoningEffort),
+            cost: { input: m.pricing.input, output: m.pricing.output, cache_read: m.pricing.cacheRead, ...(m.pricing.cacheWrite !== undefined ? { cache_write: m.pricing.cacheWrite } : {}) },
+          }),
+      ocr: { tier: m.tier, model: m.id },
+    };
+  }
+
+  // Variant siblings live under their base model's provider as separate
+  // model entries (`<upstream>-<variant>` keys): the variant id pins the
+  // effort, so the block declares reasoning:false with the single pinned tier.
+  for (const { base, variant } of registry.getVariantExposures()) {
+    const upstreamBase = base.id.includes('/') ? base.id.split('/').slice(1).join('/') : base.id;
+    const provider = ensureProvider(base.provider);
+    const cat = catById.get(base.id);
+    provider.models[`${upstreamBase}-${variant.id}`] = {
+      id: `${upstreamBase}-${variant.id}`,
+      ...(cat ? modelsDevBlock(cat) : {}),
+      reasoning: false,
+      reasoning_options: [{ type: 'effort', values: [variant.reasoningEffort] }],
+      ocr: {
         tier: base.tier,
-        pricing: base.pricing,
+        kind: 'variant',
         parent: base.id,
         variant: { id: variant.id, reasoningEffort: variant.reasoningEffort },
       },
-    }));
-
-    let data = [...virtualModels, ...comboModels, ...registered, ...variantModels];
-    if (policy) {
-      // Variant ids inherit their base model's verdict via metadata.parent
-      // (checked first — a base provider could theoretically be named
-      // 'onecast-router'). Virtual auto* ids stay visible only while at least
-      // one registered model is routable under the policy (otherwise they are
-      // dead entries). Combos pass only when EVERY member is allowed —
-      // mirrors the inference entry gate (no silent composition change).
-      const all = registry.getAllModels();
-      const tierAllowed = (t: string) => all.some((m) => m.tier === t && isModelAllowed(m.id, policy, m.tier));
-      data = data.filter((m: any) => {
-        if (m.metadata?.parent) return isModelAllowed(m.metadata.parent, policy, m.metadata?.tier);
-        if (registry.isCombo(m.id)) {
-          return registry.resolveCombo(m.id).every((mem) => isModelAllowed(mem.id, policy, mem.tier));
-        }
-        if (m.owned_by === 'onecast-router') {
-          // Virtual auto* rows honor runtime viability: bare `auto` needs an
-          // allowed model in ANY tier, auto-X in tier X — in BOTH modes.
-          return isAutoEntryUsable(m.id, policy, tierAllowed);
-        }
-        return isModelAllowed(m.id, policy, m.metadata?.tier);
-      });
-    }
-
-    return {
-      object: 'list',
-      data,
     };
-  });
+  }
+
+  if (policy) {
+    // Same verdicts as before, applied per model entry; providers whose
+    // entire model map filters out are dropped (a provider key with an
+    // empty models map would be a dead catalog entry).
+    const tierAllowed = (t: string) => allModels.some((m) => m.tier === t && isModelAllowed(m.id, policy, m.tier));
+    const verdict = (id: string, ocr: any): boolean => {
+      if (ocr?.parent) return isModelAllowed(ocr.parent, policy, ocr?.tier);
+      if (ocr?.kind === 'combo') {
+        return registry.resolveCombo(id).every((mem: any) => isModelAllowed(mem.id, policy, mem.tier));
+      }
+      if (ocr?.kind === 'auto' || ocr?.kind === 'tier') {
+        // Virtual auto* entries honor runtime viability: bare `auto` needs an
+        // allowed model in ANY tier, tier aliases in their tier — in BOTH modes.
+        return isAutoEntryUsable(id, policy, tierAllowed);
+      }
+      // Concrete entry — the model key is the upstream name; the policy
+      // vocabulary is the full registered id (ocr.model).
+      return isModelAllowed(ocr?.model ?? id, policy, ocr?.tier);
+    };
+    for (const pid of Object.keys(providers)) {
+      const models = providers[pid].models as Record<string, any>;
+      for (const mid of Object.keys(models)) {
+        if (!verdict(mid, models[mid].ocr)) delete models[mid];
+      }
+      if (Object.keys(models).length === 0) delete providers[pid];
+    }
+  }
+
+  return providers;
+  };
 
   // 2B. Single model lookup (OpenAI standard)
   app.get('/v1/models/:model', async (req, reply) => {

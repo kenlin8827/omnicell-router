@@ -37,7 +37,7 @@ const flush = () => new Promise((r) => setTimeout(r, 50)); // appendFile is fire
 const sample = {
   model: 'p/jev',
   provider: 'p',
-  upstreamKind: 'native' as const,
+  upstreamKind: 'converted' as const,
   state: 'user: hi',
   tier: 'plus',
   confidence: 0.5,

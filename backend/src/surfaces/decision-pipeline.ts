@@ -36,8 +36,8 @@ import type { TransportContext } from './types.js';
  * so the OFF path still produces zero events, byte-identical to the
  * structural capture exemption.
  * The FULL CHAIN is emitted: the client exchange AND — through the ctx passed
- * to the executor — the upstream leg (native passthrough or synthesized
- * conversion call). FinOps rows and trace records stay excluded.
+ * to the executor — the synthesized conversion call (the upstream leg). FinOps
+ * rows and trace records stay excluded.
  */
 export async function runDecisionSurface(
   t: TransportContext,
@@ -169,8 +169,8 @@ export async function runDecisionSurface(
   // gate is off: zero events, byte-identical to the pre-capture path. The
   // client leg covers the gateway's OWN inbound exchange; the SAME identity
   // (trace/session) also seeds an UpstreamEventContext passed to the
-  // executor, so the provider leg (native passthrough or converted chat
-  // call) emits its request/response pair too — the full chain is visible
+  // executor, so the provider leg (the synthesized conversion chat call)
+  // emits its request/response pair too — the full chain is visible
   // on one turn. No `purpose`: within this surface's own turn the upstream
   // events are unambiguous (unlike the judge leg inside a CHAT turn).
   // The gateway-response event is finalized by the transport's terminal send
@@ -256,8 +256,8 @@ export async function runDecisionSurface(
 
     // Terminal usage facts on BOTH subjects (mirrors the chat wire's block).
     // Protocol usage: the converted path always maps prompt/completion into
-    // input/output_tokens (convert.ts); a native upstream carries it only
-    // when it publishes one — absent usage records tokens/cost NOTHING for
+    // input/output_tokens (convert.ts); an upstream that publishes no usage
+    // records tokens/cost NOTHING for
     // this decision (the request slot was already consumed; same honesty as
     // failed chat turns). costUsd approximation: this wire has no cached/
     // reasoning split, so input bills at FULL input price — a deliberate

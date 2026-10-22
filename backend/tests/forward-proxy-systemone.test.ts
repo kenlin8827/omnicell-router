@@ -2,8 +2,8 @@
  * Step-4 MITM-leg suite for the System One decision surface.
  *
  * Pins:
- *  a) the MITM leg serves /v1/systemone end-to-end — fake NATIVE upstream on
- *     a real 127.0.0.1 listener, typed answers passthrough verbatim, exactly
+ *  a) the MITM leg serves /v1/systemone end-to-end — fake chat upstream on
+ *     a real 127.0.0.1 listener, converted typed answers, exactly
  *     the 3 X-OCR decision keys on the wire;
  *  b) the CAPTURE EXPLICIT-OFF GUARD — with requestCapture.enabled ON but
  *     requestCapture.systemone.enabled (the System One surface MASTER)
@@ -14,7 +14,7 @@
  *  c) the capture opt-in — with systemone.enabled true (nested default;
  *     hot-applied here), each leg emits the FULL CHAIN: one paired client
  *     request/response event AND one paired upstream request/response event
- *     (the native passthrough call — absolute-form line with host, span-
+ *     (the converted decision call — absolute-form line with host, span-
  *     paired, same trace/session, provider credential sanitized; no purpose
  *     tag), while a gate-denied 400 still emits ZERO (gates precede emission);
  *  d) per-surface error mapping on the MITM leg — the systemone envelope for
@@ -22,7 +22,7 @@
  *     key cannot use serves fine through the proxy).
  *
  * Harness patterns borrowed: systemone.test.ts (sandbox cwd + bun `serve`
- * fake native upstream + real createServer/ProviderRegistry),
+ * fake chat upstream + real createServer/ProviderRegistry),
  * forward-proxy.test.ts (createProxyInterceptor over a live 127.0.0.1 http
  * server — the stub-inner-server route; the full CONNECT-MITM chain is
  * already covered there for the plumbing itself), capture-http.test.ts
@@ -61,18 +61,25 @@ afterAll(() => {
   }
 });
 
-function makeConfig(providers: any[], models: any[], extra: Partial<RouterConfig> = {}): RouterConfig {
+const CHAT_PROVIDERS = new WeakMap<object, any[]>();
+
+function makeConfig(chatProviders: any[], models: any[], extra: Partial<RouterConfig> = {}): RouterConfig {
   const base = loadConfig();
-  return {
+  const config = {
     ...base,
     apiKeys: [],
-    providers,
     models,
     requestCapture: { ...base.requestCapture, enabled: false },
     session: { ...base.session, enabled: false },
     tracePersist: { ...base.tracePersist, enabled: false },
     ...extra,
   } as RouterConfig;
+  CHAT_PROVIDERS.set(config, chatProviders);
+  return config;
+}
+
+function bootServer(config: RouterConfig, mockMode = false) {
+  return createServer(config, mockMode, undefined, undefined, CHAT_PROVIDERS.get(config) ?? []);
 }
 
 const REQ = {
@@ -87,32 +94,37 @@ const REQ = {
   },
 } as any;
 
-// Fixed typed answers the fake native upstream returns — the decision wire
-// passes them through verbatim (native path, no synthesis).
-const NATIVE_ANSWERS = {
-  model: 'jev-test',
+// Fixed decision answers the fake chat upstream returns (wrapped in a chat
+// completion; the decision surface synthesizes the typed answers from it).
+const DECISION_ANSWERS = JSON.stringify({
   answers: {
-    department: { type: 'choice', choice: 'billing', probabilities: { billing: 0.94, technical: 0.06 }, confidence: 0.88 },
-    escalate: { type: 'noul', noul: 0.72 },
+    department: { choice: 'billing', probabilities: { billing: 0.94, technical: 0.06 }, confidence: 0.88 },
+    escalate: { noul: 0.72 },
   },
-  usage: { input_tokens: 133, output_tokens: 0 },
-};
+});
 
-/** Fake native System One upstream on a real 127.0.0.1 listener. */
-function startNativeUpstream(received: any[]): ReturnType<typeof serve> {
+/** Fake chat upstream serving the decision JSON on a real 127.0.0.1 listener. */
+function startChatUpstream(received: any[]): ReturnType<typeof serve> {
   return serve({
     port: 0,
     hostname: '127.0.0.1',
     async fetch(req) {
       received.push(await req.json());
-      return Response.json(NATIVE_ANSWERS);
+      return Response.json({
+        id: 'chatcmpl-decision',
+        object: 'chat.completion',
+        created: 1700000000,
+        model: 'jev-latest',
+        choices: [{ index: 0, message: { role: 'assistant', content: DECISION_ANSWERS }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 133, completion_tokens: 10, total_tokens: 143 },
+      });
     },
   });
 }
 
-function nativeProviderConfig(port: number): { providers: any[]; models: any[] } {
+function chatProviderConfig(port: number): { providers: any[]; models: any[] } {
   return {
-    providers: [{ name: 'native-test', type: 'systemone', baseUrl: `http://127.0.0.1:${port}`, apiKey: 'sk-test' }],
+    providers: [{ name: 'native-test', type: 'openai-compatible', baseUrl: `http://127.0.0.1:${port}`, apiKey: 'sk-test' }],
     models: [
       {
         id: 'native-test/jev',
@@ -151,12 +163,12 @@ function xOcrHeaderNames(res: Response): string[] {
 const SYSTEMONE_XOCR_KEYS = ['x-ocr-latency-ms', 'x-ocr-model', 'x-ocr-systemone-upstream'];
 
 describe('systemone over the MITM leg', () => {
-  test('native passthrough serves verbatim typed answers with exactly the 3 X-OCR keys', async () => {
+  test('converted decision serves typed answers with exactly the 3 X-OCR keys', async () => {
     const received: any[] = [];
-    const upstream = startNativeUpstream(received);
+    const upstream = startChatUpstream(received);
     try {
-      const { providers, models } = nativeProviderConfig(upstream.port);
-      const { orchestrator } = createServer(makeConfig(providers, models));
+      const { providers, models } = chatProviderConfig(upstream.port);
+      const { orchestrator } = bootServer(makeConfig(providers, models));
       const mitm = await mitmServer(orchestrator);
       try {
         const res = await fetch(`http://127.0.0.1:${mitm.port}/v1/systemone`, {
@@ -168,19 +180,21 @@ describe('systemone over the MITM leg', () => {
         // Golden key set: exactly the 3 decision-surface headers, nothing else.
         expect(xOcrHeaderNames(res)).toEqual(SYSTEMONE_XOCR_KEYS);
         expect(res.headers.get('x-ocr-model')).toBe('native-test/jev');
-        expect(res.headers.get('x-ocr-systemone-upstream')).toBe('native');
+        expect(res.headers.get('x-ocr-systemone-upstream')).toBe('converted');
         expect(res.headers.get('x-ocr-latency-ms')).toMatch(/^\d+$/);
 
-        // Verbatim passthrough of the native upstream's typed answers.
+        // Synthesized typed answers (converted path — no native passthrough).
         const body: any = await res.json();
-        expect(body).toEqual(NATIVE_ANSWERS);
+        expect(body.answers.department.choice).toBe('billing');
+        expect(body.answers.department.probabilities).toEqual({ billing: 0.94, technical: 0.06 });
+        expect(body.answers.escalate.noul).toBe(0.72);
 
-        // The upstream saw the client state/questions with the model field
-        // swapped to the upstream id (native contract).
+        // The upstream saw the decision chat call (converted contract): the
+        // STATE/QUESTIONS payload rides inside the user message.
         expect(received.length).toBe(1);
         expect(received[0].model).toBe('jev-latest');
-        expect(received[0].state).toEqual(REQ.state);
-        expect(received[0].questions.department.type).toBe('choice');
+        expect(received[0].messages[0].role).toBe('system');
+        expect(received[0].messages[1].content).toContain('T-9001');
       } finally {
         mitm.close();
       }
@@ -191,10 +205,10 @@ describe('systemone over the MITM leg', () => {
 
   test('per-surface error mapping: invalid bodies get the systemone envelope', async () => {
     const received: any[] = [];
-    const upstream = startNativeUpstream(received);
+    const upstream = startChatUpstream(received);
     try {
-      const { providers, models } = nativeProviderConfig(upstream.port);
-      const { orchestrator } = createServer(makeConfig(providers, models));
+      const { providers, models } = chatProviderConfig(upstream.port);
+      const { orchestrator } = bootServer(makeConfig(providers, models));
       const mitm = await mitmServer(orchestrator);
       try {
         // Structurally invalid (but valid JSON): validateSystemoneRequest 400
@@ -232,9 +246,9 @@ describe('systemone over the MITM leg', () => {
 
   test("'exempt' MITM gate never 403s — a key-denied model still serves over the proxy", async () => {
     const received: any[] = [];
-    const upstream = startNativeUpstream(received);
+    const upstream = startChatUpstream(received);
     try {
-      const { providers, models } = nativeProviderConfig(upstream.port);
+      const { providers, models } = chatProviderConfig(upstream.port);
       const config = makeConfig(providers, models);
       // A deny-mode key that cannot use native-test/jev: the Fastify leg MUST
       // 403 (proving the model really is denied for a 'key' gate), while the
@@ -242,7 +256,7 @@ describe('systemone over the MITM leg', () => {
       config.apiKeys = [
         { name: 'no-jev', key: 'sk-no-jev', modelAccess: { mode: 'deny', models: ['native-test/jev'] } },
       ] as any;
-      const { app, orchestrator } = createServer(config);
+      const { app, orchestrator } = bootServer(config);
       const mitm = await mitmServer(orchestrator);
       try {
         const viaKey = await app.inject({
@@ -260,7 +274,7 @@ describe('systemone over the MITM leg', () => {
           body: JSON.stringify({ ...REQ, model: 'native-test/jev' }),
         });
         expect(viaMitm.status).toBe(200); // gate no-op, never a 403
-        expect(viaMitm.headers.get('x-ocr-systemone-upstream')).toBe('native');
+        expect(viaMitm.headers.get('x-ocr-systemone-upstream')).toBe('converted');
         await viaMitm.json();
       } finally {
         mitm.close();
@@ -320,21 +334,21 @@ describe('systemone capture explicit-OFF guard (requestCapture.systemone.enabled
   test('requestCapture.enabled ON with systemone.enabled FALSE: zero http-exchange events on disk for BOTH systemone legs', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-fp-sys-cap-'));
     const received: any[] = [];
-    const upstream = startNativeUpstream(received);
+    const upstream = startChatUpstream(received);
     try {
-      const { providers, models } = nativeProviderConfig(upstream.port);
+      const { providers, models } = chatProviderConfig(upstream.port);
       const stamp = Date.now();
       const CHAT_MARKER = `SYSCTL-CHAT-${stamp}`;
       const FASTIFY_MARKER = `SYSCTL-FASTIFY-${stamp}`;
       const MITM_MARKER = `SYSCTL-MITM-${stamp}`;
-      // mockMode=true only matters for the chat control: execute resolves to
-      // the in-registry mock executor, so the dummy chat provider's dead
-      // baseUrl is never dialled. The decision legs bypass
-      // orchestrator.process entirely — their native fetch is real regardless.
+      // The decision conversion is a REAL registry.execute call now (no native
+      // limb to bypass it), so every provider dials the fake upstream for
+      // real — chat-dummy rides the same createServer provider-config seam
+      // (test-only; production chat providers enter via registerProvider).
       const config = makeConfig(
         [
           ...providers,
-          { name: 'chat-dummy', type: 'openai-compatible', baseUrl: 'http://127.0.0.1:1', apiKey: 'sk-dummy' },
+          { name: 'chat-dummy', type: 'openai-compatible', baseUrl: `http://127.0.0.1:${upstream.port}`, apiKey: 'sk-dummy' },
         ],
         [
           ...models,
@@ -342,8 +356,8 @@ describe('systemone capture explicit-OFF guard (requestCapture.systemone.enabled
             id: 'test/chat',
             provider: 'chat-dummy',
             upstreamModel: 'test-chat',
-            // plus-tier: `auto` starts at the plus default, so the mock-mode
-            // chat control resolves a real candidate instead of an empty pool.
+            // plus-tier: `auto` starts at the plus default, so the chat
+            // control resolves a real candidate instead of an empty pool.
             tier: 'plus',
             pricing: { input: 0, output: 0, cacheRead: 0 },
           },
@@ -359,7 +373,7 @@ describe('systemone capture explicit-OFF guard (requestCapture.systemone.enabled
           },
         }
       );
-      const { app, orchestrator } = createServer(config, true);
+      const { app, orchestrator } = bootServer(config);
       const mitm = await mitmServer(orchestrator);
       try {
         // 1. Control: a chat turn MUST capture (2 client events) — proves the
@@ -400,11 +414,12 @@ describe('systemone capture explicit-OFF guard (requestCapture.systemone.enabled
         expect(linesFor(tmp, FASTIFY_MARKER).length).toBe(0);
         expect(linesFor(tmp, MITM_MARKER).length).toBe(0);
 
-        // And machine-guarantee the totals: only the chat control pair exists
-        // — 2 client events, 0 upstream events.
+        // And machine-guarantee the totals: the chat control pair (2 client
+        // events + its real upstream pair — the converted-era chat control
+        // dials the fake upstream) and ZERO systemone events.
         const all = readExchangeEvents(tmp).filter((e) => e.eventType === 'http-exchange');
         expect(all.filter((e) => e.direction === 'client').length).toBe(2);
-        expect(all.filter((e) => e.direction === 'upstream').length).toBe(0);
+        expect(all.filter((e) => e.direction === 'upstream').length).toBe(2);
       } finally {
         mitm.close();
         await app.close();
@@ -510,7 +525,7 @@ describe('systemone full-chain capture opt-in (requestCapture.systemone.enabled)
     expect(upResps.length).toBe(1);
     const upReq = upReqs[0];
     const upResp = upResps[0];
-    expect(upReq.wire.requestLine).toMatch(/^POST http:\/\/127\.0\.0\.1:\d+\/systemone HTTP\/1\.1$/);
+    expect(upReq.wire.requestLine).toMatch(/^POST http:\/\/127\.0\.0\.1:\d+\/chat\/completions HTTP\/1\.1$/);
     expect(upReq.wire.requestHeaders.authorization).toBe('[REDACTED]'); // provider apiKey never persists
     expect(upResp.spanId).toBe(upReq.spanId);
     expect(upReq.traceId).toBe(req.traceId);
@@ -524,13 +539,13 @@ describe('systemone full-chain capture opt-in (requestCapture.systemone.enabled)
   test('MITM leg, systemone.enabled hot-applied ON: full chain — paired client + paired upstream events', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-fp-sys-on-mitm-'));
     const received: any[] = [];
-    const upstream = startNativeUpstream(received);
+    const upstream = startChatUpstream(received);
     const MARKER = `SYSCTL-ON-MITM-${Date.now()}`;
     try {
-      const { providers, models } = nativeProviderConfig(upstream.port);
+      const { providers, models } = chatProviderConfig(upstream.port);
       const captureCfg = { ...CAPTURE_BASE, enabled: true, dir: tmp };
       const config = makeConfig(providers, models, { requestCapture: { ...captureCfg, systemone: { enabled: false } } });
-      const { orchestrator } = createServer(config);
+      const { orchestrator } = bootServer(config);
       const recorder = orchestrator.getCaptureRecorder();
       // Hot-apply: the client-leg sub-switch flips ON without a restart
       // (constructed explicit-OFF above — the flip is the whole point).
@@ -566,13 +581,13 @@ describe('systemone full-chain capture opt-in (requestCapture.systemone.enabled)
   test('Fastify leg, systemone.enabled hot-applied ON: full chain — paired client + paired upstream events', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-fp-sys-on-fastify-'));
     const received: any[] = [];
-    const upstream = startNativeUpstream(received);
+    const upstream = startChatUpstream(received);
     const MARKER = `SYSCTL-ON-FASTIFY-${Date.now()}`;
     try {
-      const { providers, models } = nativeProviderConfig(upstream.port);
+      const { providers, models } = chatProviderConfig(upstream.port);
       const captureCfg = { ...CAPTURE_BASE, enabled: true, dir: tmp };
       const config = makeConfig(providers, models, { requestCapture: { ...captureCfg, systemone: { enabled: false } } });
-      const { app, orchestrator } = createServer(config);
+      const { app, orchestrator } = bootServer(config);
       const recorder = orchestrator.getCaptureRecorder();
       recorder.applyConfig({ ...captureCfg, systemone: { enabled: true } });
       try {
@@ -603,16 +618,16 @@ describe('systemone full-chain capture opt-in (requestCapture.systemone.enabled)
   test('gate-denied 400 with systemone.enabled ON: zero events — emission lives behind ALL gates', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-fp-sys-on-400-'));
     const received: any[] = [];
-    const upstream = startNativeUpstream(received);
+    const upstream = startChatUpstream(received);
     const OK_FASTIFY = `SYSCTL-ORDER-OK-F-${Date.now()}`;
     const OK_MITM = `SYSCTL-ORDER-OK-M-${Date.now()}`;
     const BAD_FASTIFY = `SYSCTL-ORDER-BAD-F-${Date.now()}`;
     const BAD_MITM = `SYSCTL-ORDER-BAD-M-${Date.now()}`;
     try {
-      const { providers, models } = nativeProviderConfig(upstream.port);
+      const { providers, models } = chatProviderConfig(upstream.port);
       const captureCfg = { ...CAPTURE_BASE, enabled: true, dir: tmp };
       const config = makeConfig(providers, models, { requestCapture: { ...captureCfg, systemone: { enabled: false } } });
-      const { app, orchestrator } = createServer(config);
+      const { app, orchestrator } = bootServer(config);
       const recorder = orchestrator.getCaptureRecorder();
       recorder.applyConfig({ ...captureCfg, systemone: { enabled: true } });
       const mitm = await mitmServer(orchestrator);

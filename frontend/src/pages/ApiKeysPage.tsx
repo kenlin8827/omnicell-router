@@ -45,6 +45,15 @@ const TIER_LABEL_KEYS: Record<string, string> = {
   ultra: 'apiKeys.tierUltra',
 };
 
+/** i18n keys for the modelRef kind tag (ADR-0003 namespace vocabulary). */
+const KIND_LABEL_KEYS: Record<string, string> = {
+  auto: 'apiKeys.kindAuto',
+  tier: 'apiKeys.kindTier',
+  combo: 'apiKeys.kindCombo',
+  model: 'apiKeys.kindModel',
+  variant: 'apiKeys.kindVariant',
+};
+
 type AccessMode = 'none' | 'allow' | 'deny';
 
 /** Chars permitted in a model-access entry: model ids plus the `*` wildcard.
@@ -239,24 +248,71 @@ export const ApiKeysPage: React.FC = () => {
 
   // View-effective-models modal state + per-model live call test
   const [viewingKey, setViewingKey] = useState<ApiKeyItem | null>(null);
+  // Mirror of viewingKey for async guards: a state read inside a stale closure
+  // would still hold the key that started the fetch, so the ref is what the
+  // post-await check compares against.
+  const viewingKeyRef = useRef<ApiKeyItem | null>(null);
   const [viewModels, setViewModels] = useState< Awaited<ReturnType<typeof api.getKeyModels>> | null>(null);
   const [viewLoading, setViewLoading] = useState(false);
   const [viewFilter, setViewFilter] = useState('');
+  // Raw mode: shows the verbatim GET /v1/models response this key gets (the
+  // exact wire format external callers see), fetched live with the key.
+  const [viewMode, setViewMode] = useState<'list' | 'json'>('list');
+  const [viewRaw, setViewRaw] = useState<{ loading: boolean; json: unknown }>({ loading: false, json: null });
+  // Expanded modal for comfortable reading of the raw JSON payload.
+  const [viewExpanded, setViewExpanded] = useState(false);
+  // Flat by default: one line per element of the top array (each model on its
+  // own row); the format toggle switches to full 2-space pretty print.
+  const [rawFormatted, setRawFormatted] = useState(false);
+  const renderRawFlat = (data: unknown): string => {
+    // OpenAI envelope ({object:'list', data:[...]}) — the /v1/models wire
+    // shape — flattened to one compact line per model so rows stay scannable.
+    if (data && typeof data === 'object' && !Array.isArray(data) && Array.isArray((data as any).data)) {
+      const { data: items, ...envelope } = data as Record<string, unknown>;
+      const header = JSON.stringify(envelope);
+      const rows = (items as unknown[]).map((item) => JSON.stringify(item)).join('\n');
+      return header ? `${header}\n${rows}` : rows;
+    }
+    // Anything else (error bodies etc.) — single minified line.
+    return JSON.stringify(data);
+  };
+  const fetchRawModels = async (key: ApiKeyItem) => {
+    setViewRaw({ loading: true, json: null });
+    try {
+      const res = await fetch('/v1/models', { headers: { Authorization: `Bearer ${key.key}` } });
+      const body = await res.json();
+      // Ignore the response if the modal switched to another key while the
+      // fetch was in flight — a late payload would show under the wrong key.
+      if (viewingKeyRef.current?.id !== key.id) return;
+      setViewRaw({ loading: false, json: body });
+    } catch (err) {
+      if (viewingKeyRef.current?.id !== key.id) return;
+      setViewRaw({ loading: false, json: String(err) });
+    }
+  };
   const [testState, setTestState] = useState<Record<string, 'loading' | 'ok' | 'denied' | 'error'>>({});
   const [testResult, setTestResult] = useState<Record<string, string>>({});
 
   const openViewModels = async (item: ApiKeyItem) => {
     setViewingKey(item);
+    viewingKeyRef.current = item;
     setViewModels(null);
     setViewFilter('');
     setTestState({});
     setTestResult({});
+    setViewMode('list');
+    // Reset the raw-JSON payload with the rest of the view state — a cached
+    // response from a previously viewed key must never render under this key.
+    setViewRaw({ loading: false, json: null });
+    setViewExpanded(false);
+    setRawFormatted(false);
     setViewLoading(true);
     try {
       setViewModels(await api.getKeyModels(item.id));
     } catch (err: any) {
       toast.error(err.message || t('common.failed'));
       setViewingKey(null);
+      viewingKeyRef.current = null;
     } finally {
       setViewLoading(false);
     }
@@ -1121,8 +1177,7 @@ print(message.content[0].text)`
 
           {connectTab === 'systemone-curl' && (
 `# System One 决策协议端点：state + 类型化问题 → 类型化答案（不走 chat 级联）
-# 上游二选一：任意已注册模型（网关自动做协议转换），或原生决策模型
-#（config.yaml 里配 providers[].type: systemone，如 TypeSafe Jev / 百炼决策模型）
+# 上游：任意已注册模型，网关自动做协议转换（chat 模型包裹 JSON 决策载荷）
 # model 填已注册模型 ID；配置了 systemone.defaultModel 后可直接用 auto
 curl http://127.0.0.1:3000/v1/systemone \\
   -H "Content-Type: application/json" \\
@@ -1439,26 +1494,60 @@ curl http://127.0.0.1:3000/v1/systemone \\
             className="card"
             style={{
               width: '100%',
-              maxWidth: '560px',
-              maxHeight: '90vh',
+              maxWidth: viewExpanded ? 'min(96vw, 1400px)' : '560px',
+              maxHeight: viewExpanded ? '94vh' : '90vh',
               overflowY: 'auto',
               padding: '24px',
               boxShadow: '0 20px 40px rgba(0,0,0,0.6)',
               display: 'flex',
               flexDirection: 'column',
               gap: '14px',
+              transition: 'max-width 0.15s ease, max-height 0.15s ease',
             }}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <h3 style={{ fontSize: '16px', fontWeight: 800, color: 'var(--text-main)' }}>
                 {t('apiKeys.viewModelsTitle')}
               </h3>
-              <button
-                onClick={() => setViewingKey(null)}
-                style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', fontSize: '18px', cursor: 'pointer' }}
-              >
-                ✕
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  disabled={viewRaw.loading}
+                  onClick={() => {
+                    const next = viewMode === 'list' ? 'json' : 'list';
+                    setViewMode(next);
+                    if (next === 'json' && viewingKey && viewRaw.json === null && !viewRaw.loading) {
+                      void fetchRawModels(viewingKey);
+                    }
+                  }}
+                >
+                  {viewMode === 'list' ? t('apiKeys.viewRawBtn') : t('apiKeys.viewListBtn')}
+                </button>
+                {viewMode === 'json' && (
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={() => setRawFormatted((v) => !v)}
+                  >
+                    {rawFormatted ? t('apiKeys.viewFlatBtn') : t('apiKeys.viewFormatBtn')}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  title={viewExpanded ? t('apiKeys.viewCollapseTitle') : t('apiKeys.viewExpandTitle')}
+                  onClick={() => setViewExpanded((v) => !v)}
+                >
+                  {viewExpanded ? '⤡' : '⤢'}
+                </button>
+                <button
+                  onClick={() => setViewingKey(null)}
+                  style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', fontSize: '18px', cursor: 'pointer' }}
+                >
+                  ✕
+                </button>
+              </div>
             </div>
 
             <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: 0 }}>
@@ -1488,36 +1577,89 @@ curl http://127.0.0.1:3000/v1/systemone \\
               <InfoTip text={t('apiKeys.modelsTestHint')} />
             </p>
 
-            {viewLoading || !viewModels ? (
+            {viewMode === 'json' ? (
+              <pre
+                style={{
+                  margin: 0,
+                  padding: '12px',
+                  borderRadius: '8px',
+                  background: 'var(--bg-inset, rgba(128,128,128,0.08))',
+                  border: '1px solid var(--divider)',
+                  fontSize: '11px',
+                  lineHeight: 1.5,
+                  fontFamily: "'JetBrains Mono', Consolas, monospace",
+                  overflow: 'auto',
+                  maxHeight: viewExpanded ? '72vh' : '60vh',
+                  whiteSpace: 'pre',
+                  color: 'var(--text-main)',
+                }}
+              >
+                {viewRaw.loading ? t('common.loading') : viewRaw.json === null ? t('common.noResults') : rawFormatted ? JSON.stringify(viewRaw.json, null, 2) : renderRawFlat(viewRaw.json)}
+              </pre>
+            ) : viewLoading || !viewModels ? (
               <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '13px' }}>
                 {t('common.loading')}
               </div>
             ) : (
               (() => {
                 const q = viewFilter.trim().toLowerCase();
-                const matches = (m: { id: string; provider: string; tiers: string[] }) =>
+                const matches = (m: { id: string; provider: string; tiers?: string[] }) =>
                   !q ||
                   m.id.toLowerCase().includes(q) ||
                   m.provider.toLowerCase().includes(q) ||
-                  m.tiers.some((t) => t.toLowerCase().includes(q));
-                const allowed = viewModels.models.filter((m) => m.allowed && matches(m));
-                const denied = viewModels.models.filter((m) => !m.allowed && matches(m));
+                  m.tiers?.some((t) => t.toLowerCase().includes(q));
+                const visible = viewModels.models.filter((m) => matches(m));
                 // Grid columns: id takes the remaining width; tier & result are
                 // content-sized (auto) so they hug the right-side button cluster —
                 // no fixed-width voids in between.
                 const rowGrid: React.CSSProperties = {
                   display: 'grid',
-                  gridTemplateColumns: 'minmax(0,1fr) auto auto 44px',
+                  gridTemplateColumns: 'auto minmax(0,1fr) auto auto 44px',
                   gap: '8px',
                   alignItems: 'center',
                   padding: '5px 8px',
                   borderBottom: '1px solid var(--divider)',
                 };
-                const renderRow = (m: { id: string; provider: string; tiers: string[]; virtual: boolean }) => {
+                const KIND_TAG_COLOR: Record<string, string> = {
+                  auto: 'var(--accent)',
+                  tier: 'var(--accent-violet)',
+                  combo: 'var(--accent-amber)',
+                  model: 'var(--accent-emerald)',
+                  variant: 'var(--accent-rose)',
+                };
+                const renderRow = (m: {
+                  id: string;
+                  kind: string;
+                  provider: string;
+                  tiers?: string[];
+                  virtual: boolean;
+                  allowed?: boolean;
+                }) => {
                   const st = testState[m.id];
-                  const tierLabel = m.tiers.map((tier) => t(TIER_LABEL_KEYS[tier] ?? '') || tier).join(' / ');
+                  const tierLabel = (m.tiers ?? [])
+                    .map((tier) => t(TIER_LABEL_KEYS[tier] ?? '') || tier)
+                    .join(' / ');
+                  const kindLabel = t(KIND_LABEL_KEYS[m.kind] ?? '') || m.kind;
+                  // Wire-order list: availability is a per-row style, NOT a
+                  // group split — the row sequence stays exactly the /v1/models
+                  // payload order.
+                  const denied = m.allowed === false;
                   return (
-                    <div key={m.id} style={rowGrid}>
+                    <div key={m.id} style={{ ...rowGrid, opacity: denied ? 0.45 : 1 }}>
+                      <span
+                        title={t('apiKeys.modelsKindTitle', { kind: kindLabel })}
+                        style={{
+                          fontSize: '10px',
+                          lineHeight: '14px',
+                          padding: '0 6px',
+                          borderRadius: '4px',
+                          color: KIND_TAG_COLOR[m.kind] ?? 'var(--text-dim)',
+                          border: '1px solid color-mix(in srgb, currentColor 45%, transparent)',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {kindLabel}
+                      </span>
                       <span
                         style={{
                           minWidth: 0,
@@ -1555,6 +1697,7 @@ curl http://127.0.0.1:3000/v1/systemone \\
                         }}
                       >
                         {st === 'loading' && <span style={{ color: 'var(--text-dim)' }}>…</span>}
+                        {!st && denied && <span style={{ color: 'var(--text-dim)' }}>{t('apiKeys.modelsDeniedBadge')}</span>}
                         {st === 'ok' && <span style={{ color: 'var(--accent-emerald)' }}>✓ {testResult[m.id]}</span>}
                         {st === 'denied' && <span style={{ color: 'var(--accent-amber)' }}>✗ {testResult[m.id]}</span>}
                         {st === 'error' && <span style={{ color: 'var(--accent-rose)' }}>✗ {testResult[m.id]}</span>}
@@ -1581,26 +1724,13 @@ curl http://127.0.0.1:3000/v1/systemone \\
                       placeholder={t('apiKeys.viewModelsSearchPlaceholder')}
                       style={{ fontSize: '12px', flexShrink: 0 }}
                     />
-                    {allowed.length === 0 && denied.length === 0 && (
+                    {visible.length === 0 && (
                       <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '12px' }}>
                         {t('common.noResults')}
                       </div>
                     )}
-                    {allowed.length > 0 && (
-                      <div>
-                        <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--accent-emerald)', marginBottom: '6px' }}>
-                          {t('apiKeys.modelsAllowedGroup', { n: allowed.length })}
-                        </div>
-                        <div style={{ maxHeight: '240px', overflowY: 'auto' }}>{allowed.map(renderRow)}</div>
-                      </div>
-                    )}
-                    {denied.length > 0 && (
-                      <div>
-                        <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', marginBottom: '6px' }}>
-                          {t('apiKeys.modelsDeniedGroup', { n: denied.length })}
-                        </div>
-                        <div style={{ maxHeight: '160px', overflowY: 'auto' }}>{denied.map(renderRow)}</div>
-                      </div>
+                    {visible.length > 0 && (
+                      <div style={{ maxHeight: '320px', overflowY: 'auto' }}>{visible.map(renderRow)}</div>
                     )}
                   </>
                 );

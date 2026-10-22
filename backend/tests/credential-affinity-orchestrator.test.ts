@@ -69,7 +69,6 @@ function makeFixture(combos?: { id: string; models: string[] }[], mode: 'both' |
   const base = loadConfig();
   const config = {
     ...base,
-    providers: [],
     models: [],
     tiers: base.tiers ?? {},
     combos,
@@ -196,7 +195,6 @@ describe('self-healing: credential rebind rides the model repin', () => {
     const base = loadConfig();
     const config = {
       ...base,
-      providers: [],
       models: [],
       tiers: base.tiers ?? {},
       session: { enabled: true, strategy: 'monotonic', ttlSeconds: 3600, maxSessions: 100 },

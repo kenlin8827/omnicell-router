@@ -126,7 +126,8 @@ export function buildChatOcrCompletionFacts(result: ExecutionResult): Record<str
  */
 export function buildSystemoneOcrHeaders(
   modelId: string,
-  upstreamKind: 'native' | 'converted',
+  /** Header value pinned to 'converted' — the native limb is retired. */
+  upstreamKind: 'converted',
   latencyMs: number
 ): Record<string, string> {
   return {

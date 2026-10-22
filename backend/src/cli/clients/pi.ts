@@ -128,8 +128,10 @@ const PI_ALIAS_META: Record<string, { name: string }> = {
  * `/model` picker reads `name`, compaction reads `contextWindow` /
  * `maxTokens`, and the cost footer reads `cost`. Sources, in order:
  *  - the fixed auto* aliases: static full-ladder declaration (see
- *    PI_ALIAS_META) + the caller's context window (there is no per-alias
- *    catalog truth);
+ *    PI_ALIAS_META) + the aggregated tier-member envelope from the live
+ *    registry (tierAliasDisplayMeta — min limits across the ladder, leader
+ *    pricing), falling back to the caller's context window when no registry
+ *    is live (standalone CLI — nothing to resolve against);
  *  - concrete ids: resolved against the live gateway registry/catalog
  *    (model-meta.ts) — per-model context window/maxTokens/cost/name beat the
  *    caller's single context window, which stays the fallback for ids with
@@ -138,14 +140,23 @@ const PI_ALIAS_META: Record<string, { name: string }> = {
  *    bare `{id, contextWindow?}` entry of legacy setups.
  */
 async function buildModelEntries(ids: string[], contextWindow?: number): Promise<Record<string, unknown>[]> {
-  const meta = await resolveClientModelMeta(ids.filter((id) => !VIRTUAL_AUTO_IDS.has(id)));
+  // Alias ids participate in meta resolution too — the aggregated tier-member
+  // envelope (contextWindow/maxTokens/cost/modalities) layers ON TOP of the
+  // static alias base below; the ladder stays the permissive full map.
+  const meta = await resolveClientModelMeta(ids);
   return ids.map((id) => {
     if (VIRTUAL_AUTO_IDS.has(id)) {
       const alias = PI_ALIAS_META[id];
+      const m = meta[id];
       return {
         id,
         ...(alias?.name ? { name: alias.name } : {}),
-        ...(contextWindow ? { contextWindow } : {}),
+        // Aggregated member envelope beats the caller's single context window;
+        // the caller's value stays the fallback when no registry is live (CLI).
+        ...(m?.contextWindow ? { contextWindow: m.contextWindow } : contextWindow ? { contextWindow } : {}),
+        ...(m?.maxTokens ? { maxTokens: m.maxTokens } : {}),
+        ...(m?.input ? { input: m.input } : {}),
+        ...(m?.cost ? { cost: m.cost } : {}),
         reasoning: true,
         thinkingLevelMap: piThinkingLevelMap(),
       };

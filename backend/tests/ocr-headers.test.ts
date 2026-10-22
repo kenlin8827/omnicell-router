@@ -179,9 +179,9 @@ describe('buildChatOcrHeaders — stub tolerance (frozen ?? / || defaults)', () 
 
 describe('buildSystemoneOcrHeaders', () => {
   it('11. emits exactly the three decision-surface headers', () => {
-    assert.deepStrictEqual(buildSystemoneOcrHeaders('native/plus-b', 'native', 17), {
+    assert.deepStrictEqual(buildSystemoneOcrHeaders('native/plus-b', 'converted', 17), {
       'X-OCR-Model': 'native/plus-b',
-      'X-OCR-Systemone-Upstream': 'native',
+      'X-OCR-Systemone-Upstream': 'converted',
       'X-OCR-Latency-MS': '17',
     });
     const converted = buildSystemoneOcrHeaders('chat/x', 'converted', 0);

@@ -306,31 +306,12 @@ retry:
 # System One Protocol Surface (POST /v1/systemone) — OPT-IN
 # ==============================================================================
 # Serve TypeSafe-style decision requests (state + typed questions → typed
-# answers with probabilities; no generated text). Two upstream paths:
-#   * NATIVE — declare the upstream as `type: systemone` (TypeSafe Jev,
-#     Alibaba Bailian decision-model-preview); requests pass through 1:1.
-#   * CONVERTED — ANY registered chat/reasoning model id serves via protocol
-#     conversion (one JSON-constrained chat call; answers normalized back).
-#     Converted probabilities are best-effort estimates, NOT calibrated —
-#     see docs/adr/0014-systemone-protocol-gateway.md.
+# answers with probabilities; no generated text). ANY registered chat/
+# reasoning model id serves via protocol conversion (one JSON-constrained
+# chat call; answers normalized back). Converted probabilities are best-
+# effort estimates, NOT calibrated — see docs/adr/0014-systemone-protocol-gateway.md.
+# NOTE: chat provider connection defs do NOT live in this file — they are
+# owned by <ocrHome>/custom-providers.json + the credential store (ADR-0010).
 #
 # systemone:
-#   defaultModel: "typesafe/jev"      # served when the request omits `model`
-#
-# providers:
-#   - name: typesafe
-#     type: systemone                 # native System One wire (not a chat executor)
-#     baseUrl: "https://api.typesafe.ai/v1"
-#     apiKey: "${TYPESAFE_API_KEY}"
-#   # Alibaba Bailian decision model:
-#   # - name: bailian-decision
-#   #   type: systemone
-#   #   baseUrl: "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
-#   #   apiKey: "${DASHSCOPE_API_KEY}"
-#
-# models:
-#   - id: "typesafe/jev"              # client-facing id used in POST /v1/systemone
-#     provider: typesafe
-#     upstreamModel: "jev-latest"
-#     tier: lite                      # required by the registry schema; not chat-routable
-#     pricing: { input: 0.042, output: 0, cacheRead: 0 }
+#   defaultModel: "my-chat-model"     # served when the request omits `model`

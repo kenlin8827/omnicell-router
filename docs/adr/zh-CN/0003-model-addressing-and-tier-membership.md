@@ -11,14 +11,14 @@
 解析顺序，精确（chat 路径 `orchestrator.ts:348-467`；决策面镜像同一顺序 `surfaces/decision-pipeline.ts:54-137`）：
 
 1. trim 一次；`request.model` 原文上 wire（surface 契约——转发字节永不改写）。
-2. 裸梯队别名 `lite|plus|pro|ultra` → `force_tier`（Layer 0，ADR-0001）。这些 id 是 RESERVED——模型与 combo 都不得注册（`RESERVED_IDS`，`member-match.ts`）。历史备注：这些别名最初带前缀（`auto-lite`…`auto-ultra`）；同一次清理中去掉了前缀，并退役了裸 `default` 别名（它是 `auto` 的同义词）——配置中仍残留旧 id 时启动会告警。
+2. 裸梯队别名 `lite|plus|pro|ultra` → `force_tier`（Layer 0，ADR-0001）。这些 id 是 RESERVED——模型与 combo 都不得注册（`RESERVED_IDS`，`member-match.ts`）。历史备注：这些别名最初带前缀（`auto-lite`…`auto-ultra`）；同一次清理中去掉了前缀，并退役了裸 `default` 别名（它是 `auto` 的同义词）——不存在遗留兼容层：旧 id 直接解析失败。
 3. 精确已注册 id → 透明直通：钉扎该模型并强制其梯队（`:364-373`）。
 4. 变体兄弟 `base-variant` / `base#variant` → 路由到 BASE，钉扎变体的 `reasoningEffort`、压过客户端所发思考级别（`ModelVariant = {id, reasoningEffort}`；`:375-387`）。真实注册 id 永远赢过兄弟名；combo 赢过变体引用；`#` 无匹配变体 → **响亮 404，绝不静默转 auto**（`:388-398`）。
 5. 裸上游名（无 provider 前缀——客户端按其自家目录点名模型的方式）：全部命中返回，按输入价、id 定序（`getModelsByUpstreamName`）；MITM 腿额外按被拦截 host 收窄（`upstreamHost` 取自客户端请求 host——原生腿刻意不信 Host，防伪冒；`:106-124,415-418`）。裸命中**绝不**抢占某个仍是活跃 combo id 的名字（`:425`）——该名字的网关自释义是它公布的 combo；同名物理模型仍可用带 provider 前缀的完整 id 直达。
 6. combo id（在精确 id 与变体兄弟分支之后、分类器之前检查——且优先于裸名命中）：成员表**就是**候选池，分类器/会话棘轮/结构断言升档全部旁路；成员全未注册的 combo **快速报错**——绝不静默降级成 `auto`（不可见的计费/模型漂移）（`:439-467`）。管线执行前的占位模型解析（思考档位机制）对 combo 与点名显式模型**不得**咨询梯队池——"无任何梯队规则认领模型"的 pool-less 部署下两条路径必须保持可调用（`:584-591, 705-722`——会话 resolver 与占位模型两处）。
 7. 其余未注册名 → 分类器裁定。这就是智能路由本身（例如 Claude Code 内切模型后送来的原生 `claude-opus-*` 名）。
 
-词汇事实：已解析的物理记录是 `ModelRegistration`（id + provider + wire + tier + pricing…，`config/types.ts:15-80`）；`ComboModelRef {id, weight?}` 是未解析的配置句柄（`:99`）；`modelRef` **措辞**命名网关可见 id 命名空间 = auto 别名 ∪ combo id ∪ 注册 id ∪ 变体兄弟 id（`:120-137`）——即控制台目录为每行打的五种标签（`kind: 'auto'|'tier'|'combo'|'model'|'variant'`，`/api/admin/gateway-models`，排列顺序与此处命名空间的读法一致）。历史语料的 `ModelRef`/`ModelIdentity` **类型名从未落地代码**——不得复活；`AGENTS.md` 已改指本篇。
+词汇事实：已解析的物理记录是 `ModelRegistration`（id + provider + wire + tier + pricing…，`config/types.ts:15-80`）；`ComboModelRef {id, weight?}` 是未解析的配置句柄（`:99`）；`modelRef` **措辞**命名网关可见 id 命名空间 = auto 别名 ∪ combo id ∪ 注册 id ∪ 变体兄弟 id（`:120-137`）——即控制台目录为每行打的五种标签（`kind: 'auto'|'tier'|'combo'|'model'|'variant'`，`/api/admin/gateway-models`——同一词汇也驱动按 key 的有效模型视图 `/api/admin/api-keys/:id/models`，后者每行额外携带 `allowed` 策略判定与 `virtual` 标记，排列顺序与此处命名空间的读法一致）。历史语料的 `ModelRef`/`ModelIdentity` **类型名从未落地代码**——不得复活；`AGENTS.md` 已改指本篇。
 
 ### 2. 梯队成员制——已提交的成员列表是唯一来源
 
@@ -37,6 +37,10 @@
 ### 3. Combo
 
 `ComboConfig = {id, disabled?, selection?, models:(string|ComboModelRef)[], note?}`——`selection` 只决定 **leader**；failover 永远按配置序走；无跨梯升档（组合本身即契约）；尝试上限 = 链长（ADR-0005）。梯队成员表可经 `combo:<id>` 规则引用 combo（§2）——组合保持自持，引用只在提交点镜像成员资格。`disabled: true` 是运维下线开关：combo 仍保持注册，好让请求路径区分「已禁用」与「未知名字」，但它从所有目录隐藏（`/v1/models` 列表与详情 404、控制台模型选择器），请求显式点名它则快速失败返回 404——与空成员场景同一条「绝不静默降级」契约，绝不回落分类器路由（`orchestrator.ts:442-453`）。`resolveCombo` 逐调用现场解析：配置序保留、未注册 id 丢弃、重复折叠到首次出现——迟到注册的模型自然加入（`registry.ts:737-752`）。id 命名空间冲突单向且响亮：combo 撞已存在模型 id → combo 被忽略 + 告警；模型后注册盖住 combo → 遮蔽（告警 + 从 `/v1/models` 隐藏）（`:698-724`、`:161-163`）。`combos` 列表顺序即控制台展示顺序——可在 UI 中重排，按原顺序写回配置。
+
+#### 3a. 目录面形状（`/v1/models`）
+
+`GET /v1/models` 是 OpenAI 兼容的（{object:'list', data:[{id, object, created, owned_by, metadata}]}），让通用 SDK 与聊天客户端能列举模型；行 id 是网关可见的 modelRef 词汇（注册 id / 变体兄弟 id / auto* 别名 / combo id）。能力目录——一个 models.dev 形状的 provider map（对齐 https://models.opencode.ai/api.json ——仅 schema 形状对齐，不复用数据），按 provider id 键控，每个 provider 携带 `models` 为按模型 id 键控的 models.dev 能力块 map（snake_case：`reasoning`/`tool_call`/`modalities`/`limit`/`cost`/`reasoning_options`）——住在 `GET /v1/catalog.json`，由**同一份**过滤数据构建（一个 builder，两种投影；OpenAI 列表的每一行都在 `metadata` 下携带其能力块）。每种 modelRef kind 的能力来源（`providers/virtual-meta.ts`）：具体模型原样透传其 catalog 记录；虚拟引用（auto*/combo）携带成员**包络**——成员间 `limit.context`/`limit.output` 取 MIN（任何成员溢出都会毁掉请求）、image input 仅当**每个**成员都声明才成立（`tool_call`/`temperature`/`structured_output` 同为交集标志）、`cost` 取链序 leader（`auto` 取梯级序首层，combo 取配置序首成员）——且 `reasoning: true` 带**完整**努力阶梯，因为梯队成员制是规则驱动的、随每次配置保存而漂移：包络只声明**限制**，绝不声明思考档位真相（网关按请求钳制，`X-OCR-Thinking-*` 如实上报）。变体兄弟以 `<upstream>-<variant>` 键挂在 base provider 下，`reasoning: false` 且只带钉扎的那个档位。OCR 路由扩展（kind/tier/selection/members/parent/variant/memberCount）住在每个模型的命名空间化 `ocr` 键下。按 key 策略过滤（§4）会剪除模型条目并丢弃模型 map 清空的 provider（两个面都如此）。同一套包络数学也喂客户端钩子写入（pi `models.json`——`cli/clients/model-meta.ts`）。
 
 ### 4. 按 key 的模型策略
 

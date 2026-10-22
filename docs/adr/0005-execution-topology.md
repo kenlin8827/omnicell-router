@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented — 2026-10-15 (facts-side corpus rewrite). Scope: how a decision becomes an upstream call; what the boot pool is built from; retry/failover semantics; streaming; token-saver compression; cost truth. Health semantics = ADR-0004; addressing/membership = ADR-0003; credential selection/affinity = ADR-0002.
+Implemented — 2026-10-15 (facts-side corpus rewrite). Scope: how a decision becomes an upstream call; what the boot pool is built from; retry/failover semantics; streaming; token-saver compression; cost truth. Health semantics = ADR-0004; addressing/membership = ADR-0003; credential selection/affinity = ADR-0002. Amended 2026-10-21: the hand-written `config.yaml` `providers[]` surface is retired — chat providers come exclusively from the defs file + CredentialStore (ADR-0010); the native System One upstream limb (`systemoneUpstreams[]`, vendor passthrough) is retired entirely (ADR-0008 amendment) — the decision surface serves conversion-only; a `buildDirectPool` failure no longer falls back to config-defined providers (registry boots mock-only).
 
 ## Decision
 

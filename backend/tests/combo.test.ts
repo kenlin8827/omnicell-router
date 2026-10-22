@@ -19,6 +19,9 @@ function authHeaders(): Record<string, string> {
   return diskKeys.length > 0 ? { authorization: `Bearer ${diskKeys[0].key}` } : {};
 }
 
+/** Flatten the /v1/models body (OpenAI envelope) into model ids. */
+const listIds = (body: any): string[] => body?.data.map((m: any) => m.id);
+
 const baseConfig: RouterConfig = {
   port: 3000,
   host: '127.0.0.1',
@@ -281,10 +284,9 @@ describe('Custom Model Combos: routing & execution', () => {
 describe('Custom Model Combos: exposure & config plumbing', () => {
   it('should list combos in /v1/models and resolve them in /v1/models/:id', async () => {
     const { app } = createServer(baseConfig, true);
-
     const list = await app.inject({ method: 'GET', url: '/v1/models' });
     assert.equal(list.statusCode, 200);
-    const ids = (list.json().data || []).map((m: any) => m.id);
+    const ids = listIds(list.json());
     assert.ok(ids.includes('combo-priority'));
 
     const single = await app.inject({
@@ -366,7 +368,7 @@ describe('Custom Model Combos: operator disable', () => {
 
     const list = await app.inject({ method: 'GET', url: '/v1/models' });
     assert.equal(list.statusCode, 200);
-    const ids = (list.json().data || []).map((m: any) => m.id);
+    const ids = listIds(list.json());
     assert.ok(!ids.includes('combo-disabled'));
 
     const single = await app.inject({

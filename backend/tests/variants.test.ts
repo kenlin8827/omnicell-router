@@ -231,7 +231,10 @@ describe('Model variants: HTTP surface', () => {
 
     const list = await app.inject({ method: 'GET', url: '/v1/models' });
     assert.equal(list.statusCode, 200);
-    const ids = (list.json().data || []).map((m: any) => m.id);
+    // OpenAI envelope rows carry the models.dev block under `metadata`; row
+    // ids are the gateway-visible ids. Provider-grouped capability data lives
+    // on /v1/catalog.json.
+    const ids: string[] = list.json().data.map((m: any) => m.id);
     assert.ok(ids.includes('vis-1-strong'));
     assert.ok(ids.includes('vis-1-quick'));
     // base model listed before its siblings

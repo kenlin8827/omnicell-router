@@ -83,7 +83,6 @@ function makeStub(name: string) {
 function makeConfig(base: unknown, extras: Record<string, unknown> = {}) {
   return {
     ...(base as Record<string, unknown>),
-    providers: [],
     models: [],
     // fresh copy: tests mutate tierPolicies in place (denylist hook) — never
     // touch the object loadConfig() may share across fixtures.

@@ -652,7 +652,6 @@ function makeRlFixture() {
   const base = loadConfig();
   const config = {
     ...base,
-    providers: [],
     models: [],
     tiers: base.tiers ?? {},
     combos: [{ id: 'rl-combo', models: ['rl/alpha', 'rl/beta'] }],
@@ -1282,15 +1281,6 @@ describe('decision-wire metering', () => {
         host: '127.0.0.1',
         webAuth: { enabled: false },
         adminApiKey: 'master-dec',
-        providers: [
-          {
-            name: 'dec-chat',
-            type: 'openai-compatible',
-            baseUrl: `http://localhost:${upstream.port}`,
-            apiKey: 'sk-test',
-            timeoutMs: 5000,
-          },
-        ],
         models: [
           {
             id: 'dec/model',
@@ -1316,7 +1306,14 @@ describe('decision-wire metering', () => {
           },
         ],
       } as unknown as RouterConfig;
-      const { app } = createServer(config);
+      const decChat = {
+        name: 'dec-chat',
+        type: 'openai-compatible' as const,
+        baseUrl: `http://localhost:${upstream.port}`,
+        apiKey: 'sk-test',
+        timeoutMs: 5000,
+      };
+      const { app } = createServer(config, false, undefined, undefined, [decChat]);
       rl.reload(config); // execution-time rule load (collection-order, see inbound note)
 
       const call = () =>

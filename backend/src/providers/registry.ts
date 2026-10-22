@@ -59,8 +59,9 @@ export class ProviderRegistry {
   private combos = new Map<string, ComboConfig>();
   private comboRrCursor = new Map<string, number>();
   /** Raw configs for every configured provider (all types) — lets the
-   *  /v1/systemone route detect native System One upstreams and reach their
-   *  baseUrl/apiKey (systemone providers build no chat executor). */
+   *  /v1/systemone route reach provider baseUrl/apiKey (this map is the
+   *  credential/config source for chat providers registered outside the
+   *  constructor). */
   private providerConfigs = new Map<string, ProviderConfig>();
   /** Pre-resolved baseUrl hostname per provider (constructor-time; the
    *  configs themselves are constructor-populated and never mutate) — keeps
@@ -81,7 +82,7 @@ export class ProviderRegistry {
   private autoRefreshTierMatch = true;
   private lastMatchRefreshAt = 0;
 
-  constructor(config: RouterConfig, mockMode = false) {
+  constructor(config: RouterConfig, mockMode = false, providerConfigs: ProviderConfig[] = []) {
     this.mockMode = mockMode;
     this.tierPolicies = config.tiers || {};
     // The breaker rules resolver borrows trip.rateLimit.hardTripAboveMs's
@@ -89,17 +90,12 @@ export class ProviderRegistry {
     // copy never rewrites the retry-side in-place-retry decision).
     this.circuitBreakerManager = new CircuitBreakerManager(config.circuitBreaker, Date.now, undefined, config.retry);
 
-    // Initialize providers
-    for (const pConfig of config.providers || []) {
+    // Chat providers materialize exclusively from the provider-defs file +
+    // CredentialStore (ADR-0005/0010) and enter via `registerProvider`; tests
+    // may hand extra configs through the third constructor parameter.
+    for (const pConfig of providerConfigs) {
       this.providerConfigs.set(pConfig.name, pConfig);
       this.providerHosts.set(pConfig.name, hostOfBaseUrl(pConfig.baseUrl));
-      if (pConfig.type === 'systemone') {
-        // Native System One upstreams are NOT chat executors — the shared
-        // decision executor calls them directly (protocols/systemone/decide.ts).
-        // Skipping the LLMProvider pool keeps chat routing from ever
-        // dispatching to them.
-        continue;
-      }
       if (pConfig.type === 'anthropic') {
         this.providers.set(pConfig.name, new AnthropicProvider(pConfig));
       } else if (pConfig.type === 'responses') {
@@ -266,16 +262,16 @@ export class ProviderRegistry {
     return hits.sort(byPrice);
   }
 
-  /** Raw provider config (any type) — the /v1/systemone route uses it to
-   *  detect native System One upstreams and reach their baseUrl/apiKey. */
+  /** Raw provider config (any type) — used for provider baseUrl/apiKey
+   *  lookup (e.g. boot-time provider registration). */
   public getProviderConfig(name: string): ProviderConfig | undefined {
     return this.providerConfigs.get(name);
   }
 
   /**
    * The provider's ordered credential chain (selection
-   * priority order), or undefined when no chain was registered (config.yaml
-   * providers, mock/stub call sites) — callers then use the baked config key.
+   * priority order), or undefined when no chain was registered (mock/stub call
+   * sites) — callers then use the baked config key.
    * Raw keys: in-process consumers only, never serialize.
    */
   public getCredentialChain(name: string): CallCredential[] | undefined {

@@ -53,7 +53,6 @@ const LABELS = { unnamed: '未命名', configKey: '配置密钥' };
     [model],
     [pair],
     [acct({ id: 'a1', providerId: 'zhipu', label: 'Z-1 主力', keyHashPrefix: 'k1' }), acct({ id: 'a2', providerId: 'zhipu', keyHashPrefix: 'k2' })],
-    new Map(),
     [],
     LABELS
   );
@@ -74,7 +73,6 @@ const LABELS = { unnamed: '未命名', configKey: '配置密钥' };
     [model],
     [],
     [acct({ id: 'a1', providerId: 'p', keyHashPrefix: 'k1' }), acct({ id: 'a2', providerId: 'p', keyHashPrefix: 'k2' })],
-    new Map(),
     [],
     LABELS
   );
@@ -85,7 +83,7 @@ const LABELS = { unnamed: '未命名', configKey: '配置密钥' };
 // --- single-credential mirror ----------------------------------------------
 {
   const model = snap({ modelId: 'p/y', provider: 'p', state: 'HALF_OPEN' });
-  const cards = buildPairCards([model], [], [acct({ id: 'a1', providerId: 'p', keyHashPrefix: 'k1' })], new Map(), [], LABELS);
+  const cards = buildPairCards([model], [], [acct({ id: 'a1', providerId: 'p', keyHashPrefix: 'k1' })], [], LABELS);
   check('chain of 1 mirrors the model breaker', cards[0].snap === model && cards[0].snapSource === 'model-mirror');
   check('mirror state reads through to the card', effectiveState(cards[0]) === 'HALF_OPEN');
 }
@@ -93,17 +91,17 @@ const LABELS = { unnamed: '未命名', configKey: '配置密钥' };
 // --- chainless provider: synthetic config-key column -------------------------
 {
   const model = snap({ modelId: 'm/z', provider: 'm' });
-  const cards = buildPairCards([model], [], [], new Map([['m', 'sk-a••••wxyz']]), [], LABELS);
+  const cards = buildPairCards([model], [], [], [], LABELS);
   check('chainless model gets one synthetic card', cards.length === 1 && cards[0].synthetic);
-  check('synthetic label is 配置密钥 with masked key', cards[0].label === '配置密钥' && cards[0].maskedKey === 'sk-a••••wxyz');
+  check('synthetic label is 配置密钥', cards[0].label === '配置密钥');
 }
 
 // --- orphan breaker: inline chain head vs rotated key ------------------------
 {
   const orphan = snap({ modelId: 'p/x', provider: 'p', state: 'OPEN', keyHashPrefix: 'k9' });
-  const inline = buildPairCards([], [orphan], [], new Map([['p', 'sk-p••••head']]), [{ provider: 'p', keyHashPrefix: 'k9' }], LABELS);
+  const inline = buildPairCards([], [orphan], [], [{ provider: 'p', keyHashPrefix: 'k9' }], LABELS);
   check('orphan prefix in the credential directory ⇒ 配置密钥', inline[0].label === '配置密钥' && !inline[0].unmatched);
-  const rotated = buildPairCards([], [orphan], [], new Map(), [], LABELS);
+  const rotated = buildPairCards([], [orphan], [], [], LABELS);
   check('orphan prefix nowhere known ⇒ bare #hash + unmatched', rotated[0].label === '#k9' && rotated[0].unmatched === true);
 }
 
@@ -111,7 +109,7 @@ const LABELS = { unnamed: '未命名', configKey: '配置密钥' };
 {
   const model = snap({ modelId: 'q/x', provider: 'q', state: 'CLOSED' });
   const orphan = snap({ modelId: 'q/x', provider: 'q', state: 'OPEN', keyHashPrefix: 'k7' });
-  const cards = buildPairCards([model], [orphan], [], new Map(), [], LABELS);
+  const cards = buildPairCards([model], [orphan], [], [], LABELS);
   const pairCard = cards.find((c: PairCard) => c.prefix === 'k7')!;
   check('orphan card attaches the model breaker for folding', pairCard.modelSnap === model && effectiveState(pairCard) === 'OPEN');
 }

@@ -2,7 +2,7 @@
 
 ## 状态
 
-已实现 — 2026-10-15（事实面语料重写）。范围：决策如何变成上游调用；启动池由什么构成；重试/failover 语义；流式；token-saver 压缩；成本真相。健康语义 = ADR-0004；寻址/成员制 = ADR-0003；凭证选择/亲和 = ADR-0002。
+已实现 — 2026-10-15（事实面语料重写）。范围：决策如何变成上游调用；启动池由什么构成；重试/failover 语义；流式；token-saver 压缩；成本真相。健康语义 = ADR-0004；寻址/成员制 = ADR-0003；凭证选择/亲和 = ADR-0002。2026-10-21 修订：手写 `config.yaml` `providers[]` 配置面退役——chat provider 仅来自定义文件 + 凭证库（ADR-0010）；原生 System One 上游支路（`systemoneUpstreams[]`、厂商直通）整体退役（ADR-0008 修订）——决策面仅经协议转换服务；`buildDirectPool` 失败不再回退到 config 内联 provider（注册表仅以 mock 模式启动）。
 
 ## 决策
 

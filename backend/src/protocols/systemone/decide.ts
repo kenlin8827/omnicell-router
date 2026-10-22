@@ -1,19 +1,17 @@
 /**
  * System One decision execution — ONE implementation shared by every caller.
  *
- * Two upstream classes, selected by the resolved model's provider type:
- *  - `type: 'systemone'` provider → native passthrough (TypeSafe Jev /
- *    Alibaba Bailian decision-model-preview wire), zero loss.
- *  - any chat provider → protocol conversion: one JSON-constrained chat
- *    completion carries all questions; the reply is normalized back into the
- *    System One answers shape (probabilities are best-effort estimates).
+ * Every resolved model serves via protocol conversion: one JSON-constrained
+ * chat completion carries all questions; the reply is normalized back into
+ * the System One answers shape (probabilities are best-effort estimates).
+ * The former native passthrough limb (TypeSafe Jev / Bailian wire) is
+ * retired — ADR-0008 §7.
  *
  * Shared by the /v1/systemone route (client-facing) and the Layer 2 router
  * judge (internal). Keeping one executor means the vendor-error effort
  * calibration below — the subtle part — is tuned once and benefits both.
  */
 import { ProviderRegistry } from '../../providers/registry.js';
-import { SystemoneProvider } from '../../providers/systemone.js';
 import type { UpstreamEventContext } from '../../providers/base.js';
 import { ModelRegistration } from '../../config/types.js';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../../types/openai.js';
@@ -30,8 +28,8 @@ const CONVERSION_REPAIR_ATTEMPTS = 1;
 
 export interface SystemoneDecision {
   response: SystemoneResponse;
-  /** Which upstream class actually served the request. */
-  upstreamKind: 'native' | 'converted';
+  /** Kept for capture/header schema stability — only 'converted' can occur. */
+  upstreamKind: 'converted';
 }
 
 /**
@@ -184,7 +182,7 @@ async function convertViaChatModel(
 export interface SystemoneDecisionOptions {
   /**
    * Caller-side cancellation. Honored where the transport allows it: the
-   * native client aborts its fetch for real. The CONVERTED path cannot be
+   * an upstream client aborts its fetch for real. The CONVERTED path cannot be
    * cancelled mid-flight (every provider owns its own AbortController, and
    * `registry.execute` takes no signal), so the signal is used to suppress
    * work we knowingly shouldn't START — above all the repair retry, which
@@ -204,10 +202,9 @@ export interface SystemoneDecisionOptions {
 }
 
 /**
- * Run one System One request against the named model, dispatching to the
- * native or converted upstream class. Callers own their own error envelope:
- * `conversion_failed` errors carry `statusCode: 502`; native upstream
- * failures surface as `UpstreamError` with the vendor's own status.
+ * Run one System One request against the named model via protocol
+ * conversion. Callers own their own error envelope: `conversion_failed`
+ * errors carry `statusCode: 502`.
  */
 export async function runSystemoneDecision(
   registry: ProviderRegistry,
@@ -215,24 +212,6 @@ export async function runSystemoneDecision(
   model: ModelRegistration,
   options?: SystemoneDecisionOptions
 ): Promise<SystemoneDecision> {
-  const providerConfig = registry.getProviderConfig(model.provider);
-  if (providerConfig?.type === 'systemone') {
-    // active credential resolved through the registry
-    // (chain head) instead of trusting only the baked config key. A
-    // config.yaml-registered systemone provider has no credential chain →
-    // head undefined → providerConfig.apiKey exactly as before (identical for
-    // the single-key shape; multi-credential systemone upstreams get the store's
-    // active key automatically once chains land for them).
-    const active = registry.getActiveCredential(model.provider);
-    const cfg = active ? { ...providerConfig, apiKey: active.key } : providerConfig;
-    const response = await new SystemoneProvider(cfg).createDecision(
-      body,
-      model,
-      options?.signal,
-      options?.upstreamEventContext
-    );
-    return { response, upstreamKind: 'native' };
-  }
   const response = await convertViaChatModel(
     registry,
     body,

@@ -1,6 +1,8 @@
 import type { ProviderRegistry } from '../../providers/registry.js';
 import type { CatalogModel, CatalogProviderRecord } from '../../opencode/catalog/types.js';
 import { modelSupportsEfforts, type ReasoningEffort } from '../../types/router.js';
+import { comboEnvelope, tierAliasEnvelope } from '../../providers/virtual-meta.js';
+import { VIRTUAL_AUTO_IDS } from '../types.js';
 
 /**
  * Client-hook model metadata — the per-entry enrichment written into client
@@ -72,14 +74,33 @@ export function piThinkingLevelMap(supported?: readonly ReasoningEffort[]): Reco
   };
 }
 
-/** pi cost block — all four fields required by pi's schema, cacheWrite defaulting to 0. */
-function piCost(pricing: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number } | undefined): ClientModelMeta['cost'] {
+/** Convert a gateway envelope into the pi entry vocabulary (snake_case cost handled). */
+function envToDisplayMeta(env: {
+  contextWindow?: number;
+  maxTokens?: number;
+  imageInput?: boolean;
+  pricing?: { input: number; output: number; cacheRead: number; cacheWrite?: number };
+  leaderName?: string;
+}): Omit<ClientModelMeta, 'reasoning'> {
+  return {
+    ...(env.leaderName ? { name: env.leaderName } : {}),
+    ...(env.contextWindow ? { contextWindow: env.contextWindow } : {}),
+    ...(env.maxTokens ? { maxTokens: env.maxTokens } : {}),
+    ...(env.imageInput ? { input: ['text', 'image'] } : {}),
+    ...(env.pricing ? { cost: piCost(env.pricing) } : {}),
+  };
+}
+
+/** pi cost block — all four fields required by pi's schema, cacheWrite defaulting to 0.
+ *  Accepts both vocabularies: registry pricing (camelCase cacheRead/cacheWrite)
+ *  and catalog CatalogCost (snake_case cache_read/cache_write). */
+function piCost(pricing: { input?: number; output?: number; cacheRead?: number; cache_read?: number; cacheWrite?: number; cache_write?: number } | undefined): ClientModelMeta['cost'] {
   if (!pricing) return undefined;
   return {
     input: pricing.input ?? 0,
     output: pricing.output ?? 0,
-    cacheRead: pricing.cacheRead ?? 0,
-    cacheWrite: pricing.cacheWrite ?? 0,
+    cacheRead: pricing.cacheRead ?? pricing.cache_read ?? 0,
+    cacheWrite: pricing.cacheWrite ?? pricing.cache_write ?? 0,
   };
 }
 
@@ -140,8 +161,21 @@ export async function resolveClientModelMeta(ids: string[]): Promise<Record<stri
 
   for (const id of unique) {
     try {
+      if (VIRTUAL_AUTO_IDS.has(id)) {
+        // Static base (name/ladder) stays in the caller (pi.ts PI_ALIAS_META);
+        // the aggregated tier-member envelope rides on top when a registry is
+        // live. Effort ladder stays the permissive full map — see virtual-meta.
+        const env = await tierAliasEnvelope(registry, catalogList, id);
+        out[id] = { ...envToDisplayMeta(env), reasoning: true, thinkingLevelMap: piThinkingLevelMap() };
+        continue;
+      }
       if (combos.has(id)) {
-        out[id] = { reasoning: true, thinkingLevelMap: piThinkingLevelMap() };
+        // Aggregate member capabilities from the fixed config list (see
+        // virtual-meta.ts); the ladder stays permissive — each member is
+        // clamped per request.
+        const combo = registry.getCombos().find((c) => c.id === id);
+        const env = combo ? await comboEnvelope(registry, catalogList, combo) : { memberCount: 0 };
+        out[id] = { ...envToDisplayMeta(env), reasoning: true, thinkingLevelMap: piThinkingLevelMap() };
         continue;
       }
       if (variants.has(id)) {

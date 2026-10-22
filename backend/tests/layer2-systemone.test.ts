@@ -3,12 +3,15 @@ import { serve } from 'bun';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createServer } from '../src/server.js';
 import { loadConfig } from '../src/config/index.js';
+import { bootServer, makeConfig as seamMakeConfig } from './helpers/systemone-seam.js';
+// This suite always runs with the Layer 2 micro-classifier disabled —
+// pin it once instead of threading the option through every call site.
+const makeConfig = (providers: any[], models: any[], systemone?: any): RouterConfig =>
+  seamMakeConfig(providers, models, { systemone, disableLayer2Classifier: true });
 import { ModelRegistration, RouterConfig } from '../src/config/types.js';
 import { Layer2Judge } from '../src/router/layer2-judge.js';
 import { RouterEngine } from '../src/router/index.js';
-import { SystemoneProvider } from '../src/providers/systemone.js';
 import { CaptureRecorder } from '../src/capture/recorder.js';
 import { resetDecisionCaptureConfig } from '../src/capture/decision-capture.js';
 import { getRouteEntryStore, normalizePrompt, promptHashOf } from '../src/router/route-entries.js';
@@ -50,21 +53,6 @@ afterAll(() => {
   }
 });
 
-function makeConfig(providers: any[], models: any[], systemone?: any): RouterConfig {
-  const base = loadConfig();
-  return {
-    ...base,
-    apiKeys: [],
-    providers,
-    models,
-    ...(systemone ? { systemone } : {}),
-    classifier: { ...base.classifier, layer2: { ...base.classifier?.layer2, enabled: false } },
-    requestCapture: { ...base.requestCapture, enabled: false },
-    session: { ...base.session, enabled: false },
-    tracePersist: { ...base.tracePersist, enabled: false },
-  } as RouterConfig;
-}
-
 function fakeChat(content: string): ChatCompletionResponse {
   return {
     id: 'chatcmpl-test',
@@ -73,6 +61,11 @@ function fakeChat(content: string): ChatCompletionResponse {
     model: 'upstream',
     choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }],
   } as ChatCompletionResponse;
+}
+
+/** Chat completion wrapping a decision-answers body (converted judge path). */
+function chatAnswers(answers: any): ChatCompletionResponse {
+  return fakeChat(JSON.stringify({ answers }));
 }
 
 const PROOF = "Prove Fermat's Last Theorem.";
@@ -97,15 +90,15 @@ describe('Layer 2 decision capture (dataset sink — single-key gate classifier.
     const upstream = serve({
       port: 0,
       async fetch() {
-        return Response.json({ answers: { tier: { type: 'choice', choice: 'plus', confidence: 0.77 } } });
+        return Response.json(chatAnswers({ tier: { type: 'choice', choice: 'plus', confidence: 0.77 } }));
       },
     });
     try {
       const config = makeConfig(
-        [{ name: 'l2-cap', type: 'systemone', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
+        [{ name: 'l2-cap', type: 'openai-compatible', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
         [{ id: 'l2-cap/jev', provider: 'l2-cap', upstreamModel: 'jev', tier: 'plus', pricing: { input: 0, output: 0, cacheRead: 0 } }]
       );
-      const { registry } = createServer(config);
+      const { registry } = bootServer(config);
       const request: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: PROOF }] };
 
       const result = await Layer2Judge.evaluate(request, { enabled: true, model: 'l2-cap/jev', timeoutMs: 5000 }, registry);
@@ -117,7 +110,7 @@ describe('Layer 2 decision capture (dataset sink — single-key gate classifier.
       const row = JSON.parse(lines[0]);
       expect(row.source).toBe('layer2_judge');
       expect(row.model).toBe('l2-cap/jev');
-      expect(row.upstreamKind).toBe('native');
+      expect(row.upstreamKind).toBe('converted');
       expect(row.tier).toBe('plus');
       expect(row.confidence).toBeCloseTo(0.77, 10);
       expect(row.state).toBe(`user: ${PROOF}`);
@@ -132,15 +125,15 @@ describe('Layer 2 decision capture (dataset sink — single-key gate classifier.
     const upstream = serve({
       port: 0,
       async fetch() {
-        return Response.json({ answers: { tier: { type: 'choice', choice: 'lite', confidence: 0.9 } } });
+        return Response.json(chatAnswers({ tier: { type: 'choice', choice: 'lite', confidence: 0.9 } }));
       },
     });
     try {
       const config = makeConfig(
-        [{ name: 'l2-cap2', type: 'systemone', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
+        [{ name: 'l2-cap2', type: 'openai-compatible', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
         [{ id: 'l2-cap2/jev', provider: 'l2-cap2', upstreamModel: 'jev', tier: 'plus', pricing: { input: 0, output: 0, cacheRead: 0 } }]
       );
-      const { registry } = createServer(config);
+      const { registry } = bootServer(config);
       await Layer2Judge.evaluate(
         { model: 'auto', messages: [{ role: 'user', content: PROOF }] },
         { enabled: true, model: 'l2-cap2/jev', timeoutMs: 5000 },
@@ -161,15 +154,15 @@ describe('Layer 2 decision capture (dataset sink — single-key gate classifier.
       async fetch() {
         // Valid answer, but slower than the judge deadline.
         await new Promise((r) => setTimeout(r, 400));
-        return Response.json({ answers: { tier: { type: 'choice', choice: 'ultra', confidence: 0.99 } } });
+        return Response.json(chatAnswers({ tier: { type: 'choice', choice: 'ultra', confidence: 0.99 } }));
       },
     });
     try {
       const config = makeConfig(
-        [{ name: 'l2-cap3', type: 'systemone', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test', timeoutMs: 60_000 }],
+        [{ name: 'l2-cap3', type: 'openai-compatible', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test', timeoutMs: 60_000 }],
         [{ id: 'l2-cap3/jev', provider: 'l2-cap3', upstreamModel: 'jev', tier: 'plus', pricing: { input: 0, output: 0, cacheRead: 0 } }]
       );
-      const { registry } = createServer(config);
+      const { registry } = bootServer(config);
       const result = await Layer2Judge.evaluate(
         { model: 'auto', messages: [{ role: 'user', content: PROOF }] },
         { enabled: true, model: 'l2-cap3/jev', timeoutMs: 150 },
@@ -185,28 +178,18 @@ describe('Layer 2 decision capture (dataset sink — single-key gate classifier.
 });
 
 describe('Layer 2 judge speaks the System One protocol', () => {
-  test('native System One upstream: typed answers become the routing tier', async () => {
+  test('System One judge upstream: typed answers become the routing tier', async () => {
     let received: any = null;
     const upstream = serve({
       port: 0,
       async fetch(req) {
         received = await req.json();
-        return Response.json({
-          model: 'jev-1.13.0',
-          answers: {
-            tier: {
-              type: 'choice',
-              choice: 'pro',
-              probabilities: { lite: 0, plus: 0.05, pro: 0.93, ultra: 0.02 },
-              confidence: 0.91,
-            },
-          },
-        });
+        return Response.json(chatAnswers({ tier: { type: 'choice', choice: 'pro', probabilities: { lite: 0, plus: 0.05, pro: 0.93, ultra: 0.02 }, confidence: 0.91 } }));
       },
     });
     try {
       const config = makeConfig(
-        [{ name: 'l2-native', type: 'systemone', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
+        [{ name: 'l2-native', type: 'openai-compatible', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
         [
           {
             id: 'l2-native/jev',
@@ -217,7 +200,7 @@ describe('Layer 2 judge speaks the System One protocol', () => {
           },
         ]
       );
-      const { registry } = createServer(config);
+      const { registry } = bootServer(config);
       const request: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: PROOF }] };
 
       const result = await Layer2Judge.evaluate(
@@ -230,16 +213,19 @@ describe('Layer 2 judge speaks the System One protocol', () => {
       expect(result!.targetTier).toBe('pro');
       expect(result!.confidence).toBeCloseTo(0.91, 10);
       expect(result!.model).toBe('l2-native/jev');
-      expect(result!.reasonCode).toBe('l2.system_one');
+      expect(result!.reasonCode).toBe('l2.system_one_uncalibrated');
       expect(result!.reasonParams).toEqual({ model: 'l2-native/jev', tier: 'pro' });
-      expect(result!.reason).not.toContain('not yet calibrated');
+      expect(result!.reason).toContain('not yet calibrated');
 
-      // The upstream saw a well-formed System One request, not a vendor wire.
-      expect(received.state).toBe(`user: ${PROOF}`);
-      expect(received.questions.tier.type).toBe('choice');
-      expect(Object.keys(received.questions.tier.criteria).sort()).toEqual(['lite', 'plus', 'pro', 'ultra']);
-      expect(String(received.questions.tier.instructions)).toContain('NEVER judge difficulty by character length');
+      // The upstream saw the JSON-constrained chat call: the STATE/QUESTIONS
+      // payload rides inside the user message, model = upstream id.
       expect(received.model).toBe('jev-latest');
+      expect(received.messages[0].role).toBe('system');
+      const wirePayload = JSON.parse(received.messages[1].content.split('\n').slice(1).join('\n'));
+      expect(wirePayload.state).toBe(`user: ${PROOF}`);
+      expect(wirePayload.questions.tier.type).toBe('choice');
+      expect(Object.keys(wirePayload.questions.tier.criteria).sort()).toEqual(['lite', 'plus', 'pro', 'ultra']);
+      expect(String(wirePayload.questions.tier.instructions)).toContain('NEVER judge difficulty by character length');
     } finally {
       upstream.stop(true);
     }
@@ -251,14 +237,12 @@ describe('Layer 2 judge speaks the System One protocol', () => {
       port: 0,
       async fetch() {
         if (fail) return new Response('{"error":{"message":"quota exhausted"}}', { status: 429 });
-        return Response.json({
-          answers: { tier: { type: 'choice', choice: 'plus', confidence: 0.9 } },
-        });
+        return Response.json(chatAnswers({ tier: { type: 'choice', choice: 'plus', confidence: 0.9 } }));
       },
     });
     try {
       const config = makeConfig(
-        [{ name: 'l2-native', type: 'systemone', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
+        [{ name: 'l2-native', type: 'openai-compatible', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
         [
           {
             id: 'l2-native/jev',
@@ -269,7 +253,7 @@ describe('Layer 2 judge speaks the System One protocol', () => {
           },
         ]
       );
-      const { registry } = createServer(config);
+      const { registry } = bootServer(config);
       const request: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: PROOF }] };
       const judgeConfig = { enabled: true, model: 'l2-native/jev', timeoutMs: 5000 } as const;
 
@@ -335,7 +319,7 @@ describe('Layer 2 judge speaks the System One protocol', () => {
           },
         ]
       );
-      const { registry } = createServer(config);
+      const { registry } = bootServer(config);
       const request: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: PROOF }] };
 
       const result = await Layer2Judge.evaluate(request, { enabled: true, timeoutMs: 5000 }, registry, 'l2-chat/model');
@@ -361,12 +345,12 @@ describe('Layer 2 judge speaks the System One protocol', () => {
       port: 0,
       async fetch() {
         calls++;
-        return Response.json({ answers: { tier: { type: 'choice', choice: 'plus', confidence: 0.8 } } });
+        return Response.json(chatAnswers({ tier: { type: 'choice', choice: 'plus', confidence: 0.8 } }));
       },
     });
     try {
       const config = makeConfig(
-        [{ name: 'l2-cache', type: 'systemone', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
+        [{ name: 'l2-cache', type: 'openai-compatible', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
         [
           {
             id: 'l2-cache/jev',
@@ -377,7 +361,7 @@ describe('Layer 2 judge speaks the System One protocol', () => {
           },
         ]
       );
-      const { registry } = createServer(config);
+      const { registry } = bootServer(config);
       const request: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: PROOF }] };
       const config2 = { enabled: true, model: 'l2-cache/jev', timeoutMs: 5000 };
 
@@ -426,7 +410,7 @@ describe('Layer 2 judge speaks the System One protocol', () => {
           },
         ]
       );
-      const { registry } = createServer(config);
+      const { registry } = bootServer(config);
       const request: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: PROOF }] };
 
       // Judge off.
@@ -471,7 +455,7 @@ describe('Layer 2 judge speaks the System One protocol', () => {
           },
         ]
       );
-      const { registry } = createServer(config);
+      const { registry } = bootServer(config);
       const request: ChatCompletionRequest = { model: 'user', messages: [{ role: 'user', content: PROOF }] };
 
       const started = Date.now();
@@ -494,12 +478,12 @@ describe('Layer 2 judge speaks the System One protocol', () => {
       async fetch() {
         seen.push(Date.now() - started);
         await new Promise((r) => setTimeout(r, 400));
-        return Response.json({ answers: { tier: { type: 'choice', choice: 'pro', confidence: 0.9 } } });
+        return Response.json(chatAnswers({ tier: { type: 'choice', choice: 'pro', confidence: 0.9 } }));
       },
     });
     try {
       const config = makeConfig(
-        [{ name: 'l2-late', type: 'systemone', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test', timeoutMs: 60_000 }],
+        [{ name: 'l2-late', type: 'openai-compatible', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test', timeoutMs: 60_000 }],
         [
           {
             id: 'l2-late/jev',
@@ -510,7 +494,7 @@ describe('Layer 2 judge speaks the System One protocol', () => {
           },
         ]
       );
-      const { registry } = createServer(config);
+      const { registry } = bootServer(config);
       const request: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: PROOF }] };
       const judge = { enabled: true, model: 'l2-late/jev', timeoutMs: 150 };
 
@@ -563,7 +547,7 @@ describe('Layer 2 judge speaks the System One protocol', () => {
           },
         ]
       );
-      const { registry } = createServer(config);
+      const { registry } = bootServer(config);
       const request: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: PROOF }] };
 
       const result = await Layer2Judge.evaluate(request, { enabled: true, model: 'l2-repair/model', timeoutMs: 150 }, registry);
@@ -577,50 +561,6 @@ describe('Layer 2 judge speaks the System One protocol', () => {
     }
   });
 
-  test('an abandoned native call is aborted for real, not left running', async () => {
-    // The native client owns its transport, so the judge's signal must tear
-    // the request down promptly — proof: it rejects at ~150ms instead of
-    // hanging until the provider's own 60s timeout.
-    const upstream = serve({
-      port: 0,
-      fetch() {
-        return new Promise<Response>(() => {}); // never answers
-      },
-    });
-    try {
-      const provider = new SystemoneProvider({
-        name: 'abort-native',
-        type: 'systemone',
-        baseUrl: `http://localhost:${upstream.port}`,
-        apiKey: 'sk-test',
-        timeoutMs: 60_000,
-      });
-      const model: ModelRegistration = {
-        id: 'abort-native/jev',
-        provider: 'abort-native',
-        upstreamModel: 'jev',
-        tier: 'plus',
-        pricing: { input: 0, output: 0, cacheRead: 0 },
-      };
-
-      const controller = new AbortController();
-      const started = Date.now();
-      const pending = provider.createDecision({ state: 's', questions: {} }, model, controller.signal);
-      setTimeout(() => controller.abort(), 150);
-
-      let rejected = false;
-      await pending.then(
-        () => undefined,
-        () => {
-          rejected = true;
-        }
-      );
-      expect(rejected).toBe(true);
-      expect(Date.now() - started).toBeLessThan(5000);
-    } finally {
-      upstream.stop(true);
-    }
-  });
 });
 
 describe('retired Layer 2 vendor keys are stripped at load time', () => {
@@ -657,14 +597,12 @@ describe('routeAsync wires the Layer 2 judge', () => {
     const upstream = serve({
       port: 0,
       async fetch() {
-        return Response.json({
-          answers: { tier: { type: 'choice', choice: 'pro', probabilities: { pro: 1 }, confidence: 0.95 } },
-        });
+        return Response.json(chatAnswers({ tier: { type: 'choice', choice: 'pro', probabilities: { pro: 1 }, confidence: 0.95 } }));
       },
     });
     try {
       const config = makeConfig(
-        [{ name: 'l2-route', type: 'systemone', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
+        [{ name: 'l2-route', type: 'openai-compatible', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
         [
           {
             id: 'l2-route/jev',
@@ -675,7 +613,7 @@ describe('routeAsync wires the Layer 2 judge', () => {
           },
         ]
       );
-      const { registry } = createServer(config);
+      const { registry } = bootServer(config);
       const request: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: PROOF }] };
 
       const decision = await RouterEngine.routeAsync(
@@ -703,9 +641,7 @@ describe('routeAsync wires the Layer 2 judge', () => {
     const upstream = serve({
       port: 0,
       async fetch() {
-        return Response.json({
-          answers: { tier: { type: 'choice', choice: 'ultra', probabilities: { ultra: 1 }, confidence: 0.99 } },
-        });
+        return Response.json(chatAnswers({ tier: { type: 'choice', choice: 'ultra', probabilities: { ultra: 1 }, confidence: 0.99 } }));
       },
     });
     try {
@@ -732,7 +668,7 @@ describe('routeAsync wires the Layer 2 judge', () => {
           },
         ]
       );
-      const { registry } = createServer(config);
+      const { registry } = bootServer(config);
       const request: ChatCompletionRequest = {
         model: 'auto',
         messages: [{ role: 'user', content: PROOF }],
@@ -757,7 +693,7 @@ describe('routeAsync wires the Layer 2 judge', () => {
 // stays silent (the exact pre-feature call shape) while the turn's own client
 // and candidate-execution events continue unchanged. Both upstream classes
 // are covered: the CONVERTED path (registry.execute plumbing) and the NATIVE
-// SystemoneProvider path (fetch wrapped directly).
+// Conversion path (registry.execute, fetch wrapped directly).
 // ---------------------------------------------------------------------------
 describe('judge-call capture (systemone.enabled × systemone.l2DecisionEnabled, capture master above them)', () => {
   interface Evt {
@@ -798,21 +734,15 @@ describe('judge-call capture (systemone.enabled × systemone.l2DecisionEnabled, 
 
   /** Route one real /v1/chat/completions turn whose Layer-2 judge dials the
    *  given provider kind; returns every http-exchange event written. */
-  async function routedTurn(opts: {
-    judgeKind: 'native' | 'converted';
-    l2DecisionEnabled: boolean;
-  }): Promise<{ events: Evt[]; marker: string }> {
+  async function routedTurn(opts: { l2DecisionEnabled: boolean }): Promise<{ events: Evt[]; marker: string }> {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-judge-cap-'));
-    const marker = `JUDGECAP-${opts.judgeKind}-${Date.now()}`;
-    // Judge upstream: answers the System One question — natively as a
-    // decision body, or as a JSON-constrained chat completion when converted.
+    const marker = `JUDGECAP-${Date.now()}`;
+    // Judge upstream: answers the System One question as a JSON-constrained
+    // chat completion (converted path — the only path).
     const judgeUpstream = serve({
       port: 0,
       hostname: '127.0.0.1',
       async fetch() {
-        if (opts.judgeKind === 'native') {
-          return Response.json({ answers: { tier: { type: 'choice', choice: 'plus', confidence: 0.82 } } });
-        }
         return Response.json(
           fakeChat(JSON.stringify({ answers: { tier: { choice: 'plus', confidence: 0.8, probabilities: { lite: 0, plus: 0.8, pro: 0.2, ultra: 0 } } } }))
         );
@@ -827,10 +757,7 @@ describe('judge-call capture (systemone.enabled × systemone.l2DecisionEnabled, 
       },
     });
     try {
-      const judgeProvider =
-        opts.judgeKind === 'native'
-          ? { name: 'jc-native', type: 'systemone', baseUrl: `http://127.0.0.1:${judgeUpstream.port}`, apiKey: 'sk-jc-secret-1', timeoutMs: 5000 }
-          : { name: 'jc-conv', type: 'openai-compatible', baseUrl: `http://127.0.0.1:${judgeUpstream.port}`, apiKey: 'sk-jc-secret-1', timeoutMs: 5000 };
+      const judgeProvider = { name: 'jc-conv', type: 'openai-compatible', baseUrl: `http://127.0.0.1:${judgeUpstream.port}`, apiKey: 'sk-jc-secret-1', timeoutMs: 5000 };
       const judgeModel = {
         id: `${judgeProvider.name}/judge`,
         provider: judgeProvider.name,
@@ -861,7 +788,7 @@ describe('judge-call capture (systemone.enabled × systemone.l2DecisionEnabled, 
         ...config.classifier,
         layer2: { enabled: true, model: judgeModel.id, timeoutMs: 5000 },
       };
-      const { app } = createServer(config);
+      const { app } = bootServer(config);
       try {
         const res = await app.inject({
           method: 'POST',
@@ -915,12 +842,12 @@ describe('judge-call capture (systemone.enabled × systemone.l2DecisionEnabled, 
   }
 
   test('converted judge ON: outer turn archives a purpose l2-judge upstream pair on the outer trace', async () => {
-    const { events, marker } = await routedTurn({ judgeKind: 'converted', l2DecisionEnabled: true });
+    const { events, marker } = await routedTurn({ l2DecisionEnabled: true });
     assertJudgePair(events, marker);
   });
 
   test('converted judge OFF (l2DecisionEnabled false): zero purpose events, turn still captured', async () => {
-    const { events } = await routedTurn({ judgeKind: 'converted', l2DecisionEnabled: false });
+    const { events } = await routedTurn({ l2DecisionEnabled: false });
     expect(events.filter((e) => e.purpose === 'l2-judge').length).toBe(0);
     // The turn itself is still captured (master ON): client pair + purpose-less
     // execution pair — only the judge leg went silent.
@@ -928,18 +855,6 @@ describe('judge-call capture (systemone.enabled × systemone.l2DecisionEnabled, 
     expect(events.filter((e) => e.direction === 'upstream' && e.phase === 'request').length).toBe(1);
   });
 
-  test('native SystemoneProvider judge ON: fetch wrapped emits the purpose pair too', async () => {
-    const { events, marker } = await routedTurn({ judgeKind: 'native', l2DecisionEnabled: true });
-    assertJudgePair(events, marker);
-    const req = events.filter((e) => e.purpose === 'l2-judge' && e.phase === 'request')[0]!;
-    // Absolute-form request line dialed the native decision wire.
-    expect(req.wire.requestLine).toMatch(/^POST http:\/\/127\.0\.0\.1:\d+\/systemone HTTP\/1\.1$/);
-  });
-
-  test('native SystemoneProvider judge OFF: silent — HTTP-surface semantics byte-identical', async () => {
-    const { events } = await routedTurn({ judgeKind: 'native', l2DecisionEnabled: false });
-    expect(events.filter((e) => e.purpose === 'l2-judge').length).toBe(0);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -954,7 +869,7 @@ describe('judge-call capture (systemone.enabled × systemone.l2DecisionEnabled, 
 describe('judge-emitted thinking effort (ADR-0012)', () => {
   const PRICING = { input: 1, output: 1, cacheRead: 0 };
 
-  /** Native System One judge upstream answering the given answers body. */
+  /** System One judge upstream answering the given answers body (converted). */
   function judgeUpstream(answers: any, onBody?: (body: any) => void) {
     return serve({
       port: 0,
@@ -962,14 +877,14 @@ describe('judge-emitted thinking effort (ADR-0012)', () => {
       async fetch(req) {
         const body = await req.json();
         onBody?.(body);
-        return Response.json({ answers });
+        return Response.json(chatAnswers(answers));
       },
     });
   }
 
   function judgeOnlyConfig(port: number, name = 'je') {
     return makeConfig(
-      [{ name, type: 'systemone', baseUrl: `http://127.0.0.1:${port}`, apiKey: 'sk-je', timeoutMs: 5000 }],
+      [{ name, type: 'openai-compatible', baseUrl: `http://127.0.0.1:${port}`, apiKey: 'sk-je', timeoutMs: 5000 }],
       [{ id: `${name}/jev`, provider: name, upstreamModel: 'jev', tier: 'ultra', pricing: PRICING }]
     );
   }
@@ -984,7 +899,7 @@ describe('judge-emitted thinking effort (ADR-0012)', () => {
       (b) => (body = b)
     );
     try {
-      const { registry } = createServer(judgeOnlyConfig(upstream.port));
+      const { registry } = bootServer(judgeOnlyConfig(upstream.port));
       const result = await Layer2Judge.evaluate(
         { model: 'auto', messages: [{ role: 'user', content: PROOF }] },
         { enabled: true, model: 'je/jev', timeoutMs: 5000, effortDecision: true },
@@ -997,9 +912,10 @@ describe('judge-emitted thinking effort (ADR-0012)', () => {
       expect(result!.reasonParams?.effort).toBe('high');
       // The wire carried BOTH questions; the effort answer space is the
       // full 6-level ladder, 'none' included.
-      expect(Object.keys(body.questions).sort()).toEqual(['effort', 'tier']);
-      expect(Object.keys(body.questions.effort.criteria)).toEqual(['none', 'low', 'medium', 'high', 'xhigh', 'max']);
-      expect(body.questions.effort.type).toBe('choice');
+      const wirePayload = JSON.parse(body.messages[1].content.split('\n').slice(1).join('\n'));
+      expect(Object.keys(wirePayload.questions).sort()).toEqual(['effort', 'tier']);
+      expect(Object.keys(wirePayload.questions.effort.criteria)).toEqual(['none', 'low', 'medium', 'high', 'xhigh', 'max']);
+      expect(wirePayload.questions.effort.type).toBe('choice');
     } finally {
       upstream.stop(true);
     }
@@ -1012,14 +928,15 @@ describe('judge-emitted thinking effort (ADR-0012)', () => {
       (b) => (body = b)
     );
     try {
-      const { registry } = createServer(judgeOnlyConfig(upstream.port, 'je2'));
+      const { registry } = bootServer(judgeOnlyConfig(upstream.port, 'je2'));
       const result = await Layer2Judge.evaluate(
         { model: 'auto', messages: [{ role: 'user', content: PROOF }], reasoning_effort: 'low' },
         { enabled: true, model: 'je2/jev', timeoutMs: 5000, effortDecision: true },
         registry
       );
       // Never second-guess the client: the question was not even asked.
-      expect(Object.keys(body.questions)).toEqual(['tier']);
+      const wirePayload = JSON.parse(body.messages[1].content.split('\n').slice(1).join('\n'));
+      expect(Object.keys(wirePayload.questions)).toEqual(['tier']);
       expect(result!.effort).toBeUndefined();
     } finally {
       upstream.stop(true);
@@ -1036,13 +953,14 @@ describe('judge-emitted thinking effort (ADR-0012)', () => {
       (b) => (body = b)
     );
     try {
-      const { registry } = createServer(judgeOnlyConfig(upstream.port, 'je3'));
+      const { registry } = bootServer(judgeOnlyConfig(upstream.port, 'je3'));
       const result = await Layer2Judge.evaluate(
         { model: 'auto', messages: [{ role: 'user', content: PROOF }] },
         { enabled: true, model: 'je3/jev', timeoutMs: 5000 },
         registry
       );
-      expect(Object.keys(body.questions)).toEqual(['tier']);
+      const wirePayload = JSON.parse(body.messages[1].content.split('\n').slice(1).join('\n'));
+      expect(Object.keys(wirePayload.questions)).toEqual(['tier']);
       expect(result!.effort).toBeUndefined();
     } finally {
       upstream.stop(true);
@@ -1050,12 +968,15 @@ describe('judge-emitted thinking effort (ADR-0012)', () => {
   });
 
   test('a garbled effort answer never sinks a good tier decision', async () => {
+    // Converted-path semantics: a choice outside the criteria keys cannot
+    // survive synthesis — the answer is REPAIRED to the argmax probability
+    // ('high' here) and the tier decision stands.
     const upstream = judgeUpstream({
-      tier: { type: 'choice', choice: 'pro', confidence: 0.93 },
-      effort: { type: 'choice', choice: 'banana', confidence: 0.7 },
+      tier: { type: 'choice', choice: 'pro', probabilities: { lite: 0, plus: 0.05, pro: 0.93, ultra: 0.02 }, confidence: 0.93 },
+      effort: { type: 'choice', choice: 'banana', probabilities: { none: 0, low: 0, medium: 0, high: 1, xhigh: 0, max: 0 }, confidence: 0.7 },
     });
     try {
-      const { registry } = createServer(judgeOnlyConfig(upstream.port, 'je4'));
+      const { registry } = bootServer(judgeOnlyConfig(upstream.port, 'je4'));
       const result = await Layer2Judge.evaluate(
         { model: 'auto', messages: [{ role: 'user', content: PROOF }] },
         { enabled: true, model: 'je4/jev', timeoutMs: 5000, effortDecision: true },
@@ -1063,7 +984,7 @@ describe('judge-emitted thinking effort (ADR-0012)', () => {
       );
       expect(result).not.toBeNull();
       expect(result!.targetTier).toBe('pro');
-      expect(result!.effort).toBeUndefined();
+      expect(result!.effort).toBe('high');
     } finally {
       upstream.stop(true);
     }
@@ -1079,7 +1000,7 @@ describe('judge-emitted thinking effort (ADR-0012)', () => {
       () => calls++
     );
     try {
-      const { registry } = createServer(judgeOnlyConfig(upstream.port, 'je5'));
+      const { registry } = bootServer(judgeOnlyConfig(upstream.port, 'je5'));
       const req: ChatCompletionRequest = { model: 'auto', messages: [{ role: 'user', content: PROOF }] };
       const on = { enabled: true, model: 'je5/jev', timeoutMs: 5000, effortDecision: true };
 
@@ -1117,7 +1038,7 @@ describe('judge-emitted thinking effort (ADR-0012)', () => {
     try {
       const config = makeConfig(
         [
-          { name: 'fc-judge', type: 'systemone', baseUrl: `http://127.0.0.1:${judge.port}`, apiKey: 'sk-j', timeoutMs: 5000 },
+          { name: 'fc-judge', type: 'openai-compatible', baseUrl: `http://127.0.0.1:${judge.port}`, apiKey: 'sk-j', timeoutMs: 5000 },
           { name: 'fc-exec', type: 'openai-compatible', baseUrl: `http://127.0.0.1:${exec.port}`, apiKey: 'sk-e', timeoutMs: 5000 },
         ],
         [
@@ -1137,7 +1058,7 @@ describe('judge-emitted thinking effort (ADR-0012)', () => {
         ...config.classifier,
         layer2: { enabled: true, model: 'fc-judge/jev', timeoutMs: 5000, effortDecision: true },
       };
-      const { app, orchestrator } = createServer(config);
+      const { app, orchestrator } = bootServer(config);
       try {
         const res = await app.inject({
           method: 'POST',

@@ -2,13 +2,13 @@
 
 ## Status
 
-Implemented — 2026-10-20（阶段：定义库 + 一次性 jsonc 移植；CRUD/boot/视图漏斗换源；先物化后推 key 的同步 REPLACE 语义；CLI 钩子改道）。修订 ADR-0005 §2(a) 的 boot 数据源。
+Implemented — 2026-10-20（阶段：定义库 + 一次性 jsonc 移植；CRUD/boot/视图漏斗换源；先物化后推 key 的同步 REPLACE 语义；CLI 钩子改道）。修订 ADR-0005 §2(a) 的 boot 数据源。2026-10-21 修订：手写 `config.yaml` `providers[]` 配置面退役——定义文件是连接定义的唯一事实源（见 §1）。
 
 ## Decision
 
 ### 1. 每类工件一个真相——连接定义加入凭证的行列
 
-Provider 的**连接定义**——id、name、npm wire 包、baseURL、headers、env 槽位、canonical/body、节点内静态模型——由 OCR 持有于 `<ocrHome>/custom-providers.json`，GLOBAL（不按环境分账；与 `credentials.json` 同册，ADR-0007 文件约定）。`opencode.jsonc` **整体退出真相链**：任何 console 路由、boot 路径、视图都不得再把它当真相读写。它是**物化目标**——opencode 同步适配器从定义文件再生的客户端工件，与密钥世界的 `opencode.db`/`auth.json` 完全同构（ADR-0006）。手改的 jsonc 定义不是任何东西的数据源；§4 的一次性导入是唯一存在的 client→OCR 定义流动，永远如此。
+Provider 的**连接定义**——id、name、npm wire 包、baseURL、headers、env 槽位、canonical/body、节点内静态模型——由 OCR 持有于 `<ocrHome>/custom-providers.json`，GLOBAL（不按环境分账；与 `credentials.json` 同册，ADR-0007 文件约定）。这是**唯一**的用户侧连接定义配置面：早先的手写 `config.yaml` `providers[]` 一节已**退役**（注册表不再读取；config 解析器直接丢弃，原生 System One 直通支路整体退役（ADR-0008 修订；未来 Jev/Bailian 集成以普通定义文件 provider 形式接入），手写 `models[]` 配置面随之一同退役（模型在 boot 时从定义 + 目录物化；`RouterConfig.models` 仅作为运行时载体存在，由 `boot.models` 覆盖））。`opencode.jsonc` **整体退出真相链**：任何 console 路由、boot 路径、视图都不得再把它当真相读写。它是**物化目标**——opencode 同步适配器从定义文件再生的客户端工件，与密钥世界的 `opencode.db`/`auth.json` 完全同构（ADR-0006）。手改的 jsonc 定义不是任何东西的数据源；§4 的一次性导入是唯一存在的 client→OCR 定义流动，永远如此。
 
 ### 2. 文件——jsonc providers 节点的保形移植
 

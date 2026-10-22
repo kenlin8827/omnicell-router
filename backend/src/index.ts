@@ -179,7 +179,7 @@ async function main() {
     if (modelLevel.length > 0)
       console.log(`[OCR]   ${modelLevel.length} models excluded (non-text wire/modality), e.g. ${modelLevel.slice(0, 3).map((e) => e.model).join(', ')}`);
   } catch (err: any) {
-    console.warn(`[OCR] Direct pool build failed, falling back to standalone config: ${err.message}`);
+    console.warn(`[OCR] Direct pool build failed, booting mock-only registry (no chat providers): ${err.message}`);
     registry = new ProviderRegistry(config, true);
   }
 
@@ -233,26 +233,6 @@ async function main() {
   }
 
   const { app } = createServer(config, false, registry, orchestrator);
-
-  // Legacy-id migration hint: the tier aliases dropped their `auto-` prefix
-  // and the bare `default` alias was retired. Old ids in persisted config no
-  // longer resolve — point the operator at the exact spots instead of letting
-  // requests 404 silently.
-  const LEGACY_MODEL_IDS = ['auto-lite', 'auto-plus', 'auto-pro', 'auto-ultra', 'default'];
-  const legacySpots: string[] = [];
-  for (const key of config.apiKeys || []) {
-    for (const m of key.modelAccess?.models || []) {
-      if (LEGACY_MODEL_IDS.includes(m)) legacySpots.push(`apiKeys[${key.name}].modelAccess: '${m}'`);
-    }
-  }
-  for (const p of config.modelProfiles || []) {
-    for (const [slot, ref] of Object.entries(p.slots || {})) {
-      if (LEGACY_MODEL_IDS.includes(ref)) legacySpots.push(`modelProfiles[${p.id}].slots.${slot}: '${ref}'`);
-    }
-  }
-  for (const spot of legacySpots) {
-    console.warn(`[OCR] Legacy model id in config — tier aliases are now bare (lite/plus/pro/ultra), 'default' was retired; please update: ${spot}`);
-  }
 
   try {
     await app.listen({ port: config.port, host: config.host });

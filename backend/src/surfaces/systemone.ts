@@ -14,8 +14,8 @@ import type { DecisionSurface } from './types.js';
  * silences BOTH legs; default ON, while the capture master is default OFF —
  * the decision payload is the client's internal state snapshot) are true,
  * and the pipeline emits only past every gate. A captured surface request
- * is FULL-CHAIN: the client exchange plus its upstream leg (native
- * passthrough / synthesized conversion call) via the ctx handed to the
+ * is FULL-CHAIN: the client exchange plus its upstream leg (the synthesized
+ * conversion call) via the ctx handed to the
  * executor; a judge leg inside a routed chat turn is captured separately by
  * requestCapture.systemone.l2DecisionEnabled (sub-switch, effective only
  * when the surface master is on).
@@ -28,7 +28,7 @@ export const systemoneSurface: DecisionSurface = {
 
   /**
    * Intentionally WIDER than routePath — by design. The MITM
-   * forward-proxy leg must also claim native System One upstream traffic:
+   * forward-proxy leg must also claim System One-shaped decision traffic:
    * TypeSafe Jev (api.typesafe.ai/v1/systemone) and the Alibaba Bailian
    * compatible-mode decision endpoint both terminate in `/systemone`, and
    * the gateway serves them over the intercepted leg. Detection is the

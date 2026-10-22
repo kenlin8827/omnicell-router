@@ -28,6 +28,18 @@ import { loadConfig } from '../src/config/index.js';
 import { createServer } from '../src/server.js';
 import { createProxyInterceptor } from '../src/forward-proxy/interceptor.js';
 
+let soChatProviders: any[] = [];
+
+function fakeChat(content: string) {
+  return {
+    id: 'chatcmpl-so',
+    object: 'chat.completion',
+    created: 1700000000,
+    model: 'jev-test',
+    choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }],
+  };
+}
+
 const TEST_KEY = 'sk-ocr-surface-headers-test';
 const BASE13 = [
   'x-ocr-tier',
@@ -236,20 +248,22 @@ describe('surface-headers: X-OCR key-set golden matrix', () => {
       port: 0,
       hostname: '127.0.0.1',
       fetch: () =>
-        Response.json({
-          model: 'jev-test',
-          answers: { route: { type: 'choice', choice: 'billing', probabilities: { billing: 1 } } },
-          usage: { input_tokens: 1, output_tokens: 0 },
-        }),
+        Response.json(
+          fakeChat(
+            JSON.stringify({
+              answers: { route: { type: 'choice', choice: 'billing', probabilities: { billing: 1 }, confidence: 1 } },
+            })
+          )
+        ),
     });
     const soConfig = loadConfig();
     soConfig.host = '127.0.0.1';
     soConfig.webAuth = { enabled: false };
     soConfig.apiKeys = config.apiKeys;
-    soConfig.providers = [
+    soChatProviders = [
       {
         name: 'native-test',
-        type: 'systemone',
+        type: 'openai-compatible',
         baseUrl: `http://127.0.0.1:${fakeUpstream.port}`,
         apiKey: 'sk-test',
       },
@@ -264,7 +278,7 @@ describe('surface-headers: X-OCR key-set golden matrix', () => {
       },
     ];
     soConfig.requestCapture = { ...soConfig.requestCapture, enabled: false };
-    const so = createServer(soConfig);
+    const so = createServer(soConfig, false, undefined, undefined, soChatProviders);
     soApp = so.app;
     const soIntercept = createProxyInterceptor(so.orchestrator);
     soMitmSrv = http.createServer((req, res) => {

@@ -50,7 +50,7 @@ describe('Fastify Gateway Server & OpenAI Endpoints', () => {
     assert.ok(body.modelsRegistered > 0);
   });
 
-  it('GET /v1/models should return virtual cascading models (auto) and physical models', async () => {
+  it('GET /v1/models returns an OpenAI envelope; /v1/catalog.json the models.dev map', async () => {
     const res = await app.inject({
       headers: authHeaders(),
       method: 'GET',
@@ -59,19 +59,27 @@ describe('Fastify Gateway Server & OpenAI Endpoints', () => {
 
     assert.strictEqual(res.statusCode, 200);
     const body = JSON.parse(res.body);
-    assert.strictEqual(body.object, 'list');
+    assert.ok(body && body.object === 'list' && Array.isArray(body.data), 'expected OpenAI list envelope');
     const ids = body.data.map((m: any) => m.id);
     assert.ok(ids.includes('auto'), 'Expected virtual "auto" model');
     assert.ok(ids.includes('lite'));
     assert.ok(ids.includes('plus'));
     assert.ok(ids.includes('pro'));
     assert.ok(ids.includes('ultra'));
+    // Every row carries the full models.dev capability block under metadata.
+    const physical = body.data.find((m: any) => m.metadata?.cost);
+    assert.ok(physical, 'Expected physical model with models.dev cost metadata');
+    assert.strictEqual(typeof physical.metadata.cost.input, 'number');
+    assert.strictEqual(typeof physical.metadata.cost.output, 'number');
+    assert.strictEqual(typeof physical.metadata.cost.cache_read, 'number');
 
-    const physical = body.data.find((m: any) => m.metadata?.pricing);
-    assert.ok(physical, 'Expected physical model with pricing metadata');
-    assert.strictEqual(typeof physical.metadata.pricing.input, 'number');
-    assert.strictEqual(typeof physical.metadata.pricing.output, 'number');
-    assert.strictEqual(typeof physical.metadata.pricing.cacheRead, 'number');
+    // Provider-grouped capability catalog: same data, models.dev shape.
+    const cat = await app.inject({ headers: authHeaders(), method: 'GET', url: '/v1/catalog.json' });
+    assert.strictEqual(cat.statusCode, 200);
+    const providers = JSON.parse(cat.body);
+    assert.ok(providers && typeof providers === 'object' && !Array.isArray(providers), 'expected provider-map body');
+    const catIds = Object.values(providers).flatMap((p: any) => Object.keys(p?.models ?? {}));
+    assert.ok(catIds.includes('auto'));
   });
 
   it('GET /v1/models/:model should return single model definition', async () => {

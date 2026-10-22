@@ -73,7 +73,6 @@ export function buildPairCards(
   modelBreakers: BreakerInfo[],
   pairBreakers: BreakerInfo[],
   storeCredentials: CredentialHealth[],
-  maskedKeyByProvider: Map<string, string>,
   credentialHashes: CredentialHash[],
   labels: MatrixLabels
 ): PairCard[] {
@@ -93,7 +92,7 @@ export function buildPairCards(
   for (const b of modelBreakers) {
     const accts = credentialsByProvider.get(b.provider) ?? [];
     if (accts.length === 0) {
-      // Chainless provider: one synthetic column for the config-baked key.
+      // Chainless provider (mock/stub call sites): one synthetic column.
       items.push({
         key: `${b.modelId}#@config`,
         modelId: b.modelId,
@@ -101,7 +100,6 @@ export function buildPairCards(
         prefix: '',
         label: labels.configKey,
         synthetic: true,
-        maskedKey: maskedKeyByProvider.get(b.provider),
         suspect: false,
         disabled: false,
         snap: b,
@@ -159,7 +157,7 @@ export function buildPairCards(
       label: a ? a.label?.trim() || labels.unnamed : isServingKey ? labels.configKey : `#${p.keyHashPrefix}`,
       synthetic: false,
       unmatched: !a && !isServingKey,
-      maskedKey: a?.maskedKey ?? (isServingKey ? maskedKeyByProvider.get(p.provider) : undefined),
+      maskedKey: a?.maskedKey,
       suspect: a?.suspect ?? false,
       disabled: a?.disabled ?? false,
       disabledReason: a?.disabledReason,

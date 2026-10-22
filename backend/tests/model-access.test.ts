@@ -179,6 +179,9 @@ describe('Per-key model access policy (auth/model-access.ts)', () => {
     // With models: [] the mockMode registry seeds deterministic tier models
     // (mock-lite / mock-plus / mock-pro / mock-ultra) — machine-independent ids.
     const ALLOWED = 'mock-lite';
+
+  /** Flatten the /v1/models body (OpenAI envelope) into model ids. */
+  const listIds = (body: any): string[] => body?.data.map((m: any) => m.id);
     const DENIED = 'mock-ultra';
 
     const buildConfig = (): RouterConfig => ({
@@ -220,7 +223,7 @@ describe('Per-key model access policy (auth/model-access.ts)', () => {
     it('GET /v1/models with allow-listed key returns ONLY the allowed model (virtual auto gated too)', async () => {
       const res = await app.inject({ method: 'GET', url: '/v1/models', headers: { authorization: 'Bearer sk-ocr-test-allow' } });
       assert.strictEqual(res.statusCode, 200);
-      const ids: string[] = JSON.parse(res.body).data.map((m: any) => m.id);
+      const ids: string[] = listIds(JSON.parse(res.body));
       assert.ok(ids.includes(ALLOWED), 'allowed model visible');
       assert.ok(!ids.includes('mock-plus'), 'other physical models hidden');
       assert.ok(!ids.includes('auto'), 'unlisted virtual auto is NOT part of the whitelist view');
@@ -251,7 +254,7 @@ describe('Per-key model access policy (auth/model-access.ts)', () => {
       };
       const { app: app2 } = createServer(cfg, true);
       const list = await app2.inject({ method: 'GET', url: '/v1/models', headers: { authorization: 'Bearer sk-ocr-test-allow-auto' } });
-      const ids: string[] = JSON.parse(list.body).data.map((m: any) => m.id);
+      const ids: string[] = listIds(JSON.parse(list.body));
       assert.ok(ids.includes('auto'), 'listed auto visible');
       const served = await app2.inject({
         method: 'POST',
@@ -316,7 +319,7 @@ describe('Per-key model access policy (auth/model-access.ts)', () => {
     it('GET /v1/models anonymous keeps the legacy FULL listing (any source)', async () => {
       const res = await app.inject({ method: 'GET', url: '/v1/models' });
       assert.strictEqual(res.statusCode, 200);
-      const ids: string[] = JSON.parse(res.body).data.map((m: any) => m.id);
+      const ids: string[] = listIds(JSON.parse(res.body));
       assert.ok(ids.includes('mock-plus') && ids.includes(ALLOWED), 'anonymous sees everything');
       // Non-loopback source is equally tolerated — no source restriction.
       const remote = await app.inject({
@@ -325,7 +328,7 @@ describe('Per-key model access policy (auth/model-access.ts)', () => {
         remoteAddress: '10.0.0.99',
       });
       assert.strictEqual(remote.statusCode, 200);
-      const remoteIds: string[] = JSON.parse(remote.body).data.map((m: any) => m.id);
+      const remoteIds: string[] = listIds(JSON.parse(remote.body));
       assert.ok(remoteIds.includes(ALLOWED), 'remote anonymous also sees everything');
     });
 
@@ -372,8 +375,15 @@ describe('Per-key model access policy (auth/model-access.ts)', () => {
         // Registered rows keep their per-model verdicts alongside the new groups.
         assert.strictEqual(rows.find((m) => m.id === 'mock-lite').allowed, true);
         assert.strictEqual(rows.find((m) => m.id === 'mock-ultra').allowed, false);
-        // Order mirrors /v1/models: virtual auto* precede combos and registered rows.
-        assert.ok(rows[0].virtual === true, 'virtual auto* rows lead the view');
+        // Order mirrors the /v1/models wire body: the onecast-router virtual
+        // provider (auto* aliases then combos) leads; concrete providers
+        // (registry order) follow.
+        const firstConcreteIdx = rows.findIndex((m) => !m.virtual && (m.kind === 'model' || m.kind === 'variant'));
+        const lastVirtualIdx = rows.findLastIndex((m) => m.virtual || m.kind === 'combo');
+        assert.ok(
+          lastVirtualIdx !== -1 && firstConcreteIdx !== -1 && lastVirtualIdx < firstConcreteIdx,
+          'all virtual/combo rows precede all concrete rows (onecast-router virtual provider leads)'
+        );
       } finally {
         // Restore (Windows can transiently EBUSY freshly-written files — retry
         // a few times; a failed restore must not fail the file, only warn).
@@ -414,7 +424,7 @@ describe('Per-key model access policy (auth/model-access.ts)', () => {
 
     it('GET /v1/models with deny-listed key hides only the denied model', async () => {
       const res = await app.inject({ method: 'GET', url: '/v1/models', headers: { authorization: 'Bearer sk-ocr-test-deny' } });
-      const ids: string[] = JSON.parse(res.body).data.map((m: any) => m.id);
+      const ids: string[] = listIds(JSON.parse(res.body));
       assert.ok(!ids.includes(DENIED));
       assert.ok(ids.includes('mock-plus'));
     });
@@ -448,13 +458,13 @@ describe('Per-key model access policy (auth/model-access.ts)', () => {
 
     it('admin/master key bypasses model policy', async () => {
       const res = await app.inject({ method: 'GET', url: '/v1/models', headers: { authorization: 'Bearer ma-master-key' } });
-      const ids: string[] = JSON.parse(res.body).data.map((m: any) => m.id);
+      const ids: string[] = listIds(JSON.parse(res.body));
       assert.ok(ids.includes('mock-plus'), 'master key sees everything');
     });
 
     it('wildcard allow pattern mock-p* admits mock-plus/mock-pro, denies the rest', async () => {
       const list = await app.inject({ method: 'GET', url: '/v1/models', headers: { authorization: 'Bearer sk-ocr-test-pattern' } });
-      const ids: string[] = JSON.parse(list.body).data.map((m: any) => m.id);
+      const ids: string[] = listIds(JSON.parse(list.body));
       assert.ok(ids.includes('mock-plus') && ids.includes('mock-pro'), 'pattern-matched models visible');
       assert.ok(!ids.includes('mock-lite') && !ids.includes('mock-ultra'), 'non-matching models hidden');
 
@@ -496,7 +506,7 @@ describe('Per-key model access policy (auth/model-access.ts)', () => {
       };
       const { app: app2 } = createServer(denyKeyConfig, true);
       const list = await app2.inject({ method: 'GET', url: '/v1/models', headers: { authorization: 'Bearer sk-ocr-test-deny-tier' } });
-      const ids: string[] = JSON.parse(list.body).data.map((m: any) => m.id);
+      const ids: string[] = listIds(JSON.parse(list.body));
       assert.ok(!ids.includes('ultra'), 'denied-tier virtual row hidden');
       assert.ok(ids.includes('plus'), 'other virtual tiers untouched');
       assert.ok(!ids.includes('mock-ultra'), 'tier expansion hides the ultra physical model too');

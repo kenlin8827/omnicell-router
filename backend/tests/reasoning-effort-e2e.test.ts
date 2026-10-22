@@ -25,7 +25,6 @@ function configWithEffortTiers(
     host: '127.0.0.1',
     baselineModel: 'mock-lite',
     fallback: { enabled: false, maxRetries: 0, escalateTier: 'plus', injectErrorContext: false },
-    providers: [],
     models: models.map((m) => ({
       id: m.id,
       provider: 'mock',

@@ -183,20 +183,27 @@ describe('Pi client adapter — model metadata', () => {
   const readJson = (p: string): any => JSON.parse(fs.readFileSync(p, 'utf8'));
   const entryOf = (cfg: any, id: string): any =>
     cfg.providers['onecast-router'].models.find((m: any) => m.id === id);
+  /** One-provider catalog record wrapping a single model def. */
+  const rec = (id: string, o: Record<string, any>): CatalogProviderRecord => ({
+    id, custom: false, connected: true, sources: [], models: [o as any],
+  });
 
   const injectDeps = (overrides: {
     models?: Record<string, any>;
-    combos?: string[];
+    combos?: (string | { id: string; models: (string | { id: string })[] })[];
     variants?: string[];
     catalog?: CatalogProviderRecord[];
+    /** tier alias → candidate pool (getCandidateModelsForTier stub) */
+    tierPools?: Record<string, any[]>;
   }) => {
     const models = overrides.models ?? {};
     const stub = {
       getModel: (id: string) => models[id],
-      getCombos: () => (overrides.combos ?? []).map((id) => ({ id, models: [] })),
+      getCombos: () => (overrides.combos ?? []).map((c) => typeof c === 'string' ? { id: c, models: [] } : c),
       getVariantExposures: () => (overrides.variants ?? []).map((id) => ({
         id, base: models[id.split('-').slice(0, -1).join('-')] ?? Object.values(models)[0], variant: { id: 'xhigh', reasoningEffort: 'xhigh' },
       })),
+      getCandidateModelsForTier: (tier: string) => overrides.tierPools?.[tier] ?? [],
     } as unknown as ProviderRegistry;
     deps = {
       registry: stub,
@@ -276,6 +283,72 @@ describe('Pi client adapter — model metadata', () => {
     expect(entryOf(cfg, 'my-combo').reasoning).toBe(true);
     expect(entryOf(cfg, 'my-combo').thinkingLevelMap.off).toBe('none');
     expect(entryOf(cfg, 'prov/toggle-xhigh').reasoning).toBe(false);
+  });
+
+  it('combos aggregate member capabilities: min limits, leader cost, intersection image input', async () => {
+    injectDeps({
+      combos: [{ id: 'my-combo', models: ['prov/leader', 'prov/follower'] }],
+      catalog: [
+        rec('prov', {
+          id: 'leader', name: 'Leader 5', reasoning: true,
+          cost: { input: 2, output: 8, cache_read: 0.5, cache_write: 1 },
+          limit: { context: 200000, output: 32000 },
+          modalities: { input: ['text', 'image'], output: ['text'] },
+        }),
+        rec('prov', {
+          id: 'follower', name: 'Follower', reasoning: true,
+          cost: { input: 1, output: 4 },
+          limit: { context: 128000, output: 16000 },
+          modalities: { input: ['text'], output: ['text'] },
+        }),
+      ],
+    });
+    await adapter.setup({ port: 4000, models: { main: 'auto' }, extraModels: ['my-combo'] });
+    const e = entryOf(readJson(configPath), 'my-combo');
+    expect(e.contextWindow).toBe(128000); // min across members — compaction-safe
+    expect(e.maxTokens).toBe(16000);
+    expect(e.input).toBeUndefined(); // follower lacks image — no image claim
+    expect(e.cost).toEqual({ input: 2, output: 8, cacheRead: 0.5, cacheWrite: 1 }); // leader pricing
+    expect(e.reasoning).toBe(true); // ladder stays permissive
+    expect(e.thinkingLevelMap.off).toBe('none');
+  });
+
+  it('tier aliases aggregate the member envelope; auto spans the whole ladder with the lite leader pricing', async () => {
+    const reg = (id: string, o: Record<string, any>): CatalogProviderRecord => ({
+      id, custom: false, connected: true, sources: [], models: [o as any],
+    });
+    const poolEntry = (id: string, provider: string, pricing: any) => ({ id, provider, upstreamModel: id.split('/').pop(), pricing });
+    injectDeps({
+      tierPools: {
+        lite: [poolEntry('prov/lite-a', 'prov', { input: 1, output: 4, cacheRead: 0.2 })],
+        pro: [
+          poolEntry('prov/pro-a', 'prov', { input: 5, output: 20, cacheRead: 1 }),
+          poolEntry('prov/pro-b', 'prov', { input: 4, output: 16, cacheRead: 0.8 }),
+        ],
+        // plus/ultra empty — auto's cost leader must come from lite
+      },
+      catalog: [
+        rec('prov', { id: 'lite-a', name: 'Lite A', limit: { context: 128000, output: 16000 }, modalities: { input: ['text'], output: ['text'] } }),
+        rec('prov', { id: 'pro-a', name: 'Pro A', limit: { context: 200000, output: 32000 }, modalities: { input: ['text', 'image'], output: ['text'] } }),
+        rec('prov', { id: 'pro-b', name: 'Pro B', limit: { context: 256000, output: 32000 }, modalities: { input: ['text', 'image'], output: ['text'] } }),
+      ],
+    });
+    await adapter.setup({ port: 4000, models: { main: 'auto' }, extraModels: ['lite', 'pro'] });
+    const cfg = readJson(configPath);
+    const lite = entryOf(cfg, 'lite');
+    expect(lite.contextWindow).toBe(128000); // own pool only
+    expect(lite.maxTokens).toBe(16000);
+    expect(lite.input).toBeUndefined(); // no image claim
+    expect(lite.cost.input).toBe(1); // lite leader pricing
+    expect(lite.reasoning).toBe(true); // ladder stays permissive
+    const auto = entryOf(cfg, 'auto');
+    expect(auto.contextWindow).toBe(128000); // min across lite+pro union
+    expect(auto.maxTokens).toBe(16000);
+    expect(auto.input).toBeUndefined(); // lite-a lacks image — no claim
+    expect(auto.cost.input).toBe(1); // first tier in ladder order (lite) leads
+    // static alias names survive the aggregation
+    expect(auto.name).toBe('Auto');
+    expect(lite.name).toBe('Lite');
   });
 
   it('unresolvable ids fall back to the bare entry with the user context window', async () => {

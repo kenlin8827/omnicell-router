@@ -2,13 +2,13 @@
 
 ## Status
 
-Implemented — 2026-10-20 (stages: the defs store + one-shot jsonc port; the funnel swap across CRUD/boot/view; materialize-then-push sync with REPLACE semantics; the CLI hook rework). Amends the boot source in ADR-0005 §2(a).
+Implemented — 2026-10-20 (stages: the defs store + one-shot jsonc port; the funnel swap across CRUD/boot/view; materialize-then-push sync with REPLACE semantics; the CLI hook rework). Amends the boot source in ADR-0005 §2(a). Amended 2026-10-21: the hand-written `config.yaml` `providers[]` surface is retired — the defs file is the sole connection-def truth (see §1).
 
 ## Decision
 
 ### 1. One truth per artifact class — connection defs join credentials
 
-Provider CONNECTION definitions — id, name, npm wire package, baseURL, headers, env slots, canonical/body, node-static models — are owned by OCR in `<ocrHome>/custom-providers.json`, GLOBAL (not per-environment; same book as `credentials.json`, ADR-0007 file conventions). `opencode.jsonc` leaves the truth chain ENTIRELY: no console route, no boot path, no view may read or write it as truth. It is a MATERIALIZATION TARGET — a sync-client artifact the opencode adapter regenerates from the defs file, exactly as `opencode.db`/`auth.json` are for keys (ADR-0006). Hand-edited jsonc defs are not a source of anything; the §4 one-shot import is the only client→OCR def motion that will ever exist.
+Provider CONNECTION definitions — id, name, npm wire package, baseURL, headers, env slots, canonical/body, node-static models — are owned by OCR in `<ocrHome>/custom-providers.json`, GLOBAL (not per-environment; same book as `credentials.json`, ADR-0007 file conventions). This is the SINGLE user-facing connection-def surface: the former hand-written `config.yaml` `providers[]` section is RETIRED (registry no longer reads it; the config parser drops it, the native-System-One passthrough limb was retired entirely (ADR-0008 amendment; a future Jev/Bailian integration arrives as an ordinary defs-file provider) and the hand-written `models[]` surface retired with it (models materialize from defs + catalog at boot; `RouterConfig.models` survives purely as the runtime carrier index.ts overwrites with `boot.models`). `opencode.jsonc` leaves the truth chain ENTIRELY: no console route, no boot path, no view may read or write it as truth. It is a MATERIALIZATION TARGET — a sync-client artifact the opencode adapter regenerates from the defs file, exactly as `opencode.db`/`auth.json` are for keys (ADR-0006). Hand-edited jsonc defs are not a source of anything; the §4 one-shot import is the only client→OCR def motion that will ever exist.
 
 ### 2. The file — a shape-preserving port of the jsonc providers node
 

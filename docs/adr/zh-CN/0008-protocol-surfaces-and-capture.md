@@ -2,7 +2,7 @@
 
 ## 状态
 
-已实现 — 2026-10-15（事实面语料重写）。范围：入站协议面（原生路由 + MITM 代理）、共享派发接缝、System One 决策网关、请求捕获平面。trace/捕获持久化分界 = ADR-0005；数据集采样（**不是**捕获）= ADR-0001；决策面的寻址 = ADR-0003。
+已实现 — 2026-10-15（事实面语料重写）。2026-10-21 修订：原生 System One 上游支路（`systemoneUpstreams[]`、厂商直通）**退役**——该面仅经 chat 模型协议转换服务；未来 Jev/Bailian 集成以普通 provider 形式经定义文件接入（ADR-0010）。范围：入站协议面（原生路由 + MITM 代理）、共享派发接缝、System One 决策网关、请求捕获平面。trace/捕获持久化分界 = ADR-0005；数据集采样（**不是**捕获）= ADR-0001；决策面的寻址 = ADR-0003。
 
 ## 决策
 
@@ -12,7 +12,7 @@
 
 ### 2. 入站线型别名——恰四个；Gemini 是上游 wire
 
-`/v1/chat/completions`（OpenAI-compatible）、`/v1/messages`（Anthropic-compatible）、`/v1/responses`（OpenAI Responses）、`/v1/systemone`（决策网关）。别名表封闭——其余一律 404。Gemini `:generateContent` 是**出站** provider wire（出站集 `openai|anthropic|google|responses|opencode-proxy`），不是入站别名。systemone 的 `detectSuffix '/systemone'` 刻意**宽于**其 routePath——让 MITM 腿认领途经的 typesafe.ai / bailian 原生决策流量。
+`/v1/chat/completions`（OpenAI-compatible）、`/v1/messages`（Anthropic-compatible）、`/v1/responses`（OpenAI Responses）、`/v1/systemone`（决策网关）。别名表封闭——其余一律 404。Gemini `:generateContent` 是**出站** provider wire（出站集 `openai|anthropic|google|responses|opencode-proxy`），不是入站别名。systemone 的 `detectSuffix '/systemone'` 刻意**宽于**其 routePath——让 MITM 腿认领途经的 typesafe.ai / bailian 同形决策流量。
 
 ### 3. MITM 转发代理——全捕获就是要点
 
@@ -30,11 +30,11 @@
 
 ### 6. System One 面——两腿 opt-in 闸树
 
-`requestCapture.enabled`（总闸，默认 OFF）× `requestCapture.systemone.enabled`（面闸，默认 ON；关掉则**两腿同哑**——客户端一对与 surface 自己的上游一对（原生直通/合成转换皆然），无 purpose 标签）。发射严格晚于全部 400/403/404/503 闸。Layer-2 裁决者的内部调用构成第三闸：`isSystemoneJudgeCaptureEnabled = 总闸 × 面闸 × systemone.l2DecisionEnabled`（默认 ON）——子闸只能**增记**事件（裁决者自己的 HTTP 腿，挂外层被路由请求，upstream 方向，`purpose:'l2-judge'`，唯一的 ExchangePurpose 值），永不越过面闸。OFF 的隐私姿态：`captureProcessContext()` 答 `{}`，该面路径与无捕获构建字节同一（专测钉住）。
+`requestCapture.enabled`（总闸，默认 OFF）× `requestCapture.systemone.enabled`（面闸，默认 ON；关掉则**两腿同哑**——客户端一对与 surface 自己的上游一对（合成转换调用），无 purpose 标签）。发射严格晚于全部 400/403/404/503 闸。Layer-2 裁决者的内部调用构成第三闸：`isSystemoneJudgeCaptureEnabled = 总闸 × 面闸 × systemone.l2DecisionEnabled`（默认 ON）——子闸只能**增记**事件（裁决者自己的 HTTP 腿，挂外层被路由请求，upstream 方向，`purpose:'l2-judge'`，唯一的 ExchangePurpose 值），永不越过面闸。OFF 的隐私姿态：`captureProcessContext()` 答 `{}`，该面路径与无捕获构建字节同一（专测钉住）。
 
-### 7. 决策网关（/v1/systemone）——两种上游形态，诚实写进措辞
+### 7. 决策网关（/v1/systemone）——统一协议转换，诚实写进措辞
 
-原生（`provider type:'systemone'`——TypeSafe Jev / decision-model-preview）：直通，零损耗。其余一切：协议**转换**——一条 JSON 受限的 chat completion 携全部问题；由此产生的概率是"自报估计、未经校准"（措辞长在协议类型与 reasonCode 分叉里，ADR-0001 §4）。该面的模型语义：点名模型 = 所点即所得；auto 梯队别名按**纯池投影**解析到访问过滤后池的链头——404 未知/无池、403 被禁、503 解析不出，**绝不**静默回退；裸 `auto`/`default`/省略 → `systemone.defaultModel`；原生上游用注册链头凭证；决策线限流计数但永不本地拒绝（裁决者是请求下腿）。响应头恰三个（冻结契约）：`X-OCR-Model / X-OCR-Systemone-Upstream / X-OCR-Latency-MS`。**同一执行器**同时服务 HTTP 面与 Layer-2 路由裁决——一个实现，两个调用方。
+PROTOCOL CONVERSION for every model——一条 JSON 受限的 chat completion 携全部问题；由此产生的概率是"自报估计、未经校准"（措辞长在协议类型与 reasonCode 分叉里，ADR-0001 §4）。该面的模型语义：点名模型 = 所点即所得；auto 梯队别名按**纯池投影**解析到访问过滤后池的链头——404 未知/无池、403 被禁、503 解析不出，**绝不**静默回退；裸 `auto`/省略 → `systemone.defaultModel`；所有模型均经协议转换由 chat 池应答；决策线限流计数但永不本地拒绝（裁决者是请求下腿）。响应头恰三个（冻结契约）：`X-OCR-Model / X-OCR-Systemone-Upstream / X-OCR-Latency-MS`。**同一执行器**同时服务 HTTP 面与 Layer-2 路由裁决——一个实现，两个调用方。
 
 ### 8. Responses 续接状态（`responses.persist`）
 

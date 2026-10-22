@@ -172,7 +172,6 @@ const DEFAULT_CONFIG: RouterConfig = {
   },
   streaming: { enabled: true },
   apiKeys: [],
-  providers: [],
   models: [],
 };
 
@@ -439,6 +438,9 @@ export function resolveRateLimit(parsed: any): RateLimitConfig {
   return { inboundGraceMs: graceMs, persist: { enabled: persistRaw.enabled !== false } };
 }
 
+/** One-shot guard for the retired `providers[]` deprecation warning (loadConfig runs per request on some paths). */
+let _retireWarned = false;
+
 export function loadConfig(configPath?: string): RouterConfig {
   const resolvedPath = getConfigPath(configPath);
   if (fs.existsSync(resolvedPath)) {
@@ -448,15 +450,38 @@ export function loadConfig(configPath?: string): RouterConfig {
       // Removed keys (retired systems: `rules:`, `flywheel:` + `classifier.localModel`
       // (the learning flywheel and the Layer 1 micro-classifier),
       // `classifier.layer2.decisionCapture`, the renamed `capture:` section,
-      // key-level `role`) are STRIPPED here so
+      // key-level `role`, and the retired hand-written `providers[]` + `models[]` +
+      // `systemoneUpstreams[]` surfaces (ADR-0010 — connection defs live only in the provider-defs file,
+      // models materialize from defs + catalog at boot; the `models` field on the
+      // returned object is the RUNTIME carrier index.ts overwrites with
+      // boot.models, never the disk value)) are STRIPPED here so
       // stale keys never re-persist on the next config save. No dual-read, no
       // migration — the config tree is the only source of truth.
       const {
         rules: _removedRules,
         capture: _removedCapture,
         flywheel: _removedFlywheel,
+        providers: _removedProviders,
+        models: _removedModels,
+        systemoneUpstreams: _removedSystemoneUpstreams,
         ...parsedRest
       } = parsed || {};
+      // One-shot migration visibility: leftover `providers:` / hand-written
+      // `models:` sections mean the file was authored against a retired surface
+      // (ADR-0010) — its entries are silently absent from the pool, so say so ONCE.
+      const _legacySections: string[] = [];
+      for (const key of ['providers', 'models', 'systemoneUpstreams'] as const) {
+        if (parsed && Array.isArray((parsed as any)[key]) && (parsed as any)[key].length > 0) _legacySections.push(`'${key}:'`);
+      }
+      if (_legacySections.length > 0 && !_retireWarned) {
+        _retireWarned = true;
+        const sections = _legacySections.join(' and ');
+        console.warn(
+          `[Config] Deprecated ${sections} section(s) found in ${resolvedPath} — these hand-written surfaces were retired ` +
+            `(ADR-0010); providers come from <ocrHome>/custom-providers.json, models materialize from defs + catalog at boot. ` +
+            `The section(s) are ignored and will not re-persist.`
+        );
+      }
       return {
         ...DEFAULT_CONFIG,
         ...parsedRest,
@@ -506,8 +531,9 @@ export function loadConfig(configPath?: string): RouterConfig {
           inplace: { ...DEFAULT_CONFIG.retry?.inplace, ...parsed?.retry?.inplace },
           failover: { ...DEFAULT_CONFIG.retry?.failover, ...parsed?.retry?.failover },
         },
-        providers: parsed?.providers || DEFAULT_CONFIG.providers,
-        models: parsed?.models || DEFAULT_CONFIG.models,
+        // RUNTIME carrier only — the disk value is stripped above; index.ts
+        // assigns boot.models over this before registry construction.
+        models: DEFAULT_CONFIG.models,
         combos: parsed?.combos || [],
         modelProfiles: parsed?.modelProfiles || [],
         clientProfileMemory: parsed?.clientProfileMemory || {},
@@ -527,7 +553,10 @@ export function loadConfig(configPath?: string): RouterConfig {
  * file that would drift from DEFAULT_CONFIG / YAML_FIELD_COMMENTS.
  */
 export function defaultConfigYaml(): string {
-  return annotateYamlComments(stringify(DEFAULT_CONFIG));
+  // `models` is the RUNTIME carrier (index.ts assigns boot.models) — the
+  // retired yaml surface must not reappear in the fresh-install template.
+  const { models: _omitted, ...template } = DEFAULT_CONFIG;
+  return annotateYamlComments(stringify(template));
 }
 
 /**
@@ -649,8 +678,8 @@ function syncRuntimeAuthView(fresh: RouterConfig): void {
     // the judge resolves model/timeout/effortDecision per evaluate, the mode
     // lever per processInternal, the System One defaultModel per decision):
     // the /auto page's "restart to apply" era is over for everything it edits.
-    // Sections with boot-time consumers (streaming executors, providers,
-    // models, tiers bootstrap) deliberately stay restart-only.
+    // Sections with boot-time consumers (streaming executors, models,
+    // tiers bootstrap) deliberately stay restart-only.
     runtimeConfigRef.classifier = fresh.classifier;
     runtimeConfigRef.routing = fresh.routing;
     runtimeConfigRef.systemone = fresh.systemone;
@@ -665,7 +694,20 @@ export function saveConfig(newConfig: Partial<RouterConfig>): { success: boolean
   const configPath = getConfigPath();
   try {
     const current = loadConfig();
-    const merged = { ...current, ...newConfig };
+    // Retired surfaces never re-persist: a stale client (or a hand-built PUT)
+    // must not resurrect the removed hand-written `providers[]` section
+    // (ADR-0010 — loadConfig already strips it on the read path).
+    const bodyRest: Partial<RouterConfig> = { ...newConfig };
+    delete (bodyRest as Record<string, unknown>).providers; // retired surface — never re-persists (ADR-0010)
+    delete (bodyRest as Record<string, unknown>).models; // runtime carrier only (index.ts assigns boot.models) — never re-persists
+    delete (bodyRest as Record<string, unknown>).systemoneUpstreams; // retired native-systemone surface — never re-persists
+    const merged = { ...current, ...bodyRest };
+    // `current` comes from loadConfig(): the retired surfaces and the models
+    // runtime carrier are already stripped to [] — do not persist empty
+    // retired keys into the file (defaultConfigYaml omits them too).
+    delete (merged as Record<string, unknown>).models;
+    delete (merged as Record<string, unknown>).providers;
+    delete (merged as Record<string, unknown>).systemoneUpstreams;
     // webAuth passwordHash preservation: GET /api/admin/config strips the
     // hash, so UI round-trips (SettingsPage saveConfig(config)) would erase
     // it — re-attach the stored hash whenever the incoming payload lacks one.

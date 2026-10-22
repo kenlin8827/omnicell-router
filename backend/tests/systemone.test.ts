@@ -3,8 +3,7 @@ import { serve } from 'bun';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createServer } from '../src/server.js';
-import { loadConfig } from '../src/config/index.js';
+import { bootServer, makeConfig } from './helpers/systemone-seam.js';
 import { __resetEnvResolutionForTests } from '../src/config/env.js';
 import { RouterConfig } from '../src/config/types.js';
 import {
@@ -58,20 +57,6 @@ afterAll(() => {
     /* best effort */
   }
 });
-
-function makeConfig(providers: any[], models: any[], systemone?: any): RouterConfig {
-  const base = loadConfig();
-  return {
-    ...base,
-    apiKeys: [],
-    providers,
-    models,
-    ...(systemone ? { systemone } : {}),
-    requestCapture: { ...base.requestCapture, enabled: false },
-    session: { ...base.session, enabled: false },
-    tracePersist: { ...base.tracePersist, enabled: false },
-  } as RouterConfig;
-}
 
 const REQ = {
   state: { ticket: 'T-1001', content: 'Paid twice for one order, please fix.' },
@@ -215,55 +200,6 @@ describe('System One: answer synthesis', () => {
 });
 
 describe('POST /v1/systemone end-to-end', () => {
-  test('native provider passthrough', async () => {
-    useSandbox('plain');
-    let received: any = null;
-    const upstream = serve({
-      port: 0,
-      async fetch(req) {
-        received = await req.json();
-        return Response.json({
-          model: 'jev-1.13.0',
-          answers: {
-            department: { type: 'choice', choice: 'billing', probabilities: { billing: 0.94, technical: 0.06 }, confidence: 0.88 },
-          },
-          usage: { input_tokens: 125, output_tokens: 0 },
-        });
-      },
-    });
-    try {
-      const config = makeConfig(
-        [{ name: 'native-test', type: 'systemone', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
-        [
-          {
-            id: 'native-test/jev',
-            provider: 'native-test',
-            upstreamModel: 'jev-latest',
-            tier: 'lite',
-            pricing: { input: 0, output: 0, cacheRead: 0 },
-          },
-        ]
-      );
-      const { app } = createServer(config);
-      const res = await app.inject({
-        method: 'POST',
-        url: '/v1/systemone',
-        payload: { ...REQ, model: 'native-test/jev' },
-      });
-      expect(res.statusCode).toBe(200);
-      const body = res.json();
-      expect(body.answers.department.choice).toBe('billing');
-      expect(body.usage.input_tokens).toBe(125);
-      expect(received.model).toBe('jev-latest');
-      expect(received.state).toEqual(REQ.state);
-      expect(received.questions.department.type).toBe('choice');
-      expect(res.headers['x-ocr-systemone-upstream']).toBe('native');
-      expect(res.headers['x-ocr-model']).toBe('native-test/jev');
-    } finally {
-      upstream.stop(true);
-    }
-  });
-
   test('chat-model conversion with one repair retry', async () => {
     useSandbox('with-default');
     const seen: any[] = [];
@@ -311,7 +247,7 @@ describe('POST /v1/systemone end-to-end', () => {
         ],
         { defaultModel: 'test/chat' }
       );
-      const { app } = createServer(config);
+      const { app } = bootServer(config);
       // `model` omitted → systemone.defaultModel from the disk config.
       const res = await app.inject({ method: 'POST', url: '/v1/systemone', payload: REQ });
       expect(res.statusCode).toBe(200);
@@ -388,7 +324,7 @@ describe('POST /v1/systemone end-to-end', () => {
           },
         ]
       );
-      const { app } = createServer(config);
+      const { app } = bootServer(config);
       const res = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'test/reject-none' } });
       expect(res.statusCode).toBe(200);
       expect(seen.length).toBe(2);
@@ -459,7 +395,7 @@ describe('POST /v1/systemone end-to-end', () => {
           },
         ]
       );
-      const { app } = createServer(config);
+      const { app } = bootServer(config);
       const res = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'test/reject-all' } });
       expect(res.statusCode).toBe(200);
       expect(seen.length).toBe(3);
@@ -535,7 +471,7 @@ describe('POST /v1/systemone end-to-end', () => {
           },
         ]
       );
-      const { app } = createServer(config);
+      const { app } = bootServer(config);
       const res = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'test/parse-enum' } });
       expect(res.statusCode).toBe(200);
       expect(seen.length).toBe(2);
@@ -569,7 +505,7 @@ describe('POST /v1/systemone end-to-end', () => {
     config.apiKeys = [
       { name: 'limited', key: 'sk-limited', modelAccess: { mode: 'deny', models: ['test/chat'] } },
     ] as any;
-    const { app } = createServer(config);
+    const { app } = bootServer(config);
     const res = await app.inject({
       method: 'POST',
       url: '/v1/systemone',
@@ -597,7 +533,7 @@ describe('POST /v1/systemone end-to-end', () => {
         },
       ]
     );
-    const { app } = createServer(config);
+    const { app } = bootServer(config);
     const res = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'ghost/model' } });
     expect(res.statusCode).toBe(404);
 
@@ -611,12 +547,11 @@ describe('POST /v1/systemone end-to-end', () => {
 });
 
 describe('System One: tier alias resolution', () => {
-  /** One native systemone upstream + one model per tier: alias resolution is
-   *  observable purely through X-OCR-Model (native passthrough echoes the
-   *  upstream body, so the header is the only honest disclosure). */
+  /** One chat provider + one decision model per tier: alias resolution is
+   *  observable through X-OCR-Model (the header names the resolved model). */
   function tieredConfig(upstreamPort: number, apiKeys: any[] = []): RouterConfig {
     const config = makeConfig(
-      [{ name: 'native-tiers', type: 'systemone', baseUrl: `http://localhost:${upstreamPort}`, apiKey: 'sk-test' }],
+      [{ name: 'native-tiers', type: 'openai-compatible', baseUrl: `http://localhost:${upstreamPort}`, apiKey: 'sk-test' }],
       [
         {
           id: 'native/lite-a',
@@ -645,22 +580,24 @@ describe('System One: tier alias resolution', () => {
     return config;
   }
 
-  const NATIVE_ANSWERS = {
-    model: 'jev-test',
-    answers: { department: { type: 'choice', choice: 'billing', probabilities: { billing: 1 } } },
-    usage: { input_tokens: 1, output_tokens: 0 },
-  };
+  const DECISION_ANSWERS = JSON.stringify({
+    answers: {
+      department: { choice: 'billing', confidence: 0.9, probabilities: { billing: 1, technical: 0 } },
+      escalate: { noul: 0.4 },
+      severity: { score: 1, probabilities: { '0': 0.2, '1': 0.8, '2': 0 } },
+    },
+  });
 
   test('plus / lite resolve to the chain-head member of the named tier', async () => {
     useSandbox('plain');
     const upstream = serve({
       port: 0,
       async fetch() {
-        return Response.json(NATIVE_ANSWERS);
+        return Response.json(fakeChat(DECISION_ANSWERS));
       },
     });
     try {
-      const { app } = createServer(tieredConfig(upstream.port));
+      const { app } = bootServer(tieredConfig(upstream.port));
       const plus = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'plus' } });
       expect(plus.statusCode).toBe(200);
       expect(plus.headers['x-ocr-model']).toBe('native/plus-b'); // first registered plus member
@@ -678,14 +615,14 @@ describe('System One: tier alias resolution', () => {
     const upstream = serve({
       port: 0,
       async fetch() {
-        return Response.json(NATIVE_ANSWERS);
+        return Response.json(fakeChat(DECISION_ANSWERS));
       },
     });
     try {
       const config = tieredConfig(upstream.port, [
         { name: 'skip-b', key: 'sk-skip', modelAccess: { mode: 'deny', models: ['native/plus-b'] } },
       ]);
-      const { app } = createServer(config);
+      const { app } = bootServer(config);
       // plus-b is the chain head but denied; the pick must land on plus-c.
       const res = await app.inject({
         method: 'POST',
@@ -705,7 +642,7 @@ describe('System One: tier alias resolution', () => {
     const config = tieredConfig(1, [
       { name: 'no-plus', key: 'sk-no-plus', modelAccess: { mode: 'deny', models: ['native/plus-b', 'native/plus-c'] } },
     ]);
-    const { app } = createServer(config);
+    const { app } = bootServer(config);
     const res = await app.inject({
       method: 'POST',
       url: '/v1/systemone',
@@ -720,7 +657,7 @@ describe('System One: tier alias resolution', () => {
   test('tier with no registered members → 404 model_not_found', async () => {
     useSandbox('plain');
     const config = tieredConfig(1); // lite/plus members exist; ultra/pro tiers are empty
-    const { app } = createServer(config);
+    const { app } = bootServer(config);
     const res = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'ultra' } });
     expect(res.statusCode).toBe(404);
     expect(res.json().error.code).toBe('model_not_found');
@@ -734,7 +671,7 @@ describe('System One: tier alias resolution', () => {
     const config = tieredConfig(1, [
       { name: 'narrow', key: 'sk-narrow', modelAccess: { mode: 'allow', models: ['native/plus-c'] } },
     ]);
-    const { app } = createServer(config);
+    const { app } = bootServer(config);
     // Mirrors the chat surfaces: an allow-mode key must NAME the tier alias.
     const res = await app.inject({
       method: 'POST',
@@ -751,14 +688,14 @@ describe('System One: tier alias resolution', () => {
     const upstream = serve({
       port: 0,
       async fetch() {
-        return Response.json(NATIVE_ANSWERS);
+        return Response.json(fakeChat(DECISION_ANSWERS));
       },
     });
     try {
       const config = tieredConfig(upstream.port, [
         { name: 'tier-wide', key: 'sk-tier', modelAccess: { mode: 'allow', models: ['plus'] } },
       ]);
-      const { app } = createServer(config);
+      const { app } = bootServer(config);
       // 'plus' in the whitelist expands to EVERY plus-tier member, so
       // both plus-b and plus-c are admissible; the chain head serves.
       const res = await app.inject({
@@ -777,7 +714,7 @@ describe('System One: tier alias resolution', () => {
   test('every tier member breaker-open → 503 no_healthy_model', async () => {
     useSandbox('plain');
     const config = tieredConfig(1);
-    const { app, registry } = createServer(config);
+    const { app, registry } = bootServer(config);
     const breaker = registry.getCircuitBreakerManager();
     breaker.trip('native/plus-b', { reason: 'test', cooldownMs: 60000 });
     breaker.trip('native/plus-c', { reason: 'test', cooldownMs: 60000 });
@@ -825,7 +762,7 @@ describe('System One: tier alias resolution', () => {
         ],
         { defaultModel: 'test/chat' }
       );
-      const { app } = createServer(config);
+      const { app } = bootServer(config);
       const res = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'auto' } });
       expect(res.statusCode).toBe(200);
       expect(res.headers['x-ocr-model']).toBe('test/chat');

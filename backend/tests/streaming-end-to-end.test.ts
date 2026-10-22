@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { serve } from 'bun';
-import { RouterConfig } from '../src/config/types.js';
+import { ProviderConfig, RouterConfig } from '../src/config/types.js';
 import { ProviderRegistry } from '../src/providers/registry.js';
 import { FinOpsTracker } from '../src/metrics/finops-tracker.js';
 import { PipelineOrchestrator } from '../src/pipeline/orchestrator.js';
@@ -42,6 +42,10 @@ function sseBody(...frames: string[]): string {
   return frames.join('') + 'data: [DONE]\n\n';
 }
 
+function stubProvider(baseUrl: string): ProviderConfig {
+  return { name: 'stub', type: 'openai-compatible', baseUrl, apiKey: 'sk-stub' };
+}
+
 function makeConfig(baseUrl: string, extra: Partial<RouterConfig> = {}): RouterConfig {
   return {
     port: 3000,
@@ -54,7 +58,6 @@ function makeConfig(baseUrl: string, extra: Partial<RouterConfig> = {}): RouterC
       inplace: { enabled: false, maxAttempts: 0, backoffMs: 1, jitterMs: 1 },
       failover: { enabled: true, maxAttempts: 3, tierCrossPolicy: 'deny' },
     },
-    providers: [{ name: 'stub', type: 'openai', baseUrl, apiKey: 'sk-stub' }],
     models: [
       { id: 'stub/one', provider: 'stub', upstreamModel: 'up-1', tier: 'lite', priority: 1, isDefaultInTier: true, pricing: { input: 0.1, cacheRead: 0.01, output: 0.2 } },
       { id: 'stub/two', provider: 'stub', upstreamModel: 'up-2', tier: 'lite', priority: 2, pricing: { input: 0.1, cacheRead: 0.01, output: 0.2 } },
@@ -63,8 +66,8 @@ function makeConfig(baseUrl: string, extra: Partial<RouterConfig> = {}): RouterC
   } as RouterConfig;
 }
 
-function boot(config: RouterConfig) {
-  const registry = new ProviderRegistry(config, false);
+function boot(config: RouterConfig, providers: ProviderConfig[] = [stubProvider('http://localhost:9/v1')]) {
+  const registry = new ProviderRegistry(config, false, providers);
   const tracker = new FinOpsTracker();
   return { registry, tracker, orchestrator: new PipelineOrchestrator(config, registry, tracker) };
 }
@@ -109,7 +112,7 @@ describe('true streaming through the candidate pool', () => {
       },
     });
     const base = `http://localhost:${server.port}/v1`;
-    const { orchestrator } = boot(makeConfig(base));
+    const { orchestrator } = boot(makeConfig(base), [stubProvider(base)]);
     const { relay, frames } = makeRelaySink();
 
     try {
@@ -174,7 +177,7 @@ describe('true streaming through the candidate pool', () => {
     const config = makeConfig(base, {
       combos: [{ id: 'pair', selection: 'priority', models: ['stub/one', 'stub/two'] }],
     } as Partial<RouterConfig>);
-    const { orchestrator } = boot(config);
+    const { orchestrator } = boot(config, [stubProvider(base)]);
     const { relay, frames } = makeRelaySink();
 
     try {
@@ -207,7 +210,7 @@ describe('true streaming through the candidate pool', () => {
     const config = makeConfig(base, {
       combos: [{ id: 'pair', selection: 'priority', models: ['stub/one', 'stub/two'] }],
     } as Partial<RouterConfig>);
-    const { orchestrator } = boot(config);
+    const { orchestrator } = boot(config, [stubProvider(base)]);
     const { relay, frames } = makeRelaySink();
     try {
       const result = await orchestrator.process(request('pair'), {}, relay);
@@ -242,7 +245,7 @@ describe('true streaming through the candidate pool', () => {
     const base = `http://localhost:${server.port}/v1`;
     const config = makeConfig(base);
     // Second provider on the Anthropic wire: no createStream anywhere on it.
-    (config.providers as any[]).push({ name: 'stub-a', type: 'anthropic', baseUrl: base, apiKey: 'sk' });
+    const providers: ProviderConfig[] = [stubProvider(base), { name: 'stub-a', type: 'anthropic', baseUrl: base, apiKey: 'sk' }];
     (config.models as any[]).push({
       id: 'stub-a/one',
       provider: 'stub-a',
@@ -252,7 +255,7 @@ describe('true streaming through the candidate pool', () => {
       wire: 'anthropic',
       pricing: { input: 0.1, cacheRead: 0.01, output: 0.2 },
     });
-    const { orchestrator } = boot(config as RouterConfig);
+    const { orchestrator } = boot(config, providers);
     const { relay, frames } = makeRelaySink();
     try {
       const result = await orchestrator.process(request('stub-a/one'), {}, relay);
@@ -293,7 +296,7 @@ describe('true streaming through the candidate pool', () => {
       },
     });
     const base = `http://localhost:${server.port}/v1`;
-    const { orchestrator } = boot(makeConfig(base));
+    const { orchestrator } = boot(makeConfig(base), [stubProvider(base)]);
     try {
       const result = await orchestrator.process(request('stub/one', false), {}, undefined);
       assert.equal(result.response.choices[0].message.content, 'buffered');
@@ -429,7 +432,7 @@ describe('schema-assertion cascade streaming', () => {
   it('escalation leg streams the final answer and stamps ttftMs/genMs', async () => {
     const { server, plusHits, liteHits } = cascadeServer();
     const base = `http://localhost:${server.port}/v1`;
-    const { orchestrator } = boot(cascadeConfig(base));
+    const { orchestrator } = boot(cascadeConfig(base), [stubProvider(base)]);
     const { relay, frames, staged } = makeFactsSink();
     try {
       const result = await orchestrator.process(schemaRequest(), {}, relay);
@@ -488,7 +491,7 @@ describe('schema-assertion cascade streaming', () => {
       },
     });
     const base = `http://localhost:${server.port}/v1`;
-    const { orchestrator } = boot(cascadeConfig(base));
+    const { orchestrator } = boot(cascadeConfig(base), [stubProvider(base)]);
     const { relay, frames } = makeFactsSink();
     try {
       const result = await orchestrator.process(schemaRequest(), {}, relay);
@@ -509,7 +512,7 @@ describe('schema-assertion cascade streaming', () => {
   it('streaming.enabled=false rolls the escalation leg back to buffered', async () => {
     const { server, plusHits } = cascadeServer();
     const base = `http://localhost:${server.port}/v1`;
-    const { orchestrator } = boot(cascadeConfig(base, { streaming: { enabled: false } }));
+    const { orchestrator } = boot(cascadeConfig(base, { streaming: { enabled: false } }), [stubProvider(base)]);
     const { relay, frames } = makeFactsSink();
     try {
       const result = await orchestrator.process(schemaRequest(), {}, relay);
@@ -564,7 +567,7 @@ describe('schema-assertion cascade streaming', () => {
       },
     });
     const base = `http://localhost:${server.port}/v1`;
-    const { orchestrator } = boot(cascadeConfig(base));
+    const { orchestrator } = boot(cascadeConfig(base), [stubProvider(base)]);
     const { relay, frames } = makeFactsSink();
     try {
       let rejected = false;

@@ -38,9 +38,9 @@ const TIERS: TierLevel[] = ['lite', 'plus', 'pro', 'ultra'];
  * The judge speaks the gateway's OWN System One protocol —
  * there is no vendor SDK and no hand-rolled vendor wire here. One `choice`
  * question over the four-tier vocabulary; the same executor that serves
- * `POST /v1/systemone` serves this call, so a native decision model
- * (Jev / Bailian) passes through natively while ANY registered chat model
- * serves through protocol conversion.
+ * `POST /v1/systemone` serves this call — every model (including the
+ * decision judge itself) answers through protocol conversion over the chat
+ * pool.
  *
  * Converted probabilities are self-reported estimates, NOT calibrated —
  * the `reason` records which upstream class answered so
@@ -296,7 +296,7 @@ export class Layer2Judge {
     // The judge's own deadline wins over the upstream's: System One is a fast
     // decision surface, and a stale answer is worthless to a routing cascade.
     // Aborting at the deadline stops the work for real where the transport
-    // allows it (native upstream) and at minimum suppresses the follow-up
+    // allows it and at minimum suppresses the follow-up
     // repair call we would otherwise fire AFTER we stopped waiting.
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -345,23 +345,19 @@ export class Layer2Judge {
         const effortAnswer = askEffort
           ? this.toEffort((decision.response as any)?.answers?.effort)
           : undefined;
-        // A native upstream's confidence is taken at face value, so a NaN or
-        // out-of-range value would flow verbatim into RoutingDecision (where
-        // JSON.stringify(NaN) silently becomes null on any serialized sink).
-        // The converted path is already clamped by convert.ts.
+        // A garbled or out-of-range confidence would flow verbatim into
+        // RoutingDecision (where JSON.stringify(NaN) silently becomes null
+        // on any serialized sink). The converted path is clamped by
+        // convert.ts; this clamp mirrors it for hand-written payloads.
         const raw = answer?.confidence;
         const confidence = typeof raw === 'number' && Number.isFinite(raw)
           ? Math.min(1, Math.max(0, raw))
           : 0.9;
-        const reason =
-          decision.upstreamKind === 'native'
-            ? `System One model ${model.id} classified this as ${tier}`
-            : `System One model ${model.id} classified this as ${tier} (self-reported, not yet calibrated)`;
-        const reasonCode =
-          decision.upstreamKind === 'native' ? 'l2.system_one' : 'l2.system_one_uncalibrated';
+        const reason = `System One model ${model.id} classified this as ${tier} (self-reported, not yet calibrated)`;
+        const reasonCode = 'l2.system_one_uncalibrated';
         // Opt-in dataset sink (classifier.layer2.collectEnabled, gated inside
         // decision-capture): the judged pair is the raw material for distilling
-        // a native decision model. Recorded ONLY on the race-winner path — an
+        // a dedicated decision model. Recorded ONLY on the race-winner path — an
         // abandoned late result must not pollute the dataset with an answer
         // nobody consumed.
         if (!timedOut) {

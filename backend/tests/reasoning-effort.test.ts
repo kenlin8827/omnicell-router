@@ -96,7 +96,6 @@ function configWithModels(
     host: '127.0.0.1',
     baselineModel: models[0]?.id ?? 'mock',
     fallback: { enabled: false, maxRetries: 0, escalateTier: 'plus', injectErrorContext: false },
-    providers: [],
     models: models.map((m) => ({
       id: m.id,
       provider: 'mock',

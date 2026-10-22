@@ -128,14 +128,6 @@ export const GuardrailsPage: React.FC = () => {
     return m;
   }, [pairBreakers]);
 
-  // Masked config keys for the synthetic single-credential column (status
-  // providers are already key-masked server-side).
-  const maskedKeyByProvider = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const p of status?.providers ?? []) if (p.apiKey) m.set(p.name, p.apiKey);
-    return m;
-  }, [status]);
-
   // The full matrix: models × credentials (join/fold semantics live in the
   // pure guardrails-matrix module, pinned by scripts/check-guardrails-matrix).
   const allItems = useMemo<PairCard[]>(
@@ -144,11 +136,10 @@ export const GuardrailsPage: React.FC = () => {
         modelBreakers,
         pairBreakers,
         storeCredentials ?? [],
-        maskedKeyByProvider,
         status?.credentialHashes ?? [],
         { unnamed: t('op.credentialUnnamed'), configKey: t('guardrails.configKey') }
       ),
-    [modelBreakers, pairBreakers, storeCredentials, maskedKeyByProvider, status, t]
+    [modelBreakers, pairBreakers, storeCredentials, status, t]
   );
 
   // Drill-down selectors: distinct providers / model ids present in the grid.

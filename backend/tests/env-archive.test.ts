@@ -70,10 +70,12 @@ async function seedAlpha(): Promise<void> {
     [
       'port: 3000',
       'adminApiKey: sk-ocr-secret-admin',
-      'providers:',
-      '  - { name: p1, apiKey: sk-provider-real }',
       'apiKeys:',
       '  - { name: c1, key: sk-ocr-client }',
+      'providers:',
+      '  - { name: legacy, type: openai, baseUrl: https://x.example/v1, apiKey: sk-legacy-provider-secret }',
+      'systemoneUpstreams:',
+      '  - { name: jev, baseUrl: https://api.typesafe.ai/v1, apiKey: sk-legacy-sysone-secret }',
       'webAuth:',
       '  enabled: true',
       '  username: admin',
@@ -108,16 +110,22 @@ describe('buildEnvelope', () => {
     expect(env.secrets).toBe('redacted');
     expect(env.source).toEqual({ name: 'alpha', type: 'regular', appVersion: expect.any(String) });
     expect(env.redactedPaths.sort()).toEqual(
-      ['adminApiKey', 'apiKeys[0].key', 'providers[0].apiKey'].sort()
+      ['adminApiKey', 'apiKeys[0].key'].sort()
     );
 
     const cfg = parse(env.config);
     expect(cfg.adminApiKey).toBe('__REDACTED__');
-    expect(cfg.providers[0].apiKey).toBe('__REDACTED__');
     expect(cfg.apiKeys[0].key).toBe('__REDACTED__');
     // passwordHash NEVER leaves, even redacted — and real values are gone.
     expect(env.config).not.toContain('scrypt$aabb');
-    expect(env.config).not.toContain('sk-provider-real');
+    expect(env.config).not.toContain('sk-ocr-client');
+    // Legacy hand-written def surfaces (ADR-0010) never leave the install:
+    // stripped from the envelope even though the redaction block no longer
+    // knows their shapes — their plaintext keys must not leak.
+    expect(env.config).not.toContain('sk-legacy-provider-secret');
+    expect(env.config).not.toContain('sk-legacy-sysone-secret');
+    expect(cfg.providers).toBeUndefined();
+    expect(cfg.systemoneUpstreams).toBeUndefined();
     expect(cfg.webAuth.passwordHash).toBeUndefined();
     expect(cfg.webAuth.username).toBe('admin'); // non-secret fields ride along
 
@@ -136,7 +144,7 @@ describe('buildEnvelope', () => {
     const env = buildEnvelope('alpha', { includeSecrets: true });
     expect(env.secrets).toBe('included');
     expect(env.redactedPaths).toEqual([]);
-    expect(env.config).toContain('sk-provider-real');
+    expect(env.config).toContain('sk-ocr-client');
     expect(env.config).toContain('sk-ocr-secret-admin');
     expect(env.config).not.toContain('scrypt$aabb');
     expect(env.config).not.toContain('passwordHash');
@@ -182,9 +190,7 @@ describe('parseAndValidateEnvelope — happy + sanitizing', () => {
     expect(v.config).not.toContain('__REDACTED__');
     const cfg = parse(v.config);
     expect(cfg.adminApiKey).toBeUndefined();
-    expect(cfg.providers[0].apiKey).toBeUndefined(); // key removed, not imported as literal
-    expect('apiKey' in cfg.providers[0]).toBe(false);
-    expect(cfg.apiKeys[0].key).toBeUndefined();
+    expect(cfg.apiKeys[0].key).toBeUndefined(); // key removed, not imported as literal
     expect(cfg.webAuth.username).toBe('admin');
     expect(v.configWasSanitized).toBe(true);
     expect(v.payload['data/layer2-decisions.jsonl']).toContain('{"v":1}');
@@ -199,7 +205,7 @@ describe('parseAndValidateEnvelope — happy + sanitizing', () => {
     expect(v.configWasSanitized).toBe(false);
     expect(v.config).toBe(env.config);
     const cfg = parse(v.config);
-    expect(cfg.providers[0].apiKey).toBe('sk-provider-real');
+    expect(cfg.apiKeys[0].key).toBe('sk-ocr-client');
   });
 
   it('hand-crafted passwordHash is stripped defensively (re-written config)', () => {

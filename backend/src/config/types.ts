@@ -4,9 +4,15 @@ import { CircuitBreakerConfig, RetryConfig } from '../resilience/types.js';
 
 import type { QuotaProbeConfigEntry } from '../quota/types.js';
 
+/**
+ * Chat/decision provider connection record — the INTERNAL construction shape
+ * handed to the per-wire provider classes and DispatchingProvider. Never a
+ * user config surface: user-visible chat providers materialize from the
+ * provider-defs file + CredentialStore (ADR-0005/0006/0010).
+ */
 export interface ProviderConfig {
   name: string;
-  type: 'openai-compatible' | 'anthropic' | 'google' | 'responses' | 'dispatch' | 'systemone';
+  type: 'openai-compatible' | 'anthropic' | 'google' | 'responses' | 'dispatch';
   baseUrl: string;
   apiKey: string;
   organization?: string;
@@ -319,9 +325,8 @@ export interface ForwardProxyConfig {
  * Layer 2 judge configuration. The judge calls a REGISTERED model over the
  * gateway's own System One protocol — there is no vendor endpoint,
  * credential or wire format to configure: `provider`, `baseUrl` and `apiKey`
- * are gone. Point `model` at any registered id (a `type: 'systemone'` provider
- * for native passthrough, or any chat model for protocol conversion); when it
- * is omitted, `systemone.defaultModel` is used.
+ * are gone. Point `model` at any registered id (any chat model serves via
+ * protocol conversion); when it is omitted, `systemone.defaultModel` is used.
  */
 export interface Layer2JudgeConfig {
   enabled: boolean;
@@ -669,10 +674,9 @@ export interface WebAuthConfig {
 }
 
 /**
- * System One protocol surface (POST /v1/systemone). Native upstreams declare
- * `type: 'systemone'` in providers; every other registered model serves via
- * chat-model conversion. `defaultModel` backs requests that omit `model`
- * (or send 'auto') — never routed through the tier cascade.
+ * System One protocol surface (POST /v1/systemone). Every registered model
+ * serves via chat-model conversion. `defaultModel` backs requests that omit
+ * `model` (or send 'auto') — never routed through the tier cascade.
  */
 export interface SystemoneSurfaceConfig {
   defaultModel?: string;
@@ -773,7 +777,6 @@ export interface RouterConfig {
   retry?: RetryConfig;
   /** Rate-limit policy (see RateLimitConfig); the windows themselves live in `apiKeys[].limits` / `credentials:`. */
   rateLimit?: RateLimitConfig;
-  providers?: ProviderConfig[];
   models?: ModelRegistration[];
   combos?: ComboConfig[];
   /** Named slot→modelRef tables for mass-assigning client agent models (see ModelProfileConfig). */

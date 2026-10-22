@@ -46,7 +46,7 @@ import type { RateLimitRule, RouterConfig } from '../config/types.js';
  *    shaped wires (chat / messages / responses) via the orchestrator's
  *    terminal accounting, and the System One decision wire via the surface's
  *    own hook (decision-pipeline.ts — the protocol's `usage` field when the
- *    upstream publishes one; a native response WITHOUT usage records nothing
+ *    upstream publishes one; a response WITHOUT usage records nothing
  *    for that call, the request slot still counts).
  *  - outbound `credential:` subjects — the chat pool gets the full shaping
  *    (peek skip / keep-bound / last-force + dispatch); the decision wire

@@ -303,17 +303,6 @@ export interface BreakerScopeResponse {
 }
 
 // Masked provider entry from /api/admin/status (ProviderConfig with apiKey masked)
-export interface MaskedProviderStatus {
-  name: string;
-  type: 'openai-compatible' | 'anthropic';
-  baseUrl: string;
-  apiKey: string; // "xxxx••••xxxx", empty string when unset
-  rawKeyConfigured: boolean;
-  organization?: string;
-  headers?: Record<string, string>;
-  timeoutMs?: number;
-}
-
 // Mirrors backend /api/admin/status payload exactly (backend/src/routes/console.ts handleStatus)
 export interface GatewayStatusResponse {
   status: string;
@@ -354,7 +343,6 @@ export interface GatewayStatusResponse {
     rules?: BreakerRulesStatus;
   };
   clients: ClientStatus[];
-  providers: MaskedProviderStatus[];
   /**
    * Runtime credential directory (provider + keyHash prefix only). Additive:
    * older gateways omit it. Lets the guardrails matrix name an orphan breaker
@@ -1828,7 +1816,15 @@ export const api = {
     status: string;
     mode: 'none' | 'allow' | 'deny';
     policyModels: string[];
-    models: { id: string; provider: string; tiers: string[]; virtual: boolean; allowed: boolean }[];
+    models: {
+      id: string;
+      kind: 'auto' | 'tier' | 'combo' | 'model' | 'variant';
+      provider: string;
+      tiers?: string[];
+      tier?: string;
+      virtual: boolean;
+      allowed: boolean;
+    }[];
   }> {
     const res = await fetch(`/api/admin/api-keys/${encodeURIComponent(id)}/models`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);

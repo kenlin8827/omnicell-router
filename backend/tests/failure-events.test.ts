@@ -3,8 +3,11 @@ import { serve } from 'bun';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createServer } from '../src/server.js';
-import { loadConfig } from '../src/config/index.js';
+import { bootServer, makeConfig as seamMakeConfig } from './helpers/systemone-seam.js';
+// This suite always runs with the Layer 2 micro-classifier disabled —
+// pin it once instead of threading the option through every call site.
+const makeConfig = (providers: any[], models: any[], systemone?: any): RouterConfig =>
+  seamMakeConfig(providers, models, { systemone, disableLayer2Classifier: true });
 import { RouterConfig } from '../src/config/types.js';
 import { Layer2Judge } from '../src/router/layer2-judge.js';
 import {
@@ -50,20 +53,6 @@ afterAll(() => {
     /* best effort */
   }
 });
-
-function makeConfig(providers: any[], models: any[]): RouterConfig {
-  const base = loadConfig();
-  return {
-    ...base,
-    apiKeys: [],
-    providers,
-    models,
-    classifier: { ...base.classifier, layer2: { ...base.classifier?.layer2, enabled: false } },
-    requestCapture: { ...base.requestCapture, enabled: false },
-    session: { ...base.session, enabled: false },
-    tracePersist: { ...base.tracePersist, enabled: false },
-  } as RouterConfig;
-}
 
 let originalLog: FailureEventLog | undefined;
 
@@ -247,7 +236,7 @@ describe('Serving emitter — a real candidate-pool failure lands in the ledger'
         [{ name: 'rl', type: 'openai-compatible', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
         [{ id: 'rl/m1', provider: 'rl', upstreamModel: 'm1', tier: 'plus', pricing: { input: 0, output: 0, cacheRead: 0 } }]
       );
-      const { orchestrator } = createServer(config);
+      const { orchestrator } = bootServer(config);
       const req: ChatCompletionRequest = { model: 'rl/m1', messages: [{ role: 'user', content: 'hello' }] };
       // The chain has exactly one candidate: the attempt fails, the in-place
       // retry fails too, then the pool exhausts and process() throws.
@@ -278,10 +267,10 @@ describe('Judge emitter — wire failure and deadline land as role=judge rows', 
     });
     try {
       const config = makeConfig(
-        [{ name: 'l2-fail', type: 'systemone', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
+        [{ name: 'l2-fail', type: 'openai-compatible', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
         [{ id: 'l2-fail/jev', provider: 'l2-fail', upstreamModel: 'jev', tier: 'plus', pricing: { input: 0, output: 0, cacheRead: 0 } }]
       );
-      const { registry } = createServer(config);
+      const { registry } = bootServer(config);
       const result = await Layer2Judge.evaluate(
         { model: 'auto', messages: [{ role: 'user', content: 'Prove Fermat.' }] },
         { enabled: true, model: 'l2-fail/jev', timeoutMs: 5000 },
@@ -319,10 +308,10 @@ describe('Judge emitter — wire failure and deadline land as role=judge rows', 
     });
     try {
       const config = makeConfig(
-        [{ name: 'l2-slow', type: 'systemone', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test', timeoutMs: 60_000 }],
+        [{ name: 'l2-slow', type: 'openai-compatible', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test', timeoutMs: 60_000 }],
         [{ id: 'l2-slow/jev', provider: 'l2-slow', upstreamModel: 'jev', tier: 'plus', pricing: { input: 0, output: 0, cacheRead: 0 } }]
       );
-      const { registry } = createServer(config);
+      const { registry } = bootServer(config);
       const result = await Layer2Judge.evaluate(
         { model: 'auto', messages: [{ role: 'user', content: 'Prove Fermat.' }] },
         { enabled: true, model: 'l2-slow/jev', timeoutMs: 150 },
@@ -360,10 +349,10 @@ describe('GET /api/admin/failure-events — equality filters, newest first', () 
     });
     try {
       const config = makeConfig(
-        [{ name: 'l2-ep', type: 'systemone', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
+        [{ name: 'l2-ep', type: 'openai-compatible', baseUrl: `http://localhost:${upstream.port}`, apiKey: 'sk-test' }],
         [{ id: 'l2-ep/jev', provider: 'l2-ep', upstreamModel: 'jev', tier: 'plus', pricing: { input: 0, output: 0, cacheRead: 0 } }]
       );
-      const { app, registry } = createServer(config);
+      const { app, registry } = bootServer(config);
 
       const log = getFailureEventLog();
       log.record({ model: 'a/m1', provider: 'a', errorClass: 'RATE_LIMITED', status: 429, message: 'x', role: 'serving' }, 1000);
