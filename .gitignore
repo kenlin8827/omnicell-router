@@ -5,6 +5,10 @@ dist/
 .env
 *.log
 
+# Local scratch space (agent / review notes, throwaway drafts). Never shipped —
+# a note that matters belongs in docs/ or an ADR, not here.
+.scratch/
+
 # Runtime state never lives in the repository: every environment owns
 # ~/.onecast-router/envs/<name>/ (config.yaml, data/, models/, catalog/,
 # traces/, capture/, webauth-secret). If a rule for a repo-root state dir ever
