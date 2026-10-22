@@ -2118,6 +2118,20 @@ export function registerConsoleRoutes(
         return reply.status(400).send({ success: false, error: 'Provider id is required' });
       }
       const id = String(body.id);
+      // Provider ids are lowercase slugs: they key the defs file, credential
+      // store, quota (provider x keyHashPrefix) pairs, breaker state and
+      // modelRef strings verbatim, and every built-in/catalog vocabulary id is
+      // lowercase. Refuse anything else so a mixed-case id can never fork the
+      // namespace (the form normalizes input live; direct API callers get the
+      // rule stated back). Also keeps the catalog-shadow guard below exact:
+      // 'OpenAI' can no longer bypass a covered 'openai' id.
+      const { isValidProviderId, PROVIDER_ID_RULE, upsertCustomProvider, getProviderNodeById } = await import('../opencode/user-config.js');
+      if (!isValidProviderId(id)) {
+        return reply.status(400).send({
+          success: false,
+          error: `Invalid provider id '${id}' - ${PROVIDER_ID_RULE}`,
+        });
+      }
       // A baseURL pointing back at THIS gateway would make the gateway its own
       // upstream (boot excludes it loudly as self_loop) — refuse at the door
       // with the same wording. Pointing at a DIFFERENT instance (another
@@ -2140,7 +2154,6 @@ export function registerConsoleRoutes(
           error: `'${id}' is covered by the built-in catalog — connect it with credentials instead of redefining it`,
         });
       }
-      const { upsertCustomProvider, getProviderNodeById } = await import('../opencode/user-config.js');
       const { getCredentialStore } = await import('../opencode/credentials/index.js');
       const store = await getCredentialStore();
       // Captured BEFORE the def write — decides whether a failed key push may roll

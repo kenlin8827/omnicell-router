@@ -347,6 +347,7 @@ export const enUS: TranslationDict = {
     phPullPattern: 'zhipu/glm-* or openai/*, anthropic/*',
     fPullPatternTip: 'Once declared, the periodic sweep pulls this provider — only ids matching the pattern; blank = never auto-pulled (manual pull still available)',
     phId: 'my-gateway',
+    idRule: 'Lowercase letters, digits, . _ - only, starting with a letter or digit; input is lowercased automatically',
     phName: 'My Company Gateway',
     phBaseUrl: 'https://gateway.example.com/v1',
     phKey: 'sk-…',

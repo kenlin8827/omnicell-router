@@ -361,6 +361,7 @@ export interface TranslationDict {
     phPullPattern: string;
     fPullPatternTip: string;
     phId: string;
+    idRule: string;
     phName: string;
     phBaseUrl: string;
     phKey: string;

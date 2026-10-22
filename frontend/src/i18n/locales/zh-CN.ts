@@ -345,6 +345,7 @@ export const zhCN: TranslationDict = {
     phPullPattern: 'zhipu/glm-* 或 openai/*, anthropic/*',
     fPullPatternTip: '声明后才会定时自动拉取该服务商的模型，且只拉取匹配的 id；留空 = 不自动拉取（仍可手动拉取）',
     phId: 'my-gateway',
+    idRule: '仅小写字母、数字和 . _ -，以字母或数字开头；输入时自动转小写',
     phName: '公司内部网关',
     phBaseUrl: 'https://gateway.example.com/v1',
     phKey: 'sk-…',

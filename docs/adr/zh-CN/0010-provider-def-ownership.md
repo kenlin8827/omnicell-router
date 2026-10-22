@@ -12,7 +12,7 @@ Provider 的**连接定义**——id、name、npm wire 包、baseURL、headers�
 
 ### 2. 文件——jsonc providers 节点的保形移植
 
-`custom-providers.json`：`version: 1`，原子 temp+rename，形状 = 现行 jsonc `providers` 节点逐字保形（id → `{ name?, npm?, options: { baseURL?, headers? }, models?, env?, canonical?, body? }`）。`user-config.ts` 的节点解析器（仅 CURRENT shape；`env:[VAR]` 名物化为 `{env:X}` 模板——boot-direct.ts:13,22 正是经这一个漏斗取节点）**不改**：boot-direct 与 console 路由换的是 loader 的**源**，不是语法。与目录层的边界：节点内静态模型跟定义走（同今天 jsonc 节点）；拉取/覆盖模型留在 `catalog/custom.json`（add-only overlay，不动——custom-store.ts:12-14 的优先级原样存活）。
+`custom-providers.json`：`version: 1`，原子 temp+rename，形状 = 现行 jsonc `providers` 节点逐字保形（id → `{ name?, npm?, options: { baseURL?, headers? }, models?, env?, canonical?, body? }`）。Provider id 为小写 slug（首字符 `[a-z0-9]`，其后 `[a-z0-9._-]`）：id 在定义文件、凭证库、配额（provider × keyHashPrefix）对、熔断状态与 modelRef `provider/model` 串中都是逐字键，且目录/词汇表里每个 id 都是小写——因此 `upsertCustomProvider` 在每次定义写入时拒绝其他形态，console 创建路由以 400 复述规则，表单 id 字段是实时输入掩码（转小写、剔除非法字符），用户所见即所存。`user-config.ts` 的节点解析器（仅 CURRENT shape；`env:[VAR]` 名物化为 `{env:X}` 模板——boot-direct.ts:13,22 正是经这一个漏斗取节点）**不改**：boot-direct 与 console 路由换的是 loader 的**源**，不是语法。与目录层的边界：节点内静态模型跟定义走（同今天 jsonc 节点）；拉取/覆盖模型留在 `catalog/custom.json`（add-only overlay，不动——custom-store.ts:12-14 的优先级原样存活）。
 
 ### 3. Boot pool——三源不变，(a) 换人
 

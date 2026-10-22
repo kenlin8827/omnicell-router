@@ -147,6 +147,14 @@ const HeadersEditor: React.FC<{
   );
 };
 
+/** Live input mask for the custom-provider id field. Mirrors the backend wire
+ *  contract `isValidProviderId` (backend/src/opencode/user-config.ts):
+ *  lowercase slug over [a-z0-9._-] with a leading letter/digit. Stripping and
+ *  lowercasing on keystroke (paste included) means the field can only hold a
+ *  rule-conforming id - the user always sees exactly what will be stored. */
+const normalizeProviderIdInput = (raw: string): string =>
+  raw.toLowerCase().replace(/[^a-z0-9._-]/g, '').replace(/^[._-]+/, '');
+
 /** Custom-provider form cell: a real label sits above the control and the
  *  placeholder is free to show an example — a typed field must not lose its
  *  identity when its placeholder disappears. */
@@ -2379,7 +2387,8 @@ export const KeysPage: React.FC = () => {
             as one control. auto-fit collapses to a single column below ~580px. */}
         <div style={{ maxWidth: 720, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(280px, 100%), 1fr))', gap: '12px 14px' }}>
           <FormField label={t('op.fId')} required>
-            <input className="input" style={{ fontSize: 12 }} placeholder={t('op.phId')} value={form.id} onChange={e => setForm({ ...form, id: e.target.value })} />
+            <input className="input" style={{ fontSize: 12 }} placeholder={t('op.phId')} value={form.id} onChange={e => setForm({ ...form, id: normalizeProviderIdInput(e.target.value) })} />
+            <span style={{ fontSize: 10.5, color: 'var(--text-dim)' }}>{t('op.idRule')}</span>
           </FormField>
           <FormField label={t('op.fName')}>
             <input className="input" style={{ fontSize: 12 }} placeholder={t('op.phName')} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />

@@ -209,9 +209,24 @@ export interface OpenCodeProviderView {
   };
 }
 
-function isValidProviderId(id: string): boolean {
-  return Boolean(id) && /^[A-Za-z0-9][A-Za-z0-9._\-]*$/.test(id);
+/**
+ * Valid custom-provider id - lowercase slug only (`[a-z0-9._-]`, leading
+ * letter/digit). The id is a verbatim key across case-sensitive stores (defs
+ * file, credential store, quota (provider x keyHashPrefix) pairs, breaker
+ * state, modelRef `provider/model` strings) and every built-in/catalog
+ * vocabulary id is lowercase, so a mixed-case id would fork the namespace.
+ * Enforced on every def write (upsertCustomProvider); the console form
+ * normalizes input live so users never see a silent rewrite.
+ */
+export function isValidProviderId(id: string): boolean {
+  return Boolean(id) && /^[a-z0-9][a-z0-9._-]*$/.test(id);
 }
+
+/** Human-readable statement of the id rule, interpolated verbatim by every
+ *  rejection site (console route 400, defs-funnel error) so the wording can
+ *  never drift apart. */
+export const PROVIDER_ID_RULE =
+  'lowercase letters, digits, ".", "_" or "-" only, starting with a letter or digit';
 
 // ---------------------------------------------------------------------------
 // opencode v2 provider-shape READ normalization 
@@ -577,7 +592,7 @@ export function listConfigProviders(): OpenCodeProviderView[] {
  */
 export function upsertCustomProvider(def: CustomProviderDef): { success: boolean; error?: string } {
   if (!isValidProviderId(def.id)) {
-    return { success: false, error: `Invalid provider id: '${def.id}'` };
+    return { success: false, error: `Invalid provider id '${def.id}' - ${PROVIDER_ID_RULE}` };
   }
 
   const built = buildV2ProviderNode(def);
