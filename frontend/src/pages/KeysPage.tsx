@@ -2617,10 +2617,13 @@ export const KeysPage: React.FC = () => {
         )}
 
         {/* Provider-def edit dialog — same fixed-overlay mount rule as the
-            reveal gate (a tab switch must not orphan it). */}
+            reveal gate (a tab switch must not orphan it). zIndex 200, NOT
+            higher: Combobox panels ride at 220 (PANEL_Z), and this dialog
+            hosts the npm Combobox — the overlay must sit BELOW the dropdown
+            layer or the panel opens underneath it. */}
         {editDef && createPortal(
           <div
-            style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}
+            style={{ position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}
             onClick={() => { if (!savingDef) setEditDef(null); }}
           >
             <div
@@ -2636,7 +2639,19 @@ export const KeysPage: React.FC = () => {
                 <input className="input" style={{ fontSize: 12, fontFamily: "'JetBrains Mono', monospace" }} value={editDef.baseURL} onChange={e => setEditDef({ ...editDef, baseURL: e.target.value })} />
               </FormField>
               <FormField label={t('op.fNpmLabel')}>
-                <input className="input" style={{ fontSize: 12, fontFamily: "'JetBrains Mono', monospace" }} value={editDef.npm} onChange={e => setEditDef({ ...editDef, npm: e.target.value })} />
+                {/* Combobox, not a free input (repo dropdown convention). The
+                    current value always rides first so a non-vocabulary def
+                    stays visible; selections may also be cleared. */}
+                <Combobox
+                  style={{ fontSize: 12 }}
+                  value={editDef.npm}
+                  onChange={(v) => setEditDef({ ...editDef, npm: v })}
+                  clearable
+                  options={[
+                    ...(editDef.npm ? [{ value: editDef.npm, label: editDef.npm }] : []),
+                    ...npmOptions.map((pkg) => ({ value: pkg, label: pkg })),
+                  ]}
+                />
               </FormField>
               <FormField label={t('op.fPullPattern')}>
                 <input className="input" style={{ fontSize: 12, fontFamily: "'JetBrains Mono', monospace" }} placeholder={t('op.phPullPattern')} value={editDef.pullPattern} onChange={e => setEditDef({ ...editDef, pullPattern: e.target.value })} />
