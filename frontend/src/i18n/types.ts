@@ -357,6 +357,9 @@ export interface TranslationDict {
     copyBaseUrl: string;
     baseUrlCopied: string;
     fNpmCustom: string;
+    fPullPattern: string;
+    phPullPattern: string;
+    fPullPatternTip: string;
     phId: string;
     phName: string;
     phBaseUrl: string;

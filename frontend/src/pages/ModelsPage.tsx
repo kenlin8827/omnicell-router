@@ -357,96 +357,113 @@ const toggleHidden = async (m: OpenCodeModelView) => {
                 return (
                 <tr key={rowKey} style={m.disabled === true ? { opacity: 0.5, height: 56 } : { height: 56 }}>
                   <td style={tdStyle}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
-                        {/* The FULL gateway-visible id (`providerId/modelId` — the
-                            registered modelRef): bare ids collide across providers
-                            and are not routable on their own. */}
-                        <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontWeight: 600, wordBreak: 'break-all' }}>{m.providerId}/{m.id}</span>
-                      </div>
-                      {res && (
-                        <span
-                          style={{
-                            fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
-                            fontSize: 10,
-                            whiteSpace: 'nowrap',
-                            color: res.ok ? 'var(--accent-emerald)' : 'var(--accent-rose)',
-                          }}
-                          title={res.ok ? `${res.latencyMs} ms` : res.error}
-                        >
-                          {res.ok ? `✓${fmtLatency(res.latencyMs ?? NaN)}` : '✗'}
-                        </span>
-                      )}
-                      <button
-                        style={{ color: 'var(--text-dim)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', flexShrink: 0 }}
-                        title={testingIds.has(rowKey) ? t('op.testing') : t('op.testBtn')}
-                        disabled={isBusy}
-                        onClick={() => testOne({ key: rowKey, providerId: m.providerId, modelId: m.id })}
-                      >
-                        {testingIds.has(rowKey) ? <Loader2 size={11} style={{ animation: 'ocr-spin 0.8s linear infinite' }} /> : <Zap size={11} />}
-                      </button>
-                      <button
-                        style={{ color: 'var(--text-dim)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', flexShrink: 0 }}
-                        title={t('models.copyFullId')}
-                        onClick={async () => {
-                          const full = `${m.providerId}/${m.id}`;
-                          (await copyToClipboard(full)) ? toast.success(full) : toast.error(t('common.failed'));
-                        }}
-                      >
-                        <Copy size={11} />
-                      </button>
-                      <button
-                        style={{ color: 'var(--text-dim)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', flexShrink: 0, opacity: m.disabled === true ? 0.6 : 1 }}
-                        title={m.disabled === true ? t('models.showInCatalog') : t('models.hideFromCatalog')}
-                        disabled={isBusy}
-                        onClick={() => void toggleHidden(m)}
-                      >
-                        {m.disabled === true ? <EyeOff size={11} /> : <Eye size={11} />}
-                      </button>
-                      {/* editing needs a local def to patch — `m.custom` is a PROVIDER-level flag
-                          and would offer the pencil on catalog-filled models, which then
-                          fail with "model is not defined for provider". `source === 'config'`
-                          is exactly "has a defs-file definition". */}
-                      {m.source === 'config' && (
-                        <button
-                          style={{ color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', flexShrink: 0 }}
-                          title={t('op.pmEdit')}
-                          onClick={() => setEditTarget({ providerId: m.providerId, modelId: m.id })}
-                        >
-                          <Pencil size={11} />
-                        </button>
-                      )}
-                      {m.source === 'config' ? (
-                        <button
-                          title={lockedIds.has(rowLockKey(m)) ? t('models.unlockHint') : t('models.lockHint')}
-                          onClick={() => void toggleLock(m)}
-                          style={{
-                            color: lockedIds.has(rowLockKey(m)) ? 'var(--accent-amber)' : 'var(--text-dim)',
-                            background: 'none',
-                            border: 'none',
-                            cursor: 'pointer',
-                            padding: 0,
-                            display: 'inline-flex',
-                            flexShrink: 0,
-                          }}
-                        >
-                          {lockedIds.has(rowLockKey(m)) ? <Lock size={11} /> : <LockOpen size={11} />}
-                        </button>
-                      ) : (
-                        <button
-                          title={t('models.lockNeedLocal')}
-                          onClick={() => toast.info(t('models.lockNeedLocal'))}
-                          style={{ color: 'var(--text-dim)', opacity: 0.55, background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', flexShrink: 0 }}
-                        >
-                          <LockOpen size={11} />
-                        </button>
-                      )}
-                    </div>
                     {(() => {
                       const displayName = m.name || m.id.split('/').pop();
-                      return displayName && displayName !== m.id ? (
-                        <div style={{ fontSize: 10.5, color: 'var(--text-dim)', marginTop: 2 }}>{displayName}</div>
-                      ) : null;
+                      const hasName = Boolean(displayName && displayName !== m.id);
+                      // Industry-standard model-cell layout (OpenRouter / Anthropic
+                      // Console style): human-readable display name as the primary
+                      // line, the FULL gateway-visible id (`providerId/modelId` —
+                      // the registered modelRef) as the monospace secondary line
+                      // with its own copy button attached. Rows without a distinct
+                      // name fall back to the id as the primary line.
+                      const mono = "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace";
+                      const copyBtn = (
+                        <button
+                          style={{ color: 'var(--text-dim)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', flexShrink: 0 }}
+                          title={t('models.copyFullId')}
+                          onClick={async () => {
+                            const full = `${m.providerId}/${m.id}`;
+                            (await copyToClipboard(full)) ? toast.success(full) : toast.error(t('common.failed'));
+                          }}
+                        >
+                          <Copy size={11} />
+                        </button>
+                      );
+                      return (
+                        <>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                            {hasName ? (
+                              <span style={{ fontWeight: 600, wordBreak: 'break-all' }}>{displayName}</span>
+                            ) : (
+                              <span style={{ fontFamily: mono, fontWeight: 600, wordBreak: 'break-all' }}>{m.providerId}/{m.id}</span>
+                            )}
+                            {res && (
+                              <span
+                                style={{
+                                  fontFamily: mono,
+                                  fontSize: 10,
+                                  whiteSpace: 'nowrap',
+                                  color: res.ok ? 'var(--accent-emerald)' : 'var(--accent-rose)',
+                                }}
+                                title={res.ok ? `${res.latencyMs} ms` : res.error}
+                              >
+                                {res.ok ? `✓${fmtLatency(res.latencyMs ?? NaN)}` : '✗'}
+                              </span>
+                            )}
+                            <button
+                              style={{ color: 'var(--text-dim)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', flexShrink: 0 }}
+                              title={testingIds.has(rowKey) ? t('op.testing') : t('op.testBtn')}
+                              disabled={isBusy}
+                              onClick={() => testOne({ key: rowKey, providerId: m.providerId, modelId: m.id })}
+                            >
+                              {testingIds.has(rowKey) ? <Loader2 size={11} style={{ animation: 'ocr-spin 0.8s linear infinite' }} /> : <Zap size={11} />}
+                            </button>
+                            {!hasName && copyBtn}
+                            <button
+                              style={{ color: 'var(--text-dim)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', flexShrink: 0, opacity: m.disabled === true ? 0.6 : 1 }}
+                              title={m.disabled === true ? t('models.showInCatalog') : t('models.hideFromCatalog')}
+                              disabled={isBusy}
+                              onClick={() => void toggleHidden(m)}
+                            >
+                              {m.disabled === true ? <EyeOff size={11} /> : <Eye size={11} />}
+                            </button>
+                            {/* editing needs a local def to patch — `m.custom` is a PROVIDER-level flag
+                                and would offer the pencil on catalog-filled models, which then
+                                fail with "model is not defined for provider". `source === 'config'`
+                                is exactly "has a defs-file definition". */}
+                            {m.source === 'config' && (
+                              <button
+                                style={{ color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', flexShrink: 0 }}
+                                title={t('op.pmEdit')}
+                                onClick={() => setEditTarget({ providerId: m.providerId, modelId: m.id })}
+                              >
+                                <Pencil size={11} />
+                              </button>
+                            )}
+                            {m.source === 'config' ? (
+                              <button
+                                title={lockedIds.has(rowLockKey(m)) ? t('models.unlockHint') : t('models.lockHint')}
+                                onClick={() => void toggleLock(m)}
+                                style={{
+                                  color: lockedIds.has(rowLockKey(m)) ? 'var(--accent-amber)' : 'var(--text-dim)',
+                                  background: 'none',
+                                  border: 'none',
+                                  cursor: 'pointer',
+                                  padding: 0,
+                                  display: 'inline-flex',
+                                  flexShrink: 0,
+                                }}
+                              >
+                                {lockedIds.has(rowLockKey(m)) ? <Lock size={11} /> : <LockOpen size={11} />}
+                              </button>
+                            ) : (
+                              <button
+                                title={t('models.lockNeedLocal')}
+                                onClick={() => toast.info(t('models.lockNeedLocal'))}
+                                style={{ color: 'var(--text-dim)', opacity: 0.55, background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', flexShrink: 0 }}
+                              >
+                                <LockOpen size={11} />
+                              </button>
+                            )}
+                          </div>
+                          {hasName && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 2, minWidth: 0 }}>
+                              <span style={{ fontFamily: mono, fontSize: 11, color: 'var(--text-dim)', wordBreak: 'break-all' }}>{m.providerId}/{m.id}</span>
+                              {copyBtn}
+                            </div>
+                          )}
+                        </>
+                      );
                     })()}
                   </td>
                   <td style={{ ...tdStyle, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>

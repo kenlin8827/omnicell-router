@@ -196,13 +196,29 @@ describe('POST /opencode/providers — the OCR store is the credential sink', ()
     expect(fs.existsSync(p.authJsonPath)).toBe(false);
   });
 
+  it('self-referencing baseURL is rejected — the gateway cannot be its own upstream', async () => {
+    const p = credPaths();
+    bindStore(p);
+    const { loadConfig } = await import('../src/config/index.js');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/opencode/providers',
+      payload: { id: 'my-gateway', baseURL: `http://127.0.0.1:${loadConfig().port}/v1`, apiKey: 'sk-ocr-123456' },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toContain('cannot be its own upstream');
+    expect(rawJsonc().providers['my-gateway']).toBeUndefined();
+  });
+
   it('create fires the model pull in the background — the response never waits on it', async () => {
     const p = credPaths();
     bindStore(p);
     const res = await app.inject({
       method: 'POST',
       url: '/api/admin/opencode/providers',
-      payload: { id: 'pullme', baseURL: 'https://pullme.test/v1', apiKey: 'sk-pull-123456' },
+      // pullPattern opts the provider into the auto-pull whitelist
+      // (catalog.autoPullPatterns) — without it the post-create pull is skipped.
+      payload: { id: 'pullme', baseURL: 'https://pullme.test/v1', apiKey: 'sk-pull-123456', pullPattern: '*' },
     });
     expect(res.statusCode).toBe(200);
     // fire-and-forget: the response carries no pull outcome (slow /models must not
@@ -212,6 +228,19 @@ describe('POST /opencode/providers — the OCR store is the credential sink', ()
     expect(pullFired).toContain('pullme');
   });
 
+  it('create without a pullPattern is NOT auto-pulled (opt-in whitelist)', async () => {
+    const p = credPaths();
+    bindStore(p);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/opencode/providers',
+      payload: { id: 'unpulled', baseURL: 'https://unpulled.test/v1', apiKey: 'sk-unpull-123456' },
+    });
+    expect(res.statusCode).toBe(200);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(pullFired).not.toContain('unpulled');
+  });
+
   it('a failed model pull is swallowed — the completed creation stands', async () => {
     const p = credPaths();
     bindStore(p);
@@ -219,7 +248,7 @@ describe('POST /opencode/providers — the OCR store is the credential sink', ()
     const res = await app.inject({
       method: 'POST',
       url: '/api/admin/opencode/providers',
-      payload: { id: 'pullboom', baseURL: 'https://pullboom.test/v1', apiKey: 'sk-boom-123456' },
+      payload: { id: 'pullboom', baseURL: 'https://pullboom.test/v1', apiKey: 'sk-boom-123456', pullPattern: '*' },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().modelsPulled).toBeUndefined();
@@ -231,7 +260,7 @@ describe('POST /opencode/providers — the OCR store is the credential sink', ()
     const res2 = await app.inject({
       method: 'POST',
       url: '/api/admin/opencode/providers',
-      payload: { id: 'pullnope', baseURL: 'https://pullnope.test/v1', apiKey: 'sk-nope-123456' },
+      payload: { id: 'pullnope', baseURL: 'https://pullnope.test/v1', apiKey: 'sk-nope-123456', pullPattern: '*' },
     });
     expect(res2.statusCode).toBe(200);
     expect(res2.json().modelsPulled).toBeUndefined();

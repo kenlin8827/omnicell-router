@@ -1111,10 +1111,10 @@ export const KeysPage: React.FC = () => {
   const [limitsBusy, setLimitsBusy] = useState(false);
 
   // Custom provider create form
-  const [form, setForm] = useState<{ id: string; name: string; baseURL: string; npm: string; apiKey: string; inline: boolean; headerRows: HeaderRow[] }>({ id: '', name: '', baseURL: '', npm: '', apiKey: '', inline: false, headerRows: [] });
+  const [form, setForm] = useState<{ id: string; name: string; baseURL: string; npm: string; apiKey: string; inline: boolean; pullPattern: string; headerRows: HeaderRow[] }>({ id: '', name: '', baseURL: '', npm: '', apiKey: '', inline: false, pullPattern: '', headerRows: [] });
   const [npmChoice, setNpmChoice] = useState<string>('');
   /** Provider-def edit dialog (connected card pencil): def-node providers only. */
-  const [editDef, setEditDef] = useState<{ id: string; name: string; baseURL: string; npm: string; headerRows: HeaderRow[] } | null>(null);
+  const [editDef, setEditDef] = useState<{ id: string; name: string; baseURL: string; npm: string; pullPattern: string; headerRows: HeaderRow[] } | null>(null);
   const [savingDef, setSavingDef] = useState(false);
   const openDefEdit = (p: OpenCodeProviderView) =>
     setEditDef({
@@ -1122,6 +1122,7 @@ export const KeysPage: React.FC = () => {
       name: p.name ?? '',
       baseURL: p.baseURL ?? '',
       npm: displayNpm(p.npm) ?? '',
+      pullPattern: p.autoPullPattern ?? '',
       headerRows: headersToRows(p.headers),
     });
   const saveDefEdit = async () => {
@@ -1135,6 +1136,8 @@ export const KeysPage: React.FC = () => {
         // Always sent: an emptied editor CLEARS the def's headers (the
         // backend contract is presence = full replace).
         headers: rowsToHeaders(editDef.headerRows) ?? {},
+        // Same presence contract: blank clears the auto-pull whitelist entry.
+        pullPattern: editDef.pullPattern.trim(),
       });
       showNotice(t('op.saveDefDone'));
       setEditDef(null);
@@ -1845,9 +1848,10 @@ export const KeysPage: React.FC = () => {
         headers: rowsToHeaders(form.headerRows),
         apiKey: form.apiKey.trim() || undefined,
         apiKeyInline: form.inline,
+        pullPattern: form.pullPattern.trim() || undefined,
       });
       showNotice(t('op.customTitle') + ' ✓');
-      setForm({ id: '', name: '', baseURL: '', npm: '', apiKey: '', inline: false, headerRows: [] });
+      setForm({ id: '', name: '', baseURL: '', npm: '', apiKey: '', inline: false, pullPattern: '', headerRows: [] });
       setNpmChoice('');
       await refreshAll();
     } catch (err: any) {
@@ -2006,32 +2010,30 @@ export const KeysPage: React.FC = () => {
             <div key={p.id} className="sub-card" style={cardFlex}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                 <ProviderLogo id={p.id} logo={p.logo} size={44} />
-                <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <div style={{ flex: '1 1 96px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
                   <span style={{ fontWeight: 700, fontSize: 14, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.id}</span>
                   {p.name && <span style={{ fontSize: 11, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>}
                 </div>
-                <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                  {displayNpm(p.npm) && (
-                    <span
-                      style={{ ...badgeStyle('var(--text-dim)', 'var(--chip-bg)'), fontFamily: "'JetBrains Mono', monospace", fontSize: 9.5 }}
-                      title={`${displayNpm(p.npm)} — ${t('catalogPage.ocrEditNpmHint')}`}
-                    >
-                      {displayNpm(p.npm)!.replace('@ai-sdk/', '')}
-                    </span>
-                  )}
-                  {p.custom && <span style={badgeStyle('var(--accent)', 'var(--accent-bg)')} title={t('op.badgeCustomTip')}>{t('op.badgeCustom')}</span>}
-                  {p.auth.inline && (
-                    <span style={{ ...badgeStyle('var(--accent-amber)', 'color-mix(in srgb, var(--accent-amber) 12%, transparent)'), display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-                      <Key size={9} />
-                      {t('op.badgeInline')}
-                    </span>
-                  )}
-                  {p.auth.type === 'oauth' && <span style={badgeStyle('var(--hue-violet)', 'var(--hue-violet-soft)')}>{t('op.badgeOauth')}</span>}
-                  {/* The api-key sink badge ("credentials.json") was removed:
-                      the bound store is PAGE-level truth (stated in the tab
-                      descriptions), identical on every card — a per-card
-                      repetition carried zero information. */}
-                </div>
+                {/* Identity badges ride the title row again — the wide npm badge
+                    moved to the URL row, so the small chips fit; the 96px title
+                    floor keeps the id readable on the narrowest card (badges
+                    wrap inside their own box below that). */}
+                {(p.custom || p.auth.inline || p.auth.type === 'oauth') && (
+                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center', minWidth: 0 }}>
+                    {p.custom && <span style={badgeStyle('var(--accent)', 'var(--accent-bg)')} title={t('op.badgeCustomTip')}>{t('op.badgeCustom')}</span>}
+                    {p.auth.inline && (
+                      <span style={{ ...badgeStyle('var(--accent-amber)', 'color-mix(in srgb, var(--accent-amber) 12%, transparent)'), display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                        <Key size={9} />
+                        {t('op.badgeInline')}
+                      </span>
+                    )}
+                    {p.auth.type === 'oauth' && <span style={badgeStyle('var(--hue-violet)', 'var(--hue-violet-soft)')}>{t('op.badgeOauth')}</span>}
+                    {/* The api-key sink badge ("credentials.json") was removed:
+                        the bound store is PAGE-level truth (stated in the tab
+                        descriptions), identical on every card — a per-card
+                        repetition carried zero information. */}
+                  </div>
+                )}
                 {p.defNode && (
                   <button
                     className="btn btn-sm"
@@ -2056,9 +2058,21 @@ export const KeysPage: React.FC = () => {
                 )}
               </div>
 
-              {p.baseURL && (
-                <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-muted)', wordBreak: 'break-all' }}>
-                  {p.baseURL}
+              {(p.baseURL || displayNpm(p.npm)) && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {p.baseURL && (
+                    <div style={{ flex: 1, minWidth: 0, fontSize: 11, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-muted)', wordBreak: 'break-all' }}>
+                      {p.baseURL}
+                    </div>
+                  )}
+                  {displayNpm(p.npm) && (
+                    <span
+                      style={{ ...badgeStyle('var(--text-dim)', 'var(--chip-bg)'), fontFamily: "'JetBrains Mono', monospace", fontSize: 9.5, flexShrink: 0 }}
+                      title={`${displayNpm(p.npm)} — ${t('catalogPage.ocrEditNpmHint')}`}
+                    >
+                      {displayNpm(p.npm)!.replace('@ai-sdk/', '')}
+                    </span>
+                  )}
                 </div>
               )}
 
@@ -2382,6 +2396,10 @@ export const KeysPage: React.FC = () => {
               <span>{t('op.fKeyInline')}</span>
             </label>
           </FormField>
+          <FormField label={t('op.fPullPattern')} style={{ gridColumn: '1 / -1' }}>
+            <input className="input" style={{ fontSize: 12, fontFamily: "'JetBrains Mono', monospace" }} placeholder={t('op.phPullPattern')} value={form.pullPattern} onChange={e => setForm({ ...form, pullPattern: e.target.value })} />
+            <span style={{ fontSize: 10.5, color: 'var(--text-dim)' }}>{t('op.fPullPatternTip')}</span>
+          </FormField>
           {/* AI SDK package is low-frequency (almost always the openai-compatible
               default) — parked last so the common path reads ID → name → URL → key. */}
           <FormField label={t('op.fNpmLabel')}>
@@ -2610,6 +2628,10 @@ export const KeysPage: React.FC = () => {
               </FormField>
               <FormField label={t('op.fNpmLabel')}>
                 <input className="input" style={{ fontSize: 12, fontFamily: "'JetBrains Mono', monospace" }} value={editDef.npm} onChange={e => setEditDef({ ...editDef, npm: e.target.value })} />
+              </FormField>
+              <FormField label={t('op.fPullPattern')}>
+                <input className="input" style={{ fontSize: 12, fontFamily: "'JetBrains Mono', monospace" }} placeholder={t('op.phPullPattern')} value={editDef.pullPattern} onChange={e => setEditDef({ ...editDef, pullPattern: e.target.value })} />
+                <span style={{ fontSize: 10.5, color: 'var(--text-dim)' }}>{t('op.fPullPatternTip')}</span>
               </FormField>
               <FormField label={t('op.fHeaders')}>
                 <HeadersEditor rows={editDef.headerRows} onChange={headerRows => setEditDef({ ...editDef, headerRows })} disabled={savingDef} />

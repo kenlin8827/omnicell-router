@@ -538,8 +538,22 @@ export interface CatalogConfig {
    * Auto-pull models for every defs-file provider on each sync period
    * (live /v1/models first, static catalog fallback). ADD-ONLY: existing
    * definitions are never overwritten. Default: true.
+   *
+   * OPT-IN PER PROVIDER: the sweep only pulls providers declared in
+   * `autoPullPatterns` — a provider absent there (or mapped to a blank
+   * string) is never auto-pulled, and a declared provider is pulled only
+   * within its pattern. Manual console pulls are unaffected.
    */
   autoPullModels?: boolean;
+  /**
+   * Per-provider auto-pull whitelists (providerId → glob pattern over model
+   * ids; comma-separated alternates — same DSL as the console pull route).
+   * Declaring a provider here is what makes the periodic sweep (and the
+   * post-create top-up) pull it; the pattern bounds how far the pull
+   * reaches, e.g. `zhipu/glm-*` or `openai/*, anthropic/*`. Read live from
+   * config.yaml (hot — no restart needed).
+   */
+  autoPullPatterns?: Record<string, string>;
 }
 
 /** The baseline catalog source is MANDATORY — console locks it against removal/disabling. */

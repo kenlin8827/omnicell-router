@@ -26,6 +26,7 @@ import type { CredentialMeta, CredentialStore, RawCred } from '../opencode/crede
 import type { CircuitBreakerManager } from '../resilience/index.js';
 import type { TraceTracker } from '../trace/tracker.js';
 import type { OpenCodeProviderView } from '../opencode/user-config.js';
+import { isSelfBaseURL } from '../utils/self-url.js';
 import { listOpenCodeAgentsLive } from '../opencode/agents.js';
 import {
   listApiKeys,
@@ -597,6 +598,24 @@ function credentialNotFoundBody(credentialId: string, providerId: string): Recor
   };
 }
 
+/**
+ * Apply a `pullPattern` edit from the provider create/update routes to
+ * config.yaml's catalog.autoPullPatterns (the per-provider auto-pull
+ * whitelist). Presence semantics: string = set (blank clears), undefined =
+ * untouched. The whitelist lives in the ROUTER config, never in the defs
+ * file — opencode v2 nodes must stay decoder-clean (ADR-0010). Returns the
+ * saveConfig result so callers surface a failed config.yaml write (400).
+ */
+function applyAutoPullPatternEdit(id: string, raw: unknown): { success: boolean; error?: string } {
+  if (raw === undefined) return { success: true };
+  const current = loadConfig().catalog ?? {};
+  const patterns = { ...(current.autoPullPatterns ?? {}) };
+  const value = typeof raw === 'string' ? raw.trim() : '';
+  if (value) patterns[id] = value;
+  else delete patterns[id];
+  return saveConfig({ catalog: { ...current, autoPullPatterns: patterns } });
+}
+
 /** Capability-gate refusal (Decision 1: branch on flags, never on `kind` — the
  *  ocr store passes with activate/rename=true; OpencodeV2Store-readonly refuses). */
 function capabilityRefusalBody(capability: 'activate' | 'rename'): Record<string, unknown> {
@@ -663,6 +682,9 @@ async function mapCredentialWriteFailure(
 async function storeProviderViews(store: CredentialStore): Promise<OpenCodeProviderView[]> {
   const { listConfigProviders } = await import('../opencode/user-config.js');
   const views = listConfigProviders();
+  // Per-provider auto-pull whitelist rides the view (edit dialog prefills from it).
+  const patterns = loadConfig().catalog?.autoPullPatterns ?? {};
+  for (const v of views) v.autoPullPattern = patterns[v.id];
   // Position reference for the stable ordering applied at the end of this function.
   const configOrder = views.map((v) => v.id);
   const byId = new Map<string, OpenCodeProviderView>(views.map((v) => [v.id, v]));
@@ -2096,6 +2118,17 @@ export function registerConsoleRoutes(
         return reply.status(400).send({ success: false, error: 'Provider id is required' });
       }
       const id = String(body.id);
+      // A baseURL pointing back at THIS gateway would make the gateway its own
+      // upstream (boot excludes it loudly as self_loop) — refuse at the door
+      // with the same wording. Pointing at a DIFFERENT instance (another
+      // port/host) is a legitimate federation upstream and passes. Criterion
+      // is the URL, never the id.
+      if (isSelfBaseURL(String(body.baseURL ?? ''), loadConfig().port)) {
+        return reply.status(409).send({
+          success: false,
+          error: `baseURL (${body.baseURL}) points at this gateway itself — the gateway cannot be its own upstream`,
+        });
+      }
       // An id covered by the remote catalog (opencode / models-dev) may NOT be
       // redefined as a custom provider — it would shadow the catalog entry.
       // Connect it with credentials through the bound store instead, no definition needed.
@@ -2142,6 +2175,9 @@ export function registerConsoleRoutes(
         body: body.body,
       });
       if (!result.success) return reply.status(400).send(result);
+      // Auto-pull whitelist edit rides the same request — config.yaml, not the defs file.
+      const patternEdit = applyAutoPullPatternEdit(id, body.pullPattern);
+      if (!patternEdit.success) return reply.status(400).send(patternEdit);
       // The def can register an integration upstream — never answer from the stale
       // registry snapshot (a false refusal would grey the button for up to the TTL).
       store.invalidate();
@@ -2174,15 +2210,21 @@ export function registerConsoleRoutes(
       // /v1/models must NOT hold the creation response (awaiting it made create
       // block up to its 15s timeout). Best-effort by design: refusals/errors are
       // logged and swallowed, the periodic auto-pull is the backstop, and the
-      // console shows models on the next refresh. Skipped when the caller brought
-      // explicit models (their list wins).
+      // console shows models on the next refresh. OPT-IN: only providers that
+      // declared a catalog.autoPullPatterns entry are pulled (the pattern bounds
+      // the pull) — an undeclared provider gets no automatic materialization of
+      // its full upstream list. Skipped when the caller brought explicit models
+      // (their list wins).
       if (!body.models) {
-        import('../opencode/catalog/auto-pull.js')
-          .then(({ autoPullProvider }) => autoPullProvider(id))
-          .then((pull) => {
-            if (pull.httpStatus !== 200) app.log.warn({ providerId: id, pull }, 'post-create model pull refused (swallowed by design)');
-          })
-          .catch((err) => app.log.warn({ err, providerId: id }, 'post-create model pull errored (swallowed by design)'));
+        const autoPattern = loadConfig().catalog?.autoPullPatterns?.[id]?.trim();
+        if (autoPattern) {
+          import('../opencode/catalog/auto-pull.js')
+            .then(({ autoPullProvider }) => autoPullProvider(id, { pattern: autoPattern }))
+            .then((pull) => {
+              if (pull.httpStatus !== 200) app.log.warn({ providerId: id, pull }, 'post-create model pull refused (swallowed by design)');
+            })
+            .catch((err) => app.log.warn({ err, providerId: id }, 'post-create model pull errored (swallowed by design)'));
+        }
       }
       return { status: 'ok', ...result };
     },
@@ -2195,6 +2237,16 @@ export function registerConsoleRoutes(
       const existing = getProviderNodeById(id);
       if (!existing) {
         return reply.status(404).send({ success: false, error: `Provider '${id}' not found in the provider defs file` });
+      }
+      // Same door-guard as create: an update may SET a baseURL — or keep the
+      // existing one — pointing at the gateway itself. The fallback mirrors
+      // the upsert's `body.baseURL ?? existing.options?.baseURL` below.
+      const effectiveBaseURL = body.baseURL ?? existing.options?.baseURL ?? '';
+      if (isSelfBaseURL(String(effectiveBaseURL), loadConfig().port)) {
+        return reply.status(409).send({
+          success: false,
+          error: `baseURL (${effectiveBaseURL}) points at this gateway itself — the gateway cannot be its own upstream`,
+        });
       }
       // B4: same implicit auth.json side-write as create (apiKey + !inline) —
       // routed to the bound store when auth.json is not the sink (Decision 4).
@@ -2232,6 +2284,9 @@ export function registerConsoleRoutes(
         body: body.body ?? existing.body,
       });
       if (!result.success) return reply.status(400).send(result);
+      // Auto-pull whitelist edit rides the same request — config.yaml, not the defs file.
+      const patternEdit = applyAutoPullPatternEdit(id, body.pullPattern);
+      if (!patternEdit.success) return reply.status(400).send(patternEdit);
       // A def edit can change what upstream registers — never answer from the stale
       // integration snapshot.
       store.invalidate();

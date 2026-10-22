@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { saveConfig } from '../src/config/index.js';
 import { normalizeModelsDev, modelsDevLogoUrl } from '../src/opencode/catalog/sources/models-dev.js';
 import { normalizeOpenRouter, OPENROUTER_PROVIDER_ID } from '../src/opencode/catalog/sources/openrouter.js';
 import { getProviderDefsPath, writeProviderDefs } from '../src/opencode/provider-defs.js';
@@ -250,7 +251,7 @@ describe('Catalog sources & repository', () => {
     ];
     writeOcrStore('sig-1', providers as any);
     const store = readOcrStore();
-    expect(store?.version).toBe(2);
+    expect(store?.version).toBe(3);
     expect(store?.sig).toBe('sig-1');
     expect(store?.builtAt).toBeGreaterThan(0);
     expect(store?.providers[0].id).toBe('anthropic');
@@ -615,6 +616,9 @@ describe('auto-pull sweep end-to-end (regression: TDZ in Phase-1)', () => {
         settings: { baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-test' },
       },
     });
+    // Opt-in declaration: the sweep only pulls providers with a pattern —
+    // '*' keeps the live-fetch regression path attemptable.
+    saveConfig({ catalog: { autoPullPatterns: { 'home-lab': '*' } } });
   });
 
   afterEach(() => {
@@ -641,6 +645,42 @@ describe('auto-pull sweep end-to-end (regression: TDZ in Phase-1)', () => {
     expect(entries[0].mode).toBe('live');
     expect(entries[0].pulled).toBe(0);
     expect(entries[0].error).toBeDefined();
+  });
+
+  it('skips providers without a declared autoPullPatterns entry (opt-in sweep)', async () => {
+    const { autoPullProviderModels } = await import('../src/opencode/catalog/auto-pull.js');
+    saveConfig({ catalog: { autoPullPatterns: {} } });
+    const entries = await autoPullProviderModels();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toEqual({ providerId: 'home-lab', mode: 'skipped', pulled: 0 });
+  });
+
+  it('bounds the live pull by the declared pattern and writes only matches (ADD-ONLY)', async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch: () =>
+        Response.json({
+          data: [{ id: 'alpha-one' }, { id: 'alpha-two' }, { id: 'beta-one' }],
+        }),
+    });
+    try {
+      writeProviderDefs({
+        'home-lab': {
+          package: '@opencode/ai/providers/openai-compatible',
+          settings: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'sk-test' },
+        },
+      });
+      saveConfig({ catalog: { autoPullPatterns: { 'home-lab': 'alpha-*' } } });
+      const { autoPullProviderModels } = await import('../src/opencode/catalog/auto-pull.js');
+      const entries = await autoPullProviderModels();
+      expect(entries).toHaveLength(1);
+      // The pattern filtered in Phase-1 — `skipped` counts only matched-but-existing ids.
+      expect(entries[0]).toMatchObject({ providerId: 'home-lab', mode: 'live', pulled: 2, skipped: 0 });
+      const { getProviderModelDefs } = await import('../src/opencode/user-config.js');
+      expect(Object.keys(getProviderModelDefs('home-lab') ?? {}).sort()).toEqual(['alpha-one', 'alpha-two']);
+    } finally {
+      server.stop(true);
+    }
   });
 });
 

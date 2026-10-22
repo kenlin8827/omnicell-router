@@ -198,6 +198,8 @@ export interface OpenCodeProviderView {
   baseURL?: string;
   models: string[];
   custom: boolean;
+  /** Per-provider auto-pull whitelist (catalog.autoPullPatterns) — shown/prefilled by the console. */
+  autoPullPattern?: string;
   /** credential summary — defs-file inline options ∪ bound-store credentials (masked) */
   auth: {
     connected: boolean;

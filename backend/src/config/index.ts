@@ -906,7 +906,9 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   catalog: '目录数据源：远程 catalog 源定义与本地锚定（控制台 /catalog 页可视化编辑，改后即时生效）',
   'catalog.syncIntervalMs': '目录自动同步周期（毫秒，默认 86400000 = 24h）',
   'catalog.lockedModels': '本地锚定的模型 id 列表：这些模型的本地定义值（含 0 价）不被任何远程源覆盖',
-  'catalog.autoPullModels': '自动拉取模型：每个同步周期为自定义服务商拉取模型清单（live /v1/models 优先，只新增不覆盖；默认 true）',
+  'catalog.autoPullModels': '自动拉取总开关：每个同步周期为自定义服务商拉取模型清单（live /v1/models 优先，只新增不覆盖；默认 true）。注意：按服务商需在 catalog.autoPullPatterns 中声明才会真正拉取',
+  'catalog.autoPullPatterns': '按服务商的自动拉取白名单：仅声明的服务商才会被定时拉取，且只拉取匹配 glob 的模型 id（逗号分隔多模式，如 zhipu/glm-*）；未声明的服务商完全不自动拉取，控制台手动拉取不受影响。热生效',
+  'catalog.autoPullPatterns.*': '该服务商的自动拉取 glob：只拉取匹配的模型 id（逗号分隔多模式，如 zhipu/glm-*，openai/*, anthropic/*）；留空/删除该条目即停止自动拉取该服务商',
   combos: '自定义模型组合（combo）：把若干已注册模型组成一个虚拟模型名，客户端直接以 combo id 作为 model 调用（控制台 /combos 页可视化编辑，保存后即时生效，无需重启）',
   'combos.*.selection': '主选策略：priority 配置顺序（默认）/ weighted 加权随机 / round_robin 轮询',
   'combos.*.disabled': '禁用开关：true 时该组合下线——不再出现在模型目录（不可选），客户端以该组合 id 调用会被直接拒绝（不可用）；控制台仍可查看并重新启用',
@@ -944,6 +946,10 @@ function lookupYamlComment(path: string): string | undefined {
   // Dynamic map level: credentials.<providerId> → credentials.*
   if (segs[0] === 'credentials' && segs.length >= 2) {
     return YAML_FIELD_COMMENTS['credentials.*'];
+  }
+  // Dynamic map level: catalog.autoPullPatterns.<providerId> → catalog.autoPullPatterns.*
+  if (segs[0] === 'catalog' && segs[1] === 'autoPullPatterns' && segs.length >= 3) {
+    return YAML_FIELD_COMMENTS['catalog.autoPullPatterns.*'];
   }
   // Dynamic array level: modelProfiles.<index>.<field…> → modelProfiles.*.<field…>
   if (segs[0] === 'modelProfiles' && segs.length >= 3) {

@@ -10,11 +10,11 @@ import {
   getProviderModelDefs,
   expandEnvTemplate,
   legacyShapedSlotEntries,
-  ROUTER_PROVIDER_ID,
 } from '../opencode/user-config.js';
 import { getCredentialStore, getCredentialStoreStatus } from '../opencode/credentials/index.js';
 import { keyHashPrefix } from '../opencode/credentials/types.js';
 import { sanitizeExtraHeaders } from '../utils/http-headers.js';
+import { isSelfBaseURL } from '../utils/self-url.js';
 import type { CallCredential, RawCred, ResolvedCredential } from '../opencode/credentials/types.js';
 import { WireKind, wireFor, unroutableReason, baseForWire } from './wire.js';
 
@@ -145,17 +145,6 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
   const retiredShapes = new Map(legacyShapedSlotEntries().map((e) => [e.id, e.paths]));
 
   for (const rec of catalog) {
-    // The gateway must never route THROUGH itself: the hook-owned
-    // `onecast-router` def (baseURL = this gateway) is client-takeover
-    // material, not an upstream. Excluded loudly, never silently pooled.
-    if (rec.id === ROUTER_PROVIDER_ID) {
-      excluded.push({
-        provider: rec.id,
-        reason: 'router self-loop — the gateway cannot be its own upstream',
-        reasonCode: 'router_self_loop',
-      });
-      continue;
-    }
     const retired = retiredShapes.get(rec.id);
     if (retired) {
       retiredShapes.delete(rec.id);
@@ -207,6 +196,22 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
     const baseURL = expandEnvTemplate(def?.options?.baseURL) || rec.api || rec.baseURL;
     if (!baseURL) {
       excluded.push({ provider: rec.id, reason: '无法确定 baseURL（无 config 定义且目录无默认 api）' });
+      continue;
+    }
+    // The gateway must never route THROUGH itself: a baseURL pointing back at
+    // this gateway's own listen endpoint would make every routed request
+    // recurse into the gateway again. Checked on the RESOLVED value — an
+    // env-templated `{env:SELF_URL}` expands exactly above, so a guard on the
+    // raw record would miss it. The criterion is the URL, never the id — a
+    // `onecast-router` def pointing at ANOTHER instance is a legitimate
+    // federation upstream. Excluded loudly, never silently (ADR-0005 §2:
+    // unroutable is excluded and reported, never a boot abort).
+    if (isSelfBaseURL(baseURL, loadConfig().port)) {
+      excluded.push({
+        provider: rec.id,
+        reason: `provider baseURL (${baseURL}) points at this gateway — the gateway cannot be its own upstream`,
+        reasonCode: 'self_loop',
+      });
       continue;
     }
 

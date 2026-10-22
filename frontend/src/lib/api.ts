@@ -2026,6 +2026,8 @@ export interface OpenCodeProviderView {
   custom: boolean;
   /** Explicit node in custom-providers.json — the delete-confirm branch signal; narrower than `custom` (catalog absence also sets custom). */
   defNode: boolean;
+  /** Per-provider auto-pull whitelist glob (catalog.autoPullPatterns) — edit-dialog prefill. */
+  autoPullPattern?: string;
   /** Runtime edit capability: defs-file node OR pulled custom-store models — the same rule the backend applies when serving model mutations. */
   modelsManageable: boolean;
   logo?: string;
@@ -2146,6 +2148,8 @@ export interface CustomProviderPayload {
   headers?: Record<string, string>;
   models?: Record<string, any>;
   options?: Record<string, any>;
+  /** Auto-pull whitelist glob (catalog.autoPullPatterns) — blank/empty string clears the entry. */
+  pullPattern?: string;
 }
 
 /** Mirror of backend ProbeHintCode (opencode/probe.ts) — category labels,

@@ -209,7 +209,8 @@ export class CatalogRepository {
     await this.ensureOcrStore().catch(() => undefined);
     console.log(`[OCR] Catalog store: ${this.ocrLoadOrigin} (${this.ocr?.length ?? 0} providers) — ${getOcrStorePath()}`);
     // Auto-pull models for custom providers in the background (ADD-ONLY,
-    // catalog.autoPullModels gated) — boot completes without waiting for it.
+    // gated by catalog.autoPullModels + the per-provider autoPullPatterns
+    // whitelist) — boot completes without waiting for it.
     void this.autoPullSafely();
   }
 

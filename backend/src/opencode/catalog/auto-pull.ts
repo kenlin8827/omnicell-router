@@ -1,16 +1,22 @@
 import { loadConfig } from '../../config/index.js';
+import { isSelfBaseURL } from '../../utils/self-url.js';
 import type { CatalogModel } from './types.js';
 
 /**
  * Model pull engine for defs-file-defined (custom) providers.
  *
  * Two paths, chosen automatically by console routes AND the periodic
- * auto-pull scheduler (catalog.autoPullModels, default on):
+ * auto-pull scheduler (catalog.autoPullModels + catalog.autoPullPatterns):
  *  - live:     provider has baseURL + credential → pull its own /v1/models
  *  - catalog:  otherwise → static merged catalog (builtin → extensions)
  *
- * Both paths are ADD-ONLY: models already defined in the defs file are never
- * overwritten — locally maintained values stay source-proof.
+ * The PERIODIC sweep is opt-in per provider: only providers declared in
+ * catalog.autoPullPatterns are swept, and only within their glob pattern —
+ * an undeclared provider (e.g. an aggregator gateway with hundreds of
+ * upstream models) never gets its full list written back. Both paths are
+ * ADD-ONLY: models already defined in the defs file are never overwritten —
+ * locally maintained values stay source-proof. Manual console pulls are
+ * unaffected by the whitelist (pattern passed per-request there).
  */
 
 /** CatalogModel is already in the OpenCode schema — strip id/source, pass the rest through. */
@@ -48,6 +54,16 @@ export async function pullLiveModels(id: string, opts: { pattern?: string; dryRu
   const baseURL = def?.options?.baseURL;
   if (!baseURL) {
     return { httpStatus: 400, body: { success: false, error: `Provider '${id}' has no baseURL configured` } };
+  }
+  // A baseURL pointing back at THIS gateway would fetch our own /v1/models and
+  // write every routable model back as this provider's defs — self-duplication,
+  // not data. A DIFFERENT instance (another port/host) is a legitimate pull
+  // target (federation). Criterion is the URL, never the id.
+  if (isSelfBaseURL(baseURL, loadConfig().port)) {
+    return {
+      httpStatus: 400,
+      body: { success: false, error: `Provider '${id}' baseURL (${baseURL}) points at this gateway itself — self-pull refused` },
+    };
   }
   // raw key from the BOUND store (every credential flavor lands there: v2 db
   // pushes, v1/standalone imports into the ocr file) — direct auth.json reads
@@ -247,14 +263,20 @@ async function enrichFromCatalog(models: CatalogModel[], excludeProviderId: stri
 }
 
 /**
- * One auto-pull sweep over EVERY defs-file provider (ADD-ONLY per
- * provider). Gated by catalog.autoPullModels (default ON, checked live so the
- * console switch is hot). Failures are captured per provider — a sweep never
- * throws.
+ * One auto-pull sweep over DECLARED defs-file providers (ADD-ONLY per
+ * provider). Gated by catalog.autoPullModels (master switch, default ON) and
+ * catalog.autoPullPatterns (per-provider opt-in: providerId → glob). A
+ * provider absent from the pattern map — or mapped to a blank string — is
+ * skipped entirely, and a declared provider's pull is bounded by its pattern.
+ * Both are checked live so console edits are hot. Failures are captured per
+ * provider — a sweep never throws.
  */
 export async function autoPullProviderModels(): Promise<AutoPullEntry[]> {
-  if (loadConfig().catalog?.autoPullModels === false) return [];
-  const { listConfigProviders, expandEnvTemplate, getProviderNodeById } = await import('../user-config.js');
+  const cfg = loadConfig().catalog;
+  if (cfg?.autoPullModels === false) return [];
+  const patterns = cfg?.autoPullPatterns ?? {};
+  const { listConfigProviders, expandEnvTemplate, getProviderNodeById, matchesGlobPattern } =
+    await import('../user-config.js');
   // keys from the BOUND store (same rule as pullLiveModels — inline above the
   // store); the store covers every credential flavor (standalone imports, v2
   // pushes), so no snapshot read is needed here.
@@ -265,6 +287,18 @@ export async function autoPullProviderModels(): Promise<AutoPullEntry[]> {
   // provider's candidate model list from its own /v1/models or the catalog.
   const jobs = await Promise.all(
     listConfigProviders().map(async (v): Promise<{ id: string; mode: AutoPullEntry['mode']; models: CatalogModel[]; error?: string; meta?: { name?: string; npm?: string; api?: string } }> => {
+      // A def whose baseURL points back at THIS gateway self-fetches
+      // /v1/models and re-materializes every routable model as its defs
+      // (same refusal as pullLiveModels). Other instances pull fine.
+      const sweepBaseURL = getProviderNodeById(v.id)?.options?.baseURL;
+      if (isSelfBaseURL(sweepBaseURL, loadConfig().port)) {
+        return { id: v.id, mode: 'skipped', models: [], error: `baseURL (${sweepBaseURL}) points at this gateway — self-pull refused` };
+      }
+      // Opt-in gate: an undeclared provider is never swept — no fetch, no
+      // catalog lookup, no writes. This is what keeps an aggregator gateway's
+      // full upstream list from being materialized every sync period.
+      const pattern = patterns[v.id]?.trim();
+      if (!pattern) return { id: v.id, mode: 'skipped', models: [] };
       const def = getProviderNodeById(v.id);
       if (!def) return { id: v.id, mode: 'skipped', models: [] };
       const baseURL = def?.options?.baseURL;
@@ -280,7 +314,7 @@ export async function autoPullProviderModels(): Promise<AutoPullEntry[]> {
           const raw = await res.json().catch(() => null);
           if (!raw) return { id: v.id, mode: 'live', models: [], error: 'non-JSON payload' };
           const { normalizeOpenAICompatible } = await import('./sources/registry.js');
-          const pulled = normalizeOpenAICompatible(raw);
+          const pulled = normalizeOpenAICompatible(raw).filter((m) => matchesGlobPattern(pattern, m.id));
           const models = await enrichFromCatalog(pulled, v.id);
           return { id: v.id, mode: 'live', models };
         } catch (err: any) {
@@ -293,7 +327,7 @@ export async function autoPullProviderModels(): Promise<AutoPullEntry[]> {
       return {
         id: v.id,
         mode: 'catalog',
-        models: provider.models,
+        models: provider.models.filter((m) => matchesGlobPattern(pattern, m.id)),
         meta: { name: provider.name, npm: provider.npm, api: provider.api },
       };
     })
