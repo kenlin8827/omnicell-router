@@ -5,6 +5,7 @@ import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
 import { Combobox } from '../components/Combobox';
+import { Pagination } from '../components/Pagination';
 
 /**
  * Route-entry experience table (ADR-0011) — every prompt the gateway has
@@ -17,6 +18,9 @@ import { Combobox } from '../components/Combobox';
 const TIERS = ['lite', 'plus', 'pro', 'ultra'];
 const EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
 type SortKey = 'updatedAt' | 'hitCount' | 'sessionCount';
+
+// Per-page options for the experience table (the server hard-caps limit at 500).
+const PAGE_SIZES = [10, 20, 50, 100, 200];
 
 const MONO: React.CSSProperties = { fontFamily: "'JetBrains Mono', monospace", fontSize: '11.5px' };
 
@@ -35,13 +39,23 @@ export const RouteEntriesPage: React.FC = () => {
   const [gate, setGate] = useState<{ enabled?: boolean; escalateOnRetry?: boolean; snippetEnabled?: boolean } | null>(null);
   const [q, setQ] = useState('');
   const [sort, setSort] = useState<SortKey>('updatedAt');
+  const [page, setPage] = useState(1); // 1-based (shared Pagination contract)
+  const [pageSize, setPageSize] = useState(50);
   const [loading, setLoading] = useState(false);
-  const [limit] = useState(200);
 
-  const load = useCallback(async (search: string, sortBy?: SortKey) => {
+  const load = useCallback(async (opts?: { q?: string; sort?: SortKey; page?: number; pageSize?: number }) => {
+    const search = opts?.q ?? q;
+    const sortBy = opts?.sort ?? sort;
+    const p = opts?.page ?? page;
+    const size = opts?.pageSize ?? pageSize;
     setLoading(true);
     try {
-      const res = await api.getRouteEntries({ limit, q: search || undefined, sort: sortBy ?? sort });
+      const res = await api.getRouteEntries({
+        limit: size,
+        offset: (p - 1) * size,
+        q: search || undefined,
+        sort: sortBy,
+      });
       setRows(res.rows);
       setTotal(res.total);
       setGate(res.gate);
@@ -50,10 +64,10 @@ export const RouteEntriesPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [limit, sort, t, toast]);
+  }, [q, sort, page, pageSize, t, toast]);
 
   useEffect(() => {
-    load('');
+    load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -61,7 +75,7 @@ export const RouteEntriesPage: React.FC = () => {
     try {
       await api.updateRouteEntry(row.promptHash, { tier, effort: row.effort ?? null });
       toast.success(t('routeEntries.savedOk'));
-      load(q);
+      load();
     } catch (err: any) {
       toast.error(t('routeEntries.saveFailed') + ' ' + err.message);
     }
@@ -71,7 +85,7 @@ export const RouteEntriesPage: React.FC = () => {
     try {
       await api.updateRouteEntry(row.promptHash, { tier: row.tier, effort });
       toast.success(t('routeEntries.savedOk'));
-      load(q);
+      load();
     } catch (err: any) {
       toast.error(t('routeEntries.saveFailed') + ' ' + err.message);
     }
@@ -81,6 +95,8 @@ export const RouteEntriesPage: React.FC = () => {
     try {
       await api.deleteRouteEntry(row.promptHash);
       toast.success(t('routeEntries.deleteOk'));
+      // Optimistic removal; the pager self-heals when the total shrinks below
+      // the current page (Pagination fires onChange(lastPage) on its own).
       setRows((r) => r.filter((x) => x.promptHash !== row.promptHash));
       setTotal((n) => Math.max(0, n - 1));
     } catch (err: any) {
@@ -148,6 +164,7 @@ export const RouteEntriesPage: React.FC = () => {
       toast.success(t('routeEntries.clearDone'));
       setRows([]);
       setTotal(0);
+      setPage(1);
     } catch (err: any) {
       toast.error(t('routeEntries.clearFailed') + ' ' + (err?.message || err));
     }
@@ -165,7 +182,7 @@ export const RouteEntriesPage: React.FC = () => {
   const sortTh = (labelKey: string, key: SortKey) => (
     <th
       style={{ ...thStyle, cursor: 'pointer', userSelect: 'none' }}
-      onClick={() => { setSort(key); load(q, key); }}
+      onClick={() => { setSort(key); setPage(1); load({ sort: key, page: 1 }); }}
       aria-sort={sort === key ? 'descending' : 'none'}
       title={t('routeEntries.sortBy')}
     >
@@ -174,16 +191,13 @@ export const RouteEntriesPage: React.FC = () => {
   );
 
   return (
-    <div className="page">
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, gap: 12, flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <RouteIcon size={20} color="var(--accent)" />
-          <div>
-            <h2 style={{ margin: 0, fontSize: 16 }}>{t('routeEntries.pageTitle')}</h2>
-            <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>{t('routeEntries.pageSubtitle')}</div>
-          </div>
+    <div className="card" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      <div className="card-header">
+        <div className="card-title">
+          <RouteIcon size={18} color="var(--accent)" />
+          <span>{t('routeEntries.pageTitle')}</span>
         </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flex: 1, justifyContent: 'flex-end' }}>
           <div style={{ position: 'relative' }}>
             <Search size={13} style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)' }} />
             <input
@@ -191,7 +205,7 @@ export const RouteEntriesPage: React.FC = () => {
               placeholder={t('routeEntries.searchPlaceholder')}
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && load(q)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { setPage(1); load({ q, page: 1 }); } }}
               style={{ paddingLeft: 26, paddingRight: q ? 26 : 10, width: 340 }}
             />
             {q && (
@@ -199,14 +213,14 @@ export const RouteEntriesPage: React.FC = () => {
                 role="button"
                 aria-label={t('routeEntries.clearSearch')}
                 title={t('routeEntries.clearSearch')}
-                onClick={() => { setQ(''); load(''); }}
+                onClick={() => { setQ(''); setPage(1); load({ q: '', page: 1 }); }}
                 style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', cursor: 'pointer', color: 'var(--text-dim)', display: 'inline-flex' }}
               >
                 <X size={14} />
               </span>
             )}
           </div>
-          <button className="btn" onClick={() => load(q)} disabled={loading} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button className="btn" onClick={() => load()} disabled={loading} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <RefreshCw size={13} /> {t('routeEntries.refresh')}
           </button>
           <button className="btn" onClick={handleClearAll} disabled={total === 0} title={t('routeEntries.clearConfirmTitle')} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -214,6 +228,9 @@ export const RouteEntriesPage: React.FC = () => {
           </button>
         </div>
       </div>
+      <p style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: '1.6', margin: '0 0 12px 0' }}>
+        {t('routeEntries.pageSubtitle')}
+      </p>
 
       {gate && gate.enabled === false && (
         <div style={{ background: 'var(--bg-elev1, rgba(255,255,255,0.04))', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 14px', fontSize: 12, color: 'var(--text-dim)', marginBottom: 12 }}>
@@ -226,7 +243,22 @@ export const RouteEntriesPage: React.FC = () => {
         </div>
       )}
 
-      <div style={{ border: '1px solid var(--border)', borderRadius: 10, overflow: 'auto', background: 'var(--bg-elev0, transparent)' }}>
+      {/* Full-height column: this wrapper is the only scroll region — the
+          pager below stays pinned to the bottom of the page (Sessions
+          pattern: flex:1 + minHeight:0 bound the scroll area). */}
+      <div style={{ overflow: 'auto', flex: 1, minHeight: 0, scrollbarGutter: 'stable' }}>
+        {rows.length === 0 ? (
+          // Empty state: centered in the full-height card — no header shell
+          // for a zero-row table; loading shares the same slot.
+          <div style={{ height: '100%', minHeight: 180, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, textAlign: 'center', color: 'var(--text-dim)', maxWidth: 560 }}>
+              <RouteIcon size={28} style={{ opacity: 0.55 }} />
+              <div style={{ fontSize: 12.5, lineHeight: 1.7 }}>
+                {loading ? t('routeEntries.loading') : t('routeEntries.empty')}
+              </div>
+            </div>
+          </div>
+        ) : (
         <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}>
           <thead>
             <tr>
@@ -241,13 +273,6 @@ export const RouteEntriesPage: React.FC = () => {
             </tr>
           </thead>
           <tbody>
-            {rows.length === 0 && (
-              <tr>
-                <td style={{ ...tdStyle, textAlign: 'center', color: 'var(--text-dim)' }} colSpan={8}>
-                  {loading ? t('routeEntries.loading') : t('routeEntries.empty')}
-                </td>
-              </tr>
-            )}
             {rows.map((row) => (
               <tr key={row.promptHash}>
                 <td style={{ ...tdStyle, maxWidth: 420 }}>
@@ -272,7 +297,7 @@ export const RouteEntriesPage: React.FC = () => {
                     value={row.tier}
                     onChange={(v) => handleTier(row, v)}
                     options={tierOptions}
-                    style={{ width: 132 }}
+                    style={{ width: 124, padding: '4px 8px', fontSize: 11.5 }}
                   />
                 </td>
                 <td style={tdStyle}>
@@ -282,7 +307,7 @@ export const RouteEntriesPage: React.FC = () => {
                     options={effortOptions}
                     clearable
                     placeholder={t('routeEntries.effortDefault')}
-                    style={{ width: 152 }}
+                    style={{ width: 124, padding: '4px 8px', fontSize: 11.5 }}
                   />
                 </td>
                 <td style={tdStyle}>
@@ -312,9 +337,19 @@ export const RouteEntriesPage: React.FC = () => {
             ))}
           </tbody>
         </table>
+        )}
       </div>
-      <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 8 }}>
-        {t('routeEntries.totalLine', { n: total })}
+      <div style={{ padding: '0 14px' }}>
+        <Pagination
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          onChange={(p) => { setPage(p); load({ page: p }); }}
+          disabled={loading}
+          showSummary
+          pageSizeOptions={PAGE_SIZES}
+          onPageSizeChange={(s) => { setPageSize(s); setPage(1); load({ pageSize: s, page: 1 }); }}
+        />
       </div>
     </div>
   );

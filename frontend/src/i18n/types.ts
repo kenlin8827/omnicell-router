@@ -1202,7 +1202,6 @@ hiddenBadge: string;
     delete: string;
     gateDisabled: string;
     shadowMode: string;
-    totalLine: string;
   };
 
   captures: {

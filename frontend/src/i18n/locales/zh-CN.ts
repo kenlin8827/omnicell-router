@@ -1122,7 +1122,6 @@ export const zhCN: TranslationDict = {
     delete: '删除该条目',
     gateDisabled: '经验表已关闭（routeEntries.enabled: false）——现有条目冻结；到「可视化配置」打开开关即可恢复学习。',
     shadowMode: '影子模式：重复提问会被检测并记入台账，但升档阶梯未启用（routeEntries.escalateOnRetry: false）。',
-    totalLine: '共 {n} 条',
   },
 
   captures: {

@@ -1129,7 +1129,6 @@ export const enUS: TranslationDict = {
     delete: 'Delete this entry',
     gateDisabled: 'The experience table is off (routeEntries.enabled: false) — rows are frozen as-is; flip the switch in Configuration to resume learning.',
     shadowMode: 'Shadow mode: repeated prompts are detected and ledgered, but the escalation ladder is OFF (routeEntries.escalateOnRetry: false).',
-    totalLine: '{n} entries',
   },
 
   captures: {
