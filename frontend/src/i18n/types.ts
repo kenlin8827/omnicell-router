@@ -900,7 +900,6 @@ hiddenBadge: string;
     colModel: string;
     /** Detail-grid thinking-level column: header + cell tooltip. */
     colThink: string;
-    colThinkTip: string;
     /** Ask-provenance attribution (ADR-0012): "source: X" tooltip line, the
      *  five author names, and the prefix marking a gateway-decided level. */
     thinkSource: string;
@@ -952,6 +951,9 @@ hiddenBadge: string;
     filterEmpty: string;
     emptySessions: string;
     copiedSessionId: string;
+    copiedPromptTitle: string;
+    thinkAutoTip: string;
+    thinkClientTip: string;
     copyFailed: string;
     clearAll: string;
     clearConfirmTitle: string;

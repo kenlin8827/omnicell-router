@@ -47,6 +47,7 @@ export const TipBubble: React.FC<{
       zIndex: 230,
       padding: '8px 10px',
       borderRadius: 8,
+      whiteSpace: 'pre-line',
       background: 'var(--card-bg)',
       border: '1px solid var(--card-border)',
       boxShadow: '0 12px 32px rgba(0,0,0,0.45)',

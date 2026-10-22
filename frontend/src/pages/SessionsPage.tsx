@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowDownWideNarrow, ArrowUpNarrowWide, Users, RefreshCw, Archive, BarChart3, ChevronDown, ChevronRight, Eye, GitBranch, X, Search, Trash2 } from 'lucide-react';
+import { ArrowDownWideNarrow, ArrowUpNarrowWide, Users, RefreshCw, Archive, BarChart3, ChevronDown, ChevronRight, Eye, GitBranch, User, Waypoints, X, Search, Trash2 } from 'lucide-react';
 import { api, type SessionRecord, type TraceRecord } from '../lib/api';
 import { formatReason, type Translate } from '../lib/reason';
 import { copyToClipboard, formatCost, formatSessionId, decodeRate, formatRate, fmtLatency } from '../lib/format';
@@ -193,7 +193,9 @@ const ProviderNsChip: React.FC<{ ns: string }> = ({ ns }) => {
  * '—' when no explicit level was in play or the trace predates the fields.
  * A gateway-decided ask (ADR-0012: L2 decision / experience entry / retry
  * escalation / model default) carries the localized `auto·` prefix and a
- * source line in the tooltip — a client ask renders bare.
+ * source line in the tooltip — a client ask renders bare. The gateway mark
+ * renders as a micro Waypoints icon inline (the text `auto·` mark survives
+ * only in text-only contexts, i.e. the tooltip lines built by lastEffortTip).
  */
 // Legacy wire values from persisted traces map onto their current
 // equivalents ('judge' was renamed to 'l2-decision'); unknown values fall
@@ -214,7 +216,8 @@ const effortSourceKey = (src: string): string => EFFORT_SOURCE_KEY[src] ?? 'sess
  * turn and is never ratcheted (ADR-0012), so the line is explicitly worded
  * "last turn" — it must never read as a session lock next to the tier
  * ceiling. '' when the last trace predates the effort fields. Mirrors
- * EffortCell's rendering rules (gateway prefix, degraded `req→act`).
+ * EffortCell's rendering rules (gateway mark — icon in the cell, text
+ * `auto·` prefix here since tooltips are plain text; degraded `req→act`).
  */
 const lastEffortTip = (s: SessionRecord, t: Translate): string => {
   const req = s.lastRequestedEffort;
@@ -236,26 +239,36 @@ const EffortCell: React.FC<{ tr: TraceRecord }> = ({ tr }) => {
   const req = tr.execution.requestedEffort;
   const act = tr.execution.actualEffort;
   const src = tr.execution.effortSource;
-  const tip =
-    t('sessions.colThinkTip') +
-    (src ? `\n${t('sessions.thinkSource', { source: t(effortSourceKey(src)) })}` : '');
+  // Tooltip carries only the non-obvious fact — who decided the level.
+  // Degradation is self-evident from the amber `req→act` text; no-source
+  // turns (client-specified / nothing in play) get no tooltip at all.
+  const tip = src ? t('sessions.thinkSource', { source: t(effortSourceKey(src)) }) : '';
   if (!req && !act) {
     return (
-      <span title={tip} style={{ color: 'var(--text-dim)' }}>
+      <span data-tip={tip || undefined} style={{ color: 'var(--text-dim)' }}>
         —
       </span>
     );
   }
   const degraded = tr.execution.reasoningDegraded === true;
   const gatewayDecided = src !== undefined && src !== 'client';
+  // Source micro-icon: Waypoints = gateway-decided, User = client-specified;
+  // each carries its own themed tooltip. Only shown when a level is in play.
+  const sourceIcon = gatewayDecided ? (
+    <span data-tip={t('sessions.thinkAutoTip')} style={{ display: 'inline-flex', verticalAlign: '-1px' }}>
+      <Waypoints size={10} style={{ marginRight: '2px', color: 'var(--text-dim)' }} />
+    </span>
+  ) : (
+    <span data-tip={t('sessions.thinkClientTip')} style={{ display: 'inline-flex', verticalAlign: '-1px' }}>
+      <User size={10} style={{ marginRight: '2px', color: 'var(--text-muted)' }} />
+    </span>
+  );
   return (
     <span
-      title={tip}
+      data-tip={tip || undefined}
       style={{ color: degraded ? 'var(--accent-amber)' : 'var(--text-muted)' }}
     >
-      {gatewayDecided && (
-        <span style={{ color: 'var(--text-dim)' }}>{t('sessions.thinkAutoMark')}</span>
-      )}
+      {sourceIcon}
       {degraded && req && act && req !== act ? `${req}→${act}` : act ?? req}
     </span>
   );
@@ -609,12 +622,16 @@ export const SessionsPage: React.FC = () => {
   // Switches gets 5.5 (icon + ×N ≈ 36px content) so no cell overflows.
   // Detail holds two side-by-side icons — 7 units keeps them on one line
   // (flex nowrap below also guarantees rows never grow a second line here).
+  // Session id gets 17: the cell also carries the first-user-prompt title
+  // line, which reads poorly when squeezed; the donation comes out of
+  // Pinned (model names ellipsize with a title tooltip) and Apps (badges
+  // wrap freely), neither of which needs the extra width.
   // Active is a bare clock time — 6.5.
   // Alignment: the tables default to textAlign:center (badges / numbers /
   // icons read better in these narrow fixed columns); only session id (mono
   // copy target) and Tokens (2×2 stat grid with its own internal layout)
   // opt back out to left — see TH_LEFT and the two body cells.
-  const colWeights = [15, 11, 13.5, 6.5, 5.5, 4.5, 5, 16.5, 6.5, 6.5, 7, 5, ...(captureOn ? [4] : [])];
+  const colWeights = [19, 9.5, 11.5, 6.5, 5.5, 4.5, 5, 16.5, 6.5, 6.5, 7, 5, ...(captureOn ? [4] : [])];
   const colSum = colWeights.reduce((a, b) => a + b, 0);
   const colWidths = colWeights.map(w => `${((w / colSum) * 100).toFixed(3)}%`);
   // Switch-timeline modal: when every event shares one provider prefix, print
@@ -741,6 +758,29 @@ export const SessionsPage: React.FC = () => {
                     >
                       {formatSessionId(s.id)}
                     </span>
+                    {/* Title = first user prompt (backend-capped summary);
+                        single line, ellipsized, full text in the tooltip. */}
+                    {s.firstUserMessage && (
+                      <div
+                        title={s.firstUserMessage}
+                        style={{
+                          marginTop: '2px',
+                          fontSize: '11px',
+                          color: 'var(--text-dim)',
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          cursor: 'copy',
+                        }}
+                        onClick={async () => {
+                          const ok = await copyToClipboard(s.firstUserMessage!);
+                          if (ok) toast.success(t('sessions.copiedPromptTitle'));
+                          else toast.error(t('sessions.copyFailed'));
+                        }}
+                      >
+                        {s.firstUserMessage}
+                      </div>
+                    )}
                   </td>
                   <td style={{ padding: '10px 14px' }}>
                     {(s.apiKeys && s.apiKeys.length > 0) || (s.clients && s.clients.length > 0) ? (
@@ -1273,16 +1313,16 @@ export const SessionsPage: React.FC = () => {
                   ].map((label, i) => (
                     <span
                       key={i}
-                      style={{ color: 'var(--text-dim)', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase' }}
+                      style={{ textAlign: 'center', color: 'var(--text-dim)', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase' }}
                     >
                       {label}
                     </span>
                   ))}
                   {(detailDesc ? [...timeline.traces].reverse() : timeline.traces).map(tr => (
                     <React.Fragment key={tr.traceId}>
-                      <span style={{ color: 'var(--text-dim)' }}>#{tr.turnNumber}</span>
-                      <span style={{ color: 'var(--text-dim)' }}>{new Date(tr.timestamp).toLocaleTimeString()}</span>
-                      <span style={{ color: 'var(--text-dim)' }}>
+                      <span style={{ textAlign: 'center', color: 'var(--text-dim)' }}>#{tr.turnNumber}</span>
+                      <span style={{ textAlign: 'center', color: 'var(--text-dim)' }}>{new Date(tr.timestamp).toLocaleTimeString()}</span>
+                      <span style={{ textAlign: 'center', color: 'var(--text-dim)' }}>
                         {new Date(tr.timestamp + tr.execution.latencyMs).toLocaleTimeString()}
                       </span>
                       {/* Model name over provider, same split as the pinned
@@ -1293,27 +1333,27 @@ export const SessionsPage: React.FC = () => {
                       {detailNs ? (
                         <span
                           title={tr.execution.modelUsed}
-                          style={{ ...PINNED_LINE_STYLE, color: 'var(--text-main)' }}
+                          style={{ ...PINNED_LINE_STYLE, color: 'var(--text-main)', textAlign: 'center' }}
                         >
                           {shortModel(detailNs, tr.execution.modelUsed)}
                         </span>
                       ) : (
-                        <span style={{ color: 'var(--text-main)' }}>
+                        <span style={{ color: 'var(--text-main)', textAlign: 'center' }}>
                           <PinnedModelCell model={tr.execution.modelUsed} />
                         </span>
                       )}
-                      <EffortCell tr={tr} />
-                      <span>{tr.finops.inputTokens.toLocaleString()}</span>
-                      <span>{tr.finops.outputTokens.toLocaleString()}</span>
-                      <span style={{ color: tr.finops.cachedTokens > 0 ? 'var(--accent-emerald)' : 'var(--text-dim)' }}>
+                      <span style={{ textAlign: 'center' }}><EffortCell tr={tr} /></span>
+                      <span style={{ textAlign: 'center' }}>{tr.finops.inputTokens.toLocaleString()}</span>
+                      <span style={{ textAlign: 'center' }}>{tr.finops.outputTokens.toLocaleString()}</span>
+                      <span style={{ textAlign: 'center', color: tr.finops.cachedTokens > 0 ? 'var(--accent-emerald)' : 'var(--text-dim)' }}>
                         {tr.finops.cachedTokens.toLocaleString()}
                       </span>
-                      <span style={{ color: 'var(--accent-amber)' }}>{formatCost(tr.finops.costUsd)}</span>
-                      <span title={`${tr.execution.latencyMs} ms`}>{fmtLatency(tr.execution.latencyMs)}</span>
-                      <span title={tr.execution.ttftMs != null ? `${tr.execution.ttftMs} ms` : t('usage.ttftTip')}>
+                      <span style={{ textAlign: 'center', color: 'var(--accent-amber)' }}>{formatCost(tr.finops.costUsd)}</span>
+                      <span style={{ textAlign: 'center' }} title={`${tr.execution.latencyMs} ms`}>{fmtLatency(tr.execution.latencyMs)}</span>
+                      <span style={{ textAlign: 'center' }} title={tr.execution.ttftMs != null ? `${tr.execution.ttftMs} ms` : t('usage.ttftTip')}>
                         {tr.execution.ttftMs != null ? fmtLatency(tr.execution.ttftMs) : '—'}
                       </span>
-                      <span title={t('usage.toksTip')}>{formatRate(decodeRate(tr.finops.outputTokens, tr.execution.genMs))}</span>
+                      <span style={{ textAlign: 'center' }} title={t('usage.toksTip')}>{formatRate(decodeRate(tr.finops.outputTokens, tr.execution.genMs))}</span>
                     </React.Fragment>
                   ))}
                 </div>
