@@ -279,15 +279,12 @@ const EffortCell: React.FC<{ tr: TraceRecord }> = ({ tr }) => {
 
 /**
  * Per-turn prompt cell for the detail grid: inline summary, or — when the
- * turn carried no user message (tool-result continuation) — a dim wrench
- * glyph. `quiet` suppresses the fallback text so a run of consecutive
- * no-prompt rows doesn't repeat the same placeholder; the run's first row
- * keeps the text so the icon stays self-explanatory (the tooltip always
- * carries the explanation). Hovering the cell reveals a copy icon; clicking
- * it copies the full summary. `copied` flips the icon to a check for a
- * moment as feedback.
+ * turn carried no user message (tool-result continuation) — a bare dim
+ * wrench glyph (the tooltip carries the explanation). Hovering the cell
+ * reveals a copy icon; clicking it copies the full summary. `copied`
+ * flips the icon to a check for a moment as feedback.
  */
-const PromptCell: React.FC<{ text: string; fallback: string; quiet?: boolean }> = ({ text, fallback, quiet }) => {
+const PromptCell: React.FC<{ text: string }> = ({ text }) => {
   const { t } = useI18n();
   const toast = useToast();
   const [hover, setHover] = React.useState(false);
@@ -316,14 +313,7 @@ const PromptCell: React.FC<{ text: string; fallback: string; quiet?: boolean }> 
           textOverflow: 'ellipsis',
         }}
       >
-        {hasText ? (
-          text
-        ) : (
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-            <Wrench size={10} style={{ flexShrink: 0 }} />
-            {!quiet && fallback}
-          </span>
-        )}
+        {hasText ? text : <Wrench size={10} style={{ flexShrink: 0 }} />}
       </span>
       {hasText && hover && (
         <span
@@ -1393,7 +1383,7 @@ export const SessionsPage: React.FC = () => {
                       {label}
                     </span>
                   ))}
-                  {(detailDesc ? [...timeline.traces].reverse() : timeline.traces).map((tr, i, arr) => (
+                  {(detailDesc ? [...timeline.traces].reverse() : timeline.traces).map(tr => (
                     <React.Fragment key={tr.traceId}>
                       <span style={{ textAlign: 'center', color: 'var(--text-dim)' }}>#{tr.turnNumber}</span>
                       <span style={{ textAlign: 'center', color: 'var(--text-dim)' }}>{new Date(tr.timestamp).toLocaleTimeString()}</span>
@@ -1417,18 +1407,7 @@ export const SessionsPage: React.FC = () => {
                           <PinnedModelCell model={tr.execution.modelUsed} />
                         </span>
                       )}
-                      <PromptCell
-                        text={tr.request?.userPromptSummary ?? ''}
-                        fallback={t('sessions.promptNoUser')}
-                        // Continuation-run dedup: only the FIRST consecutive
-                        // no-prompt row keeps the text label (the rest show
-                        // the bare wrench). Rendered order decides "first".
-                        quiet={
-                          !tr.request?.userPromptSummary &&
-                          i > 0 &&
-                          !arr[i - 1].request?.userPromptSummary
-                        }
-                      />
+                      <PromptCell text={tr.request?.userPromptSummary ?? ''} />
                       <span style={{ textAlign: 'center' }}><EffortCell tr={tr} /></span>
                       <span style={{ textAlign: 'center' }}>{tr.finops.inputTokens.toLocaleString()}</span>
                       <span style={{ textAlign: 'center' }}>{tr.finops.outputTokens.toLocaleString()}</span>

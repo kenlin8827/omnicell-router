@@ -1035,7 +1035,6 @@ hiddenBadge: string;
     /** Detail-grid thinking-level column: header + cell tooltip. */
     colThink: string;
     colPrompt: string;
-    promptNoUser: string;
     promptFallbackTip: string;
     /** Ask-provenance attribution (ADR-0012): "source: X" tooltip line, the
      *  five author names, and the prefix marking a gateway-decided level. */
@@ -1407,6 +1406,7 @@ hiddenBadge: string;
     continuedFrom: string;
     /** Header hint when the timeline was merged from N date archives. */
     stitchedHint: string;
+    stitchedFiles: string;
     statusOk: string;
     statusError: string;
     truncatedBadge: string;
@@ -1425,6 +1425,12 @@ hiddenBadge: string;
     tabDecisionResponse: string;
     decisionBadge: string;
     decisionHint: string;
+    /** Inbound-protocol badge (every recognized surface; legacy = unbadged). */
+    protocolChat: string;
+    protocolAnthropic: string;
+    protocolResponses: string;
+    protocolDecision: string;
+    protocolTip: string;
     gatewayLatency: string;
     upstreamLatency: string;
     /** Tooltip for the capture chips' TTFT + tok/s segments (decode-TPS basis). */

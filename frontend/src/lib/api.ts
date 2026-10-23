@@ -489,6 +489,13 @@ export interface CaptureSessionRow {
    * listSessionsWithSpans.
    */
   spanDates?: string[];
+  /**
+   * Inbound protocol discriminator from the first client-request event's
+   * request line (backend CaptureSessionRow.protocol). Every recognized
+   * surface is labeled explicitly — chat included. Undefined = a legacy
+   * archive without request lines or an unrecognized path (unbadged).
+   */
+  protocol?: 'chat' | 'anthropic' | 'responses' | 'systemone';
 }
 
 /** One date-dir fragment of a stitched (cross-midnight) conversation read. */

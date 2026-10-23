@@ -328,6 +328,14 @@ interface CaptureDateRow {
   bytes: number;
 }
 
+/**
+ * Inbound protocols a captured session can carry (see CaptureSessionRow.protocol).
+ * Every recognized surface gets an explicit label — chat included (rendered
+ * as the quiet neutral default) — legacy archives without request lines
+ * (or unrecognized paths) stay undefined = unbadged.
+ */
+export type CaptureSessionProtocol = 'chat' | 'anthropic' | 'responses' | 'systemone';
+
 interface CaptureSessionRow {
   file: string; // safe file name (already sanitized at write time)
   sessionId: string; // same as file minus the .jsonl suffix
@@ -354,6 +362,14 @@ interface CaptureSessionRow {
    * legacy archives.
    */
   conversationKey?: string;
+  /**
+   * Inbound protocol discriminator, derived at list time from the FIRST
+   * client-request event's request line (`POST /v1/messages HTTP/1.1` →
+   * 'anthropic'). Every recognized surface is labeled explicitly — chat
+   * included. Undefined = a legacy archive without request lines or an
+   * unrecognized path — the console renders absence as unbadged.
+   */
+  protocol?: CaptureSessionProtocol;
 }
 
 /**
@@ -885,6 +901,7 @@ export class CaptureRecorder {
         let failed = 0;
         let lastStatus: 'ok' | 'error' | undefined;
         let preview: string | undefined;
+        let protocol: CaptureSessionProtocol | undefined;
         // Key attribution: collect the DISTINCT identities seen in the
         // archive (write order). Single-key sessions → one entry; rotated /
         // mixed-key sessions → the full set so per-app retrieval matches
@@ -933,6 +950,11 @@ export class CaptureRecorder {
                 ) {
                   preview = CaptureRecorder.extractSessionPreview(rec.wire.requestBody);
                 }
+                // Inbound-protocol badge: the FIRST client request's request
+                // line wins; a req-less emission (empty line) keeps looking.
+                if (protocol === undefined && rec.direction === 'client' && rec.phase === 'request') {
+                  protocol = CaptureRecorder.protocolFromRequestLine(rec.wire?.requestLine);
+                }
               } else {
                 turns++;
                 const status = rec.status;
@@ -976,6 +998,7 @@ export class CaptureRecorder {
           preview,
           ...(keyList.length ? { apiKeys: keyList } : {}),
           ...(conversationKey ? { conversationKey } : {}),
+          ...(protocol ? { protocol } : {}),
         });
       } catch {
         // Vanished mid-listing — skip.
@@ -1889,6 +1912,51 @@ export class CaptureRecorder {
     return flat.length <= cap ? flat : flat.slice(0, cap - 1) + '…';
   }
 
+  /**
+   * System One decision requests evaluate `state` — plain text or a
+   * structured object/array (no `messages`/`input`, which is why the chat
+   * extractors miss them and decision sessions rendered untitled). Strings
+   * pass trimmed; structured state flattens to its JSON form (capped) so
+   * the session list / turn prompt shows evaluated content instead of the
+   * raw session id. Undefined for absent / empty / non-text scalar state.
+   */
+  private static stateText(state: unknown, cap = 300): string | undefined {
+    if (state === null || state === undefined) return undefined;
+    if (typeof state === 'string') return state.trim() || undefined;
+    if (typeof state !== 'object') return undefined; // numeric/boolean scalar — no title
+    try {
+      const flat = JSON.stringify(state);
+      return flat ? flat.slice(0, cap) : undefined;
+    } catch {
+      return undefined; // circular / unserializable state — fail open
+    }
+  }
+
+  /**
+   * Inbound protocol for the session-list badge, from the client request
+   * line's path (`POST /v1/systemone HTTP/1.1` → 'systemone'). Every
+   * recognized inference surface returns an explicit label — chat included,
+   * rendered by the console as the quiet neutral default. Unrecognized /
+   * req-less lines (empty requestLine) return undefined.
+   */
+  public static protocolFromRequestLine(requestLine: unknown): CaptureSessionProtocol | undefined {
+    if (typeof requestLine !== 'string') return undefined;
+    const m = /^\w+ ([^?\s]+)(?:\?\S*)? HTTP\//.exec(requestLine);
+    if (!m) return undefined;
+    switch (m[1]) {
+      case '/v1/chat/completions':
+        return 'chat';
+      case '/v1/messages':
+        return 'anthropic';
+      case '/v1/responses':
+        return 'responses';
+      case '/v1/systemone':
+        return 'systemone';
+      default:
+        return undefined; // anything unrecognized
+    }
+  }
+
   private static lastUserText(request: unknown, depth = 0): string | undefined {
     if (request === null || request === undefined || depth > 2) return undefined;
     if (typeof request === 'string') {
@@ -1909,7 +1977,8 @@ export class CaptureRecorder {
     if (Array.isArray(body.messages)) return CaptureRecorder.userTextFromMessages(body.messages, 'last');
     if (Array.isArray(body.input)) return CaptureRecorder.userTextFromMessages(body.input, 'last');
     if (typeof body.input === 'string') return body.input;
-    return undefined;
+    // System One decision surface — evaluated content lives in `state`.
+    return CaptureRecorder.stateText(body.state);
   }
 
   private static firstUserText(request: unknown, depth = 0): string | undefined {
@@ -1935,7 +2004,8 @@ export class CaptureRecorder {
     if (Array.isArray(body.messages)) return CaptureRecorder.userTextFromMessages(body.messages, 'first');
     if (Array.isArray(body.input)) return CaptureRecorder.userTextFromMessages(body.input, 'first');
     if (typeof body.input === 'string') return body.input;
-    return undefined;
+    // System One decision surface — evaluated content lives in `state`.
+    return CaptureRecorder.stateText(body.state);
   }
 
   /**

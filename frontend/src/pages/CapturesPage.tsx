@@ -85,6 +85,14 @@ const legTimingTip = (turn: CaptureTurn, side: 'upstream' | 'gateway'): string =
   return tr?.ttftMs !== undefined ? `TTFT ${tr.ttftMs} ms` : '';
 };
 
+/** Compact inline timing for TIMELINE ROWS: decode rate only. TTFT and the
+ *  raw-ms details move to the chip tooltip so a two-leg row stays narrow —
+ *  the drawer header keeps the full inline text (width is uncontested there). */
+const legRateText = (turn: CaptureTurn, side: 'upstream' | 'gateway'): string => {
+  const tr = legTiming(turn, side);
+  return tr?.rate != null ? ` · ${formatRate(tr.rate)} tok/s` : '';
+};
+
 // Left-rail splitter bounds + persistence (captures page session list).
 const RAIL_MIN = 240;
 const RAIL_MAX = 640;
@@ -94,6 +102,28 @@ const AUTO_REFRESH_KEY = 'ocr.captures.autoRefresh';
 // Detail-pane tail poll cadence. Deliberately unhurried: the refresh is a
 // quiet in-place turn-list replace, not a loading state.
 const AUTO_REFRESH_INTERVAL_MS = 3000;
+
+// Inbound-protocol badge (backend CaptureSessionRow.protocol): i18n key +
+// hue per surface. Semantic coloring: the conversation surfaces (chat /
+// Anthropic / Responses) take the THEME ACCENT — primary human traffic
+// (the palette defines no purple hue; a `--hue-purple` var would silently
+// fall back to accent anyway, so it is written explicitly). The decision
+// surface shares the blue family with the per-turn decision chips — the
+// hue this UI already uses for informational/system-metadata chips
+// (⇢ proxy, ⊕ day-span). Legacy archives without request lines stay
+// unbadged.
+const PROTOCOL_LABEL: Record<NonNullable<CaptureSessionRow['protocol']>, string> = {
+  chat: 'captures.protocolChat',
+  anthropic: 'captures.protocolAnthropic',
+  responses: 'captures.protocolResponses',
+  systemone: 'captures.protocolDecision',
+};
+const PROTOCOL_HUE: Record<NonNullable<CaptureSessionRow['protocol']>, { bg: string; fg: string }> = {
+  chat: { bg: 'color-mix(in srgb, var(--accent) 12%, transparent)', fg: 'var(--accent)' },
+  anthropic: { bg: 'color-mix(in srgb, var(--accent) 12%, transparent)', fg: 'var(--accent)' },
+  responses: { bg: 'color-mix(in srgb, var(--accent) 12%, transparent)', fg: 'var(--accent)' },
+  systemone: { bg: 'var(--hue-blue-soft)', fg: 'var(--hue-blue)' },
+};
 
 function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -351,14 +381,7 @@ const CaptureDrawer: React.FC<{
             flexWrap: 'wrap',
           }}
         >
-          <span
-            className="badge"
-            style={
-              hasError
-                ? { background: 'rgba(239,68,68,0.12)', color: '#ef4444' }
-                : { background: 'color-mix(in srgb, var(--accent-emerald) 12%, transparent)', color: 'var(--accent-emerald)' }
-            }
-          >
+          <span className={`badge ${hasError ? 'badge-danger' : 'badge-success'}`}>
             {hasError ? t('captures.statusError') : t('captures.statusOk')}
           </span>
           {turnKey && (
@@ -460,8 +483,8 @@ const CaptureDrawer: React.FC<{
               className="badge"
               title={`${t('captures.decisionBadge')} · ${turn.decisionRequest.model}${turn.decisionLatencyMs !== undefined ? ` · ${turn.decisionLatencyMs} ms` : ''}`}
               style={{
-                background: 'var(--hue-purple-soft, color-mix(in srgb, var(--accent) 12%, transparent))',
-                color: 'var(--hue-purple, var(--accent))',
+                background: 'var(--hue-blue-soft)',
+                color: 'var(--hue-blue)',
                 fontFamily: FONT_MONO,
                 fontSize: '10px',
               }}
@@ -824,8 +847,10 @@ export const CapturesPage: React.FC = () => {
   // lines — 2-4 per turn — and must never be labelled as turns).
   const [totalTurns, setTotalTurns] = useState(0);
   const [fileTruncated, setFileTruncated] = useState(false);
-  // Cross-midnight stitching: per-date fragments the displayed timeline was
-  // merged from (empty = single-archive session).
+  // Cross-midnight stitching: per-SHARD fragments ((date, file) pairs) the
+  // displayed timeline was merged from (empty = single-archive session). A
+  // conversation regrouped via conversationKey can span MANY files within
+  // ONE date — fragments.length is a shard count, never a date count.
   const [fragments, setFragments] = useState<CaptureFragmentRow[]>([]);
   const [selectedTurnIdx, setSelectedTurnIdx] = useState<number | null>(null);
   // Tab the drawer should land on ("decisionRequest" when opened from the
@@ -1352,6 +1377,12 @@ export const CapturesPage: React.FC = () => {
     return sum;
   }, [turns]);
 
+  // Distinct DATE count of the stitched fragments. The ⊕ badge and the day
+  // dividers speak DATES, not shard files — same-day session-id churn merges
+  // multiple files (conversationKey join) without crossing midnight, so the
+  // raw fragment count would read as a bogus day count.
+  const fragmentDates = useMemo(() => new Set(fragments.map(f => f.date)).size, [fragments]);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, height: '100%' }}>
       {/* Archive status, master toggle & retention policy */}
@@ -1632,6 +1663,23 @@ export const CapturesPage: React.FC = () => {
                           minWidth: 0,
                         }}
                       >
+                        {s.protocol && (
+                          <span
+                            title={t('captures.protocolTip', { protocol: t(PROTOCOL_LABEL[s.protocol]) })}
+                            style={{
+                              fontSize: '10px',
+                              lineHeight: '14px',
+                              padding: '1px 6px',
+                              borderRadius: '4px',
+                              background: PROTOCOL_HUE[s.protocol].bg,
+                              color: PROTOCOL_HUE[s.protocol].fg,
+                              fontWeight: 600,
+                              flexShrink: 0,
+                            }}
+                          >
+                            {t(PROTOCOL_LABEL[s.protocol])}
+                          </span>
+                        )}
                         {s.preview && (
                           <span
                             style={{
@@ -1647,45 +1695,75 @@ export const CapturesPage: React.FC = () => {
                             {s.sessionId}
                           </span>
                         )}
-                        {s.apiKeys && s.apiKeys.length > 0 && (
-                          <span
-                            title={t('captures.apiKeyTooltip', { name: s.apiKeys[0].name, id: s.apiKeys[0].id })}
-                            style={{
-                              fontSize: '10px',
-                              lineHeight: '14px',
-                              padding: '1px 6px',
-                              borderRadius: '4px',
-                              background: 'color-mix(in srgb, var(--accent-emerald) 10%, transparent)',
-                              border: '1px solid color-mix(in srgb, var(--accent-emerald) 25%, transparent)',
-                              color: 'var(--accent-emerald)',
-                              flexShrink: 0,
-                            }}
-                          >
-                            {s.apiKeys[0].name}
-                            {s.apiKeys.length > 1 ? ` +${s.apiKeys.length - 1}` : ''}
-                          </span>
-                        )}
-                        {s.spanDates && s.spanDates.length > 1 && (
-                          <span
-                            title={t('captures.spansDays', { n: s.spanDates.length })}
-                            style={{
-                              fontSize: '10px',
-                              lineHeight: '14px',
-                              padding: '1px 6px',
-                              borderRadius: '4px',
-                              background: 'var(--hue-blue-soft)',
-                              color: 'var(--hue-blue)',
-                              flexShrink: 0,
-                            }}
-                          >
-                            ⊕{s.spanDates.length}d
-                            {/* This shard is NOT the conversation's opening day
-                                (spanDates is newest-first, last = earliest). */}
-                            {selectedDate !== s.spanDates[s.spanDates.length - 1] && (
-                              <span style={{ opacity: 0.75 }}> · {t('captures.continuedFrom')}</span>
-                            )}
-                          </span>
-                        )}
+                        {/* Trailing metadata chips pinned right: the app tag +
+                            day-span badge align into a column across rows, the
+                            id span claims the freed width. */}
+                        <span
+                          style={{
+                            marginLeft: 'auto',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            flexShrink: 0,
+                          }}
+                        >
+                          {s.apiKeys && s.apiKeys.length > 0 && (
+                            <span
+                              title={t('captures.apiKeyTooltip', { name: s.apiKeys[0].name, id: s.apiKeys[0].id })}
+                              style={{
+                                fontSize: '10px',
+                                lineHeight: '14px',
+                                padding: '1px 6px',
+                                borderRadius: '4px',
+                                background: 'color-mix(in srgb, var(--accent-emerald) 10%, transparent)',
+                                border: '1px solid color-mix(in srgb, var(--accent-emerald) 25%, transparent)',
+                                color: 'var(--accent-emerald)',
+                                flexShrink: 0,
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 4,
+                                minWidth: 0,
+                              }}
+                            >
+                              {/* Name capped, never width-fixed: short names
+                                  ("默认") stay compact, long ones ellipsize at
+                                  120px — the +N count and the full name (tooltip)
+                                  always survive. */}
+                              <span
+                                style={{
+                                  maxWidth: 120,
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap',
+                                }}
+                              >
+                                {s.apiKeys[0].name}
+                              </span>
+                              {s.apiKeys.length > 1 ? ` +${s.apiKeys.length - 1}` : ''}
+                            </span>
+                          )}
+                          {s.spanDates && s.spanDates.length > 1 && (
+                            <span
+                              title={t('captures.spansDays', { n: s.spanDates.length })}
+                              style={{
+                                fontSize: '10px',
+                                lineHeight: '14px',
+                                padding: '1px 6px',
+                                borderRadius: '4px',
+                                background: 'var(--hue-blue-soft)',
+                                color: 'var(--hue-blue)',
+                                flexShrink: 0,
+                              }}
+                            >
+                              ⊕{s.spanDates.length}d
+                              {/* This shard is NOT the conversation's opening day
+                                  (spanDates is newest-first, last = earliest). */}
+                              {selectedDate !== s.spanDates[s.spanDates.length - 1] && (
+                                <span style={{ opacity: 0.75 }}> · {t('captures.continuedFrom')}</span>
+                              )}
+                            </span>
+                          )}
+                        </span>
                         <span
                           className="capture-card-actions"
                           style={{
@@ -1777,9 +1855,14 @@ export const CapturesPage: React.FC = () => {
                         <span style={{ fontFamily: FONT_MONO, fontSize: '11px', color: 'var(--text-dim)' }}>
                           {selectedFile.replace(/\.jsonl$/, '')} · {totalTurns} {t('captures.turnsUnit')}
                         </span>
-                        {fragments.length > 1 && (
+                        {fragmentDates > 1 && (
                           <span
-                            title={t('captures.stitchedHint', { n: fragments.length })}
+                            title={
+                              t('captures.stitchedHint', { n: fragmentDates }) +
+                              (fragments.length > fragmentDates
+                                ? `\n${t('captures.stitchedFiles', { n: fragments.length })}`
+                                : '')
+                            }
                             style={{
                               fontSize: '10px',
                               lineHeight: '16px',
@@ -1789,7 +1872,7 @@ export const CapturesPage: React.FC = () => {
                               color: 'var(--hue-blue)',
                             }}
                           >
-                            ⊕ {fragments.length}d
+                            ⊕ {fragmentDates}d
                           </span>
                         )}
                         {totalLatencyMs > 0 && (
@@ -1926,20 +2009,12 @@ export const CapturesPage: React.FC = () => {
                             const errEvent = turn.upstreamResponse?.status === 'error'
                               || turn.gatewayResponse?.status === 'error'
                               || !!turn.error;
-                            // No-prompt turn (tool-result continuation): a dim
-                            // wrench marks every such row; the text label prints
-                            // only on the FIRST row of a consecutive no-prompt
-                            // run so the icon stays self-explanatory without
-                            // every row repeating the same placeholder. Rows
-                            // render newest-first — turns[idx-1] is the row ABOVE.
-                            const continuationRunStart =
-                              !turn.promptSummary && (idx === 0 || !!turns[idx - 1]?.promptSummary);
                             // Day divider: only when the stitched timeline
-                            // actually spans multiple date shards — a
-                            // single-day session needs no per-day chrome.
+                            // actually spans multiple DATES — shard-file
+                            // churn within one date adds no dividers.
                             // Turns render newest-first, so compare with the
                             // NEXT turn (later in wall time).
-                            const multiDay = fragments.length > 1;
+                            const multiDay = fragmentDates > 1;
                             const prevTurn = turns[idx - 1];
                             const prevStart = prevTurn
                               ? (prevTurn.clientRequest?.ts
@@ -2004,33 +2079,51 @@ export const CapturesPage: React.FC = () => {
                                   {turnStart !== undefined ? fmtTime(turnStart) : ''}
                                 </span>
                                 <span
-                                  className="badge"
-                                  style={
-                                    errEvent
-                                      ? { background: 'rgba(239,68,68,0.12)', color: '#ef4444', flexShrink: 0 }
-                                      : { background: 'color-mix(in srgb, var(--accent-emerald) 12%, transparent)', color: 'var(--accent-emerald)', flexShrink: 0 }
-                                  }
+                                  className={`badge ${errEvent ? 'badge-danger' : 'badge-success'}`}
+                                  style={{ flexShrink: 0 }}
                                 >
                                   {errEvent ? t('captures.statusError') : t('captures.statusOk')}
                                 </span>
-                                <span style={{ fontWeight: 600 }}>
-                                  {turn.model}
-                                  {(() => {
-                                    const upstreamModel = turn.upstreamRequest?.model ?? turn.upstreamResponse?.model;
-                                    if (!upstreamModel || upstreamModel === turn.model) return null;
-                                    return (
-                                      <span style={{ fontWeight: 400, color: 'var(--text-dim)' }}>
-                                        {' '}→ {upstreamModel}
-                                      </span>
-                                    );
-                                  })()}
-                                </span>
+                                {/* Model: `inbound → upstream` renders only when the
+                                    upstream id differs BEYOND a mechanical provider-prefix
+                                    strip (`ark/x → x` is the same model — noise inline);
+                                    the full pair stays in the tooltip. Width-capped and
+                                    ellipsized so a long ref never starves the prompt or
+                                    the timing chips. */}
+                                {(() => {
+                                  const upstreamModel = turn.upstreamRequest?.model ?? turn.upstreamResponse?.model;
+                                  const prefixStripOnly =
+                                    !!upstreamModel &&
+                                    upstreamModel !== turn.model &&
+                                    turn.model.endsWith(`/${upstreamModel}`);
+                                  const showUpstream =
+                                    !!upstreamModel && upstreamModel !== turn.model && !prefixStripOnly;
+                                  return (
+                                    <span
+                                      title={upstreamModel && upstreamModel !== turn.model ? `${turn.model} → ${upstreamModel}` : turn.model}
+                                      style={{
+                                        fontWeight: 600,
+                                        flexShrink: 0,
+                                        maxWidth: 240,
+                                        overflow: 'hidden',
+                                        textOverflow: 'ellipsis',
+                                        whiteSpace: 'nowrap',
+                                      }}
+                                    >
+                                      {turn.model}
+                                      {showUpstream && (
+                                        <span style={{ fontWeight: 400, color: 'var(--text-dim)' }}>
+                                          {' '}→ {upstreamModel}
+                                        </span>
+                                      )}
+                                    </span>
+                                  );
+                                })()}
                                 {/* Turn prompt — the LAST user message, stamped on
                                     the client-request event at write time so
                                     metadata-only reads render it. No-prompt turns
-                                    (tool-result continuations) render a dim wrench;
-                                    the text label joins only on a run's first row,
-                                    the tooltip always carries the explanation. */}
+                                    (tool-result continuations) render a bare dim
+                                    wrench; the tooltip carries the explanation. */}
                                 <span
                                   title={turn.promptSummary || t('sessions.promptFallbackTip')}
                                   style={{
@@ -2045,10 +2138,7 @@ export const CapturesPage: React.FC = () => {
                                   {turn.promptSummary ? (
                                     turn.promptSummary
                                   ) : (
-                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                                      <Wrench size={10} style={{ flexShrink: 0 }} />
-                                      {continuationRunStart && t('sessions.promptNoUser')}
-                                    </span>
+                                    <Wrench size={10} style={{ flexShrink: 0 }} />
                                   )}
                                 </span>
                                 {turn.upstreamRequest?.proxy && (
@@ -2066,20 +2156,31 @@ export const CapturesPage: React.FC = () => {
                                     ⇢ proxy
                                   </span>
                                 )}
+                                {/* Compact leg chips: latency + decode rate inline; TTFT,
+                                    raw ms and the timing gloss move to the tooltip so a
+                                    two-leg row stays narrow. */}
                                 {turn.gatewayLatencyMs !== undefined && (
-                                  <span title={`${turn.gatewayLatencyMs} ms`} style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: FONT_MONO, flexShrink: 0 }}>
-                                    <ArrowDownRight size={11} strokeWidth={2.75} style={{ verticalAlign: '-1px', color: 'var(--text)' }} /> {fmtLatency(turn.gatewayLatencyMs)}
-                                    <span title={[t('captures.timingTip'), legTimingTip(turn, 'gateway')].filter(Boolean).join(' · ')}>
-                                      {legTimingText(turn, 'gateway')}
-                                    </span>
+                                  <span
+                                    title={[
+                                      `${t('captures.gatewayLatency')} · ${turn.gatewayLatencyMs} ms`,
+                                      legTimingTip(turn, 'gateway'),
+                                      t('captures.timingTip'),
+                                    ].filter(Boolean).join('\n')}
+                                    style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: FONT_MONO, flexShrink: 0 }}
+                                  >
+                                    <ArrowDownRight size={11} strokeWidth={2.75} style={{ verticalAlign: '-1px', color: 'var(--text)' }} /> {fmtLatency(turn.gatewayLatencyMs)}{legRateText(turn, 'gateway')}
                                   </span>
                                 )}
                                 {turn.upstreamLatencyMs !== undefined && (
-                                  <span title={`${turn.upstreamLatencyMs} ms`} style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: FONT_MONO, flexShrink: 0 }}>
-                                    <ArrowUpRight size={11} strokeWidth={2.75} style={{ verticalAlign: '-1px', color: 'var(--text)' }} /> {fmtLatency(turn.upstreamLatencyMs)}
-                                    <span title={[t('captures.timingTip'), legTimingTip(turn, 'upstream')].filter(Boolean).join(' · ')}>
-                                      {legTimingText(turn, 'upstream')}
-                                    </span>
+                                  <span
+                                    title={[
+                                      `${t('captures.upstreamLatency')} · ${turn.upstreamLatencyMs} ms`,
+                                      legTimingTip(turn, 'upstream'),
+                                      t('captures.timingTip'),
+                                    ].filter(Boolean).join('\n')}
+                                    style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: FONT_MONO, flexShrink: 0 }}
+                                  >
+                                    <ArrowUpRight size={11} strokeWidth={2.75} style={{ verticalAlign: '-1px', color: 'var(--text)' }} /> {fmtLatency(turn.upstreamLatencyMs)}{legRateText(turn, 'upstream')}
                                   </span>
                                 )}
                                 {/* L2 decision layer leg: one compact badge — latency inline,
@@ -2091,8 +2192,8 @@ export const CapturesPage: React.FC = () => {
                                     onClick={() => openTurn(idx, 'decisionRequest')}
                                     title={`${t('captures.decisionBadge')} · ${turn.decisionRequest.model}${turn.decisionLatencyMs !== undefined ? ` · ${turn.decisionLatencyMs} ms` : ''} · ${t('captures.decisionHint')}`}
                                     style={{
-                                      background: 'color-mix(in srgb, var(--accent) 12%, transparent)',
-                                      color: 'var(--accent)',
+                                      background: 'var(--hue-blue-soft)',
+                                      color: 'var(--hue-blue)',
                                       fontFamily: FONT_MONO,
                                       fontSize: '10px',
                                       flexShrink: 0,
