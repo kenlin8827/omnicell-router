@@ -13,16 +13,14 @@ import { loadConfig } from '../config/index.js';
  * the whitespace-collapsed text): the tier (and optional effort) that served
  * it well, where it was seen, and how the knowledge was earned.
  *
- * Write whitelist (ADR-0011) — exactly three producers, nothing else:
+ * Write whitelist (ADR-0011) — exactly two producers, nothing else:
  *   - 'l2_confident': a Layer 2 decision at/above the confidence bar,
  *     recorded after the turn actually served (the served tier is the truth).
- *   - 'correction'  : a retry escalation that the user accepted (the next
- *     message differed — see retry-escalation.ts); the escalated tier/effort
- *     is written back so the NEXT conversation asking the same prompt starts
- *     at the stronger setting.
  *   - 'human'       : a console edit. confidence 1.0, and it can NEVER be
- *     overwritten by the automatic producers (operator intent outranks
+ *     overwritten by the automatic producer (operator intent outranks
  *     observed evidence; delete the row instead).
+ * `@ocr-*` directives never write back: a manual override is a decision, not
+ * statistical experience.
  *
  * Storage: <envRoot>/data/route-entries.json, whole-file JSON with a debounced
  * save (2s) — the table is bounded (maxEntries LRU by updatedAt), so a full
@@ -35,7 +33,7 @@ import { loadConfig } from '../config/index.js';
  * snippets without deleting stored ones).
  */
 
-export type RouteEntrySource = 'l2_confident' | 'correction' | 'human';
+export type RouteEntrySource = 'l2_confident' | 'human';
 
 export interface RouteEntry {
   /** sha256 hex prefix of the normalized prompt (see promptHashOf). */
@@ -44,7 +42,7 @@ export interface RouteEntry {
   /** Optional reasoning-effort the entry carries (part of the experience). */
   effort?: ReasoningEffort;
   source: RouteEntrySource;
-  /** Decision confidence, or 1.0 for correction/human rows. */
+  /** Decision confidence, or 1.0 for human rows. */
   confidence: number;
   /** Last-touched session ids, most recent first, capped at 20 (LRU bubble). */
   sessions: string[];
@@ -76,7 +74,7 @@ export function normalizePrompt(text: string): string {
 }
 
 /**
- * Stable prompt identity for the experience table and the retry detector:
+ * Stable prompt identity for the experience table:
  * sha256 of the whitespace-collapsed prompt, hex-prefixed to 16 chars
  * (64 bits — collision-negligible at the table's cap, half the storage).
  * Multimodal content joins its text parts first (same rule as the trace's
@@ -130,7 +128,13 @@ export class RouteEntryStore {
       if (!fs.existsSync(this.filePath)) return;
       const parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf8')) as RouteEntriesFile;
       for (const e of Object.values(parsed.entries ?? {})) {
-        if (e && typeof e.promptHash === 'string' && e.tier) this.entries.set(e.promptHash, e);
+        if (!e || typeof e.promptHash !== 'string' || !e.tier) continue;
+        // Migration: the retired 'correction' producer (automatic retry
+        // escalation) left learned rows behind. They are ordinary learned
+        // routes now, so fold them into 'l2_confident' instead of rendering an
+        // unknown source label on the console.
+        if ((e as { source?: string }).source === 'correction') e.source = 'l2_confident';
+        this.entries.set(e.promptHash, e);
       }
     } catch (err: any) {
       console.warn(`[RouteEntries] load failed, starting empty: ${err?.message}`);
@@ -186,9 +190,8 @@ export class RouteEntryStore {
   }
 
   /**
-   * Whitelisted write. Priority: human > correction > l2_confident — a row
-   * never loses certainty. Same-or-stronger source overwrites; a human row
-   * is immutable to automatic producers (delete it explicitly instead).
+   * Whitelisted write. Priority: human > l2_confident — a human row is
+   * immutable to the automatic producer (delete it explicitly instead).
    * Creation registers the originating session too.
    */
   public upsert(input: RouteEntryUpsert, sessionId?: string): RouteEntry {
@@ -198,7 +201,7 @@ export class RouteEntryStore {
       return existing; // operator intent is immune to automatic rewrites
     }
     if (existing && SOURCE_RANK[existing.source] > SOURCE_RANK[input.source]) {
-      return existing; // correction outranks l2_confident even when older
+      return existing; // a stronger source outranks a weaker one even when older
     }
     const now = Date.now();
     const entry: RouteEntry = existing
@@ -308,11 +311,10 @@ export class RouteEntryStore {
   }
 }
 
-/** Correction > l2_confident; human sits above both via the guard in upsert. */
+/** l2_confident < human; the human guard in upsert enforces the top rank. */
 const SOURCE_RANK: Record<RouteEntrySource, number> = {
   l2_confident: 0,
-  correction: 1,
-  human: 2,
+  human: 1,
 };
 
 let store: RouteEntryStore | null = null;

@@ -5,11 +5,11 @@ import { getEnvPaths } from '../config/env.js';
 /**
  * Routing ledger — the append-only audit trail that replaced the learning
  * flywheel's dataset. One JSONL line per experience-table lifecycle event
- * (retry detected, retry skipped, entry hit, entry write, escalation
- * applied, correction observed). `retry_skipped` exists so a non-escalation
- * is auditable too — the three silent drop points (prompt below the length
- * floor, ultra ceiling reached, the L2 decision already higher) would otherwise leave
- * the operator staring at "nothing happened" with no trace. Pure
+ * (entry hit, entry write) and per `@ocr-*` directive outcome (applied,
+ * ignored, unknown), plus L2 effort-floor clamps. The directive events exist
+ * so a non-effect is auditable too — an ignored directive (explicit client
+ * choice) or a typo'd token would otherwise leave the operator staring at
+ * "nothing happened" with no trace. Pure
  * observability: nothing reads it back for routing, rows
  * carry prompt HASHES only (never prompt text), and every write failure
  * degrades to a warn — the ledger must never touch a live request.
@@ -19,12 +19,12 @@ import { getEnvPaths } from '../config/env.js';
  */
 
 export type RoutingLedgerKind =
-  | 'retry_detected'
-  | 'retry_skipped'
   | 'entry_hit'
   | 'entry_write'
-  | 'escalation'
-  | 'correction';
+  | 'directive_applied'
+  | 'directive_ignored'
+  | 'directive_unknown'
+  | 'effort_change';
 
 export interface RoutingLedgerEvent {
   kind: RoutingLedgerKind;
@@ -41,7 +41,7 @@ let ledgerPath: string | null = null;
 let dirEnsured = false;
 /** FIFO write chain: fire-and-forget appendFile promises complete out of
  *  order under load, which would scramble the audit trail's event order
- *  (e.g. a correction racing the entry hit it fed). Chaining serializes
+ *  (e.g. a directive event racing the entry write it fed). Chaining serializes
  *  completion to call order while keeping appends off the request path. */
 let writeChain: Promise<void> = Promise.resolve();
 

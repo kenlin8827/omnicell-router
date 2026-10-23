@@ -27,7 +27,6 @@ const MONO: React.CSSProperties = { fontFamily: FONT_MONO, fontSize: '11.5px' };
 
 const SOURCE_COLORS: Record<string, string> = {
   human: 'var(--accent-emerald)',
-  correction: 'var(--accent-amber)',
   l2_confident: 'var(--accent)',
 };
 
@@ -37,7 +36,7 @@ export const RouteEntriesPage: React.FC = () => {
   const confirmDialog = useConfirm();
   const [rows, setRows] = useState<RouteEntryRow[]>([]);
   const [total, setTotal] = useState(0);
-  const [gate, setGate] = useState<{ enabled?: boolean; escalateOnRetry?: boolean; snippetEnabled?: boolean } | null>(null);
+  const [gate, setGate] = useState<{ enabled?: boolean; snippetEnabled?: boolean } | null>(null);
   const [q, setQ] = useState('');
   const [sort, setSort] = useState<SortKey>('updatedAt');
   const [page, setPage] = useState(1); // 1-based (shared Pagination contract)
@@ -238,9 +237,9 @@ export const RouteEntriesPage: React.FC = () => {
           {t('routeEntries.gateDisabled')}
         </div>
       )}
-      {gate && gate.enabled !== false && gate.escalateOnRetry === false && (
+      {gate && gate.enabled !== false && (
         <div style={{ background: 'var(--bg-elev1, rgba(255,255,255,0.04))', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 14px', fontSize: 12, color: 'var(--text-dim)', marginBottom: 12 }}>
-          {t('routeEntries.shadowMode')}
+          {t('routeEntries.directiveNote')}
         </div>
       )}
 

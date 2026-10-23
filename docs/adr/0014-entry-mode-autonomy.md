@@ -2,7 +2,7 @@
 
 - **Status**: Implemented
 - **Date**: 2026-10-21
-- **Related**: ADR-0001 (routing pipeline), ADR-0002 (sessions/ratchet), ADR-0003 (model addressing), ADR-0011 (retry escalation), ADR-0012 (decision layer effort)
+- **Related**: ADR-0001 (routing pipeline), ADR-0002 (sessions/ratchet), ADR-0003 (model addressing), ADR-0011 (escalation directives), ADR-0012 (decision layer effort)
 
 ## Context
 
@@ -10,7 +10,7 @@ A gateway serves several entry modes on one wire: the `auto` cascade, the tier-f
 (`lite/plus/pro/ultra`), the global routing-mode lever (`routing.mode: cost|quality`),
 client-sent `router_options.force_tier`, explicitly named models (full id / `#variant` / bare
 upstream name), and configured combos. Each mode carries a different client intent — but every
-tier/effort mutation the gateway can perform (session ratchet, retry ladder, schema-assertion
+tier/effort mutation the gateway can perform (session ratchet, escalation directives, schema-assertion
 cascade, cross-tier pool tail) must know WHICH intents authorize it. A 2026-10-21 audit found
 three paths where a FORCED tier was silently crossed (details in §History); this ADR freezes the
 corrected matrix as a contract.
@@ -19,7 +19,7 @@ corrected matrix as a contract.
 
 | Entry mode | Tier may move by gateway judgment? | Effort may be inferred? | Session interaction |
 | :--- | :--- | :--- | :--- |
-| `auto` / tier aliases / unregistered names (classifier) | **YES** — full autonomy | YES (decision layer, entry table, retry ladder) | `'ratchet'` — upgrade, downgrade interception, pin read/follow |
+| `auto` / tier aliases / unregistered names (classifier) | **YES** — full autonomy | YES (decision layer, entry table, `@ocr-*` directives) | `'ratchet'` — upgrade, downgrade interception, pin read/follow |
 | Forced tier: tier alias (`lite`/`plus`/`pro`/`ultra`), `routing.mode` lever, `router_options.force_tier` | **NO** — the forced tier is a contract | NO inference (client value / variant pin / model spec only) | `'explicit'` — recorded, proposal NEVER rewritten downward; a forced tier ABOVE the peak is a sanctioned ceiling rise (re-pins the session, as any upgrade); at/below the peak the pin in another tier is neither followed nor rewritten (untouched for later auto turns); zombie ids repair to the forced tier's healthy head; the empty-tier degraded landing still follows |
 | Explicit model (full id / `#variant` / bare name) | **NO** — the named model serves; failover within its tier only | NO inference (same as forced tier) | `'explicit'` — plus pin write-back when the named model served |
 | Combo | **NO** — the composition is authoritative | NO | `'bypass'` — no session entity, no pin, no ceiling |
@@ -28,8 +28,10 @@ corrected matrix as a contract.
 
 - **Monotonic session ratchet interception** — `session.sticky` / `session.ratchet` /
   `session.preserved` rewrites (session-manager `applyRatchet`, `allowIntercept`).
-- **Retry-escalation ladder** — `retry.effort` / `retry.tier` (ADR-0011); `retryEligible` =
-  detection ∧ `!comboId` ∧ `!explicitModel` ∧ `!force_tier`.
+- **Escalation directives** — `directive.tier_up` / `directive.tier_down` /
+  `directive.effort_up` / `directive.effort_down` (ADR-0011): applicable only to the auto family
+  (`sessionMode === 'ratchet'`); an explicit client choice outranks them and they say so in the
+  ledger. They are also the ONLY legal downgrade source.
 - **Schema-assertion lite-lead cascade** — 5A/5B: lite first, assert, escalate to
   `fallback.escalateTier` on failure. Arms only for the auto family; both directions are tier
   moves (lite-lead serves BELOW a forced plus; the escalation leg serves ABOVE a forced lite).
@@ -61,7 +63,7 @@ corrected matrix as a contract.
 
 ## Implementation anchors
 
-- `orchestrator.ts` §3B `retryEligible`; `routeAutoDecision` entry gate (`!force_tier`);
+- `orchestrator.ts` §4A `directivesApplicable` (explicit-choice gate); `routeAutoDecision` entry gate (`!force_tier`);
   `RouterEngine.routeAsync` forced early-return (decision layer unreachable for forced tiers).
 - `orchestrator.ts` §4 `sessionMode` resolution — `explicitModel || force_tier → 'explicit'`.
 - `orchestrator.ts` §5 cascade gate (`!explicitModel ∧ !comboId ∧ !force_tier`);

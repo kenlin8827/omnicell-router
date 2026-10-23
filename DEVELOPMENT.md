@@ -54,7 +54,7 @@ onecast-router/
 │   │   ├── quota/                       # Declarative DSL prober, SQLite quota_events ledger
 │   │   ├── ratelimit/                   # Sliding window rate limiter & client event log
 │   │   ├── resilience/                  # Circuit breakers, scoped trip state, health views
-│   │   ├── router/                      # Route entries (ADR-0011), retry escalation, decision layer
+│   │   ├── router/                      # Route entries (ADR-0011), decision layer, routing ledger
 │   │   ├── routes/                      # Fastify HTTP route definitions (console, envs, surfaces)
 │   │   ├── session/                     # Monotonic ratchet state machine, zero-header hashing
 │   │   ├── surfaces/                    # Protocol surface table & dispatch layer (ADR-0008)
@@ -140,7 +140,7 @@ The decision cascade eliminates crude prompt-length heuristics and replaces them
 Before consulting a remote decision layer, the gateway computes the 16-character hex hash:
 $$\mathcal{H}_{\text{prompt}} = \text{SHA256}(\text{normalize}(\text{prompt}))[0 \dots 15]$$
 - If an entry exists in `<envRoot>/data/route-entries.json`, the gateway short-circuits Layer 2, setting `layerUsed: 'entry'` and `reasonCode: 'entry.hit'`.
-- **Write Whitelist Precedence**: `human` (manual operator edits via console) > `correction` (accepted retry escalation outcomes) > `l2_confident` (System One decision layer confidence $\ge 0.85$).
+- **Write Whitelist Precedence**: `human` (manual operator edits via console) > `l2_confident` (System One decision layer confidence $\ge 0.85$). `@ocr-*` directives never write back — a manual override is a decision, not statistical experience.
 - Human entries are immutable to automated overwrite.
 
 ### 3.3 Layer 2: System One Semantic Decision Layer (ADR-0012)
@@ -152,11 +152,19 @@ $$\mathcal{H}_{\text{prompt}} = \text{SHA256}(\text{normalize}(\text{prompt}))[0
 ### 3.4 Quality-First Baseline
 When the decision layer is disabled, times out, or fails to classify, the request immediately defaults to the hardcoded `plus` tier (`layerUsed: 'layer0'`, `reasonCode: 'default'`). The gateway never silently routes to cheap micro-models without explicit intent.
 
-### 3.5 Retry Escalation Ladder (ADR-0011)
-If an identical prompt ($\ge 20$ characters) is re-sent within the same active session following a successful completion, the gateway interprets this as operator dissatisfaction and applies the escalation ladder:
-- **Attempt 1**: Reasoning effort $+1$ (`low` $\to$ `medium` $\to$ `high` $\to$ `max`). If the model already operates at max effort or does not support reasoning effort, it executes an immediate capability jump to $\text{tier} + 1$.
-- **Attempt 2+**: Tier $+1$ (`lite` $\to$ `plus` $\to$ `pro` $\to$ `ultra`). Capped at `ultra`.
-- Every escalation event is appended to `<envRoot>/data/routing-ledger.jsonl`.
+### 3.5 Explicit Escalation Directives (ADR-0011)
+Escalation is user-authored, never inferred. Any `@ocr-*` token in the **last** user message moves this turn by one step:
+
+| Token | Effect (this turn only) |
+| :--- | :--- |
+| `@ocr-tier-up` / `@ocr-tier-down` | tier $\pm 1$ (`lite` $\leftrightarrow$ `plus` $\leftrightarrow$ `pro` $\leftrightarrow$ `ultra`) |
+| `@ocr-effort-up` / `@ocr-effort-down` | thinking effort $\pm 1$ (`none` $\to$ `low` $\to$ `medium` $\to$ `high` $\to$ `xhigh` $\to$ `max`) |
+
+- **Scrub-everywhere**: every `@ocr-…` token is stripped from every message and role on every request, so the upstream payload is byte-equivalent to one that never carried a directive (stable prefix cache, no reserved word at any vendor). Unknown tokens are scrubbed and ledgered as `directive_unknown`.
+- **Apply-last-user-message**: only the last client-authored `user` message acts, and only for that turn — clients resend history every turn, so position-only effectiveness is what makes repeat sends idempotent. Directives inside tool results / assistant text / system prompts are scrubbed but never effective (injection defence).
+- **Turn scope**: the tier overlay is applied AFTER the monotonic ratchet, so it never raises `session.maxTier` and never re-pins the session. It is also the only legal downgrade source — automatic machinery (L0, experience table, L2) only ever steps up.
+- **Precedence**: client-explicit model / `force_tier` / combo > `@ocr-*` directive > L2 dynamic > experience table > L0 rules > `plus` baseline.
+- Every applied, ignored (`explicit_choice`) or unknown directive is appended to `<envRoot>/data/routing-ledger.jsonl`; the console renders `directive.*` reason codes. Syntax reference: `docs/design/directives.md`.
 
 ---
 
@@ -173,11 +181,11 @@ Once a dialogue escalates to a higher tier (`plus`, `pro`, or `ultra`), mid-sess
 ### 4.3 Entry-Mode Autonomy Matrix (ADR-0014)
 The gateway enforces strict operational boundaries based on entry mode:
 
-| Entry Mode | Eligible Triggers | Tier Movement by Judgment | Retry Escalation | Ratchet Locked |
+| Entry Mode | Eligible Triggers | Tier Movement by Judgment | Directives | Ratchet Locked |
 | :--- | :--- | :--- | :--- | :--- |
-| **`auto`** | Bare `auto`, tier aliases, classifier model names | Allowed (full cascade) | Full ladder (effort $\to$ tier) | Yes |
-| **`explicit`** | Registered physical models, forced tier aliases | Forbidden (contract verbatim) | Disabled | No (fixed tier) |
-| **`combo`** | Configured virtual combo IDs | Forbidden (pool internal) | Disabled | No |
+| **`auto`** | Bare `auto`, tier aliases, classifier model names | Allowed (full cascade) | Active (both axes) | Yes |
+| **`explicit`** | Registered physical models, forced tier aliases | Forbidden (contract verbatim) | Ignored (ledgered `explicit_choice`) | No (fixed tier) |
+| **`combo`** | Configured virtual combo IDs | Forbidden (pool internal) | Ignored | No |
 
 ### 4.4 Guarded Pin Eviction (ADR-0002)
 Sessions pin to a specific physical model instance to maximize upstream KV prompt cache retention. A pin is evicted and migrated to a healthy landing only when:
@@ -280,7 +288,7 @@ All architectural decisions are codified under `docs/adr/`:
 | **[ADR-0008](docs/adr/0008-protocol-surfaces-and-capture.md)** | Protocol Surfaces & Capture | Dispatch table for Chat, Anthropic, Responses, and SystemOne surfaces; HTTP capture. |
 | **[ADR-0009](docs/adr/0009-quota-probing.md)** | Quota Probing | Declarative 12-construct DSL, 5 banned classes, display-only quota events ledger. |
 | **[ADR-0010](docs/adr/0010-provider-def-ownership.md)** | Provider Def Ownership | `<ocrHome>/providers.json` as single definition truth; `opencode.jsonc` materialized. |
-| **[ADR-0011](docs/adr/0011-route-entries-and-retry-escalation.md)** | Route Entries & Retry Escalation | Persistent prompt experience table (`route-entries.json`), retry ladder, routing ledger. |
+| **[ADR-0011](docs/adr/0011-route-entries-and-escalation-directives.md)** | Route Entries & Escalation Directives | Persistent prompt experience table (`route-entries.json`), explicit `@ocr-*` escalation directives, routing ledger. |
 | **[ADR-0012](docs/adr/0012-l2-decision-emitted-thinking-effort.md)** | L2-Decision-Emitted Thinking Effort | System One decision layer emits `{tier, effort}` in one call; `effortSource` provenance headers. |
 | **[ADR-0013](docs/adr/0013-failure-events-ledger.md)** | Failure Events Ledger | Upstream model call failure ledger, 10s storm coalescing, SQLite mirror, admin routes. |
 | **[ADR-0014](docs/adr/0014-entry-mode-autonomy.md)** | Entry-Mode Autonomy | Autonomy matrix: only `auto` family moves tier by judgment; forced tiers served verbatim. |

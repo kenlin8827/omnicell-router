@@ -419,8 +419,10 @@ export interface TraceRecord {
     actualEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
     reasoningDegraded?: boolean;
     /** WHO authored the ask (ADR-0012): 'client' or a gateway decision
-     *  (l2-decision / entry / escalation / model default). Absent on old rows. */
-    effortSource?: 'client' | 'l2-decision' | 'entry' | 'escalation' | 'default';
+     *  (l2-decision / entry / directive / model default; legacy rows from the
+     *  retired retry-escalation ladder may still read 'escalation' — display
+     *  only). Absent on old rows. */
+    effortSource?: 'client' | 'l2-decision' | 'entry' | 'directive' | 'default' | 'escalation';
   };
   finops: {
     inputTokens: number;
@@ -718,7 +720,7 @@ export interface SessionRecord {
    */
   lastRequestedEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   lastActualEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-  lastEffortSource?: 'client' | 'l2-decision' | 'entry' | 'escalation' | 'default';
+  lastEffortSource?: 'client' | 'l2-decision' | 'entry' | 'directive' | 'default' | 'escalation';
   lastReasoningDegraded?: boolean;
   /** Distinct client API-key identities (applications) seen on this
    *  session's traces, write order — first element is the display anchor. */
@@ -882,7 +884,7 @@ export type TierName = 'lite' | 'plus' | 'pro' | 'ultra';
 
 /* ─── Route-entry experience table (ADR-0011, admin API client) ─────────── */
 
-export type RouteEntrySource = 'l2_confident' | 'correction' | 'human';
+export type RouteEntrySource = 'l2_confident' | 'human';
 
 export interface RouteEntryRow {
   promptHash: string;
@@ -901,7 +903,6 @@ export interface RouteEntryRow {
 export interface RouteEntriesGateState {
   enabled?: boolean;
   snippetEnabled?: boolean;
-  escalateOnRetry?: boolean;
   maxEntries?: number;
 }
 

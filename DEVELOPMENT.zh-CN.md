@@ -54,7 +54,7 @@ onecast-router/
 │   │   ├── quota/                       # 声明式 DSL 探测器、SQLite quota_events 账本
 │   │   ├── ratelimit/                   # 滑动窗口速率限制器与客户端限流事件日志
 │   │   ├── resilience/                  # 熔断器状态机、作用域熔断状态、健康视图
-│   │   ├── router/                      # RouteEntry 经验表 (ADR-0011)、重试升级阶梯、决策层
+│   │   ├── router/                      # RouteEntry 经验表 (ADR-0011)、决策层、路由审计账本
 │   │   ├── routes/                      # Fastify HTTP 路由注册 (控制台、环境管理、协议面)
 │   │   ├── session/                     # 单调会话棘轮状态机、零 Header 哈希
 │   │   ├── surfaces/                    # 统一协议面映射表与分发层 (ADR-0008)
@@ -140,7 +140,7 @@ onecast-router/
 在调用任何远程决策调用前，网关计算提示词的 16 进制 SHA-256 哈希：
 $$\mathcal{H}_{\text{prompt}} = \text{SHA256}(\text{normalize}(\text{prompt}))[0 \dots 15]$$
 - 若在 `<envRoot>/data/route-entries.json` 中存在该记录，直接以 `layerUsed: 'entry'` 和 `reasonCode: 'entry.hit'` 短路返回对应层级与思考预算。
-- **写入白名单权威阶梯**：`human`（控制台人工编辑） > `correction`（采纳的重试升级结果） > `l2_confident`（System One 决策层置信度 $\ge 0.85$）。
+- **写入白名单权威阶梯**：`human`（控制台人工编辑） > `l2_confident`（System One 决策层置信度 $\ge 0.85$）。`@ocr-*` 指令永不写回——手动覆盖是决策，不是统计经验。
 - 人工编辑的经验条目具备不可覆盖性。
 
 ### 3.3 Layer 2: System One 语义决策层 (ADR-0012)
@@ -152,11 +152,19 @@ $$\mathcal{H}_{\text{prompt}} = \text{SHA256}(\text{normalize}(\text{prompt}))[0
 ### 3.4 质量优先保底基准线
 当决策层未启用、超时或因上游故障未命中时，系统强制回退至硬编码的 **`plus`** 梯队（`layerUsed: 'layer0'`, `reasonCode: 'default'`）。零配置网关绝不会暗中向廉价微模型降级。
 
-### 3.5 重复重试阶梯升级 (ADR-0011)
-若在同一个会话中，相同的 Prompt（$\ge 20$ 字符）在上一轮调用成功后被再次原样发送，网关判定客户端对生成结果不满意，自动激活升级阶梯：
-- **第 1 次重试**：思考预算提升一级（`low` $\to$ `medium` $\to$ `high` $\to$ `max`）。若模型已达上限或不支持思考预算，直接跨梯队升阶（$\text{tier} + 1$）。
-- **第 2+ 次重试**：模型梯队提升一级（`lite` $\to$ `plus` $\to$ `pro` $\to$ `ultra`），上限为 `ultra`。
-- 每次升级决策审计记录同步追加至 `<envRoot>/data/routing-ledger.jsonl`。
+### 3.5 显式升档指令 (ADR-0011)
+升档由用户书写，而非推断。**最后一条** user 消息里的任意 `@ocr-*` token 让当轮移动一步：
+
+| Token | 效果（仅当轮） |
+| :--- | :--- |
+| `@ocr-tier-up` / `@ocr-tier-down` | 梯队 $\pm 1$（`lite` $\leftrightarrow$ `plus` $\leftrightarrow$ `pro` $\leftrightarrow$ `ultra`） |
+| `@ocr-effort-up` / `@ocr-effort-down` | 思考级别 $\pm 1$（`none` $\to$ `low` $\to$ `medium` $\to$ `high` $\to$ `xhigh` $\to$ `max`） |
+
+- **全链抹除**：每次请求都会把所有 `@ocr-…` token 从全部消息与角色中剥离，上行 payload 与「从未写过指令」逐字节等价（前缀缓存稳定、任何厂商都看不到保留字）。未知 token 同样抹除并记 `directive_unknown`。
+- **仅末条 user 生效**：只有最后一条客户端 user 消息可以生效，且只作用于当轮——客户端每轮都会重发历史，按位置生效正是重发幂等的来源。tool 结果 / assistant 文本 / system 提示中的指令会被抹除但永不生效（注入防御）。
+- **当轮作用域**：tier 覆盖在单调棘轮**之后**应用，因此永不抬升 `session.maxTier`、永不重钉会话。它也是唯一合法的降档来源——自动机制（L0、经验表、L2）只升不退。
+- **优先级**：客户端显式 model / `force_tier` / combo > `@ocr-*` 指令 > L2 动态 > 经验表 > L0 规则 > `plus` 基线。
+- 生效 / 被忽略（`explicit_choice`）/ 未知的指令都会追加到 `<envRoot>/data/routing-ledger.jsonl`；控制台渲染 `directive.*` reason 码。语法参考：`docs/design/directives.md`。
 
 ---
 
@@ -173,11 +181,11 @@ $$\mathcal{H}_{\text{session}} = \text{SHA256}(\text{CanonicalJSON}(\text{messag
 ### 4.3 接入模式自治矩阵 (ADR-0014)
 根据会话首轮的寻址方式，网关划定严格的操作边界：
 
-| 接入模式 | 触发标识 | 允许网关决策调级 | 启用重试升级阶梯 | 会话棘轮锁定 |
+| 接入模式 | 触发标识 | 允许网关决策调级 | `@ocr-*` 指令 | 会话棘轮锁定 |
 | :--- | :--- | :--- | :--- | :--- |
-| **`auto`** | 纯 `auto`, `default`, 决策层模型标识 | 允许（走完整级联） | 完整阶梯 (effort $\to$ tier) | 是 |
-| **`explicit`** | 注册的具体物理模型、强制 `auto-*` 别名 | 严禁（合约忠实执行） | 禁用 | 否 (固定执行目标) |
-| **`combo`** | 配置的虚拟组合模型 ID | 严禁（内部自主轮转） | 禁用 | 否 |
+| **`auto`** | 纯 `auto`, `default`, 决策层模型标识 | 允许（走完整级联） | 双轴生效 (effort + tier) | 是 |
+| **`explicit`** | 注册的具体物理模型、强制 `auto-*` 别名 | 严禁（合约忠实执行） | 忽略（台账记 `explicit_choice`） | 否 (固定执行目标) |
+| **`combo`** | 配置的虚拟组合模型 ID | 严禁（内部自主轮转） | 忽略 | 否 |
 
 ### 4.4 实例受控驱逐 (Pin Eviction, ADR-0002)
 会话与具体物理模型实例绑定以发挥上游 KV Cache 效益。当且仅当发生下列情况时，绑定实例才会被安全驱逐并重新选定：
@@ -278,7 +286,7 @@ $$\mathcal{H}_{\text{session}} = \text{SHA256}(\text{CanonicalJSON}(\text{messag
 | **[ADR-0008](docs/adr/0008-protocol-surfaces-and-capture.md)** | 协议接入面与报文捕获 | Chat/Anthropic/Responses 统一映射表、全捕获正向代理、安全脱敏。 |
 | **[ADR-0009](docs/adr/0009-quota-probing.md)** | 声明式额度探测 | 12 项 DSL 语法、5 类封禁行为、只读展示与 quota_events 账本。 |
 | **[ADR-0010](docs/adr/0010-provider-def-ownership.md)** | 服务商定义所有权 | `<ocrHome>/providers.json` 为单一源，`opencode.jsonc` 降为物化目标。 |
-| **[ADR-0011](docs/adr/0011-route-entries-and-retry-escalation.md)** | 经验表与重试递进升级 | 提示词经验表 (`route-entries.json`)、重复重试升级阶梯、路由审计账本。 |
+| **[ADR-0011](docs/adr/0011-route-entries-and-escalation-directives.md)** | 经验表与显式升档指令 | 提示词经验表 (`route-entries.json`)、`@ocr-*` 显式升档指令、路由审计账本。 |
 | **[ADR-0012](docs/adr/0012-l2-decision-emitted-thinking-effort.md)** | 决策层联合思考级别决策 | System One 决策层单次联合决策 `{tier, effort}`、思考预算决策溯源标头。 |
 | **[ADR-0013](docs/adr/0013-failure-events-ledger.md)** | 调用故障事件账本 | 上游物理调用故障记录、10 秒风暴聚合、SQLite 持久化镜像、管理端点。 |
 | **[ADR-0014](docs/adr/0014-entry-mode-autonomy.md)** | 接入模式自治矩阵 | 模式权限矩阵：仅 auto 家族允许网关调级；强制梯队与物理模型忠实直通。 |

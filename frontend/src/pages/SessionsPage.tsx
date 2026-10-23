@@ -192,8 +192,8 @@ const ProviderNsChip: React.FC<{ ns: string }> = ({ ns }) => {
  * gateway actually served. `requested→actual` in amber when the turn was
  * degraded below the ask (the same signal X-OCR-Thinking-Degraded carries);
  * '—' when no explicit level was in play or the trace predates the fields.
- * A gateway-decided ask (ADR-0012: L2 decision / experience entry / retry
- * escalation / model default) carries the localized `auto·` prefix and a
+ * A gateway-decided ask (ADR-0012: L2 decision / experience entry / `@ocr-*`
+ * directive / model default) carries the localized `auto·` prefix and a
  * source line in the tooltip — a client ask renders bare. The gateway mark
  * renders as a micro Waypoints icon inline (the text `auto·` mark survives
  * only in text-only contexts, i.e. the tooltip lines built by lastEffortTip).
@@ -206,7 +206,9 @@ const EFFORT_SOURCE_KEY: Record<string, string> = {
   'l2-decision': 'sessions.thinkSrcL2Decision',
   judge: 'sessions.thinkSrcL2Decision',
   entry: 'sessions.thinkSrcEntry',
-  escalation: 'sessions.thinkSrcEscalation',
+  directive: 'sessions.thinkSrcDirective',
+  // Legacy wire value: pre-directive traces recorded 'escalation'.
+  escalation: 'sessions.thinkSrcDirective',
   default: 'sessions.thinkSrcDefault',
 };
 const effortSourceKey = (src: string): string => EFFORT_SOURCE_KEY[src] ?? 'sessions.thinkSrcDefault';

@@ -357,6 +357,14 @@ export interface Layer2DecisionConfig {
    * stale effort answers.
    */
   effortDecision?: boolean;
+  /**
+   * Lowest effort level the decision layer may assign (ADR-0011). Only bounds
+   * the model's own answer — a client-explicit `reasoning_effort` is never
+   * touched (the effort question is not even asked then). Default 'low':
+   * automatic machinery never silently strips thinking below that, while
+   * explicit `@ocr-effort-down` remains the user's own lever.
+   */
+  effortFloor?: ReasoningEffort;
   // Retired keys `decisionCapture` (pre-collectEnabled) are stripped at load.
 }
 
@@ -366,17 +374,30 @@ export interface ClassifierConfig {
 }
 
 /**
+ * Escalation directives (`@ocr-*`, ADR-0011). `prefix` is the reserved
+ * namespace, tokens are `<prefix><suffix>` (`tier-up`, `tier-down`,
+ * `effort-up`, `effort-down`); it must be `@` + slug + a trailing separator
+ * (`-`, `_`, `.`, `:`), 3–32 chars, and anything invalid falls back to the
+ * default. Configurable because 'ocr' is a common industry acronym — a prompt
+ * may legitimately contain `@ocr-pipeline`. `enabled: false` disables BOTH the
+ * scrub and the effect (tokens then travel as ordinary text).
+ */
+export interface DirectivesConfig {
+  enabled?: boolean; // default true
+  prefix?: string; // default '@ocr-'
+}
+
+/**
  * RouteEntry experience table (ADR-0011): the persistent "this prompt routed
- * well at X" memory + the retry-escalation policy. `enabled` gates the whole
- * subsystem (lookup, writes, ledger); `snippetEnabled` gates the 200-char
- * prompt snippet stored for console browsing (privacy-sensitive, opt-out);
- * `escalateOnRetry: false` demotes the retry ladder to shadow mode (events
- * are still detected and ledgered, nothing acts on them).
+ * well at X" memory. `enabled` gates the whole subsystem (lookup, writes,
+ * ledger); `snippetEnabled` gates the 200-char prompt snippet stored for
+ * console browsing (privacy-sensitive, opt-out). Escalation is no longer
+ * automatic — `@ocr-*` directives are the only escalation surface, so there is
+ * no retry-policy knob here any more.
  */
 export interface RouteEntriesConfig {
   enabled?: boolean; // default true
   snippetEnabled?: boolean; // default true
-  escalateOnRetry?: boolean; // default true (false = shadow-only)
   maxEntries?: number; // default 5000
 }
 
@@ -761,6 +782,7 @@ export interface RouterConfig {
    */
   streaming?: StreamingConfig;
   routeEntries?: RouteEntriesConfig;
+  directives?: DirectivesConfig;
   session?: SessionConfig;
   circuitBreaker?: CircuitBreakerConfig;
   retry?: RetryConfig;

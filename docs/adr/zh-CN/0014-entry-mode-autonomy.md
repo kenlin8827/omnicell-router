@@ -2,14 +2,14 @@
 
 - **状态**：已实现
 - **日期**：2026-10-21
-- **关联**：ADR-0001（路由管线）、ADR-0002（会话/棘轮）、ADR-0003（模型寻址）、ADR-0011（重试升档）、ADR-0012（决策层思考级别）
+- **关联**：ADR-0001（路由管线）、ADR-0002（会话/棘轮）、ADR-0003（模型寻址）、ADR-0011（升档指令）、ADR-0012（决策层思考级别）
 
 ## 背景
 
 网关在同一条线路上服务多种入口模式：`auto` 级联、强制梯队别名（`lite/plus/pro/ultra`）、
 全局路由模式杠杆（`routing.mode: cost|quality`）、客户端 `router_options.force_tier`、显式命名
 模型（完整 id / `#变体` / 裸上游名）以及配置的组合（combo）。每种模式携带不同的客户端意图——但
-网关能执行的每一次梯队/思考级别变更（会话棘轮、重试阶梯、schema 断言级联、跨级池尾）都必须知道
+网关能执行的每一次梯队/思考级别变更（会话棘轮、升档指令、schema 断言级联、跨级池尾）都必须知道
 **哪些意图授权它**。2026-10-21 的审计发现三处强制梯队被静默跨越的路径（详见 §历史）；本 ADR 将
 修正后的矩阵固化为契约。
 
@@ -17,7 +17,7 @@
 
 | 入口模式 | 梯队可被网关判定移动？ | 思考级别可被推断？ | 会话交互 |
 | :--- | :--- | :--- | :--- |
-| `auto` / 梯队别名 / 未注册名（分类器） | **可以**——完全自治 | 可以（决策层、经验表、重试阶梯） | `'ratchet'`——升级、降级拦截、pin 读写 |
+| `auto` / 梯队别名 / 未注册名（分类器） | **可以**——完全自治 | 可以（决策层、经验表、`@ocr-*` 指令） | `'ratchet'`——升级、降级拦截、pin 读写 |
 | 强制梯队：梯队别名（`lite/plus/pro/ultra`）、`routing.mode` 杠杆、`router_options.force_tier` | **不可以**——强制梯队即契约 | 不推断（仅客户端值 / 变体钉扎 / 模型规格） | `'explicit'`——记录轮次、提案**绝不向下改写**；强制梯队**高于**峰值时是合法的天花板上调（与其他升级一样重钉会话）；不高于峰值时，其他梯队的 pin 既不跟随也不改写（留给后续 auto 轮次）；僵尸 id 修复为强制梯队的健康头；空梯队降级落点仍然跟随 |
 | 显式模型（完整 id / `#变体` / 裸名） | **不可以**——所命名模型执行；仅在自身梯队内故障转移 | 不推断（同强制梯队） | `'explicit'`——所命名模型执行成功时回写 pin |
 | 组合（combo） | **不可以**——组合即权威 | 不可以 | `'bypass'`——无会话实体、无 pin、无天花板 |
@@ -26,8 +26,9 @@
 
 - **会话单调棘轮拦截**——`session.sticky` / `session.ratchet` / `session.preserved` 改写
   （session-manager `applyRatchet`，`allowIntercept`）。
-- **重试升档阶梯**——`retry.effort` / `retry.tier`（ADR-0011）；`retryEligible` =
-  检测命中 ∧ `!comboId` ∧ `!explicitModel` ∧ `!force_tier`。
+- **升档指令**——`directive.tier_up` / `directive.tier_down` / `directive.effort_up` /
+  `directive.effort_down`（ADR-0011）：只对 auto 家族适用（`sessionMode === 'ratchet'`）；显式
+  客户端选择优先于指令，并在台账中留痕。它们也是唯一合法的降档来源。
 - **schema 断言 lite 抢跑级联**——5A/5B：lite 先行、断言、失败升入 `fallback.escalateTier`。
   仅 auto 家族武装；**两个方向都是梯队移动**（lite 抢跑会服务到强制 plus 之下；升级腿会服务到
   强制 lite 之上）。
@@ -56,7 +57,7 @@
 
 ## 实现锚点
 
-- `orchestrator.ts` §3B `retryEligible`；`routeAutoDecision` 经验表门禁（`!force_tier`）；
+- `orchestrator.ts` §4A `directivesApplicable`（显式选择门禁）；`routeAutoDecision` 经验表门禁（`!force_tier`）；
   `RouterEngine.routeAsync` forced 早退（强制梯队到不了决策层）。
 - `orchestrator.ts` §4 `sessionMode` 决议——`explicitModel || force_tier → 'explicit'`。
 - `orchestrator.ts` §5 级联门禁（`!explicitModel ∧ !comboId ∧ !force_tier`）；直连路径

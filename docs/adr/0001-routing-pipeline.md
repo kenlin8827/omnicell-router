@@ -14,7 +14,7 @@ The retired Layer 1 (a local micro-tensor classifier trained by the learning fly
 
 ### 1. Layer vocabulary and cascade
 
-`layerUsed: 'layer0' | 'entry' | 'layer2'` (`types/router.ts`), reasonCode set locked beside it (`forced`, `default`, `combo`, `entry.hit`, `l2.*`, `session.*`; `retry.*` attribution rides reasonParams — ADR-0011).
+`layerUsed: 'layer0' | 'entry' | 'layer2'` (`types/router.ts`), reasonCode set locked beside it (`forced`, `default`, `combo`, `entry.hit`, `l2.*`, `session.*`, `directive.*`; `directive` attribution rides reasonParams — ADR-0011).
 
 - **Layer 0 = never consult a model.** Explicit choices are decisions: `router_options.force_tier`, auto-tier aliases (`lite/plus/pro/ultra` rewrite `force_tier` before routing), combo (reasonCode `combo`), and the global mode lever `routing.mode`: `cost`→lite, `quality`→pro, `smart`→cascade; a client-named model or forced tier always outranks the mode (`routingModeForceTier`, `router/index.ts`).
 - **Experience lookup = the persistent prior.** Before consulting the decision layer, an auto request checks the RouteEntry table (ADR-0011): a hit short-circuits L2 with `layerUsed: 'entry'`.

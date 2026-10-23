@@ -13,3 +13,6 @@ export const DEFAULT_FORWARD_PROXY_PORT = 4555;
 
 /** `compression.headroom.url` backend default (loopback-only sidecar). */
 export const DEFAULT_HEADROOM_URL = 'http://127.0.0.1:8787';
+
+/** `directives.prefix` backend default (`@ocr-*` reserved namespace). */
+export const DEFAULT_DIRECTIVE_PREFIX = '@ocr-';

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Sliders, Save, Check, Globe, HardDrive, Archive, Database, ShieldCheck, LogOut, ChevronDown, ChevronRight, Cpu, Waypoints } from 'lucide-react';
+import { Sliders, Save, Check, Globe, HardDrive, Archive, Database, ShieldCheck, LogOut, ChevronDown, ChevronRight, Cpu, Waypoints, AtSign, BookOpen } from 'lucide-react';
 import { api } from '../lib/api';
 import { sortModelOptions } from '../lib/model-options';
 import type { WebAuthConfigView } from '../lib/api';
@@ -8,7 +8,21 @@ import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
 import { Switch } from '../components/Switch';
 import { Combobox } from '../components/Combobox';
-import { DEFAULT_MAX_BODY_BYTES } from '../lib/defaults';
+import { Dialog } from '../components/Dialog';
+import { DEFAULT_MAX_BODY_BYTES, DEFAULT_DIRECTIVE_PREFIX } from '../lib/defaults';
+
+// UI mirror of the backend's resolveDirectivePrefix (backend/src/pipeline/
+// directives.ts) — the console must display the SAME fallback the gateway
+// applies, without a round-trip. Keep in sync with the backend validator.
+const DIRECTIVE_PREFIX_SHAPE = /^@[a-z0-9][a-z0-9._:-]*$/;
+function resolveDirectivePrefixUi(raw: unknown): string {
+  if (typeof raw !== 'string') return DEFAULT_DIRECTIVE_PREFIX;
+  const p = raw.trim().toLowerCase();
+  if (p.length < 3 || p.length > 32) return DEFAULT_DIRECTIVE_PREFIX;
+  if (!DIRECTIVE_PREFIX_SHAPE.test(p)) return DEFAULT_DIRECTIVE_PREFIX;
+  if (!/[-._:]$/.test(p)) return DEFAULT_DIRECTIVE_PREFIX;
+  return p;
+}
 
 export const SettingsPage: React.FC = () => {
   const { t } = useI18n();
@@ -19,6 +33,8 @@ export const SettingsPage: React.FC = () => {
   const [savedNotice, setSavedNotice] = useState(false);
   // Archive-policy collapsible — set-once values, collapsed by default
   const [policyOpen, setPolicyOpen] = useState(false);
+  // `@ocr-*` directive cheat-sheet dialog (opened from the namespace group)
+  const [showDirCheat, setShowDirCheat] = useState(false);
   // Registered physical models for the System One default-model picker
   const [modelOptions, setModelOptions] = useState<{ value: string; label: string }[]>([]);
 
@@ -157,12 +173,54 @@ export const SettingsPage: React.FC = () => {
   });
   // Same whole-node discipline for `routeEntries` (ADR-0011 experience table
   // gate) — hot-applied server-side via applyRouteEntriesConfig on every save.
+  // Same whole-node discipline for `directives` (ADR-0011 escalation surface):
+  // hot-applied server-side via applyDirectivesConfig on every save.
+  const patchDirectives = (patch: Record<string, unknown>) => setConfig({
+    ...config,
+    directives: {
+      enabled: true,
+      ...(config.directives || {}),
+      ...patch,
+    },
+  });
+  // The sheet and hints show the RESOLVED prefix — what the gateway will
+  // actually apply after its own validation — never the raw typed text.
+  const rawPrefix: unknown = config.directives?.prefix;
+  const directivePrefix = resolveDirectivePrefixUi(rawPrefix);
+  const prefixInvalid =
+    typeof rawPrefix === 'string' && resolveDirectivePrefixUi(rawPrefix) !== rawPrefix.trim().toLowerCase();
+
+  // Cheat-sheet rows for the directive dialog — tokens reflect the LIVE
+  // configured prefix, so the sheet stays truthful after a prefix rename.
+  const pfx = directivePrefix;
+  const dirCheatGroups: Array<{ label: string; rows: Array<[string, string]> }> = [
+    {
+      label: t('settings.dirCheatGroupStep'),
+      rows: [
+        [`${pfx}tier-up`, t('settings.dirCheatTierUp')],
+        [`${pfx}tier-down`, t('settings.dirCheatTierDown')],
+        [`${pfx}effort-up`, t('settings.dirCheatEffortUp')],
+        [`${pfx}effort-down`, t('settings.dirCheatEffortDown')],
+      ],
+    },
+    {
+      label: t('settings.dirCheatGroupPin'),
+      rows: [
+        [`${pfx}tier-{lite|plus|pro|ultra}`, t('settings.dirCheatTierPin')],
+        [`${pfx}effort-{none…max}`, t('settings.dirCheatEffortPin')],
+      ],
+    },
+    {
+      label: t('settings.dirCheatGroupContent'),
+      rows: [[`${pfx}continue`, t('settings.dirCheatContinue')]],
+    },
+  ];
+
   const patchRouteEntries = (patch: Record<string, unknown>) => setConfig({
     ...config,
     routeEntries: {
       enabled: true,
       snippetEnabled: true,
-      escalateOnRetry: true,
       maxEntries: 5000,
       ...(config.routeEntries || {}),
       ...patch,
@@ -480,18 +538,6 @@ export const SettingsPage: React.FC = () => {
               </div>
             </div>
             <div>
-              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
-                <span>{t('settings.reEscalate')}</span>
-                <Switch
-                  checked={config.routeEntries?.escalateOnRetry ?? true}
-                  onChange={v => patchRouteEntries({ escalateOnRetry: v })}
-                />
-              </label>
-              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '6px' }}>
-                {t('settings.reEscalateHint')}
-              </div>
-            </div>
-            <div>
               <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.reMaxEntries')}</label>
               <input
                 type="number"
@@ -504,98 +550,214 @@ export const SettingsPage: React.FC = () => {
                 {t('settings.reMaxEntriesHint')}
               </div>
             </div>
-            <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
-              {t('settings.reHotHint')}
+          </div>
+        {/* `@ocr-*` directive namespace (directives.*) — a GLOBAL surface, not a
+            routeEntries knob: the prefix and the master switch govern EVERY
+            directive token on BOTH axes (tier + effort) and stay independent of
+            the experience table (directives work with it off). */}
+        <div id="settings-directives" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+            <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent-violet)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <AtSign size={14} />
+              {t('settings.dirTitle')}
             </div>
+            <button className="btn btn-sm" onClick={() => setShowDirCheat(true)}>
+              <BookOpen size={13} />
+              <span>{t('settings.dirCheatBtn')}</span>
+            </button>
           </div>
-        </div>
-        {/* Console Access (webAuth) — dedicated save flow, see handleWebAuthSave */}
-        <div id="settings-webauth" className="card">
-        <div className="card-header">
-          <div className="card-title">
-            <ShieldCheck size={18} color="var(--accent)" />
-            <span>{t('settings.waTitle')}</span>
-          </div>
-          <button className="btn btn-primary" onClick={handleWebAuthSave} disabled={waSaving || !waConfig}>
-            <Save size={14} />
-            <span>{t('settings.waSave')}</span>
-          </button>
-        </div>
-
-        {!waConfig ? (
-          <div style={{ color: 'var(--text-dim)', fontSize: '13px' }}>…</div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px' }}>
-              <span>{t('settings.waEnable')}</span>
-              <Switch
-                checked={waEnabled}
-                disabled={waConfig.forced}
-                onChange={v => setWaEnabled(v)}
-              />
-            </label>
-
-            {waConfig.forced && (
-              <div style={{ fontSize: '12px', color: 'var(--accent-amber, #f59e0b)', lineHeight: 1.6 }}>
-                {t('settings.waForcedHint')}
+          <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
+            <span>{t('settings.dirEnable')}</span>
+            <Switch
+              checked={config.directives?.enabled ?? true}
+              onChange={v => patchDirectives({ enabled: v })}
+            />
+          </label>
+          <div>
+            <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('settings.dirPrefix')}</label>
+            <input
+              value={config.directives?.prefix ?? DEFAULT_DIRECTIVE_PREFIX}
+              onChange={e => patchDirectives({ prefix: e.target.value })}
+              placeholder={DEFAULT_DIRECTIVE_PREFIX}
+              className="input"
+              spellCheck={false}
+            />
+            {prefixInvalid && (
+              <div style={{ fontSize: '11px', color: 'var(--accent-amber, #f59e0b)', lineHeight: 1.6, marginTop: '6px' }}>
+                {t('settings.dirPrefixInvalid', { prefix: directivePrefix })}
               </div>
             )}
-
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
-              <div>
-                <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
-                  {t('settings.waUsername')}
-                </label>
-                <input
-                  type="text"
-                  value={waUsername}
-                  onChange={e => setWaUsername(e.target.value)}
-                  placeholder="admin"
-                  className="input"
-                />
-              </div>
-              <div>
-                <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
-                  {t('settings.waNewPassword')}
-                </label>
-                <input
-                  type="password"
-                  value={waPassword}
-                  onChange={e => setWaPassword(e.target.value)}
-                  placeholder={waConfig.hasPassword ? t('settings.waKeepPassword') : '••••••'}
-                  autoComplete="new-password"
-                  className="input"
-                />
-              </div>
-              <div>
-                <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
-                  {t('settings.waConfirm')}
-                </label>
-                <input
-                  type="password"
-                  value={waPassword2}
-                  onChange={e => setWaPassword2(e.target.value)}
-                  disabled={waPassword === ''}
-                  autoComplete="new-password"
-                  className="input"
-                />
-              </div>
-            </div>
-
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
-              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
-                {t('settings.waHint')}
-              </div>
-              {waConfig.active && (
-                <button className="btn btn-sm" onClick={handleWebAuthLogout}>
-                  <LogOut size={13} />
-                  <span>{t('settings.waLogout')}</span>
-                </button>
-              )}
-            </div>
           </div>
+          <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
+            {t('settings.dirPrefixHint')}
+            <br />
+            {t('settings.dirEnableHint')}
+            <br />
+            {t('settings.reDirectiveHint', { prefix: directivePrefix })}
+          </div>
+        </div>
+        {showDirCheat && (
+          <Dialog
+            title={t('settings.dirCheatTitle')}
+            subtitle={
+              <>
+                <span>{t('settings.dirCheatRuleLast')}</span>
+                <span>{t('settings.dirCheatRuleScrub')}</span>
+                <span>{t('settings.dirCheatRuleTurn')}</span>
+              </>
+            }
+            onClose={() => setShowDirCheat(false)}
+            closeLabel={t('settings.dirCheatClose')}
+            width={560}
+          >
+            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: 12.5, tableLayout: 'fixed' }}>
+              <thead>
+                <tr
+                  style={{
+                    background: 'var(--bg-elev)',
+                    borderBottom: '1px solid var(--divider)',
+                    fontSize: 11,
+                    fontWeight: 700,
+                    color: 'var(--text-dim)',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.04em',
+                  }}
+                >
+                  <th style={{ padding: '8px 12px', width: '46%', whiteSpace: 'nowrap' }}>{t('settings.dirCheatThToken')}</th>
+                  <th style={{ padding: '8px 12px' }}>{t('settings.dirCheatThEffect')}</th>
+                </tr>
+              </thead>
+              {dirCheatGroups.map((group) => (
+                <tbody key={group.label}>
+                  <tr>
+                    <td
+                      colSpan={2}
+                      style={{
+                        padding: '10px 12px 4px',
+                        fontSize: 10.5,
+                        fontWeight: 700,
+                        letterSpacing: '0.05em',
+                        color: 'var(--accent-violet)',
+                        textTransform: 'uppercase',
+                      }}
+                    >
+                      {group.label}
+                    </td>
+                  </tr>
+                  {group.rows.map(([token, effect]) => (
+                    <tr key={token} style={{ borderBottom: '1px solid var(--divider)' }}>
+                      <td style={{ padding: '7px 12px', verticalAlign: 'middle' }}>
+                        <code
+                          style={{
+                            fontFamily: 'var(--font-mono, monospace)',
+                            fontSize: 11,
+                            padding: '2px 8px',
+                            borderRadius: 6,
+                            background: 'color-mix(in srgb, var(--accent-violet) 10%, transparent)',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {token}
+                        </code>
+                      </td>
+                      <td style={{ padding: '7px 12px', color: 'var(--text-main)', verticalAlign: 'middle' }}>{effect}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              ))}
+            </table>
+          </Dialog>
         )}
-      </div>
+        {/* Console Access (webAuth) — narrow group like the siblings; keeps a
+            DEDICATED save flow (it is not hot-applied by the header save), see
+            handleWebAuthSave. */}
+        <div id="settings-webauth" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+            <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <ShieldCheck size={14} />
+              <span>{t('settings.waTitle')}</span>
+            </div>
+            <button className="btn btn-sm btn-primary" onClick={handleWebAuthSave} disabled={waSaving || !waConfig}>
+              <Save size={13} />
+              <span>{t('settings.waSave')}</span>
+            </button>
+          </div>
+
+          {!waConfig ? (
+            <div style={{ color: 'var(--text-dim)', fontSize: '13px' }}>…</div>
+          ) : (
+            <>
+              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
+                <span>{t('settings.waEnable')}</span>
+                <Switch
+                  checked={waEnabled}
+                  disabled={waConfig.forced}
+                  onChange={v => setWaEnabled(v)}
+                />
+              </label>
+
+              {waConfig.forced && (
+                <div style={{ fontSize: '11px', color: 'var(--accent-amber, #f59e0b)', lineHeight: 1.6 }}>
+                  {t('settings.waForcedHint')}
+                </div>
+              )}
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
+                <div>
+                  <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
+                    {t('settings.waUsername')}
+                  </label>
+                  <input
+                    type="text"
+                    value={waUsername}
+                    onChange={e => setWaUsername(e.target.value)}
+                    placeholder="admin"
+                    className="input"
+                  />
+                </div>
+                <div>
+                  <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
+                    {t('settings.waNewPassword')}
+                  </label>
+                  <input
+                    type="password"
+                    value={waPassword}
+                    onChange={e => setWaPassword(e.target.value)}
+                    placeholder={waConfig.hasPassword ? t('settings.waKeepPassword') : '••••••'}
+                    autoComplete="new-password"
+                    className="input"
+                  />
+                </div>
+                <div>
+                  <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
+                    {t('settings.waConfirm')}
+                  </label>
+                  <input
+                    type="password"
+                    value={waPassword2}
+                    onChange={e => setWaPassword2(e.target.value)}
+                    disabled={waPassword === ''}
+                    autoComplete="new-password"
+                    className="input"
+                  />
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
+                <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
+                  {t('settings.waHint')}
+                </div>
+                {waConfig.active && (
+                  <button className="btn btn-sm" onClick={handleWebAuthLogout}>
+                    <LogOut size={13} />
+                    <span>{t('settings.waLogout')}</span>
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+        </div>
       </div>
     </div>
   );

@@ -14,7 +14,7 @@ import {
 /**
  * RouteEntry experience table (ADR-0011) — store semantics on an isolated
  * temp file: normalization/hash stability, the write-priority ladder
- * (human > correction > l2_confident), session LRU bookkeeping, snippet
+ * (human > l2_confident), session LRU bookkeeping, snippet
  * gating and cap eviction. The module-level gate is pointed at explicit
  * values so the operator's real config can never leak into a run.
  */
@@ -64,22 +64,19 @@ describe('RouteEntryStore', () => {
     assert.equal(reloaded.peek(hash)!.hitCount, 24);
   });
 
-  it('correction outranks l2_confident; human is immune to automatic writes', () => {
+  it('human rows are immune to the automatic producer', () => {
     const store = newStore();
-    const hash = 'h-correction';
+    const hash = 'h-immune';
     store.upsert({ promptHash: hash, tier: 'plus', source: 'l2_confident', confidence: 0.88 });
-    store.upsert({ promptHash: hash, tier: 'pro', source: 'correction', confidence: 1.0 });
-    assert.equal(store.peek(hash)!.tier, 'pro');
-    assert.equal(store.peek(hash)!.source, 'correction');
-    // l2_confident can NOT drag a correction row back down.
-    store.upsert({ promptHash: hash, tier: 'plus', source: 'l2_confident', confidence: 0.99 });
+    // The automatic producer may still refine its own learned row.
+    store.upsert({ promptHash: hash, tier: 'pro', source: 'l2_confident', confidence: 0.95 });
     assert.equal(store.peek(hash)!.tier, 'pro');
     // Human edit freezes the row against every automatic producer.
     store.humanEdit(hash, 'ultra');
     const human = store.peek(hash)!;
     assert.equal(human.source, 'human');
     assert.equal(human.confidence, 1.0);
-    store.upsert({ promptHash: hash, tier: 'lite', source: 'correction', confidence: 1.0 });
+    store.upsert({ promptHash: hash, tier: 'lite', source: 'l2_confident', confidence: 1.0 });
     assert.equal(store.peek(hash)!.tier, 'ultra');
     // …but another human edit (console) may still change it, and remove clears it.
     store.humanEdit(hash, 'lite');
@@ -96,7 +93,7 @@ describe('RouteEntryStore', () => {
     const off = store.upsert({ promptHash: 'h2', tier: 'plus', source: 'l2_confident', confidence: 0.9, snippet: 'secret-ish' });
     assert.equal(off.snippet, undefined);
     // existing snippet is untouched by the flag (gates NEW snippets only)
-    const bumped = store.upsert({ promptHash: 'h1', tier: 'pro', source: 'correction', confidence: 1.0, snippet: 'ignored' });
+    const bumped = store.upsert({ promptHash: 'h1', tier: 'pro', source: 'l2_confident', confidence: 1.0, snippet: 'ignored' });
     assert.equal(bumped.snippet, 'hello world');
     applyRouteEntriesConfig({ snippetEnabled: true });
   });

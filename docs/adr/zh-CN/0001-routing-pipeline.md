@@ -14,7 +14,7 @@
 
 ### 1. 层词汇与级联
 
-`layerUsed: 'layer0' | 'entry' | 'layer2'`（`types/router.ts`），reasonCode 集合随之一同锁定（`forced`、`default`、`combo`、`entry.hit`、`l2.*`、`session.*`；`retry.*` 归因走 reasonParams——见 ADR-0011）。
+`layerUsed: 'layer0' | 'entry' | 'layer2'`（`types/router.ts`），reasonCode 集合随之一同锁定（`forced`、`default`、`combo`、`entry.hit`、`l2.*`、`session.*`、`directive.*`；`directive` 归因走 reasonParams——见 ADR-0011）。
 
 - **第 0 层 = 绝不咨询模型。** 显式选择即决策：`router_options.force_tier`、auto 梯队别名（`lite/plus/pro/ultra` 在路由前改写 `force_tier`）、组合（reasonCode `combo`）、以及全局模式杆 `routing.mode`：`cost`→lite、`quality`→pro、`smart`→级联；客户端点名模型或强制梯队永远压过模式（`routingModeForceTier`，`router/index.ts`）。
 - **经验查询 = 持久化的既有判定。** 咨询决策层之前，auto 请求先查 RouteEntry 表（ADR-0011）：命中即以 `layerUsed: 'entry'` 短路 L2。

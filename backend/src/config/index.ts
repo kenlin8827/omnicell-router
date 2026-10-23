@@ -1,14 +1,18 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { isMap, parse, parseDocument, stringify } from 'yaml';
-import { Layer2DecisionConfig, RequestCaptureConfig, RouteEntriesConfig, RouterConfig, WebAuthConfig, CircuitBreakerConfig, RateLimitConfig } from './types.js';
+import { DirectivesConfig, Layer2DecisionConfig, RequestCaptureConfig, RouteEntriesConfig, RouterConfig, WebAuthConfig, CircuitBreakerConfig, RateLimitConfig } from './types.js';
 import { DEFAULT_RETRIABLE_CAUSES } from '../resilience/types.js';
+import { EFFORT_LADDER } from '../types/router.js';
+import { resolveDirectivePrefix } from '../pipeline/directives.js';
 import { DEFAULT_CREDENTIAL_AFFINITY_CACHE_TTL_MS } from '../pipeline/credential-selection.js';
 import { ensureEnvScaffold, getEnvPaths, resolveEnvName } from './env.js';
 import {
   DEFAULT_FORWARD_PROXY_PORT,
   DEFAULT_HEADROOM_TIMEOUT_MS,
+  DEFAULT_DIRECTIVE_PREFIX,
   DEFAULT_HEADROOM_URL,
+  DEFAULT_LAYER2_EFFORT_FLOOR,
   DEFAULT_LAYER2_TIMEOUT_MS,
   DEFAULT_MAX_BODY_BYTES,
   DEFAULT_ROUTE_ENTRIES_MAX,
@@ -62,12 +66,16 @@ const DEFAULT_CONFIG: RouterConfig = {
       timeoutMs: DEFAULT_LAYER2_TIMEOUT_MS,
       collectEnabled: false, // dataset sampling: sampled decisions → data/layer2-decisions.jsonl (single-key gate, opt-in)
       effortDecision: false, // decision layer also decides the thinking level (ADR-0012) — spends thinking tokens, opt-in
+      effortFloor: DEFAULT_LAYER2_EFFORT_FLOOR, // lowest level L2 may assign (client-explicit asks are never touched)
     },
+  },
+  directives: {
+    enabled: true, // false = both the scrub and the effect are off (@ocr-* travel as text)
+    prefix: DEFAULT_DIRECTIVE_PREFIX, // reserved namespace; relocatable for OCR-domain prompts
   },
   routeEntries: {
     enabled: true, // experience table: lookup + whitelisted writes + ledger
     snippetEnabled: true, // store first 200 prompt chars for the console (opt-out)
-    escalateOnRetry: true, // false = shadow mode: detect + ledger, never act
     maxEntries: DEFAULT_ROUTE_ENTRIES_MAX,
   },
   proxy: {
@@ -220,6 +228,14 @@ function sanitizeLayer2Input(input: unknown): Layer2DecisionConfig {
   delete merged.baseUrl;
   delete merged.apiKey;
   delete merged.decisionCapture;
+  // Retired `escalateOnRetry` (automatic retry ladder, replaced by `@ocr-*`
+  // directives) must not round-trip into a saved config.yaml.
+  delete (merged as { escalateOnRetry?: unknown }).escalateOnRetry;
+  // A hand-edited/garbage floor must never silently strip thinking: any value
+  // outside the ladder falls back to the default.
+  if (!EFFORT_LADDER.includes(merged.effortFloor as (typeof EFFORT_LADDER)[number])) {
+    merged.effortFloor = DEFAULT_LAYER2_EFFORT_FLOOR;
+  }
   return merged;
 }
 
@@ -236,7 +252,25 @@ function sanitizeRouteEntriesInput(input: unknown): RouteEntriesConfig {
   const cap = Number(merged.maxEntries ?? base.maxEntries);
   merged.maxEntries =
     Number.isFinite(cap) && cap > 0 ? Math.max(1, Math.round(cap)) : (base.maxEntries ?? DEFAULT_ROUTE_ENTRIES_MAX);
+  // Retired `escalateOnRetry` (automatic retry ladder, replaced by `@ocr-*`
+  // directives) must not round-trip into a saved config.yaml.
+  delete (merged as { escalateOnRetry?: unknown }).escalateOnRetry;
   return merged;
+}
+
+/**
+ * Directives sanitizer: the prefix decides which slice of user text the gateway
+ * is allowed to rewrite, so it is validated rather than trusted — an invalid
+ * value falls back to the default namespace (`resolveDirectivePrefix`).
+ * Unknown keys never round-trip into config.yaml.
+ */
+function sanitizeDirectivesInput(input: unknown): DirectivesConfig {
+  const base = DEFAULT_CONFIG.directives as DirectivesConfig;
+  const raw = (input ?? {}) as DirectivesConfig;
+  return {
+    enabled: raw.enabled !== false,
+    prefix: resolveDirectivePrefix(raw.prefix ?? base.prefix),
+  };
 }
 
 /**
@@ -517,6 +551,7 @@ export function loadConfig(configPath?: string): RouterConfig {
           layer2: sanitizeLayer2Input(parsed?.classifier?.layer2),
         },
         routeEntries: sanitizeRouteEntriesInput(parsed?.routeEntries),
+        directives: sanitizeDirectivesInput(parsed?.directives),
         proxy: { ...DEFAULT_CONFIG.proxy, ...parsed?.proxy },
         forwardProxy: { ...DEFAULT_CONFIG.forwardProxy, ...parsed?.forwardProxy },
         compression: {
@@ -784,10 +819,13 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'classifier.layer2.decisionCache': '判定决策缓存（相同上下文复用判定结果）',
   'classifier.layer2.collectEnabled': 'L2 决策样本采集开关（默认 false 关闭）：单键门控，落盘 data/layer2-decisions.jsonl（不进捕捉页），64MB 封顶后停写并告警一次；热生效',
   'classifier.layer2.effortDecision': 'L2 决策思考级别判定开关（默认 false 关闭）：开启后决策层在同一次调用中同时判定梯队与思考级别，仅对省略 reasoning_effort 的请求补位（客户端显式值永远优先），判定结果逐轮浮动不进会话棘轮；注意决策层抬档会多花思考 token 费用',
-  routeEntries: '路由经验表：按归一化 prompt 记忆历史路由档位，重复提问自动升档；enabled 关闭即整个子系统停用（查询/写入/审计台账全停）',
+  'classifier.layer2.effortFloor': 'L2 可下探的最低思考级别（默认 low）：只约束决策模型自己的选择，绝不覆盖客户端显式值；自动机制不降档，更低档位只能由 @ocr-effort-down 指令发起',
+  directives: '升档指令（ADR-0011）：在最后一条 user 消息里写 @ocr-tier-up / @ocr-tier-down / @ocr-effort-up / @ocr-effort-down 让当轮升/降一档，或写 @ocr-tier-ultra / @ocr-effort-high 直接把当轮钉在指定档位（会话天花板只限制自动升档，指令本来就不受它约束）；@ocr-continue 表示纯续写——不作用任何档位，单独成消息时整条抹除，当轮按原档位续写上一条回复；指令每轮都会从上行消息链抹除，只作用于当轮，不改变会话梯队上限，也不写回经验表；同轴「钉住」优先于「步进」',
+  'directives.enabled': '指令总开关（默认开）：关闭后既不抹除也不生效，@ocr-* 字样会作为普通文本原样发往上游；保存后即时生效',
+  'directives.prefix': '指令命名空间（默认 @ocr-）：形如 @ + 短标识 + 结尾分隔符（- _ . :），3-32 字符；ocr 是行业通用缩写（如光学字符识别），若你的提示词里会出现 @ocr-pipeline 这类文本，可改成 @onecast- 等更少冲突的前缀；非法值回落默认；改动会让此前写下的旧前缀 token 变回普通文本（一次性前缀缓存失效）',
+  routeEntries: '路由经验表：按归一化 prompt 记忆历史路由档位；enabled 关闭即整个子系统停用（查询/写入/审计台账全停）；升档/降档由 @ocr-* 指令显式发起，不再自动判定',
   'routeEntries.enabled': '经验表总开关（查询、白名单写入与审计台账）；保存后即时生效',
   'routeEntries.snippetEnabled': '是否存 prompt 前 200 字符片段供控制台浏览/人工识别（隐私敏感，默认开；关闭只影响新写入，不删除已存片段）',
-  'routeEntries.escalateOnRetry': '重试升档动作开关：同会话重复同一问题≥20字符时第1次抬思考档、第2次起升梯队（封顶 ultra）；关闭=影子模式（只检测与记录台账，不做任何动作）',
   'routeEntries.maxEntries': '经验条目上限（按最后活动时间 LRU 淘汰；人工编辑条目豁免淘汰；非正数/非法值加载时回落默认 5000）',
   'circuitBreaker': '熔断器（按模型统计失败并自动摘除，见 /guardrails 页）；规则组 rules 可逐条开关并覆写参数，保存后即时生效（无需重启；仅 persistence.debounceMs 需重启）',
   'circuitBreaker.failureThreshold': '窗口内失败次数阈值（达到即熔断）；rules.trip.consecutiveFailures.threshold 未设置时的全局默认值',

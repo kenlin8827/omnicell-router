@@ -60,12 +60,12 @@ export type ReasoningEffort = (typeof EFFORT_LADDER)[number];
  *   client     — the request's own `reasoning_effort` field
  *   decision layer      — the L2 decision layer's effort answer (classifier.layer2.effortDecision)
  *   entry      — a route-entry experience hit (ADR-0011)
- *   escalation — the retry-escalation ladder (ADR-0011)
+ *   directive  — an `@ocr-effort-up` / `@ocr-effort-down` user directive (ADR-0011)
  *   default    — the served model's `defaultEffort` pin
  * `requestedEffort` stays the EFFECTIVE ask the machinery served against;
  * this field says whose ask it was. undefined = no level in play at all.
  */
-export type EffortSource = 'client' | 'l2-decision' | 'entry' | 'escalation' | 'default';
+export type EffortSource = 'client' | 'l2-decision' | 'entry' | 'directive' | 'default';
 
 /**
  * Returns the highest effort level `supported` is allowed to substitute
@@ -185,8 +185,8 @@ export interface RoutingDecision {
    * L2-decided thinking level (ADR-0012): set only by the L2 decision layer when
    * the client omitted `reasoning_effort` and `effortDecision` is on. The
    * orchestrator injects it into the request (the same precedence as a
-   * route-entry hit — below a client-explicit value, below a retry
-   * escalation). Per-turn and unratcheted by design.
+   * route-entry hit — below a client-explicit value, below an `@ocr-*`
+   * directive). Per-turn and unratcheted by design.
    */
   effort?: ReasoningEffort;
   /** The decision layer's self-reported confidence in `effort` — trace metadata only. */
@@ -236,8 +236,8 @@ export interface ExecutionResult {
   reasoningDegraded?: boolean;
   /**
    * WHO authored the effective ask (ADR-0012): 'client' = the request's own
-   * field; anything else is a gateway decision (decision layer / entry / escalation /
-   * model default). Surfaced as `X-OCR-Thinking-Source`.
+   * field; anything else is a gateway decision (decision layer / entry /
+   * directive / model default). Surfaced as `X-OCR-Thinking-Source`.
    */
   effortSource?: EffortSource;
 }

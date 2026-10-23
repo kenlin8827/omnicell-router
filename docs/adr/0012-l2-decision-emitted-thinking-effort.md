@@ -6,7 +6,7 @@ Implemented — 2026-10-21. Scope: the L2 decision layer's decision output grows
 
 ## Context
 
-The auto-routing decision layer decided only WHERE a prompt goes (tier), never HOW DEEP the served model should think (effort) — half a decision: a prompt decided hard enough for the pro tier could still run at the provider's own default (frequently no thinking at all), silently wasting the routing decision. Meanwhile the effort vocabulary (ADR-0003) had exactly four ways to acquire a level, and all four — the client field, a route-entry hit, retry escalation, the model's `defaultEffort` — inject by MUTATING `request.reasoning_effort` before the orchestrator reads it. The trace's `requestedEffort` therefore could not distinguish a client ask from a gateway decision: an honesty gap (the gateway's choice masqueraded as the client's).
+The auto-routing decision layer decided only WHERE a prompt goes (tier), never HOW DEEP the served model should think (effort) — half a decision: a prompt decided hard enough for the pro tier could still run at the provider's own default (frequently no thinking at all), silently wasting the routing decision. Meanwhile the effort vocabulary (ADR-0003) had exactly four ways to acquire a level, and all four — the client field, a route-entry hit, an `@ocr-effort-*` directive, the model's `defaultEffort` — inject by MUTATING `request.reasoning_effort` before the orchestrator reads it. The trace's `requestedEffort` therefore could not distinguish a client ask from a gateway decision: an honesty gap (the gateway's choice masqueraded as the client's).
 
 Design constraints surfaced in review:
 
@@ -23,7 +23,7 @@ System One `questions` is a map (`protocols/systemone/types.ts`): the decision l
 
 ### 2. `effortSource` — the ask's provenance is a first-class fact
 
-`EffortSource = 'client' | 'l2-decision' | 'entry' | 'escalation' | 'default'`. The orchestrator snapshots the client's wire value before any injection and attributes each later mutation to its site. The value rides `ExecutionResult.effortSource` (surfaced as `X-OCR-Thinking-Source`), `ExecutionTrace.execution.effortSource`, and the routing `reasonParams`. `requestedEffort` keeps its established meaning — the EFFECTIVE ask the effort machinery served against — while `effortSource` says WHOSE ask it was. `reasoningDegraded` = served-rank < effective-ask-rank regardless of source: a decision layer-decided level clamped by capability is degraded exactly like a client ask (ADR-0003 honesty rules apply to the gateway's own decisions too).
+`EffortSource = 'client' | 'l2-decision' | 'entry' | 'directive' | 'default'`. The orchestrator snapshots the client's wire value before any injection and attributes each later mutation to its site. The value rides `ExecutionResult.effortSource` (surfaced as `X-OCR-Thinking-Source`), `ExecutionTrace.execution.effortSource`, and the routing `reasonParams`. `requestedEffort` keeps its established meaning — the EFFECTIVE ask the effort machinery served against — while `effortSource` says WHOSE ask it was. `reasoningDegraded` = served-rank < effective-ask-rank regardless of source: a decision layer-decided level clamped by capability is degraded exactly like a client ask (ADR-0003 honesty rules apply to the gateway's own decisions too).
 
 ### 3. Config gate — `classifier.layer2.effortDecision` (default FALSE)
 
@@ -31,11 +31,11 @@ L2-decided effort spends thinking tokens nobody explicitly ordered, so the featu
 
 ### 4. Effort floats per turn — never ratcheted
 
-The session ratchet pins TIER for model-identity coherence (ADR-0002); effort stays a per-turn judgment with no monotonic floor. A pro-pinned session asked a trivial follow-up is served by the pinned pro model at a low effort — coherence of WHO answers, freedom of HOW DEEP. Decision effort confidence is trace metadata only; it never feeds the ratchet, the retry ladder, or any threshold.
+The session ratchet pins TIER for model-identity coherence (ADR-0002); effort stays a per-turn judgment with no monotonic floor. A pro-pinned session asked a trivial follow-up is served by the pinned pro model at a low effort — coherence of WHO answers, freedom of HOW DEEP. Decision effort confidence is trace metadata only; it never feeds the ratchet, any directive outcome, or any threshold.
 
 ### 5. The experience table learns effort bidirectionally
 
-The existing `l2_confident` write-back already records the served `actualEffort` (ADR-0011 §2) — with decision-decided effort in play, entries gain effort through that SAME path; no new writer is added to the whitelist. Same-source overwrite revises an entry DOWN as readily as up (a fresh confident judgment replaces a stale one), so the table cannot act as a one-way cost ratchet on decision layer error. `correction` rows stay sticky exactly as ADR-0011 froze them (accepted failure evidence outranks prediction; a human edit is the escape hatch), and retry-escalation semantics are untouched — it remains a within-conversation failure ladder whose effort steps ride the same clamp machinery.
+The existing `l2_confident` write-back already records the served `actualEffort` (ADR-0011 §2) — with decision-decided effort in play, entries gain effort through that SAME path; no new writer is added to the whitelist. Same-source overwrite revises an entry DOWN as readily as up (a fresh confident judgment replaces a stale one), so the table cannot act as a one-way cost ratchet on decision layer error. A human edit remains the escape hatch (ADR-0011 §2). Two bounds apply to the automatic path since the ADR-0011 rewrite: `effortDecision` may assign a level below the model's `defaultEffort` but never below `classifier.layer2.effortFloor` (default `low`, clamp ledgered as `effort_change`), and the automatic machinery never steps DOWN in tier — a downgrade is the user's explicit `@ocr-tier-down` only.
 
 ## Consequences
 

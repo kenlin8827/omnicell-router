@@ -189,18 +189,29 @@ classifier:
 # ==============================================================================
 # Route-entry Experience Table (ADR-0011)
 # ==============================================================================
-# Persistent "this prompt routed well at X" memory + the repeated-prompt
-# escalation ladder. One entry per normalized prompt hash; writes come ONLY
-# from the whitelist (high-confidence decision turns, accepted retry corrections,
-# console edits). Audit trail: <env>/data/routing-ledger.jsonl (hashes only).
+# Persistent "this prompt routed well at X" memory. One entry per normalized
+# prompt hash; writes come ONLY from the whitelist (high-confidence decision
+# turns, console edits). Audit trail: <env>/data/routing-ledger.jsonl (hashes
+# only). Escalation itself is never automatic — @ocr-* directives (see the
+# `directives:` section below) are the only escalation surface.
 routeEntries:
   enabled: true                    # Master switch (lookup + writes + ledger)
   snippetEnabled: true             # Store the first 200 prompt chars for console browsing
                                    # (privacy-sensitive, opt-out; only gates NEW snippets)
-  escalateOnRetry: true            # Repeated-prompt ladder: attempt 1 raises effort,
-                                   # attempt 2+ raises the tier (cap ultra). false = shadow
-                                   # mode: detect + ledger only, never act.
   maxEntries: 5000                 # LRU cap (evicts lowest-updatedAt rows)
+
+# ==============================================================================
+# Escalation directives (ADR-0011)
+# ==============================================================================
+# Per-turn, scrub-everywhere escalation: clients write @ocr-* tokens in the
+# prompt; the gateway scrubs them from every role before the request leaves
+# and applies the LAST directive (apply-last wins, pin beats step).
+directives:
+  enabled: true                    # Master switch: false disables BOTH scrub and
+                                   # effect — @ocr-* then travels as ordinary text.
+  prefix: '@ocr-'                  # Reserved namespace; relocatable for OCR-domain
+                                   # prompts (e.g. '@onecast-'). Invalid values fall
+                                   # back to the default.
 
 # ==============================================================================
 # Request Capture (full request/response body audit log, OPT-IN)

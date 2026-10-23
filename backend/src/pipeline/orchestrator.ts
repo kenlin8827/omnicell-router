@@ -14,7 +14,9 @@ import {
   normalizePrompt,
   L2_CONFIDENT_THRESHOLD,
 } from '../router/route-entries.js';
-import { detectRetry, planEscalation, RETRY_MIN_PROMPT_CHARS } from '../router/retry-escalation.js';
+import { scanDirectives, applyTierDirectives, applyEffortDirectives } from './directives.js';
+import { directivesGate } from './directive-gate.js';
+import { DEFAULT_LAYER2_EFFORT_FLOOR } from '../config/defaults.js';
 import { appendRoutingLedger } from '../router/routing-ledger.js';
 import { SchemaAssertion } from '../validator/schema-assertion.js';
 import { FallbackContextBuilder } from '../validator/parser.js';
@@ -285,10 +287,14 @@ export class PipelineOrchestrator {
    * is the primary use case). Implemented as a wrapper instead of an inline
    * hook so processInternal stays untouched: the session-id resolution and
    * the PRE-compression message snapshot are rebuilt here with the same pure
-   * functions (PromptOptimizer.normalizeMessages / resolveSessionId) — both
-   * are deterministic and run in the same synchronous segment, so the wrapper
-   * snapshot is byte-identical to what processInternal sees before
-   * applyCompression mutates the request. Request headers are captured in
+   * functions (PromptOptimizer.normalizeMessages / scanDirectives /
+   * resolveSessionId) — all deterministic and run in the same synchronous
+   * segment, so the wrapper snapshot is byte-identical to the scrubbed chain
+   * processInternal routes on before applyCompression mutates the request
+   * (ADR-0011 §4: the scrubbed chain feeds hashing, snippets, traces AND
+   * capture — reserved tokens never reach the archive, and session /
+   * conversation anchor resolution sees the same bytes the router sees).
+   * Request headers are captured in
    * SANITIZED form (credential values masked per the deny-list in
    * observability/http-exchange.ts), never raw.
    */
@@ -327,8 +333,21 @@ export class PipelineOrchestrator {
     let preResolvedSession: SessionResolveResult | undefined;
     let upstreamEventContext: UpstreamEventContext | undefined;
     if (captureEnabled) {
+      // ADR-0011 §4: the SCRUBBED chain feeds capture, session-id and
+      // conversation key — a reserved `@ocr-*` token must never reach the
+      // archive, and anchor resolution must see the bytes the router sees.
+      // scanDirectives is idempotent; processInternal scrubs the live
+      // request again on its own path.
       const normalizedMessages = PromptOptimizer.normalizeMessages(request);
-      const snapshotRequest: ChatCompletionRequest = { ...request, messages: normalizedMessages };
+      // Scrub with the LIVE gate (enabled flag + configured prefix), matching
+      // processInternal — a relocated prefix or a disabled gate must not
+      // desync capture/anchor bytes from what the router actually serves.
+      const gate = directivesGate();
+      const snapshotRequest: ChatCompletionRequest = {
+        ...request,
+        messages: scanDirectives(normalizedMessages, gate.enabled ? gate.prefix : null)
+          .messages,
+      };
       const keyIdentity = captureKeyIdentity(context?.fastifyRequest ?? context?.clientRequest);
       // Resolve ONCE here and hand the result to processInternal: cold-start
       // IDs carry fresh random entropy, so a second resolve of the same
@@ -412,9 +431,33 @@ export class PipelineOrchestrator {
 
     // 1. Optimize message prefix order & resolve virtual routing models
     const normalizedMessages = PromptOptimizer.normalizeMessages(request);
+    // 1.0 Control directives (ADR-0011 rewrite): SCRUB first, before anything
+    // reads or forwards the chain. Every reserved token is removed from every
+    // role and text part, and directive-only messages are dropped, so the
+    // upstream payload is byte-equivalent to one that never carried a directive
+    // (stable prefix cache, no reserved word at any vendor). Only the LAST user
+    // message's tokens are actionable — and only for this turn. The namespace
+    // comes from the hot-applied gate (`directives.prefix`); `enabled: false`
+    // disables the scan entirely, so tokens travel as ordinary text.
+    const directiveGate = directivesGate();
+    const directivePrefix = directiveGate.prefix;
+    const directiveScan = scanDirectives(
+      normalizedMessages,
+      directiveGate.enabled ? directivePrefix : null
+    );
+    if (
+      directiveScan.droppedMessages > 0 &&
+      !directiveScan.messages.some((m) => m.role === 'user')
+    ) {
+      // A directive-only prompt with no history: nothing left to send.
+      throw Object.assign(
+        new Error(`Empty prompt — ${directivePrefix}* directives were the only content in the request`),
+        { statusCode: 400 }
+      );
+    }
     const normalizedRequest: ChatCompletionRequest = {
       ...request,
-      messages: normalizedMessages,
+      messages: directiveScan.messages,
     };
 
     let explicitModel: ModelRegistration | undefined;
@@ -589,12 +632,10 @@ export class PipelineOrchestrator {
     }));
     await applyCompression(normalizedRequest, this.config.compression, sessionId);
 
-    // 2C. Route-entry experience + retry detection (ADR-0011). One normalized
-    // prompt hash feeds everything downstream: the experience-table lookup,
-    // the repeated-prompt ladder and the ledger. Detection gates on the
-    // ≥20-char floor (single-word re-sends are noise); correction observation
-    // runs at detection time because it reads the PREVIOUS turn's state
-    // before this turn overwrites it.
+    // 2C. Route-entry experience (ADR-0011). One normalized prompt hash feeds
+    // the experience-table lookup and write. Directives were scrubbed above, so
+    // a directive-bearing turn hashes exactly like its directive-free twin —
+    // no double rows, no prefix drift.
     const routeGate = routeEntriesGate();
     const routeEntriesOn = routeGate.enabled !== false;
     const lastUserMsgEarly = normalizedRequest.messages.filter((m) => m.role === 'user').pop();
@@ -604,61 +645,25 @@ export class PipelineOrchestrator {
         ? (lastUserMsgEarly.content.map((p) => (p as any).text || '').join(' ')).trim()
         : '';
     const normalizedPrompt = normalizePrompt(lastUserText ?? '');
-    const promptHash = routeEntriesOn && normalizedPrompt ? promptHashOf(normalizedPrompt) : undefined;
-    const prevRetryState = this.sessionManager.getSession(sessionId)?.retry;
-    const detection =
-      routeEntriesOn && normalizedPrompt.length >= RETRY_MIN_PROMPT_CHARS
-        ? detectRetry(prevRetryState, promptHash)
-        : { isRetry: false, attempt: 0 };
-    if (detection.isRetry) {
-      appendRoutingLedger({ kind: 'retry_detected', sessionId, promptHash, detail: { attempt: detection.attempt } });
-    } else if (
-      routeEntriesOn &&
-      normalizedPrompt.length > 0 &&
-      normalizedPrompt.length < RETRY_MIN_PROMPT_CHARS &&
-      promptHash &&
-      prevRetryState?.lastOutcomeOk === true &&
-      prevRetryState.lastPromptHash === promptHash
-    ) {
-      // A would-be retry silenced by the length floor (ADR-0011): ledger the
-      // skip so a repeated short prompt stops reading as "nothing happened".
+    // A directive-only ("just continue") turn carries no prompt of its own:
+    // hashing the previous user message would attribute this turn's outcome to
+    // the OLD prompt and let it rewrite that prompt's experience row.
+    const promptHash =
+      routeEntriesOn && normalizedPrompt && !directiveScan.lastUserDropped
+        ? promptHashOf(normalizedPrompt)
+        : undefined;
+
+    // 2D. Directive audit: tokens outside the known vocabulary never act, but
+    // they must not vanish silently either (a typo reads as "nothing
+    // happened" otherwise). Known-but-inapplicable directives are ledgered
+    // where their applicability is decided (the explicit-choice gate below).
+    const directiveActions = directiveScan.effective.map((h) => h.action);
+    for (const unk of directiveScan.unknown) {
       appendRoutingLedger({
-        kind: 'retry_skipped',
+        kind: 'directive_unknown',
         sessionId,
         promptHash,
-        detail: { cause: 'too_short', chars: normalizedPrompt.length },
-      });
-    }
-    // Correction write-back: the previous turn escalated, succeeded, and the
-    // user moved on to a DIFFERENT prompt — that is the strongest "the
-    // escalation worked" signal available (satisfied-and-left never writes
-    // back: accepted bounded loss). Human rows are immune inside the store.
-    if (
-      routeEntriesOn &&
-      prevRetryState?.escalated &&
-      prevRetryState.lastOutcomeOk === true &&
-      prevRetryState.lastPromptHash &&
-      promptHash !== prevRetryState.lastPromptHash
-    ) {
-      getRouteEntryStore().upsert(
-        {
-          promptHash: prevRetryState.lastPromptHash,
-          tier: prevRetryState.lastTierUsed ?? 'plus',
-          effort: prevRetryState.lastEffortUsed,
-          source: 'correction',
-          confidence: 1.0,
-          // Carried from the escalated turn's retry state so the correction
-          // row is human-readable on the console (snippet gate applied at
-          // recordTurnOutcome time).
-          snippet: prevRetryState.lastSnippet,
-        },
-        sessionId
-      );
-      appendRoutingLedger({
-        kind: 'correction',
-        sessionId,
-        promptHash: prevRetryState.lastPromptHash,
-        detail: { tier: prevRetryState.lastTierUsed, effort: prevRetryState.lastEffortUsed },
+        detail: { token: unk.token, role: unk.role },
       });
     }
 
@@ -670,9 +675,9 @@ export class PipelineOrchestrator {
     //
     // ADR-0012 honesty snapshot: the CLIENT's wire value is captured before
     // ANY gateway injection (routeAutoDecision's entry hit, the decision layer
-    // injection below, retry escalation, model defaultEffort). The local
-    // `requestedEffort` read later is the EFFECTIVE ask the machinery served
-    // against; `effortSource` says whose ask it was.
+    // injection below, the `@ocr-effort-*` directive, model defaultEffort). The
+    // local `requestedEffort` read later is the EFFECTIVE ask the machinery
+    // served against; `effortSource` says whose ask it was.
     const clientEffort = normalizedRequest.reasoning_effort;
     const initialDecision: RoutingDecision = comboId
       ? {
@@ -698,28 +703,50 @@ export class PipelineOrchestrator {
       initialDecision.reasonParams = { model: explicitModel.id, tier: explicitModel.tier };
     }
 
-    // ADR-0012 §1: L2-decided effort joins the request exactly like a
-    // route-entry hit — only into an omitted field (the decision layer is only ASKED
-    // when the client omitted it, so the guard is belt-and-braces), below a
-    // retry escalation (which fires later and overwrites).
+    // ADR-0012 §1 + ADR-0011 floor: L2-decided effort joins the request
+    // exactly like a route-entry hit — only into an omitted field (the
+    // decision layer is only ASKED when the client omitted it, so the guard is
+    // belt-and-braces), and it is floored at `classifier.layer2.effortFloor`.
+    // Automatic machinery never strips thinking below that on its own; the
+    // only lever below the floor is the user's `@ocr-effort-down`.
     if (
       !comboId &&
       initialDecision.layerUsed === 'layer2' &&
       initialDecision.effort &&
       normalizedRequest.reasoning_effort === undefined
     ) {
-      normalizedRequest.reasoning_effort = initialDecision.effort;
+      const floor = this.config.classifier?.layer2?.effortFloor ?? DEFAULT_LAYER2_EFFORT_FLOOR;
+      const floorRank = EFFORT_LADDER.indexOf(floor);
+      const servedEffort =
+        EFFORT_LADDER.indexOf(initialDecision.effort) < floorRank ? floor : initialDecision.effort;
+      normalizedRequest.reasoning_effort = servedEffort;
       initialDecision.reasonParams = {
         ...(initialDecision.reasonParams ?? {}),
-        effort: initialDecision.effort,
+        effort: servedEffort,
         ...(initialDecision.effortConfidence !== undefined ? { effortConfidence: initialDecision.effortConfidence } : {}),
       };
+      if (servedEffort !== initialDecision.effort) {
+        // Floor clamp is the one silent-quality-loss risk in the L2 effort
+        // path — ledger it so the operator can see whose judgement landed.
+        appendRoutingLedger({
+          kind: 'effort_change',
+          sessionId,
+          promptHash,
+          detail: {
+            source: 'l2-decision',
+            baseline: 'floor',
+            from: initialDecision.effort,
+            to: servedEffort,
+            floor,
+          },
+        });
+      }
     }
 
     // Provenance (ADR-0012 §2): whoever first filled the field after the
     // snapshot owns the ask. The entry hit mutates the request INSIDE
-    // routeAutoDecision; the decision layer injection lands just above. Escalation
-    // and model-default writes re-attribute at their own sites below.
+    // routeAutoDecision; the decision layer injection lands just above.
+    // Directive and model-default writes re-attribute at their own sites below.
     let effortSource: EffortSource | undefined =
       clientEffort !== undefined
         ? 'client'
@@ -728,87 +755,6 @@ export class PipelineOrchestrator {
             ? 'entry'
             : 'l2-decision'
           : undefined;
-
-    // 3B. Retry-escalation proposal (ADR-0011): the repeated-prompt ladder
-    // rides ON TOP of the base decision BEFORE the ratchet validates it — a
-    // tier step flows through the normal monotonic-ratchet path (upgrade =
-    // sanctioned re-pin), an effort step is written into the request's
-    // reasoning_effort and clamped by the existing effort machinery. Explicit
-    // choices are never escalated (force_tier / named model / combo): the
-    // client (or the mode lever) already decided.
-    let appliedEscalation = false;
-    const retryEligible = Boolean(
-      detection.isRetry &&
-      promptHash &&
-      !comboId &&
-      !explicitModel &&
-      !normalizedRequest.router_options?.force_tier
-    );
-    if (routeEntriesOn && retryEligible && routeGate.escalateOnRetry === false) {
-      // Shadow mode: detection still ran — ledger the would-be escalation so
-      // the operator can see what the ladder WOULD have done.
-      appendRoutingLedger({
-        kind: 'retry_skipped',
-        sessionId,
-        promptHash,
-        detail: { cause: 'shadow', attempt: detection.attempt },
-      });
-    }
-    if (routeEntriesOn && routeGate.escalateOnRetry !== false && retryEligible) {
-      const pinned = (() => {
-        const pinnedId = this.sessionManager.getSession(sessionId)?.pinnedModel;
-        return pinnedId ? this.registry.getModel(pinnedId) : undefined;
-      })();
-      const supported = pinned
-        ? pinned.supportedReasoningEfforts ?? (pinned.supportsReasoningEffort ? EFFORT_LADDER : undefined)
-        : undefined;
-      const plan = planEscalation({
-        attempt: detection.attempt,
-        lastTierUsed: prevRetryState?.lastTierUsed ?? initialDecision.targetTier,
-        lastEffortUsed: prevRetryState?.lastEffortUsed,
-        pinnedSupportedEfforts: supported,
-      });
-      if (plan.action === 'effort' && plan.effort) {
-        // Same tier, deeper thinking. normalizedRequest.reasoning_effort is
-        // read by the effort machinery BELOW — this write must land first.
-        normalizedRequest.reasoning_effort = plan.effort;
-        effortSource = 'escalation'; // ADR-0012: failure-driven overwrite owns the ask
-        initialDecision.reasonParams = { ...(initialDecision.reasonParams ?? {}), retry: 'effort', ...plan.reasonParams };
-        appliedEscalation = true;
-      } else if (plan.action === 'tier' && plan.tier && (TIER_RANK[plan.tier] ?? 0) > (TIER_RANK[initialDecision.targetTier] ?? 0)) {
-        initialDecision.targetTier = plan.tier;
-        initialDecision.reason = plan.reason;
-        initialDecision.reasonCode = plan.reasonCode;
-        initialDecision.reasonParams = { ...(initialDecision.reasonParams ?? {}), retry: 'tier', ...plan.reasonParams };
-        appliedEscalation = true;
-      } else {
-        // No ladder step landed — ledger WHY instead of staying silent:
-        // 'ceiling' = the planner is out of rungs (ultra); 'decision_higher' =
-        // the base decision already placed this turn at/above the proposal.
-        appendRoutingLedger({
-          kind: 'retry_skipped',
-          sessionId,
-          promptHash,
-          detail:
-            plan.action === 'none'
-              ? { cause: 'ceiling', attempt: detection.attempt }
-              : {
-                  cause: 'decision_higher',
-                  attempt: detection.attempt,
-                  proposedTier: plan.tier,
-                  currentTier: initialDecision.targetTier,
-                },
-        });
-      }
-      if (appliedEscalation) {
-        appendRoutingLedger({
-          kind: 'escalation',
-          sessionId,
-          promptHash,
-          detail: { action: plan.action, tier: plan.tier, effort: plan.effort, attempt: detection.attempt },
-        });
-      }
-    }
 
     // 4. Apply Monotonic Session Ratchet — three session-interaction modes,
     // resolved once here (the unified policy seam for all entry modes):
@@ -874,6 +820,82 @@ export class PipelineOrchestrator {
       );
     }
 
+    // 4A. Directives (`<prefix>tier-up` / `<prefix>tier-down`, ADR-0011
+    // rewrite) — TIER axis. Deliberately
+    // AFTER the ratchet: a directive is a per-turn override, so it must never
+    // raise `session.maxTier` or re-pin the session (the turn is the signal's
+    // scope). It is also the ONLY legal automatic-path downgrade. Explicit
+    // client choices (named model / forced tier / combo) outrank a directive —
+    // the client already decided — and say so in the ledger.
+    const directivesApplicable = sessionMode === 'ratchet';
+    if (!directivesApplicable && directiveScan.effective.length > 0) {
+      appendRoutingLedger({
+        kind: 'directive_ignored',
+        sessionId,
+        promptHash,
+        detail: { cause: 'explicit_choice', sessionMode, tokens: directiveScan.effective.map((h) => h.token) },
+      });
+    }
+    // `@ocr-continue` (ADR-0011 §4): a content-level directive with NO axis
+    // overlay — its entire effect is the directive-only drop upstream (the
+    // turn continues the previous assistant reply at the unchanged tier and
+    // effort). Ledger it so a promptless turn stays auditable.
+    if (directivesApplicable && directiveActions.includes('continue')) {
+      appendRoutingLedger({
+        kind: 'directive_applied',
+        sessionId,
+        promptHash,
+        detail: { axis: 'continue', token: `${directivePrefix}continue`, changed: false },
+      });
+    }
+    let tierDirectiveChanged = false;
+    if (directivesApplicable) {
+      const tierDirective = applyTierDirectives(directiveActions, decision.targetTier);
+      if (tierDirective.applied) {
+        const from = decision.targetTier;
+        const suffix = tierDirective.suffix ?? (tierDirective.delta > 0 ? 'tier-up' : 'tier-down');
+        const token = `${directivePrefix}${suffix}`;
+        decision.targetTier = tierDirective.tier;
+        tierDirectiveChanged = tierDirective.changed;
+        if (tierDirective.changed) {
+          decision.reasonCode = tierDirective.pinned
+            ? 'directive.tier_set'
+            : tierDirective.delta > 0
+              ? 'directive.tier_up'
+              : 'directive.tier_down';
+          decision.reason = `Directive ${token} — tier ${from} → ${tierDirective.tier}`;
+          decision.reasonParams = {
+            ...(decision.reasonParams ?? {}),
+            directive: tierDirective.pinned ? 'tier_set' : tierDirective.delta > 0 ? 'tier_up' : 'tier_down',
+            token,
+            direction: tierDirective.direction,
+            from,
+            to: tierDirective.tier,
+            ...(tierDirective.clamped ? { clamped: true } : {}),
+          };
+        }
+        appendRoutingLedger({
+          kind: 'directive_applied',
+          sessionId,
+          promptHash,
+          detail: {
+            axis: 'tier',
+            mode: tierDirective.pinned ? 'pin' : 'step',
+            token,
+            direction: tierDirective.direction,
+            from,
+            to: tierDirective.tier,
+            delta: tierDirective.delta,
+            changed: tierDirective.changed,
+            clamped: tierDirective.clamped,
+            ...(tierDirective.ignoredSteps > 0
+              ? { ignoredSteps: tierDirective.ignoredSteps, ignoredCause: 'pin_wins' }
+              : {}),
+          },
+        });
+      }
+    }
+
     let actualTier = decision.targetTier;
 
     // 4B. Session-Pin Eviction (ratchet mode only — explicit/combo requests
@@ -882,7 +904,14 @@ export class PipelineOrchestrator {
     // (with write-back). Two orthogonal forces — see the inline contract.
     const cbManager = this.registry.getCircuitBreakerManager();
     let preferredModel: ModelRegistration | null = null;
-    if (sessionMode === 'ratchet') {
+    // A tier directive moves THIS turn off the session pin on purpose: the pin
+    // belongs to the session's baseline (and to the ratchet, which this
+    // overlay bypasses), while the directive asks for a different tier right
+    // now. Following the pin here would silently serve the old tier and make
+    // `@ocr-tier-up/-down` a no-op for every established session. Skipping the
+    // block also skips pin eviction/repin for this single turn — the pin is
+    // re-evaluated on the next, non-directive turn.
+    if (sessionMode === 'ratchet' && !tierDirectiveChanged) {
       const pinnedId = this.sessionManager.getSession(sessionId)?.pinnedModel;
       preferredModel = pinnedId ? this.registry.getModel(pinnedId) ?? null : null;
       // Session-pin eviction — the unified hard-switch seam. A pin is evicted
@@ -1046,6 +1075,73 @@ export class PipelineOrchestrator {
     if (normalizedRequest.reasoning_effort === undefined && actualModel.defaultEffort) {
       normalizedRequest.reasoning_effort = actualModel.defaultEffort;
       effortSource = 'default'; // ADR-0012: the model pin owns the ask
+    }
+
+    // Effort directives (`<prefix>effort-up` / `<prefix>effort-down`,
+    // ADR-0011 rewrite) — EFFORT axis.
+    // Baseline = the effective ask already in play (client value, else the
+    // entry/L2 injection, else the model default pinned just above), so the
+    // step is relative to what this turn WOULD have served — symmetric with the
+    // tier axis, which steps from the post-ratchet decision. Capability-clamped
+    // with the same degraded-or-equal rule as everything else. Runs BEFORE the effort matching below so a
+    // model pick can honour a raised level. Per-turn: it writes the request
+    // for this call only and never records session state.
+    if (directivesApplicable) {
+      const supportedEfforts = actualModel.supportedReasoningEfforts
+        ?? (actualModel.supportsReasoningEffort ? EFFORT_LADDER : undefined);
+      const before = normalizedRequest.reasoning_effort;
+      const effortDirective = applyEffortDirectives(directiveActions, before, supportedEfforts);
+      if (effortDirective.applied) {
+        const suffix = effortDirective.suffix ?? (effortDirective.delta > 0 ? 'effort-up' : 'effort-down');
+        const token = `${directivePrefix}${suffix}`;
+        if (effortDirective.changed && effortDirective.effort) {
+          normalizedRequest.reasoning_effort = effortDirective.effort;
+          effortSource = 'directive'; // the user's own instruction owns the ask
+          decision.reasonParams = {
+            ...(decision.reasonParams ?? {}),
+            effort: effortDirective.effort,
+            ...(tierDirectiveChanged
+              ? {}
+              : {
+                  // A tier directive is the headline reason of its turn; the
+                  // effort overlay only takes the headline slot when it is the
+                  // only directive present (otherwise from/to would collide).
+                  token,
+                  direction: effortDirective.direction,
+                  from: before ?? '—',
+                  to: effortDirective.effort,
+                }),
+          };
+          if (!tierDirectiveChanged) {
+            decision.reasonCode = effortDirective.pinned
+              ? 'directive.effort_set'
+              : effortDirective.delta > 0
+                ? 'directive.effort_up'
+                : 'directive.effort_down';
+            decision.reason = `Directive ${token} — thinking level ${before ?? '—'} → ${effortDirective.effort}`;
+          }
+        }
+        appendRoutingLedger({
+          kind: 'directive_applied',
+          sessionId,
+          promptHash,
+          detail: {
+            axis: 'effort',
+            mode: effortDirective.pinned ? 'pin' : 'step',
+            token,
+            direction: effortDirective.direction,
+            from: before,
+            to: effortDirective.effort,
+            delta: effortDirective.delta,
+            changed: effortDirective.changed,
+            clamped: effortDirective.clamped,
+            model: actualModel.id,
+            ...(effortDirective.ignoredSteps > 0
+              ? { ignoredSteps: effortDirective.ignoredSteps, ignoredCause: 'pin_wins' }
+              : {}),
+          },
+        });
+      }
     }
     const requestedEffort: ReasoningEffort | undefined = normalizedRequest.reasoning_effort;
     let actualEffort: ReasoningEffort | undefined;
@@ -1526,11 +1622,12 @@ export class PipelineOrchestrator {
       usageCredentialPrefix = servedUsagePrefix;
     }
 
-    // 7B. Experience-table writes + retry-state bookkeeping (ADR-0011) —
-    // post-success only: a failed turn leaves no trace in either, so a
-    // technical resend never reads as a repeated prompt. The l2_confident
-    // write records what ACTUALLY served (failover/cascade truth), skipping
+    // 7B. Experience-table write (ADR-0011) — post-success only: a failed turn
+    // leaves no trace, so only served truth is learned. The l2_confident write
+    // records what ACTUALLY served (failover/cascade truth), skipping
     // schema-cascade turns where the lite lead owns the tier decision.
+    // Directives deliberately write NOTHING back: a manual override is an
+    // operator/user decision, not statistical experience to bake into routing.
     if (routeEntriesOn && promptHash) {
       const entryStore = getRouteEntryStore();
       if (
@@ -1545,7 +1642,7 @@ export class PipelineOrchestrator {
             effort: actualEffort,
             source: 'l2_confident',
             confidence: decision.confidence,
-            snippet: lastUserText ? lastUserText.slice(0, 200) : undefined, // same 200-char display-aid precedent as session attachOrigin
+            snippet: routeGate.snippetEnabled === false ? undefined : lastUserText ? lastUserText.slice(0, 200) : undefined, // same 200-char display-aid precedent as session attachOrigin
           },
           sessionId
         );
@@ -1556,20 +1653,6 @@ export class PipelineOrchestrator {
           detail: { source: 'l2_confident', tier: actualTier, confidence: decision.confidence },
         });
       }
-      this.sessionManager.recordTurnOutcome(sessionId, {
-        promptHash,
-        tierUsed: actualTier,
-        effortUsed: actualEffort,
-        escalated: appliedEscalation,
-        retryCount: detection.attempt,
-        // Carried so a later correction write-back lands as a READABLE row;
-        // same privacy gate as the store's own snippet handling.
-        snippet: routeGate.snippetEnabled === false
-          ? undefined
-          : lastUserText
-            ? lastUserText.slice(0, 200)
-            : undefined,
-      });
     }
 
     // 8. Session Trajectory Recording — the traceId is shared with the

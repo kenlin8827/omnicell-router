@@ -1,3 +1,5 @@
+import type { ReasoningEffort } from '../types/router.js';
+
 /**
  * Single source of truth for magic defaults that previously lived as
  * independently-declared literals in multiple modules (config defaults,
@@ -29,11 +31,22 @@ export const FORWARD_PROXY_HANG_TIMEOUT_MS = 60_000;
 /** Layer-2 decision layer timeout when `classifier.layer2.timeoutMs` is unset. */
 export const DEFAULT_LAYER2_TIMEOUT_MS = 5000;
 
+/**
+ * Lowest thinking level the L2 decision layer may assign when
+ * `classifier.layer2.effortDecision` is on (ADR-0011). A client-explicit ask is
+ * never overridden at all; this floor only bounds the model's OWN choice, so a
+ * classifier mistake can never silently strip thinking from a turn.
+ */
+export const DEFAULT_LAYER2_EFFORT_FLOOR: ReasoningEffort = 'low';
+
 /** Native System One decision passthrough timeout when `provider.timeoutMs` is unset. */
 export const DEFAULT_SYSTEMONE_NATIVE_TIMEOUT_MS = 120_000;
 
 /** Console smart-assign decider hard deadline — requests must not hang on a dead upstream. */
 export const SMART_ASSIGN_TIMEOUT_MS = 60_000;
+
+/** Reserved `@ocr-*` directive namespace when `directives.prefix` is unset. */
+export const DEFAULT_DIRECTIVE_PREFIX = '@ocr-';
 
 /** Route-entries LRU capacity when `routeEntries.maxEntries` is unset. */
 export const DEFAULT_ROUTE_ENTRIES_MAX = 5000;

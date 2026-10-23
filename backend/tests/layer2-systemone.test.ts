@@ -15,6 +15,9 @@ import { RouterEngine } from '../src/router/index.js';
 import { CaptureRecorder } from '../src/capture/recorder.js';
 import { resetDecisionCaptureConfig } from '../src/capture/decision-capture.js';
 import { getRouteEntryStore, normalizePrompt, promptHashOf } from '../src/router/route-entries.js';
+import { getEnvPaths } from '../src/config/env.js';
+import { flushRoutingLedgerForTests } from '../src/router/routing-ledger.js';
+import { DEFAULT_LAYER2_EFFORT_FLOOR } from '../src/config/defaults.js';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../src/types/openai.js';
 
 // ---------------------------------------------------------------------------
@@ -1089,6 +1092,90 @@ describe('L2-emitted thinking effort (ADR-0012)', () => {
         expect(entry!.tier).toBe('pro');
         expect(entry!.effort).toBe('high');
         expect(entry!.source).toBe('l2_confident');
+      } finally {
+        await app.close();
+      }
+    } finally {
+      decisionSrv.stop(true);
+      exec.stop(true);
+    }
+  });
+
+  test('effortFloor: an L2 decision BELOW the floor serves AT the floor and ledgers the clamp', async () => {
+    const execSeen: any[] = [];
+    // NOT `PROOF`: an earlier test in this file writes a PROOF experience row
+    // (with its own effort) into the process-wide route-entry store, and
+    // `beforeEach` cannot evict it — an entry hit would pre-empt the L2
+    // injection this case is about.
+    const FLOOR_PROMPT = 'Explain why the floor exists.';
+    // The decision layer picks 'none' — below the default floor ('low').
+    // ADR-0011 §6: automatic machinery never strips thinking below the floor;
+    // the only lever lower is the user's @ocr-effort-down.
+    const decisionSrv = decisionUpstream({
+      tier: { type: 'choice', choice: 'pro', confidence: 0.95 },
+      effort: { type: 'choice', choice: 'none', confidence: 0.9 },
+    });
+    const exec = serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      async fetch(req) {
+        execSeen.push(await req.json());
+        return Response.json(fakeChat('served at the floor'));
+      },
+    });
+    try {
+      const config = makeConfig(
+        [
+          { name: 'fl-decision', type: 'openai-compatible', baseUrl: `http://127.0.0.1:${decisionSrv.port}`, apiKey: 'sk-j', timeoutMs: 5000 },
+          { name: 'fl-exec', type: 'openai-compatible', baseUrl: `http://127.0.0.1:${exec.port}`, apiKey: 'sk-e', timeoutMs: 5000 },
+        ],
+        [
+          { id: 'fl-decision/jev', provider: 'fl-decision', upstreamModel: 'jev', tier: 'ultra', pricing: PRICING },
+          {
+            id: 'fl-exec/pro-chat',
+            provider: 'fl-exec',
+            upstreamModel: 'pro-chat',
+            tier: 'pro',
+            pricing: PRICING,
+            supportedReasoningEfforts: ['low', 'medium', 'high'],
+          },
+        ]
+      );
+      config.classifier = {
+        ...config.classifier,
+        layer2: { enabled: true, model: 'fl-decision/jev', timeoutMs: 5000, effortDecision: true },
+      };
+      const { app, orchestrator } = bootServer(config);
+      try {
+        const res = await app.inject({
+          method: 'POST',
+          url: '/v1/chat/completions',
+          headers: { 'content-type': 'application/json' },
+          payload: { model: 'auto', messages: [{ role: 'user', content: FLOOR_PROMPT }] },
+        });
+        expect(res.statusCode).toBe(200);
+
+        // The wire carries the FLOOR, not the sub-floor decision.
+        expect(execSeen[0].reasoning_effort).toBe(DEFAULT_LAYER2_EFFORT_FLOOR);
+        expect(res.headers['x-ocr-thinking-requested']).toBe(DEFAULT_LAYER2_EFFORT_FLOOR);
+        expect(res.headers['x-ocr-thinking-source']).toBe('l2-decision');
+
+        // The clamp is ledgered so the operator sees whose judgement landed.
+        await flushRoutingLedgerForTests();
+        const ledgerFile = path.join(getEnvPaths().dataDir, 'routing-ledger.jsonl');
+        const rows = fs
+          .readFileSync(ledgerFile, 'utf8')
+          .trim()
+          .split('\n')
+          .map((l) => JSON.parse(l));
+        const clamp = rows.find((r) => r.kind === 'effort_change');
+        expect(clamp).toBeDefined();
+        expect(clamp.detail).toMatchObject({
+          source: 'l2-decision',
+          baseline: 'floor',
+          from: 'none',
+          to: DEFAULT_LAYER2_EFFORT_FLOOR,
+        });
       } finally {
         await app.close();
       }

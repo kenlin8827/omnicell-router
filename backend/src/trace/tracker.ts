@@ -99,7 +99,7 @@ export interface ExecutionTrace {
     reasoningDegraded?: boolean;
     /**
      * WHO authored the effective ask (ADR-0012): 'client' = the request's
-     * own field; 'l2-decision' / 'entry' / 'escalation' / 'default' are gateway
+     * own field; 'l2-decision' / 'entry' / 'directive' / 'default' are gateway
      * decisions injected after the client value was snapshotted. Same
      * forward-compat rule as the siblings: absent on pre-field rows.
      */

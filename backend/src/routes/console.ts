@@ -10,6 +10,7 @@ import { getRawConfig, loadConfig, saveConfig, saveRawConfig, getRuntimeConfigRe
 import { getEnvPaths, resolveEnvName } from '../config/env.js';
 import { applyConfig as applyDecisionCaptureConfig } from '../capture/decision-capture.js';
 import { applyRouteEntriesConfig, getRouteEntryStore, routeEntriesGate } from '../router/route-entries.js';
+import { applyDirectivesConfig } from '../pipeline/directive-gate.js';
 import { appendRoutingLedger } from '../router/routing-ledger.js';
 import { Layer2Decision } from '../router/layer2-decision.js';
 import { EFFORT_LADDER, ReasoningEffort, TierLevel } from '../types/router.js';
@@ -1519,7 +1520,8 @@ export function registerConsoleRoutes(
     initProxyConfig(loadConfig().proxy);
     orchestrator.getCaptureRecorder().applyConfig(loadConfig().requestCapture);
     applyDecisionCaptureConfig(loadConfig().classifier?.layer2); // L2 dataset sampling: single-key gate classifier.layer2.collectEnabled, hot too
-    applyRouteEntriesConfig(loadConfig().routeEntries); // experience-table gate: hot-applies lookup/writes/escalation
+    applyRouteEntriesConfig(loadConfig().routeEntries); // experience-table gate: hot-applies lookup/writes
+    applyDirectivesConfig(loadConfig().directives); // directive gate: hot-applies the reserved namespace + kill switch
     orchestrator.getRegistry().applyCombos(loadConfig().combos);
     orchestrator.getRegistry().applyTierConfigNow(); // tier member lists commit immediately (no restart)
     warnOnEmptyTierPools(); // no residual tier → an empty pool is now possible
@@ -1549,6 +1551,7 @@ export function registerConsoleRoutes(
     orchestrator.getCaptureRecorder().applyConfig(loadConfig().requestCapture); // hot-apply capture too
     applyDecisionCaptureConfig(loadConfig().classifier?.layer2); // hot-apply the L2 dataset-sampling gate too (classifier.layer2.collectEnabled)
     applyRouteEntriesConfig(loadConfig().routeEntries); // hot-apply the experience-table gate too
+    applyDirectivesConfig(loadConfig().directives); // hot-apply the directive namespace too
     orchestrator.getRegistry().applyCombos(loadConfig().combos); // hot-apply combos too
     orchestrator.getRegistry().applyTierConfigNow(); // hot-commit tier member lists too
     warnOnEmptyTierPools(); // no residual tier → an empty pool is now possible
