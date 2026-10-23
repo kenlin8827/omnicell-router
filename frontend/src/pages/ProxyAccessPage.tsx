@@ -6,6 +6,7 @@ import { useToast } from '../components/ToastProvider';
 import { Switch } from '../components/Switch';
 import { DEFAULT_FORWARD_PROXY_PORT } from '../lib/defaults';
 
+import { FONT_MONO } from '../lib/fonts';
 /**
  * Proxy Access — the inbound forward proxy (HTTP_PROXY / HTTPS_PROXY server)
  * as a client access method under the Client Access nav group.
@@ -33,7 +34,7 @@ const preStyle: React.CSSProperties = {
   borderRadius: '8px',
   background: 'var(--well-bg)',
   border: '1px solid var(--card-border)',
-  fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+  fontFamily: FONT_MONO,
   fontSize: '11px',
   lineHeight: 1.6,
   whiteSpace: 'pre-wrap',

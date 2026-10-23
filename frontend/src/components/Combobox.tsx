@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Check, ChevronDown, Search, X } from 'lucide-react';
 import { useI18n } from '../i18n/I18nContext';
 
+import { FONT_MONO } from '../lib/fonts';
 export interface ComboboxOption {
   value: string;
   label: string;
@@ -98,7 +99,7 @@ const optionStyle: React.CSSProperties = {
   // Mono for model ids, but JetBrains Mono/Consolas have no CJK glyphs — without
   // these fallbacks Chinese labels render in the OS default monospace (SimSun on
   // Windows), which looks unlike the rest of the UI. Same stack as the .input rule.
-  fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace",
+  fontFamily: FONT_MONO,
 };
 
 export const Combobox: React.FC<ComboboxProps> = (props) => {

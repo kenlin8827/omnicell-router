@@ -31,8 +31,9 @@ import {
   type TurnOutput,
 } from '../lib/transcript';
 import { shortId, fmtDur, fmtLatency } from '../lib/format';
+import { FONT_MONO } from '../lib/fonts';
 
-const MONO = "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace";
+const MONO = FONT_MONO;
 
 const fmtTime = (ts: number) => new Date(ts).toLocaleTimeString();
 

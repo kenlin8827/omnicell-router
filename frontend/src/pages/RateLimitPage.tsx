@@ -14,6 +14,7 @@ import { useToast } from '../components/ToastProvider';
 import { Combobox } from '../components/Combobox';
 import { InfoTip } from '../components/InfoTip';
 
+import { FONT_MONO } from '../lib/fonts';
 /**
  * Rate-limit observability — every TRIGGERED cap from both directions:
  *   inbound  = client API key hit its `apiKeys[].limits` window (429 / grace)
@@ -35,7 +36,7 @@ const KIND_COLORS: Record<RateLimitEventKind, string> = {
   shaped: 'var(--text-dim)',
 };
 
-const MONO: React.CSSProperties = { fontFamily: "'JetBrains Mono', monospace", fontSize: '11.5px' };
+const MONO: React.CSSProperties = { fontFamily: FONT_MONO, fontSize: '11.5px' };
 
 /** Joined segmented switch (single-select): one bordered container, shared dividers. */
 const SegGroup: React.FC<{

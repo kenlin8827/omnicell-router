@@ -11,6 +11,7 @@ import { useConfirm } from '../components/ConfirmProvider';
 import { Combobox } from '../components/Combobox';
 import { Pagination } from '../components/Pagination';
 
+import { FONT_MONO } from '../lib/fonts';
 const PAGE_SIZES = [10, 20, 50, 100, 200];
 
 const TH_STYLE: React.CSSProperties = {
@@ -70,7 +71,7 @@ const TokenStatRow: React.FC<{ label: string; value: string; color?: string; tit
     <span
       title={title}
       style={{
-        fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+        fontFamily: FONT_MONO,
         fontWeight: 600,
         color: color ?? 'var(--text-main)',
       }}
@@ -167,7 +168,7 @@ const PinnedModelCell: React.FC<{ model: string }> = ({ model }) => {
  * omission and the rows' own tooltips carry the full refs.
  */
 const PROVIDER_CHIP_STYLE: React.CSSProperties = {
-  fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+  fontFamily: FONT_MONO,
   fontSize: '10px',
   fontWeight: 500,
   color: 'var(--text-dim)',
@@ -800,7 +801,7 @@ export const SessionsPage: React.FC = () => {
                     style={{
                       padding: '10px 14px',
                       textAlign: 'left',
-                      fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                      fontFamily: FONT_MONO,
                       color: 'var(--text-main)',
                       wordBreak: 'break-all',
                     }}
@@ -903,7 +904,7 @@ export const SessionsPage: React.FC = () => {
                           display: 'block',
                           marginTop: '3px',
                           fontSize: '10px',
-                          fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                          fontFamily: FONT_MONO,
                           lineHeight: '14px',
                           padding: '1px 6px',
                           borderRadius: '4px',
@@ -934,7 +935,7 @@ export const SessionsPage: React.FC = () => {
                         display: 'inline-flex',
                         alignItems: 'center',
                         gap: 4,
-                        fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                        fontFamily: FONT_MONO,
                         fontWeight: 600,
                         // Color = signal: blue only when switches actually
                         // happened; a zero row stays quiet gray.
@@ -948,7 +949,7 @@ export const SessionsPage: React.FC = () => {
                     </span>
                   </td>
                   <td style={{ padding: '10px 14px' }}>{s.turnCount}</td>
-                  <td style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
+                  <td style={{ padding: '10px 14px', fontFamily: FONT_MONO }}>
                     {s.traceCount.toLocaleString()}
                   </td>
                   <td style={{ padding: '10px 14px', textAlign: 'left' }}>
@@ -1011,7 +1012,7 @@ export const SessionsPage: React.FC = () => {
                       padding: '10px 14px',
                       // Amber = money, consistent with the /usage table & cards.
                       color: 'var(--accent-amber)',
-                      fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                      fontFamily: FONT_MONO,
                     }}
                   >
                     {formatCost(s.costUsd)}
@@ -1152,7 +1153,7 @@ export const SessionsPage: React.FC = () => {
             </div>
             <div
               style={{
-                fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                fontFamily: FONT_MONO,
                 fontSize: '11px',
                 color: 'var(--text-dim)',
                 margin: '0 0 14px 0',
@@ -1244,7 +1245,7 @@ export const SessionsPage: React.FC = () => {
                           background: SWITCH_DOT[ev.kind],
                         }}
                       />
-                      <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-dim)', minWidth: 68 }}>
+                      <span style={{ fontFamily: FONT_MONO, color: 'var(--text-dim)', minWidth: 68 }}>
                         {new Date(ev.at).toLocaleTimeString()}
                       </span>
                       <span className={'badge' + (SWITCH_BADGE[ev.kind] ? ` ${SWITCH_BADGE[ev.kind]}` : '')}>
@@ -1252,7 +1253,7 @@ export const SessionsPage: React.FC = () => {
                       </span>
                       <span
                         title={providerNs ? (ev.from ? `${ev.from} → ${ev.to}` : ev.to) : undefined}
-                        style={{ fontWeight: 600, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
+                        style={{ fontWeight: 600, fontFamily: FONT_MONO }}
                       >
                         {ev.from ? <><span style={{ color: 'var(--text-dim)' }}>{shortModel(providerNs, ev.from)}</span>{' → '}</> : null}
                         {shortModel(providerNs, ev.to)}
@@ -1354,7 +1355,7 @@ export const SessionsPage: React.FC = () => {
                     // vertically so the single-line cells don't hug the top.
                     alignItems: 'center',
                     fontSize: '11px',
-                    fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                    fontFamily: FONT_MONO,
                   }}
                 >
                   {[

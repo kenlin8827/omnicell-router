@@ -42,6 +42,7 @@ import { useModelTest } from '../lib/useModelTest';
 import { fmtLatency } from '../lib/format';
 import { byWindowClass, headlineWindow } from '../lib/quotaRank';
 
+import { FONT_MONO } from '../lib/fonts';
 // Nested-card surface (bg/border/radius/padding) is the global .sub-card
 // class in index.css — single source of truth across all pages and themes.
 const cardFlex: React.CSSProperties = {
@@ -112,7 +113,7 @@ const HeadersEditor: React.FC<{
         <div key={i} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 3fr) auto', gap: 6, alignItems: 'center' }}>
           <input
             className="input"
-            style={{ fontSize: 12, fontFamily: "'JetBrains Mono', monospace" }}
+            style={{ fontSize: 12, fontFamily: FONT_MONO }}
             placeholder={t('op.headerNamePh')}
             value={r.name}
             disabled={disabled}
@@ -120,7 +121,7 @@ const HeadersEditor: React.FC<{
           />
           <input
             className="input"
-            style={{ fontSize: 12, fontFamily: "'JetBrains Mono', monospace" }}
+            style={{ fontSize: 12, fontFamily: FONT_MONO }}
             placeholder={t('op.headerValuePh')}
             value={r.value}
             disabled={disabled}
@@ -489,7 +490,7 @@ const PrefixChip: React.FC<{ credential: CredentialHealth }> = ({ credential }) 
   if (!credential.keyHashPrefix) return null;
   return (
     <span
-      style={{ ...badgeStyle('var(--text-dim)', 'var(--chip-bg)'), fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
+      style={{ ...badgeStyle('var(--text-dim)', 'var(--chip-bg)'), fontFamily: FONT_MONO }}
       title={t('op.credentialPrefixTip', { prefix: credential.keyHashPrefix, id: credential.id })}
     >
       #{credential.keyHashPrefix.slice(0, 8)}
@@ -696,7 +697,7 @@ const CredentialRow: React.FC<CredentialRowProps> = ({
             <span
               style={{
                 fontSize: 11,
-                fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                fontFamily: FONT_MONO,
                 color: 'var(--text-dim)',
                 // Shrinkable so a narrow card clips the KEY, never the buttons
                 // (the action group holds flexShrink:0 and must stay reachable).
@@ -1039,7 +1040,7 @@ const CredentialLimitsDialog: React.FC<{
                     justifyContent: 'space-between',
                     gap: 10,
                     fontSize: 11.5,
-                    fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                    fontFamily: FONT_MONO,
                     color: w.retryAfterMs > 0 ? 'var(--accent-amber)' : 'var(--text-dim)',
                   }}
                 >
@@ -1936,7 +1937,7 @@ export const KeysPage: React.FC = () => {
                 </span>
               )}
               <span
-                style={{ fontSize: 10, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-muted)', maxWidth: '60%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                style={{ fontSize: 10, fontFamily: FONT_MONO, color: 'var(--text-muted)', maxWidth: '60%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
                 title={`${t('op.storeCredentialFile')}: ${storeStatus.credentialFile}`}
               >
                 {storeStatus.credentialFile}
@@ -1949,7 +1950,7 @@ export const KeysPage: React.FC = () => {
                 </span>
                 {storeStatus.excluded.map((e) => (
                   <div key={`${e.provider}:${e.reasonCode}`} style={{ fontSize: 11, color: 'var(--text-dim)' }} title={e.detail}>
-                    <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>{e.provider}</span>
+                    <span style={{ fontFamily: FONT_MONO }}>{e.provider}</span>
                     <span> — {t(EXCLUDED_REASON_LABEL[e.reasonCode] ?? e.reasonCode)}</span>
                   </div>
                 ))}
@@ -2019,7 +2020,7 @@ export const KeysPage: React.FC = () => {
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                 <ProviderLogo id={p.id} logo={p.logo} size={44} />
                 <div style={{ flex: '1 1 96px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  <span style={{ fontWeight: 700, fontSize: 14, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.id}</span>
+                  <span style={{ fontWeight: 700, fontSize: 14, fontFamily: FONT_MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.id}</span>
                   {p.name && <span style={{ fontSize: 11, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>}
                 </div>
                 {/* Identity badges ride the title row again — the wide npm badge
@@ -2069,13 +2070,13 @@ export const KeysPage: React.FC = () => {
               {(p.baseURL || displayNpm(p.npm)) && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   {p.baseURL && (
-                    <div style={{ flex: 1, minWidth: 0, fontSize: 11, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-muted)', wordBreak: 'break-all' }}>
+                    <div style={{ flex: 1, minWidth: 0, fontSize: 11, fontFamily: FONT_MONO, color: 'var(--text-muted)', wordBreak: 'break-all' }}>
                       {p.baseURL}
                     </div>
                   )}
                   {displayNpm(p.npm) && (
                     <span
-                      style={{ ...badgeStyle('var(--text-dim)', 'var(--chip-bg)'), fontFamily: "'JetBrains Mono', monospace", fontSize: 9.5, flexShrink: 0 }}
+                      style={{ ...badgeStyle('var(--text-dim)', 'var(--chip-bg)'), fontFamily: FONT_MONO, fontSize: 9.5, flexShrink: 0 }}
                       title={`${displayNpm(p.npm)} — ${t('catalogPage.ocrEditNpmHint')}`}
                     >
                       {displayNpm(p.npm)!.replace('@ai-sdk/', '')}
@@ -2089,7 +2090,7 @@ export const KeysPage: React.FC = () => {
                   does not. The old OAuth-expiry line is gone: the provider view
                   never carried a live expiry (store credentials are api keys). */}
               {!(caps && credentialList.length > 0) && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, fontFamily: FONT_MONO }}>
                   <Lock size={11} />
                   <span>{p.auth.keyMasked || '—'}</span>
                 </div>
@@ -2152,7 +2153,7 @@ export const KeysPage: React.FC = () => {
                 <div
                   style={{
                     fontSize: 11,
-                    fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                    fontFamily: FONT_MONO,
                     color: testResults[p.id].ok ? 'var(--accent-emerald)' : 'var(--accent-rose)',
                     wordBreak: 'break-all',
                   }}
@@ -2303,10 +2304,10 @@ export const KeysPage: React.FC = () => {
                   <ProviderLogo id={c.id} logo={c.logo} size={38} />
                   <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
                     <span style={{ fontWeight: 700, fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</span>
-                    <span style={{ fontSize: 10, color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.id}</span>
+                    <span style={{ fontSize: 10, color: 'var(--text-dim)', fontFamily: FONT_MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.id}</span>
                   </div>
                   {c.npm && (
-                    <span style={{ fontSize: 9.5, color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', monospace", flexShrink: 0, border: '1px solid var(--chip-bg)', borderRadius: 4, padding: '1px 4px' }} title={t('catalogPage.ocrEditNpmHint')}>
+                    <span style={{ fontSize: 9.5, color: 'var(--text-dim)', fontFamily: FONT_MONO, flexShrink: 0, border: '1px solid var(--chip-bg)', borderRadius: 4, padding: '1px 4px' }} title={t('catalogPage.ocrEditNpmHint')}>
                       {(displayNpm(c.npm) || '').replace('@ai-sdk/', '')}
                     </span>
                   )}
@@ -2406,7 +2407,7 @@ export const KeysPage: React.FC = () => {
             </label>
           </FormField>
           <FormField label={t('op.fPullPattern')} style={{ gridColumn: '1 / -1' }}>
-            <input className="input" style={{ fontSize: 12, fontFamily: "'JetBrains Mono', monospace" }} placeholder={t('op.phPullPattern')} value={form.pullPattern} onChange={e => setForm({ ...form, pullPattern: e.target.value })} />
+            <input className="input" style={{ fontSize: 12, fontFamily: FONT_MONO }} placeholder={t('op.phPullPattern')} value={form.pullPattern} onChange={e => setForm({ ...form, pullPattern: e.target.value })} />
             <span style={{ fontSize: 10.5, color: 'var(--text-dim)' }}>{t('op.fPullPatternTip')}</span>
           </FormField>
           {/* AI SDK package is low-frequency (almost always the openai-compatible
@@ -2636,7 +2637,7 @@ export const KeysPage: React.FC = () => {
                 <input className="input" style={{ fontSize: 12 }} value={editDef.name} onChange={e => setEditDef({ ...editDef, name: e.target.value })} />
               </FormField>
               <FormField label={t('op.fBaseUrl')}>
-                <input className="input" style={{ fontSize: 12, fontFamily: "'JetBrains Mono', monospace" }} value={editDef.baseURL} onChange={e => setEditDef({ ...editDef, baseURL: e.target.value })} />
+                <input className="input" style={{ fontSize: 12, fontFamily: FONT_MONO }} value={editDef.baseURL} onChange={e => setEditDef({ ...editDef, baseURL: e.target.value })} />
               </FormField>
               <FormField label={t('op.fNpmLabel')}>
                 {/* Combobox, not a free input (repo dropdown convention). The
@@ -2654,7 +2655,7 @@ export const KeysPage: React.FC = () => {
                 />
               </FormField>
               <FormField label={t('op.fPullPattern')}>
-                <input className="input" style={{ fontSize: 12, fontFamily: "'JetBrains Mono', monospace" }} placeholder={t('op.phPullPattern')} value={editDef.pullPattern} onChange={e => setEditDef({ ...editDef, pullPattern: e.target.value })} />
+                <input className="input" style={{ fontSize: 12, fontFamily: FONT_MONO }} placeholder={t('op.phPullPattern')} value={editDef.pullPattern} onChange={e => setEditDef({ ...editDef, pullPattern: e.target.value })} />
                 <span style={{ fontSize: 10.5, color: 'var(--text-dim)' }}>{t('op.fPullPatternTip')}</span>
               </FormField>
               <FormField label={t('op.fHeaders')}>

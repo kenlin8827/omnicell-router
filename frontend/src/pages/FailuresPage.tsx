@@ -7,6 +7,7 @@ import { useToast } from '../components/ToastProvider';
 import { Combobox } from '../components/Combobox';
 import { InfoTip } from '../components/InfoTip';
 
+import { FONT_MONO } from '../lib/fonts';
 /**
  * Model-call failure observability — the "which models failed, and why"
  * plane. Two sections over the same failure_events ledger (backend
@@ -36,7 +37,7 @@ const ROLE_COLORS: Record<FailureEventRole, string> = {
   probe: 'var(--text-dim)',
 };
 
-const MONO: React.CSSProperties = { fontFamily: "'JetBrains Mono', monospace", fontSize: '11.5px' };
+const MONO: React.CSSProperties = { fontFamily: FONT_MONO, fontSize: '11.5px' };
 
 /** Joined segmented switch (single-select): one bordered container, shared dividers. */
 const SegGroup: React.FC<{

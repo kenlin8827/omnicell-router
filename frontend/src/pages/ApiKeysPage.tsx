@@ -33,6 +33,7 @@ import { Combobox } from '../components/Combobox';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import { Pagination } from '../components/Pagination';
 
+import { FONT_MONO } from '../lib/fonts';
 const KEY_PAGE_SIZE = 20;
 const KEY_PAGE_SIZES = [10, 20, 50, 100, 200];
 
@@ -148,7 +149,7 @@ const ModelAccessPicker: React.FC<{
                 }
               }}
               placeholder={t('apiKeys.accessPatternPlaceholder')}
-              style={{ flex: 1, fontSize: '12px', fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
+              style={{ flex: 1, fontSize: '12px', fontFamily: FONT_MONO }}
             />
             <button type="button" onClick={addPattern} className="btn btn-sm" disabled={!patternDraft.trim()}>
               {t('apiKeys.accessPatternAdd')}
@@ -181,7 +182,7 @@ const ModelAccessPicker: React.FC<{
                     background: id.includes('*') ? 'color-mix(in srgb, var(--accent-violet) 12%, transparent)' : 'var(--input-bg)',
                     border: id.includes('*') ? '1px solid color-mix(in srgb, var(--accent-violet) 30%, transparent)' : '1px solid var(--card-border)',
                     color: id.includes('*') ? 'var(--accent-violet)' : 'var(--text-main)',
-                    fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                    fontFamily: FONT_MONO,
                     fontSize: '11px',
                     // Override .badge uppercase: model ids / patterns are
                     // case-SENSITIVE — displaying them uppercased misleads.
@@ -767,7 +768,7 @@ export const ApiKeysPage: React.FC = () => {
                             alignItems: 'center',
                             gap: '4px',
                             fontSize: '11px',
-                            fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                            fontFamily: FONT_MONO,
                             color:
                               copiedId === `id:${item.id}` ? 'var(--accent-emerald)' : 'var(--text-dim)',
                             cursor: 'copy',
@@ -798,7 +799,7 @@ export const ApiKeysPage: React.FC = () => {
                       </td>
 
                       {/* Secret Key Display */}
-                      <td style={{ padding: '14px 20px', fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
+                      <td style={{ padding: '14px 20px', fontFamily: FONT_MONO }}>
                         <div
                           style={{
                             display: 'inline-flex',
@@ -1087,7 +1088,7 @@ export const ApiKeysPage: React.FC = () => {
             border: '1px solid var(--card-border)',
             borderRadius: '8px',
             padding: '16px',
-            fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace",
+            fontFamily: FONT_MONO,
             fontSize: '12px',
             color: 'var(--text-main)',
             overflowX: 'auto',
@@ -1309,7 +1310,7 @@ curl http://127.0.0.1:3000/v1/systemone \\
                   </div>
                   <div
                     style={{
-                      fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                      fontFamily: FONT_MONO,
                       fontSize: '11px',
                       color: 'var(--text-dim)',
                       wordBreak: 'break-all',
@@ -1588,7 +1589,7 @@ curl http://127.0.0.1:3000/v1/systemone \\
                   border: '1px solid var(--divider)',
                   fontSize: '11px',
                   lineHeight: 1.5,
-                  fontFamily: "'JetBrains Mono', Consolas, monospace",
+                  fontFamily: FONT_MONO,
                   overflow: 'auto',
                   maxHeight: viewExpanded ? '72vh' : '60vh',
                   whiteSpace: 'pre',
@@ -1667,7 +1668,7 @@ curl http://127.0.0.1:3000/v1/systemone \\
                           overflow: 'hidden',
                           textOverflow: 'ellipsis',
                           whiteSpace: 'nowrap',
-                          fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                          fontFamily: FONT_MONO,
                           fontSize: '12px',
                           color: 'var(--text-main)',
                         }}
@@ -1903,7 +1904,7 @@ curl http://127.0.0.1:3000/v1/systemone \\
                 border: '1px solid color-mix(in srgb, var(--accent-emerald) 30%, transparent)',
                 padding: '10px 14px',
                 borderRadius: '8px',
-                fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                fontFamily: FONT_MONO,
                 fontSize: '12px',
                 color: 'var(--accent-emerald)',
                 wordBreak: 'break-all',

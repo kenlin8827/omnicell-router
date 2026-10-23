@@ -8,6 +8,7 @@ import { Switch } from '../components/Switch';
 import { Combobox } from '../components/Combobox';
 import { DEFAULT_HEADROOM_URL } from '../lib/defaults';
 
+import { FONT_MONO } from '../lib/fonts';
 const CAVEMAN_LEVELS = ['lite', 'full', 'ultra', 'wenyan-lite', 'wenyan', 'wenyan-ultra'] as const;
 
 /** Shared spinner style (keyframes in styles/index.css; same pattern as EnvironmentsPage). */
@@ -38,7 +39,7 @@ const CmdLine: React.FC<{ cmd: string }> = ({ cmd }) => {
           borderRadius: '6px',
           background: 'var(--btn-bg)',
           color: 'var(--text-muted)',
-          fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', monospace",
+          fontFamily: FONT_MONO,
           whiteSpace: 'nowrap',
           overflowX: 'auto',
         }}

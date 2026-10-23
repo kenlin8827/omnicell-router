@@ -24,6 +24,7 @@ import { Field, FieldRow, FormSection } from '../components/Form';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import { EFFORT_LADDER, effectiveEffortLadder, effortOptionList } from '../lib/effort';
 
+import { FONT_MONO } from '../lib/fonts';
 /**
  * /catalog — remote catalog source management: view sync state (origin +
  * last-sync time), manually add sources, toggle, delete and force-refresh.
@@ -121,7 +122,7 @@ const fmtSize = (n: number): string => (n >= 1_048_576 ? (n / 1_048_576).toFixed
 
 /** Shared raw-JSON view style for the catalog viewer modals. */
 const JSON_PRE: React.CSSProperties = {
-  fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+  fontFamily: FONT_MONO,
   fontSize: '10px',
   lineHeight: 1.55,
   color: 'var(--text-main)',
@@ -188,7 +189,7 @@ const ModelTable: React.FC<{
         const rcell: React.CSSProperties = hidden ? { ...cell, opacity: 0.55 } : cell;
         return (
         <React.Fragment key={m.id}>
-          <div style={{ ...rcell, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: '10px' }}>
+          <div style={{ ...rcell, fontFamily: FONT_MONO, fontSize: '10px' }}>
             {m.id}
             {hidden && (
               <span style={{ marginLeft: 6, fontSize: 9, color: 'var(--text-dim)', border: '1px solid var(--card-border)', borderRadius: 999, padding: '0 5px' }}>
@@ -973,7 +974,7 @@ const OcrEditModal: React.FC<{
       subtitle={
         <>
           <span>{t('catalogPage.ocrEditHint')}</span>
-          <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: 12, color: 'var(--accent)' }}>
+          <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: 'var(--accent)' }}>
             {target.providerId}/{target.modelId}
           </span>
         </>
@@ -1300,7 +1301,7 @@ const AddSourceModal: React.FC<{
                 placeholder={t('catalogPage.mapPlaceholder')}
                 className="input"
                 rows={6}
-                style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: '11px', resize: 'vertical' }}
+                style={{ fontFamily: FONT_MONO, fontSize: '11px', resize: 'vertical' }}
               />
               <div style={{ fontSize: '10px', color: 'var(--text-dim)', marginTop: '4px' }}>{t('catalogPage.mapHint')}</div>
             </div>

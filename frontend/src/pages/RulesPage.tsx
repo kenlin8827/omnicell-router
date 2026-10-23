@@ -12,6 +12,7 @@ import { effortOptionList, EFFORT_UNSET, EFFORT_I18N_KEY } from '../lib/effort';
 import { fmtLatency } from '../lib/format';
 import { sortModelOptions } from '../lib/model-options';
 
+import { FONT_MONO } from '../lib/fonts';
 type Tier = 'lite' | 'plus' | 'pro' | 'ultra';
 
 type SelectionStrategy = 'priority' | 'weighted' | 'round_robin';
@@ -712,7 +713,7 @@ export const RulesPage: React.FC = () => {
                   {testRes && (
                     <span
                       style={{
-                        fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                        fontFamily: FONT_MONO,
                         fontSize: '10px',
                         whiteSpace: 'nowrap',
                         color: testRes.ok ? 'var(--accent-emerald)' : 'var(--accent-rose)',
@@ -904,7 +905,7 @@ export const RulesPage: React.FC = () => {
                               minWidth: '22px',
                               flexShrink: 0,
                               fontSize: '10px',
-                              fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                              fontFamily: FONT_MONO,
                               color: 'var(--text-dim)',
                               textAlign: 'right',
                             }}
@@ -920,7 +921,7 @@ export const RulesPage: React.FC = () => {
                             overflow: 'hidden',
                             textOverflow: 'ellipsis',
                             whiteSpace: 'nowrap',
-                            fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                            fontFamily: FONT_MONO,
                             fontSize: '12px',
                             fontWeight: 600,
                             display: 'inline-flex',
@@ -1030,7 +1031,7 @@ export const RulesPage: React.FC = () => {
                   <input
                     type="text"
                     className="input"
-                    style={{ flex: 1, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: '11px', padding: '4px 8px' }}
+                    style={{ flex: 1, fontFamily: FONT_MONO, fontSize: '11px', padding: '4px 8px' }}
                     placeholder={t('tierPolicy.addMemberPlaceholder')}
                     value={memberDrafts[tier]}
                     onChange={(e) => setMemberDrafts((prev) => ({ ...prev, [tier]: e.target.value }))}
@@ -1184,7 +1185,7 @@ export const RulesPage: React.FC = () => {
                   {(() => {
                     const at = poolMode === 'live' ? poolsLiveAt : poolsAt;
                     return at ? (
-                      <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
+                      <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontFamily: FONT_MONO }}>
                         {t('tierPolicy.refreshedAt')} {new Date(at).toLocaleTimeString()}
                       </span>
                     ) : null;
@@ -1195,7 +1196,7 @@ export const RulesPage: React.FC = () => {
                       style={{
                         fontSize: '10px',
                         color: 'var(--text-dim)',
-                        fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                        fontFamily: FONT_MONO,
                         padding: '2px 8px',
                         borderRadius: 4,
                         background: 'var(--card-border)',
@@ -1296,7 +1297,7 @@ export const RulesPage: React.FC = () => {
                   >
                     <span style={{ width: 7, flexShrink: 0 }} />
                     <span style={{ flex: 1, minWidth: 0 }}>{t('tierPolicy.colModel')}</span>
-                    <span style={{ flexShrink: 0, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
+                    <span style={{ flexShrink: 0, fontFamily: FONT_MONO }}>
                       {t('tierPolicy.colInput')} / {t('tierPolicy.colOutput')} · {t('tierPolicy.colWeight')}
                       {modalStrategy !== 'priority' ? ` · ${t('tierPolicy.colShare')}` : ''}
                     </span>
@@ -1359,7 +1360,7 @@ export const RulesPage: React.FC = () => {
                                   overflow: 'hidden',
                                   textOverflow: 'ellipsis',
                                   whiteSpace: 'nowrap',
-                                  fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                                  fontFamily: FONT_MONO,
                                   fontWeight: 600,
                                 }}
                               >
@@ -1379,7 +1380,7 @@ export const RulesPage: React.FC = () => {
                                   {t('tierPolicy.preferredBadge')}
                                 </span>
                               )}
-                              <span style={{ flexShrink: 0, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-muted)' }}>
+                              <span style={{ flexShrink: 0, fontFamily: FONT_MONO, color: 'var(--text-muted)' }}>
                                 {segs}
                               </span>
                               <span style={{ width: 172, flexShrink: 0, display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
@@ -1414,7 +1415,7 @@ export const RulesPage: React.FC = () => {
                       alignItems: 'center',
                       padding: '4px 10px',
                       fontSize: '10px',
-                      fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                      fontFamily: FONT_MONO,
                       color: 'var(--text-dim)',
                       borderTop: '1px solid var(--divider)',
                       flexShrink: 0,
@@ -1476,7 +1477,7 @@ export const RulesPage: React.FC = () => {
                               background: 'color-mix(in srgb, var(--accent-rose) 12%, transparent)',
                               border: '1px solid color-mix(in srgb, var(--accent-rose) 30%, transparent)',
                               color: 'var(--accent-rose)',
-                              fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                              fontFamily: FONT_MONO,
                               cursor: 'pointer',
                               display: 'inline-flex',
                               alignItems: 'center',
@@ -1588,7 +1589,7 @@ export const RulesPage: React.FC = () => {
                     <span
                       data-tip={row.pattern}
                       style={{
-                        fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                        fontFamily: FONT_MONO,
                         fontSize: '11px',
                         color: 'var(--text-muted)',
                         overflow: 'hidden',
@@ -1608,7 +1609,7 @@ export const RulesPage: React.FC = () => {
                         data-tip={t(`op.${EFFORT_I18N_KEY[lvl]}`)}
                         style={{ width: '78px', flexShrink: 0, display: 'flex', alignItems: 'baseline', gap: '4px', overflow: 'hidden' }}
                       >
-                        <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: '12px', color: 'var(--text-muted)', flexShrink: 0 }}>
+                        <span style={{ fontFamily: FONT_MONO, fontSize: '12px', color: 'var(--text-muted)', flexShrink: 0 }}>
                           {lvl}
                         </span>
                         <span

@@ -7,6 +7,7 @@ import { useConfirm } from '../components/ConfirmProvider';
 import { Combobox } from '../components/Combobox';
 import { Pagination } from '../components/Pagination';
 
+import { FONT_MONO } from '../lib/fonts';
 /**
  * Route-entry experience table (ADR-0011) — every prompt the gateway has
  * learned to route. Human edits land as immutable `human` rows (confidence
@@ -22,7 +23,7 @@ type SortKey = 'updatedAt' | 'hitCount' | 'sessionCount';
 // Per-page options for the experience table (the server hard-caps limit at 500).
 const PAGE_SIZES = [10, 20, 50, 100, 200];
 
-const MONO: React.CSSProperties = { fontFamily: "'JetBrains Mono', monospace", fontSize: '11.5px' };
+const MONO: React.CSSProperties = { fontFamily: FONT_MONO, fontSize: '11.5px' };
 
 const SOURCE_COLORS: Record<string, string> = {
   human: 'var(--accent-emerald)',

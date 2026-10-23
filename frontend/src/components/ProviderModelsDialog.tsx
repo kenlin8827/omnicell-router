@@ -14,6 +14,7 @@ import { Combobox } from '../components/Combobox';
 import { Switch } from './Switch';
 import { fmtLatency } from '../lib/format';
 
+import { FONT_MONO } from '../lib/fonts';
 /** Backdrop blur is opt-in per dialog (default: dim only, no blur). */
 const overlayStyle = (blur: boolean): React.CSSProperties => ({
   position: 'fixed',
@@ -524,7 +525,7 @@ export const ProviderModelsDialog: React.FC<{
   ) => (
     <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
       {MODALITY_OPTIONS.map((m) => (
-        <label key={m} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11.5, color: 'var(--text-muted)', cursor: 'pointer', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
+        <label key={m} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11.5, color: 'var(--text-muted)', cursor: 'pointer', fontFamily: FONT_MONO }}>
           <input
             type="checkbox"
             checked={form!.data[key].includes(m)}
@@ -559,7 +560,7 @@ export const ProviderModelsDialog: React.FC<{
         {/* ---- Header ---- */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ fontSize: 14, fontWeight: 700 }}>{t(readOnly ? 'op.pmView' : 'op.pmTitle')}</span>
-          <span style={{ fontSize: 12, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--accent)' }}>{providerName || providerId}</span>
+          <span style={{ fontSize: 12, fontFamily: FONT_MONO, color: 'var(--accent)' }}>{providerName || providerId}</span>
           <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
             {filterText
               ? `${filteredRows.length} / ${rows.length}`
@@ -648,8 +649,8 @@ export const ProviderModelsDialog: React.FC<{
                   onMouseEnter={(e) => showHoverCard(row, e)}
                   onMouseLeave={() => setHover(null)}
                 >
-                  <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontWeight: 600, wordBreak: 'break-all' }}>{row.id}</span>
-                  {d.modelID && d.modelID !== row.id && <span style={{ color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: 10 }}>→ {d.modelID}</span>}
+                  <span style={{ fontFamily: FONT_MONO, fontWeight: 600, wordBreak: 'break-all' }}>{row.id}</span>
+                  {d.modelID && d.modelID !== row.id && <span style={{ color: 'var(--text-dim)', fontFamily: FONT_MONO, fontSize: 10 }}>→ {d.modelID}</span>}
                   {(d.name || row.id.split('/').pop()) && <span style={{ color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name || row.id.split('/').pop()}</span>}
                   {defThinking(d) && <span style={badge('var(--hue-violet)', 'var(--hue-violet-soft)')} title={t('models.badgeReasoning')}>{effort ? `R·${effort}` : 'R'}</span>}
                   {defTools(d) && <span style={badge('var(--accent)', 'var(--accent-bg)')} title={t('models.badgeToolCall')}>T</span>}
@@ -662,11 +663,11 @@ export const ProviderModelsDialog: React.FC<{
                   )}
                   {d.disabled === true && <span style={badge('var(--text-dim)', 'var(--chip-bg)')}>{t('models.hiddenBadge')}</span>}
                   {row.source && <span style={badge(SOURCE_BADGE[row.source]?.color ?? 'var(--text-dim)', SOURCE_BADGE[row.source]?.bg ?? 'var(--chip-bg)')}>{sourceLabel(row.source)}</span>}
-                  {d.limit?.context ? <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-dim)', marginLeft: 'auto' }}>{fmtContext(d.limit.context)}</span> : null}
+                  {d.limit?.context ? <span style={{ fontFamily: FONT_MONO, color: 'var(--text-dim)', marginLeft: 'auto' }}>{fmtContext(d.limit.context)}</span> : null}
                   {testResults[row.id] && (
                     <span
                       style={{
-                        fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                        fontFamily: FONT_MONO,
                         fontSize: 10,
                         whiteSpace: 'nowrap',
                         color: testResults[row.id].ok ? 'var(--accent-emerald)' : 'var(--accent-rose)',
@@ -742,7 +743,7 @@ export const ProviderModelsDialog: React.FC<{
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, maxHeight: 90, overflowY: 'auto' }}>
                 {preview.models.slice(0, 40).map((m) => (
-                  <span key={m.id} style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: 10, padding: '1px 6px', borderRadius: 4, background: 'var(--chip-bg)' }}>
+                  <span key={m.id} style={{ fontFamily: FONT_MONO, fontSize: 10, padding: '1px 6px', borderRadius: 4, background: 'var(--chip-bg)' }}>
                     {m.id}
                   </span>
                 ))}
@@ -780,13 +781,13 @@ export const ProviderModelsDialog: React.FC<{
             const d = hover.row.def || {};
             return (
               <>
-                <div style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontWeight: 700, fontSize: 11.5, wordBreak: 'break-all', marginBottom: 2 }}>
+                <div style={{ fontFamily: FONT_MONO, fontWeight: 700, fontSize: 11.5, wordBreak: 'break-all', marginBottom: 2 }}>
                   {hover.row.id}
                   {d.disabled === true && <span style={{ color: 'var(--text-dim)', fontWeight: 400 }}> (disabled)</span>}
                 </div>
                 {(d.name || hover.row.id.split('/').pop()) && <div style={{ color: 'var(--text-dim)', marginBottom: 4 }}>{d.name || hover.row.id.split('/').pop()}</div>}
                 {d.modelID && (
-                  <div style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-dim)', fontSize: 10.5, marginBottom: 6 }}>
+                  <div style={{ fontFamily: FONT_MONO, color: 'var(--text-dim)', fontSize: 10.5, marginBottom: 6 }}>
                     modelID → {d.modelID}
                   </div>
                 )}
@@ -801,25 +802,25 @@ export const ProviderModelsDialog: React.FC<{
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '3px 12px', color: 'var(--text-dim)' }}>
                   <span>{t('models.thContext')}</span>
-                  <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-main)' }}>{d.limit?.context ? fmtContext(d.limit.context) : '—'}</span>
+                  <span style={{ fontFamily: FONT_MONO, color: 'var(--text-main)' }}>{d.limit?.context ? fmtContext(d.limit.context) : '—'}</span>
                   <span>{t('op.pmEditOutput')}</span>
-                  <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-main)' }}>{d.limit?.output ? fmtContext(d.limit.output) : '—'}</span>
+                  <span style={{ fontFamily: FONT_MONO, color: 'var(--text-main)' }}>{d.limit?.output ? fmtContext(d.limit.output) : '—'}</span>
                   <span>{t('models.thInput')}</span>
-                  <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-main)' }}>{fmtPrice(d.cost?.input)}</span>
+                  <span style={{ fontFamily: FONT_MONO, color: 'var(--text-main)' }}>{fmtPrice(d.cost?.input)}</span>
                   <span>{t('models.thOutput')}</span>
-                  <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-main)' }}>{fmtPrice(d.cost?.output)}</span>
-                  {typeof d.cost?.cache_read === 'number' && (<><span>{t('models.costCacheRead')}</span><span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-main)' }}>{fmtPrice(d.cost.cache_read)}</span></>)}
-                  {typeof d.cost?.cache_write === 'number' && (<><span>{t('models.costCacheWrite')}</span><span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-main)' }}>{fmtPrice(d.cost.cache_write)}</span></>)}
-                  {defInput(d).length > 0 && (<><span>{t('models.modalitiesInput')}</span><span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-main)' }}>{defInput(d).map((m) => modalityLabel(t, m)).join(', ')}</span></>)}
-                  {defOutput(d).length > 0 && (<><span>{t('models.modalitiesOutput')}</span><span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-main)' }}>{defOutput(d).map((m) => modalityLabel(t, m)).join(', ')}</span></>)}
-                  {d.settings?.reasoningEffort && (<><span>{t('op.pmSettingsReasoning')}</span><span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-main)' }}>{d.settings.reasoningEffort}</span></>)}
-                  {d.compatibility?.reasoningField && (<><span>{t('op.pmReasoningField')}</span><span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-main)' }}>{d.compatibility.reasoningField}</span></>)}
-                  {Object.keys(d.headers || {}).length > 0 && (<><span>{t('op.pmHeaders')}</span><span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-main)', wordBreak: 'break-all' }}>{Object.entries(d.headers).map(([k, v]) => `${k}: ${v}`).join(' · ')}</span></>)}
-                  {d.body && Object.keys(d.body).length > 0 && (<><span>{t('op.pmBody')}</span><span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-main)', wordBreak: 'break-all' }}>{JSON.stringify(d.body)}</span></>)}
+                  <span style={{ fontFamily: FONT_MONO, color: 'var(--text-main)' }}>{fmtPrice(d.cost?.output)}</span>
+                  {typeof d.cost?.cache_read === 'number' && (<><span>{t('models.costCacheRead')}</span><span style={{ fontFamily: FONT_MONO, color: 'var(--text-main)' }}>{fmtPrice(d.cost.cache_read)}</span></>)}
+                  {typeof d.cost?.cache_write === 'number' && (<><span>{t('models.costCacheWrite')}</span><span style={{ fontFamily: FONT_MONO, color: 'var(--text-main)' }}>{fmtPrice(d.cost.cache_write)}</span></>)}
+                  {defInput(d).length > 0 && (<><span>{t('models.modalitiesInput')}</span><span style={{ fontFamily: FONT_MONO, color: 'var(--text-main)' }}>{defInput(d).map((m) => modalityLabel(t, m)).join(', ')}</span></>)}
+                  {defOutput(d).length > 0 && (<><span>{t('models.modalitiesOutput')}</span><span style={{ fontFamily: FONT_MONO, color: 'var(--text-main)' }}>{defOutput(d).map((m) => modalityLabel(t, m)).join(', ')}</span></>)}
+                  {d.settings?.reasoningEffort && (<><span>{t('op.pmSettingsReasoning')}</span><span style={{ fontFamily: FONT_MONO, color: 'var(--text-main)' }}>{d.settings.reasoningEffort}</span></>)}
+                  {d.compatibility?.reasoningField && (<><span>{t('op.pmReasoningField')}</span><span style={{ fontFamily: FONT_MONO, color: 'var(--text-main)' }}>{d.compatibility.reasoningField}</span></>)}
+                  {Object.keys(d.headers || {}).length > 0 && (<><span>{t('op.pmHeaders')}</span><span style={{ fontFamily: FONT_MONO, color: 'var(--text-main)', wordBreak: 'break-all' }}>{Object.entries(d.headers).map(([k, v]) => `${k}: ${v}`).join(' · ')}</span></>)}
+                  {d.body && Object.keys(d.body).length > 0 && (<><span>{t('op.pmBody')}</span><span style={{ fontFamily: FONT_MONO, color: 'var(--text-main)', wordBreak: 'break-all' }}>{JSON.stringify(d.body)}</span></>)}
                   {Array.isArray(d.variants) && d.variants.length > 0 && (
                     <>
                       <span>{t('op.pmVariants')}</span>
-                      <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-main)' }}>
+                      <span style={{ fontFamily: FONT_MONO, color: 'var(--text-main)' }}>
                         {d.variants.map((v: any) => `${v.id}${v.settings?.reasoningEffort ? `(${v.settings.reasoningEffort})` : ''}`).join(', ')}
                       </span>
                     </>
@@ -863,7 +864,7 @@ export const ProviderModelsDialog: React.FC<{
                 <label style={fieldLabelStyle}>{t('op.pmAddId')}</label>
                 <input
                   className="input"
-                  style={{ fontSize: 12, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", width: '100%', opacity: form.mode === 'edit' ? 0.6 : 1 }}
+                  style={{ fontSize: 12, fontFamily: FONT_MONO, width: '100%', opacity: form.mode === 'edit' ? 0.6 : 1 }}
                   value={form.data.id}
                   disabled={form.mode === 'edit'}
                   onChange={(e) => setForm({ ...form, data: { ...form.data, id: e.target.value } })}
@@ -874,7 +875,7 @@ export const ProviderModelsDialog: React.FC<{
                 <label style={fieldLabelStyle}>{t('op.pmModelID')}</label>
                 <input
                   className="input"
-                  style={{ fontSize: 12, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", width: '100%' }}
+                  style={{ fontSize: 12, fontFamily: FONT_MONO, width: '100%' }}
                   placeholder="gpt-5.2"
                   value={form.data.modelID}
                   onChange={(e) => setForm({ ...form, data: { ...form.data, modelID: e.target.value } })}
@@ -962,7 +963,7 @@ export const ProviderModelsDialog: React.FC<{
                   <div key={i} style={{ display: 'flex', gap: 6 }}>
                     <input
                       className="input"
-                      style={{ fontSize: 11.5, flex: 1, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
+                      style={{ fontSize: 11.5, flex: 1, fontFamily: FONT_MONO }}
                       placeholder="variant-id"
                       value={v.id}
                       onChange={(e) => {
@@ -1002,7 +1003,7 @@ export const ProviderModelsDialog: React.FC<{
               <label style={fieldLabelStyle}>{t('op.pmReasoningField')}</label>
               <input
                 className="input"
-                style={{ fontSize: 12, width: '100%', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
+                style={{ fontSize: 12, width: '100%', fontFamily: FONT_MONO }}
                 placeholder="reasoning_content"
                 list="ocr-thinking-fields"
                 value={form.data.reasoningField}
@@ -1018,7 +1019,7 @@ export const ProviderModelsDialog: React.FC<{
               <label style={fieldLabelStyle}>{t('op.pmHeaders')}</label>
               <textarea
                 className="input"
-                style={{ fontSize: 11.5, width: '100%', minHeight: 44, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", resize: 'vertical' }}
+                style={{ fontSize: 11.5, width: '100%', minHeight: 44, fontFamily: FONT_MONO, resize: 'vertical' }}
                 placeholder={'X-Team: platform'}
                 value={form.data.headersText}
                 onChange={(e) => setForm({ ...form, data: { ...form.data, headersText: e.target.value } })}
@@ -1028,7 +1029,7 @@ export const ProviderModelsDialog: React.FC<{
               <label style={fieldLabelStyle}>{t('op.pmBody')}</label>
               <textarea
                 className="input"
-                style={{ fontSize: 11.5, width: '100%', minHeight: 44, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", resize: 'vertical' }}
+                style={{ fontSize: 11.5, width: '100%', minHeight: 44, fontFamily: FONT_MONO, resize: 'vertical' }}
                 placeholder={'{ "store": false }'}
                 value={form.data.bodyText}
                 onChange={(e) => setForm({ ...form, data: { ...form.data, bodyText: e.target.value } })}

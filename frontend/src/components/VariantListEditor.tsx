@@ -4,6 +4,7 @@ import { Combobox, type ComboboxOption } from './Combobox';
 import { effortOptionList } from '../lib/effort';
 import { useI18n } from '../i18n/I18nContext';
 
+import { FONT_MONO } from '../lib/fonts';
 /** One `#<effort>` routing alias: a fixed variant id plus its thinking level. */
 export type VariantRow = { id: string; effort: string };
 
@@ -51,7 +52,7 @@ export const VariantListEditor: React.FC<VariantListEditorProps> = ({
         <div key={i} className="variant-row">
           <input
             className="input"
-            style={{ fontSize: 11.5, flex: 1, minWidth: 0, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
+            style={{ fontSize: 11.5, flex: 1, minWidth: 0, fontFamily: FONT_MONO }}
             placeholder="variant-id"
             value={v.id}
             onChange={(e) => onChange(value.map((x, j) => (j === i ? { ...x, id: e.target.value } : x)))}

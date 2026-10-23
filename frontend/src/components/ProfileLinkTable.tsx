@@ -7,6 +7,7 @@ import { Switch } from './Switch';
 import type { ModelProfileView } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 
+import { FONT_MONO } from '../lib/fonts';
 /** One linkable row: opencode passes agents (with an optional mode group),
  *  pi passes discovered subagent roles (mode omitted — single flat group). */
 export interface ProfileLinkRow {
@@ -277,7 +278,7 @@ export const ProfileLinkTable: React.FC<Props> = ({
                     const missing = linked && !(profile?.slots || {})[bound.slice(5)];
                     return (
                       <div key={r.name} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        <span style={{ width: '140px', flexShrink: 0, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: '12px' }}>{r.name}</span>
+                        <span style={{ width: '140px', flexShrink: 0, fontFamily: FONT_MONO, fontSize: '12px' }}>{r.name}</span>
                         {r.current && (
                           <InfoTip text={`${t('clients.profileCurrentModel')}: ${r.current}`} />
                         )}

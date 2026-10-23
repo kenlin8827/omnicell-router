@@ -9,6 +9,7 @@ import { useConfirm } from '../components/ConfirmProvider';
 import { Combobox, type ComboboxOption } from '../components/Combobox';
 import { Dialog } from '../components/Dialog';
 
+import { FONT_MONO } from '../lib/fonts';
 /** Slot keys seeded for a brand-new profile — the common subagent role vocabulary. */
 const DEFAULT_SLOT_KEYS = ['flash', 'pro', 'max', 'vision'];
 
@@ -147,7 +148,7 @@ const ProfileDialog: React.FC<{
                 value={s.key}
                 placeholder={t('modelProfiles.slotKeyPlaceholder')}
                 onChange={e => patchSlot(i, { key: e.target.value })}
-                style={{ width: 160, flexShrink: 0, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
+                style={{ width: 160, flexShrink: 0, fontFamily: FONT_MONO }}
               />
               <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>→</span>
               <div style={{ flex: 1, minWidth: 0 }}>
@@ -327,7 +328,7 @@ export const ModelProfilesPage: React.FC = () => {
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                   {p.slots.map((s, i) => (
-                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
+                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontFamily: FONT_MONO }}>
                       <span style={{ padding: '2px 8px', borderRadius: 999, background: 'var(--chip-bg)', color: 'var(--text-dim)' }}>{s.key}</span>
                       <span style={{ color: 'var(--text-dim)' }}>→</span>
                       <span style={{ color: 'var(--text-main)' }}>{s.ref}</span>

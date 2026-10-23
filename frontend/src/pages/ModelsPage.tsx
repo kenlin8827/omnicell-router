@@ -12,6 +12,7 @@ import { Chip } from '../components/Chip';
 import { Switch } from '../components/Switch';
 import { fmtLatency, copyToClipboard } from '../lib/format';
 
+import { FONT_MONO } from '../lib/fonts';
 type SortKey = 'default' | 'priceAsc' | 'priceDesc' | 'contextDesc' | 'name';
 
 const PAGE_SIZE = 50;
@@ -366,7 +367,7 @@ const toggleHidden = async (m: OpenCodeModelView) => {
                       // the registered modelRef) as the monospace secondary line
                       // with its own copy button attached. Rows without a distinct
                       // name fall back to the id as the primary line.
-                      const mono = "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace";
+                      const mono = FONT_MONO;
                       const copyBtn = (
                         <button
                           style={{ color: 'var(--text-dim)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', flexShrink: 0 }}
@@ -466,17 +467,17 @@ const toggleHidden = async (m: OpenCodeModelView) => {
                       );
                     })()}
                   </td>
-                  <td style={{ ...tdStyle, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
+                  <td style={{ ...tdStyle, fontFamily: FONT_MONO, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
                     {m.providerId}
                     {!m.connected && (
                       <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--text-dim)' }} title={t('models.notConnected')}>○</span>
                     )}
                   </td>
-                  <td style={{ ...tdStyle, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", whiteSpace: 'nowrap' }}>{fmtContext(m.limit?.context)}</td>
-                  <td style={{ ...tdStyle, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: m.cost?.input !== undefined && m.cost.input < 1 ? 'var(--accent-emerald)' : undefined, whiteSpace: 'nowrap' }}>
+                  <td style={{ ...tdStyle, fontFamily: FONT_MONO, whiteSpace: 'nowrap' }}>{fmtContext(m.limit?.context)}</td>
+                  <td style={{ ...tdStyle, fontFamily: FONT_MONO, color: m.cost?.input !== undefined && m.cost.input < 1 ? 'var(--accent-emerald)' : undefined, whiteSpace: 'nowrap' }}>
                     {fmtPrice(m.cost?.input)}
                   </td>
-                  <td style={{ ...tdStyle, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", whiteSpace: 'nowrap' }}>{fmtPrice(m.cost?.output)}</td>
+                  <td style={{ ...tdStyle, fontFamily: FONT_MONO, whiteSpace: 'nowrap' }}>{fmtPrice(m.cost?.output)}</td>
                   <td style={tdStyle}>
                     <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                       {m.reasoning && <span style={badgeStyle('var(--hue-violet)', 'var(--hue-violet-soft)')}><Brain size={10} />{t('models.badgeReasoning')}</span>}

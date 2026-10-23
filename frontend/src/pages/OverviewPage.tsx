@@ -15,6 +15,7 @@ import { BrandIcon } from '../components/BrandIcons';
 import { Combobox } from '../components/Combobox';
 import { useI18n } from '../i18n/I18nContext';
 
+import { FONT_MONO } from '../lib/fonts';
 const REFRESH_INTERVAL_MS = 10_000;
 
 // Time-range presets for the Overview's usage cards. '0' = the backend's
@@ -225,7 +226,7 @@ export const OverviewPage: React.FC = () => {
                   <BrandIcon name={c.name === 'opencode-proxy' ? 'opencode' : c.name} size={18} />
                   <div>
                     <div style={{ fontWeight: 600, fontSize: '13px' }}>{c.name === 'opencode-proxy' ? t('clients.nameOpencodeProxy') : c.displayName}</div>
-                    <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
+                    <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: FONT_MONO }}>
                       {c.configPath}
                     </div>
                   </div>

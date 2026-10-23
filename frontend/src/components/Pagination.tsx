@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useI18n } from '../i18n/I18nContext';
 import { Combobox } from './Combobox';
 
+import { FONT_MONO } from '../lib/fonts';
 interface PaginationProps {
   /** 1-based current page */
   page: number;
@@ -79,7 +80,7 @@ export const Pagination: React.FC<PaginationProps> = ({
     padding: '0 10px',
     fontSize: 12,
     justifyContent: 'center',
-    fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+    fontFamily: FONT_MONO,
   };
 
   return (

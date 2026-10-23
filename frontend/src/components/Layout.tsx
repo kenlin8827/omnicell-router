@@ -49,6 +49,7 @@ import { useToast } from '../components/ToastProvider';
 import { Combobox } from './Combobox';
 import { QuotaPeek } from './QuotaPeek';
 
+import { FONT_MONO } from '../lib/fonts';
 interface NavItemDef {
   to: string;
   labelKey: string;
@@ -355,7 +356,7 @@ export const Layout: React.FC = () => {
                 Still comes live from /api/admin/status (a stale cached bundle
                 can't misreport); the build-time constant is the fallback
                 until status arrives or while the gateway is unreachable. */}
-            <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", whiteSpace: 'nowrap' }}>
+            <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: FONT_MONO, whiteSpace: 'nowrap' }}>
               {t('nav.consoleTag')} · {t('nav.version', { version: status?.version ?? __APP_VERSION__ })}
             </div>
           </div>
@@ -520,7 +521,7 @@ export const Layout: React.FC = () => {
                 borderTop: '1px solid var(--divider)',
                 fontSize: '11px',
                 color: 'var(--text-dim)',
-                fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                fontFamily: FONT_MONO,
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'space-between',

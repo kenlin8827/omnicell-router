@@ -12,6 +12,7 @@ import { Combobox } from '../components/Combobox';
 import { Pagination } from '../components/Pagination';
 import { fmtLatency } from '../lib/format';
 
+import { FONT_MONO } from '../lib/fonts';
 const BREAKER_PAGE_SIZE = 20;
 const BREAKER_PAGE_SIZES = [10, 20, 50, 100, 200];
 
@@ -398,7 +399,7 @@ export const GuardrailsPage: React.FC = () => {
   // transparent fill + theme-accent text/border. Hardcoded dark-theme blues
   // (rgba fill + #8fb8f5 text) failed contrast on light themes.
   const hashBadgeStyle: React.CSSProperties = {
-    fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+    fontFamily: FONT_MONO,
     fontSize: '10px',
     padding: '1px 6px',
     borderRadius: '8px',
@@ -443,7 +444,7 @@ export const GuardrailsPage: React.FC = () => {
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, flexWrap: 'wrap' }}>
-            <span style={{ fontWeight: 600, fontSize: '13px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", overflowWrap: 'anywhere' }}>
+            <span style={{ fontWeight: 600, fontSize: '13px', fontFamily: FONT_MONO, overflowWrap: 'anywhere' }}>
               {c.modelId}
             </span>
             {singlePoint && (
@@ -453,7 +454,7 @@ export const GuardrailsPage: React.FC = () => {
             )}
             {res && (
               <span
-                style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '10px', whiteSpace: 'nowrap', color: res.ok ? 'var(--accent-emerald)' : 'var(--accent-rose)' }}
+                style={{ fontFamily: FONT_MONO, fontSize: '10px', whiteSpace: 'nowrap', color: res.ok ? 'var(--accent-emerald)' : 'var(--accent-rose)' }}
                 title={res.ok ? `${res.latencyMs} ms` : res.error}
               >
                 {res.ok ? `✓${fmtLatency(res.latencyMs ?? NaN)}` : '✗'}

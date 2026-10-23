@@ -8,6 +8,7 @@ import { fmtDur } from '../lib/format';
 import { byQuotaUrgency, headlineWindow } from '../lib/quotaRank';
 import { useQuotaRefresh } from '../lib/useQuotaRefresh';
 
+import { FONT_MONO } from '../lib/fonts';
 /**
  * Sidebar-resident quota peek — the wallet chip in the footer's right slot.
  * Hover opens a compact glass panel to the RIGHT of the chip (portal-mounted
@@ -35,7 +36,7 @@ import { useQuotaRefresh } from '../lib/useQuotaRefresh';
  * amber <25%).
  */
 
-const MONO: React.CSSProperties = { fontFamily: "'JetBrains Mono', monospace" };
+const MONO: React.CSSProperties = { fontFamily: FONT_MONO };
 
 const pctColor = (p: number): string =>
   p < 10 ? 'var(--accent-rose)' : p < 25 ? 'var(--accent-amber)' : 'var(--accent)';

@@ -17,6 +17,7 @@ import { useToast } from '../components/ToastProvider';
 import { byQuotaUrgency, byWindowClass } from '../lib/quotaRank';
 import { useQuotaRefresh } from '../lib/useQuotaRefresh';
 
+import { FONT_MONO } from '../lib/fonts';
 /**
  * Quota tracking overview — every CONNECTED (provider × credential) pair of a
  * covered provider with its tracked allowance. Coverage ships with the release,
@@ -43,7 +44,7 @@ import { useQuotaRefresh } from '../lib/useQuotaRefresh';
  * rendered here.
  */
 
-const MONO: React.CSSProperties = { fontFamily: "'JetBrains Mono', monospace", fontSize: '11.5px' };
+const MONO: React.CSSProperties = { fontFamily: FONT_MONO, fontSize: '11.5px' };
 
 /** Pretty-print a captured probe body: parsed JSON → indented, text → verbatim. */
 function prettyBody(b: unknown): string {
@@ -483,7 +484,7 @@ export const QuotaPage: React.FC = () => {
                   overflow: 'auto',
                   fontSize: 12,
                   lineHeight: 1.55,
-                  fontFamily: "'JetBrains Mono', monospace",
+                  fontFamily: FONT_MONO,
                   color: 'var(--text-main)',
                   whiteSpace: 'pre-wrap',
                   wordBreak: 'break-word',

@@ -33,6 +33,7 @@ import { Dialog } from '../components/Dialog';
 import { Field } from '../components/Form';
 import { Combobox } from '../components/Combobox';
 import { Switch } from '../components/Switch';
+import { FONT_MONO } from '../lib/fonts';
 
 // Mirrors backend ENV_NAME_RE (backend/src/config/env.ts) — case-insensitive
 // on purpose: the gateway accepts "Staging" and lower-cases it on disk.
@@ -78,7 +79,7 @@ function envProvenance(
     : null;
 }
 
-const MONO = "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace";
+const MONO = FONT_MONO;
 const SPIN: React.CSSProperties = { animation: 'ocr-spin 0.8s linear infinite' };
 
 const TH_STYLE: React.CSSProperties = {

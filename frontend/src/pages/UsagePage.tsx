@@ -6,6 +6,7 @@ import { formatCost, shortId, decodeRate, formatRate, fmtLatency } from '../lib/
 import { Combobox } from '../components/Combobox';
 import { useI18n } from '../i18n/I18nContext';
 
+import { FONT_MONO } from '../lib/fonts';
 const REFRESH_INTERVAL_MS = 30_000;
 
 const TIME_RANGE_OPTIONS: { value: string; labelKey: string; hours: number }[] = [
@@ -291,7 +292,7 @@ export const UsagePage: React.FC = () => {
                   columnGap: '8px',
                   rowGap: '6px',
                   fontSize: '11px',
-                  fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                  fontFamily: FONT_MONO,
                 }}
               >
                 {[
@@ -400,15 +401,15 @@ export const UsagePage: React.FC = () => {
                     <td style={{ padding: '10px 14px' }}>
                       <div style={{ fontWeight: 600 }}>{r.id ? r.name : t('usage.anonymous')}</div>
                       {r.id && (
-                        <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
+                        <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: FONT_MONO }}>
                           {shortId(r.id)}
                         </div>
                       )}
                     </td>
-                    <td style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>{r.requests.toLocaleString()}</td>
-                    <td style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>{r.inputTokens.toLocaleString()}</td>
-                    <td style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>{r.outputTokens.toLocaleString()}</td>
-                    <td style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--accent-emerald)' }}>
+                    <td style={{ padding: '10px 14px', fontFamily: FONT_MONO }}>{r.requests.toLocaleString()}</td>
+                    <td style={{ padding: '10px 14px', fontFamily: FONT_MONO }}>{r.inputTokens.toLocaleString()}</td>
+                    <td style={{ padding: '10px 14px', fontFamily: FONT_MONO }}>{r.outputTokens.toLocaleString()}</td>
+                    <td style={{ padding: '10px 14px', fontFamily: FONT_MONO, color: 'var(--accent-emerald)' }}>
                       {r.cachedTokens.toLocaleString()}
                       {/* Token-weighted hit share per app, matching the cards. */}
                       {r.inputTokens > 0 && (
@@ -417,16 +418,16 @@ export const UsagePage: React.FC = () => {
                         </div>
                       )}
                     </td>
-                    <td style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--accent-amber)' }}>
+                    <td style={{ padding: '10px 14px', fontFamily: FONT_MONO, color: 'var(--accent-amber)' }}>
                       {formatCost(r.costUsd)}
                     </td>
                     <td
-                      style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
+                      style={{ padding: '10px 14px', fontFamily: FONT_MONO }}
                       title={`${r.requests > 0 ? Math.round(r.latencyMsSum / r.requests) : 0} ms`}
                     >
                       {fmtLatency(r.requests > 0 ? r.latencyMsSum / r.requests : 0)}
                     </td>
-                    <td style={{ padding: '10px 14px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-dim)' }}>
+                    <td style={{ padding: '10px 14px', fontFamily: FONT_MONO, color: 'var(--text-dim)' }}>
                       {formatRate(decodeRate(r.genOutputTokens, r.genMsSum))}
                     </td>
                   </tr>

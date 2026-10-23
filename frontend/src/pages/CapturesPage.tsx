@@ -24,6 +24,7 @@ import { BackToTop } from '../components/BackToTop';
 import { findMediaTokens, unwrapHarnessText } from '../lib/transcript';
 import { DEFAULT_MAX_BODY_BYTES } from '../lib/defaults';
 
+import { FONT_MONO } from '../lib/fonts';
 /**
  * Best-effort completion-token extraction from a captured response wire body.
  * Non-streaming JSON carries usage once; streaming SSE repeats it, and the
@@ -178,7 +179,7 @@ function JsonBlock({ value }: { value: unknown }) {
     fontSize: '11px',
     padding: '3px 8px',
     cursor: 'pointer',
-    fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+    fontFamily: FONT_MONO,
   };
 
   return (
@@ -210,7 +211,7 @@ function JsonBlock({ value }: { value: unknown }) {
           lineHeight: 1.55,
           // Without this the UA default monospace (Courier New on Windows)
           // renders the JSON — match the standard chain used elsewhere here.
-          fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace",
+          fontFamily: FONT_MONO,
           overflow: 'auto',
           whiteSpace: 'pre-wrap',
           wordBreak: 'break-word',
@@ -362,12 +363,12 @@ const CaptureDrawer: React.FC<{
             </span>
           )}
           {headerTs !== undefined && (
-            <span style={{ fontSize: '12px', color: 'var(--text-muted)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
+            <span style={{ fontSize: '12px', color: 'var(--text-muted)', fontFamily: FONT_MONO }}>
               {new Date(headerTs).toLocaleString()}
             </span>
           )}
           <span
-            style={{ fontSize: '12px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
+            style={{ fontSize: '12px', color: 'var(--text-dim)', fontFamily: FONT_MONO }}
             title={t('captures.inboundModel')}
           >
             {turn.model}
@@ -380,7 +381,7 @@ const CaptureDrawer: React.FC<{
             if (!upstreamModel || upstreamModel === turn.model) return null;
             return (
               <span
-                style={{ fontSize: '12px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
+                style={{ fontSize: '12px', color: 'var(--text-dim)', fontFamily: FONT_MONO }}
                 title={t('captures.outboundModel')}
               >
                 → {upstreamModel}
@@ -395,7 +396,7 @@ const CaptureDrawer: React.FC<{
               style={{
                 background: 'var(--hue-blue-soft)',
                 color: 'var(--hue-blue)',
-                fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                fontFamily: FONT_MONO,
                 fontSize: '10px',
               }}
             >
@@ -415,7 +416,7 @@ const CaptureDrawer: React.FC<{
             style={{
               fontSize: '11px',
               color: 'var(--text-dim)',
-              fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+              fontFamily: FONT_MONO,
               background: 'var(--chip-bg)',
               padding: '2px 6px',
               borderRadius: '4px',
@@ -429,7 +430,7 @@ const CaptureDrawer: React.FC<{
           {turn.gatewayLatencyMs !== undefined && (
             <span
               title={`${t('captures.gatewayLatency')} · ${turn.gatewayLatencyMs} ms`}
-              style={{ fontSize: '12px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
+              style={{ fontSize: '12px', color: 'var(--text-dim)', fontFamily: FONT_MONO }}
             >
               ↳ {fmtLatency(turn.gatewayLatencyMs)}
               <span title={[t('captures.timingTip'), legTimingTip(turn, 'gateway')].filter(Boolean).join(' · ')}>
@@ -440,7 +441,7 @@ const CaptureDrawer: React.FC<{
           {turn.upstreamLatencyMs !== undefined && (
             <span
               title={`${t('captures.upstreamLatency')} · ${turn.upstreamLatencyMs} ms`}
-              style={{ fontSize: '12px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
+              style={{ fontSize: '12px', color: 'var(--text-dim)', fontFamily: FONT_MONO }}
             >
               ↗ {fmtLatency(turn.upstreamLatencyMs)}
               <span title={[t('captures.timingTip'), legTimingTip(turn, 'upstream')].filter(Boolean).join(' · ')}>
@@ -457,7 +458,7 @@ const CaptureDrawer: React.FC<{
               style={{
                 background: 'var(--hue-purple-soft, color-mix(in srgb, var(--accent) 12%, transparent))',
                 color: 'var(--hue-purple, var(--accent))',
-                fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                fontFamily: FONT_MONO,
                 fontSize: '10px',
               }}
             >
@@ -538,7 +539,7 @@ const CaptureDrawer: React.FC<{
                   fontSize: '12px',
                   padding: '8px 12px',
                   cursor: 'pointer',
-                  fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                  fontFamily: FONT_MONO,
                 }}
               >
                 {x.label}
@@ -622,7 +623,7 @@ const WireBlock: React.FC<{ event: HttpExchangeEvent }> = ({ event }) => {
     : event.wire.requestLine;
   return (
     <div>
-      <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: 6, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
+      <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: 6, fontFamily: FONT_MONO }}>
         {isResponse ? '← status line' : '→ request line'}
       </div>
       <pre
@@ -633,7 +634,7 @@ const WireBlock: React.FC<{ event: HttpExchangeEvent }> = ({ event }) => {
           border: '1px solid var(--card-border)',
           borderRadius: '6px',
           fontSize: '12px',
-          fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+          fontFamily: FONT_MONO,
           whiteSpace: 'pre-wrap',
           wordBreak: 'break-word',
           color: 'var(--text)',
@@ -649,17 +650,17 @@ const WireBlock: React.FC<{ event: HttpExchangeEvent }> = ({ event }) => {
             marginTop: 6,
             fontSize: '11px',
             color: 'var(--text-dim)',
-            fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+            fontFamily: FONT_MONO,
           }}
         >
           ⇢ {t('captures.viaProxy')}: {event.proxy}
         </div>
       )}
-      <div style={{ fontSize: '11px', color: 'var(--text-dim)', margin: '14px 0 6px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
+      <div style={{ fontSize: '11px', color: 'var(--text-dim)', margin: '14px 0 6px', fontFamily: FONT_MONO }}>
         {isResponse ? '← response headers' : '→ request headers'}
       </div>
       <JsonBlock value={isResponse ? event.wire.responseHeaders : event.wire.requestHeaders} />
-      <div style={{ fontSize: '11px', color: 'var(--text-dim)', margin: '14px 0 6px', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>
+      <div style={{ fontSize: '11px', color: 'var(--text-dim)', margin: '14px 0 6px', fontFamily: FONT_MONO }}>
         {isResponse ? '← response body' : '→ request body'}
       </div>
       <JsonBlock value={isResponse ? event.wire.responseBody : event.wire.requestBody} />
@@ -744,7 +745,7 @@ const ExportDialog: React.FC<{
         </div>
         <div
           style={{
-            fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+            fontFamily: FONT_MONO,
             fontSize: '11px',
             color: 'var(--text-dim)',
             wordBreak: 'break-all',
@@ -1598,7 +1599,7 @@ export const CapturesPage: React.FC = () => {
                           style={{
                             color: 'var(--text-dim)',
                             fontSize: '11px',
-                            fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                            fontFamily: FONT_MONO,
                             flexShrink: 0,
                           }}
                         >
@@ -1624,7 +1625,7 @@ export const CapturesPage: React.FC = () => {
                         {s.preview && (
                           <span
                             style={{
-                              fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                              fontFamily: FONT_MONO,
                               fontSize: '10.5px',
                               color: 'var(--text-dim)',
                               whiteSpace: 'nowrap',
@@ -1742,13 +1743,13 @@ export const CapturesPage: React.FC = () => {
                         }}
                       >
                         <span style={{ fontSize: '13px', fontWeight: 600 }}>{t('captures.turnsTitle')}</span>
-                        <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: '11px', color: 'var(--text-dim)' }}>
+                        <span style={{ fontFamily: FONT_MONO, fontSize: '11px', color: 'var(--text-dim)' }}>
                           {selectedFile.replace(/\.jsonl$/, '')} · {totalTurns} {t('captures.turnsUnit')}
                         </span>
                         {totalLatencyMs > 0 && (
                           <span
                             title={t('captures.totalTimeHint', { n: turns.length })}
-                            style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: '11px', color: 'var(--text-dim)' }}
+                            style={{ fontFamily: FONT_MONO, fontSize: '11px', color: 'var(--text-dim)' }}
                           >
                             · {t('captures.totalTime')} {fmtDur(totalLatencyMs)}
                           </span>
@@ -1909,7 +1910,7 @@ export const CapturesPage: React.FC = () => {
                                     boxShadow: '0 0 0 2px var(--card-bg)',
                                   }}
                                 />
-                                <span style={{ color: 'var(--text-muted)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", flexShrink: 0 }}>
+                                <span style={{ color: 'var(--text-muted)', fontFamily: FONT_MONO, flexShrink: 0 }}>
                                   {turnStart !== undefined ? fmtTime(turnStart) : ''}
                                 </span>
                                 <span
@@ -1958,7 +1959,7 @@ export const CapturesPage: React.FC = () => {
                                     style={{
                                       background: 'var(--hue-blue-soft)',
                                       color: 'var(--hue-blue)',
-                                      fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                                      fontFamily: FONT_MONO,
                                       fontSize: '10px',
                                       flexShrink: 0,
                                     }}
@@ -1976,7 +1977,7 @@ export const CapturesPage: React.FC = () => {
                                   style={{
                                     fontSize: '11px',
                                     color: 'var(--text-dim)',
-                                    fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                                    fontFamily: FONT_MONO,
                                     background: 'var(--chip-bg)',
                                     padding: '2px 6px',
                                     borderRadius: '4px',
@@ -1987,7 +1988,7 @@ export const CapturesPage: React.FC = () => {
                                   trace:{shortId(turn.traceId)}
                                 </span>
                                 {turn.gatewayLatencyMs !== undefined && (
-                                  <span title={`${turn.gatewayLatencyMs} ms`} style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", flexShrink: 0 }}>
+                                  <span title={`${turn.gatewayLatencyMs} ms`} style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: FONT_MONO, flexShrink: 0 }}>
                                     ↳ {fmtLatency(turn.gatewayLatencyMs)}
                                     <span title={[t('captures.timingTip'), legTimingTip(turn, 'gateway')].filter(Boolean).join(' · ')}>
                                       {legTimingText(turn, 'gateway')}
@@ -1995,7 +1996,7 @@ export const CapturesPage: React.FC = () => {
                                   </span>
                                 )}
                                 {turn.upstreamLatencyMs !== undefined && (
-                                  <span title={`${turn.upstreamLatencyMs} ms`} style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", flexShrink: 0 }}>
+                                  <span title={`${turn.upstreamLatencyMs} ms`} style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: FONT_MONO, flexShrink: 0 }}>
                                     ↗ {fmtLatency(turn.upstreamLatencyMs)}
                                     <span title={[t('captures.timingTip'), legTimingTip(turn, 'upstream')].filter(Boolean).join(' · ')}>
                                       {legTimingText(turn, 'upstream')}
@@ -2013,7 +2014,7 @@ export const CapturesPage: React.FC = () => {
                                     style={{
                                       background: 'color-mix(in srgb, var(--accent) 12%, transparent)',
                                       color: 'var(--accent)',
-                                      fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                                      fontFamily: FONT_MONO,
                                       fontSize: '10px',
                                       flexShrink: 0,
                                       cursor: 'pointer',
@@ -2074,7 +2075,7 @@ export const CapturesPage: React.FC = () => {
               <span style={{ fontSize: '13px', fontWeight: 700 }}>{t('captures.viewChat')}</span>
               <span
                 style={{
-                  fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                  fontFamily: FONT_MONO,
                   fontSize: '11px',
                   color: 'var(--text-dim)',
                   wordBreak: 'break-all',

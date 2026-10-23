@@ -11,6 +11,7 @@ import { Pagination } from '../components/Pagination';
 import { fmtLatency } from '../lib/format';
 import { sortModelOptions } from '../lib/model-options';
 
+import { FONT_MONO } from '../lib/fonts';
 type Selection = 'priority' | 'weighted' | 'round_robin';
 
 /** Virtual model ids routing owns — a combo must never shadow them. */
@@ -235,7 +236,7 @@ const ComboDialog: React.FC<{
               value={work.id}
               onChange={e => patch({ id: e.target.value })}
               className="input"
-              style={{ fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
+              style={{ fontFamily: FONT_MONO }}
             />
           </div>
 
@@ -385,7 +386,7 @@ const ComboDialog: React.FC<{
               <div style={{ display: 'flex', gap: '6px' }}>
                 <input
                   className="input"
-                  style={{ flex: 1, fontSize: '12px', fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace" }}
+                  style={{ flex: 1, fontSize: '12px', fontFamily: FONT_MONO }}
                   placeholder={t('combos.patternPlaceholder')}
                   value={pattern}
                   onChange={e => setPattern(e.target.value)}
@@ -733,7 +734,7 @@ export const CombosPage: React.FC = () => {
                   >
                     <GripVertical size={14} />
                   </span>
-                  <span style={{ fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace", fontSize: '13px', fontWeight: 600, wordBreak: 'break-all' }}>
+                  <span style={{ fontFamily: FONT_MONO, fontSize: '13px', fontWeight: 600, wordBreak: 'break-all' }}>
                     {combo.id.trim() || <span style={{ color: 'var(--accent-rose)' }}>—</span>}
                   </span>
                   {inactive && (
@@ -797,7 +798,7 @@ export const CombosPage: React.FC = () => {
                       >
                         <span style={{ color: 'var(--text-dim)', fontSize: '10px', width: '14px' }}>{mIdx + 1}</span>
                         <HealthDot member={mm} />
-                        <span title={m.id} style={{ fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        <span title={m.id} style={{ fontFamily: FONT_MONO, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {m.id || <span style={{ color: 'var(--accent-rose)' }}>{t('combos.warnEmptyMember')}</span>}
                         </span>
                         {combo.selection !== 'priority' && (m.weight ?? 1) > 1 && (
@@ -844,7 +845,7 @@ export const CombosPage: React.FC = () => {
                     {testRes && (
                       <span
                         style={{
-                          fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace",
+                          fontFamily: FONT_MONO,
                           fontSize: '10px',
                           whiteSpace: 'nowrap',
                           color: testRes.ok ? 'var(--accent-emerald)' : 'var(--accent-rose)',

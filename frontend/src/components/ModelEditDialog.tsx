@@ -13,6 +13,7 @@ import { ModalityPicker } from '../components/ModalityPicker';
 import { VariantListEditor } from '../components/VariantListEditor';
 import { Switch } from './Switch';
 
+import { FONT_MONO } from '../lib/fonts';
 // The modality chips come from lib/modality.ts (shared with OcrEditModal —
 // single source of truth for the option set and labels) via
 // components/ModalityPicker.tsx.
@@ -269,7 +270,7 @@ export const ModelEditDialog: React.FC<{
   return (
     <Dialog
       title={t('op.pmEditTitle')}
-      subtitle={<span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }}>{providerId}</span>}
+      subtitle={<span style={{ fontFamily: FONT_MONO }}>{providerId}</span>}
       headerActions={
         <button
           className="btn btn-sm"
@@ -300,14 +301,14 @@ export const ModelEditDialog: React.FC<{
           <FormSection title={t('form.identity')}>
             <FieldRow>
               <Field label={t('op.pmAddId')}>
-                <input className="input" style={{ fontSize: 12, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", width: '100%' }} value={form.modelKey} onChange={(e) => setForm({ ...form, modelKey: e.target.value })} />
+                <input className="input" style={{ fontSize: 12, fontFamily: FONT_MONO, width: '100%' }} value={form.modelKey} onChange={(e) => setForm({ ...form, modelKey: e.target.value })} />
               </Field>
               <Field label={t('op.pmEditName')}>
                 <input className="input" style={{ fontSize: 12, width: '100%' }} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && handleSave()} />
               </Field>
             </FieldRow>
             <Field label={t('op.pmModelID')}>
-              <input className="input" style={{ fontSize: 12, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", width: '100%' }} placeholder="gpt-5.2" value={form.modelID} onChange={(e) => setForm({ ...form, modelID: e.target.value })} />
+              <input className="input" style={{ fontSize: 12, fontFamily: FONT_MONO, width: '100%' }} placeholder="gpt-5.2" value={form.modelID} onChange={(e) => setForm({ ...form, modelID: e.target.value })} />
             </Field>
           </FormSection>
 
@@ -391,7 +392,7 @@ export const ModelEditDialog: React.FC<{
               />
             </Field>
             <Field label={t('op.pmReasoningField')}>
-              <input className="input" style={{ fontSize: 12, width: '100%', fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace" }} placeholder="reasoning_content" list="ocr-thinking-fields-m" value={form.reasoningField} onChange={(e) => setForm({ ...form, reasoningField: e.target.value })} />
+              <input className="input" style={{ fontSize: 12, width: '100%', fontFamily: FONT_MONO }} placeholder="reasoning_content" list="ocr-thinking-fields-m" value={form.reasoningField} onChange={(e) => setForm({ ...form, reasoningField: e.target.value })} />
               <datalist id="ocr-thinking-fields-m">
                 <option value="reasoning" />
                 <option value="reasoning_content" />
@@ -412,10 +413,10 @@ export const ModelEditDialog: React.FC<{
 
           <FormSection title={t('form.raw')}>
             <Field label={t('op.pmHeaders')}>
-              <textarea className="input" style={{ fontSize: 11.5, width: '100%', minHeight: 44, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", resize: 'vertical' }} placeholder={'X-Team: platform'} value={form.headersText} onChange={(e) => setForm({ ...form, headersText: e.target.value })} />
+              <textarea className="input" style={{ fontSize: 11.5, width: '100%', minHeight: 44, fontFamily: FONT_MONO, resize: 'vertical' }} placeholder={'X-Team: platform'} value={form.headersText} onChange={(e) => setForm({ ...form, headersText: e.target.value })} />
             </Field>
             <Field label={t('op.pmBody')}>
-              <textarea className="input" style={{ fontSize: 11.5, width: '100%', minHeight: 44, fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", resize: 'vertical' }} placeholder={'{ "store": false }'} value={form.bodyText} onChange={(e) => setForm({ ...form, bodyText: e.target.value })} />
+              <textarea className="input" style={{ fontSize: 11.5, width: '100%', minHeight: 44, fontFamily: FONT_MONO, resize: 'vertical' }} placeholder={'{ "store": false }'} value={form.bodyText} onChange={(e) => setForm({ ...form, bodyText: e.target.value })} />
             </Field>
           </FormSection>
         </>

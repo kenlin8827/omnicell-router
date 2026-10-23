@@ -3,6 +3,7 @@ import CodeMirror, { EditorView, oneDark } from '@uiw/react-codemirror';
 import { yaml } from '@codemirror/lang-yaml';
 import { FileCode2, Save, RefreshCw, Check, AlertCircle } from 'lucide-react';
 import { api } from '../lib/api';
+import { FONT_MONO } from '../lib/fonts';
 import { DEFAULT_THEME, isLightTheme } from '../lib/theme';
 import { useI18n } from '../i18n/I18nContext';
 
@@ -19,7 +20,7 @@ const useAppTheme = (): string => {
   return theme;
 };
 
-const editorFont = "'JetBrains Mono', Consolas, Monaco, 'Noto Sans SC', 'Microsoft YaHei', monospace";
+const editorFont = FONT_MONO;
 
 /** A top-level `config.yaml` section: key name and its 1-based line number in the document. */
 interface YamlSection {

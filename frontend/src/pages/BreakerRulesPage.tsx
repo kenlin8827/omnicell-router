@@ -18,6 +18,7 @@ import { DurationInput } from '../components/DurationInput';
 import { InfoTip } from '../components/InfoTip';
 import { Switch } from '../components/Switch';
 
+import { FONT_MONO } from '../lib/fonts';
 /* ═══════════════════════════════════════════════════════════════════════════
  * Breaker-rules page — Configuration UX contract (spec
  * docs/design/circuit-breaker-rules-config.md): three collapsible blocks A/B/C
@@ -306,7 +307,7 @@ const AutoField: React.FC<AutoFieldProps> = ({ label, suffix, value, live, unit,
           padding: '4px 10px',
           borderRadius: 7,
           cursor: 'pointer',
-          fontFamily: "'JetBrains Mono', Consolas, 'Noto Sans SC', 'Microsoft YaHei', monospace",
+          fontFamily: FONT_MONO,
           border: custom ? '1px solid var(--accent)' : '1px dashed var(--card-border)',
           background: custom ? 'var(--btn-primary-bg)' : 'transparent',
           color: custom ? 'var(--btn-primary-text)' : 'var(--text-muted)',
@@ -1159,7 +1160,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
               }}
             >
               <span style={{ color: 'var(--text-muted)' }}>{d.label}</span>
-              <span style={{ fontFamily: "'JetBrains Mono', 'Noto Sans SC', 'Microsoft YaHei', monospace", color: 'var(--text-dim)' }}>
+              <span style={{ fontFamily: FONT_MONO, color: 'var(--text-dim)' }}>
                 {d.value}
               </span>
             </div>
