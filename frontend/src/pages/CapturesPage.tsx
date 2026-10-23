@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
-import { Archive, RefreshCw, Trash2, X, AlertTriangle, Download, Copy, Check, Braces, Maximize2, Minimize2, Scale, Zap, ArrowDownRight, ArrowUpRight } from 'lucide-react';
+import { Archive, RefreshCw, Trash2, X, AlertTriangle, Download, Copy, Check, Braces, Maximize2, Minimize2, Scale, Zap, ArrowDownRight, ArrowUpRight, Wrench } from 'lucide-react';
 import {
   api,
   type CaptureStatus,
@@ -1926,6 +1926,14 @@ export const CapturesPage: React.FC = () => {
                             const errEvent = turn.upstreamResponse?.status === 'error'
                               || turn.gatewayResponse?.status === 'error'
                               || !!turn.error;
+                            // No-prompt turn (tool-result continuation): a dim
+                            // wrench marks every such row; the text label prints
+                            // only on the FIRST row of a consecutive no-prompt
+                            // run so the icon stays self-explanatory without
+                            // every row repeating the same placeholder. Rows
+                            // render newest-first — turns[idx-1] is the row ABOVE.
+                            const continuationRunStart =
+                              !turn.promptSummary && (idx === 0 || !!turns[idx - 1]?.promptSummary);
                             // Day divider: only when the stitched timeline
                             // actually spans multiple date shards — a
                             // single-day session needs no per-day chrome.
@@ -2019,8 +2027,10 @@ export const CapturesPage: React.FC = () => {
                                 </span>
                                 {/* Turn prompt — the LAST user message, stamped on
                                     the client-request event at write time so
-                                    metadata-only reads render it. Absent for
-                                    tool-result continuations (dim fallback). */}
+                                    metadata-only reads render it. No-prompt turns
+                                    (tool-result continuations) render a dim wrench;
+                                    the text label joins only on a run's first row,
+                                    the tooltip always carries the explanation. */}
                                 <span
                                   title={turn.promptSummary || t('sessions.promptFallbackTip')}
                                   style={{
@@ -2032,7 +2042,14 @@ export const CapturesPage: React.FC = () => {
                                     color: turn.promptSummary ? 'var(--text-muted)' : 'var(--text-dim)',
                                   }}
                                 >
-                                  {turn.promptSummary || t('sessions.promptNoUser')}
+                                  {turn.promptSummary ? (
+                                    turn.promptSummary
+                                  ) : (
+                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                      <Wrench size={10} style={{ flexShrink: 0 }} />
+                                      {continuationRunStart && t('sessions.promptNoUser')}
+                                    </span>
+                                  )}
                                 </span>
                                 {turn.upstreamRequest?.proxy && (
                                   <span

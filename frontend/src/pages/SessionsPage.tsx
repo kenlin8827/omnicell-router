@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowDownWideNarrow, ArrowUpNarrowWide, Users, RefreshCw, Archive, BarChart3, Check, ChevronDown, ChevronRight, Copy, Eye, GitBranch, User, Waypoints, X, Search, Trash2 } from 'lucide-react';
+import { ArrowDownWideNarrow, ArrowUpNarrowWide, Users, RefreshCw, Archive, BarChart3, Check, ChevronDown, ChevronRight, Copy, Eye, GitBranch, User, Waypoints, Wrench, X, Search, Trash2 } from 'lucide-react';
 import { api, type SessionRecord, type TraceRecord } from '../lib/api';
 import { formatReason, type Translate } from '../lib/reason';
 import { copyToClipboard, formatCost, formatSessionId, decodeRate, formatRate, fmtLatency } from '../lib/format';
@@ -278,12 +278,16 @@ const EffortCell: React.FC<{ tr: TraceRecord }> = ({ tr }) => {
 };
 
 /**
- * Per-turn prompt cell for the detail grid: inline summary (or a dim
- * fallback when the turn carried no user message). Hovering the cell
- * reveals a copy icon; clicking it copies the full summary. `copied`
- * flips the icon to a check for a moment as feedback.
+ * Per-turn prompt cell for the detail grid: inline summary, or — when the
+ * turn carried no user message (tool-result continuation) — a dim wrench
+ * glyph. `quiet` suppresses the fallback text so a run of consecutive
+ * no-prompt rows doesn't repeat the same placeholder; the run's first row
+ * keeps the text so the icon stays self-explanatory (the tooltip always
+ * carries the explanation). Hovering the cell reveals a copy icon; clicking
+ * it copies the full summary. `copied` flips the icon to a check for a
+ * moment as feedback.
  */
-const PromptCell: React.FC<{ text: string; fallback: string }> = ({ text, fallback }) => {
+const PromptCell: React.FC<{ text: string; fallback: string; quiet?: boolean }> = ({ text, fallback, quiet }) => {
   const { t } = useI18n();
   const toast = useToast();
   const [hover, setHover] = React.useState(false);
@@ -312,7 +316,14 @@ const PromptCell: React.FC<{ text: string; fallback: string }> = ({ text, fallba
           textOverflow: 'ellipsis',
         }}
       >
-        {hasText ? text : fallback}
+        {hasText ? (
+          text
+        ) : (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <Wrench size={10} style={{ flexShrink: 0 }} />
+            {!quiet && fallback}
+          </span>
+        )}
       </span>
       {hasText && hover && (
         <span
@@ -1382,7 +1393,7 @@ export const SessionsPage: React.FC = () => {
                       {label}
                     </span>
                   ))}
-                  {(detailDesc ? [...timeline.traces].reverse() : timeline.traces).map(tr => (
+                  {(detailDesc ? [...timeline.traces].reverse() : timeline.traces).map((tr, i, arr) => (
                     <React.Fragment key={tr.traceId}>
                       <span style={{ textAlign: 'center', color: 'var(--text-dim)' }}>#{tr.turnNumber}</span>
                       <span style={{ textAlign: 'center', color: 'var(--text-dim)' }}>{new Date(tr.timestamp).toLocaleTimeString()}</span>
@@ -1409,6 +1420,14 @@ export const SessionsPage: React.FC = () => {
                       <PromptCell
                         text={tr.request?.userPromptSummary ?? ''}
                         fallback={t('sessions.promptNoUser')}
+                        // Continuation-run dedup: only the FIRST consecutive
+                        // no-prompt row keeps the text label (the rest show
+                        // the bare wrench). Rendered order decides "first".
+                        quiet={
+                          !tr.request?.userPromptSummary &&
+                          i > 0 &&
+                          !arr[i - 1].request?.userPromptSummary
+                        }
                       />
                       <span style={{ textAlign: 'center' }}><EffortCell tr={tr} /></span>
                       <span style={{ textAlign: 'center' }}>{tr.finops.inputTokens.toLocaleString()}</span>
