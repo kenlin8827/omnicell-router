@@ -3,8 +3,9 @@
  * console session table. Display-only: the UA is client-forgeable and is
  * deliberately never an identity/routing input (ADR-0002 resolves session
  * identity zero-header, anchored on the API-key application). Unknown UAs
- * fall back to the trimmed raw string so the UI never invents a client that
- * isn't there — the full raw value stays in the badge tooltip.
+ * fall back to the leading token of the trimmed raw string so the UI never
+ * invents a client that isn't there — the full raw value stays in the badge
+ * tooltip.
  */
 const CLIENT_PATTERNS: [RegExp, string][] = [
   // Coding agents / CLIs
@@ -51,15 +52,18 @@ const CLIENT_PATTERNS: [RegExp, string][] = [
   [/wget/i, 'Wget'],
 ];
 
-/** Max length of an unrecognized UA shown as the badge label. */
+/** Max length of an unrecognized UA token shown as the badge label. */
 const UNKNOWN_LABEL_CAP = 32;
 
 export function clientDisplayName(ua: string): string {
   for (const [pattern, name] of CLIENT_PATTERNS) {
     if (pattern.test(ua)) return name;
   }
-  const trimmed = ua.trim();
-  return trimmed.length > UNKNOWN_LABEL_CAP
-    ? `${trimmed.slice(0, UNKNOWN_LABEL_CAP)}…`
-    : trimmed || '—';
+  // Unrecognized UA: show only the leading space-separated token, e.g.
+  // "ai/6.0.182" from "ai/6.0.182 ai-sdk/provider-utils/4.0.27 runtime/browser"
+  // — the trailing segments are SDK/runtime detail that belongs in the tooltip.
+  const token = ua.trim().split(/\s+/)[0] ?? '';
+  return token.length > UNKNOWN_LABEL_CAP
+    ? `${token.slice(0, UNKNOWN_LABEL_CAP)}…`
+    : token || '—';
 }
