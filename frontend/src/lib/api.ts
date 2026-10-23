@@ -1326,6 +1326,32 @@ export const api = {
     return res.json();
   },
 
+  /** Smart slot assignment: the backend runs ONE decider-model chat call over
+   *  frontend-supplied targets/candidates (console drafts are the truth) and
+   *  returns slot → model-id assignments. Pure decision service — nothing is
+   *  persisted; the caller applies the result to its own draft state. */
+  async smartAssignClient(
+    client: string,
+    payload: {
+      deciderModel: string;
+      targets: { key: string; label?: string; role?: string; current?: string }[];
+      /** Plain ids, or `{ id, note }` — the note contextualizes (e.g. the model
+       *  a profile slot resolves to) but only `id` is a legal assignment. */
+      candidates: (string | { id: string; note?: string })[];
+    }
+  ): Promise<{ status: string; assignments: Record<string, string> }> {
+    const res = await fetch(`/api/admin/client/${client}/smart-assign`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.message || `HTTP ${res.status}`);
+    }
+    return res.json();
+  },
+
   /** All models the gateway can route to: virtual (auto/lite/plus/pro/ultra), combos,
    *  registered models and variant exposures — `kind` tags which one each id is ('auto' = the bare auto alias, 'tier' = the bare tier aliases).
    *  `tiers` = the full membership set (a model may belong to several tiers).

@@ -1391,6 +1391,26 @@ hiddenBadge: string;
     modelsShowAll: string;
     modelsCollapse: string;
     reset: string;
+    /** Smart-assign dialog (decider model picks slot/role models) */
+    smartBtn: string;
+    smartTitle: string;
+    smartSubtitle: string;
+    smartDecider: string;
+    smartDeciderPick: string;
+    smartCandidates: string;
+    smartFilterAll: string;
+    smartFilterTier: string;
+    smartFilterCombo: string;
+    smartFilterModel: string;
+    smartTargets: string;
+    smartConfirm: string;
+    smartApplyDone: string;
+    smartFailed: string;
+    smartBusy: string;
+    smartBusyHint: string;
+    smartScopeKey: string;
+    smartScopeNone: string;
+    smartScopeEmpty: string;
     proxyHint: string;
     nameOpencodeProxy: string;
     /** Model-profile link UI (opencode setup) */

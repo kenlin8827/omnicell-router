@@ -13,6 +13,8 @@ import { applyRouteEntriesConfig, getRouteEntryStore, routeEntriesGate } from '.
 import { appendRoutingLedger } from '../router/routing-ledger.js';
 import { Layer2Decision } from '../router/layer2-decision.js';
 import { EFFORT_LADDER, ReasoningEffort, TierLevel } from '../types/router.js';
+import { runSystemoneDecision } from '../protocols/systemone/decide.js';
+import { SMART_ASSIGN_TIMEOUT_MS } from '../config/defaults.js';
 import { initProxyConfig } from '../utils/proxy.js';
 import { getOcrHomeDir } from '../cli/paths.js';
 import { getHeadroomSidecarStatus, startHeadroomSidecar, stopHeadroomSidecar } from '../compression/headroom-sidecar.js';
@@ -1239,6 +1241,120 @@ export function registerConsoleRoutes(
 
   app.post('/api/admin/client/:client/setup', handleSetup);
   app.post('/api/admin/client/:client/teardown', handleTeardown);
+
+  /**
+   * Smart slot assignment (console "smart assign" button): ONE System One
+   * decision call against a caller-chosen decider model — per-target 'choice'
+   * questions over the candidate set, so every wire works: systemone-wire
+   * deciders go through the native vendor passthrough, chat-wire ones through
+   * the protocol conversion (JSON mode + repair), combos resolve to their
+   * leader member first. Everything that defines the problem — the slot/role
+   * list and the candidate set — is supplied by the frontend (the console
+   * drafts ARE the truth, including unsaved edits); the backend only runs the
+   * decision and never persists anything. The caller applies the returned
+   * assignments to its own draft state.
+   */
+  app.post('/api/admin/client/:client/smart-assign', async (req, reply) => {
+    const body = (req.body || {}) as {
+      deciderModel?: string;
+      targets?: { key: string; label?: string; role?: string; current?: string }[];
+      candidates?: (string | { id: string; note?: string })[];
+    };
+    const decider = (body.deciderModel || '').trim();
+    const targets = Array.isArray(body.targets) ? body.targets.filter((t) => t && t.key) : [];
+    // Candidates are plain ids or { id, note } — the note (e.g. the model a
+    // profile slot resolves to) contextualizes the choice but only `id` is a
+    // legal assignment value.
+    const rawCandidates = Array.isArray(body.candidates) ? body.candidates : [];
+    const candidates = rawCandidates
+      .map((c: any) => (typeof c === 'string' ? { id: c } : { id: String(c?.id || ''), note: typeof c?.note === 'string' ? c.note : undefined }))
+      .filter((c: { id: string }) => c.id);
+    if (!decider) return reply.status(400).send({ success: false, message: 'deciderModel is required' });
+    if (targets.length === 0) return reply.status(400).send({ success: false, message: 'targets must not be empty' });
+    if (candidates.length === 0) return reply.status(400).send({ success: false, message: 'candidates must not be empty' });
+
+    // Resolve the decider to a PHYSICAL model: a combo id runs through its
+    // leader member (the same leader pick the routing path uses).
+    let model = registry.getModel(decider);
+    if (!model && registry.isCombo(decider)) {
+      const members = registry.resolveCombo(decider);
+      if (members.length === 0) {
+        return reply.status(400).send({ success: false, message: `Decider combo '${decider}' has no registered members` });
+      }
+      model = registry.pickComboLeader(decider, members);
+    }
+    if (!model) {
+      return reply.status(400).send({ success: false, message: `Decider model '${decider}' is not routable by the gateway` });
+    }
+
+    const state: Record<string, unknown> = {
+      task: 'Assign each role/slot the MOST suitable candidate id.',
+      roles: targets.map((t) => ({
+        key: t.key,
+        name: t.label || t.key,
+        ...(t.role ? { purpose: t.role } : {}),
+        ...(t.current ? { current: t.current } : {}),
+      })),
+    };
+    const rubric = 'Pick exactly one candidate id per question. Weigh the role purpose (capability needs, cost, latency) against each candidate.';
+    const questions: Record<string, { type: 'choice'; instructions: string; criteria: Record<string, string> }> = {};
+    for (const t of targets) {
+      questions[t.key] = {
+        type: 'choice',
+        instructions: rubric,
+        criteria: Object.fromEntries(candidates.map((c) => [c.id, c.note || c.id])),
+      };
+    }
+
+    const params = req.params as { client: string };
+    let response;
+    let upstreamKind: string = 'unknown';
+    // Hard deadline: a dead/slow upstream must not hang the console request
+    // forever (the native limb has no built-in timeout; the converted limb
+    // honors the signal for its repair retry).
+    const abort = new AbortController();
+    const deadline = setTimeout(() => abort.abort(), SMART_ASSIGN_TIMEOUT_MS);
+    const startedAt = Date.now();
+    try {
+      const decision = await runSystemoneDecision(registry, { model: model.id, state, questions }, model, { signal: abort.signal });
+      response = decision.response;
+      upstreamKind = decision.upstreamKind;
+    } catch (err: any) {
+      const msg = abort.signal.aborted
+        ? `Decider call timed out after ${SMART_ASSIGN_TIMEOUT_MS / 1000}s`
+        : `Decider call failed: ${err?.message || err}`;
+      req.log.warn({ client: params.client, decider, ms: Date.now() - startedAt, targets: targets.length, candidates: candidates.length, err: err?.message || String(err), aborted: abort.signal.aborted }, 'smart-assign: decider call failed');
+      return reply.status(502).send({ success: false, message: msg });
+    } finally {
+      clearTimeout(deadline);
+    }
+    req.log.info({
+      client: params.client,
+      decider,
+      resolvedWire: model.wire,
+      upstreamKind,
+      ms: Date.now() - startedAt,
+      targets: targets.length,
+      candidates: candidates.length,
+      usage: response?.usage,
+    }, 'smart-assign: decider answered');
+
+    const allowed = new Set(candidates.map((c) => c.id));
+    const assignments: Record<string, string> = {};
+    const invalid: string[] = [];
+    for (const t of targets) {
+      const v = (response?.answers?.[t.key] as { choice?: unknown } | undefined)?.choice;
+      if (typeof v === 'string' && allowed.has(v.trim())) assignments[t.key] = v.trim();
+      else invalid.push(t.key);
+    }
+    if (invalid.length > 0) {
+      return reply.status(502).send({
+        success: false,
+        message: `Decider returned invalid/missing assignments for: ${invalid.join(', ')}`,
+      });
+    }
+    return { status: 'ok', assignments };
+  });
 
   // 4a. OpenCode agent inventory (model-profile binding UI): live v2 service
   //     roster (`GET /api/agent`, plugins included) with the file scan

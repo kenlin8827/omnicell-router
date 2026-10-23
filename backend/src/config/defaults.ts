@@ -32,5 +32,8 @@ export const DEFAULT_LAYER2_TIMEOUT_MS = 5000;
 /** Native System One decision passthrough timeout when `provider.timeoutMs` is unset. */
 export const DEFAULT_SYSTEMONE_NATIVE_TIMEOUT_MS = 120_000;
 
+/** Console smart-assign decider hard deadline — requests must not hang on a dead upstream. */
+export const SMART_ASSIGN_TIMEOUT_MS = 60_000;
+
 /** Route-entries LRU capacity when `routeEntries.maxEntries` is unset. */
 export const DEFAULT_ROUTE_ENTRIES_MAX = 5000;

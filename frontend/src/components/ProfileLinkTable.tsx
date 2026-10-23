@@ -30,6 +30,9 @@ interface Props {
   profileId: string;
   profiles: ModelProfileView[];
   onProfileChange: (v: string) => void;
+  /** Optional control rendered right after the profile selector (e.g. the
+   *  smart-assign button — its candidate semantics follow that selector). */
+  headerAction?: React.ReactNode;
   /** Gateway-addressable options (auto aliases + registered ids + combos). */
   gatewayOptions: ComboboxOption[];
   /** name → draft value: '' | gateway ref | `slot:<key>`. */
@@ -70,6 +73,7 @@ export const ProfileLinkTable: React.FC<Props> = ({
   profileId,
   profiles,
   onProfileChange,
+  headerAction,
   gatewayOptions,
   drafts,
   appliedTags,
@@ -189,6 +193,7 @@ export const ProfileLinkTable: React.FC<Props> = ({
             ]}
           />
         </div>
+        {headerAction}
         <span style={{ flex: 1 }} />
         {showSort && rows.length > 8 && (
           <div style={{ display: 'flex', alignItems: 'stretch', gap: '4px', flexShrink: 0 }} title={t('clients.profileSortHint')}>

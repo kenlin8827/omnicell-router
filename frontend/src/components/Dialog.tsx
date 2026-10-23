@@ -128,7 +128,7 @@ export const Dialog: React.FC<DialogProps> = ({
         {footerLeft || footerRight ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingTop: 10, borderTop: '1px solid var(--divider)' }}>
             {footerLeft ? <div style={{ marginRight: 'auto' }}>{footerLeft}</div> : null}
-            {footerRight}
+            <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>{footerRight}</div>
           </div>
         ) : null}
       </div>

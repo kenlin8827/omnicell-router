@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Terminal, Check, X, RefreshCw, Undo2, ArrowUpRight, RotateCcw, ChevronDown, Puzzle, Eraser } from 'lucide-react';
+import { Terminal, Check, X, RefreshCw, Undo2, ArrowUpRight, RotateCcw, ChevronDown, Puzzle, Eraser, Sparkles } from 'lucide-react';
 import { BrandIcon } from '../components/BrandIcons';
 import { Combobox } from '../components/Combobox';
 import { InfoTip } from '../components/InfoTip';
 import { ProfileLinkTable } from '../components/ProfileLinkTable';
+import { SmartAssignDialog, type SmartAssignTarget, type SmartAssignCandidate } from '../components/SmartAssignDialog';
 import { api, type ClientStatus, type ApiKeyItem, type ModelProfileView, type OpenCodeAgentView, type ClientProfileMemoryEntry } from '../lib/api';
 import { modelRefBadge } from '../lib/modelRefBadge';
 import { sortModelOptions } from '../lib/model-options';
@@ -83,6 +84,20 @@ export const ClientsPage: React.FC = () => {
   const [linksOn, setLinksOn] = useState<Record<string, boolean>>({});
   /** Environment-persisted form memory (config.yaml `clientProfileMemory`) */
   const [mem, setMem] = useState<Record<string, ClientProfileMemoryEntry> | null>(null);
+  /** Smart-assign dialog target: client name + the sub-agent rows built from
+   *  the CURRENT draft state, the candidate list, and whether assignments are
+   *  profile slot links (follows the page's current profile selection). */
+  const [smartFor, setSmartFor] = useState<{
+    name: string;
+    targets: SmartAssignTarget[];
+    /** Profile-mode only: the linked profile's slot keys (+ model note). */
+    candidates?: SmartAssignCandidate[];
+    profileMode: boolean;
+    /** No-profile candidate basis: gateway models, permission-scoped to the
+     *  client's selected API key when one is picked. */
+    basis: { id: string; kind?: string; members?: number }[];
+    scopeHint: string;
+  } | null>(null);
 
   const ctxOptions = [
     { value: '262144', label: `256K ${t('clients.ctxDefault')}` },
@@ -533,6 +548,95 @@ export const ClientsPage: React.FC = () => {
     };
   };
 
+  /** Slot/agent rows the smart-assign decider fills — built from the CURRENT
+   *  draft state (never the saved config). Main/primary rows are included in
+   *  plain mode (the decider assigns a direct model ref verbatim). In profile
+   *  mode pi's `main` is EXCLUDED: main is never a profile link (see
+   *  `linkTagsOf`/`piLinkPayload`), and a `slot:<key>` wrap would write an
+   *  illegal draft into pi's main model pick. Candidate semantics follow the
+   *  page's CURRENT profile selection: a picked profile means assignments are
+   *  its SLOT KEYS (linked as `slot:<key>` drafts, candidates annotated with
+   *  the slot's model); no profile means direct gateway model refs. */
+  const openSmartAssign = async (c: ClientStatus) => {
+    const profileId = profileSel[c.name] || '';
+    const profile = profiles.find(p => p.id === profileId);
+    const profileMode = !!profile;
+    let targets: SmartAssignTarget[];
+    if (c.name === 'pi') {
+      targets = clientSlots(c)
+        // Profile mode: skip `main` — it stays a plain model pick, never a
+        // profile-link tag (`slot:<key>` would corrupt pi's primary model).
+        .filter(s => !profileMode || s.key !== 'main')
+        .map(s => ({
+          key: s.key,
+          label: slotLabels[s.key] || s.key,
+          current: s.key === 'main' ? modelSel[c.name]?.main : bindSel[c.name]?.[s.key],
+        }));
+    } else if (c.name === 'opencode') {
+      targets = (agents || []).map(a => ({ key: a.name, label: a.name, role: a.mode, current: bindSel[c.name]?.[a.name] }));
+    } else {
+      targets = clientSlots(c).map(s => ({ key: s.key, label: slotLabels[s.key] || s.key, current: modelSel[c.name]?.[s.key] }));
+    }
+    if (targets.length === 0) return;
+    if (profileMode && Object.keys(profile!.slots || {}).length === 0) return;
+
+    // Permission scoping: the client's traffic will carry its selected API
+    // key, so plain-mode candidates only make sense within that key's model
+    // access. No key picked yet = show everything but say so (the setup will
+    // demand a key before anything is written).
+    let basis = models;
+    let scopeHint = t('clients.smartScopeNone');
+    const key = followKeyOf(c.name);
+    if (key) {
+      const view = keyModels[key.id] || (await api.getKeyModels(key.id).catch(() => null));
+      if (view) {
+        setKeyModels(prev => (prev[key.id] ? prev : { ...prev, [key.id]: view }));
+        const allowed = new Set(view.models.filter(m => m.allowed).map(m => m.id));
+        basis = models.filter(m => allowed.has(m.id));
+        scopeHint = t('clients.smartScopeKey');
+      }
+    }
+    if (!profileMode && basis.length === 0) {
+      toast.error(t('clients.smartScopeEmpty'));
+      return;
+    }
+    setSmartFor({
+      name: c.name,
+      targets,
+      candidates: profileMode ? Object.entries(profile!.slots || {}).map(([k, ref]) => ({ id: k, note: ref })) : undefined,
+      profileMode,
+      basis,
+      scopeHint,
+    });
+  };
+
+  /** Write decider assignments back into the page's DRAFT state (never
+   *  config). pi's `main` is a slot pick (modelSel), not a link-table row —
+   *  split it off; everything else goes to the link-table draft. Profile mode
+   *  wraps each value as a `slot:<key>` link tag; plain mode writes the model
+   *  ref verbatim. `main` never arrives wrapped: profile mode excludes it
+   *  from the targets, and plain mode assigns a bare model ref. */
+  const applySmartAssignments = (clientName: string, assignments: Record<string, string>, profileMode: boolean) => {
+    const wrap = (v: string) => (profileMode ? `slot:${v}` : v);
+    const apply = (draft: Record<string, string>) =>
+      Object.fromEntries(Object.entries(draft).map(([k, v]) => [k, wrap(v)]));
+    if (clientName === 'pi') {
+      const { main, ...roles } = assignments;
+      if (main) setModelSel(prev => ({ ...prev, [clientName]: { ...(prev[clientName] || {}), main: wrap(main) } }));
+      if (Object.keys(roles).length > 0) {
+        setBindSel(prev => ({ ...prev, [clientName]: { ...(prev[clientName] || {}), ...apply(roles) } }));
+        setLinksOn(prev => ({ ...prev, [clientName]: true }));
+      }
+      return;
+    }
+    if (clientName === 'opencode') {
+      setBindSel(prev => ({ ...prev, [clientName]: { ...(prev[clientName] || {}), ...apply(assignments) } }));
+      setLinksOn(prev => ({ ...prev, [clientName]: true }));
+      return;
+    }
+    setModelSel(prev => ({ ...prev, [clientName]: { ...(prev[clientName] || {}), ...apply(assignments) } }));
+  };
+
   const addExtraModel = (clientName: string, id: string) => {
     if (!id) return;
     setExtraSel(prev => {
@@ -789,6 +893,19 @@ export const ClientsPage: React.FC = () => {
                       profileId={profileSel[c.name] || ''}
                       profiles={profiles}
                       onProfileChange={v => setProfileSel(prev => ({ ...prev, [c.name]: v }))}
+                      headerAction={
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          style={{ flexShrink: 0, fontSize: '11px' }}
+                          onClick={() => openSmartAssign(c)}
+                          disabled={loading}
+                          title={t('clients.smartBtn')}
+                        >
+                          <Sparkles size={11} />
+                          <span>{t('clients.smartBtn')}</span>
+                        </button>
+                      }
                       gatewayOptions={modelOptions}
                       drafts={bindSel[c.name] || {}}
                       appliedTags={c.profile?.bindings || {}}
@@ -902,6 +1019,19 @@ export const ClientsPage: React.FC = () => {
                       profileId={profileSel[c.name] || ''}
                       profiles={profiles}
                       onProfileChange={v => setProfileSel(prev => ({ ...prev, [c.name]: v }))}
+                      headerAction={
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          style={{ flexShrink: 0, fontSize: '11px' }}
+                          onClick={() => openSmartAssign(c)}
+                          disabled={loading}
+                          title={t('clients.smartBtn')}
+                        >
+                          <Sparkles size={11} />
+                          <span>{t('clients.smartBtn')}</span>
+                        </button>
+                      }
                       gatewayOptions={modelOptions}
                       drafts={bindSel[c.name] || {}}
                       appliedTags={c.profile?.bindings || {}}
@@ -934,6 +1064,19 @@ export const ClientsPage: React.FC = () => {
               </div>
             );
           })}
+
+          {smartFor && (
+            <SmartAssignDialog
+              clientName={smartFor.name}
+              targets={smartFor.targets}
+              candidates={smartFor.candidates}
+              profileMode={smartFor.profileMode}
+              models={smartFor.basis}
+              scopeHint={smartFor.scopeHint}
+              onClose={() => setSmartFor(null)}
+              onApply={a => applySmartAssignments(smartFor.name, a, smartFor.profileMode)}
+            />
+          )}
 
           {/* Static row: manual hookup guide for clients the gateway can't auto-hook
               (anything speaking OpenAI or Anthropic wire protocol). Pure documentation —
