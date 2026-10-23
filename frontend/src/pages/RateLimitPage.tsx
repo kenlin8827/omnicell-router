@@ -13,6 +13,7 @@ import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
 import { Combobox } from '../components/Combobox';
 import { InfoTip } from '../components/InfoTip';
+import { SegGroup } from '../components/SegGroup';
 
 import { FONT_MONO } from '../lib/fonts';
 /**
@@ -37,48 +38,6 @@ const KIND_COLORS: Record<RateLimitEventKind, string> = {
 };
 
 const MONO: React.CSSProperties = { fontFamily: FONT_MONO, fontSize: '11.5px' };
-
-/** Joined segmented switch (single-select): one bordered container, shared dividers. */
-const SegGroup: React.FC<{
-  value: string;
-  onChange: (v: string) => void;
-  options: { value: string; label: string }[];
-}> = ({ value, onChange, options }) => (
-  <div
-    role="group"
-    style={{
-      display: 'inline-flex',
-      border: '1px solid var(--divider)',
-      borderRadius: '8px',
-      overflow: 'hidden',
-      background: 'var(--btn-bg)',
-    }}
-  >
-    {options.map((o, i) => {
-      const active = value === o.value;
-      return (
-        <button
-          key={o.value || 'all'}
-          type="button"
-          aria-pressed={active}
-          onClick={() => onChange(o.value)}
-          style={{
-            padding: '5px 12px',
-            fontSize: '12px',
-            border: 'none',
-            borderRight: i < options.length - 1 ? '1px solid var(--divider)' : 'none',
-            background: active ? 'var(--btn-primary-bg)' : 'transparent',
-            color: active ? 'var(--btn-primary-text)' : 'var(--text-main)',
-            cursor: 'pointer',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {o.label}
-        </button>
-      );
-    })}
-  </div>
-);
 
 const TH: React.CSSProperties = {
   padding: '6px 10px',

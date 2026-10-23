@@ -21,6 +21,7 @@ import { Chip, EffortChips } from '../components/Chip';
 import { VariantListEditor } from '../components/VariantListEditor';
 import { ModalityPicker } from '../components/ModalityPicker';
 import { Dialog } from '../components/Dialog';
+import { SegGroup } from '../components/SegGroup';
 import { Field, FieldRow, FormSection } from '../components/Form';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import { EFFORT_LADDER, effectiveEffortLadder, effortOptionList } from '../lib/effort';
@@ -114,6 +115,8 @@ const TypeBadge: React.FC<{ source: CatalogSourceView }> = ({ source }) => {
 const fmtPrice = (v?: number): string => (typeof v === 'number' ? '$' + v.toFixed(3) : '—');
 
 const MODEL_GRID = 'minmax(200px, 2fr) minmax(130px, 1.3fr) 84px 84px 88px';
+/** Flat view prepends the owning provider so rows read standalone. */
+const PROVIDER_GRID = `minmax(120px, 0.9fr) ${MODEL_GRID}`;
 
 /** Pretty-JSON above this char count freezes <pre> layout (~100k+ line boxes); render a
  * newline-bounded prefix instead. Keep the "300 KB" copy in catalogPage.jsonTruncated in sync. */
@@ -140,20 +143,28 @@ const JSON_PRE: React.CSSProperties = {
 };
 
 /** Compact model detail table (provider drill-down + flat model-list sources).
- *  lockedIds holds fully-qualified `providerId||modelId` keys (providerId prop
- *  required for lock display/toggling). */
+ *  lockedIds holds fully-qualified `providerId||modelId` keys. The owning
+ *  provider comes from the `providerId` prop in grouped views, or per row via
+ *  `providerOf` in the flat view (which also turns on the provider column and
+ *  tags each row with its owning provider id first). */
 const ModelTable: React.FC<{
   models: CatalogSourceDataModelRecord[];
   showSource?: boolean;
   providerId?: string;
+  /** Flat view: resolve the row's owning provider (locks + provider column). */
+  providerOf?: (m: CatalogSourceDataModelRecord) => string;
   lockedIds?: Set<string>;
   onToggleLock?: (m: CatalogSourceDataModelRecord) => void;
   /** Hide / show from the model catalog — writes overrides.json (see ModelsPage). */
   onToggleHidden?: (m: CatalogSourceDataModelRecord) => void;
   onEdit?: (m: CatalogSourceDataModelRecord) => void;
-}> = ({ models, showSource, providerId, lockedIds, onToggleLock, onToggleHidden, onEdit }) => {
-  const lockKey = (mid: string): string => (providerId ? `${providerId}||${mid}` : mid);
-  const isLocked = (mid: string): boolean => Boolean(lockedIds?.has(lockKey(mid)));
+}> = ({ models, showSource, providerId, providerOf, lockedIds, onToggleLock, onToggleHidden, onEdit }) => {
+  const ownerOf = (m: CatalogSourceDataModelRecord): string | undefined => providerOf?.(m) ?? providerId;
+  const lockKey = (m: CatalogSourceDataModelRecord): string => {
+    const owner = ownerOf(m);
+    return owner ? `${owner}||${m.id}` : m.id;
+  };
+  const isLocked = (m: CatalogSourceDataModelRecord): boolean => Boolean(lockedIds?.has(lockKey(m)));
   const { t } = useI18n();
   const head: React.CSSProperties = {
     fontSize: '10px',
@@ -177,7 +188,8 @@ const ModelTable: React.FC<{
     </button>
   );
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: MODEL_GRID }}>
+    <div style={{ display: 'grid', gridTemplateColumns: providerOf ? PROVIDER_GRID : MODEL_GRID }}>
+      {providerOf && <div style={head}>{t('catalogPage.dataColProvider')}</div>}
       <div style={head}>{t('catalogPage.dataColModel')}</div>
       <div style={head}>{t('catalogPage.dataColName')}</div>
       <div style={head}>{t('catalogPage.dataColInput')}</div>
@@ -189,7 +201,12 @@ const ModelTable: React.FC<{
         // them) but the row reads as out-of-routing at a glance
         const rcell: React.CSSProperties = hidden ? { ...cell, opacity: 0.55 } : cell;
         return (
-        <React.Fragment key={m.id}>
+        <React.Fragment key={`${ownerOf(m) ?? ''}||${m.id}`}>
+          {providerOf && (
+            <div style={{ ...rcell, fontSize: '10px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {providerOf(m) || '—'}
+            </div>
+          )}
           <div style={{ ...rcell, fontFamily: FONT_MONO, fontSize: '10px' }}>
             {m.id}
             {hidden && (
@@ -214,13 +231,13 @@ const ModelTable: React.FC<{
                 )}
             {onToggleLock
               ? iconBtn(
-                  isLocked(m.id) ? 'var(--accent-amber)' : 'var(--text-dim)',
-                  isLocked(m.id) ? t('models.unlockHint') : t('models.lockHint'),
+                  isLocked(m) ? 'var(--accent-amber)' : 'var(--text-dim)',
+                  isLocked(m) ? t('models.unlockHint') : t('models.lockHint'),
                   () => onToggleLock(m),
-                  isLocked(m.id) ? <Lock size={9} /> : <LockOpen size={9} />,
+                  isLocked(m) ? <Lock size={9} /> : <LockOpen size={9} />,
                   8,
                 )
-              : isLocked(m.id) && (
+              : isLocked(m) && (
                   <span title={t('models.lockHint')} style={{ display: 'inline-flex', color: 'var(--accent-amber)', marginLeft: 4, verticalAlign: 'middle' }}>
                     <Lock size={9} />
                   </span>
@@ -493,6 +510,12 @@ const DataViewerModal: React.FC<{ source: CatalogSourceView; onClose: () => void
   );
 };
 
+/** Flat-view row: a catalog model tagged with its owning provider id, so the
+ *  shared ModelTable can key locks and render the provider column without a
+ *  parallel array. Display-only copies — writes still go through the real ids. */
+type FlatCatalogRow = CatalogSourceDataModelRecord & { providerId: string };
+const flatRowProvider = (m: CatalogSourceDataModelRecord): string => (m as FlatCatalogRow).providerId;
+
 /** Read-only viewer of the FULL aggregated catalog (list() output): local config
  * definitions first, opencode baseline, extension enrichments — the OCR truth.
  * Rendered as the "aggregated catalog" TAB of the sources page; it is a
@@ -509,6 +532,11 @@ const OcrCatalogPanel: React.FC = () => {
   const [editTarget, setEditTarget] = useState<{ providerId: string; modelId: string; current: CatalogSourceDataModelRecord } | null>(null);
   const [onlyLocked, setOnlyLocked] = useState(false);
   const [onlyHidden, setOnlyHidden] = useState(false);
+  // Two readings of the same truth: `group` answers "who provides what"
+  // (provider accordion), `flat` answers "what exists" across providers
+  // (cross-provider searching, price/context comparison, lock audits).
+  // JSON stays the third mode via the toolbar button.
+  const [viewMode, setViewMode] = useState<'group' | 'flat'>('group');
 
   const loadData = useCallback(async () => {
     const [d, l] = await Promise.all([opencodeApi.ocrCatalog(), opencodeApi.lockedCatalogModels().catch(() => null)]);
@@ -583,6 +611,16 @@ const OcrCatalogPanel: React.FC = () => {
 
   const totalModels = React.useMemo(() => (data?.providers ?? []).reduce((n, p) => n + p.models.length, 0), [data]);
 
+  // Flat rows are tagged with their provider id so ModelTable can key locks and
+  // render the provider column without a parallel array. Display-only copies.
+  const flatRows = React.useMemo(
+    () =>
+      providers.flatMap((p) =>
+        p.models.map((m) => ({ ...m, providerId: p.id } as FlatCatalogRow))
+      ),
+    [providers]
+  );
+
   // provider id → logo URL straight from the aggregated catalog payload (already
   // rewritten to the local logo proxy by the backend); decorative only.
   const logoMap = React.useMemo(() => {
@@ -609,6 +647,16 @@ const OcrCatalogPanel: React.FC = () => {
     }
   };
   const truncated = providers.length > MAX_RENDER;
+  const flatTruncated = flatRows.length > MAX_RENDER;
+  // The 300-row render cap applies to whichever axis the current view shows
+  // (providers in the group view, model rows in the flat view).
+  const anyTruncated = viewMode === 'flat' ? flatTruncated : truncated;
+  const shownCount = viewMode === 'flat' ? flatRows.length : providers.length;
+  const emptyText = onlyLocked
+    ? t('catalogPage.ocrNoLocked')
+    : onlyHidden
+      ? t('catalogPage.ocrNoHidden')
+      : t('catalogPage.dataEmpty');
   const toggle = (id: string) =>
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -681,22 +729,37 @@ const OcrCatalogPanel: React.FC = () => {
         )}
         {data && !showJson && (
           <>
-            <input
-              type="text"
-              className="input"
-              placeholder={t('catalogPage.dataSearch')}
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-            />
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <input
+                type="text"
+                className="input"
+                placeholder={t('catalogPage.dataSearch')}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                style={{ flex: 1 }}
+              />
+              <SegGroup
+                value={viewMode}
+                onChange={(v) => setViewMode(v === 'flat' ? 'flat' : 'group')}
+                options={[
+                  { value: 'group', label: t('catalogPage.ocrViewGroup'), title: t('catalogPage.ocrViewGroupHint') },
+                  { value: 'flat', label: t('catalogPage.ocrViewFlat'), title: t('catalogPage.ocrViewFlatHint') },
+                ]}
+              />
+            </div>
             <div style={{ overflowY: 'auto', flex: 1, minHeight: 0, borderTop: '1px solid var(--divider)', paddingTop: '8px' }}>
-              {providers.length === 0 ? (
-                <div style={{ ...dim, padding: '24px 0', textAlign: 'center' }}>
-                  {onlyLocked
-                    ? t('catalogPage.ocrNoLocked')
-                    : onlyHidden
-                      ? t('catalogPage.ocrNoHidden')
-                      : t('catalogPage.dataEmpty')}
-                </div>
+              {shownCount === 0 ? (
+                <div style={{ ...dim, padding: '24px 0', textAlign: 'center' }}>{emptyText}</div>
+              ) : viewMode === 'flat' ? (
+                <ModelTable
+                  models={flatRows.slice(0, MAX_RENDER)}
+                  showSource
+                  providerOf={flatRowProvider}
+                  lockedIds={lockedIds}
+                  onToggleLock={(m) => void handleToggleLock(m, flatRowProvider(m))}
+                  onToggleHidden={(m) => void handleToggleHidden(m, flatRowProvider(m))}
+                  onEdit={(m) => setEditTarget({ providerId: flatRowProvider(m), modelId: m.id, current: m })}
+                />
               ) : (
                 providers.slice(0, MAX_RENDER).map((p) => {
                   const open = expanded.has(p.id);
@@ -745,7 +808,7 @@ const OcrCatalogPanel: React.FC = () => {
                   );
                 })
               )}
-              {truncated && (
+              {anyTruncated && (
                 <div style={{ fontSize: '11px', color: 'var(--accent-amber)', padding: '10px 4px' }}>
                   {t('catalogPage.dataTruncated', { n: MAX_RENDER })}
                 </div>
