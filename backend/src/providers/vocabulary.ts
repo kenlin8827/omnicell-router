@@ -30,13 +30,12 @@ const RAW_ENTRIES: Omit<NpmVocabularyEntry, 'wire'>[] = [
   { alias: '@ai-sdk/anthropic', package: '@opencode/ai/providers/anthropic', order: 20 },
   { alias: '@ai-sdk/openai', package: '@opencode/ai/providers/openai', order: 30 },
   { alias: '@ai-sdk/google', package: '@opencode/ai/providers/google', order: 40 },
-  // The TypeSafe decision alias is DELIBERATELY absent: opencode 2.0.29 has no
-  // `typesafe` package (the SDK module is `typesafe-ai` and exposes only
-  // `experimental.evaluation`), so offering it in the dropdown would store a
-  // package the client cannot load. The read side still resolves the segment
-  // (wire.ts), so a hand-written def keeps the decision wire. RESTORE this entry
-  // together with the native npm→package line in opencode/user-config.ts.
-  // { alias: '@ai-sdk/typesafe-ai', package: '@opencode/ai/providers/typesafe', order: 50 },
+  // The TypeSafe decision alias is OFFERED. Its opencode v2 segment is real on
+  // the read side (wire.ts maps it to wire `systemone`), so a def authored from
+  // this npm keeps the decision wire end to end. The client copy is still made
+  // loadable by CLIENT_PACKAGE_FALLBACK (def-materialize.ts) — offering the
+  // alias must not depend on the client having shipped the segment.
+  { alias: '@ai-sdk/typesafe-ai', package: '@opencode/ai/providers/typesafe', order: 50 },
   { alias: '@ai-sdk/azure', package: '@opencode/ai/providers/azure', order: 60 },
   { alias: '@ai-sdk/amazon-bedrock', package: '@opencode/ai/providers/amazon-bedrock', order: 70 },
   // Catalog-only chat packages (plain openai wire) — kept for the dropdown's

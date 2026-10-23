@@ -2,7 +2,7 @@
 
 ## 状态
 
-已实现 — 2026-10-15（事实面语料重写）。2026-10-21 修订：原生 System One 上游支路（`systemoneUpstreams[]`、厂商直通）**退役**——该面仅经 chat 模型协议转换服务；未来 Jev/Bailian 集成以普通 provider 形式经定义文件接入（ADR-0010）。2026-10-23 修订：写侧 `@ai-sdk/typesafe-ai` → package 映射现在产出兼容运行时的 package——客户端（2.0.29）没有 `typesafe` 段，携带该 package 的 def 无法加载；wire 对直接以该段书写的 def 仍可达，写给客户端的那一份会被替换（ADR-0010 修订案）。2026-10-22 修订：原生 decision 支路**以 wire 驱动方式复职**——解析出的 npm 为 `@ai-sdk/typesafe-ai`（或 opencode v2 segment `typesafe`）的 provider 定义解析到 wire `systemone`，在决策面上以**原生直通调用**服务（§7）；所有 chat wire 模型仍走转换。范围：入站协议面（原生路由 + MITM 代理）、共享派发接缝、System One 决策网关、请求捕获平面。trace/捕获持久化分界 = ADR-0005；数据集采样（**不是**捕获）= ADR-0001；决策面的寻址 = ADR-0003。
+已实现 — 2026-10-15（事实面语料重写）。2026-10-21 修订：原生 System One 上游支路（`systemoneUpstreams[]`、厂商直通）**退役**——该面仅经 chat 模型协议转换服务；未来 Jev/Bailian 集成以普通 provider 形式经定义文件接入（ADR-0010）。2026-10-24 修订：写侧 `@ai-sdk/typesafe-ai` → package 映射保留原生 `typesafe` 段，该别名继续留在 npm 词表中——2026-10-23 的降级（改用兼容运行时 + 从下拉框隐藏别名）是回归，现予撤回。客户端可加载性仍是独立一层：客户端没有该段时，写给客户端的那一份由 `CLIENT_PACKAGE_FALLBACK` 替换（ADR-0010 修订案）。2026-10-22 修订：原生 decision 支路**以 wire 驱动方式复职**——解析出的 npm 为 `@ai-sdk/typesafe-ai`（或 opencode v2 segment `typesafe`）的 provider 定义解析到 wire `systemone`，在决策面上以**原生直通调用**服务（§7）；所有 chat wire 模型仍走转换。范围：入站协议面（原生路由 + MITM 代理）、共享派发接缝、System One 决策网关、请求捕获平面。trace/捕获持久化分界 = ADR-0005；数据集采样（**不是**捕获）= ADR-0001；决策面的寻址 = ADR-0003。
 
 ## 决策
 

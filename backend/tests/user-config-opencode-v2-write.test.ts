@@ -279,12 +279,12 @@ describe('opencodeV2PackageFor — the write-side package vocabulary', () => {
     }
   });
 
-  it('temporarily downgrades the TypeSafe npm to the compatible runtime (client has no typesafe segment)', () => {
-    // DELIBERATE, version-scoped: opencode 2.0.29 knows no `typesafe` package (the
-    // SDK module is `typesafe-ai` and only exposes experimental.evaluation), so a
-    // def written with it could not be loaded. Restoring the native mapping in
-    // user-config.ts means updating this expectation in the same commit.
-    expect(opencodeV2PackageFor('@ai-sdk/typesafe-ai')).toBe('@opencode/ai/providers/openai-compatible');
+  it('maps the TypeSafe npm onto its native typesafe segment (decision wire)', () => {
+    // The segment is a real read-side wire (`systemone`). Client loadability is
+    // NOT handled here — CLIENT_PACKAGE_FALLBACK substitutes the compatible
+    // runtime in the client copy only, so the book keeps this value.
+    expect(opencodeV2PackageFor('@ai-sdk/typesafe-ai')).toBe('@opencode/ai/providers/typesafe');
+    expect(wireFor('@opencode/ai/providers/typesafe')).toBe('systemone');
   });
 
   it('passes already-v2 packages and unknown npm strings through verbatim', () => {

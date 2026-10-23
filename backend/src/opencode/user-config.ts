@@ -339,17 +339,13 @@ const AI_SDK_TO_OPENCODE_V2_PACKAGE: Record<string, string> = {
   '@ai-sdk/google-vertex': '@opencode/ai/providers/google-vertex',
   '@ai-sdk/bedrock': '@opencode/ai/providers/bedrock',
   '@ai-sdk/amazon-bedrock': '@opencode/ai/providers/amazon-bedrock',
-  // TypeSafe decision wire. Its read-side segment 'typesafe' resolves to wire
-  // 'systemone' (wire.ts OPENCODE_V2_SEGMENT_WIRES), but opencode 2.0.29 ships NO
-  // such package: the SDK module is `typesafe-ai` and exposes only
-  // `experimental.evaluation`, and the client's loader knows neither segment. A
-  // def written with it is therefore unloadable by the client, so the write side
-  // temporarily emits the compatible-runtime package instead.
-  // RESTORE (when the client supports the segment): uncomment the next line,
-  // delete the one after it, and drop the `systemone` entry from
-  // CLIENT_PACKAGE_FALLBACK (credentials/def-materialize.ts).
-  // '@ai-sdk/typesafe-ai': '@opencode/ai/providers/typesafe',
-  '@ai-sdk/typesafe-ai': OPENCODE_V2_OPENAI_COMPATIBLE_PACKAGE,
+  // TypeSafe decision wire. The segment 'typesafe' resolves to wire 'systemone'
+  // (wire.ts OPENCODE_V2_SEGMENT_WIRES), so the authored package keeps the
+  // decision wire end to end. Client loadability is a separate concern: a client
+  // that has not shipped the segment still gets the compatible-runtime package,
+  // substituted in the client copy only by CLIENT_PACKAGE_FALLBACK
+  // (credentials/def-materialize.ts) — the book always keeps this value.
+  '@ai-sdk/typesafe-ai': '@opencode/ai/providers/typesafe',
 };
 
 /** npm string → the opencode v2 `package` value (mapped table, already-v2 passthrough, unknown passthrough). */

@@ -43,11 +43,13 @@ describe('npm vocabulary consistency', () => {
     expect(new Set(orders).size).toBe(orders.length);
   });
 
-  // Version-scoped exception (ADR-0008 2026-10-23 amendment): the decision alias
-  // is not OFFERED while the client ships no `typesafe` package. The wire itself
-  // is still resolvable, so hand-written defs keep working.
-  test('the decision alias is withheld from the dropdown while the client cannot load its package', () => {
-    expect(NPM_VOCABULARY.find((e) => e.alias === '@ai-sdk/typesafe-ai')).toBeUndefined();
+  // The decision alias IS offered: its v2 segment is a real read-side wire
+  // (`systemone`), and client loadability is handled by the materializer's
+  // CLIENT_PACKAGE_FALLBACK rather than by hiding the option.
+  test('the decision alias is offered and resolves to the decision wire', () => {
+    const entry = NPM_VOCABULARY.find((e) => e.alias === '@ai-sdk/typesafe-ai');
+    expect(entry?.package).toBe('@opencode/ai/providers/typesafe');
+    expect(entry?.wire).toBe('systemone');
     expect(wireFor('@ai-sdk/typesafe-ai')).toBe('systemone');
     expect(wireFor('@opencode/ai/providers/typesafe')).toBe('systemone');
   });
