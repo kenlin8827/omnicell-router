@@ -782,6 +782,10 @@ export class CaptureRecorder {
 
   /** Date directories, newest first. */
   public listDates(): CaptureDateRow[] {
+    return this.scanDates();
+  }
+
+  private scanDates(): CaptureDateRow[] {
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(this.rootDir, { withFileTypes: true });
@@ -810,6 +814,40 @@ export class CaptureRecorder {
       rows.push({ date: e.name, sessions, bytes });
     }
     return rows.sort((a, b) => b.date.localeCompare(a.date));
+  }
+
+  /**
+   * Cross-date continuation metadata for every archive in ONE date directory:
+   * a name-only scan across ALL date dirs marks each row whose session file
+   * also exists under other dates (a conversation that crossed midnight —
+   * same sanitized file name, appends sharded by write-time date). Cheap:
+   * readdir only, zero body parses. `spanDates` is newest-first (listDates
+   * order) INCLUDING this row's own date; attached only when it spans >1.
+   */
+  public listSessionsWithSpans(date: string, apiKeyFilter?: string): (CaptureSessionRow & { spanDates?: string[] })[] {
+    const rows = this.listSessions(date, apiKeyFilter);
+    if (rows.length === 0) return rows;
+    // One pass over all date dirs builds the fileName → dates map; each date
+    // dir is readdir'd once regardless of row count.
+    const byFile = new Map<string, string[]>();
+    for (const d of this.listDates()) {
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(path.join(this.rootDir, d.date), { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const e of entries) {
+        if (!e.isFile() || !e.name.endsWith(JSONL_SUFFIX)) continue;
+        const list = byFile.get(e.name);
+        if (list) list.push(d.date);
+        else byFile.set(e.name, [d.date]);
+      }
+    }
+    return rows.map(r => {
+      const spans = byFile.get(r.file);
+      return spans && spans.length > 1 ? { ...r, spanDates: spans } : r;
+    });
   }
 
   /** Session archive files inside one date directory, most recently written first.
@@ -1124,6 +1162,168 @@ export class CaptureRecorder {
       )
     );
     return turn ? { turn } : null;
+  }
+
+  /* --------------------------------------------------- cross-date stitching */
+
+  // conversationKey per archive path (first 64 KB head read). null = read
+  // done, none found. Bounded: one entry per archive file ever stitched.
+  private convKeyCache = new Map<string, string | null>();
+  private static CONVKEY_HEAD_BYTES = 64 * 1024;
+
+  /** All date dirs whose directory listing contains exactly this file name. */
+  private findDatesForFile(file: string): string[] {
+    if (!file || !file.endsWith(JSONL_SUFFIX) || file.includes('/') || file.includes('\\') || file.includes('..')) {
+      return [];
+    }
+    const dates: string[] = [];
+    for (const d of this.listDates()) {
+      try {
+        if (fs.readdirSync(path.join(this.rootDir, d.date), { withFileTypes: true }).some(e => e.isFile() && e.name === file)) {
+          dates.push(d.date);
+        }
+      } catch {
+        continue; // Date dir vanished mid-scan — fail open.
+      }
+    }
+    return dates;
+  }
+
+  /** First conversationKey in an archive's head window (conversationKey is
+   * stamped on EVERY event, so the first lines carry it). Cached per path. */
+  private readConversationKey(date: string, file: string): string | null {
+    const filePath = this.resolveArchiveFile(date, file);
+    if (!filePath) return null;
+    const cached = this.convKeyCache.get(filePath);
+    if (cached !== undefined) return cached;
+    let key: string | null = null;
+    try {
+      const fd = fs.openSync(filePath, 'r');
+      try {
+        const buf = Buffer.alloc(Math.min(CaptureRecorder.CONVKEY_HEAD_BYTES, fs.fstatSync(fd).size));
+        fs.readSync(fd, buf, 0, buf.length, 0);
+        for (const line of buf.toString('utf8').split(/\r?\n/)) {
+          if (!line.trim()) continue;
+          try {
+            const k = (JSON.parse(line) as Record<string, unknown>).conversationKey;
+            if (typeof k === 'string' && k) {
+              key = k;
+              break;
+            }
+          } catch {
+            /* partial first line — skip */
+          }
+        }
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      key = null;
+    }
+    // Cap the cache: admin consoles browse finite archives, but a config-root
+    // change or long uptime must not grow it without bound.
+    if (this.convKeyCache.size > 4096) this.convKeyCache.clear();
+    this.convKeyCache.set(filePath, key);
+    return key;
+  }
+
+  /**
+   * All fragments of the conversation this archive belongs to, across ALL
+   * date dirs. Primary join: exact file name (a session that crossed
+   * midnight keeps its sanitized name — readdir-only, free). Fallback join:
+   * the anchor's `conversationKey` matches sibling archives whose session id
+   * churned mid-conversation (head-window reads, cached). Newest first.
+   */
+  private conversationFragments(date: string, file: string): { date: string; file: string }[] {
+    const seen = new Set<string>();
+    const fragments: { date: string; file: string }[] = [];
+    const push = (d: string, f: string) => {
+      const k = `${d}/${f}`;
+      if (seen.has(k)) return;
+      seen.add(k);
+      fragments.push({ date: d, file: f });
+    };
+    // 1. Name join across every date dir.
+    for (const d of this.findDatesForFile(file)) push(d, file);
+    // 2. conversationKey join: only files NOT already matched — those need a
+    //    head read each (cached). Bounded by retention (dates × files).
+    const convKey = this.readConversationKey(date, file);
+    if (convKey) {
+      for (const d of this.listDates()) {
+        let entries: fs.Dirent[];
+        try {
+          entries = fs.readdirSync(path.join(this.rootDir, d.date), { withFileTypes: true });
+        } catch {
+          continue;
+        }
+        for (const e of entries) {
+          if (!e.isFile() || !e.name.endsWith(JSONL_SUFFIX)) continue;
+          if (seen.has(`${d.date}/${e.name}`)) continue;
+          if (this.readConversationKey(d.date, e.name) === convKey) push(d.date, e.name);
+        }
+      }
+    }
+    return fragments;
+  }
+
+  /**
+   * Stitched read: merge the session's fragments from every date dir into
+   * ONE chronological event stream, then group exactly like readEvents.
+   * Reads happen per fragment (each bounded by readWindowBytes), the merge
+   * dedupes by event id (defensive — appends are disjoint by construction)
+   * and sorts by ts, so a turn that straddles midnight reassembles even when
+   * its request and response events landed in different date files.
+   * Fragment turn counts are per-file (the archive's physical layout), while
+   * `turns`/`totalTurns` cover the WHOLE conversation.
+   */
+  public async readEventsStitched(
+    date: string,
+    file: string,
+    limit = 500,
+    bodies: 'full' | 'none' = 'full'
+  ): Promise<{
+    events: HttpExchangeEvent[];
+    turns: CaptureTurnSummary[];
+    totalLines: number;
+    totalTurns: number;
+    fileTruncated: boolean;
+    fragments: { date: string; file: string; turns: number }[];
+  }> {
+    const fragments = this.conversationFragments(date, file);
+    const merged = new Map<string, HttpExchangeEvent>();
+    let fileTruncated = false;
+    const fragmentRows: { date: string; file: string; turns: number }[] = [];
+    for (const f of fragments) {
+      const { events, fileTruncated: trunc } = await this.readWindowEvents(f.date, f.file);
+      if (trunc) fileTruncated = true;
+      for (const ev of events) {
+        if (!merged.has(ev.id)) merged.set(ev.id, ev);
+      }
+      fragmentRows.push({ date: f.date, file: f.file, turns: CaptureRecorder.groupEventsIntoTurns(events).length });
+    }
+    const all = [...merged.values()].sort((a, b) => a.ts - b.ts);
+    if (bodies === 'none') stripBodies(all);
+
+    let newest = all.slice(-Math.max(1, limit));
+    // Same mid-turn guard as readEvents: drop leading orphan response events.
+    const firstTurnStart = newest.findIndex(e => e.direction === 'client' && e.phase === 'request');
+    if (firstTurnStart > 0) newest = newest.slice(firstTurnStart);
+    const turns = CaptureRecorder.groupEventsIntoTurns(newest);
+    const totalTurns = CaptureRecorder.groupEventsIntoTurns(all).length;
+    return { events: newest, turns, totalLines: all.length, totalTurns, fileTruncated, fragments: fragmentRows };
+  }
+
+  /**
+   * readTurn across ALL fragments of the session: the anchor fragment's
+   * window is tried first, then every other fragment — a turn archived in a
+   * previous day's shard must still open its full wire bodies.
+   */
+  public async readTurnStitched(date: string, file: string, eventId: string): Promise<{ turn: CaptureTurnSummary } | null> {
+    for (const f of this.conversationFragments(date, file)) {
+      const result = await this.readTurn(f.date, f.file, eventId);
+      if (result) return result;
+    }
+    return null;
   }
 
   /**

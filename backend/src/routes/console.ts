@@ -3742,7 +3742,9 @@ export function registerConsoleRoutes(
       : Array.isArray(rawApiKey) && typeof rawApiKey[0] === 'string'
         ? rawApiKey[0]
         : '';
-    return { status: 'ok', date, sessions: captureRecorder.listSessions(date, apiKey.trim() || undefined) };
+    // listSessionsWithSpans adds `spanDates` (newest-first, >1 only) — the
+    // console's cross-midnight continuation badge data.
+    return { status: 'ok', date, sessions: captureRecorder.listSessionsWithSpans(date, apiKey.trim() || undefined) };
   });
 
   app.get('/api/admin/capture/:date/:file', async (req: any, reply: any) => {
@@ -3803,7 +3805,13 @@ export function registerConsoleRoutes(
     // payload, instant paint); full bodies come back per turn via /turn or a
     // bodies=full re-read.
     const bodies = (req.query as any)?.bodies === 'none' ? 'none' : 'full';
-    const result = await captureRecorder.readEvents(date, file, limit, bodies);
+    // stitched=1: merge the session's fragments from every date dir (a
+    // conversation that crossed midnight — or whose session id churned) into
+    // one chronological timeline. Response carries the per-fragment breakdown.
+    const stitched = (req.query as any)?.stitched === '1';
+    const result = stitched
+      ? await captureRecorder.readEventsStitched(date, file, limit, bodies)
+      : await captureRecorder.readEvents(date, file, limit, bodies);
     if (result.totalLines === 0 && !captureRecorder.listSessions(date).some(s => s.file === file)) {
       return reply.status(404).send({ status: 'error', message: 'Capture archive not found' });
     }
@@ -3825,7 +3833,12 @@ export function registerConsoleRoutes(
     if (typeof id !== 'string' || !id || id.length > 128) {
       return reply.status(400).send({ status: 'error', message: 'id query param required' });
     }
-    const result = await captureRecorder.readTurn(date, file, id);
+    // stitched=1: also search the session's other date-dir fragments — a
+    // cross-midnight turn's bodies live in the shard its events landed in.
+    const stitched = (req.query as any)?.stitched === '1';
+    const result = stitched
+      ? await captureRecorder.readTurnStitched(date, file, id)
+      : await captureRecorder.readTurn(date, file, id);
     if (!result) {
       return reply.status(404).send({ status: 'error', message: 'Turn not found in read window' });
     }

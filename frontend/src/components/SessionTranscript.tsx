@@ -9,7 +9,7 @@ import React, { useContext, useDeferredValue, useEffect, useMemo, useRef, useSta
 import { createPortal } from 'react-dom';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { AlertTriangle, Bot, ChevronDown, ChevronRight, ChevronsUpDown, Image as ImageIcon, Maximize2, Minimize2, User, Wrench } from 'lucide-react';
+import { AlertTriangle, Bot, ChevronDown, ChevronRight, ChevronsUpDown, Image as ImageIcon, Maximize2, Minimize2, Scale, User, Wrench } from 'lucide-react';
 import { useI18n } from '../i18n/I18nContext';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import { BackToTop, ScrollToBottom } from './BackToTop';
@@ -709,7 +709,8 @@ const TranscriptBlock: React.FC<{
               flexShrink: 0,
             }}
           >
-            ⚖ {t('captures.decisionBadge')}
+            <Scale size={10} style={{ verticalAlign: '-1px', marginRight: '3px' }} />
+            {t('captures.decisionBadge')}
             {turn.decisionLatencyMs !== undefined && ` · ${fmtLatency(turn.decisionLatencyMs)}`}
             {turn.decisionRequest.model !== turn.model && ` · ${turn.decisionRequest.model}`}
           </span>

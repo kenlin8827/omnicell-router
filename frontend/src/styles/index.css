@@ -465,13 +465,28 @@ td, th {
   background: var(--surface-hover);
 }
 
-/* Capture rail session card: the export/delete icons stay hidden until the
-   row is hovered, so the two-line rows read as text, not a button strip. */
+/* Capture rail session card: the export/delete icons collapse to zero
+   width by default (rows read as pure text); hovering the row expands the
+   group and pushes row-2 content left to make room. max-width (not width:
+   auto) so the expansion animates; overflow hidden keeps the icons clipped
+   during the transition. */
 .capture-card-actions {
+  max-width: 0;
+  /* Cancel the row's 6px flex gap while collapsed so the idle row truly
+     claims zero width; restore it on hover. */
+  margin-right: -6px;
+  overflow: hidden;
   opacity: 0;
-  transition: opacity 0.15s ease;
+  transition: max-width 0.18s ease, opacity 0.15s ease, margin-right 0.18s ease;
 }
-.capture-session-card:hover .capture-card-actions {
+.capture-session-card:hover .capture-card-actions,
+/* The selected row keeps its actions permanently expanded: it already
+   carries the chip-bg fill, so two extra icons read as part of the
+   selected state, and the row the user is most likely to act on never
+   depends on hover (stable content position while inspecting it). */
+.capture-session-card[data-selected] .capture-card-actions {
+  max-width: 60px;
+  margin-right: 0;
   opacity: 1;
 }
 

@@ -480,6 +480,20 @@ export interface CaptureSessionRow {
    * per-turn cold-start mints. Absent on key-less / legacy archives.
    */
   conversationKey?: string;
+  /**
+   * All date dirs (newest first) holding this session's archive — present
+   * ONLY when the conversation spans >1 date (crossed midnight; same file
+   * name is sharded by write-time date). Mirrors backend
+   * listSessionsWithSpans.
+   */
+  spanDates?: string[];
+}
+
+/** One date-dir fragment of a stitched (cross-midnight) conversation read. */
+export interface CaptureFragmentRow {
+  date: string;
+  file: string;
+  turns: number;
 }
 
 /** One archive hit for a session id: coordinates only (date dir + file name) */
@@ -1898,29 +1912,36 @@ export const api = {
     date: string,
     file: string,
     limit = 500,
-    bodies: 'full' | 'none' = 'full'
+    bodies: 'full' | 'none' = 'full',
+    stitched = true
   ): Promise<{
     events: HttpExchangeEvent[];
     turns: CaptureTurn[];
     totalLines: number;
     totalTurns: number;
     fileTruncated: boolean;
+    /** Present on stitched reads: per-date-dir fragments of the conversation. */
+    fragments?: CaptureFragmentRow[];
   }> {
+    const params = new URLSearchParams({
+      limit: String(limit),
+      bodies,
+      ...(stitched ? { stitched: '1' } : {}),
+    });
     const res = await fetch(
-      `/api/admin/capture/${encodeURIComponent(date)}/${encodeURIComponent(
-        file
-      )}/events?limit=${limit}&bodies=${bodies}`
+      `/api/admin/capture/${encodeURIComponent(date)}/${encodeURIComponent(file)}/events?${params.toString()}`
     );
     if (!res.ok) return { events: [], turns: [], totalLines: 0, totalTurns: 0, fileTruncated: false };
     return res.json();
   },
 
-  /** Full wire bodies for ONE turn, fetched on demand (metadata-first list reads). */
-  async getCaptureTurn(date: string, file: string, eventId: string): Promise<CaptureTurn | null> {
+  /** Full wire bodies for ONE turn, fetched on demand (metadata-first list reads).
+   *  stitched=1 lets a cross-midnight turn resolve from its other date-dir shard. */
+  async getCaptureTurn(date: string, file: string, eventId: string, stitched = true): Promise<CaptureTurn | null> {
     const res = await fetch(
       `/api/admin/capture/${encodeURIComponent(date)}/${encodeURIComponent(
         file
-      )}/turn?id=${encodeURIComponent(eventId)}`
+      )}/turn?id=${encodeURIComponent(eventId)}${stitched ? '&stitched=1' : ''}`
     );
     if (!res.ok) return null;
     const json = await res.json();

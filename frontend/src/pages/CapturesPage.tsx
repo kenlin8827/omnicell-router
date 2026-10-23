@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
-import { Archive, RefreshCw, Trash2, X, AlertTriangle, Download, Search, Copy, Check, Braces, Maximize2, Minimize2, Zap } from 'lucide-react';
+import { Archive, RefreshCw, Trash2, X, AlertTriangle, Download, Search, Copy, Check, Braces, Maximize2, Minimize2, Scale, Zap, ArrowDownRight, ArrowUpRight } from 'lucide-react';
 import {
   api,
   type CaptureStatus,
   type CaptureDateRow,
   type CaptureSessionRow,
+  type CaptureFragmentRow,
   type HttpExchangeEvent,
   type CaptureTurn,
 } from '../lib/api';
@@ -102,6 +103,13 @@ function fmtBytes(n: number): string {
 
 function fmtTime(ts: number): string {
   return new Date(ts).toLocaleTimeString();
+}
+
+/** Local YYYY-MM-DD of a turn ts — the archive shard it physically landed in. */
+function fmtDay(ts: number): string {
+  const d = new Date(ts);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
 /** Loading skeleton for the session pane — shimmer rows so a click gives
@@ -367,6 +375,24 @@ const CaptureDrawer: React.FC<{
               {new Date(headerTs).toLocaleString()}
             </span>
           )}
+          {/* TraceId — copy-on-click in the drawer header (kept out of the
+              list rows: machine bookkeeping, rarely read inline). */}
+          <span
+            title={turn.traceId}
+            onClick={async () => {
+              const ok = await copyToClipboard(turn.traceId);
+              if (ok) toast.success(t('captures.copied'));
+              else toast.error(t('common.failed'));
+            }}
+            style={{
+              fontSize: '11px',
+              color: 'var(--text-dim)',
+              fontFamily: FONT_MONO,
+              cursor: 'copy',
+            }}
+          >
+            {shortId(turn.traceId)}
+          </span>
           <span
             style={{ fontSize: '12px', color: 'var(--text-dim)', fontFamily: FONT_MONO }}
             title={t('captures.inboundModel')}
@@ -403,28 +429,6 @@ const CaptureDrawer: React.FC<{
               ⇢ {turn.upstreamRequest.proxy}
             </span>
           )}
-          {/* TraceId — the linkable key for joining this turn
-              across capture events and the trace record. Head-truncated
-              display; full value in tooltip, click copies it. */}
-          <span
-            title={turn.traceId}
-            onClick={async () => {
-              const ok = await copyToClipboard(turn.traceId);
-              if (ok) toast.success(t('captures.copied'));
-              else toast.error(t('common.failed'));
-            }}
-            style={{
-              fontSize: '11px',
-              color: 'var(--text-dim)',
-              fontFamily: FONT_MONO,
-              background: 'var(--chip-bg)',
-              padding: '2px 6px',
-              borderRadius: '4px',
-              cursor: 'copy',
-            }}
-          >
-            trace:{shortId(turn.traceId)}
-          </span>
           {/* Per-direction latency: gateway = client cycle, upstream =
               upstream cycle. Missing when one side never fired. */}
           {turn.gatewayLatencyMs !== undefined && (
@@ -432,7 +436,7 @@ const CaptureDrawer: React.FC<{
               title={`${t('captures.gatewayLatency')} · ${turn.gatewayLatencyMs} ms`}
               style={{ fontSize: '12px', color: 'var(--text-dim)', fontFamily: FONT_MONO }}
             >
-              ↳ {fmtLatency(turn.gatewayLatencyMs)}
+              <ArrowDownRight size={12} strokeWidth={2.75} style={{ verticalAlign: '-1px', color: 'var(--text)' }} /> {fmtLatency(turn.gatewayLatencyMs)}
               <span title={[t('captures.timingTip'), legTimingTip(turn, 'gateway')].filter(Boolean).join(' · ')}>
                 {legTimingText(turn, 'gateway')}
               </span>
@@ -443,7 +447,7 @@ const CaptureDrawer: React.FC<{
               title={`${t('captures.upstreamLatency')} · ${turn.upstreamLatencyMs} ms`}
               style={{ fontSize: '12px', color: 'var(--text-dim)', fontFamily: FONT_MONO }}
             >
-              ↗ {fmtLatency(turn.upstreamLatencyMs)}
+              <ArrowUpRight size={12} strokeWidth={2.75} style={{ verticalAlign: '-1px', color: 'var(--text)' }} /> {fmtLatency(turn.upstreamLatencyMs)}
               <span title={[t('captures.timingTip'), legTimingTip(turn, 'upstream')].filter(Boolean).join(' · ')}>
                 {legTimingText(turn, 'upstream')}
               </span>
@@ -462,7 +466,8 @@ const CaptureDrawer: React.FC<{
                 fontSize: '10px',
               }}
             >
-              ⚖ {t('captures.decisionBadge')}
+              <Scale size={10} style={{ verticalAlign: '-1px', marginRight: '3px' }} />
+              {t('captures.decisionBadge')}
               {turn.decisionLatencyMs !== undefined && ` · ${fmtLatency(turn.decisionLatencyMs)}`}
               {turn.decisionRequest.model !== turn.model && ` · ${turn.decisionRequest.model}`}
             </span>
@@ -819,6 +824,9 @@ export const CapturesPage: React.FC = () => {
   // lines — 2-4 per turn — and must never be labelled as turns).
   const [totalTurns, setTotalTurns] = useState(0);
   const [fileTruncated, setFileTruncated] = useState(false);
+  // Cross-midnight stitching: per-date fragments the displayed timeline was
+  // merged from (empty = single-archive session).
+  const [fragments, setFragments] = useState<CaptureFragmentRow[]>([]);
   const [selectedTurnIdx, setSelectedTurnIdx] = useState<number | null>(null);
   // Tab the drawer should land on ("decisionRequest" when opened from the
   // decision badge); reset to undefined when the selection changes.
@@ -972,6 +980,7 @@ export const CapturesPage: React.FC = () => {
       setEvents(res.events);
       setTotalTurns(res.totalTurns);
       setFileTruncated(res.fileTruncated);
+      setFragments(res.fragments ?? []);
       setBodiesLoaded(wantBodies);
     } catch (err) {
       console.error(err);
@@ -1149,6 +1158,7 @@ export const CapturesPage: React.FC = () => {
       setEvents(res.events);
       setTotalTurns(res.totalTurns);
       setFileTruncated(res.fileTruncated);
+      setFragments(res.fragments ?? []);
       setBodiesLoaded(st.bodiesLoaded);
       loadFailedRef.current = false;
     } catch {
@@ -1655,6 +1665,27 @@ export const CapturesPage: React.FC = () => {
                             {s.apiKeys.length > 1 ? ` +${s.apiKeys.length - 1}` : ''}
                           </span>
                         )}
+                        {s.spanDates && s.spanDates.length > 1 && (
+                          <span
+                            title={t('captures.spansDays', { n: s.spanDates.length })}
+                            style={{
+                              fontSize: '10px',
+                              lineHeight: '14px',
+                              padding: '1px 6px',
+                              borderRadius: '4px',
+                              background: 'var(--hue-blue-soft)',
+                              color: 'var(--hue-blue)',
+                              flexShrink: 0,
+                            }}
+                          >
+                            ⊕{s.spanDates.length}d
+                            {/* This shard is NOT the conversation's opening day
+                                (spanDates is newest-first, last = earliest). */}
+                            {selectedDate !== s.spanDates[s.spanDates.length - 1] && (
+                              <span style={{ opacity: 0.75 }}> · {t('captures.continuedFrom')}</span>
+                            )}
+                          </span>
+                        )}
                         <span
                           className="capture-card-actions"
                           style={{
@@ -1746,6 +1777,21 @@ export const CapturesPage: React.FC = () => {
                         <span style={{ fontFamily: FONT_MONO, fontSize: '11px', color: 'var(--text-dim)' }}>
                           {selectedFile.replace(/\.jsonl$/, '')} · {totalTurns} {t('captures.turnsUnit')}
                         </span>
+                        {fragments.length > 1 && (
+                          <span
+                            title={t('captures.stitchedHint', { n: fragments.length })}
+                            style={{
+                              fontSize: '10px',
+                              lineHeight: '16px',
+                              padding: '0 6px',
+                              borderRadius: '4px',
+                              background: 'var(--hue-blue-soft)',
+                              color: 'var(--hue-blue)',
+                            }}
+                          >
+                            ⊕ {fragments.length}d
+                          </span>
+                        )}
                         {totalLatencyMs > 0 && (
                           <span
                             title={t('captures.totalTimeHint', { n: turns.length })}
@@ -1880,9 +1926,45 @@ export const CapturesPage: React.FC = () => {
                             const errEvent = turn.upstreamResponse?.status === 'error'
                               || turn.gatewayResponse?.status === 'error'
                               || !!turn.error;
+                            // Day divider: only when the stitched timeline
+                            // actually spans multiple date shards — a
+                            // single-day session needs no per-day chrome.
+                            // Turns render newest-first, so compare with the
+                            // NEXT turn (later in wall time).
+                            const multiDay = fragments.length > 1;
+                            const prevTurn = turns[idx - 1];
+                            const prevStart = prevTurn
+                              ? (prevTurn.clientRequest?.ts
+                                ?? prevTurn.upstreamRequest?.ts
+                                ?? prevTurn.gatewayResponse?.ts
+                                ?? prevTurn.upstreamResponse?.ts
+                                ?? prevTurn.decisionRequest?.ts)
+                              : undefined;
+                            const dayChanged =
+                              multiDay &&
+                              turnStart !== undefined &&
+                              (prevStart === undefined || fmtDay(prevStart) !== fmtDay(turnStart));
                             return (
+                              <React.Fragment key={`${turn.traceId}-${idx}`}>
+                                {dayChanged && (
+                                  <div
+                                    style={{
+                                      position: 'relative',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: 8,
+                                      margin: '8px 0 4px',
+                                      color: 'var(--text-dim)',
+                                      fontSize: '10.5px',
+                                      fontFamily: FONT_MONO,
+                                    }}
+                                  >
+                                    <span style={{ flex: 1, height: 1, background: 'var(--card-border)' }} />
+                                    <span>{fmtDay(turnStart)}</span>
+                                    <span style={{ flex: 1, height: 1, background: 'var(--card-border)' }} />
+                                  </div>
+                                )}
                               <div
-                                key={`${turn.traceId}-${idx}`}
                                 onClick={() => openTurn(idx)}
                                 style={{
                                   position: 'relative',
@@ -1967,29 +2049,9 @@ export const CapturesPage: React.FC = () => {
                                     ⇢ proxy
                                   </span>
                                 )}
-                                <span
-                                  title={`traceId=${turn.traceId}`}
-                                  onClick={async () => {
-                                    const ok = await copyToClipboard(turn.traceId);
-                                    if (ok) toast.success(t('captures.copied'));
-                                    else toast.error(t('common.failed'));
-                                  }}
-                                  style={{
-                                    fontSize: '11px',
-                                    color: 'var(--text-dim)',
-                                    fontFamily: FONT_MONO,
-                                    background: 'var(--chip-bg)',
-                                    padding: '2px 6px',
-                                    borderRadius: '4px',
-                                    cursor: 'copy',
-                                    flexShrink: 0,
-                                  }}
-                                >
-                                  trace:{shortId(turn.traceId)}
-                                </span>
                                 {turn.gatewayLatencyMs !== undefined && (
                                   <span title={`${turn.gatewayLatencyMs} ms`} style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: FONT_MONO, flexShrink: 0 }}>
-                                    ↳ {fmtLatency(turn.gatewayLatencyMs)}
+                                    <ArrowDownRight size={11} strokeWidth={2.75} style={{ verticalAlign: '-1px', color: 'var(--text)' }} /> {fmtLatency(turn.gatewayLatencyMs)}
                                     <span title={[t('captures.timingTip'), legTimingTip(turn, 'gateway')].filter(Boolean).join(' · ')}>
                                       {legTimingText(turn, 'gateway')}
                                     </span>
@@ -1997,7 +2059,7 @@ export const CapturesPage: React.FC = () => {
                                 )}
                                 {turn.upstreamLatencyMs !== undefined && (
                                   <span title={`${turn.upstreamLatencyMs} ms`} style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: FONT_MONO, flexShrink: 0 }}>
-                                    ↗ {fmtLatency(turn.upstreamLatencyMs)}
+                                    <ArrowUpRight size={11} strokeWidth={2.75} style={{ verticalAlign: '-1px', color: 'var(--text)' }} /> {fmtLatency(turn.upstreamLatencyMs)}
                                     <span title={[t('captures.timingTip'), legTimingTip(turn, 'upstream')].filter(Boolean).join(' · ')}>
                                       {legTimingText(turn, 'upstream')}
                                     </span>
@@ -2020,10 +2082,12 @@ export const CapturesPage: React.FC = () => {
                                       cursor: 'pointer',
                                     }}
                                   >
-                                    ⚖ {turn.decisionLatencyMs !== undefined ? fmtLatency(turn.decisionLatencyMs) : t('captures.decisionBadge')}
+                                    <Scale size={10} style={{ verticalAlign: '-1px', marginRight: '3px' }} />
+                                    {turn.decisionLatencyMs !== undefined ? fmtLatency(turn.decisionLatencyMs) : t('captures.decisionBadge')}
                                   </span>
                                 )}
                               </div>
+                              </React.Fragment>
                             );
                           })}
                         </div>

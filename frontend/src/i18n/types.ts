@@ -1253,6 +1253,12 @@ hiddenBadge: string;
     totalTime: string;
     totalTimeHint: string;
     emptyRecords: string;
+    /** Cross-midnight stitching: session continues across N date archives. */
+    spansDays: string;
+    /** Badge on a shard that is NOT the conversation's opening day. */
+    continuedFrom: string;
+    /** Header hint when the timeline was merged from N date archives. */
+    stitchedHint: string;
     statusOk: string;
     statusError: string;
     truncatedBadge: string;
