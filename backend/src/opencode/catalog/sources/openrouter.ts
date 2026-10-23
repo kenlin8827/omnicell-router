@@ -1,6 +1,6 @@
 import { writeCacheFile, readCacheFile } from '../cache.js';
 import { CATALOG_USER_AGENT } from '../constants.js';
-import type { CatalogModel, CatalogProviderRecord } from '../types.js';
+import type { CatalogModel } from '../types.js';
 
 /**
  * OpenRouter source — first-party model catalog with live pricing.

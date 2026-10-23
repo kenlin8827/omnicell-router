@@ -468,7 +468,7 @@ export const CombosPage: React.FC = () => {
   // tell "unregistered" apart from "provider offline" for existing members.
   const [registeredIds, setRegisteredIds] = useState<ReadonlySet<string>>(new Set());
   const [editing, setEditing] = useState<{ draft: ComboDraft; index: number } | null>(null); // index -1 = new
-  const [saving, setSaving] = useState(false);
+  const [, setSaving] = useState(false);
   const [combosPage, setCombosPage] = useState(1);
   const [combosPageSize, setCombosPageSize] = useState(COMBOS_PAGE_SIZE);
   // Absolute combo indices whose member chain is expanded past COMBO_PREVIEW_MEMBERS.

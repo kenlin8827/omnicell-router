@@ -39,7 +39,6 @@ export interface TranslationDict {
   common: {
     loading: string;
     failed: string;
-    success: string;
     saveFailed: string;
     confirm: string;
     cancel: string;
@@ -210,12 +209,10 @@ export interface TranslationDict {
     poolLoadFailed: string;
     poolRetry: string;
     colModel: string;
-    colProvider: string;
     colInput: string;
     colOutput: string;
     colWeight: string;
     colShare: string;
-    colStatus: string;
     colActions: string;
     preferredBadge: string;
     poolHealthy: string;
@@ -378,7 +375,6 @@ export interface TranslationDict {
     staticTitle: string;
     staticDesc: string;
     pmManage: string;
-    pmView: string;
     pmNotInCatalog: string;
     pmTitle: string;
     pmEmpty: string;
@@ -393,7 +389,6 @@ export interface TranslationDict {
     pmBody: string;
     pmReasoningField: string;
     pmVariants: string;
-    pmDisabled: string;
     pmUnset: string;
     pmEffortNone: string;
     pmEffortLow: string;
@@ -412,6 +407,8 @@ export interface TranslationDict {
     pmPattern: string;
     pmPreview: string;
     pmPull: string;
+    pmPullSelected: string;
+    pmSelectTip: string;
     pmClear: string;
     pmMatched: string;
     pmPulled: string;
@@ -436,6 +433,8 @@ export interface TranslationDict {
     pmAutofillNoId: string;
     pmFilterPlaceholder: string;
     pmNoMatch: string;
+    pmEmptyBadge: string;
+    pmEmptyBadgeTip: string;
     /** Bound credential store — status badge kind labels. */
     storeKindOpencodeV2: string;
     storeKindOpencodeV2Readonly: string;
@@ -493,6 +492,10 @@ export interface TranslationDict {
     syncPrecClientAbsent: string;
     syncPrecClientUnreadable: string;
     syncPrecServiceUnreachable: string;
+    syncDefsSummary: string;
+    syncDefsReloadFailed: string;
+    syncDefsDrift: string;
+    syncDefsDriftTip: string;
     syncGenericFailure: string;
     syncToastOk: string;
     syncToastFail: string;
@@ -570,6 +573,9 @@ export interface TranslationDict {
     headPreserved: string;
     credentialDisconnect: string;
     credentialDisconnected: string;
+    credentialRevokedEverywhere: string;
+    credentialRevokeClientFailed: string;
+    credentialRevokeClientSkipped: string;
     /** Decision 8 step 1 on a non-opencode v2 binding — store-neutral wording. */
     credentialDisconnectPurge: string;
     /** Decision 8 step 1 — same shape as the provider delete confirm. */
@@ -607,7 +613,6 @@ export interface TranslationDict {
     source: string;
     search: string;
     filterAll: string;
-    onlyConnected: string;
     sortDefault: string;
     memberCount: string;
     sortPriceAsc: string;
@@ -643,7 +648,6 @@ hiddenBadge: string;
     srcModelsDev: string;
     srcOpenrouter: string;
     srcConfig: string;
-    srcCustom: string;
     srcMapped: string;
     srcOpenaiCompatible: string;
     srcService: string;
@@ -665,6 +669,8 @@ hiddenBadge: string;
     notConnected: string;
     empty: string;
     emptyFiltered: string;
+    emptyMaintainHint: string;
+    emptyMaintainAction: string;
     refresh: string;
   };
   guardrails: {
@@ -1140,6 +1146,17 @@ hiddenBadge: string;
     stateDeclared: string;
     stateUnverified: string;
     stateStale: string;
+    /** State word for a covered pair whose last attempt has a recorded
+     *  verdict (never "unverified" — that word means "not tried yet"). */
+    stateFailed: string;
+    /** A covered pair with no numbers and no failure record. */
+    neverProbed: string;
+    /** Probe-failure reason words (closed backend vocabulary). */
+    failAuth: string;
+    failStatus: string;
+    failShape: string;
+    failNetwork: string;
+    failHttp: string;
     windowNoCap: string;
     windowResets: string;
     /** Quota-peek countdown (no leading separator — it stands alone). */
@@ -1266,7 +1283,6 @@ hiddenBadge: string;
     tabReqIn: string;
     tabReqOut: string;
     tabResp: string;
-    upstreamHttpLabel: string;
     tabEmpty: string;
     inboundModel: string;
     outboundModel: string;
@@ -1414,7 +1430,6 @@ hiddenBadge: string;
     proxyHint: string;
     nameOpencodeProxy: string;
     /** Model-profile link UI (opencode setup) */
-    profileTitle: string;
     profileNone: string;
     profileEmpty: string;
     profileManage: string;
@@ -1606,7 +1621,6 @@ hiddenBadge: string;
     deleteTitle: string;
     comboId: string;
     membersUnit: string;
-    removeCombo: string;
     comboIdPlaceholder: string;
     selection: string;
     selPriority: string;
@@ -1662,7 +1676,6 @@ hiddenBadge: string;
     savedNotice: string;
     profileName: string;
     nameFieldPlaceholder: string;
-    idHint: string;
     slots: string;
     slotKeyPlaceholder: string;
     slotRefPlaceholder: string;
@@ -1781,9 +1794,6 @@ hiddenBadge: string;
     syncIntervalLabel: string;
     syncIntervalHint: string;
     syncIntervalSaved: string;
-    autoPullLabel: string;
-    autoPullHint: string;
-    autoPullSaved: string;
     iv30m: string;
     iv1h: string;
     iv6h: string;
@@ -1791,7 +1801,8 @@ hiddenBadge: string;
     iv24h: string;
     iv7d: string;
     close: string;
-    ocrView: string;
+    tabSources: string;
+    tabCatalog: string;
     ocrTitle: string;
     ocrHint: string;
     ocrLocked: string;
@@ -1851,11 +1862,6 @@ hiddenBadge: string;
   };
   auto: {
     title: string;
-    famAuto: string;
-    famLite: string;
-    famPlus: string;
-    famPro: string;
-    famUltra: string;
     modeTitle: string;
     modeSmart: string;
     modeCost: string;
@@ -1922,7 +1928,6 @@ hiddenBadge: string;
     createBtn: string;
     createdNoticeTitle: string;
     createdNoticeDesc: string;
-    copyKeyBtn: string;
     copiedNotice: string;
     doneBtn: string;
     thName: string;
@@ -2098,7 +2103,6 @@ hiddenBadge: string;
       secretsWarning: string;
       formatNote: string;
       payloadSection: string;
-      payloadCustom: string;
       payloadOverrides: string;
       payloadDecisions: string;
       payloadHint: string;

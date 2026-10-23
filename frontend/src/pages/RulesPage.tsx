@@ -44,20 +44,11 @@ const TIERS: { key: Tier; labelKey: string; descKey: string; icon: typeof Zap; c
   { key: 'ultra', labelKey: 'tierPolicy.tierUltra', descKey: 'tierPolicy.tierDescUltra', icon: Sparkles, color: 'var(--accent-amber, var(--accent))' },
 ];
 
-const TIER_KEYS = TIERS.map((x) => x.key);
-
 const splitPatterns = (s: string): string[] =>
   s
     .split(/\r?\n/)
     .map((x) => x.trim())
     .filter(Boolean);
-
-const parseNum = (s: string): number | undefined => {
-  const t = s.trim();
-  if (!t) return undefined;
-  const n = Number(t);
-  return Number.isFinite(n) ? n : undefined;
-};
 
 /** Normalize a raw effortMap from config into the 6-key form shape (unknown levels dropped). */
 const normalizeEffortMap = (raw: unknown): Record<string, string> => {

@@ -1,4 +1,3 @@
-import path from 'node:path';
 import { ReasoningEffort, EffortSource, ReasonParams, TierLevel } from '../types/router.js';
 import { getEnvPaths } from '../config/env.js';
 import type { TracePersistConfig } from '../config/types.js';

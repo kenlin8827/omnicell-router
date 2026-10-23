@@ -470,6 +470,41 @@ async function bindCredentialStoreOnce(overrides: BindOverrides = {}): Promise<S
     providerDefsImport = migrateJsoncProviderDefs({ paths, now });
   }
 
+  // Unification doctrine: every store-backed provider owns a defs node, and
+  // that node IS the routing universe (an empty node routes nothing — the
+  // catalog is a source, never a fallback pool; ADR-0010 amendment). Node
+  // creation ONLY here, and BARE: no catalog lookup — the bind must never wait
+  // on the aggregation (a real list() fetches remote sources and can hang the
+  // boot); name/npm/baseURL ride in on the first connect via
+  // ensureConnectedProviderBook, which is also the only place auto-fill
+  // (a network operation) happens. A legacy row therefore needs a pull or a
+  // re-connect before it serves models again.
+  //
+  // Every path here is the INJECTED `paths` (never a fresh resolveDefaultPaths),
+  // so a sandboxed bind writes its own book.
+  try {
+    const { upsertProviderDef } = await import('../user-config.js');
+    const { readProviderDefsFile } = await import('../provider-defs.js');
+    // RAW file check, NOT getProviderNodeById: the normalized view DROPS
+    // retired-shape nodes (Decision 9) — a raw check is the only way to avoid
+    // "resurrecting" one as a fresh routable node (and it strictly subsumes the
+    // normalized one: the view is a filter over this same map). A retired node
+    // keeps its boot exclusion (loud, operator migrates it deliberately).
+    const rawNodes = readProviderDefsFile(paths)?.providers ?? {};
+    for (const overview of safeOverview(ocr)) {
+      if (overview.total === 0 || rawNodes[overview.providerId]) continue;
+      const up = upsertProviderDef({ id: overview.providerId }, paths);
+      if (!up.success) {
+        // A persistent write failure (permissions, full disk) silently leaves
+        // store-backed providers node-less — say so instead of swallowing it.
+        console.warn(`[credentials] provider-def node for '${overview.providerId}' not created: ${up.error ?? 'unknown error'}`);
+      }
+    }
+  } catch (e) {
+    // best-effort — a missing node is repaired on the next connect
+    console.warn(`[credentials] provider-def node sweep skipped: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
   // Non-routable rows are loud (oauth/unknown shapes hold no api key).
   if (excluded.length === 0) {
     excluded = safeOverview(ocr)

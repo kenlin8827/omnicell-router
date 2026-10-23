@@ -15,6 +15,7 @@ import { ProviderLogo } from '../components/ProviderLogo';
 import { Dialog } from '../components/Dialog';
 import { useToast } from '../components/ToastProvider';
 import { byQuotaUrgency, byWindowClass } from '../lib/quotaRank';
+import { failureCaption, quotaStateWord, type TFn } from '../lib/quotaFailure';
 import { useQuotaRefresh } from '../lib/useQuotaRefresh';
 
 import { FONT_MONO } from '../lib/fonts';
@@ -86,8 +87,15 @@ const StatChip: React.FC<{ text: string; tone?: 'warn' | 'info' }> = ({ text, to
   );
 };
 
-const BadgePill: React.FC<{ quota: CredentialQuotaView; stateWord: (k: string) => string }> = ({ quota, stateWord }) => {
-  const color = STATE_COLORS[quota.badge] ?? 'var(--text-dim)';
+/** A recorded probe failure colors the badge rose: an upstream verdict (dead
+ *  key, plan refusal) is not a neutral "no data yet" state. */
+const badgeColor = (quota: CredentialQuotaView): string =>
+  quota.badge === 'unverified' && quota.lastFailure
+    ? 'var(--accent-rose)'
+    : (STATE_COLORS[quota.badge] ?? 'var(--text-dim)');
+
+const BadgePill: React.FC<{ quota: CredentialQuotaView; t: TFn }> = ({ quota, t }) => {
+  const color = badgeColor(quota);
   return (
     <span
       style={{
@@ -101,7 +109,7 @@ const BadgePill: React.FC<{ quota: CredentialQuotaView; stateWord: (k: string) =
         whiteSpace: 'nowrap',
       }}
     >
-      {stateWord(quota.badge)}
+      {quotaStateWord(quota, t)}
     </span>
   );
 };
@@ -217,18 +225,6 @@ export const QuotaPage: React.FC = () => {
   // own identity: one upstream request instead of the whole directory.
   const { refresh, isRefreshing, busy } = useQuotaRefresh(loadData);
 
-  const stateWord = useCallback(
-    (badge: string): string =>
-      badge === 'probed'
-        ? t('quotaPage.stateProbed')
-        : badge === 'declared'
-          ? t('quotaPage.stateDeclared')
-          : badge === 'stale'
-            ? t('quotaPage.stateStale')
-            : t('quotaPage.stateUnverified'),
-    [t]
-  );
-
   // Human name for a pair: the operator's credential label, else the MASKED
   // key — the exact string the credentials list shows, so "which key is this"
   // is answered by what the user actually pasted. The store's machine id is
@@ -270,7 +266,9 @@ export const QuotaPage: React.FC = () => {
     let stalePairs = 0;
     let nextReset: number | null = null;
     for (const r of rows) {
-      if (r.quota?.badge === 'stale') stalePairs += 1;
+      // A sync failure is either a stale snapshot or a covered pair whose last
+      // attempt has a recorded verdict (dead key, plan refusal, network).
+      if (r.quota?.badge === 'stale' || (r.quota?.badge === 'unverified' && r.quota.lastFailure)) stalePairs += 1;
       for (const w of r.quota?.windows ?? []) {
         if (!w.unlimited && w.remainingPct !== null && w.remainingPct < 10) lowWindows += 1;
         if (w.resetAt !== null && w.resetAt > now && (nextReset === null || w.resetAt < nextReset)) nextReset = w.resetAt;
@@ -359,7 +357,7 @@ export const QuotaPage: React.FC = () => {
                       {!row.quota ? (
                         <span style={{ color: 'var(--text-dim)', fontSize: '11.5px' }}>—</span>
                       ) : (
-                        <BadgePill quota={row.quota} stateWord={stateWord} />
+                        <BadgePill quota={row.quota} t={t} />
                       )}
                       {row.quota?.verifiedAt && (
                         <span style={{ ...MONO, fontSize: '10.5px', color: 'var(--text-dim)' }}>
@@ -370,12 +368,27 @@ export const QuotaPage: React.FC = () => {
                   </div>
                   {/* One usage meter per tracked window — session-class
                       (short-period) caps lead, credit pools sink; class ties
-                      keep declaration order (byWindowClass). */}
+                      keep declaration order (byWindowClass). A pair with no
+                      numbers shows the recorded verdict (why it is empty)
+                      instead of a mute dash. */}
                   {row.quota && row.quota.windows.length > 0 ? (
                     [...row.quota.windows].sort(byWindowClass).map((w) => <WindowMeter key={w.name} w={w} t={t} />)
-                  ) : (
-                    <div style={{ marginTop: '10px', fontSize: '11.5px', color: 'var(--text-dim)' }}>—</div>
-                  )}
+                  ) : (() => {
+                    const failed = failureCaption(row.quota, t);
+                    return (
+                      <div
+                        style={{
+                          marginTop: '10px',
+                          fontSize: '11.5px',
+                          color: failed ? 'var(--accent-rose)' : 'var(--text-dim)',
+                          wordBreak: 'break-word',
+                        }}
+                        title={failed ?? undefined}
+                      >
+                        {failed ?? t('quotaPage.neverProbed')}
+                      </div>
+                    );
+                  })()}
                   {/* Footer: plan/entry provenance + raw last-probe body */}
                   <div
                     style={{

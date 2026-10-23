@@ -47,12 +47,14 @@ const BOOTSTRAP_DEFAULT_ENV = 'default';
  * Payload files the export dialog offers as checkboxes. config.yaml is NOT in
  * this list — it is the book-set definition itself and always included. The
  * L2 decision dataset (layer2 decisions) defaults OFF: conversation-
- * derived and potentially large; the custom catalog entries default ON
- * (small, knowledge-shaped). Keys mirror backend PAYLOAD_KEYS
- * (backend/src/config/env-archive.ts) — the backend ignores unknown keys.
+ * derived and potentially large; catalog overrides default ON (small,
+ * knowledge-shaped). Keys mirror the backend EXPORT set
+ * (backend/src/config/env-archive.ts PAYLOAD_EXPORT_FILES) — the backend ignores
+ * unknown keys. `catalog/custom.json` is gone from BOTH sides: the custom model
+ * store is retired (ADR-0010 amendment). Older book-sets that still carry it
+ * import fine (import-only whitelist entry).
  */
 const ARCHIVE_PAYLOAD_OPTIONS: Array<{ key: string; i18nKey: string; defaultOn: boolean }> = [
-  { key: 'catalog/custom.json', i18nKey: 'env.export.payloadCustom', defaultOn: true },
   { key: 'catalog/overrides.json', i18nKey: 'env.export.payloadOverrides', defaultOn: true },
   { key: 'data/layer2-decisions.jsonl', i18nKey: 'env.export.payloadDecisions', defaultOn: false },
 ];

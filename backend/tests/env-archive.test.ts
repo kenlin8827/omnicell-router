@@ -129,14 +129,14 @@ describe('buildEnvelope', () => {
     expect(cfg.webAuth.passwordHash).toBeUndefined();
     expect(cfg.webAuth.username).toBe('admin'); // non-secret fields ride along
 
-    expect(Object.keys(env.payload).sort()).toEqual([
-      'catalog/custom.json',
-      'data/layer2-decisions.jsonl',
-    ]);
+    // The retired custom store file is NOT exported (ADR-0010 unification
+    // amendment) — overrides.json is absent only because it does not exist.
+    expect(Object.keys(env.payload).sort()).toEqual(['data/layer2-decisions.jsonl']);
     expect(env.payload['data/layer2-decisions.jsonl']).toContain('{"v":2}');
     expect(env.checksums.config).toBe(sha(env.config));
     expect(env.checksums['data/layer2-decisions.jsonl']).toBe(sha(env.payload['data/layer2-decisions.jsonl']));
     expect(env.checksums['catalog/overrides.json']).toBeUndefined(); // only files that exist
+    expect(env.checksums['catalog/custom.json']).toBeUndefined(); // retired key never exported
   });
 
   it('secrets=include keeps real values but STILL drops passwordHash', async () => {
@@ -194,6 +194,32 @@ describe('parseAndValidateEnvelope — happy + sanitizing', () => {
     expect(cfg.webAuth.username).toBe('admin');
     expect(v.configWasSanitized).toBe(true);
     expect(v.payload['data/layer2-decisions.jsonl']).toContain('{"v":1}');
+  });
+
+  it('a pre-unification envelope still VALIDATES its retired custom-store payload, without materializing it', () => {
+    // ADR-0010 unification amendment: catalog/custom.json leaves the export set
+    // AND is never written back (the store is retired). It stays ACCEPTED so an
+    // older book-set is not rejected outright, and its checksum is still
+    // enforced — then the entry is dropped instead of planting dead state.
+    const legacy = sign({
+      format: ENVELOPE_FORMAT,
+      version: 1,
+      name: 'legacy-book',
+      payload: { 'catalog/custom.json': '{"version":1}' },
+      config: 'port: 3000\n',
+    });
+    const v = parseAndValidateEnvelope(legacy);
+    expect(v.ok).toBe(true);
+    if (!v.ok) return;
+    expect(v.payload['catalog/custom.json']).toBeUndefined(); // verified, then dropped
+    expect(Object.keys(v.payload)).toEqual([]);
+
+    // The same entry with a WRONG checksum is still refused (accepting the key
+    // must not become a tamper hole).
+    const tampered = { ...legacy, payload: { 'catalog/custom.json': '{"version":2}' } };
+    const bad = parseAndValidateEnvelope(tampered);
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.error).toMatch(/Checksum mismatch/);
   });
 
   it('clean (included-secrets) envelope keeps its exact config text', async () => {
@@ -331,7 +357,9 @@ describe('parseAndValidateEnvelope — payload key whitelist', () => {
       expect(v.ok).toBe(false);
       if (!v.ok) expect(v.error).toMatch(/Unsupported payload key/);
     }
-    // the known data keys still pass
+    // the known data keys still pass — including the RETIRED catalog/custom.json,
+    // which stays ACCEPTED for import and is dropped from the payload after
+    // validation (dedicated case above: accepted, verified, never materialized)
     const config = 'port: 3000\n';
     const payload = {
       'data/layer2-decisions.jsonl': 'a\n',

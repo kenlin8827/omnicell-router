@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { CloudDownload, Plus, RefreshCw, Trash2, Lock, LockOpen, Globe, Eye, EyeOff, ChevronDown, ChevronRight, Database, Braces, Copy, Pencil, Check, Loader2 } from 'lucide-react';
 import { InfoTip } from '../components/InfoTip';
+import { ProviderLogo } from '../components/ProviderLogo';
 import {
   opencodeApi,
   type CatalogSourceView,
@@ -252,11 +253,26 @@ const DataViewerModal: React.FC<{ source: CatalogSourceView; onClose: () => void
   const [query, setQuery] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [showJson, setShowJson] = useState(false);
+  const [logoMap, setLogoMap] = useState<Record<string, string>>({});
   useBodyScrollLock(true);
 
   useEffect(() => {
     opencodeApi.catalogSourceData(source.id).then(setData).catch((e: any) => setError(e.message));
   }, [source.id]);
+
+  // provider id → logo URL (OCR catalog view); logos are decorative, failures ignored
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await opencodeApi.listProviders();
+        const map: Record<string, string> = {};
+        for (const p of res?.providers || []) if (p.id && p.logo) map[p.id] = p.logo;
+        setLogoMap(map);
+      } catch {
+        // decorative only — keep the initials fallback
+      }
+    })();
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -419,9 +435,10 @@ const DataViewerModal: React.FC<{ source: CatalogSourceView; onClose: () => void
                       <div key={p.id} style={{ borderBottom: '1px solid var(--divider)' }}>
                         <div
                           onClick={() => toggle(p.id)}
-                          style={{ display: 'flex', alignItems: 'center', gap: '7px', padding: '7px 4px', cursor: 'pointer', userSelect: 'none' }}
+                          style={{ display: 'flex', alignItems: 'center', gap: '9px', padding: '9px 4px', cursor: 'pointer', userSelect: 'none' }}
                         >
                           {open ? <ChevronDown size={13} color="var(--text-dim)" /> : <ChevronRight size={13} color="var(--text-dim)" />}
+                          <ProviderLogo providerId={p.id} logoMap={logoMap} size={24} />
                           <span style={{ fontWeight: 700, fontSize: '12px', color: 'var(--text-main)' }}>{p.id}</span>
                           {p.name && p.name !== p.id && (
                             <span style={{ fontSize: '11px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -433,7 +450,7 @@ const DataViewerModal: React.FC<{ source: CatalogSourceView; onClose: () => void
                           </span>
                         </div>
                         {open && ms.length > 0 && (
-                          <div style={{ paddingLeft: '22px', paddingBottom: '8px' }}>
+                          <div style={{ paddingLeft: '32px', paddingBottom: '8px' }}>
                             <ModelTable models={ms.slice(0, MAX_RENDER)} />
                           </div>
                         )}
@@ -477,8 +494,10 @@ const DataViewerModal: React.FC<{ source: CatalogSourceView; onClose: () => void
 };
 
 /** Read-only viewer of the FULL aggregated catalog (list() output): local config
- * definitions first, opencode baseline, extension enrichments — the OCR truth. */
-const OcrCatalogModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+ * definitions first, opencode baseline, extension enrichments — the OCR truth.
+ * Rendered as the "aggregated catalog" TAB of the sources page; it is a
+ * discovery/reference surface, so /models stays the maintenance plane. */
+const OcrCatalogPanel: React.FC = () => {
   const { t } = useI18n();
   const toast = useToast();
   const [data, setData] = useState<{ providers: OcrCatalogProvider[] } | null>(null);
@@ -490,7 +509,6 @@ const OcrCatalogModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const [editTarget, setEditTarget] = useState<{ providerId: string; modelId: string; current: CatalogSourceDataModelRecord } | null>(null);
   const [onlyLocked, setOnlyLocked] = useState(false);
   const [onlyHidden, setOnlyHidden] = useState(false);
-  useBodyScrollLock(true);
 
   const loadData = useCallback(async () => {
     const [d, l] = await Promise.all([opencodeApi.ocrCatalog(), opencodeApi.lockedCatalogModels().catch(() => null)]);
@@ -529,14 +547,6 @@ const OcrCatalogModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     }
   };
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
   const q = query.trim().toLowerCase();
   const MAX_RENDER = 300;
 
@@ -573,6 +583,14 @@ const OcrCatalogModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 
   const totalModels = React.useMemo(() => (data?.providers ?? []).reduce((n, p) => n + p.models.length, 0), [data]);
 
+  // provider id → logo URL straight from the aggregated catalog payload (already
+  // rewritten to the local logo proxy by the backend); decorative only.
+  const logoMap = React.useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const p of data?.providers ?? []) if (p.logo) map[p.id] = p.logo;
+    return map;
+  }, [data]);
+
   const jsonText = React.useMemo(() => {
     if (!data) return null;
     const full = JSON.stringify({ providers: data.providers }, null, 2);
@@ -601,32 +619,8 @@ const OcrCatalogModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 
   const dim: React.CSSProperties = { fontSize: '11px', color: 'var(--text-dim)' };
 
-  return createPortal(
-    <div
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'var(--scrim)',
-        zIndex: 100,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: '16px',
-      }}
-    >
-      <div
-        className="card"
-        style={{
-          width: '100%',
-          maxWidth: '920px',
-          maxHeight: '85vh',
-          padding: '20px',
-          boxShadow: '0 20px 40px rgba(0,0,0,0.6)',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '12px',
-        }}
-      >
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', minHeight: 0, flex: 1 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h3 style={{ fontSize: '15px', fontWeight: 800, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Database size={16} color="var(--accent)" />
@@ -640,12 +634,6 @@ const OcrCatalogModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             >
               <Braces size={12} />
               <span>{showJson ? t('catalogPage.viewStructured') : t('catalogPage.viewJson')}</span>
-            </button>
-            <button
-              onClick={onClose}
-              style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', fontSize: '18px', cursor: 'pointer' }}
-            >
-              ✕
             </button>
           </div>
         </div>
@@ -716,9 +704,10 @@ const OcrCatalogModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                     <div key={p.id} style={{ borderBottom: '1px solid var(--divider)' }}>
                       <div
                         onClick={() => toggle(p.id)}
-                        style={{ display: 'flex', alignItems: 'center', gap: '7px', padding: '7px 4px', cursor: 'pointer', userSelect: 'none' }}
+                        style={{ display: 'flex', alignItems: 'center', gap: '9px', padding: '9px 4px', cursor: 'pointer', userSelect: 'none' }}
                       >
                         {open ? <ChevronDown size={13} color="var(--text-dim)" /> : <ChevronRight size={13} color="var(--text-dim)" />}
+                        <ProviderLogo providerId={p.id} logoMap={logoMap} size={24} />
                         <span style={{ fontWeight: 700, fontSize: '12px', color: 'var(--text-main)' }}>{p.id}</span>
                         {p.name && p.name !== p.id && (
                           <span style={{ ...dim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
@@ -740,7 +729,7 @@ const OcrCatalogModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                         </span>
                       </div>
                       {open && p.models.length > 0 && (
-                        <div style={{ paddingLeft: '22px', paddingBottom: '8px' }}>
+                        <div style={{ paddingLeft: '32px', paddingBottom: '8px' }}>
                           <ModelTable
                             models={p.models.slice(0, MAX_RENDER)}
                             showSource
@@ -793,9 +782,7 @@ const OcrCatalogModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             }}
           />
         )}
-      </div>
-    </div>,
-    document.body
+    </div>
   );
 };
 
@@ -1335,7 +1322,7 @@ export const CatalogSourcesPage: React.FC = () => {
   const [refreshingAll, setRefreshingAll] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [viewSource, setViewSource] = useState<CatalogSourceView | null>(null);
-  const [showOcr, setShowOcr] = useState(false);
+  const [tab, setTab] = useState<'sources' | 'catalog'>('sources');
   const [syncIntervalMs, setSyncIntervalMs] = useState<number>(86_400_000);
 
   const load = useCallback(async () => {
@@ -1438,6 +1425,17 @@ export const CatalogSourcesPage: React.FC = () => {
     padding: '0 8px 10px 0',
   };
 
+  const tabBtn = (active: boolean): React.CSSProperties => ({
+    background: 'transparent',
+    border: 'none',
+    borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
+    color: active ? 'var(--accent)' : 'var(--text-dim)',
+    padding: '6px 10px',
+    fontSize: 12,
+    fontWeight: 700,
+    cursor: 'pointer',
+  });
+
   return (
     <div className="card">
       <div className="card-header">
@@ -1446,21 +1444,35 @@ export const CatalogSourcesPage: React.FC = () => {
           <span>{t('catalogPage.title')}</span>
         </div>
         <div style={{ display: 'flex', gap: '8px' }}>
-          <button className="btn" onClick={() => setShowOcr(true)}>
-            <Database size={14} />
-            <span>{t('catalogPage.ocrView')}</span>
-          </button>
-          <button className="btn" onClick={handleRefreshAll} disabled={refreshingAll}>
-            <RefreshCw size={14} style={refreshingAll ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
-            <span>{refreshingAll ? t('catalogPage.refreshing') : t('catalogPage.refreshAll')}</span>
-          </button>
-          <button className="btn btn-primary" onClick={() => setShowAdd(true)}>
-            <Plus size={14} />
-            <span>{t('catalogPage.addSource')}</span>
-          </button>
+          {tab === 'sources' && (
+            <>
+              <button className="btn" onClick={handleRefreshAll} disabled={refreshingAll}>
+                <RefreshCw size={14} style={refreshingAll ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
+                <span>{refreshingAll ? t('catalogPage.refreshing') : t('catalogPage.refreshAll')}</span>
+              </button>
+              <button className="btn btn-primary" onClick={() => setShowAdd(true)}>
+                <Plus size={14} />
+                <span>{t('catalogPage.addSource')}</span>
+              </button>
+            </>
+          )}
         </div>
       </div>
 
+      {/* Tabs: sources (editable) · aggregated catalog (read-only discovery). */}
+      <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--divider)', marginBottom: 12 }}>
+        <button style={tabBtn(tab === 'sources')} onClick={() => setTab('sources')}>
+          {t('catalogPage.tabSources')}
+        </button>
+        <button style={tabBtn(tab === 'catalog')} onClick={() => setTab('catalog')}>
+          {t('catalogPage.tabCatalog')}
+        </button>
+      </div>
+
+      {tab === 'catalog' ? (
+        <OcrCatalogPanel />
+      ) : (
+        <>
       <div style={{ fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.6, marginBottom: '4px' }}>
         {t('catalogPage.subtitle')}
       </div>
@@ -1601,10 +1613,11 @@ export const CatalogSourcesPage: React.FC = () => {
           </div>
         </div>
       )}
+        </>
+      )}
 
       {showAdd && <AddSourceModal onClose={() => setShowAdd(false)} onAdded={() => void load()} />}
       {viewSource && <DataViewerModal source={viewSource} onClose={() => setViewSource(null)} />}
-      {showOcr && <OcrCatalogModal onClose={() => setShowOcr(false)} />}
     </div>
   );
 };

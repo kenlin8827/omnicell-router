@@ -480,7 +480,7 @@ export function loadConfig(configPath?: string): RouterConfig {
         const sections = _legacySections.join(' and ');
         console.warn(
           `[Config] Deprecated ${sections} section(s) found in ${resolvedPath} — these hand-written surfaces were retired ` +
-            `(ADR-0010); providers come from <ocrHome>/custom-providers.json, models materialize from defs + catalog at boot. ` +
+            `(ADR-0010); providers come from <ocrHome>/providers.json, models materialize from defs + catalog at boot. ` +
             `The section(s) are ignored and will not re-persist.`
         );
       }

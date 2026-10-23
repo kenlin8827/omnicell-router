@@ -15,6 +15,7 @@ import {
 } from '../../opencode/user-config.js';
 import { readProviderDefsFile, writeProviderDefs } from '../../opencode/provider-defs.js';
 import { materializeDefs } from '../../opencode/credentials/def-materialize.js';
+import { reloadOpencodeService } from '../../opencode/credentials/opencode-v2-store.js';
 import { resolveDefaultPaths } from '../../opencode/credentials/paths.js';
 
 /**
@@ -220,6 +221,11 @@ export class OpenCodeClientAdapter implements ClientAdapter {
       defsPaths
     );
     materializeDefs(defsPaths, configPath);
+    // Setup changed the client's defs (router node + exposed model set): a
+    // RUNNING service registers config-declared providers only on reload, so
+    // tell it now instead of leaving the new provider invisible until restart.
+    // Best-effort — "no service running" is the common case on setup.
+    await reloadOpencodeService(defsPaths);
     if (readJsonc(configPath)?.provider?.[ROUTER_PROVIDER_ID]) {
       patchJsonc(configPath, ['provider', ROUTER_PROVIDER_ID], undefined);
     }
@@ -323,8 +329,10 @@ export class OpenCodeClientAdapter implements ClientAdapter {
 
     // Converge the client copy to the defs truth (the router def was removed
     // above) — the surgical path leaves no drift the next materialization
-    // would resurrect.
+    // would resurrect. A running service must forget the router provider too:
+    // the reload is the only way it re-reads config.
     materializeDefs(defsPaths, configPath);
+    await reloadOpencodeService(defsPaths);
 
     // Restore the user's original default whenever the current one is any
     // router ref (not just router/auto — re-setups may leave router/pro,
@@ -464,6 +472,7 @@ export class OpenCodeClientAdapter implements ClientAdapter {
     if (added > 0) {
       writeProviderDefs({ ...defs, [ROUTER_PROVIDER_ID]: { ...entry, models: modelsMap } }, defsPaths);
       materializeDefs(defsPaths, configPath);
+      await reloadOpencodeService(defsPaths); // new model ids must validate in the running service
     }
     meta.profile = { id: profileId, bindings: tags || {} };
     writeMeta(configPath, meta);

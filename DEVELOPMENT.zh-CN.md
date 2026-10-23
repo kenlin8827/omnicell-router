@@ -241,7 +241,7 @@ $$\mathcal{H}_{\text{session}} = \text{SHA256}(\text{CanonicalJSON}(\text{messag
 ## 8. 凭证中心与服务商定义单一事实源
 
 ### 8.1 服务商定义的单一事实源 (ADR-0010)
-上游连接定义（BaseURL、支持模型、协议转换）的唯一事实源为 `<ocrHome>/custom-providers.json`。外部下游配置（如 OpenCode v2 的 `opencode.jsonc`）仅作为只写同步物化目标。
+上游连接定义（BaseURL、支持模型、协议转换）的唯一事实源为 `<ocrHome>/providers.json`。外部下游配置（如 OpenCode v2 的 `opencode.jsonc`）仅作为只写同步物化目标。
 
 ### 8.2 凭据中心架构 (ADR-0006)
 - 凭证真实存储于 `<ocrHome>/credentials.json`。
@@ -277,7 +277,7 @@ $$\mathcal{H}_{\text{session}} = \text{SHA256}(\text{CanonicalJSON}(\text{messag
 | **[ADR-0007](docs/adr/0007-environments-and-bootstrap.md)** | 环境隔离与引导机制 | 独立账本目录、受控热重启环境切换、导出/导入安全信封格式。 |
 | **[ADR-0008](docs/adr/0008-protocol-surfaces-and-capture.md)** | 协议接入面与报文捕获 | Chat/Anthropic/Responses 统一映射表、全捕获正向代理、安全脱敏。 |
 | **[ADR-0009](docs/adr/0009-quota-probing.md)** | 声明式额度探测 | 12 项 DSL 语法、5 类封禁行为、只读展示与 quota_events 账本。 |
-| **[ADR-0010](docs/adr/0010-provider-def-ownership.md)** | 服务商定义所有权 | `<ocrHome>/custom-providers.json` 为单一源，`opencode.jsonc` 降为物化目标。 |
+| **[ADR-0010](docs/adr/0010-provider-def-ownership.md)** | 服务商定义所有权 | `<ocrHome>/providers.json` 为单一源，`opencode.jsonc` 降为物化目标。 |
 | **[ADR-0011](docs/adr/0011-route-entries-and-retry-escalation.md)** | 经验表与重试递进升级 | 提示词经验表 (`route-entries.json`)、重复重试升级阶梯、路由审计账本。 |
 | **[ADR-0012](docs/adr/0012-l2-decision-emitted-thinking-effort.md)** | 决策层联合思考级别决策 | System One 决策层单次联合决策 `{tier, effort}`、思考预算决策溯源标头。 |
 | **[ADR-0013](docs/adr/0013-failure-events-ledger.md)** | 调用故障事件账本 | 上游物理调用故障记录、10 秒风暴聚合、SQLite 持久化镜像、管理端点。 |

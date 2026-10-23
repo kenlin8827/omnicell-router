@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
-import { Archive, RefreshCw, Trash2, X, AlertTriangle, Download, Search, Copy, Check, Braces, Maximize2, Minimize2, Scale, Zap, ArrowDownRight, ArrowUpRight } from 'lucide-react';
+import { Archive, RefreshCw, Trash2, X, AlertTriangle, Download, Copy, Check, Braces, Maximize2, Minimize2, Scale, Zap, ArrowDownRight, ArrowUpRight } from 'lucide-react';
 import {
   api,
   type CaptureStatus,
@@ -819,7 +819,7 @@ export const CapturesPage: React.FC = () => {
   const [sessions, setSessions] = useState<CaptureSessionRow[]>([]);
   const [selectedFile, setSelectedFile] = useState<string>('');
   const [turns, setTurns] = useState<CaptureTurn[]>([]);
-  const [events, setEvents] = useState<HttpExchangeEvent[]>([]);
+  const [, setEvents] = useState<HttpExchangeEvent[]>([]);
   // Logical turn count for the whole archive (totalLines is raw event
   // lines — 2-4 per turn — and must never be labelled as turns).
   const [totalTurns, setTotalTurns] = useState(0);

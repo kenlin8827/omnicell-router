@@ -41,6 +41,7 @@ import { InfoTip } from '../components/InfoTip';
 import { useModelTest } from '../lib/useModelTest';
 import { fmtLatency } from '../lib/format';
 import { byWindowClass, headlineWindow } from '../lib/quotaRank';
+import { failureCaption } from '../lib/quotaFailure';
 
 import { FONT_MONO } from '../lib/fonts';
 // Nested-card surface (bg/border/radius/padding) is the global .sub-card
@@ -263,6 +264,11 @@ const syncOutcomeText = (o: CredentialSyncOutcome | undefined, t: TFn): string =
   }
   if (skipped > 0) parts.push(t('op.syncSkippedCount', { n: skipped }));
   if (failed > 0) parts.push(t('op.syncFailedCount', { n: failed }));
+  // The def half of a v2 write: rendered provider nodes, and — when a changed
+  // render could not be reloaded — the loudest signal in the row (the client is
+  // serving stale defs until the next successful push).
+  if (o.defsMaterialized !== undefined) parts.push(t('op.syncDefsSummary', { n: o.defsMaterialized }));
+  if (o.defsChanged === true && o.defsReloaded === false) parts.push(t('op.syncDefsReloadFailed'));
   return parts.join(' · ');
 };
 
@@ -409,7 +415,12 @@ function QuotaBadge({ quota }: { quota: CredentialQuotaView }) {
   if (quota.badge === 'stale' && quota.lastFailureAt) {
     lines.push(t('op.quotaStaleSince', { when: formatCountdown(Math.max(0, now - quota.lastFailureAt)) }));
   }
-  if (quota.badge === 'unverified') lines.push(t('op.quotaUnverified'));
+  // The recorded verdict (upstream status + its own words) — a covered pair
+  // whose credential was rejected or whose plan is inactive must not read as
+  // "waiting for the first sync".
+  const failed = failureCaption(quota, t);
+  if (failed) lines.push(failed);
+  if (quota.badge === 'unverified' && !failed) lines.push(t('op.quotaUnverified'));
   if (quota.plan) lines.push(t('op.quotaPlan', { plan: quota.plan }));
   if (quota.windows.length === 0) {
     lines.push(t('op.quotaNoData'));
@@ -1110,7 +1121,6 @@ export const KeysPage: React.FC = () => {
    * copies are one click. A 401 (or reload) takes the unlock away.
    */
   const revealPassRef = useRef('');
-  const [copyUnlocked, setCopyUnlocked] = useState(false);
 
   // Outbound rate-limit overlay editor (config `credentials:`): the dialog is
   // page-owned like the reveal gate — the row only names its target.
@@ -1375,7 +1385,19 @@ export const KeysPage: React.FC = () => {
     try {
       const res = await opencodeApi.disconnectProviderCredential(a.providerId, a.id);
       applyCredentialList(a.providerId, res.credentials);
-      toast.success(t('op.credentialDisconnected', { label: name }));
+      // A delete is a REVOCATION: report the client half honestly instead of a
+      // blanket "disconnected" (the OCR row being gone says nothing about the
+      // copy opencode routes from).
+      const revoke = res.clientRevoke;
+      if (revoke?.result === 'deleted') {
+        toast.success(t('op.credentialRevokedEverywhere', { label: name, client: revoke.clientId }));
+      } else if (revoke?.result === 'failed') {
+        toast.info(t('op.credentialRevokeClientFailed', { label: name, reason: revoke.detail ?? t('op.syncGenericFailure') }));
+      } else if (revoke) {
+        toast.info(t('op.credentialRevokeClientSkipped', { label: name, reason: revoke.result }));
+      } else {
+        toast.success(t('op.credentialDisconnected', { label: name }));
+      }
       // The credential set behind the card changed; the provider view must follow.
       await loadOpenCodeProviders();
     } catch (err: any) {
@@ -1453,9 +1475,8 @@ export const KeysPage: React.FC = () => {
   };
 
   /**
-   * Copy gesture. With the page unlocked (a verified
-   * password in the ref) this is a silent one-click reveal; otherwise it opens
-   * the password dialog. The key never transits this page's state: every
+   * Password dialog — the LOCKED arm of the copy gesture (see
+   * `handleCredentialCopyKey`). The key never transits this page's state: every
    * response passes straight into the clipboard and is forgotten.
    */
   const openRevealDialog = (a: CredentialHealth) => {
@@ -1464,6 +1485,11 @@ export const KeysPage: React.FC = () => {
     setRevealError('');
   };
 
+  /**
+   * Copy gesture: with the page unlocked (a verified password in `revealPassRef`)
+   * this is a silent one-click reveal; otherwise it opens the password dialog and
+   * the confirm handler installs the unlock. This is the row's `onCopyKey`.
+   */
   const handleCredentialCopyKey = async (a: CredentialHealth) => {
     if (!revealPassRef.current) {
       openRevealDialog(a);
@@ -1479,7 +1505,6 @@ export const KeysPage: React.FC = () => {
         // The held password stopped being true (changed upstream, or the
         // bucket was hot) — take the unlock away and fall back to the dialog.
         revealPassRef.current = '';
-        setCopyUnlocked(false);
         openRevealDialog(a);
       } else {
         toast.error(reasonError(err));
@@ -1496,7 +1521,6 @@ export const KeysPage: React.FC = () => {
       const res = await opencodeApi.revealProviderKey(revealTarget.providerId, revealTarget.id, revealPassword);
       await copyToClipboard(res.key);
       revealPassRef.current = revealPassword;
-      setCopyUnlocked(true);
       setRevealTarget(null);
       setRevealPassword('');
       toast.success(t('op.credentialKeyCopiedUnlocked'));
@@ -1679,14 +1703,12 @@ export const KeysPage: React.FC = () => {
   }, [activeTab]);
 
   // Deep link from /models: /providers?openModels=<id> opens the model
-  // maintenance dialog once the list has loaded — gated on runtime
-  // manageability (defs node / custom-store models), not the catalog-relative
-  // custom badge.
+  // maintenance dialog once the list has loaded. Every connected row owns a
+  // defs node, so presence is the only gate.
   useEffect(() => {
     const target = searchParams.get('openModels');
     if (!target || ocProviders.length === 0) return;
-    const p = ocProviders.find((x) => x.id === target);
-    if (p?.modelsManageable) setModelsPanelId(target);
+    if (ocProviders.some((x) => x.id === target)) setModelsPanelId(target);
     setSearchParams({}, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ocProviders, searchParams]);
@@ -2043,6 +2065,20 @@ export const KeysPage: React.FC = () => {
                         repetition carried zero information. */}
                   </div>
                 )}
+                {/* Empty defs node = this provider routes nothing (the boot pool
+                    only logs the exclusion). Surface it on the card and make the
+                    fix one click: the same model dialog that pulls / adds. */}
+                {p.models.length === 0 && (
+                  <button
+                    className="btn btn-sm"
+                    style={{ ...badgeStyle('var(--accent-amber)', ''), flexShrink: 0, cursor: 'pointer' }}
+                    disabled={busy}
+                    title={t('op.pmEmptyBadgeTip')}
+                    onClick={() => setModelsPanelId(p.id)}
+                  >
+                    {t('op.pmEmptyBadge')}
+                  </button>
+                )}
                 {p.defNode && (
                   <button
                     className="btn btn-sm"
@@ -2142,7 +2178,7 @@ export const KeysPage: React.FC = () => {
                       onToggleDisabled={handleCredentialToggleDisabled}
                       onClearSuspect={handleCredentialClearSuspect}
                       canReveal={webAuthActive}
-                      onCopyKey={openRevealDialog}
+                      onCopyKey={handleCredentialCopyKey}
                       onEditLimits={(acc) => openLimitsDialog(p.id, acc)}
                     />
                   ))}
@@ -2216,11 +2252,11 @@ export const KeysPage: React.FC = () => {
                       className="btn btn-sm"
                       style={modelsPanelId === p.id ? { borderColor: 'var(--accent)', color: 'var(--accent)' } : undefined}
                       disabled={busy}
-                      title={t(p.modelsManageable ? 'op.pmManage' : 'op.pmView')}
+                      title={t('op.pmManage')}
                       onClick={() => setModelsPanelId(p.id)}
                     >
                       <Cpu size={12} />
-                      <span>{t(p.modelsManageable ? 'op.pmManage' : 'op.pmView')}</span>
+                      <span>{t('op.pmManage')}</span>
                     </button>
                     {localOnlyProviders.has(p.id) && (
                       <button
@@ -2241,7 +2277,6 @@ export const KeysPage: React.FC = () => {
                 <ProviderModelsDialog
                   providerId={p.id}
                   providerName={p.name}
-                  readOnly={!p.modelsManageable}
                   onClose={() => setModelsPanelId(null)}
                   onChanged={loadOpenCodeProviders}
                 />
@@ -2482,6 +2517,15 @@ export const KeysPage: React.FC = () => {
                 )}
                 {c.present && !c.writeReady && (
                   <span style={badgeStyle('var(--text-dim)', 'transparent')}>{t('op.syncServiceMissing')}</span>
+                )}
+                {c.present && c.defsDrift === true && (
+                  // The client's materialized `providers` slot is behind the defs
+                  // book. Autosync is OFF by default, so this is the normal state
+                  // after any provider/model edit — it must be VISIBLE, because a
+                  // silent drift is indistinguishable from a working push.
+                  <span style={badgeStyle('var(--accent-amber)', 'transparent')} title={t('op.syncDefsDriftTip')}>
+                    {t('op.syncDefsDrift')}
+                  </span>
                 )}
               </div>
               <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 16, paddingTop: 2 }}>

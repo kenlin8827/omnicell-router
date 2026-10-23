@@ -263,6 +263,54 @@ export function resolveServiceConfigForPaths(
 /** Legacy loopback default (connector.ts parity) — last resort when NO explicit url is resolvable. */
 export const DEFAULT_SERVICE_BASE_URL = 'http://127.0.0.1:49374';
 
+/** In-flight reloads keyed by service endpoint — concurrent def pushes share ONE POST. */
+const serviceReloads = new Map<string, Promise<boolean>>();
+
+/**
+ * Ask the v2 service to re-read its config (`POST /api/location/reload`).
+ *
+ * The defs write direction must call this after a CHANGED materialization
+ * (ADR-0010 §5): a running service registers config-declared providers only on
+ * config load, and the unmatched-write self-heal covers just the case where a
+ * key follows the def. A def-only change (new model, price/limit edit, provider
+ * delete) pushes no key, so without this call the client keeps serving the old
+ * defs until the operator restarts opencode.
+ *
+ * Bounded + non-throwing: absent service config, insecure remote targets and
+ * transport failures all answer `false`, never an exception — the documented
+ * fallback is the resolve-time self-heal, and a reload failure must never fail
+ * the push. `targetPolicy === 'insecure_remote'` is refused for the same reason
+ * every other service call is (the Basic password never travels in plaintext).
+ */
+export function reloadOpencodeService(
+  paths: CredentialPaths,
+  env: Readonly<Record<string, string | undefined>> = defaultEnv(),
+  opts: { fetchImpl?: typeof fetch } = {}
+): Promise<boolean> {
+  const cfg = resolveServiceConfigForPaths(paths, env);
+  if (!cfg || cfg.targetPolicy === 'insecure_remote') return Promise.resolve(false);
+  const key = cfg.baseUrl;
+  const inFlight = serviceReloads.get(key);
+  if (inFlight) return inFlight;
+  const run = postReload(cfg, opts.fetchImpl ?? fetch).finally(() => serviceReloads.delete(key));
+  serviceReloads.set(key, run);
+  return run;
+}
+
+async function postReload(cfg: OpencodeV2ServiceConfig, fetchImpl: typeof fetch): Promise<boolean> {
+  try {
+    const res = await fetchImpl(`${cfg.baseUrl}${API.reload()}`, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: { Authorization: cfg.authHeader, Accept: 'application/json' },
+      signal: AbortSignal.timeout(ADMIN_HTTP_TIMEOUT_MS),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * `opencode service status` runner — the live-discovery seam for the write path.
  * Default impl: execFile (args array, no shell), 5 s timeout, first http(s)

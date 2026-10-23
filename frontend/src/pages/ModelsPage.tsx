@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Cpu, RefreshCw, Search, Brain, Wrench, Eye, EyeOff, AudioLines, Video, Thermometer, Pencil, Zap, Loader2, Lock, LockOpen, Copy } from 'lucide-react';
 import { opencodeApi, type OpenCodeModelView } from '../lib/api';
 import { useModelTest } from '../lib/useModelTest';
@@ -9,7 +9,6 @@ import { ModelEditDialog } from '../components/ModelEditDialog';
 import { Combobox } from '../components/Combobox';
 import { Pagination } from '../components/Pagination';
 import { Chip } from '../components/Chip';
-import { Switch } from '../components/Switch';
 import { fmtLatency, copyToClipboard } from '../lib/format';
 
 import { FONT_MONO } from '../lib/fonts';
@@ -24,7 +23,6 @@ const SOURCE_BADGE: Record<string, { color: string; bg: string; labelKey: string
   'models-dev': { color: 'var(--hue-blue)', bg: 'var(--hue-blue-soft)', labelKey: 'models.srcModelsDev' },
   openrouter: { color: 'var(--hue-violet)', bg: 'var(--hue-violet-soft)', labelKey: 'models.srcOpenrouter' },
   config: { color: 'var(--accent-amber)', bg: 'color-mix(in srgb, var(--accent-amber) 12%, transparent)', labelKey: 'models.srcConfig' },
-  custom: { color: 'var(--hue-emerald)', bg: 'var(--hue-emerald-soft)', labelKey: 'models.srcCustom' },
   mapped: { color: '#c084fc', bg: 'rgba(192,132,252,0.12)', labelKey: 'models.srcMapped' },
   'openai-compatible': { color: 'var(--text-dim)', bg: 'var(--chip-bg)', labelKey: 'models.srcOpenaiCompatible' },
   service: { color: 'var(--text-dim)', bg: 'var(--chip-bg)', labelKey: 'models.srcService' },
@@ -87,12 +85,13 @@ const thStyle: React.CSSProperties = {
 const tdStyle: React.CSSProperties = {
   padding: '9px 14px',
   borderBottom: '1px solid var(--divider)',
-  // Center against two-line model cells (id + display name) instead of hugging the first line.
+  // Center against the two-line model cell (display name + providerId/modelId).
   verticalAlign: 'middle',
 };
 
 export const ModelsPage: React.FC = () => {
   const { t } = useI18n();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [models, setModels] = useState<OpenCodeModelView[]>([]);
@@ -108,10 +107,8 @@ export const ModelsPage: React.FC = () => {
 
   const [query, setQuery] = useState('');
   const [provider, setProvider] = useState(searchParams.get('provider') || '');
-  // Connected-only is a stable personal preference — remember it (first visit: unchecked).
-  const [onlyConnected, setOnlyConnected] = useState(() => localStorage.getItem('ocr_models_only_connected') === '1');
   // Flag filters (same chips as the OCR catalog viewer); compose with each
-  // other and with the search / provider / connected filters.
+  // other and with the search / provider filters.
   const [onlyLocked, setOnlyLocked] = useState(false);
   const [onlyHidden, setOnlyHidden] = useState(false);
   const [sort, setSort] = useState<SortKey>('default');
@@ -122,7 +119,7 @@ export const ModelsPage: React.FC = () => {
     setLoading(true);
     try {
       const [res, lockRes] = await Promise.all([
-        opencodeApi.listModels(),
+        opencodeApi.listModels({ maintained: true }),
         opencodeApi.lockedCatalogModels().catch(() => null),
       ]);
       setModels(res.models);
@@ -157,21 +154,17 @@ export const ModelsPage: React.FC = () => {
     }
   };
 
-  /** Hide / show a model in the catalog.
+  /** Hide / show a model on the CLIENT-facing surfaces.
    *
-   *  Writes the OVERRIDE layer (overrides.json), not the defs-file def:
-   *  that works for every row (catalog-sourced, credential-only and def-backed)
-   *  and creates no def, which matters because a provider that suddenly gains a
-   *  def would have its model universe collapse to the enabled defs. Read back
-   *  from the same plane, so what the row shows is what the pool does. */
-const toggleHidden = async (m: OpenCodeModelView) => {
+   *  Writes the OVERRIDE layer (overrides.json) — the model keeps its defs
+   *  entry and stays visible here and in the catalog viewer; boot-direct just
+   *  leaves it out of the routing pool, so `/v1/models` omits it and no client
+   *  request can reach it. The pool is boot-scoped, hence the restart note. */
+  const toggleHidden = async (m: OpenCodeModelView) => {
     const hidden = m.disabled !== true;
     try {
       await opencodeApi.putCatalogOverride(m.providerId, m.id, { disabled: hidden });
       await load();
-      // The catalog store rebuilds immediately, but the ROUTING pool is built
-      // at boot — without this note the row looks hidden while the model keeps
-      // serving until a restart.
       toast.info(t(hidden ? 'models.hiddenToast' : 'models.shownToast', { id: `${m.providerId}/${m.id}` }));
     } catch (err: any) {
       toast.error('Failed: ' + err.message);
@@ -193,9 +186,8 @@ const toggleHidden = async (m: OpenCodeModelView) => {
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     let list = models.filter((m) => {
-      if (onlyConnected && !m.connected) return false;
       if (provider && m.providerId !== provider) return false;
-      // flag filters compose (locked ∩ hidden), same as the catalog viewer
+      // flag filter composes with search/provider
       if (onlyLocked && !lockedIds.has(rowLockKey(m))) return false;
       if (onlyHidden && m.disabled !== true) return false;
       if (!q) return true;
@@ -223,7 +215,7 @@ const toggleHidden = async (m: OpenCodeModelView) => {
         break;
     }
     return list;
-  }, [models, query, provider, onlyConnected, onlyLocked, onlyHidden, lockedIds, sort]);
+  }, [models, query, provider, onlyLocked, onlyHidden, lockedIds, sort]);
 
   const lockedCount = useMemo(
     () => models.filter((m) => lockedIds.has(rowLockKey(m))).length,
@@ -318,14 +310,6 @@ const toggleHidden = async (m: OpenCodeModelView) => {
             title={t('catalogPage.ocrOnlyHiddenHint')}
             onToggle={() => { setOnlyHidden((v) => !v); setPage(1); }}
           />
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
-            <Switch
-              size="sm"
-              checked={onlyConnected}
-              onChange={(v) => { setOnlyConnected(v); localStorage.setItem('ocr_models_only_connected', v ? '1' : '0'); setPage(1); }}
-            />
-            {t('models.onlyConnected')}
-          </label>
           <button className="btn btn-sm" onClick={load} disabled={loading}>
             <RefreshCw size={12} />
             <span>{t('models.refresh')}</span>
@@ -360,13 +344,14 @@ const toggleHidden = async (m: OpenCodeModelView) => {
                   <td style={tdStyle}>
                     {(() => {
                       const displayName = m.name || m.id.split('/').pop();
-                      const hasName = Boolean(displayName && displayName !== m.id);
-                      // Industry-standard model-cell layout (OpenRouter / Anthropic
-                      // Console style): human-readable display name as the primary
-                      // line, the FULL gateway-visible id (`providerId/modelId` —
-                      // the registered modelRef) as the monospace secondary line
-                      // with its own copy button attached. Rows without a distinct
-                      // name fall back to the id as the primary line.
+                      // Two-line model cell, unconditionally: display name on the
+                      // primary line, the FULL gateway-visible id
+                      // (`providerId/modelId` — the registered modelRef) on the
+                      // monospace secondary line with its own copy button.
+                      // A def whose `name` happens to equal the id (e.g.
+                      // `glm-4.6`) is NOT treated as "nameless": branching on
+                      // that made row layout depend on cosmetic defs data, so
+                      // sibling rows flipped between one and two lines.
                       const mono = FONT_MONO;
                       const copyBtn = (
                         <button
@@ -383,11 +368,7 @@ const toggleHidden = async (m: OpenCodeModelView) => {
                       return (
                         <>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                            {hasName ? (
-                              <span style={{ fontWeight: 600, wordBreak: 'break-all' }}>{displayName}</span>
-                            ) : (
-                              <span style={{ fontFamily: mono, fontWeight: 600, wordBreak: 'break-all' }}>{m.providerId}/{m.id}</span>
-                            )}
+                            <span style={{ fontWeight: 600, wordBreak: 'break-all' }}>{displayName}</span>
                             {res && (
                               <span
                                 style={{
@@ -409,7 +390,6 @@ const toggleHidden = async (m: OpenCodeModelView) => {
                             >
                               {testingIds.has(rowKey) ? <Loader2 size={11} style={{ animation: 'ocr-spin 0.8s linear infinite' }} /> : <Zap size={11} />}
                             </button>
-                            {!hasName && copyBtn}
                             <button
                               style={{ color: 'var(--text-dim)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', flexShrink: 0, opacity: m.disabled === true ? 0.6 : 1 }}
                               title={m.disabled === true ? t('models.showInCatalog') : t('models.hideFromCatalog')}
@@ -457,12 +437,10 @@ const toggleHidden = async (m: OpenCodeModelView) => {
                               </button>
                             )}
                           </div>
-                          {hasName && (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 2, minWidth: 0 }}>
-                              <span style={{ fontFamily: mono, fontSize: 11, color: 'var(--text-dim)', wordBreak: 'break-all' }}>{m.providerId}/{m.id}</span>
-                              {copyBtn}
-                            </div>
-                          )}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 2, minWidth: 0 }}>
+                            <span style={{ fontFamily: mono, fontSize: 11, color: 'var(--text-dim)', wordBreak: 'break-all' }}>{m.providerId}/{m.id}</span>
+                            {copyBtn}
+                          </div>
                         </>
                       );
                     })()}
@@ -503,6 +481,17 @@ const toggleHidden = async (m: OpenCodeModelView) => {
                   <td colSpan={7} style={{ padding: 24, textAlign: 'center', color: 'var(--text-dim)' }}>
                     {t('models.empty')}
                     {models.length > 0 && <div style={{ marginTop: 6, fontSize: 11 }}>{t('models.emptyFiltered')}</div>}
+                    {/* Empty defs plane: the page is maintained-only, so "no rows"
+                        means nothing was pulled yet — send the operator to the
+                        page where pulling happens instead of a dead end. */}
+                    {models.length === 0 && (
+                      <div style={{ marginTop: 10 }}>
+                        <div style={{ fontSize: 11, marginBottom: 8 }}>{t('models.emptyMaintainHint')}</div>
+                        <button className="btn btn-sm" onClick={() => navigate('/providers')}>
+                          {t('models.emptyMaintainAction')}
+                        </button>
+                      </div>
+                    )}
                   </td>
                 </tr>
               )}

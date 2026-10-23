@@ -7,6 +7,8 @@ import { OcrStore } from '../src/opencode/credentials/ocr-store.js';
 import { DbOpener } from '../src/opencode/credentials/opencode-v2-store.js';
 import {
   credentialSyncStatusView,
+  revokeOnClient,
+  shouldRetryAutoWrite,
   initCredentialSync,
   maybeRunV2Migration,
   pullIntoOcr,
@@ -115,7 +117,7 @@ describe('status view — both clients ship by default, toggles OFF', () => {
     expect(view.clients.map((c) => c.present)).toEqual([false, false]);
   });
 
-  it('flags availability per flavor: v2 needs the db, v1 needs auth.json WITHOUT v2 evidence', () => {
+  it('flags availability per flavor: v2 needs the db, v1 needs v1 evidence WITHOUT v2 evidence', () => {
     const v2Paths = withService(sandboxPaths());
     fs.writeFileSync(v2Paths.opencodeDbPath, 'fake-db-bytes');
     fs.writeFileSync(v2Paths.authJsonPath, JSON.stringify({ anthropic: { type: 'api', key: 'sk-stale' } }));
@@ -129,6 +131,87 @@ describe('status view — both clients ship by default, toggles OFF', () => {
     const v1View = credentialSyncStatusView({ paths: v1Paths });
     expect(v1View.clients.find((c) => c.id === 'opencode-v1')).toMatchObject({ present: true, writeReady: true });
     expect(v1View.clients.find((c) => c.id === 'opencode-v2')).toMatchObject({ present: false });
+
+    // a v1 VERSION PIN alone is v1 evidence: on a fresh v1 install auth.json
+    // does not exist yet and the write direction is what creates it.
+    const pinned = sandboxPaths();
+    fs.mkdirSync(path.dirname(pinned.installedVersionPath), { recursive: true });
+    fs.writeFileSync(pinned.installedVersionPath, '1.4.2', 'utf8');
+    const pinnedView = credentialSyncStatusView({ paths: pinned });
+    expect(pinnedView.clients.find((c) => c.id === 'opencode-v1')).toMatchObject({ present: true, writeReady: true });
+  });
+});
+
+describe('auto-write safety net: what the periodic tick retries', () => {
+  const base = { ok: true, entries: [] as never[] };
+  it('retries a defs reload that did not land even though every key entry was fine', () => {
+    // The keys deduped (ok=true) but the client kept the OLD provider list —
+    // without this the stale defs would survive until the next OCR mutation.
+    expect(shouldRetryAutoWrite({ ...base, defsChanged: true, defsReloaded: false })).toBe(true);
+    expect(shouldRetryAutoWrite({ ...base, defsChanged: true, defsReloaded: true })).toBe(false);
+    expect(shouldRetryAutoWrite({ ...base, defsChanged: false })).toBe(false);
+  });
+
+  it('keeps the shipped policy: no run / service down / entry failures retry; unhealable preconditions do not', () => {
+    expect(shouldRetryAutoWrite(undefined)).toBe(true);
+    expect(shouldRetryAutoWrite({ ...base, ok: false, precondition: 'service_unreachable' })).toBe(true);
+    expect(shouldRetryAutoWrite({ ...base, ok: false })).toBe(true);
+    expect(shouldRetryAutoWrite({ ...base, ok: false, precondition: 'client_absent' })).toBe(false);
+    expect(shouldRetryAutoWrite({ ...base, ok: false, precondition: 'client_unreadable' })).toBe(false);
+  });
+});
+
+describe('client revoke (the client half of an operator delete)', () => {
+  it('deletes ONLY the matching keyHash row on v2 — never a set diff', async () => {
+    const p = withService(sandboxPaths());
+    fs.writeFileSync(p.opencodeDbPath, 'fake-db-bytes');
+    const target = 'sk-revoke-target';
+    const other = 'sk-revoke-other';
+    const calls: { url: string; method: string }[] = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      const method = String(init?.method ?? 'GET');
+      calls.push({ url, method });
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    };
+    const out = await revokeOnClient('anthropic', keyHashPrefix(target), {
+      paths: p,
+      env: {},
+      fetchImpl,
+      now: () => 1,
+      openDatabase: fakeDb([keyRow('c-target', 'anthropic', target), keyRow('c-other', 'anthropic', other)]),
+    });
+    expect(out).toEqual({ clientId: 'opencode-v2', result: 'deleted' });
+    const deletes = calls.filter((c) => c.method === 'DELETE');
+    expect(deletes).toHaveLength(1);
+    expect(deletes[0]!.url).toContain('/api/credential/c-target');
+  });
+
+  it('reports not_found when the client holds no row for that key material', async () => {
+    const p = withService(sandboxPaths());
+    fs.writeFileSync(p.opencodeDbPath, 'fake-db-bytes');
+    const out = await revokeOnClient('anthropic', keyHashPrefix('sk-absent'), {
+      paths: p,
+      env: {},
+      openDatabase: fakeDb([keyRow('c-other', 'anthropic', 'sk-different')]),
+    });
+    expect(out).toEqual({ clientId: 'opencode-v2', result: 'not_found' });
+  });
+
+  it('absent / v1 machines are typed, never an exception', async () => {
+    const none = sandboxPaths(); // no db, no v1 evidence
+    expect(await revokeOnClient('anthropic', keyHashPrefix('sk-x'), { paths: none, env: {} })).toEqual({
+      clientId: 'opencode-v1',
+      result: 'absent',
+    });
+
+    const v1 = sandboxPaths(); // v1 pin, no v2 db
+    fs.mkdirSync(path.dirname(v1.installedVersionPath), { recursive: true });
+    fs.writeFileSync(v1.installedVersionPath, '1.9.0', 'utf8');
+    expect(await revokeOnClient('anthropic', keyHashPrefix('sk-x'), { paths: v1, env: {} })).toEqual({
+      clientId: 'opencode-v1',
+      result: 'unsupported',
+    });
   });
 });
 
@@ -275,7 +358,7 @@ describe('write sync (push): OCR file -> client', () => {
   });
 
   it('v1: dedups an unchanged head (no rewrite); an absent auth.json means the client is not there', async () => {
-    const absent = sandboxPaths(); // no auth.json — no v1 client footprint
+    const absent = sandboxPaths(); // no auth.json, no version pin — no v1 client footprint
     const absentStore = new OcrStore({ paths: absent, now: () => 1 });
     await absentStore.connectKey('anthropic', 'sk-v1-fresh');
     const none = await pushFromOcr('opencode-v1', absentStore, { paths: absent });
@@ -288,6 +371,19 @@ describe('write sync (push): OCR file -> client', () => {
     const second = await pushFromOcr('opencode-v1', ocr, { paths: p, now: () => 6 });
     expect(second).toMatchObject({ ok: true, pushed: 0, deduped: 1 });
     expect(second.pushedKeys).toEqual([{ provider: 'anthropic', keyHashPrefix: keyHashPrefix('sk-v1-fresh') }]);
+  });
+
+  it('v1: a fresh install (version pin 1, no auth.json yet) is seeded — the write creates the file', async () => {
+    const fresh = sandboxPaths(); // v1 pin, NO auth.json
+    fs.mkdirSync(path.dirname(fresh.installedVersionPath), { recursive: true });
+    fs.writeFileSync(fresh.installedVersionPath, 'v1.9.0', 'utf8');
+    const ocr = new OcrStore({ paths: fresh, now: () => 1 });
+    await ocr.connectKey('anthropic', 'sk-v1-seed');
+
+    const outcome = await pushFromOcr('opencode-v1', ocr, { paths: fresh });
+    expect(outcome).toMatchObject({ ok: true, pushed: 1 });
+    const auth = JSON.parse(fs.readFileSync(fresh.authJsonPath, 'utf8'));
+    expect(auth.anthropic).toMatchObject({ type: 'api', key: 'sk-v1-seed' });
   });
 
   it('v1: an unreadable auth.json is refused, never clobbered; v2 machines are guarded', async () => {
@@ -465,5 +561,65 @@ describe('boot engine: auto-read poll + auto-write debounce', () => {
     } finally {
       stopCredentialSync();
     }
+  });
+});
+
+/**
+ * v1 adapter conformance — fixture-verified.
+ *
+ * No opencode v1 binary exists on the dev box, so these assertions pin what we
+ * CAN prove deterministically: the file we write is shaped like the v1 file, it
+ * preserves everything we do not own, and the pre-write copy is recoverable.
+ * What only a real v1 runtime can settle (does it accept the merged file, does
+ * Windows ignore chmod, does it route from auth.json) is listed in ADR-0006.
+ */
+describe('v1 adapter conformance (fixture-verified, no v1 binary required)', () => {
+  it('keeps foreign providers and unknown entry fields byte-for-byte; only the head key is replaced', async () => {
+    const p = v1Machine(sandboxPaths(), {
+      // a provider we do not manage — must survive untouched
+      'other-vendor': { type: 'api', key: 'sk-foreign', account_id: 'acct-9', future_field: { nested: true } },
+      anthropic: { type: 'api', key: 'sk-stale', account_id: 'acct-1', future_field: 'keep-me' },
+    });
+    const ocr = new OcrStore({ paths: p, now: () => 1 });
+    await ocr.connectKey('anthropic', 'sk-fresh-head');
+    const outcome = await pushFromOcr('opencode-v1', ocr, { paths: p });
+    expect(outcome).toMatchObject({ ok: true, pushed: 1 });
+
+    const auth = readAuth(p);
+    expect(auth['other-vendor']).toEqual({ type: 'api', key: 'sk-foreign', account_id: 'acct-9', future_field: { nested: true } });
+    // The merge overwrites type/key only: v1 fields we do not model survive.
+    expect(auth.anthropic).toMatchObject({ type: 'api', key: 'sk-fresh-head', account_id: 'acct-1', future_field: 'keep-me' });
+  });
+
+  it('preserves the pre-write file as auth.json.bak.ocr before a converging write', async () => {
+    const original = JSON.stringify({ anthropic: { type: 'api', key: 'sk-before' } }, null, 2);
+    const p = sandboxPaths();
+    fs.writeFileSync(p.authJsonPath, original);
+    const ocr = new OcrStore({ paths: p, now: () => 1 });
+    await ocr.connectKey('anthropic', 'sk-after');
+    await pushFromOcr('opencode-v1', ocr, { paths: p });
+
+    expect(fs.readFileSync(`${p.authJsonPath}.bak.ocr`, 'utf8')).toBe(original); // exactly the pre-write bytes
+    expect(readAuth(p).anthropic.key).toBe('sk-after');
+  });
+
+  it('writes nothing and makes no backup when every head already matches (dedupe path)', async () => {
+    const p = v1Machine(sandboxPaths(), { anthropic: { type: 'api', key: 'sk-same' } });
+    const ocr = new OcrStore({ paths: p, now: () => 1 });
+    await ocr.connectKey('anthropic', 'sk-same');
+    const outcome = await pushFromOcr('opencode-v1', ocr, { paths: p });
+    expect(outcome).toMatchObject({ ok: true, pushed: 0, deduped: 1 });
+    expect(fs.existsSync(`${p.authJsonPath}.bak.ocr`)).toBe(false);
+  });
+
+  it('a fresh install (pin only) creates the file with no backup — nothing to preserve', async () => {
+    const p = sandboxPaths();
+    fs.mkdirSync(path.dirname(p.installedVersionPath), { recursive: true });
+    fs.writeFileSync(p.installedVersionPath, '1.9.0', 'utf8');
+    const ocr = new OcrStore({ paths: p, now: () => 1 });
+    await ocr.connectKey('anthropic', 'sk-first');
+    expect(await pushFromOcr('opencode-v1', ocr, { paths: p })).toMatchObject({ ok: true, pushed: 1 });
+    expect(readAuth(p).anthropic).toMatchObject({ type: 'api', key: 'sk-first' });
+    expect(fs.existsSync(`${p.authJsonPath}.bak.ocr`)).toBe(false);
   });
 });

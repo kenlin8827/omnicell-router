@@ -94,14 +94,6 @@ export interface ProcessContext {
   onClientExchange?: (ctx: ClientExchangeContext) => void;
 }
 
-/** Deep-enough message copy for capture snapshots (content parts cloned). */
-function snapshotMessages(messages: any[]): any[] {
-  return messages.map((m: any) => ({
-    role: m.role,
-    content: Array.isArray(m.content) ? m.content.map((p: any) => ({ ...p })) : m.content,
-  }));
-}
-
 /**
  * Pull a non-sensitive subset of inbound headers for the trace's
  * `clientHeaders` field. Three categories:
@@ -313,7 +305,6 @@ export class PipelineOrchestrator {
      */
     relay?: StreamRelay
   ): Promise<ExecutionResult> {
-    const startTime = Date.now();
     const captureEnabled = this.captureRecorder.isEnabled();
 
     // Capture pipeline state — see observability/http-exchange.ts and

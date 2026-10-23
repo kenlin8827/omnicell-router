@@ -141,9 +141,11 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
   const models: ModelRegistration[] = [];
   const excluded: DirectBootResult['excluded'] = [];
 
-  // Decision 11: a retired-shape node is dropped by the reader (opencode's own v2
-  // decoder discards the whole node), so the drop is reported here rather than
-  // leaving the operator to wonder where their provider went.
+  // Decision 11: a retired-shape node is dropped by the reader (its v2 wire
+  // spelling is unproven — the node parses, but npm/options may be ignored, which
+  // would point the provider at a silently wrong endpoint), so the drop is
+  // reported here rather than leaving the operator to wonder where their provider
+  // went.
   const retiredShapes = new Map(legacyShapedSlotEntries().map((e) => [e.id, e.paths]));
 
   for (const rec of catalog) {
@@ -219,19 +221,15 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
 
     const defs = getProviderModelDefs(rec.id) || {};
     const catById = new Map(rec.models.map((m) => [m.id, m]));
-    // config definitions win as the model universe when present (opencode
-    // semantics); auth-only providers (no defs at all) fall back to the full
-    // catalog listing. "Present but every def disabled" is NOT that case — it
-    // must end up with an empty universe, or hidden models leak back in
-    // through the catalog fallback.
-    // NOTE: no def-level `disabled` filter here — visibility is decided ONCE
-    // below from the aggregate (which merges def values + overrides.json, with
-    // the override winning). Filtering here would make a def-level
-    // `disabled: true` unrecoverable from the UI.
-    const defIds = Object.keys(defs);
-    const modelIds = defIds.length > 0 ? defIds : rec.models.map((m) => m.id);
+    // The provider's defs node IS its model universe (connect-time doctrine,
+    // ADR-0010): every connected provider owns a node, and the catalog is a
+    // SOURCE for that node, never a fallback universe. An empty node means
+    // "nothing maintained yet" and must not re-expand to the catalog listing —
+    // pull or add models to make them routable. There is no per-model hidden
+    // flag: removing a model from routing means removing its definition.
+    const modelIds = Object.keys(defs);
     if (modelIds.length === 0) {
-      excluded.push({ provider: rec.id, reason: '目录与配置均无可用模型' });
+      excluded.push({ provider: rec.id, reason: '配置中未维护任何模型（请拉取或新增）' });
       continue;
     }
 
@@ -240,13 +238,13 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
     for (const mid of modelIds) {
       const d = (defs as any)[mid];
       const catModel = catById.get(mid);
-      // Hidden from the catalog (overrides.json `disabled`, or a def-level
-      // `disabled` flag which the aggregation already carried over). Read from
-      // the AGGREGATE so both write paths are honored by this one check —
-      // hidden models stay listed in the catalog viewer but never reach the
-      // routing pool, so /v1/models omits them and nothing can be pinned.
+      // Operator takedown, CLIENT-only by contract: the model stays in the
+      // console (catalog viewer, /models) but leaves the routing pool, so
+      // /v1/models omits it and no client request can be pinned to it.
+      // Read from the AGGREGATE so both write paths are honored by this one
+      // check (overrides.json wins over a def-level flag).
       if (catModel?.disabled === true) {
-        excluded.push({ provider: rec.id, model: `${rec.id}/${mid}`, reason: '已在模型目录中隐藏（disabled）' });
+        excluded.push({ provider: rec.id, model: `${rec.id}/${mid}`, reason: '已从客户端目录隐藏（disabled）' });
         continue;
       }
       // the routing pool speaks chat/responses/anthropic only —

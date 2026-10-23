@@ -63,3 +63,25 @@ The reconcile gate (auth.json→v2 push + `authWriteDisabled` marker — superse
 - Keys added in the console reach opencode only through a write sync — automatic when enabled, explicit otherwise. The credential-sync table makes that propagation visible instead of implicit.
 - `OpencodeV2Store` remains fully exercised as the sync engine's tool (reads for pull, verified HTTP writes for push, stage-2 service discovery unchanged); its route-level v2 behaviors (integration-unmatched 409, readonly refusal, view invalidation) are no longer reachable through the console and their route tests were retired with them.
 - Tests: `credentials-sync` (engine), `credentials-factory` (single landing + totality), `credentials-console-routes` (routes × OCR file), `credentials-push-endpoint` (keep-local), `boot-direct-credential-store` (OCR-file boot), plus the unchanged `credentials-leak-surfaces` / `credentials-reveal-route` / `credentials-standalone-import` / `credentials-opencode-v2-*` adapter suites.
+
+## Amendment — key deletions never propagate (so a pull re-imports them)
+
+The write direction is ADD/ROTATE-ONLY for both clients: v2 pushes `connectKey` per credential and never calls the delete route; v1 merges the chain-head api key per provider and never removes a provider node. Consequence, stated plainly: a credential deleted only in the OCR file is re-imported by the next read sync (manual or the auto-read tick) for as long as the client still holds it. That is the read direction's contract — pull imports what the client holds, and the store keeps no memory of a deliberate deletion, so "client has a key OCR lacks" and "operator just removed that key" are the same observation. Operational rule: **to make a removal stick, delete on the client side too** (the console sync panel states this on the pull control).
+
+**The console DELETE is a REVOCATION, not a local cleanup**, and it uses the machinery above instead of inventing a second ledger:
+
+- the OCR row is deleted (the store's `disconnect`);
+- the key MATERIAL is anchored as DISABLED in the existing keyHash-anchored takedown ledger (`reason: 'deleted'`), so a pull-back re-imports the row **parked** — never routable, badge + one-click restore. An ALREADY-parked key material keeps its own note: the flag's other half (`disabledAt`) is preserved by design, and the delete must not launder the operator's audit text into `'deleted'`; This is the pull-side tombstone; a separate `(provider × keyHashPrefix)` file would duplicate a ledger whose lifecycle already matches ("survives every reconnect until the operator lifts it");
+- the client copy is deleted too (v2 `DELETE /api/credential/:id`, matched by `keyHashPrefix` — ONE row, never a set diff), because opencode routes from its own db and an OCR-only delete cannot stop it. v1 has no id-addressed delete (one key per provider in a plain file) and answers `unsupported`; the response reports the client half per target and the console says so instead of claiming a clean revocation. `?clientRevoke=0` opts out (retire the OCR row only).
+
+Constraint for future work: a book-wide "mirror deletions into the client" reconciliation is still forbidden — an unreadable or degraded OCR book would read as "delete everything on the client". Deletions stay operator-initiated, one key material at a time.
+
+### v1 client — verified scope
+
+The v1 adapter is **fixture-verified, not binary-verified**: no opencode v1 install exists on the reference machine (only v2). What the test suite pins down deterministically:
+
+- the written file keeps the v1 shape (one `api` entry per provider, `<dataDir>/auth.json`, 0600 best-effort) and **preserves everything we do not own** — other providers' entries byte-for-byte, unknown fields on the entry we rewrite (`account_id`, plus any future field), `oauth`/`wellknown` entries untouched and reported as `skipped`;
+- the pre-write file is preserved as `auth.json.bak.ocr` before every converging write (no write ⇒ no backup), and the rename goes through `atomicWriteWithRetry` (Windows EPERM/EBUSY from a holding process retries instead of failing the push);
+- presence: v1 evidence is an existing `auth.json` OR a v1 `installed.version` pin, and never on a machine with v2 evidence.
+
+What remains **unverifiable without a v1 binary**, and must not be asserted as proven: that a real v1 runtime accepts the merged file; that Windows honors/ignores the 0600 intent; that v1 actually routes from `auth.json` (the premise of both directions); that `installed.version` exists on a pure-v1 install (an install with neither pin nor `auth.json` reads as absent — the adapter stays inert rather than guessing). Field vocabulary was cross-checked against the v1-importer strings embedded in the installed v2 binary (`account_id`, `methodID`, `wellknown`, `integration_id`) — evidence, not proof.

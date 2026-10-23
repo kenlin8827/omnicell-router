@@ -7,6 +7,7 @@ import type {
   QuotaProbeConfigEntry,
   QuotaProbeEntry,
   QuotaProbeOutcome,
+  QuotaProbeFailure,
   QuotaSnapshot,
 } from './types.js';
 
@@ -281,6 +282,71 @@ export async function runDslProbe(entry: QuotaProbeEntry, opts: RunProbeOpts): P
   }
 }
 
+/** Display bound for one upstream failure message (the full body stays in the
+ *  memory-only last-probe capture; this is the one-line badge caption). */
+export const FAILURE_MESSAGE_MAX_CHARS = 160;
+
+/** Collapse an upstream body to ONE display line (whitespace-normalized). */
+function oneLine(text: string): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > FAILURE_MESSAGE_MAX_CHARS ? `${flat.slice(0, FAILURE_MESSAGE_MAX_CHARS - 1)}…` : flat;
+}
+
+/**
+ * The upstream's own words when the body carries a recognizable envelope
+ * (MiniMax `base_resp.status_msg`, the common `error.message` / `message` /
+ * `msg` / `detail` shapes), else a compact JSON stringification of a small
+ * body. Returns undefined when there is nothing display-worthy.
+ */
+function upstreamMessage(body: unknown): string | undefined {
+  if (body === undefined || body === null) return undefined;
+  if (typeof body === 'string') return body.trim() ? oneLine(body) : undefined;
+  if (typeof body !== 'object') return oneLine(String(body));
+  const rec = body as Record<string, any>;
+  const envelope = rec.base_resp ?? rec.baseResp;
+  if (envelope && typeof envelope === 'object') {
+    const msg = envelope.status_msg ?? envelope.statusMsg;
+    const code = envelope.status_code ?? envelope.statusCode;
+    if (typeof msg === 'string' && msg.trim()) {
+      return oneLine(code !== undefined && code !== null ? `${msg} (code ${String(code)})` : msg);
+    }
+  }
+  for (const key of ['error', 'message', 'msg', 'detail']) {
+    const v = rec[key];
+    if (typeof v === 'string' && v.trim()) return oneLine(v);
+    // { error: { message } } — the OpenAI-shaped failure body.
+    if (v && typeof v === 'object') {
+      const inner = (v as Record<string, unknown>).message;
+      if (typeof inner === 'string' && inner.trim()) return oneLine(inner);
+    }
+  }
+  try {
+    const json = JSON.stringify(body);
+    return json && json.length > 2 ? oneLine(json) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Build the display-safe failure verdict for one attempt: transport reason +
+ * HTTP status + the upstream's short message. Display-only evidence — it never
+ * gates routing and never reaches the breaker plane.
+ */
+export function probeFailureDetail(
+  outcome: Extract<QuotaProbeOutcome, { ok: false }>,
+  http: LastProbeCapture | undefined,
+  at: number
+): Omit<QuotaProbeFailure, 'at'> & { at: number } {
+  const message = upstreamMessage(http?.body);
+  return {
+    reason: outcome.reason,
+    ...(http?.status !== undefined ? { statusCode: http.status } : {}),
+    ...(message ? { message } : {}),
+    at,
+  };
+}
+
 /**
  * Probe one pair through its effective entry (DSL or adapter) and land the
  * result in the store. Probe failure NEVER touches breakers — it keeps the
@@ -324,11 +390,15 @@ export async function probePair(target: QuotaTarget, opts: RunProbeOpts): Promis
       verifiedAt: now(),
       entryId,
     });
+    // A success retires the previous failure verdict (it described evidence
+    // that no longer applies).
+    store.clearFailure(opts.providerId, opts.prefix);
   } else {
     // A failed attempt keeps the previous values (store marks staleness;
     // there is no "delete on failure" path — staleness is the honest
-    // signal, and a never-probed pair simply stays `unverified`).
-    store.markFailure(opts.providerId, opts.prefix);
+    // signal) AND records WHY, so a pair that never succeeded shows its
+    // verdict instead of an eternal `unverified`.
+    store.markFailure(opts.providerId, opts.prefix, probeFailureDetail(outcome, http, now()));
   }
   // The raw last exchange rides MEMORY-ONLY (never into the snapshot file) —
   // the console's "inspect last probe" surface reads it back here.

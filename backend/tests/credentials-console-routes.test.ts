@@ -117,7 +117,7 @@ beforeEach(() => {
   process.env.XDG_CONFIG_HOME = path.join(tmpDir, 'config');
   process.env.XDG_DATA_HOME = path.join(tmpDir, 'data');
   // The defs funnel resolves through OCR_HOME — align it with credPaths().ocrHome
-  // so route writes and test assertions address the same custom-providers.json.
+  // so route writes and test assertions address the same providers.json.
   process.env.OCR_HOME = path.join(tmpDir, 'ocr-home');
   const p = credPaths();
   fs.mkdirSync(p.configDir, { recursive: true });
@@ -746,6 +746,103 @@ describe('POST /opencode/providers/:id/models/pull — liveCapable keyed on the 
   });
 });
 
+describe('every connected provider is model-manageable — the defs node is the single landing spot', () => {
+  it('GET models on a never-connected provider → 404 (no credential, no node)', async () => {
+    bindStore(credPaths()); // empty store — no credential rows at all
+    const res = await app.inject({ method: 'GET', url: '/api/admin/opencode/providers/zedprov/models' });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('GET models on a connected provider with an empty node → 200 empty manageable universe', async () => {
+    const p = credPaths();
+    seedOcr(p, { zedprov: [{ id: 'c1', key: 'sk-managed-key' }] });
+    writeJsonc(p, { providers: { zedprov: { package: '@opencode-ai/provider/openai-compatible' } } });
+    bindStore(p);
+    const res = await app.inject({ method: 'GET', url: '/api/admin/opencode/providers/zedprov/models' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: 'ok', id: 'zedprov', models: {} });
+  });
+
+  it('add on a connected provider lands in providers.json and reads back', async () => {
+    const p = credPaths();
+    seedOcr(p, { zedprov: [{ id: 'c1', key: 'sk-managed-key' }] });
+    writeJsonc(p, { providers: { zedprov: { package: '@opencode-ai/provider/openai-compatible' } } });
+    bindStore(p);
+    const add = await app.inject({
+      method: 'POST',
+      url: '/api/admin/opencode/providers/zedprov/models',
+      payload: { id: 'glm-manual', name: 'Manual Model', cost: { input: 1, output: 4 } },
+    });
+    expect(add.statusCode).toBe(200);
+    const node = readJsoncProviders(p).zedprov;
+    expect(Object.keys(node.models)).toEqual(['glm-manual']);
+
+    const list = await app.inject({ method: 'GET', url: '/api/admin/opencode/providers/zedprov/models' });
+    expect(list.statusCode).toBe(200);
+    expect(Object.keys(list.json().models)).toEqual(['glm-manual']);
+  });
+
+  it('connect auto-fills: node created with the catalog baseURL, live pull fired (best-effort)', async () => {
+    const p = credPaths();
+    bindStore(p);
+    catalogRecs = [
+      {
+        id: 'zedprov',
+        name: 'Zed',
+        npm: '@opencode-ai/provider/openai-compatible',
+        baseURL: 'https://zed.test/v1',
+        custom: false,
+        connected: false,
+        sources: ['builtin'],
+        models: [],
+      },
+    ];
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/opencode/providers/zedprov/connect',
+      payload: { apiKey: 'sk-connect-fill' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().nodeCreated).toBe(true);
+    expect(res.json().modelsFilled).toBe(0); // mocked pull succeeds with 0
+    const node = readJsoncProviders(p).zedprov;
+    expect(node.settings.baseURL).toBe('https://zed.test/v1');
+    expect(pullMode).toBe('live'); // baseURL + store key → live path chosen
+  });
+  it('connect seeds the catalog baseURL onto an EXISTING bare node (the bind-sweep shape)', async () => {
+    // The hard cutover leaves store-backed providers with a BARE node (the boot
+    // bind must not wait on the network). Re-connect is the documented recovery
+    // gesture — if it does not seed the baseURL, live pull stays unreachable for
+    // every self-declared relay and the ADR's upgrade path is broken.
+    const p = credPaths();
+    seedOcr(p, { zedprov: [{ id: 'c1', key: 'sk-bare-node' }] });
+    writeJsonc(p, { providers: { zedprov: { package: '@opencode-ai/provider/openai-compatible' } } });
+    bindStore(p);
+    catalogRecs = [
+      {
+        id: 'zedprov',
+        name: 'Zed',
+        npm: '@opencode-ai/provider/openai-compatible',
+        baseURL: 'https://zed.test/v1',
+        custom: false,
+        connected: false,
+        sources: ['builtin'],
+        models: [],
+      },
+    ];
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/opencode/providers/zedprov/connect',
+      payload: { apiKey: 'sk-bare-node-2' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().nodeCreated).toBe(false); // the node existed — only seeded
+    const node = readJsoncProviders(p).zedprov;
+    expect(node.settings.baseURL).toBe('https://zed.test/v1');
+    expect(pullMode).toBe('live'); // baseURL now resolvable → live path
+  });
+});
+
 describe('GET /opencode/providers — masked store views', () => {
   it('store credentials merge into the view (connected + masked key); auth.json leftovers are IMPORTED at bind', async () => {
     const p = credPaths();
@@ -1138,6 +1235,96 @@ describe('DELETE .../providers/:id/credentials/:credentialId — disconnect (Dec
     expect(body.disconnected).toBe('c-a');
     expect(readOcrFile(p).providers.anthropic).toBeUndefined(); // emptied providers are pruned
     expect(state.isSuspect('anthropic', prefix)).toBe(false);
+    // A delete is a REVOCATION: the key MATERIAL is anchored as a takedown, so a
+    // pull-back cannot return as a clean routable credential.
+    expect(body.takedownAnchored).toBe(true);
+    expect(state.isDisabled('anthropic', prefix)).toBe(true);
+    // No v2 client in this sandbox: the client half is typed, never guessed.
+    expect(body.clientRevoke).toEqual({ clientId: 'opencode-v1', result: 'absent' });
+    state.enable('anthropic', prefix); // leave the ledger clean for other tests
+  });
+
+  it('?clientRevoke=0 keeps the client copy but STILL anchors the takedown', async () => {
+    const p = credPaths();
+    const keyA = 'sk-disc-keep-client';
+    seedOcr(p, { anthropic: [{ id: 'c-a', key: keyA }] });
+    bindStore(p);
+    const prefix = keyHashPrefix(keyA);
+    const state = registry.getCircuitBreakerManager().getCredentialStateStore();
+    const res = await app.inject({
+      method: 'DELETE',
+      url: '/api/admin/opencode/providers/anthropic/credentials/c-a?clientRevoke=0',
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().clientRevoke).toBeNull();
+    expect(res.json().takedownAnchored).toBe(true);
+    expect(state.isDisabled('anthropic', prefix)).toBe(true);
+    state.enable('anthropic', prefix);
+  });
+
+  it('an ALREADY-parked key keeps the operator note (delete never rewrites the audit reason)', async () => {
+    const p = credPaths();
+    const keyA = 'sk-disc-parked-note';
+    seedOcr(p, { anthropic: [{ id: 'c-a', key: keyA }] });
+    bindStore(p);
+    const prefix = keyHashPrefix(keyA);
+    const state = registry.getCircuitBreakerManager().getCredentialStateStore();
+    state.disable('anthropic', prefix, 'quota exhausted — operator note');
+    const res = await app.inject({
+      method: 'DELETE',
+      url: '/api/admin/opencode/providers/anthropic/credentials/c-a?clientRevoke=0',
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().takedownAnchored).toBe(true); // anchored either way
+    expect(state.getDisabled('anthropic', prefix)?.reason).toBe('quota exhausted — operator note');
+    state.enable('anthropic', prefix);
+  });
+
+  it('deletes the matching credential on a live v2 client (keyHash match, one row)', async () => {
+    const p = credPaths();
+    const keyA = 'sk-disc-client-delete';
+    seedOcr(p, { anthropic: [{ id: 'c-a', key: keyA }] });
+    const prefix = keyHashPrefix(keyA);
+    fs.writeFileSync(p.opencodeDbPath, 'fake-db-bytes');
+    resetCredentialStoreForTests(p, undefined, fetchImpl, {
+      env: {},
+      now: () => 1,
+      openDatabase: async () => ({
+        query(sql: string) {
+          return {
+            all: () =>
+              sql.includes('table_info')
+                ? ['id', 'integration_id', 'label', 'value', 'active', 'time_created', 'time_updated'].map((name) => ({
+                    name,
+                  }))
+                : [
+                    {
+                      id: 'c-client',
+                      integration_id: 'anthropic',
+                      label: null,
+                      value: JSON.stringify({ type: 'key', key: keyA }),
+                      active: 1,
+                      time_created: 1,
+                      time_updated: 1,
+                    },
+                  ],
+          };
+        },
+        close() {
+          // no-op
+        },
+      }),
+    });
+    const res = await app.inject({
+      method: 'DELETE',
+      url: '/api/admin/opencode/providers/anthropic/credentials/c-a',
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().clientRevoke).toEqual({ clientId: 'opencode-v2', result: 'deleted' });
+    const deletes = fetchCalls.filter((c) => c.method === 'DELETE' && c.url.includes('/api/credential/'));
+    expect(deletes).toHaveLength(1);
+    expect(deletes[0]!.url).toContain('/api/credential/c-client');
+    registry.getCircuitBreakerManager().getCredentialStateStore().enable('anthropic', prefix);
   });
 
   it('failed disconnect keeps the SUSPECT mark (clear is success-only)', async () => {

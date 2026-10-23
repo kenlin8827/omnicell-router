@@ -10,12 +10,13 @@ import {
 } from 'jsonc-parser';
 import { isOpencodeV2Package } from '../providers/wire.js';
 import { readProviderDefsFile, writeProviderDefs } from './provider-defs.js';
+import { resolveDefaultPaths, resolveOpencodeConfigPath, type CredentialPaths } from './credentials/paths.js';
 
 /**
  * OpenCode-adjacent configuration management.
  *
  * Responsibilities:
- *  - Provider definitions  -> the OCR provider-defs file (<ocrHome>/custom-providers.json,
+ *  - Provider definitions  -> the OCR provider-defs file (<ocrHome>/providers.json,
  *    provider-defs.ts) — the single def truth. opencode.jsonc is a sync-client
  *    materialization target, never read or written here as truth; the one-shot
  *    port from jsonc lives in provider-defs.ts.
@@ -41,16 +42,10 @@ export function getOpenCodeConfigDir(): string {
 }
 
 export function getOpenCodeConfigPath(): string {
-  const dir = getOpenCodeConfigDir();
-  const candidates = [
-    path.join(dir, 'opencode.jsonc'),
-    path.join(dir, 'opencode.json'),
-    path.join(os.homedir(), '.opencode', 'opencode.json'),
-  ];
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return p;
-  }
-  return candidates[0]; // default target when nothing exists yet
+  // Delegates to the ONE candidate resolver (credentials/paths.ts) — the defs
+  // materializer and the one-shot def port resolve through the same function,
+  // so a write can never target a different file than the read did.
+  return resolveOpencodeConfigPath(resolveDefaultPaths());
 }
 
 // ---------------------------------------------------------------------------
@@ -166,7 +161,7 @@ const DEFAULT_NPM = '@ai-sdk/openai-compatible';
  * no v1 emit path and no legacy `provider`-slot reader.
  */
 
-export interface CustomProviderDef {
+export interface ProviderDefInput {
   id: string;
   name?: string;
   npm?: string;
@@ -197,7 +192,6 @@ export interface OpenCodeProviderView {
   npm?: string;
   baseURL?: string;
   models: string[];
-  custom: boolean;
   /** Per-provider auto-pull whitelist (catalog.autoPullPatterns) — shown/prefilled by the console. */
   autoPullPattern?: string;
   /** credential summary — defs-file inline options ∪ bound-store credentials (masked) */
@@ -215,7 +209,7 @@ export interface OpenCodeProviderView {
  * file, credential store, quota (provider x keyHashPrefix) pairs, breaker
  * state, modelRef `provider/model` strings) and every built-in/catalog
  * vocabulary id is lowercase, so a mixed-case id would fork the namespace.
- * Enforced on every def write (upsertCustomProvider); the console form
+ * Enforced on every def write (upsertProviderDef); the console form
  * normalizes input live so users never see a silent rewrite.
  */
 export function isValidProviderId(id: string): boolean {
@@ -261,7 +255,7 @@ function isOpencodeV2ShapedDef(raw: Record<string, any>): boolean {
  *    model path still reads raw `settings.reasoningEffort`.
  * opencode-v1 shaped defs are returned BY REFERENCE, untouched — zero behavior change
  * for existing files. WRITE side emits both shapes via
- * `upsertCustomProvider({schema})` (P4).
+ * `upsertProviderDef({schema})` (P4).
  */
 export function normalizeProviderDef(raw: unknown): any {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
@@ -427,11 +421,11 @@ function opencodeV2ModelDefs(models: Record<string, any> | undefined): Record<st
 }
 
 /**
- * Assemble the opencode-v2 shaped `provider.<id>` node from a CustomProviderDef.
+ * Assemble the opencode-v2 shaped `provider.<id>` node from a ProviderDefInput.
  * Returns {error} without touching the file when the def cannot be written
  * honestly (cp-failfast) — never a silent credential drop.
  */
-function buildV2ProviderNode(def: CustomProviderDef): { node?: Record<string, any>; error?: string } {
+function buildV2ProviderNode(def: ProviderDefInput): { node?: Record<string, any>; error?: string } {
   // settings ← opencode v1 `options` passthrough, minus the slots opencode v2 moved out of it.
   const settings: Record<string, any> = { ...(def.options || {}) };
   const passthroughHeaders = isPlainRecord(settings.headers) ? settings.headers : undefined;
@@ -505,12 +499,18 @@ function getProviderNode(): Record<string, any> {
 /**
  * Copy-on-change normalization of the slot map (Decision 9).
  *
- * A node in the RETIRED shape is dropped here instead of passed through: opencode's
- * v2 decoder rejects npm/options spellings inside `providers` and discards the whole
- * node (`kind=invalid`), so routing it would recreate the exact divergence this
- * decision removed — OCR happily routes a provider opencode never registered.
- * Refusing is loud, not silent: `legacyShapedSlotEntries()` reports the same ids with
- * the offending paths, and boot-direct surfaces them in its exclusion list.
+ * A node in the RETIRED shape (node-level `npm`/`options`) is dropped here instead
+ * of passed through, so OCR never routes through a node whose v2 wire config is
+ * unproven. Rationale, measured rather than assumed: opencode v2.0.0 does NOT
+ * reject such a node outright — its models still enumerate (live check
+ * 2026-10-23: a `npm`+`options` probe node listed its model). What it cannot be
+ * shown to honor is the retired WIRE spelling, so the realistic failure is a
+ * provider that looks registered while its baseURL/headers are ignored — a
+ * silently wrong endpoint, worse than a missing provider. Hence: exclude loudly.
+ * `legacyShapedSlotEntries()` reports the same ids with the offending paths and
+ * boot-direct surfaces them in its exclusion list, so the drop is never silent.
+ * (Superseded claim: an earlier revision of this comment asserted the decoder
+ * discards the whole node — that was never verified and is false on 2.0.0.)
  */
 function normalizeSlotMap(node: Record<string, any>): Record<string, any> {
   let normalized: Record<string, any> | undefined;
@@ -566,7 +566,6 @@ export function listConfigProviders(): OpenCodeProviderView[] {
       npm: def?.npm || undefined,
       baseURL: options.baseURL || undefined,
       models,
-      custom: true, // anything explicitly defined in config is user-managed
       auth: {
         connected: Boolean(inlineKey),
         keyMasked: inlineKey ? maskSecret(inlineKey) : undefined,
@@ -588,9 +587,16 @@ export function listConfigProviders(): OpenCodeProviderView[] {
  * routing pool is not. Model-level defs are passed through as written (see
  * legacyShapedProviderPaths for why).
  *
- * Atomic whole-map rewrite of <ocrHome>/custom-providers.json.
+ * Atomic whole-map rewrite of <ocrHome>/providers.json.
+ *
+ * `paths` is optional and only exists so an INJECTED path set (tests, the boot
+ * bind's `BindOverrides.paths`) writes its own book instead of the env-resolved
+ * one; every console route keeps relying on the default.
  */
-export function upsertCustomProvider(def: CustomProviderDef): { success: boolean; error?: string } {
+export function upsertProviderDef(
+  def: ProviderDefInput,
+  paths: CredentialPaths = resolveDefaultPaths()
+): { success: boolean; error?: string } {
   if (!isValidProviderId(def.id)) {
     return { success: false, error: `Invalid provider id '${def.id}' - ${PROVIDER_ID_RULE}` };
   }
@@ -608,9 +614,9 @@ export function upsertCustomProvider(def: CustomProviderDef): { success: boolean
   }
 
   try {
-    const providers = { ...(readProviderDefsFile()?.providers ?? {}) };
+    const providers = { ...(readProviderDefsFile(paths)?.providers ?? {}) };
     providers[def.id] = node;
-    writeProviderDefs(providers);
+    writeProviderDefs(providers, paths);
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err.message };
@@ -618,7 +624,7 @@ export function upsertCustomProvider(def: CustomProviderDef): { success: boolean
 }
 
 /** Delete a custom provider from the defs file's `providers` map. */
-export function deleteCustomProvider(id: string): { success: boolean; error?: string } {
+export function deleteProviderDef(id: string): { success: boolean; error?: string } {
   const providers = readProviderDefsFile()?.providers ?? {};
   if (!Object.hasOwn(providers, id)) {
     return { success: false, error: `Provider '${id}' is not defined in the provider defs file` };

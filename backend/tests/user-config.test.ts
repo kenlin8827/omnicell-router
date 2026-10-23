@@ -4,8 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   listConfigProviders,
-  upsertCustomProvider,
-  deleteCustomProvider,
+  upsertProviderDef,
+  deleteProviderDef,
   getProviderNodeById,
   maskSecret,
   expandEnvTemplate,
@@ -59,7 +59,7 @@ describe('OpenCode user-config (provider defs file)', () => {
 
   it('creates the native slot; a non-inline key is refused by the writer (the store owns it)', () => {
     // The route pushes such a key through store.connectKey first and passes no apiKey.
-    const refused = upsertCustomProvider({
+    const refused = upsertProviderDef({
       id: 'home-lab',
       name: 'Home Lab',
       baseURL: 'http://192.168.1.10:20180/v1',
@@ -68,7 +68,7 @@ describe('OpenCode user-config (provider defs file)', () => {
     expect(refused.success).toBe(false);
     expect(fs.existsSync(getProviderDefsPath())).toBe(false);
 
-    const result = upsertCustomProvider({
+    const result = upsertProviderDef({
       id: 'home-lab',
       name: 'Home Lab',
       baseURL: 'http://192.168.1.10:20180/v1',
@@ -95,7 +95,7 @@ describe('OpenCode user-config (provider defs file)', () => {
       },
     });
 
-    const result = upsertCustomProvider({ id: 'maisuitx', baseURL: 'http://192.168.18.10:20180/v1' });
+    const result = upsertProviderDef({ id: 'maisuitx', baseURL: 'http://192.168.18.10:20180/v1' });
     expect(result.success).toBe(true);
 
     let parsed: any = readProviderDefsFile();
@@ -105,7 +105,7 @@ describe('OpenCode user-config (provider defs file)', () => {
     expect(parsed.providers.maisuitx.npm).toBeUndefined();
 
     // Delete keeps siblings intact
-    const del = deleteCustomProvider('maisuitx');
+    const del = deleteProviderDef('maisuitx');
     expect(del.success).toBe(true);
     parsed = readProviderDefsFile()!;
     expect(parsed.providers.maisuitx).toBeUndefined();
@@ -114,7 +114,7 @@ describe('OpenCode user-config (provider defs file)', () => {
 
   it('inline {env:VAR} lands as the v2 `env` name list and still resolves for routing', () => {
     process.env['OCR_TEST_PROVIDER_KEY'] = 'sk-from-env-9876543210';
-    const result = upsertCustomProvider({
+    const result = upsertProviderDef({
       id: 'inline',
       baseURL: 'http://10.0.0.1/v1',
       apiKey: '{env:OCR_TEST_PROVIDER_KEY}',
@@ -164,13 +164,13 @@ describe('OpenCode user-config (provider defs file)', () => {
   });
 
   it('rejects invalid provider ids and unknown deletes', () => {
-    const bad = upsertCustomProvider({ id: '../evil', baseURL: 'http://x/v1' });
+    const bad = upsertProviderDef({ id: '../evil', baseURL: 'http://x/v1' });
     expect(bad.success).toBe(false);
 
     stageAuth({ temp: { type: 'api', key: 'sk-temp-1234567890abc' } });
     expect(authSnapshot(resolveDefaultPaths()).read()['temp']).toBeDefined();
 
-    const missing = deleteCustomProvider('does-not-exist');
+    const missing = deleteProviderDef('does-not-exist');
     expect(missing.success).toBe(false);
     expect(getProviderNodeById('does-not-exist')).toBeUndefined();
   });

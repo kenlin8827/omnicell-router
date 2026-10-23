@@ -23,8 +23,9 @@ import { isSyncClientId } from '../opencode/credentials/sync.js';
 import { ensureCa } from '../forward-proxy/ca.js';
 import { getForwardProxyStatus } from '../forward-proxy/status.js';
 import { RouterConfig, type CredentialLimitConfig, type RateLimitRule } from '../config/types.js';
-import type { CatalogModel } from '../opencode/catalog/types.js';
+
 import type { CredentialMeta, CredentialStore, RawCred } from '../opencode/credentials/types.js';
+import { keyHashPrefix } from '../opencode/credentials/types.js';
 import type { CircuitBreakerManager } from '../resilience/index.js';
 import type { TraceTracker } from '../trace/tracker.js';
 import type { OpenCodeProviderView } from '../opencode/user-config.js';
@@ -44,7 +45,7 @@ import { validateRateLimitRules, getRateLimiter, credentialSubject } from '../ra
 import { getQuotaProber } from '../quota/prober.js';
 import { getQuotaStore } from '../quota/store.js';
 import { getQuotaEventLog } from '../quota/events.js';
-import type { QuotaBadgeState, QuotaSnapshot, QuotaSource, QuotaWindow } from '../quota/types.js';
+import type { QuotaBadgeState, QuotaProbeFailure, QuotaSource, QuotaWindow } from '../quota/types.js';
 import {
   checkLoginAllowed,
   createSessionToken,
@@ -245,44 +246,6 @@ function bodyToModelDef(body: any): Record<string, any> {
   return def;
 }
 
-/** CatalogModel → opencode model definition (moved to opencode/catalog/auto-pull.ts). */
-
-/** opencode v2 def → CatalogModel (custom-store mirror of the editor form payload). */
-function defToCatalogModel(id: string, def: Record<string, any>): CatalogModel {
-  const caps = def.capabilities && typeof def.capabilities === 'object' ? def.capabilities : {};
-  const modalities =
-    def.modalities && typeof def.modalities === 'object'
-      ? def.modalities
-      : caps.input || caps.output
-        ? { input: caps.input, output: caps.output }
-        : undefined;
-  return {
-    id,
-    name: def.name || undefined,
-    reasoning: def.reasoning === true || caps.reasoning === true || undefined,
-    tool_call: def.tool_call === true || (typeof caps.tools === 'boolean' ? caps.tools : undefined),
-    modalities,
-    cost: def.cost && typeof def.cost === 'object' ? def.cost : undefined,
-    limit: def.limit && typeof def.limit === 'object' ? def.limit : undefined,
-    source: 'custom',
-  };
-}
-
-/** CatalogModel → opencode v2-ish def (management view for credential-only providers). */
-function catalogModelToV2Def(m: CatalogModel): Record<string, any> {
-  const def: Record<string, any> = {};
-  if (m.name) def.name = m.name;
-  if (m.reasoning != null) def.reasoning = m.reasoning;
-  const caps: Record<string, any> = {};
-  if (m.tool_call != null) caps.tools = m.tool_call;
-  if (m.modalities?.input?.length) caps.input = m.modalities.input;
-  if (m.modalities?.output?.length) caps.output = m.modalities.output;
-  if (Object.keys(caps).length > 0) def.capabilities = caps;
-  if (m.cost) def.cost = m.cost;
-  if (m.limit) def.limit = m.limit;
-  return def;
-}
-
 // Live/catalog model pull moved to opencode/catalog/auto-pull.ts so the
 // periodic auto-pull scheduler and the console share one implementation.
 
@@ -471,6 +434,11 @@ export interface CredentialQuotaView {
   windows: QuotaWindow[];
   verifiedAt?: number;
   lastFailureAt?: number;
+  /** WHY the last attempt produced nothing (transport reason + HTTP status +
+   *  the upstream's short message). Present whenever an attempt failed —
+   *  including on a pair that never succeeded, where it is the ONLY honest
+   *  answer to "covered, but empty". Display-only. */
+  lastFailure?: QuotaProbeFailure;
   /** Entry that produced (or would produce) this — built-in id,
    *  `adapter:<id>`, or config `override:<id>` / `<pid>#<n>`. */
   entryId?: string;
@@ -479,7 +447,7 @@ export interface CredentialQuotaView {
 }
 
 /** Compute the overlay for one pair, joining the live plan (coverage/TTL)
- *  with the store (snapshot). Undefined = provider not covered. */
+ *  with the store (snapshot + failure verdict). Undefined = provider not covered. */
 function quotaViewFor(providerId: string, keyHashPrefix?: string): CredentialQuotaView | undefined {
   if (!keyHashPrefix) return undefined;
   const prober = getQuotaProber();
@@ -487,6 +455,7 @@ function quotaViewFor(providerId: string, keyHashPrefix?: string): CredentialQuo
   const ttlMs = prober?.getTtlFor(providerId);
   const store = getQuotaStore();
   const snap = store.get(providerId, keyHashPrefix);
+  const failure = store.getFailure(providerId, keyHashPrefix);
   // Uncovered rows carry no quota key at all. With the prober OFF
   // (quota.enabled:false) nothing can ever become `unverified` — the honest
   // surface is then ONLY what a previous lifetime left on disk (entryId in
@@ -494,9 +463,15 @@ function quotaViewFor(providerId: string, keyHashPrefix?: string): CredentialQuo
   if (ttlMs === undefined && !snap) return undefined;
   const ttl = ttlMs ?? 15 * 60_000;
   if (!snap) {
-    // Covered but nothing probed yet (or every attempt failed with no prior
-    // value): the honest state is `unverified`, not `stale`.
-    return { badge: 'unverified', windows: [], ttlMs: ttl };
+    // Covered but no numbers yet: `unverified` is the provenance state; the
+    // failure verdict (when present) says WHY — `unverified` alone would read
+    // as "waiting for the first sync" even for a 401 or a plan-level refusal.
+    return {
+      badge: 'unverified',
+      windows: [],
+      ttlMs: ttl,
+      ...(failure ? { lastFailure: failure, lastFailureAt: failure.at } : {}),
+    };
   }
   const badge = store.badgeState(providerId, keyHashPrefix, ttl);
   return {
@@ -506,6 +481,7 @@ function quotaViewFor(providerId: string, keyHashPrefix?: string): CredentialQuo
     windows: snap.windows,
     verifiedAt: snap.verifiedAt,
     lastFailureAt: snap.lastFailureAt,
+    ...(failure ? { lastFailure: failure } : {}),
     entryId: snap.entryId,
     ttlMs: ttl,
   };
@@ -513,11 +489,16 @@ function quotaViewFor(providerId: string, keyHashPrefix?: string): CredentialQuo
 
 /**
  * One row of the QUOTA PAGE directory (GET /api/admin/quota.pairs): every
- * CONNECTED pair — the same enumeration the status surface's credentialHashes
- * uses (store chains + config-baked inference keys, display-safe prefixes
- * only) — joined with its quota view and its per-pair trace usage. This is
- * the "all connected pairs, each with its quota" cross-provider surface;
- * KeysPage keeps the per-credential inline badge, this page owns the overview.
+ * CONNECTED pair — the bound credential store's credentials UNION the registry
+ * chains and config-baked inference keys (display-safe prefixes only) — joined
+ * with its quota view and its per-pair trace usage. This is the "all connected
+ * pairs, each with its quota" cross-provider surface; KeysPage keeps the
+ * per-credential inline badge, this page owns the overview.
+ *
+ * The store is the PRIMARY source on purpose (ADR-0009 §1): quota activation is
+ * a credential concern, model registration is a routing concern. Enumerating
+ * through `registry.getAllModels()` silently hid every connected provider whose
+ * model list is still empty — the store has the keys, so the row must exist.
  */
 interface QuotaPairRow {
   providerId: string;
@@ -537,28 +518,65 @@ interface QuotaPairRow {
   usage?: { requests: number; inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number };
 }
 
-function buildQuotaPairRows(
+async function buildQuotaPairRows(
   registry: ProviderRegistry,
   traceTracker: TraceTracker
-): QuotaPairRow[] {
+): Promise<QuotaPairRow[]> {
   const pairs = new Map<string, QuotaPairRow>();
-  const add = (providerId: string, keyHashPrefix: string, label: string | undefined, maskedKey: string) => {
+  const add = (providerId: string, keyHashPrefix: string, label: string | undefined, maskedKey: string | undefined) => {
     const id = `${providerId}#${keyHashPrefix}`;
     if (pairs.has(id)) return;
     pairs.set(id, {
       providerId,
       keyHashPrefix,
       ...(label ? { label } : {}),
-      maskedKey,
+      ...(maskedKey ? { maskedKey } : {}),
       covered: getQuotaProber()?.getPlan().byProvider.has(providerId) ?? false,
       quota: quotaViewFor(providerId, keyHashPrefix),
     });
   };
+
+  // 1. The bound credential store — the primary source. Connected providers are
+  //    credential-store rows, NOT model rows: a provider whose defs node has no
+  //    models yet can still hold keys, and those keys still carry quota.
+  try {
+    const { getCredentialStore } = await import('../opencode/credentials/index.js');
+    const store = await getCredentialStore();
+    let overview: { providerId: string }[] = [];
+    try {
+      overview = store.credentialsOverview();
+    } catch {
+      // Unreadable store: the registry fallback below still lists what boot saw.
+      overview = [];
+    }
+    for (const o of overview) {
+      let metas: CredentialMeta[] = [];
+      try {
+        metas = store.listCredentials(o.providerId);
+      } catch {
+        continue;
+      }
+      for (const m of metas) {
+        if (!m.keyHashPrefix) continue;
+        add(o.providerId, m.keyHashPrefix, m.label, m.maskedKey);
+      }
+    }
+  } catch {
+    // Store bind unavailable (mock boot / early boot) — registry-only rows.
+  }
+
+  // 2. Registry view: boot-baked chains, plus the config-baked inference key
+  //    when a provider registered no chain (the chain-less degeneracy). Union
+  //    with (1) — `add` dedupes by pair id, so a store row keeps its identity.
   for (const m of registry.getAllModels()) {
-    for (const c of registry.getCredentialChain(m.provider) ?? []) {
-      add(m.provider, c.keyHashPrefix, c.label, maskSecret(c.key));
+    const chain = registry.getCredentialChain(m.provider) ?? [];
+    for (const c of chain) add(m.provider, c.keyHashPrefix, c.label, maskSecret(c.key));
+    if (chain.length === 0) {
+      const baked = registry.getProviderConfig(m.provider)?.apiKey;
+      if (baked) add(m.provider, keyHashPrefix(baked), undefined, maskSecret(baked));
     }
   }
+
   // Per-pair usage join (trace ring GROUP BY provider×prefix — the step-1
   // aggregation surface).
   const usageRows = traceTracker.getCredentialPairUsageStats();
@@ -727,7 +745,6 @@ async function storeProviderViews(store: CredentialStore): Promise<OpenCodeProvi
       byId.set(overview.providerId, {
         id: overview.providerId,
         models: [],
-        custom: false, // credential-only provider (store-connected, no defs-file node)
         auth: { connected: true, ...badge, ...(shown?.maskedKey ? { keyMasked: shown.maskedKey } : {}) },
       });
     }
@@ -737,7 +754,7 @@ async function storeProviderViews(store: CredentialStore): Promise<OpenCodeProvi
     // order (`active DESC, time_updated DESC`), so appending store-only providers
     // in that order makes a provider JUMP to the front of the grid every time a
     // key is added to it. Config-defined providers keep their author-defined
-    // defs-file sequence; credential-only providers follow, alphabetically.
+    // defs-file sequence; store-only providers (no defs node) follow, alphabetically.
     const ra = configOrder.indexOf(a.id);
     const rb = configOrder.indexOf(b.id);
     if (ra !== rb) return (ra < 0 ? Number.MAX_SAFE_INTEGER : ra) - (rb < 0 ? Number.MAX_SAFE_INTEGER : rb);
@@ -931,7 +948,10 @@ export function registerConsoleRoutes(
     // Runtime credential directory (hash prefixes ONLY — the same display-safe
     // form pair snapshots already carry): lets the guardrails view name an
     // orphan breaker's owner (e.g. the inline config-baked chain head, which
-    // lives outside the store roster) instead of a bare #hash.
+    // lives outside the store roster) instead of a bare #hash. Union of the
+    // bound store (the connected roster — independent of model registration)
+    // and the registry chains, so a connected-but-model-less provider is named
+    // here too.
     const credentialHashes: { provider: string; keyHashPrefix: string }[] = [];
     const seenHashes = new Set<string>();
     const pushHash = (provider: string, keyHashPrefix: string) => {
@@ -940,6 +960,17 @@ export function registerConsoleRoutes(
       seenHashes.add(id);
       credentialHashes.push({ provider, keyHashPrefix });
     };
+    try {
+      const { getCredentialStore } = await import('../opencode/credentials/index.js');
+      const store = await getCredentialStore();
+      for (const o of store.credentialsOverview()) {
+        for (const meta of store.listCredentials(o.providerId)) {
+          if (meta.keyHashPrefix) pushHash(o.providerId, meta.keyHashPrefix);
+        }
+      }
+    } catch {
+      // Unreadable/unbound store — registry rows below still name what boot saw.
+    }
     for (const m of registry.getAllModels()) {
       for (const c of registry.getCredentialChain(m.provider) ?? []) pushHash(m.provider, c.keyHashPrefix);
     }
@@ -1011,7 +1042,7 @@ export function registerConsoleRoutes(
       enabled: prober !== undefined && (getRuntimeConfigRef() ?? loadConfig()).quota?.enabled !== false,
       coverage,
       rejected: plan?.rejected ?? [],
-      pairs: buildQuotaPairRows(registry, orchestrator.getTraceTracker()),
+      pairs: await buildQuotaPairRows(registry, orchestrator.getTraceTracker()),
       events: getQuotaEventLog().list().slice(0, 100),
     };
   });
@@ -2071,7 +2102,7 @@ export function registerConsoleRoutes(
   });
 
   // 7. Provider Management (defs file `providers` map + bound credential store)
-  //     - Definitions live in <ocrHome>/custom-providers.json (provider-defs.ts)
+  //     - Definitions live in <ocrHome>/providers.json (provider-defs.ts)
   //     - Credentials live in the boot-bound CredentialStore (auth.json is never written)
   //     - Connectable catalog comes from models.dev (same source as `opencode auth login`)
 
@@ -2152,7 +2183,6 @@ export function registerConsoleRoutes(
       const { getProviderDefsPath } = await import('../opencode/provider-defs.js');
       const { getCredentialStore } = await import('../opencode/credentials/index.js');
       const { catalogRepository } = await import('../opencode/catalog/repository.js');
-      const { getCustomProviderModels } = await import('../opencode/catalog/custom-store.js');
       const store = await getCredentialStore();
       // B4: credentials come from the BOUND store on every binding — the masked store
       // credentials merge into the config views, so a stale auth.json entry can never
@@ -2171,20 +2201,18 @@ export function registerConsoleRoutes(
           return {
             ...v,
             // Precise delete-branch signal: an explicit defs-file node is the
-            // ONLY case where DELETE removes a definition — credential-only rows
-            // (catalog connects, private relays) purge credentials alone. The
-            // `custom` flag is broader (catalog coverage counts) and must not
-            // drive the delete confirm wording.
+            // ONLY case where DELETE removes a definition — a row with no node
+            // (never connected, or a retired-shape node the normalized view drops)
+            // purges credentials alone. The `custom` flag is broader (catalog
+            // coverage counts) and must not drive the delete confirm wording.
             defNode: hasDefNode,
-            // Runtime capability for console editing — the SAME rule modelsGet
-            // applies when serving a manage view (defs node OR pulled
-            // custom-store models). The catalog-relative `custom` flag must not
-            // gate editing: third-party sources drift and would flip the gate
-            // without any local change.
-            modelsManageable: hasDefNode || getCustomProviderModels(v.id).length > 0,
-            // upgraded custom: an explicit defs-file definition OR not covered by
-            // the remote catalog (credential-only zhipu, private relays, …)
-            custom: u?.custom ?? v.custom,
+            // NO `modelsManageable` flag: with ONE landing spot (the provider's own
+            // node), editability IS presence — a row that exists owns a node, so the
+            // constant-true capability field was removed from the wire.
+            // DYNAMIC custom tag — the aggregated record already derives it from
+            // builtin-catalog coverage; an aggregated-unknown id (no catalog row
+            // at all) is by definition custom.
+            custom: u ? u.custom : true,
             logo: u?.logo,
             npm: v.npm ?? u?.npm,
             // Def-level custom headers (non-secret metadata — the edit dialog
@@ -2224,12 +2252,26 @@ export function registerConsoleRoutes(
       return { status: 'ok', source: catalogRepository.lastSyncOrigin, providers };
     },
 
-    /** Flat model catalog across providers (supports ?provider= & ?connected=1). */
+    /** Flat model view across providers. `?maintained=1` narrows it to the
+     *  physical models a defs node actually maintains (the /models page
+     *  universe — no virtual aliases/combos/variants by construction), and
+     *  tags every row with `maintained` so the console never has to infer it
+     *  from the source tag. Supports ?provider= & ?connected=1. */
     models: async (req: any) => {
       const { catalogRepository } = await import('../opencode/catalog/repository.js');
-      const query = req.query as { provider?: string; connected?: string };
+      const { readProviderDefsFile } = await import('../opencode/provider-defs.js');
+      const query = req.query as { provider?: string; connected?: string; maintained?: string };
       const providerFilter = query.provider?.trim().toLowerCase();
       const connectedOnly = query.connected === '1' || query.connected === 'true';
+      const maintainedOnly = query.maintained === '1' || query.maintained === 'true';
+      // Raw file read once — the aggregate is already built from the normalized
+      // view, so a retired-shape node here contributes no rows anyway.
+      const rawNodes = readProviderDefsFile()?.providers ?? {};
+      const nodeModels = (pid: string): Record<string, unknown> => {
+        const node = rawNodes[pid];
+        const models = node && typeof node === 'object' ? (node as any).models : undefined;
+        return models && typeof models === 'object' ? models : {};
+      };
       const unified = await catalogRepository.list();
       const models = unified
         .filter(
@@ -2237,16 +2279,20 @@ export function registerConsoleRoutes(
             (!providerFilter || p.id.toLowerCase() === providerFilter) &&
             (!connectedOnly || p.connected)
         )
-        .flatMap((p) =>
-          p.models.map((m) => ({
-            ...m,
-            providerId: p.id,
-            providerName: p.name,
-            logo: p.logo,
-            custom: p.custom,
-            connected: p.connected,
-          }))
-        );
+        .flatMap((p) => {
+          const defs = nodeModels(p.id);
+          return p.models
+            .map((m) => ({
+              ...m,
+              providerId: p.id,
+              providerName: p.name,
+              logo: p.logo,
+              custom: p.custom,
+              connected: p.connected,
+              maintained: Object.prototype.hasOwnProperty.call(defs, m.id),
+            }))
+            .filter((m) => !maintainedOnly || m.maintained);
+        });
       return { status: 'ok', source: catalogRepository.lastSyncOrigin, total: models.length, models };
     },
 
@@ -2263,7 +2309,7 @@ export function registerConsoleRoutes(
       // namespace (the form normalizes input live; direct API callers get the
       // rule stated back). Also keeps the catalog-shadow guard below exact:
       // 'OpenAI' can no longer bypass a covered 'openai' id.
-      const { isValidProviderId, PROVIDER_ID_RULE, upsertCustomProvider, getProviderNodeById } = await import('../opencode/user-config.js');
+      const { isValidProviderId, PROVIDER_ID_RULE, upsertProviderDef, getProviderNodeById } = await import('../opencode/user-config.js');
       if (!isValidProviderId(id)) {
         return reply.status(400).send({
           success: false,
@@ -2298,7 +2344,7 @@ export function registerConsoleRoutes(
       // the node back (only a node this request created).
       const existedBefore = getProviderNodeById(id) !== undefined;
       // A non-inline key is NEVER written into a file by
-      // the def helper — it goes to the bound store, and upsertCustomProvider is fed no
+      // the def helper — it goes to the bound store, and upsertProviderDef is fed no
       // apiKey at all. auth.json is not a sink on any binding.
       const keyToStore = Boolean(body?.apiKey) && !Boolean(body.apiKeyInline);
 
@@ -2310,7 +2356,7 @@ export function registerConsoleRoutes(
       // exists asks upstream for an id it can NEVER resolve for a brand-new custom
       // id. A failed key push rolls back the node this request created, EXCEPT the
       // unmatched refusal (see the catch below) — that keeps the def for the retry.
-      const result = upsertCustomProvider({
+      const result = upsertProviderDef({
         id,
         name: body.name,
         npm: body.npm,
@@ -2346,8 +2392,8 @@ export function registerConsoleRoutes(
           // re-type the whole definition. Existing defs are never touched.
           const m = await import('../opencode/credentials/index.js');
           if (!existedBefore && !(err instanceof m.IntegrationUnmatchedError)) {
-            const { deleteCustomProvider } = await import('../opencode/user-config.js');
-            deleteCustomProvider(id);
+            const { deleteProviderDef } = await import('../opencode/user-config.js');
+            deleteProviderDef(id);
           }
           store.invalidate();
           const failure = await mapStoreWriteFailure(err);
@@ -2383,7 +2429,7 @@ export function registerConsoleRoutes(
     update: async (req: any, reply: any) => {
       const { id } = req.params as { id: string };
       const body = req.body as any;
-      const { upsertCustomProvider, getProviderNodeById } = await import('../opencode/user-config.js');
+      const { upsertProviderDef, getProviderNodeById } = await import('../opencode/user-config.js');
       const { getCredentialStore } = await import('../opencode/credentials/index.js');
       const existing = getProviderNodeById(id);
       if (!existing) {
@@ -2415,7 +2461,7 @@ export function registerConsoleRoutes(
           return reply.status(400).send({ success: false, error: errMessage(err) });
         }
       }
-      const result = upsertCustomProvider({
+      const result = upsertProviderDef({
         id,
         name: body.name ?? existing.name,
         npm: body.npm ?? existing.npm,
@@ -2448,7 +2494,7 @@ export function registerConsoleRoutes(
     connect: async (req: any, reply: any) => {
       const { id } = req.params as { id: string };
       const body = req.body as { apiKey?: string; baseURL?: string };
-      const { upsertCustomProvider, getProviderNodeById } = await import('../opencode/user-config.js');
+      const { upsertProviderDef, getProviderNodeById } = await import('../opencode/user-config.js');
       const { getCredentialStore } = await import('../opencode/credentials/index.js');
       try {
         if (!body?.apiKey) {
@@ -2471,7 +2517,7 @@ export function registerConsoleRoutes(
         // No apiKey field → no implicit credential write on any binding.
         if (body.baseURL) {
           const existing = getProviderNodeById(id);
-          upsertCustomProvider({
+          upsertProviderDef({
             id,
             baseURL: body.baseURL,
             name: existing?.name,
@@ -2489,6 +2535,18 @@ export function registerConsoleRoutes(
         store.invalidate(); // Decision 3: console action invalidates the store view
         // Decision 6: reconnecting lifts a SUSPECT mark on this credential.
         clearSuspectForCredential(registry.getCircuitBreakerManager(), id, keyMeta?.keyHashPrefix);
+        // Connect-time doctrine: the provider now owns a defs node whose models
+        // are its universe. Best-effort (live /v1/models first, static catalog
+        // fallback) — a slow/unreachable upstream never fails the connect.
+        const { ensureConnectedProviderBook } = await import('../opencode/catalog/auto-pull.js');
+        const fill = await ensureConnectedProviderBook(id, { baseURL: body.baseURL }).catch((e: any) => ({
+          nodeCreated: false,
+          pulled: 0,
+          fillError: String(e?.message ?? e),
+        }));
+        if (fill.fillError) {
+          app.log.warn({ providerId: id, fillError: fill.fillError }, 'connect-time model auto-fill failed (swallowed by design)');
+        }
         return {
           status: 'ok',
           success: true,
@@ -2501,6 +2559,9 @@ export function registerConsoleRoutes(
           // Non-null when the sink auto-activated the new key and this surface put
           // the previous head back: the row the operator must be told is still head.
           headPreserved,
+          // ADDITIVE: model auto-fill outcome (defs node created / models written).
+          nodeCreated: fill.nodeCreated,
+          modelsFilled: fill.pulled,
           message: `Provider '${id}' connected via ${credentialSinkLabel(store)}`,
         };
       } catch (err: any) {
@@ -2570,7 +2631,7 @@ export function registerConsoleRoutes(
         const d = defs?.[mid];
         return d && typeof d === 'object' && d.modelID ? String(d.modelID) : mid;
       };
-      const enabledDefIds = Object.keys(defs || {}).filter((k) => (defs as any)[k]?.disabled !== true);
+      const defIds = Object.keys(defs || {}).filter((k) => (defs as any)[k]?.disabled !== true);
       // The probe always sends a TEXT chat request on a text wire, so default
       // model selection prefers a model whose catalog modalities accept text in
       // AND out. A video/image-output or audio-only-input model (token-plan's
@@ -2587,13 +2648,13 @@ export function registerConsoleRoutes(
       const PROBE_CANDIDATE_CAP = 3;
       const modelCandidates: string[] = body.modelId
         ? [upstreamId(body.modelId)]
-        : enabledDefIds.length > 0
+        : defIds.length > 0
           ? (() => {
-              const textDefs = enabledDefIds.filter((k) => {
+              const textDefs = defIds.filter((k) => {
                 const cm = cat?.models.find((mm) => mm.id === upstreamId(k));
                 return !cm || isTextPair(cm.modalities);
               });
-              const list = textDefs.length > 0 ? textDefs : [enabledDefIds[0]];
+              const list = textDefs.length > 0 ? textDefs : [defIds[0]];
               return list.slice(0, PROBE_CANDIDATE_CAP).map(upstreamId);
             })()
           : (() => {
@@ -2704,16 +2765,16 @@ export function registerConsoleRoutes(
     remove: async (req: any, reply: any) => {
       const { id } = req.params as { id: string };
       const query = req.query as { purgeAuth?: string };
-      const { deleteCustomProvider, getProviderNodeById } = await import('../opencode/user-config.js');
+      const { deleteProviderDef, getProviderNodeById } = await import('../opencode/user-config.js');
       const { getCredentialStore } = await import('../opencode/credentials/index.js');
       const purgeAuth = query.purgeAuth === '1' || query.purgeAuth === 'true';
       try {
         const store = await getCredentialStore();
         if (getProviderNodeById(id)) {
           // The credential side is handled through the bound store below —
-          // deleteCustomProvider is def-only, so it can neither dead-write auth.json
+          // deleteProviderDef is def-only, so it can neither dead-write auth.json
           // nor miss the standalone store's credentials.json (the B3 regression).
-          const result = deleteCustomProvider(id);
+          const result = deleteProviderDef(id);
           if (!result.success) return reply.status(400).send(result);
           // Decision 8 double confirmation is enforced by the console UI
           // (purgeAuth opt-in) — server-side the loop reports honestly.
@@ -2738,25 +2799,32 @@ export function registerConsoleRoutes(
       }
     },
 
-    // -- Per-provider model maintenance (config-defined providers only) ----
+    // -- Per-provider model maintenance (every connected provider owns a node) ----
 
-    /** Full model definitions of a config-defined provider (management view). */
+    /** Full model definitions of a provider (management view). Each row carries
+     *  the EFFECTIVE `disabled` (override plane wins over a def-level flag) so
+     *  the dialog's eye icon reflects exactly what boot-direct will do. */
     modelsGet: async (req: any, reply: any) => {
       const { id } = req.params as { id: string };
       const { getProviderModelDefs } = await import('../opencode/user-config.js');
+      const { readOverridesStore } = await import('../opencode/catalog/overrides-store.js');
       const defs = getProviderModelDefs(id);
       if (defs === undefined) {
-        // credential-only provider → models live in the custom store
-        const { getCustomProviderModels } = await import('../opencode/catalog/custom-store.js');
-        const custom = getCustomProviderModels(id);
-        if (custom.length > 0) {
-          const models: Record<string, any> = {};
-          for (const m of custom) models[m.id] = catalogModelToV2Def(m);
-          return { status: 'ok', id, models, custom: true };
-        }
+        // no defs node — every CONNECTED provider owns one (connect-time
+        // doctrine, ensureConnectedProviderBook); this row was never connected
         return reply.status(404).send({ success: false, error: `Provider '${id}' is not defined in the provider defs file` });
       }
-      return { status: 'ok', id, models: defs };
+      // node present but no models yet → an EMPTY manageable universe (pull or
+      // add models to make them routable — the catalog is a source, not a pool)
+      const overrides = readOverridesStore()?.models ?? {};
+      const models: Record<string, any> = {};
+      for (const [mid, raw] of Object.entries(defs)) {
+        const def = raw && typeof raw === 'object' ? { ...(raw as Record<string, any>) } : {};
+        const o = overrides[`${id}||${mid}`];
+        if (o?.disabled !== undefined) def.disabled = o.disabled;
+        models[mid] = def;
+      }
+      return { status: 'ok', id, models };
     },
 
     /** Add one model. Body: catalog-style fields or a raw `definition` object. */
@@ -2769,18 +2837,8 @@ export function registerConsoleRoutes(
       }
       const defs = getProviderModelDefs(id);
       if (defs === undefined) {
-        // credential-only provider (no jsonc node) → the custom store is the landing spot
-        const { readCustomStore, upsertCustomModel } = await import('../opencode/catalog/custom-store.js');
-        const custom = readCustomStore()?.providers[id];
-        if (custom?.models.some((m) => m.id === String(body.id))) {
-          return reply.status(409).send({ success: false, error: `Model '${body.id}' already exists — use PATCH to modify it` });
-        }
-        const model = defToCatalogModel(String(body.id), bodyToModelDef(body));
-        const result = upsertCustomModel(id, model);
-        if (!result.success) return reply.status(400).send(result);
-        const { catalogRepository } = await import('../opencode/catalog/repository.js');
-        await catalogRepository.ensureOcrStore();
-        return { status: 'ok', success: true, model: body.id, custom: true };
+        // no defs node — the provider was never connected (connect-time doctrine)
+        return reply.status(404).send({ success: false, error: `Provider '${id}' is not defined in the provider defs file` });
       }
       if (body.id in defs) {
         return reply.status(409).send({ success: false, error: `Model '${body.id}' already exists — use PATCH to modify it` });
@@ -2799,18 +2857,7 @@ export function registerConsoleRoutes(
       const { getProviderModelDefs, upsertProviderModel, removeProviderModel } = await import('../opencode/user-config.js');
       const defs = getProviderModelDefs(id);
       if (defs === undefined) {
-        // credential-only provider → merge the patch into the custom-store model
-        const { readCustomStore, upsertCustomModel, removeCustomModel } = await import('../opencode/catalog/custom-store.js');
-        const model = readCustomStore()?.providers[id]?.models.find((m) => m.id === modelId);
-        if (!model) {
-          return reply.status(404).send({ success: false, error: `Model '${modelId}' is not defined for provider '${id}'` });
-        }
-        const targetId = body?.newId ? String(body.newId) : modelId;
-        const next = { ...model, ...defToCatalogModel(targetId, bodyToModelDef(body)), id: targetId, source: 'custom' as const };
-        const result = upsertCustomModel(id, next);
-        if (!result.success) return reply.status(400).send(result);
-        if (targetId !== modelId) removeCustomModel(id, modelId);
-        return { status: 'ok', success: true, model: targetId, renamed: targetId !== modelId, custom: true };
+        return reply.status(404).send({ success: false, error: `Provider '${id}' is not defined in the provider defs file` });
       }
       if (!(modelId in defs)) {
         return reply.status(404).send({ success: false, error: `Model '${modelId}' is not defined for provider '${id}'` });
@@ -2857,15 +2904,7 @@ export function registerConsoleRoutes(
       const { id, modelId } = req.params as { id: string; modelId: string };
       const { removeProviderModel } = await import('../opencode/user-config.js');
       const result = removeProviderModel(id, modelId);
-      if (!result.success) {
-        // credential-only provider → remove from the custom store
-        const { removeCustomModel } = await import('../opencode/catalog/custom-store.js');
-        const rm = removeCustomModel(id, modelId);
-        if (!rm.success) return reply.status(404).send(result);
-        const { catalogRepository: repo } = await import('../opencode/catalog/repository.js');
-        await repo.ensureOcrStore();
-        return { status: 'ok', success: true, model: modelId, custom: true };
-      }
+      if (!result.success) return reply.status(404).send(result);
       const { catalogRepository } = await import('../opencode/catalog/repository.js');
       await catalogRepository.ensureOcrStore();
       return { status: 'ok', success: true, model: modelId };
@@ -2880,7 +2919,7 @@ export function registerConsoleRoutes(
      */
     modelsPull: async (req: any, reply: any) => {
       const { id } = req.params as { id: string };
-      const body = req.body as { pattern?: string; dryRun?: boolean } | undefined;
+      const body = req.body as { pattern?: string; ids?: string[]; dryRun?: boolean } | undefined;
       const { autoPullProvider } = await import('../opencode/catalog/auto-pull.js');
       const result = await autoPullProvider(id, body ?? {});
       return reply.status(result.httpStatus).send(result.body);
@@ -2892,16 +2931,7 @@ export function registerConsoleRoutes(
       const body = req.body as { pattern?: string } | undefined;
       const { clearProviderModels } = await import('../opencode/user-config.js');
       const result = clearProviderModels(id, body?.pattern);
-      if (!result.success) {
-        // credential-only provider (no jsonc node) → clear from the custom store,
-        // same fallback as modelRemove
-        const { clearCustomModels } = await import('../opencode/catalog/custom-store.js');
-        const cm = clearCustomModels(id, body?.pattern);
-        if (!cm.success) return reply.status(404).send(result);
-        const { catalogRepository: repo } = await import('../opencode/catalog/repository.js');
-        await repo.ensureOcrStore();
-        return { status: 'ok', success: true, removed: cm.removed, custom: true };
-      }
+      if (!result.success) return reply.status(404).send(result);
       const { catalogRepository } = await import('../opencode/catalog/repository.js');
       await catalogRepository.ensureOcrStore();
       return { status: 'ok', ...result };
@@ -3081,9 +3111,12 @@ export function registerConsoleRoutes(
      * outcomes. Write-converged pairs lift their SUSPECT flag.
      */
     credentialSyncRun: async (req: any, reply: any) => {
-      const body = (req.body || {}) as { clientId?: string; direction?: string };
+      const body = (req.body || {}) as { clientId?: string; direction?: string; provider?: string };
       if (!isSyncClientId(body.clientId)) {
         return reply.status(404).send({ status: 'error', success: false, error: `unknown sync client '${body.clientId}'` });
+      }
+      if (body.provider !== undefined && (typeof body.provider !== 'string' || !body.provider.trim() || body.provider.length > 200)) {
+        return reply.status(400).send({ status: 'error', success: false, error: 'provider must be a non-empty id (max 200 chars)' });
       }
       const direction =
         body.direction === 'read' || body.direction === 'write' || body.direction === 'both' ? body.direction : 'both';
@@ -3102,6 +3135,7 @@ export function registerConsoleRoutes(
           fetchImpl: overrides.fetchImpl,
           now: overrides.now,
           openDatabase: overrides.openDatabase,
+          ...(body.provider !== undefined ? { provider: body.provider.trim() } : {}),
         });
         const cb = registry.getCircuitBreakerManager();
         for (const k of result.write?.pushedKeys ?? []) clearSuspectForCredential(cb, k.provider, k.keyHashPrefix);
@@ -3198,23 +3232,59 @@ export function registerConsoleRoutes(
      */
     credentialDisconnect: async (req: any, reply: any) => {
       const { id, credentialId } = req.params as { id: string; credentialId: string };
-      const { getCredentialStore } = await import('../opencode/credentials/index.js');
+      // Client-side delete is ON by default (a delete here is a revocation, not a
+      // local cleanup): `?clientRevoke=0` keeps the client copy when the operator
+      // explicitly wants to retire only the OCR row.
+      const clientRevoke = !['0', 'false'].includes(
+        String((req.query as { clientRevoke?: string })?.clientRevoke ?? '').toLowerCase()
+      );
+      const { getCredentialStore, getBoundCredentialPaths, getBindTestOverrides } = await import(
+        '../opencode/credentials/index.js'
+      );
       const store = await getCredentialStore();
       const guard = await guardStoreCredential(store, id, credentialId);
       if (!guard.ok) return reply.status(guard.status).send(guard.body);
+      const prefix = guard.meta.keyHashPrefix;
       try {
         await store.disconnect(credentialId);
         store.invalidate();
-        clearSuspectForCredential(registry.getCircuitBreakerManager(), id, guard.meta.keyHashPrefix);
-        // A DISABLED flag is deliberately NOT dropped here: it is anchored on the
-        // key hash (Decision 5), so if the same key material comes back later the
-        // operator's takedown still applies. Re-adding a parked credential must
-        // not silently restore traffic to it — the row shows its takedown badge and
-        // one click lifts it. (SUSPECT has the opposite lifecycle: reconnect clears it.)
+        clearSuspectForCredential(registry.getCircuitBreakerManager(), id, prefix);
+        // DELETE is a REVOCATION, so it must be as durable as a takedown: anchor
+        // the key MATERIAL as disabled. Otherwise the read sync would re-import
+        // the key from the client as a clean, routable credential — the delete
+        // would silently undo itself. The flag is keyHash-anchored (same ledger
+        // as disable), so a re-import lands parked with its badge and one-click
+        // restore; SUSPECT keeps its opposite lifecycle (reconnect clears it).
+        let takedownAnchored = false;
+        if (prefix) {
+          const state = registry.getCircuitBreakerManager().getCredentialStateStore();
+          // An ALREADY-parked key material keeps its own note: `disable()` rewrites
+          // `reason` when it differs, and a delete must not launder the operator's
+          // audit text into 'deleted' (the flag's other half, `disabledAt`, is
+          // preserved by design). Parked is anchored either way.
+          takedownAnchored = state.isDisabled(id, prefix) || state.disable(id, prefix, 'deleted');
+        }
+        // The client copy outlives an OCR-only delete — opencode routes from its
+        // own db, so a revoked key must leave the client too. Targeted (this one
+        // key material), never a book-wide diff; a failure is reported, not hidden.
+        let clientRevokeResult: { clientId: string; result: string; detail?: string } | null = null;
+        if (clientRevoke && prefix) {
+          const { revokeOnClient } = await import('../opencode/credentials/sync.js');
+          const overrides = getBindTestOverrides();
+          clientRevokeResult = await revokeOnClient(id, prefix, {
+            paths: getBoundCredentialPaths() ?? undefined,
+            env: overrides.env,
+            fetchImpl: overrides.fetchImpl,
+            now: overrides.now,
+            openDatabase: overrides.openDatabase,
+          });
+        }
         return {
           status: 'ok',
           success: true,
           disconnected: credentialId,
+          takedownAnchored,
+          clientRevoke: clientRevokeResult,
           credentials: withCredentialHealth(id, store.listCredentials(id)),
         };
       } catch (err) {

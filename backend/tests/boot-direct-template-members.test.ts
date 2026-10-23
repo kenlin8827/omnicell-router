@@ -45,7 +45,8 @@ const savedPatches: unknown[] = [];
 mock.module('../src/opencode/user-config.js', () => ({
   ROUTER_PROVIDER_ID: 'onecast-router',
   getProviderNodeById: () => node,
-  getProviderModelDefs: () => ({}),
+  // The defs node is the model universe: every fixture model is maintained.
+  getProviderModelDefs: () => Object.fromEntries(catalogModels.map((m) => [m.id, {}])),
   // boot-direct asks the reader which native-slot nodes it refused (Decision 11);
   // these fixtures hand it normalized nodes directly, so nothing is refused.
   legacyShapedSlotEntries: () => [],

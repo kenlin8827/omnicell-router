@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -29,6 +30,12 @@ export interface CredentialPaths {
   /** OCR state root — OCR_HOME || ~/.onecast-router. */
   ocrHome: string;
   /**
+   * User home — ONLY used for the legacy `~/.opencode/<file>` config fallback
+   * (opencodeConfigCandidates). Injected/test path sets leave it unset and are
+   * therefore hermetic: no candidate outside their own configDir is ever probed.
+   */
+  home?: string;
+  /**
    * Service.json locations for opencode v2 -path Basic auth. Ordered: XDG-aware
    * configDir first, then the legacy home fallback — superset of
    * connector.ts:27-28 (which ignores XDG_CONFIG_HOME; touchpoint gap #5).
@@ -56,11 +63,39 @@ export function resolveDefaultPaths(
     opencodeDbPath: path.join(dataDir, 'opencode.db'),
     installedVersionPath: path.join(configDir, 'installed.version'),
     ocrHome,
+    home: homedir,
     serviceJsonCandidates: [
       path.join(configDir, 'service.json'),
       path.join(homedir, '.opencode', 'service.json'),
     ],
   };
+}
+
+/**
+ * Where an opencode client keeps its config, in READ priority order: the XDG
+ * configDir spellings first, then the legacy `~/.opencode/opencode.json`. The
+ * FIRST entry (the jsonc) is also the default write target when nothing exists
+ * yet — resolution and default must agree or a first push lands in a file the
+ * next read would not prefer.
+ *
+ * This is the ONE place that knows the candidate list — the defs materializer
+ * (write) and the one-shot def port (read) both resolve through it, so a push
+ * can never land in a file the client does not read (the historical defect: the
+ * port read `<configDir>/opencode.json` while the materializer wrote a fresh
+ * `<configDir>/opencode.jsonc` next to it).
+ */
+export function opencodeConfigCandidates(paths: CredentialPaths): string[] {
+  return [
+    path.join(paths.configDir, 'opencode.jsonc'),
+    path.join(paths.configDir, 'opencode.json'),
+    ...(paths.home ? [path.join(paths.home, '.opencode', 'opencode.json')] : []),
+  ];
+}
+
+/** First existing candidate (same order as opencodeConfigCandidates), else the jsonc default. */
+export function resolveOpencodeConfigPath(paths: CredentialPaths = resolveDefaultPaths()): string {
+  const candidates = opencodeConfigCandidates(paths);
+  return candidates.find((p) => fs.existsSync(p)) ?? candidates[0]!;
 }
 
 /** Centralized env access for consumers that need raw process.env. */

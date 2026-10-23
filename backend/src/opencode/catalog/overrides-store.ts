@@ -9,7 +9,7 @@ import type { ReasoningEffort } from '../../types/router.js';
  *
  * Field-level overrides applied LAST on the aggregated catalog (ocr.json) —
  * this is the landing spot for edits made in the OCR Catalog viewer, which
- * targets the AGGREGATION (not defs-file definitions, not custom.json).
+ * targets the AGGREGATION (not the defs-file nodes themselves).
  * Key is `${providerId}||${modelId}` (model ids may contain '/').
  */
 
@@ -21,13 +21,12 @@ export interface OverrideEntry {
   tool_call?: boolean;
   reasoning?: boolean;
   /**
-   * Hide from the model catalog: the model stays in the aggregate (and in the
-   * catalog viewer) but boot-direct keeps it out of the routing pool, so
-   * `/v1/models` omits it and no request can be pinned to it.
-   *
-   * This is the ONLY writer of the flag in the UI (both model-list rows) — a
-   * def-level `disabled: true` in the defs file is still honoured, but the
-   * override wins, exactly like `temperature` below.
+   * Hidden from CLIENT-facing catalogs (`/v1/models`, `/v1/catalog.json`): the
+   * model stays in the aggregate (the console catalog viewer and /models still
+   * list it so it can be unhidden) but boot-direct keeps it out of the routing
+   * pool, so no client request can be pinned to it. Written by the overrides
+   * layer (`OverrideEntry.disabled`) and, for hand-written configs, carried
+   * over from a def-level `disabled` flag.
    */
   disabled?: boolean;
   /** Manual correction of the tri-state sampling-parameter capability flag (real behavior of a reseller's custom models, which catalog sources cannot cover). */

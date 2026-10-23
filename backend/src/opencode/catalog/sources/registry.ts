@@ -1,4 +1,4 @@
-import { DEFAULT_CATALOG_SOURCES, BUILTIN_SOURCE_ID, type CatalogSourceConfig, type SourceMapConfig } from '../../../config/types.js';
+import { DEFAULT_CATALOG_SOURCES, type CatalogSourceConfig, type SourceMapConfig } from '../../../config/types.js';
 import { normalizeModelsDev } from './models-dev.js';
 import { normalizeOpenRouter } from './openrouter.js';
 import type { CatalogModel, CatalogProviderRecord, CatalogCost, CatalogLimit, CatalogModalities } from '../types.js';

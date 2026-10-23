@@ -1,5 +1,4 @@
 import {
-  ErrorCategory,
   ErrorDiagnosis,
   CircuitBreakerConfig,
   NetworkFailureCause,

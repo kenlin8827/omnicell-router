@@ -5,7 +5,6 @@ import { BUILTIN_SOURCE_ID, type CatalogConfig, type CatalogSourceConfig, type S
 import { resolveSources, parseByType, isKnownSourceType, type RemoteSourceDef, type ParsedSource } from './sources/registry.js';
 import { modelsDevLogoUrl } from './sources/models-dev.js';
 import { readCacheFile, writeCacheFile } from './cache.js';
-import { readCustomStore, getCustomStorePath } from './custom-store.js';
 import { readOverridesStore, getOverridesStorePath } from './overrides-store.js';
 import { proxiedFetch } from '../../utils/proxy.js';
 import { CATALOG_USER_AGENT } from './constants.js';
@@ -121,6 +120,17 @@ export function mergeModels(base: CatalogModel[], overlay: CatalogModel[], locke
     byId.set(m.id, ocr as CatalogModel);
   }
   return Array.from(byId.values());
+}
+
+/**
+ * Is this provider CUSTOM (console badge)? DYNAMIC, never stored: a provider is
+ * custom iff it is NOT covered by the built-in provider catalogs
+ * (models.opencode.ai, models.dev). Self-declared relays and catalog-unknown ids
+ * are custom; anything the builtin books cover is not, no matter how it
+ * connected. Exported so the rule has ONE definition and one test.
+ */
+export function isCustomProvider(rec: { sources: readonly CatalogSourceId[] }): boolean {
+  return !(rec.sources.includes('opencode') || rec.sources.includes('models-dev'));
 }
 
 function addSource(sources: CatalogSourceId[], s: CatalogSourceId): CatalogSourceId[] {
@@ -568,7 +578,6 @@ async setSourceEnabled(id: string, enabled: boolean): Promise<CatalogSourceView>
     // stale against fresher per-source caches.
     const fetched = this.sources.map((s) => `${s.id}:${this.remote.get(s.id)?.fetchedAt ?? 0}`).join('|');
     const locked = (loadConfig().catalog?.lockedModels ?? []).join(',');
-    const customMtime = mtime(getCustomStorePath());
     const overridesMtime = mtime(getOverridesStorePath());
     // The defs file replaced opencode.jsonc as the def truth: its mtime drives
     // the rebuild, and the jsonc mtime stays OUT — a materialization rewrite
@@ -577,7 +586,7 @@ async setSourceEnabled(id: string, enabled: boolean): Promise<CatalogSourceView>
     // so a key add/remove must drift the signature or the store serves the old
     // connected flags until restart.
     const defsMtime = mtime(getProviderDefsPath());
-    return `${defsMtime}:${mtime(getConfigPath())}:${srcs}:${fetched}:${locked}:${customMtime}:${overridesMtime}:${mtime(ocrCredentialsFile())}`;
+    return `${defsMtime}:${mtime(getConfigPath())}:${srcs}:${fetched}:${locked}:${overridesMtime}:${mtime(ocrCredentialsFile())}`;
   }
 
   private ocrLoadOrigin = 'not-built';
@@ -643,42 +652,12 @@ async setSourceEnabled(id: string, enabled: boolean): Promise<CatalogSourceView>
         name: v.name,
         npm: v.npm,
         baseURL: v.baseURL,
-        custom: v.custom,
+        // dynamic tag — final value derived at the step-5 mapping
+        custom: false,
         connected: v.auth.connected,
         sources: ['config'],
         models: this.configModelsFor(v.id),
       });
-    }
-
-    // 1b. custom store — models pulled for credential-only providers (no jsonc
-    // node to write into; e.g. live /v1/models of a self-hosted gateway). Inserted
-    // AFTER the builtin baseline: entry-creating for providers the catalog lacks,
-    // fill-missing-only for those it already covers. sources tag: 'custom'.
-    const customStore = readCustomStore();
-    if (customStore) {
-      for (const [pid, entry] of Object.entries(customStore.providers)) {
-        if (!entry.models || entry.models.length === 0) continue;
-        const record: CatalogProviderRecord = {
-          id: pid,
-          name: entry.name,
-          npm: entry.npm,
-          api: entry.api,
-          custom: true,
-          connected: false,
-          sources: ['custom'],
-          models: entry.models.map((m) => ({ ...m, source: 'custom' as const })),
-        };
-        const existing = unified.get(pid);
-        if (!existing) {
-          unified.set(pid, record);
-          continue;
-        }
-        existing.name = existing.name || entry.name;
-        existing.npm = existing.npm || entry.npm;
-        existing.api = existing.api || entry.api;
-        existing.sources = addSource(existing.sources, 'custom');
-        existing.models = mergeModels(existing.models, record.models, lockedFor(pid));
-      }
     }
 
     const orByVendor = this.demuxByVendor();
@@ -868,13 +847,7 @@ async setSourceEnabled(id: string, enabled: boolean): Promise<CatalogSourceView>
 
     // 5. serve logos through the local disk-cache proxy (offline-safe page loads)
     return Array.from(unified.values())
-      .map((rec) => {
-        // custom = user-defined/self-hosted provider: an explicit jsonc definition
-        // OR not covered by any remote catalog source (zhipu, private relays, …).
-        // Catalog-covered providers (zhipuai-coding-plan, openrouter, …) are not.
-        const catalogCovered = rec.sources.includes('opencode') || rec.sources.includes('models-dev');
-        return { ...rec, logo: localLogoApiPath(rec.logo), custom: rec.custom || !catalogCovered };
-      })
+      .map((rec) => ({ ...rec, logo: localLogoApiPath(rec.logo), custom: isCustomProvider(rec) }))
       .sort(
         (a, b) =>
           Number(b.custom || b.connected) - Number(a.custom || a.connected) ||

@@ -310,7 +310,7 @@ retry:
 # chat call; answers normalized back). Converted probabilities are best-
 # effort estimates, NOT calibrated — see docs/adr/0014-systemone-protocol-gateway.md.
 # NOTE: chat provider connection defs do NOT live in this file — they are
-# owned by <ocrHome>/custom-providers.json + the credential store (ADR-0010).
+# owned by <ocrHome>/providers.json + the credential store (ADR-0010).
 #
 # systemone:
 #   defaultModel: "my-chat-model"     # served when the request omits `model`

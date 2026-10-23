@@ -14,11 +14,14 @@ import { describe, it, expect, mock, beforeEach } from 'bun:test';
  *   - boot-direct skips any model whose aggregate says `disabled === true`
  *
  * Two rules under test:
- *   A. provider model universe — config defs win when present; "all defs
- *      disabled" must NOT fall back to the catalog listing (that fallback is
- *      only for providers with no defs at all, i.e. credential-only);
- *   B. `disabled` from either plane keeps the model out of the pool, and an
- *      override `disabled: false` can re-show a def-hidden model (WYSIWYG).
+ *   A. provider model universe — the defs node IS the universe (connect-time
+ *      doctrine). A provider with an empty node routes NOTHING: the catalog is
+ *      a source for the node, never a fallback pool;
+ *   B. `disabled` from either plane keeps a MAINTAINED model out of the pool,
+ *      and an override `disabled: false` can re-show a def-hidden model
+ *      (WYSIWYG). The pool is boot-scoped, so the console says "restart".
+ *      Encoded contract: the flag only ever removes a def-backed model from
+ *      CLIENT reach — console pages still read the aggregate.
  *
  * The catalog stub reproduces the real merge order (def passthrough → override)
  * so the tests exercise that contract, not a convenient fiction. Everything
@@ -100,7 +103,7 @@ mock.module('../src/config/index.js', () => ({
 const { buildDirectPool } = await import('../src/providers/boot-direct.js');
 const ids = (res: { models: { id: string }[] }) => res.models.map((m) => m.id);
 
-describe('provider model universe (config defs vs catalog fallback)', () => {
+describe('provider model universe (the defs node is the universe)', () => {
   beforeEach(() => {
     defs = {};
     overrides = {};
@@ -120,11 +123,13 @@ describe('provider model universe (config defs vs catalog fallback)', () => {
     expect(res.excluded.some((e) => e.provider === PROVIDER)).toBe(true);
   });
 
-  it('auth-only provider (no defs at all) still falls back to the catalog listing', async () => {
+  it('a provider with an empty defs node routes nothing — the catalog is not a fallback', async () => {
     defs = {};
     const pool = ids(await buildDirectPool());
-    expect(pool).toContain(`${PROVIDER}/m-on`);
-    expect(pool).toContain(`${PROVIDER}/m-off`);
+    expect(pool).not.toContain(`${PROVIDER}/m-on`);
+    expect(pool).not.toContain(`${PROVIDER}/m-off`);
+    const res = await buildDirectPool();
+    expect(res.excluded.some((e) => e.provider === PROVIDER)).toBe(true);
   });
 });
 
@@ -141,13 +146,12 @@ describe('hide from the catalog (`disabled`) — aggregate decides', () => {
     expect(res.excluded.some((e) => e.model === `${PROVIDER}/m-off`)).toBe(true);
   });
 
-  it('hides a CATALOG-sourced model of an auth-only provider (no def exists)', async () => {
+  it('a `disabled` flag cannot hide a model that has no def — an empty node routes nothing anyway', async () => {
     defs = {};
     overrides = { 'm-off': true };
     const res = await buildDirectPool();
-    // the provider stays (its sibling model is still routable) …
-    expect(ids(res)).toContain(`${PROVIDER}/m-on`);
-    // … but the hidden one never enters the pool
+    // no def → no universe entry, flag or not
+    expect(ids(res)).not.toContain(`${PROVIDER}/m-on`);
     expect(ids(res)).not.toContain(`${PROVIDER}/m-off`);
   });
 
@@ -157,8 +161,8 @@ describe('hide from the catalog (`disabled`) — aggregate decides', () => {
     expect(ids(await buildDirectPool())).toContain(`${PROVIDER}/m-on`);
   });
 
-  it('hiding every model of a provider removes that provider only', async () => {
-    defs = {};
+  it('hiding every def-backed model of a provider removes that provider only', async () => {
+    defs = { 'm-on': {}, 'm-off': {} };
     overrides = { 'm-on': true, 'm-off': true };
     const res = await buildDirectPool();
     expect(res.models.some((m) => m.provider === PROVIDER)).toBe(false);

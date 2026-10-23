@@ -88,6 +88,28 @@ export interface QuotaSnapshot {
   lastFailureAt?: number;
 }
 
+/**
+ * WHY the last attempt produced nothing — the honest answer to "covered, but
+ * empty". Without it a pair whose upstream answers 401 (dead credential) or
+ * a plan-level refusal (e.g. MiniMax `base_resp.status_code: 2062 "no active
+ * token plan subscription"`) is indistinguishable from "the probe has not run
+ * yet", and the console can only say `unverified` forever.
+ *
+ * Display-safe by construction: a transport-level verdict, the HTTP status, and
+ * the upstream's own short message (the last-probe dialog already shows the
+ * full body to the operator). Response HEADERS and key material never enter it.
+ */
+export interface QuotaProbeFailure {
+  /** Same closed vocabulary as `QuotaProbeOutcome.reason`. */
+  reason: 'network' | 'status' | 'shape' | 'auth';
+  /** HTTP status when a response existed (absent for a transport failure). */
+  statusCode?: number;
+  /** Upstream's own words, collapsed to one line and length-bounded. */
+  message?: string;
+  /** Epoch ms of this attempt. */
+  at: number;
+}
+
 // ─── Declarative probe DSL ──────────────────────────────────────────────────
 // Twelve constructs (windows: static / each / eachObject count as one family):
 // field extraction by path, firstOf, the 2-of-3 derivation (any two of

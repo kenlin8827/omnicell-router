@@ -13,6 +13,8 @@
 - **覆盖**（哪些 provider *可以*被探测）随 release 出货：内置声明表（§3）+ 内置代码 adapter（§4），或随用户配置（§5）。它绝不按当前凭证池快照圈范围：凭证天天增减，而某服务商额度端点的知识不随之变动。
 - **激活**（是否真的调度一次探测）随凭据：被覆盖的 provider 只要凭据出现在绑定存储的任意位置（或 config 烘焙的推理 key——无链退化形态），下一轮调度自动armed。凭证池枚举从不参与覆盖判定。
 
+激活直接读**绑定凭据存储**（`resolveKeyChain`），绝不读路由侧模型注册表：模型注册是路由的事，被覆盖的 provider 即便模型清单仍为空（“尚未维护任何模型”），它持有的 key 依旧必须被探测。registry 链只作为「本次 boot 未绑定存储」时的回退；config 烘焙的推理 key 覆盖无链退化形态。所有枚举配对目录的面（§9）用同一套并集——以模型为源的枚举是唯一会静默吞掉已连接凭据的形态。
+
 额度面**只展示**：声明的或探测出的上限永远不门控路由。配置过期不得逐出健康配对；下架决定权仍在熔断面（下文），后者依据的是*推理侧*证据，而非探测侧聚合值。
 
 ### 2. 数据模型
@@ -20,9 +22,12 @@
 ```
 QuotaSnapshot { providerId, keyHashPrefix, windows[], plan?, source, verifiedAt, entryId, lastFailureAt? }
 QuotaWindow   { name, used, total, remainingPct, resetAt, unlimited }
+QuotaProbeFailure { reason ∈ network|status|shape|auth, statusCode?, message?, at }
 source ∈ probed | measured | declared | forked
 badge  ∈ probed | declared | unverified | stale        （控制台可见四态）
 ```
+
+失败判定住在自己的表里（按与快照相同的键），不塞进快照：快照是「有窗口的值」，失败是「没有值」——而从未成功过的配对根本没有快照可挂。它与快照同样持久（同一文件 `failures` 映射），理由相同：「这个有覆盖的配对为什么空」必须能跨重启。内容仍是展示安全：传输层理由 + HTTP 状态码 + 上游自己的简短消息（完整 body 早已通过最后一次探测弹窗对操作员可见）。
 
 v1 明知有损而有意不建模（在此备案而非塞进模型）：每窗口的 `currency` / `isCreditBalance`（多币种预付费余额拍平为信贷池窗口：`used 0 / total = 实时余额`），以及周期窗口元数据。`measured` 是二期头收割层（L-a）预留的血统值；`declared` 为静态套餐上限声明保留。徽章映射：无快照 → `unverified`；`declared` 血统 → `declared`；最近一次尝试失败或超出条目 cacheTtl → `stale`；其余 `probed`。
 
@@ -53,7 +58,7 @@ kimi 条目从同一次响应中读取两个窗口：顶层 `usage` 对象给出
 
 ### 4. L-c：内置代码 adapter（一家一文件）
 
-语义无法声明式表达的 provider 落为代码 adapter（`quota/adapters/`，仿 `providers/` 目录）。v1 只有一个：**MiniMax**（`minimax`、`minimax-cn`、`minimax-coding-plan`、`minimax-cn-coding-plan`）。原因：两级 URL 回退链且成员语义**互为反义**（`/coding_plan/` 端点的计数读作 REMAINING，`/token_plan/` 读作 USED），外加相对/绝对两种重置字段与纯百分比共享桶——“per-URL 反义映射”是禁列的表类（§6），且条目单 URL 是铁律。adapter 事实（各地区 URL 序、信封 `base_resp.status_code`、snake/camel 字段对、回退触发码 404/405/5xx、密钥无效判定 401/403/1004）**先自录进文件头部事实清单再动笔**；代码照清单，不照参考项目。待办（列名，暂缓）：Copilot / Zed / Kimi-OAuth 通道——其认证需要铸造/设备流程（非推理形态头），因此永远不能进配置表；只能走 adapter，按需实现。
+语义无法声明式表达的 provider 落为代码 adapter（`quota/adapters/`，仿 `providers/` 目录）。v1 只有一个：**MiniMax**（`minimax`、`minimax-cn`、`minimax-coding-plan`、`minimax-cn-coding-plan`）。原因：两级 URL 回退链且成员语义**互为反义**（`/coding_plan/` 端点的计数读作 REMAINING，`/token_plan/` 读作 USED），外加相对/绝对两种重置字段与纯百分比共享桶——“per-URL 反义映射”是禁列的表类（§6），且条目单 URL 是铁律。adapter 事实（各地区 URL 序、信封 `base_resp.status_code`、snake/camel 字段对、回退触发码 404/405/5xx、密钥无效判定 401/403/1004）**先自录进文件头部事实清单再动笔**；代码照清单，不照参考项目。地区由 provider id 的**段**决定（id 中任意位置出现 `-cn`），绝不是配置旋钮——`endsWith('-cn')` 会漏掉 `minimax-cn-coding-plan`，把它的中国区 key 发往全球主机，那里该 key 被读作无效（认证判定，因此不会回退 URL），该配对就永远只能显示 `unverified`。待办（列名，暂缓）：Copilot / Zed / Kimi-OAuth 通道——其认证需要铸造/设备流程（非推理形态头），因此永远不能进配置表；只能走 adapter，按需实现。
 
 ### 5. L-a 与 L-d：预留的收割层与用户表
 
@@ -82,11 +87,11 @@ due-based，形照主动健康 prober（借思路不借代码）：固定 tick�
 
 ### 8. 失败语义与路由面防火墙
 
-**探测失败 ≠ 额度失败。** 失败尝试不进熔断器、不标 SUSPECT、不禁用、不进 trace 表：旧快照保留，`lastFailureAt` 把徽章翻成 `stale`。反向额度面消费推理侧证据只有一个方向：在熔断 manager 唯一失败汇聚点（`recordFailureScoped`）记录的每个 `QUOTA_EXHAUSTED` 诊断，在规则门控**之前**落 **`quota_events`** 账本一行（观测不是政策——关掉额度*跳闸*不得蒙住账本）。账本照限流账本纪律：环 500、`traces.db` 镜像（`quota_events` 表、独立 WAL 句柄、fail-open、启动 replay）。分类器新增中文撞顶 marker（额度措辞 + 会话频控措辞进入匹配字面量），使中文服务商的额度烧穿折入 QUOTA_EXHAUSTED（credential 作用域、12 小时下限、不打 SUSPECT——ADR-0004 语义不变）。词汇防火墙成立：`CLOSED/HALF_OPEN/OPEN` 仍是 CircuitBreaker 专属词；额度徽章态（`probed/declared/unverified/stale`）另立一轴，永不复用为健康词汇。撞顶下架继续走既有配对熔断 trip 语义；`resetAt` 对齐冷却整形为二期。
+**探测失败 ≠ 额度失败。** 失败尝试不进熔断器、不标 SUSPECT、不禁用、不进 trace 表：旧快照保留，`lastFailureAt` 把徽章翻成 `stale`；从未成功过的配对没有快照、保持 `unverified`——但如今同时保留**为什么**（`QuotaProbeFailure` 判定：理由 + HTTP 状态 + 上游自己的消息）。没有这份判定时，凭据被拒（401）或套餐未开通（MiniMax `base_resp.status_code: 2062 "no active token plan subscription"`，且 HTTP 200）的已覆盖配对，与「首次同步还没跑」完全无法区分——控制台只能永远重复 `unverified`，那是假话。四个徽章**状态**不变；控制台的**状态文案**由配对自身推导：有失败记录就显示「探测失败」（绝不显示「未同步」），并在任何「有覆盖但没数字」的位置渲染失败原因（额度页卡片、侧边栏 peek、逐凭据 tooltip）。成功一次即退役该判定（过期的证据不得比测量活得更久）。反向额度面消费推理侧证据只有一个方向：在熔断 manager 唯一失败汇聚点（`recordFailureScoped`）记录的每个 `QUOTA_EXHAUSTED` 诊断，在规则门控**之前**落 **`quota_events`** 账本一行（观测不是政策——关掉额度*跳闸*不得蒙住账本）。账本照限流账本纪律：环 500、`traces.db` 镜像（`quota_events` 表、独立 WAL 句柄、fail-open、启动 replay）。分类器新增中文撞顶 marker（额度措辞 + 会话频控措辞进入匹配字面量），使中文服务商的额度烧穿折入 QUOTA_EXHAUSTED（credential 作用域、12 小时下限、不打 SUSPECT——ADR-0004 语义不变）。词汇防火墙成立：`CLOSED/HALF_OPEN/OPEN` 仍是 CircuitBreaker 专属词；额度徽章态（`probed/declared/unverified/stale`）另立一轴，永不复用为健康词汇。撞顶下架继续走既有配对熔断 trip 语义；`resetAt` 对齐冷却整形为二期。
 
 ### 9. 消费面
 
-控制台：`CredentialHealth` 叠加层（每个返回凭证的响应都带，ADR-0006 §9 契约）新增附加键 `quota?: CredentialQuotaView`——四态徽章、逐窗口条 + 重置倒计时、血统（`entryId`、`source`、`plan`、过期态）在 tooltip。该键缺席 = *未覆盖*，与 `unverified` 徽章（已覆盖尚无结果）刻意不同。独立**额度页**（`/admin/quota`）渲染跨服务商目录：服务商被覆盖的每个已连接配对（配对枚举同 status 的 credentialHashes——链上凭据 + config 烘焙 key，仅展示安全前缀；未覆盖服务商不出行），携徽章、窗口条、套餐、血统与其归属用量联查（trace 环上的 `getCredentialPairUsageStats`）。版本覆盖面清单（覆盖/激活二分保持可检视）、被拒的 `quotaProbes:` 条目（校验失败上报，绝不吞）与近期烧穿事件账由 `GET /api/admin/quota` 按诊断契约供给（`coverage / rejected / pairs / events`）——页面本体保持单一目录面，不内嵌这三张清单。配对的可读身份是操作员设的凭据 label；**未命名**凭据用其掩码密钥（`maskSecret`，与凭据清单显示同一串——"这是哪把 key"直接用操作员自己贴过的东西回答）——存储机器 id 永远不是展示名（链上 label 曾回退到 `credentialId` UUID），展示安全密钥散列只留在 tooltip 与搜索里。`POST /api/admin/quota/refresh` 重排一对或整个调度，然后在请求内跑**一轮有界**探测（预算见 §7）——页面 await 后重读，手动刷新即可看到新数字，无需等 tick。两种范围都由 UI 提供：页头（整个调度）与每张卡片（仅该配对——额度按 provider × 凭据计，故只需一次上游请求），外加侧边栏 peek 里同一全局动作的副本。`frontend/src/lib/api.ts` 按后端契约名 1:1 镜像（`CredentialQuotaView`、`QuotaPairRow`、`QuotaWindow`、`QuotaBadgeState`、`QuotaSource`）。原始密钥在任何界面上都不出现（只有展示安全前缀）；UI 文案全走 `t()`。
+控制台：`CredentialHealth` 叠加层（每个返回凭证的响应都带，ADR-0006 §9 契约）新增附加键 `quota?: CredentialQuotaView`——四态徽章、逐窗口条 + 重置倒计时、血统（`entryId`、`source`、`plan`、过期态）在 tooltip。该键缺席 = *未覆盖*，与 `unverified` 徽章（已覆盖尚无结果）刻意不同。独立**额度页**（`/admin/quota`）渲染跨服务商目录：服务商被覆盖的每个已连接配对（配对枚举 = 绑定凭据存储的凭据 ∪ registry 链 ∪ config 烘焙 key，仅展示安全前缀；未覆盖服务商不出行），携徽章、窗口条、套餐、血统与其归属用量联查（trace 环上的 `getCredentialPairUsageStats`）。版本覆盖面清单（覆盖/激活二分保持可检视）、被拒的 `quotaProbes:` 条目（校验失败上报，绝不吞）与近期烧穿事件账由 `GET /api/admin/quota` 按诊断契约供给（`coverage / rejected / pairs / events`）——页面本体保持单一目录面，不内嵌这三张清单。配对的可读身份是操作员设的凭据 label；**未命名**凭据用其掩码密钥（`maskSecret`，与凭据清单显示同一串——"这是哪把 key"直接用操作员自己贴过的东西回答）——存储机器 id 永远不是展示名（链上 label 曾回退到 `credentialId` UUID），展示安全密钥散列只留在 tooltip 与搜索里。`POST /api/admin/quota/refresh` 重排一对或整个调度，然后在请求内跑**一轮有界**探测（预算见 §7）——页面 await 后重读，手动刷新即可看到新数字，无需等 tick。两种范围都由 UI 提供：页头（整个调度）与每张卡片（仅该配对——额度按 provider × 凭据计，故只需一次上游请求），外加侧边栏 peek 里同一全局动作的副本。`frontend/src/lib/api.ts` 按后端契约名 1:1 镜像（`CredentialQuotaView`、`QuotaPairRow`、`QuotaWindow`、`QuotaBadgeState`、`QuotaSource`）。原始密钥在任何界面上都不出现（只有展示安全前缀）；UI 文案全走 `t()`。
 
 ## IP 纪律（备案约束）
 

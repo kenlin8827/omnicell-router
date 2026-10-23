@@ -6,7 +6,7 @@ import { saveConfig } from '../src/config/index.js';
 import { normalizeModelsDev, modelsDevLogoUrl } from '../src/opencode/catalog/sources/models-dev.js';
 import { normalizeOpenRouter, OPENROUTER_PROVIDER_ID } from '../src/opencode/catalog/sources/openrouter.js';
 import { getProviderDefsPath, writeProviderDefs } from '../src/opencode/provider-defs.js';
-import { mergeModels, CatalogRepository } from '../src/opencode/catalog/repository.js';
+import { mergeModels, CatalogRepository, isCustomProvider } from '../src/opencode/catalog/repository.js';
 import { readCacheFile, writeCacheFile } from '../src/opencode/catalog/cache.js';
 import { readOcrStore, writeOcrStore } from '../src/opencode/catalog/ocr-store.js';
 import { ocrCredentialsFile, resolveDefaultPaths } from '../src/opencode/credentials/paths.js';
@@ -251,7 +251,7 @@ describe('Catalog sources & repository', () => {
     ];
     writeOcrStore('sig-1', providers as any);
     const store = readOcrStore();
-    expect(store?.version).toBe(3);
+    expect(store?.version).toBe(4);
     expect(store?.sig).toBe('sig-1');
     expect(store?.builtAt).toBeGreaterThan(0);
     expect(store?.providers[0].id).toBe('anthropic');
@@ -410,6 +410,18 @@ describe('CatalogRepository source management', () => {
     } catch {
       // ignore
     }
+  });
+
+  it('the custom badge is DERIVED from builtin-catalog coverage, never stored', () => {
+    // ADR-0010 unification amendment: the tag is computed at aggregation time
+    // (repository step 5 routes through this ONE predicate) and is never written
+    // to any book. Both directions pinned — a self-declared relay is custom,
+    // anything a builtin provider catalog covers is not, however it connected.
+    expect(isCustomProvider({ sources: ['config'] })).toBe(true);
+    expect(isCustomProvider({ sources: ['opencode', 'config'] })).toBe(false);
+    expect(isCustomProvider({ sources: ['models-dev'] })).toBe(false);
+    expect(isCustomProvider({ sources: ['config', 'models-dev', 'openrouter'] })).toBe(false);
+    expect(isCustomProvider({ sources: [] })).toBe(true);
   });
 
   it('guards the mandatory baseline source (no removal, no disable)', async () => {
@@ -682,48 +694,32 @@ describe('auto-pull sweep end-to-end (regression: TDZ in Phase-1)', () => {
       server.stop(true);
     }
   });
-});
 
-describe('custom store: clearCustomModels', () => {
-  let tmpDir: string;
-  let oldCatalogPath: string | undefined;
-
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-custom-clear-'));
-    oldCatalogPath = process.env.OCR_CATALOG_PATH;
-    process.env.OCR_CATALOG_PATH = path.join(tmpDir, 'catalog-merged.json');
-  });
-
-  afterEach(() => {
-    if (oldCatalogPath === undefined) delete process.env.OCR_CATALOG_PATH;
-    else process.env.OCR_CATALOG_PATH = oldCatalogPath;
+  it('explicit ids narrow the live pull below the pattern (console pull-preview selection)', async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch: () =>
+        Response.json({
+          data: [{ id: 'alpha-one' }, { id: 'alpha-two' }, { id: 'beta-one' }],
+        }),
+    });
     try {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    } catch {
-      // ignore
+      writeProviderDefs({
+        'home-lab': {
+          package: '@opencode/ai/providers/openai-compatible',
+          settings: { baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'sk-test' },
+        },
+      });
+      const { autoPullProvider } = await import('../src/opencode/catalog/auto-pull.js');
+      const res = await autoPullProvider('home-lab', { ids: ['alpha-two', 'ghost-one'] });
+      expect(res.httpStatus).toBe(200);
+      // ids ∩ upstream = alpha-two; 'ghost-one' simply matches nothing. No
+      // pattern given → the whole upstream list is the candidate pool.
+      expect(res.body).toMatchObject({ status: 'ok', live: true, matched: 1, pulled: 1, skipped: 0 });
+      const { getProviderModelDefs } = await import('../src/opencode/user-config.js');
+      expect(Object.keys(getProviderModelDefs('home-lab') ?? {})).toEqual(['alpha-two']);
+    } finally {
+      server.stop(true);
     }
-  });
-
-  it('mirrors clearProviderModels semantics against the custom store', async () => {
-    const { upsertCustomProviderModels, getCustomProviderModels, clearCustomModels } =
-      await import('../src/opencode/catalog/custom-store.js');
-    upsertCustomProviderModels('p1', { name: 'P1' }, [
-      { id: 'alpha' },
-      { id: 'gpt-x' },
-      { id: 'gpt-y' },
-    ] as any);
-
-    // pattern → only matching ids removed, provider meta kept
-    const byPattern = clearCustomModels('p1', 'gpt-*');
-    expect(byPattern).toEqual({ success: true, removed: 2 });
-    expect(getCustomProviderModels('p1').map((m) => m.id)).toEqual(['alpha']);
-
-    // no pattern → all removed; entry still exists (removed: 0 on re-run)
-    const all = clearCustomModels('p1');
-    expect(all).toEqual({ success: true, removed: 1 });
-    expect(clearCustomModels('p1')).toEqual({ success: true, removed: 0 });
-
-    // unknown provider → failure signal preserved (handler keeps its 404)
-    expect(clearCustomModels('ghost').success).toBe(false);
   });
 });

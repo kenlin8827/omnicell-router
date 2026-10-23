@@ -12,7 +12,7 @@ import { resetCredentialStoreForTests } from '../src/opencode/credentials/factor
  * Layer 1 (routes): console provider create/update/connect write the
  *  opencode.jsonc def and route the KEY to the bound store — always the OCR
  *  file (the v2 service is a sync client and is never written by these routes).
- * Layer 2 (boot): an opencode-v2 shaped def written by upsertCustomProvider
+ * Layer 2 (boot): an opencode-v2 shaped def written by upsertProviderDef
  *  resolves the SAME baseURL/headers/wire through boot-direct as the equivalent
  *  opencode-v1 shaped def. boot-direct is NOT edited here — this file only
  *  asserts against it (concurrent P3 edits must keep this contract).
@@ -54,7 +54,7 @@ mock.module('../src/opencode/catalog/auto-pull.js', () => ({
 
 const { createServer } = await import('../src/server.js');
 const { buildDirectPool } = await import('../src/providers/boot-direct.js');
-const { upsertCustomProvider } = await import(
+const { upsertProviderDef } = await import(
   '../src/opencode/user-config.js'
 );
 const { readProviderDefsFile, writeProviderDefs, getProviderDefsPath } = await import(
@@ -374,7 +374,7 @@ describe('POST /opencode/providers/:id/connect — baseURL merge keeps node shap
 
 // ---------------------------------------------------------------------------
 // 2. boot-direct equivalence (task test d) — REAL parser + REAL boot path,
-//    opencode-v2 shaped def written through upsertCustomProvider(generation:'opencode-v2')
+//    opencode-v2 shaped def written through upsertProviderDef(generation:'opencode-v2')
 // ---------------------------------------------------------------------------
 
 describe('boot-direct — opencode v2-written def routes identically to the opencode v1 equivalent', () => {
@@ -387,11 +387,11 @@ describe('boot-direct — opencode v2-written def routes identically to the open
       headers: { 'X-T': '1' },
       models: { m1: {}, m2: { provider: { npm: '@ai-sdk/anthropic' } } },
     };
-    expect(upsertCustomProvider({ id: 'eq1', ...common, npm: '@ai-sdk/openai-compatible', generation: 'opencode-v1' }).success).toBe(
+    expect(upsertProviderDef({ id: 'eq1', ...common, npm: '@ai-sdk/openai-compatible', generation: 'opencode-v1' }).success).toBe(
       true
     );
     expect(
-      upsertCustomProvider({ id: 'eq2', ...common, npm: '@ai-sdk/openai-compatible', generation: 'opencode-v2' }).success
+      upsertProviderDef({ id: 'eq2', ...common, npm: '@ai-sdk/openai-compatible', generation: 'opencode-v2' }).success
     ).toBe(true);
     fs.writeFileSync(
       p.authJsonPath,

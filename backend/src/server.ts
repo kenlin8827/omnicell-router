@@ -1215,7 +1215,7 @@ export function createServer(
   });
 
   // 3F. Query Trajectory / Traces by Session ID
-  app.get('/api/admin/sessions/:id/traces', async (req, reply) => {
+  app.get('/api/admin/sessions/:id/traces', async (req) => {
     const { id } = req.params as { id: string };
     const session = orchestrator.getSessionManager()?.getSession(id);
     const traces = orchestrator.getTraceTracker().getTracesBySession(id);

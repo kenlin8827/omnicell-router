@@ -242,7 +242,7 @@ The Token Saver pipeline reduces token bloat before upstream dispatch:
 ## 8. Credential Store & Provider Defs Truth
 
 ### 8.1 Single Truth of Provider Definitions (ADR-0010)
-Connection definitions reside strictly in `<ocrHome>/custom-providers.json`. Downstream tool configuration files (such as OpenCode v2's `opencode.jsonc`) are write-only sync targets materialized from this truth.
+Connection definitions reside strictly in `<ocrHome>/providers.json`. Downstream tool configuration files (such as OpenCode v2's `opencode.jsonc`) are write-only sync targets materialized from this truth.
 
 ### 8.2 Credential Store Architecture (ADR-0006)
 - Master credentials reside in `<ocrHome>/credentials.json`.
@@ -279,7 +279,7 @@ All architectural decisions are codified under `docs/adr/`:
 | **[ADR-0007](docs/adr/0007-environments-and-bootstrap.md)** | Environments & Bootstrap | Isolated book-set directories, controlled restart switching, export/import envelopes. |
 | **[ADR-0008](docs/adr/0008-protocol-surfaces-and-capture.md)** | Protocol Surfaces & Capture | Dispatch table for Chat, Anthropic, Responses, and SystemOne surfaces; HTTP capture. |
 | **[ADR-0009](docs/adr/0009-quota-probing.md)** | Quota Probing | Declarative 12-construct DSL, 5 banned classes, display-only quota events ledger. |
-| **[ADR-0010](docs/adr/0010-provider-def-ownership.md)** | Provider Def Ownership | `<ocrHome>/custom-providers.json` as single definition truth; `opencode.jsonc` materialized. |
+| **[ADR-0010](docs/adr/0010-provider-def-ownership.md)** | Provider Def Ownership | `<ocrHome>/providers.json` as single definition truth; `opencode.jsonc` materialized. |
 | **[ADR-0011](docs/adr/0011-route-entries-and-retry-escalation.md)** | Route Entries & Retry Escalation | Persistent prompt experience table (`route-entries.json`), retry ladder, routing ledger. |
 | **[ADR-0012](docs/adr/0012-l2-decision-emitted-thinking-effort.md)** | L2-Decision-Emitted Thinking Effort | System One decision layer emits `{tier, effort}` in one call; `effortSource` provenance headers. |
 | **[ADR-0013](docs/adr/0013-failure-events-ledger.md)** | Failure Events Ledger | Upstream model call failure ledger, 10s storm coalescing, SQLite mirror, admin routes. |

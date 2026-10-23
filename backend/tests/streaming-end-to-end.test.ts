@@ -29,6 +29,29 @@ function makeRelaySink() {
   return { relay, frames };
 }
 
+/**
+ * `serve({port:0})` hands back a port, but under the full suite (126 files, many
+ * processes binding ports at once) the first connect can still race the listen
+ * and come back ECONNREFUSED — which surfaced as two flaky failures that never
+ * reproduce when this file runs alone. Wait for the socket, with a clear error
+ * if it genuinely never opens (that would be a bind failure, not timing).
+ */
+async function waitListening(port: number, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const socket = await Bun.connect({ hostname: 'localhost', port, socket: { data() {} } });
+      socket.end();
+      return;
+    } catch (e) {
+      if (Date.now() >= deadline) {
+        throw new Error(`server on port ${port} never accepted a connection: ${(e as Error).message}`);
+      }
+      await new Promise((r) => setTimeout(r, 5));
+    }
+  }
+}
+
 const chunkLine = (delta: Record<string, unknown>, finish: string | null = null, model = 'up-1') =>
   `data: ${JSON.stringify({
     id: 'chatcmpl-e2e',
@@ -111,16 +134,25 @@ describe('true streaming through the candidate pool', () => {
         return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } });
       },
     });
+    await waitListening(server.port);
     const base = `http://localhost:${server.port}/v1`;
     const { orchestrator } = boot(makeConfig(base), [stubProvider(base)]);
     const { relay, frames } = makeRelaySink();
 
     try {
-      const pending = orchestrator.process(request('stub/one'), {}, relay);
-      await new Promise((r) => setTimeout(r, 20));
-      // THE point of the whole change: a byte reached the client while the turn
-      // was still running. A buffered gateway would have nothing here.
-      assert.ok(frames.length >= 1, `expected progressive delivery, got ${frames.length} frames at t=20ms`);
+      let settled = false;
+      const pending = orchestrator.process(request('stub/one'), {}, relay).finally(() => {
+        settled = true;
+      });
+      // THE point of the whole change: a byte reaches the client while the turn
+      // is still running. Poll instead of sleeping a fixed 20 ms; under the full
+      // suite the event loop is busy enough that 20 ms is a coin flip.
+      const deadline = Date.now() + 5_000;
+      while (frames.length === 0 && !settled && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      assert.ok(frames.length >= 1, `expected progressive delivery, got ${frames.length} frames`);
+      assert.equal(settled, false, 'the first frame must arrive while the turn is still executing');
       const result = await pending;
       assert.equal(frames.length >= 3, true);
       // The buffered object every consumer reads was rebuilt from those frames.
@@ -173,6 +205,7 @@ describe('true streaming through the candidate pool', () => {
         return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } });
       },
     });
+    await waitListening(server.port);
     const base = `http://localhost:${server.port}/v1`;
     const config = makeConfig(base, {
       combos: [{ id: 'pair', selection: 'priority', models: ['stub/one', 'stub/two'] }],
@@ -206,6 +239,7 @@ describe('true streaming through the candidate pool', () => {
         });
       },
     });
+    await waitListening(server.port);
     const base = `http://localhost:${server.port}/v1`;
     const config = makeConfig(base, {
       combos: [{ id: 'pair', selection: 'priority', models: ['stub/one', 'stub/two'] }],
@@ -242,6 +276,7 @@ describe('true streaming through the candidate pool', () => {
         );
       },
     });
+    await waitListening(server.port);
     const base = `http://localhost:${server.port}/v1`;
     const config = makeConfig(base);
     // Second provider on the Anthropic wire: no createStream anywhere on it.
@@ -295,6 +330,7 @@ describe('true streaming through the candidate pool', () => {
         );
       },
     });
+    await waitListening(server.port);
     const base = `http://localhost:${server.port}/v1`;
     const { orchestrator } = boot(makeConfig(base), [stubProvider(base)]);
     try {
@@ -384,7 +420,7 @@ describe('schema-assertion cascade streaming', () => {
         return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } });
       },
     });
-    return { server, plusHits, liteHits: () => liteHits };
+    return { server, plusHits, liteHits: () => liteHits, ready: waitListening(server.port) };
   }
 
   const schemaRequest = () =>
@@ -430,7 +466,8 @@ describe('schema-assertion cascade streaming', () => {
   }
 
   it('escalation leg streams the final answer and stamps ttftMs/genMs', async () => {
-    const { server, plusHits, liteHits } = cascadeServer();
+    const { server, plusHits, liteHits, ready } = cascadeServer();
+    await ready;
     const base = `http://localhost:${server.port}/v1`;
     const { orchestrator } = boot(cascadeConfig(base), [stubProvider(base)]);
     const { relay, frames, staged } = makeFactsSink();
@@ -490,6 +527,7 @@ describe('schema-assertion cascade streaming', () => {
         throw new Error('escalation must not run when the lite assertion passes');
       },
     });
+    await waitListening(server.port);
     const base = `http://localhost:${server.port}/v1`;
     const { orchestrator } = boot(cascadeConfig(base), [stubProvider(base)]);
     const { relay, frames } = makeFactsSink();
@@ -510,7 +548,8 @@ describe('schema-assertion cascade streaming', () => {
   });
 
   it('streaming.enabled=false rolls the escalation leg back to buffered', async () => {
-    const { server, plusHits } = cascadeServer();
+    const { server, plusHits, ready } = cascadeServer();
+    await ready;
     const base = `http://localhost:${server.port}/v1`;
     const { orchestrator } = boot(cascadeConfig(base, { streaming: { enabled: false } }), [stubProvider(base)]);
     const { relay, frames } = makeFactsSink();
@@ -566,6 +605,7 @@ describe('schema-assertion cascade streaming', () => {
         return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } });
       },
     });
+    await waitListening(server.port);
     const base = `http://localhost:${server.port}/v1`;
     const { orchestrator } = boot(cascadeConfig(base), [stubProvider(base)]);
     const { relay, frames } = makeFactsSink();

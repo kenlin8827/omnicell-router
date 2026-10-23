@@ -107,7 +107,6 @@ const SOURCE_BADGE: Record<string, { color: string; bg: string; labelKey: string
   'models-dev': { color: 'var(--hue-blue)', bg: 'var(--hue-blue-soft)', labelKey: 'models.srcModelsDev' },
   openrouter: { color: 'var(--hue-violet)', bg: 'var(--hue-violet-soft)', labelKey: 'models.srcOpenrouter' },
   config: { color: 'var(--accent-amber)', bg: 'color-mix(in srgb, var(--accent-amber) 12%, transparent)', labelKey: 'models.srcConfig' },
-  custom: { color: 'var(--hue-emerald)', bg: 'var(--hue-emerald-soft)', labelKey: 'models.srcCustom' },
   mapped: { color: '#c084fc', bg: 'rgba(192,132,252,0.12)', labelKey: 'models.srcMapped' },
   'openai-compatible': { color: 'var(--text-dim)', bg: 'var(--chip-bg)', labelKey: 'models.srcOpenaiCompatible' },
   service: { color: 'var(--text-dim)', bg: 'var(--chip-bg)', labelKey: 'models.srcService' },
@@ -149,7 +148,6 @@ interface ModelFormState {
   id: string;
   name: string;
   modelID: string;
-  disabled: boolean;
   tools: boolean;
   inputMod: string[];
   outputMod: string[];
@@ -170,7 +168,6 @@ const emptyForm: ModelFormState = {
   id: '',
   name: '',
   modelID: '',
-  disabled: false,
   tools: false,
   inputMod: ['text'],
   outputMod: ['text'],
@@ -203,11 +200,10 @@ interface ModelRow {
 export const ProviderModelsDialog: React.FC<{
   providerId: string;
   providerName?: string;
-  readOnly?: boolean;
   blur?: boolean;
   onClose: () => void;
   onChanged?: () => void;
-}> = ({ providerId, providerName, readOnly = false, blur = false, onClose, onChanged }) => {
+}> = ({ providerId, providerName, blur = false, onClose, onChanged }) => {
   const { t } = useI18n();
   const confirmDialog = useConfirm();
   const toast = useToast();
@@ -221,6 +217,10 @@ export const ProviderModelsDialog: React.FC<{
   const [pattern, setPattern] = useState('');
   const [filter, setFilter] = useState('');
   const [preview, setPreview] = useState<PullPreview | null>(null);
+  /** Pull-preview click-to-select: ids the operator pinned from the preview
+   *  chips; a non-empty set turns the "pull selected" action on (ids-filtered
+   *  pull — the glob pattern is bypassed entirely). */
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [form, setForm] = useState<{ mode: 'add' | 'edit'; data: ModelFormState } | null>(null);
   const [hover, setHover] = useState<{ row: ModelRow; top: number; left: number } | null>(null);
   const { testingIds, testResults, testAll, testOne, testAllTargets } = useModelTest();
@@ -228,26 +228,15 @@ export const ProviderModelsDialog: React.FC<{
   const load = async () => {
     setLoading(true);
     try {
-      if (readOnly) {
-        const res = await opencodeApi.listModels({ provider: providerId });
-        setRows(
-          res.models
-            .map((m) => ({
-              id: m.id,
-              def: m as any, // full catalog view (OpenCode schema)
-              source: m.source,
-            }))
-            .sort((a, b) => a.id.localeCompare(b.id))
-        );
-      } else {
-        // raw defs-file definitions — v1 or v2 shape, kept verbatim
-        const res = await opencodeApi.listProviderModels(providerId);
-        setRows(
-          Object.entries(res.models || {})
-            .map(([id, d]: [string, any]) => ({ id, def: d || {}, source: 'config' }))
-            .sort((a, b) => a.id.localeCompare(b.id))
-        );
-      }
+      // raw provider defs (providers.json) — v1 or v2 shape, kept verbatim.
+      // Every connected provider owns a node (connect-time doctrine); an empty
+      // models map is a valid, fillable universe.
+      const res = await opencodeApi.listProviderModels(providerId);
+      setRows(
+        Object.entries(res.models || {})
+          .map(([id, d]: [string, any]) => ({ id, def: d || {}, source: 'config' }))
+          .sort((a, b) => a.id.localeCompare(b.id))
+      );
     } catch (err: any) {
       toast.error(err.message);
     } finally {
@@ -360,7 +349,6 @@ export const ProviderModelsDialog: React.FC<{
         id: row.id,
         name: d.name || '',
         modelID: d.modelID || '',
-        disabled: d.disabled === true,
         tools: defTools(d),
         inputMod: defInput(d).length ? [...defInput(d)] : ['text'],
         outputMod: defOutput(d).length ? [...defOutput(d)] : ['text'],
@@ -392,7 +380,6 @@ export const ProviderModelsDialog: React.FC<{
       const payload: any = {
         name: f.name.trim() || undefined,
         modelID: f.modelID.trim() || undefined,
-        disabled: f.disabled,
         capabilities: { tools: f.tools, input: f.inputMod, output: f.outputMod },
         settings: f.reasoningEffort ? { reasoningEffort: f.reasoningEffort } : {},
         headersText: f.headersText,
@@ -475,6 +462,27 @@ export const ProviderModelsDialog: React.FC<{
         pullable: res.pullable || 0,
         models: (res.models as OpenCodeModelView[]) || [],
       });
+      setSelected(new Set()); // a fresh preview invalidates stale selections
+    });
+
+  const toggleSelected = (id: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  /** Pull ONLY the chips selected in the preview — one request, backend
+   *  filters by explicit ids (pattern is bypassed). */
+  const handlePullSelected = () =>
+    run('pull', async () => {
+      const res = await opencodeApi.pullProviderModels(providerId, { ids: [...selected] });
+      const pulled = (res.models as string[])?.length || 0;
+      toast.success(t('op.pmPulled', { n: pulled, s: res.skipped || 0 }));
+      setPreview(null);
+      setSelected(new Set());
+      await refreshAll();
     });
 
   const handlePull = () =>
@@ -559,7 +567,7 @@ export const ProviderModelsDialog: React.FC<{
       <div className="card" onClick={(e) => e.stopPropagation()} style={dialogStyle}>
         {/* ---- Header ---- */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 14, fontWeight: 700 }}>{t(readOnly ? 'op.pmView' : 'op.pmTitle')}</span>
+          <span style={{ fontSize: 14, fontWeight: 700 }}>{t('op.pmTitle')}</span>
           <span style={{ fontSize: 12, fontFamily: FONT_MONO, color: 'var(--accent)' }}>{providerName || providerId}</span>
           <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
             {filterText
@@ -687,25 +695,21 @@ export const ProviderModelsDialog: React.FC<{
                     >
                       {testingIds.has(row.id) ? <Loader2 size={11} style={spin} /> : <Zap size={11} />}
                     </button>
-                    {!readOnly && (
-                      <>
-                        <button
-                          className="btn btn-sm btn-icon"
-                          style={d.disabled === true ? { color: 'var(--text-dim)' } : undefined}
-                          title={d.disabled === true ? t('models.showInCatalog') : t('models.hideFromCatalog')}
-                          onClick={() => handleToggleHidden(row.id, d.disabled !== true)}
-                          disabled={busy || testingIds.size > 0 || testAll.running}
-                        >
-                          {d.disabled === true ? <EyeOff size={11} /> : <Eye size={11} />}
-                        </button>
-                        <button className="btn btn-sm btn-icon" title={t('op.pmEdit')} onClick={() => openEdit(row)} disabled={busy}>
-                          <Pencil size={11} />
-                        </button>
-                        <button className="btn btn-sm btn-icon" style={{ color: 'var(--accent-rose)' }} onClick={() => handleDelete(row.id)} disabled={busy || testingIds.size > 0 || testAll.running}>
-                          <Trash2 size={11} />
-                        </button>
-                      </>
-                    )}
+                    <button
+                      className="btn btn-sm btn-icon"
+                      style={d.disabled === true ? { color: 'var(--text-dim)' } : undefined}
+                      title={d.disabled === true ? t('models.showInCatalog') : t('models.hideFromCatalog')}
+                      onClick={() => handleToggleHidden(row.id, d.disabled !== true)}
+                      disabled={busy || testingIds.size > 0 || testAll.running}
+                    >
+                      {d.disabled === true ? <EyeOff size={11} /> : <Eye size={11} />}
+                    </button>
+                    <button className="btn btn-sm btn-icon" title={t('op.pmEdit')} onClick={() => openEdit(row)} disabled={busy}>
+                      <Pencil size={11} />
+                    </button>
+                    <button className="btn btn-sm btn-icon" style={{ color: 'var(--accent-rose)' }} onClick={() => handleDelete(row.id)} disabled={busy || testingIds.size > 0 || testAll.running}>
+                      <Trash2 size={11} />
+                    </button>
                   </div>
                 </div>
               );
@@ -714,44 +718,71 @@ export const ProviderModelsDialog: React.FC<{
         )}
 
         {/* ---- Actions ---- */}
-        {!readOnly && (
-          <>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-            <button className="btn btn-sm btn-primary" disabled={busy} onClick={openAdd}>
-              <Plus size={11} />
-              <span>{t('op.pmAdd')}</span>
-            </button>
-            <input className="input" style={{ fontSize: 11.5, flex: 1, minWidth: 180 }} placeholder={t('op.pmPattern')} value={pattern} onChange={(e) => { setPattern(e.target.value); setPreview(null); }} />
-            <button className="btn btn-sm" disabled={busy} onClick={handlePreview} title={t('op.pmPreview')}>
-              {pending === 'preview' ? <Loader2 size={11} style={spin} /> : <Eye size={11} />}
-              <span>{t('op.pmPreview')}</span>
-            </button>
-            <button className="btn btn-sm btn-primary" disabled={busy} onClick={handlePull} title={t('op.pmPull')}>
-              {pending === 'pull' ? <Loader2 size={11} style={spin} /> : <Download size={11} />}
-              <span>{pending === 'pull' ? t('common.loading') : t('op.pmPull')}</span>
-            </button>
-            <button className="btn btn-sm" style={{ color: 'var(--accent-rose)' }} disabled={busy || rows.length === 0} onClick={handleClear} title={t('op.pmClear')}>
-              {pending === 'clear' ? <Loader2 size={11} style={spin} /> : <Eraser size={11} />}
-              <span>{t('op.pmClear')}</span>
-            </button>
-          </div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+          <button className="btn btn-sm btn-primary" disabled={busy} onClick={openAdd}>
+            <Plus size={11} />
+            <span>{t('op.pmAdd')}</span>
+          </button>
+          <input className="input" style={{ fontSize: 11.5, flex: 1, minWidth: 180 }} placeholder={t('op.pmPattern')} value={pattern} onChange={(e) => { setPattern(e.target.value); setPreview(null); }} />
+          <button className="btn btn-sm" disabled={busy} onClick={handlePreview} title={t('op.pmPreview')}>
+            {pending === 'preview' ? <Loader2 size={11} style={spin} /> : <Eye size={11} />}
+            <span>{t('op.pmPreview')}</span>
+          </button>
+          <button className="btn btn-sm btn-primary" disabled={busy} onClick={handlePull} title={t('op.pmPull')}>
+            {pending === 'pull' ? <Loader2 size={11} style={spin} /> : <Download size={11} />}
+            <span>{pending === 'pull' ? t('common.loading') : t('op.pmPull')}</span>
+          </button>
+          <button className="btn btn-sm" style={{ color: 'var(--accent-rose)' }} disabled={busy || rows.length === 0} onClick={handleClear} title={t('op.pmClear')}>
+            {pending === 'clear' ? <Loader2 size={11} style={spin} /> : <Eraser size={11} />}
+            <span>{t('op.pmClear')}</span>
+          </button>
+        </div>
 
-          {preview && (
-            <div style={{ fontSize: 11, color: 'var(--text-dim)', padding: '6px 8px', borderRadius: 6, background: 'var(--well-bg)' }}>
-              <div style={{ marginBottom: 4 }}>
+        {preview && (
+          <div style={{ fontSize: 11, color: 'var(--text-dim)', padding: '6px 8px', borderRadius: 6, background: 'var(--well-bg)' }}>
+            <div style={{ marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span>
                 {t('op.pmMatched', { matched: preview.matched, pullable: preview.pullable })}
-              </div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, maxHeight: 90, overflowY: 'auto' }}>
-                {preview.models.slice(0, 40).map((m) => (
-                  <span key={m.id} style={{ fontFamily: FONT_MONO, fontSize: 10, padding: '1px 6px', borderRadius: 4, background: 'var(--chip-bg)' }}>
-                    {m.id}
-                  </span>
-                ))}
-                {preview.models.length > 40 && <span>+{preview.models.length - 40}…</span>}
-              </div>
+              </span>
+              {selected.size > 0 && (
+                <button
+                  className="btn btn-sm btn-primary"
+                  disabled={busy}
+                  style={{ height: 20, padding: '0 8px', fontSize: 10.5 }}
+                  onClick={handlePullSelected}
+                >
+                  {pending === 'pull' ? <Loader2 size={10} style={spin} /> : <Download size={10} />}
+                  <span>{t('op.pmPullSelected', { n: selected.size })}</span>
+                </button>
+              )}
             </div>
-          )}
-          </>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, maxHeight: 90, overflowY: 'auto' }}>
+              {preview.models.map((m) => {
+                const on = selected.has(m.id);
+                return (
+                  <button
+                    key={m.id}
+                    type="button"
+                    title={t('op.pmSelectTip')}
+                    aria-pressed={on}
+                    onClick={() => toggleSelected(m.id)}
+                    style={{
+                      fontFamily: FONT_MONO,
+                      fontSize: 10,
+                      padding: '1px 6px',
+                      borderRadius: 4,
+                      cursor: 'pointer',
+                      border: `1px solid ${on ? 'var(--accent)' : 'transparent'}`,
+                      color: on ? 'var(--accent)' : 'inherit',
+                      background: on ? 'color-mix(in srgb, var(--accent) 14%, transparent)' : 'var(--chip-bg)',
+                    }}
+                  >
+                    {m.id}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         )}
       </div>
 
@@ -783,7 +814,7 @@ export const ProviderModelsDialog: React.FC<{
               <>
                 <div style={{ fontFamily: FONT_MONO, fontWeight: 700, fontSize: 11.5, wordBreak: 'break-all', marginBottom: 2 }}>
                   {hover.row.id}
-                  {d.disabled === true && <span style={{ color: 'var(--text-dim)', fontWeight: 400 }}> (disabled)</span>}
+                  {d.disabled === true && <span style={{ color: 'var(--text-dim)', fontWeight: 400 }}> ({t('models.hiddenBadge')})</span>}
                 </div>
                 {(d.name || hover.row.id.split('/').pop()) && <div style={{ color: 'var(--text-dim)', marginBottom: 4 }}>{d.name || hover.row.id.split('/').pop()}</div>}
                 {d.modelID && (
@@ -899,10 +930,6 @@ export const ProviderModelsDialog: React.FC<{
               <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-muted)', cursor: 'pointer' }}>
                 <Switch size="sm" checked={form.data.tools} onChange={(v) => setForm({ ...form, data: { ...form.data, tools: v } })} />
                 {t('models.badgeToolCall')}
-              </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-muted)', cursor: 'pointer' }}>
-                <Switch size="sm" checked={form.data.disabled} onChange={(v) => setForm({ ...form, data: { ...form.data, disabled: v } })} />
-                {t('op.pmDisabled')}
               </label>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '8px 12px', alignItems: 'center' }}>

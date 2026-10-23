@@ -300,7 +300,7 @@ Every proxied response carries diagnostic metadata:
 ## Frequently Asked Questions
 
 ### Q1: Does OneCastRouter require duplicating API keys across configs?
-**No**. OneCastRouter treats `<ocrHome>/custom-providers.json` and `credentials.json` as the single source of truth and synchronizes bidirectionally with local OpenCode v2 credentials. Downstream clients simply authenticate with any arbitrary bearer token or configured admin API key.
+**No**. OneCastRouter treats `<ocrHome>/providers.json` and `credentials.json` as the single source of truth and synchronizes bidirectionally with local OpenCode v2 credentials. Downstream clients simply authenticate with any arbitrary bearer token or configured admin API key.
 
 ### Q2: Why will multi-turn conversations never degrade in intellect?
 Traditional routers frequently route short replies (such as *"yes"*, *"fix line 12"*, or *"looks good"*) to low-cost micro models, corrupting conversational context across 20k+ token histories. OneCastRouter enforces a **Monotonic Session Ratchet**: once a dialogue reaches an advanced tier (`plus`, `pro`, or `ultra`), it locks strictly to that tier and pins to the identical physical model instance.

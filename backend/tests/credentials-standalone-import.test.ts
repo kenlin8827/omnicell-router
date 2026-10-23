@@ -7,6 +7,7 @@ import {
   bindCredentialStore,
   readCredentialStoreState,
 } from '../src/opencode/credentials/factory.js';
+import { writeProviderDefs } from '../src/opencode/provider-defs.js';
 
 /**
  * Standalone one-shot import (fixes the previously flagged standalone
@@ -19,13 +20,20 @@ import {
  */
 
 const actualUserConfig = await import('../src/opencode/user-config.js');
+// The defs node IS the model universe (connect-time doctrine), so a routed
+// provider must carry at least one model — an empty node is excluded.
 const defFixtures: Record<string, any> = {
-  anthropic: { npm: '@ai-sdk/anthropic', options: { baseURL: 'https://api.anthropic.test/v1' } },
+  anthropic: {
+    npm: '@ai-sdk/anthropic',
+    options: { baseURL: 'https://api.anthropic.test/v1' },
+    models: { 'claude-x': {} },
+  },
 };
 mock.module('../src/opencode/user-config.js', () => ({
   ...actualUserConfig,
   getProviderNodeById: (id: string) => defFixtures[id],
-  getProviderModelDefs: (id: string) => (id in defFixtures ? {} : undefined),
+  getProviderModelDefs: (id: string) =>
+    id in defFixtures ? { ...(defFixtures[id].models ?? {}) } : undefined,
   expandEnvTemplate: (v: unknown) => (typeof v === 'string' ? v : ''),
 }));
 mock.module('../src/opencode/catalog/repository.js', () => ({
@@ -242,6 +250,10 @@ describe('B4 standalone one-shot import', () => {
   it('subsequent boot: buildDirectPool bakes the imported key (B3 regression closed end-to-end)', async () => {
     const paths = sandboxPaths();
     fs.writeFileSync(paths.authJsonPath, JSON.stringify({ anthropic: { type: 'api', key: 'sk-boot-visible' } }));
+    // Strict universe (ADR-0010 amendment): a provider routes only what its defs
+    // node maintains — seed one model so this test asserts KEY BAKING, not the
+    // model universe.
+    writeProviderDefs({ anthropic: { package: '@opencode-ai/provider/openai-compatible', models: { 'claude-test': {} } } }, paths);
     await bindCredentialStore({ paths, ...noOpencode });
 
     // Fresh process semantics: clear the sticky binding, rebind (boot 2 reads the

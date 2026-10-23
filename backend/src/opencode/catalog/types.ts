@@ -17,7 +17,6 @@ export type CatalogSourceId =
   | 'openrouter'
   | 'openai-compatible'
   | 'config'
-  | 'custom'
   | 'mapped'
   | 'service';
 
@@ -72,11 +71,11 @@ export interface CatalogModel {
    */
   supportsDeveloperRole?: boolean;
   /**
-   * Hidden from the model catalog — kept in the aggregate (the catalog viewer
-   * still lists it) but excluded from the boot-direct routing pool, so
-   * `/v1/models` omits it and nothing can be pinned to it. Written by the
-   * overrides layer (`OverrideEntry.disabled`) and, for hand-written configs,
-   * carried over from a def-level `disabled` flag.
+   * Hidden from CLIENT-facing catalogs — kept in the aggregate (the console
+   * catalog viewer and /models still list it) but excluded from the boot-direct
+   * routing pool, so `/v1/models` omits it and nothing can be pinned to it.
+   * Written by the overrides layer (`OverrideEntry.disabled`) and, for
+   * hand-written configs, carried over from a def-level `disabled` flag.
    */
   disabled?: boolean;
   /**
@@ -128,7 +127,7 @@ export interface CatalogProviderRecord {
   baseURL?: string;
   doc?: string;
   env?: string[];
-  /** defined in the defs file's providers map */
+  /** DYNAMIC custom tag — derived from builtin-catalog coverage at aggregation time, never stored (repository.ts step 5). */
   custom: boolean;
   /** has a usable credential (auth.json entry or inline key) */
   connected: boolean;

@@ -120,9 +120,6 @@ export class WarnThrottle {
     for (const l of lines) this.sink(l);
   }
 
-  /** Track the most recent suppressed key for the summary line (optional). */
-  private suppressedKey: string | undefined = undefined;
-
   private rollWindow(t: number): void {
     this.windowStart = t;
     this.windowCount = 0;

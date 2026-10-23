@@ -24,18 +24,6 @@ import { DEFAULT_PROVIDER_TIMEOUT_MS } from '../config/defaults.js';
  * /v1/responses tool-loop client routed here would silently lose tool calling.
  */
 
-/** Parse tool arguments into an object; never throws (tool loops must survive). */
-function parseArgs(raw: unknown): Record<string, any> {
-  if (raw && typeof raw === 'object') return raw as Record<string, any>;
-  if (typeof raw !== 'string' || !raw.trim()) return {};
-  try {
-    const v = JSON.parse(raw);
-    return v && typeof v === 'object' ? v : { result: v };
-  } catch {
-    return { result: raw };
-  }
-}
-
 /**
  * OpenAI Responses wire shares the same response-header semantics as the
  * chat-completions wire (x-ratelimit-*, retry-after, x-request-id) — the

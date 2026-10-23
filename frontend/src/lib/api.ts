@@ -2089,13 +2089,12 @@ export interface OpenCodeProviderView {
   /** Def-level custom headers (options.headers) — edit-dialog prefill; never secrets. */
   headers?: Record<string, string>;
   models: string[];
+  /** DYNAMIC custom tag — derived from builtin-catalog coverage at aggregation time, never stored. */
   custom: boolean;
-  /** Explicit node in custom-providers.json — the delete-confirm branch signal; narrower than `custom` (catalog absence also sets custom). */
+  /** Explicit node in providers.json — the delete-confirm branch signal; narrower than `custom` (catalog absence also sets custom). */
   defNode: boolean;
   /** Per-provider auto-pull whitelist glob (catalog.autoPullPatterns) — edit-dialog prefill. */
   autoPullPattern?: string;
-  /** Runtime edit capability: defs-file node OR pulled custom-store models — the same rule the backend applies when serving model mutations. */
-  modelsManageable: boolean;
   logo?: string;
   priceFrom?: number;
   modelsCount?: number;
@@ -2165,8 +2164,8 @@ export interface CatalogSourceDataModelRecord {
   limit?: { context?: number; input?: number; output?: number };
   /** ocr view only: creating source of this model entry */
   source?: string;
-  /** hidden from the model catalog (overrides.json `disabled`) — kept in the
-   *  aggregate, excluded from the routing pool at boot */
+  /** hidden from client-facing catalogs (overrides.json `disabled` / def-level flag) —
+   *  kept in the aggregate, excluded from the routing pool at boot */
   disabled?: boolean;
 }
 
@@ -2204,7 +2203,7 @@ export interface CatalogSourceDataResponse {
   models: CatalogSourceDataModelRecord[];
 }
 
-export interface CustomProviderPayload {
+export interface ProviderDefPayload {
   id: string;
   name?: string;
   npm?: string;
@@ -2276,7 +2275,9 @@ export interface OpenCodeModelView {
   modalities?: { input?: string[]; output?: string[] };
   cost?: { input?: number; output?: number; cache_read?: number; cache_write?: number };
   limit?: { context?: number; output?: number };
-  /** def-level `disabled` — hidden from the model catalog (row toggle action). */
+  /** true = a defs node maintains this physical model (the /models universe) */
+  maintained: boolean;
+  /** hidden from client-facing catalogs — kept on console pages, out of the pool */
   disabled?: boolean;
   source: string;
 }
@@ -2399,6 +2400,16 @@ export interface LastProbeCapture {
   body?: unknown;
 }
 
+/** Why the last probe attempt produced nothing — mirrors backend
+ *  `QuotaProbeFailure`. Display-safe: reason + HTTP status + the upstream's own
+ *  short message (never headers, never key material). */
+export interface QuotaProbeFailure {
+  reason: 'network' | 'status' | 'shape' | 'auth';
+  statusCode?: number;
+  message?: string;
+  at: number;
+}
+
 /** Per-credential quota view riding the CredentialHealth overlay — mirrors backend
  *  `CredentialQuotaView`. Display-only: nothing here gates routing. */
 export interface CredentialQuotaView {
@@ -2408,6 +2419,9 @@ export interface CredentialQuotaView {
   windows: QuotaWindow[];
   verifiedAt?: number;
   lastFailureAt?: number;
+  /** Recorded verdict of the last failed attempt (present even when the pair
+   *  never produced a snapshot — that is the point). */
+  lastFailure?: QuotaProbeFailure;
   /** Built-in id / `adapter:<id>` / config `override:<id>` — provenance label. */
   entryId?: string;
   /** Effective cache window (ms). */
@@ -2609,6 +2623,10 @@ export interface CredentialDisconnectResponse {
   status: string;
   success: boolean;
   disconnected: string;
+  /** The deleted key material is anchored as a takedown: a pull-back lands parked, not routable. */
+  takedownAnchored?: boolean;
+  /** Client half of the revocation (`null` when disabled / no key material). */
+  clientRevoke?: { clientId: string; result: string; detail?: string } | null;
   credentials: CredentialHealth[];
 }
 
@@ -2705,6 +2723,12 @@ export interface CredentialSyncOutcome {
   pulled?: number;
   pushed?: number;
   deduped?: number;
+  /** write runs only — provider nodes rendered into the client's providers slot. */
+  defsMaterialized?: number;
+  /** write runs only — the client slot was actually rewritten (not merely re-rendered). */
+  defsChanged?: boolean;
+  /** write runs only — a CHANGED render was followed by a service reload that landed. */
+  defsReloaded?: boolean;
   entries: CredentialSyncEntry[];
   detail?: string;
 }
@@ -2713,10 +2737,16 @@ export interface CredentialSyncOutcome {
 export interface CredentialSyncClientView {
   id: string;
   label: string;
-  /** The client's credential file/db exists AND is this machine's active flavor. */
+  /** The client is this machine's active flavor: v2 = its db exists; v1 = v1 evidence (auth.json or a v1 version pin) and no v2 evidence. */
   present: boolean;
   /** The write path is usable (service endpoint discoverable / local file merge). */
   writeReady: boolean;
+  /**
+   * v2 only: the client's materialized `providers` slot differs from the defs
+   * book (a push would change it). `undefined` = no defs book / unreadable
+   * client config, i.e. nothing to compare.
+   */
+  defsDrift?: boolean;
   autoRead: boolean;
   autoWrite: boolean;
   lastReadAt?: number;
@@ -2916,9 +2946,11 @@ export const opencodeApi = {
    */
   async disconnectProviderCredential(
     providerId: string,
-    credentialId: string
+    credentialId: string,
+    opts: { clientRevoke?: boolean } = {}
   ): Promise<CredentialDisconnectResponse> {
-    return ocJson(await fetch(credentialPath(providerId, credentialId), { method: 'DELETE' }));
+    const qs = opts.clientRevoke === false ? '?clientRevoke=0' : '';
+    return ocJson(await fetch(credentialPath(providerId, credentialId) + qs, { method: 'DELETE' }));
   },
 
   /**
@@ -3044,7 +3076,7 @@ export const opencodeApi = {
     );
   },
 
-  async listModels(params?: { provider?: string; connected?: boolean }): Promise<{
+  async listModels(params?: { provider?: string; connected?: boolean; maintained?: boolean }): Promise<{
     status: string;
     source: string;
     total: number;
@@ -3053,11 +3085,12 @@ export const opencodeApi = {
     const qs = new URLSearchParams();
     if (params?.provider) qs.set('provider', params.provider);
     if (params?.connected) qs.set('connected', '1');
+    if (params?.maintained) qs.set('maintained', '1');
     const suffix = qs.toString() ? `?${qs.toString()}` : '';
     return ocJson(await fetch(`/api/admin/opencode/models${suffix}`));
   },
 
-  async createProvider(payload: CustomProviderPayload): Promise<{ status: string; success: boolean }> {
+  async createProvider(payload: ProviderDefPayload): Promise<{ status: string; success: boolean }> {
     return ocJson(
       await fetch('/api/admin/opencode/providers', {
         method: 'POST',
@@ -3067,7 +3100,7 @@ export const opencodeApi = {
     );
   },
 
-  async updateProvider(id: string, payload: Partial<CustomProviderPayload>): Promise<{ status: string; success: boolean }> {
+  async updateProvider(id: string, payload: Partial<ProviderDefPayload>): Promise<{ status: string; success: boolean }> {
     return ocJson(
       await fetch(`/api/admin/opencode/providers/${encodeURIComponent(id)}`, {
         method: 'PATCH',
@@ -3219,7 +3252,7 @@ export const opencodeApi = {
 
   async pullProviderModels(
     id: string,
-    opts: { pattern?: string; dryRun?: boolean; live?: boolean } = {}
+    opts: { pattern?: string; ids?: string[]; dryRun?: boolean; live?: boolean } = {}
   ): Promise<{
     status: string;
     live?: boolean;

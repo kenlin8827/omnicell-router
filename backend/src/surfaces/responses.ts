@@ -230,7 +230,9 @@ export const responsesSurface: ChatSurface = {
     return chatToStreamEvents(result.response, s.respId, result.modelUsed);
   },
 
-  errorBody(status: number, message: string, code?: string): unknown {
+  // `_status` is kept for signature parity with the other wire surfaces; this
+  // wire's quirk is that `type` is pinned regardless of status.
+  errorBody(_status: number, message: string, code?: string): unknown {
     // Today's errorReply(): keys in order message/type/code, type pinned to
     // invalid_request_error at every status (this wire's quirk — preserved,
     // not "fixed"). runChatSurface's parse-400 channel is errorBody(400,

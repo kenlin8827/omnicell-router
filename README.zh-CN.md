@@ -302,7 +302,7 @@ main();
 ## 常见问题
 
 ### Q1: OneCastRouter 需要在配置文件中重复填写各大厂商 API Key 吗？
-**不需要**。OneCastRouter 以 `<ocrHome>/custom-providers.json` 和 `credentials.json` 为统一真实源，并与本地 OpenCode v2 双向自动同步。下游客户端调用时仅需使用任意占位 Key 或管理控制台配置的密钥即可。
+**不需要**。OneCastRouter 以 `<ocrHome>/providers.json` 和 `credentials.json` 为统一真实源，并与本地 OpenCode v2 双向自动同步。下游客户端调用时仅需使用任意占位 Key 或管理控制台配置的密钥即可。
 
 ### Q2: 为什么对话在长轮次中绝不会“降智”？
 市面上的朴素无状态路由器常将简短回复（如“好”、“修复第 5 行”）误判为简单任务而分发至微模型，导致数十万字长代码上下文被轻量模型破坏。OneCastRouter 执行**单调会话棘轮（Monotonic Session Ratchet）**：一旦会话由于复杂任务进入较高梯队（`plus`/`pro`/`ultra`），后续轮次绝不允许反向降级，严格锁定原模型实例。

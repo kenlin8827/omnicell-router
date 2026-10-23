@@ -1,9 +1,10 @@
+import { catalogModelToDef } from '../provider-defs.js';
 import { loadConfig } from '../../config/index.js';
 import { isSelfBaseURL } from '../../utils/self-url.js';
 import type { CatalogModel } from './types.js';
 
 /**
- * Model pull engine for defs-file-defined (custom) providers.
+ * Model pull engine for provider definitions (providers.json).
  *
  * Two paths, chosen automatically by console routes AND the periodic
  * auto-pull scheduler (catalog.autoPullModels + catalog.autoPullPatterns):
@@ -19,32 +20,12 @@ import type { CatalogModel } from './types.js';
  * unaffected by the whitelist (pattern passed per-request there).
  */
 
-/** CatalogModel is already in the OpenCode schema — strip id/source, pass the rest through. */
-export function catalogModelToDef(m: Record<string, any>): Record<string, any> {
-  const def: Record<string, any> = {};
-  for (const [k, v] of Object.entries(m)) {
-    if (k === 'id' || k === 'source') continue;
-    if (v === undefined) continue;
-    // Flat catalog npm → opencode's model-level `provider: { npm }` override
-    // (models.dev schema), so added models keep their exact wire shape.
-    if (k === 'npm') {
-      def.provider = { ...(def.provider || {}), npm: v };
-      continue;
-    }
-    def[k] = v;
-  }
-  // Name fallback: bare /v1/models payloads carry no name — derive it from the
-  // last '/' segment of the id (e.g. 'zhipu/glm-4.7' → 'glm-4.7').
-  if (!def.name) def.name = String(m.id).split('/').pop();
-  return def;
-}
-
 export interface PullResult {
   httpStatus: number;
   body: Record<string, any>;
 }
 
-export async function pullLiveModels(id: string, opts: { pattern?: string; dryRun?: boolean }): Promise<PullResult> {
+export async function pullLiveModels(id: string, opts: { pattern?: string; ids?: string[]; dryRun?: boolean }): Promise<PullResult> {
   const { getProviderNodeById, getProviderModelDefs, upsertProviderModel, matchesGlobPattern, expandEnvTemplate } =
     await import('../user-config.js');
   const def = getProviderNodeById(id);
@@ -117,7 +98,12 @@ export async function pullLiveModels(id: string, opts: { pattern?: string; dryRu
   // same ids) BEFORE writing — fill-missing-only, own entries excluded.
   const enriched = await enrichFromCatalog(models, id);
   const pattern = opts.pattern?.trim();
-  const matched = enriched.filter((m) => !pattern || matchesGlobPattern(pattern, m.id));
+  // Explicit id selection (console pull-preview click-to-select) narrows the
+  // matched set on TOP of the pattern; ids not matched are simply absent.
+  const idFilter = opts.ids?.length ? new Set(opts.ids.map(String)) : undefined;
+  const matched = enriched.filter(
+    (m) => (!pattern || matchesGlobPattern(pattern, m.id)) && (!idFilter || idFilter.has(m.id))
+  );
   const existing = getProviderModelDefs(id) || {};
   const pullable = matched.filter((m) => !(m.id in existing));
   if (opts.dryRun) {
@@ -143,8 +129,8 @@ export async function pullLiveModels(id: string, opts: { pattern?: string; dryRu
   };
 }
 
-export async function pullCatalogModels(id: string, opts: { pattern?: string; dryRun?: boolean }): Promise<PullResult> {
-  const { getProviderModelDefs, upsertProviderModel, matchesGlobPattern, getProviderNodeById } = await import('../user-config.js');
+export async function pullCatalogModels(id: string, opts: { pattern?: string; ids?: string[]; dryRun?: boolean }): Promise<PullResult> {
+  const { getProviderModelDefs, upsertProviderModel, matchesGlobPattern } = await import('../user-config.js');
   const { catalogRepository } = await import('./repository.js');
   const provider = await catalogRepository.getProvider(id);
   if (!provider) {
@@ -152,7 +138,12 @@ export async function pullCatalogModels(id: string, opts: { pattern?: string; dr
   }
   const existing = getProviderModelDefs(id) || {};
   const pattern = opts.pattern?.trim();
-  const matched = provider.models.filter((m) => !pattern || matchesGlobPattern(pattern, m.id));
+  // Explicit id selection (console pull-preview click-to-select) narrows the
+  // matched set on TOP of the pattern; ids not matched are simply absent.
+  const idFilter = opts.ids?.length ? new Set(opts.ids.map(String)) : undefined;
+  const matched = provider.models.filter(
+    (m) => (!pattern || matchesGlobPattern(pattern, m.id)) && (!idFilter || idFilter.has(m.id))
+  );
   const pullable = matched.filter((m) => !(m.id in existing)); // never overwrite maintained defs
   // self-hosted gateways are absent from the static catalog — say so instead of a silent 0
   const notInCatalog = provider.sources.every((s) => s === 'config');
@@ -160,20 +151,13 @@ export async function pullCatalogModels(id: string, opts: { pattern?: string; dr
   if (opts.dryRun) {
     return { httpStatus: 200, body: { status: 'ok', matched: matched.length, pullable: pullable.length, models: pullable, hint } };
   }
-  // Landing spot: providers with a defs-file node write there; CREDENTIAL-ONLY
-  // providers (store credential without a defs-file node) land in
-  // catalog/custom.json, which feeds the aggregation as the 'custom' source.
-  const hasNode = Boolean(getProviderNodeById(id));
+  // Landing spot: the provider's own defs node (EVERY connected provider has
+  // one — connect-time doctrine, see ensureConnectedProviderBook below).
   let pulled = 0;
-  if (hasNode) {
-    for (const m of pullable) {
-      const result = upsertProviderModel(id, m.id, catalogModelToDef(m));
-      if (!result.success) return { httpStatus: 400, body: result };
-      pulled++;
-    }
-  } else {
-    const { upsertCustomProviderModels } = await import('./custom-store.js');
-    pulled = upsertCustomProviderModels(id, { name: provider.name, npm: provider.npm, api: provider.api }, pullable);
+  for (const m of pullable) {
+    const result = upsertProviderModel(id, m.id, catalogModelToDef(m));
+    if (!result.success) return { httpStatus: 400, body: result };
+    pulled++;
   }
   return {
     httpStatus: 200,
@@ -286,7 +270,7 @@ export async function autoPullProviderModels(): Promise<AutoPullEntry[]> {
   // Phase 1 — concurrent FETCH (network only, no writes): resolve each
   // provider's candidate model list from its own /v1/models or the catalog.
   const jobs = await Promise.all(
-    listConfigProviders().map(async (v): Promise<{ id: string; mode: AutoPullEntry['mode']; models: CatalogModel[]; error?: string; meta?: { name?: string; npm?: string; api?: string } }> => {
+    listConfigProviders().map(async (v): Promise<{ id: string; mode: AutoPullEntry['mode']; models: CatalogModel[]; error?: string }> => {
       // A def whose baseURL points back at THIS gateway self-fetches
       // /v1/models and re-materializes every routable model as its defs
       // (same refusal as pullLiveModels). Other instances pull fine.
@@ -328,7 +312,6 @@ export async function autoPullProviderModels(): Promise<AutoPullEntry[]> {
         id: v.id,
         mode: 'catalog',
         models: provider.models.filter((m) => matchesGlobPattern(pattern, m.id)),
-        meta: { name: provider.name, npm: provider.npm, api: provider.api },
       };
     })
   );
@@ -336,7 +319,6 @@ export async function autoPullProviderModels(): Promise<AutoPullEntry[]> {
   // Phase 2 — SERIAL WRITE: writeProviderDefs is a whole-map read-modify-write over the shared
   // defs file, so model upserts must never run concurrently.
   const { getProviderModelDefs, upsertProviderModel } = await import('../user-config.js');
-  const { upsertCustomProviderModels } = await import('./custom-store.js');
   const out: AutoPullEntry[] = [];
   for (const job of jobs) {
     if (job.mode === 'skipped') {
@@ -348,16 +330,18 @@ export async function autoPullProviderModels(): Promise<AutoPullEntry[]> {
       continue;
     }
     const hasNode = Boolean(getProviderNodeById(job.id));
+    if (!hasNode) {
+      // Unification doctrine: every CONNECTED provider has a defs node (created
+      // at connect/bind). A nodeless provider is not connected — nothing to
+      // write into, and the sweep never fabricates connections.
+      out.push({ providerId: job.id, mode: 'skipped', pulled: 0 });
+      continue;
+    }
     const existing = getProviderModelDefs(job.id) || {};
     let pulled = 0;
-    if (hasNode) {
-      for (const m of job.models) {
-        if (m.id in existing) continue; // ADD-ONLY: maintained defs are source-proof
-        if (upsertProviderModel(job.id, m.id, catalogModelToDef(m)).success) pulled++;
-      }
-    } else {
-      // credential-only provider (no jsonc node) → the custom store is the landing spot
-      pulled = upsertCustomProviderModels(job.id, job.meta ?? {}, job.models.map((m) => ({ ...m, source: 'custom' as const })));
+    for (const m of job.models) {
+      if (m.id in existing) continue; // ADD-ONLY: maintained defs are source-proof
+      if (upsertProviderModel(job.id, m.id, catalogModelToDef(m)).success) pulled++;
     }
     out.push({ providerId: job.id, mode: job.mode, pulled, skipped: job.models.length - pulled });
   }
@@ -369,11 +353,12 @@ export async function autoPullProviderModels(): Promise<AutoPullEntry[]> {
  * dispatch the console pull route and the periodic scheduler use. Shared so the
  * create route can opportunistically top up a brand-new provider in one gesture.
  */
-export async function autoPullProvider(id: string, opts: { pattern?: string; dryRun?: boolean } = {}): Promise<PullResult> {
+export async function autoPullProvider(
+  id: string,
+  opts: { pattern?: string; ids?: string[]; dryRun?: boolean } = {}
+): Promise<PullResult> {
   const { getProviderNodeById, expandEnvTemplate } = await import('../user-config.js');
   const { getCredentialStore } = await import('../credentials/index.js');
-  // Credential-only providers (no jsonc node) are pullable too — they land in
-  // catalog/custom.json (the 'custom' aggregation source).
   const def = getProviderNodeById(id);
   // B4: live capability keyed on the BOUND store (pullLiveModels resolves the
   // same way — one source, no live/catalog branch mismatch). P3-5: capability
@@ -382,4 +367,102 @@ export async function autoPullProvider(id: string, opts: { pattern?: string; dry
   const inlineKey = expandEnvTemplate(def?.options?.apiKey);
   const liveCapable = Boolean(def?.options?.baseURL && (inlineKey || store.listCredentials(id).some((a) => a.routable)));
   return liveCapable ? pullLiveModels(id, opts) : pullCatalogModels(id, opts);
+}
+
+export interface ConnectedProviderBook {
+  /** True when this call created the provider's defs node. */
+  nodeCreated: boolean;
+  /** Model defs written by the auto-fill (0 when the node already had models). */
+  pulled: number;
+  /** Best-effort fill failure — never fails the connect, surfaces as data. */
+  fillError?: string;
+}
+
+/**
+ * Connect-time doctrine: EVERY connected provider owns a defs node whose
+ * models are the provider's universe. Called after a credential lands
+ * (console connect, provider create, boot bind sweep):
+ *
+ *  1. Node absent → create it, seeding the effective baseURL from the explicit
+ *     override or the aggregated catalog record (so live pull works uniformly —
+ *     the historical credential-only class had no node to carry one).
+ *  1b. Node PRESENT but carrying no `baseURL` → seed the same effective
+ *     baseURL into it. This is not cosmetic: the boot bind deliberately creates
+ *     BARE nodes (it must never wait on the aggregation), so on a hard cutover
+ *     every legacy store-backed provider arrives here with a baseURL-less node,
+ *     and the documented recovery gesture (re-connect without retyping the
+ *     baseURL) would otherwise leave the node permanently unable to live-pull.
+ *  2. Node has no models yet → auto-fill: live /v1/models first (baseURL +
+ *     store key), static catalog fallback. A node that already has models is
+ *     operator-owned truth — never re-filled here.
+ *
+ * Best-effort end to end: fill failures ride `fillError`, the caller's own
+ * operation (connect/create/bind) always succeeds.
+ */
+export async function ensureConnectedProviderBook(
+  id: string,
+  opts: { baseURL?: string } = {}
+): Promise<ConnectedProviderBook> {
+  const { getProviderNodeById, getProviderModelDefs, upsertProviderDef } = await import('../user-config.js');
+  let nodeCreated = false;
+  // NOTE: getProviderNodeById reads the NORMALIZED view, which drops retired-
+  // shape nodes (Decision 9) — a connect on such a provider deliberately
+  // rebuilds it from the catalog (the key just went to the store; the boot
+  // exclusion asked the operator to migrate). The bind sweep, by contrast,
+  // checks the RAW file and never resurrects (see factory.ts).
+  const existing = getProviderNodeById(id);
+  // The catalog lookup is only paid for when a baseURL/name is actually needed
+  // (node absent, or present-but-baseless) — an operator-owned node needs no
+  // network on this path.
+  let catalogName: string | undefined;
+  let catalogNpm: string | undefined;
+  let catalogBase: string | undefined;
+  if ((!existing || !existing.options?.baseURL) && !opts.baseURL) {
+    try {
+      const { catalogRepository } = await import('./repository.js');
+      const rec = await catalogRepository.getProvider(id);
+      catalogName = rec?.name;
+      catalogNpm = rec?.npm;
+      catalogBase = rec?.baseURL || rec?.api;
+    } catch {
+      // catalog unavailable → node without baseURL; catalog-path fill still applies
+    }
+  }
+  if (!existing) {
+    const up = upsertProviderDef({ id, name: catalogName, npm: catalogNpm, baseURL: opts.baseURL || catalogBase });
+    if (!up.success) return { nodeCreated: false, pulled: 0, fillError: up.error };
+    nodeCreated = true;
+  } else if (!existing.options?.baseURL) {
+    // Baseless node (the bind sweep's shape). Merging, not rebuilding: every
+    // other slot the operator owns (name/npm/headers/models/env/canonical/body)
+    // rides through untouched.
+    const baseURL = opts.baseURL || catalogBase;
+    if (baseURL) {
+      const up = upsertProviderDef({
+        id,
+        name: existing.name,
+        npm: existing.npm,
+        baseURL,
+        headers: existing.options?.headers,
+        models: existing.models,
+        options: existing.options,
+        env: existing.env,
+        canonical: existing.canonical,
+        body: existing.body,
+      });
+      if (!up.success) return { nodeCreated: false, pulled: 0, fillError: up.error };
+    }
+  }
+  if (Object.keys(getProviderModelDefs(id) ?? {}).length > 0) {
+    return { nodeCreated, pulled: 0 }; // operator-owned models — never re-filled
+  }
+  let res = await autoPullProvider(id, {});
+  if (!res.body?.success) {
+    res = await pullCatalogModels(id, {}); // static catalog fallback (live fetch failed)
+  }
+  return {
+    nodeCreated,
+    pulled: res.body?.pulled ?? 0,
+    ...(res.body?.success ? {} : { fillError: String(res.body?.error ?? 'model auto-fill failed') }),
+  };
 }

@@ -5,7 +5,7 @@ import {
   resolveDefaultPaths,
   quotaSnapshotsFile,
 } from '../opencode/credentials/paths.js';
-import type { QuotaBadgeState, QuotaSnapshot, LastProbeCapture } from './types.js';
+import type { QuotaBadgeState, QuotaSnapshot, QuotaProbeFailure, LastProbeCapture } from './types.js';
 
 /**
  * The (provider × keyHashPrefix) quota snapshot store.
@@ -29,6 +29,9 @@ export function quotaPairId(providerId: string, keyHashPrefix: string): string {
 interface QuotaFile {
   version: 1;
   snapshots: Record<string, QuotaSnapshot>;
+  /** Failure records, keyed like snapshots — additive, absent in older files
+   *  (a pair that never succeeded has no snapshot to hang one on). */
+  failures?: Record<string, QuotaProbeFailure>;
 }
 
 export interface QuotaStoreDeps {
@@ -43,6 +46,10 @@ export class QuotaSnapshotStore {
   private loaded = false;
   private resolvedFile: string | undefined;
   private snapshots = new Map<string, QuotaSnapshot>();
+  /** Why the last attempt produced nothing — kept OUTSIDE the snapshot so a
+   *  pair that never succeeded still carries its verdict (a snapshot is a
+   *  value; a failure is not a value with windows). */
+  private failures = new Map<string, QuotaProbeFailure>();
   private preserveCorrupt = false;
   private saveTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -111,6 +118,13 @@ export class QuotaSnapshotStore {
         this.snapshots.set(id, snap);
       }
     }
+    if (file.failures && typeof file.failures === 'object') {
+      for (const [id, f] of Object.entries(file.failures)) {
+        if (f && typeof f === 'object' && typeof f.reason === 'string' && typeof f.at === 'number') {
+          this.failures.set(id, f);
+        }
+      }
+    }
   }
 
   public get(providerId: string, keyHashPrefix: string): QuotaSnapshot | undefined {
@@ -149,20 +163,42 @@ export class QuotaSnapshotStore {
   }
 
   /**
-   * Record a failed attempt on an EXISTING snapshot: probe failure is not a
-   * quota failure — old values are KEPT, only `lastFailureAt`
-   * moves, which is what flips the badge to `stale`. No snapshot yet: nothing
-   * to stale-ate (the pair stays `unverified`).
+   * Record a failed attempt: probe failure is not a quota failure — old values
+   * are KEPT, only `lastFailureAt` moves (which flips the badge to `stale`).
+   * The verdict itself goes into the failure table, so a pair that NEVER
+   * succeeded still shows WHY it is empty instead of an eternal `unverified`.
    */
-  public markFailure(providerId: string, keyHashPrefix: string): void {
-    const existing = this.get(providerId, keyHashPrefix);
-    if (!existing) return;
-    this.put({ ...existing, lastFailureAt: this.nowFn() });
+  public markFailure(providerId: string, keyHashPrefix: string, detail?: Omit<QuotaProbeFailure, 'at'>): void {
+    const id = quotaPairId(providerId, keyHashPrefix);
+    const at = this.nowFn();
+    this.ensureLoaded();
+    this.failures.set(id, { reason: 'status', ...(detail ?? {}), at });
+    const existing = this.snapshots.get(id);
+    if (existing) {
+      // Keeps the old windows; the badge reads `lastFailureAt >= verifiedAt`.
+      this.snapshots.set(id, { ...existing, lastFailureAt: at });
+    }
+    this.scheduleSave();
+  }
+
+  /** Why the most recent attempt produced nothing (absent = never failed, or
+   *  the last attempt succeeded — success clears the record). */
+  public getFailure(providerId: string, keyHashPrefix: string): QuotaProbeFailure | undefined {
+    this.ensureLoaded();
+    return this.failures.get(quotaPairId(providerId, keyHashPrefix));
+  }
+
+  /** A success invalidates the failure verdict (a stale reason must never
+   *  outlive the evidence it described). */
+  public clearFailure(providerId: string, keyHashPrefix: string): void {
+    this.ensureLoaded();
+    if (this.failures.delete(quotaPairId(providerId, keyHashPrefix))) this.scheduleSave();
   }
 
   public clear(providerId: string, keyHashPrefix: string): void {
     this.ensureLoaded();
     this.snapshots.delete(quotaPairId(providerId, keyHashPrefix));
+    this.failures.delete(quotaPairId(providerId, keyHashPrefix));
     this.scheduleSave();
   }
 
@@ -220,7 +256,11 @@ export class QuotaSnapshotStore {
           // best effort
         }
       }
-      const payload: QuotaFile = { version: 1, snapshots: Object.fromEntries(this.snapshots) };
+      const payload: QuotaFile = {
+        version: 1,
+        snapshots: Object.fromEntries(this.snapshots),
+        ...(this.failures.size > 0 ? { failures: Object.fromEntries(this.failures) } : {}),
+      };
       const tmp = `${file}.tmp-${process.pid}`;
       fs.writeFileSync(tmp, JSON.stringify(payload, null, 2), { mode: 0o600 });
       fs.renameSync(tmp, file);

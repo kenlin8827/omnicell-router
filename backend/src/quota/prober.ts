@@ -41,6 +41,16 @@ export interface QuotaRegistryView {
   getProviderApiKey(name: string): string | undefined;
   /** Provider inference baseURL — the L-d origin containment anchor. */
   getProviderBaseUrl(name: string): string | undefined;
+  /**
+   * The bound credential store's door (ADR-0009 §1 — activation follows the
+   * CREDENTIALS, never the routing model registry): every credential the store
+   * holds for `name`, regardless of whether the provider has a registered
+   * model. Model registration is a routing concern; a provider whose model
+   * list is still empty may still hold keys, and those keys must arm quota
+   * probing. Optional so registry-only consumers (tests, mock boot) stay
+   * valid — the chain/baked fallbacks below then apply.
+   */
+  listStoredCredentials?(name: string): { keyHashPrefix: string; key: string }[];
 }
 
 /** Outcome of one manual refresh (the console button). */
@@ -198,9 +208,15 @@ export class QuotaProber {
 
   private static readonly MAX_PER_TICK = 6;
 
-  /** Resolve one provider's credential pairs: chain entries, or the
-   *  config-baked inference key (chain-less degeneracy). */
+  /** Resolve one provider's credential pairs: the bound store first (the
+   *  activation source — model registration is deliberately NOT consulted),
+   *  then the registry chain, then the config-baked inference key (chain-less
+   *  degeneracy). */
   private pairsOf(providerId: string): QuotaPairCandidate[] {
+    const stored = this.registry.listStoredCredentials?.(providerId);
+    if (stored && stored.length > 0) {
+      return stored.map((c) => ({ providerId, keyHashPrefix: c.keyHashPrefix, key: c.key }));
+    }
     const chain = this.registry.getCredentialChain(providerId);
     if (chain && chain.length > 0) {
       return chain.map((c) => ({ providerId, keyHashPrefix: c.keyHashPrefix, key: c.key }));

@@ -15,6 +15,8 @@ import { openQuotaEventStore, getQuotaEventLog } from './quota/events.js';
 import { openFailureEventStore, getFailureEventLog } from './observability/failure-events.js';
 import { QuotaProber, setQuotaProber, getQuotaProber } from './quota/prober.js';
 import { getQuotaStore } from './quota/store.js';
+import { keyHashPrefix, type CredentialStore } from './opencode/credentials/types.js';
+import { getProviderNodeById } from './opencode/user-config.js';
 import { getEnvPaths, resolveEnvName } from './config/env.js';
 import { getWarnThrottle } from './observability/warn-throttle.js';
 import { validateWebAuthStartup } from './auth/web-auth.js';
@@ -22,6 +24,17 @@ import { startForwardProxy } from './forward-proxy/index.js';
 import { setForwardProxyStatus } from './forward-proxy/status.js';
 import { defaultBreakerStateStore } from './resilience/breaker-state.js';
 import { startHeadroomSidecar } from './compression/headroom-sidecar.js';
+
+/**
+ * Provider-defs inference baseURL (the single def truth) for ids the registry
+ * never saw — a provider with no maintained model has no registry config, but
+ * its defs node still anchors L-d quota-entry origin containment.
+ */
+function providerDefBaseUrl(providerId: string): string | undefined {
+  const def = getProviderNodeById(providerId);
+  const base = def?.options?.baseURL ?? def?.settings?.baseURL;
+  return typeof base === 'string' && base.length > 0 ? base : undefined;
+}
 
 async function main() {
   // If this process was spawned by the UI "Restart Gateway" button, wait for
@@ -147,10 +160,13 @@ async function main() {
   //     so the store flip never breaks routing, auto-sync timers arm, and the
   //     auto-write hook attaches to the bound store. Never crashes boot:
   //     sync failures land as recorded outcomes on credential-sync.json.
+  //     The handle is kept for the quota prober's activation source (below):
+  //     quota activation follows CREDENTIALS, not model registration.
+  let credentialStore: CredentialStore | undefined;
   try {
     const { getCredentialStore, initCredentialSync } = await import('./opencode/credentials/index.js');
-    const credStore = await getCredentialStore();
-    await initCredentialSync(credStore);
+    credentialStore = await getCredentialStore();
+    await initCredentialSync(credentialStore);
   } catch (err: any) {
     console.warn(`[OCR] credential store bind / sync init failed (boot continues): ${err?.message ?? err}`);
   }
@@ -212,16 +228,33 @@ async function main() {
   const orchestrator = new PipelineOrchestrator(config, registry, tracker);
 
   // Quota prober: coverage ships with the release, activation
-  // follows credentials — pairs resolve through the registry's chains (store
-  // credentials) or the config-baked inference key (chain-less degeneracy).
-  // Raw keys are read through the registry chain contract (in-process
-  // consumer door); the prober serializes only display-safe snapshots.
+  // follows credentials — the bound credential store is the activation source
+  // (ADR-0009 §1: a covered provider whose model list is still empty holds
+  // probed credentials all the same), with the registry chain and the
+  // config-baked inference key (chain-less degeneracy) as fallbacks. Raw keys
+  // are read through the store's in-process consumer door; the prober
+  // serializes only display-safe snapshots.
   if (config.quota?.enabled !== false) {
     const quotaProber = new QuotaProber({
       registry: {
         getCredentialChain: (name) => registry.getCredentialChain(name),
         getProviderApiKey: (name) => registry.getProviderConfig(name)?.apiKey,
-        getProviderBaseUrl: (name) => registry.getProviderConfig(name)?.baseUrl,
+        // L-d origin containment anchor: a model-less provider has no registry
+        // config, so fall back to its provider-defs node (the single def truth).
+        getProviderBaseUrl: (name) => registry.getProviderConfig(name)?.baseUrl ?? providerDefBaseUrl(name),
+        listStoredCredentials: (name) => {
+          if (!credentialStore) return [];
+          try {
+            return credentialStore.resolveKeyChain(name).map((c) => ({
+              keyHashPrefix: keyHashPrefix(c.key),
+              key: c.key,
+            }));
+          } catch {
+            // Unreadable store: no pairs from this door (the chain fallback in
+            // the prober still applies) — a quota read must never crash a tick.
+            return [];
+          }
+        },
       },
       config: () => getRuntimeConfigRef() ?? config,
     });

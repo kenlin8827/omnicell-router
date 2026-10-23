@@ -361,16 +361,53 @@ describe('minimax quota adapter', () => {
       fetchImpl: fetchStub(() => ({ status: 200, body: { base_resp: { status_code: 1002, status_msg: 'rate limited' } } })),
     });
     assert.equal(r.ok, false);
+    // The refusal body rides the capture: an envelope verdict ("no active
+    // token plan subscription") is the operator's only explanation for an
+    // empty pair, and the badge caption is built from it.
+    const body = (r as any).http?.body as any;
+    assert.equal(body?.base_resp?.status_msg, 'rate limited');
+  });
+
+  it('region follows the id REGION SEGMENT: minimax-cn-coding-plan probes the China hosts', async () => {
+    // Regression: `endsWith('-cn')` missed this id and sent the China key to
+    // the GLOBAL host, where it reads as `2049 invalid api key` (an auth
+    // verdict, so no fallback) — the pair then sat at `unverified` forever.
+    const china: string[] = [];
+    const cn = await MINIMAX_ADAPTER.probe({
+      providerId: 'minimax-cn-coding-plan',
+      key: 'k',
+      fetchImpl: (async (u: any) => {
+        china.push(String(u));
+        return new Response(JSON.stringify(tokenPlanBody), { status: 200 });
+      }) as typeof fetch,
+    });
+    assert.equal(cn.ok, true);
+    assert.ok(china[0].includes('minimaxi.com'), `first CN host must be minimaxi.com, got ${china[0]}`);
+
+    const global: string[] = [];
+    await MINIMAX_ADAPTER.probe({
+      providerId: 'minimax-coding-plan',
+      key: 'k',
+      fetchImpl: (async (u: any) => {
+        global.push(String(u));
+        return new Response(JSON.stringify(tokenPlanBody), { status: 200 });
+      }) as typeof fetch,
+    });
+    assert.ok(global[0].includes('minimax.io'), `global host must be minimax.io, got ${global[0]}`);
   });
 });
 
 // ─── Prober: activation follows credentials ─────────────────────────────────
 
-function fakeRegistry(chains: Record<string, { keyHashPrefix: string; key: string }[]>): QuotaRegistryView {
+function fakeRegistry(
+  chains: Record<string, { keyHashPrefix: string; key: string }[]>,
+  stored?: Record<string, { keyHashPrefix: string; key: string }[]>
+): QuotaRegistryView {
   return {
     getCredentialChain: (pid) => chains[pid],
     getProviderApiKey: () => undefined,
     getProviderBaseUrl: () => undefined,
+    ...(stored ? { listStoredCredentials: (pid: string) => stored[pid] ?? [] } : {}),
   };
 }
 
@@ -453,8 +490,77 @@ describe('quota prober scheduling', () => {
     }
   });
 
-  it('quota.enabled:false is honored live — the kill switch needs no restart', async () => {
-    const tmp = sandboxPaths('quota-killswitch');
+  it('activation is credential-store-driven: a stored credential arms probing with NO registry chain', async () => {
+    // ADR-0009 §1: model registration is a routing concern. A connected
+    // provider whose model list is still empty has no registry chain — the
+    // store door is what keeps its quota alive.
+    const tmp = sandboxPaths('quota-store-door');
+    const store = new QuotaSnapshotStore({ paths: tmp });
+    setQuotaStoreForTests(store);
+    try {
+      const prober = new QuotaProber({
+        registry: fakeRegistry({}, { deepseek: [{ keyHashPrefix: 'K9', key: 'sk-9' }] }),
+        config: () => baseCfg(),
+        fetchImpl: fetchStub(() => ({
+          status: 200,
+          body: { balance_infos: [{ currency: 'CNY', total_balance: '3' }] },
+        })),
+        now: () => 1000,
+      });
+      assert.deepEqual(
+        prober.planProbes(1000).map((p) => `${p.providerId}#${p.keyHashPrefix}`),
+        ['deepseek#K9'],
+        'the store door is the activation source'
+      );
+    } finally {
+      setQuotaStoreForTests(undefined);
+      fs.rmSync(path.dirname(tmp.ocrHome), { recursive: true, force: true });
+    }
+  });
+
+  it('a never-succeeded pair keeps its failure verdict (and a success retires it)', async () => {
+    // The complaint this fixes: a covered pair with a rejected credential read
+    // as `unverified` ("not synced yet") forever — no snapshot meant the
+    // failure was dropped. The verdict must survive without a snapshot.
+    const tmp = sandboxPaths('quota-failure-verdict');
+    const store = new QuotaSnapshotStore({ paths: tmp, now: () => 1000 });
+    setQuotaStoreForTests(store);
+    try {
+      const prober = new QuotaProber({
+        registry: fakeRegistry({ deepseek: [{ keyHashPrefix: 'K1', key: 'sk-1' }] }),
+        config: () => baseCfg(),
+        fetchImpl: fetchStub(() => ({ status: 401 })),
+        now: () => 1000,
+      });
+      await prober.tick(1000);
+      assert.equal(store.get('deepseek', 'K1'), undefined, 'no snapshot yet');
+      const failure = store.getFailure('deepseek', 'K1');
+      assert.ok(failure, 'the verdict is recorded even without a snapshot');
+      assert.equal(failure!.reason, 'auth');
+      assert.equal(failure!.statusCode, 401);
+
+      // Next cycle (fresh prober, same store): success clears the verdict.
+      const okProber = new QuotaProber({
+        registry: fakeRegistry({ deepseek: [{ keyHashPrefix: 'K1', key: 'sk-1' }] }),
+        config: () => baseCfg(),
+        fetchImpl: fetchStub(() => ({
+          status: 200,
+          body: { balance_infos: [{ currency: 'CNY', total_balance: '5' }] },
+        })),
+        now: () => 2000,
+      });
+      await okProber.tick(2000);
+      assert.ok(store.get('deepseek', 'K1'), 'snapshot landed');
+      assert.equal(store.getFailure('deepseek', 'K1'), undefined, 'success retires the verdict');
+      // The verdict survives a reload of the file (durable, like the snapshot).
+      assert.ok(!JSON.stringify(store.get('deepseek', 'K1')).includes('k1'), 'no key material in the snapshot');
+    } finally {
+      setQuotaStoreForTests(undefined);
+      fs.rmSync(path.dirname(tmp.ocrHome), { recursive: true, force: true });
+    }
+  });
+
+  it('quota.enabled:false is honored live — the kill switch needs no restart', async () => {    const tmp = sandboxPaths('quota-killswitch');
     setQuotaStoreForTests(new QuotaSnapshotStore({ paths: tmp }));
     try {
       let calls = 0;

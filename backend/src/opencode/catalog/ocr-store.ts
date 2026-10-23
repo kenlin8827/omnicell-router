@@ -18,11 +18,13 @@ export interface OcrCatalogStore {
   /** Bump to invalidate every on-disk snapshot when the aggregation semantics
    *  change in code (the signature only covers defs/config mtimes + source
    *  defs + locked ids — code-level changes cannot drift it). Monotonic only —
-   *  never reuse or step back: 1 and 2 are burned by pre-history (2 was the
-   *  pre-rename snapshot with `builtin` source ids), so a stale 1/2 file stays
-   *  invalid forever and the next semantic change goes to 4. */
-  version: 3;
-  /** aggregation signature — jsonc/config.yaml mtimes + source defs + locked ids */
+   *  never reuse or step back: 1–3 are burned by pre-history (2 was the
+   *  pre-rename snapshot with `builtin` source ids; 3 the custom-store
+   *  'custom' source, retired when model books unified into providers.json),
+   *  so a stale 1/2/3 file stays invalid forever and the next semantic change
+   *  goes to 5. */
+  version: 4;
+  /** aggregation signature — defs/config.yaml mtimes + source defs + locked ids */
   sig: string;
   /** when this snapshot was aggregated (epoch ms) */
   builtAt: number;
@@ -40,7 +42,7 @@ export function readOcrStore(): OcrCatalogStore | null {
     const file = getOcrStorePath();
     if (!fs.existsSync(file)) return null;
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as OcrCatalogStore;
-    if (parsed?.version !== 3 || typeof parsed.sig !== 'string' || typeof parsed.builtAt !== 'number') return null;
+    if (parsed?.version !== 4 || typeof parsed.sig !== 'string' || typeof parsed.builtAt !== 'number') return null;
     if (!Array.isArray(parsed.providers)) return null;
     return parsed;
   } catch {
@@ -52,7 +54,7 @@ export function writeOcrStore(sig: string, providers: CatalogProviderRecord[]): 
   try {
     const file = getOcrStorePath();
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    const store: OcrCatalogStore = { version: 3, sig, builtAt: Date.now(), providers };
+    const store: OcrCatalogStore = { version: 4, sig, builtAt: Date.now(), providers };
     const tmp = `${file}.tmp.${process.pid}.${Date.now()}`;
     fs.writeFileSync(tmp, JSON.stringify(store), 'utf8');
     fs.renameSync(tmp, file);

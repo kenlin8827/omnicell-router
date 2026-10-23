@@ -12,7 +12,7 @@ import {
 import { getOpenCodeConfigPath } from '../src/opencode/user-config.js';
 /**
  * One-shot jsonc provider-def port (def-ownership decoupling):
- * <ocrHome>/custom-providers.json receives a verbatim copy of the jsonc
+ * <ocrHome>/providers.json receives a verbatim copy of the jsonc
  * `providers` slot; the jsonc file itself is NEVER written; an unparsable
  * source defers the pass (no record); per-id upsert keeps unrelated defs-file
  * ids. Hermetic: XDG_CONFIG_HOME and OCR_HOME both point at the sandbox.

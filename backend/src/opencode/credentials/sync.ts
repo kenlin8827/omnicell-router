@@ -1,19 +1,20 @@
 import fs from 'node:fs';
-import path from 'node:path';
 import {
   CredentialPaths,
   credentialSyncFile,
   defaultEnv,
   resolveDefaultPaths,
+  resolveOpencodeConfigPath,
 } from './paths.js';
 import { CredentialStore, StoreUnreadableError, keyHashPrefix } from './types.js';
-import { DbOpener, OpencodeV2Store, resolveServiceConfigForPaths } from './opencode-v2-store.js';
+import { DbOpener, OpencodeV2Store, reloadOpencodeService, resolveServiceConfigForPaths } from './opencode-v2-store.js';
 import { authSnapshot } from './auth-snapshot.js';
 import type { OpenCodeAuthEntry } from './auth-snapshot.js';
 import { atomicWriteWithRetry } from './factory.js';
 import { OcrStore } from './ocr-store.js';
-import { materializeDefs } from './def-materialize.js';
-import { setProviderDefsMutationHook } from '../provider-defs.js';
+import { defsRenderChanged, materializeDefs } from './def-materialize.js';
+import { setProviderDefsMutationHook, readProviderDefsFile } from '../provider-defs.js';
+import { PROVIDER_SLOT, readJsonc } from '../user-config.js';
 
 /**
  * Credential sync — per-client credential propagation with the OCR file
@@ -30,10 +31,11 @@ import { setProviderDefsMutationHook } from '../provider-defs.js';
  *    entries only, oauth/wellknown entries preserved untouched, one key per
  *    provider (the v1 file shape), no delete propagation.
  *
- * The v1 client is only active on a v1-flavored machine: auth.json present
- * WITHOUT v2 evidence (no opencode.db, no v2 version pin). On a v2 machine
- * auth.json is by definition a stale one-time migration snapshot and is never
- * pulled or written.
+ * The v1 client is only active on a v1-flavored machine: NO v2 evidence (no
+ * opencode.db, no v2 version pin) plus v1 evidence — auth.json OR a v1 version
+ * pin, so a fresh v1 install (pin, no auth.json yet) can still be seeded. On a
+ * v2 machine auth.json is by definition a stale one-time migration snapshot and
+ * is never pulled or written.
  *
  * Write direction invariant for BOTH clients: local OCR entries are KEPT —
  * the push converges the CLIENT toward the OCR file, never the reverse.
@@ -77,6 +79,10 @@ export interface SyncRunOutcome {
   pushedKeys?: { provider: string; keyHashPrefix: string }[];
   /** write runs only — provider nodes rendered into the client's providers slot. */
   defsMaterialized?: number;
+  /** write runs only — the client slot was actually rewritten (not merely re-rendered). */
+  defsChanged?: boolean;
+  /** write runs only — a CHANGED render was followed by a service reload that landed. */
+  defsReloaded?: boolean;
   detail?: string;
 }
 
@@ -114,6 +120,12 @@ export interface SyncOverrides {
   autoReadPollMs?: number;
   /** Auto-write debounce after an OCR mutation (ms). Default 1_500. */
   writeDebounceMs?: number;
+  /**
+   * Narrow a run to ONE provider id. Applies to BOTH directions (per-provider
+   * push AND pull): the console's provider-scoped gestures must not sweep the
+   * whole book. Absent = every provider.
+   */
+  provider?: string;
 }
 
 /** Minimal structured sink; boot passes console lines, tests capture. */
@@ -221,16 +233,25 @@ function installedMajor(paths: CredentialPaths): number | null {
 }
 
 /**
- * The v1 client only exists where auth.json exists WITHOUT v2 evidence —
- * on a v2 machine auth.json is a stale migration snapshot, never a sync peer.
+ * The v1 client exists on a v1-flavored machine: NO v2 evidence (no db, no v2
+ * version pin) AND v1 evidence — an existing auth.json OR a v1 version pin.
+ * The pin alone counts: on a fresh v1 install auth.json does not exist yet and
+ * the write direction is what CREATES it (pushOcrIntoV1), so requiring the file
+ * would make that creation unreachable. On a v2 machine auth.json is a stale
+ * migration snapshot, never a sync peer.
  */
 function v1FlavorActive(paths: CredentialPaths): boolean {
-  return fs.existsSync(paths.authJsonPath) && !fs.existsSync(paths.opencodeDbPath) && installedMajor(paths) !== 2;
+  if (fs.existsSync(paths.opencodeDbPath)) return false;
+  const major = installedMajor(paths);
+  if (major === 2) return false;
+  return major === 1 || fs.existsSync(paths.authJsonPath);
 }
 
 /** Masked status view for the console route — every client, defaults OFF. */
 export function credentialSyncStatusView(overrides: SyncOverrides = {}): {
-  clients: Array<ClientSyncState & { id: SyncClientId; label: string; present: boolean; writeReady: boolean }>;
+  clients: Array<
+    ClientSyncState & { id: SyncClientId; label: string; present: boolean; writeReady: boolean; defsDrift?: boolean }
+  >;
 } {
   const paths = overrides.paths ?? resolveDefaultPaths();
   const env = overrides.env ?? defaultEnv();
@@ -241,14 +262,50 @@ export function credentialSyncStatusView(overrides: SyncOverrides = {}): {
       let writeReady = false;
       if (c.id === 'opencode-v1') {
         present = v1FlavorActive(paths);
-        writeReady = present; // a local file merge is always possible when the client exists
+        // A local file merge (or creation, on a pin-only fresh install) is
+        // always possible when the client exists.
+        writeReady = present;
       } else {
         present = fs.existsSync(paths.opencodeDbPath);
         writeReady = present && Boolean(resolveServiceConfigForPaths(paths, env));
       }
-      return { id: c.id, label: c.label, present, writeReady, ...clientStateOf(rec, c.id) };
+      const drift = c.id === 'opencode-v2' ? clientDefsDrift(paths) : undefined;
+      return {
+        id: c.id,
+        label: c.label,
+        present,
+        writeReady,
+        ...(drift !== undefined ? { defsDrift: drift } : {}),
+        ...clientStateOf(rec, c.id),
+      };
     }),
   };
+}
+
+/**
+ * Is the client's materialized `providers` slot behind the defs book?
+ *
+ * Decided by `defsRenderChanged` — the exact comparison the materializer uses to
+ * decide whether to write, so the badge can never disagree with what a push
+ * would do.
+ * `undefined` = no defs book / unreadable client config (nothing to compare).
+ * A synced client costs two file reads; a drifted one is exactly the state an
+ * operator needs to see (auto-write OFF is the shipped default and the two
+ * directions are independent, so silent drift is normal otherwise).
+ */
+function clientDefsDrift(paths: CredentialPaths): boolean | undefined {
+  try {
+    const defs = readProviderDefsFile(paths);
+    if (!defs) return undefined;
+    const configPath = resolveOpencodeConfigPath(paths);
+    const parsed = fs.existsSync(configPath) ? readJsonc(configPath) : undefined;
+    if (fs.existsSync(configPath) && parsed === undefined) return undefined; // unparsable: no comparison
+    const slot = parsed?.[PROVIDER_SLOT];
+    const nodes = slot && typeof slot === 'object' && !Array.isArray(slot) ? slot : null;
+    return defsRenderChanged(nodes, defs.providers);
+  } catch {
+    return undefined;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -276,7 +333,9 @@ async function pullV1IntoOcr(ocr: CredentialStore, overrides: SyncOverrides): Pr
   const entries: SyncEntryRecord[] = [];
   let pulled = 0;
   let deduped = 0;
+  const only = overrides.provider?.toLowerCase();
   for (const [providerId, entry] of Object.entries(snapshot)) {
+    if (only && providerId.toLowerCase() !== only) continue; // narrowed run
     // oauth/wellknown never leave the client (the OAuth boundary) — and unlike
     // the v2 db (whose resolveKeyChain filters them), the snapshot exposes them,
     // so they are skipped here explicitly and silently.
@@ -353,9 +412,11 @@ async function pullV2IntoOcr(ocr: CredentialStore, overrides: SyncOverrides): Pr
     const entries: SyncEntryRecord[] = [];
     let pulled = 0;
     let deduped = 0;
+    const only = overrides.provider?.toLowerCase();
     for (const overview of v2.credentialsOverview()) {
       const providerId = overview.providerId;
       if (!providerId) continue;
+      if (only && providerId.toLowerCase() !== only) continue; // narrowed run
       let localPrefixes: Set<string>;
       try {
         localPrefixes = new Set(
@@ -406,10 +467,7 @@ async function pullV2IntoOcr(ocr: CredentialStore, overrides: SyncOverrides): Pr
  * file shape — the active head wins), no delete propagation, and the file is
  * never written on a v2-flavored machine (stale snapshot territory).
  */
-async function pushOcrIntoV1(
-  ocr: CredentialStore,
-  overrides: SyncOverrides & { provider?: string }
-): Promise<SyncRunOutcome> {
+async function pushOcrIntoV1(ocr: CredentialStore, overrides: SyncOverrides): Promise<SyncRunOutcome> {
   const log = overrides.log ?? defaultLog;
   const paths = overrides.paths ?? resolveDefaultPaths();
   if (!v1FlavorActive(paths)) {
@@ -467,18 +525,33 @@ async function pushOcrIntoV1(
     return { ok: true, pushed: 0, deduped, entries, pushedKeys };
   }
 
-  // Atomic write into the opencode data dir (the file may not exist yet on a
-  // fresh v1 install — creating it is the point of the write).
+  // Backup + atomic write into the opencode data dir (the file may not exist yet
+  // on a fresh v1 install; creating it is the point of the write).
+  //
+  // Two Windows-era lessons applied here, the same ones the defs materializer
+  // follows: (a) the pre-write copy is preserved as `<auth.json>.bak.ocr` before
+  // every converging write; this file holds ANOTHER process's credentials, so a
+  // merge mistake must be recoverable; (b) the rename goes through
+  // `atomicWriteWithRetry`, because a security tool holding the file makes the
+  // first rename fail with EPERM/EBUSY for a few milliseconds (a raw
+  // `renameSync` reports that as a hard write failure).
   try {
-    fs.mkdirSync(path.dirname(paths.authJsonPath), { recursive: true });
-    const tmp = `${paths.authJsonPath}.tmp.${process.pid}.${Date.now()}`;
-    fs.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+    fs.copyFileSync(paths.authJsonPath, `${paths.authJsonPath}.bak.ocr`);
+    // copyFileSync lands the copy with umask defaults (0644 on POSIX) — the
+    // backup holds the SAME key material as auth.json, so it gets the same
+    // 0600 owner-only mode the file itself is given below. Best-effort like
+    // every chmod here (Windows semantics are advisory).
+    fs.chmodSync(`${paths.authJsonPath}.bak.ocr`, 0o600);
+  } catch {
+    // fresh v1 install: nothing to preserve yet
+  }
+  try {
+    atomicWriteWithRetry(paths.authJsonPath, `${JSON.stringify(next, null, 2)}\n`);
     try {
-      fs.chmodSync(tmp, 0o600);
+      fs.chmodSync(paths.authJsonPath, 0o600);
     } catch {
       // best effort (Windows chmod semantics)
     }
-    fs.renameSync(tmp, paths.authJsonPath);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     entries.push({ provider: overrides.provider ?? '*', action: 'failed', reason: `auth.json write failed: ${msg}` });
@@ -495,10 +568,7 @@ async function pushOcrIntoV1(
  * case-insensitive × keyHash prefix) against the live v2 db, so reruns are
  * idempotent. Never throws.
  */
-async function pushOcrIntoV2(
-  ocr: CredentialStore,
-  overrides: SyncOverrides & { provider?: string }
-): Promise<SyncRunOutcome> {
+async function pushOcrIntoV2(ocr: CredentialStore, overrides: SyncOverrides): Promise<SyncRunOutcome> {
   const log = overrides.log ?? defaultLog;
   const paths = overrides.paths ?? resolveDefaultPaths();
   const env = overrides.env ?? defaultEnv();
@@ -519,10 +589,16 @@ async function pushOcrIntoV2(
   // by the time its first key pushes. Gated on the v2 client being present
   // (db on disk): a machine without one gains no jsonc providers slot from the
   // v2 client's write path. Runs even with zero keys to push — an emptied defs
-  // map must still REPLACE the client slot (def delete propagation). No
-  // explicit reload here: the first unmatched resolve triggers the single-flight
-  // reload self-heal against the freshly materialized jsonc.
+  // map must still REPLACE the client slot (def delete propagation).
+  //
+  // A CHANGED render reloads immediately: the service registers config-declared
+  // providers only when it loads config, and a def-only change (new model, price
+  // edit, provider delete) pushes no key, so the unmatched-resolve self-heal
+  // would never fire — the client would serve stale defs until a restart
+  // (ADR-0010 §5 requires the reload; it is not merely an optimization).
   let defsMaterialized: number | undefined;
+  let defsChanged: boolean | undefined;
+  let defsReloaded: boolean | undefined;
   if (fs.existsSync(paths.opencodeDbPath)) {
     const mat = materializeDefs(paths);
     if (!mat.ok) {
@@ -539,7 +615,22 @@ async function pushOcrIntoV2(
       };
     }
     defsMaterialized = mat.rendered;
+    defsChanged = mat.changed;
+    if (mat.changed) {
+      const reloadDeps = overrides.fetchImpl ? { fetchImpl: overrides.fetchImpl } : {};
+      defsReloaded = await reloadOpencodeService(paths, env, reloadDeps);
+      if (!defsReloaded) {
+        log.warn(
+          `${LOG_PREFIX} v2 write: defs changed but the service reload did not land — the unmatched-write self-heal will retry on the next key push`
+        );
+      }
+    }
   }
+  const defsFields = {
+    ...(defsMaterialized !== undefined ? { defsMaterialized } : {}),
+    ...(defsChanged !== undefined ? { defsChanged } : {}),
+    ...(defsReloaded !== undefined ? { defsReloaded } : {}),
+  };
 
   if (local.length === 0) {
     return {
@@ -548,7 +639,7 @@ async function pushOcrIntoV2(
       deduped: 0,
       entries: [],
       pushedKeys: [],
-      ...(defsMaterialized !== undefined ? { defsMaterialized } : {}),
+      ...defsFields,
     };
   }
 
@@ -557,7 +648,7 @@ async function pushOcrIntoV2(
       ok: false,
       precondition: 'service_unreachable',
       entries: [],
-      ...(defsMaterialized !== undefined ? { defsMaterialized } : {}),
+      ...defsFields,
     };
   }
 
@@ -609,8 +700,77 @@ async function pushOcrIntoV2(
       deduped,
       entries,
       pushedKeys,
-      ...(defsMaterialized !== undefined ? { defsMaterialized } : {}),
+      ...defsFields,
     };
+  } finally {
+    v2.close();
+  }
+}
+
+/**
+ * Delete ONE credential on the client — the client half of an operator delete
+ * (`DELETE` in the console). Deliberately NOT a set reconciliation: the caller
+ * names the exact key material (keyHashPrefix) that must stop existing on the
+ * client, and only the matching row is deleted. A diff of "OCR keys vs client
+ * keys" is the destructive pattern that must never exist here (an unreadable or
+ * degraded book would look like "delete everything").
+ *
+ * v2 only: the service exposes `DELETE /api/credential/:id`. v1 keeps one key
+ * per provider in a plain file with no id-addressed delete, so the answer is
+ * `unsupported` and the operator removes the provider entry there.
+ *
+ * Never throws — the local delete already happened by the time this runs, and a
+ * partial result must be reported, not raised.
+ */
+export interface ClientRevokeOutcome {
+  clientId: SyncClientId;
+  result: 'deleted' | 'not_found' | 'unsupported' | 'absent' | 'failed';
+  detail?: string;
+}
+
+export async function revokeOnClient(
+  providerId: string,
+  keyHashPrefix: string,
+  overrides: SyncOverrides = {}
+): Promise<ClientRevokeOutcome> {
+  const log = overrides.log ?? defaultLog;
+  const paths = overrides.paths ?? resolveDefaultPaths();
+  const env = overrides.env ?? defaultEnv();
+
+  if (!fs.existsSync(paths.opencodeDbPath)) {
+    // No v2 client on this machine. A v1 install has no id-addressed delete.
+    return { clientId: 'opencode-v1', result: v1FlavorActive(paths) ? 'unsupported' : 'absent' };
+  }
+  let v2: OpencodeV2Store;
+  try {
+    const deps: Parameters<typeof OpencodeV2Store.create>[0] = { paths, writable: true, env };
+    if (overrides.fetchImpl) deps.fetchImpl = overrides.fetchImpl;
+    if (overrides.now) deps.now = overrides.now;
+    if (overrides.openDatabase) deps.openDatabase = overrides.openDatabase;
+    v2 = await OpencodeV2Store.create(deps);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    log.warn(`${LOG_PREFIX} client revoke: opencode v2 store unreadable — ${msg}`);
+    return { clientId: 'opencode-v2', result: 'failed', detail: msg };
+  }
+  try {
+    let match: { id: string } | undefined;
+    try {
+      match = v2.listCredentials(providerId).find((c) => c.keyHashPrefix === keyHashPrefix);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return { clientId: 'opencode-v2', result: 'failed', detail: msg };
+    }
+    if (!match) return { clientId: 'opencode-v2', result: 'not_found' };
+    try {
+      await v2.disconnect(match.id);
+      log.info(`${LOG_PREFIX} client revoke: ${providerId} deleted on opencode-v2 (key ${keyHashPrefix})`);
+      return { clientId: 'opencode-v2', result: 'deleted' };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      log.warn(`${LOG_PREFIX} client revoke: ${providerId} delete failed on opencode-v2 — ${msg}`);
+      return { clientId: 'opencode-v2', result: 'failed', detail: msg };
+    }
   } finally {
     v2.close();
   }
@@ -657,7 +817,7 @@ export async function pullIntoOcr(
 export async function pushFromOcr(
   clientId: SyncClientId,
   ocr: CredentialStore,
-  overrides: SyncOverrides & { provider?: string } = {}
+  overrides: SyncOverrides = {}
 ): Promise<SyncRunOutcome> {
   try {
     return clientId === 'opencode-v1'
@@ -822,14 +982,7 @@ async function tickAutoPoll(): Promise<void> {
       // Re-read per client: a fresh pull that added keys is exactly the state a
       // lagging write retry should converge (dedup keeps it idempotent).
       const fresh = clientStateOf(readSyncState(paths), client.id);
-      // The safety net retries self-healing failures only: a missing precondition
-      // (service down) or per-entry failures. client_absent / client_unreadable
-      // do not heal by themselves — retrying them every tick would just churn
-      // the state file (the toggle row shows them; the operator fixes those).
-      const lastWrite = fresh.lastWrite;
-      const retryable =
-        !lastWrite ||
-        (!lastWrite.ok && (!lastWrite.precondition || lastWrite.precondition === 'service_unreachable'));
+      const retryable = shouldRetryAutoWrite(fresh.lastWrite);
       if (retryable) {
         engine.writing.add(client.id);
         void pushFromOcr(client.id, store, overrides)
@@ -841,6 +994,25 @@ async function tickAutoPoll(): Promise<void> {
       }
     }
   }
+}
+
+/**
+ * Does the periodic safety net re-run the write for this client?
+ *
+ * Retries self-healing failures only: no previous run, a missing precondition
+ * (service down) or per-entry failures. `client_absent` / `client_unreadable` do
+ * not heal by themselves — retrying them every tick would just churn the state
+ * file (the toggle row shows them; the operator fixes those).
+ *
+ * Also retries when the DEFS half did not land: a changed render whose reload
+ * failed leaves the client serving a stale provider list, and the key entries
+ * were fine (all deduped), so `ok` reads true and nothing else would ever retry
+ * it. Key pushes are idempotent, so the re-run is cheap.
+ */
+export function shouldRetryAutoWrite(lastWrite: SyncRunOutcome | undefined): boolean {
+  if (!lastWrite) return true;
+  if (lastWrite.defsChanged === true && lastWrite.defsReloaded === false) return true;
+  return !lastWrite.ok && (!lastWrite.precondition || lastWrite.precondition === 'service_unreachable');
 }
 
 function scheduleAutoWrite(): void {

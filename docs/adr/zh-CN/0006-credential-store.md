@@ -63,3 +63,25 @@ reconcile 闸（auth.json→v2 推送 + `authWriteDisabled` marker——被 §2 
 - 控制台新增的密钥只有经过一次写同步才会到达 opencode——开启自动则自动发生，否则需要显式操作。凭证同步表格让这种传播可见，而非隐式。
 - `OpencodeV2Store` 作为同步引擎的工具被完整测试（拉取用读、推送用带验证的 HTTP 写、二级服务发现不变）；它的路由级 v2 行为（integration 不匹配 409、只读拒绝、视图失效）不再从控制台可达，相应路由测试随行为一并退役。
 - 测试：`credentials-sync`（引擎）、`credentials-factory`（唯一落点 + 全函数）、`credentials-console-routes`（路由 × OCR 文件）、`credentials-push-endpoint`（保留本地）、`boot-direct-credential-store`（OCR 文件启动），以及契约不变的 `credentials-leak-surfaces` / `credentials-reveal-route` / `credentials-standalone-import` / `credentials-opencode-v2-*` 适配器套件。
+
+## 修订案 —— key 删除永不传播（因此拉取会重新导入）
+
+两个客户端的写入方向都是**只增/轮换**：v2 逐个 `connectKey`，从不调用删除路由；v1 按 provider 合并链头 api key，从不移除 provider 节点。后果直说：**只在 OCR 文件里删除的凭证，会在下一次读同步（手动或自动读轮询）时被重新导入**，只要客户端仍持有它。这是读方向的契约——pull 导入客户端持有的东西，而 store 不保留"这是操作员有意删除"的记忆，所以"客户端有一把 OCR 没有的 key"与"操作员刚删掉那把 key"在观测上是同一件事。操作规则：**要让删除生效，必须在客户端侧一并删除**（控制台的拉取按钮提示已写明这一点）。
+
+**控制台的 DELETE 是吊销（revocation），不是本地清理**，因此复用上面已有的机制，而不是再造一本账：
+
+- 删除 OCR 行（store 的 `disconnect`）；
+- 把该 key **材料**以 DISABLED 锚定进现有的 keyHash 锚定 takedown 账本（`reason: 'deleted'`），于是拉取再次导入时该行是**停用回归**——绝不直接可路由，有徽章、一键恢复。已经被停用的 key 材料保留它自己的备注：该标记的另一半（`disabledAt`）按设计保留，删除不得把操作员的审计文字洗成 `'deleted'`；这就是拉取侧 tombstone；另立一个 `(provider × keyHashPrefix)` 文件只会重复一本生命周期已经吻合的账（"在操作员抬升之前，跨过每一次重连都保持"）；
+- 同时删除客户端副本（v2 的 `DELETE /api/credential/:id`，按 `keyHashPrefix` 精确匹配一行，绝不做集合 diff），因为 opencode 用它自己的 db 路由，只删 OCR 拦不住它。v1 没有按 id 的删除（纯文件里一个 provider 一把 key），返回 `unsupported`；响应逐目标报告客户端那一半，控制台如实展示，而不是假装"干净吊销"。`?clientRevoke=0` 可关闭客户端那一半（只退役 OCR 行）。
+
+对未来工作的约束：**仍然禁止**做"把删除镜像进客户端"的全量对账——OCR 书不可读或降级时那会读成"把客户端删空"。删除永远由操作员发起、且一次只针对一把 key 材料。
+
+### v1 客户端 —— 已验证范围
+
+v1 适配器是**fixture 级验证，不是二进制级验证**：参考机上只装了 v2，没有 opencode v1。测试套件确定性地钉住的是：
+
+- 写出的文件保持 v1 形状（每 provider 一条 `api` 条目，`<dataDir>/auth.json`，0600 best-effort），并且**逐字保留不属于我们的一切**——其他 provider 的条目、被重写条目上的未知字段（`account_id` 以及将来新增字段）、`oauth`/`wellknown` 条目原样不动并报告为 `skipped`；
+- 每次真正写入前把原文件保留为 `auth.json.bak.ocr`（不写入则不备份），rename 走 `atomicWriteWithRetry`（Windows 上被占用进程挡住时的 EPERM/EBUSY 会重试，而不是判推送失败）；
+- 存在性：v1 证据 = 已存在的 `auth.json` **或** v1 `installed.version` pin，且在带 v2 证据的机器上一律不生效。
+
+**没有 v1 二进制就无法验证、因此不得声称已证**的部分：真实 v1 运行时会接受合并后的文件；Windows 上 0600 的意图是否被遵守/忽略；v1 是否真的从 `auth.json` 路由（两个方向的前提）；纯 v1 机器上是否存在 `installed.version`（既无 pin 又无 `auth.json` 时读作 absent —— 适配器保持惰性，而不是猜）。字段词汇已与安装在机上的 v2 二进制里内嵌的 v1 导入器字符串交叉核对（`account_id`、`methodID`、`wellknown`、`integration_id`）——这是证据，不是证明。

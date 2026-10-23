@@ -1,16 +1,22 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { PROVIDER_SLOT, getOpenCodeConfigPath, readJsonc } from './user-config.js';
-import { resolveDefaultPaths, type CredentialPaths } from './credentials/paths.js';
+import { PROVIDER_SLOT, readJsonc } from './user-config.js';
+import { resolveDefaultPaths, resolveOpencodeConfigPath, type CredentialPaths } from './credentials/paths.js';
 
 /**
- * OCR-owned provider connection definitions — <ocrHome>/custom-providers.json.
+ * OCR-owned provider definitions — <ocrHome>/providers.json.
  *
  * Contract: connection defs (id/name/package/settings/headers/env/canonical/body/models)
  * have ONE truth and it is THIS file, GLOBAL (not per-environment, same book as
  * credentials.json). opencode.jsonc is a sync-client materialization target:
  * after the one-shot port below, nothing here reads it for truth, and no console
  * route, boot path or view may treat it as a def source.
+ *
+ * There is NO provider class system: EVERY provider — built-in (connected via
+ * the catalog) or self-declared relay — gets a node here at connect time, with
+ * its model list auto-filled (live /v1/models first, static catalog fallback).
+ * The "custom" badge is DYNAMIC (derived from builtin-catalog coverage at
+ * aggregation time), never stored.
  *
  * The node shape is the verbatim port of the jsonc `providers` slot (the opencode
  * v2 file spelling). This module stores and migrates; it does not reinterpret —
@@ -31,7 +37,30 @@ export interface ProviderDefsImportRecord {
 }
 
 export function getProviderDefsPath(paths: CredentialPaths = resolveDefaultPaths()): string {
-  return path.join(paths.ocrHome, 'custom-providers.json');
+  return path.join(paths.ocrHome, 'providers.json');
+}
+
+/**
+ * CatalogModel → models.dev FILE-shaped model def (the defs-file `models` slot
+ * spelling). CatalogModel already is the OpenCode schema — strip id/source,
+ * pass the rest through; flat catalog npm becomes the model-level
+ * `provider: { npm }` override so added models keep their exact wire shape.
+ */
+export function catalogModelToDef(m: Record<string, any>): Record<string, any> {
+  const def: Record<string, any> = {};
+  for (const [k, v] of Object.entries(m)) {
+    if (k === 'id' || k === 'source') continue;
+    if (v === undefined) continue;
+    if (k === 'npm') {
+      def.provider = { ...(def.provider || {}), npm: v };
+      continue;
+    }
+    def[k] = v;
+  }
+  // Name fallback: bare /v1/models payloads carry no name — derive it from
+  // the last '/' segment of the id (e.g. 'zhipu/glm-4.7' → 'glm-4.7').
+  if (!def.name) def.name = String(m.id).split('/').pop();
+  return def;
 }
 
 /** Tolerant read: missing / corrupt / wrong version → null. */
@@ -88,7 +117,9 @@ export function migrateJsoncProviderDefs(
 ): ProviderDefsImportRecord | undefined {
   const paths = opts.paths ?? resolveDefaultPaths();
   const now = opts.now ?? Date.now;
-  const configPath = getOpenCodeConfigPath();
+  // The SAME resolver the materializer writes through: the port must read the
+  // client config the sync client will later converge, never a sibling file.
+  const configPath = resolveOpencodeConfigPath(paths);
   let slot: Record<string, any> = {};
   if (fs.existsSync(configPath)) {
     const parsed = readJsonc(configPath);
@@ -109,7 +140,7 @@ export function migrateJsoncProviderDefs(
     writeProviderDefs(merged, paths);
   } catch (e) {
     console.warn(
-      `[provider-defs] custom-providers.json write failed — def port deferred to next boot: ${e instanceof Error ? e.message : String(e)}`
+      `[provider-defs] providers.json write failed — def port deferred to next boot: ${e instanceof Error ? e.message : String(e)}`
     );
     return undefined;
   }

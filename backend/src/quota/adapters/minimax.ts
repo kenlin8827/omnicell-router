@@ -64,8 +64,17 @@ function countMeansRemaining(url: string): boolean {
   return url.includes('/coding_plan/');
 }
 
+/**
+ * Region is chosen by the provider-id REGION SEGMENT, never by a config knob
+ * (fact sheet above). The segment is `-cn` anywhere in the id — `minimax-cn`
+ * AND `minimax-cn-coding-plan` are China. An `endsWith('-cn')` test misses the
+ * coding-plan id and sends a China key to the GLOBAL host, where it reads as
+ * an invalid api key (verified: `base_resp.status_code: 2049`) and — because
+ * an auth verdict correctly suppresses fallback — the pair then sits at
+ * `unverified` forever.
+ */
 function urlsFor(providerId: string): string[] {
-  return providerId.endsWith('-cn') ? CHINA_URLS : GLOBAL_URLS;
+  return /(^|-)cn(-|$)/.test(providerId) ? CHINA_URLS : GLOBAL_URLS;
 }
 
 // ─── Response parsing (self-recorded fact shapes) ───────────────────────────
@@ -205,7 +214,11 @@ export const MINIMAX_ADAPTER: QuotaCodeAdapter = {
 
         // Hard key verdict — the credential is wrong, not the endpoint.
         const http: LastProbeCapture = { url, status: res.status, ok: res.ok };
-        if (res.status === 401 || res.status === 403) return { ok: false, reason: 'auth', http };
+        if (res.status === 401 || res.status === 403) {
+          const raw = await res.text().catch(() => '');
+          if (raw) http.body = raw.slice(0, LAST_BODY_MAX_CHARS);
+          return { ok: false, reason: 'auth', http };
+        }
 
         if (!res.ok) {
           lastFailure = { ok: false, reason: 'status' };
@@ -220,8 +233,14 @@ export const MINIMAX_ADAPTER: QuotaCodeAdapter = {
         } catch {
           payload = null;
         }
+        // The capture rides EVERY failure path below: an envelope refusal
+        // (`base_resp.status_code != 0`, e.g. "no active token plan
+        // subscription") is exactly the evidence an operator needs, and
+        // dropping it left the console's last-probe dialog empty.
+        const captureBody =
+          raw.length > LAST_BODY_MAX_JSON_CHARS ? raw.slice(0, LAST_BODY_MAX_CHARS) : (payload ?? (raw ? raw.slice(0, LAST_BODY_MAX_CHARS) : undefined));
+        if (captureBody !== undefined) http.body = captureBody;
         if (!payload || typeof payload !== 'object') {
-          http.body = raw.slice(0, LAST_BODY_MAX_CHARS);
           return { ok: false, reason: 'shape', http };
         }
 
@@ -238,7 +257,6 @@ export const MINIMAX_ADAPTER: QuotaCodeAdapter = {
         const probeTimeMs = now();
         const windows = parseRemainsPayload(payload, probeTimeMs, url);
         if (windows.length === 0) return { ok: false, reason: 'shape', http };
-        http.body = raw.length > LAST_BODY_MAX_JSON_CHARS ? raw.slice(0, LAST_BODY_MAX_CHARS) : payload;
         return { ok: true, windows, plan: ctx.providerId.includes('coding-plan') ? 'Token Plan' : undefined, http };
       } catch {
         lastFailure = { ok: false, reason: 'network' };

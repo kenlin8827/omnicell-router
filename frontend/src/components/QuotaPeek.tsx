@@ -2,10 +2,11 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { Wallet, RefreshCw } from 'lucide-react';
-import { api, type QuotaOverview, type QuotaWindow } from '../lib/api';
+import { api, type QuotaOverview, type QuotaWindow, type CredentialQuotaView } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { fmtDur } from '../lib/format';
 import { byQuotaUrgency, headlineWindow } from '../lib/quotaRank';
+import { failureCaption, quotaStateWord } from '../lib/quotaFailure';
 import { useQuotaRefresh } from '../lib/useQuotaRefresh';
 
 import { FONT_MONO } from '../lib/fonts';
@@ -115,14 +116,7 @@ export const QuotaPeek: React.FC = () => {
     return w.name;
   };
 
-  const badgeWord = (badge: string): string =>
-    badge === 'probed'
-      ? t('quotaPage.stateProbed')
-      : badge === 'declared'
-        ? t('quotaPage.stateDeclared')
-        : badge === 'stale'
-          ? t('quotaPage.stateStale')
-          : t('quotaPage.stateUnverified');
+  const badgeWord = (quota: CredentialQuotaView): string => quotaStateWord(quota, t);
 
   return (
     <div
@@ -261,12 +255,23 @@ export const QuotaPeek: React.FC = () => {
                       );
                       subLabel = winLabel(balance);
                     } else {
-                      const badge = r.quota?.badge;
+                      const quota = r.quota;
+                      const failed = failureCaption(quota, t);
                       headValue = (
-                        <span style={{ fontSize: '11px', fontWeight: 600, color: badge === 'stale' ? 'var(--accent-rose)' : 'var(--text-dim)', flexShrink: 0 }}>
-                          {badge ? badgeWord(badge) : '—'}
+                        <span
+                          style={{
+                            fontSize: '11px',
+                            fontWeight: 600,
+                            color: quota?.badge === 'stale' || failed ? 'var(--accent-rose)' : 'var(--text-dim)',
+                            flexShrink: 0,
+                          }}
+                        >
+                          {quota ? badgeWord(quota) : '—'}
                         </span>
                       );
+                      // A recorded verdict explains the empty state — a bare
+                      // "unverified" would read as "still waiting for the first sync".
+                      if (failed) subLabel = failed;
                     }
                     return (
                       <div

@@ -7,8 +7,8 @@ import {
   getProviderModelDefs,
   listConfigProviders,
   legacyShapedSlotEntries,
-  upsertCustomProvider,
-  deleteCustomProvider,
+  upsertProviderDef,
+  deleteProviderDef,
 } from '../src/opencode/user-config.js';
 import { writeProviderDefs, getProviderDefsPath } from '../src/opencode/provider-defs.js';
 
@@ -171,7 +171,7 @@ describe('management view + write side', () => {
     const file = writeConfig({
       acmev2: { package: '@opencode/ai/providers/google', settings: { baseURL: 'https://acmev2.test/v1' } },
     });
-    const res = upsertCustomProvider({
+    const res = upsertProviderDef({
       id: 'newprov',
       npm: '@ai-sdk/openai-compatible',
       baseURL: 'https://new.test/v1',
@@ -192,11 +192,11 @@ describe('management view + write side', () => {
     expect(raw.provider).toBeUndefined();
   });
 
-  it('deleteCustomProvider removes a opencode-v2 shaped node (jsonPath addresses ids, not shapes)', () => {
+  it('deleteProviderDef removes a opencode-v2 shaped node (jsonPath addresses ids, not shapes)', () => {
     writeConfig({
       acmev2: { package: '@opencode/ai/providers/google', settings: { baseURL: 'https://acmev2.test/v1' } },
     });
-    const res = deleteCustomProvider('acmev2');
+    const res = deleteProviderDef('acmev2');
     expect(res.success).toBe(true);
     expect(getProviderNodeById('acmev2')).toBeUndefined();
   });

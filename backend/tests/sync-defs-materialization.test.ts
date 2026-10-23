@@ -5,7 +5,7 @@ import path from 'node:path';
 import type { CredentialPaths } from '../src/opencode/credentials/paths.js';
 import { OcrStore } from '../src/opencode/credentials/ocr-store.js';
 import { initCredentialSync, pushFromOcr, setSyncAutoToggle, stopCredentialSync } from '../src/opencode/credentials/sync.js';
-import { readProviderDefsFile, writeProviderDefs } from '../src/opencode/provider-defs.js';
+import { readProviderDefsFile, writeProviderDefs, getProviderDefsPath } from '../src/opencode/provider-defs.js';
 
 function seedDefs(p: CredentialPaths, providers: Record<string, unknown>): void {
   writeProviderDefs(providers as Record<string, any>, p);
@@ -285,4 +285,104 @@ describe('def materialization (v2 write direction)', () => {
       stopCredentialSync();
     }
   }, 10000);
+
+  it('a MISSING defs book is never treated as empty — client providers survive byte-identically', async () => {
+    // "absent" != "empty": REPLACE over an unreadable book would delete every
+    // client node and claim success. Absent + a populated client slot = refuse.
+    const p = withDb(withService(sandboxPaths())); // no providers.json seeded at all
+    expect(readProviderDefsFile(p)).toBeNull();
+    const clientText = ['{', '  "providers": { "user-defined": { "package": "x" } }', '}'].join('\n');
+    writeClientJsonc(p, clientText);
+
+    const outcome = await pushFromOcr('opencode-v2', new OcrStore({ paths: p, now: () => 1 }), {
+      paths: p,
+      openDatabase: fakeDb(),
+      now: () => 1,
+    });
+    expect(outcome.ok).toBe(false);
+    expect(outcome.entries[0]?.action).toBe('failed');
+    expect(outcome.entries[0]?.reason).toContain('refusing to REPLACE');
+    expect(readJsoncRaw(p)).toBe(clientText); // untouched
+    expect(fs.existsSync(`${clientJsoncPath(p)}.bak.ocr-defs`)).toBe(false); // nothing to back up
+  });
+
+  it('a CORRUPT defs book is refused the same way (never a silent empty REPLACE)', async () => {
+    const p = withDb(withService(sandboxPaths()));
+    fs.mkdirSync(path.dirname(getProviderDefsPath(p)), { recursive: true });
+    fs.writeFileSync(getProviderDefsPath(p), '{ not json', 'utf8');
+    expect(readProviderDefsFile(p)).toBeNull();
+    const clientText = ['{', '  "providers": { "acme": { "package": "stale" } }', '}'].join('\n');
+    writeClientJsonc(p, clientText);
+
+    const outcome = await pushFromOcr('opencode-v2', new OcrStore({ paths: p, now: () => 1 }), {
+      paths: p,
+      openDatabase: fakeDb(),
+      now: () => 1,
+    });
+    expect(outcome.ok).toBe(false);
+    expect(readJsoncRaw(p)).toBe(clientText);
+  });
+
+  it('a valid but EMPTY defs book still REPLACEs (def delete propagation is kept)', async () => {
+    const p = withDb(withService(sandboxPaths()));
+    seedDefs(p, {}); // the operator deleted every provider
+    writeClientJsonc(p, ['{', '  "providers": { "gone": { "package": "x" } }', '}'].join('\n'));
+
+    const outcome = await pushFromOcr('opencode-v2', new OcrStore({ paths: p, now: () => 1 }), {
+      paths: p,
+      openDatabase: fakeDb(),
+      now: () => 1,
+    });
+    expect(outcome.ok).toBe(true);
+    expect(outcome.defsChanged).toBe(true);
+    const parsed = JSON.parse(readJsoncRaw(p));
+    expect(parsed.providers).toEqual({});
+    // the pre-sync client file is preserved for the operator
+    expect(fs.readFileSync(`${clientJsoncPath(p)}.bak.ocr-defs`, 'utf8')).toContain('gone');
+  });
+
+  it('a CHANGED def-only render reloads the service once; an unchanged render never does', async () => {
+    const p = withDb(withService(sandboxPaths()));
+    seedDefs(p, {
+      acme: { package: '@opencode/ai/providers/openai-compatible', settings: { baseURL: 'https://acme.test/v1' } },
+    });
+    writeClientJsonc(p, '{}');
+    const reloadPosts: string[] = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      if (String(init?.method ?? 'GET') === 'POST' && url.includes('/api/location/reload')) reloadPosts.push(url);
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    };
+    const ocr = new OcrStore({ paths: p, now: () => 1 }); // no keys: a pure def-only change
+
+    const first = await pushFromOcr('opencode-v2', ocr, { paths: p, fetchImpl, openDatabase: fakeDb(), now: () => 1 });
+    expect(first.ok).toBe(true);
+    expect(first.defsMaterialized).toBe(1);
+    expect(first.defsChanged).toBe(true);
+    expect(first.defsReloaded).toBe(true); // def-only changes reach a RUNNING service
+    expect(reloadPosts).toHaveLength(1);
+
+    const second = await pushFromOcr('opencode-v2', ocr, { paths: p, fetchImpl, openDatabase: fakeDb(), now: () => 2 });
+    expect(second.defsChanged).toBe(false);
+    expect(second.defsReloaded).toBeUndefined();
+    expect(reloadPosts).toHaveLength(1); // no change = no reload cost
+  });
+
+  it('writes the client config the client actually uses: opencode.json is never shadowed by a stray .jsonc', async () => {
+    const p = withDb(withService(sandboxPaths()));
+    seedDefs(p, {
+      acme: { package: '@opencode/ai/providers/openai-compatible', settings: { baseURL: 'https://acme.test/v1' } },
+    });
+    const jsonPath = path.join(p.configDir, 'opencode.json');
+    fs.writeFileSync(jsonPath, '{}', 'utf8');
+
+    const outcome = await pushFromOcr('opencode-v2', new OcrStore({ paths: p, now: () => 1 }), {
+      paths: p,
+      openDatabase: fakeDb(),
+      now: () => 1,
+    });
+    expect(outcome.ok).toBe(true);
+    expect(JSON.parse(fs.readFileSync(jsonPath, 'utf8')).providers.acme.settings.baseURL).toBe('https://acme.test/v1');
+    expect(fs.existsSync(path.join(p.configDir, 'opencode.jsonc'))).toBe(false); // no stray second config
+  });
 });

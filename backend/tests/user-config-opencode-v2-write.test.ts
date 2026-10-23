@@ -5,7 +5,7 @@ import path from 'node:path';
 import {
   getProviderNodeById,
   getProviderModelDefs,
-  upsertCustomProvider,
+  upsertProviderDef,
   upsertProviderModel,
   opencodeV2PackageFor,
 } from '../src/opencode/user-config.js';
@@ -15,7 +15,7 @@ import { wireFor } from '../src/providers/wire.js';
 
 /**
  * Provider-definition WRITES.
- * upsertCustomProvider emits exactly one shape: the v2 node (package/settings/headers/
+ * upsertProviderDef emits exactly one shape: the v2 node (package/settings/headers/
  * env/canonical/body) into opencode's native `providers` slot. There is no second
  * generation to select and no legacy npm/options emission left; requests that carry a
  * legacy-shaped node are refused, not converted. Fixtures follow user-config-v2-read.test.ts:
@@ -59,10 +59,10 @@ function readRaw(): any {
   return { providers: readProviderDefsFile()?.providers ?? {} };
 }
 
-describe('upsertCustomProvider — opencode v2 shape emission', () => {
+describe('upsertProviderDef — opencode v2 shape emission', () => {
   it('writes package/settings/headers/env — no npm/options slots, no auth.json', () => {
     const file = writeConfig('{}');
-    const res = upsertCustomProvider({
+    const res = upsertProviderDef({
       id: 'acme',
       name: 'Acme',
       npm: '@ai-sdk/openai-compatible',
@@ -102,7 +102,7 @@ describe('upsertCustomProvider — opencode v2 shape emission', () => {
         },
       })
     );
-    const res = upsertCustomProvider({
+    const res = upsertProviderDef({
       id: 'acmev2',
       npm: '@ai-sdk/anthropic',
       baseURL: 'https://acme.test/v1',
@@ -121,7 +121,7 @@ describe('upsertCustomProvider — opencode v2 shape emission', () => {
 
   it('refuses apiKey without apiKeyInline — no secret in jsonc, no auth.json write (task test b)', () => {
     const file = writeConfig('{}');
-    const res = upsertCustomProvider({
+    const res = upsertProviderDef({
       id: 'acme',
       baseURL: 'https://acme.test/v1',
       apiKey: 'sk-live-secret-0001',
@@ -137,7 +137,7 @@ describe('upsertCustomProvider — opencode v2 shape emission', () => {
 
   it('explicit apiKeyInline=true opts the literal INTO settings.apiKey (and nowhere else)', () => {
     const file = writeConfig('{}');
-    const res = upsertCustomProvider({
+    const res = upsertProviderDef({
       id: 'acme',
       baseURL: 'https://acme.test/v1',
       apiKey: 'sk-explicit-inline-2',
@@ -152,13 +152,13 @@ describe('upsertCustomProvider — opencode v2 shape emission', () => {
 
   it('options passthrough: template apiKey → env translation, literal apiKey preserved, headers hoisted', () => {
     const file = writeConfig('{}');
-    upsertCustomProvider({
+    upsertProviderDef({
       id: 'tpl',
       baseURL: 'https://tpl.test/v1',
       options: { apiKey: '{env:LEGACY_TOKEN}', timeoutMs: 5 },
       generation: 'opencode-v2',
     });
-    upsertCustomProvider({
+    upsertProviderDef({
       id: 'lit',
       baseURL: 'https://lit.test/v1',
       options: { apiKey: 'sk-existing-inline', headers: { 'X-From': 'options' } },
@@ -177,7 +177,7 @@ describe('upsertCustomProvider — opencode v2 shape emission', () => {
 
   it('emits canonical/env/body opencode v2 slots and models provider.npm→provider.package (reverse of normalizeModelDef)', () => {
     const file = writeConfig('{}');
-    const res = upsertCustomProvider({
+    const res = upsertProviderDef({
       id: 'acme',
       npm: '@ai-sdk/openai-compatible',
       baseURL: 'https://acme.test/v1',
@@ -209,8 +209,8 @@ describe('upsertCustomProvider — opencode v2 shape emission', () => {
       headers: { 'X-T': '1' },
       models: { m1: { provider: { npm: '@ai-sdk/anthropic' } } },
     };
-    const r1 = upsertCustomProvider({ id: 'eq1', ...common, npm: '@ai-sdk/openai-compatible', generation: 'opencode-v1' });
-    const r2 = upsertCustomProvider({
+    const r1 = upsertProviderDef({ id: 'eq1', ...common, npm: '@ai-sdk/openai-compatible', generation: 'opencode-v1' });
+    const r2 = upsertProviderDef({
       id: 'eq2',
       ...common,
       npm: '@ai-sdk/openai-compatible', // writer maps it to the opencode v2 compatible-runtime package
