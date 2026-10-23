@@ -2907,6 +2907,29 @@ export function registerConsoleRoutes(
     },
 
     /**
+     * Reorder one provider's model map. Body: `{ ids: string[] }` — the target
+     * order of the models this provider owns (unknown ids ignored, omitted ids
+     * keep their relative order at the tail, see reorderProviderModels).
+     */
+    modelReorder: async (req: any, reply: any) => {
+      const { id } = req.params as { id: string };
+      const body = req.body as { ids?: unknown } | undefined;
+      const ids = Array.isArray(body?.ids) ? body!.ids.filter((x): x is string => typeof x === 'string') : [];
+      if (ids.length === 0) {
+        return reply.status(400).send({ success: false, error: 'ids[] is required' });
+      }
+      const { getProviderNodeById, reorderProviderModels } = await import('../opencode/user-config.js');
+      if (!getProviderNodeById(id)) {
+        return reply.status(404).send({ success: false, error: `Provider '${id}' is not defined in the provider defs file` });
+      }
+      const result = reorderProviderModels(id, ids);
+      if (!result.success) return reply.status(400).send(result);
+      const { catalogRepository } = await import('../opencode/catalog/repository.js');
+      await catalogRepository.ensureOcrStore();
+      return { status: 'ok', ...result };
+    },
+
+    /**
      * Pull models into the provider's config definition. Data source is chosen
      * automatically: providers with baseURL + credential are pulled LIVE from
      * their own /v1/models (failures surface real errors); providers without a
@@ -3381,6 +3404,7 @@ export function registerConsoleRoutes(
     app.patch(`${prefix}/opencode/providers/:id/models/:modelId`, ocHandlers.modelUpdate);
     app.delete(`${prefix}/opencode/providers/:id/models/:modelId`, ocHandlers.modelRemove);
     app.post(`${prefix}/opencode/providers/:id/models/pull`, ocHandlers.modelsPull);
+    app.post(`${prefix}/opencode/providers/:id/models/reorder`, ocHandlers.modelReorder);
     app.post(`${prefix}/opencode/providers/:id/models/clear`, ocHandlers.modelsClear);
 
     // Per-credential credential writes (activate / rename / disconnect).

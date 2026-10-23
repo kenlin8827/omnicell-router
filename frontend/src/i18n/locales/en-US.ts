@@ -405,6 +405,8 @@ export const enUS: TranslationDict = {
     pmClearAllConfirm: 'Clear ALL models of provider "{id}"?',
     pmClearPatternConfirm: 'Remove models of provider "{id}" matching "{pattern}"?',
     pmEdit: 'Edit',
+    pmMoveUp: 'Move up (order is written to providers.json and pushed to client defs)',
+    pmMoveDown: 'Move down (order is written to providers.json and pushed to client defs)',
     pmEditName: 'Name',
     pmEditContext: 'Context limit',
     pmEditOutput: 'Output limit',

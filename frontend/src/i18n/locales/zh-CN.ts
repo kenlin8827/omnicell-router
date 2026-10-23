@@ -403,6 +403,8 @@ export const zhCN: TranslationDict = {
     pmClearAllConfirm: '确认清空 provider "{id}" 的全部模型？',
     pmClearPatternConfirm: '确认删除 provider "{id}" 中匹配 "{pattern}" 的模型？',
     pmEdit: '编辑',
+    pmMoveUp: '上移（顺序写回 providers.json，并同步到客户端 defs）',
+    pmMoveDown: '下移（顺序写回 providers.json，并同步到客户端 defs）',
     pmEditName: '名称',
     pmEditContext: '上下文上限',
     pmEditOutput: '输出上限',

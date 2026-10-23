@@ -752,6 +752,50 @@ export function removeProviderModel(providerId: string, modelId: string): { succ
 }
 
 /**
+ * Reorder `providers.<id>.models` to an explicit id order.
+ *
+ * The defs file IS the order truth: `materializeDefs` renders the node verbatim
+ * into the client config and its drift check is order-sensitive, so moving a row
+ * is a real write (one client defs push), never a console-only preference.
+ *
+ * `ids` is advisory: ids the node does not have are ignored (a stale row must
+ * never resurrect a deleted model) and ids the caller omitted keep their
+ * relative order at the tail. An order that already matches is a no-op success —
+ * no rewrite, so no pointless push.
+ */
+export function reorderProviderModels(
+  providerId: string,
+  ids: readonly string[]
+): { success: boolean; order?: string[]; changed?: boolean; error?: string } {
+  if (!getProviderNodeById(providerId)) {
+    return { success: false, error: `Provider '${providerId}' is not defined in the provider defs file` };
+  }
+  try {
+    const providers = { ...(readProviderDefsFile()?.providers ?? {}) };
+    const node = { ...providers[providerId] };
+    const models: Record<string, any> =
+      node.models && typeof node.models === 'object' ? (node.models as Record<string, any>) : {};
+    const current = Object.keys(models);
+    if (current.length === 0) return { success: true, order: [], changed: false };
+    const next: Record<string, any> = {};
+    for (const mid of ids) {
+      if (mid in models && !(mid in next)) next[mid] = models[mid];
+    }
+    for (const mid of current) if (!(mid in next)) next[mid] = models[mid];
+    const order = Object.keys(next);
+    const changed = order.length !== current.length || order.some((mid, i) => mid !== current[i]);
+    if (changed) {
+      node.models = next;
+      providers[providerId] = node;
+      writeProviderDefs(providers);
+    }
+    return { success: true, order, changed };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+/**
  * Clear models of a config-defined provider. Without a pattern the whole
  * `models` node is dropped; with a pattern only matching ids are removed
  * (a pattern that matches every id removes the empty `models` node too).

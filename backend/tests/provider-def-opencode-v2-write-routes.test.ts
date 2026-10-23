@@ -429,3 +429,63 @@ describe('boot-direct — opencode v2-written def routes identically to the open
     expect(wireOf('eq2/m1')).toBe(wireOf('eq1/m1'));
   });
 });
+
+// ---------------------------------------------------------------------------
+// 5. model order is defs-file truth (the console model dialog's up/down)
+// ---------------------------------------------------------------------------
+
+describe('POST /opencode/providers/:id/models/reorder', () => {
+  const seed = (models: string[]) =>
+    writeProviderDefs({
+      acme: {
+        package: '@opencode/ai/providers/openai-compatible',
+        baseURL: 'https://acme.test/v1',
+        models: Object.fromEntries(models.map((m) => [m, { name: m }])),
+      },
+    });
+  const reorder = (ids: unknown) =>
+    app.inject({
+      method: 'POST',
+      url: '/api/admin/opencode/providers/acme/models/reorder',
+      payload: { ids },
+    });
+
+  it('rewrites the model key order; omitted ids keep their tail order', async () => {
+    seed(['a', 'b', 'c']);
+    const res = await reorder(['c', 'a']);
+    expect(res.statusCode).toBe(200);
+    expect(res.json().changed).toBe(true);
+    expect(res.json().order).toEqual(['c', 'a', 'b']);
+    const node = rawJsonc().providers.acme;
+    expect(Object.keys(node.models)).toEqual(['c', 'a', 'b']);
+    // a reorder is not a def edit — definitions survive verbatim
+    expect(node.models.a).toEqual({ name: 'a' });
+  });
+
+  it('an already-matching order is a no-op success (no rewrite, no client push)', async () => {
+    seed(['a', 'b']);
+    const res = await reorder(['a', 'b']);
+    expect(res.statusCode).toBe(200);
+    expect(res.json().changed).toBe(false);
+  });
+
+  it('unknown ids are ignored — a stale row cannot resurrect a deleted model', async () => {
+    seed(['a', 'b']);
+    const res = await reorder(['ghost', 'b', 'a']);
+    expect(res.statusCode).toBe(200);
+    expect(res.json().order).toEqual(['b', 'a']);
+    expect(Object.keys(rawJsonc().providers.acme.models)).toEqual(['b', 'a']);
+  });
+
+  it('400 without ids[] and 404 when the provider has no defs node', async () => {
+    seed(['a']);
+    expect((await reorder([])).statusCode).toBe(400);
+    expect((await reorder('a')).statusCode).toBe(400);
+    const missing = await app.inject({
+      method: 'POST',
+      url: '/api/admin/opencode/providers/nope/models/reorder',
+      payload: { ids: ['a'] },
+    });
+    expect(missing.statusCode).toBe(404);
+  });
+});

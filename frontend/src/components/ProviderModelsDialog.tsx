@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { Plus, Trash2, Download, Eye, EyeOff, Pencil, Check, X, Eraser, Loader2, AudioLines, Video, Thermometer, Wand2, Zap, Search, ListChecks } from 'lucide-react';
+import { Plus, Trash2, Download, Eye, EyeOff, Pencil, Check, X, Eraser, Loader2, AudioLines, Video, Thermometer, Wand2, Zap, Search, ListChecks, ArrowUp, ArrowDown } from 'lucide-react';
 import { opencodeApi, type OpenCodeModelView } from '../lib/api';
 import { matchCatalogModel, catalogAutofillPatch, detectEffortLevel } from '../lib/catalogAutofill';
 import { effortOptionList } from '../lib/effort';
@@ -223,11 +223,10 @@ export const ProviderModelsDialog: React.FC<{
       // Every connected provider owns a node (connect-time doctrine); an empty
       // models map is a valid, fillable universe.
       const res = await opencodeApi.listProviderModels(providerId);
-      setRows(
-        Object.entries(res.models || {})
-          .map(([id, d]: [string, any]) => ({ id, def: d || {} }))
-          .sort((a, b) => a.id.localeCompare(b.id))
-      );
+      // NO display sort: the defs file is the order truth (the client defs push
+      // renders it verbatim), so the list shows the stored order and ↑/↓ move
+      // rows by rewriting it.
+      setRows(Object.entries(res.models || {}).map(([id, d]: [string, any]) => ({ id, def: d || {} })));
     } catch (err: any) {
       toast.error(err.message);
     } finally {
@@ -508,6 +507,41 @@ export const ProviderModelsDialog: React.FC<{
     });
   };
 
+  /**
+   * Move one row one slot and PERSIST the new order.
+   *
+   * The neighbour is taken from the filtered view (so ↑/↓ under a filter moves
+   * past the row the operator actually sees), while the payload is the full id
+   * list — the endpoint rewrites the provider's model map. The defs file is the
+   * order truth, so the local list is updated optimistically and reloaded from
+   * disk only when the write fails.
+   */
+  const moveRow = async (rowId: string, dir: -1 | 1) => {
+    if (busy) return;
+    const order = rows.map((r) => r.id);
+    const visible = filteredRows.map((r) => r.id);
+    const vi = visible.indexOf(rowId);
+    const neighbour = vi >= 0 ? visible[vi + dir] : undefined;
+    if (!neighbour) return;
+    const from = order.indexOf(rowId);
+    const to = order.indexOf(neighbour);
+    if (from < 0 || to < 0 || from === to) return;
+    order.splice(from, 1);
+    order.splice(to, 0, rowId);
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    setRows(order.map((id) => byId.get(id)!));
+    setPending('reorder');
+    try {
+      await opencodeApi.reorderProviderModels(providerId, order);
+      onChanged?.();
+    } catch (err: any) {
+      toast.error(apiErrorText(err, providerId, t));
+      await load(); // the persisted order wins — restore what is actually on disk
+    } finally {
+      setPending(null);
+    }
+  };
+
   const showHoverCard = (row: ModelRow, e: React.MouseEvent) => {
     if (form) return;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -650,7 +684,7 @@ export const ProviderModelsDialog: React.FC<{
             style={{ flex: 1, minHeight: 120, display: 'flex', flexDirection: 'column', overflowY: 'auto', opacity: loading ? 0.55 : 1, transition: 'opacity 0.15s ease' }}
             onScroll={() => setHover(null)}
           >
-            {filteredRows.map((row) => {
+            {filteredRows.map((row, idx) => {
               const d = row.def || {};
               const effort = d.settings?.reasoningEffort;
               return (
@@ -692,6 +726,22 @@ export const ProviderModelsDialog: React.FC<{
                     </span>
                   )}
                   <div className="row-actions" style={{ display: 'flex', gap: 4, marginLeft: d.limit?.context || testResults[row.id] ? 0 : 'auto' }}>
+                    <button
+                      className="btn btn-sm btn-icon"
+                      title={t('op.pmMoveUp')}
+                      disabled={busy || idx === 0}
+                      onClick={() => moveRow(row.id, -1)}
+                    >
+                      <ArrowUp size={11} />
+                    </button>
+                    <button
+                      className="btn btn-sm btn-icon"
+                      title={t('op.pmMoveDown')}
+                      disabled={busy || idx === filteredRows.length - 1}
+                      onClick={() => moveRow(row.id, 1)}
+                    >
+                      <ArrowDown size={11} />
+                    </button>
                     <button
                       className="btn btn-sm btn-icon"
                       title={t('op.testBtn')}

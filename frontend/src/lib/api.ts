@@ -3243,6 +3243,21 @@ export const opencodeApi = {
     );
   },
 
+  /** Persist the provider's model order. The defs file is the order truth, so
+   *  this is a real write (the client defs push follows). */
+  async reorderProviderModels(
+    id: string,
+    ids: string[]
+  ): Promise<{ status: string; success: boolean; order: string[]; changed: boolean }> {
+    return ocJson(
+      await fetch(`/api/admin/opencode/providers/${encodeURIComponent(id)}/models/reorder`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      })
+    );
+  },
+
   async pullProviderModels(
     id: string,
     opts: { pattern?: string; ids?: string[]; dryRun?: boolean; live?: boolean } = {}

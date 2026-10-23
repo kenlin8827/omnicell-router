@@ -418,6 +418,8 @@ export interface TranslationDict {
     pmClearAllConfirm: string;
     pmClearPatternConfirm: string;
     pmEdit: string;
+    pmMoveUp: string;
+    pmMoveDown: string;
     pmEditName: string;
     pmEditContext: string;
     pmEditOutput: string;
