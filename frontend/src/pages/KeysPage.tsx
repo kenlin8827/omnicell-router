@@ -221,6 +221,8 @@ const ProviderLogo: React.FC<{ id: string; logo?: string; size?: number }> = ({ 
 
 // Outline badges: transparent fill, border derived from the text hue (the
 // bg param is legacy at call sites — kept for signature stability).
+// whiteSpace: nowrap — a pill never breaks mid-text (CJK allows a break
+// between any two characters); squeezed badges wrap as whole units instead.
 const badgeStyle = (color: string, _bg: string): React.CSSProperties => ({
   background: 'transparent',
   color,
@@ -229,6 +231,7 @@ const badgeStyle = (color: string, _bg: string): React.CSSProperties => ({
   padding: '2px 8px',
   borderRadius: '99px',
   border: `1px solid color-mix(in srgb, ${color} 45%, transparent)`,
+  whiteSpace: 'nowrap',
 });
 
 type TFn = (path: string, params?: Record<string, string | number>) => string;
@@ -264,17 +267,42 @@ const syncOutcomeText = (o: CredentialSyncOutcome | undefined, t: TFn): string =
   }
   if (skipped > 0) parts.push(t('op.syncSkippedCount', { n: skipped }));
   if (failed > 0) parts.push(t('op.syncFailedCount', { n: failed }));
-  // The def half of a v2 write: rendered provider nodes, and — when a changed
-  // render could not be reloaded — the loudest signal in the row (the client is
-  // serving stale defs until the next successful push).
+  // The def half of a v2 write: rendered provider nodes. A failed reload is NOT
+  // a metric — it is a state warning, so it rides the row's badge cluster (short
+  // label + full explanation on hover) instead of bloating this dim summary.
   if (o.defsMaterialized !== undefined) parts.push(t('op.syncDefsSummary', { n: o.defsMaterialized }));
-  if (o.defsChanged === true && o.defsReloaded === false) parts.push(t('op.syncDefsReloadFailed'));
   // The def half of a READ: the client's hand-written provider defs are imported
   // add-only, through the adapter of the client that was synced.
   if (o.defsImported !== undefined && (o.defsImported > 0 || (o.defsConverted ?? 0) > 0)) {
     parts.push(t('op.syncDefsImported', { n: o.defsImported, c: o.defsConverted ?? 0 }));
   }
   return parts.join(' · ');
+};
+
+/** State warnings that must NOT be folded into the dim one-line summary —
+ * they are conditions, not counts (e.g. the client keeps serving stale defs
+ * until the next successful push). Callers render them as a badge (row) or
+ * append them to a toast (manual run). */
+const syncOutcomeWarnings = (o: CredentialSyncOutcome | undefined, t: TFn): string[] => {
+  const out: string[] = [];
+  if (o?.defsChanged === true && o.defsReloaded === false) out.push(t('op.syncDefsReloadFailed'));
+  return out;
+};
+
+/** Tooltip for an outcome line: the PROVIDER dimension behind the credential
+ *  counts. Returned only when the two differ — a provider holding several keys
+ *  is the one case where "9 credentials" reads as "9 providers" (the line's
+ *  visible text is the credential count, so a title equal to it says nothing). */
+const syncOutcomeBreakdown = (o: CredentialSyncOutcome | undefined, t: TFn): string => {
+  if (!o || o.entries.length === 0) return '';
+  const byProvider = new Map<string, number>();
+  for (const e of o.entries) byProvider.set(e.provider, (byProvider.get(e.provider) ?? 0) + 1);
+  if (byProvider.size === o.entries.length) return '';
+  const list = Array.from(byProvider.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([provider, n]) => `${provider} ×${n}`)
+    .join(' · ');
+  return t('op.syncProvidersBreakdown', { p: byProvider.size, list });
 };
 
 const syncHeadCell: React.CSSProperties = {
@@ -1637,7 +1665,9 @@ export const KeysPage: React.FC = () => {
       const outcome = direction === 'read' ? res.read : res.write;
       const failed = outcome?.entries.filter((e) => e.action === 'failed').length ?? 0;
       const label = t(direction === 'read' ? 'op.syncPull' : 'op.syncPush');
-      const summary = outcome ? syncOutcomeText(outcome, t) : t('op.syncGenericFailure');
+      const summary = outcome
+        ? [syncOutcomeText(outcome, t), ...syncOutcomeWarnings(outcome, t)].filter(Boolean).join(' · ')
+        : t('op.syncGenericFailure');
       if (!outcome || outcome.precondition || failed > 0) {
         toast.error(t('op.syncToastFail', { label, summary }));
       } else if (outcome.entries.length === 0) {
@@ -1873,7 +1903,7 @@ export const KeysPage: React.FC = () => {
           <Plug size={18} color="var(--accent)" />
           <span style={{ fontWeight: 700, fontSize: 15 }}>{t('op.title')}</span>
         </div>
-        <p style={{ color: 'var(--text-muted)', fontSize: 12, margin: '0 0 16px' }}>{t('op.desc', { sink: sinkLabel })}</p>
+        <p style={{ color: 'var(--text-muted)', fontSize: 12, margin: '0 0 16px' }} title={ocPaths.configPath}>{t('op.desc', { sink: sinkLabel })}</p>
 
         {notice && (
           <div style={{ padding: '10px 14px', borderRadius: '8px', background: noticeTone === 'err' ? 'color-mix(in srgb, var(--accent-rose) 12%, transparent)' : 'color-mix(in srgb, var(--accent-emerald) 15%, transparent)', border: `1px solid ${noticeTone === 'err' ? 'color-mix(in srgb, var(--accent-rose) 30%, transparent)' : 'color-mix(in srgb, var(--accent-emerald) 30%, transparent)'}`, color: noticeTone === 'err' ? 'var(--accent-rose)' : 'var(--accent-emerald)', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
@@ -1888,7 +1918,7 @@ export const KeysPage: React.FC = () => {
         )}
 
         {/* ---- Tabs ---- */}
-        <div style={{ display: 'flex', gap: 8, marginBottom: 18 }}>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
           <button style={tabBtn('connected', t('op.tabConnected'))} onClick={() => setActiveTab('connected')}>
             {t('op.tabConnected')} ({ocProviders.length})
           </button>
@@ -1906,13 +1936,7 @@ export const KeysPage: React.FC = () => {
         {/* Scrollable tab content: the tab bars stay fixed, long lists scroll here. */}
         <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
         {activeTab === 'connected' && (<>
-        {/* ---- Connected providers (defs file providers map ∪ bound store) ---- */}
-        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>{t('op.connectedTitle')}</div>
-        <p style={{ color: 'var(--text-dim)', fontSize: 11, margin: '0 0 12px' }} title={ocPaths.configPath}>
-          {t('op.connectedDesc', { sink: sinkLabel })}
-        </p>
-
-        {/* ---- Bound credential-store status ---- */}
+        {/* ---- Connected providers: bound credential-store status (defs file providers map ∪ bound store) ---- */}
         {storeStatus && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4, margin: '0 0 12px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -2253,7 +2277,6 @@ export const KeysPage: React.FC = () => {
 
         {activeTab === 'catalog' && (<>
         {/* ---- Connect catalog provider ---- */}
-        <div style={{ fontSize: 13, fontWeight: 700, margin: '0 0 8px' }}>{t('op.connectTitle')}</div>
         <p style={{ color: 'var(--text-dim)', fontSize: 11, margin: '0 0 12px' }}>
           {t('op.connectDesc')} · {t('op.catalogSource', { source: catalogSource || 'none' })}
         </p>
@@ -2375,7 +2398,6 @@ export const KeysPage: React.FC = () => {
 
         {activeTab === 'custom' && (<>
         {/* ---- Custom provider form ---- */}
-        <div style={{ fontSize: 13, fontWeight: 700, margin: '0 0 8px' }}>{t('op.customTitle')}</div>
         <p style={{ color: 'var(--text-dim)', fontSize: 11, margin: '0 0 12px' }}>{t('op.customDesc')}</p>
         {/* Capped two-column form (was an uncapped 3-col grid that stretched every
             input to ~900px on wide screens). Base URL spans the row — it is the one
@@ -2446,8 +2468,8 @@ export const KeysPage: React.FC = () => {
 
         {activeTab === 'sync' && (<>
         {/* ---- Credential sync (client ⇄ OCR file; the OCR file is the single truth) ---- */}
-        <div style={{ fontSize: 13, fontWeight: 700, margin: '0 0 8px' }}>{t('op.syncTitle')}</div>
-        <p style={{ color: 'var(--text-dim)', fontSize: 11, margin: '0 0 14px' }}>{t('op.syncDesc')}</p>
+        <p style={{ color: 'var(--text-dim)', fontSize: 11, lineHeight: 1.7, margin: '0 0 7px' }}>{t('op.syncDesc')}</p>
+        <p style={{ color: 'var(--text-dim)', fontSize: 11, lineHeight: 1.7, margin: '0 0 14px' }}>{t('op.syncDescModes')}</p>
         <div
           style={{
             display: 'grid',
@@ -2478,13 +2500,22 @@ export const KeysPage: React.FC = () => {
                 {c.present && !c.writeReady && (
                   <span style={badgeStyle('var(--text-dim)', 'transparent')}>{t('op.syncServiceMissing')}</span>
                 )}
-                {c.present && c.defsDrift === true && (
+                {c.present && c.defsDrift === true && !(c.lastWrite?.defsChanged === true && c.lastWrite.defsReloaded === false) && (
                   // The client's materialized `providers` slot is behind the defs
                   // book. Autosync is OFF by default, so this is the normal state
                   // after any provider/model edit — it must be VISIBLE, because a
                   // silent drift is indistinguishable from a working push.
                   <span style={badgeStyle('var(--accent-amber)', 'transparent')} title={t('op.syncDefsDriftTip')}>
                     {t('op.syncDefsDrift')}
+                  </span>
+                )}
+                {c.lastWrite?.defsChanged === true && c.lastWrite.defsReloaded === false && (
+                  // A changed def render the client refused to reload: it keeps
+                  // serving the OLD provider list until the next push. This is a
+                  // condition, not a count — it belongs here, not in the dim
+                  // one-line outcome summary under "last write".
+                  <span style={badgeStyle('var(--accent-rose)', 'transparent')} title={t('op.syncDefsReloadFailed')}>
+                    {t('op.syncDefsReloadFailedShort')}
                   </span>
                 )}
               </div>
@@ -2515,7 +2546,7 @@ export const KeysPage: React.FC = () => {
               <div style={syncTimeCell}>
                 <div>{syncTimeAgo(c.lastReadAt, t)}</div>
                 {syncOutcomeText(c.lastRead, t) && (
-                  <div style={syncOutcomeStyle} title={syncOutcomeText(c.lastRead, t)}>
+                  <div style={syncOutcomeStyle} title={syncOutcomeBreakdown(c.lastRead, t) || undefined}>
                     {syncOutcomeText(c.lastRead, t)}
                   </div>
                 )}
@@ -2523,7 +2554,7 @@ export const KeysPage: React.FC = () => {
               <div style={syncTimeCell}>
                 <div>{syncTimeAgo(c.lastWriteAt, t)}</div>
                 {syncOutcomeText(c.lastWrite, t) && (
-                  <div style={syncOutcomeStyle} title={syncOutcomeText(c.lastWrite, t)}>
+                  <div style={syncOutcomeStyle} title={syncOutcomeBreakdown(c.lastWrite, t) || undefined}>
                     {syncOutcomeText(c.lastWrite, t)}
                   </div>
                 )}
@@ -2653,7 +2684,12 @@ export const KeysPage: React.FC = () => {
                   onChange={(v) => setEditDef({ ...editDef, npm: v })}
                   clearable
                   options={[
-                    ...(editDef.npm ? [{ value: editDef.npm, label: editDef.npm }] : []),
+                    // Current value rides first ONLY when the vocabulary does not
+                    // already list it — otherwise the dropdown shows the same
+                    // alias twice, both ticked.
+                    ...(editDef.npm && !npmOptions.includes(editDef.npm)
+                      ? [{ value: editDef.npm, label: editDef.npm }]
+                      : []),
                     ...npmOptions.map((pkg) => ({ value: pkg, label: pkg })),
                   ]}
                 />

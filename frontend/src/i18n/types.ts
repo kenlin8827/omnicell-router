@@ -390,8 +390,6 @@ export interface TranslationDict {
   op: {
     title: string;
     desc: string;
-    connectedTitle: string;
-    connectedDesc: string;
     badgeCustom: string;
     badgeCustomTip: string;
     badgeInline: string;
@@ -414,7 +412,6 @@ export interface TranslationDict {
     deletePurgeCredOnly: string;
     deletedCredOnly: string;
     deleted: string;
-    connectTitle: string;
     connectDesc: string;
     searchCatalog: string;
     refreshCatalog: string;
@@ -589,8 +586,8 @@ export interface TranslationDict {
     pushOpencodeV2DbUnreadable: string;
     // ---- Credential sync (client ⇄ OCR file; the OCR file is the single truth) ----
     syncTab: string;
-    syncTitle: string;
     syncDesc: string;
+    syncDescModes: string;
     syncColClient: string;
     syncColAuto: string;
     syncColLastRead: string;
@@ -622,9 +619,11 @@ export interface TranslationDict {
     syncPrecServiceUnreachable: string;
     syncDefsSummary: string;
     syncDefsReloadFailed: string;
+    syncDefsReloadFailedShort: string;
     syncDefsImported: string;
     syncDefsDrift: string;
     syncDefsDriftTip: string;
+    syncProvidersBreakdown: string;
     syncGenericFailure: string;
     syncToastOk: string;
     syncToastFail: string;

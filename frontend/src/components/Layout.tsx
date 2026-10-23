@@ -312,7 +312,13 @@ export const Layout: React.FC = () => {
       {/* Sidebar Navigation */}
       <aside
         style={{
-          width: '240px',
+          // 216px: sized to the longest label, not guessed. The label column
+          // is 156px wide; the longest Chinese label is 5 glyphs (=70px at
+          // 14px) and the longest English one is 16 chars (≈114px). At the
+          // old 240px/13px pair ~62% of every Chinese row sat empty, so the
+          // menu read as a narrow text block floating in a wide column.
+          // 216px + 14px lifts the glyph share and returns 24px to content.
+          width: '216px',
           background: 'var(--sidebar-bg)',
           backdropFilter: 'blur(24px)',
           borderRight: '1px solid var(--card-border)',
@@ -351,15 +357,20 @@ export const Layout: React.FC = () => {
           >
             <Zap size={18} strokeWidth={2.5} fill="currentColor" />
           </div>
-          <div>
-            <div style={{ fontSize: '15px', fontWeight: 800, letterSpacing: '-0.02em' }}>OneCastRouter</div>
+          {/* minWidth:0 + overflow:hidden keep the tagline from blowing the
+              aside wider than 216px: "Gateway Console · v1.2.3" is ~158px of
+              mono at 11px against a 128px column, so it ellipsizes instead of
+              forcing a horizontal scrollbar on the sidebar (the overflow-y:
+              hidden parent turns a visible x-axis into auto). */}
+          <div style={{ minWidth: 0, overflow: 'hidden' }}>
+            <div style={{ fontSize: '15px', fontWeight: 800, letterSpacing: '-0.02em', whiteSpace: 'nowrap' }}>OneCastRouter</div>
             {/* Tagline + static runtime version. The version used to trail at
                 the far end of the sidebar footer, where long env names pushed
                 it off-screen; it belongs with the product identity instead.
                 Still comes live from /api/admin/status (a stale cached bundle
                 can't misreport); the build-time constant is the fallback
                 until status arrives or while the gateway is unreachable. */}
-            <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: FONT_MONO, whiteSpace: 'nowrap' }}>
+            <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: FONT_MONO, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
               {t('nav.consoleTag')} · {t('nav.version', { version: status?.version ?? __APP_VERSION__ })}
             </div>
           </div>
@@ -448,7 +459,7 @@ export const Layout: React.FC = () => {
                             justifyContent: 'space-between',
                             padding: '8px 12px',
                             borderRadius: '8px',
-                            fontSize: '13px',
+                            fontSize: '14px',
                             fontWeight: isActive ? 600 : 500,
                             color: isActive ? 'var(--accent)' : 'var(--text-main)',
                             background: isActive ? 'var(--surface-hover)' : 'transparent',
