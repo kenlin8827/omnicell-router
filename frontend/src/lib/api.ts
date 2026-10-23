@@ -612,12 +612,21 @@ export interface HttpExchangeEvent {
   completionTokens?: number;
   /** Epoch ms of the first streamed body chunk (streamed exchanges only). */
   firstByteTs?: number;
+  /**
+   * Flattened LAST user message of the request (the current turn's prompt),
+   * capped — stamped on client-request events at write time so metadata-only
+   * reads (bodies=none) still render the turn prompt in the timeline.
+   * Absent on other phases/directions and for bodies without user text.
+   */
+  promptSummary?: string;
 }
 
 export interface CaptureTurn {
   traceId: string;
   sessionId: string;
   model: string;
+  /** Lifted from the client-request event — see HttpExchangeEvent.promptSummary. */
+  promptSummary?: string;
   clientRequest?: HttpExchangeEvent;
   gatewayResponse?: HttpExchangeEvent;
   upstreamRequest?: HttpExchangeEvent;

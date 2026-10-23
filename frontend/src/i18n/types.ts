@@ -900,6 +900,9 @@ hiddenBadge: string;
     colModel: string;
     /** Detail-grid thinking-level column: header + cell tooltip. */
     colThink: string;
+    colPrompt: string;
+    promptNoUser: string;
+    promptFallbackTip: string;
     /** Ask-provenance attribution (ADR-0012): "source: X" tooltip line, the
      *  five author names, and the prefix marking a gateway-decided level. */
     thinkSource: string;
@@ -951,6 +954,7 @@ hiddenBadge: string;
     filterEmpty: string;
     emptySessions: string;
     copiedSessionId: string;
+    copiedPrompt: string;
     copiedPromptTitle: string;
     thinkAutoTip: string;
     thinkClientTip: string;
@@ -1241,6 +1245,9 @@ hiddenBadge: string;
     pickSession: string;
     turnsTitle: string;
     refreshTurnsHint: string;
+    /** Detail-pane auto-refresh toggle label + title hint. */
+    autoRefresh: string;
+    autoRefreshHint: string;
     turnsUnit: string;
     /** Timeline header summary: total gateway latency over the displayed turns. */
     totalTime: string;

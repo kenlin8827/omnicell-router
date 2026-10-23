@@ -348,6 +348,28 @@ describe('CaptureRecorder', () => {
     assert.equal(E(undefined), undefined);
   });
 
+  it('extractTurnPrompt reads the last user message across body shapes', () => {
+    const E = CaptureRecorder.extractTurnPrompt;
+    // OpenAI chat: last user message wins over the opening one
+    assert.equal(E({ messages: [{ role: 'user', content: 'first' }, { role: 'assistant', content: 'hi' }, { role: 'user', content: 'second' }] }), 'second');
+    // Anthropic tool-result continuation tail: text-less user tail is the turn
+    // itself — must NOT fall through to the previous turn's user text
+    assert.equal(
+      E({ messages: [{ role: 'user', content: 'older turn' }, { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'f' }] }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] }] }),
+      undefined
+    );
+    // Text-part array tail still resolves
+    assert.equal(E({ input: [{ role: 'user', content: [{ type: 'input_text', text: 'responses tail' }] }] }), 'responses tail');
+    // Newlines flattened, capped with ellipsis
+    const long = 'y'.repeat(300);
+    const capped = E({ messages: [{ role: 'user', content: long }] })!;
+    assert.equal(capped.length, 120);
+    assert.ok(capped.endsWith('…'));
+    // No user text at all
+    assert.equal(E({ messages: [{ role: 'user', content: [{ type: 'image_url', image_url: {} }] }] }), undefined);
+    assert.equal(E({}), undefined);
+  });
+
   it('listSessions surfaces the session preview', async () => {
     const dir = makeTmpDir();
     try {

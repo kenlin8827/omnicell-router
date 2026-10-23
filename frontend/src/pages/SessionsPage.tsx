@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowDownWideNarrow, ArrowUpNarrowWide, Users, RefreshCw, Archive, BarChart3, ChevronDown, ChevronRight, Eye, GitBranch, User, Waypoints, X, Search, Trash2 } from 'lucide-react';
+import { ArrowDownWideNarrow, ArrowUpNarrowWide, Users, RefreshCw, Archive, BarChart3, Check, ChevronDown, ChevronRight, Copy, Eye, GitBranch, User, Waypoints, X, Search, Trash2 } from 'lucide-react';
 import { api, type SessionRecord, type TraceRecord } from '../lib/api';
 import { formatReason, type Translate } from '../lib/reason';
 import { copyToClipboard, formatCost, formatSessionId, decodeRate, formatRate, fmtLatency } from '../lib/format';
@@ -274,8 +274,66 @@ const EffortCell: React.FC<{ tr: TraceRecord }> = ({ tr }) => {
   );
 };
 
-type SwitchKind = 'first' | 'ratchet' | 'fallback' | 'switch';
+/**
+ * Per-turn prompt cell for the detail grid: inline summary (or a dim
+ * fallback when the turn carried no user message). Hovering the cell
+ * reveals a copy icon; clicking it copies the full summary. `copied`
+ * flips the icon to a check for a moment as feedback.
+ */
+const PromptCell: React.FC<{ text: string; fallback: string }> = ({ text, fallback }) => {
+  const { t } = useI18n();
+  const toast = useToast();
+  const [hover, setHover] = React.useState(false);
+  const [copied, setCopied] = React.useState(false);
+  const hasText = text.length > 0;
+  return (
+    <span
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => { setHover(false); setCopied(false); }}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: '4px',
+        minWidth: 0,
+        width: '100%',
+        color: hasText ? 'var(--text-muted)' : 'var(--text-dim)',
+      }}
+    >
+      <span
+        data-tip={hasText ? text : t('sessions.promptFallbackTip')}
+        style={{
+          minWidth: 0,
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+        }}
+      >
+        {hasText ? text : fallback}
+      </span>
+      {hasText && hover && (
+        <span
+          style={{ display: 'inline-flex', flexShrink: 0, cursor: 'copy', color: 'var(--text-dim)' }}
+          onClick={async (e) => {
+            e.stopPropagation();
+            const ok = await copyToClipboard(text);
+            if (ok) {
+              setCopied(true);
+              toast.success(t('sessions.copiedPrompt'));
+              window.setTimeout(() => setCopied(false), 1500);
+            } else {
+              toast.error(t('sessions.copyFailed'));
+            }
+          }}
+        >
+          {copied ? <Check size={10} /> : <Copy size={10} />}
+        </span>
+      )}
+    </span>
+  );
+};
 
+type SwitchKind = 'first' | 'ratchet' | 'fallback' | 'switch';
 interface SwitchEvent {
   at: number;
   from: string | null;
@@ -774,7 +832,7 @@ export const SessionsPage: React.FC = () => {
                         }}
                         onClick={async () => {
                           const ok = await copyToClipboard(s.firstUserMessage!);
-                          if (ok) toast.success(t('sessions.copiedPromptTitle'));
+                          if (ok) toast.success(t('sessions.copiedPrompt'));
                           else toast.error(t('sessions.copyFailed'));
                         }}
                       >
@@ -1282,11 +1340,13 @@ export const SessionsPage: React.FC = () => {
                 <div
                   style={{
                     display: 'grid',
-                    // Think column is 96px: worst case = the localized
-                    // gateway-decided prefix (sessions.thinkAutoMark) plus a
+                    // Prompt column is 12ch-floor flex: it shows the turn's
+                    // user-prompt summary (or a fallback description when the
+                    // turn carried no user message), ellipsized with the full
+                    // text in the tooltip. Think stays 96px: worst case = a
                     // degraded req->act span like "xhigh->high" ~= 92px at
-                    // 11px mono; 56px let it bleed into the In column.
-                    gridTemplateColumns: '30px 64px 64px minmax(160px, 1fr) 96px 56px 56px 60px 86px 52px 44px 44px',
+                    // 11px mono beside the source icon.
+                    gridTemplateColumns: '30px 64px 64px minmax(140px, 1fr) minmax(120px, 1fr) 96px 56px 56px 60px 86px 52px 44px 44px',
                     columnGap: '8px',
                     rowGap: '6px',
                     // The model cell renders two stacked lines (name over
@@ -1302,6 +1362,7 @@ export const SessionsPage: React.FC = () => {
                     t('sessions.colStart'),
                     t('sessions.colEnd'),
                     t('sessions.colModel'),
+                    t('sessions.colPrompt'),
                     t('sessions.colThink'),
                     t('sessions.colIn'),
                     t('sessions.colOut'),
@@ -1342,6 +1403,10 @@ export const SessionsPage: React.FC = () => {
                           <PinnedModelCell model={tr.execution.modelUsed} />
                         </span>
                       )}
+                      <PromptCell
+                        text={tr.request?.userPromptSummary ?? ''}
+                        fallback={t('sessions.promptNoUser')}
+                      />
                       <span style={{ textAlign: 'center' }}><EffortCell tr={tr} /></span>
                       <span style={{ textAlign: 'center' }}>{tr.finops.inputTokens.toLocaleString()}</span>
                       <span style={{ textAlign: 'center' }}>{tr.finops.outputTokens.toLocaleString()}</span>

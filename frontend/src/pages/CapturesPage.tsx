@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
-import { Archive, RefreshCw, Trash2, X, AlertTriangle, Download, Search, Copy, Check, Braces, Maximize2, Minimize2 } from 'lucide-react';
+import { Archive, RefreshCw, Trash2, X, AlertTriangle, Download, Search, Copy, Check, Braces, Maximize2, Minimize2, Zap } from 'lucide-react';
 import {
   api,
   type CaptureStatus,
@@ -88,6 +88,10 @@ const RAIL_MIN = 240;
 const RAIL_MAX = 640;
 const RAIL_DEFAULT = 320;
 const RAIL_WIDTH_KEY = 'ocr.captures.railWidth';
+const AUTO_REFRESH_KEY = 'ocr.captures.autoRefresh';
+// Detail-pane tail poll cadence. Deliberately unhurried: the refresh is a
+// quiet in-place turn-list replace, not a loading state.
+const AUTO_REFRESH_INTERVAL_MS = 3000;
 
 function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -466,6 +470,34 @@ const CaptureDrawer: React.FC<{
             <X size={14} />
           </button>
         </div>
+
+        {/* Turn prompt summary — anchors the drawer to its conversation turn
+            (the full text lives inside the clientRequest tab's wire JSON,
+            far too buried for at-a-glance context). Hover shows the full
+            summary; click copies it. Hidden when the turn has no prompt. */}
+        {turn.promptSummary && (
+          <div
+            title={turn.promptSummary}
+            onClick={async () => {
+              const ok = await copyToClipboard(turn.promptSummary!);
+              if (ok) toast.success(t('sessions.copiedPrompt'));
+              else toast.error(t('sessions.copyFailed'));
+            }}
+            style={{
+              padding: '6px 16px 10px',
+              borderBottom: '1px solid var(--divider)',
+              fontSize: '12px',
+              lineHeight: 1.5,
+              color: 'var(--text-muted)',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              cursor: 'copy',
+            }}
+          >
+            {turn.promptSummary}
+          </div>
+        )}
 
         {/* Error banner */}
         {turn.error && (
@@ -850,6 +882,22 @@ export const CapturesPage: React.FC = () => {
   const [apiKeyFilter, setApiKeyFilter] = useState('');
   const [apiKeyOptions, setApiKeyOptions] = useState<{ id: string; name: string }[]>([]);
   const [pendingFile, setPendingFile] = useState<string>('');
+  // Detail-pane auto refresh: quiet tail re-read of the open session archive
+  // every AUTO_REFRESH_INTERVAL_MS. On by default; the choice persists.
+  const [autoRefresh, setAutoRefresh] = useState(() => {
+    try {
+      return localStorage.getItem(AUTO_REFRESH_KEY) !== '0';
+    } catch {
+      return true;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(AUTO_REFRESH_KEY, autoRefresh ? '1' : '0');
+    } catch {
+      /* storage unavailable — the toggle just won't persist */
+    }
+  }, [autoRefresh]);
   const [searchParams] = useSearchParams();
   const sessionParam = searchParams.get('session') || '';
 
@@ -1069,6 +1117,49 @@ export const CapturesPage: React.FC = () => {
       alive = false;
     };
   }, [selectedTurnIdx, turns, bodiesLoaded, loadedFor, selectedDate, selectedFile]);
+
+  /**
+   * Quiet tail refresh for the auto-poll: same request as the session-level
+   * refresh button, but never disturbs the reader — no skeleton, no selection
+   * reset, no loading flag. Skipped entirely while a turn drawer is open, a
+   * read is already in flight, the tab is hidden, or no archive is selected.
+   * On failure it stays silent — the next tick and the refresh buttons are
+   * the retry paths (loadFailedRef semantics untouched).
+   */
+  const autoStateRef = useRef({ loading, selectedTurnIdx, selectedDate, selectedFile, bodiesLoaded });
+  autoStateRef.current = { loading, selectedTurnIdx, selectedDate, selectedFile, bodiesLoaded };
+  const tailRefreshSeqRef = useRef(0);
+  const tailRefresh = useCallback(async () => {
+    const st = autoStateRef.current;
+    if (!st.selectedFile || st.loading || st.selectedTurnIdx !== null || document.hidden) return;
+    const seq = ++tailRefreshSeqRef.current;
+    try {
+      const res = await api.getCaptureEvents(st.selectedDate, st.selectedFile, 500, st.bodiesLoaded ? 'full' : 'none');
+      if (seq !== tailRefreshSeqRef.current) return;
+      // The user may have switched archives mid-flight — the late response
+      // must not clobber the new selection's turns.
+      const cur = autoStateRef.current;
+      if (cur.selectedDate !== st.selectedDate || cur.selectedFile !== st.selectedFile) return;
+      // A drawer opened while this tick was in flight — a new turn landing at
+      // the head shifts row indices and the drawer would silently re-resolve
+      // to a different turn. Skip rather than disturb the reader.
+      if (cur.selectedTurnIdx !== null) return;
+      setTurns([...res.turns].reverse());
+      setEvents(res.events);
+      setTotalTurns(res.totalTurns);
+      setFileTruncated(res.fileTruncated);
+      setBodiesLoaded(st.bodiesLoaded);
+      loadFailedRef.current = false;
+    } catch {
+      /* silent — retried on the next tick */
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!autoRefresh || !selectedFile) return;
+    const id = setInterval(tailRefresh, AUTO_REFRESH_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [autoRefresh, selectedFile, tailRefresh]);
 
   /**
    * Full refresh: status + date chips, then the session list of the selected
@@ -1704,6 +1795,22 @@ export const CapturesPage: React.FC = () => {
                               {chatFull ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
                             </button>
                           )}
+                          {/* Auto tail-refresh toggle for this detail pane —
+                              same quiet re-read as the refresh button, skipped
+                              while the turn drawer is open (see tailRefresh). */}
+                          <button
+                            className="btn btn-sm"
+                            onClick={() => setAutoRefresh(v => !v)}
+                            title={t('captures.autoRefreshHint')}
+                            style={
+                              autoRefresh
+                                ? { color: 'var(--accent)', borderColor: 'var(--accent)' }
+                                : undefined
+                            }
+                          >
+                            <Zap size={12} />
+                            <span>{t('captures.autoRefresh')}</span>
+                          </button>
                           {/* Session-level refresh: re-read just this archive's
                               tail (cheap), vs the header button that reloads
                               status + dates + session list too. */}
@@ -1826,6 +1933,23 @@ export const CapturesPage: React.FC = () => {
                                       </span>
                                     );
                                   })()}
+                                </span>
+                                {/* Turn prompt — the LAST user message, stamped on
+                                    the client-request event at write time so
+                                    metadata-only reads render it. Absent for
+                                    tool-result continuations (dim fallback). */}
+                                <span
+                                  title={turn.promptSummary || t('sessions.promptFallbackTip')}
+                                  style={{
+                                    flex: 1,
+                                    minWidth: 0,
+                                    whiteSpace: 'nowrap',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    color: turn.promptSummary ? 'var(--text-muted)' : 'var(--text-dim)',
+                                  }}
+                                >
+                                  {turn.promptSummary || t('sessions.promptNoUser')}
                                 </span>
                                 {turn.upstreamRequest?.proxy && (
                                   <span

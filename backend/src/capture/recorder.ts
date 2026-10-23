@@ -221,6 +221,14 @@ export interface HttpExchangeEvent {
    * or requests archived before this field existed.
    */
   apiKey?: CaptureKeyIdentity;
+  /**
+   * Flattened LAST user message of the request (the current turn's prompt),
+   * capped — stamped on client-request events at write time so metadata-only
+   * reads (`bodies=none`) can still render the turn prompt in the console
+   * timeline. Absent on other phases/directions and for bodies without user
+   * text (tool-result continuations etc.).
+   */
+  promptSummary?: string;
   /** Error message if THIS phase errored (e.g. upstream request never got a response). */
   error?: string;
   /**
@@ -276,6 +284,8 @@ export interface CaptureTurnSummary {
   traceId: string;
   sessionId: string;
   model: string;
+  /** Lifted from the client-request event — see HttpExchangeEvent.promptSummary. */
+  promptSummary?: string;
   clientRequest?: HttpExchangeEvent;
   gatewayResponse?: HttpExchangeEvent;
   upstreamRequest?: HttpExchangeEvent;
@@ -687,6 +697,9 @@ export class CaptureRecorder {
       id: `evt_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`,
       ts,
       wire,
+      ...(event.direction === 'client' && event.phase === 'request'
+        ? { promptSummary: CaptureRecorder.extractTurnPrompt(truncatedReq.value ?? '') }
+        : {}),
       ...(truncated ? { truncated: true } : {}),
     };
 
@@ -1147,6 +1160,7 @@ export class CaptureRecorder {
         // turn with last-write-wins fields).
         t = newTurn(ev);
         t.clientRequest = ev;
+        t.promptSummary = ev.promptSummary;
         activeByTrace.set(ev.traceId, t);
       } else if (ev.direction === 'client' && ev.phase === 'response') {
         // Pair by spanId with the matching client request (newest first —
@@ -1659,6 +1673,45 @@ export class CaptureRecorder {
     return flat.length <= cap ? flat : flat.slice(0, cap - 1) + '…';
   }
 
+  /**
+   * The LAST user message of a request body, flattened and capped — the
+   * current turn's prompt (history replay carries the full conversation;
+   * the tail is the fresh turn). Stamped onto client-request events at
+   * write time so metadata-only reads (`bodies=none`) can still render the
+   * turn prompt in the timeline. Same disclosure class as the session
+   * preview. Undefined when the body carries no user text.
+   */
+  public static extractTurnPrompt(request: unknown, cap = 120): string | undefined {
+    const text = CaptureRecorder.lastUserText(request);
+    if (!text) return undefined;
+    const flat = text.replace(/\s+/g, ' ').trim();
+    if (!flat) return undefined;
+    return flat.length <= cap ? flat : flat.slice(0, cap - 1) + '…';
+  }
+
+  private static lastUserText(request: unknown, depth = 0): string | undefined {
+    if (request === null || request === undefined || depth > 2) return undefined;
+    if (typeof request === 'string') {
+      // Same truncation-repair contract as firstUserText.
+      const trimmed = request.endsWith(TRUNCATION_SUFFIX)
+        ? request.slice(0, -TRUNCATION_SUFFIX.length)
+        : request;
+      try {
+        return CaptureRecorder.lastUserText(JSON.parse(trimmed), depth + 1);
+      } catch {
+        const repaired = CaptureRecorder.repairTruncatedJson(trimmed);
+        if (repaired !== null) return CaptureRecorder.lastUserText(repaired, depth + 1);
+        return trimmed.slice(0, 300);
+      }
+    }
+    if (typeof request !== 'object') return undefined;
+    const body = request as Record<string, unknown>;
+    if (Array.isArray(body.messages)) return CaptureRecorder.userTextFromMessages(body.messages, 'last');
+    if (Array.isArray(body.input)) return CaptureRecorder.userTextFromMessages(body.input, 'last');
+    if (typeof body.input === 'string') return body.input;
+    return undefined;
+  }
+
   private static firstUserText(request: unknown, depth = 0): string | undefined {
     if (request === null || request === undefined || depth > 2) return undefined;
     if (typeof request === 'string') {
@@ -1679,8 +1732,8 @@ export class CaptureRecorder {
     }
     if (typeof request !== 'object') return undefined;
     const body = request as Record<string, unknown>;
-    if (Array.isArray(body.messages)) return CaptureRecorder.userTextFromMessages(body.messages);
-    if (Array.isArray(body.input)) return CaptureRecorder.userTextFromMessages(body.input);
+    if (Array.isArray(body.messages)) return CaptureRecorder.userTextFromMessages(body.messages, 'first');
+    if (Array.isArray(body.input)) return CaptureRecorder.userTextFromMessages(body.input, 'first');
     if (typeof body.input === 'string') return body.input;
     return undefined;
   }
@@ -1732,8 +1785,13 @@ export class CaptureRecorder {
   }
 
   /** First role === 'user' entry; content as string or text-part array. */
-  private static userTextFromMessages(messages: unknown[]): string | undefined {
-    for (const m of messages) {
+  private static userTextFromMessages(messages: unknown[], pick: 'first' | 'last'): string | undefined {
+    // Walk forward for 'first', backward for 'last' — the session's opening
+    // message anchors the session preview; the LAST user message is the
+    // current turn's prompt (history replay means every request carries the
+    // full conversation, so the tail is the fresh turn).
+    const order = pick === 'first' ? messages : [...messages].reverse();
+    for (const m of order) {
       if (!m || typeof m !== 'object') continue;
       const msg = m as Record<string, unknown>;
       if (msg.role !== 'user') continue;
@@ -1744,7 +1802,12 @@ export class CaptureRecorder {
           .map(p => (p && typeof p === 'object' && typeof (p as any).text === 'string' ? (p as any).text : ''))
           .filter(Boolean);
         if (parts.length > 0) return parts.join(' ');
-        continue; // non-text parts only (images etc.) — try the next user message
+        // Non-text parts only. In the backward walk a text-less tail means a
+        // tool-result continuation: that user message IS the current turn, so
+        // stamping an older user message would mislabel the turn — stop here.
+        // The forward walk keeps looking (session preview wants opening text).
+        if (pick === 'last') return undefined;
+        continue; // images etc. — try the next user message
       }
       continue; // missing/non-text content (tool calls etc.) — try the next user message
     }
