@@ -885,46 +885,6 @@ export const ClientsPage: React.FC = () => {
                           />
                         </div>
                       ))}
-                {c.name === 'pi' && (
-                  <div style={{ gridColumn: '1 / -1' }}>
-                    <ProfileLinkTable
-                      rows={clientSlots(c).filter(s => s.key !== 'main').map(s => ({ name: s.key, current: s.value }))}
-                      emptyText={t('clients.profileAgentsEmpty')}
-                      profileId={profileSel[c.name] || ''}
-                      profiles={profiles}
-                      onProfileChange={v => setProfileSel(prev => ({ ...prev, [c.name]: v }))}
-                      headerAction={
-                        <button
-                          type="button"
-                          className="btn btn-sm"
-                          style={{ flexShrink: 0, fontSize: '11px' }}
-                          onClick={() => openSmartAssign(c)}
-                          disabled={loading}
-                          title={t('clients.smartBtn')}
-                        >
-                          <Sparkles size={11} />
-                          <span>{t('clients.smartBtn')}</span>
-                        </button>
-                      }
-                      gatewayOptions={modelOptions}
-                      drafts={bindSel[c.name] || {}}
-                      appliedTags={c.profile?.bindings || {}}
-                      onDraft={(name, v) => setBindSel(prev => ({ ...prev, [c.name]: { ...(prev[c.name] || {}), [name]: v } }))}
-                      onClear={() => setBindSel(prev => ({ ...prev, [c.name]: {} }))}
-                      hint={t('clients.profileApplyHintPi')}
-                      label={t('clients.profileRowsLabel')}
-                      on={linksOn[c.name]}
-                      onToggle={v => {
-                        setLinksOn(prev => ({ ...prev, [c.name]: v }));
-                        persistMem(c.name, profileSel[c.name] || '', linkTagsOf(bindSel[c.name]), undefined, undefined, v);
-                      }}
-                      linkedCount={Object.keys(linkTagsOf(bindSel[c.name])).length}
-                    />
-                    <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '8px' }}>
-                      {t('clients.piMetaHint')}
-                    </div>
-                  </div>
-                )}
                 {supportsExtraModels(c.name) && (() => {
                         const mode = modeSel[c.name] ?? 'none';
                         const follow = mode === 'follow';
@@ -1007,6 +967,48 @@ export const ClientsPage: React.FC = () => {
                         );
                       })()}
                     </div>
+
+                {c.name === 'pi' && (
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <ProfileLinkTable
+                      rows={clientSlots(c).filter(s => s.key !== 'main').map(s => ({ name: s.key, current: s.value }))}
+                      emptyText={t('clients.profileAgentsEmpty')}
+                      profileId={profileSel[c.name] || ''}
+                      profiles={profiles}
+                      onProfileChange={v => setProfileSel(prev => ({ ...prev, [c.name]: v }))}
+                      headerAction={
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          style={{ flexShrink: 0, fontSize: '11px' }}
+                          onClick={() => openSmartAssign(c)}
+                          disabled={loading}
+                          title={t('clients.smartBtn')}
+                        >
+                          <Sparkles size={11} />
+                          <span>{t('clients.smartBtn')}</span>
+                        </button>
+                      }
+                      gatewayOptions={modelOptions}
+                      drafts={bindSel[c.name] || {}}
+                      appliedTags={c.profile?.bindings || {}}
+                      onDraft={(name, v) => setBindSel(prev => ({ ...prev, [c.name]: { ...(prev[c.name] || {}), [name]: v } }))}
+                      onClear={() => setBindSel(prev => ({ ...prev, [c.name]: {} }))}
+                      hint={t('clients.profileApplyHintPi')}
+                      label={t('clients.profileRowsLabel')}
+                      on={linksOn[c.name]}
+                      onToggle={v => {
+                        setLinksOn(prev => ({ ...prev, [c.name]: v }));
+                        persistMem(c.name, profileSel[c.name] || '', linkTagsOf(bindSel[c.name]), undefined, undefined, v);
+                      }}
+                      linkedCount={Object.keys(linkTagsOf(bindSel[c.name])).length}
+                    />
+                    <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '8px' }}>
+                      {t('clients.piMetaHint')}
+                    </div>
+                  </div>
+                )}
+
 
                 {c.name === 'opencode' && (
                   <div style={{ borderTop: '1px solid var(--divider)', paddingTop: '12px' }}>

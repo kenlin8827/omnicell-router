@@ -194,6 +194,18 @@ export const ProfileLinkTable: React.FC<Props> = ({
           />
         </div>
         {headerAction}
+        {Object.values(drafts).some(Boolean) && (
+          <button
+            type="button"
+            className="btn btn-sm"
+            style={{ flexShrink: 0, fontSize: '11px', marginRight: 4 }}
+            title={t('clients.profileClearBindingsHint')}
+            onClick={onClear}
+          >
+            <Eraser size={11} />
+            <span>{t('clients.profileClearBindings')}</span>
+          </button>
+        )}
         <span style={{ flex: 1 }} />
         {showSort && rows.length > 8 && (
           <div style={{ display: 'flex', alignItems: 'stretch', gap: '4px', flexShrink: 0 }} title={t('clients.profileSortHint')}>
@@ -214,18 +226,6 @@ export const ProfileLinkTable: React.FC<Props> = ({
               </button>
             ))}
           </div>
-        )}
-        {Object.values(drafts).some(Boolean) && (
-          <button
-            type="button"
-            className="btn btn-sm"
-            style={{ flexShrink: 0, fontSize: '11px' }}
-            title={t('clients.profileClearBindingsHint')}
-            onClick={onClear}
-          >
-            <Eraser size={11} />
-            <span>{t('clients.profileClearBindings')}</span>
-          </button>
         )}
         <Link to="/model-profiles" style={{ color: 'var(--accent)', textDecoration: 'none', flexShrink: 0 }}>{t('clients.profileManage')}</Link>
       </div>
