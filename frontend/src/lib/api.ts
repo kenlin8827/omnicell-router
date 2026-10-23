@@ -1356,8 +1356,17 @@ export const api = {
   /** All models the gateway can route to: virtual (auto/lite/plus/pro/ultra), combos,
    *  registered models and variant exposures — `kind` tags which one each id is ('auto' = the bare auto alias, 'tier' = the bare tier aliases).
    *  `tiers` = the full membership set (a model may belong to several tiers).
+   *  `wire` = the model's resolved upstream wire (registered/variant rows only):
+   *  'systemone' means a decision-wire model that NO chat surface can address.
    *  Reads the console endpoint — /v1/models requires a key like every surface. */
-  async listGatewayModels(): Promise<{ id: string; owned_by: string; tiers?: string[]; kind?: string; members?: number }[]> {
+  async listGatewayModels(): Promise<{
+    id: string;
+    owned_by: string;
+    tiers?: string[];
+    kind?: string;
+    members?: number;
+    wire?: string;
+  }[]> {
     const res = await fetch('/api/admin/gateway-models');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
@@ -1367,6 +1376,7 @@ export const api = {
       tiers: Array.isArray(m.tiers) ? m.tiers : [],
       kind: m.kind || undefined,
       members: typeof m.members === 'number' ? m.members : undefined,
+      wire: typeof m.wire === 'string' ? m.wire : undefined,
     }));
   },
 

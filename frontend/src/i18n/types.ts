@@ -1,5 +1,27 @@
 export type Lang = 'zh' | 'en';
 
+/** One question inside a playground decision preset. Mirrors the System One
+ *  request shape the builder produces (see backend protocols/systemone/types). */
+export interface PlaygroundPresetQuestion {
+  id: string;
+  type: 'choice' | 'noul' | 'score';
+  instructions: string;
+  /** choice → options (key → description); noul → empty. */
+  choices: { key: string; desc: string }[];
+  /** score → ordered level descriptions (index 0 = lowest); others empty. */
+  levels: string[];
+}
+
+/** A ready-to-run System One use case for the playground's decision tab.
+ *  Lives in the i18n tables because the operator reads AND edits it in the
+ *  form — the payload is user-facing content, not an opaque fixture. */
+export interface PlaygroundPreset {
+  id: string;
+  label: string;
+  state: string;
+  questions: PlaygroundPresetQuestion[];
+}
+
 export interface TranslationDict {
   combobox: {
     /** Multi-select trigger label: number of currently selected options. */
@@ -54,6 +76,113 @@ export interface TranslationDict {
     summary: string;
     perPage: string;
   };
+  /** Live client-simulation chat page (/chat): one turn per gateway call,
+   *  carrying the X-OCR facts the response reports back to a real client. */
+  chat: {
+    title: string;
+    tabChat: string;
+    subtitle: string;
+    keyLabel: string;
+    keyConfigured: string;
+    keyManual: string;
+    keyPlaceholder: string;
+    keyManualPlaceholder: string;
+    keyDisabled: string;
+    keyEmpty: string;
+    keyShow: string;
+    keyHide: string;
+    modelLabel: string;
+    modelPlaceholder: string;
+    modelPick: string;
+    modelsLoadFailed: string;
+    wireSystemone: string;
+    wireHint: string;
+    decisionBlocked: string;
+    streamLabel: string;
+    paramsLabel: string;
+    temperatureLabel: string;
+    maxTokensLabel: string;
+    systemLabel: string;
+    systemPlaceholder: string;
+    send: string;
+    stop: string;
+    clear: string;
+    clearConfirm: string;
+    copyCurl: string;
+    curlCopied: string;
+    curlFailed: string;
+    curlPlaceholder: string;
+    you: string;
+    assistant: string;
+    thinkingLabel: string;
+    detailsLabel: string;
+    reqLabel: string;
+    respLabel: string;
+    jsonExpand: string;
+    jsonCopy: string;
+    jsonCopied: string;
+    jsonCopyFailed: string;
+    emptyTitle: string;
+    emptyHint: string;
+    composerPlaceholder: string;
+    pending: string;
+    aborted: string;
+    noKey: string;
+    factModel: string;
+    factTier: string;
+    factLayer: string;
+    factLatency: string;
+    factFailover: string;
+    factThinking: string;
+    factBreaker: string;
+    factTrace: string;
+    factSession: string;
+    factTokens: string;
+  };
+  /** Decision wire tab (`POST /v1/systemone`): one state evaluated against
+   *  typed questions, answered with values + probabilities. */
+  decision: {
+    title: string;
+    tabDecision: string;
+    subtitle: string;
+    stateLabel: string;
+    statePlaceholder: string;
+    stateRequired: string;
+    questionsLabel: string;
+    questionsInvalid: string;
+    typeChoice: string;
+    typeNoul: string;
+    typeScore: string;
+    instructionsPlaceholder: string;
+    criteriaLabel: string;
+    optionKey: string;
+    optionDesc: string;
+    addOption: string;
+    levelsLabel: string;
+    levelPlaceholder: string;
+    addLevel: string;
+    noulHint: string;
+    addQuestion: string;
+    removeQuestion: string;
+    payloadPreview: string;
+    questionIdMissing: string;
+    questionDuplicateId: string;
+    choiceNeedsOption: string;
+    scoreNeedsLevels: string;
+    upstreamNative: string;
+    upstreamConverted: string;
+    factStatus: string;
+    factUpstream: string;
+    emptyTitle: string;
+    emptyHint: string;
+    footerHint: string;
+    send: string;
+    presetLabel: string;
+    presetHint: string;
+  };
+
+  /** Ready-to-run System One use cases for the playground (per language). */
+  playgroundPresets: PlaygroundPreset[];
   nav: {
     overview: string;
     rules: string;
@@ -61,6 +190,7 @@ export interface TranslationDict {
     providers: string;
     models: string;
     apiKeys: string;
+    playground: string;
     clients: string;
     proxyAccess: string;
     guardrails: string;

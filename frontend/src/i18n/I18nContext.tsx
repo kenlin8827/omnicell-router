@@ -7,6 +7,10 @@ interface I18nContextValue {
   lang: Lang;
   setLang: (lang: Lang) => void;
   t: (path: string, params?: Record<string, string | number>) => string;
+  /** Raw dictionary of the active language. For content that is DATA-shaped
+   *  (arrays / objects the UI edits, e.g. the playground's decision presets)
+   *  where `t()`'s string lookup cannot help. */
+  dict: TranslationDict;
 }
 
 const DICTIONARIES: Record<Lang, TranslationDict> = {
@@ -67,7 +71,7 @@ export const I18nProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   return (
-    <I18nContext.Provider value={{ lang, setLang, t }}>
+    <I18nContext.Provider value={{ lang, setLang, t, dict: DICTIONARIES[lang] || DICTIONARIES.zh }}>
       {children}
     </I18nContext.Provider>
   );

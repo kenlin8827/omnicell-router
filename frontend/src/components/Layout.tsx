@@ -39,6 +39,7 @@ import {
   Gauge,
   Wallet,
   AlertOctagon,
+  MessagesSquare,
   type LucideIcon,
 } from 'lucide-react';
 import { api, type GatewayStatusResponse } from '../lib/api';
@@ -80,6 +81,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     icon: ArrowDownLeft,
     items: [
       { to: '/api-keys', labelKey: 'nav.apiKeys', icon: KeyRound },
+      { to: '/playground', labelKey: 'nav.playground', icon: MessagesSquare },
       { to: '/clients', labelKey: 'nav.clients', icon: MonitorSmartphone, badge: '3' },
       { to: '/proxy-access', labelKey: 'nav.proxyAccess', icon: ShieldCheck },
     ],
@@ -151,6 +153,7 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/combos': { groupKey: 'nav.grpTraffic', titleKey: 'nav.combos' },
   '/model-profiles': { groupKey: 'nav.grpTraffic', titleKey: 'nav.modelProfiles' },
   '/api-keys': { groupKey: 'nav.grpAccess', titleKey: 'nav.apiKeys' },
+  '/playground': { groupKey: 'nav.grpAccess', titleKey: 'nav.playground' },
   '/providers': { groupKey: 'nav.grpUpstream', titleKey: 'nav.providers' },
   '/models': { groupKey: 'nav.grpUpstream', titleKey: 'nav.models' },
   '/catalog': { groupKey: 'nav.grpUpstream', titleKey: 'nav.catalogSources' },

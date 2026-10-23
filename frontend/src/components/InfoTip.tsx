@@ -13,18 +13,19 @@ import { TipBubble } from './TooltipProvider';
  * near the top edge, clamped to the viewport; follows scroll and resize.
  *
  * variant="warning" swaps the icon for an amber triangle (state warnings,
- * e.g. "client not detected on this machine"); default stays the info glyph.
+ * e.g. "client not detected on this machine"); variant="danger" turns it rose
+ * for a condition that BLOCKS the action (the button it belongs to is off).
  */
 
 const BUBBLE_MAX_WIDTH = 320;
 const GAP = 8;
 const FLIP_HEADROOM = 160;
 
-export const InfoTip: React.FC<{ text: string; variant?: 'info' | 'warning' }> = ({ text, variant = 'info' }) => {
+export const InfoTip: React.FC<{ text: string; variant?: 'info' | 'warning' | 'danger' }> = ({ text, variant = 'info' }) => {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ left: number; top: number; below: boolean; width: number } | null>(null);
   const iconRef = useRef<HTMLButtonElement>(null);
-  const Icon = variant === 'warning' ? AlertTriangle : Info;
+  const Icon = variant === 'warning' || variant === 'danger' ? AlertTriangle : Info;
 
   const place = useCallback(() => {
     const el = iconRef.current;
@@ -62,7 +63,7 @@ export const InfoTip: React.FC<{ text: string; variant?: 'info' | 'warning' }> =
       <button
         type="button"
         ref={iconRef}
-        className={variant === 'warning' ? 'info-tip info-tip--warning' : 'info-tip'}
+        className={variant === 'info' ? 'info-tip' : `info-tip info-tip--${variant}`}
         aria-label={text}
         onMouseEnter={() => setOpen(true)}
         onMouseLeave={() => setOpen(false)}

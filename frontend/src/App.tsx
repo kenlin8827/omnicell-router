@@ -10,6 +10,7 @@ import { ProxyPage } from './pages/ProxyPage';
 import { ProxyAccessPage } from './pages/ProxyAccessPage';
 import { TokenSaverPage } from './pages/TokenSaverPage';
 import { ApiKeysPage } from './pages/ApiKeysPage';
+import { PlaygroundPage } from './pages/PlaygroundPage';
 import { GuardrailsPage } from './pages/GuardrailsPage';
 import { BreakerRulesPage } from './pages/BreakerRulesPage';
 import { SessionsPage } from './pages/SessionsPage';
@@ -77,6 +78,7 @@ export const App: React.FC = () => {
         <Route path="combos" element={<CombosPage />} />
         <Route path="model-profiles" element={<ModelProfilesPage />} />
         <Route path="api-keys" element={<ApiKeysPage />} />
+        <Route path="playground" element={<PlaygroundPage />} />
         <Route path="providers" element={<KeysPage />} />
         <Route path="models" element={<ModelsPage />} />
         <Route path="catalog" element={<CatalogSourcesPage />} />

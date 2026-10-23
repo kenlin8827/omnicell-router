@@ -3681,12 +3681,19 @@ export function registerConsoleRoutes(
         kind: 'model' as const,
         owned_by: m.provider,
         tiers: registry.tiersOf(m) as string[],
+        // Resolved upstream wire (model-level npm beats provider npm, see
+        // providers/wire.ts). Console pickers MUST read it from here instead of
+        // re-deriving it from the provider's npm string — `systemone` marks a
+        // decision-wire model, which no chat surface can address (ADR-0008 §7).
+        ...(m.wire ? { wire: m.wire } : {}),
       })),
       ...registry.getVariantExposures().map(({ id, base }) => ({
         id,
         kind: 'variant' as const,
         owned_by: base.provider,
         tiers: registry.tiersOf(base) as string[],
+        // A variant is served by its base model's upstream → same wire.
+        ...(base.wire ? { wire: base.wire } : {}),
       })),
     ];
     return { status: 'ok', models };

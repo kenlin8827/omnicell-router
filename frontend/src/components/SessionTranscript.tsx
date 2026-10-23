@@ -37,12 +37,14 @@ const MONO = FONT_MONO;
 
 const fmtTime = (ts: number) => new Date(ts).toLocaleTimeString();
 
-const MD_PLUGINS = [remarkGfm];
+export const MD_PLUGINS = [remarkGfm];
 // Captured answers may link out — never hijack the console's own tab.
 // Remote <img> is never fetched: a model's markdown must not make the
 // operator's browser hit a third-party origin (IP/UA leak, tracking pixel).
 // The console's own media route is a same-origin relative path, so it stays.
-const MD_COMPONENTS: Components = {
+// Exported: the live chat page (/chat) renders model answers through the SAME
+// sanitized map, so the no-remote-fetch rule cannot drift between surfaces.
+export const MD_COMPONENTS: Components = {
   a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
   img: ({ node: _node, src, ...props }) =>
     typeof src === 'string' && /^(?:https?:)?\/\//i.test(src) ? (

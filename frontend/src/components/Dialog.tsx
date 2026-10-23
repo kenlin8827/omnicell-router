@@ -122,7 +122,11 @@ export const Dialog: React.FC<DialogProps> = ({
             {subtitle}
           </div>
         ) : null}
-        <div style={{ overflowY: 'auto', minHeight: 0, display: 'flex', flexDirection: 'column', gap: '12px', paddingRight: 2 }}>
+        {/* flex:1 so a `full` dialog hands its remaining height to the body —
+            without it the body stays content-sized and a child asking for
+            `flex: 1` has nothing to fill. In windowed mode the card is auto-
+            height, so there is no free space and the rule is a no-op. */}
+        <div style={{ flex: 1, overflowY: 'auto', minHeight: 0, display: 'flex', flexDirection: 'column', gap: '12px', paddingRight: 2 }}>
           {children}
         </div>
         {footerLeft || footerRight ? (
