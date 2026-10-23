@@ -43,7 +43,7 @@ export function getOpenCodeConfigDir(): string {
 
 export function getOpenCodeConfigPath(): string {
   // Delegates to the ONE candidate resolver (credentials/paths.ts) — the defs
-  // materializer and the one-shot def port resolve through the same function,
+  // materializer and the one-shot provider import resolve through the same function,
   // so a write can never target a different file than the read did.
   return resolveOpencodeConfigPath(resolveDefaultPaths());
 }
@@ -322,8 +322,15 @@ function normalizeModelDef(raw: unknown): any {
  * any other) string keeps resolving through the classic heuristic exactly as
  * the opencode v1 node did.
  */
+/**
+ * The compatible-runtime package — the single source of that string. It is also
+ * the def-materializer's fallback for wires the client has no package for
+ * (CLIENT_PACKAGE_FALLBACK in credentials/def-materialize.ts).
+ */
+export const OPENCODE_V2_OPENAI_COMPATIBLE_PACKAGE = '@opencode/ai/providers/openai-compatible';
+
 const AI_SDK_TO_OPENCODE_V2_PACKAGE: Record<string, string> = {
-  '@ai-sdk/openai-compatible': '@opencode/ai/providers/openai-compatible',
+  '@ai-sdk/openai-compatible': OPENCODE_V2_OPENAI_COMPATIBLE_PACKAGE,
   '@ai-sdk/openai': '@opencode/ai/providers/openai',
   '@ai-sdk/anthropic': '@opencode/ai/providers/anthropic',
   '@ai-sdk/google': '@opencode/ai/providers/google',
@@ -332,9 +339,17 @@ const AI_SDK_TO_OPENCODE_V2_PACKAGE: Record<string, string> = {
   '@ai-sdk/google-vertex': '@opencode/ai/providers/google-vertex',
   '@ai-sdk/bedrock': '@opencode/ai/providers/bedrock',
   '@ai-sdk/amazon-bedrock': '@opencode/ai/providers/amazon-bedrock',
-  // TypeSafe decision wire — segment maps to wire 'systemone' on the read side
-  // (wire.ts OPENCODE_V2_SEGMENT_WIRES), pinned by the same-name test.
-  '@ai-sdk/typesafe-ai': '@opencode/ai/providers/typesafe',
+  // TypeSafe decision wire. Its read-side segment 'typesafe' resolves to wire
+  // 'systemone' (wire.ts OPENCODE_V2_SEGMENT_WIRES), but opencode 2.0.29 ships NO
+  // such package: the SDK module is `typesafe-ai` and exposes only
+  // `experimental.evaluation`, and the client's loader knows neither segment. A
+  // def written with it is therefore unloadable by the client, so the write side
+  // temporarily emits the compatible-runtime package instead.
+  // RESTORE (when the client supports the segment): uncomment the next line,
+  // delete the one after it, and drop the `systemone` entry from
+  // CLIENT_PACKAGE_FALLBACK (credentials/def-materialize.ts).
+  // '@ai-sdk/typesafe-ai': '@opencode/ai/providers/typesafe',
+  '@ai-sdk/typesafe-ai': OPENCODE_V2_OPENAI_COMPATIBLE_PACKAGE,
 };
 
 /** npm string → the opencode v2 `package` value (mapped table, already-v2 passthrough, unknown passthrough). */
@@ -370,8 +385,6 @@ function isPlainRecord(v: unknown): v is Record<string, any> {
  * `legacyShapedSlotEntries` (applied by `normalizeSlotMap`) drops and reports
  * retired-shape nodes instead of routing providers opencode never registered.
  */
-export const PROVIDER_SLOT = 'providers';
-
 /**
  * Retired NODE spellings the v2 `providers` decoder cannot read: node-level `npm`
  * and `options` (moved to `package`/`settings`).
@@ -425,7 +438,7 @@ function opencodeV2ModelDefs(models: Record<string, any> | undefined): Record<st
  * Returns {error} without touching the file when the def cannot be written
  * honestly (cp-failfast) — never a silent credential drop.
  */
-function buildV2ProviderNode(def: ProviderDefInput): { node?: Record<string, any>; error?: string } {
+export function buildV2ProviderNode(def: ProviderDefInput): { node?: Record<string, any>; error?: string } {
   // settings ← opencode v1 `options` passthrough, minus the slots opencode v2 moved out of it.
   const settings: Record<string, any> = { ...(def.options || {}) };
   const passthroughHeaders = isPlainRecord(settings.headers) ? settings.headers : undefined;
@@ -489,7 +502,7 @@ function buildV2ProviderNode(def: ProviderDefInput): { node?: Record<string, any
  * Provider defs from the defs file's `providers` map, normalized to the internal shape
  * (`package`≙`npm`, `settings`≙`options` — the aliasing in normalizeProviderDef).
  * The retired singular `provider` slot is not read: one shape, one home. opencode.jsonc
- * is NOT a source here — the defs file is the only def truth (the one-shot port in
+ * is NOT a source here — the defs file is the only def truth (the one-shot import in
  * provider-defs.ts fed it from jsonc once).
  */
 function getProviderNode(): Record<string, any> {

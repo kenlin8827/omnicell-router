@@ -20,6 +20,7 @@ import {
   SyncStateFile,
 } from '../src/opencode/credentials/sync.js';
 import { keyHashPrefix } from '../src/opencode/credentials/types.js';
+import { getProviderDefsPath } from '../src/opencode/provider-defs.js';
 
 /**
  * Credential sync — the OCR file is the single truth; the opencode flavors are
@@ -68,6 +69,20 @@ const oauthRow = (id: string, integration: string) => ({
 });
 
 function fakeDb(rows: unknown[]): DbOpener {
+  return async () => ({
+    query(sql: string) {
+      return {
+        all: () => (sql.includes('table_info') ? ALL_COLS.map((c) => ({ name: c })) : rows),
+      };
+    },
+    close() {
+      // no-op
+    },
+  });
+}
+
+/** Same shape, but the row array is LIVE — a fake service can mutate it (connect/activate). */
+function mutableDb(rows: unknown[]): DbOpener {
   return async () => ({
     query(sql: string) {
       return {
@@ -272,6 +287,90 @@ describe('read sync (pull): client -> OCR file', () => {
     expect(outcome.entries.find((e) => e.provider === 'broken')?.action).toBe('failed');
   });
 
+  it('v2: pull NEVER overrides an existing OCR active head with the client one', async () => {
+    const p = withService(sandboxPaths());
+    fs.writeFileSync(p.opencodeDbPath, 'fake-db-bytes');
+    const ocr = new OcrStore({ paths: p, now: () => 1 });
+    await ocr.connectKey('anthropic', 'sk-ocr-head'); // the operator's head
+    const db = fakeDb([
+      keyRow('c-fb', 'anthropic', 'sk-client-fb', 0),
+      keyRow('c-head', 'anthropic', 'sk-client-head', 1),
+    ]);
+    await pullIntoOcr('opencode-v2', ocr, { paths: p, openDatabase: db, now: () => 2 });
+    const rows = readOcr(p).providers.anthropic;
+    expect(rows).toHaveLength(3); // every client key lands
+    expect(rows.find((r: any) => r.active)?.key).toBe('sk-ocr-head'); // ...but the head is OCR's
+  });
+
+  it('v2: pull adopts the client head only when the OCR chain has no active row', async () => {
+    const p = withService(sandboxPaths());
+    fs.writeFileSync(p.opencodeDbPath, 'fake-db-bytes');
+    const ocr = new OcrStore({ paths: p, now: () => 1 });
+    const dead = await ocr.connectKey('openai', 'sk-dead'); // becomes active
+    await ocr.connectKey('openai', 'sk-live'); // standby
+    await ocr.disconnect(dead.id); // head disconnected → no active row left
+    expect(readOcr(p).providers.openai.every((r: any) => !r.active)).toBe(true);
+
+    const db = fakeDb([keyRow('c-live', 'openai', 'sk-live', 1)]);
+    const outcome = await pullIntoOcr('opencode-v2', ocr, { paths: p, openDatabase: db, now: () => 2 });
+    expect(outcome.ok).toBe(true);
+    expect(readOcr(p).providers.openai.find((r: any) => r.active)?.key).toBe('sk-live');
+  });
+
+  it('v2: a pull imports hand-written client defs through the v2 adapter (add-only)', async () => {
+    const p = withService(sandboxPaths());
+    fs.writeFileSync(p.opencodeDbPath, 'fake-db-bytes');
+    fs.mkdirSync(p.configDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(p.configDir, 'opencode.jsonc'),
+      '{"providers": {"myrelay": {"package": "@opencode/ai/providers/openai-compatible", "settings": {"baseURL": "https://relay.example/v1"}}}}'
+    );
+    const ocr = new OcrStore({ paths: p, now: () => 1 });
+    const db = fakeDb([keyRow('c1', 'anthropic', 'sk-a')]);
+
+    const first = await pullIntoOcr('opencode-v2', ocr, { paths: p, openDatabase: db, now: () => 2 });
+    expect(first.defsImported).toBe(1);
+    expect(first.defsConverted).toBe(0);
+    const defs = JSON.parse(fs.readFileSync(getProviderDefsPath(p), 'utf8'));
+    expect(defs.providers.myrelay.package).toBe('@opencode/ai/providers/openai-compatible');
+    expect(defs.providers.myrelay.settings.baseURL).toBe('https://relay.example/v1');
+
+    // Rerun: the OCR defs file now owns it — skipped, never rewritten.
+    const second = await pullIntoOcr('opencode-v2', ocr, { paths: p, openDatabase: db, now: () => 3 });
+    expect(second.defsImported).toBe(0);
+    expect(second.defsSkipped).toBe(1);
+  });
+
+  it('v1: a pull imports client defs through the v1 adapter (singular slot only)', async () => {
+    const p = v1Machine(sandboxPaths(), { anthropic: { type: 'api', key: 'sk-v1' } });
+    fs.writeFileSync(
+      path.join(p.configDir, 'opencode.jsonc'),
+      '{"provider": {"v1relay": {"npm": "@ai-sdk/openai-compatible", "options": {"baseURL": "https://a.example/v1"}}},' +
+        ' "providers": {"v2node": {"package": "@opencode/ai/providers/openai"}}}'
+    );
+    const ocr = new OcrStore({ paths: p, now: () => 1 });
+    const outcome = await pullIntoOcr('opencode-v1', ocr, { paths: p });
+    expect(outcome.defsImported).toBe(1); // v1relay only — the plural slot is not v1's
+    const defs = JSON.parse(fs.readFileSync(getProviderDefsPath(p), 'utf8'));
+    expect(Object.keys(defs.providers)).toEqual(['v1relay']);
+  });
+
+  it('refresh: a provider-narrowed pull only imports that provider’s def', async () => {
+    const p = withService(sandboxPaths());
+    fs.writeFileSync(p.opencodeDbPath, 'fake-db-bytes');
+    fs.mkdirSync(p.configDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(p.configDir, 'opencode.jsonc'),
+      '{"providers": {"keepme": {"package": "p1"}, "skipme": {"package": "p2"}}}'
+    );
+    const ocr = new OcrStore({ paths: p, now: () => 1 });
+    const db = fakeDb([keyRow('c1', 'anthropic', 'sk-a')]);
+    const outcome = await pullIntoOcr('opencode-v2', ocr, { paths: p, provider: 'keepme', openDatabase: db, now: () => 2 });
+    expect(outcome.defsImported).toBe(1);
+    const defs = JSON.parse(fs.readFileSync(getProviderDefsPath(p), 'utf8'));
+    expect(Object.keys(defs.providers)).toEqual(['keepme']);
+  });
+
   it('v1: refuses to pull on a v2 machine (auth.json is a stale snapshot there)', async () => {
     const p = withService(sandboxPaths());
     fs.writeFileSync(p.opencodeDbPath, 'fake-db-bytes');
@@ -331,6 +430,97 @@ describe('write sync (push): OCR file -> client', () => {
     const down = await pushFromOcr('opencode-v2', ocr, { paths: p });
     expect(down).toMatchObject({ ok: false, precondition: 'service_unreachable' });
     expect(readOcr(p).providers.anthropic).toHaveLength(1); // kept
+  });
+
+  it('v2: a pushed FALLBACK key never steals the active chain head', async () => {
+    const p = withService(sandboxPaths());
+    const ocr = new OcrStore({ paths: p, now: () => 1 });
+    await ocr.connectKey('anthropic', 'sk-head'); // active head
+    await ocr.connectKey('anthropic', 'sk-fallback'); // standby
+
+    // Live-verified 2.0.15 semantics: connecting a key makes it ACTIVE and
+    // demotes the previous active row — the reason the head must be restored.
+    const rows: any[] = [];
+    const calls: string[] = [];
+    let n = 0;
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      const method = String(init?.method ?? 'GET');
+      if (method === 'GET') {
+        return new Response(JSON.stringify({ data: [{ id: 'anthropic', connections: [] }] }), { status: 200 });
+      }
+      calls.push(`${method} ${url}`);
+      if (url.endsWith('/connect/key')) {
+        const body = JSON.parse(String(init?.body ?? '{}'));
+        for (const r of rows) r.active = 0;
+        const id = `c-${++n}`;
+        rows.push({
+          id,
+          integration_id: 'anthropic',
+          label: null,
+          value: JSON.stringify({ type: 'key', key: body.key }),
+          active: 1,
+          time_created: 1,
+          time_updated: 1,
+        });
+        return new Response(JSON.stringify({ credential: { id } }), { status: 200 });
+      }
+      if (url.endsWith('/activate')) {
+        const id = url.split('/credential/')[1]!.replace('/activate', '');
+        for (const r of rows) r.active = r.id === id ? 1 : 0;
+        return new Response(null, { status: 204 });
+      }
+      throw new Error(`unexpected ${method} ${url}`);
+    };
+
+    const outcome = await pushFromOcr('opencode-v2', ocr, {
+      paths: p,
+      fetchImpl,
+      openDatabase: mutableDb(rows),
+      now: () => 1,
+    });
+    expect(outcome.ok).toBe(true);
+    expect(outcome.pushed).toBe(2);
+    expect(calls.filter((c) => c.endsWith('/connect/key'))).toHaveLength(2);
+    // The head was connected FIRST and demoted by the fallback's connect —
+    // the write path must put it back, or opencode routes a different key.
+    expect(calls.filter((c) => c.endsWith('/activate'))).toHaveLength(1);
+    expect(JSON.parse(rows.find((r) => r.active).value).key).toBe('sk-head');
+  });
+
+  it('v2: a drifted active row is healed even when every key is already present', async () => {
+    const p = withService(sandboxPaths());
+    const ocr = new OcrStore({ paths: p, now: () => 1 });
+    await ocr.connectKey('anthropic', 'sk-head');
+    await ocr.connectKey('anthropic', 'sk-fallback');
+
+    const rows: any[] = [
+      keyRow('c-head', 'anthropic', 'sk-head', 0),
+      keyRow('c-fallback', 'anthropic', 'sk-fallback', 1),
+    ];
+    const calls: string[] = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      if (String(init?.method ?? 'GET') === 'GET') {
+        return new Response(JSON.stringify({ data: [{ id: 'anthropic', connections: [] }] }), { status: 200 });
+      }
+      calls.push(url);
+      if (url.includes('/credential/c-head/activate')) {
+        for (const r of rows) r.active = r.id === 'c-head' ? 1 : 0;
+      }
+      return new Response(null, { status: 204 });
+    };
+
+    const outcome = await pushFromOcr('opencode-v2', ocr, {
+      paths: p,
+      fetchImpl,
+      openDatabase: mutableDb(rows),
+      now: () => 1,
+    });
+    expect(outcome.pushed).toBe(0);
+    expect(outcome.deduped).toBe(2);
+    expect(calls).toEqual([expect.stringContaining('/api/credential/c-head/activate')]);
+    expect(rows.find((r) => r.active)?.id).toBe('c-head');
   });
 
   it('v1: merges the ACTIVE-head api key per provider; oauth entries preserved; one key per provider', async () => {

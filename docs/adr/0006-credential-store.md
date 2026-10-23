@@ -51,7 +51,7 @@ No store claims OAuth. oauth/wellknown rows are listed-and-badged, never routed,
 
 ### 8. Boot and console surface
 
-Boot order: bind store (OcrStore) → `initCredentialSync` (migration one-shot + auto timers + mutation hook) → `buildDirectPool`. Console: `GET /credential-store` (status; `kind` always `'ocr'`; the `integrations` field is gone — the bound store is not integration-scoped); `POST /credential-store/push` is the per-provider write sync (local entries kept, outcome recorded); new `GET /credential-sync` (table data), `POST /credential-sync/toggle`, `POST /credential-sync/run`. Reveal keeps its four hard gates.
+Boot order: bind store (OcrStore) → `initCredentialSync` (migration one-shot + auto timers + mutation hook) → `buildDirectPool`. Console: `GET /credential-store` (status; `kind` always `'ocr'`; the `integrations` field is gone — the bound store is not integration-scoped); keys are handled as ONE book, so there is no per-provider push endpoint: the only write entry is `POST /credential-sync/run` with `direction: write` (optional `provider` narrows it; local entries kept, outcome recorded); plus `GET /credential-sync` (table data) and `POST /credential-sync/toggle`. Reveal keeps its four hard gates.
 
 ### 9. Retired
 
@@ -62,7 +62,7 @@ The reconcile gate (auth.json→v2 push + `authWriteDisabled` marker — superse
 - Management writes never depend on opencode: the console works with opencode absent, stopped, or broken.
 - Keys added in the console reach opencode only through a write sync — automatic when enabled, explicit otherwise. The credential-sync table makes that propagation visible instead of implicit.
 - `OpencodeV2Store` remains fully exercised as the sync engine's tool (reads for pull, verified HTTP writes for push, stage-2 service discovery unchanged); its route-level v2 behaviors (integration-unmatched 409, readonly refusal, view invalidation) are no longer reachable through the console and their route tests were retired with them.
-- Tests: `credentials-sync` (engine), `credentials-factory` (single landing + totality), `credentials-console-routes` (routes × OCR file), `credentials-push-endpoint` (keep-local), `boot-direct-credential-store` (OCR-file boot), plus the unchanged `credentials-leak-surfaces` / `credentials-reveal-route` / `credentials-standalone-import` / `credentials-opencode-v2-*` adapter suites.
+- Tests: `credentials-sync` (engine + the keep-local push contract), `credentials-factory` (single landing + totality), `credentials-console-routes` (routes × OCR file), `boot-direct-credential-store` (OCR-file boot), plus the unchanged `credentials-leak-surfaces` / `credentials-reveal-route` / `credentials-standalone-import` / `credentials-opencode-v2-*` adapter suites.
 
 ## Amendment — key deletions never propagate (so a pull re-imports them)
 
@@ -85,3 +85,13 @@ The v1 adapter is **fixture-verified, not binary-verified**: no opencode v1 inst
 - presence: v1 evidence is an existing `auth.json` OR a v1 `installed.version` pin, and never on a machine with v2 evidence.
 
 What remains **unverifiable without a v1 binary**, and must not be asserted as proven: that a real v1 runtime accepts the merged file; that Windows honors/ignores the 0600 intent; that v1 actually routes from `auth.json` (the premise of both directions); that `installed.version` exists on a pure-v1 install (an install with neither pin nor `auth.json` reads as absent — the adapter stays inert rather than guessing). Field vocabulary was cross-checked against the v1-importer strings embedded in the installed v2 binary (`account_id`, `methodID`, `wellknown`, `integration_id`) — evidence, not proof.
+
+## Amendment — chain-head authority across the credential sync
+
+The write direction already pushes the WHOLE chain per provider (v1 stays head-only by file shape). What was unhandled is which credential the client ROUTES with: opencode v2 makes a freshly connected credential the ACTIVE one (live-verified on 2.0.15 — adding a second key demotes the working row) and has no credential ordering beyond `active`. Three rules now govern the boundary:
+
+- **Push restores the OCR head.** After a provider's keys have landed, the write path re-activates the credential whose `keyHashPrefix` matches the OCR chain head whenever the client's active row differs. This runs on every push, dedup-only sweeps included, so a client whose active row drifted self-heals; an already-correct head costs one view read and no HTTP call. It is the sync-path mirror of the console connect route's `headPreserved` defense — without it, pushing a newly added FALLBACK key silently re-points opencode at that key while OCR keeps routing the head.
+- **Pull never overrides the OCR head.** The OCR file is the single truth and the pull is add-only, so a client-side activation cannot demote it; otherwise a pull would undo the operator's "set as chain head" whenever auto-write is off (the two-directions-fight this ADR refuses elsewhere). The client head only fills a VOID: a provider whose OCR rows all lost their active flag (the head row was disconnected) adopts the client's head instead of leaving routing on recency alone.
+- **Relative order among non-active fallbacks is NOT synced, deliberately.** v2 exposes no order field (rows read `active DESC, time_updated DESC`) and the pull stamps imported rows with the pull's own timestamps, so the client's fallback sequence is not reproduced in the OCR file, nor the reverse. Only the ACTIVE head is authoritative across the boundary; standby order is a client-local read order, not a routing contract. Anyone changing that needs a real order representation on the OCR side (schema version bump), not more timestamp gaming.
+
+Tests: `credentials-sync` pins both directions — a pushed fallback does not steal the head, a drifted head is healed on a dedup-only push, a pull keeps an existing OCR head, and a pull adopts the client head only when the OCR chain has no active row.

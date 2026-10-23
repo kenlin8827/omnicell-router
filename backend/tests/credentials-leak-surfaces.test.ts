@@ -243,7 +243,7 @@ describe('error-message ECHO containment (write-path leak hunt)', () => {
     expect((err as Error).message).not.toContain(k);
   });
 
-  it('push route: failed[].reason keeps the local copy loud but the echoed key out of the response', async () => {
+  it('sync write: failed entry reasons stay loud while the echoed key stays out of the response', async () => {
     const paths = sandboxPaths();
     const { fetchImpl } = echoFetch();
     const store = new OcrStore({ paths, now: () => 1 });
@@ -251,12 +251,16 @@ describe('error-message ECHO containment (write-path leak hunt)', () => {
     await store.connectKey('anthropic', k); // local leftover
     resetCredentialStoreForTests(paths, async () => null, fetchImpl, { env: {}, now: () => 1, openDatabase: fakeDb([]) });
 
-    const res = await app.inject({ method: 'POST', url: '/api/admin/credential-store/push', payload: {} });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/credential-sync/run',
+      payload: { clientId: 'opencode-v2', direction: 'write' },
+    });
     expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body.failed).toHaveLength(1);
-    expect(body.failed[0].provider).toBe('anthropic');
-    expect(body.failed[0].reason).toContain('HTTP 500');
+    const failed = res.json().write.entries.filter((e: any) => e.action === 'failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0].provider).toBe('anthropic');
+    expect(failed[0].reason).toContain('HTTP 500');
     expect(res.body).not.toContain(k);
     // never blind-deleted: the local copy survives the failed push
     expect(JSON.parse(fs.readFileSync(ocrCredentialsFile(paths), 'utf8')).providers.anthropic).toHaveLength(1);
@@ -342,7 +346,7 @@ describe('redaction-before-truncation boundary (P1-1)', () => {
       }
     });
 
-    it(`echo at offset ${offset}: push-route 200 body carries no key fragment`, async () => {
+    it(`echo at offset ${offset}: sync-write 200 body carries no key fragment`, async () => {
       const paths = sandboxPaths();
       const store = new OcrStore({ paths, now: () => 1 });
       await store.connectKey('anthropic', KEY);
@@ -354,8 +358,8 @@ describe('redaction-before-truncation boundary (P1-1)', () => {
       );
       const res = await app.inject({
         method: 'POST',
-        url: '/api/admin/credential-store/push',
-        payload: {},
+        url: '/api/admin/credential-sync/run',
+        payload: { clientId: 'opencode-v2', direction: 'write' },
       });
       expect(res.statusCode).toBe(200); // per-entry failure, not a route-level 502
       expect(leaked(res.body)).toBe(false);
@@ -373,8 +377,8 @@ describe('redaction-before-truncation boundary (P1-1)', () => {
       );
       const res = await app.inject({
         method: 'POST',
-        url: '/api/admin/credential-store/push',
-        payload: {},
+        url: '/api/admin/credential-sync/run',
+        payload: { clientId: 'opencode-v2', direction: 'write' },
       });
       expect(res.statusCode).toBe(200);
       const syncFile = fs.readFileSync(path.join(paths.ocrHome, 'credential-sync.json'), 'utf8');

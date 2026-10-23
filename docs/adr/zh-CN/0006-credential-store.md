@@ -51,7 +51,7 @@ sha256(rawKey) 是持久身份；界面只见 12 字符前缀。熔断对、SUSP
 
 ### 8. 启动与控制台表面
 
-启动顺序：绑定 store（OcrStore）→ `initCredentialSync`（迁移一次性 + 自动定时器 + 变更钩子）→ `buildDirectPool`。控制台：`GET /credential-store`（状态；`kind` 恒为 `'ocr'`；`integrations` 字段移除——被绑定 store 不按 integration 定址）；`POST /credential-store/push` 即按 provider 的写同步（本地保留，结果入档）；新增 `GET /credential-sync`（表格数据）、`POST /credential-sync/toggle`、`POST /credential-sync/run`。reveal 的四道硬闸不变。
+启动顺序：绑定 store（OcrStore）→ `initCredentialSync`（迁移一次性 + 自动定时器 + 变更钩子）→ `buildDirectPool`。控制台：`GET /credential-store`（状态；`kind` 恒为 `'ocr'`；`integrations` 字段移除——被绑定 store 不按 integration 定址）；密钥作为**一整册**处理，因此没有按 provider 的独立推送端点：唯一的写入口是 `POST /credential-sync/run` 且 `direction: write`（可选 `provider` 收窄；本地保留，结果入档）；另有 `GET /credential-sync`（表格数据）、`POST /credential-sync/toggle`。reveal 的四道硬闸不变。
 
 ### 9. 退役
 
@@ -62,7 +62,7 @@ reconcile 闸（auth.json→v2 推送 + `authWriteDisabled` marker——被 §2 
 - 管理面写入永不依赖 opencode：opencode 缺席、停止或损坏时控制台照常工作。
 - 控制台新增的密钥只有经过一次写同步才会到达 opencode——开启自动则自动发生，否则需要显式操作。凭证同步表格让这种传播可见，而非隐式。
 - `OpencodeV2Store` 作为同步引擎的工具被完整测试（拉取用读、推送用带验证的 HTTP 写、二级服务发现不变）；它的路由级 v2 行为（integration 不匹配 409、只读拒绝、视图失效）不再从控制台可达，相应路由测试随行为一并退役。
-- 测试：`credentials-sync`（引擎）、`credentials-factory`（唯一落点 + 全函数）、`credentials-console-routes`（路由 × OCR 文件）、`credentials-push-endpoint`（保留本地）、`boot-direct-credential-store`（OCR 文件启动），以及契约不变的 `credentials-leak-surfaces` / `credentials-reveal-route` / `credentials-standalone-import` / `credentials-opencode-v2-*` 适配器套件。
+- 测试：`credentials-sync`（引擎 + 推送保留本地契约）、`credentials-factory`（唯一落点 + 全函数）、`credentials-console-routes`（路由 × OCR 文件）、`boot-direct-credential-store`（OCR 文件启动），以及契约不变的 `credentials-leak-surfaces` / `credentials-reveal-route` / `credentials-standalone-import` / `credentials-opencode-v2-*` 适配器套件。
 
 ## 修订案 —— key 删除永不传播（因此拉取会重新导入）
 
@@ -85,3 +85,13 @@ v1 适配器是**fixture 级验证，不是二进制级验证**：参考机上�
 - 存在性：v1 证据 = 已存在的 `auth.json` **或** v1 `installed.version` pin，且在带 v2 证据的机器上一律不生效。
 
 **没有 v1 二进制就无法验证、因此不得声称已证**的部分：真实 v1 运行时会接受合并后的文件；Windows 上 0600 的意图是否被遵守/忽略；v1 是否真的从 `auth.json` 路由（两个方向的前提）；纯 v1 机器上是否存在 `installed.version`（既无 pin 又无 `auth.json` 时读作 absent —— 适配器保持惰性，而不是猜）。字段词汇已与安装在机上的 v2 二进制里内嵌的 v1 导入器字符串交叉核对（`account_id`、`methodID`、`wellknown`、`integration_id`）——这是证据，不是证明。
+
+## 修订案 —— 凭证同步中的链头权威
+
+写方向本来就是按 provider 推送**整条链**（v1 因文件形状只推链头）。之前未处理的是客户端**用哪把 key 路由**：opencode v2 会把新连入的凭证置为 ACTIVE（2.0.15 实测——加第二把 key 会把正在工作的行降级），而凭证层面除了 `active` 没有任何顺序字段。现在这条边界由三条规则约束：
+
+- **推送恢复 OCR 链头。** 一个 provider 的 key 落齐之后，只要客户端的 active 行与 OCR 链头（按 `keyHashPrefix` 匹配）不一致，写路径就把它重新激活。每次推送都执行（全 dedup 的推送也算），所以客户端 active 漂移会被自愈；本来就正确时只多一次视图读取、不发 HTTP 请求。这是控制台 connect 路由 `headPreserved` 防护在同步路径上的镜像——没有它，推送一把新加的**备选** key 会在 OCR 仍路由链头的情况下悄悄把 opencode 指向那把 key。
+- **拉取永不覆盖 OCR 链头。** OCR 文件是唯一真相，拉取是只增的，所以客户端侧的一次激活不能把链头降级；否则在 auto-write 关闭时，一次拉取就会把操作员"设为链头"的操作抹掉（本 ADR 在别处明确拒绝的双向互斗）。客户端链头只填**空缺**：某 provider 的 OCR 行全部失去 active 标记（链头行被断开）时，采纳客户端链头，而不是让路由退化成按最近更新时间挑。
+- **非 active 备选之间的相对顺序**不同步，这是刻意的。v2 不暴露顺序字段（行按 `active DESC, time_updated DESC` 读取），拉取又用拉取时刻给导入行打时间戳，所以客户端的备选先后不会在 OCR 文件里复现，反向亦然。跨边界的权威只有 ACTIVE 链头；备选之间的顺序是客户端本地的读取顺序，不是路由契约。要改这一点需要在 OCR 侧引入真正的顺序表示（schema 版本升级），而不是继续玩时间戳。
+
+测试：`credentials-sync` 两个方向都钉住了——推备选不会抢链头、全 dedup 的推送会治愈漂移的链头、拉取保留已有 OCR 链头、只有当 OCR 链没有 active 行时才采纳客户端链头。

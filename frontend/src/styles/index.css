@@ -464,6 +464,21 @@ td, th {
 .list-row:hover {
   background: var(--surface-hover);
 }
+/* Provider models dialog rows: the per-row action cluster stays hidden while
+   idle (rows read as text + badges) and reveals on row hover or keyboard
+   focus. visibility:hidden (not display:none) preserves the reserved width so
+   nothing reflows on hover; focus-within keeps the buttons reachable without
+   a pointer. */
+.list-row .row-actions {
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.list-row:hover .row-actions,
+.list-row:focus-within .row-actions {
+  visibility: visible;
+  opacity: 1;
+}
 
 /* Capture rail session card: the export/delete icons collapse to zero
    width by default (rows read as pure text); hovering the row expands the

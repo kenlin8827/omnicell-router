@@ -8,7 +8,8 @@ import { opencodeV2PackageFor } from '../src/opencode/user-config.js';
  * /api/admin/opencode/npm-vocabulary and DRIVES every UI npm surface. These
  * pins keep the table honest against the actual wire resolver:
  *   - alias and v2 package resolve to the SAME wire (the write-side mapping in
- *     user-config.ts must never change the wire a user gets);
+ *     user-config.ts must never change the wire a user gets) for every entry the
+ *     dropdown OFFERS;
  *   - every v2 package is opencode-v2 shaped and round-trips through the
  *     write-side mapping (alias → package → same wire);
  *   - orders are unique and ascending (stable dropdown order).
@@ -42,8 +43,12 @@ describe('npm vocabulary consistency', () => {
     expect(new Set(orders).size).toBe(orders.length);
   });
 
-  test('the decision wire is a vocabulary member', () => {
-    const typesafe = NPM_VOCABULARY.find((e) => e.alias === '@ai-sdk/typesafe-ai');
-    expect(typesafe?.wire).toBe('systemone');
+  // Version-scoped exception (ADR-0008 2026-10-23 amendment): the decision alias
+  // is not OFFERED while the client ships no `typesafe` package. The wire itself
+  // is still resolvable, so hand-written defs keep working.
+  test('the decision alias is withheld from the dropdown while the client cannot load its package', () => {
+    expect(NPM_VOCABULARY.find((e) => e.alias === '@ai-sdk/typesafe-ai')).toBeUndefined();
+    expect(wireFor('@ai-sdk/typesafe-ai')).toBe('systemone');
+    expect(wireFor('@opencode/ai/providers/typesafe')).toBe('systemone');
   });
 });

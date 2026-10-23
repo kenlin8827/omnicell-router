@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { migrateJsoncProviderDefs, type ProviderDefsImportRecord } from '../provider-defs.js';
+import { PROVIDER_DEFS_IMPORT_VERSION, importProviderDefsAtBoot, type ProviderDefsImportMarker } from '../provider-defs.js';
 import type { OpenCodeAuthEntry } from './auth-snapshot.js';
 import {
   CredentialPaths,
@@ -112,7 +112,7 @@ export interface StandaloneImportRecord {
  * Schema of <ocrHome>/credential-store.json. ADDITIVE: `reconcile` appears
  * only after the Decision 4 gate ran, `standaloneImport` only after the B4
  * standalone one-shot import ran, `providerDefsImport` only after the jsonc
- * provider-def port ran; readers must tolerate all absences.
+ * provider import ran; readers must tolerate all absences.
  * B4/F1 consume this shape (bind evidence + hysteresis + markers).
  */
 export interface CredentialStoreState {
@@ -123,7 +123,7 @@ export interface CredentialStoreState {
   updatedAt: number;
   reconcile?: CredentialStoreStateReconcile;
   standaloneImport?: StandaloneImportRecord;
-  providerDefsImport?: ProviderDefsImportRecord;
+  providerDefsImport?: ProviderDefsImportMarker;
 }
 
 export interface BindOverrides {
@@ -461,13 +461,18 @@ async function bindCredentialStoreOnce(overrides: BindOverrides = {}): Promise<S
     excluded = imported.excluded;
   }
 
-  // One-shot jsonc provider-def port (marker-gated, same ledger pattern):
-  // undefined = deferred (unparsable source / write failure) — no marker, retried next boot.
-  let providerDefsImport: ProviderDefsImportRecord | undefined;
-  if (lkg?.providerDefsImport?.doneAt) {
+  // One-shot client→OCR provider import (marker-gated, same ledger pattern). The
+  // marker carries the IMPORTER VERSION: a record written by an older importer
+  // (or none) is STALE and the import runs again, which is how new sources (the
+  // legacy singular `provider` slot, retired node shapes) reach installs whose
+  // first import already fired. undefined = retry next boot (unparsable source /
+  // write failure) — no NEW marker; the stale record is carried through
+  // unchanged so the ledger still shows the last completed pass.
+  let providerDefsImport: ProviderDefsImportMarker | undefined;
+  if (lkg?.providerDefsImport?.doneAt && lkg.providerDefsImport.version === PROVIDER_DEFS_IMPORT_VERSION) {
     providerDefsImport = lkg.providerDefsImport;
   } else {
-    providerDefsImport = migrateJsoncProviderDefs({ paths, now });
+    providerDefsImport = importProviderDefsAtBoot({ paths, now }) ?? lkg?.providerDefsImport;
   }
 
   // Unification doctrine: every store-backed provider owns a defs node, and

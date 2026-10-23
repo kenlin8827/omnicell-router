@@ -782,13 +782,6 @@ async function purgeFailureCode(e: unknown): Promise<PurgeSummary['failed'][numb
   return 'disconnect_failed';
 }
 
-/** Machine-readable precondition failures of the credential-sync paths. */
-const SYNC_PRECONDITION_ERROR: Record<'client_absent' | 'client_unreadable' | 'service_unreachable', string> = {
-  client_absent: 'this sync client is not present on this machine (no usable credential file/db for it)',
-  client_unreadable: 'the client credential file/db is unreadable — sync unavailable',
-  service_unreachable: 'opencode v2 service not reachable now (no service.json/OPENCODE_SERVER_PASSWORD) — retry after starting opencode',
-};
-
 /**
  * Provider-wide credential purge via the bound store:
  * provider-wide disconnect is a UI-level LOOP over per-credential disconnects
@@ -2993,76 +2986,6 @@ export function registerConsoleRoutes(
     },
 
     /**
-     * Push OCR credentials INTO opencode v2 (the write direction of the
-     * opencode-v2 sync client; opencode v1 goes through the sync endpoints).
-     * The OCR file is the truth, so local entries are NEVER removed — a push
-     * converges the CLIENT toward the OCR file. Preconditions enforced
-     * server-side: an opencode v2 service must be reachable NOW and its db
-     * readable — otherwise 400 with a machine-readable reason code. Body
-     * {provider} optional (absent = every provider with local entries).
-     * The outcome is recorded into credential-sync.json (lastWrite), so the
-     * per-provider push button and the sync table stay consistent.
-     */
-    credentialStorePush: async (req: any, reply: any) => {
-      const body = (req.body || {}) as { provider?: string };
-      const provider = typeof body.provider === 'string' && body.provider.trim() ? body.provider.trim() : undefined;
-      const {
-        getCredentialStore,
-        getBoundCredentialPaths,
-        getBindTestOverrides,
-        pushFromOcr,
-        recordSyncOutcome,
-      } = await import('../opencode/credentials/index.js');
-      try {
-        const store = await getCredentialStore();
-        const overrides = getBindTestOverrides();
-        const paths = getBoundCredentialPaths() ?? undefined;
-        const outcome = await pushFromOcr('opencode-v2', store, {
-          paths,
-          provider,
-          fetchImpl: overrides.fetchImpl,
-          env: overrides.env,
-          now: overrides.now,
-          openDatabase: overrides.openDatabase,
-        });
-        if (outcome.precondition) {
-          return reply.status(400).send({
-            status: 'error',
-            success: false,
-            reasonCode: outcome.precondition,
-            error: SYNC_PRECONDITION_ERROR[outcome.precondition],
-            pushed: [],
-            failed: [],
-          });
-        }
-        recordSyncOutcome('opencode-v2', 'write', outcome, { paths, now: overrides.now });
-        // Every converged (provider, key) pair is a reconnect gesture —
-        // its SUSPECT flag lifts here, anchored on the pushed key's hash.
-        const cb = registry.getCircuitBreakerManager();
-        for (const k of outcome.pushedKeys ?? []) clearSuspectForCredential(cb, k.provider, k.keyHashPrefix);
-        const pushed = [
-          ...new Set(
-            outcome.entries
-              .filter((e) => e.action === 'pushed' || e.action === 'deduped')
-              .map((e) => e.provider)
-          ),
-        ];
-        const failed = outcome.entries
-          .filter((e) => e.action === 'failed')
-          .map((e) => ({ provider: e.provider, reason: e.reason ?? 'push failed' }));
-        return { status: 'ok', pushed, failed };
-      } catch (err: any) {
-        return reply.status(500).send({
-          status: 'error',
-          success: false,
-          error: errMessage(err),
-          pushed: [],
-          failed: [],
-        });
-      }
-    },
-
-    /**
      * Credential-sync table data — per-client auto toggles, availability and
      * the last read/write outcomes (credential-sync.json). Masked metadata
      * only; never key material.
@@ -3435,7 +3358,6 @@ export function registerConsoleRoutes(
 
   for (const prefix of ['/api/admin']) {
     app.get(`${prefix}/credential-store`, ocHandlers.credentialStore);
-    app.post(`${prefix}/credential-store/push`, ocHandlers.credentialStorePush);
     app.get(`${prefix}/credential-sync`, ocHandlers.credentialSyncStatus);
     app.post(`${prefix}/credential-sync/toggle`, ocHandlers.credentialSyncToggle);
     app.post(`${prefix}/credential-sync/run`, ocHandlers.credentialSyncRun);

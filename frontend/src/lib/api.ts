@@ -2699,15 +2699,8 @@ export interface CredentialStoreStatusResponse {
   reconcile: CredentialReconcileSummary | null;
 }
 
-/** B4 contract: POST /api/admin/credential-store/push { provider }. */
-export interface CredentialPushResponse {
-  status: string;
-  pushed: string[];
-  failed: { provider: string; reason: string }[];
-}
-
 /** Precondition codes of the sync paths — mirrors backend SyncPrecondition. */
-export type CredentialPushReasonCode = 'client_absent' | 'client_unreadable' | 'service_unreachable';
+export type SyncPreconditionCode = 'client_absent' | 'client_unreadable' | 'service_unreachable';
 
 /** One per-entry record of a sync run (masked metadata only — never key material). */
 export interface CredentialSyncEntry {
@@ -2719,7 +2712,7 @@ export interface CredentialSyncEntry {
 /** One sync run outcome as recorded in credential-sync.json. */
 export interface CredentialSyncOutcome {
   ok: boolean;
-  precondition?: CredentialPushReasonCode;
+  precondition?: SyncPreconditionCode;
   pulled?: number;
   pushed?: number;
   deduped?: number;
@@ -2729,6 +2722,16 @@ export interface CredentialSyncOutcome {
   defsChanged?: boolean;
   /** write runs only — a CHANGED render was followed by a service reload that landed. */
   defsReloaded?: boolean;
+  /** write runs only — defs left out of the config because the client defines them itself. */
+  defsSkippedBuiltIn?: string[];
+  /** read runs only — provider defs imported from the client config (add-only). */
+  defsImported?: number;
+  /** read runs only — of `defsImported`, nodes migrated from a retired shape. */
+  defsConverted?: number;
+  /** read runs only — client nodes already owned by the OCR defs file. */
+  defsSkipped?: number;
+  /** read runs only — client nodes the importer refused (surfaced in `entries`). */
+  defsFailed?: number;
   entries: CredentialSyncEntry[];
   detail?: string;
 }
@@ -2845,17 +2848,6 @@ export const opencodeApi = {
   /** Bound credential-store status (kind, capabilities, exclusions, masked credentials). */
   async getCredentialStore(): Promise<CredentialStoreStatusResponse> {
     return ocJson(await fetch('/api/admin/credential-store'));
-  },
-
-  /** Push OCR credentials into opencode v2 (write sync; local entries are kept). */
-  async pushCredentialStore(provider: string): Promise<CredentialPushResponse> {
-    return ocJson(
-      await fetch('/api/admin/credential-store/push', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider }),
-      })
-    );
   },
 
   /** Credential-sync table: per-client toggles, availability, last outcomes. */

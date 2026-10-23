@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { CredentialPaths } from '../src/opencode/credentials/paths.js';
 import { OcrStore } from '../src/opencode/credentials/ocr-store.js';
-import { initCredentialSync, pushFromOcr, setSyncAutoToggle, stopCredentialSync } from '../src/opencode/credentials/sync.js';
+import { initCredentialSync, pushFromOcr, runCredentialSync, setSyncAutoToggle, stopCredentialSync } from '../src/opencode/credentials/sync.js';
 import { readProviderDefsFile, writeProviderDefs, getProviderDefsPath } from '../src/opencode/provider-defs.js';
 
 function seedDefs(p: CredentialPaths, providers: Record<string, unknown>): void {
@@ -139,6 +139,86 @@ describe('def materialization (v2 write direction)', () => {
     expect(parsed.providers.acme.settings.baseURL).toBe('https://acme.test/v1'); // verbatim render
     expect(parsed.model).toBe('some/model'); // slot-outer survives
     expect(raw).toContain('// top comment survives the render');
+  });
+
+  it('built-in providers travel as keys only; only the client-unknown relay gets a config node', async () => {
+    const p = withDb(withService(sandboxPaths()));
+    seedDefs(p, {
+      deepseek: { package: '@opencode/ai/providers/openai-compatible', settings: { baseURL: 'https://api.deepseek.com' } },
+      maisuitx: { package: '@opencode/ai/providers/openai-compatible', settings: { baseURL: 'http://192.168.18.10:20180/v3' } },
+    });
+    writeClientJsonc(p, '{ "model": "x" }');
+    const ocr = new OcrStore({ paths: p, now: () => 1 });
+    await ocr.connectKey('deepseek', 'sk-deepseek');
+    await ocr.connectKey('maisuitx', 'sk-relay');
+
+    // /api/provider answers with integrationID only for the CLIENT's own catalog
+    // (deepseek) — the relay has no integration, so it is custom by definition.
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      if (String(init?.method ?? 'GET') === 'GET') {
+        if (url.includes('/api/provider')) {
+          return new Response(
+            JSON.stringify({ data: [{ id: 'deepseek', integrationID: 'deepseek' }, { id: 'maisuitx' }] }),
+            { status: 200 }
+          );
+        }
+        return new Response(
+          JSON.stringify({ data: [{ id: 'deepseek', connections: [] }, { id: 'maisuitx', connections: [] }] }),
+          { status: 200 }
+        );
+      }
+      return new Response(JSON.stringify({ credential: { id: 'c-1' } }), { status: 200 });
+    };
+
+    // runCredentialSync is the recorded path (the badge reads the recorded run).
+    const { write: outcome } = await runCredentialSync('opencode-v2', 'write', ocr, {
+      paths: p,
+      fetchImpl,
+      openDatabase: fakeDb(),
+      now: () => 1,
+    });
+    expect(outcome!.ok).toBe(true);
+    expect(outcome!.defsSkippedBuiltIn).toEqual(['deepseek']);
+    expect(outcome!.defsMaterialized).toBe(1);
+    const parsed = JSON.parse(readJsoncRaw(p).replace(/^\s*\/\/.*$/gm, ''));
+    expect(Object.keys(parsed.providers)).toEqual(['maisuitx']);
+
+    // The badge compares the SAME render set: no drift right after the run.
+    const { credentialSyncStatusView } = await import('../src/opencode/credentials/sync.js');
+    const view = credentialSyncStatusView({ paths: p });
+    expect(view.clients.find((c) => c.id === 'opencode-v2')?.defsDrift).toBe(false);
+  });
+
+  it('a wire the client has no package for is substituted in the client copy only (book untouched)', async () => {
+    const p = withDb(withService(sandboxPaths()));
+    const typesafeDef = {
+      package: '@opencode/ai/providers/typesafe',
+      settings: { baseURL: 'https://ark.cn-beijing.volces.com/api/v3' },
+      models: { 'doubao-1': { name: 'doubao-1' } },
+    };
+    seedDefs(p, { ark: typesafeDef });
+    writeClientJsonc(p, '{ "model": "x" }');
+    const ocr = new OcrStore({ paths: p, now: () => 1 });
+    await ocr.connectKey('ark', 'sk-ark');
+
+    const fetchImpl: typeof fetch = async (input, init) => {
+      if (String(init?.method ?? 'GET') === 'GET') {
+        // the client does NOT define ark (no integration) → the node is written
+        return new Response(JSON.stringify({ data: [{ id: 'ark', connections: [] }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ credential: { id: 'c-1' } }), { status: 200 });
+    };
+    const outcome = await pushFromOcr('opencode-v2', ocr, { paths: p, fetchImpl, openDatabase: fakeDb(), now: () => 1 });
+    expect(outcome.ok).toBe(true);
+
+    const parsed = JSON.parse(readJsoncRaw(p).replace(/^\s*\/\/.*$/gm, ''));
+    // client copy: loadable package, everything else preserved verbatim
+    expect(parsed.providers.ark.package).toBe('@opencode/ai/providers/openai-compatible');
+    expect(parsed.providers.ark.settings.baseURL).toBe('https://ark.cn-beijing.volces.com/api/v3');
+    expect(parsed.providers.ark.models).toEqual({ 'doubao-1': { name: 'doubao-1' } });
+    // the book keeps the authored def — OCR's own wire inference is unaffected
+    expect(readProviderDefsFile(p)!.providers.ark).toEqual(typesafeDef);
   });
 
   it('unparsable client jsonc is refused, never clobbered — loud entry failure, byte-identical file', async () => {
@@ -336,7 +416,8 @@ describe('def materialization (v2 write direction)', () => {
     expect(outcome.ok).toBe(true);
     expect(outcome.defsChanged).toBe(true);
     const parsed = JSON.parse(readJsoncRaw(p));
-    expect(parsed.providers).toEqual({});
+    // Every rendered node is gone; an empty slot is removed, not left as `{}`.
+    expect(parsed.providers).toBeUndefined();
     // the pre-sync client file is preserved for the operator
     expect(fs.readFileSync(`${clientJsoncPath(p)}.bak.ocr-defs`, 'utf8')).toContain('gone');
   });

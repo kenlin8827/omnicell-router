@@ -8,7 +8,7 @@ Implemented — 2026-10-20（阶段：定义库 + 一次性 jsonc 移植；CRUD/
 
 ### 1. 每类工件一个真相——连接定义加入凭证的行列
 
-Provider 的**连接定义**——id、name、npm wire 包、baseURL、headers、env 槽位、canonical/body、节点内静态模型——由 OCR 持有于 `<ocrHome>/providers.json`，GLOBAL（不按环境分账；与 `credentials.json` 同册，ADR-0007 文件约定）。这是**唯一**的用户侧连接定义配置面：早先的手写 `config.yaml` `providers[]` 一节已**退役**（注册表不再读取；config 解析器直接丢弃，原生 System One 直通支路整体退役（ADR-0008 修订；未来 Jev/Bailian 集成以普通定义文件 provider 形式接入），手写 `models[]` 配置面随之一同退役（模型在 boot 时从定义 + 目录物化；`RouterConfig.models` 仅作为运行时载体存在，由 `boot.models` 覆盖））。`opencode.jsonc` **整体退出真相链**：任何 console 路由、boot 路径、视图都不得再把它当真相读写。它是**物化目标**——opencode 同步适配器从定义文件再生的客户端工件，与密钥世界的 `opencode.db`/`auth.json` 完全同构（ADR-0006）。手改的 jsonc 定义不是任何东西的数据源；§4 的一次性导入是唯一存在的 client→OCR 定义流动，永远如此。
+Provider 的**连接定义**——id、name、npm wire 包、baseURL、headers、env 槽位、canonical/body、节点内静态模型——由 OCR 持有于 `<ocrHome>/providers.json`，GLOBAL（不按环境分账；与 `credentials.json` 同册，ADR-0007 文件约定）。这是**唯一**的用户侧连接定义配置面：早先的手写 `config.yaml` `providers[]` 一节已**退役**（注册表不再读取；config 解析器直接丢弃，原生 System One 直通支路整体退役（ADR-0008 修订；未来 Jev/Bailian 集成以普通定义文件 provider 形式接入），手写 `models[]` 配置面随之一同退役（模型在 boot 时从定义 + 目录物化；`RouterConfig.models` 仅作为运行时载体存在，由 `boot.models` 覆盖））。`opencode.jsonc` **整体退出真相链**：任何 console 路由、boot 路径、视图都不得再把它当真相读写。它是**物化目标**——opencode 同步适配器从定义文件再生的客户端工件，与密钥世界的 `opencode.db`/`auth.json` 完全同构（ADR-0006）。手改的 jsonc 定义不是任何东西的数据源；client→OCR 的定义流动只允许**只增导入**（§4 的启动导入 + 同步读方向，见后文修订案），且绝不覆盖 OCR 已拥有的 id。
 
 ### 2. 文件——jsonc providers 节点的保形移植
 
@@ -68,5 +68,25 @@ Provider CRUD 重写到定义库（`upsertProviderDef`/`getProviderNodeById` 变
 - **retired-shape 判据已更正（实测，2026-12）**。opencode v2.0.0 **不会**丢弃带节点级 `npm`/`options` 的节点：在真实安装上实测，一个 `npm`+`options` 探针节点的模型正常被枚举出来。排除策略保留，但理由换成诚实的那个——retired 的**线上拼写**未被证明被采纳，现实失败模式是"provider 看似注册成功、baseURL/headers 却被忽略"，即静默指错端点，比"没有 provider"更糟。此前"解码器会整节点丢弃（`kind=invalid`）"的说法从未被验证，予以撤回（代码注释与 boot-direct 的排除注释已同步）。
 - **漂移可见，绝不靠"同步成功"推断**。状态视图新增 `defsDrift`（opencode-v2）：用**与物化器相同**的比较，把客户端已物化的 `providers` 槽位与定义文件对比，因此徽章永不与一次推送的实际行为相左；同步表渲染"定义未推送"徽章。自动写入默认关闭且两个方向彼此独立，在此之前客户端副本落后与"推送成功"在界面上无法区分。
 - **单 provider 运行覆盖两个方向**。同步运行的 `provider` 收窄现在同时作用于拉取与推送（`credential-sync/run` 路由接受可选 `provider`），provider 级手势不会再扫全量书册。
-- **产物类别的不对称（记录在案，而非偶然）**。写入方向以 REPLACE 覆盖的类别，绝不允许客户端→OCR 回流：defs 以身份渲染整体替换 `providers` 槽位，唯一的客户端→OCR 定义流动就是一次性 port。写入方向只是**追加**的类别则允许回流：key 是只增/轮换推送，所以只在 OCR 文件里删除的 key 会被下一次拉取重新导入（ADR-0006 修订案）。未来任何推送侧删除都必须与拉取侧 tombstone 同批交付，否则两个方向永久对冲。
+- **产物类别的不对称（记录在案，而非偶然）**。写入方向以 REPLACE 覆盖的类别，绝不允许被客户端**覆盖**：defs 以身份渲染整体替换 `providers` 槽位，所以客户端→OCR 的定义流动是**只增**的（启动导入 + 同步读方向，见后文修订案——OCR 已拥有的 id 绝不从客户端取）。写入方向只是**追加**的类别则允许回流：key 是只增/轮换推送，所以只在 OCR 文件里删除的 key 会被下一次拉取重新导入（ADR-0006 修订案）。未来任何推送侧删除都必须与拉取侧 tombstone 同批交付，否则两个方向永久对冲。
 - **自动同步与手动同步共用一个内核、两层外壳（记录在案）**。两者都调用同一对 `pullIntoOcr`/`pushFromOcr`，写同一份 `credential-sync.json`；差异是有意的：SUSPECT 只由手动动作抬升（该标志是操作员确认，绝不自动清除），引擎持有在途闸门与 1.5s debounce + 60s 兜底，只有手动运行支持 `provider` 收窄。其中一处后果在此修复：当 `defsChanged === true && defsReloaded === false` 时兜底**也会重试**——此时 key 全部 dedupe（`ok` 读作 true）而客户端还在用旧的服务商列表，除此之外没有任何机制会重试它。
+
+## 修订案 —— 客户端→OCR 的 provider 导入由适配器负责 v1/v2 拼写差异（只增 + 重新武装）
+
+从客户端读取连接 def 的流动现在有两条（启动导入 + 同步读方向），都由适配器（而不是调用方）负责处理客户端配置可手写带来的两类差异：
+
+- **两个适配器，一 flavor 一个（`provider-def-adapters.ts`）。** 机器的 flavor（`credentials/paths.ts`，与凭证同步客户端共用）选择适配器；适配器负责自己的槽位与节点形状。槽位**拼写**绝不外泄：调用方只请求操作（导入用 `providerDefAdapter(flavor).read`，物化器与漂移徽章用 `clientDefNodes` / `writeDefSlot`——def 写入方恒为 v2 正规槽），这样没有第二个模块能长出"defs 到底住哪"的独立意见——共享的 `PROVIDER_SLOT` 式常量正是这种漂移双胞胎，而把两种拼写并排声明会抹掉适配器存在的意义：
+  - `opencode-v2` → 正规的复数 **`providers`** 槽，`package`/`settings` 拼写，逐字复制。退役的单数 `provider` 槽**不读**——一个 flavor 一个槽，没有遗留兼容通道（测试钉死；理由见下）。
+  - `opencode-v1` → 只读单数 **`provider`** 槽，`npm`/`options` 拼写，需要转换；复数正规槽同样不读。
+  每次读取恰好只读本适配器的槽。读方向对客户端文件永远不写。
+- **实测的槽位行为（2.0.29，2026-10-23）。** opencode v2 两种拼写**都接受**作为输入，并把旧的那一种折叠进正规形态：手写在 `provider` 下的 v1 节点（`npm`/`options`），在服务端的解码配置（`GET /api/config`）里出现在 `providers` 下、且是 `package`/`settings` 形状（原始 npm 包名会加 `aisdk:` 前缀）。所以 `providers` 才是正规/生效拼写——物化器写它、schema 也只声明它（`@opencode/schema` 2.0.16 的 `Config` 结构里只有 `providers`）——而 `provider` 是兼容**输入**，不是第二套真相。所以 v2 适配器仍然**只读**正规槽：v1 形状的残留节点经折叠照旧在客户端注册，但兼容输入不是 OCR 导入、跟踪的真相——接管只认正规拼写。
+- **形状。** 按**形状**判断，绝不按槽位猜：旧 v1 节点形状是节点级 `npm`/`options`（`legacyShapedProviderPaths`），v1 适配器会通过控制台同一个 def 构造器把它**转换**为 `package`/`settings`（模型级 `provider.npm` → `provider.package`），而不是逐字复制——逐字复制会被 OCR 读取层丢弃、并被每一次 def 写入拒绝。内联凭证随转换一起保留（`settings.apiKey` 保留；`{env:VAR}` 变成 `env:["VAR"]`），因为形状迁移不能弄丢一份可用的客户端副本；控制台把它渲染为 inline。
+- **只增。** defs 文件里已存在的 id 一律**跳过**，绝不覆盖。这取代 §4 的“按 id 整节点 upsert，jsonc 节点在自己 id 上胜出”：首次导入之后 OCR 文件就是真相，重跑只能补空缺——过期的客户端副本永远不能重置操作员的 def 编辑。（与凭证拉取的只增契约一致；删除与修改只能 OCR→客户端。）
+- **按导入版本重新武装。** `credential-store.json` 里的 marker 带 `version`（`PROVIDER_DEFS_IMPORT_VERSION`）；旧版本写入的 marker（或没有 marker）视为**过期**，下一次启动会重跑。这样已有安装无需手动操作、也不会丢账本，就能拿到新增的单数槽读取与形状转换。延后的导入（客户端配置不可解析 / defs 写失败）不写新记录、保留旧记录可见、下次启动重试。
+- **退役槽被忽略，绝不剪除。** v2 机器上两个方向都不碰单数 `provider` 槽：导入不读它，物化器只 REPLACE `providers`、其余遗留节点逐字不动，`defsDrift` 也只比较正规槽。记录在案的后果：OCR 里已删除的 def 可能仍被过期的遗留副本经折叠保活在客户端，而拉取看不见它——清除它是客户端文件编辑，与 key 删除同一条"客户端侧也要删"的规则（ADR-0006）。
+- **内置 ⇒ 只写密钥；自定义 ⇒ 写配置节点。** 写方向渲染的集合是 defs 册**减去客户端自己已定义的 provider id**。依据是证据而不是维护的 id 清单：`GET /api/provider` 只对 catalog 定义的 provider 返回 `integrationID`，而仅因被写进配置才存在的节点（如中继 `maisuitx`）没有这个字段。这些内置 provider 不需要配置节点——客户端本来就持有它们的 package/baseURL/模型清单——所以只让密钥流转（推送的 key 那一半完全不变）。客户端不认识的一律写，因此任何已连接的自定义 provider 都会落到 `providers` 里。这个 id 集合会记录在写结果上（`defsSkippedBuiltIn`），因为 `defsDrift` 必须与推送用过的渲染集合一致；没有服务可问时整册照写——缺一个 def 会断路由，多一个 def 从来不会。
+- **客户端加载不了的 wire 用替代 package，而不是跳过。** 客户端的 `package` 是闭集；它没有对应 package 的 wire（今天的 `systemone` / TypeSafe：SDK 模块存在，但只暴露 `experimental.evaluation`，加载器里没有这个段）它根本服务不了。两层、一个方向：(a) 写侧的 npm→package 表**不再产出**加载不了的 package（`@ai-sdk/typesafe-ai` → 兼容运行时，原生那一行注释保留，等客户端支持时恢复）；(b) 已经带不可加载 package 的 def（手写或导入的）仍然只在**写给客户端的那一份**换成兼容运行时 package（`CLIENT_PACKAGE_FALLBACK`，一条，按 wire 索引）——册子保留作者写的 def，OCR 自己的 wire 判据仍解析为 `systemone`。这是从册子确定推导出来的，所以 `defsDrift` 比较的正是推送会写的那张表。不做运行时探测：客户端只要节点的 `models` 里有条目就会注册模型，与 package 能否解析无关，探测会对一个服务不了请求的 package 报"正常"。将来客户端支持了这个段，改那一条（或删掉它）下一次推送就让所有 def 自动切回。替代只回答"客户端能不能加载"；上游是否说这种协议仍是供应商事实（ark 会；api.typesafe.ai 只有 `POST /systemone`，不会）。
+- **读方向也由它负责。** `pullIntoOcr` 用「本次同步的那个客户端」的适配器导入 provider defs——手动或自动跑 `opencode-v2` 永远是 v2 适配器，`opencode-v1` 永远是 v1 适配器；版本由同步请求决定，绝不靠猜。按 provider 收窄的运行只导入那一个节点。outcome 带 `defsImported` / `defsConverted` / `defsSkipped` / `defsFailed`（硬失败再加一条 `failed` 条目），控制台能看到。启动期、marker 门控的导入保留，作为「从不手动同步」的安装的种子。
+- **仍然禁止。** 不把过期的客户端副本写回：读方向的 defs 是只增的，写方向对正规槽是 REPLACE。在 OCR 删掉、但客户端正规槽里仍然存在的 provider，会被下一次拉取重新导入——与 key 删除是同一项已记录的取舍（删除后紧跟的那次推送会把它传播出去；在那之前客户端副本是唯一证据）。退役槽里的遗留副本两个方向都不碰，它不是拉取能重新接管的路径——见上方记录在案的后果。已导入的 def 在 OCR 里编辑；客户端对 OCR 自有 def 的改动会被忽略（报告为 `skipped`）。
+
+失败按节点逐条记录且绝不静默：非法 id（小写 slug 规则）、非对象节点、被拒绝的转换都会带原因报告，账本记录 `imported` / `converted` / `skipped` / `failed`。

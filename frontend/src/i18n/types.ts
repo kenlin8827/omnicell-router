@@ -447,12 +447,6 @@ export interface TranslationDict {
     exclDbUnreadable: string;
     exclNoRoutable: string;
     exclReconcilePushFailed: string;
-    /** One-shot Push-to-opencode convergence (ocr binding with local-only credentials). */
-    pushBtn: string;
-    pushTip: string;
-    pushOk: string;
-    pushPartial: string;
-    pushNone: string;
     /** Honest error notice when a purgeAuth delete left credentials behind (Decision 8). */
     purgeFailed: string;
     /** Fallback detail when the store reports a failed purge without per-credential entries. */
@@ -494,6 +488,7 @@ export interface TranslationDict {
     syncPrecServiceUnreachable: string;
     syncDefsSummary: string;
     syncDefsReloadFailed: string;
+    syncDefsImported: string;
     syncDefsDrift: string;
     syncDefsDriftTip: string;
     syncGenericFailure: string;

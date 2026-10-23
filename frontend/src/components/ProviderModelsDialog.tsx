@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { Plus, Trash2, Download, Eye, EyeOff, Pencil, Check, X, Eraser, Loader2, AudioLines, Video, Thermometer, Wand2, Zap, Search } from 'lucide-react';
+import { Plus, Trash2, Download, Eye, EyeOff, Pencil, Check, X, Eraser, Loader2, AudioLines, Video, Thermometer, Wand2, Zap, Search, ListChecks } from 'lucide-react';
 import { opencodeApi, type OpenCodeModelView } from '../lib/api';
 import { matchCatalogModel, catalogAutofillPatch, detectEffortLevel } from '../lib/catalogAutofill';
 import { effortOptionList } from '../lib/effort';

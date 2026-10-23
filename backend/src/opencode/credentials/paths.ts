@@ -49,7 +49,13 @@ export function resolveDefaultPaths(
   homedir: string = os.homedir()
 ): CredentialPaths {
   const xdgConfig = env.XDG_CONFIG_HOME || path.join(homedir, '.config');
-  const configDir = path.join(xdgConfig, 'opencode');
+  // opencode's own override: the CLI resolves OPENCODE_CONFIG_DIR the same way
+  // (`--config-dir` / ocp profiles write it), so ignoring it would point every
+  // def write at a tree the running client never reads — the silent-mismatch
+  // class this registry exists to prevent. The DATA dir stays XDG: the env var
+  // only relocates config, exactly as the CLI treats it.
+  const configOverride = env.OPENCODE_CONFIG_DIR?.trim();
+  const configDir = configOverride ? path.resolve(configOverride) : path.join(xdgConfig, 'opencode');
   const xdgData = env.XDG_DATA_HOME || path.join(homedir, '.local', 'share');
   const dataDir = path.join(xdgData, 'opencode');
   // OCR_HOME empty/whitespace = unset (cli/paths.ts semantics, no mkdir here —
@@ -79,7 +85,7 @@ export function resolveDefaultPaths(
  * next read would not prefer.
  *
  * This is the ONE place that knows the candidate list — the defs materializer
- * (write) and the one-shot def port (read) both resolve through it, so a push
+ * (write) and the one-shot provider import (read) both resolve through it, so a push
  * can never land in a file the client does not read (the historical defect: the
  * port read `<configDir>/opencode.json` while the materializer wrote a fresh
  * `<configDir>/opencode.jsonc` next to it).
@@ -167,4 +173,53 @@ export function serviceJsonCandidates(paths: CredentialPaths = resolveDefaultPat
  */
 export function quotaSnapshotsFile(paths: CredentialPaths = resolveDefaultPaths()): string {
   return path.join(paths.ocrHome, 'quota-snapshots.json');
+}
+
+// ---------------------------------------------------------------------------
+// Client flavor / presence — which opencode lives on this machine
+// ---------------------------------------------------------------------------
+
+/**
+ * How the client config is spelled depends on the FLAVOR, and BOTH the
+ * credential sync clients and the provider-def adapters must agree on which one
+ * is present (a second copy of these rules would be a drift twin). They live
+ * here, next to the path registry, because "what this machine has" and "where
+ * its files are" are the same evidence question.
+ *
+ * v2 evidence: `opencode.db` (the v2 credential database) or a v2 version pin.
+ * v1 evidence: a v1 version pin OR an existing `auth.json` — the pin alone
+ * counts because on a fresh v1 install `auth.json` does not exist yet and the
+ * v1 write direction is what creates it. On a v2 machine `auth.json` is a stale
+ * migration snapshot, never a sync peer.
+ */
+export type OpencodeFlavor = 'opencode-v1' | 'opencode-v2';
+
+export function readInstalledMajorVersion(paths: CredentialPaths): number | null {
+  try {
+    const text = fs.readFileSync(paths.installedVersionPath, 'utf8').trim();
+    const m = /v?(\d+)\./.exec(text);
+    return m ? Number(m[1]) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function isV1ClientPresent(paths: CredentialPaths): boolean {
+  if (fs.existsSync(paths.opencodeDbPath)) return false;
+  const major = readInstalledMajorVersion(paths);
+  if (major === 2) return false;
+  return major === 1 || fs.existsSync(paths.authJsonPath);
+}
+
+/**
+ * The flavor whose config this machine's client actually reads, or undefined
+ * when no client trace exists. v2 wins when both kinds of evidence appear (a v2
+ * install keeps a stale auth.json around; the db/pin is the live evidence).
+ */
+export function detectClientFlavor(paths: CredentialPaths): OpencodeFlavor | undefined {
+  if (fs.existsSync(paths.opencodeDbPath)) return 'opencode-v2';
+  const major = readInstalledMajorVersion(paths);
+  if (major === 2) return 'opencode-v2';
+  if (major === 1 || fs.existsSync(paths.authJsonPath)) return 'opencode-v1';
+  return undefined;
 }

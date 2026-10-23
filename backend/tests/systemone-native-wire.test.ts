@@ -46,9 +46,13 @@ describe('typesafe npm → systemone wire', () => {
     expect(wireFor('@opencode/ai/providers/unknown-segment')).toBe('unroutable');
   });
 
-  test('the v2 write side maps the npm onto the same segment the read side knows', () => {
-    expect(opencodeV2PackageFor('@ai-sdk/typesafe-ai')).toBe('@opencode/ai/providers/typesafe');
-    expect(wireFor(opencodeV2PackageFor('@ai-sdk/typesafe-ai'))).toBe('systemone');
+  // Write side is version-scoped, read side is not: the client (2.0.29) has no
+  // `typesafe` package, so a def written from this npm carries the compatible
+  // runtime and the wire resolves as openai. A def that ALREADY carries the
+  // segment (hand-written / imported) still resolves to the decision wire — the
+  // materializer substitutes only the client copy (ADR-0010 amendment).
+  test('the v2 write side emits a package the client can actually load', () => {
+    expect(opencodeV2PackageFor('@ai-sdk/typesafe-ai')).toBe('@opencode/ai/providers/openai-compatible');
   });
 
   test('the console probe infers the same wire (test ≡ inference)', () => {

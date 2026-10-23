@@ -17,6 +17,7 @@ import {
   readCredentialStoreState,
   resetCredentialStoreForTests,
 } from '../src/opencode/credentials/factory.js';
+import { PROVIDER_DEFS_IMPORT_VERSION } from '../src/opencode/provider-defs.js';
 
 /**
  * The factory binds ONE store per boot — ALWAYS the OcrStore. The opencode
@@ -73,6 +74,30 @@ describe('credential store factory', () => {
     expect(binding.status.probeResult?.state).toBe('empty');
     // last-known-good record persists the (only) landing
     expect(readLkg(paths)).toMatchObject({ bound: 'ocr', version: '2.0.0', degradedCode: null });
+  });
+
+  it('re-arms the client→OCR provider import when the recorded marker predates the importer version', async () => {
+    const paths = sandboxPaths();
+    await bindCredentialStore(base({ paths })); // first boot writes the CURRENT marker
+    const marker = (readLkg(paths) as any).providerDefsImport;
+    expect(marker.version).toBe(PROVIDER_DEFS_IMPORT_VERSION);
+
+    // Simulate an install whose import already fired under an older version,
+    // then a hand-written provider appears in the client config.
+    const stale = { ...readLkg(paths)! };
+    delete (stale.providerDefsImport as any).version;
+    fs.writeFileSync(credentialStoreStateFile(paths), JSON.stringify(stale));
+    fs.writeFileSync(
+      path.join(paths.configDir, 'opencode.jsonc'),
+      '{"providers": { "relay": { "package": "@opencode/ai/providers/openai-compatible", "settings": { "baseURL": "https://r.example/v1" } } }}'
+    );
+
+    resetCredentialStoreForTests();
+    await bindCredentialStore(base({ paths }));
+    const defs = JSON.parse(fs.readFileSync(path.join(paths.ocrHome, 'providers.json'), 'utf8'));
+    expect(defs.providers.relay.package).toBe('@opencode/ai/providers/openai-compatible');
+    expect(defs.providers.relay.settings.baseURL).toBe('https://r.example/v1');
+    expect((readLkg(paths) as any).providerDefsImport.version).toBe(PROVIDER_DEFS_IMPORT_VERSION);
   });
 
   it('records used:"none" when no opencode trace exists', async () => {

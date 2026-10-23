@@ -12,7 +12,7 @@ import {
   type CredentialStoreCapabilities,
   type CredentialStoreDegradedCode,
   type CredentialExcludedReasonCode,
-  type CredentialPushReasonCode,
+  type SyncPreconditionCode,
   type CredentialSyncClientView,
   type CredentialSyncOutcome,
   type CredentialMeta,
@@ -269,6 +269,11 @@ const syncOutcomeText = (o: CredentialSyncOutcome | undefined, t: TFn): string =
   // serving stale defs until the next successful push).
   if (o.defsMaterialized !== undefined) parts.push(t('op.syncDefsSummary', { n: o.defsMaterialized }));
   if (o.defsChanged === true && o.defsReloaded === false) parts.push(t('op.syncDefsReloadFailed'));
+  // The def half of a READ: the client's hand-written provider defs are imported
+  // add-only, through the adapter of the client that was synced.
+  if (o.defsImported !== undefined && (o.defsImported > 0 || (o.defsConverted ?? 0) > 0)) {
+    parts.push(t('op.syncDefsImported', { n: o.defsImported, c: o.defsConverted ?? 0 }));
+  }
   return parts.join(' · ');
 };
 
@@ -334,10 +339,10 @@ const EXCLUDED_REASON_LABEL: Partial<Record<CredentialExcludedReasonCode, string
   reconcile_push_failed: 'op.exclReconcilePushFailed',
   bind_failed: 'op.exclBindFailed',
 };
-// Sync-path precondition codes (backend SYNC_PRECONDITION_ERROR). ocJson keeps
-// the machine code on the error; only KNOWN codes get a localized claim —
-// unknown codes fall back to the raw string, loud over pretty-but-wrong.
-const PUSH_REASON_LABEL: Partial<Record<CredentialPushReasonCode, string>> = {
+// Sync-path precondition codes. ocJson keeps the machine code on the error; only
+// KNOWN codes get a localized claim — unknown codes fall back to the raw string,
+// loud over pretty-but-wrong.
+const SYNC_PRECONDITION_LABEL: Partial<Record<SyncPreconditionCode, string>> = {
   service_unreachable: 'op.pushOpencodeV2Unreachable',
   client_unreadable: 'op.pushOpencodeV2DbUnreadable',
   client_absent: 'op.syncPrecClientAbsent',
@@ -1090,7 +1095,6 @@ export const KeysPage: React.FC = () => {
   const [ocProviders, setOcProviders] = useState<OpenCodeProviderView[]>([]);
   const [ocPaths, setOcPaths] = useState<{ configPath: string }>({ configPath: '' });
   const [storeStatus, setStoreStatus] = useState<CredentialStoreStatus | null>(null);
-  const [pushingId, setPushingId] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<OpenCodeCatalogProvider[]>([]);
   const [catalogSource, setCatalogSource] = useState('');
   const [catalogQuery, setCatalogQuery] = useState('');
@@ -1250,16 +1254,6 @@ export const KeysPage: React.FC = () => {
   );
   const canWriteCredential = (providerId: string): boolean =>
     integrationIds === null || integrationIds.has(providerId.toLowerCase());
-  // OcrStore binding: its credentials are by definition local, not in opencode —
-  // these get the one-shot Push to opencode affordance (Decision 2 convergence).
-  const localOnlyProviders = useMemo(() => {
-    const set = new Set<string>();
-    if (storeStatus?.kind === 'ocr') {
-      for (const a of storeStatus.credentials) if (a.total > 0) set.add(a.providerId);
-    }
-    return set;
-  }, [storeStatus]);
-
   // ---- per-credential drill-down ----------------------------------------------------
   // The masked detail lives inside storeStatus (GET credential-store carries
   // it) so a write route's refreshed `credentials` array can patch it in place —
@@ -1310,7 +1304,7 @@ export const KeysPage: React.FC = () => {
   const reasonError = (err: any): string => {    const code: string | undefined = err?.reasonCode;
     const key = code
       ? WRITE_REASON_LABEL[code as CredentialWriteReasonCode]
-        ?? PUSH_REASON_LABEL[code as CredentialPushReasonCode]
+        ?? SYNC_PRECONDITION_LABEL[code as SyncPreconditionCode]
         ?? REVEAL_REASON_LABEL[code as CredentialRevealReasonCode]
       : undefined;
     if (key) return t(key);
@@ -1841,29 +1835,6 @@ export const KeysPage: React.FC = () => {
     }
   };
 
-  const handlePush = async (id: string) => {
-    setPushingId(id);
-    try {
-      const res = await opencodeApi.pushCredentialStore(id);
-      const failed = res.failed || [];
-      if (failed.length > 0) {
-        toast.error(t('op.pushPartial', { detail: failed.map((f) => `${f.provider}: ${f.reason}`).join('; ') }));
-      } else if ((res.pushed || []).length > 0) {
-        toast.success(t('op.pushOk', { n: res.pushed.length }));
-      } else {
-        toast.info(t('op.pushNone'));
-      }
-      await refreshAll();
-    } catch (err: any) {
-      // Push 400s carry a machine reasonCode (attached by ocJson as OcApiError):
-      // known codes render localized, unknown codes show the raw code + message
-      // rather than a guessed translation (reasonError owns that table).
-      toast.error(reasonError(err));
-    } finally {
-      setPushingId(null);
-    }
-  };
-
   const handleCreateCustom = async () => {
     if (!form.id.trim() || !form.baseURL.trim()) {
       toast.error(t('op.idAndUrlRequired'));
@@ -2258,17 +2229,6 @@ export const KeysPage: React.FC = () => {
                       <Cpu size={12} />
                       <span>{t('op.pmManage')}</span>
                     </button>
-                    {localOnlyProviders.has(p.id) && (
-                      <button
-                        className="btn btn-sm"
-                        disabled={busy || pushingId !== null}
-                        title={t('op.pushTip')}
-                        onClick={() => handlePush(p.id)}
-                      >
-                        {pushingId === p.id ? <RefreshCw size={12} style={{ animation: 'ocr-spin 0.8s linear infinite' }} /> : <Upload size={12} />}
-                        <span>{t('op.pushBtn')}</span>
-                      </button>
-                    )}
                   </>
                 )}
               </div>

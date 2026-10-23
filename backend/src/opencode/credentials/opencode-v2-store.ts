@@ -90,6 +90,8 @@ const API = {
   /** re-read config files and re-register providers — the ONLY way a running
    *  service picks up a config-declared provider (live-probed 2.0.15, 2026-10-13). */
   reload: () => '/api/location/reload',
+  /** every provider the SERVICE can serve: its own integration catalog + config nodes */
+  providers: () => '/api/provider',
   connectKey: (integrationId: string) => `/api/integration/${encodeURIComponent(integrationId)}/connect/key`,
   activate: (credentialId: string) => `/api/credential/${encodeURIComponent(credentialId)}/activate`,
   rename: (credentialId: string) => `/api/credential/${encodeURIComponent(credentialId)}`,
@@ -295,6 +297,47 @@ export function reloadOpencodeService(
   const run = postReload(cfg, opts.fetchImpl ?? fetch).finally(() => serviceReloads.delete(key));
   serviceReloads.set(key, run);
   return run;
+}
+
+/**
+ * The provider ids the CLIENT already defines itself (its own integration catalog).
+ *
+ * The defs write direction must not copy those into the operator's config: the
+ * client knows their package, baseURL and model list, so writing them only adds
+ * noise and pins choices the catalog would otherwise make. Keys still flow (the
+ * key half of the push is untouched) — "built in ⇒ auth only, custom ⇒ config".
+ *
+ * Evidence, not a maintained id list: `GET /api/provider` returns `integrationID`
+ * exactly for the catalog-defined providers; a node that only exists because it
+ * was written into the config (a relay) has none. Bounded and non-throwing:
+ * `undefined` means "cannot tell right now" (no service / refused target /
+ * transport error) and the caller then writes the whole book — the safe side,
+ * because a missing def breaks routing while a redundant one does not.
+ */
+export async function fetchClientDefinedProviderIds(
+  paths: CredentialPaths,
+  env: Readonly<Record<string, string | undefined>> = defaultEnv(),
+  opts: { fetchImpl?: typeof fetch } = {}
+): Promise<Set<string> | undefined> {
+  const cfg = resolveServiceConfigForPaths(paths, env);
+  if (!cfg || cfg.targetPolicy === 'insecure_remote') return undefined;
+  try {
+    const res = await (opts.fetchImpl ?? fetch)(`${cfg.baseUrl}${API.providers()}`, {
+      redirect: 'manual',
+      headers: { Authorization: cfg.authHeader, Accept: 'application/json' },
+      signal: AbortSignal.timeout(ADMIN_HTTP_TIMEOUT_MS),
+    });
+    if (!res.ok) return undefined;
+    const body = (await res.json()) as { data?: Array<{ id?: unknown; integrationID?: unknown }> };
+    if (!Array.isArray(body?.data)) return undefined;
+    const ids = new Set<string>();
+    for (const p of body.data) {
+      if (typeof p?.id === 'string' && typeof p.integrationID === 'string' && p.integrationID) ids.add(p.id);
+    }
+    return ids;
+  } catch {
+    return undefined;
+  }
 }
 
 async function postReload(cfg: OpencodeV2ServiceConfig, fetchImpl: typeof fetch): Promise<boolean> {
