@@ -43,6 +43,10 @@ export const SettingsPage: React.FC = () => {
   const [waConfig, setWaConfig] = useState<WebAuthConfigView | null>(null);
   const [waEnabled, setWaEnabled] = useState(false);
   const [waUsername, setWaUsername] = useState('');
+  // Load-time snapshot of the two server-owned fields, used ONLY to render the
+  // dirty badge: without it a pending change looks identical to a saved one,
+  // and this block's save is the only writer (see handleSave).
+  const [waBase, setWaBase] = useState<{ enabled: boolean; username: string } | null>(null);
   const [waPassword, setWaPassword] = useState('');
   const [waPassword2, setWaPassword2] = useState('');
   const [waSaving, setWaSaving] = useState(false);
@@ -56,6 +60,7 @@ export const SettingsPage: React.FC = () => {
       setWaConfig(res.webAuth);
       setWaEnabled(res.webAuth.enabled);
       setWaUsername(res.webAuth.username);
+      setWaBase({ enabled: res.webAuth.enabled, username: res.webAuth.username });
     }).catch(console.error);
     // Registered physical models only (kind 'model') — systemone.defaultModel
     // resolves through registry.getModel at request time.
@@ -64,8 +69,17 @@ export const SettingsPage: React.FC = () => {
     ).catch(() => {});
   }, []);
 
+  // Pending-change detection for the Console Access block. The password field
+  // counts as dirty as soon as it holds text (it never round-trips, so there is
+  // no stored value to compare against).
+  const waDirty = waBase !== null && (
+    waEnabled !== waBase.enabled ||
+    waUsername.trim() !== waBase.username.trim() ||
+    waPassword !== ''
+  );
+
   const handleWebAuthSave = async () => {
-    if (!waConfig || waSaving) return;
+    if (!waConfig || waSaving || !waDirty) return;
     try {
       if (waEnabled && waPassword === '' && !waConfig.hasPassword) {
         toast.error(t('settings.waPasswordRequired'));
@@ -119,9 +133,19 @@ export const SettingsPage: React.FC = () => {
 
   const handleSave = async () => {
     try {
-      await api.saveConfig(config);
+      // Console Access (webAuth) is owned EXCLUSIVELY by the dedicated
+      // /api/admin/auth/config endpoint: the password is hashed server-side and
+      // never round-trips, and the generic path cannot validate "enabled implies
+      // a stored hash" (validateWebAuthStartup only runs at boot). Posting a
+      // stale page snapshot here would overwrite enabled/username and can brick
+      // the console permanently (enabled + no hash = unmatchable login, then a
+      // hard boot failure). Strip it — saveConfig preserves the on-disk node.
+      const payload: Record<string, unknown> = { ...config };
+      delete payload.webAuth;
+      await api.saveConfig(payload);
       setSavedNotice(true);
       setTimeout(() => setSavedNotice(false), 3000);
+      if (waDirty) toast.info(t('settings.waUnsavedHint'));
     } catch (err: any) {
       toast.error('Failed: ' + err.message);
     }
@@ -670,14 +694,36 @@ export const SettingsPage: React.FC = () => {
         )}
         {/* Console Access (webAuth) — narrow group like the siblings; keeps a
             DEDICATED save flow (it is not hot-applied by the header save), see
-            handleWebAuthSave. */}
+            handleWebAuthSave. The dirty badge exists because a pending change
+            here is invisible to the header save. */}
         <div id="settings-webauth" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
             <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <ShieldCheck size={14} />
               <span>{t('settings.waTitle')}</span>
+              {waDirty && (
+                <span
+                  style={{
+                    fontSize: '10px',
+                    fontWeight: 600,
+                    padding: '1px 7px',
+                    borderRadius: '999px',
+                    color: 'var(--accent-amber, #f59e0b)',
+                    background: 'color-mix(in srgb, var(--accent-amber, #f59e0b) 15%, transparent)',
+                    border: '1px solid color-mix(in srgb, var(--accent-amber, #f59e0b) 35%, transparent)',
+                  }}
+                >
+                  {t('settings.waUnsaved')}
+                </span>
+              )}
             </div>
-            <button className="btn btn-sm btn-primary" onClick={handleWebAuthSave} disabled={waSaving || !waConfig}>
+            <button
+              className="btn btn-sm btn-primary"
+              onClick={handleWebAuthSave}
+              disabled={waSaving || !waConfig || !waDirty}
+              title={waDirty ? undefined : t('settings.waUnsavedHint')}
+              style={waDirty ? { boxShadow: '0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent)' } : undefined}
+            >
               <Save size={13} />
               <span>{t('settings.waSave')}</span>
             </button>

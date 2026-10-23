@@ -1696,6 +1696,8 @@ hiddenBadge: string;
     waConfirm: string;
     waSave: string;
     waSaved: string;
+    waUnsaved: string;
+    waUnsavedHint: string;
     waHint: string;
     waLogout: string;
     waLogoutConfirmTitle: string;

@@ -1689,6 +1689,8 @@ export const zhCN: TranslationDict = {
     waConfirm: '确认新密码',
     waSave: '保存访问配置',
     waSaved: '控制台访问配置已保存！',
+    waUnsaved: '未保存',
+    waUnsavedHint: '「控制台访问」的改动只能由本区块的按钮保存——顶部「保存配置并热加载」不会提交它。',
     waHint: '密码仅以 scrypt 哈希写入 config.yaml，绝不存明文；绑定非回环地址时登录强制开启。修改立即生效（写盘并热同步，无需重启）。',
     waLogout: '退出登录',
     waLogoutConfirmTitle: '退出登录？',
