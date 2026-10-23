@@ -392,6 +392,8 @@ export const enUS: TranslationDict = {
     pmEditTitle: 'Edit Model',
     pmDeleteConfirm: 'Delete model "{id}"?',
     pmPattern: 'pattern (e.g. gpt-4*, o3*; * ? and commas allowed, empty = all)',
+    pmPatternShort: 'pattern (e.g. gpt-4*, o3*)',
+    pmPullSection: 'Pull from model catalog',
     pmPreview: 'Preview',
     pmPull: 'Pull',
     pmPullSelected: 'Pull selected ({n})',

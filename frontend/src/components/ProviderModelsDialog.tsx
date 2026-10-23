@@ -102,16 +102,6 @@ const fieldLabelStyle: React.CSSProperties = {
   marginBottom: 4,
 };
 
-const SOURCE_BADGE: Record<string, { color: string; bg: string; labelKey: string }> = {
-  opencode: { color: 'var(--accent)', bg: 'var(--accent-bg)', labelKey: 'models.srcOpencode' },
-  'models-dev': { color: 'var(--hue-blue)', bg: 'var(--hue-blue-soft)', labelKey: 'models.srcModelsDev' },
-  openrouter: { color: 'var(--hue-violet)', bg: 'var(--hue-violet-soft)', labelKey: 'models.srcOpenrouter' },
-  config: { color: 'var(--accent-amber)', bg: 'color-mix(in srgb, var(--accent-amber) 12%, transparent)', labelKey: 'models.srcConfig' },
-  mapped: { color: '#c084fc', bg: 'rgba(192,132,252,0.12)', labelKey: 'models.srcMapped' },
-  'openai-compatible': { color: 'var(--text-dim)', bg: 'var(--chip-bg)', labelKey: 'models.srcOpenaiCompatible' },
-  service: { color: 'var(--text-dim)', bg: 'var(--chip-bg)', labelKey: 'models.srcService' },
-};
-
 const MODALITY_OPTIONS = ['text', 'image', 'audio', 'video', 'pdf'] as const;
 // Effort dropdown options come from lib/effort.ts (single source of truth):
 // 6-level ladder + a UI "unset" sentinel, labels rendered as
@@ -190,11 +180,12 @@ interface PullPreview {
   models: OpenCodeModelView[];
 }
 
-/** Normalized list row — raw definition (v1 or v2 shape) + provenance. */
+/** Normalized list row — raw definition (v1 or v2 shape). Every row comes
+ *  from providers.json (this dialog is the config writer), so there is no
+ *  per-row provenance to render. */
 interface ModelRow {
   id: string;
   def: any;
-  source?: string;
 }
 
 export const ProviderModelsDialog: React.FC<{
@@ -234,7 +225,7 @@ export const ProviderModelsDialog: React.FC<{
       const res = await opencodeApi.listProviderModels(providerId);
       setRows(
         Object.entries(res.models || {})
-          .map(([id, d]: [string, any]) => ({ id, def: d || {}, source: 'config' }))
+          .map(([id, d]: [string, any]) => ({ id, def: d || {} }))
           .sort((a, b) => a.id.localeCompare(b.id))
       );
     } catch (err: any) {
@@ -525,8 +516,10 @@ export const ProviderModelsDialog: React.FC<{
     setHover({ row, top: Math.max(8, Math.min(rect.top, window.innerHeight - 300)), left });
   };
 
-  const sourceLabel = (id?: string): string => (id ? (SOURCE_BADGE[id] ? t(SOURCE_BADGE[id].labelKey) : id) : '');
   const spin: React.CSSProperties = { animation: 'ocr-spin 0.8s linear infinite' };
+  /** Armed = preview chips are selected; the single pull button then targets
+   *  exactly those ids (pattern bypassed) and relabels accordingly. */
+  const pullArmed = selected.size > 0;
 
   const modalityChecks = (
     key: 'inputMod' | 'outputMod'
@@ -590,46 +583,57 @@ export const ProviderModelsDialog: React.FC<{
           </button>
         </div>
 
-        {/* ---- Filter ---- */}
-        {rows.length > 0 && (
-          <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
-            <Search
-              size={11}
-              style={{ position: 'absolute', left: 8, color: 'var(--text-dim)', pointerEvents: 'none' }}
-            />
-            <input
-              className="input"
-              style={{ fontSize: 11.5, padding: '4px 24px 4px 24px', width: '100%' }}
-              placeholder={t('op.pmFilterPlaceholder')}
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-            />
-            {filter && (
-              <button
-                type="button"
-                onClick={() => setFilter('')}
-                title={t('common.clear')}
-                style={{
-                  position: 'absolute',
-                  right: 4,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  width: 18,
-                  height: 18,
-                  padding: 0,
-                  border: 'none',
-                  background: 'transparent',
-                  color: 'var(--text-dim)',
-                  cursor: 'pointer',
-                  borderRadius: 4,
-                }}
-              >
-                <X size={11} />
-              </button>
-            )}
-          </div>
-        )}
+        {/* ---- Filter + manual add ---- */}
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          {rows.length > 0 && (
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'center', flex: 1 }}>
+              <Search
+                size={11}
+                style={{ position: 'absolute', left: 8, color: 'var(--text-dim)', pointerEvents: 'none' }}
+              />
+              <input
+                className="input"
+                style={{ fontSize: 11.5, padding: '4px 24px 4px 24px', width: '100%' }}
+                placeholder={t('op.pmFilterPlaceholder')}
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+              />
+              {filter && (
+                <button
+                  type="button"
+                  onClick={() => setFilter('')}
+                  title={t('common.clear')}
+                  style={{
+                    position: 'absolute',
+                    right: 4,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    width: 18,
+                    height: 18,
+                    padding: 0,
+                    border: 'none',
+                    background: 'transparent',
+                    color: 'var(--text-dim)',
+                    cursor: 'pointer',
+                    borderRadius: 4,
+                  }}
+                >
+                  <X size={11} />
+                </button>
+              )}
+            </div>
+          )}
+          <button
+            className="btn btn-sm btn-primary"
+            style={{ marginLeft: rows.length > 0 ? undefined : 'auto', display: 'flex', alignItems: 'center', gap: 4 }}
+            disabled={busy}
+            onClick={openAdd}
+          >
+            <Plus size={11} />
+            <span>{t('op.pmAdd')}</span>
+          </button>
+        </div>
 
         {/* ---- Model list ---- */}
         {rows.length === 0 ? (
@@ -659,7 +663,9 @@ export const ProviderModelsDialog: React.FC<{
                 >
                   <span style={{ fontFamily: FONT_MONO, fontWeight: 600, wordBreak: 'break-all' }}>{row.id}</span>
                   {d.modelID && d.modelID !== row.id && <span style={{ color: 'var(--text-dim)', fontFamily: FONT_MONO, fontSize: 10 }}>→ {d.modelID}</span>}
-                  {(d.name || row.id.split('/').pop()) && <span style={{ color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name || row.id.split('/').pop()}</span>}
+                  {/* Name only when explicitly set AND not a repeat of the id —
+                      a fallback to the id tail rendered the id twice. */}
+                  {d.name && d.name !== row.id && d.name !== row.id.split('/').pop() && <span style={{ color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name}</span>}
                   {defThinking(d) && <span style={badge('var(--hue-violet)', 'var(--hue-violet-soft)')} title={t('models.badgeReasoning')}>{effort ? `R·${effort}` : 'R'}</span>}
                   {defTools(d) && <span style={badge('var(--accent)', 'var(--accent-bg)')} title={t('models.badgeToolCall')}>T</span>}
                   {defVision(d) && <span style={badge('var(--hue-emerald)', 'var(--hue-emerald-soft)')} title={t('models.badgeVision')}><Eye size={9} /></span>}
@@ -670,7 +676,6 @@ export const ProviderModelsDialog: React.FC<{
                     <span style={badge('#e879f9', 'rgba(232,121,249,0.12)')} title={t('op.pmVariants')}>#{d.variants.length}</span>
                   )}
                   {d.disabled === true && <span style={badge('var(--text-dim)', 'var(--chip-bg)')}>{t('models.hiddenBadge')}</span>}
-                  {row.source && <span style={badge(SOURCE_BADGE[row.source]?.color ?? 'var(--text-dim)', SOURCE_BADGE[row.source]?.bg ?? 'var(--chip-bg)')}>{sourceLabel(row.source)}</span>}
                   {d.limit?.context ? <span style={{ fontFamily: FONT_MONO, color: 'var(--text-dim)', marginLeft: 'auto' }}>{fmtContext(d.limit.context)}</span> : null}
                   {testResults[row.id] && (
                     <span
@@ -686,7 +691,7 @@ export const ProviderModelsDialog: React.FC<{
                       {testResults[row.id].ok ? `✓${fmtLatency(testResults[row.id].latencyMs ?? NaN)}` : '✗'}
                     </span>
                   )}
-                  <div style={{ display: 'flex', gap: 4, marginLeft: d.limit?.context || testResults[row.id] ? 0 : 'auto' }}>
+                  <div className="row-actions" style={{ display: 'flex', gap: 4, marginLeft: d.limit?.context || testResults[row.id] ? 0 : 'auto' }}>
                     <button
                       className="btn btn-sm btn-icon"
                       title={t('op.testBtn')}
@@ -717,73 +722,83 @@ export const ProviderModelsDialog: React.FC<{
           </div>
         )}
 
-        {/* ---- Actions ---- */}
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-          <button className="btn btn-sm btn-primary" disabled={busy} onClick={openAdd}>
-            <Plus size={11} />
-            <span>{t('op.pmAdd')}</span>
-          </button>
-          <input className="input" style={{ fontSize: 11.5, flex: 1, minWidth: 180 }} placeholder={t('op.pmPattern')} value={pattern} onChange={(e) => { setPattern(e.target.value); setPreview(null); }} />
-          <button className="btn btn-sm" disabled={busy} onClick={handlePreview} title={t('op.pmPreview')}>
-            {pending === 'preview' ? <Loader2 size={11} style={spin} /> : <Eye size={11} />}
-            <span>{t('op.pmPreview')}</span>
-          </button>
-          <button className="btn btn-sm btn-primary" disabled={busy} onClick={handlePull} title={t('op.pmPull')}>
-            {pending === 'pull' ? <Loader2 size={11} style={spin} /> : <Download size={11} />}
-            <span>{pending === 'pull' ? t('common.loading') : t('op.pmPull')}</span>
-          </button>
-          <button className="btn btn-sm" style={{ color: 'var(--accent-rose)' }} disabled={busy || rows.length === 0} onClick={handleClear} title={t('op.pmClear')}>
-            {pending === 'clear' ? <Loader2 size={11} style={spin} /> : <Eraser size={11} />}
-            <span>{t('op.pmClear')}</span>
-          </button>
-        </div>
-
-        {preview && (
-          <div style={{ fontSize: 11, color: 'var(--text-dim)', padding: '6px 8px', borderRadius: 6, background: 'var(--well-bg)' }}>
-            <div style={{ marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
+        {/* ---- Catalog pull section: the glob workflow (pattern → preview →
+             pull) is one scoped task, boxed and labeled apart from the managed
+             list; clear sits right-aligned so the destructive action never
+             sits next to pull by reflex. ---- */}
+        <div style={{ border: '1px solid var(--divider)', borderRadius: 8, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 8, flexShrink: 0 }}>
+          <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)' }}>{t('op.pmPullSection')}</span>
+          <input
+            className="input"
+            style={{ fontSize: 11.5, width: '100%' }}
+            placeholder={t('op.pmPatternShort')}
+            title={t('op.pmPattern')}
+            value={pattern}
+            onChange={(e) => { setPattern(e.target.value); setPreview(null); setSelected(new Set()); }}
+          />
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <button className="btn btn-sm" disabled={busy} onClick={handlePreview} title={t('op.pmPreview')}>
+              {pending === 'preview' ? <Loader2 size={11} style={spin} /> : <ListChecks size={11} />}
+              <span>{t('op.pmPreview')}</span>
+            </button>
+            <button
+              className="btn btn-sm btn-primary"
+              disabled={busy}
+              onClick={pullArmed ? handlePullSelected : handlePull}
+              title={pullArmed ? t('op.pmSelectTip') : t('op.pmPull')}
+            >
+              {pending === 'pull' ? <Loader2 size={11} style={spin} /> : <Download size={11} />}
               <span>
-                {t('op.pmMatched', { matched: preview.matched, pullable: preview.pullable })}
+                {pending === 'pull'
+                  ? t('common.loading')
+                  : pullArmed
+                    ? t('op.pmPullSelected', { n: selected.size })
+                    : t('op.pmPull')}
               </span>
-              {selected.size > 0 && (
-                <button
-                  className="btn btn-sm btn-primary"
-                  disabled={busy}
-                  style={{ height: 20, padding: '0 8px', fontSize: 10.5 }}
-                  onClick={handlePullSelected}
-                >
-                  {pending === 'pull' ? <Loader2 size={10} style={spin} /> : <Download size={10} />}
-                  <span>{t('op.pmPullSelected', { n: selected.size })}</span>
-                </button>
-              )}
-            </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, maxHeight: 90, overflowY: 'auto' }}>
-              {preview.models.map((m) => {
-                const on = selected.has(m.id);
-                return (
-                  <button
-                    key={m.id}
-                    type="button"
-                    title={t('op.pmSelectTip')}
-                    aria-pressed={on}
-                    onClick={() => toggleSelected(m.id)}
-                    style={{
-                      fontFamily: FONT_MONO,
-                      fontSize: 10,
-                      padding: '1px 6px',
-                      borderRadius: 4,
-                      cursor: 'pointer',
-                      border: `1px solid ${on ? 'var(--accent)' : 'transparent'}`,
-                      color: on ? 'var(--accent)' : 'inherit',
-                      background: on ? 'color-mix(in srgb, var(--accent) 14%, transparent)' : 'var(--chip-bg)',
-                    }}
-                  >
-                    {m.id}
-                  </button>
-                );
-              })}
-            </div>
+            </button>
+            <div style={{ flex: 1 }} />
+            <button className="btn btn-sm" style={{ color: 'var(--accent-rose)' }} disabled={busy || rows.length === 0} onClick={handleClear} title={t('op.pmClear')}>
+              {pending === 'clear' ? <Loader2 size={11} style={spin} /> : <Eraser size={11} />}
+              <span>{t('op.pmClear')}</span>
+            </button>
           </div>
-        )}
+
+          {preview && (
+            <div style={{ fontSize: 11, color: 'var(--text-dim)', padding: '6px 8px', borderRadius: 6, background: 'var(--well-bg)' }}>
+              <div style={{ marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span>
+                  {t('op.pmMatched', { matched: preview.matched, pullable: preview.pullable })}
+                </span>
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, maxHeight: 90, overflowY: 'auto' }}>
+                {preview.models.map((m) => {
+                  const on = selected.has(m.id);
+                  return (
+                    <button
+                      key={m.id}
+                      type="button"
+                      title={t('op.pmSelectTip')}
+                      aria-pressed={on}
+                      onClick={() => toggleSelected(m.id)}
+                      style={{
+                        fontFamily: FONT_MONO,
+                        fontSize: 10,
+                        padding: '1px 6px',
+                        borderRadius: 4,
+                        cursor: 'pointer',
+                        border: `1px solid ${on ? 'var(--accent)' : 'transparent'}`,
+                        color: on ? 'var(--accent)' : 'inherit',
+                        background: on ? 'color-mix(in srgb, var(--accent) 14%, transparent)' : 'var(--chip-bg)',
+                      }}
+                    >
+                      {m.id}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* ---- Hover card ---- */}
@@ -816,7 +831,7 @@ export const ProviderModelsDialog: React.FC<{
                   {hover.row.id}
                   {d.disabled === true && <span style={{ color: 'var(--text-dim)', fontWeight: 400 }}> ({t('models.hiddenBadge')})</span>}
                 </div>
-                {(d.name || hover.row.id.split('/').pop()) && <div style={{ color: 'var(--text-dim)', marginBottom: 4 }}>{d.name || hover.row.id.split('/').pop()}</div>}
+                {d.name && d.name !== hover.row.id && d.name !== hover.row.id.split('/').pop() && <div style={{ color: 'var(--text-dim)', marginBottom: 4 }}>{d.name}</div>}
                 {d.modelID && (
                   <div style={{ fontFamily: FONT_MONO, color: 'var(--text-dim)', fontSize: 10.5, marginBottom: 6 }}>
                     modelID → {d.modelID}
@@ -829,7 +844,6 @@ export const ProviderModelsDialog: React.FC<{
                   {defAudio(d) && <span style={badge('var(--hue-pink)', 'var(--hue-pink-soft)')}>{t('models.badgeAudio')}</span>}
                   {defVideo(d) && <span style={badge('var(--hue-blue)', 'var(--hue-blue-soft)')}>{t('models.badgeVideo')}</span>}
                   {d.temperature === true && <span style={badge('var(--hue-orange)', 'var(--hue-orange-soft)')}>{t('models.badgeTemperature')}</span>}
-                  {hover.row.source && <span style={badge(SOURCE_BADGE[hover.row.source]?.color ?? 'var(--text-dim)', SOURCE_BADGE[hover.row.source]?.bg ?? 'var(--chip-bg)')}>{sourceLabel(hover.row.source)}</span>}
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '3px 12px', color: 'var(--text-dim)' }}>
                   <span>{t('models.thContext')}</span>

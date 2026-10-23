@@ -405,6 +405,8 @@ export interface TranslationDict {
     pmEditTitle: string;
     pmDeleteConfirm: string;
     pmPattern: string;
+    pmPatternShort: string;
+    pmPullSection: string;
     pmPreview: string;
     pmPull: string;
     pmPullSelected: string;

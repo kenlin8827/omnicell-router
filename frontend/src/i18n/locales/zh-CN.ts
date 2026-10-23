@@ -390,6 +390,8 @@ export const zhCN: TranslationDict = {
     pmEditTitle: '编辑模型',
     pmDeleteConfirm: '确认删除模型 "{id}"？',
     pmPattern: 'pattern（如 gpt-4*, o3*；支持 * ? 与逗号分隔，留空=全部）',
+    pmPatternShort: 'pattern（如 gpt-4*, o3*）',
+    pmPullSection: '从模型目录拉取',
     pmPreview: '预览',
     pmPull: '拉取',
     pmPullSelected: '拉取所选（{n}）',
