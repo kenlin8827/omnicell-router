@@ -2,7 +2,7 @@
  * Self-reference detection for provider defs: a baseURL that points back at
  * THIS gateway's own listen endpoint.
  *
- * The criterion is the URL, never the provider id — `onecast-router` pointing
+ * The criterion is the URL, never the provider id — `omnicell-router` pointing
  * at a different instance (another port / another machine) is a legitimate
  * federation upstream, while any id pointing at the gateway's own port is a
  * self-loop. Callers decide the consequence (boot exclusion, pull refusal,

@@ -151,7 +151,7 @@ export class OpenCodeClientAdapter implements ClientAdapter {
       details = 'No OpenCode configuration detected';
     }
 
-    // Current slot values: strip the `onecast-router/` namespace prefix
+    // Current slot values: strip the `omnicell-router/` namespace prefix
     const hookedData = hooked ? ((readJsonc(configPath) as any) || {}) : null;
     const stripPrefix = (v: any): string | undefined =>
       typeof v === 'string' && v.startsWith(`${ROUTER_PROVIDER_ID}/`)

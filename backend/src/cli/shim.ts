@@ -4,7 +4,7 @@ import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { getDefaultBinDir, getRepoRootDir } from './paths.js';
 
-const SHIM_MARKER = 'onecast-router-trampoline';
+const SHIM_MARKER = 'omnicell-router-trampoline';
 
 export function registerGlobalShims(customRepoDir?: string, customBinDir?: string): {
   success: boolean;
@@ -27,7 +27,7 @@ export function registerGlobalShims(customRepoDir?: string, customBinDir?: strin
 
   const commands = [
     { name: 'ocr', script: 'ocr' },
-    { name: 'onecast-router', script: 'onecast-router' },
+    { name: 'omnicell-router', script: 'omnicell-router' },
   ];
 
   if (isWindows) {
@@ -55,7 +55,7 @@ export function registerGlobalShims(customRepoDir?: string, customBinDir?: strin
     return {
       success: true,
       binDir,
-      message: `Registered Windows global shims (ocr, onecast-router) in ${binDir}.`,
+      message: `Registered Windows global shims (ocr, omnicell-router) in ${binDir}.`,
     };
   } else {
     // POSIX shell trampolines
@@ -74,7 +74,7 @@ export function registerGlobalShims(customRepoDir?: string, customBinDir?: strin
     return {
       success: true,
       binDir,
-      message: `Registered POSIX global shims (ocr, onecast-router) in ${binDir}.`,
+      message: `Registered POSIX global shims (ocr, omnicell-router) in ${binDir}.`,
     };
   }
 }

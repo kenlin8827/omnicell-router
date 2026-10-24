@@ -4,7 +4,7 @@
  * WHY THIS EXISTS: running `bun test backend/tests` from the repo root in ONE
  * process produces ~26 phantom failures. Two independent causes:
  *   1. config leakage — without OCR_HOME every child resolves the operator's
- *      real ~/.onecast-router environment (its config.yaml carries the
+ *      real ~/.omnicell-router environment (its config.yaml carries the
  *      webAuth login gate), so /api/admin console endpoints 401 in
  *      trace/variants/... and test writes land on real data.
  *   2. describe-cascade — one process means one shared module registry; the
@@ -41,7 +41,7 @@ if (files.length === 0) {
 }
 
 // Sandbox OCR_HOME for every child, holding a placeholder env config so the
-// operator's real ~/.onecast-router (api keys, per-key policies, webAuth) can
+// operator's real ~/.omnicell-router (api keys, per-key policies, webAuth) can
 // never leak into a run — and never be written by one. Config resolution is
 // env-relative (<home>/envs/<env>/config.yaml), so the child's cwd is
 // irrelevant: OCR_HOME + OCR_ENV are the only levers that matter.

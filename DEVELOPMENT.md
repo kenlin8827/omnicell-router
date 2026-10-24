@@ -36,7 +36,7 @@
 OmniCellRouter is organized as a Bun monorepo comprising a Fastify backend and a Vite+React frontend:
 
 ```
-onecast-router/
+omnicell-router/
 ├── backend/                             # Core gateway daemon (Fastify + Pino)
 │   ├── src/
 │   │   ├── auth/                        # Admin API keys, web sessions, model access policies

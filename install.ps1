@@ -3,12 +3,12 @@
 .SYNOPSIS
     Remote one-line installer for OmniCellRouter (OCR).
 .EXAMPLE
-    irm https://raw.githubusercontent.com/kenlin8827/onecast-router/main/install.ps1 | iex
+    irm https://raw.githubusercontent.com/kenlin8827/omnicell-router/main/install.ps1 | iex
 #>
 $ErrorActionPreference = 'Stop'
 
-$Repo = "kenlin8827/onecast-router"
-$InstallDir = Join-Path $env:LOCALAPPDATA "onecast-router"
+$Repo = "kenlin8827/omnicell-router"
+$InstallDir = Join-Path $env:LOCALAPPDATA "omnicell-router"
 
 Write-Host ""
 Write-Host "  ⚡ OmniCellRouter (OCR) - Windows One-Click Installer" -ForegroundColor Cyan
@@ -19,7 +19,7 @@ Write-Host ""
 $LocalRepo = $null
 if ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot "package.json"))) {
   $pkg = Get-Content (Join-Path $PSScriptRoot "package.json") -Raw
-  if ($pkg -match "onecast-router") {
+  if ($pkg -match "omnicell-router") {
     $LocalRepo = $PSScriptRoot
     Write-Host "[OCR] Detected local repository checkout at: $LocalRepo" -ForegroundColor Green
   }
@@ -39,9 +39,9 @@ if (-not $LocalRepo) {
   try {
     Write-Host "[OCR] Checking GitHub for latest prebuilt release..." -ForegroundColor Cyan
     $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers @{ "User-Agent" = "PowerShell" } -TimeoutSec 10 -ErrorAction Stop
-    $Asset = $Release.assets | Where-Object { $_.name -eq "onecast-router-dist.zip" } | Select-Object -First 1
+    $Asset = $Release.assets | Where-Object { $_.name -eq "omnicell-router-dist.zip" } | Select-Object -First 1
     if ($Asset) {
-      $ZipPath = Join-Path $env:TEMP "onecast-router-dist.zip"
+      $ZipPath = Join-Path $env:TEMP "omnicell-router-dist.zip"
       Write-Host "[OCR] Downloading prebuilt release $($Release.tag_name) ($($Asset.name))..." -ForegroundColor Cyan
       Invoke-WebRequest -Uri $Asset.browser_download_url -OutFile $ZipPath -UseBasicParsing
       Write-Host "[OCR] Extracting prebuilt release archive..." -ForegroundColor Cyan
@@ -111,8 +111,8 @@ $ResolvedDest = if (Test-Path $BinDir) { (Resolve-Path $BinDir).Path.TrimEnd('\'
 if ($ResolvedSource -and $ResolvedDest -and ($ResolvedSource -ne $ResolvedDest)) {
   Copy-Item (Join-Path $SourceBinDir "ocr.cmd") (Join-Path $BinDir "ocr.cmd") -Force
   Copy-Item (Join-Path $SourceBinDir "ocr.ps1") (Join-Path $BinDir "ocr.ps1") -Force
-  Copy-Item (Join-Path $SourceBinDir "onecast-router.cmd") (Join-Path $BinDir "onecast-router.cmd") -Force
-  Copy-Item (Join-Path $SourceBinDir "onecast-router.ps1") (Join-Path $BinDir "onecast-router.ps1") -Force
+  Copy-Item (Join-Path $SourceBinDir "omnicell-router.cmd") (Join-Path $BinDir "omnicell-router.cmd") -Force
+  Copy-Item (Join-Path $SourceBinDir "omnicell-router.ps1") (Join-Path $BinDir "omnicell-router.ps1") -Force
 }
 
 # 4. Check and Append to User PATH

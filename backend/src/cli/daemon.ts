@@ -614,7 +614,7 @@ export async function launchDesktop(options: { port?: number } = {}): Promise<vo
     // installed layout (NSIS, currentUser): %LOCALAPPDATA%\OmniCellRouter\OmniCellRouter.exe
     path.join(localAppData, 'OmniCellRouter', 'OmniCellRouter.exe'),
     // dev bare-run layout: cargo keeps the package name for target/release
-    path.join(getRepoRootDir(), 'desktop', 'src-tauri', 'target', 'release', 'onecast-router-desktop.exe'),
+    path.join(getRepoRootDir(), 'desktop', 'src-tauri', 'target', 'release', 'omnicell-router-desktop.exe'),
   ];
 
   let desktopBin: string | null = null;
@@ -631,7 +631,7 @@ export async function launchDesktop(options: { port?: number } = {}): Promise<vo
   } else {
     console.log('[OCR] 💡 Native desktop client (Tauri) package not found.');
     console.log('      Seamlessly opening Web Console in your browser...');
-    console.log('      (Download native desktop installers at https://github.com/kenlin8827/onecast-router/releases)');
+    console.log('      (Download native desktop installers at https://github.com/kenlin8827/omnicell-router/releases)');
     await launchWeb(options);
   }
 }

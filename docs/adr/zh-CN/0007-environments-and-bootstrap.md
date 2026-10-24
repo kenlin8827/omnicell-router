@@ -8,7 +8,7 @@
 
 ### 1. 单一布局，无模式分支
 
-每个环境一个目录：`<home>/envs/<name>/`，内含 `config.yaml · data/ · models/ · catalog/ · traces/ · capture/ · webauth-secret · env.json`（`config/env.ts:241-255`）。`<home>` = `~/.onecast-router`，被 `OCR_HOME` 整体覆写——唯一的沙箱杠杆（隔离测试器给每个测试文件自己的 `OCR_HOME` + `OCR_ENV=itest`；名字刻意避开引导层：沙箱一旦泄漏，启动即 fail-fast，而非静默写入操作者的真实 `default` 账本）。进程级文件（`ocr.pid`、`ocr.log`、`ocr.info.json`）驻 `<home>` 根、不属于任何环境；`info.json` 记录活动环境名。`default` 是引导层：永远可解析、首启由脚手架创建、不可手工创建/改名/入废纸篓。`env.json` = schema-v1 元数据 `{name, type, createdAt, schemaVersion, description?, importedFrom?}`；名称语法 `^[a-z0-9][a-z0-9_-]{0,31}$` + 大小写不敏感去重。
+每个环境一个目录：`<home>/envs/<name>/`，内含 `config.yaml · data/ · models/ · catalog/ · traces/ · capture/ · webauth-secret · env.json`（`config/env.ts:241-255`）。`<home>` = `~/.omnicell-router`，被 `OCR_HOME` 整体覆写——唯一的沙箱杠杆（隔离测试器给每个测试文件自己的 `OCR_HOME` + `OCR_ENV=itest`；名字刻意避开引导层：沙箱一旦泄漏，启动即 fail-fast，而非静默写入操作者的真实 `default` 账本）。进程级文件（`ocr.pid`、`ocr.log`、`ocr.info.json`）驻 `<home>` 根、不属于任何环境；`info.json` 记录活动环境名。`default` 是引导层：永远可解析、首启由脚手架创建、不可手工创建/改名/入废纸篓。`env.json` = schema-v1 元数据 `{name, type, createdAt, schemaVersion, description?, importedFrom?}`；名称语法 `^[a-z0-9][a-z0-9_-]{0,31}$` + 大小写不敏感去重。
 
 legacy 布局支持是被**移除**而非兼容分叉：无 `legacyConfigPath()`、无模式分支——前环境位置（repo-root `config.yaml`/`data`/`models`、`<home>/{catalog,traces,capture,webauth-secret}`）没有任何代码路径读取；升级的机器从脚手架默认起步，旧文件要就手抄。不发布迁移工具。`ensureEnvScaffold` 只建目录——带注释的 `config.yaml` 模板归配置层；`createEnv` 模板 = `blank | copy-current | copy-default`（只复制配置；数据永不复制）。
 

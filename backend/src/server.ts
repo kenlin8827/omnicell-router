@@ -858,7 +858,7 @@ export function createServer(
   const catalogOnce = await listCatalog();
   const listCatalogOnce = async () => catalogOnce;
 
-  // ── Virtual provider ('onecast-router'): auto*/combos/variants ──
+  // ── Virtual provider ('omnicell-router'): auto*/combos/variants ──
   const virtualModel = async (envPromise: Promise<VirtualEnvelope>, ocr: Record<string, unknown>) => {
     const env = await envPromise;
     return {
@@ -899,8 +899,8 @@ export function createServer(
   // tier aliases (ladder order) → combos — then concrete providers in
   // registry order, variants appended after their provider's base models.
   const providers: Record<string, any> = {
-    'onecast-router': {
-      id: 'onecast-router',
+    'omnicell-router': {
+      id: 'omnicell-router',
       name: 'OmniCellRouter',
       models: virtualModels,
     },
@@ -918,7 +918,7 @@ export function createServer(
     const provider = ensureProvider(m.provider);
     const cat = catById.get(m.id);
     // A federated upstream whose provider id collides with the virtual
-    // provider namespace (a `onecast-router` def pointing at ANOTHER
+    // provider namespace (a `omnicell-router` def pointing at ANOTHER
     // instance) can register upstreamModel === 'auto'/'lite'/... — writing
     // that key would clobber the virtual alias block and erase the gateway's
     // own cascade entry. The two are different models: key the concrete row
@@ -1042,7 +1042,7 @@ export function createServer(
       id: model,
       object: 'model',
       created: 1700000000,
-      owned_by: specific ? specific.provider : variantRef ? variantRef.base.provider : 'onecast-router',
+      owned_by: specific ? specific.provider : variantRef ? variantRef.base.provider : 'omnicell-router',
       ...(variantRef
         ? {
             metadata: {

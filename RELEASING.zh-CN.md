@@ -2,8 +2,8 @@
 
 <div align="center">
 
-[![npm](https://img.shields.io/npm/v/onecast-router.svg?color=blue)](https://www.npmjs.com/package/onecast-router)
-[![Desktop Release](https://img.shields.io/github/v/release/kenlin8827/onecast-router?color=purple)](https://github.com/kenlin8827/onecast-router/releases)
+[![npm](https://img.shields.io/npm/v/omnicell-router.svg?color=blue)](https://www.npmjs.com/package/omnicell-router)
+[![Desktop Release](https://img.shields.io/github/v/release/kenlin8827/omnicell-router?color=purple)](https://github.com/kenlin8827/omnicell-router/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 [英文版 (English)](RELEASING.md) | [中文版 (Chinese)](RELEASING.zh-CN.md) | [用户使用手册 (README)](README.zh-CN.md)
@@ -12,7 +12,7 @@
 
 本文档详细介绍了 **OmniCellRouter (OCR)** 的两大发布渠道与发行流程：
 
-1. **npm Registry 官方源 (`onecast-router`)**：Web 控制台与 CLI 完整网关包。用户通过 `npm install -g onecast-router` 全局安装或通过 `npx onecast-router` 免安装直接启动。
+1. **npm Registry 官方源 (`omnicell-router`)**：Web 控制台与 CLI 完整网关包。用户通过 `npm install -g omnicell-router` 全局安装或通过 `npx omnicell-router` 免安装直接启动。
 2. **GitHub Releases 多平台桌面版**：独立的原生桌面安装包（Tauri v2 + 嵌入式 Bun 编译网关 Sidecar），覆盖 Windows (`.exe` NSIS)、macOS (`.dmg` 包含 Apple Silicon 与 Intel) 以及 Linux (`.AppImage`, `.deb`)。
 
 ---
@@ -29,7 +29,7 @@
                               ▼                              ▼
                  ┌─────────────────────────┐   ┌───────────────────────────┐
                  │       npm 官方源         │   │      GitHub Releases      │
-                 │   (onecast-router)      │   │     (多平台桌面安装包)     │
+                 │   (omnicell-router)      │   │     (多平台桌面安装包)     │
                  └────────────┬────────────┘   └─────────────┬─────────────┘
                               │                              │
                      `npm i -g ...`                 桌面客户端安装包:
@@ -42,13 +42,13 @@
 
 ---
 
-## 2. 发布到 npm 官方源 (`onecast-router`)
+## 2. 发布到 npm 官方源 (`omnicell-router`)
 
 ### 2.1 npm 安装包运行机制
 
-- **全局可执行命令**：用户安装后，npm 会自动在系统 `PATH` 中注册 `ocr` 与 `onecast-router` 命令，指向跨平台脚本 [bin/ocr.js](file:///d:/OpenHub/opencode-router/bin/ocr.js)。
+- **全局可执行命令**：用户安装后，npm 会自动在系统 `PATH` 中注册 `ocr` 与 `omnicell-router` 命令，指向跨平台脚本 [bin/ocr.js](file:///d:/OpenHub/omnicell-router/bin/ocr.js)。
 - **原生 Node.js 兼容**：运行时支持 Node.js (>= 18.0.0)，终端用户无需预先安装 Bun 或 TypeScript。
-- **内嵌完整 Web 控制台**：发布包内仅包含编译后的生产文件（前端 [frontend/dist](file:///d:/OpenHub/opencode-router/frontend/dist) 与后端 [backend/dist](file:///d:/OpenHub/opencode-router/backend/dist)），包解压体积仅约 28 MB（内嵌了完整的离线字体与静态资产）。
+- **内嵌完整 Web 控制台**：发布包内仅包含编译后的生产文件（前端 [frontend/dist](file:///d:/OpenHub/omnicell-router/frontend/dist) 与后端 [backend/dist](file:///d:/OpenHub/omnicell-router/backend/dist)），包解压体积仅约 28 MB（内嵌了完整的离线字体与静态资产）。
 - **完整生命周期管理**：支持所有 CLI 指令，如 `ocr start`（后台启动）、`ocr web`（启动并打开浏览器）、`ocr status`（查看监控）和 `ocr stop`（停止服务）。
 
 ### 2.2 发布前准备
@@ -123,7 +123,7 @@ npm publish --access public
 
 ```bash
 # 全局安装
-npm install -g onecast-router
+npm install -g omnicell-router
 
 # 查看版本
 ocr --version
@@ -142,14 +142,14 @@ OCR 桌面端基于 Tauri v2 框架开发，网关后端通过 Bun 单文件交�
 
 | 目标系统与架构 | 平台编译目标 (Target) | 打包格式 | 安装包文件名格式 |
 | :--- | :--- | :--- | :--- |
-| **Windows x64** | `x86_64-pc-windows-msvc` | NSIS | `OneCastRouter_<版本>_x64-setup.exe` |
-| **macOS (Apple Silicon)** | `aarch64-apple-darwin` | DMG | `OneCastRouter_<版本>_aarch64.dmg` |
-| **macOS (Intel)** | `x86_64-apple-darwin` | DMG | `OneCastRouter_<版本>_x64.dmg` |
-| **Linux x64** | `x86_64-unknown-linux-gnu` | AppImage & DEB | `OneCastRouter_<版本>_amd64.AppImage`<br>`OneCastRouter_<版本>_amd64.deb` |
+| **Windows x64** | `x86_64-pc-windows-msvc` | NSIS | `OmniCellRouter_<版本>_x64-setup.exe` |
+| **macOS (Apple Silicon)** | `aarch64-apple-darwin` | DMG | `OmniCellRouter_<版本>_aarch64.dmg` |
+| **macOS (Intel)** | `x86_64-apple-darwin` | DMG | `OmniCellRouter_<版本>_x64.dmg` |
+| **Linux x64** | `x86_64-unknown-linux-gnu` | AppImage & DEB | `OmniCellRouter_<版本>_amd64.AppImage`<br>`OmniCellRouter_<版本>_amd64.deb` |
 
 ### 3.2 自动化 GitHub Actions 发布流水线
 
-工程已在 [.github/workflows/desktop-build.yml](file:///d:/OpenHub/opencode-router/.github/workflows/desktop-build.yml) 中配置全自动发布流水线，任何以 `v*`（如 `v0.1.0`）格式的 Git Tag 推送都会自动触发：
+工程已在 [.github/workflows/desktop-build.yml](file:///d:/OpenHub/omnicell-router/.github/workflows/desktop-build.yml) 中配置全自动发布流水线，任何以 `v*`（如 `v0.1.0`）格式的 Git Tag 推送都会自动触发：
 
 1. **多平台矩阵并行编译**：
    - `windows-latest`：编译 Windows NSIS 极速安装包；
@@ -165,8 +165,8 @@ OCR 桌面端基于 Tauri v2 框架开发，网关后端通过 Bun 单文件交�
 
 #### 步骤 1：确认并同步版本号
 确保以下两个配置文件中的版本号保持同步一致：
-- [package.json](file:///d:/OpenHub/opencode-router/package.json) 中的 `"version": "0.1.0"`
-- [desktop/src-tauri/tauri.conf.json](file:///d:/OpenHub/opencode-router/desktop/src-tauri/tauri.conf.json) 中的 `"version": "0.1.0"`
+- [package.json](file:///d:/OpenHub/omnicell-router/package.json) 中的 `"version": "0.1.0"`
+- [desktop/src-tauri/tauri.conf.json](file:///d:/OpenHub/omnicell-router/desktop/src-tauri/tauri.conf.json) 中的 `"version": "0.1.0"`
 
 #### 步骤 2：提交代码并打 Tag
 ```bash
@@ -219,4 +219,4 @@ bun run build
 - [ ] 推送 Git Tag 触发桌面版发布：`git tag vX.Y.Z && git push origin vX.Y.Z`。
 - [ ] 检查 GitHub Actions 流水线是否成功发布 Release 并挂载了所有平台安装包。
 - [ ] 执行 npm 发布：`npm publish --access public`。
-- [ ] 验证用户安装：运行 `npm install -g onecast-router`，测试 `ocr --version` 与 `ocr web`。
+- [ ] 验证用户安装：运行 `npm install -g omnicell-router`，测试 `ocr --version` 与 `ocr web`。

@@ -499,7 +499,7 @@ describe('CaptureRecorder HTTP exchange event stream', () => {
       status: 'ok',
       wire: {
         requestLine: 'POST /v1/chat/completions HTTP/1.1',
-        requestHeaders: { 'user-agent': 'onecast-router/test', authorization: '[REDACTED]' },
+        requestHeaders: { 'user-agent': 'omnicell-router/test', authorization: '[REDACTED]' },
         requestBody: '{"messages":[]}',
         responseLine: '',
         status: 0,

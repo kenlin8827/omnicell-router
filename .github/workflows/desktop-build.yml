@@ -124,8 +124,8 @@ jobs:
           bun install
           bun run build
           mkdir -p release-assets
-          tar -czf release-assets/onecast-router-dist.tar.gz bin backend/dist frontend/dist package.json README.md README.zh-CN.md LICENSE
-          zip -r release-assets/onecast-router-dist.zip bin backend/dist frontend/dist package.json README.md README.zh-CN.md LICENSE
+          tar -czf release-assets/omnicell-router-dist.tar.gz bin backend/dist frontend/dist package.json README.md README.zh-CN.md LICENSE
+          zip -r release-assets/omnicell-router-dist.zip bin backend/dist frontend/dist package.json README.md README.zh-CN.md LICENSE
 
       - name: Download desktop installer artifacts
         uses: actions/download-artifact@v4
@@ -142,8 +142,8 @@ jobs:
             release-assets/*.dmg
             release-assets/*.AppImage
             release-assets/*.deb
-            release-assets/onecast-router-dist.zip
-            release-assets/onecast-router-dist.tar.gz
+            release-assets/omnicell-router-dist.zip
+            release-assets/omnicell-router-dist.tar.gz
           generate_release_notes: true
           draft: false
           prerelease: false

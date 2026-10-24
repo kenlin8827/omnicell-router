@@ -2,8 +2,8 @@
 
 <div align="center">
 
-[![npm](https://img.shields.io/npm/v/onecast-router.svg?color=blue)](https://www.npmjs.com/package/onecast-router)
-[![Desktop Release](https://img.shields.io/github/v/release/kenlin8827/onecast-router?color=purple)](https://github.com/kenlin8827/onecast-router/releases)
+[![npm](https://img.shields.io/npm/v/omnicell-router.svg?color=blue)](https://www.npmjs.com/package/omnicell-router)
+[![Desktop Release](https://img.shields.io/github/v/release/kenlin8827/omnicell-router?color=purple)](https://github.com/kenlin8827/omnicell-router/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 [English Version](RELEASING.md) | [Chinese Version](RELEASING.zh-CN.md) | [User README](README.md)
@@ -12,7 +12,7 @@
 
 This document describes how to package and publish **OmniCellRouter (OCR)** across its two distribution channels:
 
-1. **npm Registry (`onecast-router`)**: The CLI & Web Gateway package, installable globally via `npm install -g onecast-router` or executable via `npx onecast-router`.
+1. **npm Registry (`omnicell-router`)**: The CLI & Web Gateway package, installable globally via `npm install -g omnicell-router` or executable via `npx omnicell-router`.
 2. **GitHub Releases (Desktop Applications)**: Multi-platform standalone desktop packages (Tauri v2 + embedded Bun gateway sidecar) for Windows (`.exe`), macOS (`.dmg`), and Linux (`.AppImage`, `.deb`).
 
 ---
@@ -29,7 +29,7 @@ This document describes how to package and publish **OmniCellRouter (OCR)** acro
                               ▼                              ▼
                  ┌─────────────────────────┐   ┌───────────────────────────┐
                  │     npm registry        │   │      GitHub Releases      │
-                 │   (onecast-router)      │   │  (Multi-Platform Assets)  │
+                 │   (omnicell-router)      │   │  (Multi-Platform Assets)  │
                  └────────────┬────────────┘   └─────────────┬─────────────┘
                               │                              │
                      `npm i -g ...`                 Desktop Installers:
@@ -42,14 +42,14 @@ This document describes how to package and publish **OmniCellRouter (OCR)** acro
 
 ---
 
-## 2. Publishing to npm Registry (`onecast-router`)
+## 2. Publishing to npm Registry (`omnicell-router`)
 
 ### 2.1 How the npm Package Works
 
 When installed via npm:
-- **Global Executables**: Installs `ocr` and `onecast-router` commands on the system `PATH` via [bin/ocr.js](file:///d:/OpenHub/opencode-router/bin/ocr.js).
+- **Global Executables**: Installs `ocr` and `omnicell-router` commands on the system `PATH` via [bin/ocr.js](file:///d:/OpenHub/omnicell-router/bin/ocr.js).
 - **Runtime Portability**: Runs natively on Node.js (>= 18.0.0) without requiring Bun or TypeScript compiler installed on the user's host.
-- **Embedded Web Console**: Ships pre-compiled static assets ([frontend/dist](file:///d:/OpenHub/opencode-router/frontend/dist)) and server dist ([backend/dist](file:///d:/OpenHub/opencode-router/backend/dist)), keeping the unpacked download size around 28 MB.
+- **Embedded Web Console**: Ships pre-compiled static assets ([frontend/dist](file:///d:/OpenHub/omnicell-router/frontend/dist)) and server dist ([backend/dist](file:///d:/OpenHub/omnicell-router/backend/dist)), keeping the unpacked download size around 28 MB.
 - **Lifecycle Commands**: Users can run `ocr start`, `ocr web` (or `ocr ui`), `ocr status`, and `ocr stop`.
 
 ### 2.2 Prerequisites
@@ -123,7 +123,7 @@ Test the published package on a clean machine or terminal:
 
 ```bash
 # Global install test
-npm install -g onecast-router
+npm install -g omnicell-router
 
 # Verify version
 ocr --version
@@ -145,14 +145,14 @@ OCR provides native desktop shells for Windows, macOS, and Linux built using Tau
 
 | Platform / Architecture | Target Triple | Bundle Type | Output Artifact Name Pattern |
 | :--- | :--- | :--- | :--- |
-| **Windows x64** | `x86_64-pc-windows-msvc` | NSIS | `OneCastRouter_<ver>_x64-setup.exe` |
-| **macOS Apple Silicon** | `aarch64-apple-darwin` | DMG | `OneCastRouter_<ver>_aarch64.dmg` |
-| **macOS Intel** | `x86_64-apple-darwin` | DMG | `OneCastRouter_<ver>_x64.dmg` |
-| **Linux x64** | `x86_64-unknown-linux-gnu` | AppImage & DEB | `OneCastRouter_<ver>_amd64.AppImage`<br>`OneCastRouter_<ver>_amd64.deb` |
+| **Windows x64** | `x86_64-pc-windows-msvc` | NSIS | `OmniCellRouter_<ver>_x64-setup.exe` |
+| **macOS Apple Silicon** | `aarch64-apple-darwin` | DMG | `OmniCellRouter_<ver>_aarch64.dmg` |
+| **macOS Intel** | `x86_64-apple-darwin` | DMG | `OmniCellRouter_<ver>_x64.dmg` |
+| **Linux x64** | `x86_64-unknown-linux-gnu` | AppImage & DEB | `OmniCellRouter_<ver>_amd64.AppImage`<br>`OmniCellRouter_<ver>_amd64.deb` |
 
 ### 3.2 Automated GitHub Actions Pipeline
 
-The workflow defined in [.github/workflows/desktop-build.yml](file:///d:/OpenHub/opencode-router/.github/workflows/desktop-build.yml) automatically triggers upon pushing any tag matching `v*` (e.g., `v0.1.0`):
+The workflow defined in [.github/workflows/desktop-build.yml](file:///d:/OpenHub/omnicell-router/.github/workflows/desktop-build.yml) automatically triggers upon pushing any tag matching `v*` (e.g., `v0.1.0`):
 
 1. **Parallel Cross-Compilation**:
    - `windows-latest`: Builds Windows NSIS installer.
@@ -228,4 +228,4 @@ Follow this checklist for a unified public release:
 - [ ] Push git tag: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 - [ ] Verify GitHub Actions release workflow finishes and desktop assets are attached.
 - [ ] Publish npm package: `npm publish --access public`.
-- [ ] Test fresh installation via `npm install -g onecast-router` and `ocr web`.
+- [ ] Test fresh installation via `npm install -g omnicell-router` and `ocr web`.

@@ -311,7 +311,7 @@ export interface ForwardProxyConfig {
    * bypasses (direct).
    */
   bypassHosts?: (string | { host: string; viaProxy?: boolean })[];
-  caDir?: string; // MITM CA dir; default ~/.onecast-router/forward-proxy
+  caDir?: string; // MITM CA dir; default ~/.omnicell-router/forward-proxy
   /**
    * Route forward-proxy transit (bypass tunnels + non-intercepted forwards)
    * through the outbound proxy policy (`proxy:` — url/includes/excludes).
@@ -632,7 +632,7 @@ export interface CompressionConfig {
  */
 export interface RequestCaptureConfig {
   enabled?: boolean; // master switch; default false
-  dir?: string; // default: ~/.onecast-router/capture
+  dir?: string; // default: ~/.omnicell-router/capture
   retentionDays?: number; // default 7; date dirs older than today-N are swept (at boot + hourly)
   maxTotalMB?: number; // default 2048; oldest date dirs are deleted first when exceeded
   maxBodyBytes?: number; // default 16777216 (16 MB) — sized so one 2M-token context body fits untruncated
@@ -653,7 +653,7 @@ export interface RequestCaptureConfig {
 
 export interface TracePersistConfig {
   enabled?: boolean; // default true
-  dir?: string; // default: ~/.onecast-router/traces (traces.db)
+  dir?: string; // default: ~/.omnicell-router/traces (traces.db)
   retentionDays?: number; // default 7; rows older than now-N are deleted (at boot + hourly)
   maxTotalMB?: number; // default 100; oldest rows deleted first when the db exceeds the budget
 }

@@ -3583,7 +3583,7 @@ export function registerConsoleRoutes(
     const virtual = ['auto', 'lite', 'plus', 'pro', 'ultra'].map((id) => ({
       id,
       kind: (id === 'auto' ? 'auto' : 'tier') as 'auto' | 'tier',
-      provider: 'onecast-router',
+      provider: 'omnicell-router',
       tier: tierFromVirtualEntry(id),
       virtual: true,
       allowed: isAutoEntryUsable(id, policy, tierAllowed),
@@ -3595,7 +3595,7 @@ export function registerConsoleRoutes(
     const combos = registry.getCombos().map((c) => ({
       id: c.id,
       kind: 'combo' as const,
-      provider: 'onecast-router',
+      provider: 'omnicell-router',
       tier: '',
       virtual: false,
       allowed: registry.resolveCombo(c.id).every((mem) => isModelAllowed(mem.id, policy, mem.tier)),
@@ -3614,7 +3614,7 @@ export function registerConsoleRoutes(
     // Order mirrors the /v1/models wire body EXACTLY (the console list is a
     // pure re-rendering of that payload — same rows, same sequence). The wire
     // builds a provider map whose insertion order IS the display order: the
-    // onecast-router virtual provider (auto alias → tier aliases → combos)
+    // omnicell-router virtual provider (auto alias → tier aliases → combos)
     // first, then concrete providers in registry first-appearance order, each
     // carrying its concrete models then its variant siblings.
     const providerRows = new Map<string, typeof registered>();
@@ -3633,7 +3633,7 @@ export function registerConsoleRoutes(
     const models = [
       ...virtual,
       ...combos,
-      ...[...providerRows.entries()].filter(([pid]) => pid !== 'onecast-router').flatMap(([, rows]) => rows),
+      ...[...providerRows.entries()].filter(([pid]) => pid !== 'omnicell-router').flatMap(([, rows]) => rows),
     ];
     return {
       status: 'ok',
@@ -3651,7 +3651,7 @@ export function registerConsoleRoutes(
     // `kind` tags the addressable-id namespace (virtual auto* / combo /
     // registered model / variant) so console pickers can badge each row —
     // owned_by alone cannot distinguish them (auto* and combos share
-    // 'onecast-router'; variants share their base model's provider).
+    // 'omnicell-router'; variants share their base model's provider).
     // `tiers` is the model's FULL membership set (pools are a per-tier
     // projection — a model may belong to several tiers, or none): no single
     // fixed tier is reported for any row.
@@ -3661,7 +3661,7 @@ export function registerConsoleRoutes(
         // `auto` keeps its own kind (true auto-routing, cross-tier ratchet);
         // the four bare tier aliases are pinned-tier entries, tagged 'tier'.
         kind: (id === 'auto' ? 'auto' : 'tier') as 'auto' | 'tier',
-        owned_by: 'onecast-router',
+        owned_by: 'omnicell-router',
         tiers: [] as string[],
       })),
       // Order mirrors /v1/models: auto* → combos → registered → variants, so
@@ -3670,7 +3670,7 @@ export function registerConsoleRoutes(
       ...registry.getCombos().map((c) => ({
         id: c.id,
         kind: 'combo' as const,
-        owned_by: 'onecast-router',
+        owned_by: 'omnicell-router',
         tiers: [] as string[],
         // Resolved member count (disabled/unregistered members dropped) —
         // console pickers show it as the combo row's meta.
@@ -3723,7 +3723,7 @@ export function registerConsoleRoutes(
   };
   app.post('/api/admin/restart', handleRestart);
 
-  // 11. Process-log tail viewer — reads ~/.onecast-router/ocr.log (only
+  // 11. Process-log tail viewer — reads ~/.omnicell-router/ocr.log (only
   //     written when the gateway runs under `ocr start`; a manual `bun
   //     backend/src/index.ts` writes to its own console instead).
   //     Reads at most 1 MiB from the tail so huge files never blow up memory.

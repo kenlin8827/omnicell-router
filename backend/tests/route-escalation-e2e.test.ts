@@ -293,7 +293,7 @@ describe('Route-entry console API contract (what /route-entries consumes)', () =
 
 describe('Configurable namespace — directives.prefix end to end (mock mode)', () => {
   it('a relocated prefix acts, while the default namespace becomes plain text', async () => {
-    applyDirectivesConfig({ enabled: true, prefix: '@onecast-' });
+    applyDirectivesConfig({ enabled: true, prefix: '@omnicell-' });
     try {
       // The OLD namespace is prose: no scrub, no effect (this is the whole
       // point — OCR-domain text such as `@ocr-pipeline` must survive).
@@ -306,11 +306,11 @@ describe('Configurable namespace — directives.prefix end to end (mock mode)', 
       );
 
       // The configured namespace does both.
-      const relocated = await turn('auto', user('@onecast-tier-up write a haiku about pipes'));
+      const relocated = await turn('auto', user('@omnicell-tier-up write a haiku about pipes'));
       assert.equal(relocated.tierUsed, 'pro');
       const newTrace = orchestrator.getTraceTracker().getRecentTraces().data[0];
       assert.ok(
-        !String(newTrace?.request?.userPromptSummary ?? '').includes('@onecast-'),
+        !String(newTrace?.request?.userPromptSummary ?? '').includes('@omnicell-'),
         'the active prefix is scrubbed from the upstream-facing prompt'
       );
     } finally {

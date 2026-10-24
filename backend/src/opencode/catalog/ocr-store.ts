@@ -5,7 +5,7 @@ import { getEnvPaths } from '../../config/env.js';
 
 /**
  * Static OCR catalog store (<env.catalog>/ocr.json — default env binds to
- * ~/.onecast-router/catalog/ocr.json).
+ * ~/.omnicell-router/catalog/ocr.json).
  *
  * This is the LOCAL DATABASE of the catalog: the full aggregated view
  * (catalogRepository.list()) materialized to disk. The repository loads this

@@ -207,7 +207,7 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
     // recurse into the gateway again. Checked on the RESOLVED value — an
     // env-templated `{env:SELF_URL}` expands exactly above, so a guard on the
     // raw record would miss it. The criterion is the URL, never the id — a
-    // `onecast-router` def pointing at ANOTHER instance is a legitimate
+    // `omnicell-router` def pointing at ANOTHER instance is a legitimate
     // federation upstream. Excluded loudly, never silently (ADR-0005 §2:
     // unroutable is excluded and reported, never a boot abort).
     if (isSelfBaseURL(baseURL, loadConfig().port)) {

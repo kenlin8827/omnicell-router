@@ -1972,7 +1972,7 @@ export const enUS: TranslationDict = {
     tabSources: 'Model sources',
     tabCatalog: 'Aggregated catalog',
     ocrTitle: 'Aggregated catalog',
-    ocrHint: 'The OCR-standard catalog data catalogRepository runs on: locally maintained providers.json first → opencode baseline (models.opencode.ai) → extension sources only fill blanks. Each provider is tagged with its sources; anchored models carry 🔒. This is a read-only discovery view — model add/edit/remove lives on /models and the provider model dialog. Persisted at ~/.onecast-router/catalog/ocr.json.',
+    ocrHint: 'The OCR-standard catalog data catalogRepository runs on: locally maintained providers.json first → opencode baseline (models.opencode.ai) → extension sources only fill blanks. Each provider is tagged with its sources; anchored models carry 🔒. This is a read-only discovery view — model add/edit/remove lives on /models and the provider model dialog. Persisted at ~/.omnicell-router/catalog/ocr.json.',
     ocrLocked: '{n} anchored',
     ocrOnlyLockedHint: 'Show only anchored models — review and unlock them here',
     ocrHidden: '{n} hidden',

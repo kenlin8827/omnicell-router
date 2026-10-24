@@ -52,7 +52,7 @@ const aggregateModels = () =>
   }));
 
 mock.module('../src/opencode/user-config.js', () => ({
-  ROUTER_PROVIDER_ID: 'onecast-router',
+  ROUTER_PROVIDER_ID: 'omnicell-router',
   getProviderNodeById: () => node,
   getProviderModelDefs: () => defs,
   // boot-direct asks the reader which native-slot nodes it refused (Decision 11);

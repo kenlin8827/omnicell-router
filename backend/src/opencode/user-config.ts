@@ -151,7 +151,7 @@ export function expandEnvTemplate(value?: string): string {
 // Provider definitions (the OCR provider-defs file — `providers` map)
 // ---------------------------------------------------------------------------
 
-export const ROUTER_PROVIDER_ID = 'onecast-router';
+export const ROUTER_PROVIDER_ID = 'omnicell-router';
 const DEFAULT_NPM = '@ai-sdk/openai-compatible';
 
 /**

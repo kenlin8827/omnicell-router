@@ -4,8 +4,8 @@
 
 **面向 [OpenCode](https://opencode.ai) 与通用大模型客户端的生产级智能级联路由器与 FinOps 网关。**
 
-[![npm](https://img.shields.io/npm/v/onecast-router.svg?color=blue)](https://www.npmjs.com/package/onecast-router)
-[![Desktop Release](https://img.shields.io/github/v/release/kenlin8827/onecast-router?color=purple)](https://github.com/kenlin8827/onecast-router/releases)
+[![npm](https://img.shields.io/npm/v/omnicell-router.svg?color=blue)](https://www.npmjs.com/package/omnicell-router)
+[![Desktop Release](https://img.shields.io/github/v/release/kenlin8827/omnicell-router?color=purple)](https://github.com/kenlin8827/omnicell-router/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Runtime](https://img.shields.io/badge/Runtime-Bun%20%7C%20Node.js-blue.svg)](https://bun.sh)
 [![OpenAI Compatible](https://img.shields.io/badge/API-OpenAI%20Compatible-green.svg)](https://platform.openai.com/docs/api-reference)
@@ -48,33 +48,33 @@
 
 ```bash
 # 全局安装
-npm install -g onecast-router
+npm install -g omnicell-router
 
 # 启动后台网关并在默认浏览器打开管理控制台
 ocr web
 
 # 或者无需全局安装直接运行
-npx onecast-router web
+npx omnicell-router web
 ```
 
 ### 2. Windows / macOS / Linux 一键安装脚本
 
 ```powershell
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/kenlin8827/onecast-router/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/kenlin8827/omnicell-router/main/install.ps1 | iex
 ```
 
 ```bash
 # macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/kenlin8827/onecast-router/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/kenlin8827/omnicell-router/main/install.sh | bash
 ```
 
 ### 3. 原生独立桌面应用 (GUI)
 
-直接从 [GitHub Releases](https://github.com/kenlin8827/onecast-router/releases/latest) 下载开箱即用的安装包：
-* **Windows**: `OneCastRouter_0.0.1_x64-setup.exe` (NSIS 安装包)
-* **macOS (Apple Silicon)**: `OneCastRouter_0.0.1_aarch64.dmg`
-* **macOS (Intel)**: `OneCastRouter_0.0.1_x64.dmg`
+直接从 [GitHub Releases](https://github.com/kenlin8827/omnicell-router/releases/latest) 下载开箱即用的安装包：
+* **Windows**: `OmniCellRouter_0.0.1_x64-setup.exe` (NSIS 安装包)
+* **macOS (Apple Silicon)**: `OmniCellRouter_0.0.1_aarch64.dmg`
+* **macOS (Intel)**: `OmniCellRouter_0.0.1_x64.dmg`
 
 ---
 
@@ -111,13 +111,13 @@ ocr teardown claude     # 恢复 Claude 直连
 
 ### 2. 源码下载与编译
 ```bash
-git clone https://github.com/kenlin8827/onecast-router.git
-cd onecast-router
+git clone https://github.com/kenlin8827/omnicell-router.git
+cd omnicell-router
 bun install && bun run build
 ```
 
 ### 3. 环境配置与启动
-每个环境管理独立的配置账本（配置、凭据、会话与日志）。默认环境目录位于 `~/.onecast-router/envs/default/config.yaml`。初次启动网关将自动根据自解释模板创建该文件。
+每个环境管理独立的配置账本（配置、凭据、会话与日志）。默认环境目录位于 `~/.omnicell-router/envs/default/config.yaml`。初次启动网关将自动根据自解释模板创建该文件。
 
 ```bash
 # 启动后台守护进程

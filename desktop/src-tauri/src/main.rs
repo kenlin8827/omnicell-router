@@ -288,11 +288,11 @@ fn shell_log(home: &std::path::Path, msg: &str) {
 }
 
 /// Same data root `ocr desktop` / the daemon tooling already assume
-/// (%LOCALAPPDATA%\onecast-router).
+/// (%LOCALAPPDATA%\omnicell-router).
 #[cfg(windows)]
 fn default_ocr_home(resource_dir: &std::path::Path) -> std::path::PathBuf {
     std::env::var("LOCALAPPDATA")
-        .map(|d| std::path::PathBuf::from(d).join("onecast-router"))
+        .map(|d| std::path::PathBuf::from(d).join("omnicell-router"))
         .unwrap_or_else(|_| resource_dir.join("data"))
 }
 
@@ -357,15 +357,15 @@ fn registry_user_path() -> Option<String> {
 fn default_ocr_home(resource_dir: &std::path::Path) -> std::path::PathBuf {
     if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
         if !xdg.trim().is_empty() {
-            return std::path::PathBuf::from(xdg).join("onecast-router");
+            return std::path::PathBuf::from(xdg).join("omnicell-router");
         }
     }
     if let Ok(home) = std::env::var("HOME") {
         if !home.trim().is_empty() {
             if cfg!(target_os = "macos") {
-                return std::path::PathBuf::from(home).join("Library/Application Support/onecast-router");
+                return std::path::PathBuf::from(home).join("Library/Application Support/omnicell-router");
             }
-            return std::path::PathBuf::from(home).join(".local/share/onecast-router");
+            return std::path::PathBuf::from(home).join(".local/share/omnicell-router");
         }
     }
     resource_dir.join("data")

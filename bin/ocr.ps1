@@ -8,12 +8,12 @@ if (-not (Test-Path $DistJs)) {
 }
 
 if (-not (Test-Path $CliTs)) {
-  $FallbackCliTs = Join-Path $env:LOCALAPPDATA "onecast-router\backend\src\cli\index.ts"
+  $FallbackCliTs = Join-Path $env:LOCALAPPDATA "omnicell-router\backend\src\cli\index.ts"
   if (Test-Path $FallbackCliTs) {
     $CliTs = $FallbackCliTs
-    $DistJs = Join-Path $env:LOCALAPPDATA "onecast-router\backend\dist\cli\index.js"
+    $DistJs = Join-Path $env:LOCALAPPDATA "omnicell-router\backend\dist\cli\index.js"
     if (-not (Test-Path $DistJs)) {
-      $DistJs = Join-Path $env:LOCALAPPDATA "onecast-router\dist\cli\index.js"
+      $DistJs = Join-Path $env:LOCALAPPDATA "omnicell-router\dist\cli\index.js"
     }
   }
 }

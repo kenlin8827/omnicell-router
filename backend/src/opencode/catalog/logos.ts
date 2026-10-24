@@ -11,7 +11,7 @@ import { CATALOG_USER_AGENT } from './constants.js';
  * Catalog records carry REMOTE logo URLs; handing them straight to the browser
  * means every page render re-fetches from the origin — and fails offline. The
  * console exposes GET /api/admin/catalog/logo?url=... which serves a cached
- * copy from ~/.cache/onecast-router/logos/ and only hits the network on a
+ * copy from ~/.cache/omnicell-router/logos/ and only hits the network on a
  * miss (or after the soft TTL), falling back to an even-stale copy on error.
  */
 
@@ -50,7 +50,7 @@ interface LogoCacheState {
 function logoCacheFile(url: string): string {
   const dir = process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache');
   const hash = crypto.createHash('sha256').update(url).digest('hex').slice(0, 32);
-  return path.join(dir, 'onecast-router', 'logos', `${hash}.json`);
+  return path.join(dir, 'omnicell-router', 'logos', `${hash}.json`);
 }
 
 export function readLogoCache(url: string): LogoCacheState | null {

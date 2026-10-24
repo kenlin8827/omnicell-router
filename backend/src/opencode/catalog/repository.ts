@@ -278,7 +278,7 @@ export class CatalogRepository {
   }
 
   private async syncRemote(def: RemoteSourceDef, force = false): Promise<void> {
-    // Per-source cache: ~/.cache/onecast-router/catalog/<sourceId>.json
+    // Per-source cache: ~/.cache/omnicell-router/catalog/<sourceId>.json
     const cacheName = `catalog/${def.id}`;
     let cached = readCacheFile<ParsedSource>(cacheName);
     // One-shot migration from the pre-restructure flat names

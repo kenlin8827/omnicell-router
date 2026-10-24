@@ -1,5 +1,5 @@
 /**
- * Token Saver — self-contained compression module for onecast-router.
+ * Token Saver — self-contained compression module for omnicell-router.
  *
  * Compresses verbose tool/command output embedded in conversation history
  * (git status, grep hits, build logs, directory listings …) before the

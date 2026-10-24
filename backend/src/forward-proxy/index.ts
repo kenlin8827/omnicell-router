@@ -9,7 +9,7 @@ import { createProxyInterceptor } from './interceptor.js';
 /**
  * Start the inbound forward proxy (HTTP_PROXY / HTTPS_PROXY server).
  * Enabled via config.yaml `forwardProxy.enabled`; defaults: port 4555,
- * loopback-only, CA under ~/.onecast-router/forward-proxy/.
+ * loopback-only, CA under ~/.omnicell-router/forward-proxy/.
  */
 export async function startForwardProxy(
   cfg: ForwardProxyConfig,

@@ -4,8 +4,8 @@
 
 **Production-ready intelligent cascading router & FinOps gateway for [OpenCode](https://opencode.ai) and standard LLM clients.**
 
-[![npm](https://img.shields.io/npm/v/onecast-router.svg?color=blue)](https://www.npmjs.com/package/onecast-router)
-[![Desktop Release](https://img.shields.io/github/v/release/kenlin8827/onecast-router?color=purple)](https://github.com/kenlin8827/onecast-router/releases)
+[![npm](https://img.shields.io/npm/v/omnicell-router.svg?color=blue)](https://www.npmjs.com/package/omnicell-router)
+[![Desktop Release](https://img.shields.io/github/v/release/kenlin8827/omnicell-router?color=purple)](https://github.com/kenlin8827/omnicell-router/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Runtime](https://img.shields.io/badge/Runtime-Bun%20%7C%20Node.js-blue.svg)](https://bun.sh)
 [![OpenAI Compatible](https://img.shields.io/badge/API-OpenAI%20Compatible-green.svg)](https://platform.openai.com/docs/api-reference)
@@ -48,33 +48,33 @@ By orchestrating **rule-based fast paths**, a persistent **RouteEntry experience
 
 ```bash
 # Global installation
-npm install -g onecast-router
+npm install -g omnicell-router
 
 # Launch the gateway & open Web Console in your default browser
 ocr web
 
 # Or run directly without installing
-npx onecast-router web
+npx omnicell-router web
 ```
 
 ### 2. Windows / macOS / Linux One-Line Installer
 
 ```powershell
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/kenlin8827/onecast-router/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/kenlin8827/omnicell-router/main/install.ps1 | iex
 ```
 
 ```bash
 # macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/kenlin8827/onecast-router/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/kenlin8827/omnicell-router/main/install.sh | bash
 ```
 
 ### 3. Standalone Desktop App (GUI)
 
-Download native standalone installers from [GitHub Releases](https://github.com/kenlin8827/onecast-router/releases/latest):
-* **Windows**: `OneCastRouter_0.0.1_x64-setup.exe` (NSIS)
-* **macOS (Apple Silicon)**: `OneCastRouter_0.0.1_aarch64.dmg`
-* **macOS (Intel)**: `OneCastRouter_0.0.1_x64.dmg`
+Download native standalone installers from [GitHub Releases](https://github.com/kenlin8827/omnicell-router/releases/latest):
+* **Windows**: `OmniCellRouter_0.0.1_x64-setup.exe` (NSIS)
+* **macOS (Apple Silicon)**: `OmniCellRouter_0.0.1_aarch64.dmg`
+* **macOS (Intel)**: `OmniCellRouter_0.0.1_x64.dmg`
 
 ---
 
@@ -111,8 +111,8 @@ ocr teardown claude     # Restore Claude to direct connection
 
 ### 2. Setup & Build
 ```bash
-git clone https://github.com/kenlin8827/onecast-router.git
-cd onecast-router
+git clone https://github.com/kenlin8827/omnicell-router.git
+cd omnicell-router
 bun install && bun run build
 ```
 

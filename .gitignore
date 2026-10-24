@@ -10,6 +10,6 @@ dist/
 .scratch/
 
 # Runtime state never lives in the repository: every environment owns
-# ~/.onecast-router/envs/<name>/ (config.yaml, data/, models/, catalog/,
+# ~/.omnicell-router/envs/<name>/ (config.yaml, data/, models/, catalog/,
 # traces/, capture/, webauth-secret). If a rule for a repo-root state dir ever
 # reappears here, the layout has regressed — see docs/adr/0018.

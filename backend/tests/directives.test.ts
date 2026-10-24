@@ -268,9 +268,9 @@ describe('configurable namespace (ADR-0011 §4)', () => {
 
   it('round-trips through config.yaml: save → load → gate', () => {
     try {
-      assert.equal(saveConfig({ directives: { enabled: true, prefix: '@onecast-' } }).success, true);
-      assert.equal(loadConfig().directives?.prefix, '@onecast-', 'persisted + read back');
-      assert.equal(applyDirectivesConfig().prefix, '@onecast-', 'gate seeds from disk');
+      assert.equal(saveConfig({ directives: { enabled: true, prefix: '@omnicell-' } }).success, true);
+      assert.equal(loadConfig().directives?.prefix, '@omnicell-', 'persisted + read back');
+      assert.equal(applyDirectivesConfig().prefix, '@omnicell-', 'gate seeds from disk');
       assert.equal(applyDirectivesConfig().enabled, true);
       // An invalid value cannot be persisted into effect — load sanitizes it.
       saveConfig({ directives: { enabled: false, prefix: 'not-a-prefix' } });
@@ -282,11 +282,11 @@ describe('configurable namespace (ADR-0011 §4)', () => {
 
   it('hot-applied prefix immediately governs the reserved namespace (no restart)', () => {
     try {
-      const gate = applyDirectivesConfig({ enabled: true, prefix: '@onecast-' });
-      assert.equal(gate.prefix, '@onecast-');
+      const gate = applyDirectivesConfig({ enabled: true, prefix: '@omnicell-' });
+      assert.equal(gate.prefix, '@omnicell-');
       // The live gate prefix IS the scrub contract: OLD tokens become prose,
       // NEW ones are scrubbed and effective — in the same request.
-      const scan = scanDirectives([user('@onecast-tier-up hello @ocr-tier-up')], gate.prefix);
+      const scan = scanDirectives([user('@omnicell-tier-up hello @ocr-tier-up')], gate.prefix);
       assert.deepEqual(scan.messages, [{ role: 'user', content: 'hello @ocr-tier-up' }]);
       assert.deepEqual(scan.effective.map((h) => h.action), ['tier_up']);
       assert.equal(scan.unknown.length, 0);
@@ -296,8 +296,8 @@ describe('configurable namespace (ADR-0011 §4)', () => {
   });
 
   it('validates the shape and falls back to the default on anything unusable', () => {
-    assert.equal(resolveDirectivePrefix('@onecast-'), '@onecast-');
-    assert.equal(resolveDirectivePrefix('  @ONEcast:  '), '@onecast:', 'trimmed + lower-cased');
+    assert.equal(resolveDirectivePrefix('@omnicell-'), '@omnicell-');
+    assert.equal(resolveDirectivePrefix('  @OMNIcell:  '), '@omnicell:', 'trimmed + lower-cased');
     assert.equal(resolveDirectivePrefix('@x_'), '@x_');
     for (const bad of [
       undefined, null, 42, '', 'ocr-', '@', '@ocr', 'ocr', '@oc r-', '@ocr/',
@@ -321,15 +321,15 @@ describe('configurable namespace (ADR-0011 §4)', () => {
       '@ocr-effort-none', '@ocr-effort-low', '@ocr-effort-medium',
       '@ocr-effort-high', '@ocr-effort-xhigh', '@ocr-effort-max',
     ]);
-    assert.equal(directiveTokens('@onecast-')[5], '@onecast-tier-lite');
+    assert.equal(directiveTokens('@omnicell-')[5], '@omnicell-tier-lite');
   });
 
   it('a relocated prefix makes the OLD namespace ordinary text — untouched, no effect', () => {
     const scan = scanDirectives(
-      [user('@ocr-tier-up refactor this'), asst('ok'), user('@onecast-tier-up refactor this')],
-      '@onecast-'
+      [user('@ocr-tier-up refactor this'), asst('ok'), user('@omnicell-tier-up refactor this')],
+      '@omnicell-'
     );
-    assert.equal(scan.prefix, '@onecast-');
+    assert.equal(scan.prefix, '@omnicell-');
     // The old token is just prose now: not scrubbed, not classified …
     assert.equal(scan.messages[0].content, '@ocr-tier-up refactor this');
     assert.equal(scan.all.length, 1);
@@ -351,7 +351,7 @@ describe('configurable namespace (ADR-0011 §4)', () => {
   it('an OCR-domain token is out of the namespace once the prefix moves', () => {
     // The collision this feature exists for: real prose, no leading boundary
     // issue, no directive semantics.
-    const scan = scanDirectives([user('our @ocr-pipeline needs @ocr-v2 handling')], '@onecast-');
+    const scan = scanDirectives([user('our @ocr-pipeline needs @ocr-v2 handling')], '@omnicell-');
     assert.equal(scan.messages[0].content, 'our @ocr-pipeline needs @ocr-v2 handling');
     assert.equal(scan.effective.length, 0);
     assert.equal(scan.unknown.length, 0);

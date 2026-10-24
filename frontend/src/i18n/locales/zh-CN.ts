@@ -1960,7 +1960,7 @@ export const zhCN: TranslationDict = {
     tabSources: '模型来源',
     tabCatalog: '聚合目录',
     ocrTitle: '聚合目录',
-    ocrHint: 'OCR 标准目录数据（catalogRepository 的运行基础）：本地维护的 providers.json 优先 → opencode 基线（models.opencode.ai）→ 扩展源只补空白字段。每个服务商标注其数据来源，锁定的模型带 🔒。这是只读发现面；模型的增删改在 /models 与 provider 模型对话框。落盘于 ~/.onecast-router/catalog/ocr.json。',
+    ocrHint: 'OCR 标准目录数据（catalogRepository 的运行基础）：本地维护的 providers.json 优先 → opencode 基线（models.opencode.ai）→ 扩展源只补空白字段。每个服务商标注其数据来源，锁定的模型带 🔒。这是只读发现面；模型的增删改在 /models 与 provider 模型对话框。落盘于 ~/.omnicell-router/catalog/ocr.json。',
     ocrLocked: '{n} 个已锚定',
     ocrOnlyLockedHint: '只显示已锚定的模型，可在此批量查看与解锁',
     ocrHidden: '{n} 个已隐藏',

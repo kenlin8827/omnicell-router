@@ -20,7 +20,7 @@ import { piThinkingLevelMap, resolveClientModelMeta } from './model-meta.js';
  * http(s) baseUrl on this key means the client routes through an OCR gateway
  * (local loopback, LAN-bound host, or a remote box — all are "hooked").
  */
-const PI_PROVIDER_KEY = 'onecast-router';
+const PI_PROVIDER_KEY = 'omnicell-router';
 
 /** Placeholder apiKey — pi's schema REQUIRES apiKey whenever custom models are declared. */
 const PI_FALLBACK_API_KEY = '***';
@@ -312,7 +312,7 @@ export class PiClientAdapter implements ClientAdapter {
     // ~/.pi/agent/settings.json). Two sources, explicit first:
     //  - per-role entries in `models` (console slot payload; 'main' excluded):
     //    the picked value wins — bare ids are written qualified as
-    //    `onecast-router/<id>`, values already carrying a provider prefix are
+    //    `omnicell-router/<id>`, values already carrying a provider prefix are
     //    written verbatim, and an unchanged echo is a no-op so a manually
     //    pinned non-router model survives untouched;
     //  - the router-owned tier preset fills every remaining role that has no
@@ -389,7 +389,7 @@ export class PiClientAdapter implements ClientAdapter {
           if (!current.startsWith(SUBAGENT_MODEL_PREFIX)) continue; // foreign pin — never stolen
           // Router-owned: refresh only preset-vocabulary auto* aliases (tier
           // table updates normalize on re-setup); a router-owned concrete pick
-          // (onecast-router/<id>) is an explicit choice and survives.
+          // (omnicell-router/<id>) is an explicit choice and survives.
           if (!VIRTUAL_AUTO_IDS.has(current.slice(SUBAGENT_MODEL_PREFIX.length))) continue;
         }
         overrides[role] = { ...base, model: `${PI_PROVIDER_KEY}/${tier}` };
@@ -641,7 +641,7 @@ export class PiClientAdapter implements ClientAdapter {
   /**
    * Remove router-owned subagent model overrides from the settings file
    * (`subagents.agentOverrides.<role>.model` values carrying the
-   * `onecast-router/` namespace prefix). Restore-then-strip like models.json:
+   * `omnicell-router/` namespace prefix). Restore-then-strip like models.json:
    * a backup written by a re-setup contains the overrides, so restoring alone
    * would leave them behind. The user's own overrides — any role, any field —
    * survive; emptied role objects / agentOverrides / subagents nodes are

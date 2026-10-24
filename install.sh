@@ -2,12 +2,12 @@
 # Remote one-line installer for OmniCellRouter (OCR)
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/kenlin8827/onecast-router/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/kenlin8827/omnicell-router/main/install.sh | bash
 #
 set -e
 
-REPO="kenlin8827/onecast-router"
-INSTALL_DIR="$HOME/.local/share/onecast-router"
+REPO="kenlin8827/omnicell-router"
+INSTALL_DIR="$HOME/.local/share/omnicell-router"
 BIN_DIR="$HOME/.local/bin"
 
 if [ -t 1 ]; then
@@ -30,7 +30,7 @@ echo -e "${NC}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")"
 IS_PREBUILT=false
 
-if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/package.json" ] && grep -q "onecast-router" "$SCRIPT_DIR/package.json" 2>/dev/null; then
+if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/package.json" ] && grep -q "omnicell-router" "$SCRIPT_DIR/package.json" 2>/dev/null; then
   echo -e "${GREEN}✔ Detected local repository checkout at: ${SCRIPT_DIR}${NC}"
   TARGET_REPO="$SCRIPT_DIR"
 else
@@ -40,12 +40,12 @@ else
 
   echo -e "${CYAN}Checking GitHub for latest prebuilt release...${NC}"
   LATEST_RELEASE=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null || echo "")
-  ASSET_URL=$(echo "$LATEST_RELEASE" | grep -o 'https://[^"]*onecast-router-dist.tar.gz' | head -n 1 || echo "")
+  ASSET_URL=$(echo "$LATEST_RELEASE" | grep -o 'https://[^"]*omnicell-router-dist.tar.gz' | head -n 1 || echo "")
   TAG_NAME=$(echo "$LATEST_RELEASE" | grep -o '"tag_name": "[^"]*' | cut -d'"' -f4 || echo "")
 
   if [ -n "$ASSET_URL" ]; then
     echo -e "${CYAN}Downloading prebuilt release ${TAG_NAME}...${NC}"
-    TMP_TAR="/tmp/onecast-router-dist.tar.gz"
+    TMP_TAR="/tmp/omnicell-router-dist.tar.gz"
     if curl -fsSL "$ASSET_URL" -o "$TMP_TAR" 2>/dev/null; then
       echo -e "${CYAN}Extracting prebuilt archive into ${INSTALL_DIR}...${NC}"
       tar -xzf "$TMP_TAR" -C "$INSTALL_DIR"
@@ -91,9 +91,9 @@ fi
 mkdir -p "$BIN_DIR"
 if [ "$TARGET_REPO/bin" != "$BIN_DIR" ]; then
   cp -f "$TARGET_REPO/bin/ocr" "$BIN_DIR/ocr"
-  cp -f "$TARGET_REPO/bin/onecast-router" "$BIN_DIR/onecast-router"
+  cp -f "$TARGET_REPO/bin/omnicell-router" "$BIN_DIR/omnicell-router"
 fi
-chmod +x "$BIN_DIR/ocr" "$BIN_DIR/onecast-router"
+chmod +x "$BIN_DIR/ocr" "$BIN_DIR/omnicell-router"
 
 # 4. PATH detection & export
 case ":$PATH:" in

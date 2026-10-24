@@ -3,7 +3,7 @@
   "productName": "OmniCellRouter",
   "mainBinaryName": "OmniCellRouter",
   "version": "0.0.1",
-  "identifier": "com.kenlin8827.onecast-router",
+  "identifier": "com.kenlin8827.omnicell-router",
   "build": {
     "frontendDist": "stub"
   },

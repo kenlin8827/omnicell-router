@@ -375,14 +375,14 @@ describe('Per-key model access policy (auth/model-access.ts)', () => {
         // Registered rows keep their per-model verdicts alongside the new groups.
         assert.strictEqual(rows.find((m) => m.id === 'mock-lite').allowed, true);
         assert.strictEqual(rows.find((m) => m.id === 'mock-ultra').allowed, false);
-        // Order mirrors the /v1/models wire body: the onecast-router virtual
+        // Order mirrors the /v1/models wire body: the omnicell-router virtual
         // provider (auto* aliases then combos) leads; concrete providers
         // (registry order) follow.
         const firstConcreteIdx = rows.findIndex((m) => !m.virtual && (m.kind === 'model' || m.kind === 'variant'));
         const lastVirtualIdx = rows.findLastIndex((m) => m.virtual || m.kind === 'combo');
         assert.ok(
           lastVirtualIdx !== -1 && firstConcreteIdx !== -1 && lastVirtualIdx < firstConcreteIdx,
-          'all virtual/combo rows precede all concrete rows (onecast-router virtual provider leads)'
+          'all virtual/combo rows precede all concrete rows (omnicell-router virtual provider leads)'
         );
       } finally {
         // Restore (Windows can transiently EBUSY freshly-written files — retry

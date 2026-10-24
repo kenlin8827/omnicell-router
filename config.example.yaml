@@ -51,7 +51,7 @@ opencode:
 #     - "*.internal"                #   bare string → tunnel DIRECT
 #     - host: "api.openai.com"      #   object form → per-host egress choice
 #       viaProxy: true              #   tunnel VIA the outbound proxy policy
-#   caDir: ""                       # default: ~/.onecast-router/forward-proxy
+#   caDir: ""                       # default: ~/.omnicell-router/forward-proxy
 #   viaOutboundProxy: false         # non-bypass forwards (non-intercepted GETs etc.) egress via config.proxy
 
 # Tier membership  — each tier's candidate pool is an EXPLICIT
@@ -210,7 +210,7 @@ directives:
   enabled: true                    # Master switch: false disables BOTH scrub and
                                    # effect — @ocr-* then travels as ordinary text.
   prefix: '@ocr-'                  # Reserved namespace; relocatable for OCR-domain
-                                   # prompts (e.g. '@onecast-'). Invalid values fall
+                                   # prompts (e.g. '@omnicell-'). Invalid values fall
                                    # back to the default.
 
 # ==============================================================================

@@ -52,10 +52,10 @@ describe('CLI Client Setup & Teardown Adapters', () => {
 
     const updated = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     // opencode v2's native slot + shape: plural `providers`, `package`/`settings`
-    expect(updated.providers['onecast-router'].settings.baseURL).toBe('http://127.0.0.1:4000/v1');
-    expect(updated.providers['onecast-router'].package).toBe('@opencode/ai/providers/openai-compatible');
+    expect(updated.providers['omnicell-router'].settings.baseURL).toBe('http://127.0.0.1:4000/v1');
+    expect(updated.providers['omnicell-router'].package).toBe('@opencode/ai/providers/openai-compatible');
     expect(updated.provider).toBeUndefined(); // no legacy-slot twin is ever created
-    expect(updated.model).toBe('onecast-router/auto');
+    expect(updated.model).toBe('omnicell-router/auto');
 
     // Teardown
     const teardownRes = await adapter.teardown();
@@ -66,7 +66,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
 
     const restored = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     expect(restored.model).toBe('anthropic/claude-sonnet-4');
-    expect(restored.providers['onecast-router']).toBeUndefined();
+    expect(restored.providers['omnicell-router']).toBeUndefined();
   });
 
   it('OpenCode adapter must preserve JSONC comments on setup', async () => {
@@ -101,8 +101,8 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     // it did not author, and opencode v2 still migrates it on read.
     expect(parsed.provider['home-lab'].options.baseURL).toBe('http://192.168.1.10/v1');
     // The router node itself goes to the native slot.
-    expect(parsed.providers['onecast-router'].settings.baseURL).toBe('http://127.0.0.1:4000/v1');
-    expect(parsed.provider['onecast-router']).toBeUndefined();
+    expect(parsed.providers['omnicell-router'].settings.baseURL).toBe('http://127.0.0.1:4000/v1');
+    expect(parsed.provider['omnicell-router']).toBeUndefined();
   });
 
   it('OpenCode adapter applies a model profile: per-agent overrides, exposed refs, sidecar echo, un-apply sweep', async () => {
@@ -126,14 +126,14 @@ describe('CLI Client Setup & Teardown Adapters', () => {
 
     // Fresh file (no agent node) → v2-native PLURAL `agents` home.
     const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    expect(cfg.agents.general.model).toBe('onecast-router/lite');
-    expect(cfg.agents.explore.model).toBe('onecast-router/deepseek-v4-flash');
+    expect(cfg.agents.general.model).toBe('omnicell-router/lite');
+    expect(cfg.agents.explore.model).toBe('omnicell-router/deepseek-v4-flash');
     // 'auto' refs inherit the default model (no override); invalid names are skipped.
     expect(cfg.agents.build?.model).toBeUndefined();
     expect(cfg.agents['bad name']).toBeUndefined();
     // Profile refs must be exposed in the provider model map — opencode validates
     // agent.<name>.model against it.
-    expect(cfg.providers['onecast-router'].models['deepseek-v4-flash']).toBeDefined();
+    expect(cfg.providers['omnicell-router'].models['deepseek-v4-flash']).toBeDefined();
 
     let status = await adapter.getStatus();
     expect(status.profile?.id).toBe('prof1');
@@ -151,7 +151,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     const after = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     expect(after.agents.general.model).toBeUndefined();
     expect(after.agents.explore.model).toBeUndefined();
-    expect(after.providers['onecast-router']).toBeDefined(); // still hooked
+    expect(after.providers['omnicell-router']).toBeDefined(); // still hooked
 
     status = await adapter.getStatus();
     expect(status.profile).toBeUndefined();
@@ -169,7 +169,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
           // …while the retired singular node keeps a router-owned ghost (an older
           // build wrote it) plus the user's own non-router entry.
           agent: {
-            general: { model: 'onecast-router/lite' },
+            general: { model: 'omnicell-router/lite' },
             keeper: { model: 'zhipuai/glm-5.3' },
           },
         },
@@ -191,7 +191,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
 
     const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     // New binding goes to the plural home…
-    expect(cfg.agents.scout.model).toBe('onecast-router/lite');
+    expect(cfg.agents.scout.model).toBe('omnicell-router/lite');
     // …the legacy ghost is swept, and user-owned non-router values survive.
     expect(cfg.agent.general.model).toBeUndefined();
     expect(cfg.agent.keeper.model).toBe('zhipuai/glm-5.3');
@@ -217,7 +217,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
 
     const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     // The binding lands in the v2 home (never forks into the singular node)…
-    expect(cfg.agents.scout.model).toBe('onecast-router/lite');
+    expect(cfg.agents.scout.model).toBe('omnicell-router/lite');
     // …and the user's own singular-node entry survives untouched.
     expect(cfg.agent.keeper.model).toBe('zhipuai/glm-5.3');
   });
@@ -245,7 +245,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(teardownRes.success).toBe(true);
 
     const restored = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    expect(restored.providers['onecast-router']).toBeUndefined();
+    expect(restored.providers['omnicell-router']).toBeUndefined();
     expect(restored.agents?.general?.model).toBeUndefined();
     expect(restored.agents?.explore?.model).toBeUndefined();
     expect(restored.model).toBe('anthropic/claude-sonnet-4');
@@ -270,7 +270,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     });
     expect(res.success).toBe(true);
     let cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    expect(cfg.agents.general.model).toBe('onecast-router/lite');
+    expect(cfg.agents.general.model).toBe('omnicell-router/lite');
     expect(Object.keys(cfg.agents)).toEqual(['general']); // retired subagent slot wrote nothing
 
     // Engaged-but-empty agent bindings ({}): sweep router-owned overrides only.
@@ -279,10 +279,10 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(cfg.agents?.general?.model).toBeUndefined();
 
     // Bare setup (CLI shape — no agent payloads) never touches the agent node.
-    fs.writeFileSync(configPath, JSON.stringify({ model: 'x', agents: { keeper: { model: 'onecast-router/plus' } } }, null, 2));
+    fs.writeFileSync(configPath, JSON.stringify({ model: 'x', agents: { keeper: { model: 'omnicell-router/plus' } } }, null, 2));
     await adapter.setup({ port: 4000, models: { main: 'auto' } });
     cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    expect(cfg.agents.keeper.model).toBe('onecast-router/plus');
+    expect(cfg.agents.keeper.model).toBe('omnicell-router/plus');
   });
 
   it('refreshProfileBindings rewrites linked agents on profile change without a full setup', async () => {
@@ -303,10 +303,10 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     const res = await adapter.refreshProfileBindings('p1', { scout: 'flash' }, { flash: 'glm-5.3' });
     expect(res.success).toBe(true);
     const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    expect(cfg.agents.scout.model).toBe('onecast-router/glm-5.3');
+    expect(cfg.agents.scout.model).toBe('omnicell-router/glm-5.3');
     // The new ref is exposed in the provider models map — opencode validates
     // agent.<name>.model against it.
-    expect(cfg.providers['onecast-router'].models['glm-5.3']).toBeDefined();
+    expect(cfg.providers['omnicell-router'].models['glm-5.3']).toBeDefined();
     expect((await adapter.getStatus()).profile?.bindings).toEqual({ scout: 'flash' });
 
     // A no-diff refresh writes nothing new (still hooked, values identical).
@@ -345,8 +345,8 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     const res = await adapter.refreshProfileBindings('p1', { scout: 'flash' }, { flash: 'qwen-max' });
     expect(res.success).toBe(true);
     let cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    expect(cfg.agents.scout.model).toBe('onecast-router/qwen-max');
-    expect(cfg.agents.explore.model).toBe('onecast-router/glm-5.3');
+    expect(cfg.agents.scout.model).toBe('omnicell-router/qwen-max');
+    expect(cfg.agents.explore.model).toBe('omnicell-router/glm-5.3');
 
     // An unchanged save on the mixed state is a no-op (the manual row in the
     // diff guard must not count as a change).
@@ -354,13 +354,13 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(again.message).toContain('already up to date');
 
     // A slot ref of 'auto' means inherit-the-default: the override is swept,
-    // and no literal `onecast-router/auto` pin is ever written.
+    // and no literal `omnicell-router/auto` pin is ever written.
     const inherit = await adapter.refreshProfileBindings('p1', { scout: 'autoSlot' }, { autoSlot: 'auto' });
     expect(inherit.success).toBe(true);
     cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     expect(cfg.agents.scout?.model).toBeUndefined();
-    expect(JSON.stringify(cfg.agents)).not.toContain('"onecast-router/auto"');
-    expect(cfg.agents.explore.model).toBe('onecast-router/glm-5.3');
+    expect(JSON.stringify(cfg.agents)).not.toContain('"omnicell-router/auto"');
+    expect(cfg.agents.explore.model).toBe('omnicell-router/glm-5.3');
   });
 
   it('teardown restores the ORIGINAL model even after re-setup with a different main', async () => {
@@ -386,7 +386,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
       JSON.stringify(
         {
           agent: {
-            scout: { mode: 'subagent', model: 'onecast-router/lite' },
+            scout: { mode: 'subagent', model: 'omnicell-router/lite' },
             build: { mode: 'primary' },
           },
         },
@@ -416,7 +416,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
       isAvailable: () => true,
       getAgents: async () => [
         { id: 'build', name: 'Build', mode: 'primary', model: { providerID: 'alibaba', id: 'x' } }, // display name must NOT leak into the write key
-        { id: 'explore', name: 'explore', mode: 'subagent', model: { providerID: 'onecast-router', id: 'lite' } },
+        { id: 'explore', name: 'explore', mode: 'subagent', model: { providerID: 'omnicell-router', id: 'lite' } },
         { id: 'tech-writer', mode: 'subagent', model: { providerID: 'anthropic', id: 'claude-x' } },
         { id: 'compaction', mode: 'primary', hidden: true },
       ],
@@ -432,7 +432,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     const configPath = path.join(tmpDir, 'opencode.json');
     fs.writeFileSync(
       configPath,
-      JSON.stringify({ agents: { scout2: { mode: 'subagent', model: 'onecast-router/pro' } } }, null, 2)
+      JSON.stringify({ agents: { scout2: { mode: 'subagent', model: 'omnicell-router/pro' } } }, null, 2)
     );
     const stub = {
       isAvailable: () => true,
@@ -527,9 +527,9 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(status.extraModels).toEqual(['gpt-4o']);
 
     const updated = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    expect(updated.providers['onecast-router'].baseUrl).toBe('http://127.0.0.1:4000/v1');
-    expect(updated.providers['onecast-router'].api).toBe('openai-completions');
-    expect(updated.providers['onecast-router'].apiKey).toBe('sk-test');
+    expect(updated.providers['omnicell-router'].baseUrl).toBe('http://127.0.0.1:4000/v1');
+    expect(updated.providers['omnicell-router'].api).toBe('openai-completions');
+    expect(updated.providers['omnicell-router'].apiKey).toBe('sk-test');
     // The user's own providers must survive the hook.
     expect(updated.providers.ollama.baseUrl).toBe('http://localhost:11434/v1');
 
@@ -540,7 +540,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(status.hooked).toBe(false);
 
     const restored = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    expect(restored.providers['onecast-router']).toBeUndefined();
+    expect(restored.providers['omnicell-router']).toBeUndefined();
     expect(restored.providers.ollama.models[0].id).toBe('llama3.1:8b');
   });
 
@@ -560,13 +560,13 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     const status = await adapter.getStatus();
     expect(status.hooked).toBe(false);
     const restored = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    expect(restored.providers['onecast-router']).toBeUndefined();
+    expect(restored.providers['omnicell-router']).toBeUndefined();
     expect(restored.providers.ollama).toBeDefined();
   });
 
   it('Pi adapter should treat a LAN/manual hook entry as hooked (host-agnostic marker)', async () => {
     const configPath = path.join(tmpDir, 'lan.json');
-    fs.writeFileSync(configPath, JSON.stringify({ providers: { 'onecast-router': { baseUrl: 'http://192.168.1.20:4000/v1', api: 'openai-completions', apiKey: 'sk-lan', models: [{ id: 'auto' }] } } }, null, 2));
+    fs.writeFileSync(configPath, JSON.stringify({ providers: { 'omnicell-router': { baseUrl: 'http://192.168.1.20:4000/v1', api: 'openai-completions', apiKey: 'sk-lan', models: [{ id: 'auto' }] } } }, null, 2));
 
     const adapter = new PiClientAdapter();
     adapter.getConfigPath = () => configPath;
@@ -590,7 +590,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(res.success).toBe(true);
 
     const data = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    expect(data.providers['onecast-router']).toBeUndefined();
+    expect(data.providers['omnicell-router']).toBeUndefined();
     expect(data.providers.ollama).toBeDefined();
     expect(data.providers.mine).toBeDefined();
     expect(await adapter.getStatus()).toMatchObject({ hooked: false });
@@ -628,9 +628,9 @@ describe('CLI Client Setup & Teardown Adapters', () => {
 
     const hooked = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
     expect(hooked.theme).toBe('nvim-dark'); // unrelated settings keys survive
-    expect(hooked.subagents.agentOverrides.worker).toEqual({ thinking: 'high', model: 'onecast-router/pro' });
-    expect(hooked.subagents.agentOverrides.scout.model).toBe('onecast-router/lite');
-    expect(hooked.subagents.agentOverrides.oracle.model).toBe('onecast-router/ultra');
+    expect(hooked.subagents.agentOverrides.worker).toEqual({ thinking: 'high', model: 'omnicell-router/pro' });
+    expect(hooked.subagents.agentOverrides.scout.model).toBe('omnicell-router/lite');
+    expect(hooked.subagents.agentOverrides.oracle.model).toBe('omnicell-router/ultra');
     expect(hooked.subagents.agentOverrides.reviewer).toEqual({ model: 'anthropic/claude-x' }); // user-owned override untouched
 
     const status = await adapter.getStatus();
@@ -659,7 +659,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     await adapter.setup({ port: 4000 });
     await adapter.setup({ port: 8000 }); // re-setup: the backup now contains pinned overrides
 
-    expect(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).subagents.agentOverrides.oracle.model).toBe('onecast-router/ultra');
+    expect(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).subagents.agentOverrides.oracle.model).toBe('omnicell-router/ultra');
 
     const res = await adapter.teardown();
     expect(res.success).toBe(true);
@@ -699,13 +699,13 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(res.success).toBe(true);
 
     const hooked = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-    expect(hooked.subagents.agentOverrides.scout.model).toBe('onecast-router/auto'); // bare pick → qualified
-    expect(hooked.subagents.agentOverrides.oracle.model).toBe('onecast-router/glm-5.3');
-    expect(hooked.subagents.agentOverrides.worker.model).toBe('onecast-router/my-worker');
+    expect(hooked.subagents.agentOverrides.scout.model).toBe('omnicell-router/auto'); // bare pick → qualified
+    expect(hooked.subagents.agentOverrides.oracle.model).toBe('omnicell-router/glm-5.3');
+    expect(hooked.subagents.agentOverrides.worker.model).toBe('omnicell-router/my-worker');
     // Unchanged echo of a manual non-router pin is left byte-identical.
     expect(hooked.subagents.agentOverrides.reviewer.model).toBe('anthropic/claude-x');
     // Roles absent from the payload get the router preset (fill-only-absent).
-    expect(hooked.subagents.agentOverrides.researcher.model).toBe('onecast-router/lite');
+    expect(hooked.subagents.agentOverrides.researcher.model).toBe('omnicell-router/lite');
 
     const status = await adapter.getStatus();
     const byKey = Object.fromEntries(status.modelSlots.map(s => [s.key, s]));
@@ -719,11 +719,11 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     // alias picks normalize to the current tier table.
     await adapter.setup({ port: 4000, models: { main: 'auto' } });
     const after = JSON.parse(fs.readFileSync(settingsPath, 'utf8')).subagents.agentOverrides;
-    expect(after.oracle.model).toBe('onecast-router/glm-5.3');
-    expect(after.worker.model).toBe('onecast-router/my-worker');
+    expect(after.oracle.model).toBe('omnicell-router/glm-5.3');
+    expect(after.worker.model).toBe('omnicell-router/my-worker');
     expect(after.reviewer.model).toBe('anthropic/claude-x');
-    expect(after.researcher.model).toBe('onecast-router/lite');
-    expect(after.scout.model).toBe('onecast-router/lite'); // alias pick normalized
+    expect(after.researcher.model).toBe('omnicell-router/lite');
+    expect(after.scout.model).toBe('omnicell-router/lite'); // alias pick normalized
   });
 
   it('Pi adapter should discover the subagent roster dynamically (package builtins + user agents, launchers skipped)', async () => {
@@ -745,8 +745,8 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(res.success).toBe(true);
 
     const overrides = JSON.parse(fs.readFileSync(settingsPath, 'utf8')).subagents.agentOverrides;
-    expect(overrides.scout.model).toBe('onecast-router/lite'); // known role → preset tier
-    expect(overrides['custom-helper'].model).toBe('onecast-router/auto'); // discovered custom → auto cascade
+    expect(overrides.scout.model).toBe('omnicell-router/lite'); // known role → preset tier
+    expect(overrides['custom-helper'].model).toBe('omnicell-router/auto'); // discovered custom → auto cascade
     expect(overrides['claude-code']).toBeUndefined(); // external-CLI launcher skipped
     expect(overrides.planner).toBeUndefined(); // preset-only role absent from a discoverable roster
 
@@ -780,7 +780,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
 
     const data = parseYaml(fs.readFileSync(webFile, 'utf8'));
     expect(Array.isArray(data)).toBe(true);
-    const route = data[0].config.providers['onecast-router'];
+    const route = data[0].config.providers['omnicell-router'];
     expect(route.baseURL).toBe('http://127.0.0.1:4000/v1');
     expect(route.api).toBe('openai-completions');
     expect(route.headers.Authorization).toBe('Bearer sk-test');
@@ -832,18 +832,18 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(theme.config.preference).toBe('dark'); // untouched user entry
     const entry = desktop.find((e: any) => e.id === 'llm-pi-ai');
     expect(Object.keys(entry.config.providers)).toContain('my-gateway'); // user provider preserved
-    expect(entry.config.providers['onecast-router'].baseURL).toBe('http://127.0.0.1:4000/v1');
-    expect(entry.config.providers['onecast-router'].headers.Authorization).toBe('Bearer sk-real');
+    expect(entry.config.providers['omnicell-router'].baseURL).toBe('http://127.0.0.1:4000/v1');
+    expect(entry.config.providers['omnicell-router'].headers.Authorization).toBe('Bearer sk-real');
 
     const web = parseYaml(fs.readFileSync(webFile, 'utf8'));
-    expect(web[0].config.providers['onecast-router']).toBeDefined();
+    expect(web[0].config.providers['omnicell-router']).toBeDefined();
 
     const teardownRes = await adapter.teardown();
     expect(teardownRes.success).toBe(true);
     expect((await adapter.getStatus()).hooked).toBe(false);
     const desktopAfter = parseYaml(fs.readFileSync(desktopFile, 'utf8'));
     const entryAfter = desktopAfter.find((e: any) => e.id === 'llm-pi-ai');
-    expect(entryAfter.config.providers['onecast-router']).toBeUndefined();
+    expect(entryAfter.config.providers['omnicell-router']).toBeUndefined();
     expect(entryAfter.config.providers['my-gateway']).toBeDefined();
     expect(desktopAfter.find((e: any) => e.id === 'ui-theme')).toBeDefined();
   });
@@ -861,7 +861,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(res.success).toBe(true);
     expect((await adapter.getStatus()).hooked).toBe(false);
     const data = parseYaml(fs.readFileSync(webFile, 'utf8'));
-    expect(data.find((e: any) => e?.config?.providers?.['onecast-router'])).toBeUndefined();
+    expect(data.find((e: any) => e?.config?.providers?.['omnicell-router'])).toBeUndefined();
   });
 
   it('Dsh adapter should treat a LAN/name-selector manual hook entry as hooked (host-agnostic marker)', async () => {
@@ -872,7 +872,7 @@ describe('CLI Client Setup & Teardown Adapters', () => {
       `- name: '@deepseek-ai/dsh-llm-pi-ai'`,
       '  config:',
       '    providers:',
-      '      onecast-router:',
+      '      omnicell-router:',
       '        api: openai-completions',
       '        baseURL: http://192.168.1.20:4000/v1',
       '        models:',

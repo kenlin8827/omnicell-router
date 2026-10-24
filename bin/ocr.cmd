@@ -7,11 +7,11 @@ if not exist "%DIST_JS%" (
 )
 
 if not exist "%CLI_TS%" (
-  if exist "%LOCALAPPDATA%\onecast-router\backend\src\cli\index.ts" (
-    set "CLI_TS=%LOCALAPPDATA%\onecast-router\backend\src\cli\index.ts"
-    set "DIST_JS=%LOCALAPPDATA%\onecast-router\backend\dist\cli\index.js"
+  if exist "%LOCALAPPDATA%\omnicell-router\backend\src\cli\index.ts" (
+    set "CLI_TS=%LOCALAPPDATA%\omnicell-router\backend\src\cli\index.ts"
+    set "DIST_JS=%LOCALAPPDATA%\omnicell-router\backend\dist\cli\index.js"
     if not exist "!DIST_JS!" (
-      set "DIST_JS=%LOCALAPPDATA%\onecast-router\dist\cli\index.js"
+      set "DIST_JS=%LOCALAPPDATA%\omnicell-router\dist\cli\index.js"
     )
   )
 )

@@ -47,16 +47,16 @@ describe('Pi client adapter — profile links', () => {
     // The hook lands in models.json; the linked ref is exposed so pi can
     // resolve the override against the provider's declared ids.
     const cfg = readJson(configPath);
-    expect(cfg.providers['onecast-router'].baseUrl).toBe('http://127.0.0.1:4000/v1');
-    expect(cfg.providers['onecast-router'].models.some((m: any) => m.id === 'lite')).toBe(true);
+    expect(cfg.providers['omnicell-router'].baseUrl).toBe('http://127.0.0.1:4000/v1');
+    expect(cfg.providers['omnicell-router'].models.some((m: any) => m.id === 'lite')).toBe(true);
 
     // settings.json: the linked role is qualified, the manual foreign pin is
     // verbatim, and a preset role (researcher — discoverable roster is empty in
     // the sandbox, so the preset table applies) got its tier default.
     const settings = readJson(path.join(tmpDir, 'settings.json'));
-    expect(settings.subagents.agentOverrides.scout.model).toBe('onecast-router/lite');
+    expect(settings.subagents.agentOverrides.scout.model).toBe('omnicell-router/lite');
     expect(settings.subagents.agentOverrides.worker.model).toBe('anthropic/claude-x');
-    expect(settings.subagents.agentOverrides.researcher.model).toBe('onecast-router/lite');
+    expect(settings.subagents.agentOverrides.researcher.model).toBe('omnicell-router/lite');
 
     // Sidecar echo (never settings.json — a running pi wipes foreign keys there).
     const meta = readJson(`${configPath}.ocr-meta.json`);
@@ -79,12 +79,12 @@ describe('Pi client adapter — profile links', () => {
     const res = await adapter.refreshProfileBindings('p1', { scout: 'flash' }, { flash: 'qwen-max' });
     expect(res.success).toBe(true);
     const settings = readJson(path.join(tmpDir, 'settings.json'));
-    expect(settings.subagents.agentOverrides.scout.model).toBe('onecast-router/qwen-max');
+    expect(settings.subagents.agentOverrides.scout.model).toBe('omnicell-router/qwen-max');
     // Manual foreign pin untouched by the write-through.
     expect(settings.subagents.agentOverrides.worker.model).toBe('anthropic/claude-x');
     // The new ref joined the provider models list.
     const cfg = readJson(configPath);
-    expect(cfg.providers['onecast-router'].models.some((m: any) => m.id === 'qwen-max')).toBe(true);
+    expect(cfg.providers['omnicell-router'].models.some((m: any) => m.id === 'qwen-max')).toBe(true);
 
     // No-diff save → explicit no-op (no settings rewrite).
     const again = await adapter.refreshProfileBindings('p1', { scout: 'flash' }, { flash: 'qwen-max' });
@@ -103,9 +103,9 @@ describe('Pi client adapter — profile links', () => {
     expect(res.success).toBe(true);
     const settings = readJson(path.join(tmpDir, 'settings.json'));
     // The role had only the model field — the whole entry is pruned; no
-    // literal onecast-router/auto pin is ever written.
+    // literal omnicell-router/auto pin is ever written.
     expect(settings.subagents.agentOverrides.scout).toBeUndefined();
-    expect(JSON.stringify(settings)).not.toContain('onecast-router/auto"');
+    expect(JSON.stringify(settings)).not.toContain('omnicell-router/auto"');
   });
 
   it("setup with profile id '' un-links: tagged roles fall back to presets, manual pins survive, echo clears", async () => {
@@ -125,7 +125,7 @@ describe('Pi client adapter — profile links', () => {
 
     const settings = readJson(path.join(tmpDir, 'settings.json'));
     // The linked role's override was stripped and the tier preset refilled it.
-    expect(settings.subagents.agentOverrides.scout.model).toBe('onecast-router/lite');
+    expect(settings.subagents.agentOverrides.scout.model).toBe('omnicell-router/lite');
     // The manual foreign pin survived the un-link.
     expect(settings.subagents.agentOverrides.worker.model).toBe('anthropic/claude-x');
 
@@ -182,7 +182,7 @@ describe('Pi client adapter — model metadata', () => {
 
   const readJson = (p: string): any => JSON.parse(fs.readFileSync(p, 'utf8'));
   const entryOf = (cfg: any, id: string): any =>
-    cfg.providers['onecast-router'].models.find((m: any) => m.id === id);
+    cfg.providers['omnicell-router'].models.find((m: any) => m.id === id);
   /** One-provider catalog record wrapping a single model def. */
   const rec = (id: string, o: Record<string, any>): CatalogProviderRecord => ({
     id, custom: false, connected: true, sources: [], models: [o as any],
@@ -372,7 +372,7 @@ describe('Pi client adapter — model metadata', () => {
     // Hand-edited existing record must survive the write-through untouched.
     const handEdited = { id: 'legacy', contextWindow: 999, maxTokens: 123 };
     const cfg0 = readJson(configPath);
-    cfg0.providers['onecast-router'].models.push(handEdited);
+    cfg0.providers['omnicell-router'].models.push(handEdited);
     fs.writeFileSync(configPath, JSON.stringify(cfg0));
 
     const res = await adapter.refreshProfileBindings('p1', { scout: 'slot' }, { slot: 'prov/thinker' });
@@ -383,6 +383,6 @@ describe('Pi client adapter — model metadata', () => {
     expect(added.thinkingLevelMap.high).toBe('high');
     expect(added.thinkingLevelMap.xhigh).toBeNull();
     // existing entries — including the hand-edited one — untouched
-    expect(cfg.providers['onecast-router'].models.find((m: any) => m.id === 'legacy')).toEqual(handEdited);
+    expect(cfg.providers['omnicell-router'].models.find((m: any) => m.id === 'legacy')).toEqual(handEdited);
   });
 });

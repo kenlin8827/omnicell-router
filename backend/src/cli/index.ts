@@ -39,7 +39,7 @@ function printHelp(): void {
   printBanner();
   console.log(`${C.bold}USAGE:${C.reset}
   ocr <command> [options]
-  onecast-router <command> [options]
+  omnicell-router <command> [options]
 
 ${C.bold}LIFECYCLE COMMANDS:${C.reset}
   ${C.green}ocr start${C.reset}               Start OCR background gateway daemon (port: config.yaml port, fallback 4000)
@@ -66,14 +66,14 @@ ${C.bold}CLIENT INTEGRATIONS (SETUP & TEARDOWN):${C.reset}
   ${C.yellow}ocr teardown pi${C.reset}         Unhook Pi and remove the OCR provider entry
   ${C.yellow}ocr teardown dsh${C.reset}        Unhook DeepSeek Harness and remove the OCR provider route
 
-${C.bold}ENVIRONMENTS (book-sets under ~/.onecast-router/envs/):${C.reset}
+${C.bold}ENVIRONMENTS (book-sets under ~/.omnicell-router/envs/):${C.reset}
   ${C.cyan}ocr env list${C.reset}                List environments (current = next boot picks)
   ${C.cyan}ocr env use <name>${C.reset}       Pin the active environment (or ${C.cyan}default${C.reset}); takes effect on restart
   ${C.cyan}ocr env create <name>${C.reset}     New environment [--sandbox]
   ${C.cyan}ocr env reset <name>${C.reset}      Reset a sandbox env (wipe data/traces/capture, keep config)
 
 ${C.bold}SYSTEM COMMANDS:${C.reset}
-  ocr install-shims       Register global \`ocr\` and \`onecast-router\` commands to PATH
+  ocr install-shims       Register global \`ocr\` and \`omnicell-router\` commands to PATH
   ocr --version, -v       Show current OCR version
   ocr --help, -h          Display this help manual
 `);
@@ -217,7 +217,7 @@ async function main(): Promise<void> {
   }
 
   if (args.includes('--version') || args.includes('-v') || action === 'version') {
-    console.log(`onecast-router (ocr) v${APP_VERSION}`);
+    console.log(`omnicell-router (ocr) v${APP_VERSION}`);
     return;
   }
 
@@ -343,7 +343,7 @@ async function main(): Promise<void> {
       const res = registerGlobalShims();
       if (res.success) {
         console.log(`${C.green}✔ ${res.message}${C.reset}`);
-        console.log(`  Commands \`ocr\` and \`onecast-router\` are now globally registered.`);
+        console.log(`  Commands \`ocr\` and \`omnicell-router\` are now globally registered.`);
       } else {
         console.error(`${C.red}✗ ${res.message}${C.reset}`);
         process.exit(1);

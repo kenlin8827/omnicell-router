@@ -36,7 +36,7 @@
 OmniCellRouter 采用 Bun Workspaces Monorepo 单体仓库架构，包含 Fastify 后端与 Vite+React 前端：
 
 ```
-onecast-router/
+omnicell-router/
 ├── backend/                             # 核心网关守护进程 (Fastify + Pino)
 │   ├── src/
 │   │   ├── auth/                        # 管理 API Key、Web 会话、模型访问策略

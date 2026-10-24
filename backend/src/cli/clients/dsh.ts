@@ -24,7 +24,7 @@ import { ClientHookStatus, VIRTUAL_AUTO_IDS } from '../types.js';
  * setup hooks every profile directory that exists; none exist → create the
  * canonical `web`. Status is hooked when ANY profile carries the route.
  */
-const DSH_PROVIDER_KEY = 'onecast-router';
+const DSH_PROVIDER_KEY = 'omnicell-router';
 
 /** Patch entry selectors accepted when locating the pi-ai adapter section. */
 const PIAI_SELECTORS = new Set(['llm-pi-ai', '@deepseek-ai/dsh-llm-pi-ai']);

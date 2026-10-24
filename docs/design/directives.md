@@ -24,7 +24,7 @@ Operator/user reference for the explicit escalation surface defined by
   (`directive_unknown`). Matching is case-insensitive (the ledger reports lower-case).
 - **Why the prefix is configurable**: `ocr` is a common industry acronym, so an OCR-domain prompt
   can legitimately contain `@ocr-pipeline` / `@ocr-v2` — and with a fixed namespace that text would
-  be silently deleted. Relocate it (`directives.prefix: '@onecast-'`) and `@ocr-…` becomes ordinary
+  be silently deleted. Relocate it (`directives.prefix: '@omnicell-'`) and `@ocr-…` becomes ordinary
   prose again. Allowed shape: `@` + lower-case slug + trailing separator (`-`, `_`, `.`, `:`),
   3–32 chars; invalid values fall back to the default at load. A word-character left boundary
   keeps prose that merely contains the substring (`alice@ocr-corp.com`) out of the namespace.

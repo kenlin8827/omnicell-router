@@ -43,7 +43,7 @@ let catalogModels: CatalogModel[] = [];
 const savedPatches: unknown[] = [];
 
 mock.module('../src/opencode/user-config.js', () => ({
-  ROUTER_PROVIDER_ID: 'onecast-router',
+  ROUTER_PROVIDER_ID: 'omnicell-router',
   getProviderNodeById: () => node,
   // The defs node is the model universe: every fixture model is maintained.
   getProviderModelDefs: () => Object.fromEntries(catalogModels.map((m) => [m.id, {}])),

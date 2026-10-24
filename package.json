@@ -1,5 +1,5 @@
 {
-  "name": "onecast-router",
+  "name": "omnicell-router",
   "version": "0.0.1",
   "description": "High-performance OmniCellRouter (OCR) & Cascading Gateway",
   "publishConfig": {
@@ -27,8 +27,8 @@
     "ocr": "bun --no-env-file backend/src/cli/index.ts",
     "setup": "bun install && bun run build",
     "dev": "bun --no-env-file scripts/dev.ts",
-    "dev:backend": "bun --filter @onecast-router/backend dev",
-    "dev:frontend": "bun --filter @onecast-router/frontend dev",
+    "dev:backend": "bun --filter @omnicell-router/backend dev",
+    "dev:frontend": "bun --filter @omnicell-router/frontend dev",
     "build": "tsc -p backend && vite build frontend",
     "build:backend": "tsc -p backend",
     "build:frontend": "vite build frontend",
@@ -57,12 +57,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/kenlin8827/onecast-router.git"
+    "url": "git+https://github.com/kenlin8827/omnicell-router.git"
   },
   "bugs": {
-    "url": "https://github.com/kenlin8827/onecast-router/issues"
+    "url": "https://github.com/kenlin8827/omnicell-router/issues"
   },
-  "homepage": "https://github.com/kenlin8827/onecast-router#readme",
+  "homepage": "https://github.com/kenlin8827/omnicell-router#readme",
   "dependencies": {
     "@fastify/cors": "^11.0.0",
     "@zip.js/zip.js": "^2.23.0",
@@ -81,6 +81,6 @@
   },
   "bin": {
     "ocr": "./bin/ocr.js",
-    "onecast-router": "./bin/ocr.js"
+    "omnicell-router": "./bin/ocr.js"
   }
 }

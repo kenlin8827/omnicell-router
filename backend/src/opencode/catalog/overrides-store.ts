@@ -5,7 +5,7 @@ import { getOcrStorePath } from './ocr-store.js';
 import type { ReasoningEffort } from '../../types/router.js';
 
 /**
- * Aggregate override store (~/.onecast-router/catalog/overrides.json).
+ * Aggregate override store (~/.omnicell-router/catalog/overrides.json).
  *
  * Field-level overrides applied LAST on the aggregated catalog (ocr.json) —
  * this is the landing spot for edits made in the OCR Catalog viewer, which

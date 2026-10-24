@@ -4,13 +4,13 @@ import path from 'node:path';
 import type { CatalogSourceState } from './types.js';
 
 /**
- * Per-source disk cache under ~/.cache/onecast-router/ (XDG_CACHE_HOME aware).
+ * Per-source disk cache under ~/.cache/omnicell-router/ (XDG_CACHE_HOME aware).
  * Reads return even-stale payloads so callers can degrade gracefully offline.
  */
 
 function getCacheDir(): string {
   const xdgCache = process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache');
-  return path.join(xdgCache, 'onecast-router');
+  return path.join(xdgCache, 'omnicell-router');
 }
 
 export function readCacheFile<T>(name: string): CatalogSourceState<T> | null {

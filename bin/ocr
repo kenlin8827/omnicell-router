@@ -8,12 +8,12 @@ if [ ! -f "$DIST_JS" ]; then
 fi
 
 if [ ! -f "$CLI_TS" ]; then
-  FALLBACK_CLI="$HOME/.local/share/onecast-router/backend/src/cli/index.ts"
+  FALLBACK_CLI="$HOME/.local/share/omnicell-router/backend/src/cli/index.ts"
   if [ -f "$FALLBACK_CLI" ]; then
     CLI_TS="$FALLBACK_CLI"
-    DIST_JS="$HOME/.local/share/onecast-router/backend/dist/cli/index.js"
+    DIST_JS="$HOME/.local/share/omnicell-router/backend/dist/cli/index.js"
     if [ ! -f "$DIST_JS" ]; then
-      DIST_JS="$HOME/.local/share/onecast-router/dist/cli/index.js"
+      DIST_JS="$HOME/.local/share/omnicell-router/dist/cli/index.js"
     fi
   fi
 fi

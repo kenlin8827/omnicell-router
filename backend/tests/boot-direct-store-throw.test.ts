@@ -75,7 +75,7 @@ mock.module('../src/opencode/credentials/index.js', () => ({
 }));
 
 mock.module('../src/opencode/user-config.js', () => ({
-  ROUTER_PROVIDER_ID: 'onecast-router',
+  ROUTER_PROVIDER_ID: 'omnicell-router',
   ...actualUserConfig,
   getProviderNodeById: (id: string) => ({ options: { baseURL: `https://${id}.test/v1` } }),
   getProviderModelDefs: () => ({ m1: {} }),

@@ -18,7 +18,7 @@ import { ChatCompletionResponse } from '../src/types/openai.js';
 // Isolation: config resolves from OCR_HOME (envs/<env>/config.yaml) and
 // request-time code re-reads the disk config per call, so a sandbox switch is
 // an OCR_ENV swap plus a resolution-cache reset. The operator's real
-// ~/.onecast-router config — api keys, per-key policies, webAuth — must never
+// ~/.omnicell-router config — api keys, per-key policies, webAuth — must never
 // leak into these tests.
 // ---------------------------------------------------------------------------
 const originalCwd = process.cwd();
