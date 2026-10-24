@@ -318,7 +318,12 @@ export const ModelsPage: React.FC = () => {
 
         {/* ---- Table ---- */}
         <div style={{ overflow: 'auto', flex: 1, minHeight: 0 }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '12px' }}>
+          {/* minWidth: every sibling column is whiteSpace:nowrap, so without a
+              floor the auto layout dumps ALL shrinkage on the model column and
+              its break-all name wraps one character per line on narrow screens.
+              The wrapper already has overflow:auto — overflow sideways instead
+              of crushing the column. */}
+          <table style={{ width: '100%', minWidth: 820, borderCollapse: 'collapse', textAlign: 'left', fontSize: '12px' }}>
             <thead>
               {/* Integer, multiple-of-4 row heights: at Windows 125%/150%
                   scaling fractional row boundaries make some 1px hairlines
