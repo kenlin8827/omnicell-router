@@ -137,6 +137,15 @@ jobs:
           pattern: desktop-*
           merge-multiple: true
 
+      # Multi-path uploads keep their subdir structure (upload-artifact uses the
+      # common ancestor as root): the Linux artifact lands in appimage/ and deb/
+      # subdirs, which the softprops flat globs below never match. Flatten first.
+      - name: Flatten downloaded artifacts
+        run: |
+          find release-assets -mindepth 2 -type f -exec mv -f {} release-assets/ \;
+          find release-assets -mindepth 1 -type d -empty -delete
+          ls -la release-assets/
+
       - name: Publish GitHub Release with Desktop & CLI Distributions
         uses: softprops/action-gh-release@v2
         with:
