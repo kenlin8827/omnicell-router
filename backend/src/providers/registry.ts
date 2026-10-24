@@ -58,6 +58,10 @@ export class ProviderRegistry {
   private rrCursor = new Map<TierLevel, number>();
   private combos = new Map<string, ComboConfig>();
   private comboRrCursor = new Map<string, number>();
+  /** Fingerprint of the combo section last applied by applyCombos — lets the
+   *  lazy hand-edit safety net skip no-op replays instead of resetting
+   *  round-robin cursors and re-logging skip warnings every TTL window. */
+  private combosFingerprint = '';
   /** Raw configs for every configured provider (all types) — lets the
    *  /v1/systemone route reach provider baseUrl/apiKey (this map is the
    *  credential/config source for chat providers registered outside the
@@ -453,14 +457,22 @@ export class ProviderRegistry {
    * (providers/credentials/wire) stays a boot snapshot.
    */
 
-  /** Hot-path guard: replay member lists + refresh policies at most every 2 seconds. */
+  /** Hot-path guard: replay member lists + the combo map + policies at most every 2 seconds. */
   private maybeRefreshTierMatch(): void {
     if (!this.autoRefreshTierMatch) return;
     const now = Date.now();
     if (now - this.lastMatchRefreshAt < 2000) return;
     this.lastMatchRefreshAt = now;
     try {
-      const tiers = loadConfig().tiers || {};
+      const fresh = loadConfig();
+      // Combos share the hand-edited-YAML safety net: a combo write that
+      // bypasses the console save paths (hand edit, direct saveConfig
+      // callers) must not stay invisible to routing until the next save
+      // event. Applied BEFORE the tier replay — combo-ref expansion reads
+      // the combo map. Mock mode excepted: hermetic registries never couple
+      // to disk. applyCombos self-skips on an unchanged section.
+      if (!this.mockMode) this.applyCombos(fresh.combos);
+      const tiers = fresh.tiers || {};
       this.tierPolicies = tiers; // the global denylist lives here too
       this.reclassifyTiers(this.expandedMemberRules(tiers).tiers);
     } catch {
@@ -500,8 +512,8 @@ export class ProviderRegistry {
   /**
    * COMMIT path — the only one that rewrites live pool membership. Called on
    * every config-save event (console routes) so edits take effect immediately;
-   * the lazy maybeRefreshTierMatch replay remains only as the out-of-band
-   * (hand-edited YAML) safety net.
+   * the lazy maybeRefreshTierMatch replay (tiers AND combos) remains only as
+   * the out-of-band (hand-edited YAML) safety net.
    */
   public applyTierConfigNow(): void {
     if (this.mockMode) return;
@@ -791,8 +803,18 @@ export class ProviderRegistry {
 
   // ─── Custom model combos ────────────────────────────────────────────────
 
-  /** (Re)register combo definitions — used at boot and for hot-apply on console config saves. */
+  /**
+   * (Re)register combo definitions — used at boot, for hot-apply on console
+   * config saves, and by the lazy maybeRefreshTierMatch safety net. A section
+   * byte-identical to the last applied one is a no-op (keeps round-robin
+   * cursors, avoids repeat skip warnings): skip outcomes depend only on the
+   * section plus the monotonically grown model map, and every read path
+   * re-checks model shadowing live, so skipping loses nothing.
+   */
   public applyCombos(combos?: ComboConfig[]): void {
+    const fingerprint = JSON.stringify(combos ?? null);
+    if (fingerprint === this.combosFingerprint) return;
+    this.combosFingerprint = fingerprint;
     this.combos.clear();
     this.comboRrCursor.clear();
     for (const combo of combos || []) {

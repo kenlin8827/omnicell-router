@@ -1794,7 +1794,7 @@ export const zhCN: TranslationDict = {
     dragSort: '拖拽排序',
     unregisteredWarn: '未注册的模型 id（将不参与执行）',
     inactiveBadge: '未生效',
-    inactiveWarn: '该组合被网关忽略（保留名或与已注册模型 id 冲突），请修改 id 后重新保存',
+    inactiveWarn: '该组合被网关忽略（保留名或与已注册模型 id 冲突）。若 id 并无冲突，一般是变更未应用——直接重新保存即可恢复，仍无效再修改 id',
     disabledBadge: '已禁用',
     disabledWarn: '已禁用：不再出现在模型目录（不可选），客户端以该组合标识调用会被拒绝（不可用）；点击电源按钮可重新启用',
     disableBtn: '禁用',
@@ -1813,7 +1813,7 @@ export const zhCN: TranslationDict = {
     testOk: '组合 {combo}：由 {model} 应答，耗时 {n}',
     testOkFailover: '（failover 链：{path}）',
     testFailed: '组合 {combo}：{error}',
-    testInactive: '组合处于非激活状态——请先修正其 id 再测试',
+    testInactive: '组合处于非激活状态——先重新保存一次；仍无效请修正其 id 后再测试',
   },
   modelProfiles: {
     title: '模型方案',

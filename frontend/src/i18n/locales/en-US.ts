@@ -1806,7 +1806,7 @@ export const enUS: TranslationDict = {
     dragSort: 'Drag to reorder',
     unregisteredWarn: 'Unregistered model id (will be skipped)',
     inactiveBadge: 'Inactive',
-    inactiveWarn: 'This combo is ignored by the gateway (reserved id or collides with a registered model id) — rename it and save again',
+    inactiveWarn: 'This combo is ignored by the gateway (reserved id or collides with a registered model id). If the id looks fine, the change likely never applied — just save again; rename only if that fails',
     disabledBadge: 'Disabled',
     disabledWarn: 'Disabled — hidden from model catalogs (not selectable) and calls naming this combo are rejected (not usable). Press the power button to re-enable.',
     disableBtn: 'Disable',
@@ -1825,7 +1825,7 @@ export const enUS: TranslationDict = {
     testOk: 'Combo {combo}: served by {model} in {n}',
     testOkFailover: ' (after failover: {path})',
     testFailed: 'Combo {combo}: {error}',
-    testInactive: 'Combo is inactive — fix its id before testing',
+    testInactive: 'Combo is inactive — save it again first; fix its id only if that fails',
   },
   modelProfiles: {
     title: 'Model Profiles',
