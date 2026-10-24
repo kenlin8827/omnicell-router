@@ -1,6 +1,6 @@
 {
   "name": "@omnicell-router/backend",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "High-performance OmniCellRouter (OCR) Gateway & CLI Core",
   "type": "module",
   "main": "dist/index.js",

@@ -168,10 +168,17 @@ The workflow defined in [.github/workflows/desktop-build.yml](file:///d:/OpenHub
 ### 3.3 Desktop Release Steps
 
 #### Step 1: Synchronize Versions
-Ensure both root `package.json` and `desktop/src-tauri/tauri.conf.json` have matching version strings:
+The root `package.json` is the single source of truth — edit the version there only. The remaining copies (workspace subpackages, `desktop/src-tauri/tauri.conf.json`, `Cargo.toml`, `Cargo.lock`) are mirrored automatically by the `npm version` lifecycle hook via [scripts/version-sync.ts](file:///d:/OpenHub/omnicell-router/scripts/version-sync.ts):
 
-- `package.json`: `"version": "0.1.0"`
-- `desktop/src-tauri/tauri.conf.json`: `"version": "0.1.0"`
+```bash
+npm version minor        # 0.1.0 -> 0.2.0, hook syncs every version copy
+```
+
+Drift is guarded in CI (`bun scripts/version-sync.ts --check` in `desktop-build.yml`); verify locally with:
+
+```bash
+bun scripts/version-sync.ts --check
+```
 
 #### Step 2: Commit and Create Tag
 Commit any pending changes and tag the release:
@@ -223,7 +230,7 @@ Follow this checklist for a unified public release:
 
 - [ ] All test suites pass: `bun run test` (121 suites, 1600+ test cases).
 - [ ] TypeScript type checks pass: `bun run typecheck`.
-- [ ] Update version in `package.json` and `desktop/src-tauri/tauri.conf.json`.
+- [ ] Bump the version only in the root `package.json` via `npm version <patch|minor|major>` (the hook syncs every copy; `bun scripts/version-sync.ts --check` must pass).
 - [ ] Commit changes: `git commit -m "chore: release vX.Y.Z"`.
 - [ ] Push git tag: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 - [ ] Verify GitHub Actions release workflow finishes and desktop assets are attached.

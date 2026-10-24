@@ -164,9 +164,17 @@ OCR 桌面端基于 Tauri v2 框架开发，网关后端通过 Bun 单文件交�
 ### 3.3 桌面版发布操作步骤
 
 #### 步骤 1：确认并同步版本号
-确保以下两个配置文件中的版本号保持同步一致：
-- [package.json](file:///d:/OpenHub/omnicell-router/package.json) 中的 `"version": "0.1.0"`
-- [desktop/src-tauri/tauri.conf.json](file:///d:/OpenHub/omnicell-router/desktop/src-tauri/tauri.conf.json) 中的 `"version": "0.1.0"`
+版本号以根 [package.json](file:///d:/OpenHub/omnicell-router/package.json) 为唯一事实源，人工只改它；其余副本（子包 package.json、`desktop/src-tauri/tauri.conf.json`、`Cargo.toml`、`Cargo.lock`）由 `npm version` 生命周期钩子经 [scripts/version-sync.ts](file:///d:/OpenHub/omnicell-router/scripts/version-sync.ts) 自动同步：
+
+```bash
+npm version minor        # 0.1.0 -> 0.2.0，钩子自动同步全部版本副本
+```
+
+漂移由 CI 守门（`desktop-build.yml` 的 `bun scripts/version-sync.ts --check`），也可本地自查：
+
+```bash
+bun scripts/version-sync.ts --check
+```
 
 #### 步骤 2：提交代码并打 Tag
 ```bash
@@ -214,7 +222,7 @@ bun run build
 
 - [ ] 本地测试套件全绿：`bun run test`（121 个测试套件，1600+ 用例通过）。
 - [ ] TypeScript 类型检查无误：`bun run typecheck`。
-- [ ] 同步更新 `package.json` 与 `desktop/src-tauri/tauri.conf.json` 的版本号。
+- [ ] 版本号只改根 `package.json` 并运行 `npm version <patch|minor|major>`（钩子自动同步其余副本；`bun scripts/version-sync.ts --check` 应全绿）。
 - [ ] 提交代码变更：`git commit -m "chore: release vX.Y.Z"`。
 - [ ] 推送 Git Tag 触发桌面版发布：`git tag vX.Y.Z && git push origin vX.Y.Z`。
 - [ ] 检查 GitHub Actions 流水线是否成功发布 Release 并挂载了所有平台安装包。

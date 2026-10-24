@@ -53,6 +53,10 @@ divergent after the next edit.
   in `backend/src/utils/event-ring.ts` (capacity, coalesce window, message bound, id scheme,
   upsert-then-trim order) — never re-declare `MAX_EVENTS`-style constants per module.
 - Shared wire/payload helpers (e.g. `DATA_URL_RE`) live in `backend/src/providers/wire.ts`.
+- The release version is declared once, in the root `package.json`; `scripts/version-sync.ts`
+  (wired as the `npm version` lifecycle hook) mirrors it into the workspace subpackages,
+  `tauri.conf.json`, `Cargo.toml` and the self-crate entry in `Cargo.lock`. Never hand-edit
+  those copies; CI drift-guards with `bun scripts/version-sync.ts --check`.
 - Exception: defaults baked into prose (`YAML_FIELD_COMMENTS`, i18n strings) are sanctioned
   copy — changing a constant means sweeping those strings in the same pass (cleanup contract
   below).

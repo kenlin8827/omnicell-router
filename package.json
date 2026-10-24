@@ -1,6 +1,6 @@
 {
   "name": "omnicell-router",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "High-performance OmniCellRouter (OCR) & Cascading Gateway",
   "publishConfig": {
     "access": "public"
@@ -25,6 +25,7 @@
   ],
   "scripts": {
     "ocr": "bun --no-env-file backend/src/cli/index.ts",
+    "version": "bun --no-env-file scripts/version-sync.ts",
     "setup": "bun install && bun run build",
     "dev": "bun --no-env-file scripts/dev.ts",
     "dev:backend": "bun --filter @omnicell-router/backend dev",

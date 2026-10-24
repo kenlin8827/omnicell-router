@@ -72,6 +72,9 @@ jobs:
           bun install
           cd desktop && bun install
 
+      - name: Guard — version fields match root package.json
+        run: bun scripts/version-sync.ts --check
+
       - name: Build backend + frontend dist
         run: bun run build
 
