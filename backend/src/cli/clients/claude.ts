@@ -43,7 +43,7 @@ export class ClaudeClientAdapter implements ClientAdapter {
         data.baseUrl?.includes(`127.0.0.1:${gwPort}`)
       ) {
         hooked = true;
-        details = `Routed to OneCastRouter gateway (:${gwPort})`;
+        details = `Routed to OmniCellRouter gateway (:${gwPort})`;
       }
     } else {
       details = 'No Claude configuration file detected';

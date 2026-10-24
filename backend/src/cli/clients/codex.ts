@@ -42,7 +42,7 @@ export class CodexClientAdapter implements ClientAdapter {
         data.api_base?.includes(`127.0.0.1:${gwPort}`)
       ) {
         hooked = true;
-        details = `Routed to OneCastRouter gateway (:${gwPort}/v1)`;
+        details = `Routed to OmniCellRouter gateway (:${gwPort}/v1)`;
       }
     } else {
       details = 'No Codex/OpenAI config file detected';

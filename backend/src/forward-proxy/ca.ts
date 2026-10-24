@@ -15,7 +15,7 @@ import forge from 'node-forge';
  * memory (persist nothing per-host).
  */
 
-const CA_CN = 'OneCastRouter Forward Proxy CA';
+const CA_CN = 'OmniCellRouter Forward Proxy CA';
 const CA_DAYS = 3650;
 const LEAF_DAYS = 30;
 

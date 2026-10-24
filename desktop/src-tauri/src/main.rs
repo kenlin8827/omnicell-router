@@ -2,7 +2,7 @@
 // itself is a GUI binary; keep the console in dev for logs).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-// OneCastRouter desktop shell (Tauri v2).
+// OmniCellRouter desktop shell (Tauri v2).
 //
 // Lifecycle: (optionally) spawn the gateway sidecar next to this binary,
 // wait for its /health, then open a window on the console UI the gateway
@@ -230,7 +230,7 @@ fn build_tray(app: &tauri::App, close_to_tray: bool) -> tauri::Result<()> {
                 .expect("bundle provides a window icon")
                 .clone(),
         )
-        .tooltip("OneCastRouter")
+        .tooltip("OmniCellRouter")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
@@ -447,7 +447,7 @@ fn boot(app: &tauri::App) -> Result<(), String> {
     // NOTE: not WebviewWindowBuilder::center() — that centers on the WORK
     // AREA (excluding the taskbar); we center on the full monitor below.
     WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-        .title("OneCastRouter")
+        .title("OmniCellRouter")
         .inner_size(default_w, default_h)
         .build()
         .map_err(|e| format!("failed to open the app window:\n{e}"))?;
@@ -585,10 +585,10 @@ fn main() {
                 shell_log(&log_home, &format!("boot failed: {msg}"));
                 app.dialog()
                     .message(format!(
-                        "OneCastRouter failed to start:\n\n{msg}\n\nShell log: {}",
+                        "OmniCellRouter failed to start:\n\n{msg}\n\nShell log: {}",
                         log_home.join("desktop.log").display()
                     ))
-                    .title("OneCastRouter")
+                    .title("OmniCellRouter")
                     .blocking_show();
                 if let Some(home) = home {
                     kill_gateway_tree(&home);

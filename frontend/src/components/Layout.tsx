@@ -285,7 +285,7 @@ export const Layout: React.FC = () => {
   };
 
   const currentRouteMeta = ROUTE_META_KEYS[location.pathname] || {
-    groupKey: 'OneCastRouter',
+    groupKey: 'OmniCellRouter',
     titleKey: 'Dashboard',
   };
 
@@ -363,7 +363,7 @@ export const Layout: React.FC = () => {
               forcing a horizontal scrollbar on the sidebar (the overflow-y:
               hidden parent turns a visible x-axis into auto). */}
           <div style={{ minWidth: 0, overflow: 'hidden' }}>
-            <div style={{ fontSize: '15px', fontWeight: 800, letterSpacing: '-0.02em', whiteSpace: 'nowrap' }}>OneCastRouter</div>
+            <div style={{ fontSize: '15px', fontWeight: 800, letterSpacing: '-0.02em', whiteSpace: 'nowrap' }}>OmniCellRouter</div>
             {/* Tagline + static runtime version. The version used to trail at
                 the far end of the sidebar footer, where long env names pushed
                 it off-screen; it belongs with the product identity instead.
@@ -512,7 +512,7 @@ export const Layout: React.FC = () => {
             The static runtime version used to trail here at the far right
             but moved up to the brand header tagline, where long env names
             can no longer push it off-screen. Replaces the old hardcoded
-            "OneCastRouter Gateway Console" tagline, which duplicated the
+            "OmniCellRouter Gateway Console" tagline, which duplicated the
             brand header and skipped i18n. */}
         {(() => {
           const gatewayOnline = Boolean(status) && !statusError;

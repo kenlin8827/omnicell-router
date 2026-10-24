@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Remote one-line installer for OneCastRouter (OCR)
+# Remote one-line installer for OmniCellRouter (OCR)
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/kenlin8827/onecast-router/main/install.sh | bash
@@ -22,7 +22,7 @@ else
 fi
 
 echo -e "${CYAN}${BOLD}"
-echo "  ⚡ OneCastRouter (OCR) - One-Click Installer"
+echo "  ⚡ OmniCellRouter (OCR) - One-Click Installer"
 echo "  High-Performance FinOps & Cascading Gateway for AI Coding Agents"
 echo -e "${NC}"
 
@@ -34,7 +34,7 @@ if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/package.json" ] && grep -q "onecast
   echo -e "${GREEN}✔ Detected local repository checkout at: ${SCRIPT_DIR}${NC}"
   TARGET_REPO="$SCRIPT_DIR"
 else
-  echo -e "📦 Installing OneCastRouter into ${INSTALL_DIR}..."
+  echo -e "📦 Installing OmniCellRouter into ${INSTALL_DIR}..."
   mkdir -p "$INSTALL_DIR"
   DOWNLOADED=false
 
@@ -111,7 +111,7 @@ case ":$PATH:" in
     ;;
 esac
 
-echo -e "\n${GREEN}${BOLD}🎉 OneCastRouter (OCR) installed successfully!${NC}\n"
+echo -e "\n${GREEN}${BOLD}🎉 OmniCellRouter (OCR) installed successfully!${NC}\n"
 echo -e "You can now run:"
 echo -e "  ${CYAN}ocr start${NC}             # Start the gateway daemon"
 echo -e "  ${CYAN}ocr web${NC}               # Open the Web Console Dashboard"

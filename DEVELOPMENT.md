@@ -1,4 +1,4 @@
-# OneCastRouter (OCR) Developer & Architecture Guide
+# OmniCellRouter (OCR) Developer & Architecture Guide
 
 <div align="center">
 
@@ -11,7 +11,7 @@
 
 </div>
 
-> This guide documents the technical architecture, internal subsystems, routing cascades, test suites, and coding conventions of **OneCastRouter (OCR)**. It reflects current code reality on `main` and Architecture Decision Records (ADR-0001 through ADR-0014).
+> This guide documents the technical architecture, internal subsystems, routing cascades, test suites, and coding conventions of **OmniCellRouter (OCR)**. It reflects current code reality on `main` and Architecture Decision Records (ADR-0001 through ADR-0014).
 
 ---
 
@@ -33,7 +33,7 @@
 
 ## 1. Monorepo Structure & Core Subsystems
 
-OneCastRouter is organized as a Bun monorepo comprising a Fastify backend and a Vite+React frontend:
+OmniCellRouter is organized as a Bun monorepo comprising a Fastify backend and a Vite+React frontend:
 
 ```
 onecast-router/

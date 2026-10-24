@@ -213,7 +213,7 @@ export class PiClientAdapter implements ClientAdapter {
     let details = 'Direct provider connection (built-in pi catalog)';
     if (url) {
       details = portFresh
-        ? `Routed to OneCastRouter gateway (${url})`
+        ? `Routed to OmniCellRouter gateway (${url})`
         : `Routed via OCR gateway URL ${url} — current port is :${defaultGatewayPort()}, re-apply setup to refresh`;
     } else if (!exists) {
       details = 'No pi config file detected (~/.pi/agent/models.json)';

@@ -1,7 +1,7 @@
 {
   "name": "onecast-router",
   "version": "0.0.1",
-  "description": "High-performance OneCastRouter (OCR) & Cascading Gateway",
+  "description": "High-performance OmniCellRouter (OCR) & Cascading Gateway",
   "publishConfig": {
     "access": "public"
   },

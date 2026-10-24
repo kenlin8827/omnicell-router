@@ -778,7 +778,7 @@ export function saveConfig(newConfig: Partial<RouterConfig>): { success: boolean
 // whatever comments the user typed.
 
 const YAML_FILE_HEADER = [
-  'OneCastRouter 网关配置（config.yaml）',
+  'OmniCellRouter 网关配置（config.yaml）',
   '可视化编辑：控制台「可视化配置」页；手写编辑：「配置文件」页（原文保存，注释保留）',
   '注意：大部分配置保存即时生效（代理/捕捉/梯队/组合/熔断/限流等，逐项见注释）；标注「重启网关生效」的段落需重启；价格单位均为 美元/百万 tokens',
 ].join('\n');

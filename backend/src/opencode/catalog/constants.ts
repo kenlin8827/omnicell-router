@@ -6,4 +6,4 @@
 /** User-Agent sent on ALL outbound catalog HTTP traffic (source pulls, logo
  *  fetches, aggregation refreshes) so remote endpoints see one consistent
  *  product identity. */
-export const CATALOG_USER_AGENT = 'OneCastRouter/1.0';
+export const CATALOG_USER_AGENT = 'OmniCellRouter/1.0';

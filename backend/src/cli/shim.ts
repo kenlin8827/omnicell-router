@@ -103,7 +103,7 @@ function ensurePosixPath(binDir: string): void {
         if (fs.existsSync(rcPath)) {
           const content = fs.readFileSync(rcPath, 'utf8');
           if (!content.includes(binDir)) {
-            fs.appendFileSync(rcPath, `\n# OneCastRouter (ocr) binary path\nexport PATH="${binDir}:$PATH"\n`);
+            fs.appendFileSync(rcPath, `\n# OmniCellRouter (ocr) binary path\nexport PATH="${binDir}:$PATH"\n`);
           }
         }
       }

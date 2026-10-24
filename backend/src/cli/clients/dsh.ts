@@ -130,7 +130,7 @@ export class DshClientAdapter implements ClientAdapter {
       // change → re-apply hint); the hooked state itself is key + URL presence.
       details = stalePort
         ? `Routed via OCR gateway in profile(s) ${hookedProfiles.join(', ')} — current port is :${defaultGatewayPort()}, re-apply setup to refresh`
-        : `Routed to OneCastRouter gateway (${hookedProfiles.join(', ')})`;
+        : `Routed to OmniCellRouter gateway (${hookedProfiles.join(', ')})`;
     }
 
     const models: any[] = route && Array.isArray(route.models) ? route.models : [];
@@ -197,7 +197,7 @@ export class DshClientAdapter implements ClientAdapter {
     const names: string[] = [];
     for (const [file, entries] of parsed) {
       const route = {
-        displayName: 'OneCastRouter',
+        displayName: 'OmniCellRouter',
         api: 'openai-completions',
         baseURL: targetUrl,
         // Credentials never live as apiKeyEnv literals — dsh resolves refs per

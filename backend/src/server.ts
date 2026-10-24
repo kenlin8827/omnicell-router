@@ -901,7 +901,7 @@ export function createServer(
   const providers: Record<string, any> = {
     'onecast-router': {
       id: 'onecast-router',
-      name: 'OneCastRouter',
+      name: 'OmniCellRouter',
       models: virtualModels,
     },
   };

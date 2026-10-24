@@ -1,7 +1,7 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-    Remote one-line installer for OneCastRouter (OCR).
+    Remote one-line installer for OmniCellRouter (OCR).
 .EXAMPLE
     irm https://raw.githubusercontent.com/kenlin8827/onecast-router/main/install.ps1 | iex
 #>
@@ -11,7 +11,7 @@ $Repo = "kenlin8827/onecast-router"
 $InstallDir = Join-Path $env:LOCALAPPDATA "onecast-router"
 
 Write-Host ""
-Write-Host "  ⚡ OneCastRouter (OCR) - Windows One-Click Installer" -ForegroundColor Cyan
+Write-Host "  ⚡ OmniCellRouter (OCR) - Windows One-Click Installer" -ForegroundColor Cyan
 Write-Host "  High-Performance FinOps & Cascading Gateway for AI Coding Agents" -ForegroundColor DarkGray
 Write-Host ""
 
@@ -30,7 +30,7 @@ $BinDir = Join-Path $TargetRepo "bin"
 $IsPrebuiltRelease = $false
 
 if (-not $LocalRepo) {
-  Write-Host "[OCR] Installing OneCastRouter into $InstallDir..." -ForegroundColor Cyan
+  Write-Host "[OCR] Installing OmniCellRouter into $InstallDir..." -ForegroundColor Cyan
   if (-not (Test-Path $InstallDir)) {
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
   }
@@ -124,7 +124,7 @@ if (-not ($UserPath -like "*$BinDir*")) {
 }
 
 Write-Host ""
-Write-Host "🎉 OneCastRouter (OCR) installed successfully!" -ForegroundColor Green
+Write-Host "🎉 OmniCellRouter (OCR) installed successfully!" -ForegroundColor Green
 Write-Host ""
 Write-Host "You can now run:" -ForegroundColor White
 Write-Host "  ocr start             " -NoNewline -ForegroundColor Cyan; Write-Host "# Start the gateway daemon" -ForegroundColor DarkGray

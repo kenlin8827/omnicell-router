@@ -106,7 +106,7 @@ function buildRouterProviderNode(port: number, model?: string, extraModels?: str
     if (id && !models[id]) models[id] = modelEntry(id);
   }
   return {
-    name: 'OneCastRouter',
+    name: 'OmniCellRouter',
     package: '@opencode/ai/providers/openai-compatible',
     settings: {
       baseURL: targetUrl,
@@ -140,7 +140,7 @@ export class OpenCodeClientAdapter implements ClientAdapter {
         const routerEntry = data.providers?.[ROUTER_PROVIDER_ID];
         if (routerEntry?.settings?.baseURL) {
           hooked = true;
-          details = `Routed to OneCastRouter gateway (${routerEntry.settings.baseURL})`;
+          details = `Routed to OmniCellRouter gateway (${routerEntry.settings.baseURL})`;
         } else {
           details = 'Active with native providers';
         }

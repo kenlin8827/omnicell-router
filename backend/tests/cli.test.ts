@@ -923,7 +923,7 @@ describe('Embedded UI & Management API Endpoints', () => {
     const resAdmin = await app.inject({ method: 'GET', url: '/admin' });
     expect(resAdmin.statusCode).toBe(200);
     expect(resAdmin.headers['content-type']).toContain('text/html');
-    expect(resAdmin.body).toContain('OneCastRouter');
+    expect(resAdmin.body).toContain('OmniCellRouter');
     expect(resAdmin.body).toContain('Gateway Console');
 
     const resTiers = await app.inject({ method: 'GET', url: '/admin/tiers' });

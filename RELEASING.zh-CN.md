@@ -1,4 +1,4 @@
-# OneCastRouter (OCR) 发行与打包发布指南
+# OmniCellRouter (OCR) 发行与打包发布指南
 
 <div align="center">
 
@@ -10,7 +10,7 @@
 
 </div>
 
-本文档详细介绍了 **OneCastRouter (OCR)** 的两大发布渠道与发行流程：
+本文档详细介绍了 **OmniCellRouter (OCR)** 的两大发布渠道与发行流程：
 
 1. **npm Registry 官方源 (`onecast-router`)**：Web 控制台与 CLI 完整网关包。用户通过 `npm install -g onecast-router` 全局安装或通过 `npx onecast-router` 免安装直接启动。
 2. **GitHub Releases 多平台桌面版**：独立的原生桌面安装包（Tauri v2 + 嵌入式 Bun 编译网关 Sidecar），覆盖 Windows (`.exe` NSIS)、macOS (`.dmg` 包含 Apple Silicon 与 Intel) 以及 Linux (`.AppImage`, `.deb`)。
@@ -21,7 +21,7 @@
 
 ```
                       ┌──────────────────────────────────────────────┐
-                      │              OneCastRouter 源码库             │
+                      │              OmniCellRouter 源码库             │
                       └───────┬──────────────────────────────┬───────┘
                               │                              │
                      npm 发布 (Web/CLI 网关)         GitHub Actions Tag 推送 (桌面版)

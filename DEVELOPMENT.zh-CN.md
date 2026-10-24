@@ -1,4 +1,4 @@
-# OneCastRouter (OCR) 开发者与架构指南
+# OmniCellRouter (OCR) 开发者与架构指南
 
 <div align="center">
 
@@ -11,7 +11,7 @@
 
 </div>
 
-> 本指南系统阐述 **OneCastRouter (OCR)** 的核心架构、内部子系统、级联分发管道、测试套件与代码规范。内容严格契合当前 `main` 分支代码事实及架构决策记录（ADR-0001 至 ADR-0014）。
+> 本指南系统阐述 **OmniCellRouter (OCR)** 的核心架构、内部子系统、级联分发管道、测试套件与代码规范。内容严格契合当前 `main` 分支代码事实及架构决策记录（ADR-0001 至 ADR-0014）。
 
 ---
 
@@ -33,7 +33,7 @@
 
 ## 1. 代码工程结构与核心子系统
 
-OneCastRouter 采用 Bun Workspaces Monorepo 单体仓库架构，包含 Fastify 后端与 Vite+React 前端：
+OmniCellRouter 采用 Bun Workspaces Monorepo 单体仓库架构，包含 Fastify 后端与 Vite+React 前端：
 
 ```
 onecast-router/

@@ -224,13 +224,13 @@ describe('importProviderDefsAtBoot', () => {
 
   it('imports the hook-owned onecast-router node verbatim (the router def is defs truth)', () => {
     writeJsonc(
-      '{"providers": { "onecast-router": { "name": "OneCastRouter", "package": "@opencode/ai/providers/openai-compatible", "settings": { "baseURL": "http://127.0.0.1:3000/v1", "apiKey": "ocr-local-token" } } }}'
+      '{"providers": { "onecast-router": { "name": "OmniCellRouter", "package": "@opencode/ai/providers/openai-compatible", "settings": { "baseURL": "http://127.0.0.1:3000/v1", "apiKey": "ocr-local-token" } } }}'
     );
     const rec = importProviderDefsAtBoot();
     expect(rec!.imported).toBe(1);
     const node = readProviderDefsFile()!.providers['onecast-router'];
     expect(node.settings.baseURL).toBe('http://127.0.0.1:3000/v1');
-    expect(node.name).toBe('OneCastRouter');
+    expect(node.name).toBe('OmniCellRouter');
   });
 });
 

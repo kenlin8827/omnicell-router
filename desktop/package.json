@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.0.1",
   "type": "module",
-  "description": "OneCastRouter desktop shell (Tauri) — bundles the gateway sidecar and opens the console UI",
+  "description": "OmniCellRouter desktop shell (Tauri) — bundles the gateway sidecar and opens the console UI",
   "scripts": {
     "tauri": "tauri",
     "build": "tauri build",

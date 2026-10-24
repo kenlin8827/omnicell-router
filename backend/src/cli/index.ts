@@ -30,7 +30,7 @@ const C = {
 
 function printBanner(): void {
   console.log(`
-${C.cyan}${C.bold}  ⚡ OneCastRouter (OCR)${C.reset} ${C.dim}v${APP_VERSION}${C.reset}
+${C.cyan}${C.bold}  ⚡ OmniCellRouter (OCR)${C.reset} ${C.dim}v${APP_VERSION}${C.reset}
   ${C.dim}High-Performance FinOps & Cascading Gateway for AI Coding Agents${C.reset}
 `);
 }
@@ -48,7 +48,7 @@ ${C.bold}LIFECYCLE COMMANDS:${C.reset}
   ${C.green}ocr status${C.reset}              Inspect daemon status, memory, health & client hooks
 
 ${C.bold}USER INTERFACE:${C.reset}
-  ${C.cyan}ocr web${C.reset} (or ${C.cyan}ocr ui${C.reset})     Open OneCastRouter Web Console in default browser
+  ${C.cyan}ocr web${C.reset} (or ${C.cyan}ocr ui${C.reset})     Open OmniCellRouter Web Console in default browser
   ${C.cyan}ocr desktop${C.reset}             Open native desktop window (falls back to web if not installed)
 
 ${C.bold}CLIENT INTEGRATIONS (SETUP & TEARDOWN):${C.reset}
@@ -243,7 +243,7 @@ async function main(): Promise<void> {
   switch (action) {
     case 'start': {
       printBanner();
-      console.log('[OCR] Starting OneCastRouter gateway...');
+      console.log('[OCR] Starting OmniCellRouter gateway...');
       const res = await startDaemon({ port, envName });
       if (res.success) {
         console.log(`${C.green}✔ ${res.message}${C.reset}`);
@@ -270,7 +270,7 @@ async function main(): Promise<void> {
 
     case 'restart': {
       printBanner();
-      console.log('[OCR] Restarting OneCastRouter gateway...');
+      console.log('[OCR] Restarting OmniCellRouter gateway...');
       const res = await restartDaemon({ port, envName });
       if (res.success) {
         console.log(`${C.green}✔ ${res.message}${C.reset}`);

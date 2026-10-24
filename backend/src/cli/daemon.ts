@@ -611,8 +611,8 @@ export async function launchDesktop(options: { port?: number } = {}): Promise<vo
   // install dir and the bundled exe name).
   const localAppData = process.env.LOCALAPPDATA || '';
   const candidates = [
-    // installed layout (NSIS, currentUser): %LOCALAPPDATA%\OneCastRouter\OneCastRouter.exe
-    path.join(localAppData, 'OneCastRouter', 'OneCastRouter.exe'),
+    // installed layout (NSIS, currentUser): %LOCALAPPDATA%\OmniCellRouter\OmniCellRouter.exe
+    path.join(localAppData, 'OmniCellRouter', 'OmniCellRouter.exe'),
     // dev bare-run layout: cargo keeps the package name for target/release
     path.join(getRepoRootDir(), 'desktop', 'src-tauri', 'target', 'release', 'onecast-router-desktop.exe'),
   ];

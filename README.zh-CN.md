@@ -1,4 +1,4 @@
-# OneCastRouter (OCR)
+# OmniCellRouter (OCR)
 
 <div align="center">
 
@@ -17,11 +17,11 @@
 
 ---
 
-## 什么是 OneCastRouter (OCR)？
+## 什么是 OmniCellRouter (OCR)？
 
-**OneCastRouter (OCR)** 是一个高性能、本地优先的 LLM API 级联路由、韧性编排与 FinOps 治理网关。它将不同上游服务商（OpenAI、Anthropic、DeepSeek、Moonshot/Kimi、阿里云百炼 DashScope、Ollama 及兼容 OpenAI 协议的私有服务）统一整合为多梯队智能级联资源池。
+**OmniCellRouter (OCR)** 是一个高性能、本地优先的 LLM API 级联路由、韧性编排与 FinOps 治理网关。它将不同上游服务商（OpenAI、Anthropic、DeepSeek、Moonshot/Kimi、阿里云百炼 DashScope、Ollama 及兼容 OpenAI 协议的私有服务）统一整合为多梯队智能级联资源池。
 
-通过编排**规则直通快道**、**RouteEntry 持久化经验表**、可选的 **System One 语义决策层**、**单调会话棘轮**、**两阶段抖动就地重试与上游 KV Cache 保护**以及 **Token Saver 压缩套件**，OneCastRouter 在保障多轮复杂开发长对话逻辑质量零劣化的前提下，降低 **70% 至 90%** 的 API 费用支出。
+通过编排**规则直通快道**、**RouteEntry 持久化经验表**、可选的 **System One 语义决策层**、**单调会话棘轮**、**两阶段抖动就地重试与上游 KV Cache 保护**以及 **Token Saver 压缩套件**，OmniCellRouter 在保障多轮复杂开发长对话逻辑质量零劣化的前提下，降低 **70% 至 90%** 的 API 费用支出。
 
 ---
 
@@ -132,7 +132,7 @@ bun run start:bun
 
 ## 客户端接入
 
-OneCastRouter 提供标准的 OpenAI 与 Anthropic 兼容端点，配置极为简单：
+OmniCellRouter 提供标准的 OpenAI 与 Anthropic 兼容端点，配置极为简单：
 
 ### 1. Cursor IDE
 1. 打开设置：`Settings` -> `Models`。
@@ -301,17 +301,17 @@ main();
 
 ## 常见问题
 
-### Q1: OneCastRouter 需要在配置文件中重复填写各大厂商 API Key 吗？
-**不需要**。OneCastRouter 以 `<ocrHome>/providers.json` 和 `credentials.json` 为统一真实源，并与本地 OpenCode v2 双向自动同步。下游客户端调用时仅需使用任意占位 Key 或管理控制台配置的密钥即可。
+### Q1: OmniCellRouter 需要在配置文件中重复填写各大厂商 API Key 吗？
+**不需要**。OmniCellRouter 以 `<ocrHome>/providers.json` 和 `credentials.json` 为统一真实源，并与本地 OpenCode v2 双向自动同步。下游客户端调用时仅需使用任意占位 Key 或管理控制台配置的密钥即可。
 
 ### Q2: 为什么对话在长轮次中绝不会“降智”？
-市面上的朴素无状态路由器常将简短回复（如“好”、“修复第 5 行”）误判为简单任务而分发至微模型，导致数十万字长代码上下文被轻量模型破坏。OneCastRouter 执行**单调会话棘轮（Monotonic Session Ratchet）**：一旦会话由于复杂任务进入较高梯队（`plus`/`pro`/`ultra`），后续轮次绝不允许反向降级，严格锁定原模型实例。
+市面上的朴素无状态路由器常将简短回复（如“好”、“修复第 5 行”）误判为简单任务而分发至微模型，导致数十万字长代码上下文被轻量模型破坏。OmniCellRouter 执行**单调会话棘轮（Monotonic Session Ratchet）**：一旦会话由于复杂任务进入较高梯队（`plus`/`pro`/`ultra`），后续轮次绝不允许反向降级，严格锁定原模型实例。
 
 ### Q3: 频繁切换模型会导致 KV Cache 失效引起费用暴涨吗？
-**绝不会**。OneCastRouter 会话严格绑定物理模型实例，并内置**两阶段就地抖动重试机制**：遇到上游 5xx 临时抖动或超时，网关优先在原物理模型就地重试，最大化保全 80%~95% 的已预热上游 Prompt Cache，避免重新上传百万 Token 导致账单翻倍。
+**绝不会**。OmniCellRouter 会话严格绑定物理模型实例，并内置**两阶段就地抖动重试机制**：遇到上游 5xx 临时抖动或超时，网关优先在原物理模型就地重试，最大化保全 80%~95% 的已预热上游 Prompt Cache，避免重新上传百万 Token 导致账单翻倍。
 
 ### Q4: 上游服务商宕机或余额欠费如何处置？
-OneCastRouter 提供工业级 7 类故障响应：
+OmniCellRouter 提供工业级 7 类故障响应：
 - **HTTP 402（余额欠费/超额）**：立即对该凭据或对熔断 12 小时，后续请求直接跳过，零延迟损耗。
 - **HTTP 5xx / 超时**：触发指数退避，并在毫秒级内自动无缝重定向到同层级备选候选模型，保障客户端 200 成功率。
 - **HTTP 429（速率限制）**：依据上游 `Retry-After` 进行自适应退避。

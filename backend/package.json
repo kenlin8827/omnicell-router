@@ -1,7 +1,7 @@
 {
   "name": "@onecast-router/backend",
   "version": "0.0.1",
-  "description": "High-performance OneCastRouter (OCR) Gateway & CLI Core",
+  "description": "High-performance OmniCellRouter (OCR) Gateway & CLI Core",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

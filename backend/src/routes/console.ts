@@ -898,9 +898,9 @@ export function registerConsoleRoutes(
     return reply.type('text/html').send(`
       <!DOCTYPE html>
       <html>
-        <head><title>OneCastRouter Gateway Console</title></head>
+        <head><title>OmniCellRouter Gateway Console</title></head>
         <body style="background:#09090b;color:#f4f4f5;font-family:sans-serif;padding:40px;text-align:center;">
-          <h2>⚡ OneCastRouter Gateway Console</h2>
+          <h2>⚡ OmniCellRouter Gateway Console</h2>
           <p style="color:#a1a1aa;">The web console assets have not been built yet.</p>
           <p>Please run <code style="color:#06b6d4;background:rgba(255,255,255,0.1);padding:4px 8px;border-radius:4px;">npm run build:frontend</code> to build the React application.</p>
         </body>

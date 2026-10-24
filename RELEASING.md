@@ -1,4 +1,4 @@
-# OneCastRouter (OCR) Release & Packaging Guide
+# OmniCellRouter (OCR) Release & Packaging Guide
 
 <div align="center">
 
@@ -10,7 +10,7 @@
 
 </div>
 
-This document describes how to package and publish **OneCastRouter (OCR)** across its two distribution channels:
+This document describes how to package and publish **OmniCellRouter (OCR)** across its two distribution channels:
 
 1. **npm Registry (`onecast-router`)**: The CLI & Web Gateway package, installable globally via `npm install -g onecast-router` or executable via `npx onecast-router`.
 2. **GitHub Releases (Desktop Applications)**: Multi-platform standalone desktop packages (Tauri v2 + embedded Bun gateway sidecar) for Windows (`.exe`), macOS (`.dmg`), and Linux (`.AppImage`, `.deb`).
@@ -21,7 +21,7 @@ This document describes how to package and publish **OneCastRouter (OCR)** acros
 
 ```
                       ┌──────────────────────────────────────────────┐
-                      │              OneCastRouter Repo              │
+                      │              OmniCellRouter Repo              │
                       └───────┬──────────────────────────────┬───────┘
                               │                              │
                     npm Publish (Web/CLI)           GitHub Actions Tag Push (Desktop)

@@ -1,4 +1,4 @@
-# OneCastRouter (OCR)
+# OmniCellRouter (OCR)
 
 <div align="center">
 
@@ -17,11 +17,11 @@
 
 ---
 
-## What is OneCastRouter (OCR)?
+## What is OmniCellRouter (OCR)?
 
-**OneCastRouter (OCR)** is a high-performance, local-first LLM API cascading router, resilience orchestrator, and FinOps gateway. It unifies model access across disparate upstream providers (OpenAI, Anthropic, DeepSeek, Moonshot/Kimi, DashScope, Ollama, and OpenAI-compatible endpoints) into an intelligent cascading pool.
+**OmniCellRouter (OCR)** is a high-performance, local-first LLM API cascading router, resilience orchestrator, and FinOps gateway. It unifies model access across disparate upstream providers (OpenAI, Anthropic, DeepSeek, Moonshot/Kimi, DashScope, Ollama, and OpenAI-compatible endpoints) into an intelligent cascading pool.
 
-By orchestrating **rule-based fast paths**, a persistent **RouteEntry experience table**, an opt-in **System One semantic decision layer**, a **monotonic session ratchet**, **two-stage jittered retry with upstream KV cache protection**, and a **Token Saver** compression pipeline, OneCastRouter cuts LLM API spending by **70% to 90%** while defending reasoning quality across multi-turn developer sessions.
+By orchestrating **rule-based fast paths**, a persistent **RouteEntry experience table**, an opt-in **System One semantic decision layer**, a **monotonic session ratchet**, **two-stage jittered retry with upstream KV cache protection**, and a **Token Saver** compression pipeline, OmniCellRouter cuts LLM API spending by **70% to 90%** while defending reasoning quality across multi-turn developer sessions.
 
 ---
 
@@ -130,7 +130,7 @@ The gateway listens on `http://127.0.0.1:4000` by default. Access the Web Admin 
 
 ## Client Integrations
 
-OneCastRouter exposes full OpenAI-compatible and Anthropic-compatible endpoints. Configure your favorite developer tools:
+OmniCellRouter exposes full OpenAI-compatible and Anthropic-compatible endpoints. Configure your favorite developer tools:
 
 ### 1. Cursor IDE
 1. Navigate to: `Settings` -> `Models`.
@@ -299,17 +299,17 @@ Every proxied response carries diagnostic metadata:
 
 ## Frequently Asked Questions
 
-### Q1: Does OneCastRouter require duplicating API keys across configs?
-**No**. OneCastRouter treats `<ocrHome>/providers.json` and `credentials.json` as the single source of truth and synchronizes bidirectionally with local OpenCode v2 credentials. Downstream clients simply authenticate with any arbitrary bearer token or configured admin API key.
+### Q1: Does OmniCellRouter require duplicating API keys across configs?
+**No**. OmniCellRouter treats `<ocrHome>/providers.json` and `credentials.json` as the single source of truth and synchronizes bidirectionally with local OpenCode v2 credentials. Downstream clients simply authenticate with any arbitrary bearer token or configured admin API key.
 
 ### Q2: Why will multi-turn conversations never degrade in intellect?
-Traditional routers frequently route short replies (such as *"yes"*, *"fix line 12"*, or *"looks good"*) to low-cost micro models, corrupting conversational context across 20k+ token histories. OneCastRouter enforces a **Monotonic Session Ratchet**: once a dialogue reaches an advanced tier (`plus`, `pro`, or `ultra`), it locks strictly to that tier and pins to the identical physical model instance.
+Traditional routers frequently route short replies (such as *"yes"*, *"fix line 12"*, or *"looks good"*) to low-cost micro models, corrupting conversational context across 20k+ token histories. OmniCellRouter enforces a **Monotonic Session Ratchet**: once a dialogue reaches an advanced tier (`plus`, `pro`, or `ultra`), it locks strictly to that tier and pins to the identical physical model instance.
 
 ### Q3: How does the gateway protect upstream KV prompt caching?
-Changing models across conversational turns invalidates upstream prefix caches and causes sudden 10x token billing spikes. OneCastRouter pins sessions to exact physical model instances and applies **In-Place Jittered Retry**: transient 5xx or timeout glitches retry immediately on the same upstream instance, preserving warmed prompt caches before attempting same-tier failovers.
+Changing models across conversational turns invalidates upstream prefix caches and causes sudden 10x token billing spikes. OmniCellRouter pins sessions to exact physical model instances and applies **In-Place Jittered Retry**: transient 5xx or timeout glitches retry immediately on the same upstream instance, preserving warmed prompt caches before attempting same-tier failovers.
 
 ### Q4: What happens if an upstream model fails or runs out of credits?
-OneCastRouter classifies errors into a 7-class taxonomy:
+OmniCellRouter classifies errors into a 7-class taxonomy:
 - **HTTP 402 (Quota Exhaustion)**: Hard-trips the credential or pair breaker for 12 hours, immediately bypassing the failed target without latency overhead.
 - **HTTP 5xx / Timeouts**: Triggers exponential cooldowns and automatically reroutes to healthy same-tier candidates in milliseconds.
 - **HTTP 429 (Rate Limits)**: Applies adaptive backoff based on upstream `Retry-After` headers.
