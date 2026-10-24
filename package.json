@@ -27,7 +27,7 @@
     "ocr": "bun --no-env-file backend/src/cli/index.ts",
     "version": "bun --no-env-file scripts/version-sync.ts",
     "setup": "bun install && bun run build",
-    "dev": "bun --no-env-file scripts/dev.ts",
+    "dev": "PORT=3000 bun --no-env-file scripts/dev.ts",
     "dev:backend": "bun --filter @omnicell-router/backend dev",
     "dev:frontend": "bun --filter @omnicell-router/frontend dev",
     "build": "tsc -p backend && vite build frontend",

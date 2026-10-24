@@ -1,5 +1,8 @@
 import { spawn } from 'node:child_process';
 
+// PORT arrives from the root package.json `dev` script (pinned 3000 for dev,
+// independent of the config.yaml `port:` that production/desktop reads) or
+// from the caller's own env when this file is run directly.
 const backendPort = process.env.PORT || '3000';
 console.log(`🚀 Starting OmniCellRouter (OCR) Full-Stack Development Services...`);
 console.log(`   ├─ Backend API:  http://127.0.0.1:${backendPort}`);
