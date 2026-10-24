@@ -43,6 +43,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { api, type GatewayStatusResponse } from '../lib/api';
+import { gatewayBaseUrl } from '../lib/gateway-url';
 import { resolveStoredTheme, THEME_STORAGE_KEY, type ThemeId } from '../lib/theme';
 import { useI18n } from '../i18n/I18nContext';
 import { useConfirm } from '../components/ConfirmProvider';
@@ -203,10 +204,11 @@ export const Layout: React.FC = () => {
 
   // Footer port chip — copying the gateway base URL is the console's most
   // frequent manual step (pasting it into a client config), so the port is a
-  // one-click copy. 127.0.0.1 matches the snippets on the Clients/ApiKeys pages.
+  // one-click copy. Same helper as the Clients/ApiKeys snippets: the host is
+  // the address the viewer dialed (loopback or LAN IP), never a raw 0.0.0.0.
   const copyGatewayUrl = () => {
     if (!status) return;
-    const url = `http://127.0.0.1:${status.port}`;
+    const url = gatewayBaseUrl(status.port);
     navigator.clipboard
       .writeText(url)
       .then(() => toast.success(t('nav.footerUrlCopied')))
@@ -567,7 +569,7 @@ export const Layout: React.FC = () => {
                   <button
                     type="button"
                     onClick={copyGatewayUrl}
-                    title={t('nav.footerCopyUrl', { url: `http://127.0.0.1:${status.port}` })}
+                    title={t('nav.footerCopyUrl', { url: gatewayBaseUrl(status.port) })}
                     style={chipStyle}
                   >
                     :{status.port}

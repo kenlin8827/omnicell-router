@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useOutletContext } from 'react-router-dom';
 import {
   KeyRound,
   Plus,
@@ -16,7 +16,8 @@ import {
   BarChart3,
 } from 'lucide-react';
 import { InfoTip } from '../components/InfoTip';
-import { api, type ApiKeyItem, type ApiKeyModelAccess } from '../lib/api';
+import { api, type ApiKeyItem, type ApiKeyModelAccess, type GatewayStatusResponse } from '../lib/api';
+import { gatewayBaseUrl } from '../lib/gateway-url';
 import { modelRefBadge } from '../lib/modelRefBadge';
 import { sortModelOptions } from '../lib/model-options';
 import {
@@ -213,6 +214,13 @@ const ModelAccessPicker: React.FC<{
 export const ApiKeysPage: React.FC = () => {
   const { t } = useI18n();
   const navigate = useNavigate();
+  // Quick-connect snippets must be dialable by whoever is reading them:
+  // host = the address this console was opened with (loopback / LAN IP /
+  // proxy origin), port = the gateway's real listen port (Layout polls
+  // /api/admin/status every 3s, handed down via outlet context).
+  const { status } = useOutletContext<{ status: GatewayStatusResponse | null }>();
+  const gwBase = gatewayBaseUrl(status?.port);
+  const gwBaseV1 = `${gwBase}/v1`;
   const confirmDialog = useConfirm();
   const toast = useToast();
   const [keys, setKeys] = useState<ApiKeyItem[]>([]);
@@ -1098,7 +1106,7 @@ export const ApiKeysPage: React.FC = () => {
           {connectTab === 'cursor' && (
 `# 1. 打开 Cursor -> Settings -> Models -> OpenAI API Key
 # 2. 勾选 "Override OpenAI Base URL"，填入：
-http://127.0.0.1:3000/v1
+${gwBaseV1}
 
 # 3. 在 API Key 中填入上方配发的客户端 API Key：
 ${inlineKey}
@@ -1112,7 +1120,7 @@ ${inlineKey}
 `from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://127.0.0.1:3000/v1",
+    base_url="${gwBaseV1}",
     api_key="${inlineKey}"
 )
 
@@ -1125,7 +1133,7 @@ print(response.choices[0].message.content)`
           )}
 
           {connectTab === 'curl' && (
-`curl http://127.0.0.1:3000/v1/chat/completions \\
+`curl ${gwBaseV1}/chat/completions \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer ${inlineKey}" \\
   -d '{
@@ -1136,7 +1144,7 @@ print(response.choices[0].message.content)`
 
           {connectTab === 'claude' && (
 `# 1. 设置环境变量（或写入 ~/.claude/settings.json 的 "env" 字段）：
-export ANTHROPIC_BASE_URL=http://127.0.0.1:3000
+export ANTHROPIC_BASE_URL=${gwBase}
 export ANTHROPIC_AUTH_TOKEN=${inlineKey}
 
 # 2. 可选：默认模型（auto = 智能分流，也可 lite / plus / pro / ultra）
@@ -1151,7 +1159,7 @@ export ANTHROPIC_MODEL=auto
 `from anthropic import Anthropic
 
 client = Anthropic(
-    base_url="http://127.0.0.1:3000",  # SDK 自动拼接 /v1/messages
+    base_url="${gwBase}",  # SDK 自动拼接 /v1/messages
     api_key="${inlineKey}"
 )
 
@@ -1165,7 +1173,7 @@ print(message.content[0].text)`
           )}
 
           {connectTab === 'anthropic-curl' && (
-`curl http://127.0.0.1:3000/v1/messages \\
+`curl ${gwBaseV1}/messages \\
   -H "Content-Type: application/json" \\
   -H "x-api-key: ${inlineKey}" \\
   -H "anthropic-version: 2023-06-01" \\
@@ -1181,7 +1189,7 @@ print(message.content[0].text)`
 # 上游：解析 wire 为 systemone 的模型走厂商原生直通，其余自动做协议转换
 # （chat 模型包裹 JSON 决策载荷）
 # model 填已注册模型 ID；配置了 systemone.defaultModel 后可直接用 auto
-curl http://127.0.0.1:3000/v1/systemone \\
+curl ${gwBaseV1}/systemone \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer ${inlineKey}" \\
   -d '{

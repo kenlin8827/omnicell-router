@@ -16,3 +16,10 @@ export const DEFAULT_HEADROOM_URL = 'http://127.0.0.1:8787';
 
 /** `directives.prefix` backend default (`@ocr-*` reserved namespace). */
 export const DEFAULT_DIRECTIVE_PREFIX = '@ocr-';
+
+/** Packaged gateway port — mirrors backend `OCR_DEFAULT_PORT`
+ *  (backend/src/cli/clients/base.ts). Last-resort fallback for console
+ *  snippets when neither the status poll nor the page origin can report the
+ *  real listening port (config.yaml `port` is the source of truth; its
+ *  in-code default 3000 applies to bare `bun run dev` only). */
+export const DEFAULT_GATEWAY_PORT = 4000;

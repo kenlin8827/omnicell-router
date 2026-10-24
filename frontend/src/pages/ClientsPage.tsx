@@ -8,6 +8,7 @@ import { ProfileLinkTable } from '../components/ProfileLinkTable';
 import { SmartAssignDialog, type SmartAssignTarget, type SmartAssignCandidate } from '../components/SmartAssignDialog';
 import { api, type ClientStatus, type ApiKeyItem, type ModelProfileView, type OpenCodeAgentView, type ClientProfileMemoryEntry } from '../lib/api';
 import { modelRefBadge } from '../lib/modelRefBadge';
+import { gatewayBaseUrl } from '../lib/gateway-url';
 import { sortModelOptions } from '../lib/model-options';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
@@ -111,9 +112,10 @@ export const ClientsPage: React.FC = () => {
    *  name, so collapsing never loses edits and opening a form is always a
    *  deliberate user action. */
   const [expanded, setExpanded] = useState<string | null>(null);
-  /** Live gateway port for the manual-endpoint guide ('' → fall back to console origin / OCR default). */
+  /** Live gateway port for the manual-endpoint guide (status poll; the
+   *  snippet helper owns the origin/daemon fallbacks and the viewer host). */
   const [port, setPort] = useState<string>('');
-  const gwPort = port || window.location.port || '4000';
+  const gwBase = gatewayBaseUrl(port ? Number(port) : undefined);
 
   const loadClients = async () => {
     try {
@@ -1136,7 +1138,7 @@ export const ClientsPage: React.FC = () => {
                   <div style={{ background: 'var(--well-bg)', border: '1px solid var(--card-border)', borderRadius: '8px', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                     <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('clients.otherProtoOpenai')}</div>
                     <code style={{ fontFamily: FONT_MONO, fontSize: '12px', color: 'var(--text-main)', wordBreak: 'break-all' }}>
-                      {`http://127.0.0.1:${gwPort}/v1`}
+                      {`${gwBase}/v1`}
                     </code>
                     <div style={{ fontFamily: FONT_MONO, fontSize: '11px', color: 'var(--text-dim)' }}>
                       POST /v1/chat/completions · /v1/responses · /v1/models
@@ -1146,7 +1148,7 @@ export const ClientsPage: React.FC = () => {
                   <div style={{ background: 'var(--well-bg)', border: '1px solid var(--card-border)', borderRadius: '8px', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                     <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('clients.otherProtoAnthropic')}</div>
                     <code style={{ fontFamily: FONT_MONO, fontSize: '12px', color: 'var(--text-main)', wordBreak: 'break-all' }}>
-                      {`http://127.0.0.1:${gwPort}`}
+                      {gwBase}
                     </code>
                     <div style={{ fontFamily: FONT_MONO, fontSize: '11px', color: 'var(--text-dim)' }}>
                       POST /v1/messages
