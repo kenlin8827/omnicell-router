@@ -34,7 +34,7 @@ export interface ClientStatus {
   /** Extra concrete models exposed in the client's model switcher (opencode) */
   extraModels?: string[];
   /** This client's model slots; value undefined = auto (intelligent routing). */
-  modelSlots: { key: string; value?: string; default?: string }[];
+  modelSlots: { key: string; value?: string; default?: string; description?: string }[];
   /** Last-linked model profile (opencode): profile id + agent→slot-key tags
    *  (the linked rows — their effective models resolve from the profile). */
   profile?: ModelProfileBinding;
@@ -62,6 +62,9 @@ export interface OpenCodeAgentView {
   /** 'service' = live opencode v2 service roster (preferred); others = file-scan fallback. */
   source: 'builtin' | 'file' | 'config' | 'service';
   model?: string;
+  /** The agent's own description (frontmatter / config node / live roster) —
+   *  the smart-assign decider's role context. Absent = unknown. */
+  description?: string;
 }
 
 /** Mirrors backend ClientProfileMemoryEntry — per-client console form memory

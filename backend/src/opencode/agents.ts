@@ -29,6 +29,10 @@ export interface OpenCodeAgentView {
   source: 'builtin' | 'file' | 'config' | 'service';
   /** Bound model (router-prefixed values stripped); undefined = inherit default model. */
   model?: string;
+  /** The agent's own description (file frontmatter / config node / live
+   *  roster). Feeds the console's smart-assign role context — absent means
+   *  unknown, never invented here. */
+  description?: string;
 }
 
 /** opencode's built-in roster. Names are stable across v2; a wrong default only
@@ -83,11 +87,13 @@ function mergeConfigNode(byName: Map<string, OpenCodeAgentView>, node: unknown):
     const prev = byName.get(name);
     const mode = VALID_MODES.has(d.mode as OpenCodeAgentMode) ? (d.mode as OpenCodeAgentMode) : prev?.mode ?? 'all';
     const configModel = typeof d.model === 'string' && d.model ? d.model : undefined;
+    const configDescription = typeof d.description === 'string' && d.description.trim() ? d.description.trim() : undefined;
     byName.set(name, {
       name,
       mode,
       source: 'config',
       model: configModel !== undefined ? stripRouterPrefix(configModel) ?? configModel : prev?.model,
+      description: configDescription ?? prev?.description,
     });
   }
 }
@@ -124,6 +130,7 @@ export function listOpenCodeAgents(overrides: ListAgentsOverrides = {}): OpenCod
           mode,
           source: 'file',
           model: fileModel !== undefined ? stripRouterPrefix(fileModel) ?? fileModel : prev?.model,
+          description: typeof fm.description === 'string' && fm.description.trim() ? fm.description.trim() : prev?.description,
         });
       }
     } catch {
@@ -147,6 +154,7 @@ interface RawServiceAgent {
   name?: string;
   mode?: string;
   hidden?: boolean;
+  description?: string;
   model?: { providerID?: string; id?: string } | string | null;
 }
 
@@ -167,7 +175,13 @@ export function mapServiceAgents(raw: RawServiceAgent[]): OpenCodeAgentView[] {
       model = `${a.model.providerID}/${a.model.id}`;
     }
     if (model) model = stripRouterPrefix(model) ?? model;
-    out.push({ name: a.id, mode, source: 'service', model });
+    out.push({
+      name: a.id,
+      mode,
+      source: 'service',
+      model,
+      description: typeof a.description === 'string' && a.description.trim() ? a.description.trim() : undefined,
+    });
   }
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }

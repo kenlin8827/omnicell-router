@@ -240,7 +240,7 @@ export class PiClientAdapter implements ClientAdapter {
       // Pi has one model picker (/model, --model); the first entry is the main slot.
       { key: 'main', value: models[0]?.id ? String(models[0].id) : undefined, default: 'auto' },
     ];
-    for (const role of this.discoverSubagentRoles(overrides)) {
+    for (const { name: role, description } of this.discoverSubagentRoles(overrides)) {
       const pinnedModel = overrides?.[role]?.model;
       modelSlots.push({
         key: role,
@@ -248,6 +248,7 @@ export class PiClientAdapter implements ClientAdapter {
           ? pinnedModel.startsWith(SUBAGENT_MODEL_PREFIX) ? pinnedModel.slice(SUBAGENT_MODEL_PREFIX.length) : pinnedModel
           : undefined,
         default: PI_SUBAGENT_TIERS[role] || 'auto',
+        description,
       });
     }
     return {
@@ -379,7 +380,7 @@ export class PiClientAdapter implements ClientAdapter {
         if (base.model === value) continue; // unchanged echo — leave a manual pin byte-identical
         overrides[role] = { ...base, model: value.includes('/') ? value : `${PI_PROVIDER_KEY}/${value}` };
       }
-      for (const role of this.discoverSubagentRoles(overrides)) {
+      for (const { name: role } of this.discoverSubagentRoles(overrides)) {
         if (explicitRoles.has(role)) continue;
         const tier = PI_SUBAGENT_TIERS[role] || 'auto';
         const entry = overrides[role];
@@ -597,8 +598,8 @@ export class PiClientAdapter implements ClientAdapter {
    * layout) the preset roster is used as fallback. Never throws; order is
    * preset-known roles first, then the rest alphabetically.
    */
-  private discoverSubagentRoles(overrides: Record<string, any> | undefined): string[] {
-    const found = new Set<string>();
+  private discoverSubagentRoles(overrides: Record<string, any> | undefined): { name: string; description?: string }[] {
+    const found = new Map<string, string | undefined>();
     const agentRoot = path.dirname(this.getConfigPath());
     const scanDirs: { dir: string; isPackage: boolean }[] = [
       { dir: path.join(agentRoot, 'npm', 'node_modules', 'pi-subagents', 'agents'), isPackage: true },
@@ -624,18 +625,24 @@ export class PiClientAdapter implements ClientAdapter {
         const name = /^[ \t]*name:[ \t]*([^\s]+)/m.exec(frontmatter)?.[1]?.replace(/^['"]|['"]$/g, '');
         if (!name) continue;
         if (isPackage && /^runner:/m.test(frontmatter)) continue; // external-CLI launcher — not model-routed
-        found.add(name);
+        // The role's own one-line description, when the agent file carries one.
+        // Package files land first, user files second, so a user override's
+        // description wins (same precedence as the name itself).
+        const description = /^[ \t]*description:[ \t]*(.+)$/m.exec(frontmatter)?.[1]
+          ?.trim()
+          .replace(/^['"]|['"]$/g, '');
+        found.set(name, description || found.get(name));
       }
     }
     if (found.size === 0) {
-      for (const role of Object.keys(PI_SUBAGENT_TIERS)) found.add(role);
+      for (const role of Object.keys(PI_SUBAGENT_TIERS)) found.set(role, undefined);
     }
     for (const role of Object.keys(overrides || {})) {
-      if (typeof role === 'string' && role) found.add(role);
+      if (typeof role === 'string' && role && !found.has(role)) found.set(role, undefined);
     }
     const known = Object.keys(PI_SUBAGENT_TIERS).filter(r => found.has(r));
-    const rest = [...found].filter(r => !(r in PI_SUBAGENT_TIERS)).sort();
-    return [...known, ...rest];
+    const rest = [...found.keys()].filter(r => !(r in PI_SUBAGENT_TIERS)).sort();
+    return [...known, ...rest].map(name => ({ name, description: found.get(name) }));
   }
 
   /**

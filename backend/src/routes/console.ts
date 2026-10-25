@@ -1399,6 +1399,10 @@ export function registerConsoleRoutes(
       roles: targets.map((t) => ({
         key: t.key,
         name: t.label || t.key,
+        // `purpose` = the client's OWN role description when it declares one
+        // (opencode agent frontmatter / pi agent file / live service roster).
+        // Absent means unknown — never synthesized server-side: role sets are
+        // discovered per client and change with the installed package.
         ...(t.role ? { purpose: t.role } : {}),
         ...(t.current ? { current: t.current } : {}),
       })),

@@ -19,7 +19,7 @@ import { FONT_MONO } from '../lib/fonts';
  * slot-less by design (opencode-proxy routes traffic transparently and keeps
  * opencode-native models — no model picker).
  */
-const clientSlots = (c: ClientStatus): { key: string; value?: string; default?: string }[] => c.modelSlots;
+const clientSlots = (c: ClientStatus): { key: string; value?: string; default?: string; description?: string }[] => c.modelSlots;
 
 /**
  * Clients whose adapter honors `extraModels` (setup writes main + extras as a
@@ -572,12 +572,15 @@ export const ClientsPage: React.FC = () => {
         .map(s => ({
           key: s.key,
           label: slotLabels[s.key] || s.key,
+          // The role's own description (agent file / roster); the decider uses
+          // it as context. Never synthesized — role sets are discovered.
+          role: s.description,
           current: s.key === 'main' ? modelSel[c.name]?.main : bindSel[c.name]?.[s.key],
         }));
     } else if (c.name === 'opencode') {
-      targets = (agents || []).map(a => ({ key: a.name, label: a.name, role: a.mode, current: bindSel[c.name]?.[a.name] }));
+      targets = (agents || []).map(a => ({ key: a.name, label: a.name, role: a.description || a.mode, current: bindSel[c.name]?.[a.name] }));
     } else {
-      targets = clientSlots(c).map(s => ({ key: s.key, label: slotLabels[s.key] || s.key, current: modelSel[c.name]?.[s.key] }));
+      targets = clientSlots(c).map(s => ({ key: s.key, label: slotLabels[s.key] || s.key, role: s.description, current: modelSel[c.name]?.[s.key] }));
     }
     if (targets.length === 0) return;
     if (profileMode && Object.keys(profile!.slots || {}).length === 0) return;

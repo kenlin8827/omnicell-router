@@ -84,4 +84,9 @@ export interface ClientModelSlot {
   value?: string;
   /** Recommended default for this role (e.g. haiku → 'lite', opus → 'pro'); used for UI seeding and reset */
   default?: string;
+  /** What this role/slot is FOR, when the client itself declares it (agent
+   *  frontmatter / live roster). Console-only: feeds the smart-assign decider's
+   *  role context. Absent = unknown — never synthesized here, because role sets
+   *  are DISCOVERED per client and change with the installed package. */
+  description?: string;
 }
