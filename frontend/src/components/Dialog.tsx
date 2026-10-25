@@ -126,7 +126,23 @@ export const Dialog: React.FC<DialogProps> = ({
             without it the body stays content-sized and a child asking for
             `flex: 1` has nothing to fill. In windowed mode the card is auto-
             height, so there is no free space and the rule is a no-op. */}
-        <div style={{ flex: 1, overflowY: 'auto', minHeight: 0, display: 'flex', flexDirection: 'column', gap: '12px', paddingRight: 2 }}>
+        {/* `scrollbar-gutter: stable` reserves the scrollbar rail for EVERY dialog. Without it a
+            body that sits near the height limit oscillates: the scrollbar appears → the content box
+            narrows by the rail width → `max-width: 100%` images shrink with it → the body drops back
+            under the limit → the scrollbar disappears → the box widens again. The rail is always
+            reserved, so the loop cannot start (and text never shifts by 6 px when a dialog grows). */}
+        <div
+          style={{
+            flex: 1,
+            overflowY: 'auto',
+            minHeight: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '12px',
+            paddingRight: 2,
+            scrollbarGutter: 'stable',
+          }}
+        >
           {children}
         </div>
         {footerLeft || footerRight ? (

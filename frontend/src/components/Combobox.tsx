@@ -16,6 +16,8 @@ export interface ComboboxOption {
   badgeColor?: string;
   /** Leading color dot (e.g. theme preview swatch) — rendered in trigger and panel. */
   swatch?: string;
+  /** Leading glyph (brand mark, host icon) — rendered in trigger and panel, before the label. */
+  icon?: React.ReactNode;
 }
 
 /** 10px color dot for `swatch` options — a real preview beats an emoji label. */
@@ -52,6 +54,12 @@ type ComboboxBaseProps = {
   forceFilter?: boolean;
   /** Non-interactive trigger (e.g. a slot owned by another control). */
   disabled?: boolean;
+  /**
+   * Chrome level. `default` = the bordered field look (`.input`). `ghost` = no border/background
+   * until hover or focus — for dense toolbars and the console header, where a row of bordered
+   * boxes would read as a form instead of "current value, click to change".
+   */
+  variant?: 'default' | 'ghost';
 };
 
 /**
@@ -103,7 +111,7 @@ const optionStyle: React.CSSProperties = {
 };
 
 export const Combobox: React.FC<ComboboxProps> = (props) => {
-  const { options, placeholder, style, clearable, panelMinWidth, forceFilter, multiple, disabled } = props;
+  const { options, placeholder, style, clearable, panelMinWidth, forceFilter, multiple, disabled, variant } = props;
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -275,7 +283,7 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
       <button
         type="button"
         ref={triggerRef}
-        className="input"
+        className={variant === 'ghost' ? 'input input-ghost' : 'input'}
         role="combobox"
         aria-expanded={open}
         aria-haspopup="listbox"
@@ -286,6 +294,7 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
         style={{ ...style, display: 'flex', alignItems: 'center', gap: 8, cursor: disabled ? 'not-allowed' : 'pointer', textAlign: 'left', opacity: disabled ? 0.5 : 1 }}
       >
         {selected?.swatch && <SwatchDot color={selected.swatch} />}
+        {selected?.icon}
         <span
           style={{
             flex: 1,
@@ -436,6 +445,7 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
                     }}
                   >
                     {o.swatch && <SwatchDot color={o.swatch} />}
+                    {o.icon}
                     <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {o.label}
                     </span>

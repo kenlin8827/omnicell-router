@@ -15,6 +15,12 @@ interface PaginationProps {
   disabled?: boolean;
   /** Show "from–to of total" summary on the left */
   showSummary?: boolean;
+  /**
+   * The caller's `total` is a LOWER BOUND, not an exact count (the source publishes no total — the MCP
+   * registry answers only a cursor). The summary then reads "of at least N", so the pager shows a
+   * number the list can prove instead of hiding the figure or inventing one.
+   */
+  totalAtLeast?: boolean;
   /** When provided (with onPageSizeChange), shows a per-page size selector */
   pageSizeOptions?: number[];
   onPageSizeChange?: (pageSize: number) => void;
@@ -56,6 +62,7 @@ export const Pagination: React.FC<PaginationProps> = ({
   onChange,
   disabled,
   showSummary,
+  totalAtLeast,
   pageSizeOptions,
   onPageSizeChange,
 }) => {
@@ -95,7 +102,7 @@ export const Pagination: React.FC<PaginationProps> = ({
     >
       {showSummary && (
         <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>
-          {t('pagination.summary', {
+          {t(totalAtLeast ? 'pagination.summaryAtLeast' : 'pagination.summary', {
             from: Math.min((page - 1) * pageSize + 1, total),
             to: Math.min(page * pageSize, total),
             total,

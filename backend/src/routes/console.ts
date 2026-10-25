@@ -4,6 +4,7 @@ import path from 'node:path';
 import { getAllClientStatuses, refreshClientProfileBindings, setupClient, teardownClient } from '../cli/clients/index.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { MEMBER_TIER_ORDER } from '../providers/member-match.js';
+import { TIER_PURPOSE } from '../providers/virtual-meta.js';
 import { globMatchAny } from '../utils/glob.js';
 import { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import { getRawConfig, loadConfig, saveConfig, saveRawConfig, getRuntimeConfigRef } from '../config/index.js';
@@ -23,7 +24,7 @@ import { APP_VERSION } from '../version.js';
 import { isSyncClientId } from '../opencode/credentials/sync.js';
 import { ensureCa } from '../forward-proxy/ca.js';
 import { getForwardProxyStatus } from '../forward-proxy/status.js';
-import { RouterConfig, type CredentialLimitConfig, type RateLimitRule } from '../config/types.js';
+import { RouterConfig, type CredentialLimitConfig, type ModelRegistration, type RateLimitRule } from '../config/types.js';
 
 import type { CredentialMeta, CredentialStore, RawCred } from '../opencode/credentials/types.js';
 import { keyHashPrefix } from '../opencode/credentials/types.js';
@@ -1268,6 +1269,87 @@ export function registerConsoleRoutes(
   app.post('/api/admin/client/:client/teardown', handleTeardown);
 
   /**
+   * Resolve a console decider PICK to the PHYSICAL model that answers it.
+   * Deliberately the SAME cascade the /v1/systemone surface applies (ADR-0008),
+   * so a name means one thing console-wide: a registered id, or a combo (its
+   * leader member answers — the same leader pick the routing path uses), is
+   * used as-is; a bare tier alias projects onto the chain head of its healthy
+   * DECISION-SURFACE pool (the read that keeps systemone-wire models in view);
+   * bare `auto` means `systemone.defaultModel`. Undefined = nothing routable
+   * behind the name (unknown id, combo without members, empty/all-unhealthy
+   * pool, unset default) — callers must refuse, never silently fall back.
+   */
+  const resolveDecider = (raw: string): ModelRegistration | undefined => {
+    const direct = registry.getModel(raw);
+    if (direct) return direct;
+    if (registry.isCombo(raw)) {
+      const members = registry.resolveCombo(raw);
+      return members.length > 0 ? registry.pickComboLeader(raw, members) : undefined;
+    }
+    if (raw === 'auto') {
+      const fallback = (loadConfig().systemone?.defaultModel || '').trim();
+      return fallback ? registry.getModel(fallback) : undefined;
+    }
+    if ((MEMBER_TIER_ORDER as readonly string[]).includes(raw)) {
+      return registry.getCandidateModelsForTier(raw as TierLevel, true, { decisionSurface: true })[0];
+    }
+    return undefined;
+  };
+
+  /**
+   * One-line, model-readable description of a candidate — `criteria` values are
+   * the ONLY per-option context the decision prompt carries (the whole
+   * questions document is serialized verbatim by convert.ts
+   * buildDecisionChatRequest). Registry data is the objective half (tier
+   * membership, price, reasoning support, wire); the frontend-supplied note
+   * carries what the registry cannot know (a profile slot link). Virtual ids
+   * resolve to no entity and are described by what they MEAN, since "assign
+   * `lite`" is a legitimate pick. Deliberately NO tier ladder here: writing
+   * "ultra = broadest" made every role land on `ultra`.
+   */
+  const describeCandidate = (rawId: string, note?: string): string => {
+    const m = registry.getModel(rawId);
+    let body: string;
+    if (m) {
+      const tiers = registry.tiersOf(m);
+      const parts = [
+        `registered model; tiers=${tiers.length > 0 ? tiers.join('|') : 'none'}`,
+        `price $${m.pricing?.input ?? 0}/$${m.pricing?.output ?? 0} per 1M tokens in/out`,
+      ];
+      if (m.wire === 'systemone') {
+        parts.push('wire=systemone — decision protocol ONLY, cannot serve chat, never assign it to a chat role');
+      } else if (m.wire) {
+        parts.push(`wire=${m.wire}`);
+      }
+      const efforts = m.supportedReasoningEfforts;
+      if (efforts && efforts.length > 0) parts.push(`reasoning=${efforts.join('|')}`);
+      else if (m.supportsReasoningEffort) parts.push('reasoning=yes');
+      body = parts.join('; ');
+    } else if (registry.resolveVariantRef(rawId)) {
+      // Variant sibling id (`<baseId>-<variantId>`): not a registry entry of its
+      // own — the base model plus a pinned reasoning level (orchestrator
+      // resolves it the same way). Calling it unregistered would steer the
+      // decider away from a perfectly legal pick.
+      const { base, variant } = registry.resolveVariantRef(rawId)!;
+      const tiers = registry.tiersOf(base);
+      body =
+        `variant of ${base.id} (pins reasoning_effort '${variant.reasoningEffort}'); ` +
+        `tiers=${tiers.length > 0 ? tiers.join('|') : 'none'}; ` +
+        `price $${base.pricing?.input ?? 0}/$${base.pricing?.output ?? 0} per 1M tokens in/out; ` +
+        `wire=${base.wire ?? 'unknown'}`;
+    } else if (registry.isCombo(rawId)) {
+      body = `combo; members=${registry.resolveCombo(rawId).length} (the router picks a healthy member per request)`;
+    } else if (rawId === 'auto') {
+      body = 'virtual alias auto; cross-tier auto-routing — the router picks per tier policy, not a fixed model';
+    } else if ((MEMBER_TIER_ORDER as readonly string[]).includes(rawId)) {
+      body = `virtual alias '${rawId}'; ${TIER_PURPOSE[rawId as TierLevel]}; the router picks a healthy member of that tier pool`;
+    } else {
+      body = 'NOT registered and not routable — do not pick';
+    }
+    return note ? `${body} · ${note}` : body;
+  };
+
+  /**
    * Smart slot assignment (console "smart assign" button): ONE System One
    * decision call against a caller-chosen decider model — per-target 'choice'
    * questions over the candidate set, so every wire works: systemone-wire
@@ -1298,22 +1380,22 @@ export function registerConsoleRoutes(
     if (targets.length === 0) return reply.status(400).send({ success: false, message: 'targets must not be empty' });
     if (candidates.length === 0) return reply.status(400).send({ success: false, message: 'candidates must not be empty' });
 
-    // Resolve the decider to a PHYSICAL model: a combo id runs through its
-    // leader member (the same leader pick the routing path uses).
-    let model = registry.getModel(decider);
-    if (!model && registry.isCombo(decider)) {
-      const members = registry.resolveCombo(decider);
-      if (members.length === 0) {
-        return reply.status(400).send({ success: false, message: `Decider combo '${decider}' has no registered members` });
-      }
-      model = registry.pickComboLeader(decider, members);
-    }
+    // Resolve the pick to a PHYSICAL model through the SAME cascade the
+    // /v1/systemone surface applies (see resolveDecider): physical id / combo
+    // leader / tier-alias pool head / `auto` → systemone.defaultModel.
+    const model = resolveDecider(decider);
     if (!model) {
-      return reply.status(400).send({ success: false, message: `Decider model '${decider}' is not routable by the gateway` });
+      return reply.status(400).send({
+        success: false,
+        message: `Decider '${decider}' does not resolve to a routable model (unknown id, empty tier pool, or unset systemone.defaultModel)`,
+      });
     }
 
     const state: Record<string, unknown> = {
-      task: 'Assign each role/slot the MOST suitable candidate id.',
+      // Tier PURPOSE (what each rung is for), never a ranking: a ladder reads
+      // as "ultra is the most/broadest" and then every role lands on it.
+      tierPurpose: TIER_PURPOSE,
+      task: 'Assign each role/slot the MOST suitable candidate id. Every candidate is described with its objective profile (tier membership, price per 1M tokens, reasoning support, wire); use that — never guess from the model name alone.',
       roles: targets.map((t) => ({
         key: t.key,
         name: t.label || t.key,
@@ -1321,13 +1403,13 @@ export function registerConsoleRoutes(
         ...(t.current ? { current: t.current } : {}),
       })),
     };
-    const rubric = 'Pick exactly one candidate id per question. Weigh the role purpose (capability needs, cost, latency) against each candidate.';
+    const rubric = 'Pick exactly one candidate id per question. Match the role\'s WORK to the tier whose PURPOSE describes it (see tierPurpose), then weigh that candidate\'s described profile (capability needs, cost, latency). Do not default every role to one "best" model — the four tiers exist to separate that work. A candidate marked unable to serve chat is never a valid answer.';
     const questions: Record<string, { type: 'choice'; instructions: string; criteria: Record<string, string> }> = {};
     for (const t of targets) {
       questions[t.key] = {
         type: 'choice',
         instructions: rubric,
-        criteria: Object.fromEntries(candidates.map((c) => [c.id, c.note || c.id])),
+        criteria: Object.fromEntries(candidates.map((c) => [c.id, describeCandidate(c.id, c.note)])),
       };
     }
 
@@ -1353,14 +1435,27 @@ export function registerConsoleRoutes(
     } finally {
       clearTimeout(deadline);
     }
+    // Diagnosability: "the decider picked badly" is unactionable without the
+    // INPUT it saw and the CHOICES it made. `state` is small (roles + task);
+    // `criteriaSample` shows one rendered candidate description verbatim and
+    // `criteriaChars` the total prompt weight; `answers` collapses each answer
+    // to its chosen id, so a diff against expectations is one line per role.
+    // The full questions document stays out of the log.
     req.log.info({
       client: params.client,
       decider,
+      resolved: model.id,
       resolvedWire: model.wire,
       upstreamKind,
       ms: Date.now() - startedAt,
       targets: targets.length,
       candidates: candidates.length,
+      criteriaChars: JSON.stringify(questions).length,
+      criteriaSample: candidates[0] ? describeCandidate(candidates[0].id, candidates[0].note) : '',
+      state,
+      answers: Object.fromEntries(
+        Object.entries((response?.answers || {}) as Record<string, { choice?: unknown }>).map(([k, v]) => [k, v?.choice])
+      ),
       usage: response?.usage,
     }, 'smart-assign: decider answered');
 
@@ -1378,7 +1473,25 @@ export function registerConsoleRoutes(
         message: `Decider returned invalid/missing assignments for: ${invalid.join(', ')}`,
       });
     }
-    return { status: 'ok', assignments };
+    return { status: 'ok', resolved: model.id, assignments };
+  });
+
+  /**
+   * Resolve a decider name WITHOUT spending anything: the console shows
+   * "→ <physical model>" next to the pick, so `lite` (a pool projection) and
+   * `auto` (the System One default) are never blind choices about who answers.
+   * Same resolver as the smart-assign call itself — one implementation.
+   */
+  app.get('/api/admin/decider/resolve', async (req, reply) => {
+    const raw = String((req.query as { model?: string })?.model || '').trim();
+    if (!raw) return reply.status(400).send({ success: false, message: 'model is required' });
+    const model = resolveDecider(raw);
+    if (!model) {
+      return reply
+        .status(404)
+        .send({ success: false, message: `Decider '${raw}' does not resolve to a routable model` });
+    }
+    return { success: true, model: raw, resolved: model.id };
   });
 
   // 4a. OpenCode agent inventory (model-profile binding UI): live v2 service

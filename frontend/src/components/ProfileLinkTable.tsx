@@ -276,7 +276,7 @@ export const ProfileLinkTable: React.FC<Props> = ({
                     {label} · {boundN}/{sorted.length}
                   </div>
                 )}
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(430px, 1fr))', gap: '6px 18px' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(480px, 1fr))', gap: '6px 18px' }}>
                   {sorted.map(r => {
                     const bound = drafts[r.name] || '';
                     const linked = bound.startsWith('slot:');
@@ -287,12 +287,15 @@ export const ProfileLinkTable: React.FC<Props> = ({
                         {r.current && (
                           <InfoTip text={`${t('clients.profileCurrentModel')}: ${r.current}`} />
                         )}
-                        <div style={{ width: '230px', flexShrink: 0 }}>
+                        {/* The picker takes the row's remaining width instead of a
+                            fixed 230px: model ids are long (vendor/model-suffix),
+                            and a fixed box clipped them to an unusable prefix. */}
+                        <div style={{ flex: 1, minWidth: 0 }}>
                           <Combobox
                             value={bound}
                             onChange={v => onDraft(r.name, v)}
                             options={rowOptions(bound)}
-                            panelMinWidth={300}
+                            panelMinWidth={360}
                           />
                         </div>
                         {missing && (

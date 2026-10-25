@@ -6,6 +6,7 @@ import { getRateLimiter, apiKeySubject } from './ratelimit/rate-limiter.js';
 import { getRateLimitEventLog, recordRateLimitEvent } from './ratelimit/event-log.js';
 import { getFailureEventLog } from './observability/failure-events.js';
 import { registerEnvironmentRoutes } from './routes/environments.js';
+import { registerHarnessRoutes } from './routes/harness.js';
 import { SURFACES } from './surfaces/table.js';
 import { createFastifyTransport } from './surfaces/transport-fastify.js';
 import { dispatchSurface } from './surfaces/dispatch.js';
@@ -686,6 +687,10 @@ export function createServer(
     const removed = getFailureEventLog().remove(id);
     return { status: 'ok', removed };
   });
+
+  // Harness domain (ADR-0015) — source registry, host catalog, inventory, market browse/detail,
+  // install + remove writers, and the derived-translation store.
+  registerHarnessRoutes(app);
 
   // 1C. Reset Tripped Circuit Breakers (Admin recovery after quota top-up)
   // optional `scope` (default 'model' = legacy behavior):

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { RequestCaptureConfig } from '../config/types.js';
 import { getEnvPaths } from '../config/env.js';
+import { renameWithRetry } from '../utils/atomic-write.js';
 import { DEFAULT_MAX_BODY_BYTES } from '../config/defaults.js';
 
 /**
@@ -1792,7 +1793,7 @@ export class CaptureRecorder {
       const tmp = `${fp}.${process.pid}.${crypto.randomUUID().slice(0, 8)}.tmp`;
       try {
         fs.writeFileSync(tmp, raw);
-        fs.renameSync(tmp, fp);
+        renameWithRetry(tmp, fp);
       } catch (inner: any) {
         try {
           fs.rmSync(tmp, { force: true });

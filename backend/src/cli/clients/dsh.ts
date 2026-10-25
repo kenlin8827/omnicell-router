@@ -9,6 +9,7 @@ import {
   defaultGatewayPort,
 } from './base.js';
 import { ClientHookStatus, VIRTUAL_AUTO_IDS } from '../types.js';
+import { renameWithRetry } from '../../utils/atomic-write.js';
 
 /**
  * Hook target: DeepSeek Harness (`dsh`). Unlike the JSON-config clients, dsh
@@ -302,22 +303,13 @@ export class DshClientAdapter implements ClientAdapter {
     fs.mkdirSync(dir, { recursive: true });
     const tmpPath = `${configPath}.tmp.${process.pid}.${Date.now()}`;
     fs.writeFileSync(tmpPath, stringify(entries), 'utf8');
-    let lastError: unknown;
-    for (let attempt = 0; attempt < 5; attempt++) {
-      try {
-        fs.renameSync(tmpPath, configPath);
-        return;
-      } catch (e) {
-        lastError = e;
-        if (attempt < 4) {
-          const until = Date.now() + (attempt + 1) * 10;
-          while (Date.now() < until) {}
-        }
-      }
-    }
     try {
-      fs.unlinkSync(tmpPath);
-    } catch {}
-    throw lastError;
+      renameWithRetry(tmpPath, configPath);
+    } catch (e) {
+      try {
+        fs.unlinkSync(tmpPath);
+      } catch {}
+      throw e;
+    }
   }
 }

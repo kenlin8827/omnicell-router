@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { peekEnvName } from '../config/env.js';
+import { renameWithRetry } from '../utils/atomic-write.js';
 import {
   CredentialPaths,
   breakerStateFile,
@@ -239,7 +240,7 @@ export class BreakerStateStore {
       } catch {
         // best effort — Windows chmod semantics differ
       }
-      fs.renameSync(tmpPath, this.filePath);
+      renameWithRetry(tmpPath, this.filePath);
     } catch (e) {
       // The gateway keeps running on in-memory breakers; only persistence
       // degrades. Loud so an operator on a read-only HOME notices the gap.

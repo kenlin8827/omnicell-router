@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { CatalogSourceState } from './types.js';
+import { renameWithRetry } from '../../utils/atomic-write.js';
 
 /**
  * Per-source disk cache under ~/.cache/omnicell-router/ (XDG_CACHE_HOME aware).
@@ -31,7 +32,7 @@ export function writeCacheFile<T>(name: string, data: T): void {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const tmp = `${file}.tmp.${process.pid}.${Date.now()}`;
     fs.writeFileSync(tmp, JSON.stringify({ fetchedAt: Date.now(), data }), 'utf8');
-    fs.renameSync(tmp, file);
+    renameWithRetry(tmp, file);
   } catch {
     // best effort
   }

@@ -39,6 +39,34 @@ const GRID = 'minmax(170px, 1fr) minmax(200px, 1.8fr) 205px 60px 72px minmax(180
 
 const fmtTime = (ts?: number): string => (ts ? new Date(ts).toLocaleString() : '—');
 
+/** Console-side sort keys for the source table — display only. The SERVER
+ *  order (priority asc, then id) remains the merge order that decides which
+ *  source fills a field first (fill-missing-only). */
+type SourceSortKey = 'priority' | 'id' | 'records' | 'synced' | 'status';
+/** Provider-group ordering in the aggregated catalog. */
+type ProviderSortKey = 'default' | 'id' | 'models' | 'locked';
+/** Model-row ordering — applies to group drill-downs and the flat list alike. */
+type ModelSortKey = 'default' | 'name' | 'priceAsc' | 'contextDesc';
+
+const priceOf = (m: CatalogSourceDataModelRecord): number =>
+  typeof m.cost?.input === 'number' && m.cost.input >= 0 ? m.cost.input : Infinity;
+
+/** Stable display sort for catalog model rows — never mutates the input. */
+const sortModelRows = <T extends CatalogSourceDataModelRecord>(rows: T[], key: ModelSortKey): T[] => {
+  if (key === 'default') return rows;
+  const copy = [...rows];
+  switch (key) {
+    case 'name':
+      return copy.sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id));
+    case 'priceAsc':
+      return copy.sort((a, b) => priceOf(a) - priceOf(b) || a.id.localeCompare(b.id));
+    case 'contextDesc':
+      return copy.sort((a, b) => (b.limit?.context || 0) - (a.limit?.context || 0) || a.id.localeCompare(b.id));
+    default:
+      return copy;
+  }
+};
+
 /** Auto-sync period presets (ms) offered in the console selector. */
 const INTERVAL_PRESETS: { ms: number; key: string }[] = [
   { ms: 1_800_000, key: 'catalogPage.iv30m' },
@@ -537,6 +565,10 @@ const OcrCatalogPanel: React.FC = () => {
   // (cross-provider searching, price/context comparison, lock audits).
   // JSON stays the third mode via the toolbar button.
   const [viewMode, setViewMode] = useState<'group' | 'flat'>('group');
+  // Display-only ordering; each view carries its own key so switching views
+  // never applies a model-price sort to provider groups (or vice versa).
+  const [providerSort, setProviderSort] = useState<ProviderSortKey>('default');
+  const [modelSort, setModelSort] = useState<ModelSortKey>('default');
 
   const loadData = useCallback(async () => {
     const [d, l] = await Promise.all([opencodeApi.ocrCatalog(), opencodeApi.lockedCatalogModels().catch(() => null)]);
@@ -597,28 +629,44 @@ const OcrCatalogPanel: React.FC = () => {
         }))
         .filter((p) => p.models.length > 0);
     }
-    if (!q) return list;
-    return list
-      .map((p) => {
-        const self = p.id.toLowerCase().includes(q) || (p.name || '').toLowerCase().includes(q);
-        const models = self
-          ? p.models
-          : p.models.filter((m) => m.id.toLowerCase().includes(q) || (m.name || '').toLowerCase().includes(q));
-        return self || models.length > 0 ? { ...p, models } : null;
-      })
-      .filter((x): x is OcrCatalogProvider => x !== null);
-  }, [data, q, onlyLocked, onlyHidden, lockedIds]);
+    if (q) {
+      list = list
+        .map((p) => {
+          const self = p.id.toLowerCase().includes(q) || (p.name || '').toLowerCase().includes(q);
+          const models = self
+            ? p.models
+            : p.models.filter((m) => m.id.toLowerCase().includes(q) || (m.name || '').toLowerCase().includes(q));
+          return self || models.length > 0 ? { ...p, models } : null;
+        })
+        .filter((x): x is OcrCatalogProvider => x !== null);
+    }
+    const byId = (a: OcrCatalogProvider, b: OcrCatalogProvider) => a.id.localeCompare(b.id);
+    const lockedCountOf = (p: OcrCatalogProvider) =>
+      p.models.reduce((n, m) => n + (lockedIds.has(`${p.id}||${m.id}`) ? 1 : 0), 0);
+    if (providerSort !== 'default') {
+      const copy = [...list];
+      if (providerSort === 'id') copy.sort(byId);
+      else if (providerSort === 'models') copy.sort((a, b) => b.models.length - a.models.length || byId(a, b));
+      else copy.sort((a, b) => lockedCountOf(b) - lockedCountOf(a) || b.models.length - a.models.length || byId(a, b));
+      list = copy;
+    }
+    // model ordering applies inside every provider group
+    return modelSort === 'default' ? list : list.map((p) => ({ ...p, models: sortModelRows(p.models, modelSort) }));
+  }, [data, q, onlyLocked, onlyHidden, lockedIds, providerSort, modelSort]);
 
   const totalModels = React.useMemo(() => (data?.providers ?? []).reduce((n, p) => n + p.models.length, 0), [data]);
 
   // Flat rows are tagged with their provider id so ModelTable can key locks and
   // render the provider column without a parallel array. Display-only copies.
+  // The model sort re-applies globally here (per-group ordering inside a single
+  // provider says nothing about the cross-provider list).
   const flatRows = React.useMemo(
     () =>
-      providers.flatMap((p) =>
-        p.models.map((m) => ({ ...m, providerId: p.id } as FlatCatalogRow))
+      sortModelRows(
+        providers.flatMap((p) => p.models.map((m) => ({ ...m, providerId: p.id } as FlatCatalogRow))),
+        modelSort
       ),
-    [providers]
+    [providers, modelSort]
   );
 
   // provider id → logo URL straight from the aggregated catalog payload (already
@@ -666,6 +714,19 @@ const OcrCatalogPanel: React.FC = () => {
     });
 
   const dim: React.CSSProperties = { fontSize: '11px', color: 'var(--text-dim)' };
+
+  const providerSortOptions = [
+    { value: 'default', label: t('catalogPage.sortDefault') },
+    { value: 'id', label: t('catalogPage.sortId') },
+    { value: 'models', label: t('catalogPage.sortModelCount') },
+    { value: 'locked', label: t('catalogPage.sortLockedCount') },
+  ];
+  const modelSortOptions = [
+    { value: 'default', label: t('catalogPage.sortDefault') },
+    { value: 'name', label: t('catalogPage.sortModelName') },
+    { value: 'priceAsc', label: t('catalogPage.sortPriceAsc') },
+    { value: 'contextDesc', label: t('catalogPage.sortContextDesc') },
+  ];
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', minHeight: 0, flex: 1 }}>
@@ -746,6 +807,21 @@ const OcrCatalogPanel: React.FC = () => {
                   { value: 'flat', label: t('catalogPage.ocrViewFlat'), title: t('catalogPage.ocrViewFlatHint') },
                 ]}
               />
+              {viewMode === 'flat' ? (
+                <Combobox
+                  value={modelSort}
+                  onChange={(v) => setModelSort(v as ModelSortKey)}
+                  options={modelSortOptions}
+                  style={{ fontSize: 12, width: 170 }}
+                />
+              ) : (
+                <Combobox
+                  value={providerSort}
+                  onChange={(v) => setProviderSort(v as ProviderSortKey)}
+                  options={providerSortOptions}
+                  style={{ fontSize: 12, width: 170 }}
+                />
+              )}
             </div>
             <div style={{ overflowY: 'auto', flex: 1, minHeight: 0, borderTop: '1px solid var(--divider)', paddingTop: '8px' }}>
               {shownCount === 0 ? (
@@ -1387,6 +1463,7 @@ export const CatalogSourcesPage: React.FC = () => {
   const [viewSource, setViewSource] = useState<CatalogSourceView | null>(null);
   const [tab, setTab] = useState<'sources' | 'catalog'>('sources');
   const [syncIntervalMs, setSyncIntervalMs] = useState<number>(86_400_000);
+  const [sourceSort, setSourceSort] = useState<SourceSortKey>('priority');
 
   const load = useCallback(async () => {
     try {
@@ -1475,6 +1552,32 @@ export const CatalogSourcesPage: React.FC = () => {
     }
   };
 
+  // Display-only ordering of the source table. Hooks run before the loading
+  // early-return, hence the `sources ?? []` seeding.
+  const sortedSources = React.useMemo(() => {
+    const list = [...(sources ?? [])];
+    const byId = (a: CatalogSourceView, b: CatalogSourceView) => a.id.localeCompare(b.id);
+    switch (sourceSort) {
+      case 'priority':
+        return list.sort((a, b) => a.priority - b.priority || byId(a, b));
+      case 'id':
+        return list.sort(byId);
+      case 'records':
+        return list.sort((a, b) => b.records - a.records || byId(a, b));
+      case 'synced':
+        // never-synced sources sink to the bottom (missing timestamp = 0)
+        return list.sort((a, b) => (b.fetchedAt ?? 0) - (a.fetchedAt ?? 0) || byId(a, b));
+      case 'status': {
+        // enabled first, then by freshness of the payload (live > cached > stale > none)
+        const rank = (s: CatalogSourceView) =>
+          (s.enabled ? 0 : 8) + ({ network: 0, cache: 1, stale: 2, none: 3 } as const)[s.origin];
+        return list.sort((a, b) => rank(a) - rank(b) || byId(a, b));
+      }
+      default:
+        return list;
+    }
+  }, [sources, sourceSort]);
+
   if (sources === null) {
     return <div style={{ color: 'var(--text-dim)' }}>Loading...</div>;
   }
@@ -1559,6 +1662,19 @@ export const CatalogSourcesPage: React.FC = () => {
           ]}
           style={{ width: '180px' }}
         />
+        <span style={{ color: 'var(--text-dim)' }}>{t('catalogPage.sortLabel')}</span>
+        <Combobox
+          value={sourceSort}
+          onChange={(v) => setSourceSort(v as SourceSortKey)}
+          options={[
+            { value: 'priority', label: t('catalogPage.sortPriority') },
+            { value: 'id', label: t('catalogPage.sortId') },
+            { value: 'records', label: t('catalogPage.sortRecords') },
+            { value: 'synced', label: t('catalogPage.sortSynced') },
+            { value: 'status', label: t('catalogPage.sortStatus') },
+          ]}
+          style={{ width: '200px' }}
+        />
       </div>
 
       {sources.length === 0 ? (
@@ -1576,7 +1692,7 @@ export const CatalogSourcesPage: React.FC = () => {
             <div style={headCell}>{t('catalogPage.colSync')}</div>
             <div style={{ ...headCell, textAlign: 'right' }}>{t('catalogPage.colActions')}</div>
 
-            {sources.map((s) => (
+            {sortedSources.map((s) => (
               <React.Fragment key={s.id}>
                 {/* source id + badges */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '10px 8px 10px 0', minWidth: 0 }}>

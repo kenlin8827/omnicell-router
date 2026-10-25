@@ -79,6 +79,25 @@ export function virtualModelsDevBlock(env: VirtualEnvelope): Record<string, unkn
 /** The tier ladder in escalation order — `auto` spans all of it. */
 export const TIER_LADDER: readonly TierLevel[] = ['lite', 'plus', 'pro', 'ultra'];
 
+/**
+ * What each tier is FOR — a FUNCTION label, deliberately not a price or
+ * capability ranking. The distinction matters: an ordering ("lite < plus <
+ * pro < ultra, cheapest → broadest") makes every console decision land on the
+ * top rung, because "best" is then unambiguous. A function label instead lets
+ * a decider match a role's WORK to a tier.
+ *
+ * The wording mirrors the gateway's own pi-subagent default mapping
+ * (cli/clients/pi.ts PI_SUBAGENT_TIERS), which is the one place these rungs
+ * were already given meaning. It is an operator-facing convention, not a
+ * routing rule: routing itself only knows pool membership.
+ */
+export const TIER_PURPOSE: Record<TierLevel, string> = {
+  lite: 'recon & web research — breadth over depth, cheap single-shot work',
+  plus: 'verification & delegation — check someone else\'s output, hand work out',
+  pro: 'implementation & review — write code, review code',
+  ultra: 'the oracle second opinion — the hardest judgment calls',
+};
+
 /** Minimal registry seam so callers can pass the live singleton (or a stub). */
 export type CatalogList = () => Promise<CatalogProviderRecord[]>;
 

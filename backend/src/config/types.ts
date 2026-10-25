@@ -752,6 +752,28 @@ export interface RateLimitConfig {
   persist?: RateLimitPersistConfig;
 }
 
+/**
+ * Console-side default models — the picks the gateway itself spends on
+ * (internal calls, never client routing). One entry today: the translation
+ * model; the System One fallback stays on its own protocol-surface section
+ * (`systemone.defaultModel`).
+ */
+export interface DefaultModelsConfig {
+  /**
+   * ModelRef for the console's internal description/README translations
+   * (harness/translation.ts). Accepts any gateway-visible modelRef: a tier
+   * alias ('lite' | 'plus' | 'pro' | 'ultra') or a registered model id.
+   * Unset = the `lite` alias. The chain never escalates to `auto` ON ITS OWN
+   * (an internal, non-critical call must not have unbounded spend): a
+   * configured model that fails degrades to `lite`, and a failing `lite`
+   * errors honestly. Resolvability is checked at request time — models
+   * register at boot, so config load cannot validate the id. Cached
+   * translations are NOT invalidated by changing this (the store is derived
+   * data keyed by text+language; the serving model is recorded per entry).
+   */
+  translation?: string;
+}
+
 export interface RouterConfig {
   port: number;
   host: string;
@@ -801,6 +823,8 @@ export interface RouterConfig {
   credentials?: Record<string, CredentialLimitConfig[]>;
   /** Per-client console form memory (see ClientProfileMemoryEntry) — UI-only, never routed. */
   clientProfileMemory?: Record<string, ClientProfileMemoryEntry>;
+  /** Console-side default models (see DefaultModelsConfig) — gateway-internal spend picks. */
+  defaultModels?: DefaultModelsConfig;
   /**
    * Quota tracking: long-tail custom probe declarations keyed by
    * provider id. Each entry carries a relative `url` (sanitized to stay inside

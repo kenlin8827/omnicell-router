@@ -1077,6 +1077,266 @@ export interface HeadroomSidecarOpResult {
   code: string | null;
 }
 
+/** Harness domain wire types (ADR-0015) — names mirror the backend contract 1:1. */
+export interface HarnessCopyView {
+  scope: 'global' | 'project';
+  host: string;
+  rootId: string;
+  /**
+   * Package-manager-owned copy (today: the `pi` subprocess install, which materializes into the
+   * runtime's own store). `path` is then an OPAQUE IDENTITY TOKEN, NOT a filesystem path — display
+   * it as an id, never as a location to open.
+   */
+  external?: boolean;
+  path: string;
+  state: 'clean' | 'dirty' | 'missing' | 'foreign' | 'untracked';
+  placement: 'materialized' | 'verified' | 'unverified';
+  contentHash?: string;
+  /**
+   * Skill copies only: every host that reads this directory, owner first. `host` is ownership (one
+   * owner per directory — install/claims/removal); this is readership (the shared `.agents/skills`
+   * tree is read by up to nine runtimes), which is what the skills page's harness rail selects by.
+   */
+  readers?: string[];
+}
+
+/** `artifact.harness` is set for `kind: 'extension'` — the runtime whose plugin API the code targets
+ *  is part of the artifact's identity (one package in two runtimes is two artifacts). */
+export interface HarnessArtifactView {
+  id: string;
+  canonicalKey: string;
+  kind: 'skill' | 'mcp' | 'extension';
+  harness?: string;
+  name: string;
+  description: string | null;
+  /** Source that produced this artifact; null for a purely local directory. */
+  sourceId: string | null;
+  /** Surfaces it was listed on at install time, writer source first (`['npm','pi-dev']` when the
+   *  package was browsed in the Pi catalog but installed through npm). */
+  listedOn: string[];
+  trust: 'official' | 'aggregator' | 'community' | 'manual';
+  audit: { status: 'pass' | 'warn' | 'fail'; summary: string } | null;
+  copies: HarnessCopyView[];
+  rollup: 'clean' | 'partial' | 'dirty' | 'missing' | 'shadowed';
+}
+
+export interface HarnessDiscoveredArtifact {
+  /** Which kind the row belongs to — one discovery channel serves every kind. */
+  kind: 'skill' | 'mcp' | 'extension';
+  /** Set iff `kind === 'extension'`: the runtime whose own store the row was read from. */
+  harness?: string;
+  name: string;
+  description: string | null;
+  copies: HarnessCopyView[];
+  hosts: string[];
+  /** Provenance of an extension row: the runtime's own record it came from. */
+  origin?: 'runtime-store' | 'config-array' | 'local-file';
+  /** File/dir the row was read from — a tooltip, never a location we own. */
+  observedFrom?: string;
+  /** Version the runtime's store records for it, when a lock file answers. */
+  version?: string;
+  canonicalKey?: string;
+  /**
+   * The inverse of the runtime's own install record — computed by the backend from the shape the
+   * scan read (`trash-path` for a real file, `drop-entry` for one string in `plugin[]`/`packages[]`,
+   * `drop-server` for one member of an `mcp` object). Absent only when the shape is unknowable, and
+   * then the row cannot be removed from the console.
+   */
+  removal?:
+    | { op: 'trash-path'; path: string }
+    | { op: 'drop-entry'; file: string; container: string; entry: string }
+    | { op: 'drop-server'; file: string; container: string; entry: string };
+}
+
+export interface HarnessInventoryResponse {
+  status: string;
+  envName: string;
+  envRoot: string;
+  hostsScanned: number;
+  artifacts: HarnessArtifactView[];
+  discovered: HarnessDiscoveredArtifact[];
+  discoveredCopies: number;
+  paths: { manifest: string; claims: string };
+}
+
+export interface HarnessSourceView {
+  id: string;
+  label: string;
+  kinds: ('skill' | 'mcp' | 'extension')[];
+  trust: string;
+  auth: string;
+  enabled: boolean;
+  /** True when the source has a browse adapter (the market tab can show results for it). */
+  browsable?: boolean;
+  /**
+   * Harnesses the source serves, when its artifacts are runtime-bound. An extension source lists its
+   * one runtime (its packages are written against that plugin API); a source without `hosts` serves
+   * every capable harness and lets the operator name one at install time.
+   */
+  hosts?: string[];
+  /**
+   * Orderings the source OFFICIALLY offers (best default first). Absent = the catalog's own order is
+   * the only one; the console then renders a single disabled entry instead of inventing alternatives.
+   */
+  sorts?: string[];
+  unavailableReason?: string;
+}
+
+export interface HarnessRootView {
+  root: string;
+  origin: 'default' | 'env-override' | 'profile';
+  precedence: number;
+}
+
+/** One marketplace entry, normalized by the backend adapter (never a vendor payload). */
+export interface HarnessMarketItem {
+  id: string;
+  sourceId: string;
+  /**
+   * Portable install handle — the key the install endpoint takes (`github:<owner/repo>` /
+   * `npm:<name>` / `mcp-official:<registry name>`). `id` carries the same value; `key` names its role.
+   */
+  key: string;
+  /**
+   * Which writer serves this row: a skill copy tree, an extension package, or an MCP server merged
+   * into a host's own config. It is the WRITER's kind, not the page's (an npm package reached from
+   * the skills page installs as an extension).
+   */
+  installKind: 'skill' | 'mcp' | 'extension';
+  name: string;
+  /** `owner/repo` for GitHub rows; absent for sources whose identity is a package name. */
+  repo?: string;
+  description: string | null;
+  url: string;
+  /** GitHub stars, or `null` when the source publishes no popularity signal (npm, the Pi catalog,
+   *  the community registries). `null` is not `0` — the console renders "unknown" for it, and can
+   *  resolve a real count on demand for rows that name a repository. */
+  stars: number | null;
+  /**
+   * The source's OWN popularity counters, when that source has a system of its own that is not
+   * GitHub stars (today only ClawHub). A separate field on purpose: the star column means "GitHub
+   * stars", and the console labels this one with its source instead of relabelling a number.
+   */
+  registryStats?: {
+    stars: number | null;
+    downloads: number | null;
+    installs: number | null;
+  };
+  updatedAt: string;
+  topics: string[];
+}
+
+/**
+ * The long-form half of one market row (`GET /api/admin/harness/detail`).
+ *
+ * Every field beyond the row is OPTIONAL: it is a patch, not a record. `readFrom` says which
+ * upstream actually answered — `none` means the dialog renders the row's own fields only.
+ */
+export interface HarnessMarketDetail {
+  /** Markdown body, capped server-side. `null` when the row publishes none. */
+  readme: string | null;
+  repo?: string;
+  description?: string;
+  homepage?: string;
+  license?: string;
+  latestVersion?: string;
+  /** ISO publish date (npm latest) / last push (GitHub). */
+  publishedAt?: string;
+  updatedAt?: string;
+  language?: string;
+  stars?: number;
+  topics?: string[];
+  /** The source's own counters (ClawHub today) — never folded into `stars`. */
+  registryStats?: {
+    stars: number | null;
+    downloads: number | null;
+    installs: number | null;
+  };
+  readFrom: 'npm' | 'github' | 'clawhub' | 'none';
+  /** Why the long-form read produced nothing — the console translates it via `harness.browseError.*`. */
+  reason?: string;
+  reasonParams?: Record<string, string>;
+  /** English fallback and diagnostic; never the runtime's own error text. */
+  message?: string;
+}
+
+export interface HarnessHostView {
+  id: string;
+  label: string;
+  hasSkills: boolean;
+  /** Extension-capable host: a verified package-manager landing exists for it. */
+  hasExt: boolean;
+  /** MCP-capable host: a verified server-config landing exists for it (the client's own config file
+   *  or container). `hasSkills` says nothing about this — a host can read the shared skills
+   *  directory and still have nowhere to write an MCP server. */
+  hasMcp: boolean;
+  /** Scopes this build accepts (today `['global']`) — project support is deferred (ADR-0015 §D2). */
+  scopes: ('global' | 'project')[];
+  /** Resolved roots per accepted scope; a scope absent from `scopes` has no key here. */
+  roots: { global: HarnessRootView[] };
+  /** Host that owns this host's directory per scope — differs from `id` when hosts share a path. */
+  owner: { global: string | null };
+}
+
+export interface HarnessPlanAction {
+  /**
+   * The op follows the artifact's LANDING SHAPE, never its provenance:
+   *  - `move-to-trash` — a file tree / loose file (reversible through the trash);
+   *  - `drop-entry` — one string inside a JSON array (`plugin[]`, pi `packages[]`);
+   *  - `drop-server` — one member of a JSON object (a server inside `mcp`);
+   *  - `prune-only` — the copy or member is already gone, only the record is left;
+   *  - `prune-record` — package-manager-owned with no declaration file to edit.
+   */
+  op: 'move-to-trash' | 'prune-only' | 'prune-record' | 'drop-entry' | 'drop-server';
+  /** The manifest copy key: a resolved path, or the identity token for an `external` copy. */
+  path: string;
+  /** The config file a `drop-*` op edits. */
+  file?: string;
+  /** Container inside `file` (`plugin` / `packages` / `mcp`). */
+  container?: string;
+  /** The exact member removed: an array element (`drop-entry`) or an object key (`drop-server`). */
+  entry?: string;
+  host: string;
+  artifactId: string | null;
+  beforeHash?: string;
+  dirty: boolean;
+  exists: boolean;
+}
+
+/**
+ * Gate plan for an install that writes third-party state (extension gate 3 / MCP gate 2). The page
+ * shows `echo` / `file`+`container` verbatim and re-sends the request with `confirm: true`.
+ */
+export interface HarnessInstallTarget {
+  host: string;
+  /** `subprocess` (package install) or `config` (`plugin[]` / server merge). */
+  op: 'subprocess' | 'config';
+  file?: string;
+  container?: string;
+  /** Structured command for subprocess targets — apply runs THIS, `echo` is display-only. */
+  command?: string;
+  args?: string[];
+  /** The EXACT command apply will run — gate 3 shows it verbatim, never paraphrased. */
+  echo?: string;
+  refused?: string;
+  added: boolean;
+}
+
+export interface HarnessRemovePlan {
+  planId: string;
+  action: 'remove';
+  artifactIds: string[];
+  actions: HarnessPlanAction[];
+  /**
+   * Copies whose `path` is an identity token, not a location. Only their manifest record can be
+   * pruned — the package stays in the runtime's own store (its own package manager owns it).
+   */
+  external: { path: string; host: string }[];
+  blocked: { path: string; code: string; message: string }[];
+  warnings: { code: string; message: string; path: string }[];
+  createdAt: number;
+}
+
 export const api = {
   async getStatus(): Promise<GatewayStatusResponse> {
     const res = await fetch('/api/admin/status');
@@ -1347,7 +1607,7 @@ export const api = {
        *  a profile slot resolves to) but only `id` is a legal assignment. */
       candidates: (string | { id: string; note?: string })[];
     }
-  ): Promise<{ status: string; assignments: Record<string, string> }> {
+  ): Promise<{ status: string; resolved?: string; assignments: Record<string, string> }> {
     const res = await fetch(`/api/admin/client/${client}/smart-assign`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1358,6 +1618,17 @@ export const api = {
       throw new Error(err.message || `HTTP ${res.status}`);
     }
     return res.json();
+  },
+
+  /** Which PHYSICAL model a decider pick actually answers with — the console's
+   *  decision-model cascade (tier alias → healthy decision-surface pool head,
+   *  `auto` → systemone.defaultModel). Costs nothing; the picker uses it to show
+   *  the resolution instead of making the operator guess. */
+  async resolveDecider(model: string): Promise<{ model: string; resolved: string } | null> {
+    const res = await fetch(`/api/admin/decider/resolve?model=${encodeURIComponent(model)}`);
+    if (!res.ok) return null;
+    const json = await res.json().catch(() => null);
+    return json?.resolved ? { model: json.model, resolved: json.resolved } : null;
   },
 
   /** All models the gateway can route to: virtual (auto/lite/plus/pro/ultra), combos,
@@ -1776,6 +2047,360 @@ export const api = {
     const res = await fetch(`/api/admin/failure-events/${encodeURIComponent(id)}`, { method: 'DELETE' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
+  },
+
+  /** Harness source registry + measured health (ADR-0015 §D6). */
+  async harnessSources(): Promise<{ status: string; sources: HarnessSourceView[] }> {
+    const res = await fetch('/api/admin/harness/sources');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /** Harness host catalog with resolved roots and their origin. */
+  async harnessHosts(): Promise<{ status: string; hosts: HarnessHostView[] }> {
+    const res = await fetch('/api/admin/harness/hosts');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /** Installed artifacts + untracked directories, reconciled per copy. */
+  async harnessInventory(): Promise<HarnessInventoryResponse> {
+    const res = await fetch('/api/admin/harness/inventory');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /** Dry-run a maintenance action (only `remove` exists today). Writes nothing. */
+  async harnessPlan(body: {
+    action: 'remove';
+    items: {
+      artifactId: string | null;
+      copies: { scope: 'global' | 'project'; host: string; path: string }[];
+      /** A discovered row's own record; authoritative over `copies` when present. */
+      removal?: HarnessDiscoveredArtifact['removal'];
+    }[];
+  }): Promise<{ status: string; plan: HarnessRemovePlan }> {
+    const res = await fetch('/api/admin/harness/plan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.message || `HTTP ${res.status}`);
+    return data;
+  },
+
+  /** Marketplace browse — normalized across sources; unavailable sources throw with a reason. */
+  async harnessBrowse(params: {
+    source?: string;
+    q?: string;
+    limit?: number;
+    harness?: string;
+    /** The market axis being browsed — a source serving several axes (npm) forks its default
+     *  query and row install kind on it. */
+    kind?: 'skill' | 'mcp' | 'extension';
+    /** 1-based page; the backend clamps a nonsense value to the first page. */
+    page?: number;
+    /** One of the source's declared `sorts`; the backend drops an order it cannot serve. */
+    sort?: string;
+    /** Ask the source again: the backend drops this source's 60 s browse cache before reading, so
+     *  the answer is a new upstream call rather than a cached window. */
+    refresh?: boolean;
+  }): Promise<{
+    status: string;
+    source: string;
+    /** The page the backend actually answered (echoed, never inferred). */
+    page: number;
+    items: HarnessMarketItem[];
+    /** Another page exists for this query — the only honest "next" signal, because a source may
+     *  report no total at all. */
+    hasMore: boolean;
+    /** Rows the source reports for this query, when it reports one (drives the page count). */
+    total?: number;
+    /**
+     * What `total` counts. `window` = the reachable slice only (skills.sh ships 600 of a 9 911-skill
+     * board and caps every search at 200), so the pager must keep the number for its page buttons but
+     * never print it as the catalog's size.
+     */
+    totalScope?: 'catalog' | 'window';
+    /** English fallback copy for `noteCode` (the console localizes the code it knows). */
+    note?: string;
+    /** Opaque note identity — the console maps it to its own translation table. */
+    noteCode?: string;
+    noteParams?: Record<string, string>;
+  }> {
+    const search = new URLSearchParams();
+    if (params.source) search.set('source', params.source);
+    if (params.q) search.set('q', params.q);
+    if (params.limit) search.set('limit', String(params.limit));
+    if (params.harness) search.set('harness', params.harness);
+    if (params.kind) search.set('kind', params.kind);
+    if (params.page && params.page > 1) search.set('page', String(params.page));
+    if (params.sort) search.set('sort', params.sort);
+    if (params.refresh) search.set('refresh', '1');
+    const res = await fetch(`/api/admin/harness/browse?${search.toString()}`);
+    const data = await res.json();
+    if (!res.ok) {
+      const error = new Error(data?.message || `HTTP ${res.status}`) as Error & {
+        code?: string;
+        /** Why it failed, in the backend's translatable vocabulary (`harness.browseError.*`). */
+        reason?: string;
+        reasonParams?: Record<string, string>;
+      };
+      error.code = data?.code;
+      error.reason = data?.reason;
+      error.reasonParams = data?.reasonParams;
+      throw error;
+    }
+    return data;
+  },
+
+  /**
+   * On-demand GitHub stars for the repositories the market is showing.
+   *
+   * Separate from `harnessBrowse` on purpose: a browse must never spend the operator's GitHub quota
+   * unasked. The backend batches several `repo:` qualifiers per request and caches the answer, so a
+   * repeated click (or a page turn back) is free. Repositories GitHub does not index come back in
+   * `missing`.
+   *
+   * `cachedOnly` answers from the backend cache with the network removed: the console calls it as a
+   * page renders, so a count this gateway resolved minutes ago appears WITHOUT a click, and a miss
+   * stays a miss (no upstream request, nothing to spend).
+   */
+  async harnessMarketStars(
+    repos: string[],
+    options?: { cachedOnly?: boolean }
+  ): Promise<{
+    status: string;
+    /** `owner/repo` (lowercase) → star count. */
+    stars: Record<string, number>;
+    /** Requested repositories the answer did not cover. */
+    missing: string[];
+    /** How many were already cached — a click that spent nothing. */
+    cached: number;
+  }> {
+    const res = await fetch('/api/admin/harness/market/stars', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(options?.cachedOnly ? { repos, cachedOnly: true } : { repos }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const error = new Error(data?.message || `HTTP ${res.status}`) as Error & {
+        code?: string;
+        reason?: string;
+        reasonParams?: Record<string, string>;
+      };
+      error.code = data?.code;
+      error.reason = data?.reason;
+      error.reasonParams = data?.reasonParams;
+      throw error;
+    }
+    return data;
+  },
+
+  /**
+   * Market-row detail — the long-form half of a browse answer (README, licence, version).
+   *
+   * Reads ONE row's declared identity (`npm:<name>` key and/or `owner/repo`); never a URL, so this
+   * cannot be used as a generic proxy. A row with nothing readable still answers (`readFrom: 'none'`)
+   * because the dialog is built on the fields the browse answer already carried.
+   */
+  async harnessDetail(params: { source?: string; key?: string; repo?: string }): Promise<{
+    status: string;
+    source: string;
+    detail: HarnessMarketDetail;
+  }> {
+    const search = new URLSearchParams();
+    if (params.source) search.set('source', params.source);
+    if (params.key) search.set('key', params.key);
+    if (params.repo) search.set('repo', params.repo);
+    const res = await fetch(`/api/admin/harness/detail?${search.toString()}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.message || `HTTP ${res.status}`);
+    return data;
+  },
+
+  /**
+   * Install one artifact — one store entry, N copies (skills) or ONE runtime's package (extensions).
+   * The request speaks a portable `key` (`<sourceId>:<ref>[#dir]`); `kind` picks the writer.
+   */
+  async harnessInstall(body: {
+    key?: string;
+    kind?: 'skill' | 'mcp' | 'extension';
+    repo?: string;
+    sourceId?: string;
+    skillDir?: string;
+    manualSpec?: string;
+    /** Gate 3 / gate 2 acknowledgement — without it an extension/mcp install writes nothing. */
+    confirm?: boolean;
+    /** Surfaces the row was browsed on, besides the one that writes it (see `HarnessArtifactView`). */
+    listedOn?: string[];
+    hosts: string[];
+    /** Global only for now — the backend answers `unsupported_scope` for anything else
+     *  (ADR-0015 §D2 "Scope": project-level install is deferred). */
+    scope: 'global';
+  }): Promise<{
+    status: string;
+    artifactId: string;
+    name: string;
+    files?: number;
+    bytes?: number;
+    copies: { host: string; path?: string; external?: boolean }[];
+    skipped: { host: string; code: string; message: string }[];
+  }> {
+    const res = await fetch('/api/admin/harness/install', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      // `ambiguous` failures carry `candidates` (the skill directories found) — the install dialog
+      // uses them to offer a picker; `confirm_required` carries `plan` (the exact commands/merges an
+      // extension or MCP install would perform) — the page shows it and retries with `confirm: true`.
+      const err: Error & {
+        code?: string;
+        candidates?: string[];
+        plan?: HarnessInstallTarget[];
+        skipped?: { host: string; code: string; message: string }[];
+      } = new Error(data?.message || `HTTP ${res.status}`);
+      err.code = data?.code;
+      err.candidates = data?.candidates;
+      err.plan = data?.plan;
+      err.skipped = data?.skipped;
+      throw err;
+    }
+    return data;
+  },
+
+  /** Translate one description into the console language (derived cache; may call the gateway). */
+  /**
+   * Translate one string into the console's language.
+   *
+   * `format: 'markdown'` selects the long-form contract (a README): prose is translated in chunked
+   * runs, fenced code is preserved verbatim, and `truncated` says the document outran the budget so
+   * its tail came back in the source language.
+   */
+  async harnessTranslate(body: { text: string; lang: string; format?: 'markdown' }): Promise<{
+    status: string;
+    text: string;
+    cached: boolean;
+    model: string;
+    truncated?: boolean;
+  }> {
+    const res = await fetch('/api/admin/harness/translate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const error = new Error(data?.message || `HTTP ${res.status}`) as Error & { code?: string };
+      error.code = data?.code;
+      throw error;
+    }
+    return data;
+  },
+
+  /** Batch translation, one chunk per call (the page walks the list in chunks). */
+  async harnessTranslateBatch(body: { lang: string; texts: string[] }): Promise<{
+    status: string;
+    results: Record<string, { text: string; model: string; cached: boolean }>;
+    errors: { text: string; code: string; message: string }[];
+  }> {
+    const res = await fetch('/api/admin/harness/translate-batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const error = new Error(data?.message || `HTTP ${res.status}`) as Error & { code?: string };
+      error.code = data?.code;
+      throw error;
+    }
+    return data;
+  },
+
+  /** Cache-only batch lookup: re-seeds the console with translations from previous visits. */
+  /** Cache-only translation lookup (never calls a model). `format: 'markdown'` reads the README
+   *  store instead of the description one, so a page translated yesterday opens translated. */
+  async harnessTranslations(body: { lang: string; texts: string[]; format?: 'markdown' }): Promise<{
+    status: string;
+    translations: Record<string, { text: string; model: string; truncated?: boolean }>;
+  }> {
+    const res = await fetch('/api/admin/harness/translations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /** Fire the real translation chain over a one-line payload — the default-model picker's
+   *  "test" button, testing the PICKER'S PENDING value (test before save; empty = unset).
+   *  Never writes the cache; an explicit click is the explicit one-call spend. */
+  async translationProbe(lang = 'en', model?: string): Promise<{
+    ok: boolean;
+    model?: string;
+    chain: string[];
+    latencyMs: number;
+    attempts: { model: string; ok: boolean; error?: string }[];
+    code?: 'no_api_key' | 'unsupported_lang' | 'upstream';
+  }> {
+    const res = await fetch('/api/admin/harness/translations/probe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lang, ...(model !== undefined ? { model } : {}) }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /** Fire the real /v1/systemone fallback path — the System One picker's "test" button, testing
+   *  the PICKER'S PENDING value (test before save; empty = unset). A real surface request:
+   *  captured like one, one upstream call per explicit click. */
+  async systemoneProbe(model?: string): Promise<{
+    ok: boolean;
+    configured: string;
+    model?: string;
+    latencyMs: number;
+    code?: 'not_configured' | 'no_api_key' | 'upstream';
+    error?: string;
+  }> {
+    const res = await fetch('/api/admin/systemone/probe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(model !== undefined ? { model } : {}),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /** Execute a plan. A 409 means the plan is stale / unknown / needs `discardLocalEdits`. */
+  async harnessApply(body: { planId: string; discardLocalEdits?: boolean }): Promise<{
+    status: string;
+    removed: string[];
+    trashDir: string | null;
+    prunedArtifacts?: string[];
+    /** Operator-facing explanation, present when the apply did something a generic "removed N"
+     *  line would misstate (e.g. a package-manager record pruned while the package stays). */
+    message?: string;
+  }> {
+    const res = await fetch('/api/admin/harness/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const error = new Error(data?.message || `HTTP ${res.status}`) as Error & { code?: string };
+      error.code = data?.code;
+      throw error;
+    }
+    return data;
   },
 
   /**

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { maskSecret } from '../user-config.js';
 import { CredentialPaths, ocrCredentialsFile, resolveDefaultPaths } from './paths.js';
+import { renameWithRetry } from '../../utils/atomic-write.js';
 import {
   CredentialMeta,
   CredentialNotFoundError,
@@ -328,7 +329,7 @@ export class OcrStore implements CredentialStore {
     } catch {
       // best effort
     }
-    fs.renameSync(tmpPath, this.file);
+    renameWithRetry(tmpPath, this.file);
     // Fire-and-forget notification AFTER the durable write — the sync engine
     // debounces a push from here. The hook must never break the mutation.
     try {

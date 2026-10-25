@@ -28,6 +28,7 @@ import { CombosPage } from './pages/CombosPage';
 import { ModelProfilesPage } from './pages/ModelProfilesPage';
 import { RouteEntriesPage } from './pages/RouteEntriesPage';
 import { YamlPage } from './pages/YamlPage';
+import { HarnessPage } from './pages/HarnessPage';
 import { ConfirmProvider } from './components/ConfirmProvider';
 import { ToastProvider } from './components/ToastProvider';
 import { TooltipProvider } from './components/TooltipProvider';
@@ -98,6 +99,18 @@ export const App: React.FC = () => {
         <Route path="environments" element={<EnvironmentsPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="yaml" element={<YamlPage />} />
+        <Route path="harness/skills" element={<HarnessPage kind="skill" />} />
+        <Route path="harness/mcp" element={<HarnessPage kind="mcp" />} />
+        <Route path="harness/extensions" element={<HarnessPage kind="extension" />} />
+        {/* Same page, landing harness in the URL: for a kind that WRITES into a client (an
+            extension package, an MCP server config) the runtime is part of the artifact's identity,
+            so it must survive reload, bookmark and Back/Forward. The bare routes above redirect
+            into the first harness that has a verified landing. A skill's rail selects a READER
+            (nine runtimes load one `.agents/skills` tree), and it is in the URL for the same
+            reason: which runtime you are looking at is a location, not view state. */}
+        <Route path="harness/skills/:harness" element={<HarnessPage kind="skill" />} />
+        <Route path="harness/mcp/:harness" element={<HarnessPage kind="mcp" />} />
+        <Route path="harness/extensions/:harness" element={<HarnessPage kind="extension" />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
         </Routes>

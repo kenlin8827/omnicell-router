@@ -35,6 +35,7 @@ import {
   ScrollText,
   Archive,
   FolderCog,
+  Boxes,
   Settings2,
   Gauge,
   Wallet,
@@ -46,6 +47,8 @@ import { api, type GatewayStatusResponse } from '../lib/api';
 import { gatewayBaseUrl } from '../lib/gateway-url';
 import { resolveStoredTheme, THEME_STORAGE_KEY, type ThemeId } from '../lib/theme';
 import { useI18n } from '../i18n/I18nContext';
+import { LANGUAGES } from '../i18n/languages';
+import type { Lang } from '../i18n/types';
 import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
 import { Combobox } from './Combobox';
@@ -135,6 +138,16 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     ],
   },
   {
+    id: 'grp-harness',
+    headingKey: 'nav.grpHarness',
+    icon: Boxes,
+    items: [
+      { to: '/harness/skills', labelKey: 'nav.skills', icon: Zap },
+      { to: '/harness/mcp', labelKey: 'nav.mcp', icon: Plug },
+      { to: '/harness/extensions', labelKey: 'nav.extensions', icon: Layers },
+    ],
+  },
+  {
     id: 'grp-system',
     headingKey: 'nav.grpSystem',
     icon: Settings,
@@ -158,6 +171,9 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/providers': { groupKey: 'nav.grpUpstream', titleKey: 'nav.providers' },
   '/models': { groupKey: 'nav.grpUpstream', titleKey: 'nav.models' },
   '/catalog': { groupKey: 'nav.grpUpstream', titleKey: 'nav.catalogSources' },
+  '/harness/skills': { groupKey: 'nav.grpHarness', titleKey: 'nav.skills' },
+  '/harness/mcp': { groupKey: 'nav.grpHarness', titleKey: 'nav.mcp' },
+  '/harness/extensions': { groupKey: 'nav.grpHarness', titleKey: 'nav.extensions' },
   '/proxy': { groupKey: 'nav.grpUpstream', titleKey: 'nav.proxy' },
   '/token-saver': { groupKey: 'nav.grpUpstream', titleKey: 'nav.tokenSaver' },
   '/clients': { groupKey: 'nav.grpAccess', titleKey: 'nav.clients' },
@@ -286,10 +302,18 @@ export const Layout: React.FC = () => {
     window.location.reload();
   };
 
-  const currentRouteMeta = ROUTE_META_KEYS[location.pathname] || {
-    groupKey: 'OmniCellRouter',
-    titleKey: 'Dashboard',
-  };
+  // Exact match first; a parameterized route (`/harness/extensions/pi`) falls back to its static
+  // parent so the header never degrades to the untranslated "Dashboard" default. Longest-prefix
+  // wins, so a future `/harness/extensions/_tool` style segment cannot borrow a sibling's title.
+  const currentRouteMeta =
+    ROUTE_META_KEYS[location.pathname] ??
+    Object.keys(ROUTE_META_KEYS)
+      .filter((route) => route !== '/' && location.pathname.startsWith(`${route}/`))
+      .sort((a, b) => b.length - a.length)
+      .map((route) => ROUTE_META_KEYS[route])[0] ?? {
+      groupKey: 'OmniCellRouter',
+      titleKey: 'Dashboard',
+    };
 
   // Theme picker: trigger sized to the longest option label + fixed chrome
   // (24 padding + 10 swatch + 2×8 gaps + 13 chevron = 63px, +6px slack).
@@ -629,16 +653,20 @@ export const Layout: React.FC = () => {
               (status dot + env:port) to avoid triple duplication, and the
               version sits in the brand header tagline. */}
           <div className="hdr-actions" style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', rowGap: 8, justifyContent: 'flex-end' }}>
-            {/* Language Switcher (i18n) */}
-            <button
-              className="btn"
-              onClick={() => setLang(lang === 'zh' ? 'en' : 'zh')}
-              style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-              title={t('header.switchLang')}
-            >
-              <Globe size={13} color="var(--accent)" />
-              <span className="hdr-label hdr-label-opt" style={{ fontWeight: 700 }}>{t('header.langBtn')}</span>
-            </button>
+            {/* Language Switcher (i18n) — Combobox per the app-wide dropdown
+                rule. Option labels are endonyms from i18n/languages.ts, so the
+                menu reads natively regardless of the active UI language; the
+                trigger shows the current language. */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }} title={t('header.switchLang')}>
+              <Globe size={13} color="var(--accent)" style={{ flexShrink: 0 }} />
+              <Combobox
+                variant="ghost"
+                value={lang}
+                onChange={(v) => setLang(v as Lang)}
+                options={LANGUAGES}
+                style={{ padding: '7px 10px', fontSize: 12, fontWeight: 700, width: 'auto' }}
+              />
+            </div>
 
             {/* Console Logout — only when webAuth login is active */}
             {webAuthActive && (
@@ -660,8 +688,10 @@ export const Layout: React.FC = () => {
               </button>
             )}
 
-            {/* Theme Picker */}
+            {/* Theme Picker — borderless: the header is a toolbar of actions, and the current theme
+                is a value to read, not a form field. */}
             <Combobox
+              variant="ghost"
               style={{ width: themePickerWidth, flexShrink: 0, padding: '6px 12px', fontSize: '12px', cursor: 'pointer' }}
               value={theme}
               onChange={(v) => setTheme(resolveStoredTheme(v))}

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ClientHookStatus, ModelProfileBinding, SupportedClient } from '../types.js';
 import { loadConfig } from '../../config/index.js';
+import { renameWithRetry } from '../../utils/atomic-write.js';
 
 export const OCR_DEFAULT_PORT = 4000;
 export const OCR_DEFAULT_URL = `http://127.0.0.1:${OCR_DEFAULT_PORT}`;
@@ -50,23 +51,14 @@ export function safeWriteJson(filePath: string, data: any): void {
   const content = JSON.stringify(data, null, 2) + '\n';
   const tmpPath = `${filePath}.tmp.${process.pid}.${Date.now()}`;
   fs.writeFileSync(tmpPath, content, 'utf8');
-  let lastError: unknown;
-  for (let attempt = 0; attempt < 5; attempt++) {
-    try {
-      fs.renameSync(tmpPath, filePath);
-      return;
-    } catch (e) {
-      lastError = e;
-      if (attempt < 4) {
-        const until = Date.now() + (attempt + 1) * 10;
-        while (Date.now() < until) {}
-      }
-    }
-  }
   try {
-    fs.unlinkSync(tmpPath);
-  } catch {}
-  throw lastError;
+    renameWithRetry(tmpPath, filePath);
+  } catch (e) {
+    try {
+      fs.unlinkSync(tmpPath);
+    } catch {}
+    throw e;
+  }
 }
 
 export function createBackup(filePath: string): string | null {

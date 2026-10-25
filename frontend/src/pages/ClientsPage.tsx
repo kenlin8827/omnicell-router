@@ -96,7 +96,7 @@ export const ClientsPage: React.FC = () => {
     profileMode: boolean;
     /** No-profile candidate basis: gateway models, permission-scoped to the
      *  client's selected API key when one is picked. */
-    basis: { id: string; kind?: string; members?: number }[];
+    basis: { id: string; kind?: string; members?: number; wire?: string }[];
     scopeHint: string;
   } | null>(null);
 

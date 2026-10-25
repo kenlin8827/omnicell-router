@@ -4,6 +4,7 @@ import path from 'node:path';
 import { ChatCompletionRequest } from '../types/openai.js';
 import { RoutingDecision, SessionLookupType, TierLevel, TierModelConfig, TIER_RANK } from '../types/router.js';
 import { SessionConfig } from '../config/types.js';
+import { renameWithRetry } from '../utils/atomic-write.js';
 
 export interface ConversationSession {
   id: string;
@@ -897,7 +898,7 @@ export class SessionManager {
       fs.mkdirSync(path.dirname(this.persistPath), { recursive: true });
       const tmp = `${this.persistPath}.tmp`;
       fs.writeFileSync(tmp, JSON.stringify(data), 'utf8');
-      fs.renameSync(tmp, this.persistPath);
+      renameWithRetry(tmp, this.persistPath);
     } catch {
       // Fail-open: persistence is best-effort continuity, never a hot-path error.
     }

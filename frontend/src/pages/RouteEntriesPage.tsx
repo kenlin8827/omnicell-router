@@ -206,7 +206,7 @@ export const RouteEntriesPage: React.FC = () => {
               value={q}
               onChange={(e) => setQ(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') { setPage(1); load({ q, page: 1 }); } }}
-              style={{ paddingLeft: 26, paddingRight: q ? 26 : 10, width: 340 }}
+              style={{ paddingLeft: 26, paddingRight: 26, width: 340 }}
             />
             {q && (
               <span
@@ -214,9 +214,9 @@ export const RouteEntriesPage: React.FC = () => {
                 aria-label={t('routeEntries.clearSearch')}
                 title={t('routeEntries.clearSearch')}
                 onClick={() => { setQ(''); setPage(1); load({ q: '', page: 1 }); }}
-                style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', cursor: 'pointer', color: 'var(--text-dim)', display: 'inline-flex' }}
+                className="input-clear"
               >
-                <X size={14} />
+                <X size={11} strokeWidth={2.5} />
               </span>
             )}
           </div>

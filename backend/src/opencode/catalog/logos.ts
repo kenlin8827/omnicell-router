@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { proxiedFetch } from '../../utils/proxy.js';
+import { renameWithRetry } from '../../utils/atomic-write.js';
 import { CATALOG_USER_AGENT } from './constants.js';
 
 /**
@@ -71,7 +72,7 @@ export function writeLogoCache(url: string, state: LogoCacheState): void {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const tmp = `${file}.tmp.${process.pid}.${Date.now()}`;
     fs.writeFileSync(tmp, JSON.stringify(state), 'utf8');
-    fs.renameSync(tmp, file);
+    renameWithRetry(tmp, file);
   } catch {
     // best effort
   }

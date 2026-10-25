@@ -610,6 +610,13 @@ td, th {
   margin-bottom: 12px;
 }
 
+/* A header-only card (e.g. the harness inventory toolbar) has nothing to separate from below:
+   keeping the 12px trail turns the card's 20px padding asymmetric (20 top / 32 bottom) and
+   renders a dead band under the row. */
+.card > .card-header:last-child {
+  margin-bottom: 0;
+}
+
 /* In-page nav feedback: brief accent ring on the jumped-to card (see
    SettingsPage jumpTo) — visible even when the scroll distance is zero. */
 @keyframes settings-jump-flash {
@@ -644,6 +651,9 @@ td, th {
   cursor: pointer;
   transition: all 0.15s ease;
   user-select: none;
+  /* A squeezed flex item wraps its label one character per line (the harness toolbar broke this
+     way). A button label is atomic: never wrap it, let the container overflow instead. */
+  white-space: nowrap;
   /* Shared elevation language with cards: the flat gray tint alone read as
      inert paint; resting + hover shadows give every secondary button lift. */
   box-shadow: var(--card-shadow);
@@ -839,6 +849,29 @@ td, th {
 .chip[aria-pressed='true']:hover {
   filter: brightness(1.12);
 }
+/* A chip's faceted count (harness source chips). The harness rail can afford a bare dimmed number
+   because its label is a plain word; a chip's label may itself END in a parenthetical
+   ("opencode.cafe（社区）"), where a trailing bare "1" reads as more of the name instead of a count.
+   So the number gets its own surface and a fixed tabular slot: the badge says "this is a quantity",
+   and a 1-digit and a 3-digit count occupy the same width, so the chip never re-flows as rows are
+   installed or removed. */
+.chip-count {
+  flex: 0 0 auto;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-dim) 22%, transparent);
+}
+/* Pressed chip sits on the accent fill: re-tint from `currentColor` so one rule serves every theme. */
+.chip[aria-pressed='true'] .chip-count {
+  color: inherit;
+  background: color-mix(in srgb, currentColor 24%, transparent);
+}
 /* One row of the variant editor (components/VariantListEditor.tsx): id input
    + effort dropdown + remove button. `align-items: stretch` plus the shared
    `.input` control height makes the three controls one strip, and the remove
@@ -885,6 +918,57 @@ td, th {
 }
 .input:focus {
   border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+/* Borderless variant (Combobox `variant="ghost"`): the trigger carries no chrome until it is
+   hovered, focused or open, so a dense toolbar / the console header reads as "current value,
+   click to change" instead of a wall of input boxes. The border is transparent rather than
+   absent so the control never shifts by 1px when the hover ring appears. */
+.input-ghost {
+  background: transparent;
+  border-color: transparent;
+}
+.input-ghost:hover {
+  background: var(--input-bg);
+  border-color: var(--input-border);
+}
+.input-ghost:focus-visible,
+.input-ghost[aria-expanded='true'] {
+  background: var(--input-bg);
+  border-color: var(--accent);
+}
+
+/* In-field clear affordance for search inputs (harness market/local, route entries):
+   a small round chip pinned to the field's right inset. Rendered ONLY while the query
+   is non-empty — an always-present ✕ reads as a dead control. The input reserves
+   `padding-right: 26px` so a long query never runs underneath the chip. */
+.input-clear {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  /* A real <button> now: the UA's default padding would push the glyph off-centre in an 18px box. */
+  padding: 0;
+  border: 1px solid var(--card-border);
+  border-radius: 50%;
+  background: var(--btn-bg);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.input-clear:hover {
+  background: var(--btn-bg-hover);
+  border-color: var(--card-border-hover);
+  color: var(--text-main);
+}
+.input-clear:focus-visible {
+  outline: none;
   box-shadow: var(--focus-ring);
 }
 
@@ -1206,7 +1290,8 @@ input[type='checkbox']:not(.switch):disabled {
   flex-shrink: 0;
 }
 @media (max-width: 1280px) {
-  /* Secondary text first: language switcher + logout go icon-only */
+  /* Secondary text first: logout goes icon-only (the language switcher is a
+     Combobox and stays visible at every width) */
   .hdr-label-opt {
     display: none;
   }
@@ -1260,5 +1345,242 @@ input[type='checkbox']:not(.switch):disabled {
 @container (min-width: 160px) {
   .tokens-stat-grid {
     grid-template-columns: 1fr 1fr;
+  }
+}
+
+/* ── Harness rail (landing pages: extensions / MCP) ──────────────────────
+   A landing page's first axis (which runtime the artifact is WRITTEN into) as a
+   vertical picker left of the content column instead of a chip row above it.
+   Card tokens only — no literal colours, so every theme carries it unchanged. */
+/* The rail is the LEFT column of the frame: it stretches to the frame's full height
+   (`align-items` default) so its border ends on the same line as the content column,
+   while `.harness-rail-inner` carries the sticky behaviour for the picker itself. */
+.harness-frame {
+  display: flex;
+  gap: 16px;
+  height: 100%;
+  flex-wrap: wrap;
+}
+.harness-body {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+/* 180px: sized to the extension-capable labels the catalog actually ships today
+   (OpenCode / Claude Code / Gemini CLI) at 12.5px, without stealing width from the
+   content column. Longer names still ellipsize rather than push the frame. */
+.harness-rail {
+  flex: 0 0 180px;
+  display: flex;
+  flex-direction: column;
+  padding: 8px 6px;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+}
+/* Sticky lives here, not on the card: the card is as tall as the content column,
+   so a sticky card could never travel; the list inside it can.
+   6px between rows + a 40px row height: one step above the sidebar's own rhythm
+   (8px vertical padding + 14px text) — this rail is a secondary picker, so its
+   rows breathe more than the primary nav's. */
+.harness-rail-inner {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* Market row name = the detail dialog's opener. Styled as a link, sized as the cell's text so the
+   table's ellipsis rules still apply to the button itself. */
+.harness-detail-link {
+  max-width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-weight: 600;
+  color: var(--text-main);
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.harness-detail-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+/* Reuses the sidebar's active treatment (surface-hover fill + card-border edge
+   + accent text) so "where am I" reads the same in both nav surfaces. */
+.harness-rail-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  height: 40px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-main);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.harness-rail-row:hover {
+  background: var(--surface-hover);
+}.harness-rail-row[aria-current='true'] {
+  background: var(--surface-hover);
+  border-color: var(--card-border);
+  color: var(--accent);
+}
+.harness-rail-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.harness-rail-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* A zero stays visible on purpose: an empty harness is still a reachable
+   install entry, so it dims instead of disappearing. */
+.harness-rail-count {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+.harness-rail-row[aria-current='true'] .harness-rail-count {
+  color: var(--accent);
+}
+/* Health: shown only when some artifact here is not clean — an empty signal
+   takes no space, so a clean rail is just names and counts. Rose rather than
+   amber because a dirty/missing tree is an error in the row badge's own scale. */
+.harness-rail-dot {
+  flex: 0 0 auto;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent-rose);
+}
+.harness-rail-title {
+  padding: 2px 8px 6px 8px;
+  font-size: 11px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.harness-rail-hint {
+  margin-top: auto;
+  padding: 10px 8px 2px 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-dim);
+}
+/* The rail's filter: a name box, not a search form — it narrows the 13-row catalog to the one
+   runtime the operator has in mind. Card tokens only, so every theme carries it unchanged. */
+.harness-rail-filter {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 6px;
+  margin: 0 2px 4px 2px;
+  height: 26px;
+  border: 1px solid var(--card-border);
+  border-radius: 7px;
+  background: var(--surface-hover);
+  color: var(--text-dim);
+}
+.harness-rail-filter:focus-within {
+  border-color: var(--accent);
+}
+.harness-rail-filter input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text-main);
+  font: inherit;
+  font-size: 11.5px;
+}
+.harness-rail-filter input::placeholder {
+  color: var(--text-dim);
+}
+/* The native search affordance is the OS's, not the theme's — the row already carries its own
+   magnifier, and a second one would double the icon. */
+.harness-rail-filter input::-webkit-search-cancel-button {
+  display: none;
+}
+.harness-rail-filter-clear {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.harness-rail-filter-clear:hover {
+  color: var(--text-main);
+}
+/* "No harness matches that filter" — inside the list, so it must not inherit the bottom hint's
+   `margin-top: auto` (that would push it to the foot of the rail). */
+.harness-rail-empty {
+  padding: 6px 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-dim);
+}
+/* Narrow screens: the rail becomes the chip row it replaced, above the content
+   (the frame wraps). CSS only — no resize listener in the component. */
+@media (max-width: 1024px) {
+  .harness-frame {
+    flex-direction: column;
+    flex-wrap: nowrap;
+  }
+  .harness-rail {
+    flex: 0 0 auto;
+    width: 100%;
+    padding: 6px 8px;
+    box-sizing: border-box;
+  }
+  .harness-rail-inner {
+    position: static;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    overflow-x: auto;
+  }
+  .harness-rail-title {
+    flex: 0 0 auto;
+    padding: 0 4px;
+  }
+  /* Row layout: the filter keeps its own width instead of stretching the chip row it shares. */
+  .harness-rail-filter {
+    flex: 0 0 auto;
+    width: 150px;
+    margin: 0 2px;
+  }
+  .harness-rail-empty {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+  .harness-rail-row {
+    flex: 0 0 auto;
+    width: auto;
+    padding: 0 10px;
+  }
+  .harness-rail-hint {
+    display: none;
   }
 }

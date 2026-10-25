@@ -6,6 +6,7 @@ import {
   quotaSnapshotsFile,
 } from '../opencode/credentials/paths.js';
 import type { QuotaBadgeState, QuotaSnapshot, QuotaProbeFailure, LastProbeCapture } from './types.js';
+import { renameWithRetry } from '../utils/atomic-write.js';
 
 /**
  * The (provider × keyHashPrefix) quota snapshot store.
@@ -263,7 +264,7 @@ export class QuotaSnapshotStore {
       };
       const tmp = `${file}.tmp-${process.pid}`;
       fs.writeFileSync(tmp, JSON.stringify(payload, null, 2), { mode: 0o600 });
-      fs.renameSync(tmp, file);
+      renameWithRetry(tmp, file);
     } catch (err: any) {
       console.warn(`[quota] snapshot save failed: ${err?.message ?? err}`);
     }

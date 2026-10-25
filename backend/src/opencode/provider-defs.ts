@@ -4,6 +4,7 @@ import { PROVIDER_ID_RULE, isValidProviderId, readJsonc } from './user-config.js
 import { resolveDefaultPaths, resolveOpencodeConfigPath, type CredentialPaths } from './credentials/paths.js';
 import { detectClientFlavor, type OpencodeFlavor } from './credentials/paths.js';
 import { providerDefAdapter } from './provider-def-adapters.js';
+import { renameWithRetry } from '../utils/atomic-write.js';
 
 /**
  * OCR-owned provider definitions — <ocrHome>/providers.json.
@@ -128,7 +129,7 @@ export function writeProviderDefs(
   const next: ProviderDefsFile = { version: 1, updated: Date.now(), providers };
   const tmp = `${file}.tmp.${process.pid}.${Date.now()}`;
   fs.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
-  fs.renameSync(tmp, file);
+  renameWithRetry(tmp, file);
   defsMutationHook?.(); // defs changed → the sync engine's debounced auto-write converges clients
 }
 

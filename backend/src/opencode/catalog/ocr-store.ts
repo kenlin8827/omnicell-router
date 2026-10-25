@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { CatalogProviderRecord } from './types.js';
 import { getEnvPaths } from '../../config/env.js';
+import { renameWithRetry } from '../../utils/atomic-write.js';
 
 /**
  * Static OCR catalog store (<env.catalog>/ocr.json — default env binds to
@@ -57,7 +58,7 @@ export function writeOcrStore(sig: string, providers: CatalogProviderRecord[]): 
     const store: OcrCatalogStore = { version: 4, sig, builtAt: Date.now(), providers };
     const tmp = `${file}.tmp.${process.pid}.${Date.now()}`;
     fs.writeFileSync(tmp, JSON.stringify(store), 'utf8');
-    fs.renameSync(tmp, file);
+    renameWithRetry(tmp, file);
   } catch {
     // best effort — the in-memory copy still serves; next rebuild retries
   }

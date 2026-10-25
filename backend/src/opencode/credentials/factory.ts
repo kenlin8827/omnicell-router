@@ -9,6 +9,7 @@ import {
   resolveDefaultPaths,
 } from './paths.js';
 import { OcrStore } from './ocr-store.js';
+import { renameWithRetry } from '../../utils/atomic-write.js';
 import {
   CredentialStore,
   StoreDegradedCode,
@@ -183,33 +184,16 @@ export function atomicWriteWithRetry(file: string, content: string): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp.${process.pid}.${Date.now()}`;
   fs.writeFileSync(tmp, content, 'utf8');
-  let lastError: unknown;
-  for (let attempt = 0; attempt < 5; attempt++) {
+  try {
+    renameWithRetry(tmp, file);
+    return;
+  } catch (e) {
     try {
-      fs.renameSync(tmp, file);
-      return;
-    } catch (e) {
-      lastError = e; // EPERM/EBUSY on Windows usually clears within a few ms
-      if (attempt < 4) blockingSleep((attempt + 1) * 10);
+      fs.unlinkSync(tmp);
+    } catch {
+      // best-effort tmp cleanup
     }
-  }
-  try {
-    fs.unlinkSync(tmp);
-  } catch {
-    // best-effort tmp cleanup
-  }
-  throw lastError;
-}
-
-/** Sync sleep on the boot write path — Atomics.wait, spin fallback. */
-function blockingSleep(ms: number): void {
-  try {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-  } catch {
-    const until = Date.now() + ms;
-    while (Date.now() < until) {
-      // spin — exotic runtimes without SharedArrayBuffer (bounded by ms)
-    }
+    throw e;
   }
 }
 

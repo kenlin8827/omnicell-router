@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { CatalogCost, CatalogLimit, CatalogModalities } from './types.js';
 import { getOcrStorePath } from './ocr-store.js';
 import type { ReasoningEffort } from '../../types/router.js';
+import { renameWithRetry } from '../../utils/atomic-write.js';
 
 /**
  * Aggregate override store (~/.omnicell-router/catalog/overrides.json).
@@ -87,7 +88,7 @@ function persist(store: OverrideStore): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp.${process.pid}.${Date.now()}`;
   fs.writeFileSync(tmp, JSON.stringify(store), 'utf8');
-  fs.renameSync(tmp, file);
+  renameWithRetry(tmp, file);
 }
 
 export function upsertOverride(providerId: string, modelId: string, entry: OverrideEntry): { success: boolean; error?: string } {

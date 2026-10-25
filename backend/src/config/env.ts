@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getOcrHomeDir } from '../cli/paths.js';
+import { renameWithRetry } from '../utils/atomic-write.js';
 
 /* ------------------------------------------------------------------------- *
  * Named environments ("book-sets") — single source of truth for which
@@ -215,7 +216,7 @@ export function writePointer(name: string): void {
   const file = path.join(root, POINTER_FILE);
   const tmp = `${file}.tmp.${process.pid}.${Date.now()}`;
   fs.writeFileSync(tmp, `${name}\n`, 'utf8');
-  fs.renameSync(tmp, file);
+  renameWithRetry(tmp, file);
 }
 
 function removePointer(): void {

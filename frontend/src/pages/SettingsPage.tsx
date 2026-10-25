@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Sliders, Save, Check, Globe, HardDrive, Archive, Database, ShieldCheck, LogOut, ChevronDown, ChevronRight, Cpu, Waypoints, AtSign, BookOpen } from 'lucide-react';
+import { Sliders, Save, Check, Globe, HardDrive, Archive, Database, ShieldCheck, LogOut, ChevronDown, ChevronRight, Cpu, Waypoints, AtSign, BookOpen, Zap } from 'lucide-react';
 import { api } from '../lib/api';
 import { sortModelOptions } from '../lib/model-options';
 import type { WebAuthConfigView } from '../lib/api';
@@ -37,6 +37,11 @@ export const SettingsPage: React.FC = () => {
   const [showDirCheat, setShowDirCheat] = useState(false);
   // Registered physical models for the System One default-model picker
   const [modelOptions, setModelOptions] = useState<{ value: string; label: string }[]>([]);
+  // Translation picker: tier aliases first (cheap → expensive; `auto` deliberately
+  // absent — an internal call must not escalate), then registered models.
+  const [translationModelOptions, setTranslationModelOptions] = useState<{ value: string; label: string }[]>([]);
+  // Chain-probe in flight (the picker's "test" button).
+  const [probing, setProbing] = useState(false);
 
   // Console webAuth (dedicated endpoints, NOT part of the whole-config save —
   // the password is hashed server-side and never round-trips through the UI)
@@ -63,10 +68,16 @@ export const SettingsPage: React.FC = () => {
       setWaBase({ enabled: res.webAuth.enabled, username: res.webAuth.username });
     }).catch(console.error);
     // Registered physical models only (kind 'model') — systemone.defaultModel
-    // resolves through registry.getModel at request time.
-    api.listGatewayModels().then(ms =>
-      setModelOptions(sortModelOptions(ms.filter(m => m.kind === 'model').map(m => ({ value: m.id, label: m.id }))))
-    ).catch(() => {});
+    // resolves through registry.getModel at request time. The translation
+    // picker reuses the same list behind the four tier aliases.
+    api.listGatewayModels().then(ms => {
+      const models = sortModelOptions(ms.filter(m => m.kind === 'model').map(m => ({ value: m.id, label: m.id })));
+      setModelOptions(models);
+      setTranslationModelOptions([
+        ...['lite', 'plus', 'pro', 'ultra'].map(id => ({ value: id, label: id })),
+        ...models,
+      ]);
+    }).catch(() => {});
   }, []);
 
   // Pending-change detection for the Console Access block. The password field
@@ -187,6 +198,53 @@ export const SettingsPage: React.FC = () => {
     ...config,
     systemone: { ...(config.systemone || {}), ...patch },
   });
+  // Same whole-node discipline for `defaultModels` (DefaultModelsConfig) —
+  // today only the console's internal translation model.
+  const patchDefaultModels = (patch: Record<string, unknown>) => setConfig({
+    ...config,
+    defaultModels: { ...(config.defaultModels || {}), ...patch },
+  });
+  // Fires the REAL /v1/systemone fallback path (model omitted → systemone.defaultModel): the
+  // System One picker's "test" affordance. Same explicit-click-spends contract as the translation
+  // probe; a probe is a real surface request, so the capture ledger records it like any client's.
+  const handleSysoneProbe = async () => {
+    if (probing) return;
+    setProbing(true);
+    try {
+      const probe = await api.systemoneProbe(config.systemone?.defaultModel ?? '');
+      if (probe.ok && probe.model) {
+        toast.success(t('settings.sysoneProbeOk', { model: probe.model, ms: String(probe.latencyMs) }));
+      } else {
+        toast.error(t('settings.sysoneProbeFail', { errors: probe.error || probe.code || 'unknown' }));
+      }
+    } catch (err: any) {
+      toast.error(err?.message || t('common.saveFailed'));
+    } finally {
+      setProbing(false);
+    }
+  };
+  // Fires the REAL translation chain over a one-line payload (never cached): the picker's
+  // "test" affordance. The click is the explicit consent to the one-call spend.
+  const handleProbe = async () => {
+    if (probing) return;
+    setProbing(true);
+    try {
+      const probe = await api.translationProbe('en', config.defaultModels?.translation ?? '');
+      if (probe.ok && probe.model) {
+        toast.success(t('settings.probeOk', { model: probe.model, ms: String(probe.latencyMs) }));
+      } else {
+        const detail =
+          probe.attempts?.filter(a => !a.ok).map(a => a.error).filter(Boolean).join(' | ')
+          || probe.code
+          || 'unknown';
+        toast.error(t('settings.probeFail', { errors: detail }));
+      }
+    } catch (err: any) {
+      toast.error(err?.message || t('common.saveFailed'));
+    } finally {
+      setProbing(false);
+    }
+  };
   // Same whole-node discipline for `responses`: the
   // section is one flat boolean today, spread-preserve it so future keys
   // survive a save round-trip. Restart-scoped — the surface reads it lazily
@@ -259,7 +317,7 @@ export const SettingsPage: React.FC = () => {
     { key: 'cache', label: t('settings.navCache'), icon: HardDrive, color: 'var(--accent-emerald)' },
     { key: 'capture', label: t('settings.navCapture'), icon: Archive, color: 'var(--accent)' },
     { key: 'responses', label: t('settings.navResponses'), icon: Database, color: 'var(--accent-emerald)' },
-    { key: 'sysone', label: t('settings.navSysone'), icon: Cpu, color: 'var(--accent-violet)' },
+    { key: 'defaults', label: t('settings.navDefaults'), icon: Cpu, color: 'var(--accent-violet)' },
     { key: 'routeentries', label: t('settings.navRouteEntries'), icon: Waypoints, color: 'var(--accent-violet)' },
     { key: 'webauth', label: t('settings.navWebAuth'), icon: ShieldCheck, color: 'var(--accent)' },
   ];
@@ -505,30 +563,75 @@ export const SettingsPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Section 5: System One decision surface — `systemone.defaultModel`
-              backs /v1/systemone requests sent without a model, and doubles as
-              the L2 decision layer's fallback decision model (classifier.layer2.model
-              unset). Deliberately NOT on /auto: it is a protocol-surface
-              default, not a routing knob. */}
-          <div id="settings-sysone" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          {/* Default models — the picks the gateway itself spends on, in one
+              group: the System One protocol surface's fallback
+              (`systemone.defaultModel` — it backs /v1/systemone requests sent
+              without a model and doubles as the L2 decision layer's fallback
+              decision model when classifier.layer2.model is unset; it is a
+              protocol-surface default, NOT a routing default-model container)
+              and the console's internal translation spend
+              (`defaultModels.translation` — the `lite` alias is the tail and
+              `auto` never enters the chain unsolicited, ADR-0015). */}
+          <div id="settings-defaults" className="sub-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--accent-violet)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Cpu size={14} />
-              {t('settings.sysoneTitle')}
+              {t('settings.defaultsTitle')}
             </div>
             <div>
               <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
                 {t('settings.sysoneModelLabel')}
               </label>
-              <Combobox
-                value={config.systemone?.defaultModel ?? ''}
-                onChange={(v: string) => patchSystemoneSurface({ defaultModel: v || undefined })}
-                options={modelOptions}
-                clearable
-                placeholder={t('settings.sysoneModelUnset')}
-              />
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <Combobox
+                    value={config.systemone?.defaultModel ?? ''}
+                    onChange={(v: string) => patchSystemoneSurface({ defaultModel: v || undefined })}
+                    options={modelOptions}
+                    clearable
+                    placeholder={t('settings.sysoneModelUnset')}
+                  />
+                </div>
+                <button
+                  className="btn"
+                  onClick={handleSysoneProbe}
+                  disabled={probing}
+                  style={{ padding: '6px 12px', fontSize: '11px', flexShrink: 0 }}
+                >
+                  <Zap size={12} />
+                  <span>{t('settings.probeBtn')}</span>
+                </button>
+              </div>
+              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '6px' }}>
+                {t('settings.sysoneModelHint')}
+              </div>
             </div>
-            <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
-              {t('settings.sysoneModelHint')}
+            <div>
+              <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
+                {t('settings.translationModelLabel')}
+              </label>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <Combobox
+                    value={config.defaultModels?.translation ?? ''}
+                    onChange={(v: string) => patchDefaultModels({ translation: v || undefined })}
+                    options={translationModelOptions}
+                    clearable
+                    placeholder={t('settings.translationModelUnset')}
+                  />
+                </div>
+                <button
+                  className="btn"
+                  onClick={handleProbe}
+                  disabled={probing}
+                  style={{ padding: '6px 12px', fontSize: '11px', flexShrink: 0 }}
+                >
+                  <Zap size={12} />
+                  <span>{t('settings.probeBtn')}</span>
+                </button>
+              </div>
+              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '6px' }}>
+                {t('settings.translationModelHint')}
+              </div>
             </div>
           </div>
           {/* Route experience table (routeEntries.*) — hot-applied on save. */}

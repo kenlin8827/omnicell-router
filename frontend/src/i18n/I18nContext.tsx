@@ -1,7 +1,14 @@
 import React, { createContext, useContext, useState, type ReactNode } from 'react';
 import type { Lang, TranslationDict } from './types';
+import { LANG_CODES, detectLang } from './languages';
 import { zhCN } from './locales/zh-CN';
 import { enUS } from './locales/en-US';
+import { esES } from './locales/es-ES';
+import { frFR } from './locales/fr-FR';
+import { deDE } from './locales/de-DE';
+import { jaJP } from './locales/ja-JP';
+import { koKR } from './locales/ko-KR';
+import { ptBR } from './locales/pt-BR';
 
 interface I18nContextValue {
   lang: Lang;
@@ -16,6 +23,12 @@ interface I18nContextValue {
 const DICTIONARIES: Record<Lang, TranslationDict> = {
   zh: zhCN,
   en: enUS,
+  es: esES,
+  fr: frFR,
+  de: deDE,
+  ja: jaJP,
+  ko: koKR,
+  pt: ptBR,
 };
 
 const I18nContext = createContext<I18nContextValue | null>(null);
@@ -23,8 +36,8 @@ const I18nContext = createContext<I18nContextValue | null>(null);
 export const I18nProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [lang, setLangState] = useState<Lang>(() => {
     const saved = localStorage.getItem('ocr_lang');
-    if (saved === 'en' || saved === 'zh') return saved;
-    return navigator.language.startsWith('zh') ? 'zh' : 'en';
+    if (saved && (LANG_CODES as readonly string[]).includes(saved)) return saved as Lang;
+    return detectLang();
   });
 
   const setLang = (newLang: Lang) => {
@@ -71,7 +84,7 @@ export const I18nProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   return (
-    <I18nContext.Provider value={{ lang, setLang, t, dict: DICTIONARIES[lang] || DICTIONARIES.zh }}>
+    <I18nContext.Provider value={{ lang, setLang, t, dict: DICTIONARIES[lang] }}>
       {children}
     </I18nContext.Provider>
   );

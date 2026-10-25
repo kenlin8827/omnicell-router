@@ -5,6 +5,7 @@ import {
   resolveDefaultPaths,
   suspectCredentialsFile,
 } from '../opencode/credentials/paths.js';
+import { renameWithRetry } from '../utils/atomic-write.js';
 
 /**
  * The SUSPECT credential flag store.
@@ -221,7 +222,7 @@ export class CredentialStateStore {
     } catch {
       // best effort — Windows chmod semantics differ
     }
-    fs.renameSync(tmpPath, this.filePath);
+    renameWithRetry(tmpPath, this.filePath);
     // The new file is durable — only now may the legacy name go away. A failed
     // unlink leaves the flag set; the next persist retries the cleanup.
     if (this.legacyCleanupFile) {

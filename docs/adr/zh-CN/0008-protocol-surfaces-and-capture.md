@@ -34,7 +34,7 @@
 
 ### 7. 决策网关（/v1/systemone）——wire 驱动，诚实写进措辞
 
-该面的模型语义：点名模型 = 所点即所得；auto 梯队别名按**纯池投影**解析到访问过滤后池的链头——404 未知/无池、403 被禁、503 解析不出，**绝不**静默回退；裸 `auto`/省略 → `systemone.defaultModel`；决策线限流计数但永不本地拒绝（决策层是请求下腿）。响应头恰三个（冻结契约）：`X-OCR-Model / X-OCR-Systemone-Upstream / X-OCR-Latency-MS`。**同一执行器**同时服务 HTTP 面与 Layer-2 路由决策层——一个实现，两个调用方。
+该面的模型语义：点名模型 = 所点即所得；auto 梯队别名按**纯池投影**解析到访问过滤后池的链头——404 未知/无池、403 被禁、503 解析不出，**绝不**静默回退；裸 `auto`/省略 → `systemone.defaultModel`；决策线限流计数但永不本地拒绝（决策层是请求下腿）。响应头恰三个（冻结契约）：`X-OCR-Model / X-OCR-Systemone-Upstream / X-OCR-Latency-MS`。**同一执行器**同时服务 HTTP 面与 Layer-2 路由决策层——一个实现，两个调用方。控制台的智能分配决策模型（`POST /api/admin/client/:client/smart-assign`，以及只读的 `GET /api/admin/decider/resolve` 探针——它回答一次选择实际落在哪个物理模型上）是**第三个调用方**，复用**同一条**别名级联：物理 id、combo 主成员、档位别名→决策面池链头、裸 `auto` → `systemone.defaultModel`——同一个名字在控制台里只有一个含义；控制台调用不带 API key，访问过滤在此为空操作；解析不出的选择直接 400 拒绝，绝不静默替换。
 
 两条执行支路，由解析出的模型 wire 选择（永不由配置表选择）：
 

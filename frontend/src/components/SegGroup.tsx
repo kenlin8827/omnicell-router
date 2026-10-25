@@ -28,10 +28,15 @@ const SIZES = {
 export const SegGroup: React.FC<{
   value: string;
   onChange: (v: string) => void;
-  options: { value: string; label: string; title?: string }[];
+  /** `icon` renders before the label; omit `label` for an icon-only switch (the title becomes the
+   *  accessible name). */
+  options: { value: string; label?: string; title?: string; icon?: React.ReactNode }[];
   size?: 'sm' | 'md' | 'lg';
   embedded?: 'start' | 'end';
-}> = ({ value, onChange, options, size = 'md', embedded }) => {
+  /** Fixed control height (px or CSS length). Use it when the group shares a row with `.btn` and
+   *  `.input`, whose padding-derived heights never match the segment metrics. */
+  height?: number | string;
+}> = ({ value, onChange, options, size = 'md', embedded, height }) => {
   const m = SIZES[size];
   return (
   <div
@@ -53,6 +58,7 @@ export const SegGroup: React.FC<{
             borderRadius: m.radius,
             background: 'var(--btn-bg)',
           }),
+      ...(height ? { height } : {}),
     }}
   >
     {options.map((o, i) => {
@@ -63,10 +69,15 @@ export const SegGroup: React.FC<{
           type="button"
           aria-pressed={active}
           title={o.title}
+          aria-label={o.label ? undefined : (o.title ?? o.value)}
           onClick={() => onChange(o.value)}
           style={{
-            padding: m.pad,
+            padding: height ? `0 ${m.pad.split(' ')[1]}` : m.pad,
             fontSize: m.font,
+            display: 'inline-flex',
+            alignItems: 'center',
+            height: height ?? undefined,
+            gap: 6,
             border: 'none',
             borderRight: i < options.length - 1 ? '1px solid var(--divider)' : 'none',
             background: active ? 'var(--btn-primary-bg)' : 'transparent',
@@ -75,6 +86,7 @@ export const SegGroup: React.FC<{
             whiteSpace: 'nowrap',
           }}
         >
+          {o.icon}
           {o.label}
         </button>
       );
