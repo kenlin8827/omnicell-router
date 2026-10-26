@@ -24,6 +24,7 @@ import { SessionTranscript } from '../components/SessionTranscript';
 import { BackToTop } from '../components/BackToTop';
 import { findMediaTokens, unwrapHarnessText } from '../lib/transcript';
 import { DEFAULT_MAX_BODY_BYTES } from '../lib/defaults';
+import { useBackdropDismiss } from '../lib/useBackdropDismiss';
 
 import { FONT_MONO } from '../lib/fonts';
 /**
@@ -284,6 +285,7 @@ const CaptureDrawer: React.FC<{
   onClose: () => void;
 }> = ({ turn, loading, outOfWindow, initialTab, onClose }) => {
   const { t } = useI18n();
+  const focusBackdrop = useBackdropDismiss(onClose);
   const toast = useToast();
   const [tab, setTab] = useState<DrawerTab>('clientRequest');
   useBodyScrollLock(true);
@@ -343,7 +345,7 @@ const CaptureDrawer: React.FC<{
 
   return createPortal(
     <div
-      onClick={onClose}
+      {...focusBackdrop}
       style={{
         position: 'fixed',
         inset: 0,
@@ -710,6 +712,7 @@ const ExportDialog: React.FC<{
   onConfirm: (exclude: string[], includeImages: boolean) => void;
 }> = ({ session, onClose, onConfirm }) => {
   const { t } = useI18n();
+  const rawBackdrop = useBackdropDismiss(onClose);
   const [keepReqIn, setKeepReqIn] = useState(true);
   const [keepReqOut, setKeepReqOut] = useState(true);
   const [keepResp, setKeepResp] = useState(true);
@@ -740,7 +743,7 @@ const ExportDialog: React.FC<{
 
   return createPortal(
     <div
-      onClick={onClose}
+      {...rawBackdrop}
       style={{
         position: 'fixed',
         inset: 0,

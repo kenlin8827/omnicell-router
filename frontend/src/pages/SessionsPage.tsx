@@ -6,6 +6,7 @@ import { formatReason, type Translate } from '../lib/reason';
 import { copyToClipboard, formatCost, formatSessionId, decodeRate, formatRate, fmtLatency } from '../lib/format';
 import { clientDisplayName } from '../lib/clientDetect';
 import { useI18n } from '../i18n/I18nContext';
+import { useBackdropDismiss } from '../lib/useBackdropDismiss';
 import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
 import { Combobox } from '../components/Combobox';
@@ -528,6 +529,7 @@ export const SessionsPage: React.FC = () => {
     detailOpen: boolean;
     trailOpen: boolean;
   } | null>(null);
+  const timelineBackdrop = useBackdropDismiss(() => setTimeline(null));
   // Request-detail list order: false = chronological (the traces' recorded
   // order), true = newest first. Reset per open in openTimeline.
   const [detailDesc, setDetailDesc] = useState(true);
@@ -1128,7 +1130,7 @@ export const SessionsPage: React.FC = () => {
       {/* Model-switch timeline modal (fetched on demand per session) */}
       {timeline && (
         <div
-          onClick={() => setTimeline(null)}
+          {...timelineBackdrop}
           style={{
             position: 'fixed',
             inset: 0,

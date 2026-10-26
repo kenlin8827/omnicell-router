@@ -2,6 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useRef, useSt
 import { AlertTriangle, HelpCircle } from 'lucide-react';
 import { useI18n } from '../i18n/I18nContext';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
+import { useBackdropDismiss } from '../lib/useBackdropDismiss';
 
 export interface ConfirmOptions {
   title: string;
@@ -33,6 +34,7 @@ export const ConfirmProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const { t } = useI18n();
   const [active, setActive] = useState<ActiveConfirm | null>(null);
   const activeRef = useRef<ActiveConfirm | null>(null);
+  const backdrop = useBackdropDismiss(() => close(false));
   useBodyScrollLock(!!active);
 
   const confirm = useCallback<ConfirmFn>((options) => {
@@ -70,7 +72,7 @@ export const ConfirmProvider: React.FC<{ children: React.ReactNode }> = ({ child
       {children}
       {o && (
         <div
-          onClick={() => close(false)}
+          {...backdrop}
           style={{
             position: 'fixed',
             inset: 0,

@@ -31,6 +31,7 @@ import { useI18n } from '../i18n/I18nContext';
 import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
 import { Combobox } from '../components/Combobox';
+import { Dialog } from '../components/Dialog';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import { Pagination } from '../components/Pagination';
 
@@ -1207,86 +1208,34 @@ curl ${gwBaseV1}/systemone \\
 
       {/* 4b. Modal: pick which API key to ship in the snippets */}
       {showPicker && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label={t('apiKeys.quickConnectPickerTitle')}
-          onClick={(e) => {
-            // Backdrop click closes the picker without picking anything.
-            if (e.target === e.currentTarget) setShowPicker(false);
-          }}
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'var(--scrim)',
-            zIndex: 110,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: '16px',
-          }}
-        >
-          <div
-            className="card"
-            style={{
-              width: '100%',
-              maxWidth: '520px',
-              maxHeight: '70vh',
-              display: 'flex',
-              flexDirection: 'column',
-              boxShadow: '0 20px 40px rgba(0,0,0,0.6)',
-            }}
-          >
-            <div
-              style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                padding: '18px 22px',
-                borderBottom: '1px solid var(--divider)',
-              }}
-            >
-              <h3 style={{ fontSize: '15px', fontWeight: 800, color: 'var(--text-main)' }}>
-                {t('apiKeys.quickConnectPickerTitle')}
-              </h3>
+        <Dialog
+          title={t('apiKeys.quickConnectPickerTitle')}
+          subtitle={t('apiKeys.quickConnectPickerDesc', { count: keys.length })}
+          onClose={() => setShowPicker(false)}
+          closeLabel={t('apiKeys.quickConnectPickerCancel')}
+          width={520}
+          footerRight={
+            <>
+              <button type="button" className="btn btn-sm" onClick={() => setShowPicker(false)}>
+                {t('apiKeys.quickConnectPickerCancel')}
+              </button>
               <button
                 type="button"
-                aria-label={t('apiKeys.quickConnectPickerCancel')}
-                onClick={() => setShowPicker(false)}
-                style={{
-                  background: 'transparent',
-                  border: 'none',
-                  color: 'var(--text-dim)',
-                  fontSize: '18px',
-                  cursor: 'pointer',
+                className="btn btn-primary btn-sm"
+                disabled={!pickerPreview}
+                onClick={() => {
+                  if (!pickerPreview) return;
+                  setSelectedKeyId(pickerPreview.id);
+                  setRevealKey(true);
+                  setShowPicker(false);
                 }}
               >
-                ✕
+                <Check size={13} />
+                <span style={{ marginLeft: '4px' }}>{t('apiKeys.quickConnectPickerConfirm')}</span>
               </button>
-            </div>
-
-            <p
-              style={{
-                padding: '14px 22px 0',
-                fontSize: '12px',
-                color: 'var(--text-muted)',
-                margin: 0,
-                lineHeight: 1.5,
-              }}
-            >
-              {t('apiKeys.quickConnectPickerDesc', { count: keys.length })}
-            </p>
-
-            <div
-              style={{
-                padding: '14px 22px',
-                flex: 1,
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '12px',
-                minHeight: 0,
-              }}
-            >
+            </>
+          }
+        >
               {/* Combobox scales to 100+ keys: options > 8 auto-renders a filter input (see Combobox.tsx). */}
               <Combobox
                 value={pickerKeyId ?? ''}
@@ -1328,94 +1277,34 @@ curl ${gwBaseV1}/systemone \\
                   </div>
                 </div>
               )}
-            </div>
-
-            <div
-              style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                padding: '14px 22px',
-                borderTop: '1px solid var(--divider)',
-                gap: '10px',
-                flexWrap: 'wrap',
-              }}
-            >
-              <div style={{ display: 'flex', gap: '8px', marginLeft: 'auto' }}>
-                <button
-                  type="button"
-                  className="btn btn-sm"
-                  onClick={() => setShowPicker(false)}
-                >
-                  {t('apiKeys.quickConnectPickerCancel')}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-primary btn-sm"
-                  disabled={!pickerPreview}
-                  onClick={() => {
-                    if (!pickerPreview) return;
-                    setSelectedKeyId(pickerPreview.id);
-                    setRevealKey(true);
-                    setShowPicker(false);
-                  }}
-                >
-                  <Check size={13} />
-                  <span style={{ marginLeft: '4px' }}>{t('apiKeys.quickConnectPickerConfirm')}</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+        </Dialog>
       )}
 
       {/* 5. Modal: Create API Key */}
       {showCreateModal && (
-        <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'var(--scrim)',
-            zIndex: 100,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: '16px',
-          }}
-        >
-          <div
-            className="card"
-            style={{
-              width: '100%',
-              maxWidth: '460px',
-              padding: '24px',
-              boxShadow: '0 20px 40px rgba(0,0,0,0.6)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '16px',
-              maxHeight: '90vh',
-              overflowY: 'auto',
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <h3 style={{ fontSize: '16px', fontWeight: 800, color: 'var(--text-main)' }}>
-                {t('apiKeys.createModalTitle')}
-              </h3>
-              <button
-                onClick={() => setShowCreateModal(false)}
-                style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', fontSize: '18px', cursor: 'pointer' }}
-              >
-                ✕
+        <Dialog
+          title={t('apiKeys.createModalTitle')}
+          onClose={() => setShowCreateModal(false)}
+          closeLabel={t('common.close')}
+          width={460}
+          footerRight={
+            <>
+              <button type="button" onClick={() => setShowCreateModal(false)} className="btn">
+                {t('apiKeys.cancelBtn')}
               </button>
-            </div>
-
+              <button type="submit" form="ocr-create-key-form" disabled={creating} className="btn btn-primary">
+                {creating ? t('common.loading') : t('apiKeys.createBtn')}
+              </button>
+            </>
+          }
+        >
             {errorMessage && (
               <div style={{ padding: '8px 12px', borderRadius: '6px', background: 'color-mix(in srgb, var(--accent-rose) 15%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-rose) 30%, transparent)', color: 'var(--accent-rose)', fontSize: '12px' }}>
                 {errorMessage}
               </div>
             )}
 
-            <form onSubmit={handleCreateSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+            <form id="ocr-create-key-form" onSubmit={handleCreateSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
               <div>
                 <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', display: 'block', marginBottom: '6px' }}>
                   {t('apiKeys.nameLabel')} <span style={{ color: 'var(--accent-rose)' }}>*</span>
@@ -1467,100 +1356,16 @@ curl ${gwBaseV1}/systemone \\
                 />
               </div>
 
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '10px' }}>
-                <button type="button" onClick={() => setShowCreateModal(false)} className="btn">
-                  {t('apiKeys.cancelBtn')}
-                </button>
-                <button type="submit" disabled={creating} className="btn btn-primary">
-                  {creating ? t('common.loading') : t('apiKeys.createBtn')}
-                </button>
-              </div>
             </form>
-          </div>
-        </div>
+        </Dialog>
       )}
 
       {/* 5a. Modal: View effective models for one key + live call test */}
       {viewingKey && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label={t('apiKeys.viewModelsTitle')}
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setViewingKey(null);
-          }}
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'var(--scrim)',
-            zIndex: 100,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: '16px',
-          }}
-        >
-          <div
-            className="card"
-            style={{
-              width: '100%',
-              maxWidth: viewExpanded ? 'min(96vw, 1400px)' : '560px',
-              maxHeight: viewExpanded ? '94vh' : '90vh',
-              overflowY: 'auto',
-              padding: '24px',
-              boxShadow: '0 20px 40px rgba(0,0,0,0.6)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '14px',
-              transition: 'max-width 0.15s ease, max-height 0.15s ease',
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <h3 style={{ fontSize: '16px', fontWeight: 800, color: 'var(--text-main)' }}>
-                {t('apiKeys.viewModelsTitle')}
-              </h3>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <button
-                  type="button"
-                  className="btn btn-sm"
-                  disabled={viewRaw.loading}
-                  onClick={() => {
-                    const next = viewMode === 'list' ? 'json' : 'list';
-                    setViewMode(next);
-                    if (next === 'json' && viewingKey && viewRaw.json === null && !viewRaw.loading) {
-                      void fetchRawModels(viewingKey);
-                    }
-                  }}
-                >
-                  {viewMode === 'list' ? t('apiKeys.viewRawBtn') : t('apiKeys.viewListBtn')}
-                </button>
-                {viewMode === 'json' && (
-                  <button
-                    type="button"
-                    className="btn btn-sm"
-                    onClick={() => setRawFormatted((v) => !v)}
-                  >
-                    {rawFormatted ? t('apiKeys.viewFlatBtn') : t('apiKeys.viewFormatBtn')}
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className="btn btn-sm"
-                  title={viewExpanded ? t('apiKeys.viewCollapseTitle') : t('apiKeys.viewExpandTitle')}
-                  onClick={() => setViewExpanded((v) => !v)}
-                >
-                  {viewExpanded ? '⤡' : '⤢'}
-                </button>
-                <button
-                  onClick={() => setViewingKey(null)}
-                  style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', fontSize: '18px', cursor: 'pointer' }}
-                >
-                  ✕
-                </button>
-              </div>
-            </div>
-
-            <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: 0 }}>
+        <Dialog
+          title={t('apiKeys.viewModelsTitle')}
+          subtitle={
+            <>
               {viewingKey.name}
               <span
                 className="badge"
@@ -1583,10 +1388,53 @@ curl ${gwBaseV1}/systemone \\
                     ? t('apiKeys.accessAllowBadge', { n: viewModels.policyModels.length })
                     : t('apiKeys.accessDenyBadge', { n: viewModels.policyModels.length })}
               </span>
-              {/* Test-call hint lives on hover only — zero floor space. */}
               <InfoTip text={t('apiKeys.modelsTestHint')} />
-            </p>
-
+            </>
+          }
+          headerActions={
+            <>
+              <button
+                type="button"
+                className="btn btn-sm"
+                disabled={viewRaw.loading}
+                onClick={() => {
+                  const next = viewMode === 'list' ? 'json' : 'list';
+                  setViewMode(next);
+                  if (next === 'json' && viewingKey && viewRaw.json === null && !viewRaw.loading) {
+                    void fetchRawModels(viewingKey);
+                  }
+                }}
+              >
+                {viewMode === 'list' ? t('apiKeys.viewRawBtn') : t('apiKeys.viewListBtn')}
+              </button>
+              {viewMode === 'json' && (
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => setRawFormatted((v) => !v)}
+                >
+                  {rawFormatted ? t('apiKeys.viewFlatBtn') : t('apiKeys.viewFormatBtn')}
+                </button>
+              )}
+              <button
+                type="button"
+                className="btn btn-sm"
+                title={viewExpanded ? t('apiKeys.viewCollapseTitle') : t('apiKeys.viewExpandTitle')}
+                onClick={() => setViewExpanded((v) => !v)}
+              >
+                {viewExpanded ? '⤡' : '⤢'}
+              </button>
+            </>
+          }
+          onClose={() => setViewingKey(null)}
+          closeLabel={t('common.close')}
+          width={viewExpanded ? 1400 : 560}
+          footerRight={
+            <button onClick={() => setViewingKey(null)} className="btn btn-primary">
+              {t('apiKeys.doneBtn')}
+            </button>
+          }
+        >
             {viewMode === 'json' ? (
               <pre
                 style={{
@@ -1747,61 +1595,27 @@ curl ${gwBaseV1}/systemone \\
               })()
             )}
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '4px' }}>
-              <button onClick={() => setViewingKey(null)} className="btn btn-primary">
-                {t('apiKeys.doneBtn')}
-              </button>
-            </div>
-          </div>
-        </div>
+        </Dialog>
       )}
 
       {/* 5b. Modal: Edit API Key (name / description / model access) */}
       {editingKey && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label={t('apiKeys.editModalTitle')}
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setEditingKey(null);
-          }}
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'var(--scrim)',
-            zIndex: 100,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: '16px',
-          }}
-        >
-          <div
-            className="card"
-            style={{
-              width: '100%',
-              maxWidth: '460px',
-              padding: '24px',
-              boxShadow: '0 20px 40px rgba(0,0,0,0.6)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '14px',
-              maxHeight: '90vh',
-              overflowY: 'auto',
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <h3 style={{ fontSize: '16px', fontWeight: 800, color: 'var(--text-main)' }}>
-                {t('apiKeys.editModalTitle')}
-              </h3>
-              <button
-                onClick={() => setEditingKey(null)}
-                style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', fontSize: '18px', cursor: 'pointer' }}
-              >
-                ✕
+        <Dialog
+          title={t('apiKeys.editModalTitle')}
+          onClose={() => setEditingKey(null)}
+          closeLabel={t('common.close')}
+          width={460}
+          footerRight={
+            <>
+              <button onClick={() => setEditingKey(null)} className="btn">
+                {t('apiKeys.cancelBtn')}
               </button>
-            </div>
-
+              <button onClick={handleSaveEdit} disabled={savingAccess} className="btn btn-primary">
+                {savingAccess ? t('common.loading') : t('common.confirm')}
+              </button>
+            </>
+          }
+        >
             <div>
               <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', display: 'block', marginBottom: '6px' }}>
                 {t('apiKeys.nameLabel')} <span style={{ color: 'var(--accent-rose)' }}>*</span>
@@ -1840,64 +1654,42 @@ curl ${gwBaseV1}/systemone \\
               />
             </div>
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '6px' }}>
-              <button onClick={() => setEditingKey(null)} className="btn">
-                {t('apiKeys.cancelBtn')}
-              </button>
-              <button onClick={handleSaveEdit} disabled={savingAccess} className="btn btn-primary">
-                {savingAccess ? t('common.loading') : t('common.confirm')}
-              </button>
-            </div>
-          </div>
-        </div>
+        </Dialog>
       )}
 
-      {/* 6. Modal: Key Created Success Alert */}
+      {/* 6. Modal: Key Created Success Alert - one-time secret, so backdrop
+          and Escape dismissal are disabled (Dialog backdropClose={false}). */}
       {createdKey && (
-        <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'var(--scrim)',
-            zIndex: 100,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: '16px',
-          }}
-        >
-          <div
-            className="card"
-            style={{
-              width: '100%',
-              maxWidth: '460px',
-              padding: '24px',
-              boxShadow: '0 20px 40px rgba(0,0,0,0.6)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '16px',
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <div
+        <Dialog
+          title={
+            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span
                 style={{
-                  width: '32px',
-                  height: '32px',
-                  borderRadius: '8px',
+                  width: 26,
+                  height: 26,
+                  borderRadius: 7,
                   background: 'color-mix(in srgb, var(--accent-emerald) 15%, transparent)',
                   color: 'var(--accent-emerald)',
-                  display: 'flex',
+                  display: 'inline-flex',
                   alignItems: 'center',
                   justifyContent: 'center',
                 }}
               >
-                <Check size={18} />
-              </div>
-              <h3 style={{ fontSize: '16px', fontWeight: 800, color: 'var(--text-main)' }}>
-                {t('apiKeys.createdNoticeTitle')}
-              </h3>
-            </div>
-
+                <Check size={15} />
+              </span>
+              {t('apiKeys.createdNoticeTitle')}
+            </span>
+          }
+          onClose={() => setCreatedKey(null)}
+          closeLabel={t('apiKeys.doneBtn')}
+          width={460}
+          backdropClose={false}
+          footerRight={
+            <button onClick={() => setCreatedKey(null)} className="btn btn-primary">
+              {t('apiKeys.doneBtn')}
+            </button>
+          }
+        >
             <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
               {t('apiKeys.createdNoticeDesc')}
             </p>
@@ -1932,13 +1724,7 @@ curl ${gwBaseV1}/systemone \\
               </button>
             </div>
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '6px' }}>
-              <button onClick={() => setCreatedKey(null)} className="btn btn-primary">
-                {t('apiKeys.doneBtn')}
-              </button>
-            </div>
-          </div>
-        </div>
+        </Dialog>
       )}
     </div>
   );

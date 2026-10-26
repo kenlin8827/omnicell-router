@@ -31,6 +31,7 @@ import {
   type LimitDraft,
 } from '../components/RateLimitEditor';
 import { ProviderModelsDialog } from '../components/ProviderModelsDialog';
+import { Dialog } from '../components/Dialog';
 import { useI18n } from '../i18n/I18nContext';
 import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
@@ -39,6 +40,7 @@ import { Pagination } from '../components/Pagination';
 import { Switch } from '../components/Switch';
 import { InfoTip } from '../components/InfoTip';
 import { useModelTest } from '../lib/useModelTest';
+import { useBackdropDismiss } from '../lib/useBackdropDismiss';
 import { fmtLatency } from '../lib/format';
 import { byWindowClass, headlineWindow } from '../lib/quotaRank';
 import { failureCaption } from '../lib/quotaFailure';
@@ -943,63 +945,14 @@ const RevealKeyDialog: React.FC<RevealDialogProps> = ({
   const { t } = useI18n();
   const name = credentialName(credential, t('op.credentialUnnamed'));
   return (
-    <div
-      style={{
-        position: 'fixed',
-        inset: 0,
-        zIndex: 200,
-        background: 'var(--scrim)',
-        display: 'flex',
-        padding: 16,
-        animation: 'ocr-fade-in 0.15s ease',
-      }}
-      onClick={onCancel}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={t('op.copyKeyTitle', { label: name })}
-        style={{
-          margin: 'auto',
-          width: 400,
-          maxWidth: '100%',
-          padding: 16,
-          borderRadius: 12,
-          background: 'var(--card-bg, #111113)',
-          border: '1px solid var(--card-border)',
-          boxShadow: '0 16px 40px rgba(0,0,0,0.45)',
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6 }}>{t('op.copyKeyTitle', { label: name })}</div>
-        <p style={{ fontSize: 11.5, color: 'var(--text-dim)', margin: '0 0 12px', lineHeight: 1.6 }}>
-          {t('op.copyKeyDesc')}
-        </p>
-        <input
-          className="input secret-mask"
-          // Re-auth gate. type="password" is unusable here: Chrome treats it
-          // (even with "new-password") as a registration field and pops the
-          // credential dropdown on focus — offering to fill the saved login
-          // (silently satisfying the gate) or to GENERATE a strong password
-          // (a random value that fails verification and may overwrite the
-          // saved credential). No autocomplete value suppresses that dropdown;
-          // the only reliable lever is not being a password field at all
-          // (masking via .secret-mask in styles/index.css).
-          type="text"
-          autoComplete="off"
-          spellCheck={false}
-          autoFocus
-          style={{ fontSize: 12, width: '100%', marginBottom: 8 }}
-          placeholder={t('op.copyKeyPassword')}
-          value={password}
-          onChange={(e) => onPassword(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') onConfirm();
-            if (e.key === 'Escape') onCancel();
-          }}
-        />
-        {error && <div style={{ fontSize: 11, color: 'var(--accent-rose)', margin: '2px 0 8px' }}>{error}</div>}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 }}>
+    <Dialog
+      title={t('op.copyKeyTitle', { label: name })}
+      subtitle={t('op.copyKeyDesc')}
+      onClose={onCancel}
+      closeLabel={t('common.cancel')}
+      width={400}
+      footerRight={
+        <>
           <button className="btn btn-sm" onClick={onCancel}>
             <span>{t('common.cancel')}</span>
           </button>
@@ -1007,9 +960,34 @@ const RevealKeyDialog: React.FC<RevealDialogProps> = ({
             <Copy size={12} />
             <span>{busy ? t('op.copyKeyCopying') : t('op.copyKeyConfirm')}</span>
           </button>
-        </div>
-      </div>
-    </div>
+        </>
+      }
+    >
+      <input
+        className="input secret-mask"
+        // Re-auth gate. type="password" is unusable here: Chrome treats it
+        // (even with "new-password") as a registration field and pops the
+        // credential dropdown on focus — offering to fill the saved login
+        // (silently satisfying the gate) or to GENERATE a strong password
+        // (a random value that fails verification and may overwrite the
+        // saved credential). No autocomplete value suppresses that dropdown;
+        // the only reliable lever is not being a password field at all
+        // (masking via .secret-mask in styles/index.css).
+        type="text"
+        autoComplete="off"
+        spellCheck={false}
+        autoFocus
+        style={{ fontSize: 12, width: '100%', marginBottom: 8 }}
+        placeholder={t('op.copyKeyPassword')}
+        value={password}
+        onChange={(e) => onPassword(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') onConfirm();
+          if (e.key === 'Escape') onCancel();
+        }}
+      />
+      {error && <div style={{ fontSize: 11, color: 'var(--accent-rose)' }}>{error}</div>}
+    </Dialog>
   );
 };
 
@@ -1031,47 +1009,28 @@ const CredentialLimitsDialog: React.FC<{
   const { t } = useI18n();
   const name = credentialName(credential, t('op.credentialUnnamed'));
   return (
-    <div
-      style={{
-        position: 'fixed',
-        inset: 0,
-        zIndex: 200,
-        background: 'var(--scrim)',
-        display: 'flex',
-        padding: 16,
-        animation: 'ocr-fade-in 0.15s ease',
-      }}
-      onClick={onCancel}
+    <Dialog
+      title={t('op.credentialLimitsTitle', { label: name })}
+      subtitle={t('op.credentialLimitsDesc', { provider: providerId })}
+      onClose={onCancel}
+      closeLabel={t('common.cancel')}
+      width={460}
+      footerRight={
+        <>
+          <button className="btn btn-sm" onClick={onCancel}>
+            <span>{t('common.cancel')}</span>
+          </button>
+          <button className="btn btn-sm btn-primary" disabled={busy} onClick={onSave}>
+            <Check size={12} />
+            <span>{t('common.confirm')}</span>
+          </button>
+        </>
+      }
     >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={t('op.credentialLimitsTitle', { label: name })}
-        style={{
-          margin: 'auto',
-          width: 460,
-          maxWidth: '100%',
-          padding: 16,
-          borderRadius: 12,
-          background: 'var(--card-bg, #111113)',
-          border: '1px solid var(--card-border)',
-          boxShadow: '0 16px 40px rgba(0,0,0,0.45)',
-          maxHeight: '90vh',
-          overflowY: 'auto',
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 2 }}>
-          {t('op.credentialLimitsTitle', { label: name })}
-        </div>
-        <p style={{ fontSize: 11.5, color: 'var(--text-dim)', margin: '0 0 12px', lineHeight: 1.6 }}>
-          {t('op.credentialLimitsDesc', { provider: providerId })}
-        </p>
-
-        <LimitsEditor value={drafts} onChange={onChangeDrafts} />
+      <LimitsEditor value={drafts} onChange={onChangeDrafts} />
 
         {windows.length > 0 && (
-          <div style={{ marginTop: 14 }}>
+          <div>
             <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', marginBottom: 6 }}>
               {t('op.credentialLimitsWindows')}
             </div>
@@ -1098,18 +1057,7 @@ const CredentialLimitsDialog: React.FC<{
             </div>
           </div>
         )}
-
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
-          <button className="btn btn-sm" onClick={onCancel}>
-            <span>{t('common.cancel')}</span>
-          </button>
-          <button className="btn btn-sm btn-primary" disabled={busy} onClick={onSave}>
-            <Check size={12} />
-            <span>{t('common.confirm')}</span>
-          </button>
-        </div>
-      </div>
-    </div>
+    </Dialog>
   );
 };
 
@@ -1167,6 +1115,9 @@ export const KeysPage: React.FC = () => {
   /** Provider-def edit dialog (connected card pencil): def-node providers only. */
   const [editDef, setEditDef] = useState<{ id: string; name: string; baseURL: string; npm: string; pullPattern: string; headerRows: HeaderRow[] } | null>(null);
   const [savingDef, setSavingDef] = useState(false);
+  // Backdrop closes only on a press+release that both land on the overlay
+  // (shared guard: useBackdropDismiss).
+  const defBackdrop = useBackdropDismiss(() => { if (!savingDef) setEditDef(null); });
   const openDefEdit = (p: OpenCodeProviderView) =>
     setEditDef({
       id: p.id,
@@ -2660,7 +2611,7 @@ export const KeysPage: React.FC = () => {
         {editDef && createPortal(
           <div
             style={{ position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}
-            onClick={() => { if (!savingDef) setEditDef(null); }}
+            {...defBackdrop}
           >
             <div
               className="card"

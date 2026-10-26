@@ -20,6 +20,10 @@ export type DialogProps = {
   onClose: () => void;
   /** i18n label used as the × button's title and aria-label. */
   closeLabel: string;
+  /** Allow dismissing via backdrop press+release and Escape (default true).
+   * False for dialogs whose accidental dismissal loses data (e.g. a one-time
+   * secret reveal) — they close only through their explicit buttons. */
+  backdropClose?: boolean;
   /** Card width cap in px. */
   width?: number;
   /** Blur the backdrop as well as dimming it. */
@@ -45,6 +49,7 @@ export const Dialog: React.FC<DialogProps> = ({
   footerRight,
   onClose,
   closeLabel,
+  backdropClose = true,
   width = 660,
   blur = false,
   full = false,
@@ -52,12 +57,13 @@ export const Dialog: React.FC<DialogProps> = ({
   useBodyScrollLock(true);
 
   useEffect(() => {
+    if (!backdropClose) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, backdropClose]);
 
   // Backdrop click closes only when press AND release both happen on the
   // overlay itself — a drag that starts inside the form (text selection)
@@ -81,8 +87,8 @@ export const Dialog: React.FC<DialogProps> = ({
         justifyContent: 'center',
         padding: full ? 0 : '16px',
       }}
-      onMouseDown={(e) => { mouseDownOnOverlay.current = e.target === e.currentTarget; }}
-      onMouseUp={(e) => { if (mouseDownOnOverlay.current && e.target === e.currentTarget) onClose(); }}
+      onMouseDown={backdropClose ? (e) => { mouseDownOnOverlay.current = e.target === e.currentTarget; } : undefined}
+      onMouseUp={backdropClose ? (e) => { if (mouseDownOnOverlay.current && e.target === e.currentTarget) onClose(); } : undefined}
     >
       <div
         className="card"

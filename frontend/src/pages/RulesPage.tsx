@@ -8,6 +8,7 @@ import { ProviderLogo } from '../components/ProviderLogo';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
+import { useBackdropDismiss } from '../lib/useBackdropDismiss';
 import { effortOptionList, EFFORT_UNSET, EFFORT_I18N_KEY } from '../lib/effort';
 import { fmtLatency } from '../lib/format';
 import { sortModelOptions } from '../lib/model-options';
@@ -131,6 +132,8 @@ export const RulesPage: React.FC = () => {
   const [saveWarnings, setSaveWarnings] = useState<
     { kind: string; tier?: string; pattern?: string }[] | null
   >(null);
+  const mapTargetBackdrop = useBackdropDismiss(() => setMapTarget(null));
+  const saveWarningsBackdrop = useBackdropDismiss(() => setSaveWarnings(null));
   const [memberFilters, setMemberFilters] = useState<Record<Tier, string>>({ lite: '', plus: '', pro: '', ultra: '' });
   // Per-tier end-to-end test (POST /api/admin/tiers/:tier/test): latest result
   // per tier card + in-flight markers. Result shows inline (✓ms / ✗) with the
@@ -1519,7 +1522,7 @@ export const RulesPage: React.FC = () => {
                 justifyContent: 'center',
                 padding: '16px',
               }}
-              onClick={() => setMapTarget(null)}
+              {...mapTargetBackdrop}
             >
               <div
                 className="card"
@@ -1662,7 +1665,7 @@ export const RulesPage: React.FC = () => {
               justifyContent: 'center',
               padding: '16px',
             }}
-            onClick={() => setSaveWarnings(null)}
+            {...saveWarningsBackdrop}
           >
             <div
               className="card"

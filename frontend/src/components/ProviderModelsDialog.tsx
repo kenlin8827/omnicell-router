@@ -9,6 +9,7 @@ import { useI18n } from '../i18n/I18nContext';
 import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
+import { useBackdropDismiss } from '../lib/useBackdropDismiss';
 import { useModelTest, apiErrorText } from '../lib/useModelTest';
 import { Combobox } from '../components/Combobox';
 import { Switch } from './Switch';
@@ -581,15 +582,13 @@ export const ProviderModelsDialog: React.FC<{
   );
 
   // Close on backdrop click only when BOTH press and release happen on the
-  // overlay itself — a click that starts inside the dialog and ends on the
-  // overlay (text-selection drag) must not dismiss it.
-  const mouseDownOnOverlay = React.useRef(false);
+  // overlay itself (shared guard: useBackdropDismiss).
+  const backdrop = useBackdropDismiss(onClose);
 
   return createPortal(
     <div
       style={overlayStyle(blur)}
-      onMouseDown={(e) => { mouseDownOnOverlay.current = e.target === e.currentTarget; }}
-      onMouseUp={(e) => { if (mouseDownOnOverlay.current && e.target === e.currentTarget) onClose(); }}
+      {...backdrop}
     >
       <div className="card" onClick={(e) => e.stopPropagation()} style={dialogStyle}>
         {/* ---- Header ---- */}
