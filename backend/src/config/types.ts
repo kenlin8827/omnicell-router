@@ -693,15 +693,25 @@ export interface SystemoneSurfaceConfig {
 }
 
 /**
- * Console-only memory (per environment): the last profile id + agent→slot
- * mapping picked on the client-hook form. Never consulted by routing or by
- * the hook itself — restoring the UI selection across page reloads, gateway
- * restarts and teardown is its single job. Keyed by client name (reserved
- * for future clients' forms).
+ * Console-only memory (per environment): a write-through mirror of the
+ * client-hook form's selections — the last profile id + agent→slot mapping,
+ * the picked model refs, and the model-list draft. Never consulted by
+ * routing or by the hook itself — restoring the UI selection across page
+ * reloads, gateway restarts and teardown is its single job. Keyed by client
+ * name (reserved for future clients' forms).
  */
 export interface ClientProfileMemoryEntry {
   profile: string; // profile id ('' = none)
   bindings: Record<string, string>; // agent name → slot key
+  /** Write-through mirror of the form drafts (the console saves on every
+   *  pick, see ClientsPage rememberDraft): models = slot → model-ref draft
+   *  (pi/omp main pick, plain slot clients); agentModels = role/agent → raw
+   *  draft ref (opencode agents, pi/omp role rows, native pins included).
+   *  Absent = restore falls back to slot defaults. */
+  models?: Record<string, string>;
+  agentModels?: Record<string, string>;
+  /** Custom model-list draft (the manual extra models picked on the form). */
+  extraModels?: string[];
   /** Model-list source on the opencode form: 'none' (default) exposes no
    *  concrete models, 'follow' derives the extra-model set from the selected
    *  API key's effective access, 'custom' keeps the manual picker. UI-only —

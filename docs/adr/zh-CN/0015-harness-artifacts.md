@@ -36,7 +36,7 @@
 - `hosts.ts` 回答**有哪些宿主、顺序、叫什么**（`HOSTS`：只有 id + label）。
 - `adapters/<host>.ts` 回答**该运行时读什么、怎么写**——每宿主一个文件，每个落点路径只声明一次。共享规则（`defineHost` 与 `SkillsHost` / `McpHost` / `ExtensionHost` 构建器）在 `adapters/declarative.ts` 里，所以错路径是一个小文件的数据错误，错规则是一处实现错误。
 
-能力是**彼此独立的接口**，不是每宿主九个方法：十二个宿主有技能落点，一个（opencode）有经核实的 MCP 落点，两个（opencode、pi）有经核实的扩展落点。不会 MCP 的宿主根本不实现 `McpHost`——"没有这个能力"是类型事实，而不是运行时抛 `unsupported`。
+能力是**彼此独立的接口**，不是每宿主九个方法：十三个宿主有技能落点，一个（opencode）有经核实的 MCP 落点，两个（opencode、pi）有经核实的扩展落点。不会 MCP 的宿主根本不实现 `McpHost`——"没有这个能力"是类型事实，而不是运行时抛 `unsupported`。
 
 版本差异是**同一适配器内的阶梯**，绝不拆成第二个适配器：`opencode` v1/v2 只差落点拼写，而扩展 identity 是 `extension:<harness>:<canonicalKey>`（§D7）——拆两个适配器 id 会在迁移期（一台机器同时有两种拼写）把同一个已装插件劈成两个制品。
 
@@ -49,7 +49,7 @@
 | claude | `~/.claude/skills` / `.claude/skills` | — | — |
 | codex | `~/.agents/skills` / `.agents/skills` | — | — |
 | pi | `~/.agents/skills` / `.agents/skills` | — | `pi install npm:<spec>`（子进程） |
-| dsh | 无 | — | — |
+| omp | `~/.omp/skills`（由 `PI_CONFIG_DIR` 迁移）/ `.omp/skills` | — | — |
 | cursor | `~/.cursor/skills` / `.agents/skills` | — | — |
 | github-copilot | `~/.copilot/skills` / `.agents/skills` | — | — |
 | gemini-cli | `~/.gemini/skills` / `.agents/skills` | — | — |
@@ -58,13 +58,14 @@
 | windsurf | `~/.codeium/windsurf/skills` / `.windsurf/skills` | — | — |
 | zed | `~/.agents/skills` / `.agents/skills` | — | — |
 
-- **多数宿主只是读者，少数才是归属者。** 九个宿主都读项目 `.agents/skills`；一个目录就是一个副本，所以由 `skillOwner()`（适配器注册表中第一个解析到该路径的条目）决定记录里的 host，其余宿主只是别名。安装、盘点、控制台共用这条规则。
-- **归属与可读是两个答案，控制台两个都要问。** `skillOwner()` 回答"这个副本归谁"（安装目标、claim、卸载）；`skillReaders()` 回答"谁能**加载**它"（`CopyView.readers`，归属者在最前）。技能页的 harness 轨道按**可读性**筛选——装在 `.agents/skills` 里的一份技能对九个运行时都可用，用归属去建轨道只会在一个条目下显示它、把另外八个藏起来。写入仍然只认归属者（`KIND_META.skill.installAxis = 'skills-owner'`）：轨道是镜头，绝不是扇出的许可。
-- **根是通过本进程量出来的。** `adapter.skillRoots(ctx, scope)` 给出候选根，带 `origin: 'default' | 'env-override'` 与优先级序号；`OPENCODE_CONFIG_DIR` 会改变 opencode 的根（DSH 声明 `DSH_HOME` 但没有技能落点）。从别的 shell 用不同覆盖启动的运行时在这里是不可见的，因此低优先级根上的副本**绝不**被报告成"没读到"。
+- **多数宿主只是读者，少数才是归属者。** 十个宿主都读项目 `.agents/skills`；一个目录就是一个副本，所以由 `skillOwner()`（适配器注册表中第一个解析到该路径的条目）决定记录里的 host，其余宿主只是别名。安装、盘点、控制台共用这条规则。
+- **归属与可读是两个答案，控制台两个都要问。** `skillOwner()` 回答"这个副本归谁"（安装目标、claim、卸载）；`skillReaders()` 回答"谁能**加载**它"（`CopyView.readers`，归属者在最前）。技能页的 harness 轨道按**可读性**筛选——装在 `.agents/skills` 里的一份技能对十个运行时都可用，用归属去建轨道只会在一个条目下显示它、把另外九个藏起来。写入仍然只认归属者（`KIND_META.skill.installAxis = 'skills-owner'`）：轨道是镜头，绝不是扇出的许可。
+- **存在性是实测的，未探测到的宿主不进轨道。** 每个适配器声明 `presence` 标记——PATH 上可探测的可执行名和/或其配置目录——`hostDetected()` 依据这些标记加上该宿主任一全局技能根是否存在来作答（运行时删了但技能树还在，就仍然可见，否则它的副本将无处可管）。控制台轨道只显示已探测到的宿主，外加行已落地的宿主；`universal` 恒为已探测，于是一台还没装任何运行时的机器仍有落点。目录表本身保持静态——存在性是每个机器上 hosts 端点的实测，绝不改动 `HOSTS` 的成员。
+- **根是通过本进程量出来的。** `adapter.skillRoots(ctx, scope)` 给出候选根，带 `origin: 'default' | 'env-override'` 与优先级序号；`OPENCODE_CONFIG_DIR` 会改变 opencode 的根，`PI_CONFIG_DIR` 会改变 omp 的根（DSH 声明 `DSH_HOME` 但没有技能落点）。从别的 shell 用不同覆盖启动的运行时在这里是不可见的，因此低优先级根上的副本**绝不**被报告成"没读到"。
 - **`host ≠ SupportedClient`。** Cursor / VS Code / Zed / Windsurf 永远不是流量客户端，但它们是制品宿主；不会为了它们扩大流量枚举。
 - **范围——只装全局；项目级是延后，不是删除。** 可接受范围由唯一常量 `ENABLED_SCOPES`（`harness/scopes.ts`）给出，当前是 `['global']`。所有面向产品的路径都读它：安装路由对其它值回答 `unsupported_scope`，`scanInventory` 不读也不扫项目级技能根 / 扩展来源 / MCP 落地，控制台不提供范围选择（一律发 `global`）。**预留的接口**就是适配器早已声明的东西——`SkillsSpec.project`、`configProject`、`looseDir.project` 每个宿主仍只拼写一次——加上写入器的 `scope` 参数，因此将来开放项目级支持只需改这张表加控制台选择器。卸载守卫仍然保留**两个**范围：范围闸门出现之前就落在仓库里的副本依旧可以卸载。技能名会规整为 `^[a-z0-9]+(-[a-z0-9]+)*$`，且解析出的目标必须留在根内（`adapter.skillTarget` 拒绝任何越界）。
 - **`readsUniversal`** 记录该运行时是否原生读取跨代理的 `.agents` 目录；它决定别名/归属关系，也决定哪些宿主不需要厂商专属写入就能接受技能副本。
-- **共享集只有一个排除项，且默认勾选。** 钉住某个运行时的技能页会列出该运行时能**加载**的每一行，因此归 `universal`（共享 `.agents` 目录，九个运行时都读）的行会在每个轨道条目下重复出现，把真正属于该运行时的行挤下去。`hideShared` 开关按副本归属（`row.hosts` 含共享宿主）把它们筛掉。它是一个 facet 而不是模式——筛选的是来源 chip 计数所用的同一张表，所以每个 chip 的数字仍然诚实——并且在无意义的地方不出现：MCP/扩展页（那里没有共享落点）、共享条目本身（那会把要收窄的列表清空），以及筛掉共享后不剩任何私有行的页面。最后这道闸门同时守着**默认值**：开关出厂即勾选，所以技能全在共享树里的运行时仍然打开完整列表。开关上带着它当前隐藏的条数，被隐藏的集合永远有账可查。
+- **共享集只有一个排除项，且默认勾选。** 钉住某个运行时的技能页会列出该运行时能**加载**的每一行，因此归 `universal`（共享 `.agents` 目录，十个运行时都读）的行会在每个轨道条目下重复出现，把真正属于该运行时的行挤下去。`hideShared` 开关按副本归属（`row.hosts` 含共享宿主）把它们筛掉。它是一个 facet 而不是模式——筛选的是来源 chip 计数所用的同一张表，所以每个 chip 的数字仍然诚实——并且在无意义的地方不出现：MCP/扩展页（那里没有共享落点）、共享条目本身（那会把要收窄的列表清空），以及筛掉共享后不剩任何私有行的页面。最后这道闸门同时守着**默认值**：开关出厂即勾选，所以技能全在共享树里的运行时仍然打开完整列表。开关上带着它当前隐藏的条数，被隐藏的集合永远有账可查。
 
 ### D3 — 技能路径规则
 
@@ -187,6 +188,10 @@
 
 - **市场读取对每一个失败应答都重试，不再只挑"看起来瞬时"的失败。** 每一次市场抓取都走**同一个** helper（`harness/net.ts` → `fetchWithRetry`）：同一套策略若在每个读取器里各写一遍，等其中一个学会了新状态码那天就会漂移。策略（`MARKET_RETRY`）是 5 次尝试、间隔 400 毫秒起逐次翻倍（±20% 抖动）、单次 6 秒、**总计 30 秒预算**——操作者确认的忍耐上限（2026-10-25；旧策略为 10 秒内 3 次尝试）。预算是契约、`attempts` 只是上限：每次尝试的截止时间是预算的剩余量，所以快速失败的端点约 7 秒内用完全部 5 次询问，而硬挂起的端点大约得到 4 次完整尝试，操作者在 30 秒耗尽时看到 `timeout`——不会更晚，因为预算连睡眠也一起封顶。重试：抛出的网络错误与**所有**状态码（含 `4xx`）——npm CDN 在发布传播期间的瞬时 `404`、比退避还短的突发 `403`/`429` 窗口都真实存在，而 10 秒预算框死了死胡同重试的代价（2026-10-25 修订：旧策略绝不重试 `403`/`429` 及其余 `4xx`）。唯一的提前返回是剩余预算放不下的 `Retry-After`——服务器点名了一个策略兑现不了的等待，再问一次必然徒劳；放得下的 `Retry-After` 则垫高下一次睡眠的下限。仍然绝不重试：解码不出的负载（`badPayload` / `markupChanged` 是**答案**，不是抖动）。helper 把**最后一个响应**原样交回而不是吞掉，因此每个读取器仍按自己的 `reason` 映射状态码；若每次尝试都抛错，则重抛最后一个错误，原有措辞不变。**只用于读**——安装仍然只尝试一次：写路径绝不能在操作者背后被重放。
 
+### D6b — 内部回环调用钉住保留会话 ID
+
+翻译与探测调用经网关自己的回环 `/v1` 面进来，不带标记时**每次调用**都会铸造一个新 `cold_start` 会话，控制台会话列表被单轮内部行淹没。因此内部调用方经 `router_options.session_id` 钉住**按用途固定**的会话 ID：`ocr-internal:translation`（描述 + README 分块）与 `ocr-internal:translation-probe`（链路探测）。`ocr-internal:` 前缀是**保留命名空间**——它声明"该行是网关内部噪音"，不是强制约束；外部客户端发送同前缀同样会被隐藏，这一点被接受（管理面信任其调用方）。标记**就是 ID 本身**：持久化轨迹以 `sessionId` 为键，因此网关重启后分类在活跃行与轨迹重建行上都天然存活，无需存储任何标志——`GET /api/admin/sessions` 由前缀推导 `internal: true` 并默认隐藏这些行（`hideInternal=0` 可显示）。翻译链是显式的（configured → lite），共享会话永远不可能棘轮升档。
+
 ### D7 — 身份:一个制品一个键
 
 | 种类 | `canonicalKey` | `artifactId` |
@@ -216,7 +221,7 @@
 
 | 领域 | 现状 |
 | :--- | :--- |
-| 项目级发现与安装（技能、MCP、扩展） | 在产品边界处关闭：`ENABLED_SCOPES` 为 `['global']`，因此安装路由回答 `unsupported_scope`、盘点不扫任何项目根、控制台不提供范围选择器。适配器里的项目落点声明与写入器的 `scope` 参数**保留**作为接口——将来开放只需改这张表加选择器，不必重拼十三个适配器 |
+| 项目级发现与安装（技能、MCP、扩展） | 在产品边界处关闭：`ENABLED_SCOPES` 为 `['global']`，因此安装路由回答 `unsupported_scope`、盘点不扫任何项目根、控制台不提供范围选择器。适配器里的项目落点声明与写入器的 `scope` 参数**保留**作为接口——将来开放只需改这张表加选择器，不必重拼十四个适配器 |
 | opencode 之外的 MCP 落地 | 不在 `HOSTS` 中；目标被带原因拒绝，绝不猜 |
 | opencode（`config`）与 pi（`subprocess`）之外的扩展落地 | 不存在；其它宿主拒绝 |
 | npm 作为**技能**来源 | 视图已声明，解析返回 `unsupported_kind` |

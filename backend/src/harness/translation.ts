@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { defaultGatewayPort } from '../cli/clients/base.js';
 import { loadConfig } from '../config/index.js';
+import { INTERNAL_SESSION_PREFIX } from '../session/session-manager.js';
 import { renameWithRetry } from '../utils/atomic-write.js';
 import { harnessEnvDir } from './manifest.js';
 
@@ -370,6 +371,10 @@ const MD_MAX_INPUT = 20_000;
  */
 const TAIL_MODEL = 'lite';
 
+/** Reserved internal-session ids (ADR-0015) — one shared session per purpose. */
+const SESSION_TRANSLATION = `${INTERNAL_SESSION_PREFIX}translation`;
+const SESSION_TRANSLATION_PROBE = `${INTERNAL_SESSION_PREFIX}translation-probe`;
+
 /**
  * The attempt chain for a given configured value. Whitespace or a `lite` value collapses to the
  * tail alone; an empty string (a cleared picker) means "as if unset".
@@ -400,7 +405,8 @@ async function callGateway(
   model: string,
   text: string,
   lang: string,
-  systemPrompt: string = SYSTEM_PROMPT
+  systemPrompt: string = SYSTEM_PROMPT,
+  sessionId?: string
 ): Promise<{ text: string; model: string } | { error: string }> {
   let response: Response;
   try {
@@ -414,6 +420,10 @@ async function callGateway(
           { role: 'system', content: systemPrompt },
           { role: 'user', content: `Target language: ${LANG_LABEL[lang as TranslationLang]}\n\n${text}` },
         ],
+        // Pin the reserved internal-session namespace (ADR-0015) so these
+        // loopback calls share one session instead of minting a fresh
+        // cold_start session per call — the id IS the internal marker.
+        ...(sessionId ? { router_options: { session_id: sessionId } } : {}),
       }),
       signal: AbortSignal.timeout(30_000),
     });
@@ -457,7 +467,7 @@ export async function translateDescription(text: string, lang: string): Promise<
   const attempts = translationChain();
   const failures: string[] = [];
   for (const model of attempts) {
-    const result = await callGateway(key, model, text, lang);
+    const result = await callGateway(key, model, text, lang, SYSTEM_PROMPT, SESSION_TRANSLATION);
     if ('error' in result) {
       failures.push(result.error);
       continue;
@@ -640,7 +650,7 @@ async function callGatewayOnce(
 ): Promise<{ text: string; model: string } | { error: string }> {
   const failures: string[] = [];
   for (const model of translationChain()) {
-    const result = await callGateway(key, model, text, lang, MARKDOWN_SYSTEM_PROMPT);
+    const result = await callGateway(key, model, text, lang, MARKDOWN_SYSTEM_PROMPT, SESSION_TRANSLATION);
     if (!('error' in result)) return result;
     failures.push(result.error);
   }
@@ -690,7 +700,7 @@ export async function probeTranslationChain(lang = 'en', overrideModel?: string)
   }
   const attempts: TranslationProbeAttempt[] = [];
   for (const model of chain) {
-    const result = await callGateway(key, model, PROBE_TEXT, lang);
+    const result = await callGateway(key, model, PROBE_TEXT, lang, SYSTEM_PROMPT, SESSION_TRANSLATION_PROBE);
     if ('error' in result) {
       attempts.push({ model, ok: false, error: result.error });
       continue;

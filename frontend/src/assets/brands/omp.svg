@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <!-- omp (omp.sh) mark, derived from the official favicon.svg (64x64 grid,
+       gradient path) — rescaled to 24x24 and flattened to monochrome so the
+       BrandIcon wrapper's fill="currentColor" themes it with the row.
+  -->
+  <g transform="translate(-4.000 -6.000) scale(1.3333)"><path d="M5.25 6h13.5v3H15v12h-3V9H9.75v8.25h-3V9H5.25z" />
+  <!-- Glyph normalized to a 20x20 visual box (centered); aspect preserved. -->
+</svg>

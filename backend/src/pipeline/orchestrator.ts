@@ -1660,12 +1660,41 @@ export class PipelineOrchestrator {
     // — see resolveTraceId). One id now joins capture events and the trace
     // record, so a console reader can pull both streams by traceId.
     const sharedTraceId = traceId ?? 'unknown';
-    const lastUserMsg = normalizedRequest.messages.filter(m => m.role === 'user').pop();
-    const userPromptSummary = typeof lastUserMsg?.content === 'string'
+    // Multimodal content parts: keep the text ones (mirrors the early
+    // lastUserText join at 2C without the `any` cast).
+    const textPartOf = (p: unknown): string => {
+      if (typeof p !== 'object' || p === null || !('text' in p)) return '';
+      const text: unknown = p.text;
+      return typeof text === 'string' ? text : '';
+    };
+
+    // The summary names the user message THAT TRIGGERED this turn. A
+    // tool-result continuation turn carries the whole history, so its last
+    // user message is the PREVIOUS turn's prompt — recording it again makes
+    // every continuation row in the console's request detail read as a
+    // duplicate (an empty summary renders the "no new user message"
+    // fallback glyph). The message is stale when its index already existed
+    // at the session's previous turn: clients append, so a genuinely new
+    // user message always lands at or past the previous messageCount.
+    // Both counts are post-compression snapshots — a heavy compression
+    // shrink may over-mark; that only hides a display aid, never data.
+    const lastUserIdx = (() => {
+      for (let i = normalizedRequest.messages.length - 1; i >= 0; i--) {
+        if (normalizedRequest.messages[i].role === 'user') return i;
+      }
+      return -1;
+    })();
+    const lastUserMsg = lastUserIdx >= 0 ? normalizedRequest.messages[lastUserIdx] : undefined;
+    let userPromptSummary = typeof lastUserMsg?.content === 'string'
       ? lastUserMsg.content.slice(0, 200)
       : Array.isArray(lastUserMsg?.content)
-        ? (lastUserMsg.content.map(p => (p as any).text || '').join(' ')).slice(0, 200)
+        ? (lastUserMsg.content.map(textPartOf).join(' ')).slice(0, 200)
         : '';
+    if (userPromptSummary) {
+      const prevTraces = this.traceTracker.getTracesBySession(sessionId);
+      const prevMessageCount = prevTraces[prevTraces.length - 1]?.request.messageCount ?? 0;
+      if (lastUserIdx < prevMessageCount) userPromptSummary = '';
+    }
 
     this.traceTracker.record({
       traceId: sharedTraceId,

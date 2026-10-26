@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { HOSTS } from '../harness/hosts.js';
 import {
   adapterFor,
+  hostDetected,
   isExtensionHost,
   isMcpHost,
   isSkillsHost,
@@ -275,6 +276,9 @@ export function registerHarnessRoutes(app: FastifyInstance): void {
       return {
         id: host.id,
         label: host.label,
+        /** Present on this machine (executable, config dir, or an existing skills root). The
+         *  console rail hides undetected hosts — but never one whose rows are already landed. */
+        detected: hostDetected(adapterFor(host.id)!),
         hasSkills: isSkillsHost(adapterFor(host.id)),
         /** MCP-capable host: its adapter implements the MCP landing capability. */
         hasMcp: isMcpHost(adapterFor(host.id)),

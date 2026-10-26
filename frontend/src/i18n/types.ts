@@ -1088,6 +1088,8 @@ hiddenBadge: string;
     switchProviderTip: string;
     filterPlaceholder: string;
     apiKeyAll: string;
+    hideInternal: string;
+    hideInternalTip: string;
     filterEmpty: string;
     emptySessions: string;
     copiedSessionId: string;
@@ -1849,8 +1851,10 @@ hiddenBadge: string;
     profileApplyHint: string;
     /** pi variant: write-through lands in settings.json agentOverrides; presets are the default. */
     profileApplyHintPi: string;
+    profileApplyHintOmp: string;
     /** pi form hint: models.json entries are written with full model metadata. */
     piMetaHint: string;
+    ompMetaHint: string;
     /** Short header-row label naming what the table binds (Subagent). */
     profileRowsLabel: string;
     /** Switch-OFF explanatory line. */

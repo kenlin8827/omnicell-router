@@ -11,7 +11,7 @@ import { scanInventory } from '../src/harness/inventory.js';
  *
  * OWNERSHIP (`skillOwner`) is one host per directory: it decides the install target, the claim and
  * the removal. READERSHIP (`skillReaders`) is every runtime whose skills roots resolve to that
- * directory — the cross-agent `.agents/skills` tree is loaded by nine of them. The skills page's
+ * directory — the cross-agent `.agents/skills` tree is loaded by ten of them. The skills page's
  * harness rail selects by readership, so these cases pin the two answers apart: a shared tree must
  * list every reader (owner first) and a vendor-private directory must list only its own host.
  */
@@ -29,9 +29,11 @@ describe('skillReaders', () => {
 
     expect(readers[0]).toBe(skillOwner(shared, 'project', root));
     expect(readers[0]).toBe('universal');
-    // Nine hosts read the cross-agent project root: universal plus the eight vendors that spell it.
+    // Ten hosts read the cross-agent project root: universal plus the nine vendors that spell it.
     expect(readers.length).toBeGreaterThan(1);
     expect(readers).toContain('opencode');
+    expect(readers).toContain('pi');
+    expect(readers).toContain('omp');
     expect(readers).toContain('cursor');
     expect(readers).toContain('zed');
     // A vendor-private directory is not a reader of the shared tree.
@@ -44,6 +46,10 @@ describe('skillReaders', () => {
     const claude = path.join(root, '.claude', 'skills');
     expect(skillReaders(claude, 'project', root)).toEqual(['claude']);
     expect(skillReaders(claude, 'project', root)).not.toContain('universal');
+    // omp reads the shared tree too, but its own `.omp/skills` directory is private to it.
+    const omp = path.join(root, '.omp', 'skills');
+    expect(skillReaders(omp, 'project', root)).toEqual(['omp']);
+    expect(skillOwner(omp, 'project', root)).toBe('omp');
   });
 
   it('answers no reader for a directory no adapter resolves', () => {

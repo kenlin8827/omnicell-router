@@ -53,7 +53,7 @@ Two files share the table, with a hard split:
   (`defineHost` + the `SkillsHost` / `McpHost` / `ExtensionHost` builders), so a wrong path is one
   small file's data bug and a wrong rule is one implementation bug.
 
-Capabilities are **separate interfaces**, not nine methods on every host: twelve hosts have a skills
+Capabilities are **separate interfaces**, not nine methods on every host: thirteen hosts have a skills
 location, one has a verified MCP landing, two have a verified extension landing. A host that cannot do
 MCP never implements `McpHost`, so absence is a type fact instead of a runtime `unsupported` throw.
 
@@ -74,7 +74,7 @@ a kind × host cell that is empty is refused at resolve time rather than guessed
 | claude | `~/.claude/skills` / `.claude/skills` | — | — |
 | codex | `~/.agents/skills` / `.agents/skills` | — | — |
 | pi | `~/.agents/skills` / `.agents/skills` | — | `pi install npm:<spec>` (subprocess) |
-| dsh | none | — | — |
+| omp | `~/.omp/skills` (relocated by `PI_CONFIG_DIR`) / `.omp/skills` | — | — |
 | cursor | `~/.cursor/skills` / `.agents/skills` | — | — |
 | github-copilot | `~/.copilot/skills` / `.agents/skills` | — | — |
 | gemini-cli | `~/.gemini/skills` / `.agents/skills` | — | — |
@@ -83,18 +83,27 @@ a kind × host cell that is empty is refused at resolve time rather than guessed
 | windsurf | `~/.codeium/windsurf/skills` / `.windsurf/skills` | — | — |
 | zed | `~/.agents/skills` / `.agents/skills` | — | — |
 
-- **Most hosts read, few hosts own.** Nine hosts read the project `.agents/skills`; one directory is
+- **Most hosts read, few hosts own.** Ten hosts read the project `.agents/skills`; one directory is
   one copy, so `skillOwner()` (first adapter in registry order resolving to that path) decides the
   recorded host and every other host is an alias. Install, inventory and the console all use that rule.
 - **Ownership and readership are two answers, and the console asks both.** `skillOwner()` answers "who
   owns this copy" (install target, claims, removal); `skillReaders()` answers "who can LOAD it"
   (`CopyView.readers`, owner first). The skills page's harness rail selects by readership — a skill
-  materialized once in `.agents/skills` is usable from nine runtimes, and a rail built on ownership
-  would show it under one entry and hide it under the other eight. Writes stay owner-only
+  materialized once in `.agents/skills` is usable from ten runtimes, and a rail built on ownership
+  would show it under one entry and hide it under the other nine. Writes stay owner-only
   (`KIND_META.skill.installAxis = 'skills-owner'`): the rail is a lens, never a fan-out permission.
+- **Presence is measured, and undetected hosts leave the rail.** Each adapter declares `presence`
+  markers — an executable name probed on PATH and/or its config directory — and `hostDetected()`
+  answers from those markers plus the existence of any of the host's global skills roots (a runtime
+  that left its skills tree behind stays visible, or its copies would become unmanageable). The
+  console rail shows detected hosts only, plus any host whose rows are already landed; `universal`
+  is always detected, so a machine with no runtime installed still has a landing spot. The catalog
+  itself stays static — presence is a per-machine measurement on the hosts endpoint, never a
+  membership change in `HOSTS`.
 - **Roots are measured through this process.** `adapter.skillRoots(ctx, scope)` answers candidate roots
   with `origin: 'default' | 'env-override'` and a precedence index; `OPENCODE_CONFIG_DIR` relocates
-  opencode's root (DSH declares `DSH_HOME` but has no skills landing). A runtime launched from a shell
+  opencode's root and `PI_CONFIG_DIR` relocates omp's (DSH declares `DSH_HOME` but has no skills
+  landing). A runtime launched from a shell
   with a different override is invisible here, so a copy on a lower-precedence root is **never**
   reported as "not read".
 - **`host ≠ SupportedClient`.** Cursor/VS Code/Zed/Windsurf are artifact hosts that will never be
@@ -114,7 +123,7 @@ a kind × host cell that is empty is refused at resolve time rather than guessed
   write.
 - **The shared set has exactly one exclusion, and it is ON by default.** A pinned skills page shows
   every row its runtime can LOAD, so the rows owned by `universal` (the shared `.agents` tree, read by
-  nine runtimes) repeat under every rail entry and crowd out the rows that ARE private to the pinned
+  ten runtimes) repeat under every rail entry and crowd out the rows that ARE private to the pinned
   runtime. A `hideShared` switch narrows them out by copy ownership (`row.hosts` contains the shared
   host). It is a facet, not a mode — it narrows the same list the source chips count from, so every
   chip number stays honest — and it is absent where it would mean nothing: on MCP/extension pages (no
@@ -474,6 +483,21 @@ the console renders. A source present in the view but absent from the registry a
   support, and `script`/`style`/`iframe`/event handlers/`javascript:` URLs never survive the
   sanitizer.
 
+### D6b — Internal loopback calls pin reserved session ids
+
+Translation and probe calls reach the gateway through its own loopback `/v1` surface, so without a
+marker EACH CALL mints a fresh `cold_start` session and the console's session list drowns in one-turn
+internal rows. Internal callers therefore pin a FIXED per-purpose session id through
+`router_options.session_id`: `ocr-internal:translation` (descriptions + README chunks) and
+`ocr-internal:translation-probe` (the chain probe). The `ocr-internal:` prefix is a RESERVED
+namespace — a claim of "this row is gateway-internal noise", not an enforced restriction; an external
+client sending the same prefix would be hidden too, which is accepted (the admin surface trusts its
+caller). The marker IS the id: persisted traces key on `sessionId`, so the classification survives a
+gateway restart on BOTH live and trace-reconstructed rows with no stored flag — `GET
+/api/admin/sessions` derives `internal: true` from the prefix and hides those rows by default
+(`hideInternal=0` shows them). The translation chain is explicit (`configured → lite`), so a shared
+session can never ratchet upward.
+
 ### D7 — Identity: one artifact, one key
 
 | Kind | `canonicalKey` | `artifactId` |
@@ -560,7 +584,7 @@ the console renders. A source present in the view but absent from the registry a
 
 | Area | State |
 | :--- | :--- |
-| Project-level discovery and install (skills, MCP, extensions) | gated off at the product boundary: `ENABLED_SCOPES` is `['global']`, so the install route answers `unsupported_scope`, the inventory scans no project root, and the console offers no scope selector. Adapter project landings and the writers' `scope` parameter stay DECLARED as the seam — shipping it is that list plus the selector, not a re-spelling of thirteen adapters |
+  landing). Adapter project landings and the writers' `scope` parameter stay DECLARED as the seam — shipping it is that list plus the selector, not a re-spelling of fourteen adapters |
 | MCP landings beyond opencode | absent from the adapters; a target is refused with a reason, never guessed |
 | Extension landings beyond opencode (`config`) and pi (`subprocess`) | absent; other hosts refuse |
 | npm as a **skill** source | declared in the view, resolves `unsupported_kind` |

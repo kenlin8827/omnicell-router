@@ -13,12 +13,12 @@ import type { ExtDiscoveryOrigin, HarnessHostId, HarnessScope, ResolvedRoot } fr
  *
  * WHY installation verbs are NOT here: install/uninstall are one pipeline — plan → confirm → apply →
  * ledger → claims (ADR-0015 gates 2/3) — implemented once per KIND in `writers/`, not once per host.
- * An adapter that owned `installExtension` would either duplicate that pipeline thirteen times or
+ * An adapter that owned `installExtension` would either duplicate that pipeline fourteen times or
  * become a forwarder. The split is: **the adapter answers WHERE, the writer answers HOW.**
  *
  * WHY skills are not a host capability at all: a skill lands in a DIRECTORY, and one directory is
- * read by up to nine hosts (`readsUniversal` / `skillOwner`). "Install this skill into this host"
- * would invite writing the same tree nine times; skills live on the location level
+ * read by up to ten hosts (`readsUniversal` / `skillOwner`). "Install this skill into this host"
+ * would invite writing the same tree ten times; skills live on the location level
  * (`skillRoots` / `skillTarget` on this interface, aggregated by `skillLocationRoots`).
  *
  * WHY one adapter per VERSION is not modelled: `opencode` v1 and v2 differ in landing SPELLINGS
@@ -98,6 +98,21 @@ export interface HostAdapter {
   readonly id: HarnessHostId;
   /** Env var that relocates this runtime's config root, when it honours one. */
   readonly configRootEnv?: string;
+  /**
+   * Install-presence markers: how the console answers "is this runtime on this machine". Either
+   * marker suffices — the executable on PATH or its config directory on disk. A host whose
+   * runtime reads a skills directory is ALSO present once that directory exists (a runtime may
+   * keep its skills tree after the executable is gone, and its rows must stay manageable).
+   */
+  readonly presence?: HostPresence;
+}
+
+/** One way to detect an installed runtime; `dir` is an absolute path. */
+export interface HostPresence {
+  /** Executable name probed on PATH (extensionless; the probe adds platform suffixes). */
+  command?: string;
+  /** The runtime's config/agent directory, e.g. `~/.claude`. */
+  dir?: string;
 }
 
 /** Where a host's skills land: one directory per scope, relocated by the host's env root when set. */
@@ -113,7 +128,8 @@ export interface SkillsHost extends HostAdapter {
   /**
    * Candidate skills roots for one scope, highest precedence first. Global scope may include the
    * cross-agent `.agents/skills` directory when the runtime reads it (`readsUniversal`); project
-   * scope is a single directory, because no runtime reads a second project root.
+   * scope lists the private project root first and, for a `readsUniversal` host with a private
+   * project root, the shared project tree second (omp reads both `.omp/skills` and `.agents/skills`).
    */
   skillRoots(ctx: AdapterContext, scope: HarnessScope): ResolvedRoot[];
   /** Where one skill NAME lands in this host, refusing anything that escapes its root. */

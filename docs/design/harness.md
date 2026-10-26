@@ -37,13 +37,16 @@ pick (an unknown or missing segment is replaced, never pushed, so a stale bookma
 valid). The rail's TITLE is fixed — one column header, `HARNESS`, on all three pages, because it is the
 same control everywhere. What the pick MEANS differs, and the hint under the rail says which: on
 Extensions the runtime is the artifact's identity; on MCP it is the config landing the install fans out
-from; on Skills it is a READER — nine runtimes load one `.agents/skills` tree, so the rail narrows to
+from; on Skills it is a READER — ten runtimes load one `.agents/skills` tree, so the rail narrows to
 "what this runtime can load" while writes stay owner-only (`skillReaders()` / `skillOwner()`,
 ADR-0015 §D2).
 
-The rail is a picker with 13 possible entries, so it filters by name once the catalog is longer than a
-glance (>8 hosts, the same threshold the shared `Combobox` uses). The ACTIVE host is never filtered
-away: the rail must still answer "where am I" while the operator types a name that excludes it.
+The rail is a picker over the 14-row catalog, but its ENTRIES are the hosts detected on this
+machine (executable on PATH, config dir, or an existing skills root — measured by the backend, never
+configured), plus any host whose rows are already landed there; `universal` is always an entry, so a
+fresh machine still has a landing spot. It filters by name once the list is longer than a glance (>8
+entries, the same threshold the shared `Combobox` uses). The ACTIVE host is never filtered away: the
+rail must still answer "where am I" while the operator types a name that excludes it.
 
 A rail pick always lands on the `Installed` tab, including a click on the row already selected: the
 badge beside every host is a count of LOCAL copies, so answering a pick with the market catalog would
@@ -152,7 +155,7 @@ source adapter ──raw──► normalizer ──► ArtifactSummary / Artifac
   badges in the header; nothing is card-only or list-only, so a bug reproduces in both.
 - The **host tag is a row field, not page chrome.** A pinned page shows every row the selected
   runtime can *load*, while ownership stays per copy: one skill sits in the shared `.agents/skills`
-  tree (`Universal`, read by nine runtimes) and another in the runtime's own directory (that runtime
+  tree (`Universal`, read by ten runtimes) and another in the runtime's own directory (that runtime
   only). Dropping the tag because "the page is already pinned" makes a reader-scoped row look
   runtime-scoped, so it renders in both layouts, labelled with the host catalog's own name and
   tooltipped with the copy's real path.
@@ -187,7 +190,7 @@ verification.
 `SupportedClient` — Cursor/VS Code/Zed will never be traffic clients, and welding the two would pollute
 the traffic domain (ADR-0015 §D2).
 
-**A host is a reader, not a location.** Nine hosts read the project `.agents/skills`, five read the
+**A host is a reader, not a location.** Ten hosts read the project `.agents/skills`, five read the
 global one, so one directory has many readers and exactly one owner: the first adapter in registry
 order that resolves to that path (`skillOwner()` in `adapters/index.ts`). Installation, the inventory
 scan and the console all apply that rule. Without it the same directory is recorded as `codex` by an
@@ -497,7 +500,7 @@ Aggregation and identity live in §5.2. Rules that follow from the table:
 
 | Shipped | Notes |
 | :--- | :--- |
-| host catalog + root resolver + owner/alias rule | 13 rows; landing cells empty where unverified |
+| host catalog + root resolver + owner/alias rule | 14 rows; landing cells empty where unverified |
 | per-env manifest v2 (+ v1 migration, orphans) + machine-wide claims | no advisory lock |
 | store (skills only) + trash snapshots | append-only, no GC |
 | inventory (`clean`/`dirty`/`missing`/`foreign`/`untracked`) + discovery channel for every kind | `shadowed` has no producer; the scan reads skill directories, a runtime's `plugin[]`/`packages[]`/loose files, and the `mcp` object of a host config |

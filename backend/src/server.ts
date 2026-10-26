@@ -28,6 +28,7 @@ import {
   type VirtualEnvelope,
 } from './providers/virtual-meta.js';
 import { modelSupportsEfforts } from './types/router.js';
+import { isInternalSessionId } from './session/session-manager.js';
 import type { TripScope } from './resilience/types.js';
 import type { CaptureKeyIdentity } from './capture/recorder.js';
 
@@ -91,6 +92,9 @@ function reconstructSessionFromTraces(traceTracker: TraceTracker, id: string) {
   const uaList = distinctTraceUserAgents(traces);
   return {
     id,
+    // The id IS the marker (see isInternalSessionId) — traces key on it, so
+    // this survives restarts on the reconstruction path exactly like live.
+    internal: isInternalSessionId(id),
     maxTier,
     entryMode: deriveSessionEntryMode(traces),
     pinnedModel: last?.execution.modelUsed ?? '',
@@ -1072,7 +1076,7 @@ export function createServer(
 
   // 3C. Active Conversation Sessions Inspection (optional limit/offset pagination)
   app.get('/api/admin/sessions', async (req) => {
-    const query = req.query as { limit?: string; offset?: string; q?: string; apiKey?: string };
+    const query = req.query as { limit?: string; offset?: string; q?: string; apiKey?: string; hideInternal?: string };
     const limit = query.limit !== undefined ? parseInt(query.limit, 10) : undefined;
     const offset = query.offset ? parseInt(query.offset, 10) : 0;
     // Duplicate params (?q=a&?q=b / ?apiKey=a&apiKey=b) parse to an ARRAY
@@ -1084,6 +1088,9 @@ export function createServer(
     // Per-application selector (same semantics as the capture sessions route):
     // exact client API-key id OR case-insensitive name substring.
     const ak = firstStr(query.apiKey).trim();
+    // Internal (gateway-loopback) rows: hidden unless the caller asks for
+    // them. Filtered BEFORE pagination so `total` stays truthful.
+    const hideInternal = firstStr(query.hideInternal) !== '0';
 
     const traceTracker = orchestrator.getTraceTracker();
     // Live sessions carry the authoritative routing state (pin/ratchet);
@@ -1096,6 +1103,9 @@ export function createServer(
       const uaList = distinctTraceUserAgents(sessTraces);
       return {
         ...s,
+        // The id IS the internal marker (reserved `ocr-internal:` prefix) —
+        // derived, never stored, so live and trace-reconstructed rows agree.
+        internal: isInternalSessionId(s.id),
         // Application attribution from the session's traces — distinct key set
         // in write order (first element = display anchor).
         apiKeys: keyList.length ? keyList : undefined,
@@ -1118,6 +1128,7 @@ export function createServer(
     // `apiKey` (ak) selects by membership in the session's distinct key set.
     const all = [...live, ...reconstructed]
       .filter(s => {
+        if (hideInternal && (s as { internal?: boolean }).internal) return false;
         const keys = s.apiKeys ?? [];
         if (ak && !keys.some(k => k.id === ak || k.name.toLowerCase().includes(ak.toLowerCase()))) return false;
         return (

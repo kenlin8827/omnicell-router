@@ -36,6 +36,7 @@ const CONFIG_DIR = path.dirname(CONFIG_CANDIDATES[0]!);
 // time requirement rather than a comment.
 export const opencodeAdapter: SkillsHost & McpHost & ExtensionHost = defineFullHost('opencode', {
   configRootEnv: 'OPENCODE_CONFIG_DIR',
+  presence: { command: 'opencode', dir: CONFIG_DIR },
   skills: {
     global: path.join(xdgConfig(), 'opencode', 'skills'),
     project: UNIVERSAL_SKILLS.project,

@@ -8,6 +8,7 @@ import type {
   ExtensionWriteTarget,
   ExtSource,
   HostAdapter,
+  HostPresence,
   McpHost,
   SkillsHost,
   SkillsSpec,
@@ -58,7 +59,20 @@ const SKILL_NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 function buildSkills(id: HarnessHostId, spec: SkillsSpec, configRootEnv?: string): SkillsHost {
   const roots = (ctx: AdapterContext, scope: HarnessScope): ResolvedRoot[] => {
     if (scope === 'project') {
-      return [{ root: path.resolve(ctx.projectRoot, spec.project), origin: 'default', precedence: 0 }];
+      const out: ResolvedRoot[] = [
+        { root: path.resolve(ctx.projectRoot, spec.project), origin: 'default', precedence: 0 },
+      ];
+      // A readsUniversal host with a PRIVATE project root (omp: `.omp/skills`) ALSO loads the
+      // cross-agent project tree — referenced from skills-paths, never re-spelled. Hosts whose
+      // project root IS the shared tree (cursor, pi, …) already resolve it as their only root.
+      if (spec.readsUniversal && spec.project !== UNIVERSAL_SKILLS.project) {
+        out.push({
+          root: path.resolve(ctx.projectRoot, UNIVERSAL_SKILLS.project),
+          origin: 'default',
+          precedence: 1,
+        });
+      }
+      return out;
     }
     const out: ResolvedRoot[] = [];
     const override = configRootEnv ? process.env[configRootEnv]?.trim() : undefined;
@@ -206,6 +220,7 @@ function buildExtension(id: HarnessHostId, spec: ExtensionSpec, configRootEnv?: 
 /** What one host declares: the env root plus whichever capabilities it actually has. */
 export interface HostSpec {
   configRootEnv?: string;
+  presence?: HostPresence;
   skills?: SkillsSpec;
   mcp?: { configGlobal: string | string[]; configProject: string | string[]; container: string };
   ext?: ExtensionSpec;
@@ -230,6 +245,7 @@ export function defineHost(id: HarnessHostId, spec: HostSpec = {}): DefinedHost 
   const base: HostAdapter = {
     id,
     ...(spec.configRootEnv ? { configRootEnv: spec.configRootEnv } : {}),
+    ...(spec.presence ? { presence: spec.presence } : {}),
   };
   return Object.assign(base, ...parts);
 }
@@ -243,7 +259,13 @@ export function defineHost(id: HarnessHostId, spec: HostSpec = {}): DefinedHost 
  */
 export function defineFullHost(
   id: HarnessHostId,
-  spec: { skills: SkillsSpec; mcp: NonNullable<HostSpec['mcp']>; ext: ExtensionSpec; configRootEnv?: string }
+  spec: {
+    skills: SkillsSpec;
+    mcp: NonNullable<HostSpec['mcp']>;
+    ext: ExtensionSpec;
+    configRootEnv?: string;
+    presence?: HostPresence;
+  }
 ): SkillsHost & McpHost & ExtensionHost {
   return defineHost(id, spec) as SkillsHost & McpHost & ExtensionHost;
 }

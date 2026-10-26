@@ -1,7 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import { defineHost } from './declarative.js';
-import { UNIVERSAL_SKILLS } from './skills-paths.js';
+import { UNIVERSAL_SKILLS, home } from './skills-paths.js';
 
 /**
  * Pi — shared skills directory + package-manager extension landing (ADR-0015 §D8.9).
@@ -15,6 +15,7 @@ import { UNIVERSAL_SKILLS } from './skills-paths.js';
 const AGENT_DIR = path.join(os.homedir(), '.pi', 'agent');
 
 export const piAdapter = defineHost('pi', {
+  presence: { command: 'pi', dir: path.join(home(), '.pi') },
   skills: { global: UNIVERSAL_SKILLS.global, project: UNIVERSAL_SKILLS.project, readsUniversal: true },
   ext: {
     subprocess: 'pi',

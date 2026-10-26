@@ -411,6 +411,29 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(byName.build).toMatchObject({ mode: 'primary', source: 'config' });
   });
 
+  it('listOpenCodeAgents attaches the config default as the inherit target for unbound agents only', async () => {
+    const configPath = path.join(tmpDir, 'opencode-effective.json');
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          model: 'omnicell-router/auto',
+          agents: {
+            scout: { mode: 'subagent', model: 'omnicell-router/lite' }, // explicitly bound
+          },
+        },
+        null,
+        2
+      )
+    );
+    const agents = listOpenCodeAgents({ configPath, agentDir: path.join(tmpDir, 'missing') });
+    const byName = Object.fromEntries(agents.map(a => [a.name, a]));
+    expect(byName.scout).toMatchObject({ model: 'lite' });
+    expect(byName.scout!.effective).toBeUndefined(); // bound agents carry no inherit target
+    expect(byName.general!.model).toBeUndefined(); // still unbound — write path keeps inherit semantics
+    expect(byName.general!.effective).toBe('auto'); // display-only: config default, router prefix stripped
+  });
+
   it('listOpenCodeAgentsLive prefers the service roster and filters hidden internals', async () => {
     const stub = {
       isAvailable: () => true,
@@ -944,7 +967,7 @@ describe('Embedded UI & Management API Endpoints', () => {
     expect(json.metrics).toBeDefined();
     expect(json.circuitBreakers).toBeDefined();
     expect(Array.isArray(json.clients)).toBe(true);
-    expect(json.clients.length).toBe(6);
+    expect(json.clients.length).toBe(7);
   });
 
   it('should support reading and validating raw YAML config on /api/admin/config/raw', async () => {

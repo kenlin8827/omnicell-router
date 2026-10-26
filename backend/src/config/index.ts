@@ -953,7 +953,7 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'modelProfiles.*.name': '方案显示名',
   'modelProfiles.*.slots': '槽位表：槽位名 → modelRef（注册模型 id / 组合 id / auto / lite / plus / pro / ultra）',
   'modelProfiles.*.note': '备注：仅控制台展示的自由文本，不参与路由',
-  clientProfileMemory: '控制台表单记忆（按环境保存）：各客户端挂接表单上次选择的模型方案、槽位映射与模型列表模式（none=不设置（默认）/ custom=自定义 / follow=跟随所选 API Key 的权限），以及上次写入的 API Key id（apiKeyId；挂接总是写入所选 Key，不存明文），仅用于页面回填，不参与路由、也不影响实际接管配置',
+  clientProfileMemory: '控制台表单记忆（按环境保存）：点击“接入”时才写入——记录该次挂接实际应用的完整表单状态：模型方案、槽位映射与模型列表模式（none=不设置（默认）/ custom=自定义 / follow=跟随所选 API Key 的权限）、自定义模型列表（extraModels）、写入的 API Key id（apiKeyId；挂接总是写入所选 Key，不存明文），以及槽位/角色模型引用快照（models/agentModels）供“还原上次提交”按钮回填，仅用于页面回填，不参与路由、也不影响实际接管配置',
   defaultModels: '默认模型（网关自身内部调用花费的模型，不参与客户端路由）',
   'defaultModels.translation': '控制台内部翻译（技能描述/README）使用的模型：填写网关可见的 modelRef（档位别名 lite/plus/pro/ultra 或已注册模型 id）。未设置 = lite；配置的模型失败降级到 lite，lite 也失败则如实报错——链条绝不自行升级到 auto（内部非关键调用不允许无上限花费；显式写 auto 视为运营者自担成本，照常生效）。可解析性在请求时校验（模型在启动时才注册）；更换该值不使已缓存翻译失效（缓存按原文+语言键控，为派生数据）',
   session: '会话粘性（棘轮：会话内模型不漂移）',

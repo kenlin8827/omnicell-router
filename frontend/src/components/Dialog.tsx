@@ -26,6 +26,12 @@ export type DialogProps = {
   backdropClose?: boolean;
   /** Card width cap in px. */
   width?: number;
+  /** Card max-size overrides (any CSS length). Windowed dialogs default to
+      `width` px / content height capped at 88vh; pass e.g.
+      `{ width: '90vw', height: '90vh' }` for a proportional expanded layout
+      that keeps a viewport margin — `height` there is the card's FIXED
+      height (the body scrolls inside it), not just a cap. */
+  maxSize?: { width?: string; height?: string };
   /** Blur the backdrop as well as dimming it. */
   blur?: boolean;
   /** Fill the viewport instead of the centered card (fullscreen reading). */
@@ -51,6 +57,7 @@ export const Dialog: React.FC<DialogProps> = ({
   closeLabel,
   backdropClose = true,
   width = 660,
+  maxSize,
   blur = false,
   full = false,
 }) => {
@@ -94,9 +101,9 @@ export const Dialog: React.FC<DialogProps> = ({
         className="card"
         style={{
           width: '100%',
-          maxWidth: full ? 'none' : width,
-          maxHeight: full ? 'none' : '88vh',
-          height: full ? '100%' : undefined,
+          maxWidth: full ? 'none' : (maxSize?.width ?? width),
+          maxHeight: full ? 'none' : (maxSize?.height ?? '88vh'),
+          height: full ? '100%' : (maxSize?.height ?? undefined),
           borderRadius: full ? 0 : undefined,
           padding: '20px',
           boxShadow: '0 20px 40px rgba(0,0,0,0.6)',

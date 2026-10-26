@@ -38,10 +38,10 @@ import { useLocation, useNavigate, useParams, useSearchParams } from 'react-rout
  *
  * The third axis is the HARNESS, and it exists for all three kinds — but it answers a different
  * question per kind, and that difference is the whole point of the rail copy:
- *   · skills     — the harness is a READER. One `.agents/skills` tree is loaded by up to nine
+ *   · skills     — the harness is a READER. One `.agents/skills` tree is loaded by up to ten
  *                  runtimes, so the rail selects "which runtime can use this" (`CopyView.readers`)
  *                  while WRITES stay owner-only (`KIND_META.skill.installAxis`): materializing the
- *                  same directory once per reader would be nine writes of one tree.
+ *                  same directory once per reader would be ten writes of one tree.
  *   · mcp        — an MCP server is one payload written into ONE OR MORE clients' config files, so
  *                  the page is pinned to one landing harness and the install may fan out from there.
  *   · extensions — code against ONE runtime's plugin API, so the runtime is part of the artifact's
@@ -72,9 +72,9 @@ interface KindMeta {
    * Which hosts an install may write to.
    *
    * `landing` — the verified landing flag decides (an MCP config, a plugin API).
-   * `skills-owner` — the OWNER of a skills directory decides, never its readers: nine runtimes read
+   * `skills-owner` — the OWNER of a skills directory decides, never its readers: ten runtimes read
    * one `.agents/skills` tree, so offering every reader as a target would write the same directory
-   * nine times. The rail still lists readers (that is a question about USE, not about writing).
+   * ten times. The rail still lists readers (that is a question about USE, not about writing).
    */
   installAxis: 'landing' | 'skills-owner';
   /** URL segment carrying the harness id: `/harness/<route>/<harness>`. */
@@ -101,7 +101,7 @@ interface KindMeta {
 
 const KIND_META: Record<Kind, KindMeta> = {
   skill: {
-    // A skill lands in a DIRECTORY, and one directory is read by up to nine runtimes. The rail asks
+    // A skill lands in a DIRECTORY, and one directory is read by up to ten runtimes. The rail asks
     // "which runtime can use this", never "who owns it" — writes stay owner-only (`installAxis`), or
     // the same tree would be materialized once per reader.
     landing: 'hasSkills',
@@ -461,6 +461,7 @@ const HOST_BRAND: Record<string, string> = {
   codex: 'codex',
   pi: 'pi',
   dsh: 'dsh',
+  omp: 'omp',
   'github-copilot': 'github-copilot',
   amp: 'amp',
   cursor: 'cursor',
@@ -490,8 +491,8 @@ const hostOption = (host: HarnessHostView): ComboboxOption => ({
  *
  * Two answers, one predicate: ownership (`copy.host`) is who the copy is recorded under — the
  * landing that was written; readership (`copy.readers`, skills only) is every runtime that loads
- * that directory. A skill materialized once in `.agents/skills` is read by nine runtimes, so asking
- * only about `host` would show it under one rail entry and hide it under the other eight.
+ * that directory. A skill materialized once in `.agents/skills` is read by ten runtimes, so asking
+ * only about `host` would show it under one rail entry and hide it under the other nine.
  */
 const copyServes =
   (harnessId: string) =>
@@ -520,7 +521,7 @@ const rowServes = (harnessId: string) => (item: HarnessDiscoveredArtifact): bool
  *
  * `universal` is a HOST id, not a runtime: it owns that directory (first adapter in registry order)
  * and every `readsUniversal` runtime loads it. So on a skills page pinned to one runtime, a row whose
- * copies carry this host is NOT private to that runtime — the same row sits under all nine rail
+ * copies carry this host is NOT private to that runtime — the same row sits under all ten rail
  * entries, which is exactly why the pinned page cannot answer "what is actually mine" on its own.
  */
 const SHARED_HOST = 'universal';
@@ -562,7 +563,7 @@ const needsAttention = (row: Row): boolean =>
  *    ┌ HARNESS ────────┐   ← `harness.railTitle`, the same word on every page (CSS uppercases it)
  *    │ [filter…      ] │   ← only when the catalog is long enough for the input to earn its row
  *    │ ▪ opencode   3  │   ← HostIcon + label + landed count (+ health dot when not clean)
- *    │ ▪ pi         0  │   ← a zero is a reachable install entry, never hidden
+ *    │ ▪ pi         0  │   ← only DETECTED hosts are entries (plus any with landed rows)
  *    └ only opencode's ────┘   ← hintKey names the pick, "only {name}'s …" (emptyKey instead when nothing has one)
  */
 const HarnessRail: React.FC<{
@@ -802,7 +803,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   const [hosts, setHosts] = useState<HarnessHostView[]>([]);
   const [hostFilter, setHostFilter] = useState('');
   /** Hide the rows that live in the shared `.agents` tree — ON by default. The shared set is the SAME
-   *  under every rail entry (nine runtimes read it), so leading a pinned page with it hides the one
+   *  under every rail entry (ten runtimes read it), so leading a pinned page with it hides the one
    *  thing that page exists to answer: what was installed for THIS runtime. The rail cannot express
    *  that complement, and the switch is one tick away for anyone who wants the full list back. */
   const [hideShared, setHideShared] = useState(true);
@@ -851,11 +852,40 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     [inventory, kind]
   );
 
-  /** Every host the kind has an axis for — the only valid values of the page's first axis. For
-   *  skills that is every runtime with a skills directory (a reader, not a landing). */
-  const harnessOptions = useMemo(
-    () => (landing ? hosts.filter((h) => h[landing]).map(hostOption) : []),
+  /** Every host the kind has an axis for, BEFORE the presence filter. Rail counts are computed
+   *  over this full list so a landed-but-undetected host still carries its number. */
+  const landingHosts = useMemo(
+    () => (landing ? hosts.filter((h) => h[landing]) : []),
     [hosts, landing]
+  );
+
+  /** Rail counts over EVERY axis host — the count is a property of the host, not of whether the
+   *  rail currently shows it. Reuses `scopedTo`/`rowServes`, so the rail can never disagree with
+   *  the table it selects. */
+  const railCounts = useMemo(() => {
+    const counts: Record<string, { count: number; warn: boolean }> = {};
+    for (const host of landingHosts) {
+      const hits = trackedRows.filter(scopedTo(kind, host.id));
+      const found = discovery
+        ? (inventory?.discovered ?? []).filter(
+          (item) => item.kind === kind && rowServes(host.id)(item)
+        ).length
+        : 0;
+      // `artifactNeedsAttention` is the only health signal this page reports, so the rail's dot and
+      // the row's badge can never disagree. Rose, not amber: the runtime's own tree is compromised,
+      // which is a different sentence from "a file drifted".
+      counts[host.id] = { count: hits.length + found, warn: hits.some(artifactNeedsAttention) };
+    }
+    return counts;
+  }, [landingHosts, trackedRows, kind, discovery, inventory]);
+
+  /** The rail's actual entries: detected hosts only — a runtime that is not on this machine has
+   *  nothing to show or install into — PLUS any host whose rows are already landed there, because
+   *  its copies must stay reachable for update/removal. `universal` is always detected (backend),
+   *  so a fresh machine still has a landing spot. */
+  const harnessOptions = useMemo(
+    () => landingHosts.filter((h) => h.detected || (railCounts[h.id]?.count ?? 0) > 0).map(hostOption),
+    [landingHosts, railCounts]
   );
 
   /** The harness segment the URL asks for. A kind with no axis reads as ''. */
@@ -871,7 +901,8 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   const canHideShared = kind === 'skill' && harness !== '' && harness !== SHARED_HOST;
 
   // The URL is the single source of truth for a landing page's harness. Once the catalog arrives, a
-  // missing or unknown segment is REPLACED (never pushed) with the first harness that HAS a landing:
+  // missing or unknown segment is REPLACED (never pushed) with the first DETECTED harness (one
+  // whose rows are landed also qualifies — see `harnessOptions`):
   // a stale bookmark lands somewhere valid, and Back never bounces between two dead URLs. A rescan
   // re-runs this effect and leaves a valid pick untouched. The query rides along — a hand-typed
   // `?tab=market` without a segment must keep the view it names.
@@ -898,9 +929,8 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     setTab('local');
   }, [landing, requestedHarness, searchParams, setTab]);
 
-  /** Rail counts: artifacts landed at each harness. The count reuses `scopedTo`, so the rail can
-   *  never disagree with the table it selects. A zero stays visible — a harness with nothing
-   *  installed must remain a reachable install entry. */
+  /** Tracked artifacts narrowed to the pinned harness ('' = the un-pinned case does not occur:
+   *  the redirect effect above replaces a missing segment before rows render). */
   const scopedTrackedRows = useMemo(
     () => (harness ? trackedRows.filter(scopedTo(kind, harness)) : trackedRows),
     [trackedRows, kind, harness]
@@ -917,27 +947,6 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
         : [],
     [inventory, kind, discovery, landing, harness]
   );
-
-  /** Rail counts: artifacts landed at each harness. The count reuses `scopedTo` for tracked rows
-   *  and the same kind/harness filter for discovery, so the rail can never disagree with the table
-   *  it selects. A zero stays visible — a harness with nothing installed must remain a reachable
-   *  install entry. */
-  const railCounts = useMemo(() => {
-    const counts: Record<string, { count: number; warn: boolean }> = {};
-    for (const option of harnessOptions) {
-      const hits = trackedRows.filter(scopedTo(kind, option.value));
-      const found = discovery
-        ? (inventory?.discovered ?? []).filter(
-            (item) => item.kind === kind && rowServes(option.value)(item)
-          ).length
-        : 0;
-      // `artifactNeedsAttention` is the only health signal this page reports, so the rail's dot and
-      // the row's badge can never disagree. Rose, not amber: the runtime's own tree is compromised,
-      // which is a different sentence from "a file drifted".
-      counts[option.value] = { count: hits.length + found, warn: hits.some(artifactNeedsAttention) };
-    }
-    return counts;
-  }, [harnessOptions, trackedRows, kind, discovery, inventory]);
 
   /** Every row this page holds, before any control narrows it (the facets below derive from it). */
   const allRows: Row[] = useMemo(() => {
@@ -1045,14 +1054,17 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
 
   /**
    * Hosts the dialog may write to — and the caliber differs per kind, which is why this used to be
-   * wrong for MCP: skills are LOCATIONS, not readers (nine hosts read the same project
+   * wrong for MCP: skills are LOCATIONS, not readers (ten hosts read the same project
    * `.agents/skills`), so a host with no skills root, or one that is an alias of another host's
    * directory, is not a target. MCP and extensions need their OWN verified landing — a shared skills
    * directory says nothing about having a server config to merge into or a package manager to run.
+   * Both axes share the presence rule: an undetected host is not offered anywhere (the rail hides it
+   * too) — `universal` is always detected, so bootstrapping a fresh machine still has a target.
    */
   const installHostOffers = useMemo(
     () =>
       hosts
+        .filter((h) => h.detected)
         .filter((h) =>
           installMeta.installAxis === 'skills-owner'
             ? h.hasSkills && h.owner && h.owner.global === h.id
@@ -2249,7 +2261,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
    *
    * `copyServes` is the same predicate the rail counts with, so the removal dialog can never disagree
    * with the list that opened it: on a skills page it answers by READERSHIP (the shared
-   * `.agents/skills` tree is one copy owned by `universal` and read by nine runtimes, so it belongs to
+   * `.agents/skills` tree is one copy owned by `universal` and read by ten runtimes, so it belongs to
    * every rail entry that reads it), on MCP/extension pages by the copy's own host. No harness on the
    * page (before the catalog resolves) means no scope to narrow by — every copy is in scope.
    */
@@ -2569,8 +2581,8 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
    *
    * Readership is what makes this mandatory rather than decorative. A skills page is pinned to one
    * runtime but shows every row that runtime can LOAD, and two such rows can live in different
-   * places: one in the shared `.agents/skills` tree (`Universal` — nine runtimes load it, so removing
-   * it touches all nine) and one in that runtime's own directory (`OpenCode` — private to it). With
+   * places: one in the shared `.agents/skills` tree (`Universal` — ten runtimes load it, so removing
+   * it touches all ten) and one in that runtime's own directory (`OpenCode` — private to it). With
    * no tag, a pinned page reads as if every row were scoped to the pinned harness, which is exactly
    * the claim it must not make. The chip's tooltip is the copy's real path, so "which directory am I
    * about to remove" never needs a second click.

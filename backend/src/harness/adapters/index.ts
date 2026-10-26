@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import type { HarnessHostId, HarnessScope } from '../types.js';
 import type { AdapterContext, HostAdapter } from './types.js';
@@ -7,6 +8,7 @@ import { clineAdapter } from './cline.js';
 import { codexAdapter } from './codex.js';
 import { cursorAdapter } from './cursor.js';
 import { dshAdapter } from './dsh.js';
+import { ompAdapter } from './omp.js';
 import { geminiCliAdapter } from './gemini-cli.js';
 import { githubCopilotAdapter } from './github-copilot.js';
 import { opencodeAdapter } from './opencode.js';
@@ -24,6 +26,7 @@ export type {
   ExtensionWriteTarget,
   ExtSource,
   HostAdapter,
+  HostPresence,
   McpHost,
   SkillsHost,
   SkillsSpec,
@@ -43,6 +46,7 @@ export const HOST_ADAPTERS: readonly HostAdapter[] = [
   codexAdapter,
   piAdapter,
   dshAdapter,
+  ompAdapter,
   cursorAdapter,
   githubCopilotAdapter,
   geminiCliAdapter,
@@ -62,7 +66,7 @@ export function adapterFor(id: HarnessHostId | string): HostAdapter | undefined 
 /**
  * Every physical skills directory the adapters resolve, deduplicated.
  *
- * One directory is ONE copy: nine hosts share `.agents/skills`, so the FIRST adapter in registry
+ * One directory is ONE copy: ten hosts share `.agents/skills`, so the FIRST adapter in registry
  * order is the owner and every other host is an alias — installation, the inventory scan and the
  * console all use this rule, otherwise the same directory gets labeled two different ways.
  */
@@ -128,4 +132,44 @@ export function skillReaders(
     }
   }
   return out;
+}
+
+/**
+ * Is this runtime present on THIS machine? Measured, never configured: the adapter's `presence`
+ * markers (executable on PATH, config directory on disk), plus — for a skills host — the existence
+ * of any of its global skills roots, so a runtime that left its skills tree behind stays visible
+ * and its rows stay manageable. `universal` is always present: it is the bootstrap entry, the
+ * place a first install lands when no runtime is installed yet.
+ */
+export function hostDetected(adapter: HostAdapter, ctx: AdapterContext = { projectRoot: process.cwd() }): boolean {
+  if (adapter.id === 'universal') return true;
+  const command = adapter.presence?.command;
+  if (command && executableOnPath(command)) return true;
+  const dir = adapter.presence?.dir;
+  if (dir && fs.existsSync(dir)) return true;
+  if (isSkillsHost(adapter)) {
+    return adapter.skillRoots(ctx, 'global').some((resolved) => fs.existsSync(resolved.root));
+  }
+  return false;
+}
+
+/** PATH probe for an extensionless executable name; Windows suffixes are tried when the name has none. */
+function executableOnPath(command: string): boolean {
+  const exts = process.platform === 'win32' && !path.extname(command) ? ['.exe', '.cmd', '.bat', ''] : [''];
+  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+    if (!dir) continue;
+    for (const ext of exts) {
+      const full = path.join(dir, command + ext);
+      try {
+        // X_OK degrades to mere existence on Windows, and on POSIX a
+        // directory with the execute bit also passes; require a real file.
+        if (!fs.statSync(full).isFile()) continue;
+        fs.accessSync(full, fs.constants.X_OK);
+        return true;
+      } catch {
+        // not this candidate — keep probing
+      }
+    }
+  }
+  return false;
 }

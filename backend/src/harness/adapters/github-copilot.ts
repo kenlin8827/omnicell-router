@@ -7,5 +7,6 @@ import { home, UNIVERSAL_SKILLS } from './skills-paths.js';
  * landing is verified for this host.
  */
 export const githubCopilotAdapter = defineHost('github-copilot', {
+  presence: { command: 'code', dir: path.join(home(), '.vscode') },
   skills: { global: path.join(home(), '.copilot', 'skills'), project: UNIVERSAL_SKILLS.project, readsUniversal: true },
 });

@@ -858,19 +858,19 @@ td, th {
 .chip-count {
   flex: 0 0 auto;
   min-width: 18px;
-  padding: 0 5px;
+  padding: 0 4px;
   border-radius: 999px;
   font-variant-numeric: tabular-nums;
   font-size: 10px;
-  line-height: 16px;
+  line-height: 14px;
   text-align: center;
-  color: var(--text-muted);
-  background: color-mix(in srgb, var(--text-dim) 22%, transparent);
-}
-/* Pressed chip sits on the accent fill: re-tint from `currentColor` so one rule serves every theme. */
-.chip[aria-pressed='true'] .chip-count {
+  /* Hollow badge: no fill, just a hairline ring tinted from the chip's OWN text color
+     (currentColor), so it follows the button in both states — pressed and unpressed.
+     A filled gray pill read as a heavy element glued to the chip; the ring keeps the
+     badge affordance (a bare number would merge with labels ending in a parenthetical)
+     at the lightest weight. */
   color: inherit;
-  background: color-mix(in srgb, currentColor 24%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
 }
 /* One row of the variant editor (components/VariantListEditor.tsx): id input
    + effort dropdown + remove button. `align-items: stretch` plus the shared
@@ -1352,9 +1352,10 @@ input[type='checkbox']:not(.switch):disabled {
    A landing page's first axis (which runtime the artifact is WRITTEN into) as a
    vertical picker left of the content column instead of a chip row above it.
    Card tokens only — no literal colours, so every theme carries it unchanged. */
-/* The rail is the LEFT column of the frame: it stretches to the frame's full height
-   (`align-items` default) so its border ends on the same line as the content column,
-   while `.harness-rail-inner` carries the sticky behaviour for the picker itself. */
+/* The rail is the LEFT column of the frame: it takes the frame's full height (`height:100%`,
+   not stretch — the row list can be taller than the frame, and a definite height is what
+   makes the list's percentage cap resolvable), so its border ends on the same line as the
+   content column, while `.harness-rail-inner` carries the sticky behaviour for the picker. */
 .harness-frame {
   display: flex;
   gap: 16px;
@@ -1374,6 +1375,13 @@ input[type='checkbox']:not(.switch):disabled {
    content column. Longer names still ellipsize rather than push the frame. */
 .harness-rail {
   flex: 0 0 180px;
+  /* The card must never outgrow the frame, or its border would overshoot the content
+     column's bottom edge (the row list can be taller than the whole page). A definite
+     `height` also makes the percentage cap on `.harness-rail-inner` resolvable — a
+     stretched auto height does not — and `overflow: hidden` clips what the cap cannot. */
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   padding: 8px 6px;
@@ -1385,10 +1393,21 @@ input[type='checkbox']:not(.switch):disabled {
    so a sticky card could never travel; the list inside it can.
    6px between rows + a 40px row height: one step above the sidebar's own rhythm
    (8px vertical padding + 14px text) — this rail is a secondary picker, so its
-   rows breathe more than the primary nav's. */
+   rows breathe more than the primary nav's.
+   The host catalog can outgrow both the card and the viewport (13+ runtimes ≈ 650px
+   before the filter and title), and a sticky block taller than its container can
+   never stick: rows past the fold would be unreachable, page scroll notwithstanding. */
 .harness-rail-inner {
   position: sticky;
   top: 0;
+  /* `100%` (= the card's definite height) keeps the list inside the card so the rail's
+     border aligns with the content column; the 44px reserve leaves the foot hint its
+     two lines; `100dvh` keeps every row reachable while the list is stuck to the
+     viewport top. `flex: 0 0 40px` on the rows stops the capped flex column from
+     shrinking them instead of scrolling. */
+  max-height: min(calc(100% - 44px), 100dvh);
+  overflow-y: auto;
+  scrollbar-width: thin;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -1420,7 +1439,9 @@ input[type='checkbox']:not(.switch):disabled {
   align-items: center;
   gap: 7px;
   width: 100%;
-  height: 40px;
+  /* 40px is the row's designed rhythm; the capped list above would otherwise let
+     flex-shrink squeeze rows to fit the viewport instead of scrolling to them. */
+  flex: 0 0 40px;
   padding: 0 8px;
   border: 1px solid transparent;
   border-radius: 8px;
@@ -1449,8 +1470,8 @@ input[type='checkbox']:not(.switch):disabled {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* A zero stays visible on purpose: an empty harness is still a reachable
-   install entry, so it dims instead of disappearing. */
+/* A detected host stays visible even at zero: it is a reachable install entry, so it
+   dims instead of disappearing. (Undetected hosts are filtered out upstream, not here.) */
 .harness-rail-count {
   flex: 0 0 auto;
   font-family: var(--font-mono);
@@ -1472,6 +1493,8 @@ input[type='checkbox']:not(.switch):disabled {
   background: var(--accent-rose);
 }
 .harness-rail-title {
+  /* The capped list scrolls instead of stretching, so its chrome must not absorb the slack. */
+  flex: 0 0 auto;
   padding: 2px 8px 6px 8px;
   font-size: 11px;
   letter-spacing: 0.4px;
@@ -1488,6 +1511,7 @@ input[type='checkbox']:not(.switch):disabled {
 /* The rail's filter: a name box, not a search form — it narrows the 13-row catalog to the one
    runtime the operator has in mind. Card tokens only, so every theme carries it unchanged. */
 .harness-rail-filter {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 5px;
@@ -1551,11 +1575,16 @@ input[type='checkbox']:not(.switch):disabled {
   .harness-rail {
     flex: 0 0 auto;
     width: 100%;
+    /* The card is a chip row now, not a full-height column — the desktop height cap and
+       clip would cut it off at the frame's height. */
+    height: auto;
+    overflow: visible;
     padding: 6px 8px;
     box-sizing: border-box;
   }
   .harness-rail-inner {
     position: static;
+    max-height: none;
     flex-direction: row;
     align-items: center;
     gap: 6px;
@@ -1578,6 +1607,7 @@ input[type='checkbox']:not(.switch):disabled {
   .harness-rail-row {
     flex: 0 0 auto;
     width: auto;
+    height: 40px;
     padding: 0 10px;
   }
   .harness-rail-hint {

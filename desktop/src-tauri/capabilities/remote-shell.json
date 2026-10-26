@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/remote-schema.json",
+  "identifier": "remote-shell",
+  "description": "The console is a REMOTE page (http://127.0.0.1:4000) loaded into the main window's webview. It needs shell open so 'open in browser' buttons can reach the system browser — the webview's own target=\"_blank\" handling is swallowed by wry. Scope is pinned to the gateway origin; no IPC command is exposed to any other document that window may navigate to.",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:4000/*"]
+  },
+  "permissions": ["shell:allow-open"]
+}

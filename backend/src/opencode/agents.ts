@@ -29,6 +29,13 @@ export interface OpenCodeAgentView {
   source: 'builtin' | 'file' | 'config' | 'service';
   /** Bound model (router-prefixed values stripped); undefined = inherit default model. */
   model?: string;
+  /** Inherit target — the config's top-level default model (router prefix
+   *  stripped), populated ONLY when `model` is absent. Display-only: the
+   *  console's profile table shows it as the row's current-model infotip
+ *  (pi/omp parity, where setup pins every role so the echo is concrete);
+ *  the binding draft and write path ignore it so `auto` keeps its
+ *  inherit-the-default semantics (no literal `omnicell-router/auto` pin). */
+  effective?: string;
   /** The agent's own description (file frontmatter / config node / live
    *  roster). Feeds the console's smart-assign role context — absent means
    *  unknown, never invented here. */
@@ -98,6 +105,14 @@ function mergeConfigNode(byName: Map<string, OpenCodeAgentView>, node: unknown):
   }
 }
 
+/** The config's top-level default model, router prefix stripped. The inherit
+ *  target every agent without an explicit `model` resolves to at runtime. */
+function configDefaultModel(configPath: string): string | undefined {
+  const top = (readJsonc(configPath) as any)?.model;
+  if (typeof top !== 'string' || !top) return undefined;
+  return stripRouterPrefix(top) ?? top;
+}
+
 export function listOpenCodeAgents(overrides: ListAgentsOverrides = {}): OpenCodeAgentView[] {
   const byName = new Map<string, OpenCodeAgentView>();
   for (const b of BUILTIN_AGENTS) {
@@ -145,7 +160,15 @@ export function listOpenCodeAgents(overrides: ListAgentsOverrides = {}): OpenCod
   mergeConfigNode(byName, parsed?.agent);
   mergeConfigNode(byName, parsed?.agents);
 
-  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+  return fillInheritTargets([...byName.values()], configPath);
+}
+
+/** Attach the inherit target to every agent that has no explicit `model` —
+ *  the config's top-level default. Display-only (see `effective`). */
+function fillInheritTargets(agents: OpenCodeAgentView[], configPath: string): OpenCodeAgentView[] {
+  const fallback = configDefaultModel(configPath);
+  if (fallback === undefined) return agents;
+  return agents.map(a => (a.model === undefined ? { ...a, effective: fallback } : a));
 }
 
 /** One raw service agent record (`GET /api/agent` item). */
@@ -202,7 +225,14 @@ export async function listOpenCodeAgentsLive(overrides: LiveAgentsOverrides = {}
     const conn = overrides.connector ?? new OpenCodeConnector();
     if (conn.isAvailable()) {
       const raw = await conn.getAgents();
-      if (raw.length > 0) return mapServiceAgents(raw);
+      if (raw.length > 0) {
+        // The service watches the same config file the file scan reads — its
+        // top-level default is the inherit target for both sources.
+        return fillInheritTargets(
+          mapServiceAgents(raw),
+          overrides.configPath ?? getOpenCodeConfigPath(),
+        );
+      }
     }
   } catch {
     // service down / auth rotated / old build without /api/agent — file fallback

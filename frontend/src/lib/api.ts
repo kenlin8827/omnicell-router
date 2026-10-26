@@ -62,18 +62,27 @@ export interface OpenCodeAgentView {
   /** 'service' = live opencode v2 service roster (preferred); others = file-scan fallback. */
   source: 'builtin' | 'file' | 'config' | 'service';
   model?: string;
+  /** Inherit target (config default model) — present only when `model` is
+   *  absent; display-only, feeds the row's current-model infotip. */
+  effective?: string;
   /** The agent's own description (frontmatter / config node / live roster) —
    *  the smart-assign decider's role context. Absent = unknown. */
   description?: string;
 }
 
 /** Mirrors backend ClientProfileMemoryEntry — per-client console form memory
- *  (config.yaml `clientProfileMemory`): last linked profile + agent→slot-key
- *  tags for profile-linked rows, model-list source and token-write behavior.
- *  UI-only: never consulted by routing or by the hook itself. */
+ *  (config.yaml `clientProfileMemory`): a write-through mirror of the form's
+ *  selections (saved on every pick). UI-only: never consulted by routing or
+ *  by the hook itself. */
 export interface ClientProfileMemoryEntry {
   profile: string;
   bindings: Record<string, string>;
+  /** models = slot → model-ref draft (pi/omp main, plain slot clients);
+   *  agentModels = role/agent → raw draft ref (native pins included);
+   *  extraModels = the custom model-list draft. Mirrors backend. */
+  models?: Record<string, string>;
+  agentModels?: Record<string, string>;
+  extraModels?: string[];
   /** Model-list source: 'none' (default) = no concrete models exposed,
    *  'follow' = mirror the selected API key's effective model access,
    *  'custom' = manual picker. Mirrors backend. */
@@ -680,6 +689,11 @@ export interface CaptureTurn {
 // Mirrors backend ConversationSession (backend/src/session/session-manager.ts) + traceCount
 export interface SessionRecord {
   id: string;
+  /** Gateway-internal loopback row (reserved `ocr-internal:` session id —
+   *  console translation/probe calls). Derived by the backend from the id,
+   *  true on live and trace-reconstructed rows alike. Hidden from the
+   *  sessions list by default (hideInternal). */
+  internal?: boolean;
   maxTier: 'lite' | 'plus' | 'pro' | 'ultra';
   /**
    * How the client addressed this session's turns, derived from its traces:
@@ -1098,7 +1112,7 @@ export interface HarnessCopyView {
   /**
    * Skill copies only: every host that reads this directory, owner first. `host` is ownership (one
    * owner per directory — install/claims/removal); this is readership (the shared `.agents/skills`
-   * tree is read by up to nine runtimes), which is what the skills page's harness rail selects by.
+   * tree is read by up to ten runtimes), which is what the skills page's harness rail selects by.
    */
   readers?: string[];
 }
@@ -1266,6 +1280,9 @@ export interface HarnessMarketDetail {
 export interface HarnessHostView {
   id: string;
   label: string;
+  /** Present on this machine (executable on PATH, config dir, or an existing skills root). The
+   *  console rail hides undetected hosts — but never one whose rows are already landed. */
+  detected: boolean;
   hasSkills: boolean;
   /** Extension-capable host: a verified package-manager landing exists for it. */
   hasExt: boolean;
@@ -1865,13 +1882,16 @@ export const api = {
     limit?: number,
     offset = 0,
     q?: string,
-    apiKey?: string
+    apiKey?: string,
+    hideInternal = true
   ): Promise<{ sessions: SessionRecord[]; total: number }> {
     const qs = new URLSearchParams();
     if (limit !== undefined) qs.set('limit', String(limit));
     qs.set('offset', String(offset));
     if (q) qs.set('q', q);
     if (apiKey) qs.set('apiKey', apiKey);
+    // Backend default hides internal rows; send '0' explicitly to include them.
+    qs.set('hideInternal', hideInternal ? '1' : '0');
     const res = await fetch(`/api/admin/sessions?${qs.toString()}`);
     if (!res.ok) return { sessions: [], total: 0 };
     const json = await res.json();

@@ -1,19 +1,19 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowDownWideNarrow, ArrowUpNarrowWide, Users, RefreshCw, Archive, BarChart3, Check, ChevronDown, ChevronRight, Copy, Eye, GitBranch, User, Waypoints, Wrench, X, Search, Trash2 } from 'lucide-react';
+import { ArrowDownWideNarrow, ArrowUpNarrowWide, Users, RefreshCw, Archive, BarChart3, Check, ChevronDown, ChevronRight, Copy, Eye, GitBranch, Maximize2, Minimize2, User, Waypoints, Wrench, Search, Trash2 } from 'lucide-react';
 import { api, type SessionRecord, type TraceRecord } from '../lib/api';
 import { formatReason, type Translate } from '../lib/reason';
 import { copyToClipboard, formatCost, formatSessionId, decodeRate, formatRate, fmtLatency } from '../lib/format';
 import { clientDisplayName } from '../lib/clientDetect';
 import { useI18n } from '../i18n/I18nContext';
-import { useBackdropDismiss } from '../lib/useBackdropDismiss';
 import { useToast } from '../components/ToastProvider';
 import { useConfirm } from '../components/ConfirmProvider';
 import { Combobox } from '../components/Combobox';
+import { Dialog } from '../components/Dialog';
 import { Pagination } from '../components/Pagination';
 
 import { FONT_MONO } from '../lib/fonts';
-const PAGE_SIZES = [10, 20, 50, 100, 200];
+const PAGE_SIZES = [10, 20, 25, 50, 100, 200];
 
 const TH_STYLE: React.CSSProperties = {
   padding: '10px 14px',
@@ -529,10 +529,20 @@ export const SessionsPage: React.FC = () => {
     detailOpen: boolean;
     trailOpen: boolean;
   } | null>(null);
-  const timelineBackdrop = useBackdropDismiss(() => setTimeline(null));
+  // (Backdrop dismiss + Escape + body scroll lock come from the shared
+  // Dialog shell; the modal renders only while `timeline` is set.)
   // Request-detail list order: false = chronological (the traces' recorded
   // order), true = newest first. Reset per open in openTimeline.
   const [detailDesc, setDetailDesc] = useState(true);
+  // Request-detail pager: long agent loops produce hundreds of trace rows —
+  // paginate client-side instead of rendering one giant grid. Reset per
+  // modal open alongside the sort order.
+  const [detailPage, setDetailPage] = useState(1);
+  const [detailPageSize, setDetailPageSize] = useState(20);
+  // Expanded toggle (header action): the card grows to 90vw × 90vh, keeping
+  // a 10% viewport margin on all sides — windowed, not `full` mode. Reset
+  // per modal open.
+  const [detailFull, setDetailFull] = useState(false);
   // Server-side filter (?q=), debounced from the search input; resets to page 1.
   const [filterInput, setFilterInput] = useState('');
   const [filter, setFilter] = useState('');
@@ -542,6 +552,10 @@ export const SessionsPage: React.FC = () => {
   const [searchParams] = useSearchParams();
   const [apiKeyFilter, setApiKeyFilter] = useState(searchParams.get('apiKey') || '');
   const [apiKeyOptions, setApiKeyOptions] = useState<{ id: string; name: string }[]>([]);
+  // Gateway-internal rows (console translation/probe loopback calls, reserved
+  // `ocr-internal:` session ids) — server-side filter, ON by default: these
+  // sessions are noise for inspecting client traffic and stay one click away.
+  const [hideInternal, setHideInternal] = useState(true);
 
   // Combobox options: the configured client keys (id + application name).
   // Best-effort — a console session without /api-keys visibility just shows
@@ -574,7 +588,7 @@ export const SessionsPage: React.FC = () => {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await api.getSessions(pageSize, (page - 1) * pageSize, filter || undefined, apiKeyFilter || undefined);
+      const res = await api.getSessions(pageSize, (page - 1) * pageSize, filter || undefined, apiKeyFilter || undefined, hideInternal);
       setSessions(res.sessions);
       setTotal(res.total);
     } catch (err) {
@@ -582,7 +596,7 @@ export const SessionsPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [page, pageSize, filter, apiKeyFilter]);
+  }, [page, pageSize, filter, apiKeyFilter, hideInternal]);
 
   useEffect(() => {
     loadData();
@@ -600,6 +614,8 @@ export const SessionsPage: React.FC = () => {
       // below only adds data — a toggle made while traces load survives.
       // Fresh modal = newest first again (per-session reset).
       setDetailDesc(true);
+      setDetailPage(1);
+      setDetailFull(false);
       setTimeline({ session: s, events: [], traces: [], detailOpen: forceOpen, trailOpen: !forceOpen });
       try {
         const traces = await api.getSessionTraces(s.id);
@@ -734,6 +750,21 @@ export const SessionsPage: React.FC = () => {
             ]}
             style={{ fontSize: '12px', padding: '5px 8px', width: 180 }}
           />
+          <label
+            style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '12px', color: 'var(--text-dim)', whiteSpace: 'nowrap', cursor: 'pointer', userSelect: 'none' }}
+            title={t('sessions.hideInternalTip')}
+          >
+            <input
+              type="checkbox"
+              checked={hideInternal}
+              onChange={(e) => {
+                setHideInternal(e.target.checked);
+                setPage(1);
+              }}
+              style={{ accentColor: 'var(--accent)' }}
+            />
+            {t('sessions.hideInternal')}
+          </label>
           <div style={{ position: 'relative', flex: '1 1 240px', minWidth: 180, maxWidth: 420 }}>
             <Search
               size={12}
@@ -1127,46 +1158,51 @@ export const SessionsPage: React.FC = () => {
         />
       </div>
 
-      {/* Model-switch timeline modal (fetched on demand per session) */}
+      {/* Model-switch timeline modal (fetched on demand per session). The
+          shared Dialog shell portals to document.body — the page root .card's
+          backdrop-filter would otherwise make itself the containing block
+          for fixed descendants and size the scrim to the card. */}
       {timeline && (
-        <div
-          {...timelineBackdrop}
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'var(--scrim)',
-            zIndex: 100,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: '20px',
-          }}
-        >
-          <div
-            className="card"
-            onClick={e => e.stopPropagation()}
-            style={{ width: 'min(920px, 94vw)', maxHeight: '88vh', overflowY: 'auto', margin: 0 }}
-          >
-            <div className="card-header">
-              <div className="card-title">
-                <GitBranch size={16} color="var(--accent)" />
-                <span>{t('sessions.detailTitle')}</span>
-              </div>
-              <button className="btn btn-sm" onClick={() => setTimeline(null)} aria-label="close">
-                <X size={12} />
-              </button>
-            </div>
-            <div
-              style={{
-                fontFamily: FONT_MONO,
-                fontSize: '11px',
-                color: 'var(--text-dim)',
-                margin: '0 0 14px 0',
-                wordBreak: 'break-all',
-              }}
-            >
+        <Dialog
+          title={
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <GitBranch size={16} color="var(--accent)" />
+              {t('sessions.detailTitle')}
+            </span>
+          }
+          subtitle={
+            <span style={{ fontFamily: FONT_MONO, fontSize: '11px', wordBreak: 'break-all' }}>
               {timeline.session.id}
-            </div>
+            </span>
+          }
+          onClose={() => setTimeline(null)}
+          closeLabel={t('common.close')}
+          // 1080 − 2×20 card padding fits the request grid's ~1008px of
+          // column minima with the right padding intact. Expanded keeps a
+          // 10% viewport margin on all sides (90vw × 90vh) instead of the
+          // viewport-filling `full` mode.
+          width={1080}
+          maxSize={detailFull ? { width: '90vw', height: '90vh' } : undefined}
+          headerActions={
+            <button
+              type="button"
+              className="btn btn-sm"
+              style={{ display: 'flex', alignItems: 'center', height: 24, padding: '0 6px' }}
+              onClick={() => {
+                const next = !detailFull;
+                setDetailFull(next);
+                // The 90vh card fits ~25 rows; the collapsed one ~20. Follow
+                // the toggle between those defaults, leaving a manually
+                // chosen page size (via the pager) untouched.
+                setDetailPageSize(s => (next ? (s === 20 ? 25 : s) : (s === 25 ? 20 : s)));
+              }}
+              title={detailFull ? t('captures.collapse') : t('captures.expand')}
+              aria-label={detailFull ? t('captures.collapse') : t('captures.expand')}
+            >
+              {detailFull ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+            </button>
+          }
+        >
             <div
               role="button"
               aria-expanded={timeline.trailOpen}
@@ -1293,7 +1329,19 @@ export const SessionsPage: React.FC = () => {
             ))}
             {/* Per-request detail: every turn's recorded token counts + actual cost */}
             {timeline.traces.length > 0 && (
-              <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: '1px solid var(--divider)' }}>
+              <div style={{
+                marginTop: '16px',
+                paddingTop: '12px',
+                borderTop: '1px solid var(--divider)',
+                // Expanded: this section fills the Dialog body's remaining
+                // height so the GRID scrolls internally (sticky header) —
+                // the Dialog chrome (title, folds, pager) stays put instead
+                // of the whole body scrolling. Collapsed: content-sized.
+                display: 'flex',
+                flexDirection: 'column',
+                flex: detailFull ? '1 1 0' : undefined,
+                minHeight: 0,
+              }}>
                 <div
                   role="button"
                   aria-expanded={timeline.detailOpen}
@@ -1361,6 +1409,14 @@ export const SessionsPage: React.FC = () => {
                     alignItems: 'center',
                     fontSize: '11px',
                     fontFamily: FONT_MONO,
+                    // Below the ~1008px column minimum (narrow window), scroll
+                    // the grid instead of clipping the cost/latency columns.
+                    overflowX: 'auto',
+                    // Expanded: the grid is the section's flex-fill scroll
+                    // region — rows scroll here, the header stays on top.
+                    flex: detailFull ? '1 1 0' : undefined,
+                    minHeight: 0,
+                    overflowY: detailFull ? 'auto' : undefined,
                   }}
                 >
                   {[
@@ -1380,12 +1436,32 @@ export const SessionsPage: React.FC = () => {
                   ].map((label, i) => (
                     <span
                       key={i}
-                      style={{ textAlign: 'center', color: 'var(--text-dim)', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase' }}
+                      style={{
+                        textAlign: 'center',
+                        color: 'var(--text-dim)',
+                        fontSize: '10px',
+                        fontWeight: 700,
+                        textTransform: 'uppercase',
+                        // Sticky on the grid's internal (expanded) scroll:
+                        // rows slide under the header, which keeps the card
+                        // background so they never bleed through.
+                        position: 'sticky',
+                        top: 0,
+                        background: 'var(--card-bg)',
+                      }}
                     >
                       {label}
                     </span>
                   ))}
-                  {(detailDesc ? [...timeline.traces].reverse() : timeline.traces).map(tr => (
+                  {(() => {
+                    const sorted = detailDesc ? [...timeline.traces].reverse() : timeline.traces;
+                    // Clamp: a sort toggle or page-size change can leave the
+                    // current page past the new last page.
+                    const maxPage = Math.max(1, Math.ceil(sorted.length / detailPageSize));
+                    const safePage = Math.min(detailPage, maxPage);
+                    return sorted
+                      .slice((safePage - 1) * detailPageSize, safePage * detailPageSize)
+                      .map(tr => (
                     <React.Fragment key={tr.traceId}>
                       <span style={{ textAlign: 'center', color: 'var(--text-dim)' }}>#{tr.turnNumber}</span>
                       <span style={{ textAlign: 'center', color: 'var(--text-dim)' }}>{new Date(tr.timestamp).toLocaleTimeString()}</span>
@@ -1423,13 +1499,31 @@ export const SessionsPage: React.FC = () => {
                       </span>
                       <span style={{ textAlign: 'center' }} title={t('usage.toksTip')}>{formatRate(decodeRate(tr.finops.outputTokens, tr.execution.genMs))}</span>
                     </React.Fragment>
-                  ))}
+                      ));
+                  })()}
                 </div>
                 )}
+                {(() => {
+                  const sorted = detailDesc ? [...timeline.traces].reverse() : timeline.traces;
+                  const maxPage = Math.max(1, Math.ceil(sorted.length / detailPageSize));
+                  const safePage = Math.min(detailPage, maxPage);
+                  return sorted.length > detailPageSize ? (
+                    <div style={{ marginTop: '10px' }}>
+                      <Pagination
+                        page={safePage}
+                        pageSize={detailPageSize}
+                        total={sorted.length}
+                        onChange={setDetailPage}
+                        showSummary
+                        pageSizeOptions={PAGE_SIZES}
+                        onPageSizeChange={(s) => { setDetailPageSize(s); setDetailPage(1); }}
+                      />
+                    </div>
+                  ) : null;
+                })()}
               </div>
             )}
-          </div>
-        </div>
+        </Dialog>
       )}
     </div>
   );

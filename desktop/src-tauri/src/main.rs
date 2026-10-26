@@ -524,6 +524,12 @@ fn main() {
             show_main(app);
         }))
         .plugin(tauri_plugin_dialog::init())
+        // Only used by the console (a REMOTE page on 127.0.0.1:4000): opens
+        // links in the system browser via shell:allow-open, granted to that
+        // origin by capabilities/remote-shell.json. The webview's own
+        // NewWindowRequested (target="_blank") is swallowed by wry, so
+        // without this the "open in browser" buttons do nothing.
+        .plugin(tauri_plugin_shell::init())
         .manage(GatewayState {
             child: Mutex::new(None),
             home: Mutex::new(None),

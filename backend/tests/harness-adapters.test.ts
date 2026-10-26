@@ -4,6 +4,7 @@ import path from 'node:path';
 import {
   HOST_ADAPTERS,
   adapterFor,
+  hostDetected,
   isExtensionHost,
   isMcpHost,
   isSkillsHost,
@@ -30,13 +31,14 @@ describe('capability matrix — who can do what', () => {
     expect(HOST_ADAPTERS.map((a) => a.id)).toEqual(HOSTS.map((h) => h.id));
   });
 
-  it('twelve hosts land skills; only opencode lands MCP; only opencode and pi land extensions', () => {
+  it('thirteen hosts land skills; only opencode lands MCP; only opencode and pi land extensions', () => {
     expect(ids((a) => isSkillsHost(a as never))).toEqual([
       'universal',
       'opencode',
       'claude',
       'codex',
       'pi',
+      'omp',
       'cursor',
       'github-copilot',
       'gemini-cli',
@@ -45,8 +47,8 @@ describe('capability matrix — who can do what', () => {
       'windsurf',
       'zed',
     ]);
-    expect(ids((a) => isMcpHost(a as never))).toEqual(['opencode']);
-    expect(ids((a) => isExtensionHost(a as never))).toEqual(['opencode', 'pi']);
+    expect(ids(isMcpHost)).toEqual(['opencode']);
+    expect(ids(isExtensionHost)).toEqual(['opencode', 'pi']);
   });
 
   it('DSH is identity only — no skills location, so no SkillsHost', () => {
@@ -66,16 +68,17 @@ describe('shared skills directories — one owner, many readers', () => {
 
   it('a vendor directory is owned by its own host', () => {
     expect(skillOwner(path.join(os.homedir(), '.claude', 'skills'), 'global')).toBe('claude');
+    expect(skillOwner(path.join(os.homedir(), '.omp', 'skills'), 'global')).toBe('omp');
     // Windsurf is one of the few hosts with its OWN project directory (cursor reads `.agents`).
     expect(skillOwner(path.resolve(process.cwd(), '.windsurf', 'skills'), 'project')).toBe('windsurf');
+    expect(skillOwner(path.resolve(process.cwd(), '.omp', 'skills'), 'project')).toBe('omp');
     expect(skillOwner(path.resolve(process.cwd(), '.cursor', 'skills'), 'project')).toBeNull();
   });
-
   it('enumeration lists each physical directory once', () => {
     const roots = skillLocationRoots(process.cwd());
     const paths = roots.map((r) => r.root);
     expect(new Set(paths).size).toBe(paths.length);
-    // Twelve hosts × two scopes collapses to far fewer rows because `.agents/skills` is shared.
+    // Thirteen hosts × two scopes collapses to far fewer rows because `.agents/skills` is shared.
     expect(roots.filter((r) => r.root === path.join(os.homedir(), '.agents', 'skills'))).toHaveLength(1);
   });
 });
@@ -91,5 +94,27 @@ describe('skills target — the refusal rules still bind', () => {
     const ctx = { projectRoot: process.cwd() };
     expect(opencodeAdapter.skillTarget(ctx, 'global', '../escape').ok).toBe(false);
     expect(opencodeAdapter.skillTarget(ctx, 'global', 'Not_A_Name').ok).toBe(false);
+  });
+});
+
+describe('install presence — the rail hides hosts that are not on this machine', () => {
+  it('every non-universal host declares at least one presence marker', () => {
+    for (const adapter of HOST_ADAPTERS) {
+      if (adapter.id === 'universal') continue;
+      expect(adapter.presence?.command || adapter.presence?.dir, adapter.id).toBeTruthy();
+    }
+  });
+
+  it('universal is always detected; a skills host is detected once its global root exists', () => {
+    expect(hostDetected(adapterFor('universal')!)).toBe(true);
+    // This dev machine may or may not carry a given runtime — the assertion that must hold
+    // everywhere is: detection is a pure measurement, never a throw.
+    for (const adapter of HOST_ADAPTERS) {
+      expect(typeof hostDetected(adapter)).toBe('boolean');
+    }
+  });
+
+  it('a made-up runtime with no markers and no skills is not detected', () => {
+    expect(hostDetected({ id: 'dsh', presence: { command: 'definitely-not-a-real-binary-xyz' } })).toBe(false);
   });
 });

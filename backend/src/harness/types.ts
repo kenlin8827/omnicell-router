@@ -15,6 +15,7 @@ export type HarnessHostId =
   | 'codex'
   | 'pi'
   | 'dsh'
+  | 'omp'
   | 'cursor'
   | 'github-copilot'
   | 'gemini-cli'
@@ -148,7 +149,7 @@ export interface CopyView {
    * Skill copies only: every host whose skills roots resolve to this directory, owner FIRST.
    *
    * `host` answers ownership (one directory, one owner — install/claims/removal), this answers
-   * READERSHIP (the cross-agent `.agents/skills` tree is read by up to nine runtimes). Absent for
+   * READERSHIP (the cross-agent `.agents/skills` tree is read by up to ten runtimes). Absent for
    * config-shaped copies, where the file IS the landing and its host is the only reader.
    */
   readers?: HarnessHostId[];

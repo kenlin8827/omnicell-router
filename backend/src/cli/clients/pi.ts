@@ -54,13 +54,6 @@ const PI_SUBAGENT_TIERS: Record<string, string> = {
 };
 
 /**
- * Namespace prefix NEW router-owned writes are qualified with — reads must go
- * through isRouterModelRef/routerModelBareId so legacy-key residue (see
- * LEGACY_PROVIDER_KEYS) is recognized too; this constant is write-side only.
- */
-const SUBAGENT_MODEL_PREFIX = `${PI_PROVIDER_KEY}/`;
-
-/**
  * Legacy provider keys written by pre-rename OCR releases (OneCastRouter era
  * and earlier experiments). Their `key/<id>` subagent pins and defaultProvider
  * values are router residue, not user choices — treated as router-owned

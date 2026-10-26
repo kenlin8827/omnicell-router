@@ -6,6 +6,25 @@ import { RoutingDecision, SessionLookupType, TierLevel, TierModelConfig, TIER_RA
 import { SessionConfig } from '../config/types.js';
 import { renameWithRetry } from '../utils/atomic-write.js';
 
+/**
+ * RESERVED session-id namespace for the gateway's OWN loopback calls
+ * (console description/README translation, translation-chain probe). The
+ * gateway pins a fixed per-purpose id (`ocr-internal:translation`, …) via
+ * `router_options.session_id` so internal calls share one session instead of
+ * minting a fresh `cold_start` session per call. The marker IS the id, so it
+ * survives restarts: persisted traces key on sessionId and the admin
+ * sessions endpoint re-derives `internal` from the prefix on BOTH live and
+ * reconstructed rows. External clients must not use this prefix — it is a
+ * claim of "this row is gateway-internal noise", honored by the admin
+ * filter, not an enforced restriction (see ADR-0015).
+ */
+export const INTERNAL_SESSION_PREFIX = 'ocr-internal:';
+
+/** Gateway-internal loopback session rows are hidden from the console by default. */
+export function isInternalSessionId(id: string): boolean {
+  return id.startsWith(INTERNAL_SESSION_PREFIX);
+}
+
 export interface ConversationSession {
   id: string;
   maxTier: TierLevel;

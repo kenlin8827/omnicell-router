@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { Terminal, Check, X, RefreshCw, Undo2, ArrowUpRight, RotateCcw, ChevronDown, Puzzle, Eraser, Sparkles } from 'lucide-react';
 import { BrandIcon } from '../components/BrandIcons';
@@ -27,7 +27,14 @@ const clientSlots = (c: ClientStatus): { key: string; value?: string; default?: 
  * These get the shared model-list editor (none / custom / follow).
  */
 const supportsExtraModels = (name: string): boolean =>
-  name === 'opencode' || name === 'dsh' || name === 'pi';
+  name === 'opencode' || name === 'dsh' || name === 'pi' || name === 'omp';
+
+/**
+ * Clients whose non-main slots are ROLE rows (pi's subagent roles, omp's
+ * modelRoles): main lives in modelSel, roles in the link-table draft
+ * (bindSel) with `slot:<key>` profile tags — see piLinkPayload/applySmartAssignments.
+ */
+const isRoleTableClient = (name: string): boolean => name === 'pi' || name === 'omp';
 
 /** Model-chip lists longer than this render truncated behind a "+N more" chip toggle. */
 const MODEL_CHIP_LIMIT = 12;
@@ -83,8 +90,15 @@ export const ClientsPage: React.FC = () => {
    *  the agent bindings entirely (no sweep — existing overrides survive).
    *  Seeded ON iff links exist (echo or memory); persisted via memory. */
   const [linksOn, setLinksOn] = useState<Record<string, boolean>>({});
-  /** Environment-persisted form memory (config.yaml `clientProfileMemory`) */
+  /** Environment-persisted form memory (config.yaml `clientProfileMemory`) —
+   *  the full snapshot written at each setup commit (see rememberDraft). */
   const [mem, setMem] = useState<Record<string, ClientProfileMemoryEntry> | null>(null);
+  /** Synchronous mirror of `mem`: consecutive commit writes before a
+   *  re-render must build on each other, not on a stale snapshot. */
+  const memRef = useRef<Record<string, ClientProfileMemoryEntry> | null>(null);
+  /** Clients whose extras draft was already hydrated from memory — the
+   *  hydration must happen exactly once, never on late effect re-runs. */
+  const extrasSeeded = useRef<Set<string>>(new Set());
   /** Smart-assign dialog target: client name + the sub-agent rows built from
    *  the CURRENT draft state, the candidate list, and whether assignments are
    *  profile slot links (follows the page's current profile selection). */
@@ -139,13 +153,13 @@ export const ClientsPage: React.FC = () => {
         }
         return next;
       });
-      // pi role rows live in the same link-table draft shape as opencode's:
+      // pi/omp role rows live in the same link-table draft shape as opencode's:
       // seeded from the slot echo (bare ref / native pin verbatim), then the
       // profile-link echo re-tags linked roles to `slot:<key>`.
       setBindSel(prev => {
         const next = { ...prev };
         for (const c of data.clients || []) {
-          if (c.name !== 'pi' || next[c.name] !== undefined) continue;
+          if (!isRoleTableClient(c.name) || next[c.name] !== undefined) continue;
           const tags = c.profile?.bindings || {};
           const rows: Record<string, string> = {};
           for (const s of clientSlots(c)) {
@@ -175,13 +189,14 @@ export const ClientsPage: React.FC = () => {
     api.listGatewayModels().then(setModels).catch(() => {});
     api.getApiKeys().then(r => setApiKeys((r.keys || []).filter(k => k.enabled))).catch(() => {});
     api.getModelProfiles().then(p => { setProfiles(p); setProfilesReady(true); }).catch(() => setProfilesReady(true));
-    api.getClientProfileMemory().then(setMem).catch(() => setMem({}));
+    api.getClientProfileMemory().then(m => { memRef.current = m; setMem(m); }).catch(() => { memRef.current = {}; setMem({}); });
   }, []);
 
-  /** Seed profile selections once BOTH sources are in: the committed form
-   *  memory (what the last setup/reset applied) wins — the form shows the
-   *  last deliberate choice, not external drift — and the live echo fills
-   *  what memory cannot express (foreign pins, pre-memory installs).
+  /** Seed selections once BOTH sources are in: the committed form memory
+   *  (the full snapshot the last setup applied — see rememberDraft) wins —
+   *  the form restores what the user last hooked, not external drift — and
+   *  the live echo fills what memory cannot express (foreign pins, installs
+   *  made outside this console).
    *  Per-client undefined guard never clobbers in-page edits. */
   useEffect(() => {
     if (mem === null || !profilesReady) return;
@@ -212,7 +227,7 @@ export const ClientsPage: React.FC = () => {
     setLinksOn(prev => {
       const next = { ...prev };
       for (const c of clients) {
-        if (c.name !== 'opencode' && c.name !== 'pi') continue;
+        if (c.name !== 'opencode' && !isRoleTableClient(c.name)) continue;
         if (next[c.name] !== undefined) continue;
         // Persisted choice wins; absent → ON iff links already exist (echo or
         // memory) — a linked client must not wake up looking unconfigured,
@@ -230,10 +245,10 @@ export const ClientsPage: React.FC = () => {
     setBindSel(prev => {
       const next = { ...prev };
       for (const c of clients) {
-        // opencode seeds from the live agent inventory and pi from its role
-        // slots (see loadClients) — their draft values carry slot links, not
-        // just refs.
-        if (c.name === 'opencode' || c.name === 'pi') continue;
+        // opencode seeds from the live agent inventory; pi/omp seed from their
+        // role slots (see loadClients) — their draft values carry slot links,
+        // not just refs.
+        if (c.name === 'opencode' || isRoleTableClient(c.name)) continue;
         if (next[c.name] === undefined) next[c.name] = mem[c.name]?.bindings || c.profile?.bindings || {};
       }
       return next;
@@ -250,12 +265,27 @@ export const ClientsPage: React.FC = () => {
       }
       return next;
     });
+
+    // Extras: the committed snapshot wins over the echo seed on first
+    // hydration (loadClients already claimed the slot from the config echo).
+    // A ref marks each client hydrated so late effect re-runs (apiKeys or
+    // profiles arriving) never clobber in-page edits.
+    const freshExtras = clients.filter(c => !extrasSeeded.current.has(c.name));
+    for (const c of freshExtras) extrasSeeded.current.add(c.name);
+    setExtraSel(prev => {
+      const next = { ...prev };
+      for (const c of freshExtras) {
+        const extras = mem[c.name]?.extraModels;
+        if (extras !== undefined) next[c.name] = [...extras];
+      }
+      return next;
+    });
   }, [clients, mem, profilesReady, profiles, apiKeys]);
 
   /** Slot-key tags behind a client's drafts — the `slot:<key>` values only.
-   *  opencode keeps them in the agent-table draft (bindSel); pi keeps them in
-   *  the role-slot drafts (modelSel). Memory persists tags so links survive
-   *  reloads. */
+   *  opencode keeps them in the agent-table draft (bindSel); pi/omp keep them
+   *  in the role-link table draft (bindSel — loadClients seeds it, the table
+   *  renders it). Memory persists tags so links survive reloads. */
   const linkTagsOf = (draft: Record<string, string> | undefined): Record<string, string> =>
     Object.fromEntries(
       Object.entries(draft || {})
@@ -263,28 +293,42 @@ export const ClientsPage: React.FC = () => {
         .map(([a, v]) => [a, v.slice(5)])
     );
 
-  /** COMMIT-POINT form memory: called only when a setup APPLIED something —
+  /** COMMIT-POINT form memory: called ONLY when a setup APPLIED something —
    *  never on mid-form edits (draft fiddling must not overwrite the memory of
-   *  the last applied configuration; it would also storm the hot-apply
-   *  pipeline with whole-config POSTs). Written into the ACTIVE environment's
-   *  config.yaml (book-set scoped — switching envs switches the memory too). */
-  const persistMem = (clientName: string, profile: string, bindings: Record<string, string>, modelMode?: 'none' | 'custom' | 'follow', apiKeyIdOverride?: string) => {
-    const mode = modelMode ?? modeSel[clientName] ?? 'none';
+   *  the last applied configuration; it would also storm the config-write
+   *  path with whole-config POSTs per pick). Snapshots the FULL form state
+   *  the setup applied: link tags, manual role/agent refs (native pins
+   *  included), pi/omp main pick, slot drafts, the custom model-list draft,
+   *  mode, key id and the link-table toggle. Written into the ACTIVE
+   *  environment's config.yaml (book-set scoped — switching envs switches
+   *  the memory too). memRef keeps two rapid commits from clobbering each
+   *  other via a stale snapshot. */
+  const rememberDraft = (clientName: string) => {
+    const ms = modelSel[clientName] || {};
+    const ds = bindSel[clientName] || {};
+    const roleRows = isRoleTableClient(clientName) || clientName === 'opencode';
+    const entry: ClientProfileMemoryEntry = {
+      profile: profileSel[clientName] || '',
+      // Link tags plus the raw manual refs verbatim (native pins included) —
+      // the snapshot must reproduce the rows exactly as the form showed them.
+      bindings: linkTagsOf(ds),
+      agentModels: roleRows
+        ? Object.fromEntries(Object.entries(ds).filter(([, v]) => v && v !== 'auto' && !v.startsWith('slot:')))
+        : undefined,
+      models: clientName === 'opencode'
+        ? undefined
+        : isRoleTableClient(clientName)
+          ? { main: ms.main || 'auto' }
+          : ms,
+      extraModels: extraSel[clientName] || [],
+      modelMode: modeSel[clientName] ?? 'none',
+      apiKeyId: keyIdOf(apiKeySel[clientName] || ''),
+      linksOn: linksOn[clientName],
+    };
     // Pure updater required: computing `next` (and firing the POST) inside the
     // setMem updater would double-invoke under StrictMode / concurrent render.
-    const next = {
-      ...(mem || {}),
-      [clientName]: {
-        profile,
-        bindings,
-        modelMode: mode,
-        // Key memory follows the same draft-snapshot rule as modelMode;
-        // `apiKeyIdOverride` covers callers that just reset/committed the form
-        // (setState would not be visible to this closure yet).
-        apiKeyId: apiKeyIdOverride ?? keyIdOf(apiKeySel[clientName] || ''),
-        linksOn: linksOn[clientName],
-      },
-    };
+    const next = { ...(memRef.current || mem || {}), [clientName]: entry };
+    memRef.current = next;
     setMem(next);
     api.saveClientProfileMemory(next).catch(e => console.warn('profile memory save failed:', e));
   };
@@ -378,6 +422,7 @@ export const ClientsPage: React.FC = () => {
         return;
       }
       const piPayload = piLinkPayload(clientName);
+      const agentPayload = opencodeAgentPayload(clientName);
       const res = await api.toggleClient(clientName, action, action === 'setup' ? {
         models: piPayload.models,
         apiKey: apiKeySel[clientName],
@@ -385,22 +430,19 @@ export const ClientsPage: React.FC = () => {
         extraModels: extras,
         ...(piPayload.agentModels ? { agentModels: piPayload.agentModels } : {}),
         profile: piPayload.profile,
-        ...opencodeAgentPayload(clientName),
+        ...agentPayload,
       } : undefined);
       setActionNotice(res.message || 'Updated');
-      // Commit-point memory: the environment remembers the selection THIS
-      // setup just applied — never half-edited drafts (per-click config
-      // writes would storm the hot-apply pipeline for a UI nicety).
       if (action === 'setup') {
-        // Memory records what THIS setup wrote — the key's stable id, never a
-        // draft pick or the raw token.
-        persistMem(clientName, profileSel[clientName] || '', linkTagsOf(bindSel[clientName]), undefined, keyIdOf(apiKeySel[clientName] || ''));
+        // Write-through: the memory mirrors the drafts this setup just
+        // applied — the same selections the payload was built from.
+        rememberDraft(clientName);
       }
       // Refresh the agent inventory cache and drop the link draft so the
       // table re-seeds from the committed config (the lazy-load effect
       // refetches; the seed effect re-tags linked rows from the fresh echo).
       if (clientName === 'opencode') setAgents(null);
-      if (clientName === 'opencode' || clientName === 'pi') {
+      if (clientName === 'opencode' || isRoleTableClient(clientName)) {
         setBindSel(prev => {
           const { [clientName]: _dropped, ...rest } = prev;
           return rest;
@@ -449,36 +491,51 @@ export const ClientsPage: React.FC = () => {
     return { agentModels: manual, profile: { id: profileSel[clientName] || '', bindings: tags } };
   };
 
-  /** Restore the form drafts to the last COMMITTED selection — STRICTLY from
-   *  form memory, no live-echo fallback: the button's contract is "what I last
-   *  applied from this console", and a field without memory resets to its
-   *  blank/default instead of borrowing the current config state (predictable
-   *  over clever: no memory → nothing to restore). Purely a draft operation —
-   *  client config files and the memory itself are never touched (hook removal
-   *  is Teardown's job, re-apply is Setup's). */
+  /** Restore the form drafts to the remembered form state (the write-through
+   *  mirror of the last selections — see rememberDraft). STRICTLY from memory,
+   *  no live-echo fallback: a field without memory resets to its blank/default
+   *  instead of borrowing the current config state (predictable over clever:
+   *  no memory → nothing to restore). Useful after a setup re-seeded the link
+   *  drafts from the config echo. Purely a draft operation — client config
+   *  files and the memory itself are never touched (hook removal is
+   *  Teardown's job, re-apply is Setup's). */
   const handleResetModel = (clientName: string) => {
     const c = clients.find(x => x.name === clientName);
     const m = mem?.[clientName];
     const memTags = m?.bindings || {};
-    // Slot drafts: memory link tags re-tag roles; everything else falls to the
-    // slot's role default — the live echo is deliberately NOT consulted.
+    const memModels = m?.models || {};
+    const memAgent = m?.agentModels || {};
+    // Slot drafts: memory link tags re-tag linked slots; the committed ref
+    // snapshot restores manual picks; the slot's role default is the last
+    // resort — the live echo is deliberately NOT consulted.
     const slots: Record<string, string> = {};
     for (const s of clientSlots(c || ({ name: clientName } as ClientStatus))) {
       const tag = memTags[s.key];
-      slots[s.key] = s.key !== 'main' && tag ? `slot:${tag}` : (s.default || 'auto');
+      slots[s.key] = s.key !== 'main' && tag ? `slot:${tag}` : (memModels[s.key] || s.default || 'auto');
     }
     setModelSel(prev => ({ ...prev, [clientName]: slots }));
-    setExtraSel(prev => ({ ...prev, [clientName]: [] }));
+    setExtraSel(prev => ({ ...prev, [clientName]: m?.extraModels ? [...m.extraModels] : [] }));
     const candidate = m?.profile || '';
     setProfileSel(prev => ({ ...prev, [clientName]: candidate && profiles.some(p => p.id === candidate) ? candidate : '' }));
-    if (clientName === 'pi') {
-      // pi role drafts live in modelSel (re-seeded above); bindSel stays empty.
-      setBindSel(prev => ({ ...prev, [clientName]: {} }));
-    } else if (clientName === 'opencode') {
-      // Memory tags re-link agents; every other agent falls to its default.
+    if (isRoleTableClient(clientName)) {
+      // pi/omp role drafts live in bindSel (loadClients seeds them there and
+      // the link table renders from it): memory link tags re-link the role,
+      // the committed agentModels restore manual refs, everything else blanks.
       setBindSel(prev => {
         const draft: Record<string, string> = {};
-        for (const a of agents || []) draft[a.name] = memTags[a.name] ? `slot:${memTags[a.name]}` : 'auto';
+        for (const s of clientSlots(c || ({ name: clientName } as ClientStatus))) {
+          if (s.key === 'main') continue;
+          draft[s.key] = memTags[s.key] ? `slot:${memTags[s.key]}` : (memAgent[s.key] || '');
+        }
+        return { ...prev, [clientName]: draft };
+      });
+    } else if (clientName === 'opencode') {
+      // Memory tags re-link agents, remembered agentModels restore manual refs
+      // verbatim; agents the user never picked stay unselected (blank — the
+      // mirror records what the form showed, it never invents an 'auto' pick).
+      setBindSel(prev => {
+        const draft: Record<string, string> = {};
+        for (const a of agents || []) draft[a.name] = memTags[a.name] ? `slot:${memTags[a.name]}` : (memAgent[a.name] || '');
         return { ...prev, [clientName]: draft };
       });
     } else {
@@ -491,7 +548,7 @@ export const ClientsPage: React.FC = () => {
       next[clientName] = k ? k.key : '';
       return next;
     });
-    if (clientName === 'opencode' || clientName === 'pi') {
+    if (clientName === 'opencode' || isRoleTableClient(clientName)) {
       setLinksOn(prev => ({ ...prev, [clientName]: m?.linksOn ?? Object.keys(memTags).length > 0 }));
     }
   };
@@ -524,12 +581,12 @@ export const ClientsPage: React.FC = () => {
     return [{ value: v, label: v }, ...modelOptions];
   };
 
-  /** pi payload: main stays a plain model pick; the role-link table's drafts
-   *  split into manual refs (agentModels) and profile-link tags (`slot:<key>`,
-   *  resolved server-side). Native pins echoed verbatim are never re-sent.
-   *  Other clients pass their slot map through unchanged. */
+  /** pi/omp payload: main stays a plain model pick; the role-link table's
+   *  drafts split into manual refs (agentModels) and profile-link tags
+   *  (`slot:<key>`, resolved server-side). Native pins echoed verbatim are
+   *  never re-sent. Other clients pass their slot map through unchanged. */
   const piLinkPayload = (clientName: string): { models: Record<string, string>; agentModels?: Record<string, string>; profile?: { id: string; bindings: Record<string, string> } } => {
-    if (clientName !== 'pi') return { models: modelSel[clientName] || {} };
+    if (!isRoleTableClient(clientName)) return { models: modelSel[clientName] || {} };
     // Switch OFF = "not configuring roles": main still applies, the role
     // payload is omitted entirely (no sweep; existing overrides survive).
     if (linksOn[clientName] === false) return { models: { main: modelSel[clientName]?.main || 'auto' } };
@@ -568,10 +625,10 @@ export const ClientsPage: React.FC = () => {
     const profile = profiles.find(p => p.id === profileId);
     const profileMode = !!profile;
     let targets: SmartAssignTarget[];
-    if (c.name === 'pi') {
+    if (isRoleTableClient(c.name)) {
       targets = clientSlots(c)
         // Profile mode: skip `main` — it stays a plain model pick, never a
-        // profile-link tag (`slot:<key>` would corrupt pi's primary model).
+        // profile-link tag (`slot:<key>` would corrupt the primary model).
         .filter(s => !profileMode || s.key !== 'main')
         .map(s => ({
           key: s.key,
@@ -629,7 +686,7 @@ export const ClientsPage: React.FC = () => {
     const wrap = (v: string) => (profileMode ? `slot:${v}` : v);
     const apply = (draft: Record<string, string>) =>
       Object.fromEntries(Object.entries(draft).map(([k, v]) => [k, wrap(v)]));
-    if (clientName === 'pi') {
+    if (isRoleTableClient(clientName)) {
       const { main, ...roles } = assignments;
       if (main) setModelSel(prev => ({ ...prev, [clientName]: { ...(prev[clientName] || {}), main: wrap(main) } }));
       if (Object.keys(roles).length > 0) {
@@ -876,7 +933,7 @@ export const ClientsPage: React.FC = () => {
                     />
                   </div>
                 )}
-                {clientSlots(c).filter(s => c.name !== 'pi' || s.key === 'main').map(s => (
+                {clientSlots(c).filter(s => !isRoleTableClient(c.name) || s.key === 'main').map(s => (
                         <div key={s.key}>
                           <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '6px' }}>
                             {slotLabels[s.key] || s.key}
@@ -967,9 +1024,9 @@ export const ClientsPage: React.FC = () => {
                               />
                             </>
                           )}
-                          {c.name === 'pi' && (
+                          {isRoleTableClient(c.name) && (
                             <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '8px' }}>
-                              {t('clients.piMetaHint')}
+                              {t(c.name === 'pi' ? 'clients.piMetaHint' : 'clients.ompMetaHint')}
                             </div>
                           )}
                         </div>
@@ -977,7 +1034,7 @@ export const ClientsPage: React.FC = () => {
                       })()}
                     </div>
 
-                {c.name === 'pi' && (
+                {isRoleTableClient(c.name) && (
                   <div style={{ gridColumn: '1 / -1' }}>
                     <ProfileLinkTable
                       rows={clientSlots(c).filter(s => s.key !== 'main').map(s => ({ name: s.key, current: s.value }))}
@@ -1003,15 +1060,15 @@ export const ClientsPage: React.FC = () => {
                       appliedTags={c.profile?.bindings || {}}
                       onDraft={(name, v) => setBindSel(prev => ({ ...prev, [c.name]: { ...(prev[c.name] || {}), [name]: v } }))}
                       onClear={() => setBindSel(prev => ({ ...prev, [c.name]: {} }))}
-                      hint={t('clients.profileApplyHintPi')}
+                      hint={t(c.name === 'pi' ? 'clients.profileApplyHintPi' : 'clients.profileApplyHintOmp')}
                       label={t('clients.profileRowsLabel')}
                       on={linksOn[c.name]}
-                      // Toggle is draft-only — the setup/reset commit persists linksOn.
+                      // Toggle is draft-only — the setup commit persists linksOn.
                       onToggle={v => setLinksOn(prev => ({ ...prev, [c.name]: v }))}
                       linkedCount={Object.keys(linkTagsOf(bindSel[c.name])).length}
                     />
                     <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '8px' }}>
-                      {t('clients.piMetaHint')}
+                      {t(c.name === 'pi' ? 'clients.piMetaHint' : 'clients.ompMetaHint')}
                     </div>
                   </div>
                 )}
@@ -1020,7 +1077,7 @@ export const ClientsPage: React.FC = () => {
                 {c.name === 'opencode' && (
                   <div style={{ borderTop: '1px solid var(--divider)', paddingTop: '12px' }}>
                     <ProfileLinkTable
-                      rows={(agents || []).map(a => ({ name: a.name, mode: a.mode, current: a.model }))}
+                      rows={(agents || []).map(a => ({ name: a.name, mode: a.mode, current: a.model || a.effective }))}
                       loading={agents === null}
                       error={agentsError}
                       onRetry={() => setAgentsError(false)}
@@ -1049,7 +1106,7 @@ export const ClientsPage: React.FC = () => {
                       hint={t('clients.profileApplyHint')}
                       label={t('clients.profileRowsLabel')}
                       on={linksOn[c.name]}
-                      // Toggle is draft-only — the setup/reset commit persists linksOn.
+                      // Toggle is draft-only — the setup commit persists linksOn.
                       onToggle={v => setLinksOn(prev => ({ ...prev, [c.name]: v }))}
                       linkedCount={Object.keys(linkTagsOf(bindSel[c.name])).length}
                       showSort
