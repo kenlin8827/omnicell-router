@@ -1,6 +1,6 @@
 {
   "name": "omnicell-router",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "High-performance OmniCellRouter (OCR) & Cascading Gateway",
   "publishConfig": {
     "access": "public"
