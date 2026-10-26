@@ -1532,7 +1532,6 @@ hiddenBadge: string;
     /** Hide rows landed in the shared `.agents` skills tree (host `universal`): the same set under
      *  every rail entry, so excluding it is how a pinned skills page shows only what is its own. */
     hideShared: string;
-    tabLocal: string;
     marketSkills: string;
     marketMcp: string;
     marketExtensions: string;

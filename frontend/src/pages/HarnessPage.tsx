@@ -812,7 +812,8 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const [layout, setLayout] = useState<'list' | 'card'>(() =>
-    localStorage.getItem(`harness.view.${kind}`) === 'card' ? 'card' : 'list'
+    // Card is the default; only an explicit operator choice of 'list' sticks.
+    localStorage.getItem(`harness.view.${kind}`) === 'list' ? 'list' : 'card'
   );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -2677,7 +2678,9 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
           onChange={(v) => setTab(v as 'local' | 'market')}
           size="lg"
           options={[
-            { value: 'local', label: t('harness.tabLocal') },
+            // Tab pairs with the market label per kind: "本机技能 | 技能市场". Reuses the
+            // installed noun so the local/本机 wording stays single-sourced.
+            { value: 'local', label: t(meta.installedKey) },
             { value: 'market', label: t(meta.marketKey) },
           ]}
         />

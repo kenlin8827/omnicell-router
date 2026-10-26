@@ -53,8 +53,45 @@ const PI_SUBAGENT_TIERS: Record<string, string> = {
   oracle: 'ultra',
 };
 
-/** Namespace prefix marking a subagent override as router-owned (teardown strips these, only these). */
+/**
+ * Namespace prefix NEW router-owned writes are qualified with — reads must go
+ * through isRouterModelRef/routerModelBareId so legacy-key residue (see
+ * LEGACY_PROVIDER_KEYS) is recognized too; this constant is write-side only.
+ */
 const SUBAGENT_MODEL_PREFIX = `${PI_PROVIDER_KEY}/`;
+
+/**
+ * Legacy provider keys written by pre-rename OCR releases (OneCastRouter era
+ * and earlier experiments). Their `key/<id>` subagent pins and defaultProvider
+ * values are router residue, not user choices — treated as router-owned
+ * everywhere the current prefix is (stripped on teardown/reset, echoed as the
+ * bare id, refreshed by the tier preset) so an old install heals on the next
+ * setup instead of posing as a foreign manual pin forever.
+ */
+const LEGACY_PROVIDER_KEYS = ['onecast-router', 'opencode-router'];
+
+/** All provider keys whose `<key>/<id>` model refs count as router-owned. */
+const ROUTER_PROVIDER_KEYS = [PI_PROVIDER_KEY, ...LEGACY_PROVIDER_KEYS];
+
+/** True when a model ref is qualified with any router provider key. */
+const isRouterModelRef = (v: unknown): v is string =>
+  typeof v === 'string' && ROUTER_PROVIDER_KEYS.some(k => v.startsWith(`${k}/`));
+
+/** Bare id of a router-qualified ref, or undefined when foreign. */
+const routerModelBareId = (v: unknown): string | undefined => {
+  if (typeof v !== 'string') return undefined;
+  const k = ROUTER_PROVIDER_KEYS.find(k => v.startsWith(`${k}/`));
+  return k ? v.slice(k.length + 1) : undefined;
+};
+
+/**
+ * Startup thinking level written into pi's settings.json alongside
+ * defaultProvider/defaultModel. `medium` is pi's own built-in default — safe
+ * for every model: the gateway resolves each request's real model and clamps
+ * the requested effort to what it can serve (X-OCR-Thinking-* headers), so a
+ * permissive client-side preset never over-drives a weaker rung.
+ */
+const PI_DEFAULT_THINKING_LEVEL = 'medium';
 
 /**
  * Sidecar next to models.json (`models.json.ocr-meta.json`) holding the
@@ -226,7 +263,7 @@ export class PiClientAdapter implements ClientAdapter {
       const pinned = overrides
         ? Object.keys(overrides).filter(role => {
             const model = overrides[role]?.model;
-            return typeof model === 'string' && model.startsWith(SUBAGENT_MODEL_PREFIX);
+            return isRouterModelRef(model);
           }).length
         : 0;
       if (pinned > 0) details += `; ${pinned} subagent role(s) pinned via ${this.getSettingsPath()}`;
@@ -245,7 +282,7 @@ export class PiClientAdapter implements ClientAdapter {
       modelSlots.push({
         key: role,
         value: typeof pinnedModel === 'string' && pinnedModel
-          ? pinnedModel.startsWith(SUBAGENT_MODEL_PREFIX) ? pinnedModel.slice(SUBAGENT_MODEL_PREFIX.length) : pinnedModel
+          ? routerModelBareId(pinnedModel) ?? pinnedModel
           : undefined,
         default: PI_SUBAGENT_TIERS[role] || 'auto',
         description,
@@ -347,7 +384,7 @@ export class PiClientAdapter implements ClientAdapter {
           const entry = overrides[role];
           if (
             entry && typeof entry === 'object' && !Array.isArray(entry) &&
-            typeof entry.model === 'string' && entry.model.startsWith(SUBAGENT_MODEL_PREFIX)
+            isRouterModelRef(entry?.model)
           ) {
             if (Object.keys(entry).length === 1) delete overrides[role];
             else delete entry.model;
@@ -387,13 +424,24 @@ export class PiClientAdapter implements ClientAdapter {
         const base = entry && typeof entry === 'object' && !Array.isArray(entry) ? entry : {};
         const current = base.model;
         if (typeof current === 'string' && current.length > 0) {
-          if (!current.startsWith(SUBAGENT_MODEL_PREFIX)) continue; // foreign pin — never stolen
-          // Router-owned: refresh only preset-vocabulary auto* aliases (tier
-          // table updates normalize on re-setup); a router-owned concrete pick
-          // (omnicell-router/<id>) is an explicit choice and survives.
-          if (!VIRTUAL_AUTO_IDS.has(current.slice(SUBAGENT_MODEL_PREFIX.length))) continue;
+          const bare = routerModelBareId(current);
+          if (bare === undefined) continue; // foreign pin — never stolen
+          // Router-owned (incl. legacy-key residue): refresh only
+          // preset-vocabulary auto* aliases (tier table updates normalize on
+          // re-setup); a router-owned concrete pick is an explicit choice and
+          // survives.
+          if (!VIRTUAL_AUTO_IDS.has(bare)) continue;
         }
         overrides[role] = { ...base, model: `${PI_PROVIDER_KEY}/${tier}` };
+      }
+      // Startup defaults: route pi's first screen through OCR. Only claimed
+      // when unset or already router-owned — a hand-picked foreign provider
+      // (user's own default in settings.json) is never stolen; the model list
+      // in models.json still exposes the OCR entries via /model.
+      if (!settings.defaultProvider || ROUTER_PROVIDER_KEYS.includes(String(settings.defaultProvider))) {
+        settings.defaultProvider = PI_PROVIDER_KEY;
+        settings.defaultModel = main;
+        if (!settings.defaultThinkingLevel) settings.defaultThinkingLevel = PI_DEFAULT_THINKING_LEVEL;
       }
       safeWriteJson(settingsPath, settings);
       // Profile-link echo: recorded AFTER the writes so the sidecar reflects
@@ -466,9 +514,7 @@ export class PiClientAdapter implements ClientAdapter {
     // not rewrite this file.
     const changed = Object.entries(desired).some(([role, ref]) => {
       const current = overrides[role]?.model;
-      const currentBare = typeof current === 'string' && current.startsWith(SUBAGENT_MODEL_PREFIX)
-        ? current.slice(SUBAGENT_MODEL_PREFIX.length)
-        : current;
+      const currentBare = routerModelBareId(current) ?? current;
       return (ref || '') !== (typeof currentBare === 'string' ? currentBare : '');
     });
     const meta = readMeta(configPath);
@@ -487,7 +533,7 @@ export class PiClientAdapter implements ClientAdapter {
         const entry = overrides[role];
         if (
           entry && typeof entry === 'object' && !Array.isArray(entry) &&
-          typeof entry.model === 'string' && entry.model.startsWith(SUBAGENT_MODEL_PREFIX)
+          typeof entry.model === 'string' && isRouterModelRef(entry.model)
         ) {
           if (Object.keys(entry).length === 1) delete overrides[role];
           else delete entry.model;
@@ -666,32 +712,40 @@ export class PiClientAdapter implements ClientAdapter {
     }
     const overrides = data?.subagents?.agentOverrides;
     let removed = 0;
+    // Router-owned startup defaults die with the hook — but only ours: a
+    // foreign defaultProvider (user's own pick) is never touched.
+    if (data.defaultProvider === PI_PROVIDER_KEY) {
+      delete data.defaultProvider;
+      delete data.defaultModel;
+      if (data.defaultThinkingLevel === PI_DEFAULT_THINKING_LEVEL) delete data.defaultThinkingLevel;
+      removed++;
+    }
     if (overrides && typeof overrides === 'object' && !Array.isArray(overrides)) {
       for (const role of Object.keys(overrides)) {
         const entry = overrides[role];
         if (
           entry && typeof entry === 'object' && !Array.isArray(entry) &&
-          typeof entry.model === 'string' && entry.model.startsWith(SUBAGENT_MODEL_PREFIX)
+          isRouterModelRef(entry?.model)
         ) {
           if (Object.keys(entry).length === 1) delete overrides[role];
           else delete entry.model;
           removed++;
         }
       }
-      if (removed > 0) {
-        if (Object.keys(overrides).length === 0) delete data.subagents.agentOverrides;
-        if (data.subagents && Object.keys(data.subagents).length === 0) delete data.subagents;
-        if (Object.keys(data).length === 0) {
-          try {
-            fs.unlinkSync(settingsPath);
-          } catch {
-            safeWriteJson(settingsPath, data); // unlink failed (file lock) — at least drop the residue
-          }
-        } else {
-          safeWriteJson(settingsPath, data);
+    }
+    if (removed > 0) {
+      if (overrides && Object.keys(overrides).length === 0) delete data.subagents.agentOverrides;
+      if (data.subagents && Object.keys(data.subagents).length === 0) delete data.subagents;
+      if (Object.keys(data).length === 0) {
+        try {
+          fs.unlinkSync(settingsPath);
+        } catch {
+          safeWriteJson(settingsPath, data); // unlink failed (file lock) — at least drop the residue
         }
+      } else {
+        safeWriteJson(settingsPath, data);
       }
     }
-    return removed > 0 ? `; removed ${removed} subagent role override(s) from ${settingsPath}` : '';
+    return removed > 0 ? `; removed ${removed} router-owned setting(s) from ${settingsPath}` : '';
   }
 }
