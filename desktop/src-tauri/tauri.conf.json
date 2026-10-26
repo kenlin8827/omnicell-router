@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "OmniCellRouter",
   "mainBinaryName": "OmniCellRouter",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "identifier": "com.kenlin8827.omnicell-router",
   "build": {
     "frontendDist": "stub"

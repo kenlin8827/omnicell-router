@@ -1,7 +1,7 @@
 {
   "name": "@omnicell-router/desktop",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "description": "OmniCellRouter desktop shell (Tauri) — bundles the gateway sidecar and opens the console UI",
   "scripts": {

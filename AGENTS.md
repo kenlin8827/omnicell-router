@@ -55,8 +55,9 @@ divergent after the next edit.
 - Shared wire/payload helpers (e.g. `DATA_URL_RE`) live in `backend/src/providers/wire.ts`.
 - The release version is declared once, in the root `package.json`; `scripts/version-sync.ts`
   (wired as the `npm version` lifecycle hook) mirrors it into the workspace subpackages,
-  `tauri.conf.json`, `Cargo.toml` and the self-crate entry in `Cargo.lock`. Never hand-edit
-  those copies; CI drift-guards with `bun scripts/version-sync.ts --check`.
+  `tauri.conf.json`, `Cargo.toml`, the self-crate entry in `Cargo.lock` and the two workspace
+  entries in `bun.lock`. Never hand-edit those copies; CI drift-guards with
+  `bun scripts/version-sync.ts --check`.
 - Exception: defaults baked into prose (`YAML_FIELD_COMMENTS`, i18n strings) are sanctioned
   copy — changing a constant means sweeping those strings in the same pass (cleanup contract
   below).

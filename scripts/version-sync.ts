@@ -35,6 +35,21 @@ const targets = [
     from: /(name = "omnicell-router-desktop"\r?\nversion = ")[^"]*(")/,
     to: `$1${v}$2`,
   },
+  // bun.lock carries the WORKSPACE package versions as well (bun rewrites them
+  // on the next install). Nothing else in the lockfile is version-derived, so
+  // leaving them stale is pure drift noise: the first `bun install` after a
+  // release dirties the tree. Anchored on each workspace name so third-party
+  // entries keep their own resolved versions.
+  {
+    file: 'bun.lock',
+    from: /("name": "@omnicell-router\/backend",\r?\n\s*"version": ")[^"]*(")/,
+    to: `$1${v}$2`,
+  },
+  {
+    file: 'bun.lock',
+    from: /("name": "@omnicell-router\/frontend",\r?\n\s*"version": ")[^"]*(")/,
+    to: `$1${v}$2`,
+  },
 ];
 
 let drift = false;
