@@ -190,7 +190,7 @@
 
 ### D6b — 内部回环调用钉住保留会话 ID
 
-翻译与探测调用经网关自己的回环 `/v1` 面进来，不带标记时**每次调用**都会铸造一个新 `cold_start` 会话，控制台会话列表被单轮内部行淹没。因此内部调用方经 `router_options.session_id` 钉住**按用途固定**的会话 ID：`ocr-internal:translation`（描述 + README 分块）与 `ocr-internal:translation-probe`（链路探测）。`ocr-internal:` 前缀是**保留命名空间**——它声明"该行是网关内部噪音"，不是强制约束；外部客户端发送同前缀同样会被隐藏，这一点被接受（管理面信任其调用方）。标记**就是 ID 本身**：持久化轨迹以 `sessionId` 为键，因此网关重启后分类在活跃行与轨迹重建行上都天然存活，无需存储任何标志——`GET /api/admin/sessions` 由前缀推导 `internal: true` 并默认隐藏这些行（`hideInternal=0` 可显示）。翻译链是显式的（configured → lite），共享会话永远不可能棘轮升档。
+翻译与探测调用经网关自己的回环 `/v1` 面进来，不带标记时**每次调用**都会铸造一个新 `cold_start` 会话，控制台会话列表被单轮内部行淹没。因此内部调用方经 `router_options.session_id` 钉住**按用途固定**的会话 ID：`ocr-internal:translation`（描述 + README 分块）与 `ocr-internal:translation-probe`（链路探测）。`ocr-internal:` 前缀是**保留命名空间**——它声明"该行是网关内部噪音"，不是强制约束；外部客户端发送同前缀同样会被隐藏，这一点被接受（管理面信任其调用方）。标记**就是 ID 本身**：持久化轨迹以 `sessionId` 为键，因此网关重启后分类在活跃行与轨迹重建行上都天然存活，无需存储任何标志——`GET /api/admin/sessions` 由前缀推导 `internal: true` 并默认隐藏这些行（`hideInternal=0` 可显示）。控制台把该开关放在会话说明行右侧（`隐藏内部会话` 勾选框），并给显示出来的内部行打 `内部` 徽章——默认生效后该分类在界面上仍然可见。翻译链是显式的（configured → lite），共享会话永远不可能棘轮升档。
 
 ### D7 — 身份:一个制品一个键
 

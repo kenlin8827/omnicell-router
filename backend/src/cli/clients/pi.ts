@@ -271,11 +271,13 @@ export class PiClientAdapter implements ClientAdapter {
       { key: 'main', value: models[0]?.id ? String(models[0].id) : undefined, default: 'auto' },
     ];
     for (const { name: role, description } of this.discoverSubagentRoles(overrides)) {
-      const pinnedModel = overrides?.[role]?.model;
+      // A USER-pinned slot (pi's own agentOverrides), never the gateway's
+      // session pin — different word, different mechanism.
+      const userPinnedModel = overrides?.[role]?.model;
       modelSlots.push({
         key: role,
-        value: typeof pinnedModel === 'string' && pinnedModel
-          ? routerModelBareId(pinnedModel) ?? pinnedModel
+        value: typeof userPinnedModel === 'string' && userPinnedModel
+          ? routerModelBareId(userPinnedModel) ?? userPinnedModel
           : undefined,
         default: PI_SUBAGENT_TIERS[role] || 'auto',
         description,

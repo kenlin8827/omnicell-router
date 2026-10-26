@@ -29,58 +29,25 @@ import {
 } from './providers/virtual-meta.js';
 import { modelSupportsEfforts } from './types/router.js';
 import { isInternalSessionId } from './session/session-manager.js';
+import {
+  currentModelOf,
+  deriveSessionEntryMode,
+  projectSessionEntity,
+  type SessionRow,
+} from './session/session-row.js';
 import type { TripScope } from './resilience/types.js';
 import type { CaptureKeyIdentity } from './capture/recorder.js';
 
 const TIER_RANK: Record<string, number> = { lite: 1, plus: 2, pro: 3, ultra: 4 };
 
 /**
- * How the client addressed a session's turns, derived from persisted traces
- * (observability reconstruction — never routing state):
- * - 'auto'    : every turn named an auto alias (bare auto or a tier-forced
- *               lite/plus/pro/ultra) — the ratchet owns the tier.
- * - 'explicit': every turn named a concrete registered model — the client owns
- *               the choice, the tier column has no lock to show.
- * - 'combo'   : every turn went through a combo — the composition IS the
- *               decision; the executed member's tier is not a session ceiling.
- * - 'mixed'   : the conversation switched entry modes across turns.
- */
-export type SessionEntryMode = 'auto' | 'explicit' | 'combo' | 'mixed';
-
-/** Classify a session from its traces (chronological order irrelevant). */
-export function deriveSessionEntryMode(traces: ExecutionTrace[]): SessionEntryMode {
-  // Virtual auto aliases: bare auto plus the four tier-forced aliases
-  // (lite/plus/pro/ultra). Routing runs these through the ratchet path (the
-  // tier aliases rewrite force_tier before routing), so a tier-forced session
-  // owns a tier lock — classifying it as explicit would strip the tier badge.
-  const AUTO_ALIAS_MODELS = new Set(['auto', 'lite', 'plus', 'pro', 'ultra']);
-  let sawAuto = false;
-  let sawExplicit = false;
-  let sawCombo = false;
-  for (const t of traces) {
-    // Combo turns are the only ones carrying this reasonCode (the orchestrator
-    // sets it on the bypass decision and the trace copies it verbatim).
-    if (t.routing?.reasonCode === 'combo') sawCombo = true;
-    else {
-      // Routing-name matching trims once while request.model is stored
-      // verbatim (surface contract) — reconstruct the routing view, not the
-      // bytes: a padded alias routed as the alias must classify as the alias.
-      const requested = (t.request?.model ?? '').trim();
-      if (!requested || AUTO_ALIAS_MODELS.has(requested)) sawAuto = true;
-      else sawExplicit = true;
-    }
-  }
-  if (Number(sawAuto) + Number(sawExplicit) + Number(sawCombo) !== 1) return 'mixed';
-  return sawCombo ? 'combo' : sawExplicit ? 'explicit' : 'auto';
-}
-
-/**
  * Rebuild a console session row from persisted traces alone (seen after a
  * gateway restart, when the live session-manager state is gone but the trace
  * store survived). Derived values are observability reconstructions — the
- * routing state itself (pin/ratchet) starts fresh by design.
+ * routing state itself (pin/ratchet) starts fresh by design, so the row is the
+ * execution view (`currentModel`), never a fabricated pin (ADR-0002 §3).
  */
-function reconstructSessionFromTraces(traceTracker: TraceTracker, id: string) {
+function reconstructSessionFromTraces(traceTracker: TraceTracker, id: string): SessionRow {
   const traces = traceTracker.getTracesBySession(id);
   const first = traces[0];
   const last = traces[traces.length - 1];
@@ -97,8 +64,7 @@ function reconstructSessionFromTraces(traceTracker: TraceTracker, id: string) {
     internal: isInternalSessionId(id),
     maxTier,
     entryMode: deriveSessionEntryMode(traces),
-    pinnedModel: last?.execution.modelUsed ?? '',
-    pinnedProvider: last?.execution.provider ?? '',
+    ...currentModelOf(traces),
     createdAt: first?.timestamp ?? 0,
     lastActiveAt: last?.timestamp ?? 0,
     turnCount: traces.length,
@@ -1093,16 +1059,22 @@ export function createServer(
     const hideInternal = firstStr(query.hideInternal) !== '0';
 
     const traceTracker = orchestrator.getTraceTracker();
-    // Live sessions carry the authoritative routing state (pin/ratchet);
-    // sessions that only exist in the persisted trace store (e.g. after a
-    // gateway restart) are reconstructed from their traces so console
-    // history survives. Live wins on id collision.
-    const live = (orchestrator.getSessionManager()?.getAllSessions() || []).map(s => {
+    // Live sessions (entity + traces) and sessions that exist only in the
+    // persisted trace store (e.g. after a gateway restart) are reconstructed
+    // so console history survives. Live wins on id collision. Both paths
+    // project into the same SessionRow contract (session-row.ts), so a row
+    // never carries the live routing state (pin/ratchet).
+    const live = (orchestrator.getSessionManager()?.getAllSessions() || []).map((s): SessionRow => {
       const sessTraces = traceTracker.getTracesBySession(s.id);
       const keyList = distinctTraceKeys(sessTraces);
       const uaList = distinctTraceUserAgents(sessTraces);
       return {
-        ...s,
+        // Whitelisted entity projection (session-row.ts): the entity's
+        // pinnedModel/pinnedProvider are routing-internal (ADR-0002) and are
+        // deliberately NOT surfaced, so live and trace-reconstructed rows
+        // report the same execution view instead of an anchor.
+        ...projectSessionEntity(s),
+        ...currentModelOf(sessTraces),
         // The id IS the internal marker (reserved `ocr-internal:` prefix) —
         // derived, never stored, so live and trace-reconstructed rows agree.
         internal: isInternalSessionId(s.id),
@@ -1123,8 +1095,9 @@ export function createServer(
       .filter(id => !liveIds.has(id))
       .map(id => reconstructSessionFromTraces(traceTracker, id));
     // Most recently active first — stable ordering for pagination. `q`
-    // filters (case-insensitive substring) across session id, pinned model,
-    // first user message and every app name, applied BEFORE pagination.
+    // filters (case-insensitive substring) across session id, current model AND
+    // its provider (both are rendered in that column), first user message and
+    // every app name, applied BEFORE pagination.
     // `apiKey` (ak) selects by membership in the session's distinct key set.
     const all = [...live, ...reconstructed]
       .filter(s => {
@@ -1134,7 +1107,10 @@ export function createServer(
         return (
           !q ||
           s.id.toLowerCase().includes(q) ||
-          String(s.pinnedModel || '')
+          String(s.currentModel || '')
+            .toLowerCase()
+            .includes(q) ||
+          String(s.currentProvider || '')
             .toLowerCase()
             .includes(q) ||
           String(s.firstUserMessage || '')
@@ -1171,7 +1147,11 @@ export function createServer(
     const traces = orchestrator.getTraceTracker().getTracesBySession(id);
     return {
       object: 'session',
-      ...session,
+      // Same two projections as the list rows (ADR-0002 §3): the routing pin
+      // and the client IP stay inside the gateway, and `currentModel` reuses the
+      // list's execution-view derivation so the endpoints cannot disagree.
+      ...projectSessionEntity(session),
+      ...currentModelOf(traces),
       traceCount: traces.length,
       recentTraces: traces.slice(-5),
     };

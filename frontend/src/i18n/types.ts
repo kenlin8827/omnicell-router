@@ -1061,7 +1061,8 @@ hiddenBadge: string;
     thApps: string;
     /** Session-table client badge tooltip — carries the raw User-Agent. */
     clientTip: string;
-    thPinned: string;
+    /** Sessions-table column: the last model that actually served the session (execution view — no pin semantics). */
+    thCurrent: string;
     thTier: string;
     tierNameLite: string;
     tierNamePlus: string;
@@ -1090,6 +1091,10 @@ hiddenBadge: string;
     apiKeyAll: string;
     hideInternal: string;
     hideInternalTip: string;
+    /** Row badge on an internal session, shown only while the filter is off. */
+    internalBadge: string;
+    /** Badge tooltip — the reserved `ocr-internal:` prefix explains the classification. */
+    internalBadgeTip: string;
     filterEmpty: string;
     emptySessions: string;
     copiedSessionId: string;

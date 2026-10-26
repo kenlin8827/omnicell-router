@@ -495,8 +495,10 @@ client sending the same prefix would be hidden too, which is accepted (the admin
 caller). The marker IS the id: persisted traces key on `sessionId`, so the classification survives a
 gateway restart on BOTH live and trace-reconstructed rows with no stored flag — `GET
 /api/admin/sessions` derives `internal: true` from the prefix and hides those rows by default
-(`hideInternal=0` shows them). The translation chain is explicit (`configured → lite`), so a shared
-session can never ratchet upward.
+(`hideInternal=0` shows them). The console surfaces that switch as the `Hide internal` checkbox
+beside the sessions description line and stamps an un-hidden internal row with an `internal` badge,
+so the classification stays visible once the default has taken effect. The translation chain is
+explicit (`configured → lite`), so a shared session can never ratchet upward.
 
 ### D7 — Identity: one artifact, one key
 

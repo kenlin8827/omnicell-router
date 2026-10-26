@@ -74,6 +74,45 @@ describe('Session Details & Trajectory Trace Observability Endpoints', () => {
     assert.ok(typeof found.outputTokens === 'number', 'session outputTokens aggregate must be reported');
     assert.ok(typeof found.cachedTokens === 'number', 'session cachedTokens aggregate must be reported');
 
+    // Console row = execution view (ADR-0002 §3): the reported model is the one
+    // that actually served the last turn, with its provider, and the routing
+    // anchor / client IP stay gateway-internal.
+    const tracesRes = await app.inject({
+      headers: authHeaders(),
+      method: 'GET',
+      url: '/api/admin/sessions/sess_unit_test_trace_1/traces',
+    });
+    const traceRows = JSON.parse(tracesRes.body).data;
+    const served = traceRows[traceRows.length - 1].execution;
+    assert.strictEqual(found.currentModel, served.modelUsed, 'currentModel must be the last served model');
+    assert.strictEqual(found.currentProvider, served.provider, 'currentProvider must be the serving provider');
+    assert.equal('pinnedModel' in found, false, 'the routing pin must not reach the console row');
+    assert.equal('pinnedProvider' in found, false);
+    assert.equal('origin' in found, false, 'session origin (client IP) must not reach the console row');
+
+    // Detail endpoint mirrors the list rows, so the two cannot disagree.
+    const detailRes = await app.inject({
+      headers: authHeaders(),
+      method: 'GET',
+      url: '/api/admin/sessions/sess_unit_test_trace_1',
+    });
+    const detail = JSON.parse(detailRes.body);
+    assert.strictEqual(detail.currentModel, served.modelUsed);
+    assert.strictEqual(detail.currentProvider, served.provider);
+    assert.equal('pinnedModel' in detail, false, 'detail endpoint applies the same projection');
+
+    // q filter: substring match over the reported model name (the field the
+    // column shows) still selects the session.
+    const byModel = await app.inject({
+      headers: authHeaders(),
+      method: 'GET',
+      url: `/api/admin/sessions?q=${encodeURIComponent(served.modelUsed)}`,
+    });
+    assert.ok(
+      JSON.parse(byModel.body).data.some((s: any) => s.id === 'sess_unit_test_trace_1'),
+      'q must match on currentModel'
+    );
+
     // q filter: substring match over session id, applied before pagination
     const filtered = await app.inject({
       headers: authHeaders(),

@@ -45,8 +45,8 @@ switch     = evict ∧ 健康着陆点存在 ∧ landing.id ≠ pin
 - **healthForce**——`modelHealthView(pin) === 'unavailable'`（ADR-0004）：模型断路器 OPEN，或全部凭证 pair 硬 OPEN / SUSPECT / 操作员 DISABLED。`recovering`（试飞在途——金丝雀槽位空闲**或被占**）永不驱逐：peek 视图会把忙碌的试飞读成宕机，而在距恢复只差一次探针的模型上移走钉扎，烧毁的 KV 缓存永久不回（没有任何回切逻辑）。Shadow 模式下自动跳闸永不驱逐：被 shadow 的断路器照常服务（`verdict()` 契约），视图同样按在服务折叠；MANUAL 与行政下架逐字生效。
 - **着陆点**——`getModelForTier(actualTier, true)` ∧ peek 可用；请求梯队全空时跨层着陆合法且有日志（`reason=empty-pool`）；repin 永不触碰 `maxTier`。**无健康着陆点 → 被驱逐的钉扎继续服务**（安全失败：被清空的梯队不得搁浅绑定会话；每轮懒惰重判，有处可去即自动完成迟到的切换）。
 - **范围**——仅 ratchet 模式。显式点名请求永不改道，仅为对齐回写钉扎（点名模型在天花板梯队实际服务；会话出生/升档时棘轮 resolver 收到的是**被点名模型本身**，绝非池代表——pool-less 部署下点名流量必须保持可调用；裸 `auto` 仍走池解析代表）。Combo 完全绕开钉扎（`sessionMode='bypass'`）：成员表逐调用现场重解析，combo 编辑下一个请求即触达所有对话——没有"绑定"需要撤离。
+- **控制台面**——钉扎是路由内部状态，绝不出现在控制台会话行中：`GET /api/admin/sessions` 只报 `currentModel`（实际服务过该会话最后一轮的模型 id，照注册原样——由图录/梯队成员匹配而来的模型带 `provider/model` 前缀，手写注册的模型是裸 id）与服务商 `currentProvider`——活跃行与轨迹重建行共用同一套推导，`GET /api/admin/sessions/:id` 走同一份投影。故障转移的落点因此绝不会冒充会话锚点；重启后的重建行按设计不携带路由状态，渲染同样的执行视图而非编造一个钉扎值；且行是封闭白名单（`SessionRow`，`backend/src/session/session-row.ts`），未来新增的会话内部字段默认不外泄，不会顺着一处展开（spread）漏出来。
 - **归因**——绝不新增 `reasonCode`（本轮代码属于 §2 的 `session.*` 词汇）；迁移走 `reasonParams`：`{ repin: 'config'|'health', repinFrom, repinTo }`，随 trace 持久化，在会话切换时间线渲染为显式尾部。
-
 被否决：peek 式驱逐（把钉扎从恢复中的模型上搬走）；在 `executeCandidatePool` 过滤链首（该池被显式/combo 共用——打破显式优先契约）；干等 TTL（最长一小时静默否决已提交的操作员编辑）。
 
 ### 4. 凭证亲和——切换是强制故障转移，绝非负载均衡

@@ -99,7 +99,7 @@ const tokenDisplay = (v: number): string => (v >= 100_000 ? COMPACT_FMT.format(v
  *              executed member's tier is not a session ceiling).
  * - explicit-> nothing (a dash): the client named the model, the gateway holds
  *              no tier lock to display.
- * - auto / mixed / absent -> the tier badge (the ratchet's locked ceiling).
+ * - auto / mixed -> the tier badge (the ratchet's locked ceiling).
  */
 const TierCell: React.FC<{ s: SessionRecord }> = ({ s }) => {
   const { t } = useI18n();
@@ -122,43 +122,58 @@ const TierCell: React.FC<{ s: SessionRecord }> = ({ s }) => {
 };
 
 /**
- * Pinned-model cell: split `provider/model` into two stacked, non-wrapping
- * lines — model name on top (inherits the cell's bold weight), provider below
- * in dim gray. Overflowing lines ellipsis; hover shows the full value.
- * Models without a `/` render as-is.
+ * Model-ref cell: model id on top (inherits the cell's bold weight), serving
+ * provider underneath in dim gray — two stacked, non-wrapping lines, each
+ * ellipsized, with the full id / provider in its tooltip. Pure execution
+ * semantics: the routing pin never surfaces here. `null` (a row with no trace
+ * at all) renders an em dash.
+ *
+ * The id namespace is MIXED: hand-configured models register bare ids
+ * (`deepseek-chat`), catalog/tier-derived ones register `provider/model`
+ * (`alibaba/qwen3.8-flash`). The serving provider is authoritative for the
+ * second line, and the id's own prefix is stripped from the first line only
+ * when it IS that provider — an id that merely contains a slash (a
+ * vendor-qualified upstream name under a different provider) renders verbatim
+ * so no part of it is lost.
  */
-const PINNED_LINE_STYLE: React.CSSProperties = {
+const MODEL_LINE_STYLE: React.CSSProperties = {
   display: 'block',
   whiteSpace: 'nowrap',
   overflow: 'hidden',
   textOverflow: 'ellipsis',
 };
-const PinnedModelCell: React.FC<{ model: string }> = ({ model }) => {
-  const slash = model.indexOf('/');
-  if (slash < 0) {
+const ModelRefCell: React.FC<{ model: string | null; provider?: string | null }> = ({
+  model,
+  provider,
+}) => {
+  if (model === null) {
     return (
-      <span title={model} style={PINNED_LINE_STYLE}>
-        {model}
-      </span>
+      <span style={{ ...MODEL_LINE_STYLE, color: 'var(--text-dim)' }}>—</span>
     );
   }
+  const slash = model.indexOf('/');
+  const inlineNs = slash < 0 ? null : model.slice(0, slash);
+  const ns = provider && provider.length > 0 ? provider : inlineNs;
+  const bare = ns !== null && ns === inlineNs ? model.slice(slash + 1) : model;
   return (
     <>
-      <span title={model} style={PINNED_LINE_STYLE}>
-        {model.slice(slash + 1)}
+      <span title={model} style={MODEL_LINE_STYLE}>
+        {bare}
       </span>
-      <span
-        title={model}
-        style={{
-          ...PINNED_LINE_STYLE,
-          marginTop: '3px',
-          fontSize: '10px',
-          fontWeight: 500,
-          color: 'var(--text-dim)',
-        }}
-      >
-        {model.slice(0, slash)}
-      </span>
+      {ns !== null && (
+        <span
+          title={ns}
+          style={{
+            ...MODEL_LINE_STYLE,
+            marginTop: '3px',
+            fontSize: '10px',
+            fontWeight: 500,
+            color: 'var(--text-dim)',
+          }}
+        >
+          {ns}
+        </span>
+      )}
     </>
   );
 };
@@ -555,6 +570,8 @@ export const SessionsPage: React.FC = () => {
   // Gateway-internal rows (console translation/probe loopback calls, reserved
   // `ocr-internal:` session ids) — server-side filter, ON by default: these
   // sessions are noise for inspecting client traffic and stay one click away.
+  // The checkbox lives on the description line below, not in the action
+  // toolbar (see the description block).
   const [hideInternal, setHideInternal] = useState(true);
 
   // Combobox options: the configured client keys (id + application name).
@@ -687,31 +704,33 @@ export const SessionsPage: React.FC = () => {
   // makes the <colgroup> authoritative — both tables render the identical
   // colgroup so columns line up pixel-perfect. Weights are normalized to
   // percentages; the capture column joins only when the archive is enabled.
-  // Pinned model gets 13.5 so its two non-wrapping lines (model + provider,
-  // e.g. "alibaba-token-plan-cn") fit without ellipsis; apps gets 11 (app-key
-  // + client badges wrap onto two lines here) and session id 15 (long ids
-  // wrap by design, so it can donate a unit).
+  // Current model gets 11.5 for its two non-wrapping lines (model id over
+  // provider, e.g. "alibaba-token-plan-cn" underneath); apps gets 9.5 (app-key
+  // + client badges wrap onto two lines here) and session id 17 (long ids
+  // wrap by design, so it can donate).
   // In/Out/Cached share ONE column as a 2×2 stat grid (left half: In over
   // Out; right half: Cached over Hit-rate) — 16.5 units keeps its two halves
   // above the container-query threshold (see .tokens-stat-wrap in index.css)
   // on ordinary desktop windows; ≥100K counts render compact (4.3M/38.9K)
   // so a half never exceeds its share. Folding cached in also removed the
   // narrow centered column whose number used to bleed into neighbors.
-  // Tier badge is a single short word (Lite/Plus/Pro/Ultra) — 6.5 units; it
-  // clears the badge padding without bleeding into the Switches column;
-  // Switches gets 5.5 (icon + ×N ≈ 36px content) so no cell overflows.
+  // Tier badge is a single short word (Lite/Plus/Pro/Ultra) — a badge needs
+  // ~6 units, but the HEADER sets the floor: the CJK label is 4 glyphs (当前
+  // 梯队) and the user asked for it on ONE line, so the column carries 8.5 and
+  // the header drops its side padding to 8 (see the <th> below). Switches gets
+  // 5.5 (icon + ×N ≈ 36px content) so no cell overflows.
   // Detail holds two side-by-side icons — 7 units keeps them on one line
   // (flex nowrap below also guarantees rows never grow a second line here).
   // Session id gets 17: the cell also carries the first-user-prompt title
-  // line, which reads poorly when squeezed; the donation comes out of
-  // Pinned (model names ellipsize with a title tooltip) and Apps (badges
-  // wrap freely), neither of which needs the extra width.
+  // line, which reads poorly when squeezed; the donation comes out of the
+  // current-model column (names ellipsize with a title tooltip) and Apps
+  // (badges wrap freely), neither of which needs the extra width.
   // Active is a bare clock time — 6.5.
   // Alignment: the tables default to textAlign:center (badges / numbers /
   // icons read better in these narrow fixed columns); only session id (mono
   // copy target) and Tokens (2×2 stat grid with its own internal layout)
   // opt back out to left — see TH_LEFT and the two body cells.
-  const colWeights = [19, 9.5, 11.5, 6.5, 5.5, 4.5, 5, 16.5, 6.5, 6.5, 7, 5, ...(captureOn ? [4] : [])];
+  const colWeights = [17, 9.5, 11.5, 8.5, 5.5, 4.5, 5, 16.5, 6.5, 6.5, 7, 5, ...(captureOn ? [4] : [])];
   const colSum = colWeights.reduce((a, b) => a + b, 0);
   const colWidths = colWeights.map(w => `${((w / colSum) * 100).toFixed(3)}%`);
   // Switch-timeline modal: when every event shares one provider prefix, print
@@ -737,7 +756,9 @@ export const SessionsPage: React.FC = () => {
           <Users size={18} color="var(--accent-violet)" />
           <span>{t('sessions.sessionsTitle')}</span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, justifyContent: 'flex-end' }}>
+        {/* flexWrap: at narrow window widths the toolbar wraps to a second row
+            instead of clipping (same treatment as the captures toolbar). */}
+        <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, flex: 1, justifyContent: 'flex-end' }}>
           <Combobox
             value={apiKeyFilter}
             onChange={v => {
@@ -750,21 +771,6 @@ export const SessionsPage: React.FC = () => {
             ]}
             style={{ fontSize: '12px', padding: '5px 8px', width: 180 }}
           />
-          <label
-            style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '12px', color: 'var(--text-dim)', whiteSpace: 'nowrap', cursor: 'pointer', userSelect: 'none' }}
-            title={t('sessions.hideInternalTip')}
-          >
-            <input
-              type="checkbox"
-              checked={hideInternal}
-              onChange={(e) => {
-                setHideInternal(e.target.checked);
-                setPage(1);
-              }}
-              style={{ accentColor: 'var(--accent)' }}
-            />
-            {t('sessions.hideInternal')}
-          </label>
           <div style={{ position: 'relative', flex: '1 1 240px', minWidth: 180, maxWidth: 420 }}>
             <Search
               size={12}
@@ -788,9 +794,34 @@ export const SessionsPage: React.FC = () => {
           </button>
         </div>
       </div>
-      <p style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: '1.6', margin: '0 0 12px 0' }}>
-        {t('sessions.sessionsDesc')}
-      </p>
+      {/* The row filter for gateway-internal sessions sits HERE, next to the
+          copy it explains, instead of in the action toolbar — the toolbar
+          keeps the list-wide controls (app filter, search, clear, refresh).
+          Server-side filter, ON by default (ADR-0015 D6b).
+          flexWrap + `marginLeft: 'auto'` on the label: the paragraph shrinks
+          first (it reflows), and only when even that is too narrow does the
+          checkbox drop to its own right-aligned row instead of squeezing the
+          copy to a column of single words. */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', flexWrap: 'wrap', gap: 16, margin: '0 0 12px 0' }}>
+        <p style={{ flex: 1, fontSize: '13px', color: 'var(--text-muted)', lineHeight: '1.6', margin: 0 }}>
+          {t('sessions.sessionsDesc')}
+        </p>
+        <label
+          style={{ display: 'flex', alignItems: 'center', gap: 5, paddingTop: 2, flexShrink: 0, marginLeft: 'auto', fontSize: '12px', color: 'var(--text-dim)', whiteSpace: 'nowrap', cursor: 'pointer', userSelect: 'none' }}
+          title={t('sessions.hideInternalTip')}
+        >
+          <input
+            type="checkbox"
+            checked={hideInternal}
+            onChange={(e) => {
+              setHideInternal(e.target.checked);
+              setPage(1);
+            }}
+            style={{ accentColor: 'var(--accent)' }}
+          />
+          {t('sessions.hideInternal')}
+        </label>
+      </div>
 
       {/* Header/body split tables: header block is static (natural flow), the
           body block is the only scroll region. Shared <colgroup> +
@@ -804,14 +835,24 @@ export const SessionsPage: React.FC = () => {
               <tr style={{ borderBottom: '1px solid var(--divider)', color: 'var(--text-dim)' }}>
                 <th style={TH_LEFT}>{t('sessions.thSessionId')}</th>
                 <th style={TH_STYLE}>{t('sessions.thApps')}</th>
-                <th style={TH_STYLE}>{t('sessions.thPinned')}</th>
-                <th style={TH_STYLE}>
-                  {/* Always two stacked lines: the 6.5-unit tier column is
-                      sized for the badge, and whether the 5-char header fits
-                      one line depends on window width — pin the wrap so the
-                      header shape is width-independent. inline-block +
-                      max-width wraps CJK every 2 chars, English per word. */}
-                  <span style={{ display: 'inline-block', maxWidth: '2.5em' }}>{t('sessions.thTier')}</span>
+                <th style={TH_STYLE}>{t('sessions.thCurrent')}</th>
+                <th style={{ ...TH_STYLE, padding: '10px 8px' }}>
+                  {/* Keep the label on ONE line when it fits. `word-break:
+                      keep-all` removes the CJK soft-break opportunities, so the
+                      4-glyph label (当前梯队) no longer splits every 2 chars; the
+                      column weight above buys the width for it. Space-separated
+                      locales ("Current Tier", "Aktuelles Tier") still wrap at
+                      the space — two short words read fine in this column.
+                      `overflow-wrap: break-word` is the emergency ladder: when
+                      the window is narrow enough that even the full label does
+                      not fit, it breaks instead of bleeding into the neighbour
+                      columns (which would look like a rendering bug). */}
+                  <span
+                    title={t('sessions.thTier')}
+                    style={{ display: 'inline-block', wordBreak: 'keep-all', overflowWrap: 'break-word' }}
+                  >
+                    {t('sessions.thTier')}
+                  </span>
                 </th>
                 <th style={TH_STYLE}>{t('sessions.thSwitches')}</th>
                 <th style={TH_STYLE}>{t('sessions.thTurns')}</th>
@@ -853,6 +894,30 @@ export const SessionsPage: React.FC = () => {
                     >
                       {formatSessionId(s.id)}
                     </span>
+                    {/* Internal marker: with the filter on, internal rows never
+                        reach the client at all (server-side exclusion), so this
+                        badge only ever appears after the checkbox above was
+                        cleared — it is what makes those rows identifiable. */}
+                    {s.internal && (
+                      <span
+                        title={t('sessions.internalBadgeTip')}
+                        style={{
+                          display: 'inline-block',
+                          marginLeft: '6px',
+                          verticalAlign: 'middle',
+                          fontFamily: 'inherit',
+                          fontSize: '10px',
+                          lineHeight: '14px',
+                          padding: '1px 6px',
+                          borderRadius: '4px',
+                          background: 'var(--chip-bg)',
+                          border: '1px solid var(--divider)',
+                          color: 'var(--text-dim)',
+                        }}
+                      >
+                        {t('sessions.internalBadge')}
+                      </span>
+                    )}
                     {/* Title = first user prompt (backend-capped summary);
                         single line, ellipsized, full text in the tooltip. */}
                     {s.firstUserMessage && (
@@ -928,7 +993,7 @@ export const SessionsPage: React.FC = () => {
                     )}
                   </td>
                   <td style={{ padding: '10px 14px', fontWeight: 600 }}>
-                    <PinnedModelCell model={s.pinnedModel} />
+                    <ModelRefCell model={s.currentModel} provider={s.currentProvider} />
                     {/* Credential affinity (display-safe keyHash). */}
                     {s.boundKeyHashPrefix && (
                       <span
@@ -1468,21 +1533,21 @@ export const SessionsPage: React.FC = () => {
                       <span style={{ textAlign: 'center', color: 'var(--text-dim)' }}>
                         {new Date(tr.timestamp + tr.execution.latencyMs).toLocaleTimeString()}
                       </span>
-                      {/* Model name over provider, same split as the pinned
-                          cell — full refs wrap badly in the mono grid. When
-                          every turn shares one provider prefix (chip up in
-                          the fold header) rows show the bare id and the
-                          tooltip carries the full ref. */}
+                      {/* Model id over provider — the same two-line cell as the
+                          current-model column (full refs wrap badly in the
+                          mono grid). When every turn shares one provider
+                          prefix (chip up in the fold header) rows show the
+                          bare id and the row tooltip carries the full ref. */}
                       {detailNs ? (
                         <span
                           title={tr.execution.modelUsed}
-                          style={{ ...PINNED_LINE_STYLE, color: 'var(--text-main)', textAlign: 'center' }}
+                          style={{ ...MODEL_LINE_STYLE, color: 'var(--text-main)', textAlign: 'center' }}
                         >
                           {shortModel(detailNs, tr.execution.modelUsed)}
                         </span>
                       ) : (
                         <span style={{ color: 'var(--text-main)', textAlign: 'center' }}>
-                          <PinnedModelCell model={tr.execution.modelUsed} />
+                          <ModelRefCell model={tr.execution.modelUsed} provider={tr.execution.provider} />
                         </span>
                       )}
                       <PromptCell text={tr.request?.userPromptSummary ?? ''} />

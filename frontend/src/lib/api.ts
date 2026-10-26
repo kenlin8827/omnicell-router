@@ -686,27 +686,42 @@ export interface CaptureTurn {
   decisionGenMs?: number;
 }
 
-// Mirrors backend ConversationSession (backend/src/session/session-manager.ts) + traceCount
+// Mirrors backend SessionRow (backend/src/session/session-row.ts) — the console
+// session-row CONTRACT, not the internal ConversationSession: a row is an
+// execution view, so `pinnedModel`/`pinnedProvider` (routing anchors) and
+// session `origin` are absent by design.
 export interface SessionRecord {
   id: string;
   /** Gateway-internal loopback row (reserved `ocr-internal:` session id —
-   *  console translation/probe calls). Derived by the backend from the id,
-   *  true on live and trace-reconstructed rows alike. Hidden from the
+   *  console translation/probe calls). Always derived by the backend from the
+   *  id, true on live and trace-reconstructed rows alike. Hidden from the
    *  sessions list by default (hideInternal). */
-  internal?: boolean;
+  internal: boolean;
   maxTier: 'lite' | 'plus' | 'pro' | 'ultra';
   /**
    * How the client addressed this session's turns, derived from its traces:
    * 'auto' (ratchet owns the tier), 'explicit' (client named a model — no tier
-   * lock to show), 'combo' (the composition IS the decision), 'mixed'.
-   * Absent on pre-entryMode backends — the UI then falls back to the tier badge.
+   * lock to show), 'combo' (the composition IS the decision), 'mixed'. Always
+   * present: both row builders derive it, so there is no fallback path.
    */
-  entryMode?: 'auto' | 'explicit' | 'combo' | 'mixed';
-  pinnedModel: string;
-  pinnedProvider: string;
+  entryMode: 'auto' | 'explicit' | 'combo' | 'mixed';
+  /**
+   * Current model = the registered id of the model that actually served this
+   * session's last turn, exactly as registered: `provider/model` for
+   * catalog/tier-derived models, a bare id for hand-configured ones. Pure
+   * execution semantics: the routing pin is gateway-internal state and never
+   * surfaces in console rows, so live and trace-reconstructed rows report the
+   * same field. Null only when the row has no trace at all.
+   */
+  currentModel: string | null;
+  /** The provider that served that turn — authoritative for both id shapes
+   *  (a bare id carries no prefix to split); null exactly when currentModel is. */
+  currentProvider: string | null;
   createdAt: number;
   lastActiveAt: number;
   turnCount: number;
+  /** Tier history in call order. Part of the admin payload; the console table
+   *  does not render it (no per-tier trail column yet). */
   historyTiers: string[];
   traceCount: number;
   /**
@@ -727,7 +742,8 @@ export interface SessionRecord {
   cachedTokens: number;
   /** Cumulative recorded actual cost (USD) across the session's traces. */
   costUsd: number;
-  /** Summed end-to-end latency (ms) across the session's traces. */
+  /** Summed end-to-end latency (ms) across the session's traces. Part of the
+   *  admin payload; the console renders per-turn latency instead. */
   totalLatencyMs: number;
   /** Output tokens summed over STREAMED traces only — decode-TPS numerator. */
   genOutputTokens: number;

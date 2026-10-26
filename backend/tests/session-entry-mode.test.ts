@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { deriveSessionEntryMode, type SessionEntryMode } from '../src/server.js';
+import { deriveSessionEntryMode, type SessionEntryMode } from '../src/session/session-row.js';
 import type { ExecutionTrace } from '../src/trace/tracker.js';
 
 // Only request.model and routing.reasonCode are read by the classifier —
