@@ -312,6 +312,14 @@ export function getEnvPaths(name?: string): EnvPaths {
   return paths;
 }
 
+/** Test hook: drop the per-process env-path cache so a test that moves
+ *  OCR_HOME between cases re-resolves every state path. Production code never
+ *  calls this (switch = restart, by design). */
+export function resetEnvPathsForTests(): void {
+  cachedEnvName = undefined;
+  cachedEnvPaths.clear();
+}
+
 /**
  * Base directory for relative paths stored in config (dataset paths, model
  * paths): the env root <home>/envs/<name>, so a default-shaped

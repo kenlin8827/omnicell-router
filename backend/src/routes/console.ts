@@ -3050,8 +3050,11 @@ export function registerConsoleRoutes(
      * Pull models into the provider's config definition. Data source is chosen
      * automatically: providers with baseURL + credential are pulled LIVE from
      * their own /v1/models (failures surface real errors); providers without a
-     * usable baseURL/key fall back to the static merged catalog. The same
-     * engine powers the periodic auto-pull (catalog.autoPullModels).
+     * usable baseURL/key fall back to the static merged catalog. Builtin
+     * (first-party catalog) providers take the MERGED path — catalog sets the
+     * metadata-authoritative base, a live /v1/models pass only tops up ids the
+     * catalog lacks. The same engine powers the periodic auto-pull
+     * (catalog.autoPullModels).
      */
     modelsPull: async (req: any, reply: any) => {
       const { id } = req.params as { id: string };
