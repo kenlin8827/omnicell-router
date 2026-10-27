@@ -256,6 +256,49 @@ describe('RateLimiter — multi-rule combination', () => {
   });
 });
 
+describe('RateLimiter — resetWindows (admin escape hatch)', () => {
+  const t0 = 1_700_000_000_000;
+
+  it('resets one subject\'s windows so a full budget reopens; other subjects untouched', () => {
+    const rl = limiterWith([{ id: 'kr', limits: [{ window: '1d', requests: 1 }] }]);
+    const subj = apiKeySubject('kr');
+    expect(rl.tryDispatch(subj, t0).allowed).toBe(true);
+    expect(rl.tryDispatch(subj, t0 + 1).allowed).toBe(false);
+
+    // Unknown subject: no-op, reports 0.
+    expect(rl.resetWindows(apiKeySubject('nope'))).toBe(0);
+    // Still full.
+    expect(rl.tryDispatch(subj, t0 + 2).allowed).toBe(false);
+
+    // The reset: budget reopens immediately.
+    expect(rl.resetWindows(subj)).toBe(1);
+    expect(rl.tryDispatch(subj, t0 + 3).allowed).toBe(true);
+  });
+
+  it('a rule label narrows the reset to one constraint of the subject', () => {
+    const rl = limiterWith([{ id: 'kn', limits: [{ window: '1m', requests: 1 }, { window: '1d', requests: 1 }] }]);
+    const subj = apiKeySubject('kn');
+    rl.tryDispatch(subj, t0); // fills BOTH walls
+    expect(rl.tryDispatch(subj, t0 + 1).allowed).toBe(false); // denied attempts are not counted
+
+    // Reset only the 1m wall — the 1d budget stays consumed.
+    expect(rl.resetWindows(subj, '1m/requests')).toBe(1);
+    expect(rl.tryDispatch(subj, t0 + 2).allowed).toBe(false);
+
+    // Reset the 1d rule too — admitted again.
+    expect(rl.resetWindows(subj, '1d/requests')).toBe(1);
+    expect(rl.tryDispatch(subj, t0 + 3).allowed).toBe(true);
+  });
+
+  it('an unmatched rule label resets nothing (0) and leaves the window full', () => {
+    const rl = limiterWith([{ id: 'ko', limits: [{ window: '1m', requests: 1 }] }]);
+    const subj = apiKeySubject('ko');
+    rl.tryDispatch(subj, t0);
+    expect(rl.resetWindows(subj, '5m/requests')).toBe(0);
+    expect(rl.tryDispatch(subj, t0 + 1).allowed).toBe(false);
+  });
+});
+
 describe('RateLimiter — reload lifecycle', () => {
   const t0 = 1_700_000_000_000;
 
@@ -1258,8 +1301,14 @@ describe('decision-wire metering', () => {
   it('completed decisions record protocol usage onto the calling key, and the cap then 429s', async () => {
     // REAL (non-mock) registry against a fake upstream: the decision wire
     // converts through a chat call, so usage must flow — prompt 120 +
-    // completion 80 = 200 tokens per decision, cap 1m/tokens 250 → the THIRD
-    // call is the one that 429s (200 → 400 ≥ 250).
+    // completion 80 = 200 tokens per decision, cap 1m/tokens 300 → the THIRD
+    // call is the one that 429s under the admission-time estimate (chars/4 of
+    // the payload, ~40 here): call two fits (200 live + est < 300), call three
+    // does not (400 live + est ≥ 300, with OR without the still-held
+    // reservations — the UPPER bound is release-timing independent). The lower
+    // bound and the third-call 429 DO assume both reply-close hooks have fired
+    // (release + usage recording both run on close): pre-close, used ≈ 2·est
+    // and the third call would still be admitted.
     const answers = JSON.stringify({ answers: { escalate: { noul: 0.4 } } });
     const upstream = Bun.serve({
       port: 0,
@@ -1302,7 +1351,7 @@ describe('decision-wire metering', () => {
             key: 'sk-ocr-dec',
             enabled: true,
             createdAt: new Date().toISOString(),
-            limits: [{ window: '1m', tokens: 250 }],
+            limits: [{ window: '1m', tokens: 300 }],
           },
         ],
       } as unknown as RouterConfig;
@@ -1329,7 +1378,12 @@ describe('decision-wire metering', () => {
       expect((await call()).statusCode).toBe(200);
       expect((await call()).statusCode).toBe(200);
       const win = rl.snapshot().find((w) => w.subject === apiKeySubject('key-dec'));
-      expect(win?.used).toBe(400); // 2 decisions × 200 protocol tokens landed on the key ledger
+      // 2 decisions × 200 protocol tokens, PLUS whatever admission estimates
+      // are still held (the close-release is asynchronous under inject) —
+      // live usage alone is exactly 400.
+      const est = Math.ceil(JSON.stringify({ ...SYS_REQ, model: 'dec/model' }).length / 4);
+      expect(win?.used).toBeGreaterThanOrEqual(400);
+      expect(win?.used).toBeLessThanOrEqual(400 + 2 * est);
 
       const third = await call();
       expect(third.statusCode).toBe(429);
@@ -1357,5 +1411,181 @@ describe('prune-on-add', () => {
       .windows.get(`${subject}|60000|requests`);
     expect(win).toBeDefined();
     expect((win!.events.length - win!.head)).toBeLessThanOrEqual(2); // only the live minute
+  });
+});
+
+// ─── bounded-memory degradation (MAX_WINDOW_EVENTS regression pin) ───────────
+
+describe('window event cap', () => {
+  it('a window past MAX_WINDOW_EVENTS drops its OLDEST live events and under-counts', () => {
+    const rl = new RateLimiter();
+    rl.reload({
+      credentials: { p: [{ keyHashPrefix: 'ab12cd34ef56', limits: [{ window: '1d', requests: 5 }] }] },
+    } as unknown as RouterConfig);
+    const subject = credentialSubject('p', 'ab12cd34ef56');
+    const t0 = 1_700_000_000_000;
+    // Sustained saturation far past the cap: each dispatch advances ts so the
+    // events stay live (1d window) — only the cap can evict them.
+    const N = 100_001;
+    for (let i = 0; i < N; i++) rl.dispatch(subject, t0 + i);
+    const win = (rl as unknown as { windows: Map<string, { events: unknown[]; head: number }> })
+      .windows.get(`${subject}|86400000|requests`);
+    expect(win).toBeDefined();
+    expect(win!.events.length - win!.head).toBeLessThanOrEqual(100_000);
+    // Oldest dropped => sum = N - evicted; the window UNDER-counts (never over).
+    const v = rl.peek(subject, t0 + N);
+    expect(v.allowed).toBe(false); // far past the requests:5 cap either way
+    if (!v.allowed) {
+      // Exact values — the eviction is deterministic: 100,000 events survive
+      // (t0+1 .. t0+100000), sum = 100,000, and msUntilBelow expires
+      // 99,996 of them to get under requests:5, so the answer points at the
+      // event at t0+99996: 86,400,000 - (100,001 - 99,996) = 86,400,000 - 5.
+      // A regression that evicted MORE events would change both numbers.
+      expect(v.used).toBe(100_000);
+      expect(v.retryAfterMs).toBe(86_400_000 - 5);
+    }
+  });
+});
+
+// ─── durable window checkpoints (rateLimit.persist — restart continuity) ─────
+
+describe('window checkpoint round-trip', () => {
+  interface Row { key: string; data: string }
+  function fakeStore() {
+    const rows = new Map<string, string>();
+    return {
+      save(key: string, data: string) { rows.set(key, data); },
+      loadAll(): Row[] { return [...rows].map(([key, data]) => ({ key, data })); },
+      deleteStale(keep: string[]) {
+        const k = new Set(keep);
+        for (const key of [...rows.keys()]) if (!k.has(key)) rows.delete(key);
+      },
+      close() {},
+      rows,
+    };
+  }
+
+  it('checkpoint → new limiter rehydrates the SAME live sum (1d budget survives a restart)', () => {
+    const store = fakeStore();
+    const t0 = 1_700_000_000_000;
+    // Lifetime 1: burn a token window on an explicit wall-clock timeline.
+    const rl1 = limiterWith([{ id: 'kc', limits: [{ window: '1d', tokens: 1000 }] }]);
+    rl1.attachWindowStore(store, t0);
+    rl1.recordUsage(apiKeySubject('kc'), { tokens: 600 }, t0 + 10_000);
+    rl1.recordUsage(apiKeySubject('kc'), { tokens: 300 }, t0 + 20_000);
+    rl1.checkpoint();
+    expect(store.rows.size).toBe(1);
+
+    // Lifetime 2: a fresh engine on a DIFFERENT timebase origin — only the
+    // wall-clock checkpoint carries the budget across.
+    const rl2 = limiterWith([{ id: 'kc', limits: [{ window: '1d', tokens: 1000 }] }]);
+    expect(rl2.attachWindowStore(store, t0 + 40_000)).toBe(1);
+    // 900/1000 live after the restart — the window rehydrated, not reset.
+    expect(rl2.peek(apiKeySubject('kc'), t0 + 40_000).allowed).toBe(true);
+    // One more 600 fills it: the pre-restart usage is genuinely in the window.
+    rl2.recordUsage(apiKeySubject('kc'), { tokens: 600 }, t0 + 41_000);
+    expect(rl2.peek(apiKeySubject('kc'), t0 + 42_000).allowed).toBe(false);
+    // …and it reopens as the PRE-RESTART usage ages out (t0+10s event).
+    expect(rl2.peek(apiKeySubject('kc'), t0 + 10_000 + 86_400_000 + 1).allowed).toBe(true);
+  });
+
+  it('a stale checkpoint row (constraint removed) is skipped and GCed at the next checkpoint', () => {
+    const store = fakeStore();
+    const t0 = 1_700_000_000_000;
+    const rl1 = limiterWith([{ id: 'kd', limits: [{ window: '1m', requests: 5 }] }]);
+    rl1.attachWindowStore(store, t0);
+    rl1.dispatch(apiKeySubject('kd'), t0);
+    rl1.checkpoint();
+    expect(store.rows.size).toBe(1);
+
+    // Lifetime 2: the rule is gone entirely.
+    const rl2 = limiterWith([]); // no limits anywhere
+    expect(rl2.attachWindowStore(store, t0)).toBe(0);
+    rl2.checkpoint();
+    expect(store.rows.size).toBe(0); // GCed
+  });
+
+  it('a corrupted checkpoint row is skipped (fail-open), not fatal', () => {
+    const store = fakeStore();
+    store.save('apikey:kc|86400000|tokens', '{not json');
+    const rl = limiterWith([{ id: 'kc', limits: [{ window: '1d', tokens: 1000 }] }]);
+    expect(rl.attachWindowStore(store, 0)).toBe(0);
+    expect(rl.peek(apiKeySubject('kc')).allowed).toBe(true); // fresh window
+  });
+});
+
+// ─── upstream-429 feedback (penalize — provider-declared wait shapes the pool) ──
+
+describe('upstream-429 cooldown', () => {
+  const t0 = 1_700_000_000_000;
+  const subject = credentialSubject('p', 'ab12cd34ef56');
+  const limiter = () => {
+    const rl = new RateLimiter();
+    rl.reload({
+      credentials: { p: [{ keyHashPrefix: 'ab12cd34ef56', limits: [{ window: '1m', requests: 100 }] }] },
+    } as unknown as RouterConfig);
+    return rl;
+  };
+
+  it('a penalized credential is denied until the declared wait elapses, then GCed on touch', () => {
+    const rl = limiter();
+    rl.penalize(subject, 60_000, t0);
+    const v = rl.peek(subject, t0 + 1);
+    expect(v.allowed).toBe(false);
+    if (!v.allowed) {
+      expect(v.rule).toBe('upstream-429');
+      expect(v.retryAfterMs).toBe(60_000 - 1);
+    }
+    // window math resumes exactly at the deadline
+    expect(rl.peek(subject, t0 + 60_000).allowed).toBe(true);
+  });
+
+  it('penalties clamp to [1s, 1d] and stack by max', () => {
+    const rl = limiter();
+    rl.penalize(subject, 30 * 86_400_000, t0); // pathological header
+    const v = rl.peek(subject, t0);
+    if (!v.allowed) expect(v.retryAfterMs).toBeLessThanOrEqual(86_400_000);
+    rl.penalize(subject, 5_000, t0); // shorter — does not extend
+    expect(rl.peek(subject, t0 + 86_400_000).allowed).toBe(true);
+  });
+
+  it('reload drops cooldowns of constraints that no longer exist', () => {
+    const rl = limiter();
+    rl.penalize(subject, 60_000, t0);
+    rl.reload({} as unknown as RouterConfig);
+    expect(rl.peek(subject, t0).allowed).toBe(true);
+  });
+});
+
+// ─── admission-time token pre-reservation (estimate cannot blow the cap) ──────
+
+describe('token pre-reservation', () => {
+  const t0 = 1_700_000_000_000;
+
+  it('an estimate larger than the remaining budget is denied BEFORE dispatch', () => {
+    const rl = limiterWith([{ id: 'kr', limits: [{ window: '1m', tokens: 1000 }] }]);
+    expect(rl.tryDispatchWithEstimate(apiKeySubject('kr'), 600, t0).allowed).toBe(true);
+    // 600 committed + 500 estimate > 1000 — the second admission waits
+    const v = rl.tryDispatchWithEstimate(apiKeySubject('kr'), 500, t0 + 1);
+    expect(v.allowed).toBe(false);
+    if (!v.allowed) {
+      expect(v.limitedBy).toBe('tokens');
+      expect(v.limit).toBe(1000);
+      // used = the POST-admission sum the check tested: 600 committed + 500 estimate
+      expect(v.used).toBe(1100);
+    }
+    // …and a denied estimate consumed NO request slot and NO reservation
+    // (399 still fits: the 600 reservation from the first admission holds)
+    expect(rl.tryDispatchWithEstimate(apiKeySubject('kr'), 399, t0 + 2).allowed).toBe(true);
+  });
+
+  it('releaseEstimate reconciles: window nets to ACTUAL usage, failed turns leave nothing', () => {
+    const rl = limiterWith([{ id: 'ks', limits: [{ window: '1m', tokens: 1000 }] }]);
+    expect(rl.tryDispatchWithEstimate(apiKeySubject('ks'), 600, t0).allowed).toBe(true);
+    rl.recordUsage(apiKeySubject('ks'), { tokens: 300 }, t0 + 10); // actual < estimate
+    rl.releaseEstimate(apiKeySubject('ks'), 600); // terminal reconcile
+    // net = 300 actual — 699 more fits (700 would exactly hit the cap)
+    expect(rl.tryDispatchWithEstimate(apiKeySubject('ks'), 699, t0 + 12).allowed).toBe(true);
+    expect(rl.tryDispatchWithEstimate(apiKeySubject('ks'), 10, t0 + 13).allowed).toBe(false);
   });
 });

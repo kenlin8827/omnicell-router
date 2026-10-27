@@ -24,7 +24,13 @@ import { ProviderRegistry } from '../providers/registry.js';
 import { applyEffortMap } from '../providers/member-match.js';
 import { FinOpsTracker } from '../metrics/finops-tracker.js';
 import { computeRequestCost } from '../metrics/request-cost.js';
-import { getRateLimiter, credentialSubject, apiKeySubject, type Countable } from '../ratelimit/rate-limiter.js';
+import {
+  getRateLimiter,
+  credentialSubject,
+  apiKeySubject,
+  UPSTREAM_429_DEFAULT_COOLDOWN_MS,
+  type Countable,
+} from '../ratelimit/rate-limiter.js';
 
 /**
  * A cap-override decision pending ledger emission (orchestrator pool gate):
@@ -2227,6 +2233,21 @@ export class PipelineOrchestrator {
           // diagnosed blast radius when a prefix attributes it, and routes the
           // bare model breaker when not (today's semantics).
           cbManager.recordFailureScoped(candidate.id, diagnosis, candidate.provider, credentialPrefix);
+
+          // Upstream-429 feedback into the local shaping window: the provider
+          // just TOLD us this credential is at-cap — feed the declared wait
+          // (or a 60s default when the 429 carries no Retry-After) into the
+          // rate limiter so NEW-session steering avoids this credential
+          // immediately instead of re-discovering the wall. The breaker keeps
+          // its own independent cooldown below; this only sharpens the peek()
+          // shaping input. No ledger entry: the failure event above already
+          // records the 429 fact.
+          if (diagnosis.category === 'RATE_LIMITED' && limitSubject) {
+            getRateLimiter().penalize(
+              limitSubject,
+              diagnosis.retryAfterSeconds ? diagnosis.retryAfterSeconds * 1000 : UPSTREAM_429_DEFAULT_COOLDOWN_MS
+            );
+          }
 
           // Failure-ledger emission (serving role): the attempt's classifier
           // verdict is in hand — record the failed call regardless of whether

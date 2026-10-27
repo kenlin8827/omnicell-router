@@ -11,6 +11,9 @@ import { initProxyConfig } from './utils/proxy.js';
 import { adoptRestartParent, writeDaemonFiles } from './cli/daemon.js';
 import { openFinOpsStore } from './trace/persist.js';
 import { openRateLimitEventStore, getRateLimitEventLog } from './ratelimit/event-log.js';
+import { openRateLimitWindowStore } from './ratelimit/window-store.js';
+import { getRateLimiter } from './ratelimit/rate-limiter.js';
+import { RATE_LIMIT_CHECKPOINT_INTERVAL_MS } from './config/index.js';
 import { openQuotaEventStore, getQuotaEventLog } from './quota/events.js';
 import { openFailureEventStore, getFailureEventLog } from './observability/failure-events.js';
 import { QuotaProber, setQuotaProber, getQuotaProber } from './quota/prober.js';
@@ -118,6 +121,8 @@ async function main() {
   //     moment operators actually want the history. Memory-only when the
   //     knob is off, the runtime lacks bun:sqlite, or the store fails to
   //     open: the ledger is observability, never a boot dependency.
+  //     Same knob gates the limiter's WINDOW checkpoints (0.5b-bis below):
+  //     both are the rateLimit.persist durability concern.
   if (config.rateLimit?.persist?.enabled !== false) {
     const rlStore = await openRateLimitEventStore(getEnvPaths().tracesDir);
     if (rlStore) {
@@ -125,6 +130,26 @@ async function main() {
       console.log(`[OCR] Rate-limit ledger: SQLite mirror active (${replayed} event(s) replayed)`);
     } else {
       console.log('[OCR] Rate-limit ledger: in-memory only (no bun:sqlite)');
+    }
+
+    // 0.5b-bis Window checkpoints — rehydrate last lifetime's sliding windows
+    //     (must run AFTER the boot reload armed the constraints) and arm the
+    //     periodic 30s checkpoint. A `1d` cost/token budget now survives a
+    //     restart instead of resetting. Memory-only without bun:sqlite.
+    //     Boot ordering matters: reload() HERE arms the constraint table
+    //     before attachWindowStore, or every persisted row is skipped at
+    //     rehydrate and the first checkpoint's deleteStale([]) would wipe
+    //     them all. createServer reloads again later (idempotent swap).
+    getRateLimiter().reload(config);
+    const windowStore = await openRateLimitWindowStore(getEnvPaths().tracesDir);
+    if (windowStore) {
+      const rehydrated = getRateLimiter().attachWindowStore(windowStore);
+      getRateLimiter().startCheckpointing(RATE_LIMIT_CHECKPOINT_INTERVAL_MS);
+      console.log(
+        `[OCR] Rate-limit windows: checkpointing active (${rehydrated} window(s) rehydrated)`
+      );
+    } else {
+      console.log('[OCR] Rate-limit windows: memory-only (no bun:sqlite)');
     }
   } else {
     console.log('[OCR] Rate-limit ledger: persistence disabled (rateLimit.persist.enabled=false)');
@@ -321,6 +346,13 @@ async function main() {
     // (the store debounces; a graceful exit should not lose the last cycles).
     getQuotaProber()?.stop();
     getQuotaStore().flush();
+    // Rate-limit windows: flush the last checkpoint so a controlled restart
+    // (console restart route included) rehydrates with zero under-count, then
+    // stop the periodic timer and close the SQLite handle — explicit teardown
+    // of the durability machinery this process armed at boot.
+    getRateLimiter().checkpoint();
+    getRateLimiter().stopCheckpointing();
+    getRateLimiter().closeWindowStore();
     // Graceful-shutdown observability: print a one-line summary for every
     // deduped warn key when the process is asked to exit. Operators get a
     // final view of "what was failing during this lifetime" without the

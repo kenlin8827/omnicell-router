@@ -1,4 +1,24 @@
 import type { RateLimitRule, RouterConfig } from '../config/types.js';
+import type { RateLimitWindowStore } from './window-store.js';
+
+/**
+ * Monotonic clock for window math — immune to NTP steps and manual clock
+ * changes that would otherwise shrink or balloon a wall-clock window
+ * (a backward step re-opens full windows instantly; a forward step fills
+ * them spuriously). The engine's timebase is DELTA-ONLY: any consistent
+ * millisecond scale works, which is why tests can pass fixed wall-clock-like
+ * timestamps as the explicit `now` argument. Callers that don't pass `now`
+ * get this monotonic scale; persistence rebases to/from wall clock at the
+ * checkpoint boundary (see checkpoint/attachWindowStore).
+ */
+function nowMs(): number {
+  return performance.now();
+}
+
+/** wall-clock → engine-timebase offset for the CURRENT instant. */
+function wallOffset(): number {
+  return Date.now() - nowMs();
+}
 
 /**
  * Sliding-window rate limiter — one engine, two directions:
@@ -28,11 +48,17 @@ import type { RateLimitRule, RouterConfig } from '../config/types.js';
  * Algorithm: exact sliding-window log. Every admitted event is
  * `(timestamp, amount)`; sums recompute over `[now - window, now]` as old
  * entries expire. This is precise (no bucket approximation) and cheap for a
- * single-process local gateway. State is MEMORY-ONLY by design: a restart
- * resets the windows (minute windows must survive no restart anyway; a day
- * window rehydration from the trace ledger is a deferred follow-up, not a
- * correctness requirement — brief under-counting after a restart is exactly
- * what the provider's own 429 + breaker catch).
+ * single-process local gateway. Timebase: monotonic (see nowMs) — window
+ * math is delta-only and immune to NTP steps; persistence rebases to
+ * wall-clock pairs at the checkpoint boundary.
+ *
+ * Durability: windows are CHECKPOINTED to SQLite (rateLimit.persist, same
+ * traces.db as the event ledger — window-store.ts) periodically and on
+ * graceful shutdown, and rehydrated at boot, so a `1d` budget survives a
+ * restart instead of resetting. Unattached (tests / non-bun runtimes /
+ * persist disabled / checkpoint failure) the engine degrades to memory-only:
+ * the pre-checkpoint behavior, where the provider's own 429 + breaker are
+ * the catch for the brief post-restart under-count.
  *
  * Verdict-not-action: the engine answers window questions and never decides
  * what a call site does with a denial. 429s, skips and force-throughs are
@@ -41,7 +67,11 @@ import type { RateLimitRule, RouterConfig } from '../config/types.js';
  * METERING COVERAGE (deliberate, not accidental):
  *  - inbound `requests` — counted at the Fastify auth gate for ALL four
  *    inference wires; the MITM forward-proxy leg bypasses that preHandler and
- *    is NOT inbound-metered.
+ *    is NOT inbound-metered. The same gate pre-reserves each admission's
+ *    PROMPT-SIZE ESTIMATE (chars/4 of the body) against the tokens caps
+ *    (tryDispatchWithEstimate) and reconciles it against actual usage when
+ *    the response stream settles (releaseEstimate) — a large request cannot
+ *    blow through a token cap on usage it has not produced YET.
  *  - `tokens` / `costUsd` — recorded on COMPLETED generations: the chat-
  *    shaped wires (chat / messages / responses) via the orchestrator's
  *    terminal accounting, and the System One decision wire via the surface's
@@ -70,6 +100,13 @@ export type RateLimitVerdict =
       rule: string;
       /** ms until the subject is admissible again (max over all full constraints). */
       retryAfterMs: number;
+      /** Cap of the binding constraint (IETF RateLimit-Limit on the 429 wire). */
+      limit: number;
+      /** Usage of the binding constraint at deny time, RESERVATIONS INCLUDED
+       *  (RateLimit-Remaining derives from it) — the same figure the admission
+       *  check tested, so the header cannot advertise headroom the gate just
+       *  refused. */
+      used: number;
     };
 
 /** A rule entry after validation: one window, one countable, one cap. */
@@ -92,6 +129,39 @@ export function credentialSubject(provider: string, keyHashPrefix: string): stri
 /** Go/Prometheus duration syntax: `500ms`, `30s`, `5m`, `1h`, `1d`. */
 const DURATION_PATTERN = /^(\d+(?:\.\d+)?)(ms|s|m|h|d)$/;
 const UNIT_MS: Record<string, number> = { ms: 1, s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 };
+
+/**
+ * Max LIVE events per window before the oldest are dropped (memory bound —
+ * see EventWindow). 100k entries ≈ a few MB per constraint; far above any
+ * realistic sliding-window population.
+ */
+const MAX_WINDOW_EVENTS = 100_000;
+
+/**
+ * Cooldown floor/ceiling for an upstream-429 penalty (see penalize). The floor
+ * keeps a missing/garbage Retry-After from being meaningless; the ceiling
+ * bounds a pathological header ("retry after 400 days") to a day.
+ */
+export const UPSTREAM_429_MIN_COOLDOWN_MS = 1_000;
+export const UPSTREAM_429_MAX_COOLDOWN_MS = 86_400_000;
+/** Default when the upstream 429 carries no usable Retry-After. Deliberately
+ *  INDEPENDENT of the error-classifier's breaker initial-cooldown floor
+ *  (resilience/circuit-breaker.ts): the breaker floor is operator-tunable via
+ *  circuitBreaker.rules.*.minCooldownMs and governs hard-trip recovery, while
+ *  this constant is the limiter's SHAPING hint (ADR-0004) — sharing a literal
+ *  here would silently couple two policies that tune on different axes. */
+export const UPSTREAM_429_DEFAULT_COOLDOWN_MS = 60_000;
+
+/**
+ * Retry-After floor for a denial whose window is full purely on token
+ * reservations (see EventWindow.reserved — they convert to real usage or
+ * release, they do not age out like events). `msUntilBelow` walks events only,
+ * so such a wall reports wait 0; advertising an immediate retry would send the
+ * client straight back into a window that reopens only when live streams
+ * settle. A 1s floor keeps the header honest without pretending to know when
+ * the streams end.
+ */
+const RESERVATION_RETRY_FLOOR_MS = 1_000;
 
 export function parseDuration(text: unknown): number | undefined {
   if (typeof text !== 'string') return undefined;
@@ -169,16 +239,50 @@ export function compileRules(rules: unknown, subjectLabel: string): Constraint[]
   return out;
 }
 
-/** Sliding-window event log for one constraint. Amounts expire by timestamp. */
+/** Sliding-window event log for one constraint. Amounts expire by timestamp.
+ *
+ * The window sum is maintained INCREMENTALLY: prune() subtracts expired
+ * amounts from `liveSum` as it advances `head`, so `sum()` is O(1) instead of
+ * an O(n) scan over the live slice on every evaluate. `msUntilBelow()` keeps
+ * the per-event walk (only reached when the window is actually full — the
+ * rare path). Floating amounts (costUsd) accumulate ε-level drift from the
+ * incremental adds/subtracts; bounded by ~n·2⁻⁵² and irrelevant next to the
+ * 0.01 USD granularity of the caps.
+ *
+ * MEMORY BOUND: live events are capped at MAX_WINDOW_EVENTS. A long window
+ * (1d) at sustained high RPS would otherwise grow one entry per admitted
+ * request without limit — in a single-process gateway that means the limiter
+ * itself OOMs the gateway. Past the cap the OLDEST live events are dropped:
+ * the window degrades to a bounded approximation that UNDER-counts (never
+ * over-counts), i.e. the failure direction is "a cap admits slightly more
+ * than configured under sustained saturation", never spontaneous denials.
+ */
 class EventWindow {
   private events: { ts: number; amount: number }[] = [];
   private head = 0;
-
+  /** Sum of events[head..] — kept in sync by prune/add; O(1) read via sum(). */
+  private liveSum = 0;
+  /**
+   * Admission-time token reservations (prompt-size estimates) not yet
+   * reconciled against actual usage. Counted by sum() so concurrent admissions
+   * cannot jointly blow through a token cap; NOT counted by msUntilBelow
+   * (reservations are transient — they convert to real usage or release, they
+   * do not age out like events do).
+   */
+  private reserved = 0;
   sum(now: number, windowMs: number): number {
     this.prune(now, windowMs);
-    let s = 0;
-    for (let i = this.head; i < this.events.length; i++) s += this.events[i].amount;
-    return s;
+    return this.liveSum + this.reserved;
+  }
+
+  /** Pre-occupy the window with an admission-time estimate. */
+  reserve(amount: number): void {
+    this.reserved += amount;
+  }
+
+  /** Release (part of) a reservation once actual usage is reconciled. Clamped at 0. */
+  release(amount: number): void {
+    this.reserved = Math.max(0, this.reserved - amount);
   }
 
   /**
@@ -187,8 +291,7 @@ class EventWindow {
    */
   msUntilBelow(now: number, windowMs: number, limit: number): number {
     this.prune(now, windowMs);
-    let s = 0;
-    for (let i = this.head; i < this.events.length; i++) s += this.events[i].amount;
+    let s = this.liveSum;
     if (s < limit) return 0;
     for (let i = this.head; i < this.events.length; i++) {
       s -= this.events[i].amount;
@@ -198,6 +301,25 @@ class EventWindow {
     // and a zero-limit constraint is permanently full — unreachable for
     // limit > 0; treat as "window end" so callers still get a finite answer).
     return windowMs;
+  }
+
+  /** Live (unpruned) entries — checkpoint serialization reads this. */
+  liveEntries(): { ts: number; amount: number }[] {
+    return this.events.slice(this.head);
+  }
+
+  /**
+   * Load a checkpoint back into the window (boot-time rehydration). Entries
+   * are pre-pruned live events in the ENGINE timebase; replaces any state.
+   * liveSum is recomputed here — the incremental invariant is rebuilt, not
+   * trusted from the checkpoint.
+   */
+  rehydrate(entries: { ts: number; amount: number }[], now: number, windowMs: number): void {
+    this.events = entries.slice();
+    this.head = 0;
+    this.liveSum = 0;
+    for (const e of this.events) this.liveSum += e.amount;
+    this.prune(now, windowMs);
   }
 
   /**
@@ -210,6 +332,14 @@ class EventWindow {
   add(ts: number, amount: number, windowMs: number): void {
     this.prune(ts, windowMs);
     this.events.push({ ts, amount });
+    this.liveSum += amount;
+    // Bounded-memory degradation: drop the oldest LIVE events past the cap.
+    // Normal traffic never reaches this (cap ≫ any realistic window population);
+    // only sustained saturation at extreme RPS on a long window does.
+    while (this.events.length - this.head > MAX_WINDOW_EVENTS) {
+      this.liveSum -= this.events[this.head].amount;
+      this.head++;
+    }
     // Amortized compaction: shift the live slice down when dead entries outnumber live ones.
     if (this.head > 64 && this.head >= this.events.length - this.head) {
       this.events = this.events.slice(this.head);
@@ -219,7 +349,10 @@ class EventWindow {
 
   private prune(now: number, windowMs: number): void {
     const cutoff = now - windowMs;
-    while (this.head < this.events.length && this.events[this.head].ts <= cutoff) this.head++;
+    while (this.head < this.events.length && this.events[this.head].ts <= cutoff) {
+      this.liveSum -= this.events[this.head].amount;
+      this.head++;
+    }
   }
 }
 
@@ -228,6 +361,8 @@ export class RateLimiter {
   private constraints = new Map<string, Constraint[]>();
   /** `${subject}|${windowMs}|${countable}` -> event log (kept across reloads while the constraint survives). */
   private windows = new Map<string, EventWindow>();
+  /** subject -> upstream-429 cooldown deadline (engine timebase); see penalize. */
+  private cooldowns = new Map<string, number>();
 
   /**
    * Rebuild the rule table from a RouterConfig. Event logs for constraints
@@ -277,6 +412,10 @@ export class RateLimiter {
     for (const logKey of [...this.windows.keys()]) {
       if (!keep.has(logKey)) this.windows.delete(logKey);
     }
+    // Cooldowns of removed subjects are equally dead.
+    for (const subject of [...this.cooldowns.keys()]) {
+      if (!next.has(subject)) this.cooldowns.delete(subject);
+    }
     this.constraints = next;
   }
 
@@ -289,7 +428,7 @@ export class RateLimiter {
    * NON-CONSUMING check — the outbound pool filter asks this before deciding
    * whether to skip a candidate; an untracked subject is trivially allowed.
    */
-  peek(subject: string, now: number = Date.now()): RateLimitVerdict {
+  peek(subject: string, now: number = nowMs()): RateLimitVerdict {
     const rules = this.constraints.get(subject);
     if (!rules) return { allowed: true };
     return this.evaluate(subject, rules, now);
@@ -300,14 +439,59 @@ export class RateLimiter {
    * request slot in the same synchronous step (Bun is single-threaded: there
    * is no check-then-act gap without an await between the two). Used by the
    * inbound preHandler; returns the verdict WITHOUT counting when full.
+   *
+   * With `tokenEstimate` > 0 the inbound token pre-reservation is folded in:
+   * the admission check tests each tokens constraint against `sum + estimate`
+   * and, when admitted, pre-occupies every tokens window with the estimate
+   * (releaseEstimate reconciles it against actual usage at terminal). One
+   * call, one synchronous step — the estimate can never slip past the cap in
+   * the gap between a peek-based check and a later add.
    */
-  tryDispatch(subject: string, now: number = Date.now()): RateLimitVerdict {
+  tryDispatch(subject: string, now: number = nowMs()): RateLimitVerdict {
+    return this.dispatchChecked(subject, 0, now);
+  }
+
+  /**
+   * tryDispatch + admission-time token pre-reservation in ONE synchronous
+   * step: each tokens constraint is checked against `sum + estimate` and,
+   * when admitted, pre-occupied with the estimate (releaseEstimate reconciles
+   * against actual usage at terminal). A request can never slip through a
+   * token cap on account of usage it has not produced YET, and concurrent
+   * admissions cannot jointly blow through it either.
+   */
+  tryDispatchWithEstimate(subject: string, tokenEstimate: number, now: number = nowMs()): RateLimitVerdict {
+    return this.dispatchChecked(subject, tokenEstimate, now);
+  }
+
+  private dispatchChecked(subject: string, tokenEstimate: number, now: number): RateLimitVerdict {
     const rules = this.constraints.get(subject);
     if (!rules) return { allowed: true };
-    const verdict = this.evaluate(subject, rules, now);
+    const verdict = this.evaluate(subject, rules, now, tokenEstimate);
     if (!verdict.allowed) return verdict;
     this.countRequests(subject, rules, now);
+    if (tokenEstimate > 0) {
+      for (const c of rules) {
+        if (c.countable === 'tokens') this.window(subject, c).reserve(tokenEstimate);
+      }
+    }
     return verdict;
+  }
+
+  /**
+   * Reconcile an admission-time token estimate against the turn's ACTUAL
+   * usage: release the reservation, then record the real tokens (the success
+   * terminal's recordUsage adds them separately — order-independent, both
+   * happen exactly once per admitted request). Called on reply close, so it
+   * also covers failed/aborted turns: their reservation releases even though
+   * no usage was produced. Untracked subjects / no token constraints: no-op.
+   */
+  releaseEstimate(subject: string, tokenEstimate: number): void {
+    if (!(tokenEstimate > 0)) return;
+    const rules = this.constraints.get(subject);
+    if (!rules) return;
+    for (const c of rules) {
+      if (c.countable === 'tokens') this.window(subject, c).release(tokenEstimate);
+    }
   }
 
   /**
@@ -318,7 +502,7 @@ export class RateLimiter {
    * the same candidate does not re-consume (a model failover to a different
    * candidate of the SAME provider does, as that is a new dispatch decision).
    */
-  dispatch(subject: string, now: number = Date.now()): void {
+  dispatch(subject: string, now: number = nowMs()): void {
     const rules = this.constraints.get(subject);
     if (!rules) return;
     this.countRequests(subject, rules, now);
@@ -342,7 +526,7 @@ export class RateLimiter {
   recordUsage(
     subject: string,
     usage: { tokens?: number; costUsd?: number },
-    now: number = Date.now()
+    now: number = nowMs()
   ): void {
     const rules = this.constraints.get(subject);
     if (!rules) return;
@@ -359,17 +543,42 @@ export class RateLimiter {
     }
   }
 
-  private evaluate(subject: string, rules: Constraint[], now: number): RateLimitVerdict {
-    let binding: { rule: Constraint; waitMs: number } | undefined;
+  private evaluate(subject: string, rules: Constraint[], now: number, tokenEstimate = 0): RateLimitVerdict {
+    // Upstream-429 cooldown (see penalize) — a provider-declared wait binds
+    // the whole subject, ahead of any local window math.
+    const until = this.cooldowns.get(subject);
+    if (until !== undefined) {
+      if (now < until) {
+        return {
+          allowed: false,
+          limitedBy: 'requests',
+          rule: 'upstream-429',
+          retryAfterMs: Math.max(1, until - now),
+          limit: 0,
+          used: 0,
+        };
+      }
+      this.cooldowns.delete(subject); // expired — GC on touch
+    }
+    let binding: { rule: Constraint; waitMs: number; sum: number } | undefined;
     for (const c of rules) {
       const w = this.window(subject, c);
-      const sum = w.sum(now, c.windowMs);
+      // Token admissions pre-occupy the window with their estimate, so the
+      // check tests the POST-admission sum — a request can never slip through
+      // a token cap on account of usage it has not produced YET.
+      const sum = w.sum(now, c.windowMs) + (c.countable === 'tokens' ? tokenEstimate : 0);
       if (sum < c.limit) continue;
-      const waitMs = w.msUntilBelow(now, c.windowMs, c.limit);
+      let waitMs = w.msUntilBelow(now, c.windowMs, c.limit);
+      if (waitMs === 0) {
+        // Full purely on reservations (+estimate): they don't age out, so no
+        // event expiry will reopen this — floor the advertised wait (see
+        // RESERVATION_RETRY_FLOOR_MS).
+        waitMs = RESERVATION_RETRY_FLOOR_MS;
+      }
       // limitedBy = the binding constraint (latest to open); retryAfter = max
       // over all full constraints — an earlier value returns callers to a
       // still-full wall.
-      if (!binding || waitMs > binding.waitMs) binding = { rule: c, waitMs };
+      if (!binding || waitMs > binding.waitMs) binding = { rule: c, waitMs, sum };
     }
     if (!binding) return { allowed: true };
     return {
@@ -377,7 +586,26 @@ export class RateLimiter {
       limitedBy: binding.rule.countable,
       rule: `${binding.rule.windowText}/${binding.rule.countable}`,
       retryAfterMs: Math.max(1, binding.waitMs),
+      limit: binding.rule.limit,
+      used: binding.sum,
     };
+  }
+
+  /**
+   * Feed a provider-declared 429 wait back into the local window: the subject
+   * (a credential) is considered at-cap until the upstream's Retry-After (or
+   * a default, when the 429 carries none) elapses — the local shaping then
+   * steers NEW sessions away WITHOUT waiting to rediscover the limit by
+   * hitting the wall again. The breaker keeps its own independent cooldown
+   * (hard-trip semantics unchanged); this is the SHAPING input, not a second
+   * breaker. Expired cooldowns GC on touch (evaluate); reload() drops
+   * cooldowns of constraints that no longer exist.
+   */
+  penalize(subject: string, penaltyMs: number, now: number = nowMs()): void {
+    const ms = Math.min(Math.max(penaltyMs, UPSTREAM_429_MIN_COOLDOWN_MS), UPSTREAM_429_MAX_COOLDOWN_MS);
+    const until = now + ms;
+    const existing = this.cooldowns.get(subject);
+    if (existing === undefined || until > existing) this.cooldowns.set(subject, until);
   }
 
   private window(subject: string, c: Constraint): EventWindow {
@@ -390,14 +618,139 @@ export class RateLimiter {
     return w;
   }
 
+  /** Attached durable checkpoint store (index.ts at boot); null = memory-only. */
+  private windowStore?: RateLimitWindowStore;
+  private checkpointTimer?: ReturnType<typeof setInterval>;
+
+  /**
+   * Attach the durable checkpoint store and rehydrate last lifetime's windows
+   * into the engine (boot-time only, BEFORE traffic). Checkpoint rows whose
+   * constraint no longer exists (rule removed/edited) are skipped and
+   * garbage-collected. Events arrive as wall-clock pairs and are rebased onto
+   * this process's monotonic timebase: the wall↔engine offset is a constant
+   * per process lifetime, so `engineTs = wallTs - offset` preserves every
+   * window delta. Replay failure is fail-open (fresh windows, the
+   * pre-checkpoint behavior). Returns the rehydrated window count.
+   */
+  attachWindowStore(store: RateLimitWindowStore, now: number = nowMs()): number {
+    this.windowStore = store;
+    const offset = wallOffset();
+    let rehydrated = 0;
+    try {
+      for (const { key, data } of store.loadAll()) {
+        const subject = key.split('|')[0];
+        if (!this.constraints.has(subject)) continue; // constraint gone — GC at next checkpoint
+        let entries: [number, number][];
+        try {
+          const parsed = JSON.parse(data);
+          if (!Array.isArray(parsed)) continue;
+          entries = parsed;
+        } catch {
+          continue; // corrupted row — fresh window for that key
+        }
+        const windowMs = Number(key.split('|')[1]);
+        if (!Number.isFinite(windowMs) || windowMs < 1) continue;
+        const converted = entries
+          .filter((e) => Array.isArray(e) && Number.isFinite(e[0]) && Number.isFinite(e[1]) && e[1] > 0)
+          .map((e) => ({ ts: e[0] - offset, amount: e[1] }));
+        const win = this.windows.get(key) ?? new EventWindow();
+        win.rehydrate(converted, now, windowMs);
+        this.windows.set(key, win);
+        rehydrated++;
+      }
+    } catch {
+      // fail open — replay must never break boot
+    }
+    return rehydrated;
+  }
+
+  /**
+   * Serialize every live window to the attached store (wall-clock pairs) and
+   * GC rows for constraints that no longer exist. Called periodically by
+   * startCheckpointing and once on graceful shutdown. Fail-open: a failed
+   * checkpoint costs only a wider post-restart under-count.
+   */
+  checkpoint(): void {
+    const store = this.windowStore;
+    if (!store) return;
+    const offset = wallOffset();
+    const keep: string[] = [];
+    for (const [key, win] of this.windows) {
+      const live = win.liveEntries();
+      if (live.length === 0) continue; // nothing worth a row
+      keep.push(key);
+      // Live events → wall clock: `wall = engineTs + offset` inverts the
+      // boot-time rebase exactly (same offset both directions per lifetime).
+      const data = JSON.stringify(live.map((e) => [Math.round(e.ts + offset), e.amount]));
+      store.save(key, data);
+    }
+    store.deleteStale(keep);
+  }
+
+  /** Arm the periodic checkpoint (index.ts at boot); unref'd so it never holds the process open. */
+  startCheckpointing(intervalMs: number): void {
+    this.stopCheckpointing();
+    this.checkpointTimer = setInterval(() => this.checkpoint(), intervalMs);
+    this.checkpointTimer.unref?.();
+  }
+
+  stopCheckpointing(): void {
+    if (this.checkpointTimer) {
+      clearInterval(this.checkpointTimer);
+      this.checkpointTimer = undefined;
+    }
+  }
+
+  /**
+   * Close the attached window store (graceful shutdown, after the final
+   * checkpoint). Detaches first so a late checkpoint cannot touch a closed
+   * handle; fail-open like every store path.
+   */
+  closeWindowStore(): void {
+    const store = this.windowStore;
+    this.windowStore = undefined;
+    this.stopCheckpointing();
+    try {
+      store?.close();
+    } catch {
+      // fail open — SQLite recovers via WAL on the next open
+    }
+  }
+
+  /**
+   * Reset the live window(s) of ONE subject — administrative escape hatch so
+   * a stuck budget can be reopened without a restart. Scoped per subject
+   * (optionally per rule label "1m/requests") by design: no global wipe —
+   * a one-button "reset everything" would void inbound key budgets. Armed
+   * rules are untouched; the next checkpoint GCs the cleared store rows
+   * (empty liveEntries() rows are dropped by deleteStale). Returns the
+   * number of constraints reset.
+   */
+  resetWindows(subject: string, rule?: string): number {
+    const rules = this.constraints.get(subject);
+    if (!rules) return 0;
+    let reset = 0;
+    for (const c of rules) {
+      if (rule !== undefined && `${c.windowText}/${c.countable}` !== rule) continue;
+      this.windows.set(`${subject}|${c.windowMs}|${c.countable}`, new EventWindow());
+      reset++;
+    }
+    return reset;
+  }
+
   /**
    * Observability snapshot: every tracked subject × constraint with its live
    * window sum. Powers /api/admin/ratelimit — operators verify a cap is armed
    * and see headroom without reading code.
    */
-  snapshot(now: number = Date.now()): RateLimitSnapshotEntry[] {
+  snapshot(now: number = nowMs()): RateLimitSnapshotEntry[] {
     const out: RateLimitSnapshotEntry[] = [];
     for (const [subject, rules] of this.constraints) {
+      // Upstream-429 shaping cooldown (penalize) — surfaced so the console can
+      // explain a skipped credential whose windows are still empty (the
+      // denial comes from the cooldown, not the window math).
+      const until = this.cooldowns.get(subject);
+      const cooldownMs = until !== undefined && now < until ? Math.max(1, until - now) : 0;
       for (const c of rules) {
         const sum = this.window(subject, c).sum(now, c.windowMs);
         out.push({
@@ -407,7 +760,14 @@ export class RateLimiter {
           countable: c.countable,
           limit: c.limit,
           used: sum,
-          retryAfterMs: sum >= c.limit ? this.window(subject, c).msUntilBelow(now, c.windowMs, c.limit) : 0,
+          // Same reservation floor as evaluate(): the console must not show a
+          // ready-to-retry `—` for a window the 429 wire reports as 1s away.
+          retryAfterMs: (() => {
+            if (sum < c.limit) return 0;
+            const wait = this.window(subject, c).msUntilBelow(now, c.windowMs, c.limit);
+            return wait === 0 ? 1_000 : wait;
+          })(),
+          ...(cooldownMs > 0 ? { cooldownMs } : {}),
         });
       }
     }
@@ -425,6 +785,8 @@ export interface RateLimitSnapshotEntry {
   used: number;
   /** ms until this constraint has slack (0 when below the cap). */
   retryAfterMs: number;
+  /** Remaining ms of the subject's upstream-429 shaping cooldown (0 = none). */
+  cooldownMs?: number;
 }
 
 /**

@@ -35,6 +35,25 @@ import { getQuotaProber } from '../quota/prober.js';
 export const DEFAULT_INBOUND_GRACE_MS = 1000;
 export const MAX_INBOUND_GRACE_MS = 2000;
 
+/**
+ * Cap on concurrent inbound grace-wait sleepers. Each sleeper parks a request
+ * (and its socket) for up to MAX_INBOUND_GRACE_MS; under a retry storm the
+ * denied-path sleepers would otherwise accumulate without bound. Beyond this
+ * many, the gate skips the grace wait and fast-fails 429 like any other
+ * denial — the window contract is unchanged, only the absorb-burst courtesy
+ * is shed under pressure.
+ */
+export const MAX_GRACE_SLEEPERS = 64;
+
+/**
+ * Period between the limiter's durable window checkpoints (rateLimit.persist).
+ * The checkpoint is also flushed on graceful shutdown, so this interval is
+ * only the crash-loss bound: a hard kill loses at most the last interval of
+ * window events (the same honest-loss-bound pattern as the session-manager
+ * debounce).
+ */
+export const RATE_LIMIT_CHECKPOINT_INTERVAL_MS = 30_000;
+
 const DEFAULT_CONFIG: RouterConfig = {
   port: parseInt(process.env.PORT || '3000', 10),
   host: process.env.HOST || '127.0.0.1',
@@ -903,7 +922,7 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'retry.failover.tierCrossPolicy': '跨梯队策略：allow_escalate 允许向上升级',
   rateLimit: '限流策略开关（窗口本身在 apiKeys[].limits 与 credentials: 叠加层）',
   'rateLimit.persist': '已触发限流事件账本的持久化：写入 traces.db（与 trace/FinOps 共库独立句柄），重启后 /rate-limit 页仍可回看上一次的触发历史；观测性写入 fail-open，永不阻塞请求路径',
-  'rateLimit.persist.enabled': '账本持久化开关（默认开）；关闭=仅内存环（重启清零）',
+  'rateLimit.persist.enabled': '限流持久化开关（默认开）：触发限流事件账本写入 traces.db（重启后 /rate-limit 页仍可回看上一次的触发历史），且滑动窗口每 30s checkpoint 一次并在优雅停机时冲刷、启动时重放（1d 类长窗口预算跨重启连续，硬杀最多丢最近一个 checkpoint 周期）；关闭=全部仅内存（重启清零）',
   'rateLimit.inboundGraceMs': '宽限等待（毫秒，默认 1000，上限 2000，0=关闭）：客户端密钥窗口满、但重开等待不超过该值时，网关原地等待窗口重开后复查一次（不循环），复查仍满或等待超限才回 429 + Retry-After——吸收亚秒级突发，避免短限流变成用户可见错误；长窗口维持快速失败：限流契约不变，等待归属客户端自己的退避',
   apiKeys: '客户端接入密钥（sk-ocr-*，见 /keys 页）；每个密钥可配 limits=入站滑动窗口限流，规则项 { window, requests | tokens | costUsd }（window 用时长语法 30s/5m/1h/1d；同一项可写多个维度=各自独立计数；任一窗口满即拒——宽限等待内（rateLimit.inboundGraceMs）先原地等满复查一次，否则 429 + Retry-After；被拒请求不计入窗口；保存即时生效）；requests 维度覆盖全部四条推理线（前向代理 MITM 腿不经该入口、不入站计量）；tokens/costUsd 在 chat 形态线（chat/messages/responses）与 systemone 决策线均于完成时记账（决策线以协议 usage 为准，上游未带 usage 的 native 应答只计 requests）',
   credentials: '模型凭证限流叠加层（原始 YAML 页编辑，保存即时生效）：按 provider id 分组，每项 { keyHashPrefix, limits } —— keyHashPrefix 是该凭据 sha256 的前 12 位（控制台凭据卡片可见，与凭证增删改名无关；大小写不敏感——编译/匹配时归一，磁盘保留原文）；limits 规则语法同 apiKeys（滑动窗口；requests=请求数、tokens=消耗 token 数、costUsd=费用美元，按完成时刻记账）；出站限流只做整形：超限凭证在 NEW 会话选号时跳过、绝不改动已绑定会话（重绑会烧上游提示缓存）、候选耗尽时末位强制放行，真正的上游 429 仍由熔断器处理决策线例外：/v1/systemone 不经候选池——不做本地跳过/拒绝、也不经熔断，上游错误逐字透传；但该线的出站 dispatch 与完成记账照常计入，凭证窗口会被它填充。内部腿（L2 决策、健康探测）的上游调用不经任何记账，不会填充窗口',

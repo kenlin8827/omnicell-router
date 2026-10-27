@@ -1,7 +1,13 @@
 import { registerConsoleRoutes, validateApiKey } from './routes/console.js';
 import { isWebAuthActive, isAdminAuthEndpoint, parseSessionCookie, verifySessionToken } from './auth/web-auth.js';
 import { getModelAccessPolicy, isModelAllowed, isAutoEntryUsable } from './auth/model-access.js';
-import { registerRuntimeConfigRef, loadConfig, DEFAULT_INBOUND_GRACE_MS, MAX_INBOUND_GRACE_MS } from './config/index.js';
+import {
+  registerRuntimeConfigRef,
+  loadConfig,
+  DEFAULT_INBOUND_GRACE_MS,
+  MAX_INBOUND_GRACE_MS,
+  MAX_GRACE_SLEEPERS,
+} from './config/index.js';
 import { getRateLimiter, apiKeySubject } from './ratelimit/rate-limiter.js';
 import { getRateLimitEventLog, recordRateLimitEvent } from './ratelimit/event-log.js';
 import { getFailureEventLog } from './observability/failure-events.js';
@@ -39,6 +45,13 @@ import type { TripScope } from './resilience/types.js';
 import type { CaptureKeyIdentity } from './capture/recorder.js';
 
 const TIER_RANK: Record<string, number> = { lite: 1, plus: 2, pro: 3, ultra: 4 };
+
+/**
+ * Live inbound grace-wait sleepers (see MAX_GRACE_SLEEPERS). Bun is
+ * single-threaded and the increment/decrement happen in one synchronous
+ * region around the awaited sleep — no interleaving hazard.
+ */
+let graceSleepers = 0;
 
 /**
  * Rebuild a console session row from persisted traces alone (seen after a
@@ -465,7 +478,35 @@ export function createServer(
     if (validation.keyConfig && path !== null && INFERENCE_ROUTE_PATHS.has(path)) {
       const subject = apiKeySubject(validation.keyConfig.id);
       const rl = getRateLimiter();
-      let verdict = rl.tryDispatch(subject);
+      // Admission-time prompt estimate for the token pre-reservation: the
+      // request body is parsed by the time the preHandler runs, so a rough
+      // chars/4 read bounds what the turn CAN consume before the upstream
+      // publishes real usage. A large request can no longer blow through a
+      // token cap on account of usage it has not produced YET. No body / no
+      // token constraints → estimate 0 → the reservation degenerates away.
+      let tokenEstimate = 0;
+      try {
+        const body = (req as unknown as { body?: unknown }).body;
+        if (body !== undefined && body !== null && !(body instanceof Buffer)) {
+          tokenEstimate = Math.ceil(JSON.stringify(body).length / 4);
+        }
+      } catch {
+        tokenEstimate = 0; // estimation must never gate a request by itself failing
+      }
+      let verdict = tokenEstimate > 0 ? rl.tryDispatchWithEstimate(subject, tokenEstimate) : rl.tryDispatch(subject);
+      // Admitted (first pass or grace re-check): reconcile the token
+      // pre-reservation exactly once per request, when the response stream
+      // settles. By then the orchestrator's success terminal has recorded
+      // ACTUAL usage — order-independent (release subtracts the estimate,
+      // recordUsage adds the real tokens, the window nets to actual either
+      // way). A failed/aborted turn releases its estimate with nothing
+      // added: no usage was produced. Registration is keyed on the FINAL
+      // verdict AFTER the grace block below (not the first pass): the grace
+      // path is denied first-pass with no reservation placed, then re-reserves
+      // on re-check — releasing the first-pass state there would leak the
+      // recheck reservation, which does NOT age out (it is not an event; only
+      // release() lowers it). One registration total, at the single point
+      // below after the grace block resolves the final verdict.
       if (!verdict.allowed) {
         let sleptMs = 0;
         // Client-liveness for the grace wait. NEVER `req.raw.destroyed`: in
@@ -481,16 +522,29 @@ export function createServer(
         reply.raw.once('close', () => {
           if (!reply.raw.writableEnded) clientGone = true;
         });
-        if (inboundGraceMs > 0 && verdict.retryAfterMs <= inboundGraceMs && !clientGone) {
+        if (
+          inboundGraceMs > 0 &&
+          verdict.retryAfterMs <= inboundGraceMs &&
+          !clientGone &&
+          graceSleepers < MAX_GRACE_SLEEPERS
+        ) {
           // setTimeout can fire a hair BEFORE the log entry expires
           // (msUntilBelow prunes at ts <= now-windowMs), so the re-check needs
           // slack — without it a correctly-timed grace sleep can still wake
           // into a still-full window. The jitter also de-synchronizes sleepers
           // racing one freed slot, but correctness only needs the floor.
           sleptMs = verdict.retryAfterMs + 5 + Math.floor(Math.random() * 25);
-          await new Promise((resolve) => setTimeout(resolve, sleptMs));
+          graceSleepers++;
+          try {
+            await new Promise((resolve) => setTimeout(resolve, sleptMs));
+          } finally {
+            graceSleepers--;
+          }
           if (!clientGone) {
-            const recheck = rl.tryDispatch(subject);
+            // Re-check WITH the estimate: the re-admission must re-reserve the
+            // token pre-occupancy the first (denied) pass never placed.
+            const recheck =
+              tokenEstimate > 0 ? rl.tryDispatchWithEstimate(subject, tokenEstimate) : rl.tryDispatch(subject);
             if (recheck.allowed) {
               req.log.info(
                 `[ratelimit] key '${validation.keyConfig!.name}' grace-admitted after ${sleptMs}ms wait (${verdict.rule})`
@@ -549,6 +603,11 @@ export function createServer(
             reply.raw.writeHead(429, {
               'content-type': 'application/json; charset=utf-8',
               'retry-after': String(retryAfterSec),
+              // IETF draft-ietf-httpapi-ratelimit-headers: machine-readable cap
+              // state so well-behaved clients back off BEFORE the next 429.
+              'ratelimit-limit': String(verdict.limit),
+              'ratelimit-remaining': '0',
+              'ratelimit-reset': String(retryAfterSec),
             });
             reply.raw.end(
               JSON.stringify({
@@ -563,6 +622,9 @@ export function createServer(
             return;
           }
           reply.header('Retry-After', String(retryAfterSec));
+          reply.header('RateLimit-Limit', String(verdict.limit));
+          reply.header('RateLimit-Remaining', '0');
+          reply.header('RateLimit-Reset', String(retryAfterSec));
           return reply.status(429).send({
             error: {
               message: `Rate limit exceeded (${verdict.rule}); retry after ${retryAfterSec}s`,
@@ -572,6 +634,14 @@ export function createServer(
             },
           });
         }
+      }
+      // Single release-registration point, keyed on the FINAL verdict (either
+      // the first pass or a grace re-check). A live reservation exists here iff
+      // the request was admitted WITH an estimate; a denied request placed no
+      // reservation (or released none) and must not register.
+      if (verdict.allowed && tokenEstimate > 0) {
+        const estimate = tokenEstimate;
+        reply.raw.once('close', () => rl.releaseEstimate(subject, estimate));
       }
     }
   });
@@ -610,8 +680,8 @@ export function createServer(
   // 1B''. Rate-Limiter Event Log — every triggered cap from both directions
   // (inbound deny/grace, outbound skip/force/shape), newest first, coalesced
   // repeats, bounded ring. Same display-safe identities as the snapshot; the
-  // ledger survives restarts via its SQLite mirror (rateLimit.persist),
-  // unlike the windows themselves which stay memory-only by design.
+  // ledger survives restarts via its SQLite mirror (rateLimit.persist), like
+  // the window checkpoints.
   app.get('/api/admin/ratelimit/events', async () => {
     return { status: 'ok', events: getRateLimitEventLog().list() };
   });
@@ -622,6 +692,33 @@ export function createServer(
   app.post('/api/admin/ratelimit/events/clear', async () => {
     getRateLimitEventLog().clear();
     return { status: 'ok', cleared: true };
+  });
+
+  // 1B⁗'. Reset the live window(s) of ONE subject — administrative escape
+  // hatch: clears the sliding-window history so a stuck budget reopens
+  // immediately. Scoped per subject (optionally one rule label "1m/requests")
+  // BY DESIGN — no global wipe, since a one-button "reset everything" would
+  // void inbound key budgets. Armed rules are untouched; the next checkpoint
+  // GCs the cleared rows from the durable store.
+  app.post('/api/admin/ratelimit/windows/reset', async (req, reply) => {
+    const body = (req.body || {}) as { subject?: string; rule?: string };
+    const query = req.query as { subject?: string; rule?: string };
+    const subject = (body.subject || query.subject || '').trim();
+    const rule = (body.rule || query.rule || '').trim() || undefined;
+    if (!subject) {
+      return reply.status(400).send({
+        status: 'error',
+        message: "subject is required (e.g. 'apikey:<id>' or 'credential:<provider>:<prefix>')",
+      });
+    }
+    const reset = getRateLimiter().resetWindows(subject, rule);
+    if (reset === 0) {
+      return reply
+        .status(404)
+        .send({ status: 'error', message: `no tracked window for subject '${subject}'${rule ? ` rule '${rule}'` : ''}` });
+    }
+    req.log.info({ subject, rule, reset }, 'rate-limit windows reset by admin');
+    return { status: 'ok', subject, ...(rule ? { rule } : {}), reset };
   });
 
   // 1B⁗. Failure-event ledger — every failed upstream MODEL CALL (serving
