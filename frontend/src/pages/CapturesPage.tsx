@@ -1438,9 +1438,10 @@ export const CapturesPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Browser: date chips on top → session list (left) + timeline (right) */}
-      {status?.enabled && (
-        <div
+      {/* Browser: date chips on top → session list (left) + timeline (right).
+          Always rendered — the toggle only controls RECORDING; existing
+          archives stay browsable/exportable/deletable while capture is off. */}
+      <div
           className="card"
           style={{
             flex: 1,
@@ -2222,7 +2223,6 @@ export const CapturesPage: React.FC = () => {
             </>
           )}
         </div>
-      )}
 
       {selectedTurnIdx !== null && turns[selectedTurnIdx] && (
         <CaptureDrawer

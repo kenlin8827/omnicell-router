@@ -2050,6 +2050,23 @@ export const api = {
   },
 
   /**
+   * Reset the live window(s) of ONE subject (optionally one rule label,
+   * e.g. "1m/requests") — administrative escape hatch for a stuck budget.
+   */
+  async resetRateLimitWindows(subject: string, rule?: string): Promise<{ status: string; reset: number }> {
+    const res = await fetch('/api/admin/ratelimit/windows/reset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subject, ...(rule ? { rule } : {}) }),
+    });
+    const body = await res.json().catch(() => undefined);
+    if (!res.ok) {
+      throw new Error(body?.message || `HTTP ${res.status}`);
+    }
+    return body;
+  },
+
+  /**
    * Failure-event ledger — every failed upstream model call (serving pool
    * attempts + decision wire calls), newest first (bounded ring, repeats
    * coalesce). Optional equality filters narrow server-side; the console
@@ -3187,6 +3204,8 @@ export interface RateLimitSnapshotEntry {
   used: number;
   /** ms until this constraint has slack (0 when below the cap). */
   retryAfterMs: number;
+  /** Remaining ms of the subject's upstream-429 shaping cooldown (0 = none). Mirrors backend optional field. */
+  cooldownMs?: number;
 }
 
 /**

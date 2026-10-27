@@ -788,9 +788,10 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   /** Gate 3: the plan the backend refuses to execute until a human reads it. Kept separately from
    *  `installTarget` so the confirmation dialog can show the exact commands on its own surface. */
   const [installGate, setInstallGate] = useState<{ targets: HarnessInstallTarget[]; skillDir?: string } | null>(null);
-  // Open when an install fails with `ambiguous`: the repo holds several SKILL.md directories and the
-  // backend refuses to guess (ADR-0015 §8). Keeps the install dialog underneath (hosts/scope live
-  // there); confirming re-invokes the same install with a `#dir`-pinned key.
+  // Open when an install fails with `ambiguous` — or with a stale `#dir` pin the adapter answers
+  // `no_artifact` for — and the backend lists the directories that DO hold a SKILL.md (ADR-0015 §8).
+  // Keeps the install dialog underneath (hosts/scope live there); confirming re-invokes the same
+  // install with a `#dir`-pinned key.
   const [skillPick, setSkillPick] = useState<{ repo: string; candidates: string[]; value: string } | null>(null);
   const [filter, setFilter] = useState<Filter>('all');
   const [q, setQ] = useState('');
@@ -1125,14 +1126,17 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   const takenOn = (item: HarnessMarketItem, host: string): boolean =>
     installsFor(item).some((c) => c.host === host && c.scope === 'global' && c.state !== 'missing');
 
+  /** Candidate hosts for an install kind: a single-target kind (an extension is code against ONE
+   *  runtime's plugin API) reads the page's harness; a multi-target kind takes `ticked` when given
+   *  (the confirm dialog's chips), otherwise the full offer list — one skill directory, or one MCP
+   *  server written into several clients' configs. Single source for the expression:
+   *  freeTargets, installTargetHosts and startInstall all read it. */
+  const hostsForKind = (kind: HarnessMarketItem['installKind'], ticked?: string[]): string[] =>
+    KIND_META[kind].installMode === 'single' ? (harness ? [harness] : []) : (ticked ?? installHostOffers.map((o) => o.value));
+
   /** Targets this market row could still be installed to, right now (current page + scope). */
   const freeTargets = (item: HarnessMarketItem): number => {
-    const hosts =
-      KIND_META[item.installKind].installMode === 'single'
-        ? harness
-          ? [harness]
-          : []
-        : installHostOffers.map((o) => o.value);
+    const hosts = hostsForKind(item.installKind);
     return hosts.filter((host) => !takenOn(item, host)).length;
   };
 
@@ -1215,7 +1219,8 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     };
   }, [detail?.readme, detailTr, lang]);
 
-  /** Install action for one market row: stateful, disabled only when every reachable target is taken. */
+  /** Install action for one market row: starts at once when a single free target leaves the sheet
+   *  nothing to ask (see `startInstall`); disabled when every reachable target is taken. */
   const marketInstallButton = (item: HarnessMarketItem) => {
     // A curated row whose package name could not be verified has no install handle of its own
     // (`key` stays `static-opencode:<name>`, and no adapter serves that source). Pressing install
@@ -1243,9 +1248,9 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     return (
       <button
         className="btn btn-sm"
-        disabled={free === 0}
+        disabled={free === 0 || installBusy}
         title={free === 0 ? t('harness.targetInstalled') : undefined}
-        onClick={() => setInstallTarget(item)}
+        onClick={() => startInstall(item)}
         style={{ flex: '0 0 auto', display: 'inline-flex', alignItems: 'center', gap: 5 }}
       >
         <Download size={12} aria-hidden />
@@ -1749,30 +1754,31 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     setMarketSubmittedQ(query.trim());
   };
 
-  /** Hosts this install writes to. A single-target kind (an extension is code against ONE runtime's
-   *  plugin API) reads the page's harness; a multi-target kind takes the ticked list — one skill
-   *  directory, or one MCP server written into several clients' configs. */
+  /** Hosts this install writes to. A taken target is not offered: the writer would only answer
+   *  `exists` after a full confirm. */
   const installTargetHosts = (): string[] => {
     if (!installTarget) return [];
-    const raw = KIND_META[installTarget.installKind].installMode === 'single' ? (harness ? [harness] : []) : installHosts;
+    const raw = hostsForKind(installTarget.installKind, installHosts);
     // A taken target is not offered: the writer would only answer `exists` after a full confirm.
     return raw.filter((host) => !takenOn(installTarget, host));
   };
 
   /**
-   * Install the picked market row. `confirmed` is the gate acknowledgement: without it the backend
-   * plans and refuses, and the caller surfaces that plan.
+   * Install ONE market row into ONE explicit host set. The core of every install path — the
+   * confirm-dialog button, the single-target fast path and the gate acknowledgement all funnel
+   * here, so the wire contract (`confirm`, `#dir` pinning, `listedOn`) is declared once.
    */
-  const doInstall = async (skillDir?: string, confirmed = false) => {
-    const hosts = installTargetHosts();
-    if (!installTarget || hosts.length === 0) return;
+  const runInstall = async (target: HarnessMarketItem, hosts: string[], skillDir?: string, confirmed = false) => {
     setInstallBusy(true);
     try {
+      // A picker re-send must REPLACE the row's stale `#dir` pin, not append to it — the key arrives
+      // as `github:<owner/repo>#<stale-dir>` and the chosen directory becomes the only pin.
+      const baseKey = target.key.includes('#') ? target.key.slice(0, target.key.indexOf('#')) : target.key;
       const res = await api.harnessInstall({
         // The key is the portable install handle (`github:<owner/repo>` / `npm:<name>`); `kind` picks
         // the writer. A skill directory pins the ambiguous case as `<key>#<dir>`.
-        key: skillDir ? `${installTarget.key}#${skillDir}` : installTarget.key,
-        kind: installTarget.installKind,
+        key: skillDir ? `${baseKey}#${skillDir}` : target.key,
+        kind: target.installKind,
         hosts,
         // Global only: project-level install is deferred, and the backend refuses anything else
         // (ADR-0015 §D2 "Scope").
@@ -1780,7 +1786,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
         // The market row's own source is a discovery facet, not the writer: a Pi-catalog package
         // carries an `npm:` key, so without this the record would claim npm was the only place the
         // operator saw it.
-        listedOn: [installTarget.sourceId],
+        listedOn: [target.sourceId],
         ...(confirmed ? { confirm: true } : {}),
       });
       toast.success(`${t('harness.installDone')}: ${res.name} → ${res.copies.map((c) => c.host).join(', ')}`);
@@ -1802,9 +1808,17 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
         setInstallGate({ targets: err.plan, ...(skillDir ? { skillDir } : {}) });
         return;
       }
-      if (err.code === 'ambiguous' && Array.isArray(err.candidates) && err.candidates.length > 0) {
+      // The picker answers two backend refusals: `ambiguous` (several SKILL.md dirs, no pin) and a
+      // STALE pin — a market row's `#dir` from registry metadata that no longer matches the repo
+      // layout (the adapter answers `no_artifact` with the dirs that DO hold a SKILL.md). Both are
+      // the same decision — a human picks the directory — so both open the picker.
+      if (
+        (err.code === 'ambiguous' || err.code === 'no_artifact') &&
+        Array.isArray(err.candidates) &&
+        err.candidates.length > 0
+      ) {
         setSkillPick({
-          repo: installTarget.repo ?? installTarget.key,
+          repo: target.repo ?? target.key,
           candidates: err.candidates,
           value: err.candidates[0] ?? '',
         });
@@ -1813,6 +1827,36 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
       toast.error(t('harness.installFailed') + ': ' + (e instanceof Error ? e.message : String(e)));
     } finally {
       setInstallBusy(false);
+    }
+  };
+
+  /** The confirm-dialog entry: hosts come from the ticked chips (or the pinned single landing). */
+  const doInstall = (skillDir?: string, confirmed = false) => {
+    const hosts = installTargetHosts();
+    if (!installTarget || hosts.length === 0) return;
+    return runInstall(installTarget, hosts, skillDir, confirmed);
+  };
+
+  /**
+   * Install entry for a market row (card button AND detail-dialog button). When the row has exactly
+   * ONE free target right now, the target-choice dialog has nothing to ask — a lone skills owner or
+   * a pinned landing is not a choice — so the install starts at once: a skill lands directly (no
+   * backend gate), an extension/MCP first request comes back `confirm_required` and the plan dialog
+   * opens over `installTarget` exactly as before. With several free targets the sheet still asks
+   * which hosts to write, because a payload fanned to N owners IS a choice.
+   */
+  const startInstall = (item: HarnessMarketItem) => {
+    // One install at a time: the fast path below bypasses the confirm dialog's
+    // disabled-confirm guard, so the row button is the only gate — two quick
+    // clicks on different rows would run concurrent installs whose completion
+    // handlers yank shared state (setInstallTarget/setTab) out from under
+    // each other.
+    if (installBusy) return;
+    const free = hostsForKind(item.installKind).filter((host) => !takenOn(item, host));
+    setInstallTarget(item);
+    if (free.length === 1) {
+      setInstallHosts(free);
+      void runInstall(item, free);
     }
   };
 
@@ -3313,6 +3357,13 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
             </div>
           ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            {/* Fast-path installs run with this sheet already open (see startInstall): without a
+                visible state the only busy signal would be the disabled footer button. */}
+            {installBusy && (
+              <span style={{ fontSize: '11.5px', color: 'var(--text-dim)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                {t('harness.installing')}
+              </span>
+            )}
             <label style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('harness.installHost')}</label>
             {installMeta.installMode === 'single' ? (
               /* One runtime is the whole target set (an extension is code against ONE plugin API), so
@@ -3499,10 +3550,12 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
               )}
               {/* Install belongs to the MARKETPLACE view only: an installed row's own action is
                   removal, which the row already offers. Both dialogs share one z-index, so the
-                  install sheet must not open BENEATH the detail dialog — close it first, then let
-                  the button's own handler run (a disabled button dispatches no click at all). */}
+                  install sheet must not open BENEATH the detail dialog — the detail closes AFTER the
+                  button's handler, on the bubble phase. A capture-phase close unmounts this subtree
+                  mid-dispatch (React 18 flushes discrete updates synchronously) and the button's
+                  own onClick never runs. */}
               {detailSubject.market && (
-                <span onClickCapture={() => setDetailSubject(null)}>
+                <span onClick={() => setDetailSubject(null)}>
                   {marketInstallButton(detailSubject.market)}
                 </span>
               )}

@@ -9,7 +9,6 @@ import {
   Users,
   Sliders,
   FileCode2,
-  RefreshCw,
   Search,
   ChevronDown,
   RotateCcw,
@@ -252,18 +251,13 @@ export const Layout: React.FC = () => {
     setCollapsedGroups(prev => ({ ...prev, [groupId]: !prev[groupId] }));
   };
 
-  const handleResetBreakers = async () => {
-    const ok = await confirmDialog({ title: t('header.resetConfirm') });
-    if (!ok) return;
-    try {
-      await api.resetBreakers();
-      toast.success(t('header.resetSuccess'));
-      const data = await api.getStatus();
-      setStatus(data);
-    } catch (err: any) {
-      toast.error(t('header.resetFailed') + err.message);
-    }
+  const handleOpenGuardrails = () => {
+    navigate('/guardrails');
   };
+
+  // Tripped model + pair breakers — same aggregation the Guardrails page header uses.
+  const trippedBreakers =
+    (status?.circuitBreakers?.tripped || 0) + (status?.circuitBreakers?.pairs?.tripped || 0);
 
   const handleRestartGateway = async () => {
     const ok = await confirmDialog({ title: t('header.restartConfirm') });
@@ -703,9 +697,25 @@ export const Layout: React.FC = () => {
               <RotateCcw size={13} />
               <span className="hdr-label">{t('header.restart')}</span>
             </button>
-            <button className="btn btn-primary" onClick={handleResetBreakers} title={t('header.resetBreakers')}>
-              <RefreshCw size={13} />
-              <span className="hdr-label">{t('header.resetBreakers')}</span>
+            {/* Breaker management entry — actual reset actions (global / per-model /
+                per-pair) live on the Guardrails page; the header is just a jump link. */}
+            <button className="btn" onClick={handleOpenGuardrails} title={t('nav.guardrails')}>
+              <ShieldAlert size={13} />
+              <span className="hdr-label">{t('nav.guardrails')}</span>
+              {trippedBreakers > 0 && (
+                <span
+                  style={{
+                    fontSize: '10px',
+                    padding: '1px 6px',
+                    borderRadius: '999px',
+                    background: 'color-mix(in srgb, var(--accent-rose) 15%, transparent)',
+                    color: 'var(--accent-rose)',
+                    fontWeight: 600,
+                  }}
+                >
+                  {trippedBreakers}
+                </span>
+              )}
             </button>
           </div>
         </header>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { Gauge, RefreshCw, ArrowDown, ArrowUp, Search, Inbox, Activity, Eraser } from 'lucide-react';
+import { Gauge, RefreshCw, ArrowDown, ArrowUp, Search, Inbox, Activity, Eraser, RotateCcw } from 'lucide-react';
 import {
   api,
   type RateLimitEvent,
@@ -150,6 +150,26 @@ export const RateLimitPage: React.FC = () => {
       toast.error(t('rateLimitPage.clearFailed') + ' ' + (err?.message || err));
     }
   }, [confirmDialog, toast, t, loadData]);
+
+  const handleResetWindow = useCallback(
+    async (w: RateLimitSnapshotEntry) => {
+      const ok = await confirmDialog({
+        title: t('rateLimitPage.resetConfirmTitle'),
+        description: t('rateLimitPage.resetConfirmDesc', { subject: subjectLabel(w.subject), rule: w.rule }),
+        danger: true,
+        confirmLabel: t('rateLimitPage.resetWindow'),
+      });
+      if (!ok) return;
+      try {
+        await api.resetRateLimitWindows(w.subject, w.rule);
+        toast.success(t('rateLimitPage.resetDone'));
+        loadData();
+      } catch (err: any) {
+        toast.error(t('rateLimitPage.resetFailed') + ' ' + (err?.message || err));
+      }
+    },
+    [confirmDialog, toast, t, loadData]
+  );
 
   // Shared direction + free-text filter over both sections; the time-window
   // preset applies to the event ledger only (windows carry no timestamps).
@@ -421,6 +441,7 @@ export const RateLimitPage: React.FC = () => {
                   <th style={TH}>{t('rateLimitPage.colUsed')}</th>
                   <th style={{ ...TH, width: '180px' }}>{t('rateLimitPage.colFill')}</th>
                   <th style={TH}>{t('rateLimitPage.colRetry')}</th>
+                  <th style={{ ...TH, width: '44px' }}></th>
                 </tr>
               </thead>
               <tbody>
@@ -432,7 +453,21 @@ export const RateLimitPage: React.FC = () => {
                     <tr key={`${w.subject}-${w.rule}-${i}`}>
                       <td style={TD}>{dirBadge(inbound ? 'inbound' : 'outbound')}</td>
                       <td style={{ ...TD, ...MONO }}>{subjectLabel(w.subject)}</td>
-                      <td style={{ ...TD, ...MONO }}>{w.rule}</td>
+                      <td style={{ ...TD, ...MONO }}>
+                        {w.rule}
+                        {!!w.cooldownMs && w.cooldownMs > 0 && (
+                          <span
+                            title={t('rateLimitPage.upstream429Cooldown', { time: fmtMs(w.cooldownMs) })}
+                            style={{
+                              marginLeft: 6, fontSize: 10, padding: '1px 6px', borderRadius: 999,
+                              background: 'color-mix(in srgb, var(--accent-amber) 15%, transparent)',
+                              color: 'var(--accent-amber)', fontWeight: 600, whiteSpace: 'nowrap',
+                            }}
+                          >
+                            429 · {fmtMs(w.cooldownMs)}
+                          </span>
+                        )}
+                      </td>
                       <td style={{ ...TD, ...MONO }}>
                         {w.countable === 'costUsd' ? `$${w.used.toFixed(4)}/$${w.limit.toFixed(2)}` : `${Math.round(w.used)}/${Math.round(w.limit)}`}
                       </td>
@@ -449,6 +484,16 @@ export const RateLimitPage: React.FC = () => {
                       </td>
                       <td style={{ ...TD, ...MONO, color: full ? 'var(--accent-amber)' : 'var(--text-dim)' }}>
                         {full && w.retryAfterMs > 0 ? fmtMs(w.retryAfterMs) : '—'}
+                      </td>
+                      <td style={TD}>
+                        <button
+                          className="btn btn-sm"
+                          style={{ padding: '2px 6px' }}
+                          onClick={() => handleResetWindow(w)}
+                          title={t('rateLimitPage.resetWindow')}
+                        >
+                          <RotateCcw size={11} />
+                        </button>
                       </td>
                     </tr>
                   );

@@ -249,14 +249,10 @@ export interface TranslationDict {
   };
   header: {
     restart: string;
-    resetBreakers: string;
     restarting: string;
     restartConfirm: string;
     restartFailed: string;
     restartTimeout: string;
-    resetSuccess: string;
-    resetFailed: string;
-    resetConfirm: string;
     switchLang: string;
     themes: {
       onyx: string;
@@ -1206,6 +1202,12 @@ hiddenBadge: string;
     noteLastCandidate: string;
     noteSpread: string;
     noteFailover: string;
+    resetWindow: string;
+    resetConfirmTitle: string;
+    resetConfirmDesc: string;
+    resetDone: string;
+    resetFailed: string;
+    upstream429Cooldown: string;
   };
   /** Model-call failure observability page: per-model aggregation strip +
    *  the failure_events ledger (serving + decision emitters). */
@@ -2308,6 +2310,11 @@ hiddenBadge: string;
   };
   auto: {
     title: string;
+    famAuto: string;
+    famLite: string;
+    famPlus: string;
+    famPro: string;
+    famUltra: string;
     modeTitle: string;
     modeSmart: string;
     modeCost: string;
