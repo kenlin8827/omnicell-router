@@ -379,6 +379,9 @@ export interface FailoverRetryConfig {
   enabled?: boolean;
   maxAttempts?: number; // max candidate models to try (default: 2)
   tierCrossPolicy?: TierCrossPolicy; // 'same_tier_only' (strict) | 'allow_escalate' (may climb a tier to stay alive, never demotes)
+  // Explicit models are NEVER covered by config failover: a named model
+  // serves or errors. Per-request substitution is the CLIENT's call via
+  // router_options.failover — there is deliberately no operator knob.
 }
 
 export interface RetryConfig {

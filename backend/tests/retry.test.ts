@@ -201,6 +201,45 @@ describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation ', () =>
     const breaker = registry.getCircuitBreakerManager().getBreaker('primary-plus');
     assert.equal(breaker?.getState(), 'CLOSED');
   });
+
+  describe('Explicit-model failover contract (ADR-0014 amendment)', () => {
+    const failReq = (model: string, extra: Record<string, unknown> = {}) => ({
+      model,
+      messages: [{ role: 'user', content: 'ping' }],
+      __simulate_error_model__: 'mock-lite-1',
+      __simulate_status__: 503,
+      __simulate_message__: 'upstream 503',
+      __simulate_fail_times__: 99,
+      ...extra,
+    });
+
+    it('a named model is NEVER substituted: exhaustion fails loud naming the model', async () => {
+      const registry = new ProviderRegistry(baseConfig, true);
+      const orchestrator = new PipelineOrchestrator(baseConfig, registry, new FinOpsTracker());
+      await assert.rejects(
+        () => orchestrator.process(failReq('mock-lite-1') as any),
+        /Explicit model 'mock-lite-1' did not serve the request/
+      );
+    });
+
+    it('router_options.failover: true restores tier-pool substitution for that request only', async () => {
+      const registry = new ProviderRegistry(baseConfig, true);
+      const orchestrator = new PipelineOrchestrator(baseConfig, registry, new FinOpsTracker());
+      const result = await orchestrator.process(failReq('mock-lite-1', {
+        router_options: { failover: true },
+      }) as any);
+      assert.equal(result.modelUsed, 'mock-lite-2');
+      assert.equal(result.failoverOccurred, true);
+    });
+
+    it('forced tier keeps its in-tier failover without any opt-in', async () => {
+      const registry = new ProviderRegistry(baseConfig, true);
+      const orchestrator = new PipelineOrchestrator(baseConfig, registry, new FinOpsTracker());
+      const result = await orchestrator.process(failReq('lite') as any);
+      assert.equal(result.modelUsed, 'mock-lite-2');
+      assert.equal(result.failoverOccurred, true);
+    });
+  });
 });
 
 describe('Resilience: Hierarchical Failover & Tier Crossing Policies ', () => {

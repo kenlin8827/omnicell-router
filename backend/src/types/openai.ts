@@ -85,6 +85,8 @@ export interface ChatCompletionRequest {
   router_options?: {
     force_tier?: 'lite' | 'plus' | 'pro' | 'ultra';
     disable_fallback?: boolean;
+    /** Explicit-mode opt-in: allow failover to tier-pool siblings when the named model fails. Default: the named model serves or errors. */
+    failover?: boolean;
     session_id?: string;
   };
 }

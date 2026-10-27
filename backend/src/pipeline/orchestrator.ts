@@ -482,9 +482,9 @@ export class PipelineOrchestrator {
       if (specific) {
         // Exact-model pass-through: the client named a REGISTERED model id
         // (e.g. pinned via the Client Hub model slots). Route to exactly
-        // this model — not merely its tier. Resilience is preserved: if its
-        // breaker is tripped, executeCandidatePool drops it and fails over
-        // within the tier.
+        // this model — not merely its tier. Resilience is preserved: in-place
+        // same-model retry and credential re-spread still apply; the model
+        // itself is never substituted (ADR-0014).
         explicitModel = specific;
         normalizedRequest.router_options = { ...normalizedRequest.router_options, force_tier: specific.tier };
       } else {
@@ -1384,43 +1384,58 @@ export class PipelineOrchestrator {
         // translation — the composition spans tiers by design.
         accessTierMode = 'member-home';
       } else {
-        // Auto & explicit: tier pool (peek-filtered; fall back to the full
-        // pool when everything is tripped — the loop force-tries the last
-        // candidate). Head = pinned model (auto, post-eviction) or the
-        // explicit model, so KV-cache affinity is preserved.
-        let pool = this.registry.getCandidateModelsForTier(actualTier, true);
-        if (pool.length === 0) pool = this.registry.getCandidateModelsForTier(actualTier, false);
-        // Bare-auto under a model-access policy: the classifier may land in a
-        // tier that holds no admissible model (allow: none whitelisted in that
-        // tier; deny: every model of that tier tier-denied) — widen the pool
-        // to every allowed model across tiers (chosen tier first, then by
-        // tier proximity) instead of failing with a policy 403. "auto"
-        // promises SOME allowed model, not a specific tier.
-        const accessPolicy = context?.modelAccess;
-        const isBareAuto = !normalizedRequest.model || normalizedRequest.model === 'auto';
-        if (accessPolicy && isBareAuto && !explicitModel && !comboId) {
-          const rank = TIER_RANK;
-          // Multi-membership admit: allowed when the id or ANY membership
-          // tier passes (allow mode); denied when the id or ANY membership
-          // tier is denied (deny mode).
-          const widened = this.registry
-            .getAllModels()
-            .filter((m) => isModelAllowedInTiers(m.id, accessPolicy, this.registry.tiersOf(m)))
-            .sort(
-              (a, b) =>
-                Math.abs((rank[a.tier] ?? 9) - (rank[actualTier] ?? 9)) - Math.abs((rank[b.tier] ?? 9) - (rank[actualTier] ?? 9)) ||
-                (rank[a.tier] ?? 9) - (rank[b.tier] ?? 9)
-            );
-          if (widened.length > 0) pool = widened;
-        }
+        // Explicit: the named model serves — the chain is [explicitModel] ONLY.
+        // Cross-model substitution of a named model is a fidelity breach (the
+        // OpenAI wire serves the named model or errors); in-place same-model
+        // retry and credential re-spread stay unconditional. A client that
+        // WANTS substitution opts in per request via router_options.failover.
+        const explicitFailover =
+          explicitModel && normalizedRequest.router_options?.failover === true;
         const head = explicitModel ?? preferredModel;
-        chain = head ? [head, ...pool.filter(m => m.id !== head.id)] : pool;
-        // Auto keeps the configured failover budget; explicit/combo are
-        // bounded by their own chain length (failover.maxAttempts governs
-        // auto routing only). Cross-tier escalation is an AUTO-routing
-        // policy — forced tiers (tier aliases / mode lever) and explicit models
-        // fail over within their tier by contract (ADR-0014).
-        attemptCap = explicitModel ? Math.max(1, chain.length) : maxFailoverCandidates;
+        if (explicitModel && !explicitFailover) {
+          // The named model IS the contract: a one-model chain, no
+          // substitution (ADR-0014). No pool is built at all — nothing to
+          // fail over to.
+          chain = [explicitModel];
+          attemptCap = 1;
+        } else {
+          // Auto (or an explicit request that opted in via
+          // router_options.failover): the tier pool (peek-filtered; fall back
+          // to the full pool when everything is tripped — the loop force-tries
+          // the last candidate) follows the head, so KV-cache affinity is
+          // preserved on the first candidate.
+          let pool = this.registry.getCandidateModelsForTier(actualTier, true);
+          if (pool.length === 0) pool = this.registry.getCandidateModelsForTier(actualTier, false);
+          // Bare-auto under a model-access policy: the classifier may land in a
+          // tier that holds no admissible model (allow: none whitelisted in that
+          // tier; deny: every model of that tier tier-denied) — widen the pool
+          // to every allowed model across tiers (chosen tier first, then by
+          // tier proximity) instead of failing with a policy 403. "auto"
+          // promises SOME allowed model, not a specific tier.
+          const accessPolicy = context?.modelAccess;
+          const isBareAuto = !normalizedRequest.model || normalizedRequest.model === 'auto';
+          if (accessPolicy && isBareAuto && !explicitModel && !comboId) {
+            const rank = TIER_RANK;
+            // Multi-membership admit: allowed when the id or ANY membership
+            // tier passes (allow mode); denied when the id or ANY membership
+            // tier is denied (deny mode).
+            const widened = this.registry
+              .getAllModels()
+              .filter((m) => isModelAllowedInTiers(m.id, accessPolicy, this.registry.tiersOf(m)))
+              .sort(
+                (a, b) =>
+                  Math.abs((rank[a.tier] ?? 9) - (rank[actualTier] ?? 9)) - Math.abs((rank[b.tier] ?? 9) - (rank[actualTier] ?? 9)) ||
+                  (rank[a.tier] ?? 9) - (rank[b.tier] ?? 9)
+              );
+            if (widened.length > 0) pool = widened;
+          }
+          chain = head ? [head, ...pool.filter(m => m.id !== head.id)] : pool;
+          // Auto keeps the configured failover budget; an explicit opt-in is
+          // bounded by its own chain length (failover.maxAttempts governs
+          // auto routing only). Cross-tier escalation is an AUTO-routing
+          // policy — forced tiers never escape their tier.
+          attemptCap = explicitModel ? Math.max(1, chain.length) : maxFailoverCandidates;
+        }
         allowEscalate =
           !explicitModel &&
           !normalizedRequest.router_options?.force_tier &&
@@ -1467,6 +1482,20 @@ export class PipelineOrchestrator {
               `API key model policy (${context?.modelAccess?.mode}) admits no candidate model for this request`
             ),
             { statusCode: 403 }
+          );
+        }
+        if (explicitModel && chain.length === 1) {
+          // An explicit chain that exhausted without a substitute (failover
+          // off — the default) must fail LOUD and name the model: the client
+          // asked for exactly this model and deserves to know it did not
+          // serve, not a generic tier-level message (mirrors policyDenied).
+          const lastErr = execResult.lastError;
+          const lastStatus = lastErr && typeof (lastErr as { statusCode?: number }).statusCode === 'number' ? (lastErr as { statusCode: number }).statusCode : undefined;
+          throw Object.assign(
+            new Error(
+              `Explicit model '${explicitModel.id}' did not serve the request (a named model is never substituted; opt in per request with router_options.failover to allow tier-pool failover). Last error: ${lastErr?.message ?? 'unknown'}`
+            ),
+            { statusCode: lastStatus ?? 502 }
           );
         }
         throw execResult.lastError || new Error(`Execution failed for tier '${actualTier}'`);
@@ -1846,7 +1875,8 @@ export class PipelineOrchestrator {
    *    rejection costs nothing upstream — when the whole chain is down this is
    *    the last-resort attempt). `attemptCap` bounds real attempts: the
    *    configured retry.failover.maxAttempts for auto routing, the full chain
-   *    length for explicit/combo chains.
+   *    length for opt-in/combo chains (an explicit model's chain is ONE — it
+   *    is never substituted).
    *
    * Breaker gate: canExecuteScoped() here is the ONLY probe-consuming check in
    * the request path — every selection/filtering site uses the non-consuming

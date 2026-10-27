@@ -1,6 +1,7 @@
 # ADR-0014: Entry-Mode Autonomy — Tier & Effort Switching Matrix
 
 - **Status**: Implemented
+- **Amended 2026-12**: explicit models are NEVER cross-model substituted — the execution chain is the named model alone (in-place same-model retry and credential re-spread stay). Previously the chain was `[named, ...tier pool]` (silent in-tier substitution, e.g. qwen → glm). Per-request opt-in: `router_options.failover: true`. The old 'failover within its tier' contract contradicted this ADR's own rationale #1 (silent drift must fail loud) and is retired.
 - **Date**: 2026-10-21
 - **Related**: ADR-0001 (routing pipeline), ADR-0002 (sessions/ratchet), ADR-0003 (model addressing), ADR-0011 (escalation directives), ADR-0012 (decision layer effort)
 
@@ -21,7 +22,7 @@ corrected matrix as a contract.
 | :--- | :--- | :--- | :--- |
 | `auto` / tier aliases / unregistered names (classifier) | **YES** — full autonomy | YES (decision layer, entry table, `@ocr-*` directives) | `'ratchet'` — upgrade, downgrade interception, pin read/follow |
 | Forced tier: tier alias (`lite`/`plus`/`pro`/`ultra`), `routing.mode` lever, `router_options.force_tier` | **NO** — the forced tier is a contract | NO inference (client value / variant pin / model spec only) | `'explicit'` — recorded, proposal NEVER rewritten downward; a forced tier ABOVE the peak is a sanctioned ceiling rise (re-pins the session, as any upgrade); at/below the peak the pin in another tier is neither followed nor rewritten (untouched for later auto turns); zombie ids repair to the forced tier's healthy head; the empty-tier degraded landing still follows |
-| Explicit model (full id / `#variant` / bare name) | **NO** — the named model serves; failover within its tier only | NO inference (same as forced tier) | `'explicit'` — plus pin write-back when the named model served |
+| Explicit model (full id / `#variant` / bare name) | **NO** — the named model serves or errors; NEVER substituted (no cross-model failover; in-place same-model retry and credential re-spread stay). A client may opt in per request via `router_options.failover: true` | NO inference (same as forced tier) | `'explicit'` — plus pin write-back when the named model served |
 | Combo | **NO** — the composition is authoritative | NO | `'bypass'` — no session entity, no pin, no ceiling |
 
 ### What counts as a tier move (all gated to the auto family)
@@ -46,7 +47,8 @@ corrected matrix as a contract.
 - **Model `defaultEffort`** — serving a model at its own declared default level (ADR-0012
   `effortSource: 'default'`) is the model's spec, not an inference about the request.
 - **In-tier failover** — breaker-driven candidate walks never leave the tier pool; attempt caps
-  per mode (auto: configured budget; explicit/combo: chain length).
+  per mode (auto: configured budget; combo: chain length; explicit: chain of ONE — a named model is never
+  substituted, `router_options.failover` is the only per-request opt-in).
 
 ## Rationale
 
