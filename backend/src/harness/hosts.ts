@@ -25,7 +25,7 @@ export const HOSTS: HostDef[] = [
   { id: 'codex', label: 'Codex' },
   { id: 'pi', label: 'Pi' },
   { id: 'dsh', label: 'DSH' },
-  { id: 'omp', label: 'omp' },
+  { id: 'omp', label: 'OMP' },
   { id: 'cursor', label: 'Cursor' },
   { id: 'github-copilot', label: 'GitHub Copilot / VS Code' },
   { id: 'gemini-cli', label: 'Gemini CLI' },

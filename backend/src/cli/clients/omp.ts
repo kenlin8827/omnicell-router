@@ -251,7 +251,7 @@ export function resolveOmpModelsPath(dir: string): string {
 
 export class OmpClientAdapter implements ClientAdapter {
   name = 'omp' as const;
-  displayName = 'omp';
+  displayName = 'OMP';
 
   /** models.yml (or models.yaml when only that exists) — the hook target. */
   getConfigPath(): string {
