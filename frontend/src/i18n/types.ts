@@ -538,6 +538,9 @@ export interface TranslationDict {
     pmPullSelected: string;
     pmSelectTip: string;
     pmClear: string;
+    pmDeleteFailed: string;
+    pmDeleteFailedConfirm: string;
+    pmDeleteFailedNone: string;
     pmMatched: string;
     pmPulled: string;
     pmCleared: string;
