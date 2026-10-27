@@ -73,7 +73,6 @@ export const deDE: TranslationDict = {
     keyHide: 'Key verbergen',
     modelLabel: 'Modell',
     modelPlaceholder: 'auto',
-    modelPick: 'Aus Liste wählen',
     modelsLoadFailed: 'Modellliste konnte nicht geladen werden — eine manuelle Modell-ID funktioniert weiterhin',
     wireSystemone: 'Entscheidung',
     wireHint: 'Upstream-Kanal: {wire} (das Gateway übersetzt den Payload)',

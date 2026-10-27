@@ -73,7 +73,6 @@ export const jaJP: TranslationDict = {
     keyHide: 'キーを隠す',
     modelLabel: 'モデル',
     modelPlaceholder: 'auto',
-    modelPick: '一覧から選ぶ',
     modelsLoadFailed: 'モデル一覧の読み込みに失敗 — 手動入力のモデル ID は引き続き機能します',
     wireSystemone: 'decision',
     wireHint: '上流ワイヤ: {wire}（ゲートウェイがペイロードを変換します）',

@@ -73,7 +73,6 @@ export const frFR: TranslationDict = {
     keyHide: 'Masquer la clé',
     modelLabel: 'Modèle',
     modelPlaceholder: 'auto',
-    modelPick: 'Choisir dans la liste',
     modelsLoadFailed: 'Échec du chargement de la liste des modèles — un id de modèle saisi à la main fonctionne toujours',
     wireSystemone: 'décision',
     wireHint: 'Canal amont : {wire} (la passerelle traduit le payload)',

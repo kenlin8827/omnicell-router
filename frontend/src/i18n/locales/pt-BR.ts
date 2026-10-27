@@ -73,7 +73,6 @@ export const ptBR: TranslationDict = {
     keyHide: 'Ocultar chave',
     modelLabel: 'Modelo',
     modelPlaceholder: 'auto',
-    modelPick: 'Escolher da lista',
     modelsLoadFailed: 'Falha ao carregar a lista de modelos — um id de modelo digitado manualmente continua funcionando',
     wireSystemone: 'decisão',
     wireHint: 'Canal de upstream: {wire} (o gateway traduz o payload)',

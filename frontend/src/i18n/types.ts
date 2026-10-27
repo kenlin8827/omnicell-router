@@ -100,7 +100,6 @@ export interface TranslationDict {
     keyHide: string;
     modelLabel: string;
     modelPlaceholder: string;
-    modelPick: string;
     modelsLoadFailed: string;
     wireSystemone: string;
     wireHint: string;

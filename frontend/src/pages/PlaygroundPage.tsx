@@ -1271,55 +1271,25 @@ export const PlaygroundPage: React.FC = () => {
                   red line used to push the stream-toggle column out of line). */}
               {mode === 'chat' && decisionWire && <InfoTip variant="danger" text={t('chat.decisionBlocked')} />}
             </div>
-            {/* One frame, two zones (same vocabulary as the API Key field):
-                free-form id on the left, catalog picker on the right. */}
-            <div className="input-group" style={{ display: 'flex', width: '100%' }}>
-              <input
-                className="input"
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                placeholder={t('chat.modelPlaceholder')}
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  width: 'auto',
-                  fontSize: 12,
-                  fontFamily: FONT_MONO,
-                  border: 'none',
-                  borderRadius: 0,
-                  background: 'transparent',
-                }}
-              />
-              <div style={{ width: 165, flexShrink: 0, display: 'flex' }}>
-                <Combobox
-                  value=""
-                  onChange={(v) => v && setModel(v)}
-                  options={modelOptions.map((m) => {
-                    const wire = wireById[m.id];
-                    return {
-                      value: m.id,
-                      label: m.id,
-                      meta: m.owned_by,
-                      // 'openai' is the unremarkable default — badge only what
-                      // changes how the request is served (translation / no chat at all).
-                      badge: wire && wire !== 'openai' ? (wire === 'systemone' ? t('chat.wireSystemone') : wire) : undefined,
-                      badgeColor: wire === 'systemone' ? 'var(--accent-rose)' : undefined,
-                    };
-                  })}
-                  placeholder={t('chat.modelPick')}
-                  panelMinWidth={320}
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    width: 'auto',
-                    border: 'none',
-                    borderLeft: '1px solid var(--divider)',
-                    borderRadius: 0,
-                    background: 'transparent',
-                  }}
-                />
-              </div>
-            </div>
+            <Combobox
+              value={model}
+              onChange={(v) => setModel(v)}
+              options={modelOptions.map((m) => {
+                const wire = wireById[m.id];
+                return {
+                  value: m.id,
+                  label: m.id,
+                  meta: m.owned_by,
+                  // 'openai' is the unremarkable default — badge only what
+                  // changes how the request is served (translation / no chat at all).
+                  badge: wire && wire !== 'openai' ? (wire === 'systemone' ? t('chat.wireSystemone') : wire) : undefined,
+                  badgeColor: wire === 'systemone' ? 'var(--accent-rose)' : undefined,
+                };
+              })}
+              placeholder={t('chat.modelPlaceholder')}
+              panelMinWidth={320}
+              style={{ width: '100%' }}
+            />
             {modelsFailed && <div style={{ fontSize: 11, color: 'var(--accent-amber)' }}>{t('chat.modelsLoadFailed')}</div>}
             {mode === 'chat' &&
               !decisionWire &&

@@ -73,7 +73,6 @@ export const koKR: TranslationDict = {
     keyHide: '키 숨기기',
     modelLabel: '모델',
     modelPlaceholder: 'auto',
-    modelPick: '목록에서 선택',
     modelsLoadFailed: '모델 목록을 불러오지 못했습니다 — 직접 입력한 모델 ID 는 계속 작동합니다',
     wireSystemone: 'decision',
     wireHint: '업스트림 와이어: {wire} (게이트웨이가 페이로드를 변환합니다)',

@@ -71,7 +71,6 @@ export const esES: TranslationDict = {
     keyHide: 'Ocultar clave',
     modelLabel: 'Modelo',
     modelPlaceholder: 'auto',
-    modelPick: 'Elegir de la lista',
     modelsLoadFailed: 'No se pudo cargar la lista de modelos — un id de modelo manual sigue funcionando',
     wireSystemone: 'decisión',
     wireHint: 'Canal ascendente: {wire} (la pasarela traduce el payload)',

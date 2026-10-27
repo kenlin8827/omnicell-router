@@ -66,7 +66,6 @@ export const enUS: TranslationDict = {
     keyHide: 'Hide key',
     modelLabel: 'Model',
     modelPlaceholder: 'auto',
-    modelPick: 'Pick from list',
     modelsLoadFailed: 'Model list failed to load — a manual model id still works',
     wireSystemone: 'decision',
     wireHint: 'Upstream wire: {wire} (the gateway translates the payload)',

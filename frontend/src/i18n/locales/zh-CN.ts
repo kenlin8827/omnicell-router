@@ -66,7 +66,6 @@ export const zhCN: TranslationDict = {
     keyHide: '隐藏密钥',
     modelLabel: '模型',
     modelPlaceholder: 'auto',
-    modelPick: '从列表选择',
     modelsLoadFailed: '模型列表加载失败，仍可手动填写模型 id',
     wireSystemone: '决策面',
     wireHint: '上游 wire：{wire}（网关会做协议转换）',
