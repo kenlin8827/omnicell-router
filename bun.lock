@@ -23,7 +23,7 @@
     },
     "backend": {
       "name": "@omnicell-router/backend",
-      "version": "0.3.1",
+      "version": "0.3.2",
       "dependencies": {
         "@fastify/cors": "^11.0.0",
         "@zip.js/zip.js": "^2.23.0",
@@ -44,7 +44,7 @@
     },
     "frontend": {
       "name": "@omnicell-router/frontend",
-      "version": "0.3.1",
+      "version": "0.3.2",
       "dependencies": {
         "@codemirror/lang-yaml": "^6.1.3",
         "@codemirror/theme-one-dark": "^6.1.3",
