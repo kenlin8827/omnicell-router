@@ -11,6 +11,9 @@ export const DEFAULT_MAX_BODY_BYTES = 16_777_216;
 /** `forwardProxy.port` backend default. */
 export const DEFAULT_FORWARD_PROXY_PORT = 4555;
 
+/** `forwardProxy.host` backend default (loopback only). */
+export const DEFAULT_FORWARD_PROXY_HOST = '127.0.0.1';
+
 /** `compression.headroom.url` backend default (loopback-only sidecar). */
 export const DEFAULT_HEADROOM_URL = 'http://127.0.0.1:8787';
 

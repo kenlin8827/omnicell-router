@@ -23,6 +23,9 @@ import { FallbackContextBuilder } from '../validator/parser.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { applyEffortMap } from '../providers/member-match.js';
 import { FinOpsTracker } from '../metrics/finops-tracker.js';
+import { resolveUnresolvedModelAction } from './unresolved-model.js';
+import { isLoopbackHost } from '../forward-proxy/bypass.js';
+import { filterHeaders } from '../forward-proxy/egress.js';
 import { computeRequestCost } from '../metrics/request-cost.js';
 import {
   getRateLimiter,
@@ -468,6 +471,19 @@ export class PipelineOrchestrator {
 
     let explicitModel: ModelRegistration | undefined;
     let variantUsed: string | undefined;
+    // MITM forward-proxy leg (no Fastify response lifecycle) — the only leg
+    // whose `clientRequest` Host header is the trusted ORIGINAL dial target.
+    // Gates the unresolved-model hosts overrides (ADR-0003).
+    const mitmLeg = !!context?.clientRequest && !context?.fastifyRequest;
+    // onMiss-mapped combo ref (forwardProxy.unresolvedModel) — merges into the
+    // combo fork below so the disabled/empty fail-fast checks apply to it too.
+    let unresolvedComboRef: string | undefined;
+    // `direct` unresolved-model outcome (ADR-0003 §7a): the turn keeps running
+    // through the pipeline (normalization → session id → compression →
+    // capture) but skips every model-bound stage — routing, ratchet, route
+    // entry, breaker, failover, FinOps, turn registration — and returns a
+    // DirectForwardPlan for the transport to relay verbatim.
+    let directMiss = false;
     // Routing-name matching trims once. `request.model` itself stays verbatim
     // end-to-end (surface contract: wire/capture bytes and the forwarded copy
     // are never rewritten) — this restores the trim tolerance the old inline
@@ -526,8 +542,8 @@ export class PipelineOrchestrator {
           // sibling provider) and the gateway's own host matches no provider
           // baseUrl anyway. Cheapest-hit-first ordering picks the primary
           // otherwise. Same-name siblings stay reachable via the tier's
-          // failover pool. Unresolved names keep the classifier contract
-          // (intelligent-routing product behavior).
+          // failover pool. A full miss falls through to the ADR-0003
+          // unresolved-model policy below (default `auto` = the classifier).
           const bareHits = this.registry.getModelsByUpstreamName(
             modelName,
             pickHeaderHost(context?.clientRequest?.headers)
@@ -544,11 +560,75 @@ export class PipelineOrchestrator {
               ...normalizedRequest.router_options,
               force_tier: explicitModel.tier,
             };
+          } else {
+            // Every exact-match chain missed. ADR-0003 forwardProxy.unresolvedModel
+            // policy takes over — MITM leg ONLY: the native /v1 leg keeps the
+            // historical classifier contract unconditionally (native client
+            // names like `claude-opus-*` after a /model switch inside Claude
+            // Code are intelligent-routing product behavior). `fail` throws
+            // loud 404 (no invisible model drift, same contract as a
+            // `#variant` typo); a modelRef resolves exactly as if the client
+            // had sent it (explicit choice, ADR-0014 semantics).
+            // `direct` (ADR-0003 §7a) runs THROUGH the pipeline now: the
+            // turn continues below and ends as a DirectForwardPlan (see the
+            // directMiss early return after compression).
+            const missHost = pickHeaderHost(context?.clientRequest?.headers);
+            const action = mitmLeg
+              ? resolveUnresolvedModelAction(this.config.forwardProxy, missHost)
+              : 'auto';
+            if (action === 'fail') {
+              throw Object.assign(
+                new Error(
+                  `Model '${modelName}' is not registered and forwardProxy.unresolvedModel.onMiss=fail — register it or adjust the policy.`
+                ),
+                { statusCode: 404 }
+              );
+            }
+            if (action === 'direct') {
+              // The turn keeps running through the pipeline (compression and
+              // capture apply below); everything model-bound is skipped via
+              // the directMiss flag and the turn ends as a DirectForwardPlan.
+              // Recursion guard: a loopback ORIGINAL destination would
+              // re-enter the gateway — degrade to the default classifier.
+              // Host headers carry the port; the matcher matches bare hosts.
+              const missHostBare = (missHost || '').trim().toLowerCase().replace(/:\d+$/, '');
+              if (missHostBare && isLoopbackHost(missHostBare)) {
+                console.warn(
+                  `[OCR] forwardProxy.unresolvedModel.onMiss=direct refused for loopback host '${missHost}' — falling back to auto routing.`
+                );
+              } else {
+                directMiss = true;
+              }
+            } else if (action !== 'auto') {
+              const ref = action.ref;
+              const refTier = tierFromVirtualEntry(ref);
+              if (refTier) {
+                normalizedRequest.router_options = {
+                  ...normalizedRequest.router_options,
+                  force_tier: refTier,
+                };
+              } else if (this.registry.isCombo(ref)) {
+                unresolvedComboRef = ref;
+              } else {
+                const mapped = this.registry.getModel(ref);
+                if (mapped) {
+                  explicitModel = mapped;
+                  normalizedRequest.router_options = {
+                    ...normalizedRequest.router_options,
+                    force_tier: mapped.tier,
+                  };
+                } else {
+                  // Config validated refs at load time can go stale (model
+                  // removed / combo renamed). Degrade to the default instead
+                  // of failing every request on a dead mapping.
+                  console.warn(
+                    `[OCR] forwardProxy.unresolvedModel.onMiss: modelRef '${ref}' does not resolve — falling back to auto routing.`
+                  );
+                }
+              }
+            }
           }
         }
-        // Other unregistered names (e.g. native `claude-opus-*` after a /model
-        // switch inside Claude Code) are left untouched — the classifier
-        // decides, which IS the intelligent-routing product behavior.
       }
     }
 
@@ -557,10 +637,11 @@ export class PipelineOrchestrator {
     // session ratchet and schema-assertion escalation are all bypassed
     // (explicit user composition wins, mirroring the exact-model
     // pass-through above).
-    const comboByName =
-      !explicitModel && modelName && this.registry.isCombo(modelName)
+    const comboByName = explicitModel
+      ? undefined
+      : modelName && this.registry.isCombo(modelName)
         ? modelName
-        : undefined;
+        : unresolvedComboRef;
     if (comboByName && this.registry.isComboDisabled(comboByName)) {
       // Fail fast like the empty-member case below: the combo is hidden from
       // /v1/models, so an in-flight client naming it must get a loud 404 —
@@ -637,6 +718,44 @@ export class PipelineOrchestrator {
       content: Array.isArray(m.content) ? m.content.map(p => ({ ...p })) : m.content,
     }));
     await applyCompression(normalizedRequest, this.config.compression, sessionId);
+    // 2B′. `direct` unresolved-model turn (ADR-0003 §7a): compression ran
+    // above on the canonical messages — that is everything model-bound this
+    // turn shares. Route-entry experience, ratchet, candidate routing,
+    // breaker, failover, FinOps and turn registration are all model-bound
+    // and are skipped; the transport relays the plan verbatim.
+    if (directMiss) {
+      const clientHeaders = (context?.clientRequest?.headers ?? {}) as Record<
+        string,
+        string | string[] | undefined
+      >;
+      // MITM leg URL: plain-HTTP proxy requests arrive absolute-form (the
+      // URL IS the original destination); TLS-decrypted MITM requests arrive
+      // origin-form — scheme marker 'https' (transport-node-http) + the
+      // trusted Host header reconstruct it.
+      const rawUrl = context?.clientRequest?.url || '/';
+      const hostHeader = pickHeaderHost(clientHeaders) ?? '';
+      const targetUrl = /^https?:\/\//i.test(rawUrl) ? rawUrl : `https://${hostHeader}${rawUrl}`;
+      // The origin wire body: the client's own payload (all non-canonical
+      // fields preserved) with the scrubbed + compressed messages spliced
+      // back in — the original model id rides along verbatim.
+      const originBody = JSON.stringify({ ...request, messages: normalizedRequest.messages });
+      const fwdHeaders = filterHeaders(clientHeaders as Parameters<typeof filterHeaders>[0]);
+      delete (fwdHeaders as Record<string, unknown>)['host'];
+      delete (fwdHeaders as Record<string, unknown>)['content-length'];
+      return {
+        directForward: {
+          url: targetUrl,
+          requestHeaders: fwdHeaders,
+          requestBody: originBody,
+          capture: upstreamEventContext,
+        },
+        modelUsed: request.model || 'unknown',
+        fallbackOccurred: false,
+        sessionId,
+        traceId,
+        latencyMs: Date.now() - startTime,
+      };
+    }
 
     // 2C. Route-entry experience (ADR-0011). One normalized prompt hash feeds
     // the experience-table lookup and write. Directives were scrubbed above, so

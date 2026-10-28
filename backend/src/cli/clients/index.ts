@@ -1,4 +1,4 @@
-import { ClientAdapter } from './base.js';
+import { ClientAdapter, ClientActionResult } from './base.js';
 import { OpenCodeClientAdapter } from './opencode.js';
 import { OpenCodeProxyClientAdapter } from './opencode-proxy.js';
 import { ClaudeClientAdapter } from './claude.js';
@@ -34,7 +34,7 @@ export async function getAllClientStatuses(): Promise<ClientHookStatus[]> {
 export async function setupClient(
   name: string,
   options?: Parameters<ClientAdapter['setup']>[0]
-): Promise<{ success: boolean; message: string }> {
+): Promise<ClientActionResult> {
   const adapter = getClientAdapter(name);
   if (!adapter) {
     return {
@@ -62,8 +62,7 @@ export async function setupClient(
   const result = await adapter.setup(options);
   return siblingNote && result.success ? { ...result, message: result.message + siblingNote } : result;
 }
-
-export async function teardownClient(name: string): Promise<{ success: boolean; message: string }> {
+export async function teardownClient(name: string): Promise<ClientActionResult> {
   const adapter = getClientAdapter(name);
   if (!adapter) {
     return {

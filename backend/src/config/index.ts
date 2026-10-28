@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { isMap, parse, parseDocument, stringify } from 'yaml';
 import { DirectivesConfig, Layer2DecisionConfig, RequestCaptureConfig, RouteEntriesConfig, RouterConfig, WebAuthConfig, CircuitBreakerConfig, RateLimitConfig } from './types.js';
+import { normalizeUnresolvedModelConfig } from '../pipeline/unresolved-model.js';
 import { DEFAULT_RETRIABLE_CAUSES } from '../resilience/types.js';
 import { EFFORT_LADDER } from '../types/router.js';
 import { resolveDirectivePrefix } from '../pipeline/directives.js';
@@ -9,6 +10,7 @@ import { DEFAULT_CREDENTIAL_AFFINITY_CACHE_TTL_MS } from '../pipeline/credential
 import { ensureEnvScaffold, getEnvPaths, resolveEnvName } from './env.js';
 import {
   DEFAULT_FORWARD_PROXY_PORT,
+  DEFAULT_FORWARD_PROXY_HOST,
   DEFAULT_HEADROOM_TIMEOUT_MS,
   DEFAULT_DIRECTIVE_PREFIX,
   DEFAULT_HEADROOM_URL,
@@ -104,7 +106,7 @@ const DEFAULT_CONFIG: RouterConfig = {
   forwardProxy: {
     enabled: false, // opt-in: full-capture MITM proxy must be enabled consciously
     port: DEFAULT_FORWARD_PROXY_PORT,
-    host: '127.0.0.1',
+    host: DEFAULT_FORWARD_PROXY_HOST,
     bypassHosts: [],
     viaOutboundProxy: false, // opt-in: transit egress via the outbound proxy policy
   },
@@ -124,6 +126,7 @@ const DEFAULT_CONFIG: RouterConfig = {
     maxBodyBytes: DEFAULT_MAX_BODY_BYTES,
     maxSessionMB: 512,
     storeMedia: true,
+    redactSecrets: true, // false = raw credentials persist in the archive (explicit opt-out)
   },
   tracePersist: {
     enabled: true, // default on: console history survives restarts (pure observability data)
@@ -324,6 +327,7 @@ function resolveRequestCapture(parsed: any): RequestCaptureConfig {
     // boolean needs the ?? chain (false must survive); deliberately NOT in the
     // pick union, which now types only the boolean/string keys.
     storeMedia: (raw.storeMedia ?? base.storeMedia) as boolean,
+    redactSecrets: (raw.redactSecrets ?? base.redactSecrets) as boolean,
     dir: pick('dir'),
   };
 }
@@ -572,7 +576,11 @@ export function loadConfig(configPath?: string): RouterConfig {
         routeEntries: sanitizeRouteEntriesInput(parsed?.routeEntries),
         directives: sanitizeDirectivesInput(parsed?.directives),
         proxy: { ...DEFAULT_CONFIG.proxy, ...parsed?.proxy },
-        forwardProxy: { ...DEFAULT_CONFIG.forwardProxy, ...parsed?.forwardProxy },
+        forwardProxy: {
+          ...DEFAULT_CONFIG.forwardProxy,
+          ...parsed?.forwardProxy,
+          unresolvedModel: normalizeUnresolvedModelConfig(parsed?.forwardProxy?.unresolvedModel),
+        },
         compression: {
           rtk: { ...DEFAULT_CONFIG.compression?.rtk, ...parsed?.compression?.rtk },
           headroom: { ...DEFAULT_CONFIG.compression?.headroom, ...parsed?.compression?.headroom },
@@ -739,6 +747,12 @@ function syncRuntimeAuthView(fresh: RouterConfig): void {
     runtimeConfigRef.classifier = fresh.classifier;
     runtimeConfigRef.routing = fresh.routing;
     runtimeConfigRef.systemone = fresh.systemone;
+    // forwardProxy too — the MITM interceptor and the orchestrator's
+    // unresolved-model policy read the live boot snapshot per request
+    // (bypassHosts, viaOutboundProxy, unresolvedModel.onMiss/hosts), so a
+    // save must land here or the console's "takes effect immediately"
+    // promise is false.
+    runtimeConfigRef.forwardProxy = fresh.forwardProxy;
   }
   getRateLimiter().reload(fresh);
   // Rebuild the effective quota plan right after the ref sync (the prober
@@ -945,6 +959,9 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'forwardProxy.bypassHosts': '例外主机（glob）：纯字符串 = 直连隧道；{ host, viaProxy: true } = 经出站代理隧道（逐主机勾选）；loopback 永远绕过',
   'forwardProxy.caDir': 'MITM CA 存放目录（默认 ~/.omnicell-router/forward-proxy）',
   'forwardProxy.viaOutboundProxy': '非例外主机的转发请求（未被拦截接管的 GET 等）是否经出站代理；例外主机的出站方式在 bypassHosts 逐行勾选',
+  'forwardProxy.unresolvedModel': '未注册模型名兜底（ADR-0003，仅 MITM 腿）：经代理接入的请求，其 model 字段经过 全量解析链（已注册 id → 变体 → Host 钉定的裸上游名 → 组合）全部未命中时的行为；原生 /v1 腿（直连网关的客户端）永不读取本节，维持智能路由不变。保存后即时生效',
+ 'forwardProxy.unresolvedModel.onMiss': '未命中动作：fail（404 显式失败，杜绝隐形模型漂移）/ direct（直连：整轮仍走管线——归一化、会话 id、请求捕捉与压缩（rtk + headroom + caveman，失败放行原文）全部生效，但跳过一切模型绑定环节（路由/棘轮/路由体验表/熔断/故障转移/计费/轮次登记），最终由直连执行器把响应从客户端拨打的原始目的地原样中继回来——原始 model id 与客户端自己的 Authorization 头随行；loopback 目标拒绝直连（防递归，降级 auto））/ 任意网关可见 modelRef（含 auto——即默认的智能路由级联，档位别名 lite/plus/pro/ultra、组合 id、已注册模型 id——按客户端显式发送该引用处理；留空与 auto 等价）',
+  'forwardProxy.unresolvedModel.hosts': '逐主机覆写（主机名小写 → onMiss 值）：按客户端拨打的原始 Host 覆写全局 onMiss，适合“该主机的目录本网关不镜像、未知名应直连放回”的场景',
   compression: 'Token 压缩（rtk 工具输出压缩 + headroom 上下文压缩 + caveman 输出风格注入；全部失败时放行原文，重启网关生效）',
   'compression.rtk.enabled': 'rtk 工具输出压缩：git/grep/ls/tree/日志/构建输出等工具结果文本压缩 60-90%（本地确定性压缩器，不破坏上游前缀缓存）',
   'compression.headroom.enabled': 'headroom 上下文压缩：转发前调用 headroom sidecar 的 /v1/compress（失败/超时自动放行原文；会话模式保上游前缀缓存）',
@@ -956,6 +973,7 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   'compression.caveman.level': 'caveman 强度：lite / full / ultra / wenyan-lite / wenyan / wenyan-ultra（文言）',
   requestCapture: '请求全量捕获（HTTP 交换审计日志；默认关闭）：请求/响应原文落盘 JSONL，捕获体可能含敏感数据且占用磁盘，按日期目录保留、到期或超容量自动清理；单会话另有 maxSessionMB 封顶（失控的 agent 循环不会吃光共享容量，触顶档案停止追加并落一条 archive-overflow 终态行）',
   'requestCapture.storeMedia': 'base64 图片/文档等二进制载荷转存硬盘（默认 true）：请求体中的 base64 媒体替换为 [MEDIA …sha256=… file=media/…] 占位符，内容寻址去重（同一张图多轮重发只落一份），随日期目录同批清理；关闭或写盘失败时仍替换为无 file= 的占位符（不留 base64 在归档里），对话回放页可直接显示缩略图',
+  'requestCapture.redactSecrets': '捕获凭证脱敏开关（默认 true）：请求捕获归档里凭证形请求头（authorization / x-api-key / cookie / token 等）与查询串认证参数的值一律替换为 [REDACTED]；设为 false 后这些值原样落盘（含上游 provider 密钥），便于排查上游实际收到的完整请求——归档将包含真实密钥，请妥善保管',
   catalog: '目录数据源：远程 catalog 源定义与本地锚定（控制台 /catalog 页可视化编辑，改后即时生效）',
   'catalog.syncIntervalMs': '目录自动同步周期（毫秒，默认 86400000 = 24h）',
   'catalog.lockedModels': '本地锚定的模型 id 列表：这些模型的本地定义值（含 0 价）不被任何远程源覆盖',
@@ -984,7 +1002,6 @@ const YAML_FIELD_COMMENTS: Record<string, string> = {
   responses: 'Responses 协议面（POST /v1/responses）：网关侧 previous_response_id 会话链',
   'responses.persist': '会话链磁盘恢复（默认 false）：开启后每轮增量以 JSONL 恢复日志写入本环境数据目录（文件权限 0600），启动时自动重放，24 小时过期自动清理——网关重启后长对话仍可续接；关闭时重启即断链（返回 400，客户端需重发完整 input）。日志含对话原文，属敏感数据落盘，与请求捕获（requestCapture）同级隐私考量；磁盘写入失败绝不影响请求本身',
 };
-
 function lookupYamlComment(path: string): string | undefined {
   const direct = YAML_FIELD_COMMENTS[path];
   if (direct !== undefined) return direct;

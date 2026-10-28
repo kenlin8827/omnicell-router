@@ -2,7 +2,8 @@ import path from 'node:path';
 import { getOcrHomeDir } from '../cli/paths.js';
 import type { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import type { ForwardProxyConfig } from '../config/types.js';
-import { DEFAULT_FORWARD_PROXY_PORT } from '../config/defaults.js';
+import { DEFAULT_FORWARD_PROXY_PORT, DEFAULT_FORWARD_PROXY_HOST } from '../config/defaults.js';
+import { getRuntimeConfigRef } from '../config/index.js';
 import { createForwardProxyServer, type ForwardProxyHandle } from './server.js';
 import { createProxyInterceptor } from './interceptor.js';
 
@@ -15,7 +16,7 @@ export async function startForwardProxy(
   cfg: ForwardProxyConfig,
   orchestrator: PipelineOrchestrator
 ): Promise<ForwardProxyHandle> {
-  const host = cfg.host?.trim() || '127.0.0.1';
+  const host = cfg.host?.trim() || DEFAULT_FORWARD_PROXY_HOST;
   const caDir = cfg.caDir?.trim() || path.join(getOcrHomeDir(), 'forward-proxy');
   const intercept = createProxyInterceptor(orchestrator);
   const handle = await createForwardProxyServer({
@@ -24,6 +25,9 @@ export async function startForwardProxy(
     caDir,
     bypassHosts: cfg.bypassHosts || [],
     viaOutboundProxy: cfg.viaOutboundProxy === true,
+    // Hot-apply seam: bypassHosts / viaOutboundProxy / unresolvedModel re-read
+    // the runtime ref per request, so console saves need no restart.
+    liveForwardProxy: () => getRuntimeConfigRef()?.forwardProxy,
     intercept,
     log: (m) => console.log(`[ForwardProxy] ${m}`),
   });

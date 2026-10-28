@@ -7,6 +7,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { EventEmitter, once } from 'node:events';
+import type { ForwardProxyConfig } from '../src/config/types.js';
 import { parseClientHelloSNI } from '../src/forward-proxy/sni.js';
 import { isLoopbackHost, matchBypass } from '../src/forward-proxy/bypass.js';
 import { ensureCa, CertMinter } from '../src/forward-proxy/ca.js';
@@ -280,6 +282,7 @@ describe('forward-proxy: LLM protocol interceptor', () => {
 
     srv.close();
   });
+
 
   it('MITM leg records the ORIGINAL request line/headers into the capture exchange', async () => {
     const calls: any[] = [];
@@ -709,7 +712,6 @@ describe('forward-proxy: outbound-proxy transit (per-host viaProxy)', () => {
     });
     await new Promise<void>((r) => echo.listen(0, '127.0.0.1', () => r()));
     const echoPort = (echo.address() as net.AddressInfo).port;
-
     // Fake CONNECT proxy: records the CONNECT line, tunnels to the echo server
     const proxyConnects: string[] = [];
     const fakeProxy = net.createServer((client) => {
@@ -787,5 +789,240 @@ describe('forward-proxy: outbound-proxy transit (per-host viaProxy)', () => {
       fakeProxy.close();
       echo.close();
     }
+  });
+});
+
+describe('forward-proxy: hot-apply (live forwardProxy config, no restart)', () => {
+  it('flipping bypassHosts/viaOutboundProxy in the live reader changes egress mid-run', async () => {
+    const echo = net.createServer((s) => {
+      s.on('data', (d) => s.write(d));
+    });
+    await new Promise<void>((r) => echo.listen(0, '127.0.0.1', () => r()));
+    const echoPort = (echo.address() as net.AddressInfo).port;
+
+    const proxyConnects: string[] = [];
+    const proxyEvents = new EventEmitter();
+    const fakeProxy = net.createServer((client) => {
+      let buf = '';
+      const onData = (d: Buffer) => {
+        buf += d.toString('latin1');
+        if (!buf.includes('\r\n\r\n')) return;
+        client.removeListener('data', onData);
+        proxyConnects.push(buf.split('\r\n')[0]);
+        proxyEvents.emit('connect', buf.split('\r\n')[0]);
+        client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+        const up = net.connect(echoPort, '127.0.0.1');
+        up.on('connect', () => {
+          const rest = buf.slice(buf.indexOf('\r\n\r\n') + 4);
+          if (rest) up.write(Buffer.from(rest, 'latin1'));
+          client.pipe(up);
+          up.pipe(client);
+        });
+        up.on('error', () => client.destroy());
+      };
+      client.on('data', onData);
+      client.on('error', () => {});
+    });
+    await new Promise<void>((r) => fakeProxy.listen(0, '127.0.0.1', () => r()));
+    const proxyPort = (fakeProxy.address() as net.AddressInfo).port;
+
+    const { initProxyConfig } = await import('../src/utils/proxy.js');
+    initProxyConfig({ enabled: true, url: `http://127.0.0.1:${proxyPort}` });
+    let live: ForwardProxyConfig = { bypassHosts: ['hot.example'] };
+    try {
+      const handle = await createForwardProxyServer({
+        port: 0,
+        host: '127.0.0.1',
+        caDir: tmpCaDir(),
+        bypassHosts: [],
+        viaOutboundProxy: false,
+        liveForwardProxy: () => live,
+        intercept: async () => false,
+      });
+
+      // Absolute-form plain-HTTP GET — not an LLM surface, so intercept passes
+      // it through to the forwarders, where the global viaOutboundProxy flag
+      // (re-read from `live` per request) decides the egress.
+      const forwardViaProxy = (): Promise<number> =>
+        new Promise((resolve) => {
+          const req = http.request(
+            { host: '127.0.0.1', port: handle.port, method: 'GET', path: `http://hot.example:${echoPort}/` },
+            (res) => {
+              res.resume();
+              res.on('end', () => resolve(res.statusCode || 0));
+            }
+          );
+          req.on('error', () => resolve(0));
+          req.end();
+        });
+
+      // Phase 1: hot.example is bypassed → blind tunnel with DIRECT egress;
+      // the unroutable host kills the tunnel → 502, no CONNECT at fakeProxy.
+      assert.equal(await forwardViaProxy(), 502);
+      assert.equal(proxyConnects.length, 0, 'bypassed host must not egress via the outbound proxy');
+
+      // Phase 2: hot-apply removes the bypass and turns the global flag on —
+      // NOT awaited to completion: the fake proxy's blind pipe keeps the
+      // response socket open; the CONNECT line at the fake proxy IS the
+      // observable.
+      live = { bypassHosts: [], viaOutboundProxy: true };
+      const inflight = http.request(
+        { host: '127.0.0.1', port: handle.port, method: 'GET', path: `http://hot.example:${echoPort}/` }
+      );
+      inflight.on('error', () => {});
+      inflight.end();
+      await once(proxyEvents, 'connect');
+      inflight.destroy();
+      assert.ok(
+        proxyConnects.some((l) => l.includes(`hot.example:${echoPort}`)),
+        `hot-applied config must route egress via the outbound proxy, got: ${proxyConnects.join(' | ')}`
+      );
+      await handle.close();
+    } finally {
+      initProxyConfig(undefined);
+      fakeProxy.close();
+      echo.close();
+    }
+  });
+});
+describe('forward-proxy: direct-leg capture parity (ADR-0003 §7a)', () => {
+  it('a direct-forward turn lands in the capture archive as client request + upstream pair sharing one traceId', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-fp-directcap-'));
+    // Fake headroom sidecar: rewrites the user message — proves the direct
+    // turn's compression runs INSIDE the pipeline now (and reaches the origin).
+    const sidecar = http.createServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          messages: [{ role: 'user', content: 'capture-me (compressed)' }],
+          tokens_before: 500,
+          tokens_saved: 450,
+          compression_skipped: false,
+        })
+      );
+    });
+    await new Promise<void>((r) => sidecar.listen(0, '127.0.0.1', () => r()));
+    const sidecarPort = (sidecar.address() as net.AddressInfo).port;
+    // Fake upstream: answers the verbatim forward with a plain JSON body.
+    // Bound on a NON-loopback address: the direct leg's recursion guard
+    // refuses loopback destinations, so the e2e parity check needs one.
+    const lanIp = Object.values(os.networkInterfaces())
+      .flat()
+      .find((i): i is os.NetworkInterfaceInfo => !!i && i.family === 'IPv4' && !i.internal)?.address;
+    assert.ok(lanIp, 'a non-loopback IPv4 address is required for the direct-leg e2e');
+    let originAuth = '';
+    let originBody = '';
+    let originLengthHeader = '';
+    const upstream = http.createServer((req, res) => {
+      originAuth = String(req.headers.authorization || '');
+      originLengthHeader = String(req.headers['content-length'] || '');
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        originBody = Buffer.concat(chunks).toString('utf8');
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"echo":true}');
+      });
+    });
+    await new Promise<void>((r) => upstream.listen(0, lanIp, () => r()));
+    const upstreamPort = (upstream.address() as net.AddressInfo).port;
+    const config = loadConfig();
+    config.requestCapture = { enabled: true, dir: tmp, retentionDays: 7, maxTotalMB: 64, maxBodyBytes: 65536 };
+    config.forwardProxy = { unresolvedModel: { onMiss: 'direct' } };
+    config.compression = {
+      headroom: { enabled: true, url: `http://127.0.0.1:${sidecarPort}`, timeoutMs: 3000, autoStart: false },
+    };
+    config.models = [
+      {
+        id: 'lite-1', provider: 'mock', upstreamModel: 'lite-1', tier: 'lite',
+        priority: 1, isDefaultInTier: true, pricing: { input: 0.15, cacheRead: 0.015, output: 0.6 },
+      },
+    ];
+    const registry = new ProviderRegistry(config, true);
+    const orchestrator = new PipelineOrchestrator(config, registry, new FinOpsTracker());
+    const handle = await createForwardProxyServer({
+      port: 0,
+      host: '127.0.0.1',
+      caDir: tmpCaDir(),
+      intercept: createProxyInterceptor(orchestrator),
+    });
+    // Plain-HTTP proxy leg: absolute-form POST for an unregistered model —
+    // the full resolution chain misses, onMiss=direct relays via the pipeline.
+    const body = JSON.stringify({
+      model: 'big-pickle',
+      messages: [{ role: 'user', content: 'capture-me' }],
+      temperature: 0.3,
+    });
+    const raw = await new Promise<string>((resolve, reject) => {
+      const sock = net.connect(handle.port, '127.0.0.1', () => {
+        sock.write(
+          `POST http://${lanIp}:${upstreamPort}/v1/chat/completions HTTP/1.1\r\n` +
+            `Host: ${lanIp}:${upstreamPort}\r\n` +
+            'Content-Type: application/json\r\n' +
+            'Authorization: Bearer client-key\r\n' +
+            `Content-Length: ${Buffer.byteLength(body)}\r\n` +
+            'Connection: close\r\n\r\n' +
+            body
+        );
+      });
+      let buf = '';
+      sock.on('data', (d) => (buf += d.toString()));
+      sock.on('close', () => resolve(buf));
+      sock.on('error', reject);
+    });
+    assert.ok(raw.includes('{"echo":true}'), 'upstream body relayed verbatim to the client');
+
+    const readAllEvents = (): any[] => {
+      const out: any[] = [];
+      if (!fs.existsSync(tmp)) return out;
+      for (const day of fs.readdirSync(tmp)) {
+        const dayDir = path.join(tmp, day);
+        if (!fs.statSync(dayDir).isDirectory()) continue;
+        for (const f of fs.readdirSync(dayDir)) {
+          for (const line of fs.readFileSync(path.join(dayDir, f), 'utf8').split('\n').filter(Boolean)) {
+            out.push(JSON.parse(line));
+          }
+        }
+      }
+      return out;
+    };
+    let events: any[] = [];
+    const deadline = Date.now() + 2500;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 25));
+      events = readAllEvents().filter((ev) => ev.eventType === 'http-exchange');
+      if (events.length >= 4) break;
+    }
+    const clientReq = events.find((e) => e.direction === 'client' && e.phase === 'request');
+    const clientRes = events.find((e) => e.direction === 'client' && e.phase === 'response');
+    const upReq = events.find((e) => e.direction === 'upstream' && e.phase === 'request');
+    const upRes = events.find((e) => e.direction === 'upstream' && e.phase === 'response');
+    assert.ok(clientReq, 'client request event captured');
+    assert.ok(clientRes, 'gateway response event captured');
+    assert.ok(upReq, 'upstream request event captured');
+    assert.ok(upRes, 'upstream response event captured');
+    // One turn: all four events share the traceId; request↔response pair by spanId.
+    const traceIds = new Set(events.map((e) => e.traceId));
+    assert.equal(traceIds.size, 1, `all direct-forward events share one traceId, got ${traceIds.size}`);
+    assert.equal(clientReq.spanId, clientRes.spanId, 'client request/response pair by spanId');
+    assert.equal(upReq.spanId, upRes.spanId, 'upstream request/response pair by spanId');
+    assert.ok(upReq.wire.requestLine.includes(`${lanIp}:${upstreamPort}`), 'upstream request line shows the ORIGINAL destination');
+    assert.ok(upReq.wire.requestBody.includes('big-pickle'), 'unregistered model name rides the verbatim forward');
+    assert.ok(upRes.wire.responseBody.includes('echo'), 'upstream response body captured');
+    // Pipeline-carried direct semantics at the origin: client's OWN auth
+    // header rides along, compression (headroom sidecar output) reached the
+    // origin, the original model id + non-canonical fields are preserved and
+    // content-length matches the forwarded bytes.
+    assert.equal(originAuth, 'Bearer client-key', "the client's own Authorization rides the direct forward");
+    const originParsed = JSON.parse(originBody);
+    assert.equal(originParsed.model, 'big-pickle', 'original model id rides verbatim');
+    assert.equal(originParsed.temperature, 0.3, 'non-canonical client fields survive');
+    assert.equal(originParsed.messages[0].content, 'capture-me (compressed)', 'pipeline compression reached the origin');
+    assert.equal(Number(originLengthHeader), Buffer.byteLength(originBody), 'no stale content-length');
+
+    await handle.close();
+    upstream.close();
+    sidecar.close();
+    fs.rmSync(tmp, { recursive: true, force: true });
   });
 });

@@ -464,9 +464,42 @@ export interface CaptureStatus {
   maxBodyBytes: number;
   maxSessionMB: number;
   storeMedia: boolean;
+  redactSecrets: boolean;
   totalBytes: number;
   dateCount: number;
 }
+
+/** Wire spec for POST /api/admin/capture/replay (mirrors frontend/src/lib/curl.ts ReplaySpec). */
+export interface ReplaySpec {
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  body?: string;
+  provider?: string;
+  model?: string;
+}
+
+export type CaptureReplayResult =
+  | { status: 'loading' }
+  | {
+      status: 'ok';
+      statusLine: string;
+      headers: Record<string, string>;
+      body: string;
+      truncated: boolean;
+      /** ms from dispatch to the status/headers event (first byte). */
+      ttfbMs: number;
+      /** ms from dispatch to stream end. */
+      totalMs: number;
+    }
+  | { status: 'error'; message: string };
+
+/** NDJSON stream events emitted by POST /api/admin/capture/replay. */
+export type CaptureReplayStreamEvent =
+  | { type: 'status'; statusLine: string; headers: Record<string, string> }
+  | { type: 'chunk'; text: string }
+  | { type: 'end'; truncated: boolean }
+  | { type: 'error'; message: string };
 
 export interface CaptureDateRow {
   date: string; // YYYY-MM-DD
@@ -1624,8 +1657,13 @@ export const api = {
       body: JSON.stringify(payload || {}),
     });
     if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.message || `HTTP ${res.status}`);
+      const body = await res.json().catch(() => ({}));
+      // reasonCode/params ride along for console i18n mapping (clients page);
+      // the raw message stays the fallback for unknown codes.
+      const err = new Error(body.message || `HTTP ${res.status}`) as Error & { reasonCode?: string; params?: Record<string, string> };
+      err.reasonCode = body.reasonCode;
+      err.params = body.params;
+      throw err;
     }
     return res.json();
   },
@@ -2707,6 +2745,51 @@ export const api = {
       { method: 'DELETE' }
     );
     return res.json();
+  },
+
+  /** Streamed replay of POST /api/admin/capture/replay (one-shot, never
+   *  recorded): the endpoint answers NDJSON; each parsed event goes to
+   *  `onEvent` so the dialog renders the body incrementally. */
+  async replayCaptureRequest(spec: ReplaySpec, onEvent: (evt: CaptureReplayStreamEvent) => void): Promise<void> {
+    const res = await fetch('/api/admin/capture/replay', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(spec),
+    });
+    if (!res.ok || !res.body) {
+      const json = await res.json().catch(() => undefined);
+      onEvent({ type: 'error', message: json?.message || `HTTP ${res.status}` });
+      return;
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        try {
+          const raw = JSON.parse(line) as Record<string, unknown>;
+          if (typeof raw.type === 'string') {
+            onEvent(raw as unknown as CaptureReplayStreamEvent);
+          } else if (raw.status === 'ok' && typeof raw.body === 'string') {
+            // Legacy (pre-NDJSON) gateway: one whole-payload JSON answer.
+            // Convert so the dialog still renders instead of erroring.
+            onEvent({ type: 'chunk', text: raw.body });
+            onEvent({ type: 'end', truncated: Boolean(raw.truncated) });
+          } else if (raw.status === 'error') {
+            onEvent({ type: 'error', message: String(raw.message || 'replay failed') });
+          }
+        } catch {
+          // A malformed line must not kill the stream — skip it.
+        }
+      }
+    }
   },
 };
 

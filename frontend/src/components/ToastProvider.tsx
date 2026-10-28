@@ -1,7 +1,7 @@
 import React, { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, CheckCircle, Info, X } from 'lucide-react';
+import { CheckCircle, Info, TriangleAlert, X } from 'lucide-react';
 
-type ToastType = 'success' | 'error' | 'info';
+type ToastType = 'success' | 'error' | 'info' | 'warning';
 
 interface ToastItem {
   id: number;
@@ -14,14 +14,17 @@ export interface ToastApi {
   success: (message: string) => void;
   error: (message: string) => void;
   info: (message: string) => void;
+  /** Amber attention toast — saved-but-restart-gated notices, degradations. */
+  warning: (message: string) => void;
 }
 
 const ToastContext = createContext<ToastApi | null>(null);
 
 const TYPE_STYLE: Record<ToastType, { color: string; bg: string; Icon: typeof Info }> = {
   success: { color: 'var(--accent-emerald)', bg: 'color-mix(in srgb, var(--accent-emerald) 15%, transparent)', Icon: CheckCircle },
-  error: { color: 'var(--accent-rose)', bg: 'color-mix(in srgb, var(--accent-rose) 15%, transparent)', Icon: AlertTriangle },
+  error: { color: 'var(--accent-rose)', bg: 'color-mix(in srgb, var(--accent-rose) 15%, transparent)', Icon: TriangleAlert },
   info: { color: 'var(--accent)', bg: 'var(--accent-bg)', Icon: Info },
+  warning: { color: 'var(--accent-amber)', bg: 'color-mix(in srgb, var(--accent-amber) 15%, transparent)', Icon: TriangleAlert },
 };
 
 const TOAST_MS = 3500;
@@ -59,6 +62,7 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       success: push('success'),
       error: push('error'),
       info: push('info'),
+      warning: push('warning'),
     }),
     [push]
   );
@@ -134,6 +138,6 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
 export const useToast = (): ToastApi => {
   const ctx = useContext(ToastContext);
-  if (!ctx) throw new Error('useToast must be used within a ToastProvider');
+  if (!ctx) throw new Error('useToast must be used within ToastProvider');
   return ctx;
 };

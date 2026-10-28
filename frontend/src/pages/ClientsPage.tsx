@@ -29,6 +29,28 @@ const clientSlots = (c: ClientStatus): { key: string; value?: string; default?: 
 const supportsExtraModels = (name: string): boolean =>
   name === 'opencode' || name === 'dsh' || name === 'pi' || name === 'omp';
 
+/** Backend machine reasonCodes (ClientActionResult) → i18n keys (opencode-proxy failure modes). */
+const CLIENT_REASON_KEY: Record<string, string> = {
+  forwardProxyDisabled: 'clients.proxyErrForwardProxyDisabled',
+  forwardProxyCaMissing: 'clients.proxyErrCaMissing',
+  serviceProbeFailed: 'clients.proxyErrServiceProbe',
+  serviceSetEnvFailed: 'clients.proxyErrServiceSetEnv',
+  serviceStartFailed: 'clients.proxyErrServiceStart',
+  notActive: 'clients.proxyErrNotActive',
+};
+
+type TFn = (key: string, params?: Record<string, string | number>) => string;
+
+/** Localize a client setup/teardown failure: a mapped reasonCode wins,
+ * anything else (other adapters, unknown codes) falls back to the raw
+ * server message — loud, never swallowed. */
+const clientActionErrorText = (err: unknown, t: TFn): string => {
+  const e = err as { reasonCode?: string; params?: Record<string, string>; message?: string };
+  const key = e?.reasonCode ? CLIENT_REASON_KEY[e.reasonCode] : undefined;
+  if (key) return t(key, e.params ?? {});
+  return 'Failed: ' + (e?.message ?? String(err));
+};
+
 /**
  * Clients whose non-main slots are ROLE rows (pi's subagent roles, omp's
  * modelRoles): main lives in modelSel, roles in the link-table draft
@@ -415,9 +437,13 @@ export const ClientsPage: React.FC = () => {
           extras = view.models.filter(m => !m.virtual && m.allowed).map(m => m.id);
         }
       }
-      // The picker is mandatory: without an explicit key there is nothing to
-      // write — refuse rather than silently keep the previous token.
-      if (action === 'setup' && !(apiKeySel[clientName] || '')) {
+      // The picker is mandatory for key-writing clients: without an explicit
+      // key there is nothing to write — refuse rather than silently keep the
+      // previous token. opencode-proxy writes no key (it only persists the
+      // service env: forward proxy, NO_PROXY, MITM CA), so it is exempt —
+      // its form doesn't even render the key picker.
+      const keyless = clientName === 'opencode-proxy';
+      if (action === 'setup' && !keyless && !(apiKeySel[clientName] || '')) {
         toast.error(t('clients.apiKeyRequired'));
         return;
       }
@@ -425,14 +451,19 @@ export const ClientsPage: React.FC = () => {
       const agentPayload = opencodeAgentPayload(clientName);
       const res = await api.toggleClient(clientName, action, action === 'setup' ? {
         models: piPayload.models,
-        apiKey: apiKeySel[clientName],
+        ...(keyless ? {} : { apiKey: apiKeySel[clientName] }),
         contextWindow: Number(ctxSel[clientName] || '262144'),
         extraModels: extras,
         ...(piPayload.agentModels ? { agentModels: piPayload.agentModels } : {}),
         profile: piPayload.profile,
         ...agentPayload,
       } : undefined);
-      setActionNotice(res.message || 'Updated');
+      // Proxy-mode notices are backend prose — show the localized hint/teardown copy instead.
+      setActionNotice(
+        clientName === 'opencode-proxy'
+          ? t(action === 'setup' ? 'clients.proxyHint' : 'clients.proxyTeardownOk')
+          : (res.message || 'Updated')
+      );
       if (action === 'setup') {
         // Write-through: the memory mirrors the drafts this setup just
         // applied — the same selections the payload was built from.
@@ -451,7 +482,7 @@ export const ClientsPage: React.FC = () => {
       await loadClients();
       setTimeout(() => setActionNotice(null), 3000);
     } catch (err: any) {
-      toast.error('Failed: ' + err.message);
+      toast.error(clientActionErrorText(err, t));
     } finally {
       setLoading(false);
     }

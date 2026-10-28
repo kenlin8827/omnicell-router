@@ -453,6 +453,14 @@ export const SettingsPage: React.FC = () => {
                 onChange={v => patchRequestCapture({ enabled: v })}
               />
             </label>
+            <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
+              <span>{t('settings.capRedactSecrets')}</span>
+              <Switch
+                checked={config.requestCapture?.redactSecrets ?? true}
+                onChange={v => patchRequestCapture({ redactSecrets: v })}
+                ariaLabel={t('settings.capRedactSecrets')}
+              />
+            </label>
 
             {/* The archive-policy block renders only while the master is on
                 (off = compact single row). */}

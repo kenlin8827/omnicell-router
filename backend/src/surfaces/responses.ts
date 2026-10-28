@@ -201,7 +201,7 @@ export const responsesSurface: ChatSurface = {
     // order as the old handler, which appended before BOTH the SSE writeHead
     // and the JSON send.
     s.respId = newResponseId();
-    const assistant = result.response.choices[0]?.message;
+    const assistant = result.response?.choices[0]?.message;
     const node: RespNode = {
       id: s.respId,
       parent: s.parent,
@@ -220,14 +220,14 @@ export const responsesSurface: ChatSurface = {
 
   encodeJson(result: ExecutionResult, state: unknown): unknown {
     const s = state as ResponsesState;
-    return chatToResponseObject(result.response, s.respId, result.modelUsed);
+    return chatToResponseObject(result.response!, s.respId, result.modelUsed);
   },
 
   encodeStream(result: ExecutionResult, state: unknown): string[] {
     const s = state as ResponsesState;
     // The exact minted s.respId (today's closure variable `respId`) — every
     // emitted event carries it; a mismatch would break continuation.
-    return chatToStreamEvents(result.response, s.respId, result.modelUsed);
+    return chatToStreamEvents(result.response!, s.respId, result.modelUsed);
   },
 
   // `_status` is kept for signature parity with the other wire surfaces; this

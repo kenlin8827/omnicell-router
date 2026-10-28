@@ -13,6 +13,10 @@ export const DEFAULT_PROVIDER_TIMEOUT_MS = 300_000;
 /** Forward-proxy listen port when `forwardProxy.port` is unset. */
 export const DEFAULT_FORWARD_PROXY_PORT = 4555;
 
+/** Forward-proxy listen host when `forwardProxy.host` is unset (loopback only). */
+export const DEFAULT_FORWARD_PROXY_HOST = '127.0.0.1';
+
+
 /** Headroom sidecar port (and base URL) when `compression.headroom.url` is unset. */
 export const DEFAULT_HEADROOM_PORT = 8787;
 export const DEFAULT_HEADROOM_URL = `http://127.0.0.1:${DEFAULT_HEADROOM_PORT}`;
@@ -50,3 +54,7 @@ export const DEFAULT_DIRECTIVE_PREFIX = '@ocr-';
 
 /** Route-entries LRU capacity when `routeEntries.maxEntries` is unset. */
 export const DEFAULT_ROUTE_ENTRIES_MAX = 5000;
+
+/** Capture-replay one-shot upstream hard deadline — streaming thinking
+ *  models legitimately run minutes; 30s aborted healthy generations. */
+export const DEFAULT_REPLAY_TIMEOUT_MS = 300_000;

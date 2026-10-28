@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { ClientAdapter } from './base.js';
+import { ClientAdapter, ClientActionResult } from './base.js';
 import { ClientHookStatus } from '../types.js';
 import { loadConfig, getRuntimeConfigRef } from '../../config/index.js';
 import { DEFAULT_FORWARD_PROXY_PORT } from '../../config/defaults.js';
@@ -271,12 +271,13 @@ export class OpenCodeProxyClientAdapter implements ClientAdapter {
     };
   }
 
-  async setup(): Promise<{ success: boolean; message: string }> {
+  async setup(): Promise<ClientActionResult> {
     invalidateProbe();
     const fp = resolveForwardProxyEndpoint();
     if (!fp) {
       return {
         success: false,
+        reasonCode: 'forwardProxyDisabled',
         message:
           'forwardProxy is not enabled in config.yaml — set `forwardProxy.enabled: true` (and keep the gateway running) before enabling OpenCode proxy mode.',
       };
@@ -284,6 +285,8 @@ export class OpenCodeProxyClientAdapter implements ClientAdapter {
     if (!fs.existsSync(fp.caPath)) {
       return {
         success: false,
+        reasonCode: 'forwardProxyCaMissing',
+        params: { path: fp.caPath },
         message: `Forward-proxy MITM CA not found at ${fp.caPath} — it is generated when the gateway boots with forwardProxy enabled. Start the gateway and retry.`,
       };
     }
@@ -291,6 +294,8 @@ export class OpenCodeProxyClientAdapter implements ClientAdapter {
     if (!probe.ok) {
       return {
         success: false,
+        reasonCode: 'serviceProbeFailed',
+        params: { detail: (probe.stderr || probe.stdout).trim() },
         message: `\`opencode service get env\` failed — OpenCode v2 with the managed service is required for proxy mode. ${(probe.stderr || probe.stdout).trim()}`.trim(),
       };
     }
@@ -316,15 +321,21 @@ export class OpenCodeProxyClientAdapter implements ClientAdapter {
     ] as const) {
       const r = await runOpenCode(['service', 'set', 'env', k, v]);
       if (!r.ok) {
-        return { success: false, message: `\`opencode service set env ${k}\` failed: ${(r.stderr || r.stdout).trim()}` };
+        return {
+          success: false,
+          reasonCode: 'serviceSetEnvFailed',
+          params: { key: k, detail: (r.stderr || r.stdout).trim() },
+          message: `\`opencode service set env ${k}\` failed: ${(r.stderr || r.stdout).trim()}`,
+      };
       }
     }
 
-    // Changing managed env stops the running service — start it back up.
     const start = await runOpenCode(['service', 'start']);
     if (!start.ok) {
       return {
         success: false,
+        reasonCode: 'serviceStartFailed',
+        params: { url: fp.url, detail: (start.stderr || start.stdout).trim() },
         message: `Proxy env persisted (${fp.url}) but \`opencode service start\` failed: ${(start.stderr || start.stdout).trim()} — run it manually, or teardown to revert.`,
       };
     }
@@ -335,12 +346,14 @@ export class OpenCodeProxyClientAdapter implements ClientAdapter {
     };
   }
 
-  async teardown(): Promise<{ success: boolean; message: string }> {
+  async teardown(): Promise<ClientActionResult> {
     invalidateProbe();
     const probe = await probeServiceEnv();
     if (!probe.ok) {
       return {
         success: false,
+        reasonCode: 'serviceProbeFailed',
+        params: { detail: (probe.stderr || probe.stdout).trim() },
         message: `\`opencode service get env\` failed — cannot inspect opencode service env. ${(probe.stderr || probe.stdout).trim()}`.trim(),
       };
     }
@@ -356,14 +369,24 @@ export class OpenCodeProxyClientAdapter implements ClientAdapter {
       if (prev !== undefined) {
         const r = await runOpenCode(['service', 'set', 'env', k, prev]);
         if (!r.ok) {
-          return { success: false, message: `\`opencode service set env ${k}\` failed: ${(r.stderr || r.stdout).trim()}` };
+          return {
+            success: false,
+            reasonCode: 'serviceSetEnvFailed',
+            params: { key: k, detail: (r.stderr || r.stdout).trim() },
+            message: `\`opencode service set env ${k}\` failed: ${(r.stderr || r.stdout).trim()}`,
+          };
         }
         touched.push(`${k} (restored)`);
         oursPresent = true;
       } else if (cur && looksLikeOurs(k, cur, fp)) {
         const r = await runOpenCode(['service', 'unset', 'env', k]);
         if (!r.ok) {
-          return { success: false, message: `\`opencode service unset env ${k}\` failed: ${(r.stderr || r.stdout).trim()}` };
+          return {
+            success: false,
+            reasonCode: 'serviceSetEnvFailed',
+            params: { key: k, detail: (r.stderr || r.stdout).trim() },
+            message: `\`opencode service unset env ${k}\` failed: ${(r.stderr || r.stdout).trim()}`,
+          };
         }
         touched.push(`${k} (removed)`);
         oursPresent = true;
@@ -377,16 +400,19 @@ export class OpenCodeProxyClientAdapter implements ClientAdapter {
     }
 
     if (!oursPresent) {
-      return { success: false, message: 'OpenCode proxy mode is not active — nothing to tear down.' };
+      return { success: false, reasonCode: 'notActive', message: 'OpenCode proxy mode is not active — nothing to tear down.' };
     }
 
     const start = await runOpenCode(['service', 'start']);
     if (!start.ok) {
       return {
         success: false,
+        reasonCode: 'serviceStartFailed',
+        params: { detail: (start.stderr || start.stdout).trim() },
         message: `Env restored (${touched.join(', ')}) but \`opencode service start\` failed: ${(start.stderr || start.stdout).trim()} — run it manually.`,
       };
     }
+
 
     return {
       success: true,

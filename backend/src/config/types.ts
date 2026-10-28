@@ -263,6 +263,29 @@ export interface RoutingConfig {
   mode: RoutingMode; // smart = rules/Layer2 decision layer cascade (default); cost = always lite; quality = always pro
 }
 
+/**
+ * Behavior on the MITM forward-proxy leg when the client's `model` name
+ * matches no registered model, combo, variant or tier alias (after the full
+ * bare-name resolution chain missed). Forward-proxy-leg ONLY — the native
+ * /v1 leg never consults this (a client dialing the gateway directly gets
+ * the historical classifier behavior unconditionally). `onMiss` accepts the
+ * verbs `fail` / `direct` or ANY gateway-visible modelRef (`auto` =
+ * the default cascade). See pipeline/unresolved-model.ts.
+ */
+export interface UnresolvedModelConfig {
+  /** `fail` | `direct` | any modelRef; default `auto` (classifier).
+   *  `direct` runs the turn THROUGH the pipeline (normalization, session id,
+   *  capture, compression: rtk + headroom + caveman, fail-open) but skips
+   *  every model-bound stage — the turn ends as a `DirectForwardPlan` and the
+   *  transport relays the response from the ORIGINAL destination the client
+   *  dialed, original model id and the client's own Authorization header
+   *  riding along (surfaces/direct-forward.ts). Loopback targets never pass
+   *  through (recursion guard — they degrade to `auto`). */
+  onMiss?: string;
+  /** original-dial host (lowercase) → onMiss override. */
+  hosts?: Record<string, string>;
+}
+
 export interface OpenCodeConfig {
   url?: string;
   password?: string;
@@ -307,7 +330,7 @@ export interface ForwardProxyConfig {
   /**
    * Bypass list: bare glob strings = pure tunnel with DIRECT egress; object
    * entries `{ host, viaProxy }` choose the egress per host (viaProxy →
-   * tunnel through the outbound proxy policy, e.g. clash). Loopback always
+   * tunnel through the upstream proxy policy, e.g. clash). Loopback always
    * bypasses (direct).
    */
   bypassHosts?: (string | { host: string; viaProxy?: boolean })[];
@@ -319,6 +342,9 @@ export interface ForwardProxyConfig {
    * network-blocked and a local proxy (clash etc.) is configured.
    */
   viaOutboundProxy?: boolean;
+  /** Unresolved-model-name policy — MITM forward-proxy leg only
+   *  (see UnresolvedModelConfig). */
+  unresolvedModel?: UnresolvedModelConfig;
 }
 
 /**
@@ -626,7 +652,10 @@ export interface CompressionConfig {
  * OFF by default (opt-in): captured bodies may contain sensitive data, and the
  * console /api/admin/* endpoints are auth-exempt — enable consciously.
  * Request header names are recorded; credential-shaped header VALUES are
- * redacted ([REDACTED]) by the exchange serializer.
+ * redacted ([REDACTED]) by the exchange serializer. `redactSecrets: false`
+ * opts OUT of that redaction — raw Authorization / api-key values (and
+ * auth-by-query params) then persist in the archive. Default true; turning
+ * it off is a conscious operator decision, never the shipped posture.
  *
  * The requestCapture tree (audit-log capture config).
  */
@@ -649,6 +678,16 @@ export interface RequestCaptureConfig {
    * stores binary bytes.
    */
   storeMedia?: boolean;
+  /**
+   * Credential redaction for captured headers and query strings (default
+   * true). When false, values matching the credential deny-list
+   * (authorization / api-key / cookie / token / ... — see
+   * `DENY_HEADER_SUBSTRINGS` in observability/http-exchange.ts) are written
+   * VERBATIM to the capture archive, including upstream provider keys.
+   * Useful to debug exactly what an upstream received; the archive then
+   * holds live credentials — protect it accordingly.
+   */
+  redactSecrets?: boolean;
 }
 
 export interface TracePersistConfig {

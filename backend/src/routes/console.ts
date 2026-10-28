@@ -16,8 +16,8 @@ import { appendRoutingLedger } from '../router/routing-ledger.js';
 import { Layer2Decision } from '../router/layer2-decision.js';
 import { EFFORT_LADDER, ReasoningEffort, TierLevel } from '../types/router.js';
 import { runSystemoneDecision } from '../protocols/systemone/decide.js';
-import { SMART_ASSIGN_TIMEOUT_MS } from '../config/defaults.js';
-import { initProxyConfig } from '../utils/proxy.js';
+import { SMART_ASSIGN_TIMEOUT_MS, DEFAULT_REPLAY_TIMEOUT_MS } from '../config/defaults.js';
+import { initProxyConfig, proxiedFetch } from '../utils/proxy.js';
 import { getOcrHomeDir } from '../cli/paths.js';
 import { getHeadroomSidecarStatus, startHeadroomSidecar, stopHeadroomSidecar } from '../compression/headroom-sidecar.js';
 import { APP_VERSION } from '../version.js';
@@ -4153,6 +4153,100 @@ export function registerConsoleRoutes(
       return reply.status(404).send({ status: 'error', message: `No capture archive for ${date}` });
     }
     return { status: 'ok', message: `Capture archive ${date} deleted` };
+  });
+
+  /* ---------------------------------------------------------------------- *
+   * One-shot upstream-request replay (capture drawer debug button).
+   * Re-sends a captured upstream request verbatim — NO pipeline, NO session
+   * machinery, NO capture recording: the fetch here is a bare console-side
+   * HTTP call, invisible to the observation ledgers. Debugging aid only.
+   * ---------------------------------------------------------------------- */
+  app.post('/api/admin/capture/replay', async (req: any, reply: any) => {
+    const { url, method, headers, body, provider, model } = (req.body || {}) as {
+      url?: string;
+      method?: string;
+      headers?: Record<string, string>;
+      body?: string;
+      provider?: string;
+      model?: string;
+    };
+    if (!url || !/^https?:\/\//i.test(url)) {
+      return reply.status(400).send({ status: 'error', message: 'an absolute http(s) "url" is required' });
+    }
+    if (!method || !/^[A-Z]+$/.test(method)) {
+      return reply.status(400).send({ status: 'error', message: '"method" must be an upper-case HTTP verb' });
+    }
+    if (body !== undefined && typeof body !== 'string') {
+      return reply.status(400).send({ status: 'error', message: '"body" must be a UTF-8 string (hex/binary bodies are not replayable)' });
+    }
+    // Hop-by-hop / recomputed-by-fetch headers: replaying them verbatim
+    // corrupts the request (stale length, wrong authority).
+    const SKIP_HEADERS: Record<string, true> = {
+      host: true,
+      'content-length': true,
+      connection: true,
+      'transfer-encoding': true,
+    };
+    const outHeaders: Record<string, string> = {};
+    for (const [name, value] of Object.entries(headers || {})) {
+      if (!SKIP_HEADERS[name.toLowerCase()] && typeof value === 'string') outHeaders[name] = value;
+    }
+    // Stream the result as NDJSON so the console can render the body
+    // incrementally (SSE replays become live): one JSON event per line —
+    // status (status line + headers), chunk (body piece), end (terminal cap
+    // flag), error (transport failure). The call is console-side only —
+    // nothing is recorded anywhere.
+    reply.hijack();
+    const raw = reply.raw;
+    raw.writeHead(200, { 'content-type': 'application/x-ndjson', 'cache-control': 'no-store' });
+    const send = (evt: Record<string, unknown>) => raw.write(`${JSON.stringify(evt)}\n`);
+    try {
+      // Honor the outbound proxy policy for fidelity with the original call;
+      // provider/model are the policy's glob keys (absent → direct).
+      const res = await proxiedFetch(
+        url,
+        {
+          method,
+          headers: outHeaders,
+          body: body || undefined,
+          signal: AbortSignal.timeout(DEFAULT_REPLAY_TIMEOUT_MS),
+        },
+        { provider, model }
+      );
+      const resHeaders: Record<string, string> = {};
+      res.headers.forEach((value, key) => {
+        resHeaders[key] = value;
+      });
+      send({ type: 'status', statusLine: `HTTP/1.1 ${res.status} ${res.statusText}`.trimEnd(), headers: resHeaders });
+      // Cap the streamed echo — the replay result is console UI text, not an
+      // archive record; huge streams surface their head then get cancelled.
+      const REPLAY_BODY_CAP = 512 * 1024;
+      const reader = res.body?.getReader();
+      let total = 0;
+      let truncated = false;
+      if (reader) {
+        const dec = new TextDecoder();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          total += value.byteLength;
+          if (total >= REPLAY_BODY_CAP) {
+            truncated = true;
+            send({ type: 'chunk', text: dec.decode(value.subarray(0, value.byteLength - (total - REPLAY_BODY_CAP))) });
+            break;
+          }
+          send({ type: 'chunk', text: dec.decode(value, { stream: true }) });
+        }
+        await reader.cancel().catch(() => undefined);
+      }
+      send({ type: 'end', truncated });
+      raw.end();
+    } catch (err: any) {
+      // Hijacked reply: transport errors must flow through the stream too.
+      const cause = err?.cause?.code || err?.code;
+      raw.write(`${JSON.stringify({ type: 'error', message: cause ? `${err.message} (${cause})` : String(err?.message || err) })}\n`);
+      raw.end();
+    }
   });
 
   /* ---------------------------------------------------------------------- *

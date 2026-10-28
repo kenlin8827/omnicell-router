@@ -465,7 +465,12 @@ describe('systemone full-chain capture opt-in (requestCapture.enabled)', () => {
     expect(resp.traceId).toBe(req.traceId);
     expect(req.sessionId).toBeTruthy();
     expect(resp.sessionId).toBe(req.sessionId);
-    expect(req.wire.requestLine).toBe('POST /v1/systemone HTTP/1.1');
+    // Request-line form per leg: the MITM client leg is ABSOLUTE-FORM (the
+    // authority the client dialed is visible); the Fastify leg stays
+    // ORIGIN-FORM (`POST /v1/systemone` — no host, gateway-local target).
+    expect(req.wire.requestLine).toMatch(
+      /^POST (https?:\/\/127\.0\.0\.1:\d+)?\/v1\/systemone HTTP\/1\.1$/
+    );
     expect(req.wire.requestHeaders.authorization).toBe('[REDACTED]');
     expect(req.model).toBe('native-test/jev');
     expect(resp.wire.status).toBe(200);

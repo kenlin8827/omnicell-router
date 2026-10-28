@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
-import { Archive, RefreshCw, Trash2, X, AlertTriangle, Download, Copy, Check, Braces, Maximize2, Minimize2, Scale, Zap, ArrowDownRight, ArrowUpRight, Wrench } from 'lucide-react';
+import { Archive, RefreshCw, Trash2, X, AlertTriangle, Download, Copy, Check, Braces, Maximize2, Minimize2, Scale, Zap, ArrowDownRight, ArrowUpRight, Wrench, Terminal, Send } from 'lucide-react';
+import { buildCurl, buildCurlPosix, buildReplaySpec } from '../lib/curl';
 import {
   api,
   type CaptureStatus,
@@ -10,10 +11,13 @@ import {
   type CaptureFragmentRow,
   type HttpExchangeEvent,
   type CaptureTurn,
+  type CaptureReplayResult,
+  type CaptureReplayStreamEvent,
+  type ReplaySpec,
 } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
-import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
+import { useConfirm } from '../components/ConfirmProvider';
 import { Switch } from '../components/Switch';
 import { Combobox } from '../components/Combobox';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
@@ -647,14 +651,118 @@ const CaptureDrawer: React.FC<{
  *  support engineer can paste it directly into a curl / netcat replay. */
 const WireBlock: React.FC<{ event: HttpExchangeEvent }> = ({ event }) => {
   const { t } = useI18n();
+  const toast = useToast();
   const isResponse = event.phase === 'response';
+  const [curlCopied, setCurlCopied] = useState(false);
+  const [replaying, setReplaying] = useState(false);
+  const [replay, setReplay] = useState<CaptureReplayResult | null>(null);
+  const [replaySpec, setReplaySpec] = useState<ReplaySpec | null>(null);
   const statusLine = isResponse
     ? event.wire.responseLine || `HTTP/1.1 ${event.wire.status} ${event.wire.status === 0 ? 'NETWORK_ERROR' : ''}`.trim()
     : event.wire.requestLine;
+  // One-click replay command for the request side (client leg replays
+  // against this gateway, upstream leg against the provider); null when the
+  // wire cannot be reconstructed (response side, hex body).
+  const curl = isResponse ? null : buildCurl(event);
+  const copyCurl = async () => {
+    if (!curl) return;
+    try {
+      await navigator.clipboard.writeText(curl);
+    } catch {
+      // Fallback for non-secure contexts (http://, older browsers).
+      const ta = document.createElement('textarea');
+      ta.value = curl;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    setCurlCopied(true);
+    toast.success(t('chat.curlCopied'));
+    setTimeout(() => setCurlCopied(false), 1500);
+  };
+
+  const runReplay = async () => {
+    const spec = buildReplaySpec(event);
+    if (!spec || replaying) return;
+    setReplaySpec(spec);
+    // Open the dialog immediately in loading state; the body then fills in
+    // chunk by chunk as the upstream stream arrives.
+    setReplay({ status: 'loading' });
+    setReplaying(true);
+    const t0 = Date.now();
+    let statusLine = '';
+    let headers: Record<string, string> = {};
+    let body = '';
+    let truncated = false;
+    let ttfbMs = 0;
+    const flush = () => setReplay({ status: 'ok', statusLine, headers, body, truncated, ttfbMs, totalMs: Date.now() - t0 });
+    try {
+      await api.replayCaptureRequest(spec, (evt: CaptureReplayStreamEvent) => {
+        if (evt.type === 'status') {
+          statusLine = evt.statusLine;
+          headers = evt.headers;
+          ttfbMs = Date.now() - t0;
+          flush();
+        } else if (evt.type === 'chunk') {
+          body += evt.text;
+          flush();
+        } else if (evt.type === 'end') {
+          truncated = evt.truncated;
+          flush();
+        } else {
+          setReplay({ status: 'error', message: evt.message });
+          toast.error(evt.message);
+        }
+      });
+    } catch (err: any) {
+      const message = err?.message || t('captures.replayFailed');
+      setReplay({ status: 'error', message });
+      toast.error(message);
+    } finally {
+      setReplaying(false);
+    }
+  };
   return (
     <div>
-      <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: 6, fontFamily: FONT_MONO }}>
-        {isResponse ? '← status line' : '→ request line'}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+        <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: FONT_MONO }}>
+          {isResponse ? '← status line' : '→ request line'}
+        </span>
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          {curl && (
+            <button
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 4,
+                background: 'var(--chip-bg)', border: '1px solid var(--card-border)',
+                borderRadius: '4px', color: curlCopied ? 'var(--accent)' : 'var(--text-dim)',
+                fontSize: '11px', padding: '3px 8px', cursor: 'pointer', fontFamily: FONT_MONO,
+              }}
+              onClick={copyCurl}
+              title={t('chat.copyCurl')}
+            >
+              {curlCopied ? <Check size={12} /> : <Terminal size={12} />}
+              {curlCopied ? t('chat.curlCopied') : t('chat.copyCurl')}
+            </button>
+          )}
+          {!isResponse && event.direction === 'upstream' && (
+            <button
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 4,
+                background: 'var(--chip-bg)', border: '1px solid var(--card-border)',
+                borderRadius: '4px', color: replaying ? 'var(--accent)' : 'var(--text-dim)',
+                fontSize: '11px', padding: '3px 8px', cursor: 'pointer', fontFamily: FONT_MONO,
+                opacity: replaying ? 0.6 : 1,
+              }}
+              onClick={() => void runReplay()}
+              disabled={replaying}
+              title={t('captures.replayHint')}
+            >
+              <Send size={12} />
+              {replaying ? t('captures.replaying') : t('captures.replay')}
+            </button>
+          )}
+        </div>
       </div>
       <pre
         style={{
@@ -694,7 +802,166 @@ const WireBlock: React.FC<{ event: HttpExchangeEvent }> = ({ event }) => {
         {isResponse ? '← response body' : '→ request body'}
       </div>
       <JsonBlock value={isResponse ? event.wire.responseBody : event.wire.requestBody} />
+      {replay && replaySpec && createPortal(
+        <ReplayResultDialog
+          result={replay}
+          curlPosix={buildCurlPosix(replaySpec)}
+          onClose={() => setReplay(null)}
+          onReplay={() => void runReplay()}
+          busy={replaying}
+        />,
+        document.body
+      )}
     </div>
+  );
+};
+
+/**
+ * Replay result modal: the one-shot upstream replay's response (status line,
+ * headers, body) in an isolated dialog — the wire block behind stays
+ * untouched, so re-runs never pollute the captured record view.
+ */
+const ReplayResultDialog: React.FC<{
+  result: CaptureReplayResult;
+  curlPosix: string;
+  onClose: () => void;
+  onReplay: () => void;
+  busy: boolean;
+}> = ({ result, curlPosix, onClose, onReplay, busy }) => {
+  const { t } = useI18n();
+  const toast = useToast();
+  const backdrop = useBackdropDismiss(onClose);
+  useBodyScrollLock(true);
+  // Live elapsed clock while the stream is running; frozen at the final
+  // totalMs once the stream ends.
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!busy) return;
+    const start = Date.now();
+    setElapsed(0);
+    const id = setInterval(() => setElapsed(Date.now() - start), 100);
+    return () => clearInterval(id);
+  }, [busy]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  return createPortal(
+    <div
+      {...backdrop}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 220,
+        background: 'var(--scrim)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '16px',
+        animation: 'ocr-fade-in 0.15s ease',
+      }}
+    >
+      <div
+        className="card"
+        onClick={e => e.stopPropagation()}
+        style={{
+          width: '100%',
+          maxWidth: 720,
+          maxHeight: '85vh',
+          padding: '20px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 12,
+          boxShadow: '0 20px 40px rgba(0,0,0,0.6)',
+          animation: 'ocr-pop-in 0.18s ease',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Send size={16} color="var(--accent)" />
+          <span style={{ fontSize: '14px', fontWeight: 700 }}>{t('captures.replayResult')}</span>
+          <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6 }}>
+            <button
+              className="btn btn-sm"
+              onClick={onReplay}
+              disabled={busy}
+              title={t('captures.replayHint')}
+            >
+              <Send size={12} />
+              <span>{busy ? t('captures.replaying') : t('captures.replay')}</span>
+            </button>
+            <button
+              className="btn btn-sm"
+              onClick={async () => {
+                const ok = await copyToClipboard(curlPosix);
+                if (ok) toast.success(t('chat.curlCopied'));
+                else toast.error(t('chat.curlFailed'));
+              }}
+              title={t('captures.replayCopyCurlPosix')}
+            >
+              <Terminal size={12} />
+              <span>cURL</span>
+            </button>
+            <button className="btn btn-sm" onClick={onClose} title={t('common.close')}>
+              <X size={12} />
+              <span>{t('common.close')}</span>
+            </button>
+          </span>
+        </div>
+        {result.status === 'ok' && (
+          <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: FONT_MONO }}>
+            {t('captures.replayTiming', { ttfb: result.ttfbMs, total: result.totalMs })}
+          </div>
+        )}
+        {busy && (
+          <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: FONT_MONO }}>
+            {t('captures.replayElapsed', { ms: elapsed })}
+          </div>
+        )}
+        <div style={{ overflow: 'auto', minHeight: 0 }}>
+          {result.status === 'loading' ? (
+            <div style={{ padding: '48px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '12px' }}>
+              <RefreshCw size={16} style={{ animation: 'ocr-spin 0.8s linear infinite', verticalAlign: '-3px', marginRight: 8 }} />
+              {t('captures.replaying')}
+            </div>
+          ) : result.status === 'error' ? (
+            <div style={{ fontSize: '12px', color: 'var(--error, #c0392b)', fontFamily: FONT_MONO, padding: '8px 12px', background: 'var(--well-bg)', border: '1px solid var(--card-border)', borderRadius: '6px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+              {result.message}
+            </div>
+          ) : (
+            <>
+              <pre
+                style={{
+                  margin: 0,
+                  padding: '10px 12px',
+                  background: 'var(--well-bg)',
+                  border: '1px solid var(--card-border)',
+                  borderRadius: '6px',
+                  fontSize: '12px',
+                  fontFamily: FONT_MONO,
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  color: 'var(--text)',
+                }}
+              >
+                {result.statusLine}
+              </pre>
+              <div style={{ fontSize: '11px', color: 'var(--text-dim)', margin: '10px 0 6px', fontFamily: FONT_MONO }}>
+                {t('captures.replayRespHeaders')}
+              </div>
+              <JsonBlock value={result.headers} />
+              <div style={{ fontSize: '11px', color: 'var(--text-dim)', margin: '10px 0 6px', fontFamily: FONT_MONO }}>
+                {t('captures.replayRespBody')}
+              </div>
+              <JsonBlock value={result.body + (result.truncated ? '\n…' : '')} />
+            </>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body
   );
 };
 

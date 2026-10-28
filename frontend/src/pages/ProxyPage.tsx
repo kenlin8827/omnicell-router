@@ -22,7 +22,7 @@ export const ProxyPage: React.FC = () => {
 
   useEffect(() => {
     api.getConfig().then(cfg => {
-      setProxy(((cfg as any).proxy as ProxyShape) || {});
+      setProxy(cfg.proxy || {});
       setLoading(false);
     }).catch(console.error);
   }, []);
