@@ -1894,6 +1894,7 @@ export const jaJP: TranslationDict = {
     waSaved: 'コンソールアクセス設定を保存しました！',
     waUnsaved: '未保存',
     waUnsavedHint: 'コンソールアクセスの変更はこのブロック専用のボタンでのみ保存されます — 上の「設定を保存」ボタンでは送信されません。',
+    waTopSaveConfirmTitle: 'コンソールアクセスに未保存の変更があります',
     waHint: 'パスワードは config.yaml に scrypt ハッシュとしてのみ保存され、平文では保存されません。ループバック以外のバインドではログインが強制されます。変更は即時適用されます（永続化 + ホット同期、再起動なし）。',
     waLogout: 'ログアウト',
     waLogoutConfirmTitle: 'ログアウトしますか？',

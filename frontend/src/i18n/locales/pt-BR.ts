@@ -1894,6 +1894,7 @@ export const ptBR: TranslationDict = {
     waSaved: 'Configuração de acesso do console salva!',
     waUnsaved: 'Não salvo',
     waUnsavedHint: 'As mudanças de acesso do console são salvas só pelo botão próprio deste bloco — o botão de cima "salvar config" não as envia.',
+    waTopSaveConfirmTitle: 'Há alterações não salvas no acesso do console',
     waHint: 'A senha é guardada só como hash scrypt no config.yaml, nunca em claro; o login é forçado para vínculos fora do loopback. As mudanças valem imediatamente (persistidas + sincronizadas a quente, sem reinício).',
     waLogout: 'Sair',
     waLogoutConfirmTitle: 'Sair?',

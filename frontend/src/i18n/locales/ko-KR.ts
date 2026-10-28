@@ -1894,6 +1894,7 @@ export const koKR: TranslationDict = {
     waSaved: '콘솔 접근 구성이 저장되었습니다!',
     waUnsaved: '저장되지 않음',
     waUnsavedHint: '콘솔 접근 변경은 이 블록 자체의 버튼으로만 저장됩니다 — 위의 "구성 저장" 버튼은 이를 제출하지 않습니다.',
+    waTopSaveConfirmTitle: '콘솔 접근에 저장되지 않은 변경이 있습니다',
     waHint: '비밀번호는 config.yaml 에 scrypt 해시로만 저장되며 평문으로는 저장되지 않습니다. 루프백이 아닌 바인딩에서는 로그인이 강제됩니다. 변경은 즉시 적용됩니다 (영구 저장 + 핫 동기화, 재시작 없음).',
     waLogout: '로그아웃',
     waLogoutConfirmTitle: '로그아웃하시겠습니까?',

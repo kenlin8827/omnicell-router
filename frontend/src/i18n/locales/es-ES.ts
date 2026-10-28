@@ -1892,6 +1892,7 @@ export const esES: TranslationDict = {
     waSaved: '¡Configuración de acceso de consola guardada!',
     waUnsaved: 'Sin guardar',
     waUnsavedHint: 'Los cambios de acceso de consola se guardan solo con el botón propio de este bloque — el botón superior de "guardar config" no los envía.',
+    waTopSaveConfirmTitle: 'Hay cambios sin guardar en el acceso de consola',
     waHint: 'La contraseña se guarda solo como hash scrypt en config.yaml, nunca en claro; el inicio de sesión se fuerza para enlaces no loopback. Los cambios se aplican de inmediato (persistidos + sincronizados en caliente, sin reinicio).',
     waLogout: 'Cerrar sesión',
     waLogoutConfirmTitle: '¿Cerrar sesión?',

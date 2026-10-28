@@ -1922,6 +1922,7 @@ export const enUS: TranslationDict = {
     waSaved: 'Console access configuration saved!',
     waUnsaved: 'Unsaved',
     waUnsavedHint: 'Console-access changes are saved by this block’s own button only — the top "save config" button does not submit them.',
+    waTopSaveConfirmTitle: 'Console access has unsaved changes',
     waHint: 'The password is stored only as a scrypt hash in config.yaml, never in plaintext; login is forced on for non-loopback binds. Changes apply immediately (persisted + hot-synced, no restart).',
     waLogout: 'Log Out',
     waLogoutConfirmTitle: 'Log out?',

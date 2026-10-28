@@ -1894,6 +1894,7 @@ export const deDE: TranslationDict = {
     waSaved: 'Konsolenzugangs-Konfiguration gespeichert!',
     waUnsaved: 'Ungespeichert',
     waUnsavedHint: 'Konsolenzugangs-Änderungen werden nur über den eigenen Button dieses Blocks gespeichert — der obere „Config speichern“-Button überträgt sie nicht.',
+    waTopSaveConfirmTitle: 'Ungespeicherte Änderungen im Konsolenzugriff',
     waHint: 'Das Passwort wird nur als scrypt-Hash in config.yaml gespeichert, nie im Klartext; bei Nicht-Loopback-Binds ist der Login erzwungen. Änderungen greifen sofort (persistiert + hot-synchronisiert, ohne Neustart).',
     waLogout: 'Abmelden',
     waLogoutConfirmTitle: 'Abmelden?',

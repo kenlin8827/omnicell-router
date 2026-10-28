@@ -1894,6 +1894,7 @@ export const frFR: TranslationDict = {
     waSaved: 'Configuration d’accès console enregistrée !',
     waUnsaved: 'Non enregistré',
     waUnsavedHint: 'Les changements d’accès console sont enregistrés par le bouton propre de ce bloc — le bouton « enregistrer la config » du haut ne les soumet pas.',
+    waTopSaveConfirmTitle: 'L’accès console comporte des modifications non enregistrées',
     waHint: 'Le mot de passe n’est stocké que sous forme de hachage scrypt dans config.yaml, jamais en clair ; la connexion est forcée pour les liaisons non loopback. Les changements s’appliquent immédiatement (persistés + synchronisés à chaud, sans redémarrage).',
     waLogout: 'Se déconnecter',
     waLogoutConfirmTitle: 'Se déconnecter ?',
