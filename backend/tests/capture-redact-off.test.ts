@@ -51,7 +51,7 @@ describe('capture redactSecrets opt-out', () => {
     const config = loadConfig();
     config.host = '127.0.0.1';
     config.webAuth = { enabled: false };
-    config.adminApiKey = MASTER_KEY;
+    config.adminKey = MASTER_KEY;
     config.apiKeys = [
       {
         id: 'key-redact-off',

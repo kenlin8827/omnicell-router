@@ -28,7 +28,7 @@ const sandboxDefault = path.join(sandboxRoot, 'with-default');
 fs.mkdirSync(sandboxPlain);
 fs.mkdirSync(sandboxDefault);
 process.env.OCR_HOME = path.join(sandboxRoot, 'home');
-const baseYaml = 'port: 3000\nhost: 127.0.0.1\napiKeys: []\nmodels: []\n';
+const baseYaml = 'schemaVersion: 1\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\n';
 
 /** Materialize a sandbox environment under the throwaway OCR_HOME. */
 function seedSandboxEnv(name: string, yaml: string): void {
@@ -39,7 +39,7 @@ function seedSandboxEnv(name: string, yaml: string): void {
 }
 
 seedSandboxEnv('plain', baseYaml);
-seedSandboxEnv('with-default', baseYaml + 'systemone:\n  defaultModel: "test/chat"\n');
+seedSandboxEnv('with-default', baseYaml + 'protocol:\n  systemone:\n    defaultModel: "test/chat"\n');
 process.env.OCR_ENV = 'plain';
 process.chdir(sandboxPlain);
 

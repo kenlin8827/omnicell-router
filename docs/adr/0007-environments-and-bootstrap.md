@@ -27,6 +27,11 @@ Session cookie = HMAC-SHA256-signed `ocr_session` (HttpOnly, SameSite=Lax); the 
 ### 5. Export — explicit 'ocr-env' envelope, redact-by-default
 
 Container: format id `'ocr-env'` version 1, transported as a `.orc_env.zip` (`<name>-YYYYMMDD.orc_env.zip`) — its OWN envelope (manifest + config.yaml + payload entries), NOT an opencode-compatible file, and explicitly NOT the abandoned custom `OCRENC1` container. Payload set is CLOSED: the EXPORT set is two keys — `data/layer2-decisions.jsonl`, `catalog/overrides.json` — and `catalog/ocr.json` is deliberately excluded (signature-keyed, rebuildable). The IMPORT whitelist additionally accepts the retired `catalog/custom.json` (ADR-0010 unification amendment): its checksum is still enforced, then the entry is dropped and never written back, so pre-amendment book-sets restore instead of being rejected. Secret policy: `webAuth.passwordHash` stripped ALWAYS; session secret / CA material / traces / capture / logs NEVER included; credential-bearing values in config.yaml redacted by default (`__REDACTED__` sentinel + `redactedPaths` list; type-agnostic — any non-empty scalar at `adminApiKey`, `apiKeys[*].key`, userinfo-bearing `proxy.url`, `opencode.password`); plaintext keys opt-in `?secrets=include` only. `?include=` selects a payload subset (unknown keys ignored — the closed set is the contract). `?encrypt=1` ⇒ standard zip + WinZip AE-2 AES-256 entries (zip.js, PBKDF2-HMAC-SHA1 pinned to the WinZip 1000 iterations, CRC-32 stored 0, manifest sha256 stays the integrity layer; password via `x-ocr-archive-password` header — NEVER a query parameter; `encrypt=1` implies `secrets=include` since the layer carries the protection; third-party unzip with the password alone works; offline decrypt script ships).
+   ADR-0016 amendment: the `adminApiKey` config key was RENAMED to
+   `adminKey` (disk: `client.adminKey`), but the redaction list keeps
+   guarding the old name — legacy v0 config bytes inside an envelope may
+   still carry it, and a secret shape outlives the config key that used to
+   own it.
 
 ### 6. Import — default-new, replace-via-trash, guard stack
 

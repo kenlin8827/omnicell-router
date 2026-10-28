@@ -819,6 +819,8 @@ export const SettingsPage: React.FC = () => {
                     fontWeight: 600,
                     padding: '1px 7px',
                     borderRadius: '999px',
+                    whiteSpace: 'nowrap',
+                    flexShrink: 0,
                     color: 'var(--accent-amber, #f59e0b)',
                     background: 'color-mix(in srgb, var(--accent-amber, #f59e0b) 15%, transparent)',
                     border: '1px solid color-mix(in srgb, var(--accent-amber, #f59e0b) 35%, transparent)',
@@ -879,7 +881,7 @@ export const SettingsPage: React.FC = () => {
                   <input
                     type="password"
                     value={waPassword}
-                    onChange={e => setWaPassword(e.target.value)}
+                    onChange={e => { setWaPassword(e.target.value); if (e.target.value !== '') setWaEnabled(true); }}
                     placeholder={waConfig.hasPassword ? t('settings.waKeepPassword') : '••••••'}
                     autoComplete="new-password"
                     className="input"

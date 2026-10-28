@@ -414,6 +414,45 @@ describe('buildEnvelope — redaction completeness', () => {
     expect(env.config).not.toContain('hunter2');
     expect(parse(env.config).opencode.baseUrl).toBe('https://x.example');
   });
+
+  it('v1 grouped layout (ADR-0016) redacts every secret path and drops client.webAuth.passwordHash', async () => {
+    const v1 = [
+      'schemaVersion: 1',
+      'client:',
+      '  adminKey: sk-ocr-secret-admin',
+      '  webAuth:',
+      '    enabled: true',
+      '    passwordHash: scrypt$aa$bb',
+      '  apiKeys:',
+      '    - key: sk-live-1',
+      'upstream:',
+      '  proxy:',
+      '    url: http://corp-user:s3cret@10.0.0.1:7890',
+      'ops:',
+      '  opencode:',
+      '    password: hunter2',
+      '',
+    ].join('\n');
+    await seedConfig('v1', v1);
+    const env = buildEnvelope('v1', { includeSecrets: false });
+    expect(env.redactedPaths.sort()).toEqual(
+      ['client.adminKey', 'client.apiKeys[0].key', 'ops.opencode.password', 'upstream.proxy.url'].sort()
+    );
+    const cfg = parse(env.config) as any;
+    expect(cfg.client.adminKey).toBe('__REDACTED__');
+    expect(cfg.client.apiKeys[0].key).toBe('__REDACTED__');
+    expect(cfg.upstream.proxy.url).toBe('__REDACTED__');
+    expect(cfg.ops.opencode.password).toBe('__REDACTED__');
+    expect(cfg.client.webAuth.passwordHash).toBeUndefined();
+    expect(env.config).not.toContain('sk-ocr-secret-admin');
+    expect(env.config).not.toContain('s3cret');
+    expect(env.config).not.toContain('hunter2');
+
+    const withSecrets = buildEnvelope('v1', { includeSecrets: true });
+    const cfg2 = parse(withSecrets.config) as any;
+    expect(cfg2.client.adminKey).toBe('sk-ocr-secret-admin');
+    expect(cfg2.client.webAuth.passwordHash).toBeUndefined();
+  });
 });
 
 /* ─── P3-4 dangerous keys ────────────────────────────────────────────────── */

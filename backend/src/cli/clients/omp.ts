@@ -406,7 +406,7 @@ export class OmpClientAdapter implements ClientAdapter {
     const contextWindow = options?.contextWindow && options.contextWindow > 0 ? Math.floor(options.contextWindow) : undefined;
     // Gateway-issued key wins; keep the previous entry's key; placeholder only
     // as last resort (omp needs the field present; the gateway preHandler may
-    // still 401 without a real key when adminApiKey auth is enabled).
+    // still 401 without a real key when client API-key auth is enabled).
     const prevEntry = providers.get(OMP_PROVIDER_KEY) as unknown;
     const prevKey = isMap(prevEntry) ? prevEntry.get('apiKey') : undefined;
     const apiKey = options?.apiKey?.trim()

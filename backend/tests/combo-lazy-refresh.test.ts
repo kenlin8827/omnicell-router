@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import './helpers/sandbox-home.js';
 import { getConfigPath } from '../src/config/index.js';
 import { ProviderRegistry } from '../src/providers/registry.js';
 import type { ComboConfig, ModelRegistration, RouterConfig } from '../src/config/types.js';
@@ -42,7 +43,7 @@ describe('combo lazy refresh (hand-edited-YAML safety net)', () => {
     // config on disk, bypassing every console save route.
     fs.writeFileSync(
       getConfigPath(),
-      'port: 3000\nhost: 127.0.0.1\napiKeys: []\ncombos:\n  - id: lazy-combo\n    models:\n      - p/a\n'
+      'schemaVersion: 1\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\nrouting:\n  combos:\n    - id: lazy-combo\n      models:\n        - p/a\n'
     );
 
     const registry = new ProviderRegistry(makeConfig(), false); // constructor saw NO combos

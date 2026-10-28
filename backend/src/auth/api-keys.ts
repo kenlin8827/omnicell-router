@@ -10,20 +10,22 @@ export interface AuthValidationResult {
 }
 
 /**
- * Validates a Bearer token or API key against adminApiKey or configured client API keys
+ * Validates a Bearer token or API key against the adminKey (master) or
+ * configured client API keys.
  */
 export function validateApiKey(token: string, config: RouterConfig): AuthValidationResult {
   if (!token) {
     return { valid: false, error: 'Missing API key' };
   }
 
-  // 1. Check Master / Admin API Key
-  if (config.adminApiKey && token === config.adminApiKey) {
+  // 1. Master admin key (client.adminKey on disk)
+  if (config.adminKey && token === config.adminKey) {
     return { valid: true };
   }
 
-  // 2. Check Client API Keys
+  // 2. Client API keys
   const keys = config.apiKeys || [];
+
   const found = keys.find((k) => k.key === token);
 
   if (!found) {

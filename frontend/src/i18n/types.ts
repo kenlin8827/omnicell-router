@@ -2383,6 +2383,10 @@ hiddenBadge: string;
     desc: string;
     savedNotice: string;
     filterPlaceholder: string;
+    /** Optional: only zh-CN and en ship the comment-panel copy; other locales fall back to en. */
+    commentsTitle?: string;
+    commentsHint?: string;
+    commentsTruncated?: string;
   };
   apiKeys: {
     title: string;

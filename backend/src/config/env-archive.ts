@@ -22,10 +22,12 @@ configure({ useWebWorkers: false });
  * a new machine a head start; data starts empty for
  * everything else (book-set intuition: export carries KNOWLEDGE, not state).
  *
- * Redaction (default): values at adminApiKey / apiKeys[*].key become the
- * sentinel '__REDACTED__' and their paths are
- * listed in redactedPaths. `?secrets=include` exports real values instead —
- * an explicit operator decision, never the default.
+ * Redaction (default): values at the admin key, apiKeys[*].key, credentialed
+ * proxy.url and opencode.password become the sentinel '__REDACTED__' and
+ * their paths are listed in redactedPaths. Both the v1 grouped layout
+ * (client.adminKey / upstream.proxy.url / …) and the legacy flat v0 shape
+ * (adminApiKey / proxy.url / …) are covered. `?secrets=include` exports real
+ * values instead — an explicit operator decision, never the default.
  *
  * Import HARD guard — sentinel stripping: a redacted archive must not mint
  * credentials with the literal apiKey "__REDACTED__", so parseAndValidate
@@ -152,8 +154,15 @@ export function buildEnvelope(
   }
 
   // Session/login material never travels: drop the passwordHash key entirely
-  // (both modes — the hash belongs to THIS install's webauth chain).
-  if (parsed.webAuth && typeof parsed.webAuth === 'object') delete parsed.webAuth.passwordHash;
+  // (both modes — the hash belongs to THIS install's webauth chain). The v1
+  // grouped layout (ADR-0016) keeps it at client.webAuth; legacy flat files
+  // keep it at webAuth — both shapes are handled below.
+  const at = (root: any, path: string): any =>
+    path.split('.').reduce((c: any, s: string) => (c == null ? undefined : c[s]), root);
+  for (const wpath of ['webAuth', 'client.webAuth']) {
+    const w = at(parsed, wpath);
+    if (w && typeof w === 'object') delete w.passwordHash;
+  }
 
   // Retired hand-written def surfaces (ADR-0010) are dead config — strip them
   // from the envelope entirely. Legacy files may still carry `providers:` /
@@ -177,19 +186,36 @@ export function buildEnvelope(
         redactedPaths.push(at);
       }
     };
-    redact(parsed, 'adminApiKey', 'adminApiKey');
-    if (Array.isArray(parsed.apiKeys)) {
-      parsed.apiKeys.forEach((k: any, i: number) => redact(k, 'key', `apiKeys[${i}].key`));
-    }
-    // proxy.url carries inline credentials when the userinfo part has a
+    // Redact BOTH vocabularies (ADR-0016): the v1 grouped disk layout stores
+    // the same secrets under client.* / upstream.* / ops.* paths, while a
+    // not-yet-migrated legacy (v0) file still uses the flat runtime shape.
+    // Each redaction fires only when the path actually exists.
+    const redactAt = (root: any, path: string) => {
+      const i = path.lastIndexOf('.');
+      const parent = i === -1 ? root : at(root, path.slice(0, i));
+      if (parent && typeof parent === 'object') redact(parent, path.slice(i + 1), path);
+    };
+    // proxy.url carries inline credentials only when the userinfo part has a
     // password — redact exactly then, leave plain URLs untouched (P2-1b).
-    const proxyUrl = parsed.proxy?.url;
-    if (typeof proxyUrl === 'string' && /:\/\/[^/@\s]+:[^/@\s]+@/.test(proxyUrl)) {
-      parsed.proxy.url = REDACTION_SENTINEL;
-      redactedPaths.push('proxy.url');
+    for (const proxyPath of ['proxy.url', 'upstream.proxy.url']) {
+      const u = at(parsed, proxyPath);
+      if (typeof u === 'string' && /:\/\/[^/@\s]+:[^/@\s]+@/.test(u)) {
+        const i = proxyPath.lastIndexOf('.');
+        (at(parsed, proxyPath.slice(0, i)) as any)[proxyPath.slice(i + 1)] = REDACTION_SENTINEL;
+        redactedPaths.push(proxyPath);
+      }
     }
     // opencode connector password (P2-1b).
-    redact(parsed.opencode, 'password', 'opencode.password');
+    redactAt(parsed, 'opencode.password');
+    redactAt(parsed, 'ops.opencode.password');
+    redactAt(parsed, 'adminApiKey');
+    redactAt(parsed, 'client.adminKey');
+    for (const listPath of ['apiKeys', 'client.apiKeys']) {
+      const list = at(parsed, listPath);
+      if (Array.isArray(list)) {
+        list.forEach((k: any, i: number) => redact(k, 'key', `${listPath}[${i}].key`));
+      }
+    }
   }
 
   const payload: Record<string, string> = {};

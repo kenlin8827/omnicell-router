@@ -36,10 +36,10 @@ const baseConfig = loadConfig();
 baseConfig.host = '127.0.0.1';
 // webAuth ACTIVE with credentials: reveal's precondition. The console gate then
 // requires session-or-bearer on every /api/admin route — tests ride the master
-// adminApiKey Bearer (the gate's sanctioned programmatic limb).
+// adminKey Bearer (the gate's sanctioned programmatic limb).
 const testConfig = {
   ...baseConfig,
-  adminApiKey: ADMIN_KEY,
+  adminKey: ADMIN_KEY,
   webAuth: { enabled: true, username: 'tester', passwordHash: hashPassword(PASSWORD) },
 };
 const { app } = createServer(testConfig, true);

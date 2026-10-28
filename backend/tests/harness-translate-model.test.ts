@@ -29,11 +29,11 @@ process.env.OCR_ENV = 'default';
 const ENV_DIR = path.join(process.env.OCR_HOME, 'envs', 'default');
 fs.mkdirSync(ENV_DIR, { recursive: true });
 const BASE_CONFIG =
-  'port: 3000\nhost: 127.0.0.1\nmodels: []\n' +
-  'apiKeys:\n  - id: key-test\n    name: test\n    key: sk-ocr-internal-test\n    enabled: true\n    createdAt: "2026-01-01T00:00:00.000Z"\n';
+  'schemaVersion: 1\nclient:\n  port: 3000\n  host: 127.0.0.1\n' +
+  '  apiKeys:\n    - id: key-test\n      name: test\n      key: sk-ocr-internal-test\n      enabled: true\n      createdAt: "2026-01-01T00:00:00.000Z"\n';
 
 function writeDefaultsConfig(translationModel?: string): void {
-  const section = translationModel === undefined ? '' : `defaultModels:\n  translation: ${translationModel}\n`;
+  const section = translationModel === undefined ? '' : `ops:\n  defaultModels:\n    translation: ${translationModel}\n`;
   fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'), BASE_CONFIG + section, 'utf8');
 }
 
@@ -160,7 +160,7 @@ describe('probeTranslationChain', () => {
   });
 
   it('answers no_api_key before spending a call', async () => {
-    writeRawConfig('port: 3000\nhost: 127.0.0.1\nmodels: []\napiKeys: []\n');
+    writeRawConfig('schemaVersion: 1\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\n');
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () => {
       throw new Error('no key means no call');

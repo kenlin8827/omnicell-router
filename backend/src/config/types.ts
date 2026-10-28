@@ -826,7 +826,11 @@ export interface DefaultModelsConfig {
 export interface RouterConfig {
   port: number;
   host: string;
-  adminApiKey?: string;
+  /** Admin key (client.adminKey on disk): full /v1/* access, never metered,
+   *  and the programmatic Bearer limb for /api/admin/* when webAuth is active. */
+  adminKey?: string;
+  /** Per-client inference keys (client.apiKeys on disk): each sk-ocr-* key has
+   *  its own limits / modelAccess / expiry and is metered. */
   apiKeys?: ApiKeyConfig[];
   webAuth?: WebAuthConfig;
   opencode?: OpenCodeConfig;

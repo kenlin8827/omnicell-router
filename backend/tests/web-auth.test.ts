@@ -116,7 +116,7 @@ describe('web-auth console gate (server integration)', () => {
     ...baseConfig,
     host: '0.0.0.0',
     webAuth: { enabled: true, username: 'tester', passwordHash: hashPassword('test-pass-123') },
-    adminApiKey: 'master-webauth-key',
+    adminKey: 'master-webauth-key',
     apiKeys: [],
   };
   const { app } = createServer(testConfig, true);
@@ -153,7 +153,7 @@ describe('web-auth console gate (server integration)', () => {
     assert.strictEqual(res.statusCode, 200);
   });
 
-  it('master adminApiKey Bearer unlocks the console surface (programmatic access)', async () => {
+  it('master key Bearer unlocks the console surface (programmatic access)', async () => {
     const res = await app.inject({
       method: 'GET',
       url: '/api/admin/status',

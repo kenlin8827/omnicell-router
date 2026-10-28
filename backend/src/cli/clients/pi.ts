@@ -329,7 +329,7 @@ export class PiClientAdapter implements ClientAdapter {
     const contextWindow = options?.contextWindow && options.contextWindow > 0 ? Math.floor(options.contextWindow) : undefined;
     // Gateway-issued key wins; keep the previous entry's key; placeholder only
     // as last resort (pi needs the field present; the gateway preHandler may
-    // still 401 without a real key when adminApiKey auth is enabled).
+    // still 401 without a real key when client API-key auth is enabled).
     const apiKey = options?.apiKey?.trim() || data.providers[PI_PROVIDER_KEY]?.apiKey || PI_FALLBACK_API_KEY;
 
     data.providers[PI_PROVIDER_KEY] = {

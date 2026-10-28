@@ -7,7 +7,10 @@ import { MEMBER_TIER_ORDER } from '../providers/member-match.js';
 import { TIER_PURPOSE } from '../providers/virtual-meta.js';
 import { globMatchAny } from '../utils/glob.js';
 import { PipelineOrchestrator } from '../pipeline/orchestrator.js';
-import { getRawConfig, loadConfig, saveConfig, saveRawConfig, getRuntimeConfigRef } from '../config/index.js';
+import { getRawConfig, loadConfig, saveConfig, saveRawConfig, getRuntimeConfigRef, getConfigPath } from '../config/index.js';
+import { YAML_FILE_HEADER_ZH, YAML_FIELD_COMMENTS_ZH, type CommentLang } from '../config/comments-zh.js';
+import { YAML_FILE_HEADER_EN, YAML_FIELD_COMMENTS_EN } from '../config/comments-en.js';
+
 import { getEnvPaths, resolveEnvName } from '../config/env.js';
 import { applyConfig as applyDecisionCaptureConfig } from '../capture/decision-capture.js';
 import { applyRouteEntriesConfig, getRouteEntryStore, routeEntriesGate } from '../router/route-entries.js';
@@ -63,6 +66,12 @@ import {
   verifyPassword,
   verifySessionToken,
 } from '../auth/web-auth.js';
+/**
+ * Comment language for GET /api/admin/config/comments (the console's dynamic
+ * comment panel; config.yaml itself is ZERO-COMMENT on disk, ADR-0016).
+ * Anything else falls back to zh-CN.
+ */
+const commentLangFromQuery = (q: unknown): CommentLang => (q === 'en' ? 'en' : 'zh-CN');
 
 export { validateApiKey };
 
@@ -1505,8 +1514,7 @@ export function registerConsoleRoutes(
 
   // 4b. Console webAuth — login/logout/session probes + credential management.
   // login/logout/session stay reachable pre-login (server.ts gate whitelist);
-  // the two config endpoints ride the normal console gate (session cookie or
-  // master adminApiKey Bearer).
+  // the two config endpoints ride the normal console gate (session cookie).
   app.get('/api/admin/auth/session', async (req) => {
     const disk = getRuntimeConfigRef() || loadConfig(); // runtime snapshot (see gate comment)
     const active = isWebAuthActive(disk);
@@ -1655,7 +1663,7 @@ export function registerConsoleRoutes(
   app.post('/api/admin/config', handleSaveConfig);
 
   // 6. Raw YAML Configuration
-  app.get('/api/admin/config/raw', async () => ({ status: 'ok', yaml: getRawConfig() }));
+  app.get('/api/admin/config/raw', async () => ({ status: 'ok', yaml: getRawConfig(), path: getConfigPath() }));
 
   const handleSaveRawYaml = async (req: any, reply: any) => {
     const body = req.body as { yaml?: string };
@@ -1682,6 +1690,22 @@ export function registerConsoleRoutes(
     return result;
   };
   app.post('/api/admin/config/raw', handleSaveRawYaml);
+
+  // 6b. Dynamic comment panel data — config.yaml is ZERO-COMMENT on disk
+  // (ADR-0016); the Config File page renders per-field comments from these
+  // dictionaries in the operator's language. Runtime-path keyed; the panel
+  // walks the flat runtime shape the same way loadConfig expands it.
+  app.get('/api/admin/config/comments', async (req) => {
+    const query = req.query as Record<string, unknown>;
+    const lang = commentLangFromQuery(query.lang);
+    const zh = lang === 'zh-CN';
+    return {
+      status: 'ok',
+      lang,
+      header: zh ? YAML_FILE_HEADER_ZH : YAML_FILE_HEADER_EN,
+      fields: zh ? YAML_FIELD_COMMENTS_ZH : YAML_FIELD_COMMENTS_EN,
+    };
+  });
 
   // 6a. Forward-proxy MITM CA export — clients using the inbound forward
   // proxy must trust this CA. Generated on first request when absent (the

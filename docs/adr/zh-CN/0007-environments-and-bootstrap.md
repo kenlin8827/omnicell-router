@@ -27,6 +27,7 @@ legacy 布局支持是被**移除**而非兼容分叉：无 `legacyConfigPath()`
 ### 5. 导出——显式 'ocr-env' 信封、默认脱敏
 
 容器：格式 id `'ocr-env'` version 1，传输名 `.orc_env.zip`（`<name>-YYYYMMDD.orc_env.zip`）——**自有**信封（manifest + config.yaml + payload 条目），不是 opencode 兼容文件，也明确不是被弃用的自定义 `OCRENC1` 容器。Payload 集合是**封闭**的：**导出集**为两个键——`data/layer2-decisions.jsonl`、`catalog/overrides.json`——`catalog/ocr.json` 刻意排除（签名键控缓存，重建可得）。**导入**白名单额外接受已退役的 `catalog/custom.json`（ADR-0010 书册统一修订案）：其 checksum 仍校验，随后条目被丢弃、绝不写回，因此修订前的书集可正常恢复而不被拒。秘密策略：`webAuth.passwordHash` **永远**删除；会话 secret / CA 材料 / traces / capture / 日志**永不**入档；配置内的凭证值默认脱敏（`__REDACTED__` 哨兵 + `redactedPaths` 列表；类型无关——`adminApiKey`、`apiKeys[*].key`、带 userinfo 的 `proxy.url`、`opencode.password` 处非空标量即遮）；明文密钥仅显式 `?secrets=include`。`?include=` 选 payload 子集（未知键忽略——封闭集合即契约）。`?encrypt=1` ⇒ 标准 zip + WinZip AE-2 AES-256 条目（zip.js，PBKDF2-HMAC-SHA1 钉死 WinZip 的 1000 轮，CRC-32 存 0，manifest sha256 仍是完整性层；密码经 `x-ocr-archive-password` 头——**永不**走 query；`encrypt=1` 蕴含 `secrets=include`——加密层即保护所在；第三方解压软件凭密码可开；离线解密脚本随仓）。
+   ADR-0016 修订：`adminApiKey` 配置键已更名为 `adminKey`（磁盘：client.adminKey），但遮蔽名单继续守卫旧键名——信封里的 v0 旧版 config 字节仍可能携带它，秘密形态比曾经拥有它的配置键活得久。
 
 ### 6. 导入——默认新建、替换经废纸篓、守卫成栈
 

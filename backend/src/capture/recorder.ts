@@ -218,9 +218,9 @@ export interface HttpExchangeEvent {
    * `name` are persisted — the token value is never stored, consistent with
    * the credential deny-list in `observability/http-exchange.ts` (the raw
    * Authorization / x-api-key header values stay `[REDACTED]`).
-   * Absent (`undefined`) when the leg has no key identity: master-key
-   * (`adminApiKey`) access, MITM forward-proxy tunnels (CONNECT-authenticated),
-   * or requests archived before this field existed.
+   * Absent (`undefined`) when the leg has no key identity: keyless /v1 calls
+   * or MITM forward-proxy tunnels (CONNECT-authenticated), plus requests
+   * archived before this field existed.
    */
   apiKey?: CaptureKeyIdentity;
   /**

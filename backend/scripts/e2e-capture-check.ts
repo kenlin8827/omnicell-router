@@ -14,7 +14,6 @@ const { createServer } = await import('../src/server.js');
 
 const config = loadConfig();
 // Pin auth keys so the e2e check works regardless of the user's disk config.
-config.adminApiKey = 'e2e-admin-key';
 config.apiKeys = [{ key: 'e2e-client-key', name: 'e2e' } as any];
 config.requestCapture = {
   enabled: true,

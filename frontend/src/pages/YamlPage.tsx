@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import CodeMirror, { EditorView, oneDark } from '@uiw/react-codemirror';
 import { yaml } from '@codemirror/lang-yaml';
+import { Decoration, WidgetType } from '@codemirror/view';
+import type { DecorationSet } from '@codemirror/view';
+import type { Range } from '@codemirror/state';
+import { EditorState, StateField } from '@codemirror/state';
 import { FileCode2, Save, RefreshCw, Check, AlertCircle } from 'lucide-react';
 import { api } from '../lib/api';
 import { FONT_MONO } from '../lib/fonts';
@@ -43,6 +47,124 @@ const sectionAtCursor = (view: EditorView): string | null => {
   return current;
 };
 
+/**
+ * Disk (grouped) YAML path → runtime comment-dictionary key. Mirrors the
+ * server's disk↔runtime mapping (schema.ts SECTION_MOVES + retry split):
+ * strip the group prefix, apply the three renames, collapse dynamic levels.
+ */
+const RUNTIME_GROUPS = ['client', 'protocol', 'routing', 'upstream', 'resilience', 'ops'];
+const translateDiskPath = (diskPath: string): string => {
+  const segs = diskPath.split('.');
+  if (segs[0] === 'schemaVersion') return '';
+  if (diskPath.startsWith('resilience.retry.escalation')) return 'fallback' + diskPath.slice('resilience.retry.escalation'.length);
+  if (diskPath.startsWith('routing.strategy')) return 'routing.mode' + diskPath.slice('routing.strategy'.length);
+  if (diskPath.startsWith('routing.profileMemory')) return 'clientProfileMemory' + diskPath.slice('routing.profileMemory'.length);
+  if (RUNTIME_GROUPS.includes(segs[0]) && segs.length > 1) segs.shift();
+  if (segs[0] === 'retry' && segs[1] === 'escalation') return 'fallback.' + segs.slice(2).join('.');
+  let key = segs.join('.');
+  if (segs[0] === 'tiers' && segs.length >= 2) key = 'tiers.*' + (segs.length > 2 ? '.' + segs.slice(2).join('.') : '');
+  if (segs[0] === 'combos' && segs.length >= 2) key = 'combos.*' + (segs.length > 2 ? '.' + segs.slice(2).join('.') : '');
+  if (segs[0] === 'modelProfiles' && segs.length >= 2) key = 'modelProfiles.*' + (segs.length > 2 ? '.' + segs.slice(2).join('.') : '');
+  if (segs[0] === 'credentials' && segs.length >= 2) key = 'credentials.*';
+  if (segs[0] === 'catalog' && segs[1] === 'autoPullPatterns' && segs.length >= 3) key = 'catalog.autoPullPatterns.*';
+  return key;
+};
+
+/** Dotted YAML path of the key at (or above) the cursor line, by indentation stack. */
+const pathAtCursor = (view: EditorView): string | null => {
+  const state = view.state;
+  const line = state.doc.lineAt(state.selection.main.head);
+  const stack: Array<{ indent: number; key: string }> = [];
+  const scan = (text: string) => {
+    if (/^\s*(#|-)/.test(text) || text.trim() === '') return;
+    const m = /^(\s*)([A-Za-z_][A-Za-z0-9_.-]*):/.exec(text);
+    if (!m) return;
+    const indent = m[1].length;
+    while (stack.length > 0 && stack[stack.length - 1].indent >= indent) stack.pop();
+    stack.push({ indent, key: m[2] });
+  };
+  for (let i = 1; i <= line.number; i++) scan(state.doc.line(i).text);
+  if (stack.length === 0) return null;
+  return translateDiskPath(stack.map((s) => s.key).join('.'));
+};
+
+/** Read-only inlay: renders the dictionary comment as ghost text after the key, IDE-inlay style. */
+/**
+ * Read-only block widget: renders the dictionary comment as a ghost line
+ * ABOVE the key line, indent-aligned (IDE "hint above" style).
+ */
+class CommentInlay extends WidgetType {
+  constructor(
+    readonly text: string,
+    readonly indent: number
+  ) {
+    super();
+  }
+  eq(other: CommentInlay): boolean {
+    return other.text === this.text && other.indent === this.indent;
+  }
+  toDOM(): HTMLElement {
+    const div = document.createElement('div');
+    div.className = 'cm-ghost-comment';
+    div.setAttribute('aria-hidden', 'true');
+    div.style.paddingLeft = `${this.indent + 2}ch`;
+    div.textContent = `# ${this.text}`;
+    return div;
+  }
+  ignoreEvent(): boolean {
+    return true;
+  }
+}
+
+/**
+ * Split a dictionary comment into display items: '；' / '。' boundaries become
+ * bullet rows (one concern per row, readable). Braced fragments like
+ * "{ window: 1m, requests: 3 }" never contain the separators, so they stay
+ * intact; a trailing empty piece from a final '。' is dropped.
+ */
+const splitCommentItems = (text: string): string[] =>
+  text
+    .split(/；|。/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+/** Build one inlay per key line whose translated path has a dictionary entry. */
+const buildGhostDecorations = (state: EditorState, dict: Record<string, string>, truncatedSuffix: string): DecorationSet => {
+  const out: Array<Range<Decoration>> = [];
+  const stack: Array<{ indent: number; key: string }> = [];
+  for (let i = 1; i <= state.doc.lines; i++) {
+    const line = state.doc.line(i);
+    const text = line.text;
+    if (/^\s*(#|-|schemaVersion:)/.test(text)) continue;
+    const m = /^(\s*)([A-Za-z_][A-Za-z0-9_.-]*):/.exec(text);
+    if (!m) continue;
+    const indent = m[1].length;
+    while (stack.length > 0 && stack[stack.length - 1].indent >= indent) stack.pop();
+    stack.push({ indent, key: m[2] });
+    const key = translateDiskPath(stack.map((s) => s.key).join('.'));
+    const comment = key ? dict[key] : undefined;
+    if (!comment) continue;
+    const oneLine = comment.length > 120 ? `${comment.slice(0, 120)}… ${truncatedSuffix}` : comment;
+    out.push(
+      Decoration.widget({ widget: new CommentInlay(oneLine, indent), block: true, side: -1 }).range(line.from)
+    );
+  }
+  return Decoration.set(out, true);
+};
+
+/**
+ * Block decorations MUST come from a StateField — CodeMirror rejects block
+ * ranges provided via a ViewPlugin ("Block decorations may not be specified
+ * via plugins"). The field rebuilds on doc changes; a dict change swaps the
+ * extension (memoized by commentDict), re-creating the field.
+ */
+const ghostComments = (dict: Record<string, string>, truncatedSuffix: string) =>
+  StateField.define<DecorationSet>({
+    create: (state) => buildGhostDecorations(state, dict, truncatedSuffix),
+    update: (deco, tr) => (tr.docChanged ? buildGhostDecorations(tr.state, dict, truncatedSuffix) : deco),
+    provide: (field) => EditorView.decorations.from(field),
+  });
+
 /** Editor chrome (bg / gutters / selection / caret) driven by the app's CSS variables. */
 const appChrome = EditorView.theme({
   '&': { backgroundColor: 'var(--input-bg)', color: 'var(--text-main)', fontSize: '13px' },
@@ -53,16 +175,30 @@ const appChrome = EditorView.theme({
   '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': {
     backgroundColor: 'rgba(99, 161, 255, 0.25) !important',
   },
+  '.cm-ghost-comment': {
+    color: 'var(--text-dim)',
+    opacity: 0.55,
+    fontStyle: 'italic',
+    fontSize: '11px',
+    pointerEvents: 'none',
+    lineHeight: 1.5,
+    userSelect: 'none',
+    whiteSpace: 'pre-wrap',
+  },
   '&.cm-focused': { outline: 'none' },
 });
 
 export const YamlPage: React.FC = () => {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const [yamlContent, setYamlContent] = useState('');
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [configPath, setConfigPath] = useState('');
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
+  const [commentDict, setCommentDict] = useState<Record<string, string>>({});
+  const [commentHeader, setCommentHeader] = useState('');
+  const [cursorPath, setCursorPath] = useState<string | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   const appTheme = useAppTheme();
 
@@ -71,7 +207,9 @@ export const YamlPage: React.FC = () => {
     const lines = yamlContent.split('\n');
     for (let i = 0; i < lines.length; i++) {
       const m = TOP_LEVEL_RE.exec(lines[i]);
-      if (m) out.push({ key: m[1], line: i + 1 });
+      // schemaVersion is machine-managed (ADR-0016): read at load, rewritten
+      // on save — it is not a section the operator navigates or edits.
+      if (m && m[1] !== 'schemaVersion') out.push({ key: m[1], line: i + 1 });
     }
     return out;
   }, [yamlContent]);
@@ -92,11 +230,29 @@ export const YamlPage: React.FC = () => {
     view.focus();
   };
 
+  // schemaVersion is machine-managed (ADR-0016): the editor NEVER shows it.
+  // Strip it out of the loaded text; the save path splices it back in, so
+  // disk keeps the version key while the operator edits pure content.
+  const SCHEMA_VERSION_RE = /^schemaVersion:\s*(\d+)\s*$/m;
+  const stripSchemaVersion = (text: string): { body: string; version: number } => {
+    const m = SCHEMA_VERSION_RE.exec(text);
+    if (!m) return { body: text, version: 1 };
+    return {
+      body: text.replace(`${m[0]}\n`, '').replace(m[0], ''),
+      version: Number(m[1]),
+    };
+  };
+
+  const schemaVersionRef = useRef(1);
+
   const loadYaml = async () => {
     setLoading(true);
     try {
       const res = await api.getRawYaml();
-      setYamlContent(res.yaml || '');
+      const stripped = stripSchemaVersion(res.yaml || '');
+      schemaVersionRef.current = stripped.version;
+      setYamlContent(stripped.body);
+      setConfigPath(res.path || '');
       setNotice(null);
     } catch (err: any) {
       setNotice({ type: 'error', text: 'Error: ' + err.message });
@@ -108,16 +264,52 @@ export const YamlPage: React.FC = () => {
   useEffect(() => {
     loadYaml();
   }, []);
+  // Dynamic comment panel: dictionaries come from the backend (zh-CN/en);
+  // config.yaml itself is comment-free on disk (ADR-0016). Reload on UI
+  // language switch — the panel follows instantly, the file never changes.
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getConfigComments(api.commentLang())
+      .then((res) => {
+        if (cancelled) return;
+        setCommentDict(res.fields || {});
+        setCommentHeader(res.header || '');
+      })
+      .catch(() => {
+        if (!cancelled) setCommentDict({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [lang]);
 
   const handleSave = async () => {
     try {
-      await api.saveRawYaml(yamlContent);
+      const raw = `schemaVersion: ${schemaVersionRef.current}\n${yamlContent}`;
+      await api.saveRawYaml(raw);
       setNotice({ type: 'success', text: t('yaml.savedNotice') });
       setTimeout(() => setNotice(null), 4000);
     } catch (err: any) {
       setNotice({ type: 'error', text: 'Failed: ' + err.message });
     }
   };
+
+  // Hooks must be unconditional: the memo lives at component top level, not
+  // inside the `{!loading && …}` conditional render (hook-order crash).
+  const extensions = useMemo(
+    () => [
+      yaml(),
+      ghostComments(commentDict, t('yaml.commentsTruncated')),
+      EditorView.updateListener.of((update) => {
+        if (update.selectionSet || update.docChanged) {
+          setActiveKey(sectionAtCursor(update.view));
+          setCursorPath(pathAtCursor(update.view));
+        }
+      }),
+    ],
+    [commentDict, lang]
+  );
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', height: '100%' }}>
@@ -139,6 +331,20 @@ export const YamlPage: React.FC = () => {
           </div>
         </div>
 
+        {configPath && (
+          <div
+            style={{
+              fontFamily: editorFont,
+              fontSize: '11px',
+              color: 'var(--text-dim)',
+              wordBreak: 'break-all',
+              userSelect: 'text',
+              margin: '-4px 16px 10px',
+            }}
+          >
+            {configPath}
+          </div>
+        )}
         {notice && (
           <div
             style={{
@@ -229,18 +435,124 @@ export const YamlPage: React.FC = () => {
                   viewRef.current = view;
                   setActiveKey(sectionAtCursor(view));
                 }}
-                extensions={[
-                  yaml(),
-                  EditorView.updateListener.of((update) => {
-                    if (update.selectionSet || update.docChanged) {
-                      setActiveKey(sectionAtCursor(update.view));
-                    }
-                  }),
-                ]}
+                extensions={extensions}
                 onChange={setYamlContent}
                 basicSetup={{ foldGutter: true, highlightActiveLine: true, autocompletion: false }}
               />
             </div>
+
+            <aside
+              style={{
+                width: '380px',
+                flexShrink: 0,
+                border: '1px solid var(--card-border)',
+                borderRadius: '10px',
+                padding: '12px 14px',
+                overflowY: 'auto',
+                minHeight: 0,
+                fontSize: '12px',
+                color: 'var(--text-muted)',
+                lineHeight: 1.6,
+                scrollbarWidth: 'thin',
+              }}
+            >
+              <div style={{ fontWeight: 600, marginBottom: '8px', color: 'var(--text-main)' }}>
+                {t('yaml.commentsTitle')}
+              </div>
+              {cursorPath && commentDict[cursorPath] ? (
+                <>
+                  <div
+                    style={{
+                      fontFamily: editorFont,
+                      fontSize: '11px',
+                      color: 'var(--accent)',
+                      marginBottom: '8px',
+                      wordBreak: 'break-all',
+                      paddingBottom: '6px',
+                      borderBottom: '1px solid var(--card-border)',
+                    }}
+                  >
+                    {cursorPath}
+                  </div>
+                  <ul style={{ margin: 0, padding: 0, listStyle: 'none' }}>
+                    {splitCommentItems(commentDict[cursorPath]).map((item, i) => (
+                      <li
+                        key={i}
+                        style={{
+                          display: 'flex',
+                          gap: '6px',
+                          marginBottom: '6px',
+                          lineHeight: 1.55,
+                          whiteSpace: 'pre-wrap',
+                        }}
+                      >
+                        <span
+                          style={{
+                            flexShrink: 0,
+                            color: 'var(--text-dim)',
+                            fontSize: '16px',
+                            lineHeight: '12px',
+                            fontWeight: 700,
+                          }}
+                        >
+                          ·
+                        </span>
+                        <span>{item}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : commentHeader ? (
+                <div style={{ lineHeight: 1.65, fontSize: '12px' }}>
+                  {commentHeader.split('\n').map((ln, i) => {
+                    // Group rows ("  client      Client entry surface: …") render as
+                    // chip + description rows; everything else is prose.
+                    const m = /^\s{2}(client|protocol|routing|upstream|resilience|ops)\s+(.+)$/.exec(ln);
+                    if (m) {
+                      return (
+                        <div key={i} style={{ display: 'flex', gap: '8px', alignItems: 'baseline', marginBottom: '5px' }}>
+                          <span
+                            style={{
+                              fontFamily: editorFont,
+                              fontSize: '11px',
+                              color: 'var(--accent)',
+                              background: 'var(--surface)',
+                              border: '1px solid var(--card-border)',
+                              padding: '1px 8px',
+                              borderRadius: '4px',
+                              flexShrink: 0,
+                              minWidth: '82px',
+                              textAlign: 'center',
+                            }}
+                          >
+                            {m[1]}
+                          </span>
+                          <span>{m[2]}</span>
+                        </div>
+                      );
+                    }
+                    const trimmed = ln.trim();
+                    if (!trimmed) return null;
+                    const isHeading = /(配置层次|Configuration layers|每段唯一归属|exactly one home)/.test(trimmed);
+                    return (
+                      <div
+                        key={i}
+                        style={{
+                          marginBottom: '6px',
+                          whiteSpace: 'pre-wrap',
+                          fontWeight: isHeading ? 600 : 400,
+                          color: isHeading ? 'var(--text-main)' : 'var(--text-secondary)',
+                        }}
+                      >
+                        {trimmed}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>{t('yaml.commentsHint')}</div>
+              )}
+            </aside>
           </div>
         )}
 

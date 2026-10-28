@@ -34,7 +34,7 @@ const PATCH_FILENAME = 'cordis.patch.yml';
 
 /** Placeholder credential — dsh refuses a route with neither apiKeyEnv nor
  *  an Authorization header; the gateway may still 401 without a real key
- *  when adminApiKey auth is enabled (same contract as the pi adapter). */
+ *  when client API-key auth is enabled (same contract as the pi adapter). */
 const DSH_FALLBACK_API_KEY = '***';
 
 const isPiaiEntry = (e: any): boolean =>

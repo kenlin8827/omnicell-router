@@ -1462,6 +1462,14 @@ export const api = {
     return json?.outcome ?? null;
   },
 
+  /** Comment-dictionary language for config.yaml (re-)annotation: derived
+   *  from the UI locale; the backend dictionaries only ship zh-CN and en —
+   *  every other UI locale maps to en. */
+  commentLang(): 'zh-CN' | 'en' {
+    const ui = (typeof localStorage !== 'undefined' && localStorage.getItem('ocr_lang')) || 'zh';
+    return ui === 'zh' ? 'zh-CN' : 'en';
+  },
+
   async getConfig(): Promise<any> {
     const res = await fetch('/api/admin/config');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -1483,7 +1491,18 @@ export const api = {
     }
     return res.json();
   },
-
+  /** Dynamic comment-panel data: the zh-CN/en comment dictionaries for
+   *  config.yaml fields (config.yaml itself carries no comments on disk). */
+  async getConfigComments(lang: 'zh-CN' | 'en'): Promise<{
+    status: string;
+    lang: string;
+    header: string;
+    fields: Record<string, string>;
+  }> {
+    const res = await fetch(`/api/admin/config/comments?lang=${lang}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
   async getHeadroomSidecar(): Promise<HeadroomSidecarStatus> {
     const res = await fetch('/api/admin/headroom/sidecar');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -1618,7 +1637,7 @@ export const api = {
     return res.json();
   },
 
-  async getRawYaml(): Promise<{ status: string; yaml: string }> {
+  async getRawYaml(): Promise<{ status: string; yaml: string; path?: string }> {
     const res = await fetch('/api/admin/config/raw');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
