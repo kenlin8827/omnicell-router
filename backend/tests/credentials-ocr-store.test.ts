@@ -109,3 +109,59 @@ describe('OcrStore.reorder', () => {
     ]);
   });
 });
+
+describe('OcrStore.setWeight', () => {
+  it('stores the weight, bumps timeUpdated, rides the chain and the masked meta', async () => {
+    const p = sandboxPaths();
+    const store = new OcrStore({ paths: p, now: (() => { let t = 100; return () => (t += 1); })() });
+    const a = await store.connectKey('anthropic', 'sk-w-a');
+    await store.connectKey('anthropic', 'sk-w-b');
+    const updated = await store.setWeight(a.id, 3);
+    expect(updated.weight).toBe(3);
+    const rows = readFile(p).providers.anthropic;
+    expect(rows.find((r: { credentialId: string }) => r.credentialId === a.id).weight).toBe(3);
+    expect(rows.find((r: { credentialId: string }) => r.credentialId === a.id).timeUpdated).toBeGreaterThan(
+      rows.find((r: { credentialId: string }) => r.credentialId === a.id).timeCreated
+    );
+    expect(rows.find((r: { credentialId: string }) => r.credentialId !== a.id).weight).toBeUndefined();
+    // the raw chain (boot/refresh input) carries the weight; meta exposes it masked-only
+    expect(store.resolveKeyChain('anthropic').find((c) => c.credentialId === a.id)?.weight).toBe(3);
+    expect(store.listCredentials('anthropic').find((m) => m.id === a.id)?.weight).toBe(3);
+    expect(store.listCredentials('anthropic').find((m) => m.id !== a.id)?.weight).toBeUndefined();
+  });
+
+  it('clamps out-of-range values and refuses unknown ids', async () => {
+    const p = sandboxPaths();
+    const store = new OcrStore({ paths: p });
+    const a = await store.connectKey('anthropic', 'sk-w-clamp');
+    expect((await store.setWeight(a.id, 0)).weight).toBe(1); // degenerate → floor
+    expect((await store.setWeight(a.id, 10_000)).weight).toBe(100); // ceiling
+    expect((await store.setWeight(a.id, 2.9)).weight).toBe(2); // integers only
+    await expect(store.setWeight('nope', 2)).rejects.toBeInstanceOf(CredentialNotFoundError);
+  });
+
+  it('read-path sanitize: a hand-edited illegal weight degrades to ABSENT (= 1), never reaches the chain', async () => {
+    const p = sandboxPaths();
+    writeFile(p, {
+      version: 2,
+      providers: {
+        anthropic: [
+          { credentialId: 'c-a', key: 'sk-w-hand-a', timeCreated: 1, timeUpdated: 1, active: true, weight: 0 },
+          { credentialId: 'c-b', key: 'sk-w-hand-b', timeCreated: 1, timeUpdated: 2, active: false, weight: 500 },
+          { credentialId: 'c-c', key: 'sk-w-hand-c', timeCreated: 1, timeUpdated: 3, active: false, weight: 'x' },
+          { credentialId: 'c-d', key: 'sk-w-hand-d', timeCreated: 1, timeUpdated: 4, active: false, weight: 2.5 },
+        ],
+      },
+    });
+    const store = new OcrStore({ paths: p });
+    const metas = store.listCredentials('anthropic');
+    expect(metas.find((m) => m.id === 'c-a')?.weight).toBeUndefined();
+    expect(metas.find((m) => m.id === 'c-b')?.weight).toBe(100); // over-ceiling clamps to the max
+    expect(metas.find((m) => m.id === 'c-c')?.weight).toBeUndefined(); // non-numeric degrades
+    expect(metas.find((m) => m.id === 'c-d')?.weight).toBe(2); // fractional floors
+    // chain view agrees
+    const chain = store.resolveKeyChain('anthropic');
+    expect(chain.find((c) => c.credentialId === 'c-b')?.weight).toBe(100);
+    expect(chain.find((c) => c.credentialId === 'c-c')?.weight).toBeUndefined();
+  });
+});

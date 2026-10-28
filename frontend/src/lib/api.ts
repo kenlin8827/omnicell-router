@@ -3110,6 +3110,8 @@ export interface CredentialStoreCapabilities {
   activate: boolean;
   /** Backend supports reordering credentials (POST …/credentials/reorder). */
   reorder: boolean;
+  /** Backend supports per-credential spread weights (POST …/credentials/:id/weight). */
+  weight: boolean;
   rename: boolean;
   oauth: boolean;
   envVisible: boolean;
@@ -3127,6 +3129,11 @@ export interface CredentialMeta {
   routable: boolean;
   keyHashPrefix?: string;
   maskedKey?: string;
+  /**
+   * Spread weight for the deterministic new-session hash spread (integers >= 1,
+   * absent = 1). OCR-file rows carry it; opencode v2 rows never do.
+   */
+  weight?: number;
 }
 
 export interface CredentialOverview {
@@ -3700,6 +3707,25 @@ export const opencodeApi = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids }),
+      })
+    );
+  },
+
+  /**
+   * Set one credential's spread weight (integer 1..CREDENTIAL_WEIGHT_MAX; the
+   * backend 400s anything else). OCR-file rows only — a v2-bound store refuses
+   * with capability_unsupported. Same wire response shape as the other writes.
+   */
+  async setProviderCredentialWeight(
+    providerId: string,
+    credentialId: string,
+    weight: number
+  ): Promise<CredentialWriteResponse> {
+    return ocJson(
+      await fetch(credentialPath(providerId, credentialId) + '/weight', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ weight }),
       })
     );
   },

@@ -19,7 +19,7 @@ import { appendRoutingLedger } from '../router/routing-ledger.js';
 import { Layer2Decision } from '../router/layer2-decision.js';
 import { EFFORT_LADDER, ReasoningEffort, TierLevel } from '../types/router.js';
 import { runSystemoneDecision } from '../protocols/systemone/decide.js';
-import { SMART_ASSIGN_TIMEOUT_MS, DEFAULT_REPLAY_TIMEOUT_MS } from '../config/defaults.js';
+import { SMART_ASSIGN_TIMEOUT_MS, DEFAULT_REPLAY_TIMEOUT_MS, CREDENTIAL_WEIGHT_MAX } from '../config/defaults.js';
 import { initProxyConfig, proxiedFetch } from '../utils/proxy.js';
 import { getOcrHomeDir } from '../cli/paths.js';
 import { getHeadroomSidecarStatus, startHeadroomSidecar, stopHeadroomSidecar } from '../compression/headroom-sidecar.js';
@@ -316,7 +316,7 @@ async function refreshProviderCredentialChain(
   try {
     registry.refreshCredentialChain(
       providerId,
-      store.resolveKeyChain(providerId).map((c) => toCallCredential(c.key, c.label))
+      store.resolveKeyChain(providerId).map((c) => toCallCredential(c.key, c.label, c.weight))
     );
   } catch {
     // keep the existing chain — a refresh failure must never take routing down
@@ -689,7 +689,7 @@ function applyAutoPullPatternEdit(id: string, raw: unknown): { success: boolean;
 
 /** Capability-gate refusal (Decision 1: branch on flags, never on `kind` — the
  *  ocr store passes with activate/rename=true; OpencodeV2Store-readonly refuses). */
-function capabilityRefusalBody(capability: 'activate' | 'rename' | 'reorder'): Record<string, unknown> {
+function capabilityRefusalBody(capability: 'activate' | 'rename' | 'reorder' | 'weight'): Record<string, unknown> {
   return {
     status: 'error',
     success: false,
@@ -3329,6 +3329,46 @@ export function registerConsoleRoutes(
     },
 
     /**
+     * SET the spread weight of ONE credential (operator lever for unequal
+     * quotas: a credential weighing w occupies w slots of the deterministic
+     * new-session spread). Body: { weight: number } — an INTEGER in
+     * [1, CREDENTIAL_WEIGHT_MAX]; anything else is a 400 invalid_weight.
+     * Gated on capabilities.weight (opencode v2 rows have no weight field and
+     * refuse, exactly like reorder). The chain is hot-refreshed so the new
+     * weight shapes the very next placement — no restart.
+     */
+    credentialSetWeight: async (req: any, reply: any) => {
+      const { id, credentialId } = req.params as { id: string; credentialId: string };
+      const body = req.body as { weight?: unknown } | undefined;
+      const raw = body?.weight;
+      const weight = typeof raw === 'number' && Number.isInteger(raw) ? raw : NaN;
+      if (!Number.isFinite(weight) || weight < 1 || weight > CREDENTIAL_WEIGHT_MAX) {
+        return reply.status(400).send({
+          status: 'error',
+          success: false,
+          reasonCode: 'invalid_weight',
+          error: `weight must be an integer between 1 and ${CREDENTIAL_WEIGHT_MAX}`,
+        });
+      }
+      const { getCredentialStore } = await import('../opencode/credentials/index.js');
+      const store = await getCredentialStore();
+      if (!store.capabilities.weight) return reply.status(400).send(capabilityRefusalBody('weight'));
+      const guard = await guardStoreCredential(store, id, credentialId);
+      if (!guard.ok) return reply.status(guard.status).send(guard.body);
+      try {
+        const credential = await store.setWeight(credentialId, weight);
+        store.invalidate(); // Decision 3: console action invalidates the store view
+        // The weight rides the runtime chain — swap it in so the next
+        // new-session placement sees the new proportions immediately.
+        await refreshProviderCredentialChain(registry, store, id);
+        return { status: 'ok', success: true, credential, credentials: withCredentialHealth(id, store.listCredentials(id)) };
+      } catch (err) {
+        const failure = await mapCredentialWriteFailure(err, id, credentialId);
+        return reply.status(failure.status).send(failure.body);
+      }
+    },
+
+    /**
      * Rename one credential (user-editable label; opencode v2 rows carry
      * one; a store without labels refuses via capabilities.rename=false). Label contract:
      * trimmed, ≤80 chars, and EMPTY IS VALID — it CLEARS the label. An empty value
@@ -3615,6 +3655,7 @@ export function registerConsoleRoutes(
     // Per-credential credential writes (reorder / rename / disconnect).
     // Decision 8 double-confirm lives in the console UI; these honor the call.
     app.post(`${prefix}/opencode/providers/:id/credentials/reorder`, ocHandlers.credentialReorder);
+    app.post(`${prefix}/opencode/providers/:id/credentials/:credentialId/weight`, ocHandlers.credentialSetWeight);
     // Operator takedown (OCR credential state, NOT the credential store — survives
     // cooldown/reconnect/Push and is lifted only here).
     app.post(`${prefix}/opencode/providers/:id/credentials/:credentialId/disable`, ocHandlers.credentialDisable);

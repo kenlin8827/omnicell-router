@@ -1209,6 +1209,68 @@ describe('POST .../providers/:id/credentials/reorder', () => {
   });
 });
 
+describe('POST .../providers/:id/credentials/:credentialId/weight', () => {
+  it('200: stores the weight, answers the refreshed inline list, stays masked-only', async () => {
+    const p = credPaths();
+    const keyA = 'sk-wt-A-key';
+    const keyB = 'sk-wt-B-key';
+    seedOcr(p, {
+      anthropic: [
+        { id: 'c-a', key: keyA, active: true },
+        { id: 'c-b', key: keyB, active: false },
+      ],
+    });
+    bindStore(p);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/opencode/providers/anthropic/credentials/c-b/weight',
+      payload: { weight: 3 },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.success).toBe(true);
+    expect(body.credential.id).toBe('c-b');
+    expect(body.credential.weight).toBe(3);
+    expect(readOcrFile(p).providers.anthropic.find((r: { credentialId: string }) => r.credentialId === 'c-b').weight).toBe(3);
+    // refreshed inline list carries the weight for the UI editor
+    const row = body.credentials.find((a: { id: string }) => a.id === 'c-b');
+    expect(row.weight).toBe(3);
+    expect(body.credentials.find((a: { id: string }) => a.id === 'c-a').weight).toBeUndefined();
+    // masked-only wire contract
+    expect(res.body).not.toContain(keyA);
+    expect(res.body).not.toContain(keyB);
+  });
+
+  it('400: non-integer / out-of-range / missing weights never reach the store', async () => {
+    const p = credPaths();
+    seedOcr(p, { anthropic: [{ id: 'c-a', key: 'sk-wt-val' }] });
+    bindStore(p);
+    for (const payload of [undefined, {}, { weight: 0 }, { weight: -2 }, { weight: 1.5 }, { weight: 101 }, { weight: '3' }, { weight: null }]) {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/admin/opencode/providers/anthropic/credentials/c-a/weight',
+        ...(payload !== undefined ? { payload } : {}),
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().reasonCode).toBe('invalid_weight');
+    }
+    expect(readOcrFile(p).providers.anthropic[0].weight).toBeUndefined();
+  });
+
+  it('unknown credential → 404 credential_not_found, no write', async () => {
+    const p = credPaths();
+    seedOcr(p, { anthropic: [{ id: 'c-a', key: 'sk-wt-miss' }] });
+    bindStore(p);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/opencode/providers/anthropic/credentials/c-nope/weight',
+      payload: { weight: 2 },
+    });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().reasonCode).toBe('credential_not_found');
+  });
+});
+
 describe('PATCH .../providers/:id/credentials/:credentialId — rename', () => {
   it('label contract: oversized / non-string → 400 invalid_label; success stores the TRIMMED label', async () => {
     const p = credPaths();

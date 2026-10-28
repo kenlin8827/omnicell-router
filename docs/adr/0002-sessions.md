@@ -55,7 +55,7 @@ Each session may bind one credential (`boundKeyHashPrefix` = display-safe `sha25
 
 - bound & healthy & in the candidate's chain → **keep, ever** (local rate-limit caps never move a binding — only the provider's own 429 / pair-open / takedown does);
 - bound & pair-OPEN/SUSPECT/DISABLED → next healthy in chain order, **FORCED rebind** persisted after it serves;
-- bound & stale/expired/absent-from-chain → treated absent → deterministic new-session spread `sha256(sessionId) % healthyPool` (capped credentials preferred-against — shaping applies only to NEW placements);
+- bound & stale/expired/absent-from-chain → treated absent → deterministic new-session spread `sha256(sessionId) % healthyPool` (capped credentials preferred-against — shaping applies only to NEW placements); the spread is WEIGHTED since the ADR-0006 weight amendment: the hash draws a slot in `[0, Σweights)` and walks the weight prefix sums, so a credential weighing w occupies w consecutive slots (uniform weights reproduce the pre-weight landing exactly; weights never move a kept binding, never re-order the forced-failover landing — chain order still wins there — and never touch the ratchet);
 - every prefix out → no prefix (legacy force); every prefix DISABLED → move on to the next candidate (a takedown outranks a guess);
 - lazy window expiry (`credentialAffinity.cacheTtlMs`, read against `lastActiveAt`) is independent of the session TTL; no switch-back on recovery anywhere.
 

@@ -100,11 +100,36 @@ export interface CredentialSelectionCtx {
  * across restarts and across callers; cold prefixes have nothing to lose, so
  * spreading new sessions is free (Decision 7). Exported so tests assert the
  * same function the resolver uses instead of duplicating the hash.
+ *
+ * With every weight equal to 1 this and weightedSpreadIndex below agree
+ * exactly (total === count), so single-credential and unweighted chains keep
+ * the pre-weight landing slots.
  */
 export function credentialSpreadIndex(sessionId: string, count: number): number {
   if (count <= 1) return 0;
   const hex = crypto.createHash('sha256').update(sessionId).digest('hex').slice(0, 8);
   return parseInt(hex, 16) % count;
+}
+
+/**
+ * Weighted twin of credentialSpreadIndex: the same hash draws a slot in
+ * [0, Σweights), then walks the weight prefix sums. A credential weighing w
+ * occupies w consecutive slots, so new-session traffic splits in proportion
+ * to the weights while staying deterministic per sessionId. Callers pass
+ * sanitized weights (integers >= 1) — every entry occupies at least one slot,
+ * so the walk always terminates and the last index is the fallback.
+ */
+export function weightedSpreadIndex(sessionId: string, weights: readonly number[]): number {
+  const total = weights.reduce((sum, w) => sum + w, 0);
+  if (total <= 1) return 0;
+  const hex = crypto.createHash('sha256').update(sessionId).digest('hex').slice(0, 8);
+  const slot = parseInt(hex, 16) % total;
+  let acc = 0;
+  for (let i = 0; i < weights.length; i++) {
+    acc += weights[i];
+    if (slot < acc) return i;
+  }
+  return weights.length - 1;
 }
 
 export function selectCredential(
@@ -174,8 +199,10 @@ export function selectCredential(
   }
 
   // New-session spread — also the landing for expired and stale bindings.
+  // Weights shape ONLY this placement; the forced-failover landing above
+  // stays chain-order priority (ADR-0002).
   if (healthy.length === 0) return { forcedMove: false, reason: 'all-unhealthy' };
-  const pick = spreadPool[credentialSpreadIndex(ctx.sessionId, spreadPool.length)];
+  const pick = spreadPool[weightedSpreadIndex(ctx.sessionId, spreadPool.map((c) => c.weight ?? 1))];
   notifyShaped();
   return {
     credential: pick,

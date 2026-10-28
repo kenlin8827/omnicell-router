@@ -58,3 +58,8 @@ export const DEFAULT_ROUTE_ENTRIES_MAX = 5000;
 /** Capture-replay one-shot upstream hard deadline — streaming thinking
  *  models legitimately run minutes; 30s aborted healthy generations. */
 export const DEFAULT_REPLAY_TIMEOUT_MS = 300_000;
+
+/** Upper bound for a per-credential spread weight (integers >= 1; absence = 1).
+ *  Weights only shape the NEW-session hash spread — they never touch the
+ *  ratchet, failover order, or the sync boundary. */
+export const CREDENTIAL_WEIGHT_MAX = 100;

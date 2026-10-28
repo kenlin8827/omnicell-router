@@ -4,6 +4,7 @@ import path from 'node:path';
 import { maskSecret } from '../user-config.js';
 import { CredentialPaths, ocrCredentialsFile, resolveDefaultPaths } from './paths.js';
 import { renameWithRetry } from '../../utils/atomic-write.js';
+import { CREDENTIAL_WEIGHT_MAX } from '../../config/defaults.js';
 import {
   CredentialMeta,
   CredentialNotFoundError,
@@ -45,6 +46,12 @@ interface OcrCredential {
   timeCreated: number;
   timeUpdated: number;
   active: boolean;
+  /**
+   * Spread weight for the new-session hash spread (integers >= 1, ABSENT = 1).
+   * Sanitized on every read — a hand-edited file can never inject a 0/negative/
+   * fractional/NaN weight into the spread.
+   */
+  weight?: number;
 }
 
 interface OcrFile {
@@ -68,6 +75,7 @@ const OCR_CAPABILITIES: StoreCapabilities = {
   multiCredential: true,
   activate: true,
   reorder: true,
+  weight: true, // weights live in this file — the OCR store is their home
   rename: true,
   oauth: false,
   envVisible: false, // OCR-only store — no opencode env-templated sibling surface
@@ -84,6 +92,7 @@ function toMeta(providerId: string, credential: OcrCredential): CredentialMeta {
     routable: Boolean(credential.key),
     keyHashPrefix: keyHashPrefix(credential.key),
     maskedKey: maskSecret(credential.key),
+    ...(credential.weight !== undefined ? { weight: credential.weight } : {}),
   };
 }
 
@@ -96,6 +105,7 @@ function toRaw(providerId: string, credential: OcrCredential): RawCred {
     keyHash: sha256KeyHash(credential.key),
     active: credential.active,
     timeUpdated: credential.timeUpdated,
+    ...(credential.weight !== undefined ? { weight: credential.weight } : {}),
   };
 }
 
@@ -118,6 +128,14 @@ function normalizeLegacyOrder(rows: OcrCredential[]): OcrCredential[] {
   const active = rows.filter((r) => r.active);
   const rest = rows.filter((r) => !r.active).sort((a, b) => b.timeUpdated - a.timeUpdated);
   return [...active, ...rest];
+}
+
+/** Clamp an arbitrary stored/hand-edited value to a legal weight (integers 1..MAX). */
+function sanitizeWeight(value: unknown): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n) || n < 1) return undefined;
+  return Math.min(n, CREDENTIAL_WEIGHT_MAX);
 }
 
 export class OcrStore implements CredentialStore {
@@ -285,6 +303,23 @@ export class OcrStore implements CredentialStore {
     return this.load(providerId).map((a) => toMeta(providerId, a));
   }
 
+  /**
+   * Operator set-weight: integers 1..CREDENTIAL_WEIGHT_MAX are stored as-is;
+   * the route validates first, this clamp is the belt under the suspenders
+   * for every other caller. Bumps timeUpdated and saves as version 2.
+   */
+  async setWeight(credentialId: string, weight: number): Promise<CredentialMeta> {
+    const found = this.findCredential(credentialId);
+    if (!found) throw new CredentialNotFoundError(credentialId);
+    const { providerId } = found;
+    const sanitized = sanitizeWeight(weight) ?? 1;
+    const rows = this.load(providerId).map((a) =>
+      a.credentialId === credentialId ? { ...a, weight: sanitized, timeUpdated: this.now() } : a
+    );
+    this.save(providerId, rows);
+    return toMeta(providerId, rows.find((a) => a.credentialId === credentialId)!);
+  }
+
   invalidate(): void {
     // file read per call — nothing cached
   }
@@ -343,7 +378,11 @@ export class OcrStore implements CredentialStore {
     // would surface Object.prototype for a key absent from the file.
     const rows = Object.hasOwn(providers, providerId) ? providers[providerId] : undefined;
     if (!Array.isArray(rows)) return [];
-    return rows.filter((r): r is OcrCredential => Boolean(r) && typeof r === 'object' && typeof r.credentialId === 'string');
+    return rows
+      .filter((r): r is OcrCredential => Boolean(r) && typeof r === 'object' && typeof r.credentialId === 'string')
+      // Read-path sanitize: a hand-edited file can never smuggle an illegal
+      // weight into the spread (bad values degrade to ABSENT = 1).
+      .map((r) => ({ ...r, weight: sanitizeWeight(r.weight) }));
   }
 
   private loadRows(): OcrCredential[] {

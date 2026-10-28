@@ -655,6 +655,12 @@ export interface TranslationDict {
     credentialPinTip: string;
     /** Under-list line: several credentials DO serve at once (per-session spread). */
     credentialsSpreadHint: string;
+    /** Spread-weight column header / editor label. */
+    credentialWeight: string;
+    /** Weight tooltip: what the number shapes (and what it never touches). */
+    credentialWeightTip: string;
+    /** Toast: weight committed. */
+    credentialWeightSet: string;
     /** Operator takedown (OCR credential state; reversible, never destructive). */
     credentialDisabled: string;
     credentialDisabledTip: string;

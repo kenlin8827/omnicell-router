@@ -23,6 +23,7 @@ import {
   type CredentialQuotaView,
   type NpmVocabularyEntry,
 } from '../lib/api';
+import { CREDENTIAL_WEIGHT_MAX } from '../lib/defaults';
 import {
   LimitsEditor,
   compileLimitDrafts,
@@ -587,6 +588,11 @@ type CredentialRowProps = {
   onCopyKey: (a: CredentialHealth) => void;
   /** Open the outbound rate-limit overlay editor for THIS credential. */
   onEditLimits: (a: CredentialHealth) => void;
+  /**
+   * Commit a new spread weight for THIS credential (zoom-table editor; absent
+   * = the store cannot carry weights, the row renders a read-only ×N badge).
+   */
+  onEditWeight?: (a: CredentialHealth, weight: number) => void;
   /** 1-based chain slot in the list; the chain head is always #1. */
   position: number;
 };
@@ -932,6 +938,15 @@ const CredentialRow: React.FC<CredentialRowProps> = ({
           >
             #{position}
           </span>
+          {/* Weight badge (card rows are read-only here; the zoom table owns
+              the editor). Absent = 1 and stays unlabeled — clutter rule. */}
+          {(credential.weight ?? 1) > 1 && (
+            <span
+              style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums' }}
+            >
+              ×{credential.weight}
+            </span>
+          )}
           <span
             style={{ fontWeight: 700, fontSize: 12, flex: '0 1 auto', minWidth: 48, overflow: 'hidden', textOverflow: 'ellipsis' }}
             title={name}
@@ -1032,6 +1047,7 @@ const CredentialZoomRow: React.FC<CredentialZoomRowProps> = ({
   canReveal,
   onCopyKey,
   onEditLimits,
+  onEditWeight,
   position,
 }) => {
   const { t } = useI18n();
@@ -1140,6 +1156,39 @@ const CredentialZoomRow: React.FC<CredentialZoomRowProps> = ({
           {/* Copy sits beside the key it copies. */}
           <CredentialActions large ghost only="copy" credential={credential} caps={caps} pending={pending} testing={testing} canReveal={canReveal} onStartRename={startRename} onPin={onPin} onTest={onTest} onCopyKey={onCopyKey} onClearSuspect={onClearSuspect} onEditLimits={onEditLimits} onToggleDisabled={onToggleDisabled} onDisconnect={onDisconnect} />
         </span>
+      </td>
+      {/* Weight: editable only when the bound store can carry one (OCR file);
+          v2-bound rows render the read-only badge. Blur/Enter commits, the
+          backend clamps — the input mirrors the same 1..MAX range. */}
+      <td style={{ ...ZOOM_TD, textAlign: 'center' }}>
+        {caps?.weight && onEditWeight ? (
+          <input
+            type="number"
+            className="input"
+            min={1}
+            max={CREDENTIAL_WEIGHT_MAX}
+            key={credential.weight ?? 1}
+            defaultValue={credential.weight ?? 1}
+            disabled={pending}
+            aria-label={t('op.credentialWeight')}
+            style={{ width: 58, fontSize: 12.5, textAlign: 'center' }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+            }}
+            onBlur={(e) => {
+              const n = Math.floor(Number(e.target.value));
+              const clamped = Number.isFinite(n) ? Math.min(Math.max(n, 1), CREDENTIAL_WEIGHT_MAX) : 1;
+              if (clamped !== (credential.weight ?? 1)) onEditWeight(credential, clamped);
+              else e.target.value = String(credential.weight ?? 1);
+            }}
+          />
+        ) : (
+          (credential.weight ?? 1) > 1 && (
+            <span style={{ fontSize: 12.5, color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums' }}>
+              ×{credential.weight}
+            </span>
+          )
+        )}
       </td>
       <td style={{ ...ZOOM_TD, textAlign: 'center' }}>
         <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
@@ -1592,6 +1641,20 @@ export const KeysPage: React.FC = () => {
       applyCredentialList(a.providerId, res.credentials);
       setRenameKey(null);
       toast.success(label ? t('op.credentialRenamed', { label }) : t('op.credentialLabelCleared'));
+    } catch (err: any) {
+      toast.error(reasonError(err));
+    } finally {
+      setPendingCredential(null);
+    }
+  };
+
+  /** Spread weight commit (zoom-table editor). Shapes NEW-session placement only. */
+  const handleCredentialWeight = async (a: CredentialHealth, weight: number) => {
+    setPendingCredential(`${a.providerId}:${a.id}`);
+    try {
+      const res = await opencodeApi.setProviderCredentialWeight(a.providerId, a.id, weight);
+      applyCredentialList(a.providerId, res.credentials);
+      toast.success(t('op.credentialWeightSet', { label: credentialName(a, t('op.credentialUnnamed')), weight }));
     } catch (err: any) {
       toast.error(reasonError(err));
     } finally {
@@ -2220,9 +2283,11 @@ export const KeysPage: React.FC = () => {
           </button>
         </div>
         {/* Responsive, capped at 3 columns: the min track is a THIRD of the row
-            (minus gaps), so a wide screen never stretches 4+ cards into slivers,
-            while a narrow one drops to 2 / 1 by the 300px floor. */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(max(300px, calc((100% - 28px) / 3)), 1fr))', gap: '14px' }}>
+            (minus gaps), so a wide screen never stretches 4+ cards into slivers.
+            The 340px floor is deliberate: below ~1050px of row width three cards
+            cramp (URL text truncates, action rows wrap), so mid-size windows
+            drop to 2 columns instead. */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(max(340px, calc((100% - 28px) / 3)), 1fr))', gap: '14px' }}>
           {pagedConnected.map(p => {
             const credentialList = credentialsByProvider.get(p.id) ?? [];
             const caps = storeStatus?.capabilities;
@@ -2902,6 +2967,7 @@ export const KeysPage: React.FC = () => {
             canReveal: webAuthActive,
             onCopyKey: handleCredentialCopyKey,
             onEditLimits: (acc: CredentialHealth) => openLimitsDialog(p.id, acc),
+            onEditWeight: handleCredentialWeight,
           });
           return (
             <Dialog
@@ -2924,7 +2990,8 @@ export const KeysPage: React.FC = () => {
                       <th style={{ ...ZOOM_TH, textAlign: 'center', padding: '5px 4px' }}>#</th>
                       <th style={ZOOM_TH}>{t('op.credentialZoomColName')}</th>
                       <th style={ZOOM_TH}>{t('op.credentialZoomColKey')}</th>
-                      <th style={{ ...ZOOM_TH, textAlign: 'center', padding: '5px 16px', width: '1%' }}>{t('op.credentialZoomColStatus')}</th>
+                      {caps?.weight && <th style={{ ...ZOOM_TH, textAlign: 'center' }}>{t('op.credentialWeight')} <InfoTip text={t('op.credentialWeightTip')} /></th>}
+                      <th style={ZOOM_TH}>{t('op.credentialZoomColStatus')}</th>
                       {/* One column per action — the header IS the label. Headers
                           wrap so each column stays as wide as its button. */}
                       <th style={ZOOM_TH_ACT}>{t('op.credentialPin')}</th>

@@ -26,3 +26,8 @@ export const DEFAULT_DIRECTIVE_PREFIX = '@ocr-';
  *  real listening port (config.yaml `port` is the source of truth; its
  *  in-code default 3000 applies to bare `bun run dev` only). */
 export const DEFAULT_GATEWAY_PORT = 4000;
+
+/** Upper bound for a per-credential spread weight — mirrors backend
+ *  `CREDENTIAL_WEIGHT_MAX` (backend/src/config/defaults.ts). Integers >= 1;
+ *  absence = 1. Weights only shape the NEW-session hash spread. */
+export const CREDENTIAL_WEIGHT_MAX = 100;

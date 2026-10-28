@@ -58,8 +58,8 @@ export interface DirectBootResult {
  *  store's machine id is NOT a display name (it used to leak as a UUID).
  *  Exported for the console's hot chain rebuild (`registry.refreshCredentialChain`
  *  callers) — the same mapping the boot pool uses, never a second convention. */
-export function toCallCredential(key: string, label?: string): CallCredential {
-  return { key, keyHashPrefix: keyHashPrefix(key), ...(label ? { label } : {}) };
+export function toCallCredential(key: string, label?: string, weight?: number): CallCredential {
+  return { key, keyHashPrefix: keyHashPrefix(key), ...(label ? { label } : {}), ...(weight !== undefined ? { weight } : {}) };
 }
 
 /**
@@ -341,7 +341,7 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
     // ordered chain rides on the payload (registry-only, raw keys in memory).
     // Single-credential providers get a length-1 chain — behavior byte-identical.
     const credentialChain: CallCredential[] = storeCreds.map((c) =>
-      toCallCredential(c.key, c.label)
+      toCallCredential(c.key, c.label, c.weight)
     );
     // Defensive fallback consistency: if the chain read was empty but resolveKey
     // supplied the baked key, represent it so head === config.apiKey always holds.

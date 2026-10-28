@@ -517,6 +517,9 @@ export class OpencodeV2Store implements CredentialStore {
       multiCredential: true,
       activate: writable,
       reorder: writable,
+      // The v2 service exposes no weight field — v2 rows always weigh 1 and
+      // the console set-weight route refuses via this flag.
+      weight: false,
       rename: writable,
       oauth: false, // OAuth is excluded on every store
       envVisible: true,
@@ -572,6 +575,11 @@ export class OpencodeV2Store implements CredentialStore {
       `contention (SQLITE_BUSY/-shm) still present after ${attempts} attempts: ${msgOf(lastError)}`,
       paths.opencodeDbPath
     );
+  }
+
+  /** Weights are OCR-file state; the v2 service has nowhere to persist one. */
+  async setWeight(): Promise<CredentialMeta> {
+    throw new CapabilityUnsupportedError('setWeight', 'opencode v2 exposes no weight field');
   }
 
   probe(): StoreProbeResult {
