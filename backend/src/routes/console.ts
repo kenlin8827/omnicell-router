@@ -689,7 +689,7 @@ function applyAutoPullPatternEdit(id: string, raw: unknown): { success: boolean;
 
 /** Capability-gate refusal (Decision 1: branch on flags, never on `kind` — the
  *  ocr store passes with activate/rename=true; OpencodeV2Store-readonly refuses). */
-function capabilityRefusalBody(capability: 'activate' | 'rename'): Record<string, unknown> {
+function capabilityRefusalBody(capability: 'activate' | 'rename' | 'reorder'): Record<string, unknown> {
   return {
     status: 'error',
     success: false,
@@ -3279,30 +3279,51 @@ export function registerConsoleRoutes(
     },
 
     /**
-     * Activate ONE credential of a multi-credential provider (the
-     * Keys page's "make active" action). Gated purely on
-     * capabilities.activate (Decision 1): OpencodeV2Store-readonly has false
-     * → 400 'capability_unsupported'; the ocr store has true → allowed (no
-     * kind branching anywhere). Response carries the refreshed masked credential
-     * list in the store-status overlay shape so the UI repaints without a
-     * second fetch.
+     * REORDER a provider's credential chain (the Keys page's drag/ordering
+     * action; replaces the retired operator activate route — `store.activate`
+     * stays the internal head primitive for sync/connect headPreserved).
+     * Body: { ids: string[] } — a permutation of the provider's credential
+     * ids; the chain head becomes ids[0]. Gated on capabilities.reorder
+     * (Decision 1). Response mirrors the old activate reply: the head
+     * credential plus the refreshed masked credential list so the UI
+     * repaints without a second fetch.
      */
-    credentialActivate: async (req: any, reply: any) => {
-      const { id, credentialId } = req.params as { id: string; credentialId: string };
+    credentialReorder: async (req: any, reply: any) => {
+      const { id } = req.params as { id: string };
+      const body = req.body as { ids?: unknown } | undefined;
+      const ids = body?.ids;
+      if (!Array.isArray(ids) || ids.length === 0 || ids.some((x) => typeof x !== 'string')) {
+        return reply.status(400).send({
+          status: 'error',
+          success: false,
+          reasonCode: 'invalid_ids',
+          error: 'ids must be a non-empty array of credential id strings',
+        });
+      }
       const { getCredentialStore } = await import('../opencode/credentials/index.js');
       const store = await getCredentialStore();
-      if (!store.capabilities.activate) return reply.status(400).send(capabilityRefusalBody('activate'));
-      const guard = await guardStoreCredential(store, id, credentialId);
-      if (!guard.ok) return reply.status(guard.status).send(guard.body);
+      if (!store.capabilities.reorder) return reply.status(400).send(capabilityRefusalBody('reorder'));
+      // Guard-light: verify the provider has rows before the store call (the
+      // store's own reorder validates the id permutation and 404s unknown ids).
       try {
-        const credential = await store.activate(credentialId);
+        if (store.listCredentials(id).length === 0) {
+          return reply.status(404).send(credentialNotFoundBody(ids[0] as string, id));
+        }
+      } catch (err) {
+        const failure = await mapStoreWriteFailure(err);
+        if (failure) return reply.status(failure.status).send({ status: 'error', ...failure.body });
+        return reply.status(500).send({ status: 'error', success: false, error: errMessage(err) });
+      }
+      try {
+        const reordered = await store.reorder(id, ids as string[]);
         store.invalidate(); // Decision 3: console action invalidates the store view
-        // Activate REORDERS the chain (head = active row) — swap the runtime
-        // chain so the new head serves without a restart.
+        // Reorder IS the chain order — swap the runtime chain so the new head
+        // serves without a restart.
         await refreshProviderCredentialChain(registry, store, id);
+        const credential = reordered[0];
         return { status: 'ok', success: true, credential, credentials: withCredentialHealth(id, store.listCredentials(id)) };
       } catch (err) {
-        const failure = await mapCredentialWriteFailure(err, id, credentialId);
+        const failure = await mapCredentialWriteFailure(err, id, String((ids as string[])[0]));
         return reply.status(failure.status).send(failure.body);
       }
     },
@@ -3591,9 +3612,9 @@ export function registerConsoleRoutes(
     app.post(`${prefix}/opencode/providers/:id/models/reorder`, ocHandlers.modelReorder);
     app.post(`${prefix}/opencode/providers/:id/models/clear`, ocHandlers.modelsClear);
 
-    // Per-credential credential writes (activate / rename / disconnect).
+    // Per-credential credential writes (reorder / rename / disconnect).
     // Decision 8 double-confirm lives in the console UI; these honor the call.
-    app.post(`${prefix}/opencode/providers/:id/credentials/:credentialId/activate`, ocHandlers.credentialActivate);
+    app.post(`${prefix}/opencode/providers/:id/credentials/reorder`, ocHandlers.credentialReorder);
     // Operator takedown (OCR credential state, NOT the credential store — survives
     // cooldown/reconnect/Push and is lifted only here).
     app.post(`${prefix}/opencode/providers/:id/credentials/:credentialId/disable`, ocHandlers.credentialDisable);

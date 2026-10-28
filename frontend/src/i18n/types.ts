@@ -651,8 +651,8 @@ export interface TranslationDict {
     credentialSoleServingTip: string;
     /** Chain head = opencode's own key + failover priority head, not the only serving row. */
     credentialChainHeadTip: string;
-    /** Refusal reason: activating a non-routable credential cannot affect gateway routing. */
-    credentialActivateNotRoutableTip: string;
+    /** Tip for the pin-to-top affordance (credential reorder). */
+    credentialPinTip: string;
     /** Under-list line: several credentials DO serve at once (per-session spread). */
     credentialsSpreadHint: string;
     /** Operator takedown (OCR credential state; reversible, never destructive). */
@@ -665,6 +665,15 @@ export interface TranslationDict {
     credentialDisabledOk: string;
     credentialEnabled: string;
     credentialsAllDisabled: string;
+    /** Per-provider credential zoom (enlarged table dialog on KeysPage). */
+    credentialZoom: string;
+    credentialZoomDesc: string;
+    /** Zoom table: dim 'normal' word shown when a row carries no badges. */
+    credentialZoomStatusNormal: string;
+    credentialZoomColName: string;
+    credentialZoomColKey: string;
+    credentialZoomColStatus: string;
+    credentialZoomColToggle: string;
     credentialsAllDisabledTip: string;
     /** Full explanation behind the ⊘ icon (the two-word badge answered nothing). */
     credentialNotRoutableTip: string;
@@ -684,8 +693,10 @@ export interface TranslationDict {
     quotaVerified: string;
     quotaPlan: string;
     credentialPrefixTip: string;
-    credentialActivate: string;
-    credentialActivated: string;
+    /** Button: move this credential to the head of the chain (reorder). */
+    credentialPin: string;
+    /** Toast: credential was pinned to the chain head. */
+    credentialPinned: string;
     /** Per-credential connectivity probe (multi-credential: the provider-level Test only ever hits the head row). */
     credentialTest: string;
     credentialTestTip: string;

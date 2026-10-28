@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
-import { Key, Check, RefreshCw, Trash2, Plug, Plus, Lock, Cpu, Zap, Upload, Download, AlertTriangle, Star, Pencil, Unplug, Clock, ShieldAlert, Ban, PowerOff, Power, Copy, Gauge } from 'lucide-react';
+import { Key, Check, RefreshCw, Trash2, Plug, Plus, Lock, Cpu, Zap, Upload, Download, AlertTriangle, Pencil, Unplug, Clock, ShieldAlert, Ban, PowerOff, Power, Copy, Gauge, Maximize2, ArrowUpToLine } from 'lucide-react';
 import {
   opencodeApi,
   api,
@@ -570,7 +570,7 @@ type CredentialRowProps = {
   onCancelRename: () => void;
   /** Shared tick clock (cooldown chips). */
   now: number;
-  onActivate: (a: CredentialHealth) => void;
+  onPin: (a: CredentialHealth) => void;
   onRename: (a: CredentialHealth, label: string) => void;
   /** One-shot upstream probe with THIS row's exact key (bypasses head selection). */
   onTest: (a: CredentialHealth) => void;
@@ -587,10 +587,254 @@ type CredentialRowProps = {
   onCopyKey: (a: CredentialHealth) => void;
   /** Open the outbound rate-limit overlay editor for THIS credential. */
   onEditLimits: (a: CredentialHealth) => void;
-  /** 1-based chain slot in the list. The chain head keeps the ★; every other
-      row shows its slot number so the whole priority order is readable. */
+  /** 1-based chain slot in the list; the chain head is always #1. */
   position: number;
 };
+
+/** Compact icon-button look shared by every per-credential action. */
+const CRED_ICON_BTN: React.CSSProperties = { padding: '2px 6px', fontSize: 11, lineHeight: 1 };
+const CRED_ICON_BTN_LG: React.CSSProperties = { padding: '3px 7px', fontSize: 12, lineHeight: 1 };
+
+/**
+ * Status badges for one credential — shared by the card row and the zoom
+ * table so the two surfaces can never disagree on what a row "says".
+ * Word badges keep icon + text; icon-only markers lean on `title`.
+ */
+const CredentialStatusBadges: React.FC<{ credential: CredentialHealth; remaining: number }> = ({ credential, remaining }) => {
+  const { t } = useI18n();
+  return (
+    <>
+      {credential.disabled && (
+        <span
+          style={{ ...badgeStyle('var(--accent-rose)', 'color-mix(in srgb, var(--accent-rose) 12%, transparent)'), display: 'inline-flex', alignItems: 'center', gap: 3 }}
+          title={credential.disabledReason ? `${t('op.credentialDisabledTip')} · ${credential.disabledReason}` : t('op.credentialDisabledTip')}
+        >
+          <PowerOff size={9} />
+          {t('op.credentialDisabled')}
+        </span>
+      )}
+      {!credential.routable && (
+        <span style={{ display: 'inline-flex', color: 'var(--text-dim)' }} title={t('op.credentialNotRoutableTip')}>
+          <Ban size={11} />
+        </span>
+      )}
+      {credential.suspect && (
+        <span style={{ display: 'inline-flex', color: 'var(--accent-rose)' }} title={t('op.credentialSuspectTip')}>
+          <AlertTriangle size={11} />
+        </span>
+      )}
+      {remaining > 0 && (
+        <span
+          style={{ ...badgeStyle('var(--accent-amber)', 'color-mix(in srgb, var(--accent-amber) 12%, transparent)'), display: 'inline-flex', alignItems: 'center', gap: 3 }}
+          title={t('op.credentialOpenPairs', { n: credential.openPairs })}
+        >
+          <Clock size={9} />
+          {formatCountdown(remaining)}
+        </span>
+      )}
+      {/* Outbound caps armed for THIS credential (config credentials: overlay).
+          The count is the rule count; per-rule detail lives in the tooltip. */}
+      {(credential.limits ?? []).length > 0 && (
+        <span
+          style={{ ...badgeStyle('var(--accent)', 'color-mix(in srgb, var(--accent) 12%, transparent)'), display: 'inline-flex', alignItems: 'center', gap: 3 }}
+          title={(credential.limits ?? []).map(ruleLabel).join('\n')}
+        >
+          <Gauge size={9} />
+          {(credential.limits ?? []).length}
+        </span>
+      )}
+      {/* Quota tracking badge: present only when the provider is COVERED —
+          absence != the `unverified` state. Display-only, never gates routing. */}
+      {credential.quota && <QuotaBadge quota={credential.quota} />}
+    </>
+  );
+};
+
+/**
+ * Per-credential action buttons — the single source of action availability
+ * (Decision 1: capability-first) shared by the card row and the zoom table.
+ * Icon-only with full title + aria-label; the zoom table puts the labels in
+ * its per-action column headers and renders ONE action per column via
+ * `only` (the cell is empty when the row's state hides the action).
+ */
+type CredentialActionKind = 'test' | 'pin' | 'rename' | 'copy' | 'clearSuspect' | 'limits' | 'toggle' | 'disconnect';
+
+type CredentialActionsProps = {
+  credential: CredentialHealth;
+  caps: CredentialStoreCapabilities;
+  pending: boolean;
+  testing: boolean;
+  canReveal: boolean;
+  /** Zoom-table sizing (slightly larger hit area). */
+  large?: boolean;
+  /** Render only this action (zoom-table per-column mode); omit for the full cluster. */
+  only?: CredentialActionKind;
+  /** Borderless inline look for buttons embedded beside cell text (rename beside the name, copy beside the key). */
+  ghost?: boolean;
+  onStartRename: () => void;
+  onPin: (a: CredentialHealth) => void;
+  onTest: (a: CredentialHealth) => void;
+  onCopyKey: (a: CredentialHealth) => void;
+  onClearSuspect: (a: CredentialHealth) => void;
+  onEditLimits: (a: CredentialHealth) => void;
+  onToggleDisabled: (a: CredentialHealth) => void;
+  onDisconnect: (a: CredentialHealth) => void;
+};
+
+const CredentialActions: React.FC<CredentialActionsProps> = ({
+  credential,
+  caps,
+  pending,
+  testing,
+  canReveal,
+  large = false,
+  only,
+  ghost = false,
+  onStartRename,
+  onPin,
+  onTest,
+  onCopyKey,
+  onClearSuspect,
+  onEditLimits,
+  onToggleDisabled,
+  onDisconnect,
+}) => {
+  const { t } = useI18n();
+  const btn: React.CSSProperties = ghost
+    ? { ...CRED_ICON_BTN_LG, border: 'none', background: 'transparent', color: 'var(--text-dim)', padding: '2px 4px' }
+    : large
+      ? CRED_ICON_BTN_LG
+      : CRED_ICON_BTN;
+  const icon = large ? 13 : 12;
+  // Action availability is capability-first (Decision 1: branch on flags,
+  // never on `kind`). Disabled affordances keep the blocked-tooltip pattern so
+  // the reason is never a mystery.
+  const actionTip = (supported: boolean, okLabel: string) =>
+    supported ? okLabel : t('op.reasonCapabilityUnsupported');
+  // Pin-to-top is a reorder: shown on every non-head row (a takedown row
+  // keeps the button, disabled with its reason — an empty cell reads as a
+  // missing affordance). The store must advertise the capability, else say so.
+  const pinTip = !caps.reorder
+    ? t('op.reasonCapabilityUnsupported')
+    : credential.disabled
+      ? t('op.credentialDisabledTip')
+      : t('op.credentialPinTip');
+  const want = (kind: CredentialActionKind) => only === undefined || only === kind;
+  return (
+    <>
+      {/* Per-credential connectivity probe: pins the store row THIS line
+          names — the card-level Test only ever hits the head credential. */}
+      {want('test') && credential.routable && (
+        <button
+          className="btn btn-sm"
+          style={btn}
+          disabled={testing || pending}
+          title={testing ? t('op.testing') : t('op.credentialTestTip')}
+          aria-label={t('op.credentialTest')}
+          onClick={() => onTest(credential)}
+        >
+          {testing ? (
+            <RefreshCw size={icon} style={{ animation: 'ocr-spin 0.8s linear infinite' }} />
+          ) : (
+            <Zap size={icon} />
+          )}
+        </button>
+      )}
+      {want('pin') && !credential.active && (
+        <button
+          className="btn btn-sm"
+          style={btn}
+          disabled={!caps.reorder || credential.disabled || !credential.routable || pending}
+          title={pinTip}
+          aria-label={t('op.credentialPin')}
+          onClick={() => onPin(credential)}
+        >
+          <ArrowUpToLine size={icon} />
+        </button>
+      )}
+      {want('rename') && (
+        <button
+          className="btn btn-sm"
+          style={btn}
+          disabled={!caps.rename || pending}
+          title={actionTip(caps.rename, t('op.credentialRename'))}
+          aria-label={t('op.credentialRename')}
+          onClick={onStartRename}
+        >
+          <Pencil size={icon} />
+        </button>
+      )}
+      {/* Raw-key export for the row the operator can name. Only api-key rows
+          have anything to reveal (oauth material never leaves any surface). */}
+      {want('copy') && credential.type === 'api' && credential.routable && (
+        <button
+          className="btn btn-sm"
+          style={btn}
+          disabled={!canReveal || pending}
+          title={canReveal ? t('op.credentialCopyKey') : t('op.credentialCopyNeedsAuthTip')}
+          aria-label={t('op.credentialCopyKey')}
+          onClick={() => onCopyKey(credential)}
+        >
+          <Copy size={icon} />
+        </button>
+      )}
+      {want('clearSuspect') && credential.suspect && credential.keyHashPrefix && (
+        <button
+          className="btn btn-sm"
+          style={btn}
+          disabled={pending}
+          title={t('op.credentialClearSuspect')}
+          aria-label={t('op.credentialClearSuspect')}
+          onClick={() => onClearSuspect(credential)}
+        >
+          <ShieldAlert size={icon} />
+        </button>
+      )}
+      {/* Outbound rate-limit overlay — CONFIG-side governance: the caps live
+          in OCR's own config.yaml, not in the credential store. Routable rows
+          only: a credential that can never carry traffic has nothing to shape. */}
+      {want('limits') && credential.keyHashPrefix && credential.routable && (
+        <button
+          className="btn btn-sm"
+          style={btn}
+          disabled={pending}
+          title={t('op.credentialLimitsTip')}
+          aria-label={t('op.credentialLimits')}
+          onClick={() => onEditLimits(credential)}
+        >
+          <Gauge size={icon} />
+        </button>
+      )}
+      {/* Takedown first, destruction last: this is the safe lever, and the
+          two must never be confused for one another. */}
+      {want('toggle') && (
+        <button
+          className="btn btn-sm"
+          style={btn}
+          disabled={pending}
+          title={credential.disabled ? t('op.credentialEnableTip') : t('op.credentialDisableTip')}
+          aria-label={credential.disabled ? t('op.credentialEnable') : t('op.credentialDisable')}
+          onClick={() => onToggleDisabled(credential)}
+        >
+          {credential.disabled ? <Power size={icon} /> : <PowerOff size={icon} />}
+        </button>
+      )}
+      {want('disconnect') && (
+        <button
+          className="btn btn-sm"
+          style={{ ...btn, color: 'var(--accent-rose)' }}
+          disabled={pending}
+          title={t('op.credentialDisconnect')}
+          aria-label={t('op.credentialDisconnect')}
+          onClick={() => onDisconnect(credential)}
+        >
+          <Unplug size={icon} />
+        </button>
+      )}
+    </>
+  );
+};
+
 
 /** One credential of a multi-credential provider — the drill-down row. */
 const CredentialRow: React.FC<CredentialRowProps> = ({
@@ -604,7 +848,7 @@ const CredentialRow: React.FC<CredentialRowProps> = ({
   onStartRename,
   onCancelRename,
   now,
-  onActivate,
+  onPin,
   onRename,
   onTest,
   onDisconnect,
@@ -619,28 +863,6 @@ const CredentialRow: React.FC<CredentialRowProps> = ({
   const [labelDraft, setLabelDraft] = useState('');
   const remaining = credential.cooldownUntilMs !== undefined ? credential.cooldownUntilMs - now : 0;
   const name = credentialName(credential, t('op.credentialUnnamed'));
-  // Display truth: the active flag, or the only credential able to serve.
-  // A takedown is never "serving", even when it is the store's active row or the
-  // sole routable one — the operator took it out of routing on purpose.
-  const serving = !credential.disabled && (credential.active || soleServing);
-
-  // Action availability is capability-first (Decision 1: branch on flags,
-  // never on `kind`). Disabled affordances keep the blocked-tooltip pattern so
-  // the reason is never a mystery.
-  const actionTip = (supported: boolean, okLabel: string) =>
-    supported ? okLabel : t('op.reasonCapabilityUnsupported');
-  // A non-routable row (oauth / wellknown / empty key) can never carry OCR
-  // traffic, so "make it the chain head" has no routing effect — the only thing
-  // it changes is which credential opencode itself uses. Say that, don't let the
-  // button imply the gateway will start serving this key.
-  const activateTip = !credential.routable
-    ? t('op.credentialActivateNotRoutableTip')
-    : actionTip(caps.activate, t('op.credentialActivate'));
-
-  // ONE line per credential: identity, status and actions share a single row so a
-  // provider with several keys never outgrows its scroll cap. Word badges became
-  // icon + tooltip for the same reason — `title` still carries the full claim.
-  const rowIconBtn: React.CSSProperties = { padding: '2px 6px', fontSize: 11, lineHeight: 1 };
 
   return (
     <div
@@ -653,8 +875,8 @@ const CredentialRow: React.FC<CredentialRowProps> = ({
         // The scroll container is a flex column: without this the rows SHRINK
         // to fit the cap instead of overflowing and scrolling.
         flexShrink: 0,
-        // Serving state is already carried by the ★ chain-head marker — no
-        // extra bar/border (redundant encoding was the box-in-box complaint).
+        // Chain order rides the #1 slot number — no extra bar/border
+        // (redundant encoding was the box-in-box complaint).
         whiteSpace: 'nowrap',
         overflow: 'hidden',
       }}
@@ -678,55 +900,38 @@ const CredentialRow: React.FC<CredentialRowProps> = ({
           />
           <button
             className="btn btn-sm btn-primary"
-            style={rowIconBtn}
+            style={CRED_ICON_BTN}
             disabled={pending || labelDraft.trim() === (credential.label?.trim() ?? '')}
             title={labelDraft.trim() ? t('op.credentialRename') : t('op.credentialClearLabel')}
             onClick={() => onRename(credential, labelDraft.trim())}
           >
             <Check size={12} />
           </button>
-          <button className="btn btn-sm" style={rowIconBtn} onClick={onCancelRename}>
+          <button className="btn btn-sm" style={CRED_ICON_BTN} onClick={onCancelRename}>
             ✕
           </button>
         </>
       ) : (
         <>
-          {/* Gold star = chain head. It does NOT mean "only this key serves":
-              a multi-credential provider spreads NEW sessions across every
-              healthy row (Decision 7), so the other rows are working too.
-              Non-head rows show their 1-based slot number instead, so the
-              whole fallback order is readable at a glance.
-              Color comes from --accent-star (per-theme tuned gold), NOT
-              --accent: accent blue is the interactive color (links, buttons,
-              badges) a non-clickable status icon must not borrow. */}
-          {serving ? (
-            <span
-              style={{ display: 'inline-flex', alignItems: 'center', color: 'var(--accent-star)' }}
-              title={credential.active ? t('op.credentialChainHeadTip') : t('op.credentialSoleServingTip')}
-            >
-              {/* Outline, not fill: this is status metadata on a row whose
-                  content (label + key) must outweigh it; gold outline stays
-                  scannable without turning the page into a starfield. The
-                  solid/outline pair also mirrors state (this) vs action
-                  (the "make head" button on non-head rows). */}
-              <Star size={12} />
-            </span>
-          ) : (
-            <span
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                fontSize: 10,
-                fontWeight: 600,
-                minWidth: 12,
-                color: 'var(--text-dim)',
-                fontVariantNumeric: 'tabular-nums',
-              }}
-              title={t('op.credentialChainHeadTip')}
-            >
-              #{position}
-            </span>
-          )}
+          {/* Slot number = chain order (head = #1). The order itself changes
+              only via the pin action (a multi-credential provider spreads NEW
+              sessions across every healthy row — Decision 7 — so position is
+              priority, not exclusivity). Uniform color: order metadata only,
+              no row gets a special tint. */}
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              fontSize: 10,
+              fontWeight: 600,
+              minWidth: 12,
+              color: 'var(--text-dim)',
+              fontVariantNumeric: 'tabular-nums',
+            }}
+            title={t('op.credentialChainHeadTip')}
+          >
+            #{position}
+          </span>
           <span
             style={{ fontWeight: 700, fontSize: 12, flex: '0 1 auto', minWidth: 48, overflow: 'hidden', textOverflow: 'ellipsis' }}
             title={name}
@@ -758,162 +963,204 @@ const CredentialRow: React.FC<CredentialRowProps> = ({
             </span>
           )}
           <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
-            {credential.disabled && (
-              <span
-                style={{ ...badgeStyle('var(--accent-rose)', 'color-mix(in srgb, var(--accent-rose) 12%, transparent)'), display: 'inline-flex', alignItems: 'center', gap: 3 }}
-                title={credential.disabledReason ? `${t('op.credentialDisabledTip')} · ${credential.disabledReason}` : t('op.credentialDisabledTip')}
-              >
-                <PowerOff size={9} />
-                {t('op.credentialDisabled')}
-              </span>
-            )}
-            {!credential.routable && (
-              <span style={{ display: 'inline-flex', color: 'var(--text-dim)' }} title={t('op.credentialNotRoutableTip')}>
-                <Ban size={11} />
-              </span>
-            )}
-            {credential.suspect && (
-              <span style={{ display: 'inline-flex', color: 'var(--accent-rose)' }} title={t('op.credentialSuspectTip')}>
-                <AlertTriangle size={11} />
-              </span>
-            )}
-            {remaining > 0 && (
-              <span
-                style={{ ...badgeStyle('var(--accent-amber)', 'color-mix(in srgb, var(--accent-amber) 12%, transparent)'), display: 'inline-flex', alignItems: 'center', gap: 3 }}
-                title={t('op.credentialOpenPairs', { n: credential.openPairs })}
-              >
-                <Clock size={9} />
-                {formatCountdown(remaining)}
-              </span>
-            )}
-            {/* Outbound caps armed for THIS credential (config credentials: overlay).
-                The count is the rule count; per-rule detail lives in the tooltip
-                (the row is one dense line — machine text, not prose). */}
-            {(credential.limits ?? []).length > 0 && (
-              <span
-                style={{ ...badgeStyle('var(--accent)', 'color-mix(in srgb, var(--accent) 12%, transparent)'), display: 'inline-flex', alignItems: 'center', gap: 3 }}
-                title={(credential.limits ?? []).map(ruleLabel).join('\n')}
-              >
-                <Gauge size={9} />
-                {(credential.limits ?? []).length}
-              </span>
-            )}
-            {/* Quota tracking badge: present only when the provider
-                is COVERED — absence != the `unverified` state. Display-only,
-                never gates routing; multi-window detail lives in the tooltip. */}
-            {credential.quota && <QuotaBadge quota={credential.quota} />}
-            {/* Per-credential connectivity probe: pins the store row THIS line
-                names — the card-level Test only ever hits the head credential. */}
-            {credential.routable && (
-              <button
-                className="btn btn-sm"
-                style={rowIconBtn}
-                disabled={testing || pending}
-                title={testing ? t('op.testing') : t('op.credentialTestTip')}
-                aria-label={t('op.credentialTest')}
-                onClick={() => onTest(credential)}
-              >
-                {testing ? (
-                  <RefreshCw size={12} style={{ animation: 'ocr-spin 0.8s linear infinite' }} />
-                ) : (
-                  <Zap size={12} />
-                )}
-              </button>
-            )}
-            {!credential.active && !credential.disabled && (
-              <button
-                className="btn btn-sm"
-                style={rowIconBtn}
-                disabled={!caps.activate || !credential.routable || pending}
-                title={activateTip}
-                aria-label={t('op.credentialActivate')}
-                onClick={() => onActivate(credential)}
-              >
-                <Star size={12} />
-              </button>
-            )}
-            <button
-              className="btn btn-sm"
-              style={rowIconBtn}
-              disabled={!caps.rename || pending}
-              title={actionTip(caps.rename, t('op.credentialRename'))}
-              aria-label={t('op.credentialRename')}
-              onClick={() => {
+            <CredentialStatusBadges credential={credential} remaining={remaining} />
+            <CredentialActions
+              credential={credential}
+              caps={caps}
+              pending={pending}
+              testing={testing}
+              canReveal={canReveal}
+              onStartRename={() => {
                 setLabelDraft(credential.label ?? '');
                 onStartRename();
               }}
-            >
-              <Pencil size={12} />
-            </button>
-            {/* Raw-key export for the row the operator
-                can name. Only api-key rows have anything to reveal (oauth
-                material never leaves any surface). */}
-            {credential.type === 'api' && credential.routable && (
-              <button
-                className="btn btn-sm"
-                style={rowIconBtn}
-                disabled={!canReveal || pending}
-                title={canReveal ? t('op.credentialCopyKey') : t('op.credentialCopyNeedsAuthTip')}
-                aria-label={t('op.credentialCopyKey')}
-                onClick={() => onCopyKey(credential)}
-              >
-                <Copy size={12} />
-              </button>
-            )}
-            {credential.suspect && credential.keyHashPrefix && (
-              <button
-                className="btn btn-sm"
-                style={rowIconBtn}
-                disabled={pending}
-                title={t('op.credentialClearSuspect')}
-                aria-label={t('op.credentialClearSuspect')}
-                onClick={() => onClearSuspect(credential)}
-              >
-                <ShieldAlert size={12} />
-              </button>
-            )}
-            {/* Outbound rate-limit overlay — CONFIG-side governance: the caps
-                live in OCR's own config.yaml, not in the credential store —
-                same reasoning as the suspect door above. Routable rows only: a
-                credential that can never carry traffic has nothing to shape. */}
-            {credential.keyHashPrefix && credential.routable && (
-              <button
-                className="btn btn-sm"
-                style={rowIconBtn}
-                disabled={pending}
-                title={t('op.credentialLimitsTip')}
-                aria-label={t('op.credentialLimits')}
-                onClick={() => onEditLimits(credential)}
-              >
-                <Gauge size={12} />
-              </button>
-            )}
-            {/* Takedown first, destruction last: this is the safe lever, and the
-                two must never be confused for one another. */}
-            <button
-              className="btn btn-sm"
-              style={rowIconBtn}
-              disabled={pending}
-              title={credential.disabled ? t('op.credentialEnableTip') : t('op.credentialDisableTip')}
-              aria-label={credential.disabled ? t('op.credentialEnable') : t('op.credentialDisable')}
-              onClick={() => onToggleDisabled(credential)}
-            >
-              {credential.disabled ? <Power size={12} /> : <PowerOff size={12} />}
-            </button>
-            <button
-              className="btn btn-sm"
-              style={{ ...rowIconBtn, color: 'var(--accent-rose)' }}
-              disabled={pending}
-              title={t('op.credentialDisconnect')}
-              aria-label={t('op.credentialDisconnect')}
-              onClick={() => onDisconnect(credential)}
-            >
-              <Unplug size={12} />
-            </button>
+              onPin={onPin}
+              onTest={onTest}
+              onCopyKey={onCopyKey}
+              onClearSuspect={onClearSuspect}
+              onEditLimits={onEditLimits}
+              onToggleDisabled={onToggleDisabled}
+              onDisconnect={onDisconnect}
+            />
           </span>
         </>
       )}
     </div>
+  );
+};
+
+const ZOOM_TH: React.CSSProperties = {
+  textAlign: 'left',
+  fontSize: 11.5,
+  fontWeight: 700,
+  color: 'var(--text-dim)',
+  padding: '5px 10px',
+  borderBottom: '1px solid var(--border)',
+  whiteSpace: 'nowrap',
+};
+/** Action column headers: centered, wrapping so each column is as wide as its button. */
+const ZOOM_TH_ACT: React.CSSProperties = { ...ZOOM_TH, textAlign: 'center', padding: '4px 2px', whiteSpace: 'normal' };
+const ZOOM_TD: React.CSSProperties = {
+  padding: '8px 10px',
+  borderBottom: '1px solid var(--border)',
+  verticalAlign: 'middle',
+  whiteSpace: 'nowrap',
+};
+
+type CredentialZoomRowProps = Omit<CredentialRowProps, 'now'> & { now: number };
+
+/** One credential of the zoom dialog — a table row: the labels live in the
+ *  column headers, the actions stay icon-only. Same shared badge/action
+ *  components as the card row, so availability logic cannot drift. */
+const CredentialZoomRow: React.FC<CredentialZoomRowProps> = ({
+  credential,
+  caps,
+  soleServing,
+  prefixVisible,
+  pending,
+  testing,
+  renaming,
+  onStartRename,
+  onCancelRename,
+  now,
+  onPin,
+  onRename,
+  onTest,
+  onDisconnect,
+  onToggleDisabled,
+  onClearSuspect,
+  canReveal,
+  onCopyKey,
+  onEditLimits,
+  position,
+}) => {
+  const { t } = useI18n();
+  const [labelDraft, setLabelDraft] = useState('');
+  const remaining = credential.cooldownUntilMs !== undefined ? credential.cooldownUntilMs - now : 0;
+  const name = credentialName(credential, t('op.credentialUnnamed'));
+  const startRename = () => {
+    setLabelDraft(credential.label ?? '');
+    onStartRename();
+  };
+  // One shared helper renders every per-column action — the pin/test/limits/
+  // toggle/disconnect columns and the ghost copy/clear-suspect embeds all use
+  // the same availability logic.
+  const action = (kind: 'test' | 'pin' | 'copy' | 'clearSuspect' | 'limits' | 'toggle' | 'disconnect') => (
+    <CredentialActions
+      large
+      only={kind}
+      credential={credential}
+      caps={caps}
+      pending={pending}
+      testing={testing}
+      canReveal={canReveal}
+      onStartRename={startRename}
+      onPin={onPin}
+      onTest={onTest}
+      onCopyKey={onCopyKey}
+      onClearSuspect={onClearSuspect}
+      onEditLimits={onEditLimits}
+      onToggleDisabled={onToggleDisabled}
+      onDisconnect={onDisconnect}
+    />
+  );
+  return (
+    <tr>
+      {/* Chain order column: plain slot number — head = #1, no star (the pin
+          action in the action columns is how the order changes). */}
+      <td style={{ ...ZOOM_TD, textAlign: 'center', color: 'var(--text-dim)', fontWeight: 600, fontSize: 12 }}>
+        #{position}
+      </td>
+      <td style={{ ...ZOOM_TD, fontWeight: 700, fontSize: 13.5, maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis' }} title={name}>
+        {renaming ? (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <input
+              className="input"
+              style={{ fontSize: 13, width: 180 }}
+              aria-label={t('op.credentialLabelPlaceholder')}
+              placeholder={t('op.credentialLabelPlaceholder')}
+              maxLength={80}
+              value={labelDraft}
+              onChange={(e) => setLabelDraft(e.target.value)}
+              onKeyDown={(e) => {
+                // Enter with an empty draft is the CLEAR gesture, not a no-op.
+                if (e.key === 'Enter') onRename(credential, labelDraft.trim());
+                if (e.key === 'Escape') onCancelRename();
+              }}
+              autoFocus
+            />
+            <button
+              className="btn btn-sm btn-primary"
+              style={CRED_ICON_BTN_LG}
+              disabled={pending || labelDraft.trim() === (credential.label?.trim() ?? '')}
+              title={labelDraft.trim() ? t('op.credentialRename') : t('op.credentialClearLabel')}
+              onClick={() => onRename(credential, labelDraft.trim())}
+            >
+              <Check size={13} />
+            </button>
+            <button className="btn btn-sm" style={CRED_ICON_BTN_LG} title={t('common.cancel')} aria-label={t('common.cancel')} onClick={onCancelRename}>
+              ✕
+            </button>
+          </span>
+        ) : (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</span>
+            {prefixVisible && <PrefixChip credential={credential} />}
+            {/* Rename lives beside the name it edits, not in its own column. */}
+            <CredentialActions
+              large
+              ghost
+              only="rename"
+              credential={credential}
+              caps={caps}
+              pending={pending}
+              testing={testing}
+              canReveal={canReveal}
+              onStartRename={startRename}
+              onPin={onPin}
+              onTest={onTest}
+              onCopyKey={onCopyKey}
+              onClearSuspect={onClearSuspect}
+              onEditLimits={onEditLimits}
+              onToggleDisabled={onToggleDisabled}
+              onDisconnect={onDisconnect}
+            />
+          </span>
+        )}
+      </td>
+      <td style={{ ...ZOOM_TD, fontSize: 12.5, fontFamily: FONT_MONO, color: 'var(--text-dim)', maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          {credential.maskedKey && (
+            <span
+              title={credential.keyHashPrefix ? t('op.credentialPrefixTip', { prefix: credential.keyHashPrefix, id: credential.id }) : undefined}
+            >
+              {credential.maskedKey}
+            </span>
+          )}
+          {/* Copy sits beside the key it copies. */}
+          <CredentialActions large ghost only="copy" credential={credential} caps={caps} pending={pending} testing={testing} canReveal={canReveal} onStartRename={startRename} onPin={onPin} onTest={onTest} onCopyKey={onCopyKey} onClearSuspect={onClearSuspect} onEditLimits={onEditLimits} onToggleDisabled={onToggleDisabled} onDisconnect={onDisconnect} />
+        </span>
+      </td>
+      <td style={{ ...ZOOM_TD, textAlign: 'center' }}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
+          <CredentialStatusBadges credential={credential} remaining={remaining} />
+          {/* Suspect-clear is a per-row conditional (suspect rows only), so it
+              rides the status cell instead of an always-empty column. */}
+          {action('clearSuspect')}
+          {/* Explicit "normal" word: an empty cell reads as broken data. */}
+          {!credential.disabled && !credential.suspect && remaining <= 0 && (credential.limits ?? []).length === 0 && !credential.quota && (
+            <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>{t('op.credentialZoomStatusNormal')}</span>
+          )}
+        </span>
+      </td>
+      {/* One action per column — the header above IS the label. Compact cells:
+          the button sets the column's width, nothing more. */}
+      {(['pin', 'test', 'limits', 'toggle', 'disconnect'] as const).map((kind) => (
+        <td key={kind} style={{ ...ZOOM_TD, padding: '8px 2px', textAlign: 'center' }}>
+          {action(kind)}
+        </td>
+      ))}
+    </tr>
   );
 };
 
@@ -1252,6 +1499,9 @@ export const KeysPage: React.FC = () => {
   // `${providerId}:${credentialId}` of the row in label-edit mode (page-owned so it
   // closes only when the rename write succeeds).
   const [renameKey, setRenameKey] = useState<string | null>(null);
+  // Provider whose credential list is open in the zoom dialog (page-scoped:
+  // the dialog shares the card rows' handler wiring).
+  const [zoomProviderId, setZoomProviderId] = useState<string | null>(null);
 
   const applyCredentialList = (providerId: string, credentials: CredentialHealth[]) =>
     setStoreStatus((prev) =>
@@ -1291,13 +1541,17 @@ export const KeysPage: React.FC = () => {
     return code ? t('op.reasonGenericCode', { code, message }) : t('op.reasonGeneric', { message });
   };
 
-  const handleCredentialActivate = async (a: CredentialHealth) => {
+  const handleCredentialPin = async (a: CredentialHealth) => {
     setPendingCredential(`${a.providerId}:${a.id}`);
     try {
-      const res = await opencodeApi.activateProviderCredential(a.providerId, a.id);
+      // Reorder is a full permutation: move the pinned row to the head and
+      // keep the remaining order stable.
+      const list = credentialsByProvider.get(a.providerId) ?? [a];
+      const orderedIds = [a.id, ...list.filter((c) => c.id !== a.id).map((c) => c.id)];
+      const res = await opencodeApi.reorderProviderCredentials(a.providerId, orderedIds);
       applyCredentialList(a.providerId, res.credentials);
-      toast.success(t('op.credentialActivated', { label: credentialName(a, t('op.credentialUnnamed')) }));
-      // The card's own masked key mirrors the ACTIVE credential — keep it honest.
+      toast.success(t('op.credentialPinned', { label: credentialName(a, t('op.credentialUnnamed')) }));
+      // The card's own masked key mirrors the chain head — keep it honest.
       await loadOpenCodeProviders();
     } catch (err: any) {
       toast.error(reasonError(err));
@@ -2025,6 +2279,17 @@ export const KeysPage: React.FC = () => {
                     {t('op.pmEmptyBadge')}
                   </button>
                 )}
+                {caps && credentialList.length > 0 && (
+                  <button
+                    className="btn btn-sm"
+                    style={{ flexShrink: 0 }}
+                    title={t('op.credentialZoom')}
+                    aria-label={t('op.credentialZoom')}
+                    onClick={() => setZoomProviderId(p.id)}
+                  >
+                    <Maximize2 size={12} />
+                  </button>
+                )}
                 {p.defNode && (
                   <button
                     className="btn btn-sm"
@@ -2118,7 +2383,7 @@ export const KeysPage: React.FC = () => {
                       onStartRename={() => setRenameKey(`${p.id}:${a.id}`)}
                       onCancelRename={() => setRenameKey(null)}
                       now={now}
-                      onActivate={handleCredentialActivate}
+                      onPin={handleCredentialPin}
                       onRename={handleCredentialRename}
                       onDisconnect={handleCredentialDisconnect}
                       onToggleDisabled={handleCredentialToggleDisabled}
@@ -2602,6 +2867,83 @@ export const KeysPage: React.FC = () => {
             onSave={handleSaveCredentialLimits}
           />
         )}
+
+        {/* Per-provider credential zoom — a TABLE: the labels live in the
+            column headers, the actions stay icon-only (title + aria-label
+            carry the full name), so the dialog stays narrow. Rows reuse the
+            same shared badge/action components as the card rows — availability
+            logic cannot drift — and share the page-owned handler wiring. */}
+        {zoomProviderId && ocProviders.some((x) => x.id === zoomProviderId) && (() => {
+          const p = ocProviders.find((x) => x.id === zoomProviderId)!;
+          const caps = storeStatus?.capabilities;
+          const credentialList = credentialsByProvider.get(p.id) ?? [];
+          const liveIds = credentialList.filter((a) => a.routable && !a.disabled).map((a) => a.id);
+          const soleRoutableId = liveIds.length === 1 ? liveIds[0] : null;
+          const masks = credentialList.map((a) => a.maskedKey ?? a.id);
+          const ambiguousMasks = new Set(masks.filter((m, i) => masks.indexOf(m) !== i));
+          const rowProps = (a: CredentialHealth, i: number) => ({
+            credential: a,
+            position: i + 1,
+            caps: caps!,
+            soleServing: soleRoutableId === a.id,
+            prefixVisible: a.maskedKey ? ambiguousMasks.has(a.maskedKey) : true,
+            pending: pendingCredential === `${p.id}:${a.id}`,
+            testing: testingIds.has(`${p.id}:${a.id}`),
+            onTest: (acc: CredentialHealth) => testOne({ key: `${p.id}:${acc.id}`, providerId: p.id, credentialId: acc.id }),
+            renaming: renameKey === `${p.id}:${a.id}`,
+            onStartRename: () => setRenameKey(`${p.id}:${a.id}`),
+            onCancelRename: () => setRenameKey(null),
+            now,
+            onPin: handleCredentialPin,
+            onRename: handleCredentialRename,
+            onDisconnect: handleCredentialDisconnect,
+            onToggleDisabled: handleCredentialToggleDisabled,
+            onClearSuspect: handleCredentialClearSuspect,
+            canReveal: webAuthActive,
+            onCopyKey: handleCredentialCopyKey,
+            onEditLimits: (acc: CredentialHealth) => openLimitsDialog(p.id, acc),
+          });
+          return (
+            <Dialog
+              title={p.id}
+              subtitle={t('op.credentialZoomDesc')}
+              onClose={() => setZoomProviderId(null)}
+              closeLabel={t('common.close')}
+              width={640}
+              maxSize={{ width: 'min(860px, 94vw)' }}
+              footerRight={
+                <button className="btn btn-sm" onClick={() => setZoomProviderId(null)}>
+                  <span>{t('common.close')}</span>
+                </button>
+              }
+            >
+              {caps && credentialList.length > 0 && (
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr>
+                      <th style={{ ...ZOOM_TH, textAlign: 'center', padding: '5px 4px' }}>#</th>
+                      <th style={ZOOM_TH}>{t('op.credentialZoomColName')}</th>
+                      <th style={ZOOM_TH}>{t('op.credentialZoomColKey')}</th>
+                      <th style={{ ...ZOOM_TH, textAlign: 'center', padding: '5px 16px', width: '1%' }}>{t('op.credentialZoomColStatus')}</th>
+                      {/* One column per action — the header IS the label. Headers
+                          wrap so each column stays as wide as its button. */}
+                      <th style={ZOOM_TH_ACT}>{t('op.credentialPin')}</th>
+                      <th style={ZOOM_TH_ACT}>{t('op.credentialTest')}</th>
+                      <th style={ZOOM_TH_ACT}>{t('op.credentialLimits')}</th>
+                      <th style={ZOOM_TH_ACT}>{t('op.credentialZoomColToggle')}</th>
+                      <th style={{ ...ZOOM_TH_ACT, color: 'var(--accent-rose)' }}>{t('op.credentialDisconnect')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {credentialList.map((a, i) => (
+                      <CredentialZoomRow key={a.id} {...rowProps(a, i)} />
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </Dialog>
+          );
+        })()}
 
         {/* Provider-def edit dialog — same fixed-overlay mount rule as the
             reveal gate (a tab switch must not orphan it). zIndex 200, NOT

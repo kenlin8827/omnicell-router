@@ -30,9 +30,13 @@ export function isStoreKind(value: unknown): value is StoreKind {
 export interface StoreCapabilities {
   /** More than one credential per provider is expressible. */
   multiCredential: boolean;
-  /** A specific credential can be marked active. */
+  /** A specific credential can be marked active (the internal head primitive). */
   activate: boolean;
-  /** Credentials carry a user-editable label. */
+  /**
+   * The operator surface can REORDER a provider's credential chain; the head
+   * primitive (activate) stays on the interface for internal callers.
+   */
+  reorder: boolean;
   rename: boolean;
   /** OAuth connect is supported. Capability-gated; false for ALL stores in P1+P2. */
   oauth: boolean;
@@ -203,6 +207,14 @@ export interface CredentialStore {
 
   connectKey(providerId: string, key: string, label?: string): Promise<CredentialMeta>;
   activate(credentialId: string): Promise<CredentialMeta>;
+  /**
+   * Reorder a provider's credential chain to exactly `orderedIds` (a
+   * permutation of the provider's credential ids — anything else throws). The
+   * chain head becomes orderedIds[0]; `active` follows position 0. The
+   * operator surface (console reorder route); the internal head primitive
+   * stays `activate`.
+   */
+  reorder(providerId: string, orderedIds: string[]): Promise<CredentialMeta[]>;
   rename(credentialId: string, label: string): Promise<CredentialMeta>;
   disconnect(credentialId: string): Promise<void>;
 

@@ -3108,6 +3108,8 @@ export type CredentialExcludedReasonCode =
 export interface CredentialStoreCapabilities {
   multiCredential: boolean;
   activate: boolean;
+  /** Backend supports reordering credentials (POST …/credentials/reorder). */
+  reorder: boolean;
   rename: boolean;
   oauth: boolean;
   envVisible: boolean;
@@ -3624,7 +3626,7 @@ function ocJson<T>(res: Response): Promise<T> {
   return res.json();
 }
 
-/** Per-credential write path (activate / rename / disconnect share it). */
+/** Per-credential write path (rename / disconnect share it). */
 function credentialPath(providerId: string, credentialId: string): string {
   return `/api/admin/opencode/providers/${encodeURIComponent(providerId)}/credentials/${encodeURIComponent(credentialId)}`;
 }
@@ -3687,12 +3689,19 @@ export const opencodeApi = {
     );
   },
 
-  /** Make one credential the active credential of its provider. */
-  async activateProviderCredential(
-    providerId: string,
-    credentialId: string
-  ): Promise<CredentialWriteResponse> {
-    return ocJson(await fetch(credentialPath(providerId, credentialId) + '/activate', { method: 'POST' }));
+  /**
+   * Pin one credential to the head of its provider's chain by posting the full
+   * permutation of credential ids (head = ids[0]). Same wire response shape
+   * as the other credential writes.
+   */
+  async reorderProviderCredentials(providerId: string, ids: string[]): Promise<CredentialWriteResponse> {
+    return ocJson(
+      await fetch(`/api/admin/opencode/providers/${encodeURIComponent(providerId)}/credentials/reorder`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      })
+    );
   },
 
   /**

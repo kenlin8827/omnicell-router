@@ -40,6 +40,7 @@ function sandboxPaths(): CredentialPaths {
 const OCR_CAPS = {
   multiCredential: true,
   activate: true,
+  reorder: true,
   rename: true,
   oauth: false,
   envVisible: false,

@@ -51,7 +51,7 @@ No store claims OAuth. oauth/wellknown rows are listed-and-badged, never routed,
 
 ### 8. Boot and console surface
 
-Boot order: bind store (OcrStore) → `initCredentialSync` (migration one-shot + auto timers + mutation hook) → `buildDirectPool`. Console: `GET /credential-store` (status; `kind` always `'ocr'`; the `integrations` field is gone — the bound store is not integration-scoped); keys are handled as ONE book, so there is no per-provider push endpoint: the only write entry is `POST /credential-sync/run` with `direction: write` (optional `provider` narrows it; local entries kept, outcome recorded); plus `GET /credential-sync` (table data) and `POST /credential-sync/toggle`. Reveal keeps its four hard gates.
+Boot order: bind store (OcrStore) → `initCredentialSync` (migration one-shot + auto timers + mutation hook) → `buildDirectPool`. Console: `GET /credential-store` (status; `kind` always `'ocr'`; the `integrations` field is gone — the bound store is not integration-scoped); keys are handled as ONE book, so there is no per-provider push endpoint: the only write entry is `POST /credential-sync/run` with `direction: write` (optional `provider` narrows it; local entries kept, outcome recorded); plus `GET /credential-sync` (table data) and `POST /credential-sync/toggle`. Reveal keeps its four hard gates. The operator credential-chain seam is `POST /opencode/providers/:id/credentials/reorder` (see the amendment below); `store.activate` survives only as the internal head primitive.
 
 ### 9. Retired
 
@@ -103,7 +103,7 @@ The routing chain (`registry.credentialChains`) used to be a BOOT-ONLY snapshot:
 The chain is now HOT: `registry.refreshCredentialChain(name, chain)` swaps the entry wholesale (atomic Map put under Bun's single thread; in-flight requests keep serving on the old array reference) and is invoked at every store-mutation seam:
 
 - console **connect** (`connectKeyIdempotent` — covers the create/setKey/connect routes),
-- console **activate** (the chain REORDERS — head = active row),
+- console **reorder** (the chain REORDERS — head = `ids[0]` via the store's `reorder`),
 - console **disconnect** (the removed key leaves the live chain immediately),
 - **credential sync run** (a pull can land keys on many providers; every connected provider's chain is refreshed).
 
@@ -111,4 +111,14 @@ Operator disable/enable is deliberately NOT a rebuild trigger: the disabled row 
 
 RAW keys remain registry-only (never serialized). A store read failure during a rebuild is swallowed — the previous chain keeps serving (fail-open). The stale prose claiming "repeated connect grows the chain" in `console.ts` described a mechanism that no longer existed; the dedup there protects the store's keyHash identity, not a chain length.
 
-Tests: `credentials-console-routes` pins the hot path — connect grows the live chain, activate reorders the head, disconnect removes the row, all without a restart.
+Tests: `credentials-console-routes` pins the hot path — connect grows the live chain, reorder moves the head, disconnect removes the row, all without a restart.
+
+## Amendment — operator surface: reorder replaces activate (2026-10-28)
+
+The operator-facing mutation seam was a per-credential `POST …/credentials/:credentialId/activate` ("make active"). It is replaced by a whole-chain `POST …/providers/:id/credentials/reorder` with body `{ ids: string[] }` — `ids` MUST be a permutation of the provider's credential ids, and the chain head becomes `ids[0]`. `store.activate(credentialId)` remains on the `CredentialStore` interface (capability `activate` stays `true`) as the INTERNAL head primitive used by the credential-sync push (head restore) and the console connect route's `headPreserved` defense — it just no longer has a route.
+
+OCR file schema version 2: the credentials.json ROW-ARRAY ORDER is now the authoritative chain order (index 0 = head). Version 1 files encoded order only as a derivation (active rows first, then `!active` by `timeUpdated` DESC); on read they are normalized IN MEMORY to that legacy derived order — never written back just for reading — and every mutation saves the file as version 2 with array order authoritative. `active` FOLLOWS POSITION 0 (`rows[0].active === true`, head's `timeUpdated` bumped), which keeps both prior invariants intact: Push/Pull head-authority semantics (§ "chain-head authority across the credential sync") and the opencode CLI pointer (opencode routes with its active row; the sync restores the OCR head by keyHash exactly as before). Standby ordering is now durable locally — the thing the earlier amendment said "needs a real order representation on the OCR side"; that representation is the v2 array.
+
+`OpencodeV2Store` maps `reorder` to a HEAD-SET ONLY: the v2 service exposes no order field (its rows read `active DESC, time_updated DESC`), so reorder validates the id permutation and activates `ids[0]` (skipping the POST when that row is already active); standby order stays the service's local read order, per the existing amendment. `capabilities.reorder` is `writable` on the v2 store and `true` on the OCR store; the console route refuses with 400 `capability_unsupported` when the bound store cannot reorder.
+
+Tests: `credentials-console-routes` pins the reorder route (head flip, refreshed inline list, capability/invalid-body refusals, unknown id 404); `credentials-ocr-store` pins the store primitive (permutation validation, `active` follows position 0, v1 normalization on read, version 2 on write); `credentials-opencode-v2-writes` pins the head-set degradation.
