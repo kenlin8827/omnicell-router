@@ -266,6 +266,56 @@ describe('POST /opencode/providers/:id/connect — the local store is the sink',
   });
 });
 
+describe('hot credential-chain refresh — the runtime chain tracks the store without a restart', () => {
+  const HOT = 'hot-chain-provider'; // unique id — the module-level registry outlives each test
+
+  it('connect adds the new key to the live chain; activate reorders it; disconnect removes it', async () => {
+    const p = credPaths();
+    bindStore(p);
+
+    // Boot degeneracy: pretend the process started with ONE key (key A).
+    await app.inject({
+      method: 'POST',
+      url: `/api/admin/opencode/providers/${HOT}/connect`,
+      payload: { apiKey: 'sk-hot-a' },
+    });
+    const chain1 = registry.getCredentialChain(HOT) ?? [];
+    expect(chain1.map((c: { keyHashPrefix: string }) => c.keyHashPrefix)).toEqual([keyHashPrefix('sk-hot-a')]);
+
+    // Second key lands in the store AND in the live chain (head unchanged —
+    // connectKeyIdempotent preserved the active row).
+    await app.inject({
+      method: 'POST',
+      url: `/api/admin/opencode/providers/${HOT}/connect`,
+      payload: { apiKey: 'sk-hot-b' },
+    });
+    const chain2 = registry.getCredentialChain(HOT) ?? [];
+    expect(chain2.map((c: { keyHashPrefix: string }) => c.keyHashPrefix)).toEqual([
+      keyHashPrefix('sk-hot-a'),
+      keyHashPrefix('sk-hot-b'),
+    ]);
+
+    // Activate key B — the chain reorders (head = active row), hot.
+    const rows = readOcrFile(p).providers[HOT];
+    const bRow = rows.find((r: { key: string }) => r.key === 'sk-hot-b');
+    const act = await app.inject({
+      method: 'POST',
+      url: `/api/admin/opencode/providers/${HOT}/credentials/${bRow.credentialId}/activate`,
+    });
+    expect(act.statusCode).toBe(200);
+    expect((registry.getCredentialChain(HOT) ?? [])[0].keyHashPrefix).toBe(keyHashPrefix('sk-hot-b'));
+
+    // Disconnect key B — it leaves the live chain immediately.
+    const del = await app.inject({
+      method: 'DELETE',
+      url: `/api/admin/opencode/providers/${HOT}/credentials/${bRow.credentialId}?clientRevoke=0`,
+    });
+    expect(del.statusCode).toBe(200);
+    const chain3 = registry.getCredentialChain(HOT) ?? [];
+    expect(chain3.map((c: { keyHashPrefix: string }) => c.keyHashPrefix)).toEqual([keyHashPrefix('sk-hot-a')]);
+  });
+});
+
 describe('POST /opencode/providers/:id/key — same store routing', () => {
   it('key route → the local file; a legacy auth.json stays untouched', async () => {
     const p = credPaths();

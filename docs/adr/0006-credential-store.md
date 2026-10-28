@@ -95,3 +95,20 @@ The write direction already pushes the WHOLE chain per provider (v1 stays head-o
 - **Relative order among non-active fallbacks is NOT synced, deliberately.** v2 exposes no order field (rows read `active DESC, time_updated DESC`) and the pull stamps imported rows with the pull's own timestamps, so the client's fallback sequence is not reproduced in the OCR file, nor the reverse. Only the ACTIVE head is authoritative across the boundary; standby order is a client-local read order, not a routing contract. Anyone changing that needs a real order representation on the OCR side (schema version bump), not more timestamp gaming.
 
 Tests: `credentials-sync` pins both directions — a pushed fallback does not steal the head, a drifted head is healed on a dedup-only push, a pull keeps an existing OCR head, and a pull adopts the client head only when the OCR chain has no active row.
+
+## Amendment — hot credential-chain refresh (2026-10-28)
+
+The routing chain (`registry.credentialChains`) used to be a BOOT-ONLY snapshot: `buildDirectPool` → `registerProvider` was the single write point, so a credential added through the console (connect / activate / disconnect) or landed by a credential sync stayed invisible to `pipeline/credential-selection.ts` until the next gateway restart. With a multi-credential provider the new-session spread kept collapsing onto the boot-time chain — operationally: "every request uses the first credential" — because the selector saw `chain.length === 1` and degenerated to the head.
+
+The chain is now HOT: `registry.refreshCredentialChain(name, chain)` swaps the entry wholesale (atomic Map put under Bun's single thread; in-flight requests keep serving on the old array reference) and is invoked at every store-mutation seam:
+
+- console **connect** (`connectKeyIdempotent` — covers the create/setKey/connect routes),
+- console **activate** (the chain REORDERS — head = active row),
+- console **disconnect** (the removed key leaves the live chain immediately),
+- **credential sync run** (a pull can land keys on many providers; every connected provider's chain is refreshed).
+
+Operator disable/enable is deliberately NOT a rebuild trigger: the disabled row stays in the chain and is filtered at selection time by `isPairOut` (takedown outranks every runtime signal; chain membership is orthogonal). An EMPTY chain deletes the entry — the provider degenerates to the head-baked path (`config.apiKey`), preserving the head === baked-key invariant.
+
+RAW keys remain registry-only (never serialized). A store read failure during a rebuild is swallowed — the previous chain keeps serving (fail-open). The stale prose claiming "repeated connect grows the chain" in `console.ts` described a mechanism that no longer existed; the dedup there protects the store's keyHash identity, not a chain length.
+
+Tests: `credentials-console-routes` pins the hot path — connect grows the live chain, activate reorders the head, disconnect removes the row, all without a restart.

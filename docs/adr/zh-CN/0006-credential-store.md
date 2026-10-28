@@ -95,3 +95,20 @@ v1 适配器是**fixture 级验证，不是二进制级验证**：参考机上�
 - **非 active 备选之间的相对顺序**不同步，这是刻意的。v2 不暴露顺序字段（行按 `active DESC, time_updated DESC` 读取），拉取又用拉取时刻给导入行打时间戳，所以客户端的备选先后不会在 OCR 文件里复现，反向亦然。跨边界的权威只有 ACTIVE 链头；备选之间的顺序是客户端本地的读取顺序，不是路由契约。要改这一点需要在 OCR 侧引入真正的顺序表示（schema 版本升级），而不是继续玩时间戳。
 
 测试：`credentials-sync` 两个方向都钉住了——推备选不会抢链头、全 dedup 的推送会治愈漂移的链头、拉取保留已有 OCR 链头、只有当 OCR 链没有 active 行时才采纳客户端链头。
+
+## 修订——凭证链热刷新（2026-10-28）
+
+路由链（`registry.credentialChains`）过去是**仅启动时**的快照：`buildDirectPool` → `registerProvider` 是唯一写入点，因此通过控制台加入的凭证（connect / activate / disconnect）或由凭证同步落地的 key，在下一次网关重启前对 `pipeline/credential-selection.ts` 不可见。多凭证 provider 的新会话散布会一直塌缩到启动时的链上——运营表现就是「所有请求永远用第一把凭证」——因为选择器看到 `chain.length === 1` 而退化为链头。
+
+链现在是**热的**：`registry.refreshCredentialChain(name, chain)` 整体换入条目（Bun 单线程下 Map 写入原子；在途请求继续用旧数组引用服务），并在每个 store 变更缝隙被调用：
+
+- 控制台 **connect**（`connectKeyIdempotent`——覆盖 create / setKey / connect 路由），
+- 控制台 **activate**（链会**重排**——链头 = active 行），
+- 控制台 **disconnect**（被移除的 key 立即离开运行时链），
+- **凭证同步运行**（一次拉取可能在多个 provider 上落 key；刷新所有已连接 provider 的链）。
+
+操作员 disable/enable 刻意**不是**重建触发器：被禁用的行保留在链里，由选择期的 `isPairOut` 过滤（下架优先于一切运行时信号；链成员资格与此正交）。空链会删除条目——provider 退化到链头烘焙路径（`config.apiKey`），保持链头 === 烘焙 key 的不变式。
+
+RAW key 仍然只在注册表内存中（永不序列化）。重建时的 store 读取失败被吞掉——旧链继续服务（fail-open）。`console.ts` 里「重复 connect 会增长链」的陈旧描述对应一个已不存在的机制；那里的 dedup 保护的是 store 的 keyHash 身份，不是链长。
+
+测试：`credentials-console-routes` 钉住热路径——connect 让运行时链增长、activate 重排链头、disconnect 移除该行，全程无需重启。

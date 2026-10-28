@@ -45,6 +45,7 @@ import {
   validateApiKey,
   validateModelAccess,
 } from '../auth/api-keys.js';
+import { toCallCredential } from '../providers/boot-direct.js';
 import { getModelAccessPolicy, isAutoEntryUsable, isModelAllowed, isModelAllowedInTiers, tierFromVirtualEntry } from '../auth/model-access.js';
 import { validateRateLimitRules, getRateLimiter, credentialSubject } from '../ratelimit/rate-limiter.js';
 import { getQuotaProber } from '../quota/prober.js';
@@ -297,6 +298,31 @@ function clearSuspectForCredential(cb: CircuitBreakerManager, providerId: string
 }
 
 /**
+ * Hot credential-chain rebuild for ONE provider — the runtime twin of the
+ * boot pool's chain. The routing chain (`registry.credentialChains`) is
+ * otherwise written ONLY at process boot, so a console connect/disconnect/
+ * activate or a credential sync would leave the live chain stale (new keys
+ * invisible to the spread, removed keys still routable) until the next
+ * restart. Reads the bound store's ordered chain (active head first) and
+ * swaps it in via `registry.refreshCredentialChain`; a store read failure is
+ * swallowed — the boot-baked chain keeps serving (fail-open, same doctrine as
+ * every observability write). RAW KEYS stay in memory (registry-only).
+ */
+async function refreshProviderCredentialChain(
+  registry: ProviderRegistry,
+  store: CredentialStore,
+  providerId: string
+): Promise<void> {
+  try {
+    registry.refreshCredentialChain(
+      providerId,
+      store.resolveKeyChain(providerId).map((c) => toCallCredential(c.key, c.label))
+    );
+  } catch {
+    // keep the existing chain — a refresh failure must never take routing down
+  }
+}
+/**
  * Idempotent connect (identity at the write seam): handing the store a
  * key it ALREADY holds for this provider is idempotent — the existing credential is
  * reported back and NO second row is created. Without this, every repeated
@@ -328,7 +354,8 @@ async function connectKeyIdempotent(
   label: string | undefined,
   // Credential flags live in the resilience state file, reached through the manager
   // so the write seam never re-derives its own view of "is this head still good".
-  cb: CircuitBreakerManager
+  cb: CircuitBreakerManager,
+  registry: ProviderRegistry
 ): Promise<{ credential: CredentialMeta; deduped: boolean; headPreserved?: CredentialMeta }> {
   const { keyHashPrefix } = await import('../opencode/credentials/index.js');
   const prefix = keyHashPrefix(key);
@@ -383,6 +410,10 @@ async function connectKeyIdempotent(
       }
     }
   }
+
+  // The chain is boot-baked otherwise — without this swap a newly connected key
+  // stays invisible to the per-request spread until the next gateway restart.
+  await refreshProviderCredentialChain(registry, store, providerId);
 
   return { credential, deduped: false, ...(headPreserved ? { headPreserved } : {}) };
 }
@@ -2519,7 +2550,7 @@ export function registerConsoleRoutes(
       let keyMeta: CredentialMeta | undefined;
       if (keyToStore) {
         try {
-          keyMeta = (await connectKeyIdempotent(store, id, String(body.apiKey), undefined, registry.getCircuitBreakerManager())).credential;
+          keyMeta = (await connectKeyIdempotent(store, id, String(body.apiKey), undefined, registry.getCircuitBreakerManager(), registry)).credential;
         } catch (err) {
           // Roll back only a node THIS request created — with ONE exception: the
           // unmatched refusal now fires only AFTER the store's reload attempt, so
@@ -2591,7 +2622,7 @@ export function registerConsoleRoutes(
       let keyMeta: CredentialMeta | undefined;
       if (keyToStore) {
         try {
-          keyMeta = (await connectKeyIdempotent(store, id, String(body.apiKey), undefined, registry.getCircuitBreakerManager())).credential;
+          keyMeta = (await connectKeyIdempotent(store, id, String(body.apiKey), undefined, registry.getCircuitBreakerManager(), registry)).credential;
         } catch (err) {
           const failure = await mapStoreWriteFailure(err);
           if (failure) return reply.status(failure.status).send(failure.body);
@@ -2647,7 +2678,7 @@ export function registerConsoleRoutes(
         // (Decision 3: read degrades with a badge, write refuses).
         const store = await getCredentialStore();
         const { credential: keyMeta, deduped, headPreserved } = await connectKeyIdempotent(
-          store, id, body.apiKey, undefined, registry.getCircuitBreakerManager()
+          store, id, body.apiKey, undefined, registry.getCircuitBreakerManager(), registry
         );
         // Optional baseURL override — merge with the existing definition so we
         // never wipe name/npm/models of a config-defined custom provider.
@@ -2879,7 +2910,7 @@ export function registerConsoleRoutes(
         // auth.json write exists on any binding.
         const store = await getCredentialStore();
         const { credential: keyMeta, deduped, headPreserved } = await connectKeyIdempotent(
-          store, id, body.apiKey, undefined, registry.getCircuitBreakerManager()
+          store, id, body.apiKey, undefined, registry.getCircuitBreakerManager(), registry
         );
         store.invalidate();
         // Decision 6: a key rotation handed to the store is a reconnect — clear SUSPECT.
@@ -3232,6 +3263,11 @@ export function registerConsoleRoutes(
         });
         const cb = registry.getCircuitBreakerManager();
         for (const k of result.write?.pushedKeys ?? []) clearSuspectForCredential(cb, k.provider, k.keyHashPrefix);
+        // A sync pull/import can land keys on MANY providers — refresh every
+        // connected provider's runtime chain (cheap: one store read per provider).
+        for (const o of store.credentialsOverview()) {
+          await refreshProviderCredentialChain(registry, store, o.providerId);
+        }
         return { status: 'ok', direction, ...result };
       } catch (err: any) {
         return reply.status(500).send({
@@ -3261,6 +3297,9 @@ export function registerConsoleRoutes(
       try {
         const credential = await store.activate(credentialId);
         store.invalidate(); // Decision 3: console action invalidates the store view
+        // Activate REORDERS the chain (head = active row) — swap the runtime
+        // chain so the new head serves without a restart.
+        await refreshProviderCredentialChain(registry, store, id);
         return { status: 'ok', success: true, credential, credentials: withCredentialHealth(id, store.listCredentials(id)) };
       } catch (err) {
         const failure = await mapCredentialWriteFailure(err, id, credentialId);
@@ -3341,6 +3380,7 @@ export function registerConsoleRoutes(
       try {
         await store.disconnect(credentialId);
         store.invalidate();
+        await refreshProviderCredentialChain(registry, store, id); // removed key must leave the live chain
         clearSuspectForCredential(registry.getCircuitBreakerManager(), id, prefix);
         // DELETE is a REVOCATION, so it must be as durable as a takedown: anchor
         // the key MATERIAL as disabled. Otherwise the read sync would re-import
