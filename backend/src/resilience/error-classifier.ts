@@ -96,8 +96,8 @@ export class ErrorClassifier {
       usedAttribution === undefined
         ? {}
         : credentialSuspect
-          ? { tripScope, credentialSuspect: true }
-          : { tripScope };
+          ? { tripScope, credentialSuspect: true, usedKeyHashPrefix: usedAttribution }
+          : { tripScope, usedKeyHashPrefix: usedAttribution };
 
     // Helper: checks if this failure cause is whitelisted for in-place retry
     const isCauseInPlaceRetriable = (cause: RetriableCauseConfig): boolean => {
@@ -420,8 +420,8 @@ export class ErrorClassifier {
       reasonParams: { message: rawMessage.slice(0, 150) },
       // Decision 6 last bullet: an UNCLASSIFIED failure cools only its own
       // pair ("under-cool rather than over-cool; retry naturally validates
-      // siblings"). A real outage still reaches the model breaker through
-      // SERVICE_UNAVAILABLE above, which is where network causes land.
+      // siblings"). A real outage still reaches every tuple of the model
+      // through SERVICE_UNAVAILABLE above, which is where network causes land.
       ...scoped('pair'),
       rawError: error,
     };

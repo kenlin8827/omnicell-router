@@ -87,7 +87,10 @@ function sanitizeRecord(raw: unknown): BreakerRecord | null {
     halfOpenEnteredAt: num(r.halfOpenEnteredAt),
     outcomeWindow: Array.isArray(r.outcomeWindow) ? r.outcomeWindow.filter(v => v === true || v === false) : [],
   };
-  if (typeof r.keyHashPrefix === 'string' && r.keyHashPrefix) rec.keyHashPrefix = r.keyHashPrefix;
+  // `''` (the chain-less SENTINEL prefix) is a real key — the string-typed
+  // check is the guard, never truthiness, or a chain-less provider's whole
+  // breaker memory vanishes on every restart.
+  if (typeof r.keyHashPrefix === 'string') rec.keyHashPrefix = r.keyHashPrefix;
   if (r.tier === 'lite' || r.tier === 'plus' || r.tier === 'pro' || r.tier === 'ultra') rec.tier = r.tier;
   if (typeof r.reason === 'string') rec.reason = r.reason;
   // Reason vocabulary is closed at the boundary: a hand-edited file cannot
@@ -106,6 +109,9 @@ function sanitizeRecord(raw: unknown): BreakerRecord | null {
     }
     if (Object.keys(clean).length) rec.reasonParams = clean as BreakerRecord['reasonParams'];
   }
+  // Scope label: closed three-value vocabulary — anything else is a hand-edit
+  // artifact and drops losslessly.
+  if (r.scope === 'pair' || r.scope === 'credential' || r.scope === 'model') rec.scope = r.scope;
   if (typeof r.category === 'string' && (ERROR_CATEGORIES as readonly string[]).includes(r.category)) {
     rec.category = r.category as BreakerRecord['category'];
   }

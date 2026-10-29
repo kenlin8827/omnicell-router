@@ -345,7 +345,10 @@ describe('ProviderRegistry.pickModelForEffort — healthyOnly + circuit breaker'
     ]);
     const reg = new ProviderRegistry(cfg, true);
     const cb = reg.getCircuitBreakerManager();
-    cb.trip('only', { reason: 'test', cooldownMs: 60_000 });
+    // The healthyOnly filter reads the per-credential availability aggregate,
+    // so give the mock provider a chain and trip its tuple.
+    reg.refreshCredentialChain('mock', [{ keyHashPrefix: 'k1', key: 'sk-k1' }]);
+    cb.tripPair('only', 'k1', { reason: 'test', cooldownMs: 60_000 }, 'mock');
     const pick = reg.pickModelForEffort('pro', 'high', true);
     // No other healthy thinking-capable model exists → null so the
     // orchestrator falls back to its tier-default path (which does the
@@ -359,7 +362,8 @@ describe('ProviderRegistry.pickModelForEffort — healthyOnly + circuit breaker'
     ]);
     const reg = new ProviderRegistry(cfg, true);
     const cb = reg.getCircuitBreakerManager();
-    cb.trip('only', { reason: 'test', cooldownMs: 60_000 });
+    reg.refreshCredentialChain('mock', [{ keyHashPrefix: 'k1', key: 'sk-k1' }]);
+    cb.tripPair('only', 'k1', { reason: 'test', cooldownMs: 60_000 }, 'mock');
     const pick = reg.pickModelForEffort('pro', 'high', false);
     assert.ok(pick, 'healthyOnly=false bypasses the breaker');
     assert.strictEqual(pick!.model.id, 'only');
@@ -373,7 +377,8 @@ describe('ProviderRegistry.pickModelForEffort — healthyOnly + circuit breaker'
     ]);
     const reg = new ProviderRegistry(cfg, true);
     const cb = reg.getCircuitBreakerManager();
-    cb.trip('pro-1', { reason: 'test', cooldownMs: 60_000 });
+    reg.refreshCredentialChain('mock', [{ keyHashPrefix: 'k1', key: 'sk-k1' }]);
+    cb.tripPair('pro-1', 'k1', { reason: 'test', cooldownMs: 60_000 }, 'mock');
     const pick = reg.pickModelForEffort('pro', 'high');
     assert.ok(pick);
     assert.strictEqual(pick!.model.id, 'ultra-1', 'cross-tier must skip tripped pro');

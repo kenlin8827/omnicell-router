@@ -34,8 +34,9 @@ export interface ProbePlan {
 /**
  * Active liveness sweep over tripped breakers, scope-aware:
  *
- *   model breaker down     -> probe the model through ONE representative credential
- *   pair breaker down      -> probe the pairs that are due, within the per-model budget
+ *   model-scope trip       -> every tuple of the model is due; probe through
+ *                             ONE representative credential within the budget
+ *   tuple breaker down     -> probe the tuples that are due, within the per-model budget
  *
  * The budget is the HALF_OPEN trial budget (`rules.recovery.halfOpen.maxProbes`,
  * defaulting to `circuitBreaker.halfOpenMaxProbes`), so one model never
@@ -117,7 +118,7 @@ export class ActiveHealthProber {
           budget--;
         } else {
           const representative = chain.find((prefix) => !this.manager.isPairOut(modelId, prefix));
-          // A down model breaker whose every credential is out has nothing to try this
+          // A model-scope trip whose every credential is out has nothing to try this
           // cycle — the pair breakers report their own cooldowns.
           if (representative === undefined) continue;
           prefixes.push(representative);

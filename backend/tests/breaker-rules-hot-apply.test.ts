@@ -107,13 +107,12 @@ describe('breaker rules hot-apply (invariant 6, v3.2)', () => {
   it('rules still enabled leave existing OPEN cooldowns untouched — no retroactive re-evaluation', () => {
     const { manager } = makeManager();
     manager.recordFailure('p/x', QUOTA_402, 'p');
-    const before = manager.getBreaker('p/x')?.getSnapshot();
-    expect(before?.state).toBe('OPEN');
+    const before = manager.getPairBreaker('p/x', '')?.getSnapshot();
 
     // Re-resolve with a longer quota cooldown (rule stays ON): the running
     // OPEN timer keeps its original length — cooldownUntil is never recomputed.
     manager.applyConfig({ ...BASE, quotaCooldownMs: 120_000 });
-    const after = manager.getBreaker('p/x')?.getSnapshot();
+    const after = manager.getPairBreaker('p/x', '')?.getSnapshot();
     expect(after?.state).toBe('OPEN');
     expect(after?.cooldownUntil).toBe(before?.cooldownUntil);
     expect(manager.canExecute('p/x').allowed).toBe(false);
@@ -123,7 +122,7 @@ describe('breaker rules hot-apply (invariant 6, v3.2)', () => {
     // never reconciles even when other rules toggle.
     manager.trip('p/x', { reason: 'operator', cooldownMs: 30_000 });
     manager.applyConfig({ ...BASE, rules: { counting: { serverErrors: { enabled: false } } } });
-    expect(manager.getBreaker('p/x')?.getSnapshot().state).toBe('OPEN');
+    expect(manager.getPairBreaker('p/x', '')?.getSnapshot().state).toBe('OPEN');
   });
 
   it('new trip params govern from the next failure without touching accumulated state', () => {
@@ -140,7 +139,7 @@ describe('breaker rules hot-apply (invariant 6, v3.2)', () => {
     });
     manager.recordFailure('p/x', SERVICE_503, 'p');
     expect(manager.canExecute('p/x').allowed).toBe(false);
-    expect(manager.getBreaker('p/x')?.getSnapshot().reasonCode).toBe('breaker.consecutive');
+    expect(manager.getPairBreaker('p/x', '')?.getSnapshot().reasonCode).toBe('breaker.consecutive');
   });
 
   it('shadow flips live for existing breakers; the master enabled switch too', () => {
@@ -151,7 +150,7 @@ describe('breaker rules hot-apply (invariant 6, v3.2)', () => {
     manager.applyConfig({ ...BASE, shadow: true });
     expect(manager.getRulesStatus().shadow).toBe(true);
     expect(manager.canExecute('p/x').allowed).toBe(true); // shadow verdict flips, state stays OPEN
-    expect(manager.getBreaker('p/x')?.getState()).toBe('OPEN');
+    expect(manager.getPairBreaker('p/x', '')?.getState()).toBe('OPEN');
 
     manager.applyConfig({ ...BASE, shadow: false, enabled: false });
     expect(manager.canExecute('p/x').allowed).toBe(true); // master switch short-circuits the gate

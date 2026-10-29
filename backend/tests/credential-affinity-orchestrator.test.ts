@@ -174,9 +174,12 @@ describe('self-healing: credential rebind rides the model repin', () => {
     const boundP1 = orchestrator.getSessionManager().getSession(sessionId)!.boundKeyHashPrefix!;
     expect(chainP1.some((c) => c.keyHashPrefix === boundP1)).toBe(true);
 
-    // m1 model breaker down: aggregate unavailable -> self-healing repins to m2, and
-    // the (foreign) binding is stale for p2's chain -> forced re-spread.
-    registry.getCircuitBreakerManager().trip(m1.id, { reason: 'test outage' }, 'p1');
+    // m1 fully out (every tuple of the model): aggregate unavailable ->
+    // self-healing repins to m2, and the (foreign) binding is stale for p2's
+    // chain -> forced re-spread.
+    for (const c of chainP1) {
+      registry.getCircuitBreakerManager().tripPair(m1.id, c.keyHashPrefix, { reason: 'test outage' }, 'p1');
+    }
     // auto mode so the session pin (ratchet) drives the preference:
     const r2 = await orchestrator.process(turn('hello again', 'plus'), sessCtx(sessionId));
     expect(r2.modelUsed).toBe(m2.id);
@@ -212,7 +215,9 @@ describe('self-healing: credential rebind rides the model repin', () => {
 
     await orchestrator.process(turn('hello', 'p1/alpha'), sessCtx(sessionId));
     const bound = orchestrator.getSessionManager().getSession(sessionId)!.boundKeyHashPrefix!;
-    registry.getCircuitBreakerManager().trip(m1.id, undefined, 'p1');
+    for (const c of chainP1) {
+      registry.getCircuitBreakerManager().tripPair(m1.id, c.keyHashPrefix, undefined, 'p1');
+    }
     const r2 = await orchestrator.process(turn('hello again', 'plus'), sessCtx(sessionId));
     expect(r2.modelUsed).toBe(m2same.id);
     expect(orchestrator.getSessionManager().getSession(sessionId)!.boundKeyHashPrefix).toBe(bound); // continuity

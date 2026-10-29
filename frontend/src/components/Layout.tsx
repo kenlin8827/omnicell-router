@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutGrid,
@@ -230,22 +230,25 @@ export const Layout: React.FC = () => {
       .catch(() => toast.error(t('common.failed') + url));
   };
 
-  // Load gateway status periodically
-  useEffect(() => {
-    const fetchStatus = async () => {
-      try {
-        const data = await api.getStatus();
-        setStatus(data);
-        setStatusError(false);
-      } catch (err) {
-        console.warn('Failed to poll gateway status:', err);
-        setStatusError(true);
-      }
-    };
-    fetchStatus();
-    const interval = setInterval(fetchStatus, 3000);
-    return () => clearInterval(interval);
+  // Load gateway status periodically; `refreshStatus` lets pages (breaker
+  // trip/reset, restart) force an immediate re-poll instead of waiting for
+  // the next 3s tick.
+  const refreshStatus = useCallback(async () => {
+    try {
+      const data = await api.getStatus();
+      setStatus(data);
+      setStatusError(false);
+    } catch (err) {
+      console.warn('Failed to poll gateway status:', err);
+      setStatusError(true);
+    }
   }, []);
+
+  useEffect(() => {
+    refreshStatus();
+    const interval = setInterval(refreshStatus, 3000);
+    return () => clearInterval(interval);
+  }, [refreshStatus]);
 
   const toggleGroup = (groupId: string) => {
     setCollapsedGroups(prev => ({ ...prev, [groupId]: !prev[groupId] }));
@@ -255,9 +258,9 @@ export const Layout: React.FC = () => {
     navigate('/guardrails');
   };
 
-  // Tripped model + pair breakers — same aggregation the Guardrails page header uses.
-  const trippedBreakers =
-    (status?.circuitBreakers?.tripped || 0) + (status?.circuitBreakers?.pairs?.tripped || 0);
+  // Model-level tripped breakers only — matches the Guardrails page header
+  // ("当前触发熔断状态"); pair breakers surface there as a sub-count, not here.
+  const trippedBreakers = status?.circuitBreakers?.tripped || 0;
 
   const handleRestartGateway = async () => {
     const ok = await confirmDialog({ title: t('header.restartConfirm') });
@@ -725,7 +728,7 @@ export const Layout: React.FC = () => {
             header stay fixed; fixed-viewport pages (logs/captures) get their
             own internal scrollbars because this box has a definite height. */}
         <main style={{ padding: 'clamp(14px, 2.5vw, 28px)', flex: 1, minWidth: 0, minHeight: 0, overflowY: 'auto' }}>
-          <Outlet context={{ status, statusError }} />
+          <Outlet context={{ status, statusError, refreshStatus }} />
         </main>
       </div>
     </div>

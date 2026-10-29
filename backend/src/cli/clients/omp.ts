@@ -55,7 +55,7 @@ const OMP_ROLE_TIERS: Record<string, string> = {
 /** Console-only role context (omp docs wording) — feeds the smart-assign decider. */
 const OMP_ROLE_DESCRIPTIONS: Record<string, string> = {
   smol: 'Fast, inexpensive utility work and fast handoff paths',
-  tiny: 'Very small online classifications, titles and memory support',
+  tiny: 'Very small online classifications, titles, memory support and speech cleanup',
   commit: 'Commit-message generation',
   plan: 'Plan-mode architecture and review',
   slow: 'Thorough reasoning where extra latency is acceptable',

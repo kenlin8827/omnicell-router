@@ -113,7 +113,7 @@ describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation ', () =>
     assert.equal(result.inplaceRetries, 1);
 
     // Circuit breaker must still be CLOSED because the in-place retry recovered
-    const breaker = registry.getCircuitBreakerManager().getBreaker('primary-plus');
+    const breaker = registry.getCircuitBreakerManager().getPairBreaker('primary-plus', '');
     assert.equal(breaker?.getState(), 'CLOSED');
   });
 
@@ -172,7 +172,7 @@ describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation ', () =>
     assert.equal(result.inplaceRetries, 0);
 
     // Primary breaker must be hard-tripped into OPEN
-    const breaker = registry.getCircuitBreakerManager().getBreaker('primary-plus');
+    const breaker = registry.getCircuitBreakerManager().getPairBreaker('primary-plus', '');
     assert.equal(breaker?.getState(), 'OPEN');
     assert.equal(breaker?.getSnapshot().category, 'QUOTA_EXHAUSTED');
   });
@@ -198,7 +198,7 @@ describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation ', () =>
     });
 
     // Primary breaker must NOT be tripped on client input error
-    const breaker = registry.getCircuitBreakerManager().getBreaker('primary-plus');
+    const breaker = registry.getCircuitBreakerManager().getPairBreaker('primary-plus', '');
     assert.equal(breaker?.getState(), 'CLOSED');
   });
 
@@ -321,7 +321,7 @@ describe('Resilience: Hierarchical Failover & Tier Crossing Policies ', () => {
     // The session pin (lite-1, born healthy) is followed and stays healthy —
     // the pin-eviction repair path CANNOT be what serves plus: with both
     // lite attempts gone, the allow_escalate tail is the only route to plus-1.
-    registry.getCircuitBreakerManager().getBreaker('lite-2')?.trip('503 outage', 'SERVICE_UNAVAILABLE', 3600000);
+    registry.getCircuitBreakerManager().trip('lite-2', { reason: '503 outage', cooldownMs: 3600000 });
 
     const req: any = {
       model: 'auto',
@@ -343,8 +343,8 @@ describe('Resilience: Hierarchical Failover & Tier Crossing Policies ', () => {
     const orchestrator = new PipelineOrchestrator(crossTierConfig, registry, tracker);
 
     // Trip both lite-1 and lite-2 to simulate total outage in Lite Tier
-    registry.getCircuitBreakerManager().getBreaker('lite-1')?.trip('503 outage', 'SERVICE_UNAVAILABLE', 3600000);
-    registry.getCircuitBreakerManager().getBreaker('lite-2')?.trip('503 outage', 'SERVICE_UNAVAILABLE', 3600000);
+    registry.getCircuitBreakerManager().trip('lite-1', { reason: '503 outage', cooldownMs: 3600000 });
+    registry.getCircuitBreakerManager().trip('lite-2', { reason: '503 outage', cooldownMs: 3600000 });
 
     const req: any = {
       model: 'lite',
@@ -404,7 +404,7 @@ describe('Resilience: Hierarchical Failover & Tier Crossing Policies ', () => {
     const orchestrator = new PipelineOrchestrator(crossTierConfig, registry, tracker);
 
     // Trip plus-1
-    registry.getCircuitBreakerManager().getBreaker('plus-1')?.trip('Plus down', 'SERVICE_UNAVAILABLE', 3600000);
+    registry.getCircuitBreakerManager().trip('plus-1', { reason: 'Plus down', cooldownMs: 3600000 });
 
     const req: any = {
       model: 'plus',

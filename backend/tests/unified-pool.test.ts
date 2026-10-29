@@ -49,8 +49,8 @@ describe('Unified pool: last-candidate force-try', () => {
     });
     const { registry, orchestrator } = makeOrchestrator(config);
     const cb = registry.getCircuitBreakerManager();
-    cb.getBreaker('lite-1')?.trip('pre-tripped', 'MANUAL', 3600000);
-    cb.getBreaker('lite-2')?.trip('pre-tripped', 'MANUAL', 3600000);
+    cb.trip('lite-1', { reason: 'pre-tripped', cooldownMs: 3600000 });
+    cb.trip('lite-2', { reason: 'pre-tripped', cooldownMs: 3600000 });
 
     // Mock upstream is actually healthy — force-trying the last candidate
     // must succeed instead of failing with zero attempts.
@@ -75,7 +75,7 @@ describe('Unified pool: last-candidate force-try', () => {
     const { registry, orchestrator } = makeOrchestrator(config);
     const cb = registry.getCircuitBreakerManager();
     for (const id of ['lite-1', 'lite-2', 'lite-3']) {
-      cb.getBreaker(id)?.trip('pre-tripped', 'MANUAL', 3600000);
+      cb.trip(id, { reason: 'pre-tripped', cooldownMs: 3600000 });
     }
 
     const result = await orchestrator.process({
@@ -95,8 +95,8 @@ describe('Unified breaker gate: peek vs consume', () => {
   it('isAvailable (peek) must NOT consume HALF_OPEN probe quota', async () => {
     const registry = new ProviderRegistry(makeConfig(), true);
     const cb = registry.getCircuitBreakerManager();
-    const breaker = cb.getBreaker('lite-1')!;
-
+    cb.recordSuccessScoped('lite-1'); // materialize the sentinel tuple (a manual manager trip clamps to 1000ms)
+    const breaker = cb.getPairBreaker('lite-1', '')!;
     breaker.trip('simulated outage', 'SERVICE_UNAVAILABLE', 60); // 60ms cooldown
     await new Promise(r => setTimeout(r, 90)); // cooldown expires → next check flips HALF_OPEN
 
@@ -121,7 +121,8 @@ describe('Unified breaker gate: peek vs consume', () => {
     });
     const { registry, orchestrator } = makeOrchestrator(config);
     const cb = registry.getCircuitBreakerManager();
-    cb.getBreaker('lite-1')?.trip('simulated outage', 'SERVICE_UNAVAILABLE', 60);
+    cb.recordSuccessScoped('lite-1'); // materialize the sentinel tuple (manual-trip clamp bypassed below)
+    cb.getPairBreaker('lite-1', '')!.trip('simulated outage', 'SERVICE_UNAVAILABLE', 60);
     await new Promise(r => setTimeout(r, 90));
 
     // Request 1: canary via combo leader position — dry checks must not have
@@ -131,7 +132,7 @@ describe('Unified breaker gate: peek vs consume', () => {
       messages: [{ role: 'user', content: 'Recovery probe' }],
     } as any);
     assert.equal(r1.modelUsed, 'lite-1');
-    assert.equal(cb.getBreaker('lite-1')?.getState(), 'CLOSED');
+    assert.equal(cb.getPairBreaker('lite-1', '')?.getState(), 'CLOSED');
 
     // Request 2: fully healthy again — normal serving.
     const r2 = await orchestrator.process({
@@ -143,7 +144,9 @@ describe('Unified breaker gate: peek vs consume', () => {
 
   it('should release the canary slot when the probe fails with a non-penalty error (400)', () => {
     const cb = new CircuitBreakerManager({ enabled: true, failureThreshold: 3, initialCooldownMs: 30 });
-    const breaker = cb.getOrCreateBreaker('m1', 'mock', 'lite');
+    cb.registerModel({ id: 'm1', provider: 'mock', upstreamModel: 'm1', tier: 'lite', pricing: { input: 1, output: 1, cacheRead: 0 } });
+    cb.recordSuccessScoped('m1'); // materialize the sentinel tuple (a manual manager trip clamps to 1000ms)
+    const breaker = cb.getPairBreaker('m1', '')!;
     breaker.trip('simulated outage', 'SERVICE_UNAVAILABLE', 30);
 
     // Transition to HALF_OPEN (cooldown 30ms → wait)
@@ -254,7 +257,7 @@ describe('429 hard-trip with explicit Retry-After', () => {
 
     // First 429 → immediate hard trip (no 3-strike accumulation) + failover
     assert.equal(result.modelUsed, 'lite-2');
-    const breaker = registry.getCircuitBreakerManager().getBreaker('lite-1')!;
+    const breaker = registry.getCircuitBreakerManager().getPairBreaker('lite-1', '')!;
     assert.equal(breaker.getState(), 'OPEN');
     assert.equal(breaker.getSnapshot().category, 'RATE_LIMITED');
 

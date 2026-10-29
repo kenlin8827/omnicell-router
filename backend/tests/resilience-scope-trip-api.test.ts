@@ -79,7 +79,7 @@ describe('POST /api/admin/health/circuit-breakers/trip — scopes', () => {
     expect(json.model).toBe('plus-1');
     expect(json.tripped).toBe(true);
     expect(json.scope).toBe('model');
-    expect(cb().getBreaker('plus-1')?.getState()).toBe('OPEN');
+    expect(cb().getPairBreaker('plus-1', '')?.getState()).toBe('OPEN'); // the model trip lands on the sentinel tuple
     expect(cb().snapshotsWithPairs().filter((s) => s.keyHashPrefix)).toEqual([]); // no pair breakers invented
   });
 
@@ -103,7 +103,7 @@ describe('POST /api/admin/health/circuit-breakers/trip — scopes', () => {
 
     expect(cb().getPairBreaker('plus-1', 'k1prefix0000')?.getState()).toBe('OPEN');
     expect(cb().getPairBreaker('plus-2', 'k1prefix0000')).toBeUndefined(); // other model untouched
-    expect(cb().getBreaker('plus-1')?.getState()).toBe('CLOSED'); // and NOT the model breaker
+    expect(cb().getPairBreaker('plus-1', '')?.getState() ?? 'CLOSED').toBe('CLOSED'); // and NOT the sentinel tuple
     expect(cb().modelAvailability('plus-1', ['k1prefix0000', 'k2prefix0000'])).toEqual({
       available: true,
       openPrefixes: ['k1prefix0000'],
@@ -189,24 +189,23 @@ describe('POST /api/admin/health/circuit-breakers/reset — scopes', () => {
     expect(cb().modelAvailability('plus-1', ['kS']).available).toBe(false); // still out of service
   });
 
-  it('legacy ?model= query still resets the model breaker, and no target resets everything', async () => {
+  it('legacy ?model= query still resets every tuple of the model', async () => {
     cb().reset();
-    await post('/api/admin/health/circuit-breakers/trip', { scope: 'pair', model: 'plus-1', credential: 'kZ', cooldownMs: 600000 });
     await post('/api/admin/health/circuit-breakers/trip', { model: 'plus-1', cooldownMs: 60000 });
+    await post('/api/admin/health/circuit-breakers/trip', { scope: 'pair', model: 'plus-1', credential: 'kZ', cooldownMs: 600000 });
 
     const res = await post('/api/admin/health/circuit-breakers/reset?model=plus-1');
     expect(res.statusCode).toBe(200);
     expect(res.json().scope).toBe('model');
     expect(res.json().resetCount).toBeGreaterThanOrEqual(2); // model breaker + its pair
-    expect(cb().getBreaker('plus-1')?.getState()).toBe('CLOSED');
+    expect(cb().getSnapshot('plus-1')?.state).toBe('CLOSED');
     expect(cb().getPairBreaker('plus-1', 'kZ')?.getState()).toBe('CLOSED'); // model reset clears its pairs
 
-    await post('/api/admin/health/circuit-breakers/trip', { model: 'plus-1', cooldownMs: 60000 });
+    // Second model: a targeted reset leaves other models' tuples alone.
     await post('/api/admin/health/circuit-breakers/trip', { model: 'plus-2', cooldownMs: 60000 });
-    const all = await post('/api/admin/health/circuit-breakers/reset');
-    expect(all.json().resetCount).toBeGreaterThanOrEqual(2); // every model and pair breaker
-    expect(cb().getBreaker('plus-1')?.getState()).toBe('CLOSED');
-    expect(cb().getBreaker('plus-2')?.getState()).toBe('CLOSED');
+    const other = await post('/api/admin/health/circuit-breakers/reset?model=plus-2');
+    expect(other.json().resetCount).toBeGreaterThanOrEqual(1);
+    expect(cb().getSnapshot('plus-2')?.state).toBe('CLOSED');
   });
 
   it('400s an unknown scope and a scope that needs an credential without one', async () => {

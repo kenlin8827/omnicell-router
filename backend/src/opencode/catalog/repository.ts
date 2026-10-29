@@ -8,6 +8,7 @@ import { readCacheFile, writeCacheFile } from './cache.js';
 import { readOverridesStore, getOverridesStorePath } from './overrides-store.js';
 import { proxiedFetch } from '../../utils/proxy.js';
 import { CATALOG_USER_AGENT } from './constants.js';
+import { requestPoolRefresh } from '../../providers/pool-refresh.js';
 import { loadConfig, getConfigPath } from '../../config/index.js';
 import { readOcrStore, writeOcrStore, getOcrStorePath } from './ocr-store.js';
 import { ocrCredentialsFile } from '../credentials/paths.js';
@@ -248,6 +249,9 @@ export class CatalogRepository {
       const pulled = results.reduce((n, r) => n + r.pulled, 0);
       if (pulled > 0) {
         console.log(`[OCR] Auto model pull: +${pulled} models across ${results.filter((r) => r.pulled > 0).length} providers`);
+        // The defs file just changed — resync the live pool so the new models
+        // are routable (and visible in the matrix) without a restart/console hit.
+        requestPoolRefresh();
       }
     } catch {
       // best effort — next sync period retries

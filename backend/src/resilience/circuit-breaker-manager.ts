@@ -22,6 +22,7 @@ import {
 } from './types.js';
 import { ModelRegistration } from '../config/types.js';
 import { ReasonParams } from '../types/router.js';
+import type { TierLevel } from '../types/router.js';
 import { recordQuotaEvent } from '../quota/events.js';
 
 export interface CircuitBreakerSummary {
@@ -47,9 +48,13 @@ export interface ScopeTarget {
   modelId?: string;
   keyHashPrefix?: string;
   providerId?: string;
+  /** The provider's full credential chain — widens a model-scope manual trip
+   *  to every chain tuple (operator takedown must take the model OUT, not just
+   *  the sentinel tuple). */
+  chainPrefixes?: readonly string[];
 }
 
-/** Gate verdict of a model or (model, credential) breaker — same shape as `canExecute`. */
+/** Gate verdict of a (model, credential) breaker — same shape as `canExecute`. */
 export interface BreakerGate {
   allowed: boolean;
   reason?: string;
@@ -63,25 +68,24 @@ export interface TripResult {
   message: string;
 }
 
-/** Aggregate availability of one model-level breaker, with the credentials that are out of it. */
+/** Aggregate availability of one model, with the credentials that are out of it. */
 export interface ModelAvailability {
   available: boolean;
-  /** Candidate prefixes that cannot serve: pair OPEN/unavailable, or credential SUSPECT. */
+  /** Candidate prefixes that cannot serve: tuple OPEN/unavailable, or credential SUSPECT. */
   openPrefixes: string[];
 }
 
 /**
- * Model-level CAPABILITY view used by session-pin eviction — deliberately NOT
- * the breaker's own state machine. `CLOSED / HALF_OPEN / OPEN` are
- * `CircuitBreaker` states (component layer); a model aggregates many breakers
- * (model-level × every credential pair), so its view reads in capability
- * terms (the plain health dual `available`/`unavailable`, refined by the
- * middle state `recovering` the boolean cannot express):
+ * Model-level CAPABILITY view used by session-pin eviction — derived purely
+ * from the (model × credential) tuple breakers; there is NO model-level state
+ * machine behind it. `CLOSED / HALF_OPEN / OPEN` are `CircuitBreaker` states
+ * (component layer); a model aggregates many tuples, so its view reads in
+ * capability terms (the plain health dual `available`/`unavailable`, refined
+ * by the middle state `recovering` the boolean cannot express):
  *   'available'   — some credential can serve right now;
- *   'recovering'  — nothing can serve yet, but a breaker (model-level or a
- *                   pair) is mid-trial: one successful probe closes it;
- *   'unavailable' — nothing can serve and no trial is in flight: model
- *                   breaker OPEN with no pair in trial, or every pair
+ *   'recovering'  — nothing can serve yet, but a tuple is mid-trial: one
+ *                   successful probe closes it;
+ *   'unavailable' — nothing can serve and no trial is in flight: every tuple
  *                   hard-OPEN / DISABLED / SUSPECT (cooldown expiry or an
  *                   operator action is the only way back).
  * Built from breaker STATES (non-consuming, `viewState()` below), never the
@@ -93,12 +97,19 @@ export interface ModelAvailability {
  */
 export type ModelHealthView = 'available' | 'recovering' | 'unavailable';
 
-/** One (model × credential) breaker plus the identity it is keyed by. */
+/**
+ * The atomic breaker unit: one (model × credential) tuple.
+ * `keyHashPrefix === ''` is the SENTINEL for the chain-less credential (the
+ * config-baked key of a provider with no credential chain) — every legacy
+ * model-level path degenerates to that one tuple, byte-for-byte.
+ */
 interface PairRecord {
   modelId: string;
   keyHashPrefix: string;
   provider: string;
   breaker: CircuitBreaker;
+  /** Blast-radius label of the last scoped trip/failure delivered here ('model' | 'credential' | 'pair'). */
+  lastScope?: TripScope;
 }
 
 /**
@@ -116,27 +127,35 @@ function pairKey(modelId: string, keyHashPrefix: string): string {
   return `${modelId}::${keyHashPrefix}`;
 }
 
+/** Worst-state fold order for derived model views. */
+const STATE_SEVERITY: Record<CircuitBreakerState, number> = { CLOSED: 0, HALF_OPEN: 1, OPEN: 2 };
+
 /**
- * Circuit breaker registry with scoped breakers.
+ * Circuit breaker registry over (model × credential) tuple breakers — the
+ * ONLY state machines. Every wider granularity is a fan-out WRITE over tuples
+ * plus a scope label the tuple keeps for display:
  *
- *   bare-modelId breaker          == model scope   (this model, every credential)
- *   `${modelId}::${keyHashPrefix}` == pair scope    (this model, this credential)
- *   all pairs of one credential    == credential scope (this credential, every model)
+ *   scope 'pair'      -> this one tuple (provider + modelId + credential)
+ *   scope 'credential' -> every tuple of (provider, credential) — the key, on
+ *                         every model it can reach
+ *   scope 'model'      -> every tuple of the modelId (the upstream/model is
+ *                         what failed — key-independent)
  *
- * A provider whose chain has a single credential never gets pair breakers: the caller
- * omits `keyHashPrefix` and every path degenerates to the bare-modelId breaker
- * — byte-identical to the legacy single-credential behavior.
+ * A provider whose chain has a single (or no) credential routes through the
+ * sentinel tuple `keyHashPrefix === ''`: every legacy model-level path
+ * (no-prefix gate/success/failure) lands there, so chain-less providers keep
+ * exactly one breaker with the historical semantics.
  *
- * With a `BreakerStateStore` attached (boot path only) the whole registry also has
- * an on-disk memory: cooldowns, backoff position and manual
- * trips survive a gateway restart. Without one it stays purely in-memory.
+ * With a `BreakerStateStore` attached (boot path only) the registry also has
+ * an on-disk memory: cooldowns, backoff position and manual trips survive a
+ * gateway restart. Without one it stays purely in-memory.
  */
 export class CircuitBreakerManager {
-  private breakers = new Map<string, CircuitBreaker>();
-  private pairs = new Map<string, PairRecord>();
+  private tuples = new Map<string, PairRecord>();
   // modelId -> provider, so credential-wide expansion and SUSPECT lookups can name the
-  // credential owner even for pair breakers created lazily on a failure path.
+  // credential owner even for tuples created lazily on a failure path.
   private modelProviders = new Map<string, string>();
+  private modelTiers = new Map<string, TierLevel | undefined>();
   private config: CircuitBreakerConfig;
   /**
    * The effective ruleset, resolved at construction and re-resolved on every
@@ -152,7 +171,7 @@ export class CircuitBreakerManager {
   private credentialState: CredentialStateStore;
   // optional on-disk breaker memory.
   // Undefined = pure in-memory (every test harness and any registry the boot
-  // path never attaches a store to; behavior is byte-identical to pre-P3).
+  // path never attaches a store to).
   private stateStore: BreakerStateStore | undefined;
 
   constructor(
@@ -173,12 +192,12 @@ export class CircuitBreakerManager {
   /**
    * Hot-apply a new circuitBreaker config (spec invariant 6, hot-apply):
    * re-resolve the effective ruleset, swap it into the gate, and push config
-   * + the new rules into every live breaker (model AND pair). Breaker STATE is
-   * never touched by the swap — the new rules govern from the next decision
-   * point — except the invariant-2 reconciliation below. `retryConfig` is
-   * consulted only for `hardTripAboveMs`'s default, exactly like boot.
-   * Deliberately NOT hot-applied here: `persistence.debounceMs` (the
-   * BreakerStateStore binds its debounce at construction, boot path).
+   * + the new rules into every live tuple breaker. Breaker STATE is never
+   * touched by the swap — the new rules govern from the next decision point —
+   * except the invariant-2 reconciliation below. `retryConfig` is consulted
+   * only for `hardTripAboveMs`'s default, exactly like boot. Deliberately NOT
+   * hot-applied here: `persistence.debounceMs` (the BreakerStateStore binds
+   * its debounce at construction, boot path).
    */
   public applyConfig(config?: CircuitBreakerConfig, retryConfig?: RetryConfig): void {
     this.config = config || {};
@@ -199,52 +218,17 @@ export class CircuitBreakerManager {
         breaker.reset();
       }
     };
-    for (const breaker of this.breakers.values()) settle(breaker);
-    for (const pair of this.pairs.values()) settle(pair.breaker);
+    for (const tuple of this.tuples.values()) settle(tuple.breaker);
   }
 
-  public registerModel(model: ModelRegistration): CircuitBreaker {
+  /** Registry bookkeeping only — tuple breakers are created lazily on first evidence. */
+  public registerModel(model: ModelRegistration): void {
     this.modelProviders.set(model.id, model.provider);
-    let breaker = this.breakers.get(model.id);
-    if (!breaker) {
-      breaker = new CircuitBreaker(
-        model.id,
-        model.provider,
-        model.tier,
-        this.config,
-        this.nowFn,
-        this.rules
-      );
-      this.breakers.set(model.id, breaker);
-    }
-    return breaker;
-  }
-
-  public getBreaker(modelId: string): CircuitBreaker | undefined {
-    return this.breakers.get(modelId);
-  }
-
-  public getOrCreateBreaker(
-    modelId: string,
-    provider = 'unknown',
-    tier?: any
-  ): CircuitBreaker {
-    if (!this.modelProviders.has(modelId)) this.modelProviders.set(modelId, provider);
-    let breaker = this.breakers.get(modelId);
-    if (!breaker) {
-      breaker = new CircuitBreaker(modelId, provider, tier, this.config, this.nowFn, this.rules);
-      this.breakers.set(modelId, breaker);
-    }
-    return breaker;
-  }
-
-  /** The pair breaker for (model, credential), or undefined if none exists. */
-  public getPairBreaker(modelId: string, keyHashPrefix: string): CircuitBreaker | undefined {
-    return this.pairs.get(pairKey(modelId, keyHashPrefix))?.breaker;
+    this.modelTiers.set(model.id, model.tier);
   }
 
   /**
-   * Models this registry knows for a provider — the model set an credential-wide
+   * Models this registry knows for a provider — the model set a credential-wide
    * trip covers (registerModel is called for every registered model).
    */
   private modelsOfProvider(providerId?: string): string[] {
@@ -257,135 +241,156 @@ export class CircuitBreakerManager {
   }
 
   /**
-   * Models an credential-wide trip of (provider, credential) covers: everything
-   * registered for that provider, plus any model that already carries a pair
-   * breaker for the credential (a pair can outlive a provider re-index).
+   * Models a credential-wide trip of (provider, credential) covers: everything
+   * registered for that provider, plus any model that already carries a tuple
+   * for the credential (a tuple can outlive a provider re-index).
    */
   private credentialModelIds(providerId: string, keyHashPrefix: string): string[] {
     const out = new Set<string>(this.modelsOfProvider(providerId));
-    for (const pair of this.pairs.values()) {
-      if (pair.keyHashPrefix === keyHashPrefix && pair.provider === providerId) out.add(pair.modelId);
+    for (const tuple of this.tuples.values()) {
+      if (tuple.keyHashPrefix === keyHashPrefix && tuple.provider === providerId) out.add(tuple.modelId);
     }
     return Array.from(out);
   }
 
+  /** Tuple prefixes currently materialized for a model. */
+  private tuplePrefixesOf(modelId: string): string[] {
+    const out: string[] = [];
+    for (const tuple of this.tuples.values()) {
+      if (tuple.modelId === modelId) out.push(tuple.keyHashPrefix);
+    }
+    return out;
+  }
+
+  /**
+   * The tuple set a model-scope failure/trip lands on: the caller's chain
+   * prefixes when known (the orchestrator passes them, so a model-scope trip
+   * covers credentials that never failed yet), else the materialized tuples,
+   * else the sentinel '' tuple (chain-less). Every target is created on demand
+   * so the fan-out is durable and visible in the matrix.
+   */
+  private modelTupleTargets(modelId: string, provider?: string, chainPrefixes?: readonly string[]): PairRecord[] {
+    const prefixes =
+      chainPrefixes && chainPrefixes.length > 0
+        ? Array.from(new Set(chainPrefixes))
+        : this.tuplePrefixesOf(modelId);
+    const effective = prefixes.length > 0 ? prefixes : [''];
+    return effective.map((prefix) => this.getOrCreateTuple(modelId, prefix, provider));
+  }
+
+  /** The pair breaker for (model, credential), or undefined if none exists. */
+  public getPairBreaker(modelId: string, keyHashPrefix: string): CircuitBreaker | undefined {
+    return this.tuples.get(pairKey(modelId, keyHashPrefix))?.breaker;
+  }
+
   /**
    * Trial-call budget per model per prober cycle (Decision 6 reuses the
-   * HALF_OPEN trial budget, so pair fan-out cannot multiply background load).
+   * HALF_OPEN trial budget, so tuple fan-out cannot multiply background load).
    * = rules.recovery.halfOpen.maxProbes, defaulting to halfOpenMaxProbes.
    */
   public getProbeBudget(): number {
     return this.rules.recovery.halfOpen.maxProbes;
   }
 
-  private getOrCreatePair(modelId: string, keyHashPrefix: string, provider?: string): PairRecord {
+  private getOrCreateTuple(modelId: string, keyHashPrefix: string, provider?: string): PairRecord {
     const key = pairKey(modelId, keyHashPrefix);
-    let pair = this.pairs.get(key);
-    if (!pair) {
+    let tuple = this.tuples.get(key);
+    if (!tuple) {
       const owner = this.resolveProvider(modelId, provider);
-      pair = {
+      tuple = {
         modelId,
         keyHashPrefix,
         provider: owner,
         breaker: new CircuitBreaker(
           modelId,
           owner,
-          this.breakers.get(modelId)?.tier,
+          this.modelTiers.get(modelId),
           this.config,
           this.nowFn,
           this.rules
         ),
       };
-      this.pairs.set(key, pair);
+      this.tuples.set(key, tuple);
     }
-    return pair;
+    return tuple;
   }
 
+  /**
+   * CONSUMING gate for the no-chain path: the sentinel '' tuple (the config
+   * -baked key of a chain-less provider). Multi-credential traffic never goes
+   * through here — `canExecuteScoped` with a real prefix is the gate.
+   */
   public canExecute(modelId: string): { allowed: boolean; reason?: string; state: CircuitBreakerState } {
-    const breaker = this.breakers.get(modelId);
-    if (!breaker) {
+    const tuple = this.tuples.get(pairKey(modelId, ''));
+    if (!tuple) {
       return { allowed: true, state: 'CLOSED' };
     }
-    const check = breaker.canExecute();
+    const check = tuple.breaker.canExecute();
     return {
       allowed: check.allowed,
       reason: check.reason,
-      state: breaker.getState(),
+      state: tuple.breaker.getState(),
     };
   }
 
   /**
-   * CONSUMING gate at the finest attributed scope.
-   * No `keyHashPrefix` (single-credential provider) is exactly `canExecute(modelId)`.
-   * With a prefix the model breaker is only PEEKED and the pair breaker consumes
-   * the canary slot. Consuming the model slot here would strand it: a pair-scope
-   * verdict deliberately never reaches the model breaker, so a HALF_OPEN model
-   * whose slot was spent on a request that came back 429-on-one-credential would
-   * sit with an exhausted quota while every credential stayed healthy. Pair scope
-   * therefore bounds background traffic by (credentials x the HALF_OPEN trial
-   * budget) instead, and a pair success counts as a model trial success
-   * (see `recordSuccessScoped` — closes only at recovery.halfOpen.successThreshold).
+   * CONSUMING gate at the finest attributed scope — the ONE tuple (provider +
+   * modelId + credential). No `keyHashPrefix` (chain-less provider) is exactly
+   * `canExecute(modelId)` on the sentinel tuple.
    */
   public canExecuteScoped(modelId: string, keyHashPrefix?: string): BreakerGate {
     if (!keyHashPrefix) {
       return this.canExecute(modelId);
     }
 
-    const modelBreaker = this.breakers.get(modelId);
-    if (modelBreaker) {
-      const peek = modelBreaker.peekExecute();
-      if (!peek.allowed) {
-        return { allowed: false, reason: peek.reason, state: modelBreaker.getState() };
-      }
-    }
-
-    const pair = this.pairs.get(pairKey(modelId, keyHashPrefix));
+    const tuple = this.tuples.get(pairKey(modelId, keyHashPrefix));
     if (this.isSuspect(modelId, keyHashPrefix)) {
       return {
         allowed: false,
         reason:
           `Credential '${keyHashPrefix}' is SUSPECT for model '${modelId}' ` +
           '(confirmed-bad credential; reconnect or clear to restore).',
-        state: pair ? pair.breaker.getState() : 'OPEN',
+        state: tuple ? tuple.breaker.getState() : 'OPEN',
       };
     }
-    if (!pair) {
-      // No pair state = never failed on this credential: the model breaker already said yes.
-      return { allowed: true, state: modelBreaker ? modelBreaker.getState() : 'CLOSED' };
+    if (!tuple) {
+      // No tuple state = never failed on this credential.
+      return { allowed: true, state: 'CLOSED' };
     }
-    const check = pair.breaker.canExecute();
-    return { allowed: check.allowed, reason: check.reason, state: pair.breaker.getState() };
+    const check = tuple.breaker.canExecute();
+    return { allowed: check.allowed, reason: check.reason, state: tuple.breaker.getState() };
   }
 
   /**
    * NON-CONSUMING availability check (peek) — safe for selection, filtering
-   * and introspection; never takes a HALF_OPEN probe slot. The consuming
-   * gate is getBreaker(modelId)?.canExecute() at the execution site only.
+   * and introspection; never takes a HALF_OPEN probe slot. A model is
+   * available while ANY of its tuple breakers is peek-allowed (no tuples =
+   * never failed anywhere = available). The consuming gate is
+   * `canExecuteScoped()` at the execution site only.
    */
   public isAvailable(modelId: string): boolean {
-    const breaker = this.breakers.get(modelId);
-    if (!breaker) {
-      return true;
+    let sawAny = false;
+    for (const tuple of this.tuples.values()) {
+      if (tuple.modelId !== modelId) continue;
+      sawAny = true;
+      if (tuple.breaker.peekExecute().allowed) return true;
     }
-    return breaker.peekExecute().allowed;
+    return !sawAny;
   }
 
   /**
-   * The derived aggregate the pool builders will read:
-   * a model is available iff its model breaker is CLOSED/HALF_OPEN-capable AND
-   * at least one candidate credential serves (its pair breaker not OPEN, its
-   * credential not SUSPECT). A down model breaker reports every candidate unusable
-   * (the pair breakers themselves may all be healthy — the model is what
-   * failed); an empty `candidatePrefixes` (no chain registered) degenerates to
-   * the model-breaker check alone, never to "unavailable", which is what keeps
-   * single-credential providers intact.
+   * The derived aggregate the pool builders read:
+   * a model is available iff at least one candidate credential serves (its
+   * tuple breaker not OPEN, its credential not SUSPECT/DISABLED). With an
+   * EMPTY `candidatePrefixes` (chain-less provider) the SENTINEL tuple is the
+   * only gate — consulted via `isAvailable`, so a manual model trip on the
+   * sentinel reads out as unavailable exactly like any chained takedown.
    */
   public modelAvailability(modelId: string, candidatePrefixes: string[]): ModelAvailability {
-    if (!this.isAvailable(modelId)) {
-      return { available: false, openPrefixes: [...candidatePrefixes] };
-    }
     if (candidatePrefixes.length === 0) {
-      return { available: true, openPrefixes: [] };
+      // Chain-less: the SENTINEL '' tuple is the only gate (a manual model trip
+      // lands there, so it must read out as unavailable, not short-circuit).
+      return { available: this.isAvailable(modelId), openPrefixes: [] };
     }
 
     const openPrefixes: string[] = [];
@@ -412,28 +417,20 @@ export class CircuitBreakerManager {
   }
 
   /**
-   * Model capability view for session-pin eviction (see `ModelHealthView`):
-   * a pin is evictable ONLY at 'unavailable'. Operator takedowns
-   * (DISABLED / SUSPECT) outrank trial state: they are decisions, not
-   * recovery-in-progress. Chain-less providers degenerate to the model
-   * breaker alone. A tripped model-level OPEN returns 'unavailable' even
-   * if pairs read healthy (the trip marks every prefix out anyway); a model
-   * trial mid-flight whose every pair is still hard-OPEN returns
-   * 'unavailable' too — no probe can reach upstream until a pair cools
-   * back, so the trial cannot serve either.
+   * Model capability view for session-pin eviction (see `ModelHealthView`),
+   * folded purely from tuple states — there is no model-level machine. A
+   * tuple OPEN does not immediately condemn the model (another credential may
+   * serve); 'unavailable' requires EVERY candidate to be out (operator
+   * takedowns outrank trial state and serve as 'out', never 'recovering').
+   * Chain-less providers degenerate to the sentinel '' tuple alone.
    */
   public modelHealthView(modelId: string, candidatePrefixes: string[]): ModelHealthView {
-    const modelBreaker = this.breakers.get(modelId);
-    const modelState = modelBreaker ? this.viewState(modelBreaker) : 'CLOSED';
-    if (modelState === 'OPEN') return 'unavailable';
-    if (candidatePrefixes.length === 0) {
-      return modelState === 'HALF_OPEN' ? 'recovering' : 'available';
-    }
+    const prefixes = candidatePrefixes.length > 0 ? candidatePrefixes : [''];
     let anyHalfOpen = false;
-    for (const prefix of candidatePrefixes) {
-      if (this.isDisabled(modelId, prefix) || this.isSuspect(modelId, prefix)) continue; // takedown: serves as 'out', never 'recovering'
-      const pair = this.pairs.get(pairKey(modelId, prefix));
-      const state = pair ? this.viewState(pair.breaker) : 'CLOSED'; // never failed on this credential
+    for (const prefix of prefixes) {
+      if (prefix && (this.isDisabled(modelId, prefix) || this.isSuspect(modelId, prefix))) continue; // takedown: serves as 'out', never 'recovering'
+      const tuple = this.tuples.get(pairKey(modelId, prefix));
+      const state = tuple ? this.viewState(tuple.breaker) : 'CLOSED'; // never failed on this credential
       if (state === 'CLOSED') return 'available';
       if (state === 'HALF_OPEN') anyHalfOpen = true;
     }
@@ -460,11 +457,11 @@ export class CircuitBreakerManager {
 
   /**
    * The single NON-CONSUMING "out of service" predicate
-   * for one (model, credential) pair: credential SUSPECT, or its pair breaker
-   * currently not peek-allowed. NEVER takes a HALF_OPEN probe slot — the
-   * consuming gate is `canExecuteScoped()` at the execution site only.
-   * Selection (credential-selection.ts), the prober plan (health-prober.ts) and
-   * `modelAvailability()` below all route through this one implementation.
+   * for one (model, credential) tuple: credential SUSPECT/DISABLED, or its
+   * breaker currently not peek-allowed. NEVER takes a HALF_OPEN probe slot —
+   * the consuming gate is `canExecuteScoped()` at the execution site only.
+   * Selection (credential-selection.ts), the prober plan (health-prober.ts)
+   * and `modelAvailability()` above all route through this one implementation.
    */
   public isPairOut(modelId: string, keyHashPrefix: string): boolean {
     // Operator takedown outranks every runtime signal: it is the one state that
@@ -472,8 +469,20 @@ export class CircuitBreakerManager {
     // consumers (selection, prober plan, model availability) through this gate.
     if (this.isDisabled(modelId, keyHashPrefix)) return true;
     if (this.isSuspect(modelId, keyHashPrefix)) return true;
-    const pair = this.pairs.get(pairKey(modelId, keyHashPrefix));
-    return pair !== undefined && !pair.breaker.peekExecute().allowed;
+    const tuple = this.tuples.get(pairKey(modelId, keyHashPrefix));
+    return tuple !== undefined && !tuple.breaker.peekExecute().allowed;
+  }
+
+  /** Retire a model: every tuple breaker and identity bookkeeping goes with it
+   *  (the registry's hot pool sync — a removed model must not ghost through
+   *  credential-wide expansion or snapshots). */
+  public dropModel(modelId: string): void {
+    this.schedulePersist();
+    for (const [key, tuple] of Array.from(this.tuples)) {
+      if (tuple.modelId === modelId) this.tuples.delete(key);
+    }
+    this.modelProviders.delete(modelId);
+    this.modelTiers.delete(modelId);
   }
 
   public getCredentialStateStore(): CredentialStateStore {
@@ -493,38 +502,36 @@ export class CircuitBreakerManager {
   }
 
   /**
-   * Rehydrate breakers from disk. Records for models the registry no longer
-   * knows (config removed/renamed them over the restart) are DROPPED, so the
-   * file self-cleans and removed models never ghost through snapshots or
-   * credential-wide trip expansion. OPEN records whose reasonCode belongs to a
-   * now-disabled trip rule are skipped too — the startup reconciliation of
-   * spec invariant 2: closing a rule must not resurrect a cooldown nobody
+   * Rehydrate tuple breakers from disk. Records for models the registry no
+   * longer knows (config removed/renamed them over the restart) are DROPPED,
+   * so the file self-cleans and removed models never ghost through snapshots
+   * or credential-wide trip expansion. OPEN records whose reasonCode belongs
+   * to a now-disabled trip rule are skipped too — the startup reconciliation
+   * of spec invariant 2: closing a rule must not resurrect a cooldown nobody
    * asked for (the same filter runs live in `applyConfig` at every hot-apply,
-   * invariant 6). Returns the applied counts.
+   * invariant 6). Pre-tuple files carried a `models[]` layer; those records
+   * are IGNORED (the model level is a derived view now). Returns the applied
+   * tuple count.
    */
-  public restoreState(): { models: number; pairs: number } {
+  public restoreState(): { pairs: number } {
     const file = this.stateStore?.load();
-    if (!file) return { models: 0, pairs: 0 };
+    if (!file) return { pairs: 0 };
     const disabled = CircuitBreakerManager.disabledTripReasonCodes(this.rules);
     const revived = (rec: BreakerRecord): boolean =>
       rec.state === 'OPEN' && rec.reasonCode !== undefined && disabled.has(rec.reasonCode);
-    let models = 0;
-    for (const rec of file.models) {
-      if (!this.modelProviders.has(rec.modelId) || revived(rec)) continue;
-      // Identity (provider/tier) comes from the CURRENT config, not the file.
-      const breaker = this.getOrCreateBreaker(rec.modelId, this.modelProviders.get(rec.modelId));
-      breaker.applyRecord(rec);
-      models++;
-    }
     let pairs = 0;
     for (const rec of file.pairs) {
-      if (!rec.keyHashPrefix || !this.modelProviders.has(rec.modelId) || revived(rec)) continue;
-      // getOrCreatePair resolves the owner from the registry (resolveProvider).
-      const pair = this.getOrCreatePair(rec.modelId, rec.keyHashPrefix);
-      pair.breaker.applyRecord(rec);
+      // `''` (the chain-less SENTINEL tuple) is a real key — only undefined is
+      // absent; dropping it would erase a chain-less provider's ENTIRE breaker
+      // memory on every restart.
+      if (rec.keyHashPrefix === undefined || !this.modelProviders.has(rec.modelId) || revived(rec)) continue;
+      // getOrCreateTuple resolves the owner from the registry (resolveProvider).
+      const tuple = this.getOrCreateTuple(rec.modelId, rec.keyHashPrefix);
+      tuple.breaker.applyRecord(rec);
+      tuple.lastScope = rec.scope;
       pairs++;
     }
-    return { models, pairs };
+    return { pairs };
   }
 
   /** Trip reasonCodes whose owning rule is disabled — those records/breakers reconcile away (invariant 2). */
@@ -543,15 +550,20 @@ export class CircuitBreakerManager {
     return out;
   }
 
-  /** The live full-state file (called by the debounced store, never hot-path). */
+  /** The live full-state file (called by the debounced store, never hot-path).
+   *  `models` stays an always-empty field for file-shape compatibility — the
+   *  model level is a derived view with no state of its own (v2 semantics). */
   private buildStateFile(): BreakerStateFile {
     return {
       version: 1,
       savedAt: this.nowFn(),
-      models: Array.from(this.breakers.values(), b => b.toRecord()),
-      pairs: Array.from(this.pairs.values(), p => ({
+      models: [],
+      pairs: Array.from(this.tuples.values(), p => ({
         ...p.breaker.toRecord(),
         keyHashPrefix: p.keyHashPrefix,
+        // The scope label rides the pair record so scope-symmetric recovery
+        // survives restarts (the frontend keys its recover action off it).
+        ...(p.lastScope ? { scope: p.lastScope } : {}),
       })),
     };
   }
@@ -567,29 +579,21 @@ export class CircuitBreakerManager {
     this.stateStore.requestSave(() => this.buildStateFile());
   }
 
+  /** Success on the sentinel '' tuple — the chain-less legacy path. */
   public recordSuccess(modelId: string): void {
     this.schedulePersist();
-    const breaker = this.breakers.get(modelId);
-    if (breaker) {
-      breaker.recordSuccess();
-    }
+    this.getOrCreateTuple(modelId, '').breaker.recordSuccess();
   }
 
   /** Provider owner of a model as this registry knows it ('unknown' when never seen). */
   private resolveProvider(modelId: string, provider?: string): string {
     if (provider && provider !== 'unknown') return provider;
-    return this.modelProviders.get(modelId) ?? this.breakers.get(modelId)?.provider ?? 'unknown';
+    return this.modelProviders.get(modelId) ?? 'unknown';
   }
 
   /**
-   * Success for one (model, credential). Without a
-   * prefix this is today's `recordSuccess(modelId)`. With one, the pair breaker
-   * recovers and a HALF_OPEN model breaker gets a TRIAL SUCCESS: the scoped
-   * gate peeks the model breaker instead of consuming its slot, so a
-   * recovering model needs an explicit closer and any credential that answers
-   * proves the upstream is back. With successThreshold > 1 this counts toward
-   * the model's trial batch (the batch closes at the threshold), it does NOT
-   * force-close (spec rule #10 interaction note).
+   * Success for one (model, credential) tuple. Without a prefix this is the
+   * sentinel-tuple `recordSuccess(modelId)` (chain-less path).
    */
   public recordSuccessScoped(modelId: string, keyHashPrefix?: string, provider?: string): void {
     this.schedulePersist();
@@ -598,50 +602,47 @@ export class CircuitBreakerManager {
       return;
     }
     const owner = this.resolveProvider(modelId, provider);
-    const pair = this.pairs.get(pairKey(modelId, keyHashPrefix));
-    if (pair) {
-      pair.breaker.recordSuccess();
+    const tuple = this.tuples.get(pairKey(modelId, keyHashPrefix));
+    if (tuple) {
+      tuple.breaker.recordSuccess();
     } else if (owner !== 'unknown') {
-      // A success on a never-failed pair still has to name the owner, or the
+      // A success on a never-failed tuple still has to name the owner, or the
       // credential-wide expansion would not know which provider this model belongs to.
-      this.getOrCreatePair(modelId, keyHashPrefix, owner);
-    }
-    const modelBreaker = this.breakers.get(modelId);
-    if (modelBreaker && modelBreaker.getState() === 'HALF_OPEN') {
-      modelBreaker.recordSuccess();
+      this.getOrCreateTuple(modelId, keyHashPrefix, owner);
     }
   }
 
   public recordFailure(modelId: string, diagnosis: ErrorDiagnosis, provider = 'unknown'): void {
-    this.schedulePersist();
-    this.applyFailure(modelId, diagnosis, provider, undefined);
+    this.recordFailureScoped(modelId, diagnosis, provider, undefined);
   }
 
   /**
    * Record a failure and EXPAND it over the blast radius
-   * the rule gate resolved. Without a prefix (or without a `tripScope`, which
-   * only ever exists under credential attribution) the diagnosis goes to the
-   * bare-modelId breaker, exactly as before P3.
+   * the rule gate resolved. The credential actually used comes from the
+   * caller's prefix OR the registry-stamped `diagnosis.usedKeyHashPrefix` —
+   * a degenerate selection (all-unhealthy / no-session) still executed on a
+   * chain credential, and its stamp is ground truth. Without either, the
+   * failure is chain-less and lands on the sentinel '' tuple.
    *
-   *   'pair'    -> this (model, credential) only
+   *   'pair'      -> this one (model, credential) tuple
    *   'credential' -> every model this credential can reach; SUSPECT if diagnosed
-   *   'model'   -> the bare-modelId breaker (aggregation takes the model down)
+ *   'model'     -> EVERY tuple of the modelId (fan-out accounting: each tuple's
+   *                  ladder sees the model-level failure, so one key serving a
+   *                  dying upstream trips the whole model at the threshold)
    *
    * A rule `scope` override replaces the classifier's blast radius here —
-   * AFTER credential attribution (invariant 4): with no prefix there is no
-   * pair space to expand into, so chain-less providers keep degenerating to
-   * the model breaker no matter what an override says.
+   * AFTER credential attribution (invariant 4).
    *
-   * Pair and credential verdicts deliberately do NOT touch the model breaker:
-   * credential-scoped failures are not evidence about the model, and cooling a
-   * model because one of its credentials hit a limit is the flaw this design
-   * removes.
+   * `chainPrefixes` (optional, orchestrator-only) widens the model-scope
+   * fan-out to the full credential chain so a model-level trip covers keys
+   * that never served the failing attempt.
    */
   public recordFailureScoped(
     modelId: string,
     diagnosis: ErrorDiagnosis,
     provider?: string,
-    keyHashPrefix?: string
+    keyHashPrefix?: string,
+    chainPrefixes?: readonly string[]
   ): void {
     // Quota linkage: every QUOTA_EXHAUSTED diagnosis
     // lands a row in the quota_events ledger at this single join point —
@@ -651,11 +652,20 @@ export class CircuitBreakerManager {
     // records executed turns); this ledger is their quota-shaped counterpart.
     // Fire-and-forget fail-open: a ledger error must never disturb the
     // breaker record it piggybacks on.
+    // Attribution ground truth: the caller's selection prefix may be absent
+    // (all-unhealthy / all-disabled / no-session degeneracies still execute on
+    // the chain head), but `registry.execute` stamped the credential that
+    // ACTUALLY served the failed attempt onto the error, and the classifier
+    // carried it here as `diagnosis.usedKeyHashPrefix`. That stamp — not the
+    // selection outcome — is what scopes the trip: a credential-fault error
+    // (quota/auth/per-credential 429) must never degrade to the model level
+    // just because selection returned no prefix.
+    const attributed = keyHashPrefix ?? diagnosis.usedKeyHashPrefix;
     if (diagnosis.category === 'QUOTA_EXHAUSTED') {
       try {
         recordQuotaEvent({
           providerId: provider ?? this.modelProviders.get(modelId) ?? 'unknown',
-          keyHashPrefix,
+          keyHashPrefix: attributed,
           modelId,
           statusCode: diagnosis.statusCode,
           reason: diagnosis.reason,
@@ -665,11 +675,7 @@ export class CircuitBreakerManager {
       }
     }
     this.schedulePersist();
-    if (!keyHashPrefix) {
-      this.applyFailure(modelId, diagnosis, provider ?? 'unknown', undefined);
-      return;
-    }
-    this.applyFailure(modelId, diagnosis, provider, keyHashPrefix);
+    this.applyFailure(modelId, diagnosis, provider, attributed, chainPrefixes);
   }
 
   /**
@@ -697,34 +703,40 @@ export class CircuitBreakerManager {
     modelId: string,
     diagnosis: ErrorDiagnosis,
     provider?: string,
-    keyHashPrefix?: string
+    keyHashPrefix?: string,
+    chainPrefixes?: readonly string[]
   ): void {
     const r = this.rules;
     const owner = this.resolveProvider(modelId, provider);
     const dispatch = this.dispatchFailure(diagnosis);
-    const deliver = (breaker: CircuitBreaker): void => {
+    const deliver = (tuple: PairRecord, scope: TripScope): void => {
+      tuple.lastScope = scope;
       switch (dispatch.kind) {
         case 'drop':
-          breaker.releaseProbeSlot();
+          tuple.breaker.releaseProbeSlot();
           return;
         case 'hard':
-          breaker.recordHardTrip(diagnosis, dispatch.cooldownMs);
+          tuple.breaker.recordHardTrip(diagnosis, dispatch.cooldownMs);
           return;
         case 'count':
-          breaker.recordFailure(dispatch.diagnosis);
+          tuple.breaker.recordFailure(dispatch.diagnosis);
           return;
         default:
-          breaker.recordFailure(diagnosis);
+          tuple.breaker.recordFailure(diagnosis);
       }
     };
 
     const scope = this.effectiveScope(diagnosis);
     if (scope === 'model' || !keyHashPrefix) {
-      deliver(this.getOrCreateBreaker(modelId, owner));
+      // Model blast radius: every tuple of the model (chain prefixes widen the
+      // fan-out; a chain-less provider degenerates to the sentinel tuple).
+      for (const tuple of this.modelTupleTargets(modelId, owner, scope === 'model' ? chainPrefixes : undefined)) {
+        deliver(tuple, 'model');
+      }
       return;
     }
     if (scope === 'pair') {
-      deliver(this.getOrCreatePair(modelId, keyHashPrefix, owner).breaker);
+      deliver(this.getOrCreateTuple(modelId, keyHashPrefix, owner), 'pair');
       return;
     }
     // credential-wide: the credential is the problem, on every model it can serve.
@@ -732,7 +744,7 @@ export class CircuitBreakerManager {
     const rowTargets = new Set(this.credentialModelIds(owner, keyHashPrefix));
     rowTargets.add(modelId);
     for (const targetId of rowTargets) {
-      deliver(this.getOrCreatePair(targetId, keyHashPrefix, owner).breaker);
+      deliver(this.getOrCreateTuple(targetId, keyHashPrefix, owner), 'credential');
     }
     // SUSPECT is administrative and auth-only: quota recovers by itself, a
     // dead key does not (Decision 6). The flag rides on the trip (spec: mark
@@ -857,64 +869,55 @@ export class CircuitBreakerManager {
   }
 
   /**
-   * Manual reset. `modelId` = the model's breaker AND that model's pair
-   * breakers (an operator
-   * putting a model back in service does not want a stale credential cooldown to
-   * keep the aggregate down). SUSPECT is the separate administrative gate and
-   * survives every reset path — only `CredentialStateStore.clear()` lifts it.
-   * No argument resets every model breaker and every pair breaker.
+   * Manual reset of one MODEL: every tuple breaker of the model (an operator
+   * putting a model back in service does not want a stale credential cooldown
+   * to keep the aggregate down). SUSPECT is the separate administrative gate
+   * and survives every reset path — only `CredentialStateStore.clear()` lifts
+   * it. No argument resets every tuple breaker.
    */
   public reset(modelId?: string): { resetCount: number; message: string } {
     this.schedulePersist();
     if (modelId) {
-      const breaker = this.breakers.get(modelId);
       let count = 0;
-      if (breaker) {
-        breaker.reset();
-        count = 1;
-      }
-      for (const pair of this.pairs.values()) {
-        if (pair.modelId !== modelId) continue;
-        pair.breaker.reset();
+      for (const tuple of this.tuples.values()) {
+        if (tuple.modelId !== modelId) continue;
+        tuple.breaker.reset();
         count++;
       }
       if (count === 0) {
-        return { resetCount: 0, message: `Model '${modelId}' not found in circuit breaker registry.` };
+        return { resetCount: 0, message: `No circuit breaker found for model '${modelId}'.` };
       }
       return { resetCount: count, message: `Circuit breaker for model '${modelId}' reset to CLOSED.` };
     }
-
-    let count = 0;
-    for (const breaker of this.breakers.values()) {
-      breaker.reset();
-      count++;
+    for (const tuple of this.tuples.values()) {
+      tuple.breaker.reset();
     }
-    for (const pair of this.pairs.values()) {
-      pair.breaker.reset();
-      count++;
-    }
+    const count = this.tuples.size;
     return { resetCount: count, message: `All ${count} circuit breakers successfully reset to CLOSED.` };
   }
 
-  /** Reset one (model, credential) pair; no prefix degenerates to `reset(modelId)`. */
+  /** Reset one (model, credential) tuple; no prefix degenerates to `reset(modelId)`. */
   public resetScoped(modelId: string, keyHashPrefix?: string): { resetCount: number; message: string } {
     if (!keyHashPrefix) return this.reset(modelId);
     this.schedulePersist();
-    const pair = this.pairs.get(pairKey(modelId, keyHashPrefix));
-    if (!pair) {
+    const tuple = this.tuples.get(pairKey(modelId, keyHashPrefix));
+    if (!tuple) {
       return { resetCount: 0, message: `No pair breaker for model '${modelId}' on credential '${keyHashPrefix}'.` };
     }
-    pair.breaker.reset();
+    tuple.breaker.reset();
     return {
       resetCount: 1,
       message: `Circuit breaker for model '${modelId}' on credential '${keyHashPrefix}' reset to CLOSED.`,
     };
   }
 
-  /** Reset the scope a manual operator action names (see `tripByScope`). */
   public resetByScope(scope: TripScope, target: ScopeTarget): { resetCount: number; message: string } {
-    if (scope === 'model') return this.reset(target.modelId);
-
+    if (scope === 'model') {
+      if (!target.modelId) {
+        return { resetCount: 0, message: "scope 'model' requires a model." };
+      }
+      return this.reset(target.modelId);
+    }
     if (scope === 'pair') {
       if (!target.modelId || !target.keyHashPrefix) {
         return { resetCount: 0, message: "scope 'pair' requires both model and credential." };
@@ -922,7 +925,7 @@ export class CircuitBreakerManager {
       return this.resetScoped(target.modelId, target.keyHashPrefix);
     }
 
-    // credential: every pair breaker of this credential. SUSPECT is NOT cleared here —
+    // credential: every tuple breaker of this credential. SUSPECT is NOT cleared here —
     // it needs the explicit clear endpoint (administrative, not a cooldown).
     if (!target.keyHashPrefix) {
       return { resetCount: 0, message: "scope 'credential' requires an credential (keyHashPrefix)." };
@@ -931,10 +934,10 @@ export class CircuitBreakerManager {
     // entry points, so arm the debounced snapshot here.
     this.schedulePersist();
     let count = 0;
-    for (const pair of this.pairs.values()) {
-      if (pair.keyHashPrefix !== target.keyHashPrefix) continue;
-      if (target.providerId && pair.provider !== target.providerId) continue;
-      pair.breaker.reset();
+    for (const tuple of this.tuples.values()) {
+      if (tuple.keyHashPrefix !== target.keyHashPrefix) continue;
+      if (target.providerId && tuple.provider !== target.providerId) continue;
+      tuple.breaker.reset();
       count++;
     }
     return {
@@ -946,22 +949,30 @@ export class CircuitBreakerManager {
   }
 
   /**
-   * Manually trip a model's breaker into OPEN (admin takes it out of
-   * rotation from the console). Persisted with the rest of the breaker
-   * memory: the trip survives a restart until its
-   * cooldown expires; for a permanent exclusion still use the exclude
-   * lists (config.tiers).
+   * Manually trip a MODEL: every tuple breaker of the model goes OPEN (admin
+   * takes it out of rotation from the console). Persisted with the rest of
+   * the breaker memory: the trip survives a restart until its cooldown
+   * expires; for a permanent exclusion still use the exclude lists
+   * (config.tiers).
    */
-  public trip(modelId: string, options?: ManualTripOptions, provider = 'unknown'): TripResult {
+  public trip(
+    modelId: string,
+    options?: ManualTripOptions,
+    provider = 'unknown',
+    chainPrefixes?: readonly string[]
+  ): TripResult {
     this.schedulePersist();
-    const breaker = this.getOrCreateBreaker(modelId, provider);
+    const targets = this.modelTupleTargets(modelId, provider, chainPrefixes);
     const cooldownMs = this.manualCooldownMs(options);
-    breaker.trip(`Manual trip: ${this.manualReason(options)}`, 'MANUAL', cooldownMs, 'breaker.manual', this.manualTripParams(options));
+    for (const tuple of targets) {
+      tuple.lastScope = 'model';
+      tuple.breaker.trip(`Manual trip: ${this.manualReason(options)}`, 'MANUAL', cooldownMs, 'breaker.manual', this.manualTripParams(options));
+    }
     return {
-      tripped: true,
-      affected: 1,
+      tripped: targets.length > 0,
+      affected: targets.length,
       message:
-        `Circuit breaker for model '${modelId}' manually tripped (OPEN) ` +
+        `Circuit breaker for model '${modelId}' manually tripped (OPEN) on ${targets.length} credential(s) ` +
         `for ${CircuitBreakerManager.minutes(cooldownMs)}.`,
     };
   }
@@ -987,7 +998,7 @@ export class CircuitBreakerManager {
     return `~${Math.round(cooldownMs / 60000)} min`;
   }
 
-  /** Manual trip of a single (model, credential) pair. */
+  /** Manual trip of a single (model, credential) tuple. */
   public tripPair(
     modelId: string,
     keyHashPrefix: string,
@@ -995,9 +1006,10 @@ export class CircuitBreakerManager {
     provider?: string
   ): TripResult {
     this.schedulePersist();
-    const pair = this.getOrCreatePair(modelId, keyHashPrefix, provider);
+    const tuple = this.getOrCreateTuple(modelId, keyHashPrefix, provider);
     const cooldownMs = this.manualCooldownMs(options);
-    pair.breaker.trip(`Manual trip: ${this.manualReason(options)}`, 'MANUAL', cooldownMs, 'breaker.manual', this.manualTripParams(options));
+    tuple.lastScope = 'pair';
+    tuple.breaker.trip(`Manual trip: ${this.manualReason(options)}`, 'MANUAL', cooldownMs, 'breaker.manual', this.manualTripParams(options));
     return {
       tripped: true,
       affected: 1,
@@ -1021,30 +1033,30 @@ export class CircuitBreakerManager {
     const cooldownMs = this.manualCooldownMs(options);
     const reason = `Manual trip: ${this.manualReason(options)}`;
     // Without an explicit provider the credential's owner(s) are whatever the
-    // existing pair breakers say — a prefix is only ever seen through a provider.
+    // existing tuple breakers say — a prefix is only ever seen through a provider.
     const owners = new Set<string>();
     if (providerId) owners.add(providerId);
-    for (const pair of this.pairs.values()) {
-      if (pair.keyHashPrefix === keyHashPrefix) owners.add(pair.provider);
+    // When a provider IS given, expansion honors it too — another provider's
+    // tuples sharing the same prefix must not mislabel created tuples' owner.
+    for (const tuple of this.tuples.values()) {
+      if (tuple.keyHashPrefix === keyHashPrefix && (!providerId || tuple.provider === providerId)) {
+        owners.add(tuple.provider);
+      }
     }
 
     const targets = new Set<string>();
-    for (const pair of this.pairs.values()) {
-      if (pair.keyHashPrefix === keyHashPrefix && (!providerId || pair.provider === providerId)) {
-        targets.add(pair.modelId);
+    for (const tuple of this.tuples.values()) {
+      if (tuple.keyHashPrefix === keyHashPrefix && (!providerId || tuple.provider === providerId)) {
+        targets.add(tuple.modelId);
       }
     }
     for (const owner of owners) {
       for (const modelId of this.credentialModelIds(owner, keyHashPrefix)) targets.add(modelId);
     }
     for (const modelId of targets) {
-      this.getOrCreatePair(modelId, keyHashPrefix, providerId).breaker.trip(
-        reason,
-        'MANUAL',
-        cooldownMs,
-        'breaker.manual',
-        this.manualTripParams(options)
-      );
+      const tuple = this.getOrCreateTuple(modelId, keyHashPrefix, providerId);
+      tuple.lastScope = 'credential';
+      tuple.breaker.trip(reason, 'MANUAL', cooldownMs, 'breaker.manual', this.manualTripParams(options));
     }
     const label = CircuitBreakerManager.minutes(cooldownMs);
     return {
@@ -1067,7 +1079,7 @@ export class CircuitBreakerManager {
       if (!target.modelId) {
         return { tripped: false, affected: 0, message: "scope 'model' requires a model." };
       }
-      return this.trip(target.modelId, options, target.providerId ?? 'unknown');
+      return this.trip(target.modelId, options, target.providerId ?? 'unknown', target.chainPrefixes);
     }
     if (scope === 'pair') {
       if (!target.modelId || !target.keyHashPrefix) {
@@ -1081,37 +1093,71 @@ export class CircuitBreakerManager {
     return this.tripCredential(target.keyHashPrefix, options, target.providerId);
   }
 
+  /**
+   * DERIVED model view: the worst-state fold over the model's tuple breakers
+   * (OPEN > HALF_OPEN > CLOSED). The model level has no state machine of its
+   * own — this fold exists so existing summary consumers (health endpoint,
+   * console matrix) keep one row per model. A model with no tuples yet folds
+   * to a clean CLOSED snapshot.
+   */
+  private foldedModelSnapshot(modelId: string): CircuitBreakerSnapshot {
+    let worst: { snap: CircuitBreakerSnapshot; scope: TripScope | undefined } | undefined;
+    for (const tuple of this.tuples.values()) {
+      if (tuple.modelId !== modelId) continue;
+      const snap = tuple.breaker.getSnapshot();
+      if (!worst || STATE_SEVERITY[snap.state] > STATE_SEVERITY[worst.snap.state]) {
+        worst = { snap, scope: tuple.lastScope };
+      } else if (snap.state === worst.snap.state && snap.consecutiveFailures > worst.snap.consecutiveFailures) {
+        worst = { snap, scope: tuple.lastScope };
+      }
+    }
+    const base: CircuitBreakerSnapshot = {
+      modelId,
+      provider: this.modelProviders.get(modelId) ?? 'unknown',
+      tier: this.modelTiers.get(modelId),
+      state: 'CLOSED',
+      consecutiveFailures: 0,
+      totalRequests: 0,
+      totalSuccesses: 0,
+      totalFailures: 0,
+      remainingCooldownMs: 0,
+      currentCooldownMs: 0,
+      halfOpenProbes: 0,
+      halfOpenSuccesses: 0,
+    };
+    if (!worst) return base;
+    return { ...base, ...worst.snap, modelId, scope: worst.scope };
+  }
+
   public getSnapshot(modelId: string): CircuitBreakerSnapshot | undefined {
-    return this.breakers.get(modelId)?.getSnapshot();
+    if (!this.modelProviders.has(modelId)) return undefined;
+    return this.foldedModelSnapshot(modelId);
   }
 
   public getAllSnapshots(): CircuitBreakerSnapshot[] {
-    return Array.from(this.breakers.values()).map(b => b.getSnapshot());
+    return Array.from(this.modelProviders.keys(), (modelId) => this.foldedModelSnapshot(modelId));
   }
 
   /**
-   * Model AND pair breaker snapshots — the view a scope-aware console/prober
-   * reads. Pair snapshots carry `keyHashPrefix`; model snapshots never do, so
-   * readers can filter with `snapshots.filter(s => !s.keyHashPrefix)`.
+   * Tuple-breaker snapshots — the view a scope-aware console/prober reads.
+   * Every snapshot carries `keyHashPrefix` (the chain-less sentinel surfaces
+   * as `''`). Model-level rows are the derived fold in `getAllSnapshots()`.
    */
   public snapshotsWithPairs(): CircuitBreakerSnapshot[] {
-    const out: CircuitBreakerSnapshot[] = [];
-    for (const breaker of this.breakers.values()) out.push(breaker.getSnapshot());
-    for (const pair of this.pairs.values()) {
-      out.push({ ...pair.breaker.getSnapshot(), keyHashPrefix: pair.keyHashPrefix });
-    }
-    return out;
+    return Array.from(this.tuples.values(), (tuple) => ({
+      ...tuple.breaker.getSnapshot(),
+      keyHashPrefix: tuple.keyHashPrefix,
+      scope: tuple.lastScope,
+    }));
   }
 
   /**
-   * Pair-only summary (every snapshot here carries `keyHashPrefix`). Additive
-   * companion to `getSummary()` — the model-only contract pinned by
-   * resilience-pairs tests stays untouched; the console status payload ships
-   * this as `circuitBreakers.pairs` so the guardrails view can render the
-   * credential-scoped layer without changing any existing consumer's numbers.
+   * Tuple-only summary (every snapshot here carries `keyHashPrefix`). The
+   * console status payload ships this as `circuitBreakers.pairs` so the
+   * guardrails view renders the credential-scoped layer.
    */
   public getPairSummary(): CircuitBreakerSummary {
-    const snapshots = this.snapshotsWithPairs().filter(s => s.keyHashPrefix !== undefined);
+    const snapshots = this.snapshotsWithPairs();
     return {
       object: 'circuit_breaker_summary',
       total: snapshots.length,

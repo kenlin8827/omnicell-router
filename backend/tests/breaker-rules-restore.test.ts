@@ -115,47 +115,43 @@ const RULE_OFF_CASES: Array<[BreakerReasonCode, BreakerRulesConfig]> = [
 
 describe('restore drops OPEN records of disabled rules (invariant 2)', () => {
   it.each(RULE_OFF_CASES)('OPEN %s with its rule disabled: skipped, gate stays open', (code, rules) => {
-    const { manager } = bootedWith(`drop-${code}`, file([rec({ reasonCode: code })]), rules);
-    expect(manager.restoreState()).toEqual({ models: 0, pairs: 0 });
-    // registerModel created the breaker eagerly, but it stays PRISTINE — the
-    // OPEN record was skipped, not applied (invariant 2).
-    const snap = manager.getSnapshot(X);
-    expect(snap?.state).toBe('CLOSED');
-    expect(snap?.totalRequests).toBe(0);
-    expect(snap?.reasonCode).toBeUndefined();
-    expect(manager.canExecute(X).allowed).toBe(true);
+    const { manager } = bootedWith(`drop-${code}`, file([], [rec({ keyHashPrefix: 'K1', reasonCode: code })]), rules);
+    expect(manager.restoreState()).toEqual({ pairs: 0 });
+    // The tuple is never materialized: the OPEN record was skipped, not
+    // applied (invariant 2).
+    expect(manager.getPairBreaker(X, 'K1')).toBeUndefined();
+    expect(manager.canExecuteScoped(X, 'K1').allowed).toBe(true);
   });
 
   it('the same records DO restore when the rule is enabled (control)', () => {
     for (const [code] of RULE_OFF_CASES) {
-      const { manager } = bootedWith(`keep-${code}`, file([rec({ reasonCode: code })]));
-      expect(manager.restoreState()).toEqual({ models: 1, pairs: 0 });
-      expect(manager.canExecute(X).allowed).toBe(false);
+      const { manager } = bootedWith(`keep-${code}`, file([], [rec({ keyHashPrefix: 'K1', reasonCode: code })]));
+      expect(manager.restoreState()).toEqual({ pairs: 1 });
+      expect(manager.canExecuteScoped(X, 'K1').allowed).toBe(false);
     }
   });
 
-  it('pair records of a disabled rule are dropped too', () => {
-    const { manager } = bootedWith(
-      'drop-pair',
-      file([], [rec({ keyHashPrefix: 'K1', reasonCode: 'breaker.quota' })]),
-      { trip: { quota: { enabled: false } } },
-    );
-    expect(manager.restoreState()).toEqual({ models: 0, pairs: 0 });
-    expect(manager.getPairBreaker(X, 'K1')).toBeUndefined();
-    expect(manager.isPairOut(X, 'K1')).toBe(false);
+  it('legacy model-level records are IGNORED entirely — the model level is a derived view', () => {
+    // A pre-tuple file carrying a models[] ledger: restoreState never applies
+    // it, whatever the records say and whichever rules are enabled.
+    const { manager } = bootedWith('ignore-models', file([rec({ reasonCode: 'breaker.quota' })]));
+    expect(manager.restoreState()).toEqual({ pairs: 0 });
+    expect(manager.getSnapshot(X)?.state).toBe('CLOSED'); // no tuple was ever created from the model record
+    expect(manager.canExecute(X).allowed).toBe(true);
   });
 
   it('dropping one record does not drop the rest of the ledger', () => {
     const { manager } = bootedWith(
       'mixed',
-      file([rec({ modelId: X, reasonCode: 'breaker.quota' }), rec({ modelId: 'p/z', reasonCode: 'breaker.manual' })],
-      ),
+      file([], [
+        rec({ keyHashPrefix: 'K1', reasonCode: 'breaker.quota' }),
+        rec({ keyHashPrefix: 'K2', reasonCode: 'breaker.manual' }),
+      ]),
       { trip: { quota: { enabled: false } } },
     );
-    manager.registerModel(model('p/z'));
-    expect(manager.restoreState()).toEqual({ models: 1, pairs: 0 });
-    expect(manager.getSnapshot(X)?.state).toBe('CLOSED'); // dropped: pristine
-    expect(manager.getSnapshot('p/z')?.state).toBe('OPEN'); // manual: kept
+    expect(manager.restoreState()).toEqual({ pairs: 1 });
+    expect(manager.getPairBreaker(X, 'K1')).toBeUndefined(); // dropped: pristine
+    expect(manager.getPairBreaker(X, 'K2')?.getState()).toBe('OPEN'); // manual: kept
   });
 });
 
@@ -163,12 +159,12 @@ describe('restore keeps what reconciliation must not touch', () => {
   it('HALF_OPEN records survive their reasonCode\u2019s rule being off (revived = OPEN only)', () => {
     const { manager } = bootedWith(
       'halfopen',
-      file([rec({ state: 'HALF_OPEN', reasonCode: 'breaker.quota', cooldownUntil: 900 })]),
+      file([], [rec({ keyHashPrefix: 'K1', state: 'HALF_OPEN', reasonCode: 'breaker.quota', cooldownUntil: 900 })]),
       { trip: { quota: { enabled: false } } },
     );
-    expect(manager.restoreState()).toEqual({ models: 1, pairs: 0 });
-    expect(manager.getSnapshot(X)?.state).toBe('HALF_OPEN');
-    expect(manager.canExecute(X).allowed).toBe(true); // re-armed probe slot
+    expect(manager.restoreState()).toEqual({ pairs: 1 });
+    expect(manager.getPairBreaker(X, 'K1')?.getState()).toBe('HALF_OPEN');
+    expect(manager.canExecuteScoped(X, 'K1').allowed).toBe(true); // re-armed probe slot
   });
 
   it('manual OPEN records survive EVERY trip switch off (operator intent, not a rule)', () => {
@@ -181,30 +177,36 @@ describe('restore keeps what reconciliation must not touch', () => {
         failureRate: { enabled: false },
       },
     };
-    const { manager } = bootedWith('manual', file([rec({ reasonCode: 'breaker.manual', category: 'MANUAL' })]), allOff);
-    expect(manager.restoreState()).toEqual({ models: 1, pairs: 0 });
-    const snap = manager.getSnapshot(X);
+    const { manager } = bootedWith(
+      'manual',
+      file([], [rec({ keyHashPrefix: 'K1', reasonCode: 'breaker.manual', category: 'MANUAL' })]),
+      allOff,
+    );
+    expect(manager.restoreState()).toEqual({ pairs: 1 });
+    const snap = manager.getPairBreaker(X, 'K1')?.getSnapshot();
     expect(snap?.category).toBe('MANUAL');
     expect(snap?.state).toBe('OPEN');
-    expect(manager.canExecute(X).allowed).toBe(false);
+    expect(manager.canExecuteScoped(X, 'K1').allowed).toBe(false);
   });
 
   it('canary-wrapped OPEN records are not reconciled (canary is not a rule\u2019s direct code)', () => {
     const { manager } = bootedWith(
       'canary',
-      file([rec({ reasonCode: 'breaker.canary', category: 'SERVICE_UNAVAILABLE' })]),
+      file([], [rec({ keyHashPrefix: 'K1', reasonCode: 'breaker.canary', category: 'SERVICE_UNAVAILABLE' })]),
       { trip: { consecutiveFailures: { enabled: false } } },
     );
-    expect(manager.restoreState()).toEqual({ models: 1, pairs: 0 });
-    expect(manager.getSnapshot(X)?.reasonCode).toBe('breaker.canary');
+    expect(manager.restoreState()).toEqual({ pairs: 1 });
+    expect(manager.getPairBreaker(X, 'K1')?.getSnapshot().reasonCode).toBe('breaker.canary');
   });
 
   it('records without a reasonCode survive any toggle (legacy ledger control)', () => {
-    const { manager } = bootedWith('noreason', file([rec({ reasonCode: undefined, reason: 'pre-code trip' })]), {
-      trip: { quota: { enabled: false } },
-    });
-    expect(manager.restoreState()).toEqual({ models: 1, pairs: 0 });
-    expect(manager.getSnapshot(X)?.state).toBe('OPEN');
+    const { manager } = bootedWith(
+      'noreason',
+      file([], [rec({ keyHashPrefix: 'K1', reasonCode: undefined, reason: 'pre-code trip' })]),
+      { trip: { quota: { enabled: false } } },
+    );
+    expect(manager.restoreState()).toEqual({ pairs: 1 });
+    expect(manager.getPairBreaker(X, 'K1')?.getState()).toBe('OPEN');
   });
 });
 
@@ -220,23 +222,22 @@ describe('legacy record files without the new fields sanitize to 0/undefined', (
       store.filePath,
       JSON.stringify({
         version: 1,
-        savedAt: 1,
-        models: [
+        models: [],
+        pairs: [
           {
-            modelId: X, provider: 'p', state: 'OPEN',
+            modelId: X, provider: 'p', keyHashPrefix: 'K1', state: 'OPEN',
             consecutiveFailures: 4, totalRequests: 9, totalSuccesses: 5, totalFailures: 4,
             lastFailureTime: 5, lastSuccessTime: 6, trippedAt: 7,
             cooldownUntil: 9_999_999_999, currentCooldownMs: 60_000, halfOpenProbes: 0,
             reasonCode: 'breaker.bogus', reason: 'old trip',
           },
         ],
-        pairs: [],
       }),
       'utf8',
     );
 
     const loaded = store.load()!;
-    const loadedRec = loaded.models[0]!;
+    const loadedRec = loaded.pairs[0]!;
     expect(loadedRec.halfOpenSuccesses).toBe(0); // sanitized to zero, never undefined-into-the-machine
     expect(loadedRec.halfOpenEnteredAt).toBe(0);
     expect(loadedRec.outcomeWindow).toEqual([]);
@@ -245,12 +246,12 @@ describe('legacy record files without the new fields sanitize to 0/undefined', (
     const manager = new CircuitBreakerManager(BASE, clock.now, new CredentialStateStore({ paths, now: clock.now }));
     manager.registerModel(model(X));
     manager.attachStateStore(store);
-    expect(manager.restoreState()).toEqual({ models: 1, pairs: 0 });
-    const snap = manager.getSnapshot(X)!;
+    expect(manager.restoreState()).toEqual({ pairs: 1 });
+    const snap = manager.getPairBreaker(X, 'K1')!.getSnapshot();
     expect(snap.state).toBe('OPEN');
     expect(snap.consecutiveFailures).toBe(4); // old accumulation intact
     expect(snap.halfOpenSuccesses).toBe(0);
-    expect(snap.halfOpenEnteredAt).toBeUndefined();
+    expect(snap.halfOpenEnteredAt).toBeUndefined(); // zero renders as omitted in the snapshot
     expect(snap.reasonCode).toBeUndefined(); // pre-code trip renders via the verbatim reason fallback
     // reasonCode-less records are NOT reconciliation targets: quota-off would still keep this one.
   });
@@ -260,21 +261,20 @@ describe('legacy record files without the new fields sanitize to 0/undefined', (
       'legacy-halfopen',
       {
         version: 1,
-        savedAt: 1,
-        models: [
+        models: [],
+        pairs: [
           {
-            modelId: X, provider: 'p', state: 'HALF_OPEN',
+            modelId: X, provider: 'p', keyHashPrefix: 'K1', state: 'HALF_OPEN',
             consecutiveFailures: 2, totalRequests: 3, totalSuccesses: 0, totalFailures: 3,
             lastFailureTime: 0, lastSuccessTime: 0, trippedAt: 0,
             cooldownUntil: 900, currentCooldownMs: 1000, halfOpenProbes: 1,
           } as unknown as BreakerRecord,
         ],
-        pairs: [],
       },
       { recovery: { halfOpen: { maxProbes: 2, successThreshold: 2 } } },
     );
-    expect(manager.restoreState()).toEqual({ models: 1, pairs: 0 });
-    const snap = manager.getSnapshot(X)!;
+    expect(manager.restoreState()).toEqual({ pairs: 1 });
+    const snap = manager.getPairBreaker(X, 'K1')!.getSnapshot();
     expect(snap.state).toBe('HALF_OPEN');
     expect(snap.halfOpenProbes).toBe(0); // today's quota refresh
     expect(snap.halfOpenSuccesses).toBe(0); // new counter refreshed too (rule #10)

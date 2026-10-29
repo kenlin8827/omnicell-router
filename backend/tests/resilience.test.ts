@@ -442,7 +442,7 @@ describe('Resilience: Transparent Multi-Model Failover & Session Self-Healing', 
 
     // Check circuit breaker status: primary-plus must now be in OPEN state!
     const cbManager = registry.getCircuitBreakerManager();
-    const primaryBreaker = cbManager.getBreaker('primary-plus');
+    const primaryBreaker = cbManager.getPairBreaker('primary-plus', '');
     assert.equal(primaryBreaker?.getState(), 'OPEN');
     assert.equal(primaryBreaker?.getSnapshot().category, 'QUOTA_EXHAUSTED');
 
@@ -474,8 +474,19 @@ describe('Resilience: Transparent Multi-Model Failover & Session Self-Healing', 
     const sessionBefore = orchestrator.getSessionManager().getSession(sessionId);
     assert.equal(sessionBefore?.pinnedModel, 'primary-plus');
 
-    // Now primary-plus suffers an outage / 402
-    registry.getCircuitBreakerManager().getBreaker('primary-plus')?.trip('5-hour outage', 'SERVICE_UNAVAILABLE', 5 * 3600 * 1000);
+    // Give the mock provider a credential chain so the tuple matrix — and the
+    // modelAvailability aggregate the pin eviction reads — has prefix space.
+    registry.refreshCredentialChain('mock', [
+      { keyHashPrefix: 'k1', key: 'sk-k1' },
+      { keyHashPrefix: 'k2', key: 'sk-k2' },
+    ]);
+    // Manually take BOTH tuples of the pinned model out: a single pair trip
+    // leaves the model served by its other credential, so the pin only
+    // evicts once every credential of the model is out of service.
+    const breakerMgr = registry.getCircuitBreakerManager();
+    for (const prefix of ['k1', 'k2']) {
+      breakerMgr.tripPair('primary-plus', prefix, { reason: '5-hour outage', cooldownMs: 5 * 3600 * 1000 }, 'mock');
+    }
 
     // Turn 2: Follow-up in same session
     const req2: any = {
@@ -535,7 +546,7 @@ describe('Resilience: REST Observability & Administrative API Endpoints', () => 
     assert.equal(jsonHealthy.circuitBreakers.tripped, 0);
 
     // Trip the model
-    registry.getCircuitBreakerManager().getBreaker('plus-1')?.trip('Test 402', 'QUOTA_EXHAUSTED', 3600000);
+    registry.getCircuitBreakerManager().trip('plus-1', { reason: 'Test 402', cooldownMs: 3600000 });
 
     // Should now report degraded/outage
     const resTripped = await app.inject({ method: 'GET', url: '/health' });
@@ -549,14 +560,14 @@ describe('Resilience: REST Observability & Administrative API Endpoints', () => 
     const mgr = registry.getCircuitBreakerManager();
 
     mgr.trip('plus-1', { reason: 'provider billing issue' });
-    const noted = mgr.getBreaker('plus-1')?.getSnapshot();
+    const noted = mgr.getPairBreaker('plus-1', '')?.getSnapshot();
     assert.equal(noted?.reasonCode, 'breaker.manual');
     assert.equal(noted?.reasonParams?.detail, 'provider billing issue');
 
     // No note -> empty detail so the console renders its "via console" label.
     mgr.reset('plus-1');
     mgr.trip('plus-1', {});
-    const bare = mgr.getBreaker('plus-1')?.getSnapshot();
+    const bare = mgr.getPairBreaker('plus-1', '')?.getSnapshot();
     assert.equal(bare?.reasonCode, 'breaker.manual');
     assert.equal(bare?.reasonParams?.detail, '');
   });
@@ -588,7 +599,17 @@ describe('Resilience: REST Observability & Administrative API Endpoints', () => 
 
   it('GET /api/admin/health/circuit-breakers should expose detailed snapshot metrics', async () => {
     const { app, registry } = createServer(testConfig, true);
-    registry.getCircuitBreakerManager().getBreaker('plus-1')?.trip('Quota exhausted 402', 'QUOTA_EXHAUSTED', 12 * 3600 * 1000);
+    // A manual trip is always breaker.manual; a hard 402 diagnosis is what
+    // produces a QUOTA_EXHAUSTED snapshot for the metrics surface.
+    registry.getCircuitBreakerManager().recordFailureScoped('plus-1', {
+      category: 'QUOTA_EXHAUSTED',
+      statusCode: 402,
+      isRetriable: false,
+      isInPlaceRetriable: false,
+      shouldTripBreaker: true,
+      hardTrip: true,
+      reason: 'Quota exhausted 402',
+    }, 'mock');
 
     const res = await app.inject({ method: 'GET', url: '/api/admin/health/circuit-breakers' });
     assert.equal(res.statusCode, 200);
@@ -602,7 +623,7 @@ describe('Resilience: REST Observability & Administrative API Endpoints', () => 
 
   it('POST /api/admin/health/circuit-breakers/reset should reset tripped breakers to CLOSED', async () => {
     const { app, registry } = createServer(testConfig, true);
-    registry.getCircuitBreakerManager().getBreaker('plus-1')?.trip('Test trip', 'SERVICE_UNAVAILABLE', 3600000);
+    registry.getCircuitBreakerManager().trip('plus-1', { reason: 'Test trip', cooldownMs: 3600000 });
 
     // Call reset endpoint
     const resReset = await app.inject({
@@ -615,7 +636,7 @@ describe('Resilience: REST Observability & Administrative API Endpoints', () => 
     assert.equal(resetJson.resetCount, 1);
 
     // Verify model is back to CLOSED
-    assert.equal(registry.getCircuitBreakerManager().getBreaker('plus-1')?.getState(), 'CLOSED');
+    assert.equal(registry.getCircuitBreakerManager().getPairBreaker('plus-1', '')?.getState(), 'CLOSED');
   });
 
   it('POST /v1/chat/completions should attach failover and circuit breaker response headers', async () => {

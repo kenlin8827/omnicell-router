@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Link, useOutletContext } from 'react-router-dom';
+import { isTakenDown } from '../lib/guardrails-matrix';
 import { ShieldAlert, RefreshCw, RotateCcw, Ban, Zap, Loader2, AlertTriangle } from 'lucide-react';
 import { api, opencodeApi, type GatewayStatusResponse, type BreakerInfo, type BreakerTripScope, type CredentialHealth } from '../lib/api';
 import { useModelTest, type ModelTestTarget } from '../lib/useModelTest';
@@ -16,7 +17,7 @@ import { FONT_MONO } from '../lib/fonts';
 const BREAKER_PAGE_SIZE = 20;
 const BREAKER_PAGE_SIZES = [10, 20, 50, 100, 200];
 
-type StateFilter = 'ALL' | 'OPEN' | 'HALF_OPEN' | 'CLOSED';
+type StateFilter = 'ALL' | 'OPEN' | 'HALF_OPEN' | 'CLOSED' | 'TAKEDOWN';
 
 // Tripped first, half-open probes next, healthy last; longer remaining cooldown first within a state
 const STATE_ORDER: Record<BreakerInfo['state'], number> = { OPEN: 0, HALF_OPEN: 1, CLOSED: 2 };
@@ -39,7 +40,10 @@ const SCOPE_LABEL_KEY: Record<BreakerTripScope, string> = {
 };
 
 export const GuardrailsPage: React.FC = () => {
-  const { status } = useOutletContext<{ status: GatewayStatusResponse | null }>();
+  const { status, refreshStatus } = useOutletContext<{
+    status: GatewayStatusResponse | null;
+    refreshStatus?: () => Promise<void>;
+  }>();
   const { t } = useI18n();
   const toast = useToast();
   const confirmDialog = useConfirm();
@@ -72,13 +76,14 @@ export const GuardrailsPage: React.FC = () => {
     [t]
   );
 
-  const loadStoreCredentials = async () => {
-    if (storeCredentials !== null) return;
+  const loadStoreCredentials = async (force = false) => {
+    if (!force && storeCredentials !== null) return;
     try {
       const res = await opencodeApi.getCredentialStore();
       setStoreCredentials(res.store.credentials.flatMap((a) => a.credentials ?? []));
     } catch {
-      setStoreCredentials([]);
+      // Never blank a good roster on a transient error — keep the last load.
+      if (storeCredentials === null) setStoreCredentials([]);
     }
   };
 
@@ -118,17 +123,6 @@ export const GuardrailsPage: React.FC = () => {
   const pairHalf = status?.circuitBreakers?.pairs?.halfOpen || 0;
   const pairTotal = status?.circuitBreakers?.pairs?.total || 0;
 
-  // OPEN pair count per model — the "N pairs OPEN" corner badge and the
-  // single-point guard (model still serving on exactly one credential).
-  const openPairsByModel = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const p of pairBreakers) {
-      if (p.state !== 'OPEN') continue;
-      m.set(p.modelId, (m.get(p.modelId) ?? 0) + 1);
-    }
-    return m;
-  }, [pairBreakers]);
-
   // The full matrix: models × credentials (join/fold semantics live in the
   // pure guardrails-matrix module, pinned by scripts/check-guardrails-matrix).
   const allItems = useMemo<PairCard[]>(
@@ -142,6 +136,29 @@ export const GuardrailsPage: React.FC = () => {
       ),
     [modelBreakers, pairBreakers, storeCredentials, status, t]
   );
+
+  // KPI counters aligned with the tabs: derived from the CARDS via
+  // effectiveState (tuple truth + takedowns), never from the two payload
+  // layers added together (the model fold IS the tuples' worst state now).
+  const openCards = allItems.filter((c) => !isTakenDown(c) && effectiveState(c) === 'OPEN').length;
+  const halfOpenCards = allItems.filter((c) => !isTakenDown(c) && effectiveState(c) === 'HALF_OPEN').length;
+
+  // ROUTABLE pair count per model: tuples that selection can actually use —
+  // neither tripped (state==='OPEN') nor operator-taken-down. HALF_OPEN still
+  // serves probe traffic, so it counts as routable. A card with NO tuple
+  // record (`snap === undefined`) has never failed and IS routable. This is
+  // the truth behind the 单点风险 badge (chainLen - open - takedown), NOT the
+  // raw OPEN count: a disabled sibling makes a healthy pair a single point
+  // even with zero breakers tripped.
+  const routablePairsByModel = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const c of allItems) {
+      if (c.synthetic) continue;
+      if (!isTakenDown(c) && c.snap?.state !== 'OPEN') m.set(c.modelId, (m.get(c.modelId) ?? 0) + 1);
+    }
+    return m;
+  }, [allItems]);
+
 
   // Drill-down selectors: distinct providers / model ids present in the grid.
   // modelId is globally unique (provider-prefixed), so meta shows card count
@@ -214,7 +231,15 @@ export const GuardrailsPage: React.FC = () => {
         if (providerFilter !== '' && c.provider !== providerFilter) return false;
         if (modelIdFilter !== '' && c.modelId !== modelIdFilter) return false;
         if (credentialFilter !== '' && c.prefix !== credentialFilter) return false;
-        if (stateFilter !== 'ALL' && effectiveState(c) !== stateFilter) return false;
+        // A takedown card lives ONLY in the 已停用 tab (+全部) — never double
+        // listed as 熔断中/健康, which are pure breaker states.
+        if (stateFilter === 'TAKEDOWN') {
+          if (!isTakenDown(c)) return false;
+        } else if (isTakenDown(c)) {
+          return false;
+        } else if (stateFilter !== 'ALL' && effectiveState(c) !== stateFilter) {
+          return false;
+        }
         return true;
       })
       .sort((a, b) => {
@@ -248,6 +273,7 @@ export const GuardrailsPage: React.FC = () => {
     try {
       await api.resetBreakers();
       toast.success(t('guardrails.resetSuccess'));
+      void refreshStatus?.(); // immediate card refresh — don't wait for the 3s poll
     } catch (err: any) {
       toast.error('Failed: ' + err.message);
     } finally {
@@ -261,6 +287,8 @@ export const GuardrailsPage: React.FC = () => {
     try {
       await api.resetBreakers(modelId);
       toast.success(t('guardrails.resetOneSuccess', { model: modelId }));
+      loadStoreCredentials(true); // takedown badges / roster refresh
+      void refreshStatus?.();
     } catch (err: any) {
       toast.error(t('guardrails.resetOneFailed') + err.message);
     } finally {
@@ -282,7 +310,9 @@ export const GuardrailsPage: React.FC = () => {
         const res = await api.tripBreakersScoped(scope, { model: c.modelId, credential: c.prefix, ...opts });
         toast.success(t('guardrails.tripScopeSuccess', { scope: t(SCOPE_LABEL_KEY[scope]), n: res.affected ?? 0 }));
       }
+      loadStoreCredentials(true); // takedown badges / roster refresh
       closeTripPanel();
+      void refreshStatus?.(); // immediate card refresh — don't wait for the 3s poll
     } catch (err: any) {
       toast.error(t('guardrails.tripFailed') + err.message);
     } finally {
@@ -317,8 +347,11 @@ export const GuardrailsPage: React.FC = () => {
     try {
       const res = await api.resetBreakersScoped(scope, { model: c.modelId, credential: c.prefix });
       const n = res.resetCount ?? 0;
-      if (n > 0) toast.success(t('guardrails.resetScopeSuccess', { n }));
-      else toast.info(t('guardrails.resetScopeNone'));
+      if (n > 0) {
+        toast.success(t('guardrails.resetScopeSuccess', { n }));
+        loadStoreCredentials(true); // takedown badges / roster refresh
+      } else toast.info(t('guardrails.resetScopeNone'));
+      void refreshStatus?.();
     } catch (err: any) {
       toast.error(t('guardrails.resetOneFailed') + err.message);
     } finally {
@@ -327,21 +360,32 @@ export const GuardrailsPage: React.FC = () => {
   };
 
   /**
-   * Recover a pair card. A model-mirror card's truth IS the model breaker
-   * (single-credential chain), so its recover clears that; a pair-sourced
-   * card resets exactly its own (model × credential) breaker.
+   * Recover a card AT THE SCOPE IT WAS TRIPPED WITH (symmetric with the trip):
+   * the tuple's recorded `scope` label picks the undo —
+   *   'model'      -> reset every tuple of the model (恢复模型级熔断)
+   *   'credential' -> reset every tuple of (provider, credential) (恢复凭证熔断)
+   *   'pair'       -> reset exactly this (model × credential) tuple
+   * A model-mirror card (chain-less sentinel) resets the model's tuples.
    */
   const handleRecoverPair = async (c: PairCard) => {
     setResettingPair(c.key);
+    const scope = c.snap?.scope;
     try {
-      if (c.snapSource === 'model-mirror') {
+      if (c.snapSource === 'model-mirror' || scope === 'model') {
         await api.resetBreakers(c.modelId);
-        toast.success(t('guardrails.resetOneSuccess', { model: c.modelId }));
+        toast.success(t('guardrails.resetModelScopeSuccess', { model: c.modelId }));
+      } else if (scope === 'credential') {
+        // Aim at the SNAP's own tuple key — a sentinel-backed single-credential
+        // card carries the store prefix, but the trip lives on the '' tuple.
+        const res = await api.resetBreakersScoped('credential', { model: c.modelId, credential: c.snapPrefix ?? c.prefix });
+        toast.success(t('guardrails.resetScopeSuccess', { n: res.resetCount ?? 0 }));
       } else {
-        const res = await api.resetBreakersScoped('pair', { model: c.modelId, credential: c.prefix });
+        const res = await api.resetBreakersScoped('pair', { model: c.modelId, credential: c.snapPrefix ?? c.prefix });
         if ((res.resetCount ?? 0) > 0) toast.success(t('guardrails.resetPairSuccess', { model: c.modelId, credential: c.prefix }));
         else toast.info(t('guardrails.resetScopeNone'));
       }
+      loadStoreCredentials(true); // takedown badges / roster refresh
+      void refreshStatus?.();
     } catch (err: any) {
       toast.error(t('guardrails.resetOneFailed') + err.message);
     } finally {
@@ -390,9 +434,11 @@ export const GuardrailsPage: React.FC = () => {
 
   const stateFilters: { key: StateFilter; label: string }[] = [
     { key: 'ALL', label: `${t('guardrails.stateAll')} (${allItems.length})` },
-    { key: 'OPEN', label: `${t('guardrails.stateTripped')} (${allItems.filter((c) => effectiveState(c) === 'OPEN').length})` },
-    { key: 'HALF_OPEN', label: `${t('guardrails.stateHalfOpen')} (${allItems.filter((c) => effectiveState(c) === 'HALF_OPEN').length})` },
-    { key: 'CLOSED', label: t('guardrails.stateHealthy') },
+    { key: 'OPEN', label: `${t('guardrails.stateTripped')} (${allItems.filter((c) => !isTakenDown(c) && effectiveState(c) === 'OPEN').length})` },
+    { key: 'HALF_OPEN', label: `${t('guardrails.stateHalfOpen')} (${allItems.filter((c) => !isTakenDown(c) && effectiveState(c) === 'HALF_OPEN').length})` },
+    { key: 'CLOSED', label: `${t('guardrails.stateHealthy')} (${allItems.filter((c) => !isTakenDown(c) && effectiveState(c) === 'CLOSED').length})` },
+    // Takedowns are a management dimension, not a breaker state — their own tab.
+    { key: 'TAKEDOWN', label: `${t('op.credentialDisabled')} (${allItems.filter(isTakenDown).length})` },
   ];
 
   // Key-hash chip follows the outline-badge convention (index.css .badge-*):
@@ -425,9 +471,14 @@ export const GuardrailsPage: React.FC = () => {
     const testing = pTest && testingIds.has(pTest.key);
     const pairTripped = !!c.snap && c.snap.state !== 'CLOSED';
     const modelTripped = !!c.modelSnap && c.modelSnap.state !== 'CLOSED';
-    const openPairs = openPairsByModel.get(c.modelId) ?? 0;
-    const singlePoint = openPairs > 0 && c.chainLen >= 2 && c.chainLen - openPairs <= 1;
-    const statSnap = c.snap ?? c.modelSnap;
+    // Routable-pair truth (see routablePairsByModel): OPEN **and** takedown
+    // both remove a pair from the pool. Badge fires exactly when the model is
+    // one failure/takedown away from total outage.
+    const routable = routablePairsByModel.get(c.modelId) ?? 0;
+    const singlePoint = c.chainLen >= 2 && routable === 1;
+    // The card's OWN tuple is the only truth: a sibling credential's trip or
+    // the derived model fold never leaks counts/cooldowns onto this card.
+    const statSnap = c.snap;
     const cooldown = effectiveCooldown(c);
     return (
       <div
@@ -447,11 +498,6 @@ export const GuardrailsPage: React.FC = () => {
             <span style={{ fontWeight: 600, fontSize: '13px', fontFamily: FONT_MONO, overflowWrap: 'anywhere' }}>
               {c.modelId}
             </span>
-            {singlePoint && (
-              <span className="badge badge-warning" style={{ whiteSpace: 'nowrap' }}>
-                {t('guardrails.singlePoint')}
-              </span>
-            )}
             {res && (
               <span
                 style={{ fontFamily: FONT_MONO, fontSize: '10px', whiteSpace: 'nowrap', color: res.ok ? 'var(--accent-emerald)' : 'var(--accent-rose)' }}
@@ -462,17 +508,34 @@ export const GuardrailsPage: React.FC = () => {
             )}
           </div>
           <span
-            className={`badge ${isClosed ? 'badge-success' : isOpen ? 'badge-danger' : 'badge-warning'}`}
+            className={`badge ${c.disabled || c.suspect ? 'badge-danger' : isClosed ? 'badge-success' : isOpen ? 'badge-danger' : 'badge-warning'}`}
             style={{ whiteSpace: 'nowrap', flexShrink: 0 }}
-            title={noRecord ? t('guardrails.noPairRecords') : undefined}
+            title={
+              c.disabled
+                ? c.disabledReason || t('op.credentialDisabledTip')
+                : c.suspect
+                  ? t('guardrails.credentialSuspectTip')
+                  : noRecord
+                    ? t('guardrails.noPairRecords')
+                    : undefined
+            }
           >
-            {stateLabel(state)}
+            {c.disabled ? t('op.credentialDisabled') : c.suspect ? t('guardrails.credentialSuspectBadge') : stateLabel(state)}
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-dim)', flexWrap: 'wrap' }}>
           <span style={{ fontWeight: 600, color: 'var(--text)' }} title={c.unmatched ? t('guardrails.unmatchedHint') : undefined}>
             {c.label}
           </span>
+          {singlePoint && c.snap?.state !== 'OPEN' && (
+            // Model-level heads-up: after excluding THIS card's own tuple, the
+            // model is one failure away from total outage. Hidden only when the
+            // card's OWN tuple is OPEN (risk materialized; HALF_OPEN still
+            // routes and is exactly the danger window the badge exists for).
+            <span className="badge badge-warning" style={{ fontSize: '10px', whiteSpace: 'nowrap' }} title={t('guardrails.singlePointTip')}>
+              {t('guardrails.singlePoint')}
+            </span>
+          )}
           {c.synthetic ? (
             c.maskedKey ? <span style={hashBadgeStyle}>{c.maskedKey}</span> : null
           ) : (
@@ -496,12 +559,10 @@ export const GuardrailsPage: React.FC = () => {
               <Ban size={12} />
             </span>
           )}
-          <span>· {c.provider}</span>
         </div>
 
         {pairTripped && c.snap?.reason && (
           <div
-            title={c.snap.reason}
             style={{
               fontSize: '11px',
               color: c.snap.state === 'OPEN' ? 'var(--accent-rose)' : 'var(--accent-amber)',
@@ -512,15 +573,32 @@ export const GuardrailsPage: React.FC = () => {
               lineHeight: 1.5,
             }}
           >
-            {t('guardrails.reasonLabel')}: {formatReason(c.snap.reasonCode, c.snap.reasonParams, c.snap.reason, t)}
+            {statSnap?.category && (
+              <span
+                className="badge badge-warning"
+                style={{ fontSize: '10px', marginRight: '6px', whiteSpace: 'nowrap' }}
+              >
+                {categoryLabel(statSnap.category)}
+              </span>
+            )}
+            {c.snap.scope && c.snap.scope !== 'pair' && (
+              <span
+                className="badge badge-warning"
+                style={{ fontSize: '10px', marginRight: '6px', whiteSpace: 'nowrap' }}
+                title={t(SCOPE_LABEL_KEY[c.snap.scope])}
+              >
+                {t(SCOPE_LABEL_KEY[c.snap.scope])}
+              </span>
+            )}
+            {formatReason(c.snap.reasonCode, c.snap.reasonParams, c.snap.reason, t)}
           </div>
         )}
-        {modelTripped && c.modelSnap?.reason && (
+        {modelTripped && !pairTripped && c.modelSnap?.reason && (
           <div
             title={c.modelSnap.reason}
             style={{
               fontSize: '11px',
-              color: c.modelSnap.state === 'OPEN' ? 'var(--accent-rose)' : 'var(--accent-amber)',
+              color: 'var(--text-dim)',
               display: '-webkit-box',
               WebkitLineClamp: 2,
               WebkitBoxOrient: 'vertical',
@@ -528,13 +606,23 @@ export const GuardrailsPage: React.FC = () => {
               lineHeight: 1.5,
             }}
           >
+            {c.modelSnap?.category && (
+              <span
+                className="badge badge-warning"
+                style={{ fontSize: '10px', marginRight: '6px', whiteSpace: 'nowrap' }}
+              >
+                {categoryLabel(c.modelSnap.category)}
+              </span>
+            )}
             {t('guardrails.modelLevel')}: {formatReason(c.modelSnap.reasonCode, c.modelSnap.reasonParams, c.modelSnap.reason, t)}
           </div>
         )}
 
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-dim)' }}>
-          <span>{t('guardrails.failures', { count: statSnap?.consecutiveFailures ?? 0 })}</span>
-          {cooldown > 0 && <span style={{ color: 'var(--accent-amber)' }}>{formatCooldown(cooldown)}</span>}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '11px', color: 'var(--text-dim)' }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
+            <span>{t('guardrails.failures', { count: statSnap?.consecutiveFailures ?? 0 })}</span>
+          </span>
+          {cooldown > 0 && <span style={{ color: 'var(--accent-amber)', whiteSpace: 'nowrap' }}>{formatCooldown(cooldown)}</span>}
         </div>
 
         {tripPanelKey === c.key ? (
@@ -593,10 +681,18 @@ export const GuardrailsPage: React.FC = () => {
             </div>
           </div>
         ) : (
-          <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '6px', minHeight: '26px', flexWrap: 'wrap' }}>
-            {!isClosed && statSnap && (
-              <span style={{ fontSize: '11px', color: 'var(--text-dim)', marginRight: 'auto' }}>
-                {categoryLabel((pairTripped ? c.snap : c.modelSnap)?.category)}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '6px', minHeight: '26px', flexWrap: 'wrap', marginTop: 'auto' }}>
+            {c.modelSnap?.tier && (
+              // Pool-membership tag (ADR-0003): which `auto`/effort pool this
+              // model serves — bottom-left corner of the card, in the footer
+              // row, opposite the action buttons (`marginRight: auto` anchors
+              // it left). Fixed slot: the trip category now lives on the
+              // reason row, so this corner never swaps content.
+              <span
+                style={{ fontFamily: FONT_MONO, fontSize: '10px', color: 'var(--text-dim)', whiteSpace: 'nowrap', marginRight: 'auto' }}
+                title={t('guardrails.tierBadge')}
+              >
+                {c.modelSnap.tier}
               </span>
             )}
             {pTest && (
@@ -616,10 +712,19 @@ export const GuardrailsPage: React.FC = () => {
                 className="btn btn-sm"
                 disabled={resettingPair === c.key}
                 onClick={() => handleRecoverPair(c)}
+                title={c.snap?.scope ? t(SCOPE_LABEL_KEY[c.snap.scope]) : undefined}
                 style={{ display: 'flex', alignItems: 'center', gap: '5px' }}
               >
                 <RotateCcw size={12} />
-                <span>{resettingPair === c.key ? t('guardrails.resetting') : t('guardrails.resetOne')}</span>
+                <span>
+                  {resettingPair === c.key
+                    ? t('guardrails.resetting')
+                    : c.snap?.scope === 'model'
+                      ? t('guardrails.resetModelLevel')
+                      : c.snap?.scope === 'credential'
+                        ? t('guardrails.resetCredentialScope')
+                        : t('guardrails.resetOne')}
+                </span>
               </button>
             ) : modelTripped ? (
               <button
@@ -654,28 +759,36 @@ export const GuardrailsPage: React.FC = () => {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '16px' }}>
         <div className="card">
           <div style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '8px' }}>{t('guardrails.totalBreakers')}</div>
-          <div style={{ fontSize: '28px', fontWeight: 800 }}>{totalBreakers + pairTotal}</div>
+          {/* Same truth as the grid: the roster-driven model × credential
+              tuples. The backend pair count only covers MATERIALIZED tuple
+              breakers (lazy — created on first failure/action), so it would
+              under-report and disagree with the cards below. */}
+          <div style={{ fontSize: '28px', fontWeight: 800 }}>{allItems.length}</div>
           <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginTop: '4px' }}>
-            {pairTotal > 0 ? t('guardrails.pairSplit', { m: totalBreakers, p: pairTotal }) : t('guardrails.totalBreakersSub')}
+            {t('guardrails.pairSplit', { m: totalBreakers, p: allItems.length })}
           </div>
         </div>
 
         <div className="card">
           <div style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '8px' }}>{t('guardrails.openBreakers')}</div>
-          <div style={{ fontSize: '28px', fontWeight: 800, color: openCount + pairOpen > 0 ? 'var(--accent-rose)' : 'var(--accent-emerald)' }}>
-            {openCount + pairOpen}
+          {/* SAME filter as the 熔断中 tab below (effectiveState): tuple truth
+              plus operator takedowns. The model layer is a DERIVED fold of the
+              same tuples — adding `openCount` counted one model-scope trip
+              twice (once per model fold, once per tuple). */}
+          <div style={{ fontSize: '28px', fontWeight: 800, color: openCards > 0 ? 'var(--accent-rose)' : 'var(--accent-emerald)' }}>
+            {openCards}
           </div>
           <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginTop: '4px' }}>
-            {openCount + pairOpen > 0 ? t('guardrails.openSubTripped') : t('guardrails.openSubSafe')}
+            {openCards > 0 ? t('guardrails.openSubTripped') : t('guardrails.openSubSafe')}
           </div>
           {pairOpen > 0 && (
             <div style={{ fontSize: '11px', color: 'var(--accent-rose)', marginTop: '2px' }}>
               {t('guardrails.pairTrippedSub', { n: pairOpen })}
             </div>
           )}
-          {halfOpenCount + pairHalf > 0 && (
+          {halfOpenCards > 0 && (
             <div style={{ fontSize: '11px', color: 'var(--accent-amber)', marginTop: '2px' }}>
-              {t('guardrails.stateHalfOpen')}: {halfOpenCount + pairHalf}
+              {t('guardrails.stateHalfOpen')}: {halfOpenCards}
             </div>
           )}
         </div>
@@ -766,6 +879,13 @@ export const GuardrailsPage: React.FC = () => {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '12px', flex: 1, minHeight: 0, overflowY: 'auto', alignContent: 'start' }}>
           {pagedItems.length > 0 ? (
             pagedItems.map(renderPairCard)
+          ) : status && modelBreakers.length === 0 ? (
+            <div style={{ padding: '32px', textAlign: 'center', color: 'var(--text-dim)', gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'center' }}>
+              <div>{t('guardrails.emptyMatrix')}</div>
+              <Link className="btn" style={{ fontSize: '12px', textDecoration: 'none' }} to="/providers">
+                {t('guardrails.emptyMatrixCta')}
+              </Link>
+            </div>
           ) : (
             <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-dim)', gridColumn: '1 / -1' }}>
               {t('guardrails.noMatch')}

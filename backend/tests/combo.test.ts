@@ -127,7 +127,7 @@ describe('Custom Model Combos: routing & execution', () => {
     assert.deepEqual(result.failoverPath, ['lite-1', 'lite-2']);
 
     // Leader breaker hard-tripped by the 402
-    assert.equal(registry.getCircuitBreakerManager().getBreaker('lite-1')?.getState(), 'OPEN');
+    assert.equal(registry.getCircuitBreakerManager().getPairBreaker('lite-1', '')?.getState(), 'OPEN');
   });
 
   it('must NOT escalate outside the combo when all members fail (composition is authoritative)', async () => {
@@ -153,7 +153,7 @@ describe('Custom Model Combos: routing & execution', () => {
 
   it('should skip a tripped member and lead with the first healthy one (no failover counted)', async () => {
     const { registry, orchestrator } = makeOrchestrator(baseConfig);
-    registry.getCircuitBreakerManager().getBreaker('lite-1')?.trip('pre-tripped', 'MANUAL', 3600000);
+    registry.getCircuitBreakerManager().trip('lite-1', { reason: 'pre-tripped', cooldownMs: 3600000 });
 
     const result = await orchestrator.process({
       model: 'combo-priority',
