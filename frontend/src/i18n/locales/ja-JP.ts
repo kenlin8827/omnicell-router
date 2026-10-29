@@ -2288,7 +2288,7 @@ export const jaJP: TranslationDict = {
     save: 'YAML を保存して適用',
     desc: 'config.yaml を直接編集します。システムは保存前に構文とスキーマを検証し、自動で config.yaml.bak バックアップを作成します。',
     savedNotice: 'YAML を検証して保存し、config.yaml.bak バックアップを作成しました！',
-    filterPlaceholder: 'セクションを絞り込み…',
+    filterPlaceholder: 'キーパスを絞り込み…',
   },
   apiKeys: {
     title: 'クライアント API キー管理',

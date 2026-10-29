@@ -2319,7 +2319,7 @@ export const enUS: TranslationDict = {
     commentsTruncated: '(full text in the comment panel on the right)',
     desc: 'Directly edit config.yaml. The system validates syntax and schema before saving, creating an automatic config.yaml.bak backup.',
     savedNotice: 'YAML validated and persisted with config.yaml.bak backup created!',
-    filterPlaceholder: 'Filter sections…',
+    filterPlaceholder: 'Filter key paths…',
   },
   apiKeys: {
     title: 'Client API Keys Management',

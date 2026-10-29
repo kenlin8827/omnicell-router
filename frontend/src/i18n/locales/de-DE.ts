@@ -2288,7 +2288,7 @@ export const deDE: TranslationDict = {
     save: 'YAML speichern & anwenden',
     desc: 'config.yaml direkt bearbeiten. Das System validiert Syntax und Schema vor dem Speichern und erzeugt ein automatisches config.yaml.bak-Backup.',
     savedNotice: 'YAML validiert und persistiert, config.yaml.bak-Backup erstellt!',
-    filterPlaceholder: 'Abschnitte filtern…',
+    filterPlaceholder: 'Schlüsselpfade filtern…',
   },
   apiKeys: {
     title: 'Client-API-Keys-Verwaltung',

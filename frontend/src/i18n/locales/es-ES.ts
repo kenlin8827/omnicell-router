@@ -2286,7 +2286,7 @@ export const esES: TranslationDict = {
     save: 'Guardar y aplicar YAML',
     desc: 'Edita config.yaml directamente. El sistema valida sintaxis y esquema antes de guardar, creando una copia de seguridad automática config.yaml.bak.',
     savedNotice: '¡YAML validado y persistido con copia de seguridad config.yaml.bak creada!',
-    filterPlaceholder: 'Filtrar secciones…',
+    filterPlaceholder: 'Filtrar rutas de claves…',
   },
   apiKeys: {
     title: 'Gestión de claves API de cliente',

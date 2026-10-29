@@ -5,7 +5,7 @@ import { Decoration, WidgetType } from '@codemirror/view';
 import type { DecorationSet } from '@codemirror/view';
 import type { Range } from '@codemirror/state';
 import { EditorState, StateField } from '@codemirror/state';
-import { FileCode2, Save, RefreshCw, Check, AlertCircle } from 'lucide-react';
+import { ChevronDown, ChevronRight, FileCode2, PanelRightClose, PanelRightOpen, Save, RefreshCw, Check, AlertCircle } from 'lucide-react';
 import { api } from '../lib/api';
 import { FONT_MONO } from '../lib/fonts';
 import { DEFAULT_THEME, isLightTheme } from '../lib/theme';
@@ -26,26 +26,61 @@ const useAppTheme = (): string => {
 
 const editorFont = FONT_MONO;
 
-/** A top-level `config.yaml` section: key name and its 1-based line number in the document. */
+/** A navigable `config.yaml` key: dotted disk path (array items indexed
+ *  `key[N]`) and its 1-based line number in the document. Depth 0 = top-level
+ *  section. */
 interface YamlSection {
-  key: string;
+  path: string;
   line: number;
+  depth: number;
 }
 
-/** Matches a top-level YAML key at column 0 (unindented, not a comment/list line). */
-const TOP_LEVEL_RE = /^([A-Za-z_][A-Za-z0-9_.-]*):(?=[\s#]|$)/;
-
-/** Finds the last top-level key at or above the cursor line — drives the active chip. */
-const sectionAtCursor = (view: EditorView): string | null => {
-  const state = view.state;
-  const upto = state.doc.lineAt(state.selection.main.head).number;
-  let current: string | null = null;
-  for (let i = 1; i <= upto; i++) {
-    const m = TOP_LEVEL_RE.exec(state.doc.line(i).text);
-    if (m) current = m[1];
+/**
+ * Scans every key line of the document into navigable entries, mirroring the
+ * indentation-stack walk of `pathsAtCursor`: dotted disk path (array items
+ * counted per parent as `key[N]`) + 1-based line. Quoted/mapping-style keys
+ * are not matched — the outline is a navigation aid, not a parser.
+ */
+const scanEntries = (text: string): YamlSection[] => {
+  const out: YamlSection[] = [];
+  const stack: Array<{ indent: number; seg: string; count: number }> = [];
+  const pathOf = () =>
+    stack
+      .map((s) => s.seg)
+      .reduce((a, b) => (b.startsWith('[') ? a + b : `${a}.${b}`));
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const ln = lines[i];
+    if (ln.trim() === '' || /^\s*#/.test(ln)) continue;
+    const list = /^(\s*)-\s+(.*)$/.exec(ln);
+    const bareDash = /^(\s*)-\s*$/.exec(ln);
+    const key = list ? null : /^(\s*)([A-Za-z_][A-Za-z0-9_.-]*):/.exec(ln);
+    const dash = list ?? bareDash;
+    if (!dash && !key) continue;
+    const indent = dash ? dash[1].length : key![1].length;
+    while (stack.length > 0 && stack[stack.length - 1].indent >= indent) stack.pop();
+    if (dash) {
+      const parent = stack[stack.length - 1];
+      if (!parent) continue;
+      const idx = parent.count++;
+      stack.push({ indent, seg: `[${idx}]`, count: 0 });
+      // `- id: a` — the item node itself (`parent[N]`) is navigable, and its
+      // first key shares the line and nests under it; children then align at
+      // dashIndent + 2.
+      const inner = list ? /^([A-Za-z_][A-Za-z0-9_.-]*):/.exec(list[2]) : null;
+      out.push({ path: pathOf(), line: i + 1, depth: stack.length - 1 });
+      if (inner) {
+        stack.push({ indent: indent + 2, seg: inner[1], count: 0 });
+        out.push({ path: pathOf(), line: i + 1, depth: stack.length - 1 });
+      }
+      continue;
+    }
+    stack.push({ indent, seg: key![2], count: 0 });
+    out.push({ path: pathOf(), line: i + 1, depth: stack.length - 1 });
   }
-  return current;
+  return out;
 };
+
 
 /**
  * Disk (grouped) YAML path → runtime comment-dictionary key. Mirrors the
@@ -70,22 +105,51 @@ const translateDiskPath = (diskPath: string): string => {
   return key;
 };
 
-/** Dotted YAML path of the key at (or above) the cursor line, by indentation stack. */
-const pathAtCursor = (view: EditorView): string | null => {
+/**
+ * Raw disk path (`client.apiKeys[0].id`, array items indexed) and the
+ * translated comment-dictionary path of the key at (or above) the cursor
+ * line — by indentation stack, mirroring `scanEntries`' walk. The raw path
+ * drives sidebar selection; the translated one drives the comment panel.
+ */
+const pathsAtCursor = (view: EditorView): { raw: string; translated: string; line: number } | null => {
   const state = view.state;
   const line = state.doc.lineAt(state.selection.main.head);
-  const stack: Array<{ indent: number; key: string }> = [];
-  const scan = (text: string) => {
-    if (/^\s*(#|-)/.test(text) || text.trim() === '') return;
-    const m = /^(\s*)([A-Za-z_][A-Za-z0-9_.-]*):/.exec(text);
-    if (!m) return;
-    const indent = m[1].length;
+  const stack: Array<{ indent: number; seg: string; count: number }> = [];
+  // True when the cursor line itself is a `- key: value` item: selection then
+  // stops at the item node (`client.apiKeys[0]`), not the inline first key.
+  let onDashInline = false;
+  const scan = (text: string, isCursor: boolean) => {
+    if (/^\s*#/.test(text) || text.trim() === '') return;
+    const list = /^(\s*)-\s+(.*)$/.exec(text);
+    const m = list ? null : /^(\s*)([A-Za-z_][A-Za-z0-9_.-]*):/.exec(text);
+    if (!list && !m) return;
+    const indent = list ? list[1].length : m![1].length;
     while (stack.length > 0 && stack[stack.length - 1].indent >= indent) stack.pop();
-    stack.push({ indent, key: m[2] });
+    if (list) {
+      const parent = stack[stack.length - 1];
+      if (!parent) return;
+      const idx = parent.count++;
+      stack.push({ indent, seg: `[${idx}]`, count: 0 });
+      const inner = /^([A-Za-z_][A-Za-z0-9_.-]*):/.exec(list[2]);
+      if (inner) {
+        if (isCursor) onDashInline = true;
+        stack.push({ indent: indent + 2, seg: inner[1], count: 0 });
+      }
+      return;
+    }
+    stack.push({ indent, seg: m![2], count: 0 });
   };
-  for (let i = 1; i <= line.number; i++) scan(state.doc.line(i).text);
+  for (let i = 1; i <= line.number; i++) scan(state.doc.line(i).text, i === line.number);
   if (stack.length === 0) return null;
-  return translateDiskPath(stack.map((s) => s.key).join('.'));
+  // On a dash line the inner first key is not yet "entered" — drop it.
+  if (onDashInline && stack.length >= 2 && /\[\d+\]$/.test(stack[stack.length - 2].seg)) stack.pop();
+  const join = (segs: string[]) =>
+    segs.reduce((a, b) => (b.startsWith('[') ? a + b : `${a}.${b}`));
+  const raw = join(stack.map((s) => s.seg));
+  // Comment-dictionary keys never carry array indices — strip `[N]` before
+  // translating so the panel still resolves inside arrays.
+  const translated = translateDiskPath(join(stack.map((s) => s.seg.replace(/\[\d+\]$/, '')).filter(Boolean)));
+  return { raw, translated, line: line.number };
 };
 
 /** Read-only inlay: renders the dictionary comment as ghost text after the key, IDE-inlay style. */
@@ -194,29 +258,124 @@ export const YamlPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [configPath, setConfigPath] = useState('');
-  const [activeKey, setActiveKey] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
   const [commentDict, setCommentDict] = useState<Record<string, string>>({});
   const [commentHeader, setCommentHeader] = useState('');
   const [cursorPath, setCursorPath] = useState<string | null>(null);
+  const [cursorRawPath, setCursorRawPath] = useState<string | null>(null);
+  const [cursorLine, setCursorLine] = useState<number | null>(null);
+  // Resizable left outline: clamped width, persisted per browser.
+  const SIDEBAR_MIN = 140;
+  const SIDEBAR_MAX = 360;
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const v = Number(localStorage.getItem('yaml.sidebarWidth'));
+    return Number.isFinite(v) && v >= SIDEBAR_MIN && v <= SIDEBAR_MAX ? v : 200;
+  });
+  const asideRef = useRef<HTMLElement | null>(null);
+  const startSidebarResize = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const move = (ev: PointerEvent) => {
+      const left = asideRef.current?.getBoundingClientRect().left ?? 0;
+      setSidebarWidth(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, ev.clientX - left)));
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      setSidebarWidth((w) => {
+        localStorage.setItem('yaml.sidebarWidth', String(w));
+        return w;
+      });
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
+  const [commentsOpen, setCommentsOpen] = useState(() => localStorage.getItem('yaml.commentsOpen') !== '0');
+  const toggleComments = () =>
+    setCommentsOpen((prev) => {
+      localStorage.setItem('yaml.commentsOpen', prev ? '0' : '1');
+      return !prev;
+    });
   const viewRef = useRef<EditorView | null>(null);
   const appTheme = useAppTheme();
+  const sections = useMemo(() => scanEntries(yamlContent), [yamlContent]);
 
-  const sections = useMemo(() => {
-    const out: YamlSection[] = [];
-    const lines = yamlContent.split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      const m = TOP_LEVEL_RE.exec(lines[i]);
-      // schemaVersion is machine-managed (ADR-0016): read at load, rewritten
-      // on save — it is not a section the operator navigates or edits.
-      if (m && m[1] !== 'schemaVersion') out.push({ key: m[1], line: i + 1 });
+  // Full recursive tree: each entry maps to its direct children (one path
+  // segment / array index deeper). Array members appear as indexed rows
+  // (`client.apiKeys[0]`) and hide the bare array-key row.
+  const childRowsByPath = useMemo(() => {
+    const parentOf = (p: string): string | null => {
+      const m = /^(.+)(\[\d+\]|\.[^.]+)$/.exec(p);
+      return m ? m[1] : null;
+    };
+    const byPath = new Map<string, YamlSection[]>();
+    for (const s of sections) {
+      const parent = parentOf(s.path);
+      if (!parent) continue;
+      const arr = byPath.get(parent);
+      if (arr) arr.push(s);
+      else byPath.set(parent, [s]);
     }
-    return out;
-  }, [yamlContent]);
+    for (const [parent, rows] of byPath) {
+      const withItems = new Set(
+        rows.filter((r) => /\[\d+\]$/.test(r.path)).map((r) => r.path.replace(/\[\d+\]$/, '')),
+      );
+      if (withItems.size === 0) continue;
+      byPath.set(parent, rows.filter((r) => /\[\d+\]$/.test(r.path) || !withItems.has(r.path)));
+    }
+    return byPath;
+  }, [sections]);
 
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const toggleExpanded = (path: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
+  // Cursor movement selects the key under it; every ancestor expands so the
+  // selected row stays visible in the tree.
+  const selectCursorPath = (paths: { raw: string; translated: string; line: number } | null) => {
+    setCursorPath(paths ? paths.translated : null);
+    setCursorRawPath(paths ? paths.raw : null);
+    setCursorLine(paths ? paths.line : null);
+    if (!paths) return;
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      // Expand every ancestor so the selected row stays visible even when a
+      // bare array-key row in the chain is hidden by its indexed items.
+      let rest: string | null = paths.raw;
+      while (rest) {
+        const m = /^(.+)(\[\d+\]|\.[^.]+)$/.exec(rest);
+        if (!m) break;
+        rest = m[1];
+        next.add(rest);
+      }
+      return next;
+    });
+  };
+
+  // A dash line hosts two entries (item node + its inline first key); only
+  // the deeper one is the actual key under the cursor and takes the highlight
+  // — the item node stays a plain group row. On value/blank lines nothing
+  // shares the line — fall back to the deepest key at/above the cursor.
+  const activePaths = useMemo(() => {
+    const onLine = cursorLine === null ? [] : sections.filter((s) => s.line === cursorLine);
+    if (onLine.length > 0) {
+      const deepest = onLine.reduce((a, b) => (b.path.length > a.path.length ? b : a));
+      return new Set([deepest.path]);
+    }
+    return new Set(cursorRawPath ? [cursorRawPath] : []);
+  }, [sections, cursorLine, cursorRawPath]);
+
+  // Typing a filter flattens the tree into matching full key paths
+  // (`client.port`, `client.apiKeys[0].id`, …); clearing it restores the tree.
+  const filtering = filter.trim().length > 0;
   const visibleSections = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    return q ? sections.filter((s) => s.key.toLowerCase().includes(q)) : sections;
+    if (!q) return sections.filter((s) => s.depth === 0);
+    return sections.filter((s) => s.path.toLowerCase().includes(q));
   }, [sections, filter]);
 
   const jumpTo = (lineNo: number) => {
@@ -303,13 +462,110 @@ export const YamlPage: React.FC = () => {
       ghostComments(commentDict, t('yaml.commentsTruncated')),
       EditorView.updateListener.of((update) => {
         if (update.selectionSet || update.docChanged) {
-          setActiveKey(sectionAtCursor(update.view));
-          setCursorPath(pathAtCursor(update.view));
+          selectCursorPath(pathsAtCursor(update.view));
         }
       }),
     ],
     [commentDict, lang]
   );
+
+  // Recursive tree row: label = own segment (array items keep their base,
+  // `apiKeys[0]`), chevron when children exist, selected when the editor
+  // cursor sits on this key. Level 0 = top-level section.
+  const renderNode = (s: YamlSection, level: number): React.ReactNode => {
+    const children = filtering ? [] : (childRowsByPath.get(s.path) ?? []);
+    const open = expanded.has(s.path);
+    const active = activePaths.has(s.path);
+    const item = /\[(\d+)\]$/.exec(s.path);
+    const label = item
+      ? `${s.path.slice(0, s.path.lastIndexOf('[')).split('.').pop()}[${item[1]}]`
+      : s.path.split('.').pop()!;
+    const row = (
+      <button
+        onClick={() => jumpTo(s.line)}
+        title={s.path}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '8px',
+          flex: 1,
+          minWidth: 0,
+          textAlign: 'left',
+          fontSize: level === 0 ? '12px' : '11px',
+          fontWeight: level === 0 ? 600 : 400,
+          fontFamily: editorFont,
+          padding: level === 0 ? '4px 10px' : '3px 10px 3px 4px',
+          borderRadius: '6px',
+          cursor: 'pointer',
+          border: 'none',
+          background: active ? 'color-mix(in srgb, var(--accent) 18%, transparent)' : 'transparent',
+          color: active ? 'var(--accent)' : 'var(--text-muted)',
+        }}
+      >
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {level === 0 || filtering ? s.path : label}
+        </span>
+        <span style={{ fontSize: '10px', opacity: 0.6, flexShrink: 0 }}>{s.line}</span>
+      </button>
+    );
+    if (filtering) {
+      // Flat result list: no tree chrome — no chevron gutter, no indent.
+      return (
+        <div key={`${s.path}:${s.line}`}>
+          <button
+            onClick={() => jumpTo(s.line)}
+            title={s.path}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '8px',
+              width: '100%',
+              textAlign: 'left',
+              fontSize: '11px',
+              fontFamily: editorFont,
+              padding: '3px 10px',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              border: 'none',
+              background: active ? 'color-mix(in srgb, var(--accent) 18%, transparent)' : 'transparent',
+              color: active ? 'var(--accent)' : 'var(--text-muted)',
+            }}
+          >
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.path}</span>
+            <span style={{ fontSize: '10px', opacity: 0.6, flexShrink: 0 }}>{s.line}</span>
+          </button>
+        </div>
+      );
+    }
+    return (
+      <div key={`${s.path}:${s.line}`}>
+        <div style={{ display: 'flex', alignItems: 'stretch', paddingLeft: `${level * 14}px` }}>
+          <button
+            onClick={() => toggleExpanded(s.path)}
+            title={s.path}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: children.length > 0 ? '16px' : '6px',
+              flexShrink: 0,
+              background: 'transparent',
+              border: 'none',
+              cursor: children.length > 0 ? 'pointer' : 'default',
+              color: 'var(--text-dim)',
+              padding: 0,
+            }}
+          >
+            {children.length > 0 ? open ? <ChevronDown size={12} /> : <ChevronRight size={12} /> : null}
+          </button>
+          {row}
+        </div>
+        {open && children.map((c) => renderNode(c, level + 1))}
+      </div>
+    );
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', height: '100%' }}>
@@ -372,7 +628,11 @@ export const YamlPage: React.FC = () => {
         {!loading && (
           <div style={{ display: 'flex', gap: '16px', flex: 1, minHeight: 0 }}>
             {sections.length > 0 && (
-              <aside style={{ width: '180px', flexShrink: 0, display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <>
+              <aside
+                ref={asideRef}
+                style={{ width: `${sidebarWidth}px`, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: '8px' }}
+              >
               <input
                 className="input"
                 style={{ fontSize: '11px', padding: '5px 10px' }}
@@ -381,36 +641,22 @@ export const YamlPage: React.FC = () => {
                 onChange={(e) => setFilter(e.target.value)}
               />
               <nav style={{ overflowY: 'auto', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: '2px', scrollbarWidth: 'thin' }}>
-                {visibleSections.map((s) => {
-                  const active = activeKey === s.key;
-                  return (
-                    <button
-                      key={`${s.key}:${s.line}`}
-                      onClick={() => jumpTo(s.line)}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        gap: '8px',
-                        width: '100%',
-                        textAlign: 'left',
-                        fontSize: '12px',
-                        fontFamily: editorFont,
-                        padding: '4px 10px',
-                        borderRadius: '6px',
-                        cursor: 'pointer',
-                        border: 'none',
-                        background: active ? 'color-mix(in srgb, var(--accent) 18%, transparent)' : 'transparent',
-                        color: active ? 'var(--accent)' : 'var(--text-muted)',
-                      }}
-                    >
-                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.key}</span>
-                      <span style={{ fontSize: '10px', opacity: 0.6, flexShrink: 0 }}>{s.line}</span>
-                    </button>
-                  );
-                })}
+                {visibleSections.map((s) => renderNode(s, filtering ? 1 : 0))}
               </nav>
               </aside>
+              <div
+                onPointerDown={startSidebarResize}
+                style={{
+                  width: '5px',
+                  flexShrink: 0,
+                  cursor: 'col-resize',
+                  borderRadius: '3px',
+                  background: 'transparent',
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--card-border)')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+              />
+              </>
             )}
 
             <div
@@ -433,14 +679,39 @@ export const YamlPage: React.FC = () => {
                 theme={isLightTheme(appTheme) ? [appChrome] : [oneDark, appChrome]}
                 onCreateEditor={(view) => {
                   viewRef.current = view;
-                  setActiveKey(sectionAtCursor(view));
+                  selectCursorPath(pathsAtCursor(view));
                 }}
                 extensions={extensions}
                 onChange={setYamlContent}
                 basicSetup={{ foldGutter: true, highlightActiveLine: true, autocompletion: false }}
               />
             </div>
+            {!commentsOpen && (
+            <button
+              onClick={toggleComments}
+              title={t('yaml.commentsTitle')}
+              style={{
+                width: '16px',
+                alignSelf: 'stretch',
+                flexShrink: 0,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                border: '1px solid var(--card-border)',
+                borderRadius: '8px',
+                background: 'transparent',
+                color: 'var(--text-dim)',
+                padding: 0,
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface)')}
+              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+            >
+              <PanelRightOpen size={12} />
+            </button>
+            )}
 
+            {commentsOpen && (
             <aside
               style={{
                 width: '380px',
@@ -456,8 +727,30 @@ export const YamlPage: React.FC = () => {
                 scrollbarWidth: 'thin',
               }}
             >
-              <div style={{ fontWeight: 600, marginBottom: '8px', color: 'var(--text-main)' }}>
-                {t('yaml.commentsTitle')}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>{t('yaml.commentsTitle')}</span>
+                <button
+                  onClick={toggleComments}
+                  title={t('yaml.commentsTitle')}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    width: '20px',
+                    height: '20px',
+                    flexShrink: 0,
+                    cursor: 'pointer',
+                    border: 'none',
+                    borderRadius: '5px',
+                    background: 'transparent',
+                    color: 'var(--text-dim)',
+                    padding: 0,
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                >
+                  <PanelRightClose size={12} />
+                </button>
               </div>
               {cursorPath && commentDict[cursorPath] ? (
                 <>
@@ -553,6 +846,7 @@ export const YamlPage: React.FC = () => {
                 <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>{t('yaml.commentsHint')}</div>
               )}
             </aside>
+            )}
           </div>
         )}
 

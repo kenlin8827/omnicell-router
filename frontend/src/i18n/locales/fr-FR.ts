@@ -2288,7 +2288,7 @@ export const frFR: TranslationDict = {
     save: 'Enregistrer & appliquer le YAML',
     desc: 'Éditez config.yaml directement. Le système valide la syntaxe et le schéma avant l’enregistrement, en créant une sauvegarde automatique config.yaml.bak.',
     savedNotice: 'YAML validé et persisté avec sauvegarde config.yaml.bak créée !',
-    filterPlaceholder: 'Filtrer les sections…',
+    filterPlaceholder: 'Filtrer les chemins de clés…',
   },
   apiKeys: {
     title: 'Gestion des clés API clients',

@@ -2288,7 +2288,7 @@ export const koKR: TranslationDict = {
     save: 'YAML 저장 및 적용',
     desc: 'config.yaml 을 직접 편집합니다. 시스템은 저장 전에 구문과 스키마를 검증하고 자동으로 config.yaml.bak 백업을 만듭니다.',
     savedNotice: 'YAML 이 검증되어 저장되었고 config.yaml.bak 백업이 만들어졌습니다!',
-    filterPlaceholder: '섹션 필터링…',
+    filterPlaceholder: '키 경로 필터링…',
   },
   apiKeys: {
     title: '클라이언트 API 키 관리',

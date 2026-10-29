@@ -2288,7 +2288,7 @@ export const ptBR: TranslationDict = {
     save: 'Salvar e aplicar YAML',
     desc: 'Edite o config.yaml diretamente. O sistema valida sintaxe e esquema antes de salvar, criando um backup automático config.yaml.bak.',
     savedNotice: 'YAML validado e persistido com backup config.yaml.bak criado!',
-    filterPlaceholder: 'Filtrar seções…',
+    filterPlaceholder: 'Filtrar caminhos de chaves…',
   },
   apiKeys: {
     title: 'Gestão de chaves de API de cliente',

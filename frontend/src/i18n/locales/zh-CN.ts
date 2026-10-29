@@ -2299,7 +2299,7 @@ export const zhCN: TranslationDict = {
     commentsTruncated: '（完整说明见右侧注释面板）',
     desc: '直接编辑底层 config.yaml。在保存提交前系统会自动进行严格的 YAML 语法解析与 Schema 校验，并自动在磁盘生成 config.yaml.bak 备份副本。',
     savedNotice: 'YAML 配置校验通过，已持久化并备份为 config.yaml.bak！',
-    filterPlaceholder: '过滤段落…',
+    filterPlaceholder: '过滤键路径…',
   },
   apiKeys: {
     title: 'API 密钥管理',
