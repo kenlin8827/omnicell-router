@@ -53,6 +53,7 @@ export function createProxyInterceptor(
       return true;
     }
 
+
     // surface.capture is the PROTOCOL-LEVEL capture policy (chat family:
     // always true; the decision surface wires capture in its pipeline only
     // behind the requestCapture.enabled master).

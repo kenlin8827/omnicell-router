@@ -30,9 +30,20 @@ export function isStoreKind(value: unknown): value is StoreKind {
 export interface StoreCapabilities {
   /** More than one credential per provider is expressible. */
   multiCredential: boolean;
-  /** A specific credential can be marked active. */
+  /** A specific credential can be marked active (the internal head primitive). */
   activate: boolean;
-  /** Credentials carry a user-editable label. */
+  /**
+   * The operator surface can REORDER a provider's credential chain; the head
+   * primitive (activate) stays on the interface for internal callers.
+   */
+  reorder: boolean;
+  /**
+   * Per-credential spread weight is writable on THIS store. The weight lives
+   * OCR-side only: the opencode v2 service exposes no order/weight field, so
+   * v2-bound rows always weigh 1 and the console refuses with 400
+   * capability_unsupported (same gate pattern as reorder).
+   */
+  weight: boolean;
   rename: boolean;
   /** OAuth connect is supported. Capability-gated; false for ALL stores in P1+P2. */
   oauth: boolean;
@@ -83,6 +94,13 @@ export interface CredentialMeta {
   keyHashPrefix?: string;
   /** maskSecret() output — existing masking rule. */
   maskedKey?: string;
+  /**
+   * Spread weight for the deterministic new-session hash spread (integers >= 1,
+   * absent = 1). OCR-file rows carry it; opencode v2 rows never do. Shapes NEW
+   * placements only — failover order, the ratchet and the sync boundary never
+   * read it.
+   */
+  weight?: number;
 }
 
 export interface ResolvedCredential {
@@ -111,6 +129,8 @@ export interface CallCredential {
   label?: string;
   /** Raw key material — in-memory only. */
   key: string;
+  /** Spread weight (same contract as CredentialMeta.weight). */
+  weight?: number;
 }
 
 /**
@@ -127,6 +147,8 @@ export interface RawCred {
   keyHash: string;
   active: boolean;
   timeUpdated?: number;
+  /** Spread weight (same contract as CredentialMeta.weight). */
+  weight?: number;
 }
 
 export interface StoreProbeResult {
@@ -203,6 +225,20 @@ export interface CredentialStore {
 
   connectKey(providerId: string, key: string, label?: string): Promise<CredentialMeta>;
   activate(credentialId: string): Promise<CredentialMeta>;
+  /**
+   * Reorder a provider's credential chain to exactly `orderedIds` (a
+   * permutation of the provider's credential ids — anything else throws). The
+   * chain head becomes orderedIds[0]; `active` follows position 0. The
+   * operator surface (console reorder route); the internal head primitive
+   * stays `activate`.
+   */
+  reorder(providerId: string, orderedIds: string[]): Promise<CredentialMeta[]>;
+  /**
+   * Set a credential's spread weight (integer 1..CREDENTIAL_WEIGHT_MAX; the
+   * store clamps/denies per its capabilities — v2 stores refuse outright).
+   * Bumps timeUpdated; the operator surface is the console set-weight route.
+   */
+  setWeight(credentialId: string, weight: number): Promise<CredentialMeta>;
   rename(credentialId: string, label: string): Promise<CredentialMeta>;
   disconnect(credentialId: string): Promise<void>;
 

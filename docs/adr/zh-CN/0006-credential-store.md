@@ -95,3 +95,31 @@ v1 适配器是**fixture 级验证，不是二进制级验证**：参考机上�
 - **非 active 备选之间的相对顺序**不同步，这是刻意的。v2 不暴露顺序字段（行按 `active DESC, time_updated DESC` 读取），拉取又用拉取时刻给导入行打时间戳，所以客户端的备选先后不会在 OCR 文件里复现，反向亦然。跨边界的权威只有 ACTIVE 链头；备选之间的顺序是客户端本地的读取顺序，不是路由契约。要改这一点需要在 OCR 侧引入真正的顺序表示（schema 版本升级），而不是继续玩时间戳。
 
 测试：`credentials-sync` 两个方向都钉住了——推备选不会抢链头、全 dedup 的推送会治愈漂移的链头、拉取保留已有 OCR 链头、只有当 OCR 链没有 active 行时才采纳客户端链头。
+
+## 修订——凭证链热刷新（2026-10-28）
+
+路由链（`registry.credentialChains`）过去是**仅启动时**的快照：`buildDirectPool` → `registerProvider` 是唯一写入点，因此通过控制台加入的凭证（connect / activate / disconnect）或由凭证同步落地的 key，在下一次网关重启前对 `pipeline/credential-selection.ts` 不可见。多凭证 provider 的新会话散布会一直塌缩到启动时的链上——运营表现就是「所有请求永远用第一把凭证」——因为选择器看到 `chain.length === 1` 而退化为链头。
+
+链现在是**热的**：`registry.refreshCredentialChain(name, chain)` 整体换入条目（Bun 单线程下 Map 写入原子；在途请求继续用旧数组引用服务），并在每个 store 变更缝隙被调用：
+
+- 控制台 **connect**（`connectKeyIdempotent`——覆盖 create / setKey / connect 路由），
+- 控制台 **activate**（链会**重排**——链头 = active 行），
+- 控制台 **disconnect**（被移除的 key 立即离开运行时链），
+- **凭证同步运行**（一次拉取可能在多个 provider 上落 key；刷新所有已连接 provider 的链）。
+
+操作员 disable/enable 刻意**不是**重建触发器：被禁用的行保留在链里，由选择期的 `isPairOut` 过滤（下架优先于一切运行时信号；链成员资格与此正交）。空链会删除条目——provider 退化到链头烘焙路径（`config.apiKey`），保持链头 === 烘焙 key 的不变式。
+
+RAW key 仍然只在注册表内存中（永不序列化）。重建时的 store 读取失败被吞掉——旧链继续服务（fail-open）。`console.ts` 里「重复 connect 会增长链」的陈旧描述对应一个已不存在的机制；那里的 dedup 保护的是 store 的 keyHash 身份，不是链长。
+
+测试：`credentials-console-routes` 钉住热路径——connect 让运行时链增长、activate 重排链头、disconnect 移除该行，全程无需重启。
+
+## 修订——单凭证散布权重（2026-10-29）
+
+确定性新会话散布（ADR-0002 §4）过去给每条健康行相等的哈希槽。额度不对等的操作员（一把 key 的日额度是另一把的 5 倍）没有任何杠杆：分摊永远是 1/N。凭证现可携带可选整数 `weight`（>= 1，缺省 = 1，上限 `CREDENTIAL_WEIGHT_MAX` = 100——单源在 `backend/src/config/defaults.ts`，镜像于 `frontend/src/lib/defaults.ts`）。
+
+- **归属**：权重只存在 OCR 文件里（`OcrCredential.weight`，随 schema version 2 保存）。opencode v2 服务除 `active` 外没有权重/顺序字段，v2 绑定的行恒为权重 1：`capabilities.weight` 在 OCR store 为 `true`、在 `OpencodeV2Store` 为 `false`，绑定 store 无该能力时控制台路由以 400 `capability_unsupported` 拒绝（与 reorder 门同款）。权重两个方向都不过同步边界——push/pull 的头权威规则不变。
+- **操作面**：`POST …/providers/:id/credentials/:credentialId/weight`，body `{ weight }`；路由校验 `[1, CREDENTIAL_WEIGHT_MAX]` 整数（否则 400 `invalid_weight`），store 写时再次收敛，读路径对手改文件消毒（0/负数/非数值退化为缺省，分数取整——坏值永远进不了散布）。控制台 Keys 页在单 provider 凭证放大弹框里编辑权重；卡片行只读显示 `×N` 徽标。
+- **落位语义**：`weightedSpreadIndex` 用同一个 sha256(sessionId) 抽槽，落在 `[0, Σweights)`，按权重前缀和走——权重 w 占 w 个连续槽。全 1 权重与原落位逐一相等（total === count），存量会话落点不变。权重只塑形**新会话散布**：强制故障转移落点仍按链序，keep/亲和规则不读它，棘轮不碰（ADR-0011 覆盖纪律）。
+- **热链**：权重走 `CallCredential.weight` 全链路（`resolveKeyChain` → 启动/`refreshProviderCredentialChain`），设权重后下一次落位即生效，无需重启。
+
+测试：`credential-selection.test.ts` 钉住加权散布（全 1 向后兼容、槽位映射、比例冒烟、故障转移链序优先）；`credentials-ocr-store.test.ts` 钉住 set/clamp/消毒与链/meta 透传；`credentials-console-routes.test.ts` 钉住路由（200 形态、非法 body 400、未知 id 404、仅掩码线上契约）。

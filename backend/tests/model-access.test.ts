@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import './helpers/sandbox-home.js';
 import { loadConfig, saveConfig, getConfigPath } from '../src/config/index.js';
 import { createServer } from '../src/server.js';
 import { validateModelAccess } from '../src/auth/api-keys.js';
@@ -189,7 +190,7 @@ describe('Per-key model access policy (auth/model-access.ts)', () => {
       host: '127.0.0.1', // loopback: webAuth forced gate stays off (console endpoints stay anonymous)
       webAuth: { enabled: false }, // tests read the operator's live config.yaml via loadConfig() — never inherit its login gate
       models: [],
-      adminApiKey: 'ma-master-key',
+      adminKey: 'ma-master-key',
       apiKeys: [
         {
           id: 'key-allow',

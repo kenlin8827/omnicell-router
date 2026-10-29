@@ -464,9 +464,42 @@ export interface CaptureStatus {
   maxBodyBytes: number;
   maxSessionMB: number;
   storeMedia: boolean;
+  redactSecrets: boolean;
   totalBytes: number;
   dateCount: number;
 }
+
+/** Wire spec for POST /api/admin/capture/replay (mirrors frontend/src/lib/curl.ts ReplaySpec). */
+export interface ReplaySpec {
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  body?: string;
+  provider?: string;
+  model?: string;
+}
+
+export type CaptureReplayResult =
+  | { status: 'loading' }
+  | {
+      status: 'ok';
+      statusLine: string;
+      headers: Record<string, string>;
+      body: string;
+      truncated: boolean;
+      /** ms from dispatch to the status/headers event (first byte). */
+      ttfbMs: number;
+      /** ms from dispatch to stream end. */
+      totalMs: number;
+    }
+  | { status: 'error'; message: string };
+
+/** NDJSON stream events emitted by POST /api/admin/capture/replay. */
+export type CaptureReplayStreamEvent =
+  | { type: 'status'; statusLine: string; headers: Record<string, string> }
+  | { type: 'chunk'; text: string }
+  | { type: 'end'; truncated: boolean }
+  | { type: 'error'; message: string };
 
 export interface CaptureDateRow {
   date: string; // YYYY-MM-DD
@@ -1429,6 +1462,14 @@ export const api = {
     return json?.outcome ?? null;
   },
 
+  /** Comment-dictionary language for config.yaml (re-)annotation: derived
+   *  from the UI locale; the backend dictionaries only ship zh-CN and en —
+   *  every other UI locale maps to en. */
+  commentLang(): 'zh-CN' | 'en' {
+    const ui = (typeof localStorage !== 'undefined' && localStorage.getItem('ocr_lang')) || 'zh';
+    return ui === 'zh' ? 'zh-CN' : 'en';
+  },
+
   async getConfig(): Promise<any> {
     const res = await fetch('/api/admin/config');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -1450,7 +1491,18 @@ export const api = {
     }
     return res.json();
   },
-
+  /** Dynamic comment-panel data: the zh-CN/en comment dictionaries for
+   *  config.yaml fields (config.yaml itself carries no comments on disk). */
+  async getConfigComments(lang: 'zh-CN' | 'en'): Promise<{
+    status: string;
+    lang: string;
+    header: string;
+    fields: Record<string, string>;
+  }> {
+    const res = await fetch(`/api/admin/config/comments?lang=${lang}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
   async getHeadroomSidecar(): Promise<HeadroomSidecarStatus> {
     const res = await fetch('/api/admin/headroom/sidecar');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -1585,7 +1637,7 @@ export const api = {
     return res.json();
   },
 
-  async getRawYaml(): Promise<{ status: string; yaml: string }> {
+  async getRawYaml(): Promise<{ status: string; yaml: string; path?: string }> {
     const res = await fetch('/api/admin/config/raw');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
@@ -1624,8 +1676,13 @@ export const api = {
       body: JSON.stringify(payload || {}),
     });
     if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.message || `HTTP ${res.status}`);
+      const body = await res.json().catch(() => ({}));
+      // reasonCode/params ride along for console i18n mapping (clients page);
+      // the raw message stays the fallback for unknown codes.
+      const err = new Error(body.message || `HTTP ${res.status}`) as Error & { reasonCode?: string; params?: Record<string, string> };
+      err.reasonCode = body.reasonCode;
+      err.params = body.params;
+      throw err;
     }
     return res.json();
   },
@@ -2708,6 +2765,51 @@ export const api = {
     );
     return res.json();
   },
+
+  /** Streamed replay of POST /api/admin/capture/replay (one-shot, never
+   *  recorded): the endpoint answers NDJSON; each parsed event goes to
+   *  `onEvent` so the dialog renders the body incrementally. */
+  async replayCaptureRequest(spec: ReplaySpec, onEvent: (evt: CaptureReplayStreamEvent) => void): Promise<void> {
+    const res = await fetch('/api/admin/capture/replay', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(spec),
+    });
+    if (!res.ok || !res.body) {
+      const json = await res.json().catch(() => undefined);
+      onEvent({ type: 'error', message: json?.message || `HTTP ${res.status}` });
+      return;
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        try {
+          const raw = JSON.parse(line) as Record<string, unknown>;
+          if (typeof raw.type === 'string') {
+            onEvent(raw as unknown as CaptureReplayStreamEvent);
+          } else if (raw.status === 'ok' && typeof raw.body === 'string') {
+            // Legacy (pre-NDJSON) gateway: one whole-payload JSON answer.
+            // Convert so the dialog still renders instead of erroring.
+            onEvent({ type: 'chunk', text: raw.body });
+            onEvent({ type: 'end', truncated: Boolean(raw.truncated) });
+          } else if (raw.status === 'error') {
+            onEvent({ type: 'error', message: String(raw.message || 'replay failed') });
+          }
+        } catch {
+          // A malformed line must not kill the stream — skip it.
+        }
+      }
+    }
+  },
 };
 
 export interface ApiKeyModelAccess {
@@ -3006,6 +3108,10 @@ export type CredentialExcludedReasonCode =
 export interface CredentialStoreCapabilities {
   multiCredential: boolean;
   activate: boolean;
+  /** Backend supports reordering credentials (POST …/credentials/reorder). */
+  reorder: boolean;
+  /** Backend supports per-credential spread weights (POST …/credentials/:id/weight). */
+  weight: boolean;
   rename: boolean;
   oauth: boolean;
   envVisible: boolean;
@@ -3023,6 +3129,11 @@ export interface CredentialMeta {
   routable: boolean;
   keyHashPrefix?: string;
   maskedKey?: string;
+  /**
+   * Spread weight for the deterministic new-session hash spread (integers >= 1,
+   * absent = 1). OCR-file rows carry it; opencode v2 rows never do.
+   */
+  weight?: number;
 }
 
 export interface CredentialOverview {
@@ -3522,7 +3633,7 @@ function ocJson<T>(res: Response): Promise<T> {
   return res.json();
 }
 
-/** Per-credential write path (activate / rename / disconnect share it). */
+/** Per-credential write path (rename / disconnect share it). */
 function credentialPath(providerId: string, credentialId: string): string {
   return `/api/admin/opencode/providers/${encodeURIComponent(providerId)}/credentials/${encodeURIComponent(credentialId)}`;
 }
@@ -3585,12 +3696,38 @@ export const opencodeApi = {
     );
   },
 
-  /** Make one credential the active credential of its provider. */
-  async activateProviderCredential(
+  /**
+   * Pin one credential to the head of its provider's chain by posting the full
+   * permutation of credential ids (head = ids[0]). Same wire response shape
+   * as the other credential writes.
+   */
+  async reorderProviderCredentials(providerId: string, ids: string[]): Promise<CredentialWriteResponse> {
+    return ocJson(
+      await fetch(`/api/admin/opencode/providers/${encodeURIComponent(providerId)}/credentials/reorder`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      })
+    );
+  },
+
+  /**
+   * Set one credential's spread weight (integer 1..CREDENTIAL_WEIGHT_MAX; the
+   * backend 400s anything else). OCR-file rows only — a v2-bound store refuses
+   * with capability_unsupported. Same wire response shape as the other writes.
+   */
+  async setProviderCredentialWeight(
     providerId: string,
-    credentialId: string
+    credentialId: string,
+    weight: number
   ): Promise<CredentialWriteResponse> {
-    return ocJson(await fetch(credentialPath(providerId, credentialId) + '/activate', { method: 'POST' }));
+    return ocJson(
+      await fetch(credentialPath(providerId, credentialId) + '/weight', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ weight }),
+      })
+    );
   },
 
   /**

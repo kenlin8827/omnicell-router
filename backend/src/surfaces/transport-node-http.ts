@@ -144,6 +144,11 @@ export function createNodeHttpTransport(
               method: req.method || 'POST',
               url: req.url || '',
               headers: req.headers as Record<string, string | string[] | undefined>,
+              // Scheme marker for the origin-form url case: an origin-form
+              // url on this transport is always a TLS-DECRYPTED MITM leg
+              // (plain-HTTP proxy requests arrive absolute-form and never
+              // consult the marker).
+              scheme: 'https' as const,
             },
             onClientExchange: (ctx: ClientExchangeContext) => {
               clientCtx = ctx;
@@ -151,6 +156,31 @@ export function createNodeHttpTransport(
           }
         : {},
 
+    relayUpstream: (up) => {
+      // Verbatim origin relay (direct legs): the pipe IS the response —
+      // status/headers/body bytes pass through untouched; the capture stash
+      // accumulates the same bytes the client receives.
+      try {
+        res.writeHead(up.statusCode || 502, up.statusMessage, up.headers as http.OutgoingHttpHeaders);
+      } catch (err) {
+        logWriteError(err, 'node-http relayUpstream writeHead failed');
+        finalizeCapture();
+        return;
+      }
+      up.stream.on('data', (chunk: Buffer) => {
+        if (clientCtx) appendGatewayResponseChunk(clientCtx, chunk.toString('utf8'));
+      });
+      up.stream.pipe(res);
+      up.stream.on('end', () => {
+        finalizeCapture();
+      });
+      up.stream.on('error', () => {
+        try {
+          res.destroy();
+        } catch {}
+        finalizeCapture();
+      });
+    },
     sendJson: (status, payload, headers) => {
       let serialized: string;
       try {

@@ -516,6 +516,10 @@ export class OpencodeV2Store implements CredentialStore {
     this.capabilities = {
       multiCredential: true,
       activate: writable,
+      reorder: writable,
+      // The v2 service exposes no weight field — v2 rows always weigh 1 and
+      // the console set-weight route refuses via this flag.
+      weight: false,
       rename: writable,
       oauth: false, // OAuth is excluded on every store
       envVisible: true,
@@ -571,6 +575,11 @@ export class OpencodeV2Store implements CredentialStore {
       `contention (SQLITE_BUSY/-shm) still present after ${attempts} attempts: ${msgOf(lastError)}`,
       paths.opencodeDbPath
     );
+  }
+
+  /** Weights are OCR-file state; the v2 service has nowhere to persist one. */
+  async setWeight(): Promise<CredentialMeta> {
+    throw new CapabilityUnsupportedError('setWeight', 'opencode v2 exposes no weight field');
   }
 
   probe(): StoreProbeResult {
@@ -684,6 +693,37 @@ export class OpencodeV2Store implements CredentialStore {
     const known = this.findRow(credentialId);
     this.invalidate();
     return known ? { ...rowToMeta(known), active: true } : { id: credentialId, providerId: '(unknown)', type: 'api', active: true, routable: true };
+  }
+
+  /**
+   * The v2 service exposes NO order API (ADR-0006 amendment), so reorder
+   * DEGRADES to a head-set: activate orderedIds[0] (skipped when that row is
+   * already active) and let the service's `active DESC, time_updated DESC`
+   * read order stand for the standbys. `orderedIds` is still validated as a
+   * permutation of the provider's rows first (unknown id →
+   * CredentialNotFoundError; duplicates/length mismatch → Error).
+   */
+  async reorder(providerId: string, orderedIds: string[]): Promise<CredentialMeta[]> {
+    this.assertWritable('reorder');
+    const rows = this.currentView().get(providerId) ?? [];
+    const rowIds = new Set(rows.map((r) => r.id));
+    const seen = new Set<string>();
+    for (const id of orderedIds) {
+      if (!rowIds.has(id)) throw new CredentialNotFoundError(id);
+      if (seen.has(id)) throw new Error(`reorder: duplicate credential id '${id}'`);
+      seen.add(id);
+    }
+    if (seen.size !== rows.length) {
+      throw new Error(`reorder: expected ${rows.length} credential ids for provider '${providerId}', received ${seen.size}`);
+    }
+    const headId = orderedIds[0];
+    const head = rows.find((r) => r.id === headId);
+    if (head && !head.active) {
+      await this.activate(headId);
+    } else {
+      this.invalidate();
+    }
+    return this.listCredentials(providerId);
   }
 
   async rename(credentialId: string, label: string): Promise<CredentialMeta> {

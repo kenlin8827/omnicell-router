@@ -28,7 +28,7 @@ process.env.OCR_HOME = path.join(sandbox, 'home');
 process.env.OCR_ENV = 'default';
 const ENV_DIR = path.join(process.env.OCR_HOME, 'envs', 'default');
 fs.mkdirSync(ENV_DIR, { recursive: true });
-fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'), 'port: 3000\nhost: 127.0.0.1\napiKeys: []\nmodels: []\n');
+fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'), 'schemaVersion: 1\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\n');
 fs.writeFileSync(path.join(ENV_DIR, 'env.json'), JSON.stringify({ name: 'default', type: 'regular', schemaVersion: 1 }));
 process.chdir(sandbox);
 
@@ -72,7 +72,7 @@ afterAll(() => {
 beforeEach(() => {
   resetDecisionCaptureConfig();
   clearDataset();
-  writeConfig('port: 3000\nhost: 127.0.0.1\napiKeys: []\nmodels: []\n');
+  writeConfig('schemaVersion: 1\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\n');
 });
 
 describe('dataset gate truth table (single key classifier.layer2.collectEnabled)', () => {
@@ -102,7 +102,7 @@ describe('dataset gate truth table (single key classifier.layer2.collectEnabled)
     // The old three-tier inputs are gone from the gate: a requestCapture
     // section OFF (or absent entirely) must NOT suppress the dataset sink.
     writeConfig(
-      'port: 3000\nhost: 127.0.0.1\napiKeys: []\nmodels: []\nrequestCapture:\n  enabled: false\nclassifier:\n  layer2:\n    collectEnabled: true\n'
+      'schemaVersion: 1\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\nops:\n  requestCapture:\n    enabled: false\nrouting:\n  classifier:\n    layer2:\n      collectEnabled: true\n'
     );
     resetDecisionCaptureConfig();
     captureDecision(sample);
@@ -176,14 +176,16 @@ describe('64MB dataset cap', () => {
 describe('removed config keys are stripped, never round-tripped', () => {
   test('a stray legacy `capture:` section is ignored, the real section keeps its values', () => {
     writeConfig([
-      'port: 3000',
-      'host: 127.0.0.1',
-      'apiKeys: []',
-      'models: []',
-      'capture:',
+      'schemaVersion: 1',
+      'client:',
+      '  port: 3000',
+      '  host: 127.0.0.1',
+      '  apiKeys: []',
+      'capture:', // retired junk key: stripped at load, never round-tripped
       '  enabled: true',
-      'requestCapture:',
-      '  enabled: false',
+      'ops:',
+      '  requestCapture:',
+      '    enabled: false',
       '',
     ].join('\n'));
     const cfg = loadConfig();

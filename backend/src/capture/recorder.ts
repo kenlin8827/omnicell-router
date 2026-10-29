@@ -5,6 +5,7 @@ import { RequestCaptureConfig } from '../config/types.js';
 import { getEnvPaths } from '../config/env.js';
 import { renameWithRetry } from '../utils/atomic-write.js';
 import { DEFAULT_MAX_BODY_BYTES } from '../config/defaults.js';
+import { setCaptureSecretRedaction } from '../observability/http-exchange.js';
 
 /**
  * One captured turn — a single JSONL line in the per-session archive file.
@@ -217,9 +218,9 @@ export interface HttpExchangeEvent {
    * `name` are persisted — the token value is never stored, consistent with
    * the credential deny-list in `observability/http-exchange.ts` (the raw
    * Authorization / x-api-key header values stay `[REDACTED]`).
-   * Absent (`undefined`) when the leg has no key identity: master-key
-   * (`adminApiKey`) access, MITM forward-proxy tunnels (CONNECT-authenticated),
-   * or requests archived before this field existed.
+   * Absent (`undefined`) when the leg has no key identity: keyless /v1 calls
+   * or MITM forward-proxy tunnels (CONNECT-authenticated), plus requests
+   * archived before this field existed.
    */
   apiKey?: CaptureKeyIdentity;
   /**
@@ -392,6 +393,7 @@ interface CaptureStatus {
   maxBodyBytes: number;
   maxSessionMB: number;
   storeMedia: boolean;
+  redactSecrets: boolean;
   totalBytes: number;
   dateCount: number;
 }
@@ -525,6 +527,7 @@ export class CaptureRecorder {
   private maxBodyBytes: number;
   private maxSessionBytes: number;
   private storeMedia: boolean;
+  private redactSecrets: boolean;
   // Per-session seal bookkeeping: cached byte size per archive path + which
   // archives already got their terminal `archive-overflow` line.
   private fileBytesCache = new Map<string, number>();
@@ -542,6 +545,8 @@ export class CaptureRecorder {
     this.maxBodyBytes = config?.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
     this.maxSessionBytes = (config?.maxSessionMB ?? 512) * 1024 * 1024;
     this.storeMedia = config?.storeMedia ?? true;
+    setCaptureSecretRedaction(config?.redactSecrets ?? true);
+    this.redactSecrets = config?.redactSecrets ?? true;
     this.rootDir = path.resolve(config?.dir || getEnvPaths().captureDir);
 
     if (this.enabled) {
@@ -577,6 +582,8 @@ export class CaptureRecorder {
     this.maxBodyBytes = cfg?.maxBodyBytes ?? this.maxBodyBytes;
     this.maxSessionBytes = (cfg?.maxSessionMB ?? this.maxSessionBytes / (1024 * 1024)) * 1024 * 1024;
     this.storeMedia = cfg?.storeMedia ?? this.storeMedia;
+    setCaptureSecretRedaction(cfg?.redactSecrets ?? true);
+    this.redactSecrets = cfg?.redactSecrets ?? true;
     const newDir = path.resolve(cfg?.dir || this.rootDir);
     if (newDir !== this.rootDir) {
       this.rootDir = newDir;
@@ -792,6 +799,7 @@ export class CaptureRecorder {
       maxBodyBytes: this.maxBodyBytes,
       maxSessionMB: Math.round(this.maxSessionBytes / (1024 * 1024)),
       storeMedia: this.storeMedia,
+      redactSecrets: this.redactSecrets,
       totalBytes: dates.reduce((sum, d) => sum + d.bytes, 0),
       dateCount: dates.length,
     };
@@ -1942,7 +1950,9 @@ export class CaptureRecorder {
    */
   public static protocolFromRequestLine(requestLine: unknown): CaptureSessionProtocol | undefined {
     if (typeof requestLine !== 'string') return undefined;
-    const m = /^\w+ ([^?\s]+)(?:\?\S*)? HTTP\//.exec(requestLine);
+    // The path segment; tolerates ABSOLUTE-FORM lines (`POST https://host/p?q`
+    // — the MITM client leg) by skipping an optional scheme+authority prefix.
+    const m = /^\w+ (?:[a-z][a-z0-9+.-]*:\/\/[^/?\s]+)?([^?\s]+)(?:\?\S*)? HTTP\//.exec(requestLine);
     if (!m) return undefined;
     switch (m[1]) {
       case '/v1/chat/completions':

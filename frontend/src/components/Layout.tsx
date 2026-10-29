@@ -109,7 +109,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
       { to: '/providers', labelKey: 'nav.providers', icon: Plug },
       { to: '/models', labelKey: 'nav.models', icon: Cpu },
       { to: '/catalog', labelKey: 'nav.catalogSources', icon: CloudDownload },
-      { to: '/proxy', labelKey: 'nav.proxy', icon: ArrowLeftRight },
+      { to: '/proxy-upstream', labelKey: 'nav.proxy', icon: ArrowLeftRight },
       { to: '/token-saver', labelKey: 'nav.tokenSaver', icon: Zap },
     ],
   },
@@ -173,7 +173,7 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/harness/skills': { groupKey: 'nav.grpHarness', titleKey: 'nav.skills' },
   '/harness/mcp': { groupKey: 'nav.grpHarness', titleKey: 'nav.mcp' },
   '/harness/extensions': { groupKey: 'nav.grpHarness', titleKey: 'nav.extensions' },
-  '/proxy': { groupKey: 'nav.grpUpstream', titleKey: 'nav.proxy' },
+  '/proxy-upstream': { groupKey: 'nav.grpUpstream', titleKey: 'nav.proxy' },
   '/token-saver': { groupKey: 'nav.grpUpstream', titleKey: 'nav.tokenSaver' },
   '/clients': { groupKey: 'nav.grpAccess', titleKey: 'nav.clients' },
   '/proxy-access': { groupKey: 'nav.grpAccess', titleKey: 'nav.proxyAccess' },
@@ -662,26 +662,6 @@ export const Layout: React.FC = () => {
               />
             </div>
 
-            {/* Console Logout — only when webAuth login is active */}
-            {webAuthActive && (
-              <button
-                className="btn"
-                onClick={async () => {
-                  const ok = await confirmDialog({
-                    title: t('settings.waLogoutConfirmTitle'),
-                    description: t('settings.waLogoutConfirmDesc'),
-                    confirmLabel: t('settings.waLogout'),
-                  });
-                  if (ok) api.logout().finally(() => window.location.reload());
-                }}
-                style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-                title={t('settings.waLogout')}
-              >
-                <LogOut size={13} color="var(--accent-red, #ef4444)" />
-                <span className="hdr-label hdr-label-opt" style={{ fontWeight: 700 }}>{t('settings.waLogout')}</span>
-              </button>
-            )}
-
             {/* Theme Picker — borderless: the header is a toolbar of actions, and the current theme
                 is a value to read, not a form field. */}
             <Combobox
@@ -717,6 +697,27 @@ export const Layout: React.FC = () => {
                 </span>
               )}
             </button>
+            {/* Console Logout — only when webAuth login is active; sits at the
+                far right end of the toolbar: an account/session action, not a
+                preference, so it trails the quick actions. */}
+            {webAuthActive && (
+              <button
+                className="btn"
+                onClick={async () => {
+                  const ok = await confirmDialog({
+                    title: t('settings.waLogoutConfirmTitle'),
+                    description: t('settings.waLogoutConfirmDesc'),
+                    confirmLabel: t('settings.waLogout'),
+                  });
+                  if (ok) api.logout().finally(() => window.location.reload());
+                }}
+                style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+                title={t('settings.waLogout')}
+              >
+                <LogOut size={13} color="var(--accent-red, #ef4444)" />
+                <span className="hdr-label hdr-label-opt" style={{ fontWeight: 700 }}>{t('settings.waLogout')}</span>
+              </button>
+            )}
           </div>
         </header>
 

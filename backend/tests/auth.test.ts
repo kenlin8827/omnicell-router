@@ -12,7 +12,7 @@ describe('API Key Authentication & Client Auth Flow', () => {
     ...baseConfig,
     host: '127.0.0.1', // loopback: the webAuth forced gate stays off (see web-auth.test.ts)
     webAuth: { enabled: false }, // tests read the operator's live config.yaml via loadConfig() — never inherit its login gate
-    adminApiKey: 'master-secret-key-1234',
+    adminKey: 'master-secret-key-1234',
     apiKeys: [
       {
         id: 'key-test-client',

@@ -52,6 +52,22 @@ const DENY_HEADER_SUBSTRINGS = [
   'auth',
 ];
 
+/**
+ * Module-level kill switch for capture-side credential redaction, driven by
+ * `requestCapture.redactSecrets` (default true = redact). When an operator
+ * explicitly sets `redactSecrets: false`, header and query-param values pass
+ * through UNSANITIZED — raw API keys reach the capture archive on disk. That
+ * is a conscious operator decision; the default keeps the redaction always on.
+ * Set from CaptureRecorder (constructor + applyConfig) so console hot-apply
+ * and controlled-restart config switches both take effect.
+ */
+let captureRedactionEnabled = true;
+
+/** Apply the `requestCapture.redactSecrets` policy (true = redact, default). */
+export function setCaptureSecretRedaction(redact: boolean): void {
+  captureRedactionEnabled = redact;
+}
+
 /** Sentinel value written in place of a credential-bearing header value. */
 export const REDACTED = '[REDACTED]';
 
@@ -67,7 +83,7 @@ function sanitizeHeadersForCapture(raw: Headers | undefined): Record<string, str
   if (!raw) return out;
   raw.forEach((value, key) => {
     const lc = key.toLowerCase();
-    if (DENY_HEADER_SUBSTRINGS.some(s => lc.includes(s))) {
+    if (captureRedactionEnabled && DENY_HEADER_SUBSTRINGS.some(s => lc.includes(s))) {
       out[lc] = REDACTED;
     } else {
       out[lc] = value;
@@ -86,7 +102,7 @@ function sanitizePlainHeadersForCapture(
     if (value === undefined) continue;
     const lc = key.toLowerCase();
     const v = Array.isArray(value) ? value[0] : value;
-    if (DENY_HEADER_SUBSTRINGS.some(s => lc.includes(s))) {
+    if (captureRedactionEnabled && DENY_HEADER_SUBSTRINGS.some(s => lc.includes(s))) {
       out[lc] = REDACTED;
     } else {
       out[lc] = v;
@@ -126,10 +142,11 @@ function encodeWireBody(body: string | Uint8Array | undefined | null): WireBody 
 const QUERY_AUTH_PARAM_RE = /(^|[^a-z])(key|apikey|token|secret|signature|credential|password|auth|sig)([^a-z]|$)/i;
 
 function redactQueryAuth(u: URL): void {
-  // Defense-in-depth: auth-by-query (Google-style `?key=AIza...`) must
-  // never persist raw — redact the value, keep the param name.
+  // Defense-in-depth: auth-by-query (Google-style `?key=AIza...`) does not
+  // persist raw unless the operator disabled redaction
+  // (`requestCapture.redactSecrets: false`) — redact the value, keep the name.
   for (const name of [...new Set(u.searchParams.keys())]) {
-    if (QUERY_AUTH_PARAM_RE.test(name)) u.searchParams.set(name, REDACTED);
+    if (captureRedactionEnabled && QUERY_AUTH_PARAM_RE.test(name)) u.searchParams.set(name, REDACTED);
   }
 }
 
@@ -308,6 +325,15 @@ export type CaptureClientRequest = {
   method: string;
   url?: string;
   headers: Record<string, string | string[] | undefined>;
+  /**
+   * Origin scheme of the ORIGINAL client request. Only the MITM
+   * forward-proxy leg sets it (`https` — that path exists solely for
+   * TLS-decrypted traffic); when present, `emitClientRequest` renders the
+   * client request line in ABSOLUTE form (`POST https://host/path HTTP/1.1`)
+   * using the `host` header, so the archive shows which authority the
+   * client dialed. Fastify legs stay origin-form (`POST /path HTTP/1.1`).
+   */
+  scheme?: 'http' | 'https';
 };
 
 /**
@@ -337,8 +363,20 @@ export function emitClientRequest(args: {
 }): ClientExchangeContext {
   const spanId = cryptoRandom();
   const apiKey = captureKeyIdentity(args.req);
+  // MITM client legs render ABSOLUTE-FORM so the archive shows the authority
+  // the client dialed: a plain-HTTP proxy request already arrives with an
+  // absolute-form url (kept verbatim); a TLS-decrypted leg carries an
+  // origin-form url plus the `scheme` marker set by the node-http transport,
+  // and the authority comes from the surviving `host` header. Fastify legs
+  // (no scheme marker, origin-form url) stay origin-form.
+  const rawUrl = args.req?.url ?? '';
+  const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(rawUrl);
+  const reqHeaders = args.req?.headers as Record<string, string | string[] | undefined> | undefined;
+  const host = typeof reqHeaders?.host === 'string' ? reqHeaders.host : undefined;
+  const scheme = args.req && 'scheme' in args.req ? args.req.scheme : undefined;
+  const authority = !hasScheme && scheme && host ? `${scheme}://${host}` : '';
   const requestLine = args.req
-    ? `${args.req.method} ${pathnameAndQuery(args.req.url ?? '')} HTTP/1.1`
+    ? `${args.req.method} ${hasScheme ? absoluteFormUrl(rawUrl) : `${authority}${pathnameAndQuery(rawUrl)}`} HTTP/1.1`
     : '';
   const requestHeaders = args.req
     ? sanitizePlainHeadersForCapture(args.req.headers as any)

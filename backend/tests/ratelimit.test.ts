@@ -350,22 +350,25 @@ describe('config plumbing — credentials:/limits survive the loadConfig round t
     fs.writeFileSync(
       cfgPath,
       [
-        'credentials:',
-        '  anthropic:',
-        '    - keyHashPrefix: "ab12cd34ef56"',
+        'schemaVersion: 1',
+        'upstream:',
+        '  credentials:',
+        '    anthropic:',
+        '      - keyHashPrefix: "ab12cd34ef56"',
+        '        limits:',
+        '          - { window: 1m, requests: 10 }',
+        '          - { window: 1m, tokens: 50000 }',
+        '          - { window: 1d, requests: 800 }',
+        'client:',
+        '  apiKeys:',
+        '    - id: key-abc',
+        '      name: YAML Client',
+        '      key: sk-ocr-yaml',
+        '      enabled: true',
+        '      createdAt: "2026-01-01T00:00:00.000Z"',
         '      limits:',
-        '        - { window: 1m, requests: 10 }',
-        '        - { window: 1m, tokens: 50000 }',
-        '        - { window: 1d, requests: 800 }',
-        'apiKeys:',
-        '  - id: key-abc',
-        '    name: YAML Client',
-        '    key: sk-ocr-yaml',
-        '    enabled: true',
-        '    createdAt: "2026-01-01T00:00:00.000Z"',
-        '    limits:',
-        '      - { window: 1m, requests: 30 }',
-        '      - { window: 1d, costUsd: 5 }',
+        '        - { window: 1m, requests: 30 }',
+        '        - { window: 1d, costUsd: 5 }',
         '',
       ].join('\n'),
       'utf8'
@@ -517,7 +520,7 @@ describe('inbound enforcement — server 429', () => {
     ...baseConfig,
     host: '127.0.0.1',
     webAuth: { enabled: false },
-    adminApiKey: 'master-rl-key',
+    adminKey: 'master-rl-key',
     apiKeys: [rlKey],
   };
   const { app } = createServer(testConfig, true);
@@ -891,7 +894,7 @@ describe('inbound grace — bounded wait', () => {
     ...baseConfig,
     host: '127.0.0.1',
     webAuth: { enabled: false },
-    adminApiKey: 'master-grace',
+    adminKey: 'master-grace',
     apiKeys: [mk('key-grace-short', '500ms'), mk('key-grace-long', '3s'), mk('key-grace-race', '1s')],
     rateLimit: { inboundGraceMs: 1000 },
   };
@@ -965,7 +968,7 @@ describe('inbound grace — disabled (inboundGraceMs = 0)', () => {
     ...baseConfig,
     host: '127.0.0.1',
     webAuth: { enabled: false },
-    adminApiKey: 'master-grace-off',
+    adminKey: 'master-grace-off',
     apiKeys: [
       {
         id: 'key-grace-off',
@@ -1013,7 +1016,7 @@ describe('inbound grace — an aborted client never burns the freed slot', () =>
     ...baseConfig,
     host: '127.0.0.1',
     webAuth: { enabled: false },
-    adminApiKey: 'master-grace-abort',
+    adminKey: 'master-grace-abort',
     apiKeys: [abortKey],
     rateLimit: { inboundGraceMs: 1000 },
   };
@@ -1029,7 +1032,7 @@ describe('inbound grace — an aborted client never burns the freed slot', () =>
     // kept is the one that matters: nobody hangs.
     testConfig.apiKeys = [abortKey];
     testConfig.webAuth = { enabled: false };
-    testConfig.adminApiKey = 'master-grace-abort';
+    testConfig.adminKey = 'master-grace-abort';
     setRateLimiterForTests(new RateLimiter());
     getRateLimiter().reload(testConfig);
     const url = await app.listen({ port: 0, host: '127.0.0.1' });
@@ -1075,7 +1078,7 @@ describe('inbound grace — a LIVE client gets answered over a real socket', () 
     ...baseConfig,
     host: '127.0.0.1',
     webAuth: { enabled: false },
-    adminApiKey: 'master-grace-live',
+    adminKey: 'master-grace-live',
     apiKeys: [liveKey],
     rateLimit: { inboundGraceMs: 1000 },
   };
@@ -1084,7 +1087,7 @@ describe('inbound grace — a LIVE client gets answered over a real socket', () 
   it('a capped-but-live request is grace-admitted and receives a response (no hang)', async () => {
     testConfig.apiKeys = [liveKey];
     testConfig.webAuth = { enabled: false };
-    testConfig.adminApiKey = 'master-grace-live';
+    testConfig.adminKey = 'master-grace-live';
     setRateLimiterForTests(new RateLimiter());
     getRateLimiter().reload(testConfig);
     const url = await app.listen({ port: 0, host: '127.0.0.1' });
@@ -1329,7 +1332,7 @@ describe('decision-wire metering', () => {
         ...loadConfig(),
         host: '127.0.0.1',
         webAuth: { enabled: false },
-        adminApiKey: 'master-dec',
+        adminKey: 'master-dec',
         models: [
           {
             id: 'dec/model',

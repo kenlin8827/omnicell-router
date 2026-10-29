@@ -51,7 +51,7 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 describe('key-by-key merge at every level (invariant 5)', () => {
   it('partial `rules` (trip only) keeps the counting + recovery family defaults', () => {
-    const c = cfgFrom('circuitBreaker:\n  rules:\n    trip:\n      quota:\n        cooldownMs: 7000\n');
+    const c = cfgFrom('schemaVersion: 1\nresilience:\n  circuitBreaker:\n    rules:\n      trip:\n        quota:\n          cooldownMs: 7000\n');
     // Family map defaults survive:
     expect(c.rules?.counting?.serverErrors?.enabled).toBe(true);
     expect(c.rules?.counting?.unknownErrors?.enabled).toBe(true);
@@ -71,7 +71,7 @@ describe('key-by-key merge at every level (invariant 5)', () => {
   });
 
   it('partial family map (counting.clientErrors only) keeps its sibling classes', () => {
-    const c = cfgFrom('circuitBreaker:\n  rules:\n    counting:\n      clientErrors:\n        enabled: true\n');
+    const c = cfgFrom('schemaVersion: 1\nresilience:\n  circuitBreaker:\n    rules:\n      counting:\n        clientErrors:\n          enabled: true\n');
     expect(c.rules?.counting?.clientErrors?.enabled).toBe(true);
     expect(c.rules?.counting?.serverErrors?.enabled).toBe(true);
     expect(c.rules?.counting?.unknownErrors?.enabled).toBe(true);
@@ -79,7 +79,7 @@ describe('key-by-key merge at every level (invariant 5)', () => {
   });
 
   it('partial single rule object keeps every one of its own defaults', () => {
-    const c = cfgFrom('circuitBreaker:\n  rules:\n    trip:\n      rateLimit:\n        hardTripAboveMs: 4000\n');
+    const c = cfgFrom('schemaVersion: 1\nresilience:\n  circuitBreaker:\n    rules:\n      trip:\n        rateLimit:\n          hardTripAboveMs: 4000\n');
     expect(c.rules?.trip?.rateLimit?.enabled).toBe(true);
     expect(c.rules?.trip?.rateLimit?.scope).toBe('auto');
     expect(c.rules?.trip?.rateLimit?.minCooldownMs).toBeUndefined(); // numeric stays UNSET = auto
@@ -87,20 +87,20 @@ describe('key-by-key merge at every level (invariant 5)', () => {
   });
 
   it('a null rules/family value (bare YAML key) falls back to defaults, not {}', () => {
-    const c = cfgFrom('circuitBreaker:\n  rules:\n    trip:\n');
+    const c = cfgFrom('schemaVersion: 1\nresilience:\n  circuitBreaker:\n    rules:\n      trip:\n');
     expect(c.rules?.trip?.quota?.enabled).toBe(true);
     expect(c.rules?.trip?.failureRate?.enabled).toBe(true);
   });
 
   it('YAML-null numeric params mean UNSET, not 0', () => {
-    const c = cfgFrom('circuitBreaker:\n  rules:\n    trip:\n      quota:\n        cooldownMs:\n        enabled: true\n');
+    const c = cfgFrom('schemaVersion: 1\nresilience:\n  circuitBreaker:\n    rules:\n      trip:\n        quota:\n          cooldownMs:\n          enabled: true\n');
     expect(c.rules?.trip?.quota?.cooldownMs).toBeUndefined();
     expect(resolveBreakerRules(c).trip.quota.cooldownMs).toBe(12 * 3600 * 1000); // global fallback intact
   });
 
   it('junk values fall back at the boundary; the valid sibling key survives', () => {
     const c = cfgFrom(
-      'circuitBreaker:\n  rules:\n    trip:\n      auth:\n        markSuspect: "yes please"\n        cooldownMs: 500\n',
+      'schemaVersion: 1\nresilience:\n  circuitBreaker:\n    rules:\n      trip:\n        auth:\n          markSuspect: "yes please"\n          cooldownMs: 500\n',
     );
     expect(c.rules?.trip?.auth?.markSuspect).toBe(true); // non-boolean -> today's default
     expect(c.rules?.trip?.auth?.cooldownMs).toBe(500);
@@ -108,7 +108,7 @@ describe('key-by-key merge at every level (invariant 5)', () => {
 
   it('garbage enums fall back to today\u2019s behavior', () => {
     const c = cfgFrom(
-      'circuitBreaker:\n  rules:\n    trip:\n      quota:\n        scope: galaxy\n    recovery:\n      onCanaryFailure: teleport\n',
+      'schemaVersion: 1\nresilience:\n  circuitBreaker:\n    rules:\n      trip:\n        quota:\n          scope: galaxy\n      recovery:\n        onCanaryFailure: teleport\n',
     );
     expect(c.rules?.trip?.quota?.scope).toBe('auto');
     expect(c.rules?.recovery?.onCanaryFailure).toBe('backoff');
@@ -118,13 +118,13 @@ describe('key-by-key merge at every level (invariant 5)', () => {
   });
 
   it('unknown keys inside the rules tree are dropped (round-trip hygiene)', () => {
-    const c = cfgFrom('circuitBreaker:\n  rules:\n    trip:\n      quota:\n        bogus: 1\n        enabled: false\n');
+    const c = cfgFrom('schemaVersion: 1\nresilience:\n  circuitBreaker:\n    rules:\n      trip:\n        quota:\n          bogus: 1\n          enabled: false\n');
     expect(c.rules?.trip?.quota).not.toHaveProperty('bogus');
     expect(c.rules?.trip?.quota?.enabled).toBe(false); // the valid sibling key still lands
   });
 
   it('booleans materialize but numeric params stay UNSET so later global-knob edits still propagate', () => {
-    const c = cfgFrom('circuitBreaker:\n  failureThreshold: 7\n  rules:\n    trip:\n      consecutiveFailures:\n        enabled: true\n');
+    const c = cfgFrom('schemaVersion: 1\nresilience:\n  circuitBreaker:\n    failureThreshold: 7\n    rules:\n      trip:\n        consecutiveFailures:\n          enabled: true\n');
     expect(c.rules?.trip?.consecutiveFailures?.threshold).toBeUndefined(); // not frozen into the tree
     expect(resolveBreakerRules(c).trip.consecutiveFailures.threshold).toBe(7); // knob propagates ("auto")
   });
@@ -132,19 +132,19 @@ describe('key-by-key merge at every level (invariant 5)', () => {
 
 describe('halfOpen cross-field clamps (invariant 5)', () => {
   it('maxProbes < 1 clamps to 1 (0 would starve the prober budget)', () => {
-    const c = cfgFrom('circuitBreaker:\n  rules:\n    recovery:\n      halfOpen:\n        maxProbes: 0\n');
+    const c = cfgFrom('schemaVersion: 1\nresilience:\n  circuitBreaker:\n    rules:\n      recovery:\n        halfOpen:\n          maxProbes: 0\n');
     expect(c.rules?.recovery?.halfOpen?.maxProbes).toBe(1);
     expect(resolveBreakerRules(c).recovery.halfOpen.maxProbes).toBe(1);
   });
 
   it('successThreshold clamps to the explicit maxProbes', () => {
-    const c = cfgFrom('circuitBreaker:\n  rules:\n    recovery:\n      halfOpen:\n        maxProbes: 4\n        successThreshold: 9\n');
+    const c = cfgFrom('schemaVersion: 1\nresilience:\n  circuitBreaker:\n    rules:\n      recovery:\n        halfOpen:\n          maxProbes: 4\n          successThreshold: 9\n');
     expect(c.rules?.recovery?.halfOpen?.successThreshold).toBe(4);
     expect(resolveBreakerRules(c).recovery.halfOpen.successThreshold).toBe(4);
   });
 
   it('successThreshold clamps to the GLOBAL halfOpenMaxProbes when maxProbes is unset', () => {
-    const c = cfgFrom('circuitBreaker:\n  halfOpenMaxProbes: 2\n  rules:\n    recovery:\n      halfOpen:\n        successThreshold: 5\n');
+    const c = cfgFrom('schemaVersion: 1\nresilience:\n  circuitBreaker:\n    halfOpenMaxProbes: 2\n    rules:\n      recovery:\n        halfOpen:\n          successThreshold: 5\n');
     expect(c.rules?.recovery?.halfOpen?.maxProbes).toBeUndefined(); // stays UNSET = auto
     expect(c.rules?.recovery?.halfOpen?.successThreshold).toBe(2); // against the effective budget
     expect(resolveBreakerRules(c).recovery.halfOpen.successThreshold).toBe(2);
@@ -159,7 +159,7 @@ describe('halfOpen cross-field clamps (invariant 5)', () => {
   });
 
   it('an unsatisfiable threshold cannot pin HALF_OPEN end-to-end: clamped batch closes on the first success', () => {
-    const c = cfgFrom('circuitBreaker:\n  rules:\n    recovery:\n      halfOpen:\n        maxProbes: 3\n        successThreshold: 0\n');
+    const c = cfgFrom('schemaVersion: 1\nresilience:\n  circuitBreaker:\n    rules:\n      recovery:\n        halfOpen:\n          maxProbes: 3\n          successThreshold: 0\n');
     expect(c.rules?.recovery?.halfOpen?.successThreshold).toBe(1); // floor 1
     expect(resolveBreakerRules(c).recovery.halfOpen.successThreshold).toBe(1);
   });
@@ -167,11 +167,11 @@ describe('halfOpen cross-field clamps (invariant 5)', () => {
 
 describe('persistence.debounceMs reaches the breaker-state store', () => {
   it('absent section -> default 1000; custom value survives the sanitizer', () => {
-    expect(cfgFrom('circuitBreaker:\n  enabled: true\n').persistence?.debounceMs).toBe(1000);
+    expect(cfgFrom('schemaVersion: 1\nresilience:\n  circuitBreaker:\n    enabled: true\n').persistence?.debounceMs).toBe(1000);
     expect(DEFAULT_BREAKER_PERSIST_DEBOUNCE_MS).toBe(1000);
-    const c = cfgFrom('circuitBreaker:\n  persistence:\n    debounceMs: 2500\n');
+    const c = cfgFrom('schemaVersion: 1\nresilience:\n  circuitBreaker:\n    persistence:\n      debounceMs: 2500\n');
     expect(c.persistence?.debounceMs).toBe(2500);
-    expect(cfgFrom('circuitBreaker:\n  persistence:\n    debounceMs: -9\n').persistence?.debounceMs).toBe(1000);
+    expect(cfgFrom('schemaVersion: 1\nresilience:\n  circuitBreaker:\n    persistence:\n      debounceMs: -9\n').persistence?.debounceMs).toBe(1000);
   });
 
   it('a store built with that value flushes on its own debounce (no explicit flush)', async () => {
@@ -205,9 +205,9 @@ describe('persistence.debounceMs reaches the breaker-state store', () => {
   });
 });
 
-describe('legacy shape equivalence (byte-for-byte promise)', () => {
-  it('a minimal legacy config resolves to exactly the rules-less resolution', () => {
-    const c = cfgFrom('port: 3000\ncircuitBreaker:\n  failureThreshold: 5\n');
+describe('minimal-shape equivalence (byte-for-byte promise)', () => {
+  it('a minimal config resolves to exactly the rules-less resolution', () => {
+    const c = cfgFrom('schemaVersion: 1\nclient:\n  port: 3000\nresilience:\n  circuitBreaker:\n    failureThreshold: 5\n');
     expect(resolveBreakerRules(c)).toEqual(
       (() => {
         const clone = { ...c, rules: undefined };
@@ -239,9 +239,9 @@ describe('legacy shape equivalence (byte-for-byte promise)', () => {
 
   it('the template self-documents the rules tree (operators see the knobs)', () => {
     const doc = parse(defaultConfigYaml()) as any;
-    expect(Object.keys(doc.circuitBreaker.rules)).toEqual(['counting', 'trip', 'recovery']);
-    expect(doc.circuitBreaker.rules.trip.failureRate.enabled).toBe(true);
-    expect(doc.circuitBreaker.shadow).toBe(false);
-    expect(doc.circuitBreaker.persistence.debounceMs).toBe(1000);
+    expect(Object.keys(doc.resilience.circuitBreaker.rules)).toEqual(['counting', 'trip', 'recovery']);
+    expect(doc.resilience.circuitBreaker.rules.trip.failureRate.enabled).toBe(true);
+    expect(doc.resilience.circuitBreaker.shadow).toBe(false);
+    expect(doc.resilience.circuitBreaker.persistence.debounceMs).toBe(1000);
   });
 });

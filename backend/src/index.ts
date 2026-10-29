@@ -1,4 +1,4 @@
-import { loadConfig, ensureDefaultConfigFile, getRuntimeConfigRef } from './config/index.js';
+import { loadConfig, ensureDefaultConfigFile, upgradeConfigFile, getRuntimeConfigRef } from './config/index.js';
 import { createServer } from './server.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { DispatchingProvider } from './providers/dispatch.js';
@@ -58,6 +58,10 @@ async function main() {
   if (cfgTemplate.created) {
     console.log(`[OCR] No config.yaml found — wrote default template to ${cfgTemplate.path} (edit + restart to apply)`);
   }
+  // Schema upgrade (ADR-0016): the ONE legacy-config migration point. Older
+  // files are rewritten to the current schemaVersion before the first
+  // loadConfig; a file targeting a NEWER schema fails boot (upgrade OCR).
+  upgradeConfigFile();
 
   const config = loadConfig();
   initProxyConfig(config.proxy);

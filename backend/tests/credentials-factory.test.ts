@@ -52,6 +52,8 @@ function readLkg(paths: CredentialPaths): Record<string, unknown> | null {
 const OCR_CAPS = {
   multiCredential: true,
   activate: true,
+  reorder: true,
+  weight: true,
   rename: true,
   oauth: false,
   envVisible: false,

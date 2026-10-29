@@ -17,7 +17,7 @@ import {
  * client, not an alternative store — so every route lands on the local file:
  *  connect/key: local write + idempotent dedup (same keyHash never adds a row),
  *      no auth.json side-write on ANY binding.
- *  per-credential write surface: activate/rename/disconnect routes — label
+ *  per-credential write surface: reorder/rename/disconnect routes — label
  *      contract, credential cross-check guard, suspect clear on disconnect.
  *  store-resolved reads: test probe key resolution + models-pull live branch.
  *  operator takedown: OCR-side state, not a store write.
@@ -263,6 +263,57 @@ describe('POST /opencode/providers/:id/connect — the local store is the sink',
     expect(rows.find((r: { key: string }) => r.key === 'sk-head-two').active).toBe(false);
     expect(first.json().credential.active).toBe(true);
     expect(second.json().credential.active).toBe(false);
+  });
+});
+
+describe('hot credential-chain refresh — the runtime chain tracks the store without a restart', () => {
+  const HOT = 'hot-chain-provider'; // unique id — the module-level registry outlives each test
+
+  it('connect adds the new key to the live chain; reorder moves the head; disconnect removes it', async () => {
+    const p = credPaths();
+    bindStore(p);
+
+    // Boot degeneracy: pretend the process started with ONE key (key A).
+    await app.inject({
+      method: 'POST',
+      url: `/api/admin/opencode/providers/${HOT}/connect`,
+      payload: { apiKey: 'sk-hot-a' },
+    });
+    const chain1 = registry.getCredentialChain(HOT) ?? [];
+    expect(chain1.map((c: { keyHashPrefix: string }) => c.keyHashPrefix)).toEqual([keyHashPrefix('sk-hot-a')]);
+
+    // Second key lands in the store AND in the live chain (head unchanged —
+    // connectKeyIdempotent preserved the active row).
+    await app.inject({
+      method: 'POST',
+      url: `/api/admin/opencode/providers/${HOT}/connect`,
+      payload: { apiKey: 'sk-hot-b' },
+    });
+    const chain2 = registry.getCredentialChain(HOT) ?? [];
+    expect(chain2.map((c: { keyHashPrefix: string }) => c.keyHashPrefix)).toEqual([
+      keyHashPrefix('sk-hot-a'),
+      keyHashPrefix('sk-hot-b'),
+    ]);
+    // Reorder — key B becomes the chain head, hot.
+    const rows = readOcrFile(p).providers[HOT];
+    const bRow = rows.find((r: { key: string }) => r.key === 'sk-hot-b');
+    const aRow = rows.find((r: { key: string }) => r.key === 'sk-hot-a');
+    const act = await app.inject({
+      method: 'POST',
+      url: `/api/admin/opencode/providers/${HOT}/credentials/reorder`,
+      payload: { ids: [bRow.credentialId, aRow.credentialId] },
+    });
+    expect(act.statusCode).toBe(200);
+    expect((registry.getCredentialChain(HOT) ?? [])[0].keyHashPrefix).toBe(keyHashPrefix('sk-hot-b'));
+
+    // Disconnect key B — it leaves the live chain immediately.
+    const del = await app.inject({
+      method: 'DELETE',
+      url: `/api/admin/opencode/providers/${HOT}/credentials/${bRow.credentialId}?clientRevoke=0`,
+    });
+    expect(del.statusCode).toBe(200);
+    const chain3 = registry.getCredentialChain(HOT) ?? [];
+    expect(chain3.map((c: { keyHashPrefix: string }) => c.keyHashPrefix)).toEqual([keyHashPrefix('sk-hot-a')]);
   });
 });
 
@@ -1061,35 +1112,36 @@ describe('POST .../credentials/:credentialId/{disable,enable} — operator taked
   });
 });
 
-describe('POST .../providers/:id/credentials/:credentialId/activate', () => {
-  it('flips the active row in credentials.json; refreshed masked credentials inline (overlay shape)', async () => {
+describe('POST .../providers/:id/credentials/reorder', () => {
+  it('200: reorders the chain, flips the head to ids[0], refreshes the inline list', async () => {
     const p = credPaths();
     const keyA = 'sk-act-A-key';
     const keyB = 'sk-act-B-key';
     seedOcr(p, {
       anthropic: [
-        { id: 'c-a', key: keyA, active: false },
-        { id: 'c-b', key: keyB, active: true },
+        { id: 'c-a', key: keyA, active: true },
+        { id: 'c-b', key: keyB, active: false },
       ],
     });
     bindStore(p);
     const res = await app.inject({
       method: 'POST',
-      url: '/api/admin/opencode/providers/anthropic/credentials/c-a/activate',
+      url: '/api/admin/opencode/providers/anthropic/credentials/reorder',
+      payload: { ids: ['c-b', 'c-a'] },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.success).toBe(true);
-    expect(body.credential.id).toBe('c-a');
+    // the head is ids[0]
+    expect(body.credential.id).toBe('c-b');
     expect(body.credential.active).toBe(true);
     const rows = readOcrFile(p).providers.anthropic;
-    expect(rows.find((r: { credentialId: string }) => r.credentialId === 'c-a').active).toBe(true);
-    expect(rows.find((r: { credentialId: string }) => r.credentialId === 'c-b').active).toBe(false);
-    // refreshed inline list = store-status overlay shape (P3-step3 keys present).
-    // The OCR store lists in FILE order (the v2 view's active-first ORDER BY is
-    // gone with it); chain PRIORITY itself stays active-first via
-    // resolveKeyChain — the drill-down cannot hide a row either way.
-    expect(body.credentials.map((a: { id: string }) => a.id)).toEqual(['c-a', 'c-b']);
+    // array order is authoritative and active follows position 0
+    expect(rows.map((r: { credentialId: string }) => r.credentialId)).toEqual(['c-b', 'c-a']);
+    expect(rows[0].active).toBe(true);
+    expect(rows[1].active).toBe(false);
+    // refreshed inline list = store-status overlay shape (P3-step3 keys present)
+    expect(body.credentials.map((a: { id: string }) => a.id)).toEqual(['c-b', 'c-a']);
     expect(body.credentials[0].suspect).toBe(false);
     expect(body.credentials[0].openPairs).toBe(0);
     // masked-only wire contract (Decision 1 risk limb)
@@ -1097,55 +1149,46 @@ describe('POST .../providers/:id/credentials/:credentialId/activate', () => {
     expect(res.body).not.toContain(keyB);
   });
 
-  it('ocr standalone: capabilities.activate=true → allowed; active flag flips in credentials.json', async () => {
+  it('400: invalid ids body shapes (missing / empty / non-string entries) never reach the store', async () => {
     const p = credPaths();
+    seedOcr(p, { anthropic: [{ id: 'c-a', key: 'sk-ord-a' }] });
     bindStore(p);
-    await app.inject({
-      method: 'POST',
-      url: '/api/admin/opencode/providers/anthropic/connect',
-      payload: { apiKey: 'sk-ocr-acc-1' },
+    for (const payload of [undefined, {}, { ids: [] }, { ids: ['c-a', 7] }, { ids: 'c-a' }]) {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/admin/opencode/providers/anthropic/credentials/reorder',
+        ...(payload !== undefined ? { payload } : {}),
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().reasonCode).toBe('invalid_ids');
+    }
+    // the row is untouched
+    expect(readOcrFile(p).providers.anthropic[0].credentialId).toBe('c-a');
+  });
+
+  it('unknown id in the permutation → 404 credential_not_found, no partial write', async () => {
+    const p = credPaths();
+    seedOcr(p, {
+      anthropic: [
+        { id: 'c-a', key: 'sk-guard-a', active: true },
+        { id: 'c-b', key: 'sk-guard-b', active: false },
+      ],
     });
-    await app.inject({
-      method: 'POST',
-      url: '/api/admin/opencode/providers/anthropic/connect',
-      payload: { apiKey: 'sk-ocr-acc-2' },
-    });
-    const before = readOcrFile(p).providers.anthropic;
-    const secondId = before[1].credentialId;
-    expect(before[1].active).toBe(false); // first key for a provider is active by default
+    bindStore(p);
     const res = await app.inject({
       method: 'POST',
-      url: `/api/admin/opencode/providers/anthropic/credentials/${secondId}/activate`,
+      url: '/api/admin/opencode/providers/anthropic/credentials/reorder',
+      payload: { ids: ['c-b', 'c-nope'] },
     });
-    expect(res.statusCode).toBe(200);
-    expect(res.json().success).toBe(true);
-    const after = readOcrFile(p).providers.anthropic;
-    expect(after.find((a: { credentialId: string }) => a.credentialId === secondId).active).toBe(true);
-    expect(after.find((a: { credentialId: string }) => a.credentialId !== secondId).active).toBe(false);
+    expect(res.statusCode).toBe(404);
+    expect(res.json().reasonCode).toBe('credential_not_found');
+    // order + active flags untouched
+    const rows = readOcrFile(p).providers.anthropic;
+    expect(rows.map((r: { credentialId: string }) => r.credentialId)).toEqual(['c-a', 'c-b']);
+    expect(rows[0].active).toBe(true);
   });
 
-  it('cross-check guard: unknown id → 404 credential_not_found, no passthrough', async () => {
-    const p = credPaths();
-    seedOcr(p, { anthropic: [{ id: 'c-a', key: 'sk-guard-a' }] });
-    bindStore(p);
-    const cases = [
-      { method: 'POST', url: '/api/admin/opencode/providers/anthropic/credentials/c-nope/activate' },
-      { method: 'PATCH', url: '/api/admin/opencode/providers/anthropic/credentials/c-nope', payload: { label: 'x' } },
-      { method: 'DELETE', url: '/api/admin/opencode/providers/anthropic/credentials/c-nope' },
-    ] as const;
-    for (const c of cases) {
-      const res = await app.inject({
-        method: c.method,
-        url: c.url,
-        ...('payload' in c ? { payload: c.payload } : {}),
-      });
-      expect(res.statusCode).toBe(404);
-      expect(res.json().reasonCode).toBe('credential_not_found');
-    }
-    expect(fetchCalls.filter((x) => x.url.includes('/api/credential/c-nope'))).toHaveLength(0);
-  });
-
-  it('cross-check guard: ocr credential of ANOTHER provider is refused (findCredential is global)', async () => {
+  it('cross-check guard: ocr credential of ANOTHER provider is refused (permutation is per-provider)', async () => {
     const p = credPaths();
     bindStore(p);
     await app.inject({
@@ -1154,15 +1197,77 @@ describe('POST .../providers/:id/credentials/:credentialId/activate', () => {
       payload: { apiKey: 'sk-ocr-cross' },
     });
     const accId = readOcrFile(p).providers.anthropic[0].credentialId;
-    // The ocr store's findCredential(credentialId) would happily resolve this id —
-    // the route-level guard against listCredentials('openai') must not let it.
+    // 'openai' has no rows, so the route 404s before the store is ever called.
     const res = await app.inject({
       method: 'POST',
-      url: `/api/admin/opencode/providers/openai/credentials/${accId}/activate`,
+      url: '/api/admin/opencode/providers/openai/credentials/reorder',
+      payload: { ids: [accId] },
     });
     expect(res.statusCode).toBe(404);
     expect(res.json().reasonCode).toBe('credential_not_found');
     expect(readOcrFile(p).providers.anthropic[0].active).toBe(true); // untouched
+  });
+});
+
+describe('POST .../providers/:id/credentials/:credentialId/weight', () => {
+  it('200: stores the weight, answers the refreshed inline list, stays masked-only', async () => {
+    const p = credPaths();
+    const keyA = 'sk-wt-A-key';
+    const keyB = 'sk-wt-B-key';
+    seedOcr(p, {
+      anthropic: [
+        { id: 'c-a', key: keyA, active: true },
+        { id: 'c-b', key: keyB, active: false },
+      ],
+    });
+    bindStore(p);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/opencode/providers/anthropic/credentials/c-b/weight',
+      payload: { weight: 3 },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.success).toBe(true);
+    expect(body.credential.id).toBe('c-b');
+    expect(body.credential.weight).toBe(3);
+    expect(readOcrFile(p).providers.anthropic.find((r: { credentialId: string }) => r.credentialId === 'c-b').weight).toBe(3);
+    // refreshed inline list carries the weight for the UI editor
+    const row = body.credentials.find((a: { id: string }) => a.id === 'c-b');
+    expect(row.weight).toBe(3);
+    expect(body.credentials.find((a: { id: string }) => a.id === 'c-a').weight).toBeUndefined();
+    // masked-only wire contract
+    expect(res.body).not.toContain(keyA);
+    expect(res.body).not.toContain(keyB);
+  });
+
+  it('400: non-integer / out-of-range / missing weights never reach the store', async () => {
+    const p = credPaths();
+    seedOcr(p, { anthropic: [{ id: 'c-a', key: 'sk-wt-val' }] });
+    bindStore(p);
+    for (const payload of [undefined, {}, { weight: 0 }, { weight: -2 }, { weight: 1.5 }, { weight: 101 }, { weight: '3' }, { weight: null }]) {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/admin/opencode/providers/anthropic/credentials/c-a/weight',
+        ...(payload !== undefined ? { payload } : {}),
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().reasonCode).toBe('invalid_weight');
+    }
+    expect(readOcrFile(p).providers.anthropic[0].weight).toBeUndefined();
+  });
+
+  it('unknown credential → 404 credential_not_found, no write', async () => {
+    const p = credPaths();
+    seedOcr(p, { anthropic: [{ id: 'c-a', key: 'sk-wt-miss' }] });
+    bindStore(p);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/opencode/providers/anthropic/credentials/c-nope/weight',
+      payload: { weight: 2 },
+    });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().reasonCode).toBe('credential_not_found');
   });
 });
 

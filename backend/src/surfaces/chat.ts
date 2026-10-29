@@ -30,14 +30,17 @@ export const chatSurface: ChatSurface = {
   },
 
   encodeJson(result: ExecutionResult): unknown {
-    return result.response;
+    // Direct-forward turns never reach the encoders (chat-pipeline
+    // short-circuits to relayUpstream) — the non-null assertion is the
+    // ExecutionResult contract for encode-reachable results.
+    return result.response!;
   },
 
   encodeStream(result: ExecutionResult): string[] {
     // Plain `result.modelUsed` — today's handler passed exactly this to the
     // generator; the `modelUsed || gate || 'auto'` fallback is only for the
     // X-OCR-Model HEADER (ocr-headers.ts), never for chunk bodies.
-    return [...buildChatStreamChunks(result.response, result.modelUsed), 'data: [DONE]\n\n'];
+    return [...buildChatStreamChunks(result.response!, result.modelUsed), 'data: [DONE]\n\n'];
   },
 
   encodeChunk(chunk, ctx) {

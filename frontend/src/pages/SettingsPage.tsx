@@ -143,6 +143,15 @@ export const SettingsPage: React.FC = () => {
   };
 
   const handleSave = async () => {
+    if (waDirty) {
+      const ok = await confirmDialog({
+        title: t('settings.waTopSaveConfirmTitle'),
+        description: t('settings.waUnsavedHint'),
+        warning: true,
+        confirmLabel: t('common.confirm'),
+      });
+      if (!ok) return;
+    }
     try {
       // Console Access (webAuth) is owned EXCLUSIVELY by the dedicated
       // /api/admin/auth/config endpoint: the password is hashed server-side and
@@ -156,7 +165,6 @@ export const SettingsPage: React.FC = () => {
       await api.saveConfig(payload);
       setSavedNotice(true);
       setTimeout(() => setSavedNotice(false), 3000);
-      if (waDirty) toast.info(t('settings.waUnsavedHint'));
     } catch (err: any) {
       toast.error('Failed: ' + err.message);
     }
@@ -451,6 +459,14 @@ export const SettingsPage: React.FC = () => {
               <Switch
                 checked={config.requestCapture?.enabled ?? false}
                 onChange={v => patchRequestCapture({ enabled: v })}
+              />
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
+              <span>{t('settings.capRedactSecrets')}</span>
+              <Switch
+                checked={config.requestCapture?.redactSecrets ?? true}
+                onChange={v => patchRequestCapture({ redactSecrets: v })}
+                ariaLabel={t('settings.capRedactSecrets')}
               />
             </label>
 
@@ -811,6 +827,8 @@ export const SettingsPage: React.FC = () => {
                     fontWeight: 600,
                     padding: '1px 7px',
                     borderRadius: '999px',
+                    whiteSpace: 'nowrap',
+                    flexShrink: 0,
                     color: 'var(--accent-amber, #f59e0b)',
                     background: 'color-mix(in srgb, var(--accent-amber, #f59e0b) 15%, transparent)',
                     border: '1px solid color-mix(in srgb, var(--accent-amber, #f59e0b) 35%, transparent)',
@@ -871,7 +889,7 @@ export const SettingsPage: React.FC = () => {
                   <input
                     type="password"
                     value={waPassword}
-                    onChange={e => setWaPassword(e.target.value)}
+                    onChange={e => { setWaPassword(e.target.value); if (e.target.value !== '') setWaEnabled(true); }}
                     placeholder={waConfig.hasPassword ? t('settings.waKeepPassword') : '••••••'}
                     autoComplete="new-password"
                     className="input"

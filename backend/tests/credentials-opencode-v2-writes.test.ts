@@ -7,6 +7,7 @@ import { ocrCredentialsFile } from '../src/opencode/credentials/paths.js';
 import { DbOpener, OpencodeV2Store, resolveServiceConfigForPaths } from '../src/opencode/credentials/opencode-v2-store.js';
 import {
   CapabilityUnsupportedError,
+  CredentialNotFoundError,
   IntegrationUnmatchedError,
   WriteFailedError,
   keyHashPrefix,
@@ -144,6 +145,53 @@ describe('OpencodeV2Store writes (HTTP mock against the opencode v2 service)', (
     expect(calls[1]!.body).toEqual({ label: 'rotated' });
     // the documented credential COLLECTION routes 404 on 2.0.15 — must never be called
     for (const c of calls) expect(c.url).not.toMatch(/\/api\/credential\/?$/);
+  });
+
+  it('reorder degrades to a head-set: activates ids[0], skips the POST when it is already active', async () => {
+    const paths = sandboxPaths();
+    writeServiceJson(paths, { password: 'pw1', port: 4100 });
+    const mkRow = (id: string, active: number, updated: number) => ({
+      id,
+      integration_id: 'anthropic',
+      label: null,
+      value: JSON.stringify({ type: 'key', key: `sk-reorder-${id}` }),
+      active,
+      time_created: 1,
+      time_updated: updated,
+    });
+    const rows = [mkRow('c1', 1, 5), mkRow('c2', 0, 9)];
+    const { fetchImpl, calls } = makeFetch((call) => {
+      // emulate the service: activate flips the flags and the read order
+      const m = call.url.match(/\/api\/credential\/([^/]+)\/activate$/);
+      if (m) {
+        for (const r of rows) r.active = r.id === m[1] ? 1 : 0;
+        rows.sort((a, b) => b.active - a.active || b.time_updated - a.time_updated);
+      }
+      return { status: 200, json: { ok: true } };
+    });
+    const store = await makeStore({ paths, fetchImpl, rows });
+
+    // standby c2 becomes the head → exactly ONE activate POST (c1 is never touched)
+    const out = await store.reorder('anthropic', ['c2', 'c1']);
+    expect(calls.map((c) => `${c.method} /${c.url.split('/api/')[1]}`)).toEqual(['POST /credential/c2/activate']);
+    expect(out.map((m) => m.id)).toEqual(['c2', 'c1']);
+    expect(out[0]!.active).toBe(true);
+
+    // ids[0] already active → no HTTP call at all
+    calls.length = 0;
+    const out2 = await store.reorder('anthropic', ['c2', 'c1']);
+    expect(calls).toHaveLength(0);
+    expect(out2.map((m) => m.id)).toEqual(['c2', 'c1']);
+
+    // not a permutation → CredentialNotFoundError before any write
+    let err: unknown;
+    try {
+      await store.reorder('anthropic', ['c2', 'nope']);
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(CredentialNotFoundError);
+    expect(calls).toHaveLength(0);
   });
 
   it('activate / rename / disconnect each invalidate the cached view AFTER the post-write row lookup (Decision 3: ANY console action)', async () => {

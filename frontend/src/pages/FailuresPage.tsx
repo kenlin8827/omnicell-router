@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { AlertOctagon, RefreshCw, Search, Inbox, Activity, Eraser, Trash2 } from 'lucide-react';
+import { AlertOctagon, RefreshCw, Search, Inbox, Activity, Eraser, Trash2, Copy } from 'lucide-react';
 import { api, type FailureEvent, type FailureErrorClass, type FailureEventRole } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 import { useConfirm } from '../components/ConfirmProvider';
@@ -295,23 +295,24 @@ export const FailuresPage: React.FC = () => {
                     border: '1px solid var(--divider)',
                     borderRadius: '8px',
                     padding: '8px 12px',
-                    minWidth: '170px',
+                    flex: '1 1 260px',
+                    maxWidth: '380px',
                     background: 'var(--chip-bg)',
                     display: 'flex',
                     flexDirection: 'column',
                     gap: '4px',
                   }}
                 >
-                  <div style={{ ...MONO, fontSize: '12.5px', color: 'var(--text-main)' }}>{agg.model}</div>
-                  <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{agg.provider}</div>
-                  <div style={{ fontSize: '15px', fontWeight: 600, color: 'var(--accent-amber)' }}>
-                    {t('failuresPage.cardTotal', { n: agg.total })}
+                  <div style={{ ...MONO, fontSize: '12.5px', color: 'var(--text-main)', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={agg.model}>
+                    {agg.model}
                   </div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                  <div style={{ fontSize: '15px', fontWeight: 600, color: 'var(--accent-amber)', display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'baseline' }}>
+                    {t('failuresPage.cardTotal', { n: agg.total })}
                     {Object.entries(agg.classes)
                       .sort(([, a], [, b]) => (b ?? 0) - (a ?? 0))
+                      .slice(0, 3)
                       .map(([c, n]) => (
-                        <span key={c} style={{ fontSize: '10.5px', color: 'var(--text-dim)' }}>
+                        <span key={c} style={{ fontSize: '10.5px', fontWeight: 400, color: 'var(--text-dim)' }}>
                           {classLabel(c as FailureErrorClass)} ×{n}
                         </span>
                       ))}
@@ -399,8 +400,9 @@ export const FailuresPage: React.FC = () => {
                   <th style={TH}>{t('failuresPage.colModel')}</th>
                   <th style={TH}>{t('failuresPage.colClass')}</th>
                   <th style={TH}>{t('failuresPage.colStatus')}</th>
-                  <th style={TH}>{t('failuresPage.colMessage')}</th>
                   <th style={TH}>{t('failuresPage.colSession')}</th>
+                  <th style={TH}>{t('failuresPage.colMessage')}</th>
+                  <th style={TH} aria-label={t('failuresPage.copyMessage')} />
                   <th style={TH} aria-label={t('failuresPage.removeRow')} />
                 </tr>
               </thead>
@@ -414,16 +416,30 @@ export const FailuresPage: React.FC = () => {
                       )}
                     </td>
                     <td style={TD}>{roleBadge(e.role)}</td>
-                    <td style={{ ...TD, ...MONO }}>
-                      {e.model}
-                      <span style={{ color: 'var(--text-dim)' }}> · {e.provider}</span>
-                    </td>
+                    <td style={{ ...TD, ...MONO }}>{e.model}</td>
                     <td style={TD}>{classBadge(e.errorClass)}</td>
                     <td style={{ ...TD, ...MONO }}>{e.status ?? '—'}</td>
-                    <td style={{ ...TD, whiteSpace: 'normal', maxWidth: '420px', color: 'var(--text-dim)', wordBreak: 'break-word' }}>
-                      {e.message}
-                    </td>
                     <td style={{ ...TD, ...MONO, color: 'var(--text-dim)' }}>{e.sessionId ?? '—'}</td>
+                    <td style={{ ...TD, maxWidth: '420px', color: 'var(--text-dim)' }} title={e.message}>
+                      <div style={{ ...MONO, wordBreak: 'break-all', lineHeight: 1.9, padding: '4px 0', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                        {e.message}
+                      </div>
+                    </td>
+                    <td style={TD}>
+                      <button
+                        className="btn btn-sm"
+                        title={t('failuresPage.copyMessage')}
+                        style={{ padding: '2px 6px', color: 'var(--text-dim)' }}
+                        onClick={() => {
+                          navigator.clipboard.writeText(e.message).then(
+                            () => toast.success(t('failuresPage.messageCopied')),
+                            () => toast.error(t('failuresPage.messageCopyFailed')),
+                          );
+                        }}
+                      >
+                        <Copy size={12} />
+                      </button>
+                    </td>
                     <td style={TD}>
                       <button
                         className="btn btn-sm"

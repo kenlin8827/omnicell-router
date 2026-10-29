@@ -9,6 +9,8 @@ export interface ConfirmOptions {
   description?: string;
   /** Danger actions get a red confirm button and a warning icon. */
   danger?: boolean;
+  /** Warning notice: amber warning icon, but the confirm action itself stays non-destructive (primary button). */
+  warning?: boolean;
   confirmLabel?: string;
   cancelLabel?: string;
   /** Opt-in: blur the page behind the overlay. Default: dim only, no blur. */
@@ -66,6 +68,7 @@ export const ConfirmProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const o = active?.options;
   const danger = !!o?.danger;
+  const warn = !danger && !!o?.warning;
 
   return (
     <ConfirmContext.Provider value={confirm}>
@@ -111,11 +114,15 @@ export const ConfirmProvider: React.FC<{ children: React.ReactNode }> = ({ child
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  background: danger ? 'color-mix(in srgb, var(--accent-rose) 15%, transparent)' : 'var(--accent-bg)',
-                  color: danger ? 'var(--accent-rose)' : 'var(--accent)',
+                  background: danger
+                    ? 'color-mix(in srgb, var(--accent-rose) 15%, transparent)'
+                    : warn
+                      ? 'color-mix(in srgb, var(--accent-amber, #f59e0b) 15%, transparent)'
+                      : 'var(--accent-bg)',
+                  color: danger ? 'var(--accent-rose)' : warn ? 'var(--accent-amber, #f59e0b)' : 'var(--accent)',
                 }}
               >
-                {danger ? <AlertTriangle size={18} /> : <HelpCircle size={18} />}
+                {danger || warn ? <AlertTriangle size={18} /> : <HelpCircle size={18} />}
               </div>
               <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
                 <div style={{ fontSize: 14.5, fontWeight: 700, color: 'var(--text-main)', lineHeight: 1.45, wordBreak: 'break-word' }}>

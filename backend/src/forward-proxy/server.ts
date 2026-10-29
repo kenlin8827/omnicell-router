@@ -6,8 +6,16 @@ import { CertMinter, ensureCa } from './ca.js';
 import { parseClientHelloSNI } from './sni.js';
 import { splice } from './relay.js';
 import { matchBypass, type BypassEntry } from './bypass.js';
-import { resolveProxyUrl } from '../utils/proxy.js';
 import { FORWARD_PROXY_HANG_TIMEOUT_MS } from '../config/defaults.js';
+import type { ForwardProxyConfig } from '../config/types.js';
+import {
+  currentBypassHosts,
+  filterHeaders,
+  openViaProxy,
+  parseProxy,
+  setLiveForwardProxy,
+  transitProxyFor,
+} from './egress.js';
 
 /**
  * Inbound forward proxy (the HTTP_PROXY / HTTPS_PROXY server).
@@ -40,17 +48,8 @@ import { FORWARD_PROXY_HANG_TIMEOUT_MS } from '../config/defaults.js';
 const MAX_HELLO_BYTES = 32 * 1024;
 const CLIENT_ERROR_RESPONSE = 'HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n';
 
-const HOP_BY_HOP = new Set([
-  'connection',
-  'proxy-connection',
-  'keep-alive',
-  'proxy-authenticate',
-  'proxy-authorization',
-  'te',
-  'trailer',
-  'transfer-encoding',
-  'upgrade',
-]);
+// (hop-by-hop header filtering and the outbound-proxy egress policy live in
+//  egress.ts, shared with the pipeline's direct-forward relay.)
 
 export interface ForwardProxyDeps {
   port: number;
@@ -59,15 +58,24 @@ export interface ForwardProxyDeps {
   /**
    * Bypass list: bare strings = pure tunnel (direct); `{ host, viaProxy }`
    * entries choose the egress per host (viaProxy → through the outbound
-   * proxy policy).
+   * proxy policy). Boot snapshot — `liveForwardProxy` (when provided) wins
+   * per request, so console saves hot-apply without a restart.
    */
   bypassHosts?: (string | BypassEntry)[];
   /**
    * Route transit (bypass tunnels + non-intercepted forwards) through the
    * outbound proxy policy (`config.proxy` — url/includes/excludes). Default
    * false = direct egress. Recommended on for network-blocked targets.
+   * Boot snapshot — `liveForwardProxy` (when provided) wins per request.
    */
   viaOutboundProxy?: boolean;
+  /**
+   * Live `forwardProxy` config reader (the hot-apply runtime ref). When
+   * present, `bypassHosts` and `viaOutboundProxy` are re-read per request —
+   * console saves take effect without a gateway restart. Port/host/CA stay
+   * boot-frozen (they shape the listening socket and cert material).
+   */
+  liveForwardProxy?: () => ForwardProxyConfig | undefined;
   /** Returns true when the request was fully handled (intercepted). */
   intercept: (req: http.IncomingMessage, res: http.ServerResponse) => Promise<boolean>;
   log?: (msg: string) => void;
@@ -88,114 +96,37 @@ interface ForwardTarget {
   viaProxy?: boolean;
 }
 
-function filterHeaders(headers: http.IncomingHttpHeaders): Record<string, string | string[]> {
-  const out: Record<string, string | string[]> = {};
-  for (const [k, v] of Object.entries(headers)) {
-    if (v === undefined) continue;
-    if (HOP_BY_HOP.has(k.toLowerCase())) continue;
-    out[k] = v;
-  }
-  return out;
-}
 
-// ── outbound-proxy transit (config.proxy policy) ──────────────────────────
-// When enabled, bypass tunnels and non-intercepted forwards egress through
-// the configured outbound proxy (e.g. clash/v2ray) via CONNECT, so
-// network-blocked targets become reachable without touching interception.
-// Module-level because only one forward proxy instance exists per process;
-// createForwardProxyServer sets it (last created wins).
-let transitViaOutboundProxy = false;
-
-function transitProxyFor(host: string, port: number, force?: boolean): string | undefined {
-  // force: per-host egress choice (bypass entries carry it); undefined = the
-  // global `viaOutboundProxy` flag (non-intercepted forwards).
-  const enabled = force === undefined ? transitViaOutboundProxy : force;
-  if (!enabled) return undefined;
-  return resolveProxyUrl(`https://${host}:${port}/`, { model: host });
-}
-
-function parseProxy(proxyUrl: string): { host: string; port: number; auth?: string } | null {
-  try {
-    const u = new URL(proxyUrl);
-    const port = parseInt(u.port || (u.protocol === 'https:' ? '443' : '80'), 10);
-    const auth = u.username
-      ? 'Basic ' + Buffer.from(`${decodeURIComponent(u.username)}:${decodeURIComponent(u.password)}`).toString('base64')
-      : undefined;
-    return { host: u.hostname, port, auth };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Open a raw byte pipe to `host:port` through an HTTP CONNECT proxy.
- * Resolves with the tunneled socket (paused — consumers must splice/pipe,
- * which resumes it; Bun drops listener-less early data, hence the pause).
- */
-function openViaProxy(proxyUrl: string, host: string, port: number): Promise<net.Socket> {
-  return new Promise((resolve, reject) => {
-    const p = parseProxy(proxyUrl);
-    if (!p) return reject(new Error('invalid outbound proxy url'));
-    const sock = net.connect(p.port, p.host);
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        sock.destroy();
-        reject(new Error('outbound proxy connect timeout'));
-      }
-    }, 15000);
-    let buf = '';
-    const onData = (d: Buffer): void => {
-      buf += d.toString('latin1');
-      const idx = buf.indexOf('\r\n\r\n');
-      if (idx === -1) return;
-      settled = true;
-      clearTimeout(timer);
-      sock.removeListener('data', onData);
-      const head = buf.slice(0, idx);
-      const rest = buf.slice(idx + 4);
-      if (!/^HTTP\/1\.[01] 200/.test(head)) {
-        sock.destroy();
-        reject(new Error(`outbound proxy rejected CONNECT: ${head.split('\r\n')[0] || 'no status'}`));
-        return;
-      }
-      if (rest.length) sock.unshift(Buffer.from(rest, 'latin1'));
-      sock.pause();
-      resolve(sock);
-    };
-    sock.on('data', onData);
-    sock.on('error', (err) => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        reject(err);
-      }
-    });
-    sock.on('connect', () => {
-      const lines = [
-        `CONNECT ${host}:${port} HTTP/1.1`,
-        `Host: ${host}:${port}`,
-        ...(p.auth ? [`Proxy-Authorization: ${p.auth}`] : []),
-        '',
-        '',
-      ];
-      sock.write(lines.join('\r\n'));
-    });
+/** Send the request body upstream: a straight pipe (non-intercepted
+ *  forwards never had their stream consumed). */
+function pumpRequestBody(req: http.IncomingMessage, upstream: http.ClientRequest): void {
+  req.pipe(upstream);
+  req.on('error', () => {
+    try {
+      upstream.destroy();
+    } catch {}
   });
 }
 
-/** Stream one http request to its real target and pipe the response back. */
-function forwardTo(req: http.IncomingMessage, res: http.ServerResponse, t: ForwardTarget): Promise<void> {
+function forwardTo(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  t: ForwardTarget
+): Promise<void> {
   const proxyUrl = transitProxyFor(t.host, t.port, t.viaProxy);
   if (proxyUrl) {
-    return t.secure ? forwardSecureViaProxy(req, res, t, proxyUrl) : forwardPlainViaProxy(req, res, t, proxyUrl);
+    return t.secure
+      ? forwardSecureViaProxy(req, res, t, proxyUrl)
+      : forwardPlainViaProxy(req, res, t, proxyUrl);
   }
   return forwardDirect(req, res, t);
 }
 
-/** Direct upstream request (no outbound proxy involved). */
-function forwardDirect(req: http.IncomingMessage, res: http.ServerResponse, t: ForwardTarget): Promise<void> {
+function forwardDirect(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  t: ForwardTarget
+): Promise<void> {
   return new Promise((resolve) => {
     const transport = t.secure ? https : http;
     const upstream = transport.request(
@@ -209,11 +140,13 @@ function forwardDirect(req: http.IncomingMessage, res: http.ServerResponse, t: F
       } as https.RequestOptions,
       (up) => {
         // Headers arrived — the request is alive; clear the hang-protection
-        // timer so long-lived streams (SSE passthrough) are never killed.
+        // timer so long-lived streams (SSE direct forwards) are never killed.
         upstream.setTimeout(0);
         res.writeHead(up.statusCode || 502, filterHeaders(up.headers as http.IncomingHttpHeaders));
         up.pipe(res);
-        up.on('end', resolve);
+        up.on('end', () => {
+          resolve();
+        });
         up.on('error', () => {
           try {
             res.destroy();
@@ -236,14 +169,10 @@ function forwardDirect(req: http.IncomingMessage, res: http.ServerResponse, t: F
       } catch {}
       resolve();
     });
-    req.pipe(upstream);
-    req.on('error', () => {
-      try {
-        upstream.destroy();
-      } catch {}
-    });
+    pumpRequestBody(req, upstream);
   });
 }
+
 
 function proxyFail(res: http.ServerResponse, code: number, msg: string): void {
   try {
@@ -251,7 +180,6 @@ function proxyFail(res: http.ServerResponse, code: number, msg: string): void {
     res.end(msg);
   } catch {}
 }
-
 /**
  * HTTPS target via an outbound HTTP proxy: CONNECT tunnel → one-shot loopback
  * relay → https.request over the relay (TLS runs end-to-end through the
@@ -320,12 +248,7 @@ function forwardSecureViaProxy(
             cleanup();
             resolve();
           });
-          req.pipe(upstream);
-          req.on('error', () => {
-            try {
-              upstream.destroy();
-            } catch {}
-          });
+          pumpRequestBody(req, upstream);
         });
       })
       .catch((err: any) => {
@@ -362,7 +285,9 @@ function forwardPlainViaProxy(
         upstream.setTimeout(0);
         res.writeHead(up.statusCode || 502, filterHeaders(up.headers as http.IncomingHttpHeaders));
         up.pipe(res);
-        up.on('end', resolve);
+        up.on('end', () => {
+          resolve();
+        });
         up.on('error', () => {
           try {
             res.destroy();
@@ -383,18 +308,13 @@ function forwardPlainViaProxy(
       );
       resolve();
     });
-    req.pipe(upstream);
-    req.on('error', () => {
-      try {
-        upstream.destroy();
-      } catch {}
-    });
+    pumpRequestBody(req, upstream);
   });
 }
 
 export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<ForwardProxyHandle> {
   const log = deps.log ?? (() => {});
-  transitViaOutboundProxy = deps.viaOutboundProxy === true;
+  setLiveForwardProxy(deps.liveForwardProxy, deps.viaOutboundProxy === true);
   const ca = ensureCa(deps.caDir);
   const minter = new CertMinter(ca);
 
@@ -558,7 +478,7 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
     socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
     if (head && head.length) socket.unshift(head);
 
-    const bb = matchBypass(rawHost, deps.bypassHosts);
+    const bb = matchBypass(rawHost, currentBypassHosts(deps.bypassHosts));
     if (bb.bypassed) {
       tunnel(socket, rawHost, port, undefined, bb.viaProxy);
       return;
@@ -640,7 +560,7 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
       res.end('Forward proxy requires an absolute-form request URI');
       return;
     }
-    const bb = matchBypass(target.hostname, deps.bypassHosts);
+    const bb = matchBypass(target.hostname, currentBypassHosts(deps.bypassHosts));
     try {
       if (!bb.bypassed && (await deps.intercept(req, res))) return;
       await forwardTo(req, res, {

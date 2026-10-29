@@ -42,7 +42,7 @@ process.env.OCR_HOME = path.join(sandboxRoot, 'home');
 process.env.OCR_ENV = 'default';
 const ENV_DIR = path.join(process.env.OCR_HOME, 'envs', 'default');
 fs.mkdirSync(ENV_DIR, { recursive: true });
-fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'), 'port: 3000\nhost: 127.0.0.1\napiKeys: []\nmodels: []\n');
+fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'), 'schemaVersion: 1\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\n');
 fs.writeFileSync(path.join(ENV_DIR, 'env.json'), JSON.stringify({ name: 'default', type: 'regular', schemaVersion: 1 }));
 process.chdir(sandbox);
 
@@ -88,7 +88,7 @@ describe('Layer 2 decision capture (dataset sink — single-key gate classifier.
 
   test('enabled: a decision-model decision lands as one parseable row', async () => {
     fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'),
-      'port: 3000\nhost: 127.0.0.1\napiKeys: []\nmodels: []\nclassifier:\n  layer2:\n    collectEnabled: true\n');
+      'schemaVersion: 1\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\nrouting:\n  classifier:\n    layer2:\n      collectEnabled: true\n');
     const upstream = serve({
       port: 0,
       async fetch() {
@@ -123,7 +123,7 @@ describe('Layer 2 decision capture (dataset sink — single-key gate classifier.
   });
 
   test('default off: zero writes', async () => {
-    fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'), 'port: 3000\nhost: 127.0.0.1\napiKeys: []\nmodels: []\n');
+    fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'), 'schemaVersion: 1\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\n');
     const upstream = serve({
       port: 0,
       async fetch() {
@@ -150,7 +150,7 @@ describe('Layer 2 decision capture (dataset sink — single-key gate classifier.
 
   test('an abandoned late result never lands in the dataset', async () => {
     fs.writeFileSync(path.join(ENV_DIR, 'config.yaml'),
-      'port: 3000\nhost: 127.0.0.1\napiKeys: []\nmodels: []\nclassifier:\n  layer2:\n    collectEnabled: true\n');
+      'schemaVersion: 1\nclient:\n  port: 3000\n  host: 127.0.0.1\n  apiKeys: []\nrouting:\n  classifier:\n    layer2:\n      collectEnabled: true\n');
     const upstream = serve({
       port: 0,
       async fetch() {
@@ -571,17 +571,19 @@ describe('retired Layer 2 vendor keys are stripped at load time', () => {
     fs.writeFileSync(
       legacyPath,
       [
-        'port: 3000',
-        'host: 127.0.0.1',
-        'apiKeys: []',
-        'models: []',
-        'classifier:',
-        '  layer2:',
-        '    enabled: true',
-        '    provider: "typesafe"',
-        '    baseUrl: "https://api.typesafe.ai/v1"',
-        '    apiKey: "sk-legacy"',
-        '    timeoutMs: 900',
+        'schemaVersion: 1',
+        'client:',
+        '  port: 3000',
+        '  host: 127.0.0.1',
+        '  apiKeys: []',
+        'routing:',
+        '  classifier:',
+        '    layer2:',
+        '      enabled: true',
+        '      provider: "typesafe"',
+        '      baseUrl: "https://api.typesafe.ai/v1"',
+        '      apiKey: "sk-legacy"',
+        '      timeoutMs: 900',
         '',
       ].join('\n')
     );

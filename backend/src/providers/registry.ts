@@ -197,6 +197,23 @@ export class ProviderRegistry {
     }
   }
 
+  /**
+   * Hot credential-chain refresh — the runtime twin of the boot-baked chain.
+   * Credential-store mutations (console connect/disconnect/activate, credential
+   * sync) call this so `getCredentialChain` reflects the store WITHOUT a
+   * gateway restart. A non-empty chain replaces the entry wholesale (callers
+   * snapshot the array they hold; in-flight requests keep serving on the old
+   * reference — the Map swap is atomic under Bun's single thread). An EMPTY
+   * chain deletes the entry: the provider degenerates to the pre-P3 head-baked
+   * path (`config.apiKey`), which matches boot's head === baked-key invariant.
+   * RAW KEYS IN MEMORY ONLY — same contract as `registerProvider`; never
+   * serialize into a console/API surface.
+   */
+  public refreshCredentialChain(name: string, chain: readonly CallCredential[]): void {
+    if (chain.length) this.credentialChains.set(name, [...chain]);
+    else this.credentialChains.delete(name);
+  }
+
   public registerModel(model: ModelRegistration, isDefault = false): void {
     if (RESERVED_IDS.has(model.id)) {
       console.warn(`[Registry] Model id '${model.id}' is a reserved virtual model name — registration ignored.`);

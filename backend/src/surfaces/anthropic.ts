@@ -40,14 +40,14 @@ export const anthropicSurface: ChatSurface = {
   },
 
   encodeJson(result: ExecutionResult): unknown {
-    return openAIToAnthropic(result.response, result.modelUsed);
+    return openAIToAnthropic(result.response!, result.modelUsed);
   },
 
   encodeStream(result: ExecutionResult): string[] {
     // The generator ends the sequence with message_stop — the Anthropic wire
     // has no [DONE] sentinel and today's stream block wrote none (contract §4:
     // generators stay as-is with their own DONE/frame sequence).
-    return chatToAnthropicStreamEvents(result.response, result.modelUsed);
+    return chatToAnthropicStreamEvents(result.response!, result.modelUsed);
   },
 
   errorBody(status: number, message: string): unknown {

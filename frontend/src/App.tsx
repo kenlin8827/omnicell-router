@@ -83,7 +83,7 @@ export const App: React.FC = () => {
         <Route path="providers" element={<KeysPage />} />
         <Route path="models" element={<ModelsPage />} />
         <Route path="catalog" element={<CatalogSourcesPage />} />
-        <Route path="proxy" element={<ProxyPage />} />
+        <Route path="proxy-upstream" element={<ProxyPage />} />
         <Route path="token-saver" element={<TokenSaverPage />} />
         <Route path="clients" element={<ClientsPage />} />
         <Route path="proxy-access" element={<ProxyAccessPage />} />

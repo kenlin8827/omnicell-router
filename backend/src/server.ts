@@ -269,16 +269,15 @@ export function createServer(
   // reset/export/import. Under /api/admin/* → covered by the webAuth gate.
   registerEnvironmentRoutes(app);
 
-  // Authentication hook: validates adminApiKey (master) or client API keys (apiKeys)
+  // Authentication hook: validates the adminKey (master) or client API keys
   const resolveActiveAuthConfig = () => {
     const diskConfig = loadConfig();
     const activeKeys =
       config.apiKeys !== undefined && config.apiKeys.length > 0
         ? config.apiKeys
         : diskConfig.apiKeys || config.apiKeys || [];
-    const adminKey = config.adminApiKey !== undefined ? config.adminApiKey : diskConfig.adminApiKey;
+    const adminKey = config.adminKey !== undefined ? config.adminKey : diskConfig.adminKey;
     // Inbound grace budget, same boot-snapshot-first doctrine as the keys:
-    // a programmatically-supplied config wins; otherwise the disk view (which
     // loadConfig has already resolved + clamped). Re-defensive-clamped here so
     // hand-built configs (tests) cannot smuggle junk into the sleep math.
     const grace = config.rateLimit?.inboundGraceMs ?? diskConfig.rateLimit?.inboundGraceMs;
@@ -352,8 +351,8 @@ export function createServer(
 
     // Console webAuth gate — independent of the inference-surface API-key
     // auth below. When active, /api/admin/* (except the auth endpoints
-    // themselves) requires a login session cookie OR the master adminApiKey
-    // as Bearer/x-api-key (programmatic access). The SPA HTML + hashed
+    // themselves) requires a login session cookie OR the adminKey (client.adminKey
+    // on disk) as Bearer/x-api-key (programmatic access). The SPA HTML + hashed
     // assets under /admin* stay open — the login view lives client-side.
     if (isAdminSurface && !(path !== null && isAdminAuthEndpoint(path)) && isWebAuthActive(config)) {
       const cookieToken = parseSessionCookie(req.headers.cookie);
@@ -375,7 +374,7 @@ export function createServer(
         reply.raw.writeHead(401, { 'content-type': 'application/json; charset=utf-8' });
         reply.raw.end(JSON.stringify({
           error: {
-            message: 'Console authentication required. Log in at /admin/ or present the master adminApiKey.',
+            message: 'Console authentication required. Log in at /admin/ or present the adminKey (client.adminKey).',
             type: 'authentication_error',
             code: 'console_auth_required',
           },
@@ -389,7 +388,7 @@ export function createServer(
 
     const activeConfig: RouterConfig = {
       ...config,
-      adminApiKey: adminKey,
+      adminKey,
       apiKeys: activeKeys,
     };
 
@@ -458,8 +457,8 @@ export function createServer(
     // the gate: an over-limit request never enters the pipeline and never
     // consumes a request slot (a counted denial would let a retry storm push
     // its own lockout past the window). Only the four inference wires are
-    // metered — /v1/models browsing and the admin plane answer freely. The
-    // master adminApiKey has no keyConfig → no subject → never metered.
+    // metered — /v1/models browsing and the admin plane answer freely. A
+    // keyless caller (no apiKeys match) has no keyConfig → no subject → never metered.
     // A denial is answered 429 + `Retry-After` (requests/tokens/cost budget
     // alike — a cost window re-opens by time too, and 402 tells client SDKs
     // "don't retry", which is the wrong contract for a sliding budget), with

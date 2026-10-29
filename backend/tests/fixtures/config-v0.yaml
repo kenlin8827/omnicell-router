@@ -1,0 +1,91 @@
+# FROZEN FIXTURE — legacy pre-ADR-0016 flat config (schemaVersion 0).
+# Never edit: the migration chain tests anchor on these exact bytes.
+port: 4000
+host: 127.0.0.1
+adminApiKey: sk-ocr-master-legacy
+webAuth:
+  enabled: true
+  username: admin
+  passwordHash: scrypt$aa$bb
+apiKeys:
+  - id: key-1
+    name: Editor
+    key: sk-ocr-key-1
+rateLimit:
+  inboundGraceMs: 1200
+forwardProxy:
+  enabled: true
+  port: 4555
+  unresolvedModel:
+    onMiss: direct
+routing:
+  mode: cost
+tiers:
+  exclude:
+    - 'blocked/*'
+  lite:
+    members:
+      - pattern: 'openai/gpt-4o-mini'
+classifier:
+  layer2:
+    enabled: true
+    model: openai/gpt-4o-mini
+session:
+  strategy: sticky
+  ttlSeconds: 7200
+directives:
+  enabled: true
+routeEntries:
+  maxEntries: 900
+systemone:
+  defaultModel: openai/gpt-4o-mini
+responses:
+  persist: true
+combos:
+  - id: daily-driver
+    models:
+      - openai/gpt-4o-mini
+clientProfileMemory:
+  Cursor:
+    profile: fast
+fallback:
+  enabled: true
+  maxRetries: 2
+  escalateTier: pro
+  injectErrorContext: false
+proxy:
+  enabled: true
+  url: http://127.0.0.1:7890
+  excludes:
+    - 'local/*'
+credentials:
+  anthropic:
+    - keyHashPrefix: abcdef123456
+streaming:
+  enabled: false
+compression:
+  rtk:
+    enabled: true
+  caveman:
+    level: lite
+circuitBreaker:
+  failureThreshold: 5
+retry:
+  enabled: true
+  inplace:
+    maxAttempts: 2
+    backoffMs: 300
+  failover:
+    maxAttempts: 3
+requestCapture:
+  enabled: true
+tracePersist:
+  retentionDays: 14
+catalog:
+  syncIntervalMs: 43200000
+quota:
+  intervalMs: 30000
+opencode:
+  url: http://127.0.0.1:4096
+defaultModels:
+  translation: plus

@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   credentialSpreadIndex,
+  weightedSpreadIndex,
   DEFAULT_CREDENTIAL_AFFINITY_CACHE_TTL_MS,
   selectCredential,
 } from '../src/pipeline/credential-selection.js';
@@ -250,5 +251,65 @@ describe('pool exhaustion and suspect skipping', () => {
     // and the spread indexes the FILTERED pool (2 healthy, not the 3-entry chain)
     const sel = selectCredential(session('s-1'), MODEL, chain, cb, { sessionId: 's-1' });
     expect(sel.credential?.keyHashPrefix).toBe([chain[1], chain[2]][credentialSpreadIndex('s-1', 2)].keyHashPrefix);
+  });
+});
+
+describe('weighted new-session spread', () => {
+  const wchain: CallCredential[] = [
+    { ...cred('sk-w-a', 'a'), weight: 3 },
+    { ...cred('sk-w-b', 'b'), weight: 1 },
+  ];
+
+  it('uniform weights agree with the unweighted spread exactly (back-compat)', () => {
+    for (const id of ['u-1', 'u-2', 'u-3', 'u-4', 'u-5', 'u-6', 'u-7', 'u-8']) {
+      expect(weightedSpreadIndex(id, [1, 1, 1])).toBe(credentialSpreadIndex(id, 3));
+    }
+    // and a 2-entry pool agrees with the resolver's pre-weight landing
+    for (const id of ['u-9', 'u-10', 'u-11']) {
+      expect(weightedSpreadIndex(id, [1, 1])).toBe(credentialSpreadIndex(id, 2));
+    }
+  });
+
+  it('weight w occupies w consecutive slots: [3,1] maps slots 0-2 → index 0, slot 3 → index 1', () => {
+    const ids = Array.from({ length: 64 }, (_, i) => `slot-${i}`);
+    for (const id of ids) {
+      const idx = weightedSpreadIndex(id, [3, 1]);
+      expect(idx === 0 || idx === 1).toBe(true);
+      // determinism: same id, same answer
+      expect(weightedSpreadIndex(id, [3, 1])).toBe(idx);
+    }
+    // proportionality smoke over the same id set: 3:1 lands near 75% (hash
+    // uniformity, tolerance generous enough to never flake)
+    const heavy = ids.filter((id) => weightedSpreadIndex(id, [3, 1]) === 0).length;
+    expect(heavy / ids.length).toBeGreaterThan(0.55);
+    expect(heavy / ids.length).toBeLessThan(0.9);
+  });
+
+  it('selectCredential lands on the weighted slot and binds non-forced', () => {
+    const cb = makeManager();
+    const sel = selectCredential(session('w-sess'), MODEL, wchain, cb, { sessionId: 'w-sess' });
+    expect(sel.credential?.keyHashPrefix).toBe(wchain[weightedSpreadIndex('w-sess', [3, 1])].keyHashPrefix);
+    expect(sel.bind).toEqual({ keyHashPrefix: sel.credential!.keyHashPrefix, forced: false });
+    expect(sel.forcedMove).toBe(false);
+  });
+
+  it('forced-failover landing ignores weights — chain order outranks the heavy row', () => {
+    const cb = makeManager();
+    // heavy row (weight 3) is the bound-and-bad one; the landing must be the
+    // chain head (weight 1), never the weighted favorite.
+    const heavyBad: CallCredential[] = [
+      { ...cred('sk-w-light', 'light'), weight: 1 },
+      { ...cred('sk-w-heavy', 'heavy'), weight: 3 },
+    ];
+    cb.getCredentialStateStore().mark(PROVIDER, heavyBad[1].keyHashPrefix, 'dead key');
+    const sel = selectCredential(
+      session('w-fail', { boundKeyHashPrefix: heavyBad[1].keyHashPrefix }),
+      MODEL,
+      heavyBad,
+      cb,
+      { sessionId: 'w-fail' }
+    );
+    expect(sel.credential?.keyHashPrefix).toBe(heavyBad[0].keyHashPrefix);
+    expect(sel.forcedMove).toBe(true);
   });
 });

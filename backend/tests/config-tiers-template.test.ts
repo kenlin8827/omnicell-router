@@ -37,9 +37,9 @@ const TIERS = ['lite', 'plus', 'pro', 'ultra'] as const;
 describe('defaultConfigYaml — the template ships EMPTY pools', () => {
   it('ships 4 tiers x no members (lite/plus/pro/ultra; configured=false)', () => {
     const doc = parse(defaultConfigYaml()) as any;
-    expect(Object.keys(doc.tiers)).toEqual([...TIERS]);
-    for (const t of TIERS) expect(doc.tiers[t]).toEqual({});
-    const resolved = resolveTierMembers(doc.tiers);
+    expect(Object.keys(doc.routing.tiers)).toEqual([...TIERS]);
+    for (const t of TIERS) expect(doc.routing.tiers[t]).toEqual({});
+    const resolved = resolveTierMembers(doc.routing.tiers);
     expect(resolved.configured).toBe(false);
     for (const t of TIERS) expect(resolved.tiers[t]).toEqual([]);
   });
@@ -56,7 +56,7 @@ describe('defaultConfigYaml — the template ships EMPTY pools', () => {
 
 describe('loadConfig tiers fallback — absent section restores the empty shells', () => {
   it('no `tiers:` section at all → four empty shells, no members anywhere', () => {
-    const p = writeConfig('no-tiers.yaml', 'port: 3999\nhost: 127.0.0.1\n');
+    const p = writeConfig('no-tiers.yaml', 'schemaVersion: 1\nclient:\n  port: 3999\n  host: 127.0.0.1\n');
     const cfg = loadConfig(p);
     expect(Object.keys(cfg.tiers ?? {})).toEqual([...TIERS]);
     for (const t of TIERS) expect(cfg.tiers?.[t]?.members).toBeUndefined();
@@ -64,7 +64,7 @@ describe('loadConfig tiers fallback — absent section restores the empty shells
   });
 
   it('`tiers:` written empty (null value) → empty shells too', () => {
-    const p = writeConfig('null-tiers.yaml', 'port: 3999\ntiers:\n');
+    const p = writeConfig('null-tiers.yaml', 'schemaVersion: 1\nclient:\n  port: 3999\nrouting:\n  tiers:\n');
     const cfg = loadConfig(p);
     expect(Object.keys(cfg.tiers ?? {})).toEqual([...TIERS]);
     expect(resolveTierMembers(cfg.tiers).configured).toBe(false);
@@ -72,7 +72,7 @@ describe('loadConfig tiers fallback — absent section restores the empty shells
   });
 
   it('explicit `tiers: {}` stays {} — no members anywhere (boot warns, does not seed)', () => {
-    const p = writeConfig('empty-tiers.yaml', 'port: 3999\ntiers: {}\n');
+    const p = writeConfig('empty-tiers.yaml', 'schemaVersion: 1\nclient:\n  port: 3999\nrouting:\n  tiers: {}\n');
     const cfg = loadConfig(p);
     expect(cfg.tiers).toEqual({});
     expect(resolveTierMembers(cfg.tiers).configured).toBe(false);
@@ -82,7 +82,7 @@ describe('loadConfig tiers fallback — absent section restores the empty shells
   it('committed member lists are never merged with or replaced by the template', () => {
     const p = writeConfig(
       'mine.yaml',
-      ['port: 3999', 'tiers:', '  lite:', '    members:', '      - pattern: "mine/*"', '  pro:', '    members:', '      - pattern: "other/thing"', ''].join('\n')
+      ['schemaVersion: 1', 'client:', '  port: 3999', 'routing:', '  tiers:', '    lite:', '      members:', '        - pattern: "mine/*"', '    pro:', '      members:', '        - pattern: "other/thing"', ''].join('\n')
     );
     const cfg = loadConfig(p);
     expect(cfg.tiers?.lite?.members).toEqual([{ pattern: 'mine/*' }]);

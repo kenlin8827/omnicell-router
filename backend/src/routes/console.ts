@@ -7,7 +7,10 @@ import { MEMBER_TIER_ORDER } from '../providers/member-match.js';
 import { TIER_PURPOSE } from '../providers/virtual-meta.js';
 import { globMatchAny } from '../utils/glob.js';
 import { PipelineOrchestrator } from '../pipeline/orchestrator.js';
-import { getRawConfig, loadConfig, saveConfig, saveRawConfig, getRuntimeConfigRef } from '../config/index.js';
+import { getRawConfig, loadConfig, saveConfig, saveRawConfig, getRuntimeConfigRef, getConfigPath } from '../config/index.js';
+import { YAML_FILE_HEADER_ZH, YAML_FIELD_COMMENTS_ZH, type CommentLang } from '../config/comments-zh.js';
+import { YAML_FILE_HEADER_EN, YAML_FIELD_COMMENTS_EN } from '../config/comments-en.js';
+
 import { getEnvPaths, resolveEnvName } from '../config/env.js';
 import { applyConfig as applyDecisionCaptureConfig } from '../capture/decision-capture.js';
 import { applyRouteEntriesConfig, getRouteEntryStore, routeEntriesGate } from '../router/route-entries.js';
@@ -16,8 +19,8 @@ import { appendRoutingLedger } from '../router/routing-ledger.js';
 import { Layer2Decision } from '../router/layer2-decision.js';
 import { EFFORT_LADDER, ReasoningEffort, TierLevel } from '../types/router.js';
 import { runSystemoneDecision } from '../protocols/systemone/decide.js';
-import { SMART_ASSIGN_TIMEOUT_MS } from '../config/defaults.js';
-import { initProxyConfig } from '../utils/proxy.js';
+import { SMART_ASSIGN_TIMEOUT_MS, DEFAULT_REPLAY_TIMEOUT_MS, CREDENTIAL_WEIGHT_MAX } from '../config/defaults.js';
+import { initProxyConfig, proxiedFetch } from '../utils/proxy.js';
 import { getOcrHomeDir } from '../cli/paths.js';
 import { getHeadroomSidecarStatus, startHeadroomSidecar, stopHeadroomSidecar } from '../compression/headroom-sidecar.js';
 import { APP_VERSION } from '../version.js';
@@ -42,6 +45,7 @@ import {
   validateApiKey,
   validateModelAccess,
 } from '../auth/api-keys.js';
+import { toCallCredential } from '../providers/boot-direct.js';
 import { getModelAccessPolicy, isAutoEntryUsable, isModelAllowed, isModelAllowedInTiers, tierFromVirtualEntry } from '../auth/model-access.js';
 import { validateRateLimitRules, getRateLimiter, credentialSubject } from '../ratelimit/rate-limiter.js';
 import { getQuotaProber } from '../quota/prober.js';
@@ -63,6 +67,12 @@ import {
   verifyPassword,
   verifySessionToken,
 } from '../auth/web-auth.js';
+/**
+ * Comment language for GET /api/admin/config/comments (the console's dynamic
+ * comment panel; config.yaml itself is ZERO-COMMENT on disk, ADR-0016).
+ * Anything else falls back to zh-CN.
+ */
+const commentLangFromQuery = (q: unknown): CommentLang => (q === 'en' ? 'en' : 'zh-CN');
 
 export { validateApiKey };
 
@@ -288,6 +298,31 @@ function clearSuspectForCredential(cb: CircuitBreakerManager, providerId: string
 }
 
 /**
+ * Hot credential-chain rebuild for ONE provider — the runtime twin of the
+ * boot pool's chain. The routing chain (`registry.credentialChains`) is
+ * otherwise written ONLY at process boot, so a console connect/disconnect/
+ * activate or a credential sync would leave the live chain stale (new keys
+ * invisible to the spread, removed keys still routable) until the next
+ * restart. Reads the bound store's ordered chain (active head first) and
+ * swaps it in via `registry.refreshCredentialChain`; a store read failure is
+ * swallowed — the boot-baked chain keeps serving (fail-open, same doctrine as
+ * every observability write). RAW KEYS stay in memory (registry-only).
+ */
+async function refreshProviderCredentialChain(
+  registry: ProviderRegistry,
+  store: CredentialStore,
+  providerId: string
+): Promise<void> {
+  try {
+    registry.refreshCredentialChain(
+      providerId,
+      store.resolveKeyChain(providerId).map((c) => toCallCredential(c.key, c.label, c.weight))
+    );
+  } catch {
+    // keep the existing chain — a refresh failure must never take routing down
+  }
+}
+/**
  * Idempotent connect (identity at the write seam): handing the store a
  * key it ALREADY holds for this provider is idempotent — the existing credential is
  * reported back and NO second row is created. Without this, every repeated
@@ -319,7 +354,8 @@ async function connectKeyIdempotent(
   label: string | undefined,
   // Credential flags live in the resilience state file, reached through the manager
   // so the write seam never re-derives its own view of "is this head still good".
-  cb: CircuitBreakerManager
+  cb: CircuitBreakerManager,
+  registry: ProviderRegistry
 ): Promise<{ credential: CredentialMeta; deduped: boolean; headPreserved?: CredentialMeta }> {
   const { keyHashPrefix } = await import('../opencode/credentials/index.js');
   const prefix = keyHashPrefix(key);
@@ -374,6 +410,10 @@ async function connectKeyIdempotent(
       }
     }
   }
+
+  // The chain is boot-baked otherwise — without this swap a newly connected key
+  // stays invisible to the per-request spread until the next gateway restart.
+  await refreshProviderCredentialChain(registry, store, providerId);
 
   return { credential, deduped: false, ...(headPreserved ? { headPreserved } : {}) };
 }
@@ -649,7 +689,7 @@ function applyAutoPullPatternEdit(id: string, raw: unknown): { success: boolean;
 
 /** Capability-gate refusal (Decision 1: branch on flags, never on `kind` — the
  *  ocr store passes with activate/rename=true; OpencodeV2Store-readonly refuses). */
-function capabilityRefusalBody(capability: 'activate' | 'rename'): Record<string, unknown> {
+function capabilityRefusalBody(capability: 'activate' | 'rename' | 'reorder' | 'weight'): Record<string, unknown> {
   return {
     status: 'error',
     success: false,
@@ -1505,8 +1545,7 @@ export function registerConsoleRoutes(
 
   // 4b. Console webAuth — login/logout/session probes + credential management.
   // login/logout/session stay reachable pre-login (server.ts gate whitelist);
-  // the two config endpoints ride the normal console gate (session cookie or
-  // master adminApiKey Bearer).
+  // the two config endpoints ride the normal console gate (session cookie).
   app.get('/api/admin/auth/session', async (req) => {
     const disk = getRuntimeConfigRef() || loadConfig(); // runtime snapshot (see gate comment)
     const active = isWebAuthActive(disk);
@@ -1655,7 +1694,7 @@ export function registerConsoleRoutes(
   app.post('/api/admin/config', handleSaveConfig);
 
   // 6. Raw YAML Configuration
-  app.get('/api/admin/config/raw', async () => ({ status: 'ok', yaml: getRawConfig() }));
+  app.get('/api/admin/config/raw', async () => ({ status: 'ok', yaml: getRawConfig(), path: getConfigPath() }));
 
   const handleSaveRawYaml = async (req: any, reply: any) => {
     const body = req.body as { yaml?: string };
@@ -1682,6 +1721,22 @@ export function registerConsoleRoutes(
     return result;
   };
   app.post('/api/admin/config/raw', handleSaveRawYaml);
+
+  // 6b. Dynamic comment panel data — config.yaml is ZERO-COMMENT on disk
+  // (ADR-0016); the Config File page renders per-field comments from these
+  // dictionaries in the operator's language. Runtime-path keyed; the panel
+  // walks the flat runtime shape the same way loadConfig expands it.
+  app.get('/api/admin/config/comments', async (req) => {
+    const query = req.query as Record<string, unknown>;
+    const lang = commentLangFromQuery(query.lang);
+    const zh = lang === 'zh-CN';
+    return {
+      status: 'ok',
+      lang,
+      header: zh ? YAML_FILE_HEADER_ZH : YAML_FILE_HEADER_EN,
+      fields: zh ? YAML_FIELD_COMMENTS_ZH : YAML_FIELD_COMMENTS_EN,
+    };
+  });
 
   // 6a. Forward-proxy MITM CA export — clients using the inbound forward
   // proxy must trust this CA. Generated on first request when absent (the
@@ -2495,7 +2550,7 @@ export function registerConsoleRoutes(
       let keyMeta: CredentialMeta | undefined;
       if (keyToStore) {
         try {
-          keyMeta = (await connectKeyIdempotent(store, id, String(body.apiKey), undefined, registry.getCircuitBreakerManager())).credential;
+          keyMeta = (await connectKeyIdempotent(store, id, String(body.apiKey), undefined, registry.getCircuitBreakerManager(), registry)).credential;
         } catch (err) {
           // Roll back only a node THIS request created — with ONE exception: the
           // unmatched refusal now fires only AFTER the store's reload attempt, so
@@ -2567,7 +2622,7 @@ export function registerConsoleRoutes(
       let keyMeta: CredentialMeta | undefined;
       if (keyToStore) {
         try {
-          keyMeta = (await connectKeyIdempotent(store, id, String(body.apiKey), undefined, registry.getCircuitBreakerManager())).credential;
+          keyMeta = (await connectKeyIdempotent(store, id, String(body.apiKey), undefined, registry.getCircuitBreakerManager(), registry)).credential;
         } catch (err) {
           const failure = await mapStoreWriteFailure(err);
           if (failure) return reply.status(failure.status).send(failure.body);
@@ -2623,7 +2678,7 @@ export function registerConsoleRoutes(
         // (Decision 3: read degrades with a badge, write refuses).
         const store = await getCredentialStore();
         const { credential: keyMeta, deduped, headPreserved } = await connectKeyIdempotent(
-          store, id, body.apiKey, undefined, registry.getCircuitBreakerManager()
+          store, id, body.apiKey, undefined, registry.getCircuitBreakerManager(), registry
         );
         // Optional baseURL override — merge with the existing definition so we
         // never wipe name/npm/models of a config-defined custom provider.
@@ -2855,7 +2910,7 @@ export function registerConsoleRoutes(
         // auth.json write exists on any binding.
         const store = await getCredentialStore();
         const { credential: keyMeta, deduped, headPreserved } = await connectKeyIdempotent(
-          store, id, body.apiKey, undefined, registry.getCircuitBreakerManager()
+          store, id, body.apiKey, undefined, registry.getCircuitBreakerManager(), registry
         );
         store.invalidate();
         // Decision 6: a key rotation handed to the store is a reconnect — clear SUSPECT.
@@ -3050,8 +3105,11 @@ export function registerConsoleRoutes(
      * Pull models into the provider's config definition. Data source is chosen
      * automatically: providers with baseURL + credential are pulled LIVE from
      * their own /v1/models (failures surface real errors); providers without a
-     * usable baseURL/key fall back to the static merged catalog. The same
-     * engine powers the periodic auto-pull (catalog.autoPullModels).
+     * usable baseURL/key fall back to the static merged catalog. Builtin
+     * (first-party catalog) providers take the MERGED path — catalog sets the
+     * metadata-authoritative base, a live /v1/models pass only tops up ids the
+     * catalog lacks. The same engine powers the periodic auto-pull
+     * (catalog.autoPullModels).
      */
     modelsPull: async (req: any, reply: any) => {
       const { id } = req.params as { id: string };
@@ -3205,6 +3263,11 @@ export function registerConsoleRoutes(
         });
         const cb = registry.getCircuitBreakerManager();
         for (const k of result.write?.pushedKeys ?? []) clearSuspectForCredential(cb, k.provider, k.keyHashPrefix);
+        // A sync pull/import can land keys on MANY providers — refresh every
+        // connected provider's runtime chain (cheap: one store read per provider).
+        for (const o of store.credentialsOverview()) {
+          await refreshProviderCredentialChain(registry, store, o.providerId);
+        }
         return { status: 'ok', direction, ...result };
       } catch (err: any) {
         return reply.status(500).send({
@@ -3216,24 +3279,88 @@ export function registerConsoleRoutes(
     },
 
     /**
-     * Activate ONE credential of a multi-credential provider (the
-     * Keys page's "make active" action). Gated purely on
-     * capabilities.activate (Decision 1): OpencodeV2Store-readonly has false
-     * → 400 'capability_unsupported'; the ocr store has true → allowed (no
-     * kind branching anywhere). Response carries the refreshed masked credential
-     * list in the store-status overlay shape so the UI repaints without a
-     * second fetch.
+     * REORDER a provider's credential chain (the Keys page's drag/ordering
+     * action; replaces the retired operator activate route — `store.activate`
+     * stays the internal head primitive for sync/connect headPreserved).
+     * Body: { ids: string[] } — a permutation of the provider's credential
+     * ids; the chain head becomes ids[0]. Gated on capabilities.reorder
+     * (Decision 1). Response mirrors the old activate reply: the head
+     * credential plus the refreshed masked credential list so the UI
+     * repaints without a second fetch.
      */
-    credentialActivate: async (req: any, reply: any) => {
-      const { id, credentialId } = req.params as { id: string; credentialId: string };
+    credentialReorder: async (req: any, reply: any) => {
+      const { id } = req.params as { id: string };
+      const body = req.body as { ids?: unknown } | undefined;
+      const ids = body?.ids;
+      if (!Array.isArray(ids) || ids.length === 0 || ids.some((x) => typeof x !== 'string')) {
+        return reply.status(400).send({
+          status: 'error',
+          success: false,
+          reasonCode: 'invalid_ids',
+          error: 'ids must be a non-empty array of credential id strings',
+        });
+      }
       const { getCredentialStore } = await import('../opencode/credentials/index.js');
       const store = await getCredentialStore();
-      if (!store.capabilities.activate) return reply.status(400).send(capabilityRefusalBody('activate'));
+      if (!store.capabilities.reorder) return reply.status(400).send(capabilityRefusalBody('reorder'));
+      // Guard-light: verify the provider has rows before the store call (the
+      // store's own reorder validates the id permutation and 404s unknown ids).
+      try {
+        if (store.listCredentials(id).length === 0) {
+          return reply.status(404).send(credentialNotFoundBody(ids[0] as string, id));
+        }
+      } catch (err) {
+        const failure = await mapStoreWriteFailure(err);
+        if (failure) return reply.status(failure.status).send({ status: 'error', ...failure.body });
+        return reply.status(500).send({ status: 'error', success: false, error: errMessage(err) });
+      }
+      try {
+        const reordered = await store.reorder(id, ids as string[]);
+        store.invalidate(); // Decision 3: console action invalidates the store view
+        // Reorder IS the chain order — swap the runtime chain so the new head
+        // serves without a restart.
+        await refreshProviderCredentialChain(registry, store, id);
+        const credential = reordered[0];
+        return { status: 'ok', success: true, credential, credentials: withCredentialHealth(id, store.listCredentials(id)) };
+      } catch (err) {
+        const failure = await mapCredentialWriteFailure(err, id, String((ids as string[])[0]));
+        return reply.status(failure.status).send(failure.body);
+      }
+    },
+
+    /**
+     * SET the spread weight of ONE credential (operator lever for unequal
+     * quotas: a credential weighing w occupies w slots of the deterministic
+     * new-session spread). Body: { weight: number } — an INTEGER in
+     * [1, CREDENTIAL_WEIGHT_MAX]; anything else is a 400 invalid_weight.
+     * Gated on capabilities.weight (opencode v2 rows have no weight field and
+     * refuse, exactly like reorder). The chain is hot-refreshed so the new
+     * weight shapes the very next placement — no restart.
+     */
+    credentialSetWeight: async (req: any, reply: any) => {
+      const { id, credentialId } = req.params as { id: string; credentialId: string };
+      const body = req.body as { weight?: unknown } | undefined;
+      const raw = body?.weight;
+      const weight = typeof raw === 'number' && Number.isInteger(raw) ? raw : NaN;
+      if (!Number.isFinite(weight) || weight < 1 || weight > CREDENTIAL_WEIGHT_MAX) {
+        return reply.status(400).send({
+          status: 'error',
+          success: false,
+          reasonCode: 'invalid_weight',
+          error: `weight must be an integer between 1 and ${CREDENTIAL_WEIGHT_MAX}`,
+        });
+      }
+      const { getCredentialStore } = await import('../opencode/credentials/index.js');
+      const store = await getCredentialStore();
+      if (!store.capabilities.weight) return reply.status(400).send(capabilityRefusalBody('weight'));
       const guard = await guardStoreCredential(store, id, credentialId);
       if (!guard.ok) return reply.status(guard.status).send(guard.body);
       try {
-        const credential = await store.activate(credentialId);
+        const credential = await store.setWeight(credentialId, weight);
         store.invalidate(); // Decision 3: console action invalidates the store view
+        // The weight rides the runtime chain — swap it in so the next
+        // new-session placement sees the new proportions immediately.
+        await refreshProviderCredentialChain(registry, store, id);
         return { status: 'ok', success: true, credential, credentials: withCredentialHealth(id, store.listCredentials(id)) };
       } catch (err) {
         const failure = await mapCredentialWriteFailure(err, id, credentialId);
@@ -3314,6 +3441,7 @@ export function registerConsoleRoutes(
       try {
         await store.disconnect(credentialId);
         store.invalidate();
+        await refreshProviderCredentialChain(registry, store, id); // removed key must leave the live chain
         clearSuspectForCredential(registry.getCircuitBreakerManager(), id, prefix);
         // DELETE is a REVOCATION, so it must be as durable as a takedown: anchor
         // the key MATERIAL as disabled. Otherwise the read sync would re-import
@@ -3524,9 +3652,10 @@ export function registerConsoleRoutes(
     app.post(`${prefix}/opencode/providers/:id/models/reorder`, ocHandlers.modelReorder);
     app.post(`${prefix}/opencode/providers/:id/models/clear`, ocHandlers.modelsClear);
 
-    // Per-credential credential writes (activate / rename / disconnect).
+    // Per-credential credential writes (reorder / rename / disconnect).
     // Decision 8 double-confirm lives in the console UI; these honor the call.
-    app.post(`${prefix}/opencode/providers/:id/credentials/:credentialId/activate`, ocHandlers.credentialActivate);
+    app.post(`${prefix}/opencode/providers/:id/credentials/reorder`, ocHandlers.credentialReorder);
+    app.post(`${prefix}/opencode/providers/:id/credentials/:credentialId/weight`, ocHandlers.credentialSetWeight);
     // Operator takedown (OCR credential state, NOT the credential store — survives
     // cooldown/reconnect/Push and is lifted only here).
     app.post(`${prefix}/opencode/providers/:id/credentials/:credentialId/disable`, ocHandlers.credentialDisable);
@@ -4150,6 +4279,100 @@ export function registerConsoleRoutes(
       return reply.status(404).send({ status: 'error', message: `No capture archive for ${date}` });
     }
     return { status: 'ok', message: `Capture archive ${date} deleted` };
+  });
+
+  /* ---------------------------------------------------------------------- *
+   * One-shot upstream-request replay (capture drawer debug button).
+   * Re-sends a captured upstream request verbatim — NO pipeline, NO session
+   * machinery, NO capture recording: the fetch here is a bare console-side
+   * HTTP call, invisible to the observation ledgers. Debugging aid only.
+   * ---------------------------------------------------------------------- */
+  app.post('/api/admin/capture/replay', async (req: any, reply: any) => {
+    const { url, method, headers, body, provider, model } = (req.body || {}) as {
+      url?: string;
+      method?: string;
+      headers?: Record<string, string>;
+      body?: string;
+      provider?: string;
+      model?: string;
+    };
+    if (!url || !/^https?:\/\//i.test(url)) {
+      return reply.status(400).send({ status: 'error', message: 'an absolute http(s) "url" is required' });
+    }
+    if (!method || !/^[A-Z]+$/.test(method)) {
+      return reply.status(400).send({ status: 'error', message: '"method" must be an upper-case HTTP verb' });
+    }
+    if (body !== undefined && typeof body !== 'string') {
+      return reply.status(400).send({ status: 'error', message: '"body" must be a UTF-8 string (hex/binary bodies are not replayable)' });
+    }
+    // Hop-by-hop / recomputed-by-fetch headers: replaying them verbatim
+    // corrupts the request (stale length, wrong authority).
+    const SKIP_HEADERS: Record<string, true> = {
+      host: true,
+      'content-length': true,
+      connection: true,
+      'transfer-encoding': true,
+    };
+    const outHeaders: Record<string, string> = {};
+    for (const [name, value] of Object.entries(headers || {})) {
+      if (!SKIP_HEADERS[name.toLowerCase()] && typeof value === 'string') outHeaders[name] = value;
+    }
+    // Stream the result as NDJSON so the console can render the body
+    // incrementally (SSE replays become live): one JSON event per line —
+    // status (status line + headers), chunk (body piece), end (terminal cap
+    // flag), error (transport failure). The call is console-side only —
+    // nothing is recorded anywhere.
+    reply.hijack();
+    const raw = reply.raw;
+    raw.writeHead(200, { 'content-type': 'application/x-ndjson', 'cache-control': 'no-store' });
+    const send = (evt: Record<string, unknown>) => raw.write(`${JSON.stringify(evt)}\n`);
+    try {
+      // Honor the outbound proxy policy for fidelity with the original call;
+      // provider/model are the policy's glob keys (absent → direct).
+      const res = await proxiedFetch(
+        url,
+        {
+          method,
+          headers: outHeaders,
+          body: body || undefined,
+          signal: AbortSignal.timeout(DEFAULT_REPLAY_TIMEOUT_MS),
+        },
+        { provider, model }
+      );
+      const resHeaders: Record<string, string> = {};
+      res.headers.forEach((value, key) => {
+        resHeaders[key] = value;
+      });
+      send({ type: 'status', statusLine: `HTTP/1.1 ${res.status} ${res.statusText}`.trimEnd(), headers: resHeaders });
+      // Cap the streamed echo — the replay result is console UI text, not an
+      // archive record; huge streams surface their head then get cancelled.
+      const REPLAY_BODY_CAP = 512 * 1024;
+      const reader = res.body?.getReader();
+      let total = 0;
+      let truncated = false;
+      if (reader) {
+        const dec = new TextDecoder();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          total += value.byteLength;
+          if (total >= REPLAY_BODY_CAP) {
+            truncated = true;
+            send({ type: 'chunk', text: dec.decode(value.subarray(0, value.byteLength - (total - REPLAY_BODY_CAP))) });
+            break;
+          }
+          send({ type: 'chunk', text: dec.decode(value, { stream: true }) });
+        }
+        await reader.cancel().catch(() => undefined);
+      }
+      send({ type: 'end', truncated });
+      raw.end();
+    } catch (err: any) {
+      // Hijacked reply: transport errors must flow through the stream too.
+      const cause = err?.cause?.code || err?.code;
+      raw.write(`${JSON.stringify({ type: 'error', message: cause ? `${err.message} (${cause})` : String(err?.message || err) })}\n`);
+      raw.end();
+    }
   });
 
   /* ---------------------------------------------------------------------- *

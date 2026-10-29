@@ -1,3 +1,4 @@
+import type { Readable } from 'node:stream';
 import type { ModelAccessConfig } from '../config/types.js';
 import type { ProcessContext } from '../pipeline/orchestrator.js';
 import type { ChatCompletionChunk, ChatCompletionRequest } from '../types/openai.js';
@@ -64,6 +65,20 @@ export interface TransportContext {
   /** Capture-only ProcessContext fields (node-http transport answers {} for capture=false surfaces). */
   captureProcessContext(): Pick<ProcessContext, 'fastifyRequest' | 'clientRequest' | 'onClientExchange'>;
   sendJson(status: number, payload: unknown, headers?: Record<string, string>): void;
+  /**
+   * Raw upstream relay (the `direct` unresolved-model executor, ADR-0003
+   * §7a): ONE terminal send that pipes an origin response to the client
+   * verbatim — status line, headers and body bytes (JSON or SSE alike).
+   * Callers pass hop-by-hop-stripped headers; the implementation owns the
+   * capture side (per-chunk gateway-response stash + finalize), matching
+   * sendJson/beginSse discipline.
+   */
+  relayUpstream(up: {
+    statusCode: number;
+    statusMessage?: string;
+    headers: Record<string, string | string[] | undefined>;
+    stream: Readable;
+  }): void;
   beginSse(headers: Record<string, string>): void;
   writeSseChunk(chunk: string): void;
   endSse(): void;

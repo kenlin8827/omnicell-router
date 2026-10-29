@@ -5,7 +5,7 @@
  *   • every HttpExchangeEvent of a key-authenticated turn carries
  *     apiKey = { id, name } (the non-secret half of ApiKeyConfig);
  *   • the raw token value NEVER reaches the archive;
- *   • master-key (adminApiKey) access carries no attribution (field absent);
+ *   • master-key (client.adminKey) access carries no attribution (field absent);
  *   • listSessions surfaces the attribution per archive and filters by it;
  *   • the lightweight session trajectory (ExecutionTrace via
  *     /api/admin/traces) and /api/admin/sessions expose the same identity.
@@ -73,7 +73,7 @@ describe('capture-keyid (API-key attribution on request logs)', () => {
     const config = loadConfig();
     config.host = '127.0.0.1';
     config.webAuth = { enabled: false };
-    config.adminApiKey = MASTER_KEY;
+    config.adminKey = MASTER_KEY;
     config.apiKeys = [
       {
         id: CLIENT_KEY_ID,
@@ -230,7 +230,7 @@ describe('capture-keyid (API-key attribution on request logs)', () => {
   });
 
   it('console API: sessions list exposes the identity; capture sessions route filters by ?apiKey=', async () => {
-    // /api/admin/* accepts the master adminApiKey as Bearer credential.
+    // /api/admin/* accepts the master key (client.adminKey) as Bearer credential.
     const adminHeaders = { authorization: `Bearer ${MASTER_KEY}` };
 
     const tracesRes = await app.inject({ method: 'GET', url: '/api/admin/traces?limit=100', headers: adminHeaders });

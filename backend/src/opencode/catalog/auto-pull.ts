@@ -10,6 +10,9 @@ import type { CatalogModel } from './types.js';
  * auto-pull scheduler (catalog.autoPullModels + catalog.autoPullPatterns):
  *  - live:     provider has baseURL + credential → pull its own /v1/models
  *  - catalog:  otherwise → static merged catalog (builtin → extensions)
+ *  - merged:   BUILTIN providers (first-party catalog coverage) with a live
+ *              capability → catalog first (metadata-authoritative base), then
+ *              a live /v1/models pass that only tops up ids the catalog lacks
  *
  * The PERIODIC sweep is opt-in per provider: only providers declared in
  * catalog.autoPullPatterns are swept, and only within their glob pattern —
@@ -175,7 +178,7 @@ export async function pullCatalogModels(id: string, opts: { pattern?: string; id
 
 export interface AutoPullEntry {
   providerId: string;
-  mode: 'live' | 'catalog' | 'skipped';
+  mode: 'live' | 'catalog' | 'merged' | 'skipped';
   pulled: number;
   skipped?: number;
   error?: string;
@@ -289,21 +292,45 @@ export async function autoPullProviderModels(): Promise<AutoPullEntry[]> {
       const inlineKey = expandEnvTemplate(def?.options?.apiKey);
       const key = inlineKey || credStore.resolveKey(v.id)?.key;
       if (baseURL && key) {
+        // Builtin (first-party catalog) providers merge: the static catalog is
+        // the metadata-authoritative base, the live list only tops up ids the
+        // catalog does not know yet (dedup by id, catalog entries win).
+        let liveModels: CatalogModel[] | undefined;
+        let liveError: string | undefined;
         try {
           const res = await fetch(`${String(baseURL).replace(/\/+$/, '')}/models`, {
             headers: { Authorization: `Bearer ${key}` },
             signal: AbortSignal.timeout(15000),
           });
-          if (!res.ok) return { id: v.id, mode: 'live', models: [], error: `HTTP ${res.status}` };
-          const raw = await res.json().catch(() => null);
-          if (!raw) return { id: v.id, mode: 'live', models: [], error: 'non-JSON payload' };
-          const { normalizeOpenAICompatible } = await import('./sources/registry.js');
-          const pulled = normalizeOpenAICompatible(raw).filter((m) => matchesGlobPattern(pattern, m.id));
-          const models = await enrichFromCatalog(pulled, v.id);
-          return { id: v.id, mode: 'live', models };
+          if (!res.ok) liveError = `HTTP ${res.status}`;
+          else {
+            const raw = await res.json().catch(() => null);
+            if (!raw) liveError = 'non-JSON payload';
+            else {
+              const { normalizeOpenAICompatible } = await import('./sources/registry.js');
+              liveModels = normalizeOpenAICompatible(raw).filter((m) => matchesGlobPattern(pattern, m.id));
+            }
+          }
         } catch (err: any) {
-          return { id: v.id, mode: 'live', models: [], error: err?.message || String(err) };
+          liveError = err?.message || String(err);
         }
+        if (await isBuiltinCatalogProvider(v.id)) {
+          const { catalogRepository } = await import('./repository.js');
+          const provider = await catalogRepository.getProvider(v.id);
+          const catalogModels = (provider?.models ?? []).filter((m) => matchesGlobPattern(pattern, m.id));
+          if (!catalogModels.length && !liveModels?.length) return { id: v.id, mode: 'skipped', models: [] };
+          const seen = new Set(catalogModels.map((m) => m.id));
+          const enriched = await enrichFromCatalog(liveModels ?? [], v.id);
+          return {
+            id: v.id,
+            mode: 'merged',
+            models: [...catalogModels, ...enriched.filter((m) => !seen.has(m.id))],
+            ...(liveError && !catalogModels.length ? { error: liveError } : {}),
+          };
+        }
+        if (liveError) return { id: v.id, mode: 'live', models: [], error: liveError };
+        const models = await enrichFromCatalog(liveModels ?? [], v.id);
+        return { id: v.id, mode: 'live', models };
       }
       const { catalogRepository } = await import('./repository.js');
       const provider = await catalogRepository.getProvider(v.id);
@@ -349,9 +376,83 @@ export async function autoPullProviderModels(): Promise<AutoPullEntry[]> {
 }
 
 /**
+ * True when the provider exists in the aggregated catalog AND is not custom —
+ * i.e. its sources include a first-party catalog (opencode / models-dev).
+ * Builtin providers get CATALOG-FIRST pulls: the live /v1/models list of a
+ * first-party upstream is bare (ids + display names only), while the catalog
+ * carries the curated pricing/limits/modalities the router and console rely on.
+ */
+export async function isBuiltinCatalogProvider(id: string): Promise<boolean> {
+  const { catalogRepository, isCustomProvider } = await import('./repository.js');
+  const provider = await catalogRepository.getProvider(id);
+  return Boolean(provider && !isCustomProvider(provider));
+}
+
+/**
+ * Merged pull for BUILTIN providers: static catalog sets the metadata-authoritative
+ * base, then a live /v1/models pass (ADD-ONLY, same as everywhere) fills in ids the
+ * catalog does not know yet. Both passes only ever write models absent from the
+ * defs file, so operator-maintained values stay source-proof regardless of order.
+ */
+export async function pullMergedModels(id: string, opts: { pattern?: string; ids?: string[]; dryRun?: boolean }): Promise<PullResult> {
+  const catalogResult = await pullCatalogModels(id, opts);
+  // Catalog failure (not in catalog / no def node): fall through to live-only.
+  if (!catalogResult.body.success && !catalogResult.body.status) return catalogResult;
+  if (catalogResult.body.hint) return catalogResult; // not-in-catalog etc. — nothing to merge onto
+  const { getProviderNodeById, expandEnvTemplate } = await import('../user-config.js');
+  const { getCredentialStore } = await import('../credentials/index.js');
+  const def = getProviderNodeById(id);
+  const store = await getCredentialStore();
+  const liveCapable = Boolean(def?.options?.baseURL && (expandEnvTemplate(def?.options?.apiKey) || store.listCredentials(id).some((a) => a.routable)));
+  if (!liveCapable) return catalogResult;
+  const liveResult = await pullLiveModels(id, opts);
+  // Explicit-failure check (=== false): a dryRun preview body carries no
+  // `success` key at all — truthiness here would classify a SUCCESSFUL live
+  // preview as a dead upstream and drop the merge to catalog-only.
+  if (liveResult.body.success === false) {
+    // Catalog data already landed (or previewed) — a dead upstream must not
+    // erase it; surface the live failure as data alongside the catalog outcome.
+    return {
+      httpStatus: 200,
+      body: { ...catalogResult.body, live: false, liveError: liveResult.body },
+    };
+  }
+  if (opts.dryRun) {
+    // Both previews returned matched model lists — union by id, catalog first
+    // (its entries carry the richer metadata for shared ids).
+    const seen = new Set<string>();
+    const models = [...(catalogResult.body.models ?? []), ...(liveResult.body.models ?? [])].filter((m: any) =>
+      !seen.has(m.id) ? seen.add(m.id) : false
+    );
+    return {
+      httpStatus: 200,
+      body: {
+        ...catalogResult.body,
+        live: true,
+        matched: models.length,
+        pullable: models.length,
+        models,
+      },
+    };
+  }
+  return {
+    httpStatus: 200,
+    body: {
+      status: 'ok',
+      success: true,
+      live: true,
+      pulled: Number(catalogResult.body.pulled ?? 0) + Number(liveResult.body.pulled ?? 0),
+      skipped: Number(catalogResult.body.skipped ?? 0) + Number(liveResult.body.skipped ?? 0),
+    },
+  };
+}
+
+/**
  * Pull one provider's models with the automatic live/catalog choice — the SAME
  * dispatch the console pull route and the periodic scheduler use. Shared so the
  * create route can opportunistically top up a brand-new provider in one gesture.
+ * Builtin (first-party catalog) providers take the merged catalog+live path:
+ * catalog sets the authoritative metadata base, live only tops up new ids.
  */
 export async function autoPullProvider(
   id: string,
@@ -366,6 +467,9 @@ export async function autoPullProvider(
   const store = await getCredentialStore();
   const inlineKey = expandEnvTemplate(def?.options?.apiKey);
   const liveCapable = Boolean(def?.options?.baseURL && (inlineKey || store.listCredentials(id).some((a) => a.routable)));
+  if (await isBuiltinCatalogProvider(id)) {
+    return liveCapable ? pullMergedModels(id, opts) : pullCatalogModels(id, opts);
+  }
   return liveCapable ? pullLiveModels(id, opts) : pullCatalogModels(id, opts);
 }
 

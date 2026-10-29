@@ -198,6 +198,33 @@ export function createFastifyTransport(
       finalizeCapture(reply);
     },
 
+    relayUpstream: (up) => {
+      // Verbatim origin relay (direct legs): bypass Fastify's serializer and
+      // pipe the origin bytes onto the raw reply — the capture stash sees the
+      // same bytes the client receives (contract §1.5: one terminal send).
+      try {
+        reply.raw.writeHead(up.statusCode || 502, up.statusMessage, up.headers as Record<string, string | string[]>);
+      } catch (err) {
+        logError(err, 'Fastify relayUpstream writeHead failed');
+        finalizeCapture(reply);
+        return;
+      }
+      const ctx = getClientExchangeContext(req);
+      up.stream.on('data', (chunk: Buffer) => {
+        if (ctx) appendGatewayResponseChunk(ctx, chunk.toString('utf8'));
+      });
+      up.stream.pipe(reply.raw);
+      up.stream.on('end', () => {
+        finalizeCapture(reply);
+      });
+      up.stream.on('error', () => {
+        try {
+          reply.raw.destroy();
+        } catch {}
+        finalizeCapture(reply);
+      });
+    },
+
     isClientGone,
     logError,
   };

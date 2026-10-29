@@ -1,8 +1,25 @@
 import { beforeAll, afterAll, describe, expect, it } from 'bun:test';
 import http from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { loadConfig } from '../src/config/index.js';
 import { createServer, canonicalPath } from '../src/server.js';
 import { createSessionToken, SESSION_COOKIE } from '../src/auth/web-auth.js';
+
+// Isolation: both loadConfig() and the request-time disk key gate read the
+// ACTIVE environment's config.yaml from OCR_HOME. Sandbox the home and seed a
+// known CURRENT-schema (v1 grouped) config with NO client keys — the "no key
+// gate" environment every OFF-app assertion below is written against (on a
+// workstation whose live config carries keys, the OFF app would 401 before
+// the CSRF gate ever runs).
+const csrfSandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-admin-csrf-'));
+process.env.OCR_HOME = path.join(csrfSandbox, 'home');
+process.env.OCR_ENV = 'default';
+const csrfEnvDir = path.join(process.env.OCR_HOME, 'envs', 'default');
+fs.mkdirSync(csrfEnvDir, { recursive: true });
+fs.writeFileSync(path.join(csrfEnvDir, 'config.yaml'), 'schemaVersion: 1\nclient:\n  host: 127.0.0.1\n');
+fs.writeFileSync(path.join(csrfEnvDir, 'env.json'), JSON.stringify({ name: 'default', type: 'regular', schemaVersion: 1 }));
 
 /**
  * Security P2-3 — drive-by CSRF narrowing on state-changing /api/admin/*
@@ -19,15 +36,19 @@ import { createSessionToken, SESSION_COOKIE } from '../src/auth/web-auth.js';
  *      (both the new CSRF gate and the PRE-EXISTING webAuth session gate).
  */
 
+// OFF app: webAuth inactive, no client keys on disk (sandbox above), so the
+// CSRF gate is the first line of defense — every 403/200 verdict below is
+// the gate's own, never a key-auth 401.
 const inactiveConfig = loadConfig();
 inactiveConfig.host = '127.0.0.1';
 inactiveConfig.webAuth = { enabled: false };
+inactiveConfig.adminKey = undefined;
 const { app } = createServer(inactiveConfig, true);
 
 const activeConfig = loadConfig();
 activeConfig.host = '127.0.0.1';
 activeConfig.webAuth = { enabled: true };
-activeConfig.adminApiKey = 'test-admin-key';
+activeConfig.adminKey = 'test-admin-key';
 const { app: authedApp } = createServer(activeConfig, true);
 
 // Boot before injecting: an inject that lands mid-avvio-boot on an UNMATCHED
@@ -41,7 +62,14 @@ beforeAll(async () => {
   offPort = Number(new URL(await app.listen({ port: 0, host: '127.0.0.1' })).port);
   onPort = Number(new URL(await authedApp.listen({ port: 0, host: '127.0.0.1' })).port);
 });
-afterAll(() => Promise.all([app.close(), authedApp.close()]));
+afterAll(() => {
+  try {
+    fs.rmSync(csrfSandbox, { recursive: true, force: true });
+  } catch {
+    /* best effort */
+  }
+  return Promise.all([app.close(), authedApp.close()]);
+});
 
 /**
  * Raw-socket POST (node:http, never proxied): light-my-request has a
@@ -202,7 +230,7 @@ describe('F2: gates test the router-canonical path, not raw req.url', () => {
     expect(res.statusCode).toBe(200);
   });
 
-  it('webAuth ON: %61pi + master adminApiKey Bearer → 200 (programmatic path unaffected)', async () => {
+  it('webAuth ON: %61pi + master key Bearer → 200 (programmatic path unaffected)', async () => {
     const res = await authedApp.inject({
       method: 'POST',
       url: ENCODED_WRITE,
@@ -236,11 +264,12 @@ describe('F2: gates test the router-canonical path, not raw req.url', () => {
 
   it('double-encoded %2561: ONE decode pass matches the router — passes gates and routes to nothing (404/401, never 200)', async () => {
     // decodeURI('%2561pi…') === '%61pi…' (non-reserved), same as find-my-way,
-    // which then matches no admin route. webAuth OFF → 404 from the router;
-    // webAuth ON → non-admin path still needs an API key → 401. Either way
-    // the ADMIN handler never runs.
+    // which then matches no admin route. webAuth OFF → 404 from the router
+    // (or 401 from the disk-backed key gate when the workstation config
+    // carries client keys); webAuth ON → non-admin path still needs an API
+    // key → 401. Every verdict means the ADMIN handler never runs.
     const off = await rawPost(offPort, '/%2561pi/admin/metrics/reset', 'http://evil.test');
-    expect(off.status).toBe(404);
+    expect([404, 401]).toContain(off.status);
     const on = await rawPost(onPort, '/%2561pi/admin/metrics/reset', 'http://evil.test');
     expect(on.status).toBe(401);
     expect(on.body).not.toContain('console_auth_required'); // key-auth 401, not the admin gate
@@ -248,9 +277,10 @@ describe('F2: gates test the router-canonical path, not raw req.url', () => {
 
   it('%41pi → /Api…: find-my-way is case-sensitive — no route match, no admin-handler 200', async () => {
     // webAuth OFF: decoded '/Api/admin/metrics/reset' fails the (case-sensitive)
-    // lowercase prefix on both sides; router 404s (auth disabled, no key gate).
+    // lowercase prefix on both sides; router 404s (auth disabled, no key gate)
+    // or the disk-backed key gate 401s first — either way no admin handler.
     // webAuth ON: same non-admin verdict → falls through to key auth → 401.
-    expect((await rawPost(offPort, '/%41pi/admin/metrics/reset', 'http://evil.test')).status).toBe(404);
+    expect([404, 401]).toContain((await rawPost(offPort, '/%41pi/admin/metrics/reset', 'http://evil.test')).status);
     expect((await rawPost(onPort, '/%41pi/admin/metrics/reset', 'http://evil.test')).status).toBe(401);
   });
 

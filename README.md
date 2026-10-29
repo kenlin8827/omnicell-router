@@ -143,7 +143,7 @@ OmniCellRouter exposes full OpenAI-compatible and Anthropic-compatible endpoints
 
 ### 2. Claude Code / OpenCode CLI / Chatbox
 1. **API Base URL**: `http://127.0.0.1:3000/v1`
-2. **API Key**: Any placeholder string (or your configured `adminApiKey`).
+2. **API Key**: any `sk-ocr-*` key created on the console /keys page (or any placeholder if the gateway runs keyless).
 3. **Model**: `auto` (or explicit tier aliases like `plus`).
 
 ### 3. Python SDK

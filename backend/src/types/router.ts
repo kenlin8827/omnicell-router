@@ -1,4 +1,5 @@
 import { ChatCompletionResponse } from './openai.js';
+import type { UpstreamEventContext } from '../observability/upstream-events.js';
 // Type-only imports: erased at runtime, so the resilience -> types/router
 // value-direction import cycle can never exist.
 import type { CircuitBreakerSnapshot } from '../resilience/types.js';
@@ -193,9 +194,29 @@ export interface RoutingDecision {
   effortConfidence?: number;
 }
 
+/**
+ * `direct` unresolved-model outcome (ADR-0003 §7a): the turn ran THROUGH the
+ * pipeline (normalization, session id, compression, capture) but resolves to
+ * NO model — the transport must relay the response from the ORIGINAL
+ * destination verbatim (raw bytes; the client's own auth headers ride along).
+ * When set on an ExecutionResult, `response`/`tierUsed` are undefined and the
+ * chat pipeline short-circuits to `relayUpstream` instead of encode/send.
+ */
+export interface DirectForwardPlan {
+  /** Absolute origin URL — the ORIGINAL destination the MITM client dialed. */
+  url: string;
+  /** Client auth/accept headers (hop-by-hop, host and content-length stripped). */
+  requestHeaders: Record<string, string | string[]>;
+  /** Origin wire body: the client's own payload with scrubbed/compressed messages spliced back in. */
+  requestBody: string;
+  /** Upstream-leg capture provenance (undefined when capture is disabled). */
+  capture?: UpstreamEventContext;
+}
+
 export interface ExecutionResult {
-  response: ChatCompletionResponse;
-  tierUsed: TierLevel;
+  response?: ChatCompletionResponse;
+  tierUsed?: TierLevel;
+  directForward?: DirectForwardPlan;
   modelUsed: string;
   layerUsed?: 'layer0' | 'entry' | 'layer2';
   fallbackOccurred: boolean;

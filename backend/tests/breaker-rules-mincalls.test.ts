@@ -145,18 +145,18 @@ describe('minCalls clamps (sanitizer + resolver defense)', () => {
   };
 
   it('minCalls above the RULE windowSize clamps down to it', () => {
-    const c = cfg('circuitBreaker:\n  rules:\n    trip:\n      failureRate:\n        windowSize: 4\n        minCalls: 9\n');
+    const c = cfg('schemaVersion: 1\nresilience:\n  circuitBreaker:\n    rules:\n      trip:\n        failureRate:\n          windowSize: 4\n          minCalls: 9\n');
     expect(c.rules?.trip?.failureRate?.minCalls).toBe(4);
     expect(resolveBreakerRules(c).trip.failureRate.minCalls).toBe(4);
   });
 
   it('minCalls above the GLOBAL slidingWindowSize clamps down to it (auto fallback)', () => {
-    const c = cfg('circuitBreaker:\n  slidingWindowSize: 6\n  rules:\n    trip:\n      failureRate:\n        minCalls: 9\n');
+    const c = cfg('schemaVersion: 1\nresilience:\n  circuitBreaker:\n    slidingWindowSize: 6\n    rules:\n      trip:\n        failureRate:\n          minCalls: 9\n');
     expect(c.rules?.trip?.failureRate?.minCalls).toBe(6);
   });
 
   it('negative minCalls clamps to 0 (rate decided from the first outcome)', () => {
-    const c = cfg('circuitBreaker:\n  rules:\n    trip:\n      failureRate:\n        minCalls: -3\n');
+    const c = cfg('schemaVersion: 1\nresilience:\n  circuitBreaker:\n    rules:\n      trip:\n        failureRate:\n          minCalls: -3\n');
     expect(c.rules?.trip?.failureRate?.minCalls).toBe(0);
   });
 

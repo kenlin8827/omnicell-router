@@ -51,7 +51,7 @@ No store claims OAuth. oauth/wellknown rows are listed-and-badged, never routed,
 
 ### 8. Boot and console surface
 
-Boot order: bind store (OcrStore) → `initCredentialSync` (migration one-shot + auto timers + mutation hook) → `buildDirectPool`. Console: `GET /credential-store` (status; `kind` always `'ocr'`; the `integrations` field is gone — the bound store is not integration-scoped); keys are handled as ONE book, so there is no per-provider push endpoint: the only write entry is `POST /credential-sync/run` with `direction: write` (optional `provider` narrows it; local entries kept, outcome recorded); plus `GET /credential-sync` (table data) and `POST /credential-sync/toggle`. Reveal keeps its four hard gates.
+Boot order: bind store (OcrStore) → `initCredentialSync` (migration one-shot + auto timers + mutation hook) → `buildDirectPool`. Console: `GET /credential-store` (status; `kind` always `'ocr'`; the `integrations` field is gone — the bound store is not integration-scoped); keys are handled as ONE book, so there is no per-provider push endpoint: the only write entry is `POST /credential-sync/run` with `direction: write` (optional `provider` narrows it; local entries kept, outcome recorded); plus `GET /credential-sync` (table data) and `POST /credential-sync/toggle`. Reveal keeps its four hard gates. The operator credential-chain seam is `POST /opencode/providers/:id/credentials/reorder` (see the amendment below); `store.activate` survives only as the internal head primitive.
 
 ### 9. Retired
 
@@ -95,3 +95,41 @@ The write direction already pushes the WHOLE chain per provider (v1 stays head-o
 - **Relative order among non-active fallbacks is NOT synced, deliberately.** v2 exposes no order field (rows read `active DESC, time_updated DESC`) and the pull stamps imported rows with the pull's own timestamps, so the client's fallback sequence is not reproduced in the OCR file, nor the reverse. Only the ACTIVE head is authoritative across the boundary; standby order is a client-local read order, not a routing contract. Anyone changing that needs a real order representation on the OCR side (schema version bump), not more timestamp gaming.
 
 Tests: `credentials-sync` pins both directions — a pushed fallback does not steal the head, a drifted head is healed on a dedup-only push, a pull keeps an existing OCR head, and a pull adopts the client head only when the OCR chain has no active row.
+
+## Amendment — hot credential-chain refresh (2026-10-28)
+
+The routing chain (`registry.credentialChains`) used to be a BOOT-ONLY snapshot: `buildDirectPool` → `registerProvider` was the single write point, so a credential added through the console (connect / activate / disconnect) or landed by a credential sync stayed invisible to `pipeline/credential-selection.ts` until the next gateway restart. With a multi-credential provider the new-session spread kept collapsing onto the boot-time chain — operationally: "every request uses the first credential" — because the selector saw `chain.length === 1` and degenerated to the head.
+
+The chain is now HOT: `registry.refreshCredentialChain(name, chain)` swaps the entry wholesale (atomic Map put under Bun's single thread; in-flight requests keep serving on the old array reference) and is invoked at every store-mutation seam:
+
+- console **connect** (`connectKeyIdempotent` — covers the create/setKey/connect routes),
+- console **reorder** (the chain REORDERS — head = `ids[0]` via the store's `reorder`),
+- console **disconnect** (the removed key leaves the live chain immediately),
+- **credential sync run** (a pull can land keys on many providers; every connected provider's chain is refreshed).
+
+Operator disable/enable is deliberately NOT a rebuild trigger: the disabled row stays in the chain and is filtered at selection time by `isPairOut` (takedown outranks every runtime signal; chain membership is orthogonal). An EMPTY chain deletes the entry — the provider degenerates to the head-baked path (`config.apiKey`), preserving the head === baked-key invariant.
+
+RAW keys remain registry-only (never serialized). A store read failure during a rebuild is swallowed — the previous chain keeps serving (fail-open). The stale prose claiming "repeated connect grows the chain" in `console.ts` described a mechanism that no longer existed; the dedup there protects the store's keyHash identity, not a chain length.
+
+Tests: `credentials-console-routes` pins the hot path — connect grows the live chain, reorder moves the head, disconnect removes the row, all without a restart.
+
+## Amendment — operator surface: reorder replaces activate (2026-10-28)
+
+The operator-facing mutation seam was a per-credential `POST …/credentials/:credentialId/activate` ("make active"). It is replaced by a whole-chain `POST …/providers/:id/credentials/reorder` with body `{ ids: string[] }` — `ids` MUST be a permutation of the provider's credential ids, and the chain head becomes `ids[0]`. `store.activate(credentialId)` remains on the `CredentialStore` interface (capability `activate` stays `true`) as the INTERNAL head primitive used by the credential-sync push (head restore) and the console connect route's `headPreserved` defense — it just no longer has a route.
+
+OCR file schema version 2: the credentials.json ROW-ARRAY ORDER is now the authoritative chain order (index 0 = head). Version 1 files encoded order only as a derivation (active rows first, then `!active` by `timeUpdated` DESC); on read they are normalized IN MEMORY to that legacy derived order — never written back just for reading — and every mutation saves the file as version 2 with array order authoritative. `active` FOLLOWS POSITION 0 (`rows[0].active === true`, head's `timeUpdated` bumped), which keeps both prior invariants intact: Push/Pull head-authority semantics (§ "chain-head authority across the credential sync") and the opencode CLI pointer (opencode routes with its active row; the sync restores the OCR head by keyHash exactly as before). Standby ordering is now durable locally — the thing the earlier amendment said "needs a real order representation on the OCR side"; that representation is the v2 array.
+
+`OpencodeV2Store` maps `reorder` to a HEAD-SET ONLY: the v2 service exposes no order field (its rows read `active DESC, time_updated DESC`), so reorder validates the id permutation and activates `ids[0]` (skipping the POST when that row is already active); standby order stays the service's local read order, per the existing amendment. `capabilities.reorder` is `writable` on the v2 store and `true` on the OCR store; the console route refuses with 400 `capability_unsupported` when the bound store cannot reorder.
+
+Tests: `credentials-console-routes` pins the reorder route (head flip, refreshed inline list, capability/invalid-body refusals, unknown id 404); `credentials-ocr-store` pins the store primitive (permutation validation, `active` follows position 0, v1 normalization on read, version 2 on write); `credentials-opencode-v2-writes` pins the head-set degradation.
+
+## Amendment — per-credential spread weight (2026-10-29)
+
+The deterministic new-session spread (ADR-0002 §4) used to give every healthy row an equal hash slot. Operators with unequal per-key quotas (one key carries 5× the daily budget of another) had no lever: the split was always 1/N. Credentials now carry an optional integer `weight` (>= 1, absent = 1, ceiling `CREDENTIAL_WEIGHT_MAX` = 100 — single-sourced in `backend/src/config/defaults.ts`, mirrored in `frontend/src/lib/defaults.ts`).
+
+- **Home**: the weight lives in the OCR file only (`OcrCredential.weight`, saved with schema version 2). The opencode v2 service exposes no weight/order field beyond `active`, so v2-bound rows always weigh 1: `capabilities.weight` is `true` on the OCR store and `false` on `OpencodeV2Store`, and the console route refuses with 400 `capability_unsupported` on a store without the capability (the reorder gate pattern). Weights never cross the sync boundary in either direction — the push/pull head-authority rules are untouched.
+- **Operator surface**: `POST …/providers/:id/credentials/:credentialId/weight` with body `{ weight }`; the route validates an integer in `[1, CREDENTIAL_WEIGHT_MAX]` (400 `invalid_weight` otherwise), the store re-clamps on write, and the read path sanitizes hand-edited files (0/negative/fractional/non-numeric degrade to absent or floor/clamp — a bad file value can never poison the spread). The console Keys page edits the weight in the per-provider credential zoom dialog; the card rows show a read-only `×N` badge.
+- **Placement semantics**: `weightedSpreadIndex` draws the SAME sha256(sessionId) slot, now in `[0, Σweights)`, and walks the weight prefix sums — a row weighing w occupies w consecutive slots. Uniform weights reproduce the pre-weight landing exactly (total === count), so existing sessions keep their slots. The weight shapes ONLY the new-session spread: the forced-failover landing stays chain-order priority, the keep/affinity rules never read it, and the ratchet is untouched (ADR-0011 overlay discipline).
+- **Hot chain**: the weight rides `CallCredential.weight` end-to-end (`resolveKeyChain` → boot/`refreshProviderCredentialChain`), so a set-weight takes effect on the very next placement without a restart.
+
+Tests: `credential-selection.test.ts` pins the weighted spread (uniform back-compat, slot mapping, proportionality smoke, failover-order precedence); `credentials-ocr-store.test.ts` pins set/clamp/sanitize and the chain/meta passthrough; `credentials-console-routes.test.ts` pins the route (200 shape, invalid-body 400s, unknown-id 404, masked-only wire).

@@ -200,6 +200,22 @@ export class CatalogRepository {
     return this;
   }
 
+  /** Test hook: drop all singleton state (timer, remote caches, sources,
+   *  materialized store) so a test process can boot a fresh catalog against
+   *  its own mocks. Production code never calls this. */
+  resetForTests(): void {
+    this.stop();
+    this.remote.clear();
+    this.sources = resolveSources();
+    this.intervalMs = 24 * 3600 * 1000;
+    this.started = false;
+    this.ocr = null;
+    this.ocrDirty = true;
+    this.ocrSig = '';
+    this.serviceProbe = null;
+    this.serviceProbedAt = 0;
+  }
+
   /** Boot-time sync of every enabled source + periodic refresh. */
   async start(): Promise<void> {
     this.started = true;

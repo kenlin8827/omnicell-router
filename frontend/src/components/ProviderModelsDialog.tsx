@@ -32,7 +32,7 @@ const overlayStyle = (blur: boolean): React.CSSProperties => ({
 const dialogStyle: React.CSSProperties = {
   margin: 'auto',
   width: '100%',
-  maxWidth: 680,
+  maxWidth: 860,
   maxHeight: '85vh',
   overflow: 'hidden', // inner regions scroll; header/actions stay pinned
   padding: '20px',
@@ -489,6 +489,31 @@ export const ProviderModelsDialog: React.FC<{
       await refreshAll();
     });
 
+  /** Delete ONLY rows with a failed test result — untested / passing rows are
+   *  never touched, so a blank result sheet can never wipe the list. A blank
+   *  failure sheet gets a hint instead of a destructive no-op. */
+  const failedIds = rows.filter((r) => testResults[r.id] && !testResults[r.id].ok).map((r) => r.id);
+
+  const handleDeleteFailed = async () => {
+    if (failedIds.length === 0) {
+      toast.info(t('op.pmDeleteFailedNone'));
+      return;
+    }
+    const ok = await confirmDialog({
+      title: t('op.pmDeleteFailedConfirm', { n: failedIds.length }),
+      danger: true,
+      confirmLabel: t('common.delete'),
+    });
+    if (!ok) return;
+    run('delete-failed', async () => {
+      for (const id of failedIds) {
+        await opencodeApi.deleteProviderModel(providerId, id);
+      }
+      toast.success(t('op.pmCleared', { n: failedIds.length }));
+      await refreshAll();
+    });
+  };
+
   const handleClear = async () => {
     const p = pattern.trim();
     const message = p
@@ -694,7 +719,22 @@ export const ProviderModelsDialog: React.FC<{
                   onMouseEnter={(e) => showHoverCard(row, e)}
                   onMouseLeave={() => setHover(null)}
                 >
-                  <span style={{ fontFamily: FONT_MONO, fontWeight: 600, wordBreak: 'break-all' }}>{row.id}</span>
+                  <span
+                    style={{
+                      fontFamily: FONT_MONO,
+                      fontWeight: 600,
+                      flexShrink: 0,
+                      // Never wrap: the wrap-break of a long id mid-token
+                      // reads as two models; overflow sideways-ellipsis and
+                      // let the hover card carry the full id instead.
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      maxWidth: '55%',
+                    }}
+                  >
+                    {row.id}
+                  </span>
                   {d.modelID && d.modelID !== row.id && <span style={{ color: 'var(--text-dim)', fontFamily: FONT_MONO, fontSize: 10 }}>→ {d.modelID}</span>}
                   {/* Name only when explicitly set AND not a repeat of the id —
                       a fallback to the id tail rendered the id twice. */}
@@ -806,6 +846,17 @@ export const ProviderModelsDialog: React.FC<{
               </span>
             </button>
             <div style={{ flex: 1 }} />
+            <button
+              className="btn btn-sm"
+              style={{ color: 'var(--accent-amber)' }}
+              disabled={busy || failedIds.length === 0}
+              onClick={() => void handleDeleteFailed()}
+              title={t('op.pmDeleteFailedConfirm', { n: failedIds.length })}
+            >
+              {pending === 'delete-failed' ? <Loader2 size={11} style={spin} /> : <Trash2 size={11} />}
+              <span>{t('op.pmDeleteFailed')}</span>
+              {failedIds.length > 0 && <span style={{ opacity: 0.7 }}>&nbsp;{failedIds.length}</span>}
+            </button>
             <button className="btn btn-sm" style={{ color: 'var(--accent-rose)' }} disabled={busy || rows.length === 0} onClick={handleClear} title={t('op.pmClear')}>
               {pending === 'clear' ? <Loader2 size={11} style={spin} /> : <Eraser size={11} />}
               <span>{t('op.pmClear')}</span>

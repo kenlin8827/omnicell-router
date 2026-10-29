@@ -538,6 +538,9 @@ export interface TranslationDict {
     pmPullSelected: string;
     pmSelectTip: string;
     pmClear: string;
+    pmDeleteFailed: string;
+    pmDeleteFailedConfirm: string;
+    pmDeleteFailedNone: string;
     pmMatched: string;
     pmPulled: string;
     pmCleared: string;
@@ -648,10 +651,16 @@ export interface TranslationDict {
     credentialSoleServingTip: string;
     /** Chain head = opencode's own key + failover priority head, not the only serving row. */
     credentialChainHeadTip: string;
-    /** Refusal reason: activating a non-routable credential cannot affect gateway routing. */
-    credentialActivateNotRoutableTip: string;
+    /** Tip for the pin-to-top affordance (credential reorder). */
+    credentialPinTip: string;
     /** Under-list line: several credentials DO serve at once (per-session spread). */
     credentialsSpreadHint: string;
+    /** Spread-weight column header / editor label. */
+    credentialWeight: string;
+    /** Weight tooltip: what the number shapes (and what it never touches). */
+    credentialWeightTip: string;
+    /** Toast: weight committed. */
+    credentialWeightSet: string;
     /** Operator takedown (OCR credential state; reversible, never destructive). */
     credentialDisabled: string;
     credentialDisabledTip: string;
@@ -662,6 +671,15 @@ export interface TranslationDict {
     credentialDisabledOk: string;
     credentialEnabled: string;
     credentialsAllDisabled: string;
+    /** Per-provider credential zoom (enlarged table dialog on KeysPage). */
+    credentialZoom: string;
+    credentialZoomDesc: string;
+    /** Zoom table: dim 'normal' word shown when a row carries no badges. */
+    credentialZoomStatusNormal: string;
+    credentialZoomColName: string;
+    credentialZoomColKey: string;
+    credentialZoomColStatus: string;
+    credentialZoomColToggle: string;
     credentialsAllDisabledTip: string;
     /** Full explanation behind the ⊘ icon (the two-word badge answered nothing). */
     credentialNotRoutableTip: string;
@@ -681,8 +699,10 @@ export interface TranslationDict {
     quotaVerified: string;
     quotaPlan: string;
     credentialPrefixTip: string;
-    credentialActivate: string;
-    credentialActivated: string;
+    /** Button: move this credential to the head of the chain (reorder). */
+    credentialPin: string;
+    /** Toast: credential was pinned to the chain head. */
+    credentialPinned: string;
     /** Per-credential connectivity probe (multi-credential: the provider-level Test only ever hits the head row). */
     credentialTest: string;
     credentialTestTip: string;
@@ -1253,6 +1273,9 @@ hiddenBadge: string;
     colSession: string;
     cardTotal: string;
     cardLastSeen: string;
+    copyMessage: string;
+    messageCopied: string;
+    messageCopyFailed: string;
     removeRow: string;
     removeFailed: string;
   };
@@ -1451,6 +1474,16 @@ hiddenBadge: string;
     formatJson: string;
     showRaw: string;
     viaProxy: string;
+    replay: string;
+    replaying: string;
+    replayFailed: string;
+    replayHint: string;
+    replayCopyCurlPosix: string;
+    replayTiming: string;
+    replayElapsed: string;
+    replayResult: string;
+    replayRespHeaders: string;
+    replayRespBody: string;
     exportTitle: string;
     exported: string;
     exportOptionsTitle: string;
@@ -1779,6 +1812,14 @@ hiddenBadge: string;
     apiKey: string;
     apiKeySelect: string;
     apiKeyRequired: string;
+    actionFailed: string;
+    proxyErrForwardProxyDisabled: string;
+    proxyErrCaMissing: string;
+    proxyErrServiceProbe: string;
+    proxyErrServiceSetEnv: string;
+    proxyErrServiceStart: string;
+    proxyErrNotActive: string;
+    proxyTeardownOk: string;
     contextWindow: string;
     ctxDefault: string;
     models: string;
@@ -1908,6 +1949,7 @@ hiddenBadge: string;
     capPolicyGroup: string;
     capPolicySummary: string;
     capStoreMedia: string;
+    capRedactSecrets: string;
     capPrivacyHint: string;
     capHotHint: string;
     respTitle: string;
@@ -1971,6 +2013,7 @@ hiddenBadge: string;
     waSaved: string;
     waUnsaved: string;
     waUnsavedHint: string;
+    waTopSaveConfirmTitle: string;
     waHint: string;
     waLogout: string;
     waLogoutConfirmTitle: string;
@@ -2006,6 +2049,7 @@ hiddenBadge: string;
     title: string;
     saveBtn: string;
     savedNotice: string;
+    savedHotNotice: string;
     enable: string;
     hint: string;
     port: string;
@@ -2019,6 +2063,15 @@ hiddenBadge: string;
     caBtn: string;
     caHint: string;
     hostNote: string;
+    unresolvedTitle: string;
+    unresolvedHint: string;
+    unresolvedOnMiss: string;
+    unresolvedHosts: string;
+    unresolvedHostPlaceholder: string;
+    unresolvedValuePlaceholder: string;
+    unresolvedModeFail: string;
+    unresolvedModeDirect: string;
+    addHost: string;
     helpTitle: string;
     wizardPrev: string;
     wizardNext: string;
@@ -2348,6 +2401,10 @@ hiddenBadge: string;
     desc: string;
     savedNotice: string;
     filterPlaceholder: string;
+    /** Optional: only zh-CN and en ship the comment-panel copy; other locales fall back to en. */
+    commentsTitle?: string;
+    commentsHint?: string;
+    commentsTruncated?: string;
   };
   apiKeys: {
     title: string;
