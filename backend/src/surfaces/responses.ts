@@ -3,6 +3,8 @@ import {
   chatToResponseObject,
   chatToStreamEvents,
   inputItemsToMessages,
+  responsesToolsToChat,
+  responsesToolChoiceToChat,
   type ResponsesRequest,
 } from '../routes/responses.js';
 import type { ChatCompletionRequest, ChatMessage } from '../types/openai.js';
@@ -174,7 +176,13 @@ export const responsesSurface: ChatSurface = {
     if (req.temperature !== undefined) request.temperature = req.temperature;
     if (req.top_p !== undefined) request.top_p = req.top_p;
     if (req.max_output_tokens !== undefined) request.max_tokens = req.max_output_tokens;
-    if (req.tools?.length) request.tools = req.tools;
+    if (req.tools !== undefined && !Array.isArray(req.tools)) {
+      return { error: 'Invalid request: "tools" must be an array.' };
+    }
+    if (req.tools?.length) request.tools = responsesToolsToChat(req.tools as unknown[]);
+    if (req.tool_choice !== undefined && req.tool_choice !== null) {
+      request.tool_choice = responsesToolChoiceToChat(req.tool_choice);
+    }
     if (req.reasoning?.effort) request.reasoning_effort = req.reasoning.effort;
     // Responses-native reasoning.max_tokens maps to router's max_thinking_tokens,
     // which provider payload builders translate per-upstream (see anthropic.ts,

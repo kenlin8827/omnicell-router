@@ -11,14 +11,17 @@ import { ChatCompletionRequest, ChatCompletionResponse, ChatMessageContentPart, 
 import { UpstreamError } from '../resilience/error-classifier.js';
 import { proxiedFetch, resolveProxyUrl } from '../utils/proxy.js';
 import { DEFAULT_PROVIDER_TIMEOUT_MS } from '../config/defaults.js';
+import { chatToolsToResponses } from '../routes/responses.js';
 
 /**
  * OpenAI Responses API wire (`@ai-sdk/openai`) — POST {base}/responses.
  * Serves providers (or single models, via model-level npm override) that reject
  * chat/completions with `ModelProtocolUnsupported` — e.g. Zen's gpt-6-luna.
  *
- * Tools are fully mapped both directions (2026-10): request.tools → payload
- * tools (identical flat function shape), assistant tool_calls in history →
+ * Tools are fully mapped both directions (2026-10): the pipeline canonicalizes
+ * tools in the chat-completions (nested) shape; request.tools → payload tools
+ * re-flattens to the Responses wire (identical flat function shape), assistant
+ * tool_calls in history →
  * function_call items, tool role messages → function_call_output items, and
  * upstream function_call output items → chat tool_calls. Without this, a
  * /v1/responses tool-loop client routed here would silently lose tool calling.
@@ -82,7 +85,7 @@ export function buildResponsesPayload(request: ChatCompletionRequest, model: Mod
   else if (request.max_completion_tokens != null) payload.max_output_tokens = request.max_completion_tokens;
   if (request.temperature != null && model.temperature !== false) payload.temperature = request.temperature;
   if (request.top_p != null) payload.top_p = request.top_p;
-  if (request.tools?.length) payload.tools = request.tools;
+  if (request.tools?.length) payload.tools = chatToolsToResponses(request.tools);
   if (request.reasoning_effort || request.max_thinking_tokens != null) {
     const reasoning: Record<string, any> = {};
     // OpenAI Responses accepts the full 5-level vocabulary (none/low/medium/

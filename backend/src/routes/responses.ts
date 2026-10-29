@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import {
+  ChatCompletionRequest,
   ChatCompletionResponse,
   ChatMessage,
   Tool,
@@ -97,6 +98,8 @@ export interface ResponsesRequest {
   top_p?: number;
   max_output_tokens?: number;
   tools?: Tool[];
+  /** Responses wire: 'auto'/'none'/'required' | {type:'function', name}; normalized to the chat shape in parse. */
+  tool_choice?: unknown;
   // 5-level effort vocabulary (the OpenAI Responses wire mirrors the
   // OpenAI Chat Completions ladder — `max` is Anthropic-only and never
   // crosses this wire). OpenAI Responses rejects unsupported values
@@ -106,6 +109,59 @@ export interface ResponsesRequest {
 // can carry it through the downgrade pipeline; the openai-compatible
 // provider builder collapses it before this wire is touched.
 reasoning?: { effort?: Exclude<ReasoningEffort, 'max'>; max_tokens?: number };
+}
+
+/**
+ * Responses-wire tools are FLAT (`{type:'function', name, description, parameters}`);
+ * chat-completions tools are NESTED (`{type:'function', function:{...}}`). The
+ * internal pipeline canonicalizes on the chat-completions (nested) shape, so
+ * the Responses surface flattens incoming client tools here and the
+ * Responses-upstream provider re-flattens on payload build.
+ */
+export function responsesToolsToChat(tools: unknown[]): Tool[] {
+  return tools.map((raw) => {
+    const t = raw as Record<string, any>;
+    if (t && typeof t === 'object' && t.function?.name) return t as Tool; // already nested
+    if (t && typeof t === 'object' && typeof t.name === 'string') {
+      return {
+        type: 'function' as const,
+        function: {
+          name: t.name,
+          description: t.description,
+          parameters: t.parameters ?? { type: 'object', properties: {} },
+        },
+      };
+    }
+    return t as Tool; // unknown shape — pass through, fail at the upstream
+  });
+}
+
+/** Chat-completions (nested) tools → Responses-wire (flat) tools. */
+export function chatToolsToResponses(tools: Tool[]): Record<string, unknown>[] {
+  return tools.map((t) =>
+    t.function
+      ? {
+          type: 'function',
+          name: t.function.name,
+          ...(t.function.description !== undefined ? { description: t.function.description } : {}),
+          parameters: t.function.parameters,
+        }
+      : (t as unknown as Record<string, unknown>),
+  );
+}
+
+/**
+ * Responses-wire tool_choice → chat-completions tool_choice. The scalar
+ * ladder ('auto'/'none'/'required') is identical; the object form differs:
+ * Responses uses `{type:'function', name}`, chat nests the name under
+ * `function`. Anything else passes through and fails at the upstream.
+ */
+export function responsesToolChoiceToChat(raw: unknown): ChatCompletionRequest['tool_choice'] {
+  if (typeof raw === 'string') return raw as ChatCompletionRequest['tool_choice'];
+  if (raw && typeof raw === 'object' && typeof (raw as any).name === 'string') {
+    return { type: 'function', function: { name: (raw as any).name } };
+  }
+  return raw as ChatCompletionRequest['tool_choice'];
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +228,19 @@ export function chatToResponseObject(
   const msg = chatResp.choices[0]?.message;
   const output: Record<string, unknown>[] = [];
 
+  // Assistant prose and tool_calls coexist in Responses output (message item +
+  // function_call items); dropping the text when the model also called tools
+  // would silently lose its explanation/reasoning preamble.
+  const text = typeof msg?.content === 'string' ? msg.content : '';
+  if (text) {
+    output.push({
+      type: 'message',
+      id: shortId('msg_'),
+      status: 'completed',
+      role: 'assistant',
+      content: [{ type: 'output_text', text, annotations: [] }],
+    });
+  }
   if (Array.isArray(msg?.tool_calls) && msg.tool_calls.length > 0) {
     for (const tc of msg.tool_calls) {
       output.push({
@@ -183,14 +252,14 @@ export function chatToResponseObject(
         status: 'completed',
       });
     }
-  } else {
-    const text = typeof msg?.content === 'string' ? msg.content : '';
+  }
+  if (output.length === 0) {
     output.push({
       type: 'message',
       id: shortId('msg_'),
       status: 'completed',
       role: 'assistant',
-      content: [{ type: 'output_text', text, annotations: [] }],
+      content: [{ type: 'output_text', text: '', annotations: [] }],
     });
   }
 

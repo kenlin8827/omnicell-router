@@ -15,6 +15,15 @@ export class UpstreamError extends Error {
   public modelId?: string;
   public retryAfterSeconds?: number;
   /**
+   * Alias of `status`: every surface's `executionError` and the orchestrator's
+   * explicit-model wrapper read `err.statusCode` — without this alias an
+   * upstream 4xx loses its status here and collapses to the 502 fallback,
+   * which retry-happy harness clients then treat as retryable.
+   */
+  get statusCode(): number | undefined {
+    return this.status;
+  }
+  /**
    * Display-safe sha256 prefix of the credential that was
    * actually used when this failure happened. Stamped centrally by
    * `ProviderRegistry.execute` (attribution seam for the P3 pair-scoped breaker);

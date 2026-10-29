@@ -4,6 +4,7 @@ import { buildAnthropicPayload, anthropicToChatCompletion } from '../src/provide
 import { buildGooglePayload, googleToChatCompletion } from '../src/providers/google.js';
 import { buildResponsesPayload, responsesToChatCompletion } from '../src/providers/responses.js';
 import { ChatCompletionRequest, ToolCall } from '../src/types/openai.js';
+import { UpstreamError } from '../src/resilience/error-classifier.js';
 
 const model = { id: 'm1', upstreamModel: 'up-model-1' } as any;
 
@@ -185,12 +186,19 @@ describe('Google upstream wire: tools mapping', () => {
 });
 
 describe('Responses upstream wire: tools mapping', () => {
-  it('passes request.tools through (identical flat function shape) and maps reasoning_effort', () => {
+  it('re-flattens nested request.tools to the Responses flat shape and maps reasoning_effort', () => {
     const p = buildResponsesPayload(
       { ...chatRequest, reasoning_effort: 'high' } as ChatCompletionRequest,
       model
     ) as any;
-    assert.deepStrictEqual(p.tools, chatRequest.tools);
+    assert.deepStrictEqual(p.tools, [
+      {
+        type: 'function',
+        name: 'list_files',
+        description: 'List files in a directory',
+        parameters: { type: 'object', properties: { path: { type: 'string' } } },
+      },
+    ]);
     assert.deepStrictEqual(p.reasoning, { effort: 'high' });
   });
 
@@ -494,5 +502,13 @@ describe('Provider payload builders: temperature capability (models.dev tri-stat
     const p = buildResponsesPayload(reqWithTemp, strippedModel) as any;
     assert.strictEqual(p.temperature, undefined);
     assert.strictEqual((buildResponsesPayload(reqWithTemp, allowedModel) as any).temperature, 1);
+  });
+});
+
+describe('UpstreamError status fidelity', () => {
+  it('exposes statusCode alias so surfaces keep upstream 4xx instead of collapsing to 502', () => {
+    const err = new UpstreamError({ message: "upstream 400: 'function' is a required property - tools.0", status: 400 });
+    assert.strictEqual(err.statusCode, 400);
+    assert.strictEqual(new UpstreamError({ message: 'network down' }).statusCode, undefined);
   });
 });

@@ -4,6 +4,9 @@ import {
   inputItemsToMessages,
   chatToResponseObject,
   chatToStreamEvents,
+  responsesToolsToChat,
+  chatToolsToResponses,
+  responsesToolChoiceToChat,
   ResponsesRequest,
 } from '../src/routes/responses.js';
 import { RespStore, newResponseId, ChatMessageLite } from '../src/session/resp-store.js';
@@ -25,6 +28,75 @@ function fakeChatResponse(text: string): ChatCompletionResponse {
     usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
   } as ChatCompletionResponse;
 }
+
+describe('Responses API: tool shape conversion', () => {
+  it('flattens Responses-wire tools into the nested chat-completions shape', () => {
+    const flat = [
+      {
+        type: 'function',
+        name: 'read',
+        description: 'Read a file',
+        parameters: { type: 'object', properties: { path: { type: 'string' } } },
+      },
+    ];
+    const chat = responsesToolsToChat(flat);
+    assert.equal(chat.length, 1);
+    assert.deepEqual(chat[0], {
+      type: 'function',
+      function: {
+        name: 'read',
+        description: 'Read a file',
+        parameters: { type: 'object', properties: { path: { type: 'string' } } },
+      },
+    });
+  });
+
+  it('passes already-nested tools through untouched', () => {
+    const nested = [
+      { type: 'function', function: { name: 'bash', description: 'd', parameters: {} } },
+    ];
+    assert.deepEqual(responsesToolsToChat(nested), nested);
+  });
+
+  it('maps Responses tool_choice object {type,name} to the nested chat shape; scalars pass through', () => {
+    assert.deepEqual(responsesToolChoiceToChat({ type: 'function', name: 'read' }), {
+      type: 'function',
+      function: { name: 'read' },
+    });
+    assert.strictEqual(responsesToolChoiceToChat('auto'), 'auto');
+    assert.strictEqual(responsesToolChoiceToChat('none'), 'none');
+    assert.strictEqual(responsesToolChoiceToChat('required'), 'required');
+  });
+
+  it('round-trips nested back to flat for a Responses-upstream provider', () => {
+    const nested = [
+      {
+        type: 'function',
+        function: {
+          name: 'read',
+          description: 'Read a file',
+          parameters: { type: 'object', properties: {} },
+        },
+      },
+    ];
+    const flat = chatToolsToResponses(nested);
+    assert.deepEqual(flat, [
+      {
+        type: 'function',
+        name: 'read',
+        description: 'Read a file',
+        parameters: { type: 'object', properties: {} },
+      },
+    ]);
+  });
+
+  it('omits undefined description when re-flattening', () => {
+    const flat = chatToolsToResponses([
+      { type: 'function', function: { name: 'x', parameters: {} } },
+    ] as any);
+    assert.ok(!('description' in flat[0]));
+  });
+});
 
 describe('Responses API: input conversion', () => {
   it('converts plain string input into a single user message', () => {
@@ -92,6 +164,19 @@ describe('Responses API: response object + stream events', () => {
     const obj = chatToResponseObject(resp, 'resp_y', 'mock-model') as any;
     assert.strictEqual(obj.output[0].type, 'function_call');
     assert.strictEqual(obj.output[0].call_id, 'call_9');
+  });
+
+  it('emits assistant prose BEFORE function_call items when both are present', () => {
+    const resp = fakeChatResponse('let me check that file');
+    resp.choices[0].message.tool_calls = [
+      { id: 'call_1', type: 'function', function: { name: 'read', arguments: '{}' } },
+    ];
+    const obj = chatToResponseObject(resp, 'resp_z', 'mock-model') as any;
+    assert.strictEqual(obj.output.length, 2);
+    assert.strictEqual(obj.output[0].type, 'message');
+    assert.strictEqual(obj.output[0].content[0].text, 'let me check that file');
+    assert.strictEqual(obj.output[1].type, 'function_call');
+    assert.strictEqual(obj.output[1].name, 'read');
   });
 
   it('stream event sequence: created -> in_progress -> item/part/deltas -> completed, with final payload intact', () => {
