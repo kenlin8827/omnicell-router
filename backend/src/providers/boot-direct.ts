@@ -1,4 +1,6 @@
 import { ModelRegistration, ModelVariant, ProviderConfig } from '../config/types.js';
+import { DispatchingProvider } from './dispatch.js';
+import type { ProviderRegistry } from './registry.js';
 import type { CatalogModel } from '../opencode/catalog/types.js';
 import { PoolMembership, TierLevel, EFFORT_LADDER, type ReasoningEffort } from '../types/router.js';
 import { loadConfig } from '../config/index.js';
@@ -451,4 +453,24 @@ export async function buildDirectPool(): Promise<DirectBootResult> {
   }
 
   return { instances, models, excluded };
+}
+
+/**
+ * Hot pool rebuild (console provider-def mutations): the runtime twin of the
+ * boot path — the SAME builder with the SAME invariants, reconciled into the
+ * live registry without a gateway restart. Fail-open at the caller: a rebuild
+ * error must never take routing down; the existing registry keeps serving.
+ */
+export async function refreshDirectPool(registry: ProviderRegistry): Promise<DirectBootResult> {
+  const boot = await buildDirectPool();
+  registry.applyDirectPool(
+    boot.instances.map((inst) => ({
+      name: inst.name,
+      provider: new DispatchingProvider(inst.config, inst.wireBases),
+      config: inst.config,
+      credentialChain: inst.credentialChain,
+    })),
+    boot.models
+  );
+  return boot;
 }

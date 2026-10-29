@@ -4,6 +4,7 @@ import path from 'node:path';
 import { getAllClientStatuses, refreshClientProfileBindings, setupClient, teardownClient } from '../cli/clients/index.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { MEMBER_TIER_ORDER } from '../providers/member-match.js';
+import { refreshDirectPool } from '../providers/boot-direct.js';
 import { TIER_PURPOSE } from '../providers/virtual-meta.js';
 import { globMatchAny } from '../utils/glob.js';
 import { PipelineOrchestrator } from '../pipeline/orchestrator.js';
@@ -321,7 +322,33 @@ async function refreshProviderCredentialChain(
   } catch {
     // keep the existing chain — a refresh failure must never take routing down
   }
+  // Chain-only by design: the pool rebuild stays behind the mutation-route
+  // wrapper (`withPoolSync`) or the config-save seams — a credential-sync
+  // run over P providers must not trigger P+1 full rebuilds.
 }
+
+/**
+ * Wrap an admin mutation handler with a post-run POOL RESYNC: every def /
+ * credential / override write lands in the live registry the same way a boot
+ * rebuild would (ADR-0010 §3 amendment) — no restart. Fail-open: a rebuild
+ * error keeps the existing registry serving. Handlers that already replied
+ * (error paths) skip the resync.
+ */
+const withPoolSync =
+  (registry: ProviderRegistry, handler: (req: any, reply: any) => Promise<unknown>) =>
+  async (req: any, reply: any) => {
+    const result = await handler(req, reply);
+    if (!reply.sent) {
+      try {
+        await refreshDirectPool(registry);
+      } catch (err) {
+        // Fail-open: the registry keeps serving, but a silent drift hides a
+        // failed mutation — log it so an operator can see it landed nowhere.
+        console.warn(`[console] pool resync after a def/credential mutation failed (registry may drift): ${(err as Error).message}`);
+      }
+    }
+    return result;
+  };
 /**
  * Idempotent connect (identity at the write seam): handing the store a
  * key it ALREADY holds for this provider is idempotent — the existing credential is
@@ -1680,6 +1707,12 @@ export function registerConsoleRoutes(
     applyDirectivesConfig(loadConfig().directives); // directive gate: hot-applies the reserved namespace + kill switch
     orchestrator.getRegistry().applyCombos(loadConfig().combos);
     orchestrator.getRegistry().applyTierConfigNow(); // tier member lists commit immediately (no restart)
+    try {
+      await refreshDirectPool(orchestrator.getRegistry()); // provider-def sync: models/wires/chains match the defs file (no restart)
+    } catch (err) {
+      // Fail-open, but never silent: the registry keeps serving and may drift.
+      console.warn(`[console] pool resync after config save failed (registry may drift): ${(err as Error).message}`);
+    }
     warnOnEmptyTierPools(); // no residual tier → an empty pool is now possible
     orchestrator
       .getRegistry()
@@ -1716,6 +1749,12 @@ export function registerConsoleRoutes(
       .getCircuitBreakerManager()
       .applyConfig(loadConfig().circuitBreaker, loadConfig().retry); // hot-apply breaker rules too (see handleSaveConfig)
     // Profile-link write-through on the raw path too (same diff guard).
+    try {
+      await refreshDirectPool(orchestrator.getRegistry()); // provider-def sync on the raw path too (no restart)
+    } catch (err) {
+      // Fail-open, but never silent: the registry keeps serving and may drift.
+      console.warn(`[console] pool resync after config save failed (registry may drift): ${(err as Error).message}`);
+    }
     const profileNote = await refreshClientProfileBindings(loadConfig().modelProfiles || []);
     if (profileNote) return { ...result, message: `Saved. ${profileNote.trim().replace(/^; /, '')}` };
     return result;
@@ -1771,9 +1810,9 @@ export function registerConsoleRoutes(
         isDefaultInTier: Boolean(model.isDefaultInTier),
         inputPrice: model.pricing?.input,
         outputPrice: model.pricing?.output,
-        // Decision 6 aggregate: healthy iff the model breaker is up AND at least one
-        // a credential pair serves — a model whose every credential is cooling shows
-        // down here exactly as it does to the pool builders.
+        // Decision 6 aggregate: healthy iff at least one credential tuple serves —
+        // a model whose every credential is cooling shows down here exactly as it
+        // does to the pool builders.
         healthy: registry.modelAvailable(model).available,
         weight,
       }));
@@ -1843,9 +1882,9 @@ export function registerConsoleRoutes(
           isDefaultInTier: Boolean(model.isDefaultInTier),
           inputPrice: model.pricing?.input,
           outputPrice: model.pricing?.output,
-          // Decision 6 aggregate: healthy iff the model breaker is up AND at least one
-          // a credential pair serves — a model whose every credential is cooling shows
-          // down here exactly as it does to the pool builders.
+          // Decision 6 aggregate: healthy iff at least one credential tuple serves —
+          // a model whose every credential is cooling shows down here exactly as it
+          // does to the pool builders.
           healthy: registry.modelAvailable(model).available,
           weight,
         })),
@@ -2158,18 +2197,20 @@ export function registerConsoleRoutes(
 
   for (const prefix of ['/api/admin']) {
     app.get(`${prefix}/catalog/sources`, listCatalogSources);
-    app.post(`${prefix}/catalog/sources`, handleAddCatalogSource);
-    app.post(`${prefix}/catalog/sources/refresh`, handleRefreshCatalogSources);
-    app.post(`${prefix}/catalog/sources/:id/refresh`, handleRefreshCatalogSource);
-    app.put(`${prefix}/catalog/sources/:id`, handleToggleCatalogSource);
-    app.delete(`${prefix}/catalog/sources/:id`, handleRemoveCatalogSource);
+    // Source mutations change the catalog universe the pool builder consumes —
+    // resync the pool so pricing/modality/tier inputs cannot drift.
+    app.post(`${prefix}/catalog/sources`, withPoolSync(registry, handleAddCatalogSource));
+    app.post(`${prefix}/catalog/sources/refresh`, withPoolSync(registry, handleRefreshCatalogSources));
+    app.post(`${prefix}/catalog/sources/:id/refresh`, withPoolSync(registry, handleRefreshCatalogSource));
+    app.put(`${prefix}/catalog/sources/:id`, withPoolSync(registry, handleToggleCatalogSource));
+    app.delete(`${prefix}/catalog/sources/:id`, withPoolSync(registry, handleRemoveCatalogSource));
     app.get(`${prefix}/catalog/sources/:id/data`, getCatalogSourceData);
     app.get(`${prefix}/catalog/locked-models`, listLockedCatalogModels);
-    app.post(`${prefix}/catalog/locked-models`, handleLockCatalogModel);
+    app.post(`${prefix}/catalog/locked-models`, withPoolSync(registry, handleLockCatalogModel));
     app.get(`${prefix}/catalog/ocr`, getCatalogOcr);
     app.get(`${prefix}/catalog/override`, handleGetCatalogOverride);
-    app.put(`${prefix}/catalog/override`, handlePutCatalogOverride);
-    app.delete(`${prefix}/catalog/override`, handleDeleteCatalogOverride);
+    app.put(`${prefix}/catalog/override`, withPoolSync(registry, handlePutCatalogOverride));
+    app.delete(`${prefix}/catalog/override`, withPoolSync(registry, handleDeleteCatalogOverride));
     app.post(`${prefix}/catalog/sync-interval`, handleSetCatalogSyncInterval);
   }
 
@@ -2202,7 +2243,7 @@ export function registerConsoleRoutes(
           tier: model?.tier,
           inputPrice: model?.pricing?.input,
           outputPrice: model?.pricing?.output,
-          breakerState: model ? cb.getBreaker(model.id)?.getState() ?? 'CLOSED' : undefined,
+          breakerState: model ? cb.getSnapshot(model.id)?.state ?? 'CLOSED' : undefined,
         };
       }),
     }));
@@ -3631,37 +3672,37 @@ export function registerConsoleRoutes(
     app.get(`${prefix}/credential-store`, ocHandlers.credentialStore);
     app.get(`${prefix}/credential-sync`, ocHandlers.credentialSyncStatus);
     app.post(`${prefix}/credential-sync/toggle`, ocHandlers.credentialSyncToggle);
-    app.post(`${prefix}/credential-sync/run`, ocHandlers.credentialSyncRun);
+    app.post(`${prefix}/credential-sync/run`, withPoolSync(registry, ocHandlers.credentialSyncRun));
     app.get(`${prefix}/opencode/npm-vocabulary`, ocHandlers.npmVocabulary);
     app.get(`${prefix}/opencode/providers`, ocHandlers.list);
     app.get(`${prefix}/opencode/catalog`, ocHandlers.catalog);
     app.get(`${prefix}/opencode/models`, ocHandlers.models);
-    app.post(`${prefix}/opencode/providers`, ocHandlers.create);
-    app.patch(`${prefix}/opencode/providers/:id`, ocHandlers.update);
-    app.post(`${prefix}/opencode/providers/:id/connect`, ocHandlers.connect);
-    app.post(`${prefix}/opencode/providers/:id/key`, ocHandlers.setKey);
+    app.post(`${prefix}/opencode/providers`, withPoolSync(registry, ocHandlers.create));
+    app.patch(`${prefix}/opencode/providers/:id`, withPoolSync(registry, ocHandlers.update));
+    app.post(`${prefix}/opencode/providers/:id/connect`, withPoolSync(registry, ocHandlers.connect));
+    app.post(`${prefix}/opencode/providers/:id/key`, withPoolSync(registry, ocHandlers.setKey));
     app.post(`${prefix}/opencode/providers/:id/test`, ocHandlers.test);
-    app.delete(`${prefix}/opencode/providers/:id`, ocHandlers.remove);
+    app.delete(`${prefix}/opencode/providers/:id`, withPoolSync(registry, ocHandlers.remove));
 
     // Per-provider model maintenance (config-defined providers only)
     app.get(`${prefix}/opencode/providers/:id/models`, ocHandlers.modelsGet);
-    app.post(`${prefix}/opencode/providers/:id/models`, ocHandlers.modelAdd);
-    app.patch(`${prefix}/opencode/providers/:id/models/:modelId`, ocHandlers.modelUpdate);
-    app.delete(`${prefix}/opencode/providers/:id/models/:modelId`, ocHandlers.modelRemove);
-    app.post(`${prefix}/opencode/providers/:id/models/pull`, ocHandlers.modelsPull);
-    app.post(`${prefix}/opencode/providers/:id/models/reorder`, ocHandlers.modelReorder);
-    app.post(`${prefix}/opencode/providers/:id/models/clear`, ocHandlers.modelsClear);
+    app.post(`${prefix}/opencode/providers/:id/models`, withPoolSync(registry, ocHandlers.modelAdd));
+    app.patch(`${prefix}/opencode/providers/:id/models/:modelId`, withPoolSync(registry, ocHandlers.modelUpdate));
+    app.delete(`${prefix}/opencode/providers/:id/models/:modelId`, withPoolSync(registry, ocHandlers.modelRemove));
+    app.post(`${prefix}/opencode/providers/:id/models/pull`, withPoolSync(registry, ocHandlers.modelsPull));
+    app.post(`${prefix}/opencode/providers/:id/models/reorder`, withPoolSync(registry, ocHandlers.modelReorder));
+    app.post(`${prefix}/opencode/providers/:id/models/clear`, withPoolSync(registry, ocHandlers.modelsClear));
 
     // Per-credential credential writes (reorder / rename / disconnect).
     // Decision 8 double-confirm lives in the console UI; these honor the call.
-    app.post(`${prefix}/opencode/providers/:id/credentials/reorder`, ocHandlers.credentialReorder);
-    app.post(`${prefix}/opencode/providers/:id/credentials/:credentialId/weight`, ocHandlers.credentialSetWeight);
+    app.post(`${prefix}/opencode/providers/:id/credentials/reorder`, withPoolSync(registry, ocHandlers.credentialReorder));
+    app.post(`${prefix}/opencode/providers/:id/credentials/:credentialId/weight`, withPoolSync(registry, ocHandlers.credentialSetWeight));
     // Operator takedown (OCR credential state, NOT the credential store — survives
     // cooldown/reconnect/Push and is lifted only here).
-    app.post(`${prefix}/opencode/providers/:id/credentials/:credentialId/disable`, ocHandlers.credentialDisable);
-    app.post(`${prefix}/opencode/providers/:id/credentials/:credentialId/enable`, ocHandlers.credentialEnable);
-    app.patch(`${prefix}/opencode/providers/:id/credentials/:credentialId`, ocHandlers.credentialRename);
-    app.delete(`${prefix}/opencode/providers/:id/credentials/:credentialId`, ocHandlers.credentialDisconnect);
+    app.post(`${prefix}/opencode/providers/:id/credentials/:credentialId/disable`, withPoolSync(registry, ocHandlers.credentialDisable));
+    app.post(`${prefix}/opencode/providers/:id/credentials/:credentialId/enable`, withPoolSync(registry, ocHandlers.credentialEnable));
+    app.patch(`${prefix}/opencode/providers/:id/credentials/:credentialId`, withPoolSync(registry, ocHandlers.credentialRename));
+    app.delete(`${prefix}/opencode/providers/:id/credentials/:credentialId`, withPoolSync(registry, ocHandlers.credentialDisconnect));
     // password-gated raw-key export (controlled exception).
     app.post(`${prefix}/opencode/providers/:id/credentials/:credentialId/reveal`, ocHandlers.credentialReveal);
   }

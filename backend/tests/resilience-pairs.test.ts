@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { CredentialStateStore } from '../src/resilience/credential-state.js';
+import { BreakerStateStore } from '../src/resilience/breaker-state.js';
 import { CircuitBreakerManager } from '../src/resilience/circuit-breaker-manager.js';
 import { ErrorClassifier, UpstreamError } from '../src/resilience/error-classifier.js';
 import { ActiveHealthProber, type ProberTargetResolver } from '../src/resilience/health-prober.js';
@@ -164,13 +165,19 @@ describe('(a) classifier tripScope + credentialSuspect table', () => {
     const plain = ErrorClassifier.classify(stamped(status, message), 'p/m1', 'p');
     expect('tripScope' in plain).toBe(false);
     expect('credentialSuspect' in plain).toBe(false);
+    expect('usedKeyHashPrefix' in plain).toBe(false);
 
     const attributed = ErrorClassifier.classify(stamped(status, message, 'bbbbbbbbbbbb'), 'p/m1', 'p');
     const plainKeys = Object.keys(plain);
     const added = Object.keys(attributed).filter((k) => !plainKeys.includes(k));
-    const expectedAdded = [...(scope ? ['tripScope'] : []), ...(status === 401 ? ['credentialSuspect'] : [])].sort();
+    // The stamp rides only on trip-bearing diagnoses (CLIENT_ERROR never trips
+    // and never carries blast radius, so it stays stamp-free).
+    const expectedAdded = scope
+      ? ['tripScope', 'usedKeyHashPrefix', ...(status === 401 ? ['credentialSuspect'] : [])].sort()
+      : [];
     expect(added.sort()).toEqual(expectedAdded);
     expect(attributed.tripScope).toBe(scope);
+    if (scope) expect(attributed.usedKeyHashPrefix).toBe('bbbbbbbbbbbb');
     for (const key of plainKeys as Array<keyof ErrorDiagnosis>) {
       if (key === 'rawError') continue;
       expect(attributed[key]).toEqual(plain[key]);
@@ -181,7 +188,7 @@ describe('(a) classifier tripScope + credentialSuspect table', () => {
 // ─── (b) pair trip isolation ────────────────────────────────────────────────
 
 describe('(b) pair trips are isolated per (model x credential)', () => {
-  it('a pair trip on X/K1 leaves X/K2 and Y/K1 and the model breaker untouched', () => {
+  it('a pair trip on X/K1 leaves X/K2 and Y/K1 and every other tuple untouched', () => {
     const { manager } = makeManager();
     manager.registerModel(model('p/x', 'p'));
     manager.registerModel(model('p/y', 'p'));
@@ -191,7 +198,7 @@ describe('(b) pair trips are isolated per (model x credential)', () => {
     expect(manager.getPairBreaker('p/x', 'K1')?.getState()).toBe('OPEN');
     expect(manager.canExecuteScoped('p/x', 'K2').allowed).toBe(true);
     expect(manager.canExecuteScoped('p/y', 'K1').allowed).toBe(true); // model-specific independence
-    expect(manager.isAvailable('p/x')).toBe(true); // model breaker never cooled by a credential fault
+    expect(manager.getPairBreaker('p/x', '')?.getState() ?? 'CLOSED').toBe('CLOSED'); // sentinel tuple never cooled by a credential fault
     expect(manager.canExecute('p/x').allowed).toBe(true);
 
     const agg = manager.modelAvailability('p/x', ['K1', 'K2']);
@@ -199,18 +206,20 @@ describe('(b) pair trips are isolated per (model x credential)', () => {
     expect(agg.openPrefixes).toEqual(['K1']);
   });
 
-  it('a soft pair failure accumulates on the pair only, never on the model breaker', () => {
+  it('a soft no-chain model-scope failure accumulates on the sentinel tuple', () => {
     const { manager } = makeManager();
     manager.registerModel(model('p/x', 'p'));
     const soft = diagnosis({ hardTrip: false, category: 'SERVICE_UNAVAILABLE' });
 
+    // Model-scope fan-out without a chain: no materialized tuples and no
+    // chain prefixes means the failure degenerates to the sentinel '' tuple.
     manager.recordFailureScoped('p/x', diagnosis({ tripScope: 'model', ...soft }), 'p', 'K1');
 
-    expect(manager.getPairBreaker('p/x', 'K1')).toBeUndefined(); // model scope does not touch pair breakers
-    expect(manager.getBreaker('p/x')?.getState()).toBe('CLOSED'); // threshold not reached yet
+    expect(manager.getPairBreaker('p/x', '')?.getState()).toBe('CLOSED'); // threshold not reached yet
     manager.recordFailureScoped('p/x', diagnosis({ tripScope: 'model', ...soft }), 'p', 'K1');
     manager.recordFailureScoped('p/x', diagnosis({ tripScope: 'model', ...soft }), 'p', 'K1');
-    expect(manager.getBreaker('p/x')?.getState()).toBe('OPEN');
+    expect(manager.getPairBreaker('p/x', '')?.getState()).toBe('OPEN'); // sentinel ladder tripped at threshold
+    expect(manager.getPairBreaker('p/x', 'K1')).toBeUndefined(); // attribution never materializes a K1 tuple on a model-scope fan-out
   });
 });
 
@@ -229,7 +238,7 @@ describe('(c) credential scope cools the whole credential, not the model', () =>
     expect(manager.getPairBreaker('p/y', 'K1')?.getState()).toBe('OPEN'); // never-used model, still covered
     expect(manager.canExecuteScoped('p/y', 'K1').allowed).toBe(false);
     expect(manager.canExecuteScoped('p/x', 'K2').allowed).toBe(true);
-    expect(manager.getBreaker('p/x')?.getState()).toBe('CLOSED');
+    expect(manager.canExecute('p/x').allowed).toBe(true); // the sentinel tuple is untouched by a credential-scoped trip
 
     const agg = manager.modelAvailability('p/x', ['K1', 'K2']);
     expect(agg.available).toBe(true);
@@ -252,27 +261,92 @@ describe('(c) credential scope cools the whole credential, not the model', () =>
     expect(manager.canExecuteScoped('p/x', 'K1').allowed).toBe(false);
   });
 });
+// ─── (c2) attribution fallback from the diagnosis stamp ─────────────────────
+
+describe('(c2) a credential fault with no selection prefix still cools the credential', () => {
+  it('quota carrying the stamp trips the pair even when the caller passes no prefix', () => {
+    const { manager } = makeManager();
+    manager.registerModel(model('p/x', 'p'));
+    manager.registerModel(model('p/y', 'p'));
+
+    // Degenerate selection (all-unhealthy / no-session): prefix undefined,
+    // but the chain head served the attempt and registry.execute stamped it.
+    manager.recordFailureScoped(
+      'p/x',
+      diagnosis({ category: 'QUOTA_EXHAUSTED', tripScope: 'credential', usedKeyHashPrefix: 'K1' }),
+      'p',
+      undefined
+    );
+
+    expect(manager.getPairBreaker('p/x', 'K1')?.getState()).toBe('OPEN');
+    expect(manager.getPairBreaker('p/y', 'K1')?.getState()).toBe('OPEN'); // credential-wide via the stamp
+    expect(manager.canExecute('p/x').allowed).toBe(true); // the sentinel tuple is untouched by a credential-scoped trip
+    expect(manager.canExecuteScoped('p/x', 'K2').allowed).toBe(true);
+  });
+
+  it('end-to-end: a stamped 402 classified without a selection prefix lands on the pair', () => {
+    const { manager } = makeManager();
+    manager.registerModel(model('p/x', 'p'));
+    const d = ErrorClassifier.classify(stamped(402, 'insufficient_quota', 'K1'), 'p/x', 'p');
+
+    manager.recordFailureScoped('p/x', d, 'p', undefined);
+
+    expect(d.usedKeyHashPrefix).toBe('K1');
+    expect(manager.getPairBreaker('p/x', 'K1')?.getState()).toBe('OPEN');
+    expect(manager.canExecute('p/x').allowed).toBe(true); // credential fault never touches the sentinel tuple
+  });
+
+  it('no stamp and no prefix lands on the sentinel pair (the chain-less degeneracy)', () => {
+    const { manager } = makeManager();
+    manager.registerModel(model('p/x', 'p'));
+
+    manager.recordFailureScoped('p/x', diagnosis({ category: 'QUOTA_EXHAUSTED', tripScope: 'credential' }), 'p', undefined);
+
+    expect(manager.getPairBreaker('p/x', 'K1')).toBeUndefined();
+    expect(manager.getPairBreaker('p/x', '')?.getState()).toBe('OPEN'); // the sentinel tuple carries the unattributed trip
+    expect(manager.canExecute('p/x').allowed).toBe(false);
+  });
+});
 
 // ─── (d) model trip via 5xx ────────────────────────────────────────────────
 
 describe('(d) model trip takes every credential out', () => {
-  it('an outage trips the bare breaker and the aggregate reports no live prefix', () => {
+  it('an outage with the chain fans out: every tuple trips at threshold and nothing serves', () => {
     const { manager } = makeManager();
     manager.registerModel(model('p/x', 'p'));
     // Realistic shape: SERVICE_UNAVAILABLE counts toward the statistical
     // detectors (threshold 3 in CELL_CFG); no hard-trip hatch exists for 5xx.
+    // The orchestrator passes the chain prefixes, so the model-scope fan-out
+    // covers credentials that never served the failing attempt.
+    const outage = diagnosis({ category: 'SERVICE_UNAVAILABLE', tripScope: 'model', hardTrip: false });
+    const chainPrefixes = ['K1', 'K2'];
+
+    for (let i = 0; i < 3; i++) {
+      manager.recordFailureScoped('p/x', outage, 'p', 'K1', chainPrefixes);
+    }
+
+    expect(manager.getPairBreaker('p/x', 'K1')?.getState()).toBe('OPEN');
+    expect(manager.getPairBreaker('p/x', 'K2')?.getState()).toBe('OPEN'); // created on demand by the fan-out
+    const agg = manager.modelAvailability('p/x', chainPrefixes);
+    expect(agg.available).toBe(false);
+    expect(agg.openPrefixes).toEqual(['K1', 'K2']); // every tuple down = nothing serves
+    expect(manager.canExecuteScoped('p/x', 'K2').allowed).toBe(false);
+  });
+
+  it('without a chain the model-scope fan-out degenerates to the sentinel tuple', () => {
+    const { manager } = makeManager();
+    manager.registerModel(model('p/x', 'p'));
     const outage = diagnosis({ category: 'SERVICE_UNAVAILABLE', tripScope: 'model', hardTrip: false });
 
-    manager.recordFailureScoped('p/x', outage, 'p', 'K1');
-    manager.recordFailureScoped('p/x', outage, 'p', 'K1');
-    manager.recordFailureScoped('p/x', outage, 'p', 'K1'); // 3rd reaches the threshold
+    for (let i = 0; i < 3; i++) {
+      manager.recordFailureScoped('p/x', outage, 'p', 'K1');
+    }
 
-    expect(manager.getBreaker('p/x')?.getState()).toBe('OPEN');
+    // No chain prefixes passed and nothing materialized before the first
+    // failure: the fan-out lands on the sentinel '' tuple, never on K1.
+    expect(manager.getPairBreaker('p/x', '')?.getState()).toBe('OPEN');
     expect(manager.getPairBreaker('p/x', 'K1')).toBeUndefined();
-    const agg = manager.modelAvailability('p/x', ['K1', 'K2']);
-    expect(agg.available).toBe(false);
-    expect(agg.openPrefixes).toEqual(['K1', 'K2']); // model breaker down = nothing serves
-    expect(manager.canExecuteScoped('p/x', 'K2').allowed).toBe(false);
+    expect(manager.modelAvailability('p/x', ['K1', 'K2']).available).toBe(true); // no tuple is out
   });
 });
 
@@ -440,7 +514,10 @@ describe('(f) prober probes one representative pair per model', () => {
     const prober = new ActiveHealthProber(manager, resolver);
     return prober.probeTrippedModels().then(() => {
       expect(calls.map((c) => c.prefix)).toEqual(['K4']);
-      expect(manager.getBreaker('p/x')?.getState()).toBe('CLOSED'); // success closed the model breaker
+      // The probe's success lands on K4's tuple; the sentinel tuple that armed
+      // the trial stays armed, and K1 was never probed (budget spent).
+      expect(manager.getPairBreaker('p/x', 'K4')?.getState()).toBe('CLOSED');
+      expect(manager.getPairBreaker('p/x', '')?.getState()).toBe('HALF_OPEN');
       expect(manager.getPairBreaker('p/x', 'K1')?.getState()).toBe('OPEN'); // never probed: budget spent
     });
   });
@@ -492,7 +569,7 @@ describe('(f) prober probes one representative pair per model', () => {
     const prober = new ActiveHealthProber(manager, resolver);
     return prober.probeTrippedModels().then(() => {
       expect(calls).toEqual([{ modelId: 'p/x', prefix: undefined }]);
-      expect(manager.getBreaker('p/x')?.getState()).toBe('CLOSED');
+      expect(manager.getPairBreaker('p/x', '')?.getState()).toBe('CLOSED');
     });
   });
 });
@@ -509,19 +586,19 @@ describe('Extras: single-pair degeneracy and snapshot surfaces', () => {
 
     expect(manager.getPairBreaker('p/x', 'K1')).toBeUndefined();
     expect(manager.snapshotsWithPairs().filter((s) => s.keyHashPrefix)).toEqual([]);
-    expect(manager.getBreaker('p/x')?.getState()).toBe('OPEN'); // hardTrip diagnosis, model-level
+    expect(manager.getPairBreaker('p/x', '')?.getState()).toBe('OPEN'); // hardTrip diagnosis lands on the sentinel tuple
     expect(manager.canExecuteScoped('p/x')).toEqual(manager.canExecute('p/x'));
     expect(manager.canExecuteScoped('p/x').allowed).toBe(false);
     // A success does not un-trip an OPEN breaker — same as recordSuccess(modelId).
     manager.recordSuccessScoped('p/x');
-    expect(manager.getBreaker('p/x')?.getState()).toBe('OPEN');
+    expect(manager.getPairBreaker('p/x', '')?.getState()).toBe('OPEN');
     manager.reset('p/x');
-    expect(manager.getBreaker('p/x')?.getState()).toBe('CLOSED');
+    expect(manager.getPairBreaker('p/x', '')?.getState()).toBe('CLOSED');
     // Empty candidate list = no chain registered = model check alone.
     expect(manager.modelAvailability('p/x', [])).toEqual({ available: true, openPrefixes: [] });
   });
 
-  it('getSummary/getAllSnapshots stay model-only so /health is unchanged', () => {
+  it('getSummary/getAllSnapshots fold the worst tuple state per model', () => {
     const { manager } = makeManager();
     manager.registerModel(model('p/x', 'p'));
     manager.registerModel(model('p/y', 'p'));
@@ -530,8 +607,8 @@ describe('Extras: single-pair degeneracy and snapshot surfaces', () => {
 
     expect(manager.getAllSnapshots()).toHaveLength(2);
     expect(manager.getSummary().total).toBe(2);
-    expect(manager.getSummary().tripped).toBe(0); // pair breakers are not model outages
-    expect(manager.snapshotsWithPairs()).toHaveLength(4);
+    expect(manager.getSummary().tripped).toBe(2); // an OPEN tuple folds its model to OPEN
+    expect(manager.snapshotsWithPairs()).toHaveLength(2);
     expect(manager.snapshotsWithPairs().filter((s) => s.keyHashPrefix).map((s) => s.keyHashPrefix).sort()).toEqual(['K1', 'K2']);
   });
 
@@ -551,12 +628,12 @@ describe('Extras: single-pair degeneracy and snapshot surfaces', () => {
     expect(pairs.halfOpen).toBe(0);
     // Every row carries the credential identity — readers never mix layers.
     expect(pairs.breakers.every((s) => s.keyHashPrefix !== undefined)).toBe(true);
-    // The model-only summary is untouched by all of this (additive contract).
+    // The model summary is the derived fold of the same tuples.
     expect(manager.getSummary().total).toBe(2);
-    expect(manager.getSummary().tripped).toBe(0);
+    expect(manager.getSummary().tripped).toBe(2);
   });
 
-  it('reset(modelId) clears the model AND its pairs; resetScoped clears one', () => {
+  it('reset(modelId) clears every tuple of the model; resetScoped clears one', () => {
     const { manager } = makeManager();
     manager.registerModel(model('p/x', 'p'));
     manager.recordFailureScoped('p/x', diagnosis({ tripScope: 'pair' }), 'p', 'K1');
@@ -567,7 +644,7 @@ describe('Extras: single-pair degeneracy and snapshot surfaces', () => {
     expect(manager.getPairBreaker('p/x', 'K2')?.getState()).toBe('OPEN');
     expect(manager.resetScoped('p/x', 'K4').resetCount).toBe(0); // unknown pair: no-op
 
-    expect(manager.resetByScope('model', { modelId: 'p/x' }).resetCount).toBe(3); // model + 2 pairs
+    expect(manager.resetByScope('model', { modelId: 'p/x' }).resetCount).toBe(2); // both tuples of the model
     expect(manager.getPairBreaker('p/x', 'K2')?.getState()).toBe('CLOSED');
   });
 });
@@ -594,5 +671,103 @@ describe('Extras: prober budget is per model, not global', () => {
     return prober.probeTrippedModels().then(() => {
       expect(calls.map((c) => `${c.modelId}/${c.prefix}`)).toEqual(['p/x/K1', 'p/y/K1']);
     });
+  });
+});
+
+// ─── (c3) manual takedowns mirror the fan-out contract ──────────────────────
+
+describe('(c3) a manual model-scope trip takes the WHOLE chain out', () => {
+  it('trips every chain tuple even when nothing has failed yet', () => {
+    const { manager } = makeManager();
+    manager.registerModel(model('p/x', 'p'));
+
+    // Operator takedown with the full chain — no prior tuples exist.
+    const result = manager.trip('p/x', undefined, 'p', ['K1', 'K2']);
+
+    expect(result.affected).toBe(2);
+    expect(manager.getPairBreaker('p/x', 'K1')?.getState()).toBe('OPEN');
+    expect(manager.getPairBreaker('p/x', 'K2')?.getState()).toBe('OPEN');
+    expect(manager.canExecuteScoped('p/x', 'K1').allowed).toBe(false);
+    expect(manager.modelAvailability('p/x', ['K1', 'K2']).available).toBe(false);
+  });
+
+  it('modelAvailability consults the sentinel tuple when the chain is empty', () => {
+    const { manager } = makeManager();
+    manager.registerModel(model('p/x', 'p'));
+    manager.trip('p/x', undefined, 'p');
+    // A chain-less manual trip lives on the sentinel tuple — it must read out.
+    expect(manager.modelAvailability('p/x', []).available).toBe(false);
+    expect(manager.modelHealthView('p/x', [])).toBe('unavailable');
+  });
+
+  it('an empty chain with a healthy sentinel stays available', () => {
+    const { manager } = makeManager();
+    manager.registerModel(model('p/x', 'p'));
+    expect(manager.modelAvailability('p/x', []).available).toBe(true);
+  });
+});
+
+// ─── (c4) recovery symmetry: resetByScope restores exactly what the trip touched ──
+
+describe('(c4) recovery symmetry per scope, including the lastScope label round-trip', () => {
+  it('pair trip → resetByScope(pair) restores only that tuple', () => {
+    const { manager } = makeManager();
+    manager.registerModel(model('p/x', 'p'));
+    manager.tripByScope('pair', { modelId: 'p/x', keyHashPrefix: 'K1', providerId: 'p' }, { cooldownMs: 60_000 });
+    manager.tripByScope('pair', { modelId: 'p/x', keyHashPrefix: 'K2', providerId: 'p' }, { cooldownMs: 60_000 });
+
+    const r = manager.resetByScope('pair', { modelId: 'p/x', keyHashPrefix: 'K1' });
+    expect(r.resetCount).toBe(1);
+    expect(manager.getPairBreaker('p/x', 'K1')?.getState()).toBe('CLOSED');
+    expect(manager.getPairBreaker('p/x', 'K2')?.getState()).toBe('OPEN'); // sibling untouched
+  });
+
+  it('credential trip → resetByScope(credential) restores every model the trip fanned out to', () => {
+    const { manager } = makeManager();
+    manager.registerModel(model('p/x', 'p'));
+    manager.registerModel(model('p/y', 'p'));
+    manager.tripCredential('K1', { cooldownMs: 60_000 }, 'p');
+
+    const r = manager.resetByScope('credential', { keyHashPrefix: 'K1' });
+    expect(r.resetCount).toBe(2); // p/x and p/y
+    expect(manager.canExecuteScoped('p/x', 'K1').allowed).toBe(true);
+    expect(manager.canExecuteScoped('p/y', 'K1').allowed).toBe(true);
+  });
+
+  it('model trip → resetByScope(model) restores the whole chain and nothing else', () => {
+    const { manager } = makeManager();
+    manager.registerModel(model('p/x', 'p'));
+    manager.registerModel(model('p/y', 'p'));
+    manager.tripByScope('model', { modelId: 'p/x', providerId: 'p', chainPrefixes: ['K1', 'K2'] }, { cooldownMs: 60_000 });
+
+    const r = manager.resetByScope('model', { modelId: 'p/x' });
+    expect(r.resetCount).toBe(2);
+    expect(manager.modelAvailability('p/x', ['K1', 'K2']).available).toBe(true);
+    expect(manager.modelAvailability('p/y', ['K1', 'K2']).available).toBe(true); // p/y untouched
+  });
+
+  it('the lastScope label survives snapshotsWithPairs and a persisted restart', () => {
+    const paths = sandboxPaths('scope-label');
+    const clock = makeClock();
+    const credentialState = new CredentialStateStore({ paths, now: clock.now });
+    const store = new BreakerStateStore({ paths, debounceMs: 3_600_000 });
+    const first = new CircuitBreakerManager(CELL_CFG, clock.now, credentialState);
+    first.registerModel(model('p/x', 'p'));
+    first.attachStateStore(store);
+
+    first.tripByScope('model', { modelId: 'p/x', providerId: 'p', chainPrefixes: ['K1', 'K2'] }, { cooldownMs: 60_000 });
+    first.tripByScope('pair', { modelId: 'p/x', keyHashPrefix: 'K1', providerId: 'p' }, { cooldownMs: 60_000 }); // re-trips K1 as pair
+    expect(first.snapshotsWithPairs().find((s) => s.keyHashPrefix === 'K1')?.scope).toBe('pair');
+    expect(first.snapshotsWithPairs().find((s) => s.keyHashPrefix === 'K2')?.scope).toBe('model');
+    store.flush();
+
+    // "Restart": the labels ride the persisted records back into lastScope.
+    const store2 = new BreakerStateStore({ paths, debounceMs: 3_600_000 });
+    const second = new CircuitBreakerManager(CELL_CFG, clock.now, credentialState);
+    second.registerModel(model('p/x', 'p'));
+    second.attachStateStore(store2);
+    second.restoreState();
+    expect(second.snapshotsWithPairs().find((s) => s.keyHashPrefix === 'K1')?.scope).toBe('pair');
+    expect(second.snapshotsWithPairs().find((s) => s.keyHashPrefix === 'K2')?.scope).toBe('model');
   });
 });

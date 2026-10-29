@@ -716,8 +716,11 @@ describe('System One: tier alias resolution', () => {
     const config = tieredConfig(1);
     const { app, registry } = bootServer(config);
     const breaker = registry.getCircuitBreakerManager();
-    breaker.trip('native/plus-b', { reason: 'test', cooldownMs: 60000 });
-    breaker.trip('native/plus-c', { reason: 'test', cooldownMs: 60000 });
+    // The pool filter reads the per-credential aggregate, so trip every
+    // member's tuple for the provider's credential.
+    registry.refreshCredentialChain('native-tiers', [{ keyHashPrefix: 'k1', key: 'sk-test' }]);
+    breaker.tripPair('native/plus-b', 'k1', { reason: 'test', cooldownMs: 60000 }, 'native-tiers');
+    breaker.tripPair('native/plus-c', 'k1', { reason: 'test', cooldownMs: 60000 }, 'native-tiers');
     const res = await app.inject({ method: 'POST', url: '/v1/systemone', payload: { ...REQ, model: 'plus' } });
     expect(res.statusCode).toBe(503);
     expect(res.json().error.code).toBe('no_healthy_model');

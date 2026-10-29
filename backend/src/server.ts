@@ -648,7 +648,11 @@ export function createServer(
   // 1. Health check (Enriched with Circuit Breaker status)
   app.get('/health', async () => {
     const cbSummary = registry.getCircuitBreakerManager().getSummary();
-    const isDegraded = cbSummary.tripped > 0;
+    // Degraded reads the CAPABILITY fold (ADR-0004 §4), not the worst-state
+    // fold: one cooling credential of a five-key chain must not mark the
+    // whole gateway degraded while every model still serves.
+    const anyOut = registry.getAllModels().some((m) => registry.modelHealthView(m) === 'unavailable');
+    const isDegraded = anyOut;
     return {
       status: isDegraded ? (cbSummary.healthy === 0 ? 'outage' : 'degraded') : 'ok',
       version: APP_VERSION,
@@ -760,9 +764,9 @@ export function createServer(
 
   // 1C. Reset Tripped Circuit Breakers (Admin recovery after quota top-up)
   // optional `scope` (default 'model' = legacy behavior):
-  //   model   -> the model breaker (bare modelId); no model = reset everything
-  //   credential -> every pair breaker of one credential (keyHash prefix)
-  //   pair    -> one (model, credential) breaker
+  //   model   -> every tuple breaker of the model (modelId); no model = reset everything
+  //   credential -> every tuple breaker of one credential (keyHash prefix)
+  //   pair    -> one (model, credential) tuple breaker
   // Resetting an credential never lifts its SUSPECT flag — that is administrative
   // state and needs 1E (or a console reconnect / Push).
   app.post('/api/admin/health/circuit-breakers/reset', async (req, reply) => {
@@ -770,23 +774,32 @@ export function createServer(
     const body = (req.body || {}) as { model?: string; credential?: string; scope?: string };
     const targetModel = query?.model || body?.model;
     const credential = query?.credential || body?.credential;
-    const scopeRaw = body?.scope || query?.scope || 'model';
+    // No model AND no credential = the legacy BULK reset (every tuple breaker);
+    // with no target there is no scope to validate — everything resets.
+    const scopeRaw: string | undefined =
+      body?.scope || query?.scope || (targetModel || credential ? 'model' : undefined);
     const cbManager = registry.getCircuitBreakerManager();
 
-    if (scopeRaw !== 'model' && scopeRaw !== 'credential' && scopeRaw !== 'pair') {
+    if (scopeRaw !== undefined && scopeRaw !== 'model' && scopeRaw !== 'credential' && scopeRaw !== 'pair') {
       return reply.status(400).send({
         status: 'error',
         message: `Unknown scope '${scopeRaw}' (expected 'model', 'credential' or 'pair')`,
       });
     }
-    if (scopeRaw !== 'model' && !credential) {
+    if (scopeRaw === 'credential' && !credential) {
       return reply.status(400).send({
         status: 'error',
-        message: `scope '${scopeRaw}' requires an credential (keyHash prefix)`,
+        message: `scope 'credential' requires an credential (keyHash prefix)`,
       });
     }
-    if (scopeRaw === 'pair' && !targetModel) {
-      return reply.status(400).send({ status: 'error', message: "scope 'pair' requires a model" });
+    if (scopeRaw === 'pair' && (!targetModel || !credential)) {
+      return reply.status(400).send({ status: 'error', message: "scope 'pair' requires a model and an credential" });
+    }
+
+    // No scope (no target) = bulk reset of every tuple breaker.
+    if (scopeRaw === undefined) {
+      const result = cbManager.reset();
+      return { status: 'ok', scope: 'all' as const, ...result };
     }
 
     const scope = scopeRaw as TripScope;
@@ -843,6 +856,13 @@ export function createServer(
         modelId: targetModel,
         keyHashPrefix: credential,
         providerId: targetModel ? registry.getModel(targetModel)?.provider : undefined,
+        // Model-scope takedown spans the FULL credential chain — without it a
+        // healthy chained model with no prior failures would trip only the
+        // sentinel tuple and keep serving on every chain credential.
+        chainPrefixes:
+          scope === 'model' && targetModel
+            ? registry.getCredentialChain(registry.getModel(targetModel)?.provider ?? '')?.map((c) => c.keyHashPrefix)
+            : undefined,
       },
       { reason: body.reason, cooldownMs: typeof body.cooldownMs === 'number' ? body.cooldownMs : undefined }
     );

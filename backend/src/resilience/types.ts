@@ -92,6 +92,11 @@ export interface ErrorDiagnosis {
   tripScope?: TripScope;
   /** Credential-scope failures that mean "this credential is administratively bad" (dead key) — SUSPECT flag. */
   credentialSuspect?: boolean;
+
+  /** The credential actually used (`UpstreamError.usedCredentialKeyHashPrefix`, stamped by
+   *  `registry.execute`), carried on the diagnosis so the manager can attribute the failure
+   *  even when the caller's selection prefix is absent (all-unhealthy / no-session paths). */
+  usedKeyHashPrefix?: string;
 }
 
 /** Blast-radius override for one trip rule ('auto' = keep the classifier's diagnosed scope). */
@@ -274,11 +279,13 @@ export interface CircuitBreakerSnapshot {
   tier?: TierLevel;
   state: CircuitBreakerState;
   /**
-   * Present only on a PAIR breaker snapshot (model × this
-   * credential's display-safe keyHash prefix). Absent = the model breaker,
-   * which is what every pre-P3 consumer already reads.
+   * Present on a TUPLE breaker snapshot (model × this credential's
+   * display-safe keyHash prefix). `''` = the chain-less sentinel tuple (the
+   * config-baked key). Absent on the DERIVED model fold.
    */
   keyHashPrefix?: string;
+  /** Blast radius of the last trip delivered to this breaker: 'model' | 'credential' | 'pair'. */
+  scope?: TripScope;
   reason?: string;
   /** Trip trigger/cause code/params (BreakerReasonCode); absent = pre-code trip. */
   reasonCode?: BreakerReasonCode;
@@ -319,6 +326,10 @@ export interface BreakerRecord {
   consecutiveFailures: number;
   totalRequests: number;
   totalSuccesses: number;
+  /** Blast radius of the last trip ('pair' | 'credential' | 'model') — the
+   *  scope label the tuple breaker carries; restored by the manager so
+   *  scope-symmetric recovery survives restarts. */
+  scope?: TripScope;
   totalFailures: number;
   lastFailureTime: number;
   lastSuccessTime: number;

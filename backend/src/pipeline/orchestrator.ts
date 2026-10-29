@@ -1058,8 +1058,8 @@ export class PipelineOrchestrator {
       //   removal can. Checked with healthyOnly=false so health never
       //   masquerades as config intent (and vice versa below).
       //   HEALTH (runtime reality, model CAPABILITY view —
-      //   registry.modelHealthView): evict ONLY at 'unavailable' — the
-      //   model breaker hard-OPEN, or every credential pair out of service
+      //   registry.modelHealthView): evict ONLY at 'unavailable' — every
+      //   credential tuple out of service
       //   as hard-OPEN / credential-SUSPECT / operator-DISABLED, so a full
       //   credential takedown evicts the pin even though the model stays
       //   configured. PARTIAL disablement is not eviction: the credential
@@ -1907,7 +1907,7 @@ export class PipelineOrchestrator {
       },
     });
 
-    const breakerState = cbManager.getBreaker(actualModel.id)?.getState() || 'CLOSED';
+    const breakerState = cbManager.getSnapshot(actualModel.id)?.state ?? 'CLOSED';
     // additive keys only — older readers keep reading
     // breakerState alone: when the turn ran in pair mode, expose the serving
     // credential's pair snapshot and the model's availability aggregate.
@@ -2377,11 +2377,20 @@ export class PipelineOrchestrator {
             this.config.circuitBreaker,
             this.config.retry
           );
-          // The classifier already read the registry-stamped usedCredentialKeyHashPrefix
-          // (tripScope + credentialSuspect); this call expands the verdict over the
-          // diagnosed blast radius when a prefix attributes it, and routes the
-          // bare model breaker when not (today's semantics).
-          cbManager.recordFailureScoped(candidate.id, diagnosis, candidate.provider, credentialPrefix);
+          // The classifier carried the registry-stamped usedCredentialKeyHashPrefix
+          // onto the diagnosis (tripScope + credentialSuspect + usedKeyHashPrefix);
+          // the manager attributes from `credentialPrefix` OR that stamp, so a
+          // credential-fault error cools its credential even when selection
+          // returned no prefix (all-unhealthy / no-session): the manager then
+          // attributes from the diagnosis stamp itself. Only a chain-less
+          // provider (no stamp at all) stays on the sentinel tuple.
+          cbManager.recordFailureScoped(
+            candidate.id,
+            diagnosis,
+            candidate.provider,
+            credentialPrefix,
+            this.registry.getCredentialChain(candidate.provider)?.map((c) => c.keyHashPrefix)
+          );
 
           // Upstream-429 feedback into the local shaping window: the provider
           // just TOLD us this credential is at-cap — feed the declared wait

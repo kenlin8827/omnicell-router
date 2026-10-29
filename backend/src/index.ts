@@ -1,6 +1,8 @@
 import { loadConfig, ensureDefaultConfigFile, upgradeConfigFile, getRuntimeConfigRef } from './config/index.js';
+import { setPoolRefreshHook } from './providers/pool-refresh.js';
 import { createServer } from './server.js';
 import { ProviderRegistry } from './providers/registry.js';
+import { refreshDirectPool } from './providers/boot-direct.js';
 import { DispatchingProvider } from './providers/dispatch.js';
 import { buildDirectPool } from './providers/boot-direct.js';
 import { FinOpsTracker } from './metrics/finops-tracker.js';
@@ -205,7 +207,11 @@ async function main() {
     const boot = await buildDirectPool();
     config.models = boot.models;
 
-    registry = new ProviderRegistry(config, boot.models.length === 0);
+    // An EMPTY direct pool boots an EMPTY registry on purpose: the console
+    // model list stays empty and the guardrails matrix guides the operator to
+    // connect a provider — mock tier models are a TEST surface (e2e-capture,
+    // createServer(mockMode)), never a production fallback.
+    registry = new ProviderRegistry(config, false);
     for (const inst of boot.instances) {
       // the credential chain rides straight into the
       // registry (raw keys stay in-process; no console/API serialization).
@@ -219,14 +225,18 @@ async function main() {
     console.log(
       `[OCR] Direct pool: ${boot.instances.length} providers / ${boot.models.length} models (no daemon)`
     );
+    // Background producers (catalog auto-pull) resync the pool through this
+    // hook — same builder, same fail-open contract, no import cycles.
+    setPoolRefreshHook(() => refreshDirectPool(registry));
     const providerLevel = boot.excluded.filter((e) => !e.model);
     const modelLevel = boot.excluded.filter((e) => e.model);
     for (const ex of providerLevel) console.log(`[OCR]   excluded ${ex.provider}: ${ex.reason}`);
     if (modelLevel.length > 0)
       console.log(`[OCR]   ${modelLevel.length} models excluded (non-text wire/modality), e.g. ${modelLevel.slice(0, 3).map((e) => e.model).join(', ')}`);
   } catch (err: any) {
-    console.warn(`[OCR] Direct pool build failed, booting mock-only registry (no chat providers): ${err.message}`);
-    registry = new ProviderRegistry(config, true);
+    console.warn(`[OCR] Direct pool build failed, booting an EMPTY registry (no chat providers): ${err.message}`);
+    registry = new ProviderRegistry(config, false);
+    setPoolRefreshHook(() => refreshDirectPool(registry));
   }
 
   // breaker memory: attach the on-disk
@@ -244,10 +254,10 @@ async function main() {
   cbManager.attachStateStore(breakerStore);
   try {
     const restored = cbManager.restoreState();
-    if (restored.models || restored.pairs) {
+    if (restored.pairs) {
       console.log(
         `[OCR] Breaker memory restored (${breakerStore.filePath}): ` +
-          `${restored.models} model + ${restored.pairs} pair breaker(s)`
+          `${restored.pairs} tuple breaker(s)`
       );
     }
   } catch (err: any) {

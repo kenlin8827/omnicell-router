@@ -15,7 +15,7 @@ import type { BreakerRecord, BreakerRulesConfig, CircuitBreakerConfig, ErrorDiag
  * concurrent budget = maxProbes; CLOSE only at successThreshold; probe
  * failure AND short-batch exhaustion resolve via onCanaryFailure; non-penalty
  * outcomes release the slot; restore refreshes halfOpenSuccesses +
- * halfOpenEnteredAt; a PAIR success COUNTS toward the model batch (never
+ * halfOpenEnteredAt; a tuple success counts toward ITS OWN trial batch (never
  * force-closes) when successThreshold > 1; maxWaitMs expiry resolves via
  * onCanaryFailure (default 0 = wait forever).
  */
@@ -268,7 +268,7 @@ describe('restore refresh of the trial batch (rule #10 persistence)', () => {
   });
 });
 
-describe('pair success counts toward the model batch (recordSuccessScoped interaction)', () => {
+describe('tuple trial batch (successThreshold on the tuple itself)', () => {
   function makeScopingManager(rules?: BreakerRulesConfig) {
     const clock = makeClock();
     const paths = sandboxPaths();
@@ -282,22 +282,22 @@ describe('pair success counts toward the model batch (recordSuccessScoped intera
     return { manager, clock };
   }
 
-  it('with successThreshold 2 the first pair success COUNTS, the second CLOSES', () => {
+  it('with successThreshold 2 the first tuple success COUNTS, the second CLOSES', () => {
     const { manager, clock } = makeScopingManager({ recovery: { halfOpen: { maxProbes: 2, successThreshold: 2 } } });
-    const outage: ErrorDiagnosis = { ...NET_503, tripScope: 'model' };
-    manager.recordFailureScoped('p/x', outage, 'p'); // 2 counted -> model breaker OPEN
-    manager.recordFailureScoped('p/x', outage, 'p');
-    expect(manager.getSnapshot('p/x')?.state).toBe('OPEN');
+    const outage: ErrorDiagnosis = { ...NET_503, tripScope: 'pair' };
+    manager.recordFailureScoped('p/x', outage, 'p', 'K1'); // 2 counted -> the K1 tuple OPEN
+    manager.recordFailureScoped('p/x', outage, 'p', 'K1');
+    expect(manager.getPairBreaker('p/x', 'K1')?.getState()).toBe('OPEN');
 
     clock.advance(1000);
     expect(manager.getSnapshot('p/x')?.state).toBe('HALF_OPEN'); // the snapshot poll arms the trial
 
     manager.recordSuccessScoped('p/x', 'K1', 'p');
     const mid = manager.getSnapshot('p/x');
-    expect(mid?.state).toBe('HALF_OPEN'); // counted, NOT force-closed (spec rule #10 interaction note)
+    expect(mid?.state).toBe('HALF_OPEN'); // counted, NOT force-closed (spec rule #10)
     expect(mid?.halfOpenSuccesses).toBe(1);
 
-    manager.recordSuccessScoped('p/x', 'K2', 'p');
+    manager.recordSuccessScoped('p/x', 'K1', 'p');
     const done = manager.getSnapshot('p/x');
     expect(done?.state).toBe('CLOSED');
     expect(done?.consecutiveFailures).toBe(0);
@@ -305,13 +305,13 @@ describe('pair success counts toward the model batch (recordSuccessScoped intera
 
   it('default successThreshold 1 keeps today\u2019s canary-closes-on-first-success', () => {
     const { manager, clock } = makeScopingManager(); // no rules: legacy 1/1
-    const outage: ErrorDiagnosis = { ...NET_503, tripScope: 'model' };
-    manager.recordFailureScoped('p/x', outage, 'p');
-    manager.recordFailureScoped('p/x', outage, 'p');
+    const outage: ErrorDiagnosis = { ...NET_503, tripScope: 'pair' };
+    manager.recordFailureScoped('p/x', outage, 'p', 'K1');
+    manager.recordFailureScoped('p/x', outage, 'p', 'K1');
     clock.advance(1000);
     expect(manager.getSnapshot('p/x')?.state).toBe('HALF_OPEN');
 
     manager.recordSuccessScoped('p/x', 'K1', 'p');
-    expect(manager.getSnapshot('p/x')?.state).toBe('CLOSED'); // first pair success closes (pre-spec behavior)
+    expect(manager.getSnapshot('p/x')?.state).toBe('CLOSED'); // first tuple success closes (pre-spec behavior)
   });
 });

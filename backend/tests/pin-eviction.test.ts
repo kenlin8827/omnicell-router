@@ -368,7 +368,9 @@ describe('shadow mode: automatic trips never evict', () => {
     const r1 = await orchestrator.process(turn('first hello'), sessCtx(sessionId));
     expect(r1.modelUsed).toBe(m1.id);
 
-    registry.getCircuitBreakerManager().recordFailure(m1.id, diag5xx, 'p1');
+    registry
+      .getCircuitBreakerManager()
+      .recordFailureScoped(m1.id, diag5xx, 'p1', undefined, chainP1.map((c) => c.keyHashPrefix));
     // The trip really fired (accounting runs under shadow) — the fold is
     // what saves the view, not a missing state change.
     expect(registry.getCircuitBreakerManager().getSummary().tripped).toBe(1);
@@ -386,7 +388,9 @@ describe('shadow mode: automatic trips never evict', () => {
     const sessionId = 'sess-ev-noshadow';
     await orchestrator.process(turn('first hello'), sessCtx(sessionId));
 
-    registry.getCircuitBreakerManager().recordFailure(m1.id, diag5xx, 'p1');
+    registry
+      .getCircuitBreakerManager()
+      .recordFailureScoped(m1.id, diag5xx, 'p1', undefined, chainP1.map((c) => c.keyHashPrefix));
     expect(registry.getCircuitBreakerManager().getSummary().tripped).toBe(1);
     expect(registry.modelHealthView(m1)).toBe('unavailable');
 

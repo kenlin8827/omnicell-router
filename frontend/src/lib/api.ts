@@ -102,6 +102,8 @@ export interface BreakerInfo {
   provider: string;
   tier?: string;
   state: 'CLOSED' | 'OPEN' | 'HALF_OPEN';
+  /** Blast radius of the last trip delivered to this breaker: 'model' | 'credential' | 'pair'. */
+  scope?: 'model' | 'credential' | 'pair';
   reason?: string;
   /** Machine-readable trip reason (backend BreakerReasonCode): trigger code on
    *  wrapped/manual trips, cause code on a hard trip. Absent = pre-code trip. */

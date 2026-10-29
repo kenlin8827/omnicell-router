@@ -8,6 +8,7 @@ import {
   buildPairCards,
   effectiveState,
   effectiveCooldown,
+  isTakenDown,
   type PairCard,
 } from '../frontend/src/lib/guardrails-matrix';
 import type { BreakerInfo, CredentialHealth } from '../frontend/src/lib/api';
@@ -63,10 +64,9 @@ const LABELS = { unnamed: '未命名', configKey: '配置密钥' };
   check('unlabeled row reads 未命名, never the credentialId', c2.label === '未命名');
   check('pair breaker joins its card (snapSource=pair)', c1.snap === pair && c1.snapSource === 'pair');
   check('healthy sibling has no snap but keeps modelSnap', c2.snap === undefined && c2.modelSnap === model);
-  check('effective state folds model breaker into every card', effectiveState(c2) === 'CLOSED');
+  check('healthy sibling stays CLOSED (fold never paints)', effectiveState(c2) === 'CLOSED');
 }
-
-// --- model-level trip folds into all pair cards -----------------------------
+// --- model fold is CONTEXT, never painted onto cards -------------------------
 {
   const model = snap({ modelId: 'p/x', provider: 'p', state: 'OPEN', remainingCooldownMs: 9000 });
   const cards = buildPairCards(
@@ -76,8 +76,12 @@ const LABELS = { unnamed: '未命名', configKey: '配置密钥' };
     [],
     LABELS
   );
-  check('model OPEN ⇒ every pair card OPEN', cards.every((c) => effectiveState(c) === 'OPEN'));
-  check('cooldown folds from the model breaker', cards.every((c) => effectiveCooldown(c) === 9000));
+  // A model fold OPEN with NO tuple breakers means nothing failed on these
+  // credentials yet — the cards must stay healthy (the old fold-painting made
+  // one credential's trip look like every credential tripped).
+  check('model fold alone never trips pair cards', cards.every((c) => effectiveState(c) === 'CLOSED'));
+  check('cooldown never folds from the model breaker', cards.every((c) => effectiveCooldown(c) === 0));
+  check('cards still carry the fold for context', cards.every((c) => c.modelSnap === model));
 }
 
 // --- single-credential mirror ----------------------------------------------
@@ -111,7 +115,19 @@ const LABELS = { unnamed: '未命名', configKey: '配置密钥' };
   const orphan = snap({ modelId: 'q/x', provider: 'q', state: 'OPEN', keyHashPrefix: 'k7' });
   const cards = buildPairCards([model], [orphan], [], [], LABELS);
   const pairCard = cards.find((c: PairCard) => c.prefix === 'k7')!;
+  check('orphan card owns its tuple (snapSource=pair)', pairCard.snapSource === 'pair' && pairCard.snap === orphan);
   check('orphan card attaches the model breaker for folding', pairCard.modelSnap === model && effectiveState(pairCard) === 'OPEN');
+}
+
+// --- takedown dimension is independent of breaker state ---------------------
+{
+  const healthy = { snap: undefined, disabled: false, suspect: false };
+  const taken = { snap: undefined, disabled: true, suspect: false };
+  const suspect = { snap: undefined, disabled: false, suspect: true };
+  const tripped = { snap: { state: 'OPEN' }, disabled: false, suspect: false };
+  check('isTakenDown: disabled or suspect, regardless of breaker state',
+    isTakenDown(taken as never) && isTakenDown(suspect as never) && !isTakenDown(healthy as never) && !isTakenDown(tripped as never));
+  check('effectiveState ignores takedown (pure tuple truth)', effectiveState(taken as never) === 'CLOSED' && effectiveState(tripped as never) === 'OPEN');
 }
 
 if (failures > 0) {

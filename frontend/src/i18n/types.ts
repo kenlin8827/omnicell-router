@@ -684,6 +684,7 @@ export interface TranslationDict {
     /** Full explanation behind the ⊘ icon (the two-word badge answered nothing). */
     credentialNotRoutableTip: string;
     credentialSuspectTip: string;
+    credentialSuspectBadge: string;
     credentialOpenPairs: string;
     /** Per-credential quota tracking badge — display-only, never
      *  gates routing. */
@@ -869,6 +870,7 @@ hiddenBadge: string;
     resetCredentialConfirmDesc: string;
     /** The (model × credential) matrix grid. */
     singlePoint: string;
+    singlePointTip: string;
     resetPairSuccess: string;
     pairSplit: string;
     pairTrippedSub: string;
@@ -881,8 +883,13 @@ hiddenBadge: string;
     keyHashBadge: string;
     modelLevel: string;
     resetModelLevel: string;
+    resetCredentialScope: string;
+    resetModelScopeSuccess: string;
+    emptyMatrix: string;
+    emptyMatrixCta: string;
     singleCredHint: string;
     /** Structured trip-reason templates (backend BreakerReasonCode). */
+    tierBadge: string;
     reasonManualConsole: string;
     reasonManual: string;
     reasonQuota: string;

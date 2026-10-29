@@ -241,15 +241,79 @@ export class ProviderRegistry {
   /**
    * Aggregate model availability across its credential chain:
    * the chain's credential prefixes feed `modelAvailability`, so a model whose
-   * credentials are ALL pair-OPEN/SUSPECT reads as unavailable even while its
-   * model breaker is CLOSED, and a model trip marks every prefix open.
+   * credentials are ALL tuple-OPEN/SUSPECT reads as unavailable. A model-scope
+   * trip lands on every tuple, so the aggregate reads it as every prefix open.
    * Chain-less providers (config.yaml boot) pass an empty prefix list and the
-   * aggregate degenerates to the plain model check.
+   * aggregate degenerates to the sentinel-tuple check.
    */
   public modelAvailable(model: ModelRegistration): ModelAvailability {
     const chain = this.credentialChains.get(model.provider);
     const prefixes = chain?.map((c) => c.keyHashPrefix) ?? [];
     return this.circuitBreakerManager.modelAvailability(model.id, prefixes);
+  }
+
+  /**
+   * Hot pool sync (provider-def saves / connect / disconnect): reconcile the
+   * boot-built registry with a freshly built direct pool WITHOUT a restart —
+   * the model-set analogue of `refreshCredentialChain`. Providers and chains
+   * swap wholesale; models reconcile IN PLACE (existing registration objects
+   * mutate, so session pins and in-flight references stay valid; removed ids
+   * retire with their breaker tuples); the tier/combos view re-commits
+   * afterwards. The variant index rebuilds via registerModel/indexVariants.
+   */
+  public applyDirectPool(
+    instances: {
+      name: string;
+      provider: LLMProvider;
+      config: ProviderConfig;
+      credentialChain?: CallCredential[];
+    }[],
+    models: ModelRegistration[]
+  ): void {
+    if (this.mockMode) return;
+    const keep = new Set(instances.map((i) => i.name));
+    for (const name of Array.from(this.providers.keys())) {
+      if (!keep.has(name)) {
+        this.providers.delete(name);
+        this.credentialChains.delete(name);
+        this.providerConfigs.delete(name);
+        this.providerHosts.delete(name);
+      }
+    }
+    for (const inst of instances) {
+      // registerProvider only WRITES a chain when non-empty — a kept provider
+      // whose fresh chain is empty must not keep its old (dead) keys routable.
+      if (!inst.credentialChain || inst.credentialChain.length === 0) this.credentialChains.delete(inst.name);
+      this.registerProvider(inst.name, inst.provider, inst.credentialChain, inst.config);
+    }
+    const nextIds = new Set(models.map((m) => m.id));
+    for (const id of Array.from(this.models.keys())) {
+      if (!nextIds.has(id)) this.retireModel(id);
+    }
+    for (const m of models) {
+      const existing = this.models.get(m.id);
+      if (existing) {
+        Object.assign(existing, m);
+        this.indexVariants(existing);
+      } else {
+        this.registerModel(m, m.isDefaultInTier);
+      }
+    }
+    // Re-commit the tier/combos view over the reconciled model set
+    // (representatives and pools included).
+    this.applyTierConfigNow();
+    this.applyCombos(loadConfig().combos);
+  }
+
+  private retireModel(id: string): void {
+    this.models.delete(id);
+    for (const [tier, m] of Array.from(this.tierDefaults)) {
+      if (m.id === id) this.tierDefaults.delete(tier);
+    }
+    for (const [siblingId, ref] of Array.from(this.variantIndex)) {
+      if (ref.baseId === id) this.variantIndex.delete(siblingId);
+    }
+    this.circuitBreakerManager.dropModel(id);
   }
 
   /**
