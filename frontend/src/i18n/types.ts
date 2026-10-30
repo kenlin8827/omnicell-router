@@ -1700,6 +1700,13 @@ hiddenBadge: string;
     srcMgmt: {
       manage: string;
       close: string;
+      enabled: string;
+      updated: string;
+      rescanEnabled: string;
+      intervalMin: string;
+      rescanNow: string;
+      rescanDiff: string;
+      rescanOk: string;
       title: string;
       placeholder: string;
       check: string;

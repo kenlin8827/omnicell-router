@@ -1276,6 +1276,27 @@ export interface HarnessCatalogSource {
   counts: boolean;
 }
 
+/** One operator git-marketplace entry (the shared store's config row, mirrored by GET sources). */
+export interface HarnessMarketplaceEntry {
+  slug: string;
+  repo: string;
+  enabled: boolean;
+  addedAt?: number;
+  rescan: { enabled: boolean; intervalMs: number };
+  /** Kinds the source's snapshot actually carries — the dialog filters by the open tab's kind. */
+  kinds: ('skill' | 'plugin')[];
+}
+
+/** A summarized probe from the snapshot history (§D9) — never a raw dump. */
+export interface HarnessSourceSnapshot {
+  probedAt: number;
+  sha: string;
+  stars: number | null;
+  rows: number;
+  added: string[] | null;
+  removed: string[] | null;
+}
+
 export interface HarnessSourceView {
   id: string;
   label: string;
@@ -2597,8 +2618,8 @@ export const api = {
     return res.json();
   },
 
-  async harnessPluginSources(harness: string): Promise<{ status: string; sources: HarnessCatalogSource[] }> {
-    const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/sources`);
+  async harnessPluginSources(harness: string, kind?: 'skill' | 'plugin'): Promise<{ status: string; sources: HarnessCatalogSource[]; operator: HarnessMarketplaceEntry[] }> {
+    const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/sources${kind ? `?kind=${kind}` : ''}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },
@@ -2633,6 +2654,28 @@ export const api = {
 
   async harnessPluginRemoveSource(harness: string, slug: string): Promise<{ status: string }> {
     const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/sources/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async harnessPluginUpdateSource(harness: string, slug: string, patch: { enabled?: boolean; rescan?: { enabled?: boolean; intervalMs?: number } }): Promise<{ status: string }> {
+    const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/sources/${encodeURIComponent(slug)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async harnessPluginRescanSource(harness: string, slug: string): Promise<{ status: string; diff: { added: string[]; removed: string[] } | null; rows: number }> {
+    const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/sources/${encodeURIComponent(slug)}/rescan`, { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async harnessPluginSourceSnapshots(harness: string, slug: string): Promise<{ status: string; snapshots: HarnessSourceSnapshot[] }> {
+    const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/sources/${encodeURIComponent(slug)}/snapshots`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },

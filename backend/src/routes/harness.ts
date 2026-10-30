@@ -35,7 +35,11 @@ import {
   listMarketplaces,
   latestSnapshot,
   marketplaceSourceId,
+  probeMarketplace,
+  snapshotHistory,
+  updateMarketplace,
 } from '../harness/market/marketplaces.js';
+import { harvestAll } from '../harness/plugin/catalog.js';
 
 /**
  * Harness admin surface (ADR-0015): sources, hosts, inventory, install, uninstall, translate.
@@ -104,7 +108,97 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
       reply.code(404);
       return { status: 'error', code: 'unknown_harness', message: `unknown harness` };
     }
-    return { status: 'ok', sources: adapter.sources() };
+    // Kind isolation (§D11): the dialog that opens on the skill tab must not list plugin sources
+    // and vice versa. `kind` narrows BOTH lists — the built-in chips by their declared `kinds`,
+    // the operator entries by what their snapshot actually carries. A source with no rows of the
+    // kind is not listed there: a chip that cannot serve the open tab is noise, not information.
+    const kindQ = ((req.query || {}) as { kind?: string }).kind;
+    const kindOk = (kinds: readonly string[]) => !kindQ || kinds.includes(kindQ);
+    return {
+      status: 'ok',
+      sources: SOURCES_VIEW.filter((s) => kindOk(s.kinds)).map((s) => ({
+        id: s.id,
+        label: s.label,
+        tier: 'federated' as const,
+        sorts: [] as string[],
+        counts: false,
+      })),
+      operator: listMarketplaces()
+        .map((e) => {
+          const snap = latestSnapshot(e.slug);
+          const kinds = [
+            ...((snap?.rows.length ?? 0) > 0 ? ['skill' as const] : []),
+            ...((snap?.plugins.length ?? 0) > 0 ? ['plugin' as const] : []),
+          ];
+          return { ...e, kinds };
+        })
+        .filter((e) => kindOk(e.kinds)),
+    };
+  });
+
+  // Full CRUD (§D11): the dialog edits the entry config in place — enable/disable and the rescan
+  // schedule. Toggling enabled changes which snapshots the harvest reads, so the mutation
+  // re-harvests every served harness, same as register/remove.
+  app.patch('/api/admin/harness/plugins/:harness/sources/:slug', async (req, reply) => {
+    if (!pluginAdapterFor((req.params as { harness: string }).harness)) {
+      reply.code(404);
+      return { status: 'error', code: 'unknown_harness', message: `unknown harness` };
+    }
+    const { slug } = req.params as { slug: string };
+    const body = (req.body || {}) as { enabled?: boolean; rescan?: { enabled?: boolean; intervalMs?: number } };
+    const updated = updateMarketplace(slug, body);
+    if (!updated) {
+      reply.code(404);
+      return { status: 'error', code: 'unknown_source', message: `unknown source '${slug}'` };
+    }
+    harvestAll();
+    return { status: 'ok', entry: updated };
+  });
+
+  // Manual rescan: same probe as the scheduler, persisted, then a full re-harvest. The diff
+  // REPORTS additions/removals — it never rewrites installed copies (§D9).
+  app.post('/api/admin/harness/plugins/:harness/sources/:slug/rescan', async (req, reply) => {
+    if (!pluginAdapterFor((req.params as { harness: string }).harness)) {
+      reply.code(404);
+      return { status: 'error', code: 'unknown_harness', message: `unknown harness` };
+    }
+    const { slug } = req.params as { slug: string };
+    const entry = getMarketplaceEntry(slug);
+    if (!entry) {
+      reply.code(404);
+      return { status: 'error', code: 'unknown_source', message: `unknown source '${slug}'` };
+    }
+    const outcome = await probeMarketplace(entry, opts.marketplaceFetch);
+    if (!outcome.ok) {
+      reply.code(409);
+      return { status: 'error', code: outcome.code ?? 'unavailable', message: outcome.message };
+    }
+    harvestAll();
+    return { status: 'ok', diff: outcome.snapshot.lastDiff ?? null, rows: outcome.snapshot.rows.length };
+  });
+
+  // Bounded snapshot history (§D9): probes are summarized, never a raw dump.
+  app.get('/api/admin/harness/plugins/:harness/sources/:slug/snapshots', async (req, reply) => {
+    if (!pluginAdapterFor((req.params as { harness: string }).harness)) {
+      reply.code(404);
+      return { status: 'error', code: 'unknown_harness', message: `unknown harness` };
+    }
+    const { slug } = req.params as { slug: string };
+    if (!getMarketplaceEntry(slug)) {
+      reply.code(404);
+      return { status: 'error', code: 'unknown_source', message: `unknown source '${slug}'` };
+    }
+    return {
+      status: 'ok',
+      snapshots: snapshotHistory(slug).map((s) => ({
+        probedAt: s.probedAt,
+        sha: s.sha,
+        stars: s.stars,
+        rows: s.rows.length,
+        added: s.lastDiff?.added ?? null,
+        removed: s.lastDiff?.removed ?? null,
+      })),
+    };
   });
 
   // Register PROBES FIRST (an entry is written only when its repo answers a manifest or a

@@ -843,12 +843,15 @@ REMOVED. Source maintenance lives where the sources are consumed: the harness pa
 the plugin market is a TAB of the harness page, not a separate destination. The nav label is
 "Plugin Management".
 
-**One dialog, two tabs.** The per-harness sources dialog (`HarnessSourcesDialog`) opens from the
-plugin tab AND the skill tab of the same harness page — the same
-`/plugins/:harness/sources*` route serves both, because the operator git sources are
-`kinds: ['skill', 'plugin']` dual-axis by declaration (skill-first) and a second skill-side
-registration surface would fork the store's truth. Built-in federated sources render read-only;
-operator `mp-` sources carry check-before-add and remove.
+**One dialog, two tabs — kind-isolated.** The per-harness sources dialog (`HarnessSourcesDialog`)
+opens from the plugin tab AND the skill tab of the same harness page — the same
+`/plugins/:harness/sources*` route serves both. But the CONTENTS are isolated by the open tab's
+kind: `GET .../sources?kind=skill|plugin` filters BOTH lists — built-in chips by their declared
+`kinds` (the plugin tab sees pi-dev; the skill tab sees skills-sh / clawhub / github / npm), and
+operator entries by what their snapshot actually carries (a skills-only repo never lists on the
+plugin tab). A source that cannot serve the open tab is noise, not information. Built-in
+federated sources render read-only; operator `mp-` sources carry check-before-add, in-place edit
+(enable + rescan schedule), manual rescan with a reported diff, and remove.
 
 **The dialog states the sharing.** The store behind the dialog is GLOBAL — one
 `marketplaces.json`, `mp-` ids shared by every served harness. The dialog's subtitle says so; the
@@ -863,5 +866,6 @@ browses pi-dev (federated) plus operator git sources; the skill axis keeps its c
 browsing chip appears on.
 
 **Wiring.** `frontend/src/components/HarnessSourcesDialog.tsx`; opened from `HarnessPage`'s
-market tab; API client mirrors the per-harness route shape 1:1. The deprecated global client
-functions and the `MarketplacesPage` were deleted with their i18n keys in the same commit.
+market tab with the tab's kind; API client mirrors the per-harness route shape 1:1. The
+deprecated global client functions and the `MarketplacesPage` were deleted with their i18n keys
+in the same commit.

@@ -2823,6 +2823,17 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
           ]}
         />
         <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: FONT_MONO }}>{breadcrumb()}</span>
+        {tab === 'market' && kind !== 'mcp' && (
+          <button
+            type="button"
+            className="btn btn-sm"
+            style={{ marginLeft: 'auto' }}
+            onClick={() => setSourcesOpen(true)}
+          >
+            <Settings2 size={12} />
+            {t('harness.srcMgmt.manage')}
+          </button>
+        )}
       </div>
 
       {/* ── Header: scope totals + rescan (local inventory only) ─────────── */}
@@ -3207,18 +3218,10 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
       </div>
       )}
 
-      {tab === 'market' && kind !== 'mcp' && (
-        <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'flex-end' }}>
-          <button type="button" className="btn btn-sm" onClick={() => setSourcesOpen(true)}>
-            <Settings2 size={12} />
-            {t('harness.srcMgmt.manage')}
-          </button>
-        </div>
-      )}
       {tab === 'market' && renderMarket()}
 
       {tab === 'market' && kind !== 'mcp' && (
-        <HarnessSourcesDialog harness={harness} open={sourcesOpen} onClose={() => setSourcesOpen(false)} />
+        <HarnessSourcesDialog harness={harness} kind={kind} open={sourcesOpen} onClose={() => setSourcesOpen(false)} />
       )}
 
       {/* ── Location picker ──────────────────────────────────────────────── */}

@@ -363,10 +363,12 @@ harness 页面的市场 tab。`/harness/plugins` 与 `/harness/plugins/:harness`
 `HarnessPage kind="plugin"`——插件市场是 harness 页面的一个 **tab**，不是独立目的地。导航名为
 「插件管理 / Plugin Management」。
 
-**一个弹框，两个 tab。** 按 harness 的来源弹框（`HarnessSourcesDialog`）从同一 harness 页面的插件 tab
-**和**技能 tab 打开——同一条 `/plugins/:harness/sources*` 路由服务两者：操作者 git 源按声明就是
-`kinds: ['skill', 'plugin']` 双轴（skill 优先），再设一个技能侧注册面只会分叉存储的真相。内建联邦源
-只读渲染；操作者 `mp-` 源带先探测后添加与移除。
+**一个弹框，两个 tab——按 kind 隔离。** 按 harness 的来源弹框（`HarnessSourcesDialog`）从同一 harness 页面的插件 tab
+**和**技能 tab 打开——同一条 `/plugins/:harness/sources*` 路由服务两者。但**内容按当前 tab 的 kind 隔离**：
+`GET .../sources?kind=skill|plugin` 对两个列表都过滤——内建芯片按声明的 `kinds`（插件 tab 见 pi-dev；技能 tab 见
+skills-sh / clawhub / github / npm），操作者条目按其快照实际携带的内容（只有技能的仓库绝不会出现在插件 tab）。
+一个无法服务当前 tab 的源是噪音，不是信息。内建联邦源只读渲染；操作者 `mp-` 源带先探测后添加、就地编辑
+（启用 + 重扫计划）、带 diff 报告的手动重扫与移除。
 
 **弹框声明共享。** 弹框背后的存储是**全局**的——单份 `marketplaces.json`，`mp-` id 被每个被服务的 harness
 共享。弹框副标题写明这一点；UI 绝不把列出的源标成「本 harness 独有」，且每次变更都会重收割所有被服务
@@ -377,5 +379,5 @@ harness 的索引（§D10）。若未来确需按 harness 独占，那只是 mar
 **浏览芯片**不在插件轴上——插件轴浏览 pi-dev（联邦）加操作者 git 源；技能轴保留自己的芯片。一个源的
 `kinds` 声明（`harness/market/source-views.ts`）是浏览芯片出现在哪个轴上的唯一裁决。
 
-**接线。** `frontend/src/components/HarnessSourcesDialog.tsx`；从 `HarnessPage` 的市场 tab 打开；API client
+**接线。** `frontend/src/components/HarnessSourcesDialog.tsx`；从 `HarnessPage` 的市场 tab 携带 tab 的 kind 打开；API client
 与按 harness 路由形状 1:1 镜像。废弃的全局 client 函数与 `MarketplacesPage` 连同其 i18n 键在同一 commit 删除。

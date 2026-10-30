@@ -222,14 +222,25 @@ describe('per-harness plugin source routes', () => {
     });
     expect(bad.statusCode).toBe(400);
 
-    // The per-harness sources view carries the custom chip for a harness whose index gained
-    // rows from it — the repo's plugin manifest feeds the claude axis (pi's plugin index sees
-    // only its own plugin kind, so a skills-only repo contributes nothing there).
+    // Kind isolation: the plugin-kind query only lists sources whose snapshot carries plugins.
+    const pluginView = JSON.parse(
+      (await app.inject({ method: 'GET', url: '/api/admin/harness/plugins/claude/sources?kind=plugin' })).body,
+    ) as { sources: { id: string }[]; operator: { slug: string; kinds: string[] }[] };
+    expect(pluginView.sources.some((s) => s.id === 'pi-dev')).toBe(true);
+    expect(pluginView.sources.some((s) => s.id === 'skills-sh')).toBe(false);
+    expect(pluginView.operator.some((e) => e.slug === 'repo')).toBe(true);
+    const skillView = JSON.parse(
+      (await app.inject({ method: 'GET', url: '/api/admin/harness/plugins/claude/sources?kind=skill' })).body,
+    ) as { sources: { id: string }[]; operator: { slug: string; kinds: string[] }[] };
+    expect(skillView.sources.some((s) => s.id === 'pi-dev')).toBe(false);
+    expect(skillView.operator.some((e) => e.slug === 'repo' && e.kinds.includes('skill'))).toBe(true);
+
+    // The unfiltered view answers both lists: built-in chips + the operator entry.
     const sources = JSON.parse(
       (await app.inject({ method: 'GET', url: '/api/admin/harness/plugins/claude/sources' })).body,
-    ) as { sources: { id: string }[] };
-    console.log('SOURCES', JSON.stringify(sources.sources));
-    expect(sources.sources.some((s) => s.id === 'mp-repo')).toBe(true);
+    ) as { sources: { id: string }[]; operator: { slug: string; kinds: string[] }[] };
+    expect(sources.sources.some((s) => s.id === 'pi-dev')).toBe(true);
+    expect(sources.operator.some((e) => e.slug === 'repo' && e.kinds.includes('plugin'))).toBe(true);
 
     // Browse answers rows with keys the install route accepts.
     const browse = JSON.parse(
@@ -241,6 +252,36 @@ describe('per-harness plugin source routes', () => {
     // Unknown harness answers 404.
     const ghost = await app.inject({ method: 'GET', url: '/api/admin/harness/plugins/nope/sources' });
     expect(ghost.statusCode).toBe(404);
+
+    // Full CRUD: disable removes the index rows from the view (harvest skips disabled entries).
+    const patchOff = await app.inject({ method: 'PATCH', url: '/api/admin/harness/plugins/pi/sources/repo', payload: { enabled: false } });
+    expect(patchOff.statusCode).toBe(200);
+    const sourcesOff = JSON.parse(
+      (await app.inject({ method: 'GET', url: '/api/admin/harness/plugins/claude/sources' })).body,
+    ) as { operator: { slug: string; enabled: boolean }[] };
+    expect(sourcesOff.operator.every((e) => !(e.slug === 'repo' && e.enabled))).toBe(true);
+
+    // Manual rescan: no change since the add-time probe — empty diff, rows reported.
+    const rescan = JSON.parse(
+      (await app.inject({ method: 'POST', url: '/api/admin/harness/plugins/pi/sources/repo/rescan' })).body,
+    ) as { status: string; diff: { added: string[]; removed: string[] }; rows: number };
+    expect(rescan.diff.added).toEqual([]);
+    expect(rescan.diff.removed).toEqual([]);
+    expect(rescan.rows).toBe(2);
+
+    // Snapshot history is summarized, never a raw dump.
+    const snaps = JSON.parse(
+      (await app.inject({ method: 'GET', url: '/api/admin/harness/plugins/pi/sources/repo/snapshots' })).body,
+    ) as { snapshots: { rows: number; sha: string }[] };
+    expect(snaps.snapshots.length).toBeGreaterThanOrEqual(1);
+
+    // Re-enable restores the view.
+    const patchOn = await app.inject({ method: 'PATCH', url: '/api/admin/harness/plugins/pi/sources/repo', payload: { enabled: true } });
+    expect(patchOn.statusCode).toBe(200);
+    const sourcesOn = JSON.parse(
+      (await app.inject({ method: 'GET', url: '/api/admin/harness/plugins/claude/sources' })).body,
+    ) as { operator: { slug: string; enabled: boolean }[] };
+    expect(sourcesOn.operator.some((e) => e.slug === 'repo' && e.enabled)).toBe(true);
 
     // Remove cleans the shared store.
     const del = await app.inject({ method: 'DELETE', url: '/api/admin/harness/plugins/pi/sources/repo' });
@@ -256,7 +297,13 @@ describe('per-harness plugin source routes', () => {
     registerHarnessRoutes(app, { marketplaceFetch: fakeFetch() });
     const del = await app.inject({ method: 'DELETE', url: '/api/admin/harness/plugins/pi/sources/ghost' });
     expect(del.statusCode).toBe(404);
-    const ghostHarness = await app.inject({ method: 'DELETE', url: '/api/admin/harness/plugins/nope/sources/ghost' });
+    const patchGhost = await app.inject({ method: 'PATCH', url: '/api/admin/harness/plugins/pi/sources/ghost', payload: { enabled: false } });
+    expect(patchGhost.statusCode).toBe(404);
+    const rescanGhost = await app.inject({ method: 'POST', url: '/api/admin/harness/plugins/pi/sources/ghost/rescan' });
+    expect(rescanGhost.statusCode).toBe(404);
+    const snapsGhost = await app.inject({ method: 'GET', url: '/api/admin/harness/plugins/pi/sources/ghost/snapshots' });
+    expect(snapsGhost.statusCode).toBe(404);
+    const ghostHarness = await app.inject({ method: 'PATCH', url: '/api/admin/harness/plugins/nope/sources/ghost', payload: {} });
     expect(ghostHarness.statusCode).toBe(404);
   });
 });

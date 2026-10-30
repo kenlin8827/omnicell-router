@@ -1701,6 +1701,13 @@ export const enUS: TranslationDict = {
     srcMgmt: {
       manage: 'Manage sources',
       close: 'Close',
+      enabled: 'Enabled',
+      updated: 'Updated \'{slug}\'',
+      rescanEnabled: 'Auto rescan',
+      intervalMin: 'min',
+      rescanNow: 'Rescan now',
+      rescanDiff: 'Rescan done: {added} added, {removed} removed ({rows} rows)',
+      rescanOk: 'Rescan done: {rows} rows',
       title: 'Sources',
       placeholder: 'GitHub repository URL',
       check: 'Check',
