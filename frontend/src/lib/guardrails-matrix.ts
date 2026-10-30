@@ -7,7 +7,7 @@ import type { BreakerInfo, CredentialHealth } from './api';
  * (scripts/check-guardrails-matrix.ts) without a browser.
  */
 
-const STATE_ORDER: Record<BreakerInfo['state'], number> = { OPEN: 0, HALF_OPEN: 1, CLOSED: 2 };
+export const STATE_ORDER: Record<BreakerInfo['state'], number> = { OPEN: 0, HALF_OPEN: 1, CLOSED: 2 };
 
 /**
  * The grid unit: one (model × credential) tuple — the atomic breaker key.
@@ -80,6 +80,18 @@ export function effectiveState(c: PairCard): BreakerInfo['state'] {
 /** Routing truth (`isPairOut`): selection will NEVER pick this pairing. */
 export function isTakenDown(c: PairCard): boolean {
   return c.disabled || c.suspect;
+}
+
+/**
+ * Whether this card may surface the derived model fold as a MODEL-level
+ * takedown. Only a fold whose own blast radius is `model` qualifies: a
+ * credential- or pair-scoped sibling trip raises the same fold (worst-state
+ * aggregate), and painting THAT as the model layer relabels a credential
+ * fault as a model outage on a card whose own tuple is healthy (ADR-0004 §2:
+ * the fold is display context, never the card's own truth).
+ */
+export function isModelWideTrip(c: PairCard): boolean {
+  return !!c.modelSnap && c.modelSnap.state !== 'CLOSED' && c.modelSnap.scope === 'model';
 }
 
 export function effectiveCooldown(c: PairCard): number {

@@ -11,7 +11,7 @@
  *    the body).
  *  - Non-JSON / hex / image-free bodies pass through byte-identical.
  *  - getMediaFile + the route reject traversal-shaped date/hash (400) and
- *    serve stored files with a per-extension Content-Type (200) / 404 miss.
+ *    serve stored files with a per-plugin Content-Type (200) / 404 miss.
  */
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';

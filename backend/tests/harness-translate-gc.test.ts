@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import fastify from 'fastify';
-import { harnessEnvDir } from '../src/harness/manifest.js';
+import { harnessEnvDir } from '../src/harness/host/manifest.js';
 import { pruneTranslationStore, readCachedTranslations } from '../src/harness/translation.js';
 import { registerHarnessRoutes } from '../src/routes/harness.js';
 

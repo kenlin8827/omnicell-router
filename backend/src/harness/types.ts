@@ -6,7 +6,9 @@
  * traffic clients, and welding the two would pollute the traffic domain.
  */
 
-export type HarnessKind = 'skill' | 'mcp' | 'extension';
+import type { BrowseResult } from './common/market.js';
+
+export type HarnessKind = 'skill' | 'mcp' | 'plugin';
 
 export type HarnessHostId =
   | 'universal'
@@ -22,7 +24,11 @@ export type HarnessHostId =
   | 'cline'
   | 'amp'
   | 'windsurf'
-  | 'zed';
+  | 'zed'
+  | 'antigravity'
+  | 'factory'
+  | 'kimi'
+  | 'grok';
 
 /**
  * Where an artifact may be materialized: project-local or user-level.
@@ -91,15 +97,15 @@ export type Pin =
 
 export interface ArtifactRecord {
   /**
-   * `extension:<harness>:<canonicalKey>` for kind `extension` — the runtime is part of the identity,
-   * because an extension is code against ONE runtime's plugin API (one package installed into two
+   * `plugin:<harness>:<canonicalKey>` for kind `plugin` — the runtime is part of the identity,
+   * because an plugin is code against ONE runtime's plugin API (one package installed into two
    * runtimes is two artifacts). `<kind>:<canonicalKey>` for every other kind (ADR-0015 §D7).
    */
   id: string;
   canonicalKey: string;
   kind: HarnessKind;
   /**
-   * The runtime this artifact is an extension OF; present iff `kind === 'extension'` (ADR-0015 §D2:
+   * The runtime this artifact is an plugin OF; present iff `kind === 'plugin'` (ADR-0015 §D2:
    * an artifact declares its compatible hosts). For skill/mcp the host is a landing choice recorded
    * per copy, so no artifact-level harness exists.
    */
@@ -119,11 +125,19 @@ export interface ArtifactRecord {
   storeRef?: string;
   listedOn: string[];
   trust: TrustTier;
+  /**
+   * The runtime's OWN identity for a plugin installed through its native marketplace CLI
+   * (`<plugin>@<marketplace>`, e.g. claude's `postman@postman`). `canonicalKey` stays the MARKET
+   * row's identity (the `mp-` key) so the console can mark that row installed; this field is what
+   * lets discovery exclude the runtime record it would otherwise read back as a second artifact
+   * (ADR-0015 §D8.10). Absent for every other install path.
+   */
+  nativeKey?: string;
   copies: CopyRecord[];
 }
 
 export interface ManifestFile {
-  /** v2 added the artifact-level `harness` dimension for extensions; v1 manifests migrate on read. */
+  /** v2 added the artifact-level `harness` dimension for plugins; v1 manifests migrate on read. */
   version: 1 | 2;
   artifacts: ArtifactRecord[];
 }
@@ -159,7 +173,7 @@ export interface ArtifactView {
   id: string;
   canonicalKey: string;
   kind: HarnessKind;
-  /** The runtime an extension is written for; absent for skill/mcp (host lives per copy). */
+  /** The runtime an plugin is written for; absent for skill/mcp (host lives per copy). */
   harness?: HarnessHostId;
   name: string;
   /**
@@ -184,10 +198,12 @@ export interface ArtifactView {
 
 export interface HarnessSourceView {
   id: string;
+  /** Showcase catalog grouping ('default', 'enterprise', etc.). */
+  catalog?: string;
   label: string;
   kinds: HarnessKind[];
   trust: TrustTier;
-  /** Credential the source's OWN API demands (`oidc` = skills.sh's closed endpoint); `none` otherwise.
+  /** Credential the source's OWN API demands (`oidc` = a closed, token-minted endpoint); `none` otherwise.
    *  Every source offered today is readable anonymously, so this is a declaration, not a gate. */
   auth: 'none' | 'oidc';
   /**
@@ -209,6 +225,8 @@ export interface HarnessSourceView {
    * would claim a global ranking nobody computed. `undefined` = one order only: the catalog's own.
    */
   sorts?: string[];
+  /** The source's OWN browse function (declared by its adapter file). Absent = no market chip. */
+  browse?: (query: string, limit: number, page: number, sort: string | undefined, fetchImpl?: typeof fetch) => Promise<BrowseResult>;
   lastSyncAt?: number;
 }
 
@@ -221,7 +239,7 @@ export type ExtDiscoveryOrigin = 'runtime-store' | 'config-array' | 'local-file'
  * A discovered row has no manifest entry, so removal is not "delete our copy" — it is the inverse of
  * the shape the runtime landed it in. The descriptor travels WITH the row so the console never has to
  * guess, and so the plan can name the exact file and container it will touch:
- *   · `trash-path` — a real file/dir on disk (a loose `extensions/*.ts`, a path-shaped `plugin[]`
+ *   · `trash-path` — a real file/dir on disk (a loose `plugins/*.ts`, a path-shaped `plugin[]`
  *     entry). Reversible through the trash.
  *   · `drop-entry` — one string inside a JSON string array (`plugin[]`, pi's `packages[]`). Dropping
  *     the string is the inverse of installing it; for a package it removes the DECLARATION, not the
@@ -238,12 +256,12 @@ export type DiscoveredRemoval =
 export interface DiscoveredArtifact {
   /**
    * Which kind the row belongs to. Discovery is ONE channel for every kind (a skill directory, a
-   * package the runtime's manager installed, a loose extension file), so the console can filter a
+   * package the runtime's manager installed, a loose plugin file), so the console can filter a
    * landing page without a second scan endpoint.
    */
   kind: HarnessKind;
   /**
-   * The runtime whose own record the row was read from: set for `extension` (its store /
+   * The runtime whose own record the row was read from: set for `plugin` (its store /
    * declaration / loose directory) and for `mcp` (the `mcp` container of its config file). Absent for
    * `skill`, whose copies are grouped per directory NAME across every host that reads them.
    */
@@ -285,7 +303,7 @@ export interface InventoryResponse {
   artifacts: ArtifactView[];
   /**
    * On-disk rows with no manifest entry, for every kind — skills grouped per skill (NOT per
-   * directory), extensions one row per package/file the runtime's own store declares.
+   * directory), plugins one row per package/file the runtime's own store declares.
    */
   discovered: DiscoveredArtifact[];
   /** Total copies behind `discovered` (a skill may live in several roots). */

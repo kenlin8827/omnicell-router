@@ -2,10 +2,10 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { discoverExtensions, type ExtSource } from '../src/harness/discover.js';
-import { applyRemove, planRemove } from '../src/harness/maintenance.js';
-import { findArtifact } from '../src/harness/manifest.js';
-import { applyExtension } from '../src/harness/writers/extension.js';
+import { discoverPlugins, type ExtSource } from '../src/harness/host/discover.js';
+import { applyRemove, planRemove } from '../src/harness/host/maintenance.js';
+import { findArtifact } from '../src/harness/host/manifest.js';
+import { applyPlugin } from '../src/harness/host/writers/plugin.js';
 
 /**
  * Removal ops (ADR-0015 §D5 / §D8.9 / §D8.10).
@@ -33,7 +33,7 @@ describe('tracked config-landed copy', () => {
     // A hand-written config: another plugin and an unrelated key must survive our removal.
     fs.writeFileSync(config, JSON.stringify({ theme: 'keep-me', plugin: ['other-plugin'] }, null, 2));
 
-    const applied = await applyExtension({
+    const applied = await applyPlugin({
       sourceId: 'manual',
       canonicalKey: 'manual:my-plugin',
       spec: 'my-plugin',
@@ -70,7 +70,7 @@ describe('tracked config-landed copy', () => {
     const config = path.join(root, 'opencode.json');
     fs.writeFileSync(config, JSON.stringify({ plugin: [] }, null, 2));
 
-    const applied = await applyExtension({
+    const applied = await applyPlugin({
       sourceId: 'manual',
       canonicalKey: 'manual:forgotten',
       spec: 'forgotten',
@@ -116,7 +116,7 @@ describe('discovered row descriptor', () => {  it('removes a plugin[] row throug
       path: file,
       key: 'plugin',
     };
-    const row = discoverExtensions([source]).find((r) => r.name === 'ghost')!;
+    const row = discoverPlugins([source]).find((r) => r.name === 'ghost')!;
     expect(row.removal).toEqual({ op: 'drop-entry', file, container: 'plugin', entry: 'ghost' });
 
     const plan = planRemove([{ artifactId: null, copies: row.copies, removal: row.removal }]);
@@ -129,10 +129,10 @@ describe('discovered row descriptor', () => {  it('removes a plugin[] row throug
     expect(after['mcp']).toEqual({ keep: { type: 'local' } });
   });
 
-  it('describes a loose extension file as a trash path, not a config entry', () => {
+  it('describes a loose plugin file as a trash path, not a config entry', () => {
     const dir = path.join(tmp(), 'extensions');
     const source: ExtSource = { host: 'pi', scope: 'global', origin: 'local-file', kind: 'loose-dir', path: dir };
-    const rows = discoverExtensions([source], {
+    const rows = discoverPlugins([source], {
       deps: {
         exists: () => true,
         readJson: () => ({}),

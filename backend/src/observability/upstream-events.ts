@@ -1,5 +1,5 @@
 import type { CaptureKeyIdentity, CaptureRecorder, HttpExchangeEvent } from '../capture/recorder.js';
-import { emitUpstreamRequest, emitUpstreamResponse } from '../observability/http-exchange.js';
+import { emitUpstreamRequest, emitUpstreamResponse } from './http-exchange.js';
 
 /**
  * Event-stream upstream context shared by the provider adapters. The shape

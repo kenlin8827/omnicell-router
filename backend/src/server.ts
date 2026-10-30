@@ -13,6 +13,8 @@ import { getRateLimitEventLog, recordRateLimitEvent } from './ratelimit/event-lo
 import { getFailureEventLog } from './observability/failure-events.js';
 import { registerEnvironmentRoutes } from './routes/environments.js';
 import { registerHarnessRoutes } from './routes/harness.js';
+import { MarketplaceRescanScheduler } from './harness/common/marketplace-rescan-scheduler.js';
+import { allHostProbes, probeOptionsFor } from './harness/plugin/adapters/index.js';
 import { SURFACES } from './surfaces/table.js';
 import { createFastifyTransport } from './surfaces/transport-fastify.js';
 import { dispatchSurface } from './surfaces/dispatch.js';
@@ -42,6 +44,7 @@ import {
   promptTurnsOf,
   sessionTitleOf,
   type SessionRow,
+  boundCredentialLabelOf,
 } from './session/session-row.js';
 import type { TripScope } from './resilience/types.js';
 import type { CaptureKeyIdentity } from './capture/recorder.js';
@@ -902,14 +905,14 @@ export function createServer(
   // OpenAI SDKs and chat clients hard-code. Row ids are the gateway-visible
   // modelRef vocabulary (registered id / variant sibling id / auto* alias /
   // combo id); the full models.dev capability block (plus the namespaced
-  // `ocr` routing extensions) rides under each row's `metadata`.
+  // `ocr` routing plugins) rides under each row's `metadata`.
   //
   // GET /v1/catalog.json — models.dev-shaped provider map (aligned with
   // https://models.opencode.ai/api.json): body keyed by provider id, each
   // provider carrying `models` as a model-id keyed map of capability blocks
   // (snake_case: reasoning/tool_call/modalities/limit/cost/reasoning_options).
   // Consumers that want provider-grouped capability data (opencode-style
-  // clients) read this instead. OCR routing extensions (kind/tier/selection/
+  // clients) read this instead. OCR routing plugins (kind/tier/selection/
   // members/parent/variant) live under each model's `ocr` key:
   //  - concrete models: verbatim passthrough of the catalog record's
   //    capability fields;
@@ -1186,11 +1189,12 @@ export function createServer(
     // so console history survives. Live wins on id collision. Both paths
     // project into the same SessionRow contract (session-row.ts), so a row
     // never carries the live routing state (pin/ratchet).
+    const registry = orchestrator.getRegistry();
     const live = (orchestrator.getSessionManager()?.getAllSessions() || []).map((s): SessionRow => {
       const sessTraces = traceTracker.getTracesBySession(s.id);
       const keyList = distinctTraceKeys(sessTraces);
       const uaList = distinctTraceUserAgents(sessTraces);
-      return {
+      const row: SessionRow = {
         // Whitelisted entity projection (session-row.ts): the entity's
         // pinnedModel/pinnedProvider are routing-internal (ADR-0002) and are
         // deliberately NOT surfaced, so live and trace-reconstructed rows
@@ -1216,6 +1220,11 @@ export function createServer(
         entryMode: deriveSessionEntryMode(sessTraces),
         ...traceTracker.getSessionAggregates(s.id),
       };
+      const boundCredentialLabel = boundCredentialLabelOf(
+        registry.getCredentialChain(row.currentProvider ?? ''),
+        row.boundKeyHashPrefix
+      );
+      return boundCredentialLabel ? { ...row, boundCredentialLabel } : row;
     });
     const liveIds = new Set(live.map(s => s.id));
     const reconstructed = traceTracker
@@ -1273,20 +1282,27 @@ export function createServer(
     }
 
     const traces = orchestrator.getTraceTracker().getTracesBySession(id);
+    const execution = currentModelOf(traces);
+    // Same display identity join as the list rows: match the bound prefix
+    // against the serving provider's live chain.
+    const boundCredentialLabel = boundCredentialLabelOf(
+      orchestrator.getRegistry().getCredentialChain(execution.currentProvider ?? ''),
+      session.boundKeyHashPrefix
+    );
     return {
       object: 'session',
       // Same two projections as the list rows (ADR-0002 §3): the routing pin
       // and the client IP stay inside the gateway, and `currentModel` reuses the
       // list's execution-view derivation so the endpoints cannot disagree.
       ...projectSessionEntity(session),
-      // Same turns number as the list rows (server.ts:1206): the entity
-      // turnCount counts EVERY request — displayed next to traceCount the two
-      // would always be equal.
+      // Same turns number as the list rows: the entity turnCount counts EVERY
+      // request — displayed next to traceCount the two would always be equal.
       turnCount: promptTurnsOf(traces),
       // Same title derivation as the list rows (entity first, birth trace as
       // the fallback) so list and detail cannot disagree.
       firstUserMessage: session.firstUserMessage ?? sessionTitleOf(traces),
-      ...currentModelOf(traces),
+      ...execution,
+      ...(boundCredentialLabel ? { boundCredentialLabel } : {}),
       traceCount: traces.length,
       recentTraces: traces.slice(-5),
     };
@@ -1426,6 +1442,21 @@ export function createServer(
       const t = createFastifyTransport(req, reply, orchestrator);
       await dispatchSurface(t, surface, orchestrator, req.body);
       return reply;
+    });
+  }
+
+  // Opt-in marketplace rescan loop (ADR-0015 §D9): ONE process timer, unref'd so it never holds
+  // the process open; a tick probes only entries whose `rescan.enabled` is due. The hooks are the
+  // same per-form readers the dialog's manual rescan uses — the loop owns no format itself.
+  // mockMode is the test seam: it never reaches the network, so it never runs this loop.
+  if (!mockMode) {
+    const rescanScheduler = new MarketplaceRescanScheduler(60_000, fetch, (entry) => ({
+      ...probeOptionsFor(entry.harness ?? null),
+      hosts: allHostProbes(),
+    }));
+    rescanScheduler.start();
+    app.addHook('onClose', async () => {
+      rescanScheduler.stop();
     });
   }
 

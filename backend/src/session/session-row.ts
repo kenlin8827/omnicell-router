@@ -14,6 +14,7 @@
  * Spreading the entity published both; projecting field by field makes the next
  * internal field invisible by default instead of leaking on the next edit.
  */
+import type { CallCredential } from '../opencode/credentials/types.js';
 import type { ConversationSession } from './session-manager.js';
 import type { ExecutionTrace, TraceTracker } from '../trace/tracker.js';
 import type { CaptureKeyIdentity } from '../capture/recorder.js';
@@ -160,8 +161,34 @@ export interface SessionRow extends SessionEntityView, SessionAggregates {
   entryMode: SessionEntryMode;
   currentModel: string | null;
   currentProvider: string | null;
+  /**
+   * Operator-set label of the credential `boundKeyHashPrefix` names. The
+   * session entity stores only the display-safe prefix — labels are
+   * credential-store metadata — so the route resolves this against the LIVE
+   * registry chain at serialization time. Absent means unnamed or no longer
+   * in that provider's chain; the console then falls back to the prefix.
+   */
+  boundCredentialLabel?: string;
   /** Distinct client API-key identities, write order (first = display anchor). */
   apiKeys?: CaptureKeyIdentity[];
   /** Distinct client User-Agents, write order (console display only). */
   clients?: string[];
+}
+
+/**
+ * Operator label for a bound credential, matched against the serving
+ * provider's LIVE registry chain at serialization time. The session entity
+ * persists only the display-safe `boundKeyHashPrefix` (ADR-0002 §3); labels
+ * are credential-store metadata that can be renamed without touching any
+ * session, so the join happens on read. `undefined` = unnamed credential, no
+ * chain (mock/stub or provider gone), or the credential left the chain — the
+ * console then falls back to the prefix.
+ */
+export function boundCredentialLabelOf(
+  chain: readonly CallCredential[] | undefined,
+  keyHashPrefix: string | undefined
+): string | undefined {
+  if (!keyHashPrefix) return undefined;
+  const label = chain?.find(c => c.keyHashPrefix === keyHashPrefix)?.label?.trim();
+  return label || undefined;
 }

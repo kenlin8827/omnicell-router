@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
-import { manifestPath, readManifest } from '../src/harness/manifest.js';
+import { manifestPath, readManifest } from '../src/harness/host/manifest.js';
 
 /**
  * Manifest read posture (ADR-0015 §D4): the manifest is the truth for what the gateway installed,

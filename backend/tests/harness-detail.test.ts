@@ -121,6 +121,28 @@ describe('readMarketDetail', () => {  it('reads the npm document and never touch
     expect(calls.some((c) => c.url === 'https://api.github.com/repos/owner/repo/readme')).toBe(true);
   });
 
+  it('falls back to repository README when npm returns the ERROR: No README placeholder', async () => {
+    const { impl, calls } = stubFetch((url) => {
+      if (url.startsWith('https://registry.npmjs.org/')) {
+        return jsonResponse({
+          name: 'pkg-sentinel',
+          readme: 'ERROR: No README data found!',
+          repository: { url: 'https://github.com/owner/repo-sentinel' },
+          'dist-tags': { latest: '2.0.0' },
+        });
+      }
+      if (url.endsWith('/readme')) return textResponse('# Recovered README');
+      return jsonResponse({ stargazers_count: 88 });
+    });
+
+    const detail = await readMarketDetail({ key: 'npm:pkg-sentinel' }, impl);
+
+    expect(detail.readme).toBe('# Recovered README');
+    expect(detail.readFrom).toBe('github');
+    expect(detail.stars).toBe(88);
+    expect(calls.some((c) => c.url === 'https://api.github.com/repos/owner/repo-sentinel/readme')).toBe(true);
+  });
+
   it('reads a GitHub-only row (no package key) from its repo slug', async () => {
     const { impl, calls } = stubFetch((url) => {
       if (url.endsWith('/readme')) return textResponse('# Repo README');
@@ -253,14 +275,37 @@ describe('GET /api/admin/harness/detail', () => {
       await app.ready();
       const res = await app.inject({
         method: 'GET',
-        url: '/api/admin/harness/detail?source=npm&key=npm:some-pkg',
+        url: '/api/admin/harness/detail?source=pi-dev&key=npm:some-pkg',
       });
       expect(res.statusCode).toBe(200);
       const body = res.json() as { status: string; source: string; detail: { readme: string; latestVersion: string } };
       expect(body.status).toBe('ok');
-      expect(body.source).toBe('npm');
+      expect(body.source).toBe('pi-dev');
       expect(body.detail.readme).toBe('hello');
       expect(body.detail.latestVersion).toBe('2.0.0');
+      await app.close();
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it('answers the detail without source parameter (e.g. from installed row or direct repo)', async () => {
+    const { impl } = stubFetch(() => jsonResponse({ readme: 'hello without source', 'dist-tags': { latest: '1.0.0' } }));
+    const original = globalThis.fetch;
+    globalThis.fetch = impl;
+    try {
+      const app = fastify();
+      registerHarnessRoutes(app);
+      await app.ready();
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/admin/harness/detail?key=npm:some-pkg',
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json() as { status: string; source: string; detail: { readme: string } };
+      expect(body.status).toBe('ok');
+      expect(body.source).toBe('direct');
+      expect(body.detail.readme).toBe('hello without source');
       await app.close();
     } finally {
       globalThis.fetch = original;

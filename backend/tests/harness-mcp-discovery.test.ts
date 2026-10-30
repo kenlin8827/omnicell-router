@@ -2,12 +2,12 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { discoverMcp, mcpSources, mcpTrackedKey, type DiscoveryDeps, type McpSource } from '../src/harness/discover.js';
-import { applyRemove, planRemove } from '../src/harness/maintenance.js';
-import { isMcpHost } from '../src/harness/adapters/index.js';
+import { discoverMcp, mcpSources, mcpTrackedKey, type DiscoveryDeps, type McpSource } from '../src/harness/host/discover.js';
+import { applyRemove, planRemove } from '../src/harness/host/maintenance.js';
+import { isMcpHost } from '../src/harness/host/adapters/index.js';
 
 /**
- * MCP discovery (ADR-0015 §D8.10) — the object-shaped landing, read the same way the extension page
+ * MCP discovery (ADR-0015 §D8.10) — the object-shaped landing, read the same way the plugin page
  * reads `plugin[]`.
  *
  * The rules under test are the ones that keep observation from becoming ownership: one row per

@@ -996,7 +996,9 @@ export const SessionsPage: React.FC = () => {
                   </td>
                   <td style={{ padding: '10px 14px', fontWeight: 600 }}>
                     <ModelRefCell model={s.currentModel} provider={s.currentProvider} />
-                    {/* Credential affinity (display-safe keyHash). */}
+                    {/* Credential affinity: the operator's label when the
+                        registry chain carries one, else the display-safe
+                        keyHash prefix (ADR-0002 §3). */}
                     {s.boundKeyHashPrefix && (
                       <span
                         title={t('sessions.boundCredentialTip', {
@@ -1007,7 +1009,7 @@ export const SessionsPage: React.FC = () => {
                           display: 'block',
                           marginTop: '3px',
                           fontSize: '10px',
-                          fontFamily: FONT_MONO,
+                          fontFamily: s.boundCredentialLabel ? undefined : FONT_MONO,
                           lineHeight: '14px',
                           padding: '1px 6px',
                           borderRadius: '4px',
@@ -1021,7 +1023,7 @@ export const SessionsPage: React.FC = () => {
                           whiteSpace: 'nowrap',
                         }}
                       >
-                        #{s.boundKeyHashPrefix}
+                        {s.boundCredentialLabel || `#${s.boundKeyHashPrefix}`}
                       </span>
                     )}
                   </td>

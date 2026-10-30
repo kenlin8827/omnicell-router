@@ -4,7 +4,7 @@ import { isTakenDown } from '../lib/guardrails-matrix';
 import { ShieldAlert, RefreshCw, RotateCcw, Ban, Zap, Loader2, AlertTriangle } from 'lucide-react';
 import { api, opencodeApi, type GatewayStatusResponse, type BreakerInfo, type BreakerTripScope, type CredentialHealth } from '../lib/api';
 import { useModelTest, type ModelTestTarget } from '../lib/useModelTest';
-import { buildPairCards, effectiveState, effectiveCooldown, type PairCard } from '../lib/guardrails-matrix';
+import { buildPairCards, effectiveState, effectiveCooldown, isModelWideTrip, type PairCard } from '../lib/guardrails-matrix';
 import { formatReason } from '../lib/reason';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
@@ -470,7 +470,10 @@ export const GuardrailsPage: React.FC = () => {
     const pTest = pairTestTarget(c);
     const testing = pTest && testingIds.has(pTest.key);
     const pairTripped = !!c.snap && c.snap.state !== 'CLOSED';
-    const modelTripped = !!c.modelSnap && c.modelSnap.state !== 'CLOSED';
+    // The fold counts as a model-level takedown ONLY when IT was model-scoped:
+    // a credential/pair sibling trip raises the same worst-state fold, and
+    // showing it here would relabel that fault as a model outage.
+    const modelTripped = isModelWideTrip(c);
     // Routable-pair truth (see routablePairsByModel): OPEN **and** takedown
     // both remove a pair from the pool. Badge fires exactly when the model is
     // one failure/takedown away from total outage.
@@ -514,13 +517,13 @@ export const GuardrailsPage: React.FC = () => {
               c.disabled
                 ? c.disabledReason || t('op.credentialDisabledTip')
                 : c.suspect
-                  ? t('guardrails.credentialSuspectTip')
+                  ? t('op.credentialSuspectTip')
                   : noRecord
                     ? t('guardrails.noPairRecords')
                     : undefined
             }
           >
-            {c.disabled ? t('op.credentialDisabled') : c.suspect ? t('guardrails.credentialSuspectBadge') : stateLabel(state)}
+            {c.disabled ? t('op.credentialDisabled') : c.suspect ? t('op.credentialSuspectBadge') : stateLabel(state)}
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-dim)', flexWrap: 'wrap' }}>

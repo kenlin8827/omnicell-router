@@ -21,6 +21,15 @@ interface PaginationProps {
    * number the list can prove instead of hiding the figure or inventing one.
    */
   totalAtLeast?: boolean;
+  /**
+   * CURSOR source: it publishes no total, only "another page exists". Numbered pages are then a
+   * lie — page 3 may not exist, and jumping to it costs a cursor walk — so the bar renders
+   * prev / current / next only. `hasNext` (not arithmetic over a lower bound) decides "next".
+   * One component, one layout: a separate cursor pager would fork a11y, spacing and self-heal.
+   */
+  cursor?: boolean;
+  /** Cursor mode: whether the source says another page exists (its own `hasMore`). */
+  hasNext?: boolean;
   /** When provided (with onPageSizeChange), shows a per-page size selector */
   pageSizeOptions?: number[];
   onPageSizeChange?: (pageSize: number) => void;
@@ -63,16 +72,22 @@ export const Pagination: React.FC<PaginationProps> = ({
   disabled,
   showSummary,
   totalAtLeast,
+  cursor,
+  hasNext,
   pageSizeOptions,
   onPageSizeChange,
 }) => {
   const { t } = useI18n();
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const nextDisabled = cursor ? !hasNext : page >= totalPages;
 
-  // Self-heal when the data set shrinks below the current page (deletions, filters)
+  // Self-heal when the data set shrinks below the current page (deletions, filters). A cursor
+  // source has no page count to heal against — its lower bound is derived from the page itself,
+  // so running this would push the caller forward on every render.
   React.useEffect(() => {
+    if (cursor) return;
     if (page > totalPages) onChange(totalPages);
-  }, [page, totalPages, onChange]);
+  }, [page, totalPages, onChange, cursor]);
 
   const showButtons = total > 0;
   const showSelector = Boolean(pageSizeOptions && onPageSizeChange) && total > 0;
@@ -131,29 +146,40 @@ export const Pagination: React.FC<PaginationProps> = ({
           >
             <ChevronLeft size={13} />
           </button>
-          {pageItems(page, totalPages).map((item, idx) =>
-            item === '…' ? (
-              <span key={`gap-${idx}`} style={{ fontSize: 12, color: 'var(--text-dim)', padding: '0 2px' }}>
-                …
-              </span>
-            ) : (
-              <button
-                key={item}
-                className={`btn btn-sm ${item === page ? 'btn-primary' : ''}`}
-                style={btnStyle}
-                disabled={disabled}
-                onClick={() => onChange(item)}
-                aria-label={t('pagination.page', { n: item })}
-                aria-current={item === page ? 'page' : undefined}
-              >
-                {item}
-              </button>
+          {cursor ? (
+            <span
+              className="btn btn-sm btn-primary"
+              style={btnStyle}
+              aria-label={t('pagination.page', { n: page })}
+              aria-current="page"
+            >
+              {page}
+            </span>
+          ) : (
+            pageItems(page, totalPages).map((item, idx) =>
+              item === '…' ? (
+                <span key={`gap-${idx}`} style={{ fontSize: 12, color: 'var(--text-dim)', padding: '0 2px' }}>
+                  …
+                </span>
+              ) : (
+                <button
+                  key={item}
+                  className={`btn btn-sm ${item === page ? 'btn-primary' : ''}`}
+                  style={btnStyle}
+                  disabled={disabled}
+                  onClick={() => onChange(item)}
+                  aria-label={t('pagination.page', { n: item })}
+                  aria-current={item === page ? 'page' : undefined}
+                >
+                  {item}
+                </button>
+              )
             )
           )}
           <button
             className="btn btn-sm"
             style={btnStyle}
-            disabled={disabled || page >= totalPages}
+            disabled={disabled || nextDisabled}
             onClick={() => onChange(page + 1)}
             aria-label={t('pagination.next')}
           >
