@@ -1,123 +1,25 @@
 import { describe, expect, it } from 'bun:test';
 import fastify from 'fastify';
-import { browseOpenCodeEcosystem, browseSource, npmDefaultQuery, npmDefaultQueryFor, resetBrowseCache } from '../src/harness/browse.js';
-import { HOSTS } from '../src/harness/hosts.js';
-import { OPENCODE_ECOSYSTEM } from '../src/harness/opencode-ecosystem.js';
+import { browseSource, npmDefaultQuery, npmDefaultQueryFor, resetBrowseCache } from '../src/harness/market/browse.js';
+import { HOSTS } from '../src/harness/host/hosts.js';
 import { registerHarnessRoutes } from '../src/routes/harness.js';
 import type { HarnessSourceView } from '../src/harness/types.js';
 
-/**
- * Curated OpenCode catalog is a disk-only browse source (ADR-0015 §D6): no fetch, no cache, and no
- * install adapter. Its rows must still carry the ONE handle the install endpoint understands —
- * `npm:<pkg>` — because a curated row IS a package published on npm; the install handle is not this
- * source's to invent.
- */
 
-function sourceView(overrides: Partial<HarnessSourceView> = {}): HarnessSourceView {
-  return {
-    id: 'static-opencode',
-    label: 'OpenCode ecosystem (curated)',
-    kinds: ['extension'],
-    trust: 'community',
-    auth: 'none',
-    enabled: true,
-    browsable: true,
-    hosts: ['opencode'],
-    ...overrides,
-  };
-}
-
-describe('browseOpenCodeEcosystem', () => {
-  it('returns the whole snapshot for an empty query', () => {
-    const result = browseOpenCodeEcosystem('', 50);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.items.length).toBe(OPENCODE_ECOSYSTEM.length);
-    expect(result.note).toBeString();
-  });
-
-  it('normalizes every row to the shared market shape', () => {
-    const result = browseOpenCodeEcosystem('', 50);
-    if (!result.ok) throw new Error('expected ok');
-    for (const item of result.items) {
-      expect(item.sourceId).toBe('static-opencode');
-      expect(item.installKind).toBe('extension');
-      expect(item.id.startsWith('static-opencode:')).toBe(true);
-      // The table carries no popularity or timestamp; null / '' is the honest answer, not a guess.
-      expect(item.stars).toBeNull();
-      expect(item.updatedAt).toBe('');
-      expect(item.url.startsWith('https://github.com/')).toBe(true);
-    }
-  });
-
-  it('gives a published row an npm install handle and leaves an unpublished row without one', () => {
-    const result = browseOpenCodeEcosystem('', 50);
-    if (!result.ok) throw new Error('expected ok');
-    const byName = new Map(result.items.map((i) => [i.name, i]));
-
-    // A name that is also the package name.
-    expect(byName.get('opencode-pty')?.key).toBe('npm:opencode-pty');
-    // A name that is NOT the package name — the verified scoped name wins.
-    expect(byName.get('opencode-notifier')?.key).toBe('npm:@mohak34/opencode-notifier');
-    expect(byName.get('opencode-dynamic-context-pruning')?.key).toBe('npm:@tarquinen/opencode-dcp');
-
-    // No package published under this repo: no install handle is invented.
-    const firecrawl = byName.get('opencode-firecrawl');
-    expect(firecrawl?.key).toBe('static-opencode:opencode-firecrawl');
-    expect(firecrawl?.topics).toEqual([]);
-  });
-
-  it('filters on name and description, case-insensitively', () => {
-    const byName = browseOpenCodeEcosystem('PTY');
-    if (!byName.ok) throw new Error('expected ok');
-    expect(byName.items.map((i) => i.name)).toContain('opencode-pty');
-
-    const byDescription = browseOpenCodeEcosystem('notifications');
-    if (!byDescription.ok) throw new Error('expected ok');
-    expect(byDescription.items.map((i) => i.name)).toContain('opencode-notifier');
-
-    const miss = browseOpenCodeEcosystem('zzz-no-such-plugin-zzz');
-    if (!miss.ok) throw new Error('expected ok');
-    expect(miss.items).toEqual([]);
-  });
-
-  it('honors the limit and clamps it', () => {
-    const three = browseOpenCodeEcosystem('', 3);
-    if (!three.ok) throw new Error('expected ok');
-    expect(three.items.length).toBe(3);
-
-    const clamped = browseOpenCodeEcosystem('', 0);
-    if (!clamped.ok) throw new Error('expected ok');
-    expect(clamped.items.length).toBe(1);
-  });
-
-  // The note is copy, not data: the adapter states WHICH sentence applies and keeps its English
-  // text as the fallback, so the console can render the same fact in its own language.
-  it('carries the note identity beside its English copy, and only where a note exists', () => {
-    const empty = browseOpenCodeEcosystem('', 5);
-    if (!empty.ok) throw new Error('expected ok');
-    expect(empty.noteCode).toBe('curated');
-    expect(empty.note).toBeString();
-
-    const typed = browseOpenCodeEcosystem('pty', 5);
-    if (!typed.ok) throw new Error('expected ok');
-    // A typed query is a search, not the catalog's default view — nothing to explain.
-    expect(typed.note).toBeUndefined();
-    expect(typed.noteCode).toBeUndefined();
-  });
-});
 
 describe('browseSource routing', () => {
-  it('serves the curated source from disk', async () => {
-    const result = await browseSource(sourceView(), 'pty', 24);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.items[0]?.name).toBe('opencode-pty');
-  });
-
   it('still refuses a disabled source with its measured reason', async () => {
     const result = await browseSource(
-      sourceView({ id: 'retired-source', enabled: false, unavailableReason: 'API returns 401 without a key' }),
+      {
+        id: 'retired-source',
+        label: 'retired',
+        kinds: ['plugin'],
+        trust: 'community',
+        auth: 'none',
+        enabled: false,
+        browsable: true,
+        unavailableReason: 'API returns 401 without a key',
+      },
       '',
       24
     );
@@ -128,86 +30,19 @@ describe('browseSource routing', () => {
   });
 });
 
-describe('browse paging', () => {
-  it('slices a catalog into pages and reports an honest end', () => {
-    const first = browseOpenCodeEcosystem('', 10, 1);
-    if (!first.ok) throw new Error('expected ok');
-    expect(first.items.length).toBe(10);
-    expect(first.total).toBe(OPENCODE_ECOSYSTEM.length);
-    expect(first.hasMore).toBe(true);
 
-    // 31 rows at 10 per page: the fourth page is the remainder, and nothing follows it.
-    const last = browseOpenCodeEcosystem('', 10, 4);
-    if (!last.ok) throw new Error('expected ok');
-    expect(last.items.length).toBe(OPENCODE_ECOSYSTEM.length - 30);
-    expect(last.hasMore).toBe(false);
-
-    const past = browseOpenCodeEcosystem('', 10, 9);
-    if (!past.ok) throw new Error('expected ok');
-    expect(past.items).toEqual([]);
-    expect(past.hasMore).toBe(false);
-  });
-});
-
-describe('browse route paging contract', () => {
-  const app = fastify({ logger: false });
-  registerHarnessRoutes(app);
-
-  it('echoes the answered page and carries hasMore/total for the console pager', async () => {
-    const res = await app.inject({
-      method: 'GET',
-      url: '/api/admin/harness/browse?source=static-opencode&limit=10&page=2',
-    });
-    expect(res.statusCode).toBe(200);
-    const body = res.json() as {
-      page: number;
-      hasMore: boolean;
-      total: number;
-      items: { id: string }[];
-    };
-    expect(body.page).toBe(2);
-    expect(body.total).toBe(OPENCODE_ECOSYSTEM.length);
-    expect(body.items.length).toBe(10);
-    expect(body.hasMore).toBe(true);
-
-    // Page 2 continues page 1: no row appears on both, which is what a broken offset looks like.
-    const firstRes = await app.inject({
-      method: 'GET',
-      url: '/api/admin/harness/browse?source=static-opencode&limit=10&page=1',
-    });
-    const firstIds = new Set((firstRes.json() as { items: { id: string }[] }).items.map((i) => i.id));
-    expect(body.items.some((item) => firstIds.has(item.id))).toBe(false);
-  });
-
-  it('clamps a nonsense page to the first one instead of answering empty', async () => {
-    const res = await app.inject({
-      method: 'GET',
-      url: '/api/admin/harness/browse?source=static-opencode&limit=5&page=0',
-    });
-    const body = res.json() as { page: number; items: unknown[] };
-    expect(body.page).toBe(1);
-    expect(body.items.length).toBe(5);
-  });
-});
-
-describe('snapshot invariants', () => {
-  it('has unique names and a github repo for every row', () => {
-    const names = OPENCODE_ECOSYSTEM.map((e) => e.name);
-    expect(new Set(names).size).toBe(names.length);
-    for (const entry of OPENCODE_ECOSYSTEM) {
-      expect(entry.repo).toMatch(/^[\w.-]+\/[\w.-]+$/);
-      expect(entry.description.length).toBeGreaterThan(0);
-    }
-  });
-
-  it('never claims an npm name that is not a legal package reference', () => {
-    // The writer inserts the spec verbatim into a shell command: no whitespace, no shell characters.
-    for (const entry of OPENCODE_ECOSYSTEM) {
-      if (entry.npm === undefined) continue;
-      expect(entry.npm).toMatch(/^(@[\w.-]+\/)?[\w.-]+$/);
-    }
-  });
-});
+function sourceView(overrides: Partial<HarnessSourceView> = {}): HarnessSourceView {
+  return {
+    id: 'github',
+    label: 'GitHub',
+    kinds: ['skill'],
+    trust: 'community',
+    auth: 'none',
+    enabled: true,
+    browsable: true,
+    ...overrides,
+  };
+}
 
 /**
  * The npm source's empty query is a PER-HARNESS default (ADR-0015 §D6): a page pinned to one runtime
@@ -218,7 +53,7 @@ describe('npm empty-query default', () => {
   const npmSource: HarnessSourceView = {
     id: 'npm',
     label: 'npm registry',
-    kinds: ['extension'],
+    kinds: ['plugin'],
     trust: 'community',
     auth: 'none',
     enabled: true,
@@ -242,7 +77,7 @@ describe('npm empty-query default', () => {
     expect(npmDefaultQuery('dsh')).toBe('keywords:dsh-plugin');
     expect(npmDefaultQuery('claude')).toBe('keywords:claude-code-plugin');
     expect(npmDefaultQuery('codex')).toBe('keywords:codex-plugin');
-    expect(npmDefaultQuery('gemini-cli')).toBe('keywords:gemini-cli-extension');
+    expect(npmDefaultQuery('gemini-cli')).toBe('keywords:gemini-cli-plugin');
   });
 
   it('never opens a runtime without a tag convention on another runtime\'s tag', () => {
@@ -305,7 +140,7 @@ describe('npm empty-query default', () => {
     expect(npmDefaultQueryFor('mcp', 'pi')).toBe('keywords:mcp-server');
     expect(npmDefaultQueryFor('mcp', '')).toBe('keywords:mcp-server');
     // The other axes keep the per-harness mapping untouched.
-    expect(npmDefaultQueryFor('extension', 'pi')).toBe('keywords:pi-package');
+    expect(npmDefaultQueryFor('plugin', 'pi')).toBe('keywords:pi-package');
     expect(npmDefaultQueryFor(undefined, 'pi')).toBe('keywords:pi-package');
     const seen = stubFetch();
     try {
@@ -333,7 +168,7 @@ describe('npm empty-query default', () => {
       expect(mcp.ok && ext.ok).toBe(true);
       if (!mcp.ok || !ext.ok) return;
       expect(mcp.items[0]!.installKind).toBe('mcp');
-      expect(ext.items[0]!.installKind).toBe('extension');
+      expect(ext.items[0]!.installKind).toBe('plugin');
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -420,7 +255,7 @@ describe('market ordering', () => {
     const npmSorted: HarnessSourceView = {
       id: 'npm',
       label: 'npm registry',
-      kinds: ['extension'],
+      kinds: ['plugin'],
       trust: 'community',
       auth: 'none',
       enabled: true,
@@ -462,17 +297,7 @@ describe('market ordering', () => {
     }
   });
 
-  it('orders a full-catalog source over the whole list, not just the shown page', async () => {
-    const curated = sourceView({ sorts: ['catalog', 'name'] });
-    const expected = [...OPENCODE_ECOSYSTEM.map((e) => e.name)].sort((a, b) => a.localeCompare(b));
-    const result = await browseSource(curated, '', 5, { sort: 'name' });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.items.map((i) => i.name)).toEqual(expected.slice(0, 5));
-    if (result.total === undefined) throw new Error('expected a total');
-    expect(result.total).toBe(OPENCODE_ECOSYSTEM.length);
-  });
-});
+
 
 /**
  * The 60 s browse cache is a quota shield, so a second read of the same query answers from memory —
@@ -484,7 +309,7 @@ describe('browse refresh', () => {
   const npmSource = sourceView({
     id: 'npm',
     label: 'npm registry',
-    kinds: ['extension'],
+    kinds: ['plugin'],
     sorts: ['relevance'],
   });
   const originalFetch = globalThis.fetch;
@@ -562,4 +387,5 @@ describe('browse refresh', () => {
       globalThis.fetch = originalFetch;
     }
   });
+});
 });

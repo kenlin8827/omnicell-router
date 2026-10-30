@@ -902,14 +902,14 @@ export function createServer(
   // OpenAI SDKs and chat clients hard-code. Row ids are the gateway-visible
   // modelRef vocabulary (registered id / variant sibling id / auto* alias /
   // combo id); the full models.dev capability block (plus the namespaced
-  // `ocr` routing extensions) rides under each row's `metadata`.
+  // `ocr` routing plugins) rides under each row's `metadata`.
   //
   // GET /v1/catalog.json — models.dev-shaped provider map (aligned with
   // https://models.opencode.ai/api.json): body keyed by provider id, each
   // provider carrying `models` as a model-id keyed map of capability blocks
   // (snake_case: reasoning/tool_call/modalities/limit/cost/reasoning_options).
   // Consumers that want provider-grouped capability data (opencode-style
-  // clients) read this instead. OCR routing extensions (kind/tier/selection/
+  // clients) read this instead. OCR routing plugins (kind/tier/selection/
   // members/parent/variant) live under each model's `ocr` key:
   //  - concrete models: verbatim passthrough of the catalog record's
   //    capability fields;

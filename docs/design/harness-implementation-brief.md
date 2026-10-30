@@ -7,17 +7,16 @@ this file disagrees with the ADR, the ADR wins.
 
 ## Progress
 
-**Landed** — host catalog + root resolver, hash normalization, per-env manifest v2 (with the v1
-migration and orphan retirement) + machine-wide claims, inventory reconciliation, the removal ops
+**Landed** — host catalog + root resolver, hash normalization, per-env manifest v3 (v2/v3 `plugin` rename, NO legacy migration) + machine-wide claims, inventory reconciliation, the removal ops
 (`move-to-trash` / `drop-entry` / `drop-server` / `prune-record`), the API
 (`/sources`, `/hosts`, `/applies`, `/inventory`, `/plan`, `/apply`, `/browse`, `/install`,
-`/translate*`), the three kind writers (skill tree / MCP merge / extension config + subprocess), the
+`/translate*`), the three kind writers (skill tree / MCP merge / plugin config + subprocess), the
 post-apply probe, the `applies` ledger, the GitHub + npm + MCP-official + Smithery adapters (both MCP
-registries browsable since 2026-10-25), extension discovery
+registries browsable since 2026-10-25), plugin discovery
 with `removal` descriptors, description translation, and the console (three pages, harness rail,
 installed/market tabs, list ⇄ card).
 
-**Not landed** (ADR-0015 "Deferred" is authoritative) — MCP landings beyond opencode, extension
+**Not landed** (ADR-0015 "Deferred" is authoritative) — MCP landings beyond opencode, plugin
 landings beyond opencode/pi, npm-as-skill, the PulseMCP/mcp.so/curated-list adapters,
 config-declared sources, write-ahead intent, store/trash GC, adopt,
 harness export/import, `canonicalKey` alias overrides.
@@ -26,7 +25,7 @@ The task numbering below is the original plan's, not a backlog to execute.
 
 ## 0. Definition of done (the whole thing)
 
-- [ ] Skills, MCP servers and Extensions are browsable from all shipped sources, searchable, and
+- [ ] Skills, MCP servers and Plugins are browsable from all shipped sources, searchable, and
       installable/uninstallable per copy across every enabled host.
 - [ ] Inventory reports `clean / dirty / missing / foreign / untracked` per copy and `partial` /
       `shadowed` as derived rollups, for every host in the catalog.
@@ -60,7 +59,7 @@ skill there."* Roughly 40% of the full brief.
 | multi-target + per-copy uninstall | a second host is actually in use |
 | `probe.ts` placement verification | someone reports "installed but not loaded" |
 | MCP merge | skills MVP is in use and stable |
-| Extensions | MCP is stable; Pi users ask |
+| Plugins | MCP is stable; Pi users ask |
 | skills.sh / Smithery / static sources | GitHub+manual proves insufficient |
 | upstream update scan + `canonicalKey` alias overrides | second source exists |
 
@@ -88,11 +87,11 @@ New module `backend/src/harness/` — one responsibility per file, no god-module
 | :--- | :--- | :--- |
 | `types.ts` | `HarnessKind`, `HostId`, `CopyState`, `ArtifactSummary`, `ArtifactDetail`, `InstallPayload`, `SourceAdapter`, `Pin` | contain logic |
 | `hosts.ts` | host identity table (`HOSTS`: id + label, catalog order) | hold landing paths (they live in `adapters/`) |
-| `adapters/<host>.ts` | one file per host: skills dirs, MCP landing, extension landing (each path once) | duplicate another host's path |
+| `adapters/<host>.ts` | one file per host: skills dirs, MCP landing, plugin landing (each path once) | duplicate another host's path |
 | `adapters/declarative.ts` | the shared `defineHost` rules + capability interfaces + guards | hardcode a host-specific path |
 | `hash.ts` | hash normalization (LF, BOM strip, sorted paths, no mode) + content hashing | know about sources |
 | `paths.ts` | target path composition + containment checks (absolute, `..`, reserved names, 240-char cap) | touch the network |
-| `manifest.ts` | per-env manifest read/write, schema version + migration, advisory lock | write files outside its root |
+| `manifest.ts` | per-env manifest read/write, schema version gate (no migration), advisory lock | write files outside its root |
 | `claims.ts` | `path → (env, artifactId, copyId)` registry, transfer plan | delete copies |
 | `store.ts` | `<ocrHome>/harness/store/<key>/<hash>/` blobs, staging, `prune` | mutate targets |
 | `identity.ts` | `canonicalKey` derivation + operator alias overrides | fetch |
@@ -109,7 +108,7 @@ New module `backend/src/harness/` — one responsibility per file, no god-module
 | `probe.ts` | placement verification per host (CLI probe where one exists) | claim "loaded" without evidence |
 | `mcp/merge.ts` | JSON/JSONC key merge with backup, env **key names** only | write TOML; store secrets |
 | `mcp/launch.ts` | `claude mcp add` subprocess (timeout, captured output, command echo) | pass `-y` |
-| `extensions.ts` | `pi install npm:<pkg>` subprocess + `opencode.json` `plugin[]` merge | auto-confirm |
+| `plugins.ts` | `pi install npm:<pkg>` subprocess + `opencode.json` `plugin[]` merge | auto-confirm |
 | `ledger.ts` | harness event ring (`utils/event-ring.ts` skeleton) | own a config knob |
 | `service.ts` | orchestration façade used by routes (search → aggregate → join installs) | contain policy |
 
@@ -122,7 +121,7 @@ Config: extend `config/types.ts` + `config/index.ts` with `harness.sources[]` (m
 
 | File | Responsibility |
 | :--- | :--- |
-| `pages/harness/SkillsPage.tsx` / `McpPage.tsx` / `ExtensionsPage.tsx` | thin: layout + source tabs + data fetch, no rendering detail |
+| `pages/harness/SkillsPage.tsx` / `McpPage.tsx` / `PluginsPage.tsx` | thin: layout + source tabs + data fetch, no rendering detail |
 | `components/harness/SourceTabs.tsx` | runtime-derived tab row (enabled/disabled + reason) |
 | `components/harness/ViewToggle.tsx` | list ⇄ card, persisted per kind |
 | `components/harness/ArtifactList.tsx` / `ArtifactCard.tsx` | two layouts of the **same** `ArtifactSummary` |
@@ -132,8 +131,8 @@ Config: extend `config/types.ts` + `config/index.ts` with `harness.sources[]` (m
 | `components/harness/CopyManager.tsx` | per-copy install state + uninstall + transfer/adopt |
 | `lib/api.ts` | mirror backend contract names 1:1 (no page prefixes) |
 
-Routes: `App.tsx` (`/harness/skills|mcp|extensions`); nav group in `Layout.tsx`; keys
-`nav.grpHarness`, `nav.skills`, `nav.mcp`, `nav.extensions` in `zh-CN.ts` + `en-US.ts` in the same
+Routes: `App.tsx` (`/harness/skills|mcp|plugins`); nav group in `Layout.tsx`; keys
+`nav.grpHarness`, `nav.skills`, `nav.mcp`, `nav.plugins` in `zh-CN.ts` + `en-US.ts` in the same
 commit. All copy through `t()`; no hardcoded UI strings.
 
 ## 4. Task order (each task = one reviewable change)
@@ -141,7 +140,7 @@ commit. All copy through `t()`; no hardcoded UI strings.
 | # | Task | Depends on | Acceptance |
 | :--- | :--- | :--- | :--- |
 | T1 | `types.ts` + `hosts.ts` + `paths.ts` + `hash.ts` | — | unit: every host × scope path; containment rejects `..`, absolute, `CON`, >240; hash stable across CRLF/LF/BOM |
-| T2 | `manifest.ts` + `claims.ts` | T1 | unit: two envs cannot claim one path; lock contention reports; migration v0→v1 |
+| T2 | `manifest.ts` + `claims.ts` | T1 | unit: two envs cannot claim one path; lock contention reports; set-aside on wrong version |
 | T3 | `store.ts` + `adopt` | T2 | unit: one blob, two targets, zero refetch; adopt with no pin is not updatable |
 | T4 | `inventory.ts` | T3 | unit: `dirty`/`missing`/`foreign`/`untracked` fixtures; fast path avoids full hash |
 | T5 | `sources/github.ts` + `sources/npm.ts` + `identity.ts` | T1 | unit: fixture JSON normalizers, no network; canonicalKey grouping; alias override wins |
@@ -152,7 +151,7 @@ commit. All copy through `t()`; no hardcoded UI strings.
 | T10 | multi-target + `CopyManager` + `ViewToggle`/`ArtifactCard` + `shadowed` | T9 | manual matrix: 3 targets, remove one copy |
 | T11 | `probe.ts` + placement tri-state in UI | T10 | unit: probe absent → `unverified`; UI never says "loaded" |
 | T12 | `mcp/merge.ts` + `mcp/launch.ts` + two hosts | T11 | unit: merge preserves unrelated keys; aggregator cannot override launch spec |
-| T13 | `extensions.ts` (Pi subprocess, OpenCode `plugin[]`) | T12 | unit: no `-y`; captured output; ledger row |
+| T13 | `plugins.ts` (Pi subprocess, OpenCode `plugin[]`) | T12 | unit: no `-y`; captured output; ledger row |
 | T14 | skills.sh + smithery + static sources + source health UI | T13 | each degrades to `unavailable + reason`; page never blanks |
 | T15 | docs: ADR status flip, design sync, `zh-CN` mirror | all | drift checks pass (see §6) |
 
@@ -192,8 +191,8 @@ rg -n "(//|\*).*\b(<any deleted symbol>)\b" backend/src frontend/src backend/tes
 | skill × claude | | | | | | |
 | mcp × opencode | | | | | | |
 | mcp × claude | | | | | | |
-| extension × pi | | | | | | |
-| extension × opencode | | | | | | |
+| plugin × pi | | | | | | |
+| plugin × opencode | | | | | | |
 
 Plus: two environments claiming one path (`foreign` + transfer), and one crash-simulated apply
 (interrupted intent surfaced, not silently resumed).

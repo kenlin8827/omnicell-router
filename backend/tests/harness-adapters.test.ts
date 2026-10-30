@@ -5,20 +5,20 @@ import {
   HOST_ADAPTERS,
   adapterFor,
   hostDetected,
-  isExtensionHost,
+  isPluginHost,
   isMcpHost,
   isSkillsHost,
   skillLocationRoots,
   skillOwner,
-} from '../src/harness/adapters/index.js';
-import { opencodeAdapter } from '../src/harness/adapters/opencode.js';
-import { HOSTS } from '../src/harness/hosts.js';
+} from '../src/harness/host/adapters/index.js';
+import { opencodeAdapter } from '../src/harness/host/adapters/opencode.js';
+import { HOSTS } from '../src/harness/host/hosts.js';
 
 /**
  * Host adapter capabilities (ADR-0015 §D2/§D3 R3).
  *
  * The point of the capability split is that ABSENCE is a type fact: a host either implements
- * `SkillsHost` / `McpHost` / `ExtensionHost` or it does not. These cases pin the matrix, so a new host
+ * `SkillsHost` / `McpHost` / `PluginHost` or it does not. These cases pin the matrix, so a new host
  * cannot quietly claim a landing the vendor has not verified — and a shared skills directory cannot
  * end up with two owners.
  */
@@ -31,7 +31,7 @@ describe('capability matrix — who can do what', () => {
     expect(HOST_ADAPTERS.map((a) => a.id)).toEqual(HOSTS.map((h) => h.id));
   });
 
-  it('thirteen hosts land skills; only opencode lands MCP; only opencode and pi land extensions', () => {
+  it('thirteen hosts land skills; only opencode lands MCP; claude, opencode and pi land plugins', () => {
     expect(ids((a) => isSkillsHost(a as never))).toEqual([
       'universal',
       'opencode',
@@ -48,13 +48,13 @@ describe('capability matrix — who can do what', () => {
       'zed',
     ]);
     expect(ids(isMcpHost)).toEqual(['opencode']);
-    expect(ids(isExtensionHost)).toEqual(['opencode', 'pi']);
+    expect(ids(isPluginHost)).toEqual(['opencode', 'claude', 'pi']);
   });
 
   it('DSH is identity only — no skills location, so no SkillsHost', () => {
     expect(isSkillsHost(adapterFor('dsh'))).toBe(false);
     expect(isMcpHost(adapterFor('dsh'))).toBe(false);
-    expect(isExtensionHost(adapterFor('dsh'))).toBe(false);
+    expect(isPluginHost(adapterFor('dsh'))).toBe(false);
   });
 });
 

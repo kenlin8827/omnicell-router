@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'bun:test';
-import { chunkRepos, fetchRepoStars, normalizeRepos, peekStarCache, resetStarCache } from '../src/harness/stars.js';
+import { chunkRepos, fetchRepoStars, normalizeRepos, peekStarCache, resetStarCache } from '../src/harness/market/stars.js';
 
 /**
  * On-demand star resolution. The contract under test is narrow: the repository list is validated and

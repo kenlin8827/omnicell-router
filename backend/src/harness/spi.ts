@@ -32,7 +32,7 @@ export interface SkillFile {
 export type InstallPayload =
   | { kind: 'skill'; name: string; files: SkillFile[] }
   | { kind: 'mcp'; name: string; launch: McpLaunch }
-  | { kind: 'extension'; name: string; pm: 'npm'; spec: string };
+  | { kind: 'plugin'; name: string; pm: 'npm'; spec: string };
 
 export interface ResolveOptions {
   /** Injectable fetch (house test style); defaults to globalThis.fetch. */
@@ -53,8 +53,8 @@ export type ResolveOutcome =
       ok: true;
       /**
        * `<sourceId>:<ref>[#detail]` — the manifest canonicalKey. The artifactId is
-       * `<kind>:<canonicalKey>`, except for `extension`, where the harness is part of the identity:
-       * `extension:<harness>:<canonicalKey>`.
+       * `<kind>:<canonicalKey>`, except for `plugin`, where the harness is part of the identity:
+       * `plugin:<harness>:<canonicalKey>`.
        */
       canonicalKey: string;
       /** Raw artifact name (vendor spelling); the writer normalizes it for target paths. */
@@ -81,7 +81,7 @@ export interface SourceAdapter {
   /**
    * Harnesses this source's artifacts are bound to (ADR-0015 §D2). ABSENT = harness-agnostic: the
    * operator picks the landing host, as with skills and MCP. Present = the source only serves those
-   * runtimes, and an extension request for any other harness is refused before any network work.
+   * runtimes, and an plugin request for any other harness is refused before any network work.
    */
   hosts?: HarnessHostId[];
   /**

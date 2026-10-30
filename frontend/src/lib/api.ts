@@ -26,6 +26,9 @@ export interface GatewayMetrics {
 export interface ClientStatus {
   name: string;
   displayName: string;
+  /** The harness host this client's artifacts land in (backend `ClientAdapter.harness`); `null` =
+   *  traffic-only client with no landing. Absent on older gateways — callers fall back to `name`. */
+  harness?: string | null;
   configPath: string;
   exists: boolean;
   hooked: boolean;
@@ -1172,12 +1175,12 @@ export interface HarnessCopyView {
   readers?: string[];
 }
 
-/** `artifact.harness` is set for `kind: 'extension'` — the runtime whose plugin API the code targets
+/** `artifact.harness` is set for `kind: 'plugin'` — the runtime whose plugin API the code targets
  *  is part of the artifact's identity (one package in two runtimes is two artifacts). */
 export interface HarnessArtifactView {
   id: string;
   canonicalKey: string;
-  kind: 'skill' | 'mcp' | 'extension';
+  kind: 'skill' | 'mcp' | 'plugin';
   harness?: string;
   name: string;
   description: string | null;
@@ -1194,14 +1197,14 @@ export interface HarnessArtifactView {
 
 export interface HarnessDiscoveredArtifact {
   /** Which kind the row belongs to — one discovery channel serves every kind. */
-  kind: 'skill' | 'mcp' | 'extension';
-  /** Set iff `kind === 'extension'`: the runtime whose own store the row was read from. */
+  kind: 'skill' | 'mcp' | 'plugin';
+  /** Set iff `kind === 'plugin'`: the runtime whose own store the row was read from. */
   harness?: string;
   name: string;
   description: string | null;
   copies: HarnessCopyView[];
   hosts: string[];
-  /** Provenance of an extension row: the runtime's own record it came from. */
+  /** Provenance of an plugin row: the runtime's own record it came from. */
   origin?: 'runtime-store' | 'config-array' | 'local-file';
   /** File/dir the row was read from — a tooltip, never a location we own. */
   observedFrom?: string;
@@ -1231,17 +1234,59 @@ export interface HarnessInventoryResponse {
   paths: { manifest: string; claims: string };
 }
 
+/** One row of a probed git-marketplace snapshot — a SKILL.md directory the source can install. */
+export interface HarnessMarketplaceRow {
+  dir: string;
+  name: string;
+  title: string;
+  description: string | null;
+}
+
+
+
+
+/** One row of the per-harness plugin catalog (ADR-0015 §D10). Plugin kind ONLY. */
+export interface HarnessCatalogRow {
+  key: string;
+  name: string;
+  summary: string | null;
+  stars: number | null;
+  updatedAt: number | null;
+  sourceId: string;
+  surfaces: string[];
+  hosts: string[];
+  repo: string | null;
+}
+
+/** One federated source's answer, in the source's own native order (never co-ordered). */
+export interface HarnessCatalogSection {
+  sourceId: string;
+  label: string;
+  rows: HarnessCatalogRow[];
+  total?: number;
+  totalExact?: boolean;
+  note?: string;
+}
+
+export interface HarnessCatalogSource {
+  id: string;
+  label: string;
+  tier: 'index' | 'federated';
+  sorts: string[];
+  counts: boolean;
+}
+
 export interface HarnessSourceView {
   id: string;
   label: string;
-  kinds: ('skill' | 'mcp' | 'extension')[];
+  kinds: ('skill' | 'mcp' | 'plugin')[];
   trust: string;
   auth: string;
   enabled: boolean;
   /** True when the source has a browse adapter (the market tab can show results for it). */
   browsable?: boolean;
   /**
-   * Harnesses the source serves, when its artifacts are runtime-bound. An extension source lists its
+   * Harnesses the source serves, when its artifacts are runtime-bound. An plugin source lists its
    * one runtime (its packages are written against that plugin API); a source without `hosts` serves
    * every capable harness and lets the operator name one at install time.
    */
@@ -1266,15 +1311,15 @@ export interface HarnessMarketItem {
   sourceId: string;
   /**
    * Portable install handle — the key the install endpoint takes (`github:<owner/repo>` /
-   * `npm:<name>` / `mcp-official:<registry name>`). `id` carries the same value; `key` names its role.
+   * `npm:<name>` / `clawhub:<owner>/<slug>`). `id` carries the same value; `key` names its role.
    */
   key: string;
   /**
-   * Which writer serves this row: a skill copy tree, an extension package, or an MCP server merged
+   * Which writer serves this row: a skill copy tree, an plugin package, or an MCP server merged
    * into a host's own config. It is the WRITER's kind, not the page's (an npm package reached from
-   * the skills page installs as an extension).
+   * the skills page installs as an plugin).
    */
-  installKind: 'skill' | 'mcp' | 'extension';
+  installKind: 'skill' | 'mcp' | 'plugin';
   name: string;
   /** `owner/repo` for GitHub rows; absent for sources whose identity is a package name. */
   repo?: string;
@@ -1339,7 +1384,7 @@ export interface HarnessHostView {
    *  console rail hides undetected hosts — but never one whose rows are already landed. */
   detected: boolean;
   hasSkills: boolean;
-  /** Extension-capable host: a verified package-manager landing exists for it. */
+  /** Plugin-capable host: a verified package-manager landing exists for it. */
   hasExt: boolean;
   /** MCP-capable host: a verified server-config landing exists for it (the client's own config file
    *  or container). `hasSkills` says nothing about this — a host can read the shared skills
@@ -1379,7 +1424,7 @@ export interface HarnessPlanAction {
 }
 
 /**
- * Gate plan for an install that writes third-party state (extension gate 3 / MCP gate 2). The page
+ * Gate plan for an install that writes third-party state (plugin gate 3 / MCP gate 2). The page
  * shows `echo` / `file`+`container` verbatim and re-sends the request with `confirm: true`.
  */
 export interface HarnessInstallTarget {
@@ -2219,7 +2264,7 @@ export const api = {
     harness?: string;
     /** The market axis being browsed — a source serving several axes (npm) forks its default
      *  query and row install kind on it. */
-    kind?: 'skill' | 'mcp' | 'extension';
+    kind?: 'skill' | 'mcp' | 'plugin';
     /** 1-based page; the backend clamps a nonsense value to the first page. */
     page?: number;
     /** One of the source's declared `sorts`; the backend drops an order it cannot serve. */
@@ -2343,17 +2388,17 @@ export const api = {
   },
 
   /**
-   * Install one artifact — one store entry, N copies (skills) or ONE runtime's package (extensions).
+   * Install one artifact — one store entry, N copies (skills) or ONE runtime's package (plugins).
    * The request speaks a portable `key` (`<sourceId>:<ref>[#dir]`); `kind` picks the writer.
    */
   async harnessInstall(body: {
     key?: string;
-    kind?: 'skill' | 'mcp' | 'extension';
+    kind?: 'skill' | 'mcp' | 'plugin';
     repo?: string;
     sourceId?: string;
     skillDir?: string;
     manualSpec?: string;
-    /** Gate 3 / gate 2 acknowledgement — without it an extension/mcp install writes nothing. */
+    /** Gate 3 / gate 2 acknowledgement — without it an plugin/mcp install writes nothing. */
     confirm?: boolean;
     /** Surfaces the row was browsed on, besides the one that writes it (see `HarnessArtifactView`). */
     listedOn?: string[];
@@ -2379,7 +2424,7 @@ export const api = {
     if (!res.ok) {
       // `ambiguous` failures carry `candidates` (the skill directories found) — the install dialog
       // uses them to offer a picker; `confirm_required` carries `plan` (the exact commands/merges an
-      // extension or MCP install would perform) — the page shows it and retries with `confirm: true`.
+      // plugin or MCP install would perform) — the page shows it and retries with `confirm: true`.
       const err: Error & {
         code?: string;
         candidates?: string[];
@@ -2521,6 +2566,85 @@ export const api = {
       error.code = data?.code;
       throw error;
     }
+    return data;
+  },
+
+  // ---------------------------------------------------------------------------
+  // Plugin catalog (ADR-0015 §D10): one merged directory per harness.
+  // ---------------------------------------------------------------------------
+
+  async harnessPluginCatalog(
+    harness: string,
+    opts: { q?: string; page?: number; pageSize?: number; sort?: string } = {},
+  ): Promise<{
+    status: string;
+    sort: string;
+    rows: HarnessCatalogRow[];
+    page: number;
+    pageSize: number;
+    hasMore: boolean;
+    total: number | null;
+    notes: string[];
+    sections?: HarnessCatalogSection[];
+  }> {
+    const search = new URLSearchParams();
+    if (opts.q) search.set('q', opts.q);
+    if (opts.page) search.set('page', String(opts.page));
+    if (opts.pageSize) search.set('pageSize', String(opts.pageSize));
+    if (opts.sort) search.set('sort', opts.sort);
+    const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/catalog?${search.toString()}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async harnessPluginSources(harness: string): Promise<{ status: string; sources: HarnessCatalogSource[] }> {
+    const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/sources`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async harnessPluginCheckSource(harness: string, url: string): Promise<{
+    status: string;
+    ok: boolean;
+    skills: number;
+    mcps: number;
+    plugins: number;
+    message?: string;
+  }> {
+    const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/sources/check`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async harnessPluginRegisterSource(harness: string, url: string, rescan?: { enabled?: boolean; intervalMs?: number }): Promise<{ status: string; message?: string }> {
+    const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/sources`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, rescan }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.message || `HTTP ${res.status}`);
+    return data;
+  },
+
+  async harnessPluginRemoveSource(harness: string, slug: string): Promise<{ status: string }> {
+    const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/sources/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async harnessPluginInstall(harness: string, row: HarnessCatalogRow): Promise<{ status: string; ok?: boolean; artifactId?: string; name?: string; message?: string }> {
+    const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/install`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ row }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.message || `HTTP ${res.status}`);
     return data;
   },
 

@@ -4,7 +4,7 @@ import { createBackup, safeWriteJson } from '../cli/clients/base.js';
 /**
  * Read/write one runtime config file with the house safety contract (ADR-0015 §D5, gate 2).
  *
- * Shared by the two write paths that MUTATE an existing config member — the extension writer's
+ * Shared by the two write paths that MUTATE an existing config member — the plugin writer's
  * `plugin[]` merge and removal's `drop-entry` / `drop-server` ops — so a member is removed with
  * exactly the discipline that added it: parse plain JSON only (a JSONC file would lose its comments
  * in a round-trip), snapshot with `createBackup` (`.bak.ocr`), then an atomic rename.

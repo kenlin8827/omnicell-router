@@ -143,7 +143,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     items: [
       { to: '/harness/skills', labelKey: 'nav.skills', icon: Zap },
       { to: '/harness/mcp', labelKey: 'nav.mcp', icon: Plug },
-      { to: '/harness/extensions', labelKey: 'nav.extensions', icon: Layers },
+      { to: '/harness/plugins', labelKey: 'nav.plugins', icon: Layers },
     ],
   },
   {
@@ -172,7 +172,7 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/catalog': { groupKey: 'nav.grpUpstream', titleKey: 'nav.catalogSources' },
   '/harness/skills': { groupKey: 'nav.grpHarness', titleKey: 'nav.skills' },
   '/harness/mcp': { groupKey: 'nav.grpHarness', titleKey: 'nav.mcp' },
-  '/harness/extensions': { groupKey: 'nav.grpHarness', titleKey: 'nav.extensions' },
+  '/harness/plugins': { groupKey: 'nav.grpHarness', titleKey: 'nav.plugins' },
   '/proxy-upstream': { groupKey: 'nav.grpUpstream', titleKey: 'nav.proxy' },
   '/token-saver': { groupKey: 'nav.grpUpstream', titleKey: 'nav.tokenSaver' },
   '/clients': { groupKey: 'nav.grpAccess', titleKey: 'nav.clients' },
@@ -299,9 +299,9 @@ export const Layout: React.FC = () => {
     window.location.reload();
   };
 
-  // Exact match first; a parameterized route (`/harness/extensions/pi`) falls back to its static
+  // Exact match first; a parameterized route (`/harness/plugins/pi`) falls back to its static
   // parent so the header never degrades to the untranslated "Dashboard" default. Longest-prefix
-  // wins, so a future `/harness/extensions/_tool` style segment cannot borrow a sibling's title.
+  // wins, so a future `/harness/plugins/_tool` style segment cannot borrow a sibling's title.
   const currentRouteMeta =
     ROUTE_META_KEYS[location.pathname] ??
     Object.keys(ROUTE_META_KEYS)

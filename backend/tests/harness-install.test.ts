@@ -6,11 +6,11 @@ import zlib from 'node:zlib';
 import fastify from 'fastify';
 import { skillDirs } from '../src/harness/tree.js';
 import { normalizeName } from '../src/harness/spi.js';
-import { githubAdapter } from '../src/harness/sources/github.js';
-import { applySkill } from '../src/harness/writers/skill.js';
-import { installArtifact } from '../src/harness/install.js';
-import { scanInventory } from '../src/harness/inventory.js';
-import { claimPath, readManifest } from '../src/harness/manifest.js';
+import { githubAdapter } from '../src/harness/host/resolvers/github.js';
+import { applySkill } from '../src/harness/host/writers/skill.js';
+import { installArtifact } from '../src/harness/host/install.js';
+import { scanInventory } from '../src/harness/host/inventory.js';
+import { claimPath, readManifest } from '../src/harness/host/manifest.js';
 import { registerHarnessRoutes } from '../src/routes/harness.js';
 
 /**
@@ -284,7 +284,7 @@ describe('install route (host validation at the boundary)', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/admin/harness/install',
-      payload: { manualSpec: '@x/unknown-host-ext', kind: 'extension', confirm: true, hosts: ['nosuchhost'], scope: 'global' },
+      payload: { manualSpec: '@x/unknown-host-ext', kind: 'plugin', confirm: true, hosts: ['nosuchhost'], scope: 'global' },
     });
     expect(res.statusCode).toBe(400);
     expect(res.json()).toEqual({ status: 'error', code: 'bad_request', message: "unknown host 'nosuchhost'" });
@@ -298,7 +298,7 @@ describe('install route (host validation at the boundary)', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/admin/harness/install',
-      payload: { manualSpec: '@x/project-ext', kind: 'extension', confirm: true, hosts: ['opencode'], scope: 'project' },
+      payload: { manualSpec: '@x/project-ext', kind: 'plugin', confirm: true, hosts: ['opencode'], scope: 'project' },
     });
     expect(res.statusCode).toBe(400);
     const body = res.json() as { status: string; code: string; message: string };

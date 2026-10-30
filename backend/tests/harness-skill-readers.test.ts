@@ -2,9 +2,9 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { skillOwner, skillReaders } from '../src/harness/adapters/index.js';
-import { applySkill } from '../src/harness/writers/skill.js';
-import { scanInventory } from '../src/harness/inventory.js';
+import { skillOwner, skillReaders } from '../src/harness/host/adapters/index.js';
+import { applySkill } from '../src/harness/host/writers/skill.js';
+import { scanInventory } from '../src/harness/host/inventory.js';
 
 /**
  * Skills readership (ADR-0015 §D2) — the second answer a skills directory has.

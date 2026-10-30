@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { browseGitHub, resetBrowseCache } from '../src/harness/browse.js';
+import { browseGitHub, resetBrowseCache } from '../src/harness/market/browse.js';
 import { fetchFailureReason, fetchWithRetry, MARKET_RETRY, type RetryPolicy } from '../src/harness/net.js';
 
 /**

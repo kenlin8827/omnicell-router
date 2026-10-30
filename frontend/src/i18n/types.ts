@@ -226,7 +226,7 @@ export interface TranslationDict {
     grpHarness: string;
     skills: string;
     mcp: string;
-    extensions: string;
+    plugins: string;
     grpSystem: string;
     searchPlaceholder: string;
     consoleTag: string;
@@ -1568,11 +1568,16 @@ hiddenBadge: string;
     sources: string;
     installedSkills: string;
     installedMcp: string;
-    installedExtensions: string;
+    installedPlugins: string;
     filterAll: string;
-    /** Health filter — keeps rows with a dirty / missing / foreign copy. Provenance is a column, not
-     *  a browsing mode: the list is ONE list, because every row in it is removable. */
     filterIssues: string;
+    foreignHint: string;
+    removeNoteTrash: string;
+    removeNoteConfig: string;
+    removeNoteDecl: string;
+    installedBadge: string;
+    targetInstalled: string;
+    targetTakenHint: string;
     local: string;
     localHint: string;
     sourceOther: string;
@@ -1587,12 +1592,10 @@ hiddenBadge: string;
     translateAllDone: string;
     translateAllPartial: string;
     allHosts: string;
-    /** Hide rows landed in the shared `.agents` skills tree (host `universal`): the same set under
-     *  every rail entry, so excluding it is how a pinned skills page shows only what is its own. */
     hideShared: string;
     marketSkills: string;
     marketMcp: string;
-    marketExtensions: string;
+    marketPlugins: string;
     name: string;
     repository: string;
     stars: string;
@@ -1601,31 +1604,18 @@ hiddenBadge: string;
     starsMissing: string;
     starsFailed: string;
     starsHint: string;
-    /** Market-row detail dialog (ADR-0015 §D6). Optional for the same reason as `statePartial`:
-     *  these shipped after the first locale sweep, so a locale without them falls back to English
-     *  instead of failing the type check. */
-    detailOpen?: string;
-    detailLoading?: string;
-    detailNoReadme?: string;
-    detailOpenExternal?: string;
-    /** A source with its own popularity system (ClawHub): the counter line in the footer of the
-     *  dialog, and the tooltip that says whose number the star column is showing. Optional for the
-     *  same fallback-to-English reason as the other post-sweep keys. */
-    registryCounts?: string;
-    starsRegistryHint?: string;
-    /** Long-form (README) translation + the dialog's own size control. Same optional-key rule. */
-    detailTranslate?: string;
-    detailTranslating?: string;
-    detailTruncated?: string;
-    detailExpand?: string;
-    detailCollapse?: string;
+    detailOpen: string;
+    detailLoading: string;
+    detailNoReadme: string;
+    detailOpenExternal: string;
+    registryCounts: string;
+    starsRegistryHint: string;
+    detailTranslate: string;
+    detailTranslating: string;
+    detailTruncated: string;
+    detailExpand: string;
+    detailCollapse: string;
     marketSearch: string;
-    /** Re-read the shown market page from its source (the browse answer is cached for 60 s). */
-    marketRefresh: string;
-    /** Tooltip for `marketRefresh`: says what is re-read and why it can differ. */
-    marketRefreshHint: string;
-    /** Market ordering labels, keyed by the upstream sort key a source declares (`sorts`). */
-    marketSortLabel: string;
     marketSortName: string;
     marketSortRelevance: string;
     marketSortStars: string;
@@ -1635,12 +1625,13 @@ hiddenBadge: string;
     marketSortDownloads: string;
     marketSortRecent: string;
     marketSortHelpWanted: string;
-    /** skills.sh — the site's three leaderboards (`all-time` is its root page, `/trending`, `/hot`). */
     marketSortAllTime: string;
     marketSortTrending: string;
     marketSortHot: string;
-    /** Shown (disabled) for a source that publishes exactly one order — its catalog's own. */
     marketSortCatalog: string;
+    marketSortLabel: string;
+    marketRefresh: string;
+    marketRefreshHint: string;
     install: string;
     installing: string;
     installTitle: string;
@@ -1651,11 +1642,11 @@ hiddenBadge: string;
     multiSkillsTitle: string;
     multiSkillsHint: string;
     multiSkillsPick: string;
-    description: string;
-    source: string;
     empty: string;
     scan: string;
     searchPlaceholder: string;
+    description: string;
+    source: string;
     noMatch: string;
     scanning: string;
     list: string;
@@ -1663,20 +1654,11 @@ hiddenBadge: string;
     host: string;
     state: string;
     stateClean: string;
-    /** The table's ONE word for every non-clean rollup. The specific reason (drift / absent /
-     *  another environment's claim / shadowed) is the badge's tooltip and the copy list's own
-     *  sentence — the column does not spend four words on four causes. */
-    stateIssue: string;
     stateDirty: string;
     stateMissing: string;
     stateForeign: string;
-    /** Rollup states the inventory can report but which no badge table row had a word for: an
-     *  artifact that landed in some locations and not others (`partial`), and one whose copy is
-     *  hidden by a higher-precedence location (`shadowed`). Optional for the same reason as
-     *  `extNoHarness` — these shipped after the first locale sweep, so a locale that has not been
-     *  localized yet falls back to the English table instead of failing the type check. */
-    statePartial?: string;
-    stateShadowed?: string;
+    stateShadowed: string;
+    stateIssue: string;
     remove: string;
     selectedCount: string;
     removeSelected: string;
@@ -1686,116 +1668,51 @@ hiddenBadge: string;
     removeDirtyDesc: string;
     removeDone: string;
     removeFailed: string;
-    /** What a removal physically does, one line per landing shape — shown before the confirm. */
-    removeNoteTrash: string;
-    /** `{file}` = the config file whose member is dropped. */
-    removeNoteConfig: string;
-    /** `{file}` = the runtime's declaration file whose package entry is dropped. */
-    removeNoteDecl: string;
-    /** Disabled-uninstall tooltip: another environment owns the path (transfer first). */
-    foreignHint: string;
-    /** Market row: how many copies this row is already installed as (`{n}`). */
-    installedBadge: string;
-    /** Install target already holds a clean copy — the writer would only answer `exists`. */
-    targetInstalled: string;
-    targetTakenHint: string;
-    /** Extension-harness axis (ADR-0015 §D2: an extension is code against ONE runtime's plugin API)
-     *  plus the gate-3 install confirmation. Optional on purpose: these strings shipped with the
-     *  extension page, so locales that have not been localized yet omit them and `t()` falls back to
-     *  the English table instead of failing the type check. `extOnly` interpolates `{name}` with
-     *  the pinned harness's display label (the rail's bottom hint and the single-target install
-     *  dialog both name the runtime). */
-    extNoHarness?: string;
-    extOnly?: string;
-    /** The rail's ONE column header, shared by all three pages (CSS uppercases it). What the pick
-     *  means differs per kind, and that is the per-kind hint's job — a different title per page made
-     *  one control look like three. */
-    railTitle?: string;
-    /** Skills axis: the harness there is a READER (nine runtimes load one `.agents/skills` tree), so
-     *  its hint says "can load", never "installed into". Same optionality rule as `extNoHarness`;
-     *  `skillsOnly` interpolates `{name}` with the reader's display label. */
-    skillsNoHarness?: string;
-    skillsOnly?: string;
-    /** MCP landing axis: the "nothing can take it" line, and the hint explaining that the page is
-     *  pinned to one client's config. Same optionality rule as `extNoHarness`; `mcpOnly`
-     *  interpolates `{name}` with the client's display label. */
-    mcpNoHarness?: string;
-    mcpOnly?: string;
-    /** Scope note under the empty extension list. Extensions DO have a discovery scan (the runtime's
-     *  own store is readable), so this line explains what the list contains: the rows a runtime
-     *  installed for itself are here too, and they are removable through their own record. */
-    extScopeNote?: string;
-    extManaged?: string;
-    /** Origin of a discovered extension row — the runtime record it was read from, as copy. */
-    originRuntimeStore?: string;
-    originConfigEntry?: string;
-    originLocalFile?: string;
-    /** Rail row sub-labels: the installed count (`{n}`) and the accessible name that carries both
-     *  the harness and its count (`{name}` / `{count}`) — a screen reader must not read a bare digit. */
-    railCount?: string;
-    railAria?: string;
-    /** Filter field inside the harness rail (shown once the catalog is longer than a glance) and the
-     *  line it shows when the typed name matches no host. */
-    railFilter?: string;
-    railNoMatch?: string;
-    /** A source chip's accessible name, carrying its faceted count (`{name}` / `{count}`): the count
-     *  renders as a dim digit beside the label, so a screen reader gets the sentence instead. */
-    sourceCountAria?: string;
-    sourceUnbrowsable?: string;
-    noBrowsableSource?: string;
-    /** Curated row with no published package name: the install handle belongs to the npm source. */
-    browseOnNpm?: string;
-    browseOnNpmHint?: string;
-    installGateTitle?: string;
-    installGateDesc?: string;
-    /** Marketplace source copy, keyed by the backend source id (`GET /sources`). The registry decides
-     *  WHICH sources exist, what each serves and whether it is browsable; these tables only name them
-     *  in the console language (`label` is the backend's English fallback). */
+    pluginNoHarness: string;
+    pluginOnly: string;
+    railTitle: string;
+    skillsNoHarness: string;
+    skillsOnly: string;
+    mcpNoHarness: string;
+    mcpOnly: string;
+    extScopeNote: string;
+    extManaged: string;
+    originRuntimeStore: string;
+    originConfigEntry: string;
+    originLocalFile: string;
+    railCount: string;
+    railAria: string;
+    railFilter: string;
+    railNoMatch: string;
+    railMore: string;
+    railLess: string;
+    sourceUnbrowsable: string;
+    noBrowsableSource: string;
+    installGateTitle: string;
+    installGateDesc: string;
     sourceNames: {
       github: string;
       skillsSh: string;
-      mcpOfficial: string;
-      smithery: string;
       npm: string;
-      curated: string;
-      awesome: string;
-      cafe: string;
       piDev: string;
       clawhub: string;
     };
-    /** Market context line under the source chips, keyed by the browse adapter's `noteCode` (the
-     *  backend `note` is the fallback). `{keyword}` = the bare npm tag an empty query defaulted
-     *  to (never the `keywords:` search expression); `{query}` = the plain phrase searched when the
-     *  pinned runtime publishes no npm tag. */
-    marketNote: {
-      /** npm — sorted server-side across a fetched window of the registry's own ranking. */
-      windowSorted: string;
-      githubAnonymous: string;
-      npmKeyword: string;
-      npmDefault: string;
-      curated: string;
-      awesome: string;
-      /** opencode.cafe: `{total}` catalog entries, `{plugins}` of them installable plugins. */
-      cafeFiltered: string;
-      piDev: string;
-      /** mcp-official: a row is a server config member, not a package or a skills tree. */
-      mcpRegistry: string;
-      /** skills.sh: `{n}` = installable rows of the chosen leaderboard board; that window is what a
-       *  short (1-character) term filters, because the site's search needs two. */
-      skillsShBoard: string;
-      /** skills.sh: `{n}` = the search endpoint's own match cap per query (it ignores paging). */
-      skillsShSearch: string;
-      /** smithery: `{total}` = rows the registry claims, `{reachable}` = rows its API will serve. */
-      smitheryWindow: string;
-      /** clawhub — empty query: the catalog endpoint's own ranking; rows install from the registry's
-       *  own versioned store, pinned to a version. */
-      clawhubCatalog: string;
-      /** clawhub — `{n}` = the limit one search request carries (the endpoint has no paging). */
-      clawhubSearch: string;
+    srcMgmt: {
+      manage: string;
+      close: string;
+      title: string;
+      placeholder: string;
+      check: string;
+      add: string;
+      remove: string;
+      empty: string;
+      builtin: string;
+      shared: string;
+      checkOk: string;
+      addOk: string;
+      removed: string;
+      fail: string;
     };
-    /** Why a market read failed, keyed by the backend's `reason` (the backend's English `message`
-     *  is the fallback for a reason this table does not know). `{status}` = the HTTP status the
-     *  upstream answered. */
     browseError: {
       network: string;
       timeout: string;
@@ -1806,7 +1723,18 @@ hiddenBadge: string;
       badPayload: string;
       unsupportedSource: string;
     };
-  };
+    marketNote: {
+      windowSorted: string;
+      githubAnonymous: string;
+      npmKeyword: string;
+      npmDefault: string;
+      piDev: string;
+      skillsShBoard: string;
+      skillsShSearch: string;
+      clawhubCatalog: string;
+      clawhubSearch: string;
+    };
+  },
 
   clients: {
     title: string;

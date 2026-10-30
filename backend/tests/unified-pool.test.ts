@@ -217,7 +217,7 @@ describe('Unified session modes: explicit wins', () => {
     const { orchestrator } = makeOrchestrator(config);
 
     // Turn 1 pins the tier default (lite-1); turn 2 explicitly names the
-    // SECONDARY lite model on the SAME session (real chain extension).
+    // SECONDARY lite model on the SAME session (real chain plugin).
     const baseMessages = [{ role: 'user', content: 'Session start' }];
     const r1 = await orchestrator.process({ model: 'lite', messages: baseMessages } as any);
     const before = (orchestrator.getSessionManager() as any).sessions.get(r1.sessionId);

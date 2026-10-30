@@ -545,7 +545,7 @@ type FlatCatalogRow = CatalogSourceDataModelRecord & { providerId: string };
 const flatRowProvider = (m: CatalogSourceDataModelRecord): string => (m as FlatCatalogRow).providerId;
 
 /** Read-only viewer of the FULL aggregated catalog (list() output): local config
- * definitions first, opencode baseline, extension enrichments — the OCR truth.
+ * definitions first, opencode baseline, plugin enrichments — the OCR truth.
  * Rendered as the "aggregated catalog" TAB of the sources page; it is a
  * discovery/reference surface, so /models stays the maintenance plane. */
 const OcrCatalogPanel: React.FC = () => {

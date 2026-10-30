@@ -3,14 +3,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import fastify from 'fastify';
-import { mcpOfficialAdapter } from '../src/harness/sources/mcp-official.js';
-import { npmAdapter } from '../src/harness/sources/npm.js';
+import { npmAdapter } from '../src/harness/host/resolvers/npm.js';
 import { MARKET_RETRY } from '../src/harness/net.js';
-import { installArtifact } from '../src/harness/install.js';
-import { applyMcp, planMcp } from '../src/harness/writers/mcp.js';
-import { applyRemove, planRemove } from '../src/harness/maintenance.js';
-import { claimPath, readManifest } from '../src/harness/manifest.js';
-import { scanInventory } from '../src/harness/inventory.js';
+import { installArtifact } from '../src/harness/host/install.js';
+import { applyMcp, planMcp } from '../src/harness/host/writers/mcp.js';
+import { applyRemove, planRemove } from '../src/harness/host/maintenance.js';
+import { claimPath, readManifest } from '../src/harness/host/manifest.js';
+import { scanInventory } from '../src/harness/host/inventory.js';
 import { registerHarnessRoutes } from '../src/routes/harness.js';
 
 /**
@@ -236,123 +235,9 @@ describe('hosts route (capability flags)', () => {
     const byId = new Map(body.hosts.map((host) => [host.id, host]));
     expect(byId.get('opencode')).toMatchObject({ hasSkills: true, hasMcp: true, hasExt: true });
     // A host with no MCP landing answers `false` — the flag is a capability, not a path guess.
-    expect(byId.get('claude')).toMatchObject({ hasSkills: true, hasMcp: false, hasExt: false });
+    expect(byId.get('claude')).toMatchObject({ hasSkills: true, hasMcp: false, hasExt: true });
     expect(byId.get('universal')).toMatchObject({ hasSkills: true, hasMcp: false, hasExt: false });
   });
-});
-
-describe('mcp-official adapter resolve', () => {
-  const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
-  const fakeFetch = (routes: Record<string, unknown>, status = 200): typeof fetch =>
-    (async (input: unknown) => {
-      const url = String(input);
-      if (url in routes) return json(routes[url], status);
-      return new Response('nf', { status: 404 });
-    }) as typeof fetch;
-  /** The per-server read the registry actually serves (measured: the bare path answers 404). */
-  const latestUrl = (name: string) =>
-    `https://registry.modelcontextprotocol.io/v0/servers/${encodeURIComponent(name)}/versions/latest`;
-
-  it('derives an npx launch from an npm package, env NAMES only', async () => {
-    // The record is the author's published `server.json`: package fields are camelCase.
-    const record = {
-      server: {
-        name: 'io.github/owner/brave-search',
-        description: 'Brave search for MCP',
-        packages: [
-          {
-            registryType: 'npm',
-            identifier: '@modelcontextprotocol/server-brave-search',
-            runtimeHint: 'npx',
-            runtimeArguments: [{ value: '-y' }],
-            environmentVariables: [{ name: 'BRAVE_API_KEY' }, { name: 'BRAVE_API_KEY' }],
-          },
-        ],
-      },
-    };
-    const outcome = await mcpOfficialAdapter.resolve('io.github/owner/brave-search', 'mcp', {
-      fetchImpl: fakeFetch({ [latestUrl('io.github/owner/brave-search')]: record }),
-    });
-    expect(outcome.ok).toBe(true);
-    if (!outcome.ok) return;
-    if (outcome.payload.kind !== 'mcp') return expect.unreachable();
-    expect(outcome.canonicalKey).toBe('mcp-official:io.github/owner/brave-search');
-    expect(outcome.payload.launch).toEqual({
-      command: 'npx',
-      args: ['@modelcontextprotocol/server-brave-search', '-y'],
-      envKeys: ['BRAVE_API_KEY', 'BRAVE_API_KEY'],
-    });
-    // The server key is the WHOLE reverse-DNS identity: the last path segment alone (`brave-search`)
-    // is not unique across publishers, and two servers sharing one config key would overwrite.
-    expect(outcome.name).toBe('io-github-owner-brave-search');
-    // The registry's own prose travels with the resolve, so the manifest can record it.
-    expect(outcome.description).toBe('Brave search for MCP');
-  });
-
-  it('ignores a shell-shaped runtimeHint instead of writing it into a launch spec', async () => {
-    const record = {
-      server: {
-        name: 'io.github/owner/hinted',
-        packages: [
-          {
-            registryType: 'npm',
-            identifier: 'hinted-server',
-            runtimeHint: 'npx -y && rm -rf /',
-            runtimeArguments: [],
-            environmentVariables: [],
-          },
-        ],
-      },
-    };
-    const outcome = await mcpOfficialAdapter.resolve('io.github/owner/hinted', 'mcp', {
-      fetchImpl: fakeFetch({ [latestUrl('io.github/owner/hinted')]: record }),
-    });
-    expect(outcome.ok).toBe(true);
-    if (!outcome.ok) return;
-    if (outcome.payload.kind !== 'mcp') return expect.unreachable();
-    expect(outcome.payload.launch).toEqual({ command: 'npx', args: ['hinted-server'], envKeys: [] });
-  });
-
-  it('derives a remote launch from remotes', async () => {
-    const record = { server: { name: 'ac.example/mcp', remotes: [{ type: 'streamable-http', url: 'https://mcp.example/sse' }] } };
-    const outcome = await mcpOfficialAdapter.resolve('ac.example/mcp', 'mcp', {
-      fetchImpl: fakeFetch({ [latestUrl('ac.example/mcp')]: record }),
-    });
-    expect(outcome.ok).toBe(true);
-    if (!outcome.ok) return;
-    if (outcome.payload.kind !== 'mcp') return expect.unreachable();
-    expect(outcome.payload.launch).toEqual({ url: 'https://mcp.example/sse', transport: 'http' });
-    // A generic last segment is why the config key is the full identity, not `mcp`.
-    expect(outcome.name).toBe('ac-example-mcp');
-    // No description in the record = no description claimed; the manifest omits the field.
-    expect(outcome.description).toBeNull();
-  });
-
-  it('reads the identity through /versions/latest — the bare path is not served', async () => {
-    const seen: string[] = [];
-    const fetchImpl = (async (input: unknown) => {
-      seen.push(String(input));
-      return new Response('nf', { status: 404 });
-    }) as unknown as typeof fetch;
-    const outcome = await mcpOfficialAdapter.resolve('ac.example/missing', 'mcp', { fetchImpl });
-    expect(outcome.ok).toBe(false);
-    if (!outcome.ok) expect(outcome.code).toBe('no_artifact');
-    // Regression guard: `/v0/servers/<name>` answers 404 on the real registry, so a request without
-    // `versions/latest` would report every existing server as missing. The shared policy retries a
-    // 404 like any other failed answer (ADR-0015 §8), so the URL appears once PER ATTEMPT — and
-    // every one of them is the versioned path.
-    expect(seen).toHaveLength(MARKET_RETRY.attempts);
-    expect(new Set(seen)).toEqual(new Set([latestUrl('ac.example/missing')]));
-  }, 30_000);
-
-  it('refuses an unknown server and non-mcp kinds', async () => {
-    const missing = await mcpOfficialAdapter.resolve('ac.example/none', 'mcp', { fetchImpl: fakeFetch({}) });
-    expect(missing.ok).toBe(false);
-    if (!missing.ok) expect(missing.code).toBe('no_artifact');
-    const wrongKind = await mcpOfficialAdapter.resolve('ac.example/mcp', 'skill', { fetchImpl: fakeFetch({}) });
-    expect(wrongKind.ok).toBe(false);
-    if (!wrongKind.ok) expect(wrongKind.code).toBe('unsupported_kind');
-  }, 30_000);
 });
 
 /**

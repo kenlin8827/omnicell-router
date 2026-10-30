@@ -1,4 +1,4 @@
-# Harness — Skills, MCP Servers, Extensions
+# Harness — Skills, MCP Servers, Plugins
 
 Design companion to [ADR-0015](../adr/0015-harness-artifacts.md). Vocabulary is fixed there
 (`client` = traffic hook, `harness` = artifact host). **ADR-0015 is the authority**: it records the
@@ -16,7 +16,7 @@ Out of scope (v1):
 
 - installing harness artifacts **into a remote machine** — local filesystem only;
 - multi-tenant/marketplace features, ratings, publishing;
-- Claude Code plugin marketplaces and Codex extension surfaces (no first-class registry);
+- Claude Code plugin marketplaces and Codex plugin surfaces (no first-class registry);
 - any gateway-routing effect. Harness state never influences routing, credentials, or provider defs.
 
 ## 2. Navigation and routes
@@ -28,7 +28,7 @@ different risk levels and different poll/cache behaviour.
 nav group "Harness"          routes                                  page scope
 ├── Skills      ───────────► /harness/skills[/:harness]              pinned to ONE READER
 ├── MCP Servers ───────────► /harness/mcp[/:harness]                 pinned to a landing harness
-└── Extensions  ───────────► /harness/extensions[/:harness]          pinned to ONE runtime
+└── Plugins  ───────────► /harness/plugins[/:harness]          pinned to ONE runtime
 ```
 
 Each page has two tabs — `Installed` (the local inventory) and that kind's market — because installing
@@ -36,7 +36,7 @@ produces exactly the row the other tab lists. Every page is pinned to ONE harnes
 pick (an unknown or missing segment is replaced, never pushed, so a stale bookmark lands somewhere
 valid). The rail's TITLE is fixed — one column header, `HARNESS`, on all three pages, because it is the
 same control everywhere. What the pick MEANS differs, and the hint under the rail says which: on
-Extensions the runtime is the artifact's identity; on MCP it is the config landing the install fans out
+Plugins the runtime is the artifact's identity; on MCP it is the config landing the install fans out
 from; on Skills it is a READER — ten runtimes load one `.agents/skills` tree, so the rail narrows to
 "what this runtime can load" while writes stay owner-only (`skillReaders()` / `skillOwner()`,
 ADR-0015 §D2).
@@ -68,7 +68,7 @@ over containers that CARRY it (GitHub's topic-filtered repo search — the topic
 and the stars reward the repo, not the skill), which outranks `npm` — the widest, noisiest net: a
 relevance search across the entire registry, LAST on every axis it serves. On the skills axis
 `skills-sh` therefore opens the market, ClawHub's skill-only registry follows, and `github` is the
-wider net below it; an opencode extensions page opens on the curated catalog, not on a
+wider net below it; an opencode plugins page opens on the curated catalog, not on a
 registry-wide keyword search. A disabled
 chip, when one exists, also sorts behind the live ones: a dead chip in front of a working
 catalogue reads as "the market is broken".
@@ -89,7 +89,7 @@ deliberately UNFACETTED: a chip whose count the current search narrowed to 0 sta
 never makes the whole chip row — `all` included — disappear.
 
 Route registration is one line per route in `frontend/src/App.tsx`; nav entries live in the
-`Layout.tsx` group table (`nav.grpHarness` + `nav.skills` / `nav.mcp` / `nav.extensions`), with every
+`Layout.tsx` group table (`nav.grpHarness` + `nav.skills` / `nav.mcp` / `nav.plugins`), with every
 locale entry in the same commit. No hardcoded UI strings (repo rule).
 
 ## 3. Page anatomy
@@ -131,7 +131,7 @@ same object, so onboarding a marketplace never adds JSX.
 ```ts
 interface ArtifactSummary {
   canonicalKey: string;              // ADR-0015 §D7
-  kind: 'skill' | 'mcp' | 'extension';
+  kind: 'skill' | 'mcp' | 'plugin';
   name: string;
   summary: string;                   // one line, source-agnostic
   listedOn: { sourceId: string; label: string; trust: TrustTier; url?: string }[];
@@ -170,13 +170,13 @@ source adapter ──raw──► normalizer ──► ArtifactSummary / Artifac
 `√` supported · `—` not applicable · `?` unknown (read the adapter before wiring) · `v` needs vendor
 verification.
 
-| host | skills | mcp | extensions | notes |
+| host | skills | mcp | plugins | notes |
 | :--- | :--- | :--- | :--- | :--- |
 | universal | √ | — | — | `.agents/skills` only |
 | opencode | √ | √ | √ | `opencode.json` `mcp` + `plugin[]`; root may be relocated by `OPENCODE_CONFIG_DIR` |
 | claude | √ | √ v | — | `~/.claude.json` / project `.mcp.json`; has `claude mcp add` CLI |
 | codex | √ | **—** | — | codex adapter writes `~/.codex/config.json`, **not** `config.toml`; no TOML writer in this repo → MCP only via `codex mcp add`, else not offered |
-| pi | √ | via extension | √ | MCP arrives as `pi-mcp-adapter`; `pi install` runs npm lifecycle scripts |
+| pi | √ | via plugin | √ | MCP arrives as `pi-mcp-adapter`; `pi install` runs npm lifecycle scripts |
 | dsh | ? | ? | ? | per-profile `$DSH_HOME/profiles/<name>/cordis.patch.yml` (`dsh.ts:15-25`) |
 | cursor | √ v | v | — | `~/.cursor/mcp.json` |
 | github-copilot / vscode | √ | v | — | `<repo>/.vscode/mcp.json` |
@@ -252,7 +252,7 @@ operator confirms.
 | :--- | :--- | :--- |
 | skill | `gh:<owner>/<repo>#<path>` | `npm:<pkg>#<path>` → `url:<host>/<slug>` |
 | mcp | official reverse-DNS `name` (e.g. `ac.inference.sh/mcp`) | npm package name → `url:<host+path>` |
-| extension | `npm:<name>` | — |
+| plugin | `npm:<name>` | — |
 
 **Aggregation is designed, not shipped.** The marketplace browses ONE source at a time
 (`GET /browse?source=…`) and returns that source's normalized `MarketItem[]`; there is no fan-out
@@ -275,7 +275,7 @@ is an exact tag filter (measured 2026-10-25: the first 250 rows of every query b
 The hub therefore maps one author-declared npm tag per runtime — `pi` → `pi-package` (12 736 rows),
 `dsh` → `dsh-plugin` (10 048), `opencode` → `opencode-plugin` (2 684), `claude` →
 `claude-code-plugin` (656), `codex` → `codex-plugin` (118), `gemini-cli` →
-`gemini-cli-extension` (18) — so a page pinned to one harness never opens on another runtime's
+`gemini-cli-plugin` (18) — so a page pinned to one harness never opens on another runtime's
 catalog. The remaining hosts (`cursor`, `windsurf`, `zed`, `cline`, `amp`, `github-copilot`) are
 deliberately ABSENT: their tags answer 0–25 packages dominated by one cross-tagging publisher, so a
 tag default would render an empty market and call it a catalog. Those pages open on the relevance
@@ -311,19 +311,19 @@ type CopyState = {
   without a probe result; `materialized` is the honest default.
 - "Is it installed?" is answered **without a per-row request**: the console joins each market row
   against the inventory it already holds (`installsFor`), using the row's `canonicalKey` (exact for an
-  extension, repo-prefix for a skill until the tarball names its directory). The market response
+  plugin, repo-prefix for a skill until the tarball names its directory). The market response
   carries no install state, and a per-row state request is forbidden (N+1 on a page of 50 rows).
 - Install / uninstall are per copy. `Remove` on a row opens the copy list with checkboxes, listing EVERY
   copy and preselecting only those this page's harness serves — the same `copyServes` predicate the rail
   counts with, so a skills page selects by readership (a `.agents/skills` copy is owned by `universal`
-  and read by every `readsUniversal` runtime, so it appears under each of them) and an MCP/extension page
+  and read by every `readsUniversal` runtime, so it appears under each of them) and an MCP/plugin page
   by the copy's own host. The page's scope is a DEFAULT, not a permission: another runtime's copy stays
   visible and tickable (the card's host chips name it anyway), so "remove everywhere" is one plan fully
   checked. Only a `foreign` copy is disabled — another environment owns that path and the plan refuses
   it. A `dirty` copy requires an explicit "discard local edits" confirmation — for trash moves only,
   because a config-member edit never destroys the hand edit.
 - **The removal op is chosen by the landing shape, and the plan says which one.** A file tree or a
-  loose extension file is moved to the trash; a `plugin[]` / `packages[]` member is dropped from its
+  loose plugin file is moved to the trash; a `plugin[]` / `packages[]` member is dropped from its
   own file; an MCP server member is deleted from its `mcp` container; a package with no declaration
   file only loses its record. A copy whose `path` is a config file is NEVER trashed — that file holds
   every other artifact the runtime knows about. Which shape applies is decided server-side; the
@@ -353,7 +353,7 @@ All under the existing `/api/admin/*` auth + CSRF gate. Reads are cheap; every w
 | `GET /applies` | last 100 ledger rows | `harness.json` mirror; no paging |
 | `GET /inventory` | manifest + disk reconciliation | per-copy `state` + `removal` descriptors on discovered rows |
 | `GET /browse?source&q&limit&harness&page` | marketplace browse | one normalized `MarketItem[]` for ONE 1-based `page`, plus `hasMore` and — when the source reports one — `total`; optional `note` + its `noteCode`/`noteParams`; 409 `unavailable` for a dead source |
-| `POST /install` | resolve + write | MCP / extension answer `confirm_required` with the plan first |
+| `POST /install` | resolve + write | MCP / plugin answer `confirm_required` with the plan first |
 | `POST /plan` | dry run, `action: 'remove'` | returns `planId` + ops; writes nothing; 10-minute TTL |
 | `POST /apply` | execute a removal plan | 409 when stale / unknown / needs `discardLocalEdits` |
 | `POST /translate` | one description | cache-backed, via the gateway's own surface |
@@ -389,7 +389,7 @@ console                backend                          store / targets
   │ POST install ──────►│
   │                     │ resolve (cache) ───────────────────► source
   │                     │ shape-validate (name / spec / launch)
-  │ ◄── confirm_required│  (mcp: added+changed keys · extension: exact echo)
+  │ ◄── confirm_required│  (mcp: added+changed keys · plugin: exact echo)
   │ confirm: true ─────►│
   │                     │ claim target paths (refuse foreign)
   │                     │ skill: stage into store ───────────► store
@@ -410,7 +410,7 @@ MCP differs in the middle step: the "diff" is a key-level diff of the target con
 than rewritten without them. **TOML is not offered** — this repo has no TOML library, so a codex MCP
 write would mean hand-writing a comment-preserving TOML editor. Codex MCP is unsupported.
 
-Extensions differ in the last step: instead of writing files, the backend runs the landing command
+Plugins differ in the last step: instead of writing files, the backend runs the landing command
 (`pi install npm:<pkg>`) with a timeout, captures stdout/stderr, and records the exit code. That command
 executes npm lifecycle scripts — the confirmation says so verbatim, and `-y` is never passed. OpenCode
 plugins are an array edit in `opencode.json` — a config merge.
@@ -444,15 +444,15 @@ throwing:
 | Source | Kinds | Measured access | Shipped role |
 | :--- | :--- | :--- | :--- |
 | GitHub `owner/repo` | skill | search 10 req/min anonymous (`GITHUB_TOKEN` optional); tarball per install | **live**: the content source for every skill install |
-| npm registry | skill, extension | `/-/v1/search` → **200** anonymous | **live** for extensions (`installKind: extension`); npm-as-skill resolves `unsupported_kind` |
+| npm registry | skill, plugin | `/-/v1/search` → **200** anonymous | **live** for plugins (`installKind: plugin`); npm-as-skill resolves `unsupported_kind` |
 | MCP official registry | mcp | `/v0/servers` → **200** anonymous, opaque cursor, `limit` ≤ 100; per-server read `/v0/servers/<name>/versions/latest` → **200** (bare path 404) | **live**: browsable catalog + authoritative identity and launch spec; rows install through the MCP merge writer |
 | skills.sh | skill | `/api/v1/*` → **401** (Vercel OIDC only); `GET /api/skills/<view>/<n>` → **200** anonymous, 0-based pages of **200** rows with `total` (All-time **9 911**, Trending 9 959, Hot 6 765) and `hasMore`, which is exactly what the site's own leaderboard scrolls through; `GET /api/search?q=&limit=` → **200** anonymous, capped at **200** rows, `offset`/`page`/`cursor` ignored, terms under 2 characters refused | **live**, read from the site and never from its API: no query (or one character) reads the chosen board, 2+ characters search the WHOLE catalog through the site's own endpoint, and rows install through the GitHub writer as `github:<owner/repo>#<skill-dir>`. The `VERCEL_OIDC_TOKEN` the API asks for is minted inside a Vercel deployment with an hourly lifetime, so it is not an operator secret |
 | ClawHub | skill | `/api/v1/skills?limit=&cursor=&sort=` → **200** anonymous, opaque cursor, own `sort` enum; `/api/v1/search?q=` → **200** anonymous, NO paging parameter (one answer = one window); `/api/v1/download?slug=&ownerHandle=&version=` → **200** deterministic ZIP (errors are plain text; a slug clash answers `409 AMBIGUOUS_SKILL_SLUG` and names `ownerHandle`); anonymous reads **3000/min/IP** with `Retry-After` | **live**: browsable catalog + search, rows install from the registry's OWN versioned store through the skill writer — the pin is `{clawhub:{slug, version}}`, `stars` stays `null` (its star system is a different unit), and a JSON 200 (the undocumented `public-github` handoff for GitHub-backed skills) is refused by name |
 | Smithery | mcp | `GET /servers` + `GET /servers/<name>` → **200** anonymous; the listing serves **500** rows however it is sliced (page 26 empty) while claiming ~20 765 | **live**, and the one aggregator that HOSTS its records: a row installs the hosted deployment (`<slug>.run.tools`) with an `Authorization` env reference (measured `initialize` → 401 without that header). Holds launch authority for its own hosting only; a connection that declares required config is refused by name |
 | PulseMCP | mcp | `api.pulsemcp.com/v0beta/servers` → **410** (retired) | no row, no adapter |
 | mcp.so | mcp | `/api/servers` → **404** | no row, no adapter |
-| OpenCode ecosystem | extension | prose docs, no API | declared disabled, bound to `opencode` |
-| manual | mcp, extension | operator input | **not a source**: `manualPayload` / `manualSpec` on the install request |
+| OpenCode ecosystem | plugin | prose docs, no API | declared disabled, bound to `opencode` |
+| manual | mcp, plugin | operator input | **not a source**: `manualPayload` / `manualSpec` on the install request |
 
 Aggregation and identity live in §5.2. Rules that follow from the table:
 
@@ -463,14 +463,14 @@ Aggregation and identity live in §5.2. Rules that follow from the table:
   official record when that registry carries the same server.
 - The curated OpenCode list is declared disabled with `trust: community`; it is never presented as
   audited.
-- Manual install stays first-class: `manualPayload` (MCP) and `manualSpec` (extension) are the only
+- Manual install stays first-class: `manualPayload` (MCP) and `manualSpec` (plugin) are the only
   paths that work offline and the only ones a user with a private payload needs.
 - Source credentials come from the environment (`GITHUB_TOKEN` today); no token is ever written to the
   manifest or returned by an API response.
 
 ## 9. Security and honesty gates
 
-1. **Preview is not optional.** An MCP or extension install answers `confirm_required` with the
+1. **Preview is not optional.** An MCP or plugin install answers `confirm_required` with the
    plan first; a removal answers with a plan id before any write. Nothing runs on a bare request.
 2. **Third-party content is data.** `SKILL.md` is never executed; it is written as a file.
 3. **MCP servers are processes.** The confirmation shows the launch command, and the install sheet
@@ -482,7 +482,7 @@ Aggregation and identity live in §5.2. Rules that follow from the table:
    `^[a-z0-9]+(-[a-z0-9]+)*$` before it becomes a directory, and a `trash-path` removal descriptor is
    containment-checked against the known roots.
 6. **No self-fan-out.** The planner writes only the hosts the operator ticked; it never multiplies
-   targets on its own. An extension is stricter still: exactly one harness, refused otherwise.
+   targets on its own. An plugin is stricter still: exactly one harness, refused otherwise.
 7. **Trust is stored, and shown as the source label.** `trust` travels on the record; the table shows
    the source (or "local"), never a badge that implies an audit. There is no cross-source conflict
    surface because there is no cross-source merge yet.
@@ -490,7 +490,7 @@ Aggregation and identity live in §5.2. Rules that follow from the table:
    no manifest entry shows as `untracked` and is removable through a plan and a confirmation, exactly
    like a tracked copy — because a row the operator can see but cannot remove is the state this design
    rejects. (The "adopt into the manifest" action is not built.)
-9. **Extensions install code.** `pi install` runs npm lifecycle scripts; the dialog says so verbatim,
+9. **Plugins install code.** `pi install` runs npm lifecycle scripts; the dialog says so verbatim,
    `-y` is never passed, and the exact command is recorded in the ledger.
 10. **MCP secrets are named, never stored.** The server record contributes env **key names**; values
     come from the operator's environment. Harness never reads, writes, or logs a credential (ADR-0006
@@ -501,17 +501,17 @@ Aggregation and identity live in §5.2. Rules that follow from the table:
 | Shipped | Notes |
 | :--- | :--- |
 | host catalog + root resolver + owner/alias rule | 14 rows; landing cells empty where unverified |
-| per-env manifest v2 (+ v1 migration, orphans) + machine-wide claims | no advisory lock |
+| per-env manifest v3 (no legacy migration) + machine-wide claims | no advisory lock |
 | store (skills only) + trash snapshots | append-only, no GC |
 | inventory (`clean`/`dirty`/`missing`/`foreign`/`untracked`) + discovery channel for every kind | `shadowed` has no producer; the scan reads skill directories, a runtime's `plugin[]`/`packages[]`/loose files, and the `mcp` object of a host config |
-| skill writer, MCP merge (opencode), extension (opencode `plugin[]` / pi subprocess) | plan → confirm → apply |
+| skill writer, MCP merge (opencode), plugin (opencode `plugin[]` / pi subprocess) | plan → confirm → apply |
 | probe-driven `placement` | `materialized` → `verified` with evidence only |
 | removal ops keyed on landing shape | `move-to-trash` / `drop-entry` / `drop-server` / `prune-record` |
 | source adapters: GitHub, npm, MCP official, Smithery, pi.dev, skills.sh, ClawHub, awesome-opencode, opencode.cafe, curated list | every MCP source offered is browsable and installable; ClawHub installs from its own versioned store |
 | console: three pages, harness rail, installed/market tabs, list ⇄ card, description translation | — |
 
 Not shipped — see ADR-0015 "Deferred" for the authoritative list: MCP landings beyond opencode,
-extension landings beyond opencode/pi, npm-as-skill, the console
+plugin landings beyond opencode/pi, npm-as-skill, the console
 MCP install gate, config-declared sources, write-ahead intent, store/trash GC, adopt, harness
 export/import, `canonicalKey` alias overrides, `shadowed`/`profile` producers.
 
@@ -520,7 +520,7 @@ artifacts with different `canonicalKey` and the same `name` are **refused** (`ex
 types a different name. No `name@hash` suffix: a suffix policy invented later means migrating
 already-materialized copies and the manifest.
 
-**Extensions are the highest-risk write** (npm lifecycle scripts = arbitrary code) and they are the
+**Plugins are the highest-risk write** (npm lifecycle scripts = arbitrary code) and they are the
 one that never fans out: one harness per apply, echoed command, no `-y`.
 
 ## 11. The simpler alternative (recorded, not taken)
@@ -545,7 +545,7 @@ echoed verbatim.
 - `bun run typecheck` — backend + frontend, must exit 0.
 - `bun run build` — full build.
 - `bun run test` — backend suite; new tests must use the isolated runner (never `bun test backend/tests`).
-- Unit targets: path resolver (all hosts × scopes), hash/dirty detection, manifest v1 → v2 migration +
+- Unit targets: path resolver (all hosts × scopes), hash/dirty detection, manifest v3 shape gate (set-aside, no migration) +
   orphan retirement, remove-plan ops (`move-to-trash` / `drop-entry` / `drop-server` / `prune-record`),
   JSON/JSONC refusal, name sanitizer, per-source normalizers (fixture JSON, no network),
   `trash-path` containment, claims single-owner enforcement.
@@ -615,7 +615,7 @@ row the other tab lists — a tab switch is the shortest confirmation loop.
 
 | Concern | Decision |
 | :--- | :--- |
-| Live sources | GitHub (skills), npm (extensions), the official MCP registry, pi.dev's catalog, skills.sh (its leaderboard boards + its own search endpoint), ClawHub (its catalog endpoint + its own search endpoint, rows installing from the registry's own versioned store), awesome-opencode, opencode.cafe and the curated snapshot. The skills.sh API answers 401 to unauthenticated callers (Vercel OIDC), so that source reads what the SITE reads — an API this console never calls must not decide what the market can show |
+| Live sources | GitHub (skills), npm (plugins), the official MCP registry, pi.dev's catalog, skills.sh (its leaderboard boards + its own search endpoint), ClawHub (its catalog endpoint + its own search endpoint, rows installing from the registry's own versioned store), awesome-opencode, opencode.cafe and the curated snapshot. The skills.sh API answers 401 to unauthenticated callers (Vercel OIDC), so that source reads what the SITE reads — an API this console never calls must not decide what the market can show |
 | Normalized shape | the adapter maps a vendor payload to `MarketItem` once; the page never learns a vendor's JSON |
 | Search budget | anonymous GitHub search allows 10 req/min, and the backend cache is keyed by the EXACT query string — so a distinct prefix is a distinct upstream call. The field therefore spends nothing while typing: a query reaches the network only when COMMITTED (Enter, a source switch, clearing the field), and committing the already-shown query is not a new axis (a repeated Enter costs nothing). Committed queries are still cached 60 s |
 | Refresh | one button beside the source chips re-reads the SHOWN page under the current source/query/order — it sends `refresh=1`, and the backend evicts only that source's cache family before dispatch, so the rows come back newly read instead of 60 s old. The axis never changes (a re-search) and the page never moves (a re-page); while a read is in flight the button is disabled, so a second click cannot spend a second call |

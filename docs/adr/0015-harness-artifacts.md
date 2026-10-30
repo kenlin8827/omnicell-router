@@ -1,9 +1,11 @@
-# ADR-0015: Harness Artifacts — Skills, MCP Servers, Extensions
+# ADR-0015: Harness Artifacts — Skills, MCP Servers, Plugins
 
 - **Status**: Implemented (recorded from current code, 2026-10-24)
 - **Date**: 2026-10-24
 - **Amended**: 2026-10-25 — the installed row's source cell names the BROWSE surface (the install
   source: `pi.dev`), falling back to the writer when the record carries no other surface (§D8.6).
+- **Amended**: 2026-10-30 — operator git-marketplace sources (`mp-<slug>`): any GitHub repository
+  becomes a browse/install source with no code change (§D9).
 - **Related**: ADR-0010 (definition ownership + materialization targets), ADR-0006 (credential store —
   never read by this domain), ADR-0013 (observation-ledger precedent), ADR-0007 (environment layout,
   trash-based delete)
@@ -15,7 +17,7 @@ The gateway already owns a **client** relationship with eight runtimes (`Support
 writes the runtime's model/auth config so requests flow through the gateway, and stops there.
 
 What the runtimes can additionally be given — **skills** (instruction folders), **MCP servers** (tool
-backends), **extensions** (runtime plugins/packages) — is otherwise installed by each vendor's own
+backends), **plugins** (runtime plugins/packages) — is otherwise installed by each vendor's own
 CLI, into vendor-specific directories, with no record inside the gateway. Three consequences:
 
 1. Operators cannot see what is installed where; the same skill is often copied into four directories
@@ -36,7 +38,7 @@ deliberately does not.
 | Term | Means | Lives in |
 | :--- | :--- | :--- |
 | client | a runtime hooked to the gateway (model + auth config) | `<runtime config>`, e.g. `opencode.json` |
-| harness | that client considered as an **artifact host** (skills / MCP / extensions) | `<ocrHome>/harness/` |
+| harness | that client considered as an **artifact host** (skills / MCP / plugins) | `<ocrHome>/harness/` |
 | artifact | one installable unit of a given kind | manifest record + materialized copies |
 
 `opencode-proxy` is a **hook mode of the same runtime**, not a second artifact host: the harness domain
@@ -50,15 +52,15 @@ Two files share the table, with a hard split:
 - `hosts.ts` answers **which hosts exist, in which order, called what** (`HOSTS`: id + label only).
 - `adapters/<host>.ts` answers **what this runtime reads and how it is written** — one file per host,
   every landing path spelled exactly once. `adapters/declarative.ts` holds the shared rules
-  (`defineHost` + the `SkillsHost` / `McpHost` / `ExtensionHost` builders), so a wrong path is one
+  (`defineHost` + the `SkillsHost` / `McpHost` / `PluginHost` builders), so a wrong path is one
   small file's data bug and a wrong rule is one implementation bug.
 
 Capabilities are **separate interfaces**, not nine methods on every host: thirteen hosts have a skills
-location, one has a verified MCP landing, two have a verified extension landing. A host that cannot do
+location, one has a verified MCP landing, three have a verified plugin landing. A host that cannot do
 MCP never implements `McpHost`, so absence is a type fact instead of a runtime `unsupported` throw.
 
 Version differences are a **ladder inside one adapter**, never a second adapter: `opencode` v1 vs v2
-differ in landing spellings only, and extension identity is `extension:<harness>:<canonicalKey>`
+differ in landing spellings only, and plugin identity is `plugin:<harness>:<canonicalKey>` (spelled `extension:…` in manifest v1/v2)
 (§D7) — two adapter ids would split one installed plugin into two artifacts exactly when a machine
 carries both spellings during a migration.
 
@@ -67,11 +69,11 @@ are repo-relative and resolved against the gateway process's cwd — declared, b
 `ENABLED_SCOPES` is `['global']` (see **Scope** below). Only the cells below have a landing;
 a kind × host cell that is empty is refused at resolve time rather than guessed.
 
-| Host | Skills: global / project | MCP landing | Extension landing |
+| Host | Skills: global / project | MCP landing | Plugin landing |
 | :--- | :--- | :--- | :--- |
 | universal | `~/.agents/skills` / `.agents/skills` | — | — |
 | opencode | `$XDG/opencode/skills` / `.agents/skills` | `opencode.json` · `mcp` | v1 `opencode.json` · `plugin[]` · `plugin/`; v2 `opencode.jsonc` · `plugins[]` · `plugins/` |
-| claude | `~/.claude/skills` / `.claude/skills` | — | — |
+| claude | `~/.claude/skills` / `.claude/skills` | — | `claude plugin install <id> --scope user` (subprocess); record `~/.claude/plugins/installed_plugins.json` · `plugins` map (§D8.11) |
 | codex | `~/.agents/skills` / `.agents/skills` | — | — |
 | pi | `~/.agents/skills` / `.agents/skills` | — | `pi install npm:<spec>` (subprocess) |
 | omp | `~/.omp/skills` (relocated by `PI_CONFIG_DIR`) / `.omp/skills` | — | — |
@@ -88,18 +90,23 @@ a kind × host cell that is empty is refused at resolve time rather than guessed
   recorded host and every other host is an alias. Install, inventory and the console all use that rule.
 - **Ownership and readership are two answers, and the console asks both.** `skillOwner()` answers "who
   owns this copy" (install target, claims, removal); `skillReaders()` answers "who can LOAD it"
-  (`CopyView.readers`, owner first). The skills page's harness rail selects by readership — a skill
-  materialized once in `.agents/skills` is usable from ten runtimes, and a rail built on ownership
-  would show it under one entry and hide it under the other nine. Writes stay owner-only
+  (`CopyView.readers`, owner first). The skills page's harness rail renders TWO containers with ONE
+  shared order — a pure function of the host catalog, so no interaction can reshuffle either block:
+  `universal` pinned first, then the ONE-CLICK hosts (the backend `ClientAdapter.harness` set) anchor
+  to the Clients page's adapter order, everything else follows a curated popularity table (catalog
+  order breaking ties). The primary container shows `universal` plus the one-click hosts whose
+  presence markers fire (`hostDetected`); the second container holds every other runtime — even a
+  detected one the one-click integration does not cover — and only MOUNTS on one "load more" click,
+  APPENDED after the primary block, never interleaved. Writes stay owner-only
   (`KIND_META.skill.installAxis = 'skills-owner'`): the rail is a lens, never a fan-out permission.
 - **Presence is measured, and undetected hosts leave the rail.** Each adapter declares `presence`
   markers — an executable name probed on PATH and/or its config directory — and `hostDetected()`
   answers from those markers plus the existence of any of the host's global skills roots (a runtime
-  that left its skills tree behind stays visible, or its copies would become unmanageable). The
-  console rail shows detected hosts only, plus any host whose rows are already landed; `universal`
-  is always detected, so a machine with no runtime installed still has a landing spot. The catalog
-  itself stays static — presence is a per-machine measurement on the hosts endpoint, never a
-  membership change in `HOSTS`.
+  that left its skills tree behind stays visible, or its copies would become unmanageable). Whether
+  the console rail shows a host is the rail bullet above: one-click membership plus presence.
+  `universal` is always detected, so a machine with no runtime installed still has a landing spot.
+  The catalog itself stays static — presence is a per-machine measurement on the hosts endpoint,
+  never a membership change in `HOSTS`.
 - **Roots are measured through this process.** `adapter.skillRoots(ctx, scope)` answers candidate roots
   with `origin: 'default' | 'env-override'` and a precedence index; `OPENCODE_CONFIG_DIR` relocates
   opencode's root and `PI_CONFIG_DIR` relocates omp's (DSH declares `DSH_HOME` but has no skills
@@ -111,7 +118,7 @@ a kind × host cell that is empty is refused at resolve time rather than guessed
 - **Scope — global only; project scope is deferred, not deleted.** The accept list is one constant,
   `ENABLED_SCOPES` (`harness/scopes.ts`), and it holds `['global']`. Everything product-facing reads
   it: the install route refuses anything else (`unsupported_scope`), `scanInventory` never reads or
-  scans a project skills root / extension source / MCP landing, and the console offers no scope choice
+  scans a project skills root / plugin source / MCP landing, and the console offers no scope choice
   (it always sends `global`). The seam is what the adapters already declare — `SkillsSpec.project`,
   `configProject`, `looseDir.project` stay spelled exactly once per host — plus the writers' `scope`
   parameter, so shipping project support is that list plus the console selector. The removal guard
@@ -126,7 +133,7 @@ a kind × host cell that is empty is refused at resolve time rather than guessed
   ten runtimes) repeat under every rail entry and crowd out the rows that ARE private to the pinned
   runtime. A `hideShared` switch narrows them out by copy ownership (`row.hosts` contains the shared
   host). It is a facet, not a mode — it narrows the same list the source chips count from, so every
-  chip number stays honest — and it is absent where it would mean nothing: on MCP/extension pages (no
+  chip number stays honest — and it is absent where it would mean nothing: on MCP/plugin pages (no
   shared landing exists there), on the shared entry itself (it would empty the list it is meant to
   narrow), and on a page where nothing private would remain. That last gate guards the DEFAULT too:
   the switch ships ticked, so a runtime whose skills all live in the shared tree still opens on its
@@ -169,13 +176,13 @@ a kind × host cell that is empty is refused at resolve time rather than guessed
   another env; the same env may re-claim. A copy whose path is claimed elsewhere reports `foreign` and
   may only be adopted through a transfer — never a second claim, never a silent delete.
 - The **store is written by the skill writer only**: payload files stage into `<storeKey>.tmp-*` and
-  are promoted by rename, then copied per target. MCP and extension writes have no store blob — they
+  are promoted by rename, then copied per target. MCP and plugin writes have no store blob — they
   edit a config file or run a package manager.
-- **Manifest v2** carries the artifact-level `harness` for extensions. A v1 record is migrated in
-  memory on read: a legacy `extension:<canonicalKey>` splits into one record per host, the
-  `external` marker is back-filled by exact token match, and a copy-less legacy record (no host names
-  it) is retired to `manifest.orphans.json` — losing the only record it ever existed would be worse
-  than an orphan line.
+- **Manifest v3** carries the artifact-level `harness` for plugins and spells the kind `plugin`
+  (renamed from `extension`, §D2). There is deliberately NO legacy migration: a pre-v3 file is set
+  aside like unparsable bytes and a fresh v3 manifest starts empty — installed artifacts are simply
+  re-installed from their sources. (v1/v2 spelled the kind `extension:`; the migration machinery —
+  per-host splitting, `manifest.orphans.json` — was retired with the rename, 2026-10-30.)
 - **The record carries the SOURCE's one-line `description`** (optional; absent when the source claims
   none). The console prefers installed text — a skill's `SKILL.md` is read at view time — and falls
   back to this field for kinds whose copy has no file of ours to read: an npm package living in the
@@ -183,7 +190,7 @@ a kind × host cell that is empty is refused at resolve time rather than guessed
   the package's OWN `package.json` `description` from the runtime store: a local file read, never a
   registry round-trip, so a full machine stops rendering as blank cards without turning a rescan into
   N network requests.
-- **A local extension row describes itself from its own material**, so hand-placed plugins are not
+- **A local plugin row describes itself from its own material**, so hand-placed plugins are not
   blank cards either. A path naming a DIRECTORY answers from that directory's `package.json`
   `description`; a path naming a FILE answers from its first block comment's first paragraph (capped
   at 300 characters, folded to one line). No header comment and no manifest means `null` — this is a
@@ -195,9 +202,9 @@ a kind × host cell that is empty is refused at resolve time rather than guessed
 {
   "version": 2,
   "artifacts": [{
-    "id": "extension:opencode:npm:@acme/plugin",   // <kind>:<canonicalKey>, harness for extensions
+    "id": "plugin:opencode:npm:@acme/plugin",   // <kind>:<canonicalKey>, harness for plugins
     "canonicalKey": "npm:@acme/plugin",
-    "kind": "extension",
+    "kind": "plugin",
     "harness": "opencode",
     "name": "@acme/plugin",
     "description": "One-line description the source claimed",  // optional, absent when none
@@ -231,22 +238,22 @@ a kind × host cell that is empty is refused at resolve time rather than guessed
 | :--- | :--- | :--- |
 | skill | file-tree drop (`<name>/`, N files) | resolve targets, refuse `exists` / `foreign`, stage-then-copy |
 | mcp | **config merge** into `opencode.json` `mcp` | added/changed keys shown, `confirm: true` required, `.bak.ocr` + atomic write |
-| extension | `plugin[]` array edit **or** `pi install npm:<spec>` — exactly one harness | command echoed verbatim, `confirm: true` required, no `-y`, 120 s timeout |
+| plugin | `plugin[]` array edit **or** `pi install npm:<spec>` — exactly one harness | command echoed verbatim, `confirm: true` required, no `-y`, 120 s timeout |
 
-- **An extension targets one harness, never several.** Installing to two runtimes is two installs and
-  therefore two artifacts: the backend refuses `hosts.length !== 1` for `kind: extension`.
+- **An plugin targets one harness, never several.** Installing to two runtimes is two installs and
+  therefore two artifacts: the backend refuses `hosts.length !== 1` for `kind: plugin`.
 - **A merge never rewrites a file it cannot round-trip.** A config with comments (JSONC) is refused,
   not stringified-away; `createBackup` writes `.bak.ocr` before the atomic rename.
 - **Subprocess installs execute third-party code.** The plan echoes the exact command, the runner never
   appends `-y`/`--yes`, output is captured, and the exit code is recorded.
 - **Order of writes.** Skill: claims → store staging → per-copy `cpSync` (a failed copy is removed and
-  released) → manifest last. MCP: claim → merge → backup/write → manifest last. Extension: run/merge →
+  released) → manifest last. MCP: claim → merge → backup/write → manifest last. Plugin: run/merge →
   manifest last. A manifest entry therefore only ever exists for a copy that landed.
 - **Removal op follows the landing shape, never the provenance:**
 
   | Landing shape | Op | What is destroyed |
   | :--- | :--- | :--- |
-  | file tree, loose extension file | `move-to-trash` | the tree, into `trash/<ts>-<planId>/` |
+  | file tree, loose plugin file | `move-to-trash` | the tree, into `trash/<ts>-<planId>/` |
   | one string in a JSON array (`plugin[]`, pi `packages[]`) | `drop-entry` | that string; `.bak.ocr` first |
   | one member of a JSON object (a server in `mcp`) | `drop-server` | that member; `.bak.ocr` first |
   | package copy with no declaration file | `prune-record` | the record only |
@@ -254,7 +261,7 @@ a kind × host cell that is empty is refused at resolve time rather than guessed
   A copy whose `path` is a **config file** is never trashed: `opencode.json` holds every other server
   and plugin, so moving it would delete configuration that is not ours. A `trash-path` descriptor from
   a discovered row is containment-checked (it must sit directly under a known skills root or a host's
-  declared loose-extension directory) — a path-safety rule, not an ownership ceremony.
+  declared loose-plugin directory) — a path-safety rule, not an ownership ceremony.
 
 - **Removal is plan → confirm → apply**, with a 10-minute plan TTL. Apply re-checks that every
   non-`drop` target still exists, refuses a `dirty` copy without `discardLocalEdits`, and writes the
@@ -272,19 +279,19 @@ the console renders. A source present in the view but absent from the registry a
 | Source | Kinds | Access (measured) | Role |
 | :--- | :--- | :--- | :--- |
 | GitHub `owner/repo` | skill | anonymous, 10 req/min search, `GITHUB_TOKEN` optional | the content source: tarball per install, 200 files / 8 MiB caps |
-| npm registry | skill, extension, mcp | anonymous search 200; `keywords:` is an exact tag filter | extension package source AND MCP launch source: an mcp row resolves to a launch over the pinned spec (`npx -y <pkg@version>`, version + `dist.integrity` recorded — no author runtime arguments exist off-registry, so none are invented); npm-as-skill resolves `unsupported_kind`. An empty query opens on the PINNED runtime's own tag (per-harness map in `browse.ts`), the MCP axis on the author's own `mcp-server` tag (10 501 packages measured 2026-10-25; the wider `model-context-protocol` tag at 41 344 is mostly SDKs/clients); a runtime with no tag convention falls back to a relevance phrase and says so, never to another runtime's tag |
-| pi.dev package catalog | extension | anonymous 200, server-rendered HTML — no JSON API; 50 cards per page, addressed by its own `&page` | official Pi catalog, bound to `pi`; browse-only: every row prints its own `pi install npm:<pkg>`, so the key is `npm:<pkg>` and install runs through the npm source |
+| npm registry | skill, plugin, mcp | anonymous search 200; `keywords:` is an exact tag filter | plugin package source AND MCP launch source: an mcp row resolves to a launch over the pinned spec (`npx -y <pkg@version>`, version + `dist.integrity` recorded — no author runtime arguments exist off-registry, so none are invented); npm-as-skill resolves `unsupported_kind`. An empty query opens on the PINNED runtime's own tag (per-harness map in `browse.ts`), the MCP axis on the author's own `mcp-server` tag (10 501 packages measured 2026-10-25; the wider `model-context-protocol` tag at 41 344 is mostly SDKs/clients); a runtime with no tag convention falls back to a relevance phrase and says so, never to another runtime's tag |
+| pi.dev package catalog | plugin | anonymous 200, server-rendered HTML — no JSON API; 50 cards per page, addressed by its own `&page` | official Pi catalog, bound to `pi`; browse-only: every row prints its own `pi install npm:<pkg>`, so the key is `npm:<pkg>` and install runs through the npm source |
 | MCP official registry | mcp | anonymous `/v0/servers` — list browsable (`limit` ≤ 100, opaque cursor, `version=latest`); per-server read at `/v0/servers/<name>/versions/latest` (the bare path answers 404) | authoritative server identity + launch spec; browse rows carry `mcp-official:<name>` and install merges the server into a host's `mcp` container. The registry publishes no star count and no ordering parameter, so the source declares no `sorts` and the market invents neither |
 | skills.sh | skill | API **401** without a Vercel workload token; the endpoint the SITE's own browser uses answers **200** anonymous: `GET /api/skills/<view>/<page>` — 0-based, **200 rows** an answer, stating `total` (All-time **9 911**, Trending 9 959, Hot 6 765) and `hasMore`; `GET /api/search?q=&limit=` — caps at **200** rows, IGNORES `offset`/`page`/`cursor`, refuses a term shorter than 2 characters | **live**, never through the closed API: an empty (or 1-character) query pages the chosen board through the site's own paging endpoint (so rank 601+ is reachable), a 2+ character query searches the WHOLE catalog through the site's own search endpoint. A board answer is a RANKING (`total` = 9 911 rows, of which 178 carry no GitHub repository and are dropped by the install grammar — `totalScope` therefore stays absent for boards), while a search answer is a WINDOW (`totalScope: 'window'`, summary hidden). Rows install as `github:<owner/repo>#<skill-dir>` (the site's own `npx skills add` identity). The `VERCEL_OIDC_TOKEN` the API asks for is minted inside a Vercel deployment with an hourly lifetime, so it is no operator secret |
 | ClawHub | skill | `GET /api/v1/skills?limit=&cursor=&sort=` (cursor-paged, its own `sort` enum), `GET /api/v1/search?q=` — NO paging parameter, one answer is a window; `GET /api/v1/skills/<slug>?ownerHandle=` → one skill's own record (`skill.description` IS the published `SKILL.md`, plus `latestVersion`, `stats`, `owner`); `GET /api/v1/download?slug=&ownerHandle=&version=` → deterministic ZIP bytes; anonymous reads 3000/min/IP with `Retry-After` (measured 2026-10-25) | **live**, and the one skill registry that installs from its OWN store: rows carry no GitHub repo, so the pin is the registry version (`{clawhub:{slug, version}}`) and `stars` stays `null` — the registry's own star/download/install tally travels in `registryStats` (its own unit, labelled as ClawHub's) instead of being relabelled a GitHub count. `ownerHandle` is the disambiguator the registry's own 409 error names — undocumented on the endpoints but measured working (a wrong owner answers 404). A 200 that answers JSON is the registry's `public-github` handoff for GitHub-backed skills; its shape is undocumented, so the adapter refuses it by name |
 | Smithery | mcp | `GET /servers` + `GET /servers/<name>` → **200** anonymous; the listing serves 500 rows however it is sliced while claiming ~20 765 | **live**: the one aggregator that HOSTS its records (`<slug>.run.tools`, measured MCP `initialize` → 401 without an `Authorization` header), so its launch spec is authoritative for its own deployments. Arbitration: the official record wins when it also carries the server. A connection that declares required config (`configSchema.required`) is refused by name — the writer can reference env KEY names, not a per-connection config object |
-| OpenCode ecosystem | extension | curated docs table (mdx), shipped as a snapshot | browse-only, bound to `opencode`; a row with a verified package name installs through npm |
-| awesome-opencode | extension | `dist/registry.json` — a flat array with a declared schema, read through the GitHub contents API | community catalog, bound to `opencode`; install resolves the package on demand (declared name → repository-verified candidate) and answers the npm identity |
-| opencode.cafe | extension | Convex `extensions:listAllApproved` — anonymous read, POSTed directly (undocumented contract) | community catalog, bound to `opencode`; only `type: 'plugin'` rows are extensions; install resolves the package the same way; the query ships author e-mails, which the reader narrows away |
-| manual | mcp, extension | operator input | escape hatch: `manualPayload` (MCP) / `manualSpec` (extension) |
+| OpenCode ecosystem | plugin | curated docs table (mdx), shipped as a snapshot | browse-only, bound to `opencode`; a row with a verified package name installs through npm |
+| awesome-opencode | plugin | `dist/registry.json` — a flat array with a declared schema, read through the GitHub contents API | community catalog, bound to `opencode`; install resolves the package on demand (declared name → repository-verified candidate) and answers the npm identity |
+| opencode.cafe | plugin | Convex `plugins:listAllApproved` — anonymous read, POSTed directly (undocumented contract) | community catalog, bound to `opencode`; only `type: 'plugin'` rows are plugins; install resolves the package the same way; the query ships author e-mails, which the reader narrows away |
+| manual | mcp, plugin | operator input | escape hatch: `manualPayload` (MCP) / `manualSpec` (plugin) |
 
 - **One normalized payload.** The writer never sees a source: skill → `{files}`; mcp → `{launch}`;
-  extension → `{spec}`. A source that cannot produce a payload is browse-only and says so.
+  plugin → `{spec}`. A source that cannot produce a payload is browse-only and says so.
 - **Caps bind EXPANDED bytes, before any decompression.** A declared compressed length is not a
   memory bound (deflate reaches ~1000:1): the file count is read from the archive's own directory
   record and every inflate call is limited to the remaining budget, so an oversized payload is
@@ -317,16 +324,16 @@ the console renders. A source present in the view but absent from the registry a
     entry declares itself, else a probed candidate confirmed by the package's own `repository` — both
     owner and repo, never "a package with this name exists". 89 of 136 entries resolve; the rest answer
     `no_artifact` with the repo URL rather than installing a squatted name.
-  - opencode.cafe (`sources/opencode-cafe.ts`) reads a Convex query (`extensions:listAllApproved`,
+  - opencode.cafe (`sources/opencode-cafe.ts`) reads a Convex query (`plugins:listAllApproved`,
     anonymous, POSTed directly — an undocumented contract, so a re-provisioned deployment answers
-    `upstream` and never an empty catalog). Only `type: 'plugin'` rows are extensions. The reader
+    `upstream` and never an empty catalog). Only `type: 'plugin'` rows are plugins. The reader
     narrows every row onto a shape with no `author` field: the public query returns author e-mail
     addresses and they must not reach the market, the manifest or a log.
 
   The earning rules live once, in `catalog-npm.ts`. The resolved payload is the npm adapter's, so the
   artifact's `canonicalKey` is `npm:<pkg>` and one package has ONE identity no matter which catalog
   surfaced it. `sourceId` records where the row was DISCOVERED — that is provenance, not identity,
-  which is why the extension writer derives `ref` from the key itself instead of slicing by the
+  which is why the plugin writer derives `ref` from the key itself instead of slicing by the
   requesting source's name. A catalog whose rows carry ANOTHER source's key (the Pi catalog and the
   curated list both install as `npm:<pkg>`) would lose that provenance through `sourceId` alone, so the
   install request also carries `listedOn` and the record keeps both (D8.6).
@@ -337,7 +344,7 @@ the console renders. A source present in the view but absent from the registry a
   `pi install npm:<pkg>` command — the catalog's own statement of what a row installs. That contract is
   unversioned and undocumented, so the reader fails LOUD: a page with neither package cards nor the
   result-count marker, or cards that yield no package name, answers `upstream`, never an empty market.
-  The market lists that catalog ROW FOR ROW: every row — extension, untyped bundle, skill, theme,
+  The market lists that catalog ROW FOR ROW: every row — plugin, untyped bundle, skill, theme,
   prompt — installs with the same printed command (`pi install npm:<pkg>`) into the same runtime
   package store, so nothing is dropped, and the catalog's own count is therefore an exact `total`. A
   row's type chips are the catalog's vocabulary, not this market's kinds. The card's
@@ -506,12 +513,12 @@ explicit (`configured → lite`), so a shared session can never ratchet upward.
 | :--- | :--- | :--- |
 | skill | `<sourceId>:<ref>[#detail]`, e.g. `github:owner/repo#dir` | `skill:<canonicalKey>` |
 | mcp | `<sourceId>:<ref>`, e.g. `manual:brave` | `mcp:<canonicalKey>` |
-| extension | `npm:<name>` / `manual:<spec>` | `extension:<harness>:<canonicalKey>` |
+| plugin | `npm:<name>` / `manual:<spec>` | `plugin:<harness>:<canonicalKey>` |
 
-- **For extensions the harness enters the `artifactId`, not the `canonicalKey`.** One package installed
+- **For plugins the harness enters the `artifactId`, not the `canonicalKey`.** One package installed
   into two runtimes is two installs with two rollback stories; folding them would make "remove"
   ambiguous. The `canonicalKey` stays runtime-free so a future cross-runtime ABI can still group them.
-- `name` is the on-disk directory name (skills) or the spec written verbatim (extensions). Two
+- `name` is the on-disk directory name (skills) or the spec written verbatim (plugins). Two
   artifacts wanting one directory is a **refusal** (`exists`), never a suffix policy invented later.
 - **Provenance is stored, not merged.** `pin`, `sourceId`, `listedOn`, `trust` travel with the record;
   there is no trust-ladder field arbitration in this build (Deferred). `listedOn` accumulates surfaces
@@ -551,13 +558,14 @@ explicit (`configured → lite`), so a shared session can never ratchet upward.
    `untracked` answers "no manifest entry", never "not removable" (D5).
 8. **Placement ≠ loading.** `materialized` is the default claim. The post-apply probe upgrades it to
    `verified` only with evidence — skill: `SKILL.md` present; mcp: the server key is in the parsed
-   config; extension config copy: the spec is in the host's declared container; `external` copy: the
+   config; plugin config copy: the spec is in the host's declared container; `external` copy: the
    apply-time exit code. A failed probe records `unverified`; an undecidable one leaves the value
    alone. The console never prints "loaded" without a probe.
 9. **`external` is an ownership marker, not a condition.** A package-manager copy owns no path of ours:
    `path` is the identity token `<canonicalKey>#<harness>`, it is never stat-ed or hashed, and it
    reports `clean` with `placement: verified` because the subprocess exit code is the proof. Its
-   removal edits the declaration the runtime itself reads (`pi` `settings.json` `packages[]`), falling
+   removal edits the declaration the runtime itself reads (`pi` `settings.json` `packages[]`, claude
+   `installed_plugins.json` `plugins`), falling
    back to `prune-record` — with wording that says the package bytes stay — when no declaration file
    is declared. No unverified inverse command is invented.
 10. **Discovery is observation, and observation is not a removal ban.** What a runtime installed for
@@ -581,6 +589,21 @@ explicit (`configured → lite`), so a shared session can never ratchet upward.
     the entry was ACTUALLY found in — so an uninstall edits the array the runtime reads, not the one we
     would have written. A JSONC config is parsed as JSONC (comments are not corruption); the WRITE
     landing still refuses a JSONC rewrite and prefers an existing plain-JSON candidate (§D8.2).
+11. **Claude's plugin landing is the runtime's own CLI and MAP record.** Plugins install through
+    `claude plugin install <id> --scope user|project` (gate 3: the exact command echoed, confirmed,
+    hard timeout — never a hand-edit of claude's own state). The record is
+    `~/.claude/plugins/installed_plugins.json`, an object MAP keyed by the plugin id
+    (`"<name>@<marketplace>"`), each value carrying `installPath` / `version` / `installedAt`;
+    enable state lives in the settings.json files' `enabledPlugins`, which the runtime syncs from
+    this record itself. Two consequences enforced in code: a plugin id collides with a versioned
+    npm spec, so every entry is read with the **`claude:` spec prefix** (canonicalKey
+    `claude:<name>@<marketplace>`, never parsed as npm); and the record is a MAP, so discovery
+    reads the shape (`containerShape: 'map'` on the source) and the removal inverse is a
+    `drop-server` member drop of the runtime's own key (the marketplace/material cache under
+    `~/.claude/plugins/marketplaces/` stays — the wording says the bytes stay, as with pi).
+    A row's version and description answer from the entry value and the installed plugin's own
+    `.claude-plugin/plugin.json`. The store is GLOBAL (like pi's); the `--scope` flag carries the
+    install scope, the record does not fork.
 
 ## Deferred (not implemented — do not assume)
 
@@ -588,7 +611,7 @@ explicit (`configured → lite`), so a shared session can never ratchet upward.
 | :--- | :--- |
   landing). Adapter project landings and the writers' `scope` parameter stay DECLARED as the seam — shipping it is that list plus the selector, not a re-spelling of fourteen adapters |
 | MCP landings beyond opencode | absent from the adapters; a target is refused with a reason, never guessed |
-| Extension landings beyond opencode (`config`) and pi (`subprocess`) | absent; other hosts refuse |
+| Plugin landings beyond opencode (`config`), pi (`subprocess`) and claude (`subprocess` + map record, §D8.11) | absent; other hosts refuse |
 | npm as a **skill** source | declared in the view, resolves `unsupported_kind` |
 | PulseMCP / mcp.so | no live adapter and no row in the view (measured 410 retired / 404). skills.sh moved out of this row: its PAGES are readable, see §D6 |
 | Curated OpenCode catalog | browse-only snapshot: no install adapter, and no runtime fetch — `raw.githubusercontent.com` and `cdn.jsdelivr.net` both reset from this environment, so the table ships in the repo and goes stale between refreshes. 29 of 31 rows carry a verified npm name and install through the npm source; 2 publish no package and cannot be installed from the console |
@@ -598,7 +621,7 @@ explicit (`configured → lite`), so a shared session can never ratchet upward.
 | Write-ahead intent, cross-copy install rollback, manifest advisory lock | not built; the guarantee is "manifest last" + per-copy rollback |
 | `shadowed` rollup, `profile` root origin | named in the type unions, no producer |
 | Store/trash GC, adopt-an-untracked-directory action, harness export/import, `canonicalKey` alias overrides, name-collision suffix policy | not built (collision = refusal) |
-| `dsh` MCP/extension surface, `codex` MCP (no TOML writer) | unsupported |
+| `dsh` MCP/plugin surface, `codex` MCP (no TOML writer) | unsupported |
 | A verified inverse package-manager command (`pi uninstall`) | not implemented; the declaration edit is the shipped undo |
 
 ## Consequences
@@ -608,7 +631,7 @@ explicit (`configured → lite`), so a shared session can never ratchet upward.
   row, not a page rewrite; identity, trust and the removal ops are stated once and reused everywhere.
 - Positive: the removal op keyed on landing shape is what stops "uninstall one plugin" from meaning
   "delete the client's whole configuration" — the failure mode the earlier provenance-keyed design had.
-- Negative: capability per (kind × host) is very uneven — MCP only on opencode, extensions only on
+- Negative: capability per (kind × host) is very uneven — MCP only on opencode, plugins only on
   opencode and pi. That is honest, but it means most host rows are read-only for two of the three kinds.
 - Negative: a runtime-owned copy removed from the console stops loading but its bytes stay in the
   runtime's store; that is the truth of editing a declaration and the console must keep saying it.
@@ -623,8 +646,8 @@ explicit (`configured → lite`), so a shared session can never ratchet upward.
 - `backend/src/harness/adapters/` — one file per host (its landing paths, exactly once), the shared
   `defineHost` rules, the capability interfaces, and the registry (`adapterFor`, `skillLocationRoots`,
   `skillOwner`, `skillRootsFor`).
-- `backend/src/harness/{manifest,types}.ts` — manifest v2 + migration + orphans, claims, vocabulary.
-- `backend/src/harness/writers/{skill,mcp,extension}.ts` — the three write modes and their gates.
+- `backend/src/harness/{manifest,types}.ts` — manifest v3 (no legacy migration), claims, vocabulary.
+- `backend/src/harness/writers/{skill,mcp,plugin}.ts` — the three write modes and their gates.
 - `backend/src/harness/{inventory,discover}.ts` — reconciliation, the discovery channel, removal
   descriptors.
 - `backend/src/harness/{maintenance,config-file}.ts` — the removal ops, trash snapshots, the shared
@@ -681,3 +704,164 @@ explicit (`configured → lite`), so a shared session can never ratchet upward.
 - Whether the trust field (`trust`) should stay single-source or grow the cross-source aggregation this
   record deliberately left out. `listedOn` no longer needs the question: it records every surface a row
   was browsed on (D8.6), and only the writer's `trust` claim is still single-valued.
+
+## D9 — Operator git-marketplace sources (amendment, 2026-10-30)
+
+Any GitHub repository the operator names becomes a browse/install source with **no code change**:
+`<ocrHome>/harness/marketplaces.json` is the config, one `mp-<slug>` adapter instance per entry
+(`sources/git-marketplace.ts`), and the registry resolves `mp-*` ids dynamically. The type exists
+because the Claude-style `marketplace.json` catalog format has become the industry's converging
+distribution shape (grok, Copilot CLI, Goose, omp all read it or a clone), while the CONTENT under
+it has already converged on one primitive: `SKILL.md`.
+
+**Recognition (the probe).** One probe at add-time and on each rescan: repo meta + HEAD commit +
+git tree. A recognized manifest (`.claude-plugin/marketplace.json` and its grok / Copilot / Goose
+clones, one parser) narrows the scan to the author's declared relative-path source directories;
+external manifest sources (`git-subdir`, `url`, `npm`, …) are REPORTED, not resolved — phase one
+does not follow them. No manifest (or an unparseable one — a broken file is not a manifest) falls
+back to a whole-tree `SKILL.md` scan. Rows are capped (30) and deduped by basename, shortest path
+first: generated mirrors (an `.openclaw/skills/` copy of `skills/`) never surface as second rows.
+
+**Containment and provenance.** An `mp-<slug>` adapter resolves ONLY its configured repository and
+ONLY `#<skill-dir>`-pinned refs — the market rows carry the pins, a bare ref would guess. The
+resolve delegates to the github adapter (tarball, caps, commit pin) and REWRITES the canonicalKey
+to `mp-<slug>:<repo>#<dir>`, so a manifest record always names the surface the operator actually
+browsed, never a `github:` key that would weld every marketplace onto the built-in source.
+
+**What is deliberately NOT installed.** Per-harness adapter forms — hooks (executable JS),
+OpenCode runtime plugins, slash commands, rules files, private git-loaded plugins — are counted
+in the snapshot (`authorAdapters`, `unsupported`) and never enter a payload. Skills and MCP are
+the kinds this domain installs; rules and command forms need their own decision before they ever
+become rows. Git-loaded plugins (pi's `git:` install of an unpublished repo JS) are a recorded
+non-goal: npm-published plugins are already covered by the npm source, and executing
+repository-resident code from an operator-added list is a trust-boundary change that deserves its
+own ADR.
+
+**Rescan (opt-in).** Per source: `rescan.enabled` (default false) + `intervalMs` (clamped 1 min –
+30 days; default 1 day). One process timer ticks due sources, appends a bounded snapshot history
+(20, deduped on sha+rows), and diffs rows/pin against the previous snapshot. A rescan REPORTS
+additions/removals — it never rewrites installed copies; upgrades still go through the install
+route and its gates. The snapshot also carries repo-level stars and `pushedAt` (same API response,
+free): source-level metadata, never stamped onto rows — a row claims no popularity signal its
+source did not state (§D6).
+
+**Browse.** Custom sources ride the standard `/sources` + `/browse` contract: rows render as
+MarketItems keyed `mp-<slug>:<repo>#<dir>`, the only declared sort is `name` (a local filter+page
+over the snapshot — a stale snapshot answers; the rescan loop owns freshness), and installs go
+through the ordinary install route, writer source first, `listedOn` unchanged.
+
+**Maintenance verbs live per harness (amendment, 2026-12).** The global CRUD routes
+(`POST/PATCH/DELETE /api/admin/harness/marketplaces*`, `rescan`, `snapshots`) are REMOVED — a
+standalone global management page taught an ownership the store does not have. Registration and
+removal moved onto the per-harness plugin-market surface (§D10/§D11):
+`POST /api/admin/harness/plugins/:harness/sources {url}` (probe-first, the slug is DERIVED from
+the repo — `mp-<repo>` — and a duplicate slug answers 409),
+`POST .../sources/check {url}` (the operator's dry-run before add; reports skill/MCP/plugin
+counts, writes nothing), `DELETE .../sources/:slug` (404 on unknown harness or slug).
+`GET /api/admin/harness/sources` stays as a read-only view (built-ins + `mp-` chips) with no
+mutation verbs. Unknown or non-github targets answer 400; unknown harness 404.
+
+## D10 — The plugin market: per-harness adapters over a two-tier catalog (amendment, 2026-10-30)
+
+**One directory per harness, one adapter per harness.** `PluginAdapter` (claude / opencode / pi)
+owns `sources()` + `search()` + `checkSource()` + `registerSource()`/`unregisterSource()` +
+`install(row)`. There is deliberately NO `supported()` predicate: the adapter's existence IS the
+support declaration — an instance is only created for a served harness, the landing check happens
+at install time, and row-level compatibility travels on `CatalogRow.hosts[]`.
+
+**Two tiers, bounded vs unbounded.**
+
+- **Index tier** — bounded sources (operator git marketplaces via their snapshots, curated static
+  registries) harvested into `<ocrHome>/harness/catalog/<harness>/index.jsonl` (JSONL, replaced
+  wholesale per harvest, cap 2000 rows per harness, over-cap drops whole newest sources first).
+  Browse/search/sort/paginate are local: no upstream request, offline-capable, snapshot-backed.
+  Harvest is a READ over snapshots — registering a source probes once (the only hard network
+  dependency), afterwards GitHub outages cannot blank the page; a failed rescan keeps serving the
+  old snapshot with its age on the label.
+- **Federated tier** — unbounded live directories (pi.dev, the curated OpenCode plugin lists).
+  Rows are NEVER materialized. Each answer carries its own `total`/`totalExact`.
+
+**Adapter owns the order; the facade merges by the same key.** The facade NEVER re-sorts federated
+pages — a page-local re-sort of independently paged sources cannot produce a global order, and the
+pagination it implies is false. Since no federated plugin source can serve `name`/`stars`/`updated`
+pages (their native orders are downloads / catalog position), the merged, sorted `rows` of a
+catalog page are index-tier only; every federated source's query answer travels as its own labeled
+`CatalogSection` in the source's native order with its own total. The console does not interleave
+rows it cannot co-order. `stars` sorting includes only sources whose star count is a real GitHub
+number; sources without one are excluded from that order and the exclusion is stated.
+
+**Honest counts.** There is no separate `count()` method — every `search` response carries
+`total?` + `totalExact`, taken from what the upstream itself states. A source that cannot count
+answers a lower bound (`5000+`); the facade never synthesizes a grand total across sources.
+
+**Rows.** Plugin kind ONLY — skills and MCPs keep their own axes (a source that carries all three
+reports all three in its probe; the catalog sells one kind and links to the others). Dedup keys:
+`npm:<pkg>` for npm-backed rows, `mp-<slug>:<repo>#<source>` for git rows. `surfaces[]` records
+every source a row was seen on; `hosts[]` is the source's declared compatibility, and the console
+dims (never hides) rows not declared for the open harness.
+
+**Five boundaries.** (1) registration accepts github.com URLs only; (2) the mp resolver's
+containment fence (`#dir` pins, no bare refs) — never guessed; (3) size caps (30 rows/source,
+8 MiB / 200 files tarballs, 2000 rows/harness index); (4) harvest: only index-tier sources land on
+disk, federated answers stay ephemeral; (5) query: per-source 8 s timeout and the whole page
+degrades per section, never wholesale — a timed-out source shows as a note.
+
+**Install.** `install(row)` delegates to the ordinary install orchestrator (resolve → payload →
+writer → manifest) with the adapter's own harness as the single host — a plugin takes exactly ONE
+host, its identity includes it (§D5); `surfaces` minus the writing source travel as `listedOn`
+(§D9). Nothing here bypasses the gates.
+
+**Dual-axis adapters (amendment, 2026-12).** The market splits along the same axis split as the
+rest of the domain: the HOST axis (`harness/host/`) owns every install; the MARKET axis
+(`harness/plugin/`) owns discovery only — `install(row)` is a translation step that funnels into
+the host route with gate-3 discipline intact. `createPluginAdapter(harness, fetchImpl)` is the
+only construction point; `claude` gets the declarative landing (container shape, `specPrefix`,
+subprocess args), `pi` the sibling-id catalog, everything else the generic adapter.
+
+**The sources view is honest about contributors.** `GET .../sources` answers the index-tier
+sources of THIS harness's catalog — and the index harvest lists only sources that contributed
+rows to that harness. A skills-only git repo appears on the skill axis's view, not on a plugin
+axis that gained nothing: a chip that names a source with zero rows would claim a tier the
+harvest never wrote.
+
+**Mutation re-harvests everyone.** The marketplace store is global (one `marketplaces.json`), so
+`registerSource`/`unregisterSource` — and the rescan scheduler after a probe — re-harvest the
+index of EVERY served harness, not just the acting one. A stale sibling tab would teach a
+per-harness model the store does not have. The harvest is a local read over snapshots — cheap by
+construction (§D10's index tier).
+
+**Wiring.** `backend/src/harness/plugin/` (adapters over the shared market layer) with the host
+axis in `backend/src/harness/host/`; routes under `/api/admin/harness/plugins/:harness/{catalog,sources,sources/check,sources/:slug,install}` (§D11); console page `PluginMarketPage` at
+`/harness/plugins`. The built-in source views moved to `harness/market/source-views.ts` so the
+domain can declare capabilities without importing the route layer.
+
+## D11 — The console market surface: per-harness tabs, a sources dialog, one shared store (amendment, 2026-12)
+
+**No standalone marketplace page.** The dedicated Marketplaces page and its nav entry are
+REMOVED. Source maintenance lives where the sources are consumed: the harness page's market tab.
+`/harness/plugins` and `/harness/plugins/:harness` route back to `HarnessPage kind="plugin"` —
+the plugin market is a TAB of the harness page, not a separate destination. The nav label is
+"Plugin Management".
+
+**One dialog, two tabs.** The per-harness sources dialog (`HarnessSourcesDialog`) opens from the
+plugin tab AND the skill tab of the same harness page — the same
+`/plugins/:harness/sources*` route serves both, because the operator git sources are
+`kinds: ['skill', 'plugin']` dual-axis by declaration (skill-first) and a second skill-side
+registration surface would fork the store's truth. Built-in federated sources render read-only;
+operator `mp-` sources carry check-before-add and remove.
+
+**The dialog states the sharing.** The store behind the dialog is GLOBAL — one
+`marketplaces.json`, `mp-` ids shared by every served harness. The dialog's subtitle says so; the
+UI never labels the listed sources as THIS harness's own, and every mutation re-harvests all
+served harnesses' indexes (§D10). If per-harness exclusivity is ever needed, it is an OPTIONAL
+`scope` field on the marketplace entry — no migration, the file stays single.
+
+**Resolver vs chip.** npm and github remain INSTALL RESOLVERS on the host axis (an `npm:` row
+must resolve somewhere), but the npm BROWSING chip is not on the plugin axis — the plugin axis
+browses pi-dev (federated) plus operator git sources; the skill axis keeps its chips. A source's
+`kinds` declaration in `harness/market/source-views.ts` is the single word on which axis a
+browsing chip appears on.
+
+**Wiring.** `frontend/src/components/HarnessSourcesDialog.tsx`; opened from `HarnessPage`'s
+market tab; API client mirrors the per-harness route shape 1:1. The deprecated global client
+functions and the `MarketplacesPage` were deleted with their i18n keys in the same commit.

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Boxes, Download, ExternalLink, FolderTree, Globe, Inbox, Info, LayoutGrid, List, Maximize2, Minimize2, RefreshCw, Search, ShieldAlert, Star, Terminal, Trash2, X } from 'lucide-react';
+import { Boxes, Download, ExternalLink, FolderTree, Globe, Inbox, Info, LayoutGrid, List, Maximize2, Minimize2, RefreshCw, Search, Settings2, ShieldAlert, Star, Terminal, Trash2, X } from 'lucide-react';
 import {
   api,
   type HarnessArtifactView,
@@ -22,6 +22,7 @@ import ReactMarkdown from 'react-markdown';
 import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
 import { useI18n } from '../i18n/I18nContext';
+import { HarnessSourcesDialog } from '../components/HarnessSourcesDialog';
 import { BrandIcon } from '../components/BrandIcons';
 import { FONT_MONO } from '../lib/fonts';
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
@@ -38,13 +39,13 @@ import { useLocation, useNavigate, useParams, useSearchParams } from 'react-rout
  *
  * The third axis is the HARNESS, and it exists for all three kinds — but it answers a different
  * question per kind, and that difference is the whole point of the rail copy:
- *   · skills     — the harness is a READER. One `.agents/skills` tree is loaded by up to ten
- *                  runtimes, so the rail selects "which runtime can use this" (`CopyView.readers`)
- *                  while WRITES stay owner-only (`KIND_META.skill.installAxis`): materializing the
- *                  same directory once per reader would be ten writes of one tree.
+ *   · skills     — one `.agents/skills` tree is loaded by up to ten runtimes, but the rail lists
+ *                  only runtimes whose CLI is installed on this machine — WRITES stay owner-only
+ *                  (`KIND_META.skill.installAxis`): materializing the same directory once per
+ *                  reader would be ten writes of one tree.
  *   · mcp        — an MCP server is one payload written into ONE OR MORE clients' config files, so
  *                  the page is pinned to one landing harness and the install may fan out from there.
- *   · extensions — code against ONE runtime's plugin API, so the runtime is part of the artifact's
+ *   · plugins — code against ONE runtime's plugin API, so the runtime is part of the artifact's
  *                  identity: it is the page's scope and the install's only target.
  *
  * The page therefore pins one harness (no "all") wherever the kind has a host axis, and shows only
@@ -57,7 +58,7 @@ import { useLocation, useNavigate, useParams, useSearchParams } from 'react-rout
  * those copies are listed first. One runtime's page never preselects another runtime's copy.
  */
 
-type Kind = 'skill' | 'mcp' | 'extension';
+type Kind = 'skill' | 'mcp' | 'plugin';
 /** `issues` is a health filter, not a provenance one: it keeps what needs attention (missing,
  *  foreign) and drops the rows that are simply fine. */
 type Filter = 'all' | 'issues';
@@ -74,7 +75,7 @@ interface KindMeta {
    * `landing` — the verified landing flag decides (an MCP config, a plugin API).
    * `skills-owner` — the OWNER of a skills directory decides, never its readers: ten runtimes read
    * one `.agents/skills` tree, so offering every reader as a target would write the same directory
-   * ten times. The rail still lists readers (that is a question about USE, not about writing).
+   * ten times. The rail still lists the owner's page (that is the one-click integrated set).
    */
   installAxis: 'landing' | 'skills-owner';
   /** URL segment carrying the harness id: `/harness/<route>/<harness>`. */
@@ -101,9 +102,9 @@ interface KindMeta {
 
 const KIND_META: Record<Kind, KindMeta> = {
   skill: {
-    // A skill lands in a DIRECTORY, and one directory is read by up to ten runtimes. The rail asks
-    // "which runtime can use this", never "who owns it" — writes stay owner-only (`installAxis`), or
-    // the same tree would be materialized once per reader.
+    // A skill lands in a DIRECTORY, and one directory is read by up to ten runtimes. The rail lists
+    // the OWNER (the one-click installable set) — writes stay owner-only (`installAxis`), or the
+    // same tree would be materialized once per reader.
     landing: 'hasSkills',
     installAxis: 'skills-owner',
     route: 'skills',
@@ -126,7 +127,7 @@ const KIND_META: Record<Kind, KindMeta> = {
     marketKey: 'harness.marketMcp',
     installMode: 'multi',
     // The MCP landing is a config OBJECT (`mcp` inside the host's own file), and reading it is the
-    // same observation the extension page does over `plugin[]`: a server the operator added by hand
+    // same observation the plugin page does over `plugin[]`: a server the operator added by hand
     // is installed, shows up here, and is removable by dropping that member from its own file.
     discovery: true,
     rail: {
@@ -134,23 +135,24 @@ const KIND_META: Record<Kind, KindMeta> = {
       emptyKey: 'harness.mcpNoHarness',
     },
   },
-  extension: {
+  plugin: {
     landing: 'hasExt',
     installAxis: 'landing',
-    route: 'extensions',
-    titleKey: 'nav.extensions',
-    installedKey: 'harness.installedExtensions',
-    marketKey: 'harness.marketExtensions',
+    route: 'plugins',
+    titleKey: 'nav.plugins',
+    installedKey: 'harness.installedPlugins',
+    marketKey: 'harness.marketPlugins',
     installMode: 'single',
-    singleHintKey: 'harness.extOnly',
-    // Extensions DO get a discovery scan: the runtime's own store is readable (pi's
-    // `settings.json` `packages[]`, opencode's `plugin[]`). Those rows are observation of an install
+    singleHintKey: 'harness.pluginOnly',
+    // Plugins DO get a discovery scan: the runtime's own store is readable (pi's
+    // `settings.json` `packages[]`, opencode's `plugin[]`, claude's `installed_plugins.json`
+    // `plugins` map). Those rows are observation of an install
     // we did not make — and they are removable all the same, because the scan hands the console the
     // inverse of the record it read (ADR-0015 §D8.10).
     discovery: true,
     emptyNoteKey: 'harness.extScopeNote',
     rail: {
-      hintKey: 'harness.extOnly',
+      hintKey: 'harness.pluginOnly',
       emptyKey: 'harness.extNoHarness',
     },
   },
@@ -168,12 +170,7 @@ const KIND_META: Record<Kind, KindMeta> = {
 const SOURCE_NAME_KEY: Record<string, string> = {
   github: 'harness.sourceNames.github',
   'skills-sh': 'harness.sourceNames.skillsSh',
-  'mcp-official': 'harness.sourceNames.mcpOfficial',
-  smithery: 'harness.sourceNames.smithery',
   npm: 'harness.sourceNames.npm',
-  'static-opencode': 'harness.sourceNames.curated',
-  'awesome-opencode': 'harness.sourceNames.awesome',
-  'opencode-cafe': 'harness.sourceNames.cafe',
   'pi-dev': 'harness.sourceNames.piDev',
   clawhub: 'harness.sourceNames.clawhub',
 };
@@ -209,15 +206,10 @@ const NOTE_KEY: Record<string, string> = {
   'github-anonymous': 'harness.marketNote.githubAnonymous',
   'npm-keyword': 'harness.marketNote.npmKeyword',
   'npm-default': 'harness.marketNote.npmDefault',
-  curated: 'harness.marketNote.curated',
-  awesome: 'harness.marketNote.awesome',
-  'cafe-filtered': 'harness.marketNote.cafeFiltered',
   'pi-dev': 'harness.marketNote.piDev',
   'window-sorted': 'harness.marketNote.windowSorted',
-  'mcp-registry': 'harness.marketNote.mcpRegistry',
   'skills-sh-board': 'harness.marketNote.skillsShBoard',
   'skills-sh-search': 'harness.marketNote.skillsShSearch',
-  'smithery-window': 'harness.marketNote.smitheryWindow',
   'clawhub-catalog': 'harness.marketNote.clawhubCatalog',
   'clawhub-search': 'harness.marketNote.clawhubSearch',
 };
@@ -360,11 +352,11 @@ interface Row {
    *  row: the runtime's own store is not a marketplace, so it was listed on nothing. */
   listedOn: string[];
   state: string;
-  /** Discovered extension rows carry the runtime record they were read from (`runtime-store` …). */
+  /** Discovered plugin rows carry the runtime record they were read from (`runtime-store` …). */
   origin?: HarnessDiscoveredArtifact['origin'];
   /** Version the runtime's own store records — rendered as `@x.y.z` beside the name. */
   version?: string;
-  /** How to undo the runtime's own install record; present for a discovered extension row. */
+  /** How to undo the runtime's own install record; present for a discovered plugin row. */
   removal?: HarnessDiscoveredArtifact['removal'];
   artifact?: HarnessArtifactView;
 }
@@ -462,6 +454,7 @@ const HOST_BRAND: Record<string, string> = {
   pi: 'pi',
   dsh: 'dsh',
   omp: 'omp',
+  grok: 'grok',
   'github-copilot': 'github-copilot',
   amp: 'amp',
   cursor: 'cursor',
@@ -501,7 +494,7 @@ const copyServes =
 
 /**
  * Does an artifact belong to the page's harness?
- *   · an extension is written against ONE runtime's plugin API, so the runtime is part of its
+ *   · an plugin is written against ONE runtime's plugin API, so the runtime is part of its
  *     IDENTITY (`artifact.harness`) — a copy list alone would miss a package that is recorded but
  *     not yet materialized;
  *   · an MCP artifact is one server that may sit in several clients' configs at once, and a skill is
@@ -509,9 +502,9 @@ const copyServes =
  *     unset — reading it would hide every artifact that has copies on this page.
  */
 const scopedTo = (kind: Kind, harnessId: string) => (artifact: HarnessArtifactView): boolean =>
-  (kind === 'extension' && artifact.harness === harnessId) || artifact.copies.some(copyServes(harnessId));
+  (kind === 'plugin' && artifact.harness === harnessId) || artifact.copies.some(copyServes(harnessId));
 
-/** The same question for a discovered row: its copies carry readership, and an extension row also
+/** The same question for a discovered row: its copies carry readership, and an plugin row also
  *  names its runtime at the row level (the store it was read from). */
 const rowServes = (harnessId: string) => (item: HarnessDiscoveredArtifact): boolean =>
   item.harness === harnessId || item.copies.some(copyServes(harnessId));
@@ -563,7 +556,7 @@ const needsAttention = (row: Row): boolean =>
  *    ┌ HARNESS ────────┐   ← `harness.railTitle`, the same word on every page (CSS uppercases it)
  *    │ [filter…      ] │   ← only when the catalog is long enough for the input to earn its row
  *    │ ▪ opencode   3  │   ← HostIcon + label + landed count (+ health dot when not clean)
- *    │ ▪ pi         0  │   ← only DETECTED hosts are entries (plus any with landed rows)
+ *    │ ▫ show 6 more   │   ← collapsed tail (hosts neither integrated nor landed) behind one click
  *    └ only opencode's ────┘   ← hintKey names the pick, "only {name}'s …" (emptyKey instead when nothing has one)
  */
 const HarnessRail: React.FC<{
@@ -573,7 +566,18 @@ const HarnessRail: React.FC<{
   onSelect: (id: string) => void;
   hintKey: string;
   emptyKey: string;
-}> = ({ hosts, counts, activeId, onSelect, hintKey, emptyKey }) => {
+  /** The host catalog + inventory arrive from one slow scan; until they do the rail would read as
+   *  "no harness on this machine", which is a claim — show the spinner instead of the empty line. */
+  loading: boolean;
+  /** Hosts the page holds back until "load more" is clicked; 0 renders nothing. */
+  hiddenCount: number;
+  /** Whether the hidden tail is currently revealed (the row then offers "collapse" instead). */
+  expanded: boolean;
+  /** Length of the default (clients-integrated) block; when the tail is revealed, a divider
+   *  separates it from the appended hidden hosts. */
+  primaryCount: number;
+  onToggle: () => void;
+}> = ({ hosts, counts, activeId, onSelect, hintKey, emptyKey, loading, hiddenCount, expanded, primaryCount, onToggle }) => {
   const { t } = useI18n();
   const [filter, setFilter] = useState('');
   /** The bottom hint names the harness it scopes — the display label of the rail's current pick. */
@@ -588,6 +592,42 @@ const HarnessRail: React.FC<{
     (option) =>
       option.value === activeId || !needle || `${option.label} ${option.value}`.toLowerCase().includes(needle)
   );
+  // Two containers by construction: the primary block, and the hidden tail in its own group that
+  // only mounts once expanded — the seam between them is structural, not a divider inside a list.
+  const primaryEnd = Math.min(primaryCount, hosts.length);
+  const blocks = [
+    { key: 'primary', options: visible.slice(0, primaryEnd) },
+    ...(expanded && primaryEnd < visible.length
+      ? [{ key: 'hidden', options: visible.slice(primaryEnd) }]
+      : []),
+  ];
+  const renderRow = (option: ComboboxOption) => {
+    const active = option.value === activeId;
+    const cell = counts[option.value] ?? { count: 0, warn: false };
+    return (
+      <button
+        key={option.value}
+        type="button"
+        className="harness-rail-row"
+        // Selected state, not a toggle: the row IS the scope of the page beside it.
+        aria-current={active ? 'true' : undefined}
+        aria-label={t('harness.railAria')
+          .replace('{name}', option.label)
+          .replace('{count}', String(cell.count))}
+        title={t('harness.railCount').replace('{n}', String(cell.count))}
+        // The row hands the pick to `onSelect`; what a pick RESETS is the page's business
+        // (it lives with the URL effect so Back/Forward replays the same chain).
+        onClick={() => onSelect(option.value)}
+      >
+        {option.icon}
+        <span className="harness-rail-label">{option.label}</span>
+        {cell.warn && <span className="harness-rail-dot" aria-hidden />}
+        <span className="harness-rail-count" aria-hidden>
+          {cell.count}
+        </span>
+      </button>
+    );
+  };
   return (
     <nav className="harness-rail" aria-label={t('harness.railTitle')}>
       {/* Two boxes, two jobs: the nav stretches to the frame's full height (the border has to reach
@@ -620,39 +660,33 @@ const HarnessRail: React.FC<{
           </div>
         )}
         {hosts.length === 0 ? (
-          <span className="harness-rail-hint">{t(emptyKey)}</span>
+          loading ? (
+            <span className="harness-rail-hint" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <RefreshCw size={11} style={{ animation: 'ocr-spin 0.8s linear infinite' }} aria-hidden />
+              {t('harness.scanning')}
+            </span>
+          ) : (
+            <span className="harness-rail-hint">{t(emptyKey)}</span>
+          )
         ) : visible.length === 0 ? (
           // Filtered to nothing: say so, and keep the field usable — an empty rail with no explanation
           // reads as "this machine has no runtimes".
           <span className="harness-rail-empty">{t('harness.railNoMatch')}</span>
         ) : (
-          visible.map((option) => {
-            const active = option.value === activeId;
-            const cell = counts[option.value] ?? { count: 0, warn: false };
-            return (
-              <button
-                key={option.value}
-                type="button"
-                className="harness-rail-row"
-                // Selected state, not a toggle: the row IS the scope of the page beside it.
-                aria-current={active ? 'true' : undefined}
-                aria-label={t('harness.railAria')
-                  .replace('{name}', option.label)
-                  .replace('{count}', String(cell.count))}
-                title={t('harness.railCount').replace('{n}', String(cell.count))}
-                // The row hands the pick to `onSelect`; what a pick RESETS is the page's business
-                // (it lives with the URL effect so Back/Forward replays the same chain).
-                onClick={() => onSelect(option.value)}
-              >
-                {option.icon}
-                <span className="harness-rail-label">{option.label}</span>
-                {cell.warn && <span className="harness-rail-dot" aria-hidden />}
-                <span className="harness-rail-count" aria-hidden>
-                  {cell.count}
-                </span>
-              </button>
-            );
-          })
+          blocks.map((block) => (
+            <div key={block.key} className={`harness-rail-group harness-rail-group-${block.key}`}>
+              {block.options.map(renderRow)}
+            </div>
+          ))
+        )}
+        {(hiddenCount > 0 || expanded) && (
+          <button type="button" className="harness-rail-row" onClick={onToggle}>
+            <span className="harness-rail-label" style={{ color: 'var(--text-dim)' }}>
+              {hiddenCount > 0
+                ? t('harness.railMore').replace('{n}', String(hiddenCount))
+                : t('harness.railLess')}
+            </span>
+          </button>
         )}
       </div>
       {/* Bottom-anchored: the card is full height, so the explanation sits at its foot —
@@ -796,6 +830,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   const [filter, setFilter] = useState<Filter>('all');
   const [q, setQ] = useState('');
   const [picker, setPicker] = useState<{ row: Row; picked: Set<string> } | null>(null);
+  const [sourcesOpen, setSourcesOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   /** Translated text, keyed by row/item id. `src` pins the exact original it was produced from —
    *  re-downloading a skill whose description changed must not resurface the previous translation. */
@@ -817,6 +852,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     // Card is the default; only an explicit operator choice of 'list' sticks.
     localStorage.getItem(`harness.view.${kind}`) === 'list' ? 'list' : 'card'
   );
+  const [showAllHosts, setShowAllHosts] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -838,7 +874,6 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
       setLoading(false);
     }
   };
-
   useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -880,22 +915,91 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     return counts;
   }, [landingHosts, trackedRows, kind, discovery, inventory]);
 
-  /** The rail's actual entries: detected hosts only — a runtime that is not on this machine has
-   *  nothing to show or install into — PLUS any host whose rows are already landed there, because
-   *  its copies must stay reachable for update/removal. `universal` is always detected (backend),
-   *  so a fresh machine still has a landing spot. */
-  const harnessOptions = useMemo(
-    () => landingHosts.filter((h) => h.detected || (railCounts[h.id]?.count ?? 0) > 0).map(hostOption),
-    [landingHosts, railCounts]
+  /** The harness segment the URL asks for, validated against the catalog: an unknown or missing
+   *  id is not a harness, it is a broken URL. Validated against every axis host (not just the
+   *  admitted ones) so a deep link to a collapsed host still pins its page. */
+  const requestedHarness = landing ? (params.harness ?? '') : '';
+  const harness = useMemo(
+    () => (landingHosts.some((h) => h.id === requestedHarness) ? requestedHarness : ''),
+    [landingHosts, requestedHarness]
   );
 
-  /** The harness segment the URL asks for. A kind with no axis reads as ''. */
-  const requestedHarness = landing ? (params.harness ?? '') : '';
-  /** Validated against the catalog: an unknown or missing id is not a harness, it is a broken URL. */
-  const harness = useMemo(
-    () => (harnessOptions.some((o) => o.value === requestedHarness) ? requestedHarness : ''),
-    [harnessOptions, requestedHarness]
+  /** The hosts the ONE-CLICK integration covers — the backend `ClientAdapter.harness` values
+   *  (frontend mirror; opencode/opencode-proxy fold to one, grok has no landing). Hosts OUTSIDE
+   *  this set are never admitted by default, however installed they are. */
+  const ONE_CLICK_HOSTS: Record<string, true> = { opencode: true, claude: true, codex: true, pi: true, dsh: true, omp: true, grok: true };
+
+  /** The anchoring order: the Clients page's adapter order (backend insertion order — by market
+   *  share: claude, codex, opencode, grok, then the niche pi/dsh/omp), mirrored. */
+  const CLIENT_ORDER = ['claude', 'codex', 'opencode', 'grok', 'pi', 'dsh', 'omp'];
+
+  /** Popularity ranking for hosts OUTSIDE the clients set (curated — the host catalog carries no
+   *  download signal); hosts missing here fall back to catalog order after the ranked ones. */
+  const HOST_POPULARITY: Record<string, number> = {
+    'github-copilot': 0,
+    cursor: 1,
+    'gemini-cli': 2,
+    windsurf: 3,
+    zed: 4,
+    cline: 5,
+    amp: 6,
+  };
+
+  /** Rank offset for hosts absent from the popularity table — after every ranked one. */
+  const HOST_POPULARITY_FALLBACK = 100;
+
+  /** ONE comparator for BOTH rail containers: `universal` pinned FIRST (always visible, top of
+   *  the primary container), then clients-integrated hosts anchor to the Clients page's adapter
+   *  order, everything else follows the popularity table (catalog order breaking ties). The order
+   *  is a pure function of the host catalog — no click, selection or expand state feeds it, so
+   *  interacting with the rail can never reshuffle either container. */
+  const compareHosts = useCallback((a: HarnessHostView, b: HarnessHostView) => {
+    const rank = (h: HarnessHostView): number => {
+      if (h.id === SHARED_HOST) return -1;
+      const ci = CLIENT_ORDER.indexOf(h.id);
+      if (ci >= 0) return ci;
+      const pop = HOST_POPULARITY[h.id];
+      return pop === undefined ? CLIENT_ORDER.length + HOST_POPULARITY_FALLBACK : CLIENT_ORDER.length + pop;
+    };
+    return rank(a) - rank(b);
+  }, []);
+
+  /** Primary-container membership, INDEPENDENT of every interaction: exactly the clients
+   *  integration (detected one-click hosts) — the hidden container holds everything else,
+   *  including `universal`... which still renders FIRST, in the primary container. */
+  const isPrimaryHost = useCallback(
+    (h: HarnessHostView) => h.id === SHARED_HOST || (ONE_CLICK_HOSTS[h.id] && h.detected === true),
+    []
   );
+
+  /** Default admission: exactly the clients integration (detected one-click hosts). Everything
+   *  else — `universal`, detected hosts outside the one-click set, hosts without presence
+   *  markers — hides in the second container behind one "load more" click. */
+  const admittedHosts = useMemo(() => {
+    const set = new Set<string>();
+    for (const h of landingHosts) {
+      if (showAllHosts || isPrimaryHost(h)) {
+        set.add(h.id);
+      }
+    }
+    return set;
+  }, [landingHosts, showAllHosts, isPrimaryHost]);
+
+  const harnessOptions = useMemo(() => {
+    // Catalog index as the tie-break keeps unranked hosts in a stable, predictable spot.
+    const catIndex = new Map(landingHosts.map((h, i) => [h.id, i]));
+    const ordered = [...landingHosts].sort(
+      (a, b) => compareHosts(a, b) || (catIndex.get(a.id) ?? 0) - (catIndex.get(b.id) ?? 0)
+    );
+    // Two containers: primary (admitted) first, hidden tail appended — each sorted by the SAME
+    // comparator above, so expanding never reshuffles either block.
+    return [
+      ordered.filter((h) => admittedHosts.has(h.id)),
+      ordered.filter((h) => !admittedHosts.has(h.id)),
+    ].flat().map((h) => hostOption(h));
+  }, [landingHosts, admittedHosts, compareHosts]);
+  /** How many non-integrated hosts the collapsed rail is holding back (the "load more" badge). */
+  const hiddenHostCount = showAllHosts ? 0 : landingHosts.filter((h) => !admittedHosts.has(h.id)).length;
 
   /** The exclusion earns its place only where readership creates a shared set (skills) and the page
    *  is pinned to a runtime other than that shared location itself. */
@@ -1048,7 +1152,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   }, [hosts, scopedTrackedRows, scopedDiscovered]);
 
   /** Kind of the install the open dialog would run. The marketplace ROW names its writer (an npm
-   *  package reached from the skills page is an extension package), so the target list follows the
+   *  package reached from the skills page is an plugin package), so the target list follows the
    *  row, not the page. */
   const installKind: Kind = installTarget?.installKind ?? kind;
   const installMeta = KIND_META[installKind];
@@ -1057,7 +1161,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
    * Hosts the dialog may write to — and the caliber differs per kind, which is why this used to be
    * wrong for MCP: skills are LOCATIONS, not readers (ten hosts read the same project
    * `.agents/skills`), so a host with no skills root, or one that is an alias of another host's
-   * directory, is not a target. MCP and extensions need their OWN verified landing — a shared skills
+   * directory, is not a target. MCP and plugins need their OWN verified landing — a shared skills
    * directory says nothing about having a server config to merge into or a package manager to run.
    * Both axes share the presence rule: an undetected host is not offered anywhere (the rail hides it
    * too) — `universal` is always detected, so bootstrapping a fresh machine still has a target.
@@ -1103,9 +1207,8 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   /**
    * Copies a market row is already installed as.
    *
-   * An extension row's key IS its canonicalKey (`npm:<name>`), and so is an MCP row's
-   * (`mcp-official:<server name>` — the writer keys the server inside a host's own `mcp` container by
-   * that identity), so both joins are exact. A skill's canonicalKey carries the directory inside the
+   * A plugin row's key IS its canonicalKey (`npm:<name>`), and so is an MCP row's (the writer keys
+   * the server inside a host's own `mcp` container by that identity), so both joins are exact. A skill's canonicalKey carries the directory inside the
    * repo (`gh:<owner>/<repo>#<dir>`), which a market row cannot know before the tarball is resolved —
    * so the repo prefix is the honest match there and the exact per-target answer waits for the
    * install sheet.
@@ -1126,7 +1229,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   const takenOn = (item: HarnessMarketItem, host: string): boolean =>
     installsFor(item).some((c) => c.host === host && c.scope === 'global' && c.state !== 'missing');
 
-  /** Candidate hosts for an install kind: a single-target kind (an extension is code against ONE
+  /** Candidate hosts for an install kind: a single-target kind (an plugin is code against ONE
    *  runtime's plugin API) reads the page's harness; a multi-target kind takes `ticked` when given
    *  (the confirm dialog's chips), otherwise the full offer list — one skill directory, or one MCP
    *  server written into several clients' configs. Single source for the expression:
@@ -1222,27 +1325,6 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   /** Install action for one market row: starts at once when a single free target leaves the sheet
    *  nothing to ask (see `startInstall`); disabled when every reachable target is taken. */
   const marketInstallButton = (item: HarnessMarketItem) => {
-    // A curated row whose package name could not be verified has no install handle of its own
-    // (`key` stays `static-opencode:<name>`, and no adapter serves that source). Pressing install
-    // could only produce `unsupported_source`, so send the operator to the source that serves it.
-    if (item.installKind === 'extension' && item.sourceId === 'static-opencode' && !item.key.startsWith('npm:')) {
-      return (
-        <button
-          className="btn btn-sm"
-          title={t('harness.browseOnNpmHint')}
-          onClick={() => {
-            setMarketSource('npm');
-            setMarketQ(item.name);
-            // Jumping to npm IS the search: commit the package name so the list answers it at once.
-            commitMarket(item.name);
-          }}
-          style={{ flex: '0 0 auto', display: 'inline-flex', alignItems: 'center', gap: 5 }}
-        >
-          <Search size={12} aria-hidden />
-          <span>{t('harness.browseOnNpm')}</span>
-        </button>
-      );
-    }
     const free = freeTargets(item);
     const count = installsFor(item).length;
     return (
@@ -1265,7 +1347,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   };
 
   /** The one harness a single-target install writes to. Absent when this page pins none — a skills
-   *  page has no runtime axis, so there is nowhere to write an extension package. */
+   *  page has no runtime axis, so there is nowhere to write an plugin package. */
   const singleTarget = installHostOffers.find((o) => o.value === harness);
   /** Shown in place of the target chips when nothing here can take the install. Null for skills: a
    *  skill's landing list is its owned locations, which the chips already enumerate honestly. */
@@ -1287,7 +1369,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
 
   /**
    * Sources the page may offer: the kind must match, and a source that declares `hosts` serves ONLY
-   * those harnesses (an extension source is bound to the runtime whose plugin API its packages
+   * those harnesses (an plugin source is bound to the runtime whose plugin API its packages
    * target). A source without `hosts` is offered everywhere and the harness is named at install —
    * which is why the MCP registries stay a cross-harness discovery surface.
    */
@@ -1802,7 +1884,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
       await load();
     } catch (e) {
       const err = e as Error & { code?: string; candidates?: string[]; plan?: HarnessInstallTarget[] };
-      // Gate 3 (extension) / gate 2 (mcp): nothing was written and the backend handed back the exact
+      // Gate 3 (plugin) / gate 2 (mcp): nothing was written and the backend handed back the exact
       // plan. The operator reads it and re-sends with `confirm` — that is the whole gate.
       if (err.code === 'confirm_required' && Array.isArray(err.plan) && err.plan.length > 0) {
         setInstallGate({ targets: err.plan, ...(skillDir ? { skillDir } : {}) });
@@ -1841,7 +1923,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
    * Install entry for a market row (card button AND detail-dialog button). When the row has exactly
    * ONE free target right now, the target-choice dialog has nothing to ask — a lone skills owner or
    * a pinned landing is not a choice — so the install starts at once: a skill lands directly (no
-   * backend gate), an extension/MCP first request comes back `confirm_required` and the plan dialog
+   * backend gate), an plugin/MCP first request comes back `confirm_required` and the plan dialog
    * opens over `installTarget` exactly as before. With several free targets the sheet still asks
    * which hosts to write, because a payload fanned to N owners IS a choice.
    */
@@ -2306,7 +2388,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
    * `copyServes` is the same predicate the rail counts with, so the removal dialog can never disagree
    * with the list that opened it: on a skills page it answers by READERSHIP (the shared
    * `.agents/skills` tree is one copy owned by `universal` and read by ten runtimes, so it belongs to
-   * every rail entry that reads it), on MCP/extension pages by the copy's own host. No harness on the
+   * every rail entry that reads it), on MCP/plugin pages by the copy's own host. No harness on the
    * page (before the catalog resolves) means no scope to narrow by — every copy is in scope.
    */
   const servesPage = (copy: HarnessCopyView): boolean => (harness ? copyServes(harness)(copy) : true);
@@ -2549,7 +2631,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   };
 
   /** Where a row came from, as copy: a registry label for a tracked row, the runtime record for a
-   *  discovered extension (it has no source — the runtime's own store is not a marketplace), the
+   *  discovered plugin (it has no source — the runtime's own store is not a marketplace), the
    *  plain "local" for a skill directory. Raw ids never reach the UI: a cell is copy, not a slug.
    *
    *  A tracked row answers "where did I INSTALL this from" — the BROWSE surface, not the writer that
@@ -2658,7 +2740,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     // A row whose shape the scan could not describe has nothing to plan against: refuse the click
     // instead of letting it fail after the round-trip. Config-backed kinds only — a skill's removal
     // is planned from its copies, so it needs no descriptor.
-    const unknownShape = (kind === 'extension' || kind === 'mcp') && !row.tracked && !row.removal;
+    const unknownShape = (kind === 'plugin' || kind === 'mcp') && !row.tracked && !row.removal;
     return (
       <button
         className="btn btn-sm"
@@ -2674,7 +2756,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   };
 
   /** The count noun follows the artifact kind ("installed skills / installed MCP / installed
-   *  extensions"): one shared skills label read as a lie on a landing page, where the list holds
+   *  plugins"): one shared skills label read as a lie on a landing page, where the list holds
    *  servers or plugins. */
   const installedNoun = t(meta.installedKey);
 
@@ -2723,7 +2805,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     : null;
 
   /** Everything inside the frame is identical for every kind — the rail only changes the frame
-   *  around it, so skills/MCP cannot drift from the extension page. */
+   *  around it, so skills/MCP cannot drift from the plugin page. */
   const content = (
     <>
       {/* Page-level tabs: the two views share one artifact set, so they are two views of one page
@@ -2910,7 +2992,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
           </div>
           {/* The one exclusion worth having: the shared `.agents` tree is the same set under every
               rail entry, so hiding it is the only way this page says "mine" — and it is therefore ON
-              by default. Absent where it would mean nothing: not on MCP/extension pages (no shared
+              by default. Absent where it would mean nothing: not on MCP/plugin pages (no shared
               landing there), not on the shared entry itself, and not on a page with nothing private
               left to show. The count is the receipt for a hidden set: it says how many rows this
               switch is holding back right now, under the current query. */}
@@ -3125,7 +3207,19 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
       </div>
       )}
 
+      {tab === 'market' && kind !== 'mcp' && (
+        <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'flex-end' }}>
+          <button type="button" className="btn btn-sm" onClick={() => setSourcesOpen(true)}>
+            <Settings2 size={12} />
+            {t('harness.srcMgmt.manage')}
+          </button>
+        </div>
+      )}
       {tab === 'market' && renderMarket()}
+
+      {tab === 'market' && kind !== 'mcp' && (
+        <HarnessSourcesDialog harness={harness} open={sourcesOpen} onClose={() => setSourcesOpen(false)} />
+      )}
 
       {/* ── Location picker ──────────────────────────────────────────────── */}
       {picker && (
@@ -3366,7 +3460,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
             )}
             <label style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('harness.installHost')}</label>
             {installMeta.installMode === 'single' ? (
-              /* One runtime is the whole target set (an extension is code against ONE plugin API), so
+              /* One runtime is the whole target set (an plugin is code against ONE plugin API), so
                  the harness is rendered as a fixed chip rather than a choice the backend refuses. */
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {singleTarget ? (
@@ -3675,6 +3769,11 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
         onSelect={pickHarness}
         hintKey={railCopy.hintKey}
         emptyKey={railCopy.emptyKey}
+        loading={!inventory}
+        hiddenCount={hiddenHostCount}
+        expanded={showAllHosts}
+        primaryCount={landingHosts.filter(isPrimaryHost).length}
+        onToggle={() => setShowAllHosts((v) => !v)}
       />
       <div className="harness-body">{content}</div>
     </div>

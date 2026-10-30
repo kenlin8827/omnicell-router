@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from 'bun:test';
-import { browsePiDev, browseSource, resetBrowseCache } from '../src/harness/browse.js';
-import { decodeEntities, fetchPiDevCatalog, parsePiDevCatalog, parsePiDevCount } from '../src/harness/pi-dev.js';
+import { browsePiDev, browseSource, resetBrowseCache } from '../src/harness/market/browse.js';
+import { decodeEntities, fetchPiDevCatalog, parsePiDevCatalog, parsePiDevCount } from '../src/harness/plugin/pi-dev.js';
 import type { HarnessSourceView } from '../src/harness/types.js';
 
 /**
@@ -28,7 +28,7 @@ function card(opts: {
   const npmLink = opts.npm === null ? '' : `<a href="https://www.npmjs.com/package/${opts.npm ?? opts.name}" target="_blank" rel="noopener">npm</a>`;
   const repoLink = opts.repo === null ? '' : `<a href="https://github.com/${opts.repo ?? 'nicobailon/pi-subagents'}" target="_blank" rel="noopener">repo</a>`;
   const repo = opts.repo === null ? '' : `<a href="https://github.com/${opts.repo ?? 'nicobailon/pi-subagents'}/issues/new?template=package-report.yml&amp;labels=package-report" target="_blank" rel="noopener">report</a>`;
-  return `<article class="surface-panel content-card" data-package-card="true" data-package-name="${opts.name}" data-package-search="${opts.name}" data-package-types="${opts.types ?? 'extension'}" data-package-downloads="558314" data-package-date="${opts.date ?? 1792878517488}" data-package-sort-name="${opts.name}"><div class="packages-card-preview" aria-hidden="true" data-preview-type="extension"><div class="packages-card-preview-frame" data-package-preview-frame="true" data-package-preview-name="${opts.name}" data-package-preview-status="missing"><span></span></div></div><div class="packages-card-body"><h3 class="packages-name"><a href="/packages/${opts.name}" data-package-link="true" data-package-path="/packages/${opts.packagePath ?? opts.name}">${opts.name}</a></h3><p class="packages-desc">${opts.desc ?? 'Pi extension for single-agent delegation and scripted multi-agent workflows'}</p><div class="packages-meta"><span>nicopreme</span><span>558.3K/mo</span><span>3h ago</span></div><div class="packages-badges"><span class="meta-chip packages-badge" data-type="extension">extension</span></div><div class="packages-links">${npmLink}${repoLink}${repo}</div><div class="packages-install"><code><span class="prefix">$</span> pi install npm:${opts.install ?? opts.name}</code></div></div></article>`;
+  return `<article class="surface-panel content-card" data-package-card="true" data-package-name="${opts.name}" data-package-search="${opts.name}" data-package-types="${opts.types ?? 'plugin'}" data-package-downloads="558314" data-package-date="${opts.date ?? 1792878517488}" data-package-sort-name="${opts.name}"><div class="packages-card-preview" aria-hidden="true" data-preview-type="plugin"><div class="packages-card-preview-frame" data-package-preview-frame="true" data-package-preview-name="${opts.name}" data-package-preview-status="missing"><span></span></div></div><div class="packages-card-body"><h3 class="packages-name"><a href="/packages/${opts.name}" data-package-link="true" data-package-path="/packages/${opts.packagePath ?? opts.name}">${opts.name}</a></h3><p class="packages-desc">${opts.desc ?? 'Pi plugin for single-agent delegation and scripted multi-agent workflows'}</p><div class="packages-meta"><span>nicopreme</span><span>558.3K/mo</span><span>3h ago</span></div><div class="packages-badges"><span class="meta-chip packages-badge" data-type="plugin">plugin</span></div><div class="packages-links">${npmLink}${repoLink}${repo}</div><div class="packages-install"><code><span class="prefix">$</span> pi install npm:${opts.install ?? opts.name}</code></div></div></article>`;
 }
 
 /** A rendered catalog page. The marker must agree with the cards, or "is there a next page" lies. */
@@ -64,7 +64,7 @@ function sourceView(overrides: Partial<HarnessSourceView> = {}): HarnessSourceVi
   return {
     id: 'pi-dev',
     label: 'pi.dev (official)',
-    kinds: ['extension'],
+    kinds: ['plugin'],
     trust: 'official',
     auth: 'none',
     enabled: true,
@@ -102,8 +102,8 @@ describe('parsePiDevCatalog', () => {
     expect(parsed.entries).toHaveLength(1);
     const entry = parsed.entries[0]!;
     expect(entry.packageName).toBe('pi-subagents');
-    expect(entry.types).toEqual(['extension']);
-    expect(entry.description).toBe('Pi extension for single-agent delegation and scripted multi-agent workflows');
+    expect(entry.types).toEqual(['plugin']);
+    expect(entry.description).toBe('Pi plugin for single-agent delegation and scripted multi-agent workflows');
     expect(entry.repoUrl).toBe('https://github.com/nicobailon/pi-subagents');
     expect(entry.url).toBe('https://pi.dev/packages/pi-subagents');
     expect(entry.publishedAt).toBe(new Date(1792878517488).toISOString());
@@ -212,7 +212,7 @@ describe('browsePiDev', () => {
     // The catalog prints `pi install npm:<pkg>`: the package is the identity, so the row installs
     // through the npm source and the console's installed-state join stays exact.
     expect(item.key).toBe('npm:pi-subagents');
-    expect(item.installKind).toBe('extension');
+    expect(item.installKind).toBe('plugin');
     expect(item.repo).toBe('nicobailon/pi-subagents');
     expect(item.url).toBe('https://pi.dev/packages/pi-subagents');
     expect(item.stars).toBeNull();
@@ -224,9 +224,9 @@ describe('browsePiDev', () => {
     stub(
       200,
       page([
-        card({ name: 'an-extension', types: 'extension' }),
+        card({ name: 'an-plugin', types: 'plugin' }),
         card({ name: 'a-bundle', types: '' }),
-        card({ name: 'multi-typed', types: 'extension skill prompt' }),
+        card({ name: 'multi-typed', types: 'plugin skill prompt' }),
         card({ name: 'a-skill', types: 'skill' }),
         card({ name: 'a-theme', types: 'theme' }),
         card({ name: 'a-prompt', types: 'prompt' }),
@@ -236,7 +236,7 @@ describe('browsePiDev', () => {
     if (!result.ok) throw new Error('expected ok');
     // Dropping rows would break the one thing a 5 000-row catalog needs: an exact `from–to / total`.
     expect(result.items.map((i) => i.name)).toEqual([
-      'an-extension',
+      'an-plugin',
       'a-bundle',
       'multi-typed',
       'a-skill',
@@ -381,7 +381,7 @@ describe('browsePiDev', () => {
   });
 
   it('answers upstream when cards survive but carry no package identity', async () => {
-    stub(200, page(['<article data-package-card="true" data-package-types="extension"></article>']));
+    stub(200, page(['<article data-package-card="true" data-package-types="plugin"></article>']));
     const result = await browsePiDev('', 24);
     expect(result).toMatchObject({ ok: false, code: 'upstream', reason: 'markupChanged' });
   });

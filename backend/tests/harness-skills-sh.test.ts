@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from 'bun:test';
-import { browseSkillsSh, browseSource, resetBrowseCache } from '../src/harness/browse.js';
-import { fetchSkillsShPage, searchSkillsSh, SKILLS_SH_PAGE_SIZE } from '../src/harness/skills-sh.js';
+import { browseSkillsSh, browseSource, resetBrowseCache } from '../src/harness/market/browse.js';
+import { fetchSkillsShPage, searchSkillsSh, SKILLS_SH_PAGE_SIZE } from '../src/harness/skill/skills-sh.js';
 import type { HarnessSourceView } from '../src/harness/types.js';
 
 /**

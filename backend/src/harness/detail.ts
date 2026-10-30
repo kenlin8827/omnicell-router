@@ -1,5 +1,5 @@
 import { describeFetchFailure, fetchFailureReason, fetchWithRetry, type FailureReason } from './net.js';
-import { fetchClawHubSkill } from './clawhub.js';
+import { fetchClawHubSkill } from './skill/clawhub.js';
 
 /**
  * Market-row detail (ADR-0015 §D6) — the long-form half of a browse answer.

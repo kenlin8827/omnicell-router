@@ -851,7 +851,7 @@ td, th {
 }
 /* A chip's faceted count (harness source chips). The harness rail can afford a bare dimmed number
    because its label is a plain word; a chip's label may itself END in a parenthetical
-   ("opencode.cafe（社区）"), where a trailing bare "1" reads as more of the name instead of a count.
+   ("ClawHub（社区）"), where a trailing bare "1" reads as more of the name instead of a count.
    So the number gets its own surface and a fixed tabular slot: the badge says "this is a quantity",
    and a 1-digit and a 3-digit count occupy the same width, so the chip never re-flows as rows are
    installed or removed. */
@@ -1348,7 +1348,7 @@ input[type='checkbox']:not(.switch):disabled {
   }
 }
 
-/* ── Harness rail (landing pages: extensions / MCP) ──────────────────────
+/* ── Harness rail (landing pages: plugins / MCP) ──────────────────────
    A landing page's first axis (which runtime the artifact is WRITTEN into) as a
    vertical picker left of the content column instead of a chip row above it.
    Card tokens only — no literal colours, so every theme carries it unchanged. */
@@ -1370,7 +1370,7 @@ input[type='checkbox']:not(.switch):disabled {
   flex-direction: column;
   gap: 16px;
 }
-/* 180px: sized to the extension-capable labels the catalog actually ships today
+/* 180px: sized to the plugin-capable labels the catalog actually ships today
    (OpenCode / Claude Code / Gemini CLI) at 12.5px, without stealing width from the
    content column. Longer names still ellipsize rather than push the frame. */
 .harness-rail {
@@ -1454,7 +1454,21 @@ input[type='checkbox']:not(.switch):disabled {
 }
 .harness-rail-row:hover {
   background: var(--surface-hover);
-}.harness-rail-row[aria-current='true'] {
+}
+/* The hidden tail lives in its own container below the primary one. Groups are transparent flex
+   columns so the rows keep their exact rhythm inside `.harness-rail-inner` (40px flex-basis); the
+   seam is the second group's border-top, drawn only while it is mounted (expanded). */
+.harness-rail-group {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+}
+.harness-rail-group-hidden {
+  border-top: 1px solid var(--card-border);
+  margin-top: 4px;
+  padding-top: 4px;
+}
+.harness-rail-row[aria-current='true'] {
   background: var(--surface-hover);
   border-color: var(--card-border);
   color: var(--accent);

@@ -2,12 +2,12 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { installArtifact } from '../src/harness/install.js';
-import { applySkill } from '../src/harness/writers/skill.js';
-import { applyRemove, planRemove } from '../src/harness/maintenance.js';
-import { recentApplies, type HarnessApplyEvent } from '../src/harness/ledger.js';
-import { findArtifact } from '../src/harness/manifest.js';
-import { scanInventory } from '../src/harness/inventory.js';
+import { installArtifact } from '../src/harness/host/install.js';
+import { applySkill } from '../src/harness/host/writers/skill.js';
+import { applyRemove, planRemove } from '../src/harness/host/maintenance.js';
+import { recentApplies, type HarnessApplyEvent } from '../src/harness/host/ledger.js';
+import { findArtifact } from '../src/harness/host/manifest.js';
+import { scanInventory } from '../src/harness/host/inventory.js';
 
 /**
  * Apply ledger + post-apply probe (ADR-0015): every WRITER-level apply appends one observation row
@@ -62,11 +62,11 @@ describe('apply ledger', () => {
     expect(mine[1]!.hosts).toBe('opencode');
   });
 
-  it('records the exact subprocess command for extension installs (gate 3)', async () => {
+  it('records the exact subprocess command for plugin installs (gate 3)', async () => {
     const root = tmpProject();
     const result = await installArtifact({
       manualSpec: '@x/pkg',
-      kind: 'extension',
+      kind: 'plugin',
       confirm: true,
       hosts: ['pi'],
       scope: 'project',
@@ -75,18 +75,18 @@ describe('apply ledger', () => {
     });
     expect(result.ok).toBe(true);
     const row = recentApplies(10)[0]!;
-    expect(row.kind).toBe('extension');
+    expect(row.kind).toBe('plugin');
     expect(row.command).toBe('pi install npm:@x/pkg');
     expect(row.outcome).toBe('ok');
   });
 });
 
 describe('remove plan + apply (audit)', () => {
-  /** Install one package-manager-owned (external) extension and return its artifact id + token. */
+  /** Install one package-manager-owned (external) plugin and return its artifact id + token. */
   async function seedExternal(spec: string): Promise<{ artifactId: string; token: string }> {
     const installed = await installArtifact({
       manualSpec: spec,
-      kind: 'extension',
+      kind: 'plugin',
       confirm: true,
       hosts: ['pi'],
       scope: 'project',
@@ -136,7 +136,7 @@ describe('remove plan + apply (audit)', () => {
 
     const row = recentApplies(50).find((r) => r.action === 'remove' && r.artifactId === artifactId);
     expect(row).toBeDefined();
-    expect(row?.kind).toBe('extension');
+    expect(row?.kind).toBe('plugin');
     expect(row?.name).toBe('@pi/ledger-ext');
     expect(row?.hosts).toBe('pi');
     expect(row?.outcome).toBe('ok');
