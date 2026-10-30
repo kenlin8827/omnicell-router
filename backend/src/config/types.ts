@@ -751,6 +751,11 @@ export interface ClientProfileMemoryEntry {
   agentModels?: Record<string, string>;
   /** Custom model-list draft (the manual extra models picked on the form). */
   extraModels?: string[];
+  /** Custom virtual-tier draft (auto/lite/plus/pro/ultra): the explicit set
+   *  the form shows for the client's switcher. Undefined = untouched draft —
+   *  the setup payload omits `virtualModels` and the adapter injects its own
+   *  default block; an array (possibly empty) scopes the block to that set. */
+  virtualModels?: string[];
   /** Model-list source on the opencode form: 'none' (default) exposes no
    *  concrete models, 'follow' derives the extra-model set from the selected
    *  API key's effective access, 'custom' keeps the manual picker. UI-only —

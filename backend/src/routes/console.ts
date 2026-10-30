@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getAllClientStatuses, refreshClientProfileBindings, setupClient, teardownClient } from '../cli/clients/index.js';
+import { VIRTUAL_AUTO_IDS } from '../cli/types.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { MEMBER_TIER_ORDER } from '../providers/member-match.js';
 import { refreshDirectPool } from '../providers/boot-direct.js';
@@ -1222,11 +1223,12 @@ export function registerConsoleRoutes(
   // 4. Client Interception Setup / Teardown
   const handleSetup = async (req: any, reply: any) => {
     const { client } = req.params as { client: string };
-    const { models, apiKey, contextWindow, extraModels, agentModels, profile } = (req.body || {}) as {
+    const { models, apiKey, contextWindow, extraModels, virtualModels, agentModels, profile } = (req.body || {}) as {
       models?: Record<string, string>;
       apiKey?: string;
       contextWindow?: number;
       extraModels?: string[];
+      virtualModels?: string[];
       agentModels?: Record<string, string>;
       profile?: { id?: string; bindings?: Record<string, string> };
     };
@@ -1235,6 +1237,12 @@ export function registerConsoleRoutes(
       : undefined;
     const cleanedExtra = Array.isArray(extraModels)
       ? extraModels.map(s => String(s || '').trim()).filter(Boolean)
+      : undefined;
+    // Follow-mode virtual block: clamp to the known tier aliases in canonical
+    // order — the field carries the key policy's allowed verdicts, never
+    // arbitrary ids (concrete pins ride in extraModels).
+    const cleanedVirtual = Array.isArray(virtualModels)
+      ? [...VIRTUAL_AUTO_IDS].filter(id => virtualModels.map(s => String(s || '').trim()).includes(id))
       : undefined;
     const cw = Number(contextWindow);
 
@@ -1318,6 +1326,7 @@ export function registerConsoleRoutes(
       ...(apiKey?.trim() ? { apiKey: apiKey.trim() } : {}),
       ...(Number.isFinite(cw) && cw > 0 ? { contextWindow: Math.floor(cw) } : {}),
       ...(cleanedExtra ? { extraModels: cleanedExtra } : {}),
+      ...(cleanedVirtual !== undefined ? { virtualModels: cleanedVirtual } : {}),
       ...(agentModelsPayload ? { agentModels: agentModelsPayload } : {}),
       ...(profileEcho ? { profile: profileEcho } : {}),
     });

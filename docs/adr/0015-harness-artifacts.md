@@ -10,8 +10,8 @@
 
 ## Context
 
-The gateway already owns a **client** relationship with six runtimes (`SupportedClient`: `opencode`,
-`opencode-proxy`, `claude`, `codex`, `pi`, `dsh`). That relationship is about **traffic**: an adapter
+The gateway already owns a **client** relationship with eight runtimes (`SupportedClient`: `opencode`,
+`opencode-proxy`, `claude`, `codex`, `pi`, `dsh`, `omp`, `grok`). That relationship is about **traffic**: an adapter
 writes the runtime's model/auth config so requests flow through the gateway, and stops there.
 
 What the runtimes can additionally be given — **skills** (instruction folders), **MCP servers** (tool

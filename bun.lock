@@ -26,6 +26,7 @@
       "version": "0.4.1",
       "dependencies": {
         "@fastify/cors": "^11.0.0",
+        "@iarna/toml": "^2.2.5",
         "@zip.js/zip.js": "^2.23.0",
         "fastify": "^5.2.1",
         "fflate": "^0.8.3",
@@ -228,6 +229,8 @@
     "@fontsource/jetbrains-mono": ["@fontsource/jetbrains-mono@5.3.0", "https://registry.npmmirror.com/@fontsource/jetbrains-mono/-/jetbrains-mono-5.3.0.tgz", {}, "sha512-fqDfB5I9f1p1TV486aUgB9t8zP84P0O1FtQR5Ol9vjwPy+S+EIGlVYm1cvj2W5shcZMTg2nZFdVMoH5wFu8a1A=="],
 
     "@fontsource/noto-sans-sc": ["@fontsource/noto-sans-sc@5.3.0", "https://registry.npmmirror.com/@fontsource/noto-sans-sc/-/noto-sans-sc-5.3.0.tgz", {}, "sha512-HeqIlGm0+ohOKxZLuHj1qW6r6avHH0OWdKERAcSDI0RQ+MXrteuLKA+M+5eOA8rYy0MFvOR5AT0fQo2rUkye0Q=="],
+
+    "@iarna/toml": ["@iarna/toml@2.2.5", "", {}, "sha512-trnsAYxU3xnS1gPHPyU961coFyLkh4gAD/0zQ5mymY4yOZ+CYvsPqUbOFSw0aDM4y0tV7tiFxL/1XfXPNC6IPg=="],
 
     "@jridgewell/gen-mapping": ["@jridgewell/gen-mapping@0.3.13", "https://registry.npmmirror.com/@jridgewell/gen-mapping/-/gen-mapping-0.3.13.tgz", { "dependencies": { "@jridgewell/sourcemap-codec": "^1.5.0", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA=="],
 

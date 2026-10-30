@@ -1095,6 +1095,8 @@ hiddenBadge: string;
     entryModeExplicitHint: string;
     thSwitches: string;
     thTurns: string;
+    /** Tooltip: turns = distinct user prompts; tool-loop requests excluded */
+    thTurnsTip: string;
     thRequests: string;
     thActive: string;
     thDetail: string;
@@ -1480,6 +1482,14 @@ hiddenBadge: string;
     copied: string;
     formatJson: string;
     showRaw: string;
+    /** Toggle label: merge streamed chunks into the non-stream response body. */
+    merge: string;
+    /** Tooltip for the merge toggle (target shape + merged fields). */
+    mergeHint: string;
+    /** Toggle label: parse the body and render the final text. */
+    parseRender: string;
+    /** Tooltip for the parse-and-render toggle (the rendered sections). */
+    parseRenderHint: string;
     viaProxy: string;
     replay: string;
     replaying: string;

@@ -342,7 +342,7 @@ export class OmpClientAdapter implements ClientAdapter {
     };
   }
 
-  async setup(options?: { port?: number; models?: Record<string, string>; apiKey?: string; contextWindow?: number; extraModels?: string[]; /** Effective role bindings (manual + profile-linked, merged by the console route): role → modelRef. */ agentModels?: Record<string, string>; /** Profile-link echo for the OCR sidecar meta: role → profile-slot key ('' id = un-link). */ profile?: ModelProfileBinding }): Promise<{ success: boolean; message: string }> {
+  async setup(options?: { port?: number; models?: Record<string, string>; apiKey?: string; contextWindow?: number; extraModels?: string[]; /** Follow mode: the virtual tier subset the selected key's policy admits. */ virtualModels?: string[]; /** Effective role bindings (manual + profile-linked, merged by the console route): role → modelRef. */ agentModels?: Record<string, string>; /** Profile-link echo for the OCR sidecar meta: role → profile-slot key ('' id = un-link). */ profile?: ModelProfileBinding }): Promise<{ success: boolean; message: string }> {
     const configPath = this.getConfigPath();
     const dir = path.dirname(configPath);
 
@@ -393,13 +393,17 @@ export class OmpClientAdapter implements ClientAdapter {
     }
     const explicitRefs = [...new Set(Object.values(explicitRoles).filter(v => !v.includes('/')))];
 
-    // Fixed auto* tier aliases are always exposed (the gateway resolves them
-    // natively), then the user's extra concrete models, then any bare
-    // explicit-role refs not already listed. Main stays slot #1.
+    // Virtual tier block: follow mode scopes it to the subset the selected
+    // key's policy admits (`virtualModels`); other callers get the full block.
+    // Then the user's extra concrete models, then any bare explicit-role refs
+    // not already listed. Main stays slot #1.
     const extras = (options?.extraModels || []).map(id => id.trim()).filter(id => id && id !== main);
+    const virtuals = Array.isArray(options?.virtualModels)
+      ? [...VIRTUAL_AUTO_IDS].filter(id => options.virtualModels!.includes(id))
+      : [...VIRTUAL_AUTO_IDS];
     const ids = [
       main,
-      ...[...VIRTUAL_AUTO_IDS].filter(id => id !== main && !extras.includes(id)),
+      ...virtuals.filter(id => id !== main && !extras.includes(id)),
       ...extras,
       ...explicitRefs.filter(id => id !== main && !extras.includes(id)),
     ];

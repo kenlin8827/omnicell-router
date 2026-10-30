@@ -2,7 +2,7 @@
 
 ## 状态
 
-已实现 — 2026-10-15。由代码事实推导（`backend/src/session/session-manager.ts`、`backend/src/pipeline/orchestrator.ts` 4B 接缝、`backend/src/pipeline/credential-selection.ts`）。语料重置中按现行代码重新推导（历史编号已退役；现行图谱：0001 路由、0003 寻址/成员制、0004 容错、0005 执行、0006 凭证、0007 环境、0008 接入面）。层级：跨切面（请求侧会话状态）。本篇一引用的健康词汇定义于 ADR-0004；亲和身份锚定定义于 ADR-0006。
+已实现 — 2026-10-15。由代码事实推导（`backend/src/session/session-manager.ts`、`backend/src/pipeline/orchestrator.ts` 4B 接缝、`backend/src/pipeline/credential-selection.ts`）。语料重置中按现行代码重新推导（历史编号已退役；现行图谱：0001 路由、0003 寻址/成员制、0004 容错、0005 执行、0006 凭证、0007 环境、0008 接入面）。层级：跨切面（请求侧会话状态）。本篇一引用的健康词汇定义于 ADR-0004；亲和身份锚定定义于 ADR-0006。2026-10-29 增补 §1 第 8 层：厂商 header 兜底。
 
 ## 背景
 
@@ -20,7 +20,8 @@
 4. 链锚——历史头部截至每个 assistant 轮的前缀哈希（探针有界；命中分叉/重生成后仍共头的历史）。按**规范形**序列化（见下）：登记的 assistant 回音保留其 `tool_calls`，故 agent 工具循环能扛住客户端回传时的字节漂移重新锚定。
 5. 尾锚——长度 ≥ 3、终于 assistant 边界的尾部窗口（截旧轮保上下文的客户端靠它回家）。
 6. 会话键——`sha256(apiKey 身份 + 完整首条用户消息)`。仅在字节精确锚点落空后才走到（第 2 轮起，如重生成的 assistant 改写），且仅当该键**只有唯一候选**（无歧义）时才归队；有歧义的键（两个活会话共享首条消息）冷启动——假性拆分可自愈，假性合并永不可逆。传输 IP 被刻意排除在输入之外：本地网关对所有人都是 `127.0.0.1`/`::1`（无区分度），且地址在两个环回族之间抖动（正是它破坏了再锚定）。这取代了原先的首条消息根映射：它把 turn-1 形态的重发直接短路到 mint（根本不查键），又把有歧义的根**墓碑化**——同题重问毒化键，再叠加下述 tool-call 漂移，之后每一轮都落到被毒化的键上重新 mint，把一条会话级联成几十个 session id。
-7. 冷启动——全新随机 id（`sess_` + 12 随机字节）。turn-1 形态的重发**总是** mint 一个不同 id（守住"绝不假性合并"）；待各分叉从第 2 轮起有了自己的锚点后自愈。确定性出生 id 被否决：本地网关上共享模板开场白的会话会与它相撞。
+7. 冷启动——全新随机 id（`sess_` + 12 随机字节）。无厂商 header 时，turn-1 形态的重发**总是** mint 一个不同 id（守住"绝不假性合并"）；待各分叉从第 2 轮起有了自己的锚点后自愈。确定性出生 id 被否决：本地网关上共享模板开场白的会话会与它相撞。
+8. 厂商 header 兜底（`header_fallback`）——精确名单落空后，任何 `x-<app>-(session|conversation)-id` header（`x-grok-session-id`、`x-my-harness-conversation-id` 等；app 段必须非空，故第 1 层的裸形态绝不在此重现）会在**两条** mint 路径上为新生 id 命名——turn-1 形态起步与第 6 层歧义重 mint——取代随机 id。该声明 outrank 内容歧义，正如第 1 层 outrank 一切：行为良好的客户端在歧义分裂时重附到自己的会话 id（控制台/归档关联不因 id 漂移断裂）；逐轮垃圾值也只重命名当次 mint（锚点从下一轮起重新接管）。它永远无法改道锚点已持有的会话。每个值受两道命名空间守卫约束：认领保留前缀 `ocr-internal:`（网关内部行）或超过 200 字符的值被忽略——探测落到下一个匹配 header，否则落到随机 mint。无 header 的分裂仍走随机 mint，"绝不假性合并"的保证原样保留。
 
 tool-call 锚按**规范形**序列化——易变包装字段（`"type":"function"` 标记、arguments JSON 的美化 vs 重压缩、信封键序）被归一化抹平；对回传时重新序列化的客户端，整对象哈希会在每个 tool-call 边界落空。该保留的区分度照旧保留：纯 tool-call 轮仍按 id + name + arguments 区分，不同的调用绝不互撞（不可逆的假性合并方向）。锚映射与会话键持久化到按环境的 JSON 快照（`<env>/data/sessions.json`——只存内容哈希与会话 id，无明文），2 秒防抖 + 原子写、关停时刷盘；重启不再撕碎非配合型客户端的分组（仅内存态的 tier/钉选/亲和绑定会重建）。完整摘要式重写匹配不到任何锚，刻意开新会话。出生元数据（`origin`、`firstUserMessage`）先写先得、此后不可变。
 
@@ -45,7 +46,7 @@ switch     = evict ∧ 健康着陆点存在 ∧ landing.id ≠ pin
 - **healthForce**——`modelHealthView(pin) === 'unavailable'`（ADR-0004）：模型断路器 OPEN，或全部凭证 pair 硬 OPEN / SUSPECT / 操作员 DISABLED。`recovering`（试飞在途——金丝雀槽位空闲**或被占**）永不驱逐：peek 视图会把忙碌的试飞读成宕机，而在距恢复只差一次探针的模型上移走钉扎，烧毁的 KV 缓存永久不回（没有任何回切逻辑）。Shadow 模式下自动跳闸永不驱逐：被 shadow 的断路器照常服务（`verdict()` 契约），视图同样按在服务折叠；MANUAL 与行政下架逐字生效。
 - **着陆点**——`getModelForTier(actualTier, true)` ∧ peek 可用；请求梯队全空时跨层着陆合法且有日志（`reason=empty-pool`）；repin 永不触碰 `maxTier`。**无健康着陆点 → 被驱逐的钉扎继续服务**（安全失败：被清空的梯队不得搁浅绑定会话；每轮懒惰重判，有处可去即自动完成迟到的切换）。
 - **范围**——仅 ratchet 模式。显式点名请求永不改道，仅为对齐回写钉扎（点名模型在天花板梯队实际服务；会话出生/升档时棘轮 resolver 收到的是**被点名模型本身**，绝非池代表——pool-less 部署下点名流量必须保持可调用；裸 `auto` 仍走池解析代表）。Combo 完全绕开钉扎（`sessionMode='bypass'`）：成员表逐调用现场重解析，combo 编辑下一个请求即触达所有对话——没有"绑定"需要撤离。
-- **控制台面**——钉扎是路由内部状态，绝不出现在控制台会话行中：`GET /api/admin/sessions` 只报 `currentModel`（实际服务过该会话最后一轮的模型 id，照注册原样——由图录/梯队成员匹配而来的模型带 `provider/model` 前缀，手写注册的模型是裸 id）与服务商 `currentProvider`——活跃行与轨迹重建行共用同一套推导，`GET /api/admin/sessions/:id` 走同一份投影。故障转移的落点因此绝不会冒充会话锚点；重启后的重建行按设计不携带路由状态，渲染同样的执行视图而非编造一个钉扎值；且行是封闭白名单（`SessionRow`，`backend/src/session/session-row.ts`），未来新增的会话内部字段默认不外泄，不会顺着一处展开（spread）漏出来。
+- **控制台面**——钉扎是路由内部状态，绝不出现在控制台会话行中：`GET /api/admin/sessions` 只报 `currentModel`（实际服务过该会话最后一轮的模型 id，照注册原样——由图录/梯队成员匹配而来的模型带 `provider/model` 前缀，手写注册的模型是裸 id）与服务商 `currentProvider`——活跃行与轨迹重建行共用同一套推导，`GET /api/admin/sessions/:id` 走同一份投影。故障转移的落点因此绝不会冒充会话锚点；重启后的重建行按设计不携带路由状态，渲染同样的执行视图而非编造一个钉扎值；且行是封闭白名单（`SessionRow`，`backend/src/session/session-row.ts`），未来新增的会话内部字段默认不外泄，不会顺着一处展开（spread）漏出来。行里的 `firstUserMessage`（会话 id 下方的标题行）在出生时采集一次、由同一份提取结果写往两处——活跃实体与会话轨迹（`request.firstUserSummary`，后续每一轮逐字重写，因此轨迹环淘汰出生记录也不会让标题消失）——因此轨迹重建行（重启后，或从不铸造实体的 combo/stateless 会话）用的是同一个值；读取时绝不查请求捕捉归档，捕捉关闭时标题依然存在。
 - **归因**——绝不新增 `reasonCode`（本轮代码属于 §2 的 `session.*` 词汇）；迁移走 `reasonParams`：`{ repin: 'config'|'health', repinFrom, repinTo }`，随 trace 持久化，在会话切换时间线渲染为显式尾部。
 被否决：peek 式驱逐（把钉扎从恢复中的模型上搬走）；在 `executeCandidatePool` 过滤链首（该池被显式/combo 共用——打破显式优先契约）；干等 TTL（最长一小时静默否决已提交的操作员编辑）。
 

@@ -124,6 +124,35 @@ export function currentModelOf(traces: ExecutionTrace[]): CurrentModelView {
   };
 }
 
+/**
+ * User-prompt turn count — the console "Turns" column. One per trace carrying
+ * a NEW user prompt; the orchestrator blanks `userPromptSummary` on
+ * tool-result continuations (lastUserIdx < prevMessageCount, orchestrator.ts),
+ * so this never counts an agent tool loop's follow-up requests. The session
+ * entity's own `turnCount` counts EVERY request — never display that number
+ * next to `traceCount`, the two would always be equal.
+ */
+export function promptTurnsOf(traces: ExecutionTrace[]): number {
+  return traces.reduce((n, t) => (t.request.userPromptSummary ? n + 1 : n), 0);
+}
+
+/**
+ * Session title — the FIRST user prompt of the conversation, rendered under
+ * the session id. One derivation for both row shapes: the traces carry it
+ * (`request.firstUserSummary`, derived at birth and re-stamped on every later
+ * turn), so a row rebuilt from traces alone (after a restart, or for a
+ * combo/stateless session that never minted an entity) keeps its name instead
+ * of rendering untitled. Traces written before the field existed fall back to
+ * the opening turn's `userPromptSummary` — for a fresh conversation that IS
+ * the first prompt; only a client replaying pre-existing history differs, and
+ * there the replayed tail is the closest surviving value.
+ */
+export function sessionTitleOf(traces: ExecutionTrace[]): string | undefined {
+  const first = traces[0];
+  if (!first) return undefined;
+  return first.request.firstUserSummary || first.request.userPromptSummary || undefined;
+}
+
 /** One console session row. */
 export interface SessionRow extends SessionEntityView, SessionAggregates {
   /** Gateway-internal loopback row — derived from the id, never stored. */

@@ -86,16 +86,17 @@ function sweepRouterAgentModels(configPath: string): void {
   }
 }
 
-function buildRouterProviderNode(port: number, model?: string, extraModels?: string[], apiKey?: string): any {
+function buildRouterProviderNode(port: number, model?: string, extraModels?: string[], apiKey?: string, virtualModels?: string[]): any {
   const targetUrl = `http://127.0.0.1:${port}/v1`;
   const modelEntry = (label: string) => ({ name: label });
-  const models: Record<string, { name: string }> = {
-    auto: modelEntry('Auto'),
-    'lite': modelEntry('Lite'),
-    'plus': modelEntry('Plus'),
-    'pro': modelEntry('Pro'),
-    'ultra': modelEntry('Ultra'),
-  };
+  // Virtual tier block: follow mode scopes it to the subset the selected key's
+  // policy admits (`virtualModels`); every other caller gets the full block.
+  const virtuals = Array.isArray(virtualModels)
+    ? [...VIRTUAL_AUTO_IDS].filter(id => virtualModels.includes(id))
+    : [...VIRTUAL_AUTO_IDS];
+  const models: Record<string, { name: string }> = Object.fromEntries(
+    virtuals.map(id => [id, modelEntry(id === 'auto' ? 'Auto' : id[0].toUpperCase() + id.slice(1))])
+  );
   // Pin a concrete registered model: expose it in the client's model picker.
   if (model && model !== 'auto' && !['lite','plus','pro','ultra'].includes(model)) {
     models[model] = modelEntry(`Pinned: ${model}`);
@@ -186,6 +187,8 @@ export class OpenCodeClientAdapter implements ClientAdapter {
     port?: number;
     models?: Record<string, string>;
     extraModels?: string[];
+    /** Follow mode: the virtual tier subset the selected key's policy admits. */
+    virtualModels?: string[];
     apiKey?: string;
     /** Effective agent bindings (manual picks + profile-resolved links, merged by the console route): agent name → modelRef ('auto'/'' = inherit default). */
     agentModels?: Record<string, string>;
@@ -217,7 +220,7 @@ export class OpenCodeClientAdapter implements ClientAdapter {
     const defsPaths = resolveDefaultPaths();
     const defs = readProviderDefsFile(defsPaths)?.providers ?? {};
     writeProviderDefs(
-      { ...defs, [ROUTER_PROVIDER_ID]: buildRouterProviderNode(port, main, exposedExtras, apiKey) },
+      { ...defs, [ROUTER_PROVIDER_ID]: buildRouterProviderNode(port, main, exposedExtras, apiKey, options?.virtualModels) },
       defsPaths
     );
     materializeDefs(defsPaths, configPath);

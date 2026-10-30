@@ -5,6 +5,7 @@ import { ClaudeClientAdapter } from './claude.js';
 import { CodexClientAdapter } from './codex.js';
 import { PiClientAdapter } from './pi.js';
 import { DshClientAdapter } from './dsh.js';
+import { GrokClientAdapter } from './grok.js';
 import { OmpClientAdapter } from './omp.js';
 import { ClientHookStatus, SupportedClient } from '../types.js';
 
@@ -16,6 +17,7 @@ const adapters: Record<SupportedClient, ClientAdapter> = {
   pi: new PiClientAdapter(),
   dsh: new DshClientAdapter(),
   omp: new OmpClientAdapter(),
+  grok: new GrokClientAdapter(),
 };
 
 export function getClientAdapter(name: string): ClientAdapter | null {

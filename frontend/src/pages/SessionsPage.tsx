@@ -855,7 +855,9 @@ export const SessionsPage: React.FC = () => {
                   </span>
                 </th>
                 <th style={TH_STYLE}>{t('sessions.thSwitches')}</th>
-                <th style={TH_STYLE}>{t('sessions.thTurns')}</th>
+                <th style={TH_STYLE}>
+                  <span title={t('sessions.thTurnsTip')}>{t('sessions.thTurns')}</span>
+                </th>
                 <th style={TH_STYLE}>{t('sessions.thRequests')}</th>
                 <th style={TH_LEFT}>{t('sessions.thTokens')}</th>
                 <th style={TH_STYLE}>{t('sessions.thCost')}</th>

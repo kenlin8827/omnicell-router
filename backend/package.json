@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@fastify/cors": "^11.0.0",
+    "@iarna/toml": "^2.2.5",
     "@zip.js/zip.js": "^2.23.0",
     "fastify": "^5.2.1",
     "fflate": "^0.8.3",

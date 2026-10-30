@@ -303,7 +303,7 @@ async function main(): Promise<void> {
       printBanner();
       const client = args[1] as SupportedClient;
       if (!client) {
-        console.error(`${C.red}✗ Missing client target.${C.reset} Usage: \`ocr setup <opencode | opencode-proxy | claude | codex | pi | dsh | omp>\``);
+        console.error(`${C.red}✗ Missing client target.${C.reset} Usage: \`ocr setup <opencode | opencode-proxy | claude | codex | pi | dsh | omp | grok>\``);
         process.exit(1);
       }
       const res = await setupClient(client, { port });
@@ -320,7 +320,7 @@ async function main(): Promise<void> {
       printBanner();
       const client = args[1] as SupportedClient;
       if (!client) {
-        console.error(`${C.red}✗ Missing client target.${C.reset} Usage: \`ocr teardown <opencode | opencode-proxy | claude | codex | pi | dsh | omp>\``);
+        console.error(`${C.red}✗ Missing client target.${C.reset} Usage: \`ocr teardown <opencode | opencode-proxy | claude | codex | pi | dsh | omp | grok>\``);
         process.exit(1);
       }
       const res = await teardownClient(client);

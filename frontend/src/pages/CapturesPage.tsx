@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
-import { Archive, RefreshCw, Trash2, X, AlertTriangle, Download, Copy, Check, Braces, Maximize2, Minimize2, Scale, Zap, ArrowDownRight, ArrowUpRight, Wrench, Terminal, Send } from 'lucide-react';
+import { Archive, RefreshCw, Trash2, X, AlertTriangle, Download, Copy, Check, Braces, Combine, FileText, Maximize2, Minimize2, Scale, Zap, ArrowDownRight, ArrowUpRight, Wrench, Terminal, Send } from 'lucide-react';
 import { buildCurl, buildCurlPosix, buildReplaySpec } from '../lib/curl';
 import {
   api,
@@ -25,8 +25,9 @@ import { copyToClipboard, shortId, decodeRate, formatRate, fmtDur, fmtLatency } 
 import { useSplitterWidth, VSplitter } from '../components/Splitter';
 import { strToU8, zipSync } from 'fflate';
 import { SessionTranscript } from '../components/SessionTranscript';
+import { Prose } from '../components/Prose';
 import { BackToTop } from '../components/BackToTop';
-import { findMediaTokens, unwrapHarnessText } from '../lib/transcript';
+import { findMediaTokens, mergeSseToNonStream, parseAssistantResponse, unwrapHarnessText } from '../lib/transcript';
 import { DEFAULT_MAX_BODY_BYTES } from '../lib/defaults';
 import { useBackdropDismiss } from '../lib/useBackdropDismiss';
 
@@ -166,16 +167,27 @@ const TurnsSkeleton: React.FC<{ chat?: boolean }> = ({ chat }) => {
 
 /**
  * Wire-content block with a small toolbar: copy-to-clipboard (with textarea
- * fallback for non-secure contexts) and a JSON pretty/raw toggle offered
- * only when the content actually parses as JSON. Defaults to RAW — this is
- * a wire capture, so the bytes as actually sent/received are the source of
- * truth; pretty-printing is an opt-in reading aid.
+ * fallback for non-secure contexts), a JSON pretty/raw toggle offered only
+ * when the content actually parses as JSON, and two reading aids for
+ * completion responses — a merge view (streamed chunks folded into the
+ * equivalent NON-STREAM response body) and a parsed render of the final
+ * text (thinking / answer / tool calls). Defaults to RAW — this is a wire
+ * capture, so the bytes as actually sent/received are the source of truth;
+ * everything beyond that is an opt-in reading aid.
  */
-function JsonBlock({ value }: { value: unknown }) {
+export function JsonBlock({ value }: { value: unknown }) {
   const { t } = useI18n();
   const toast = useToast();
   const [copied, setCopied] = useState(false);
   const [formatted, setFormatted] = useState(false);
+  // Non-wire view modes. 'merged' folds a streamed SSE body into the
+  // equivalent non-stream response; 'parsed' renders the semantic final
+  // text. Both are self-scoping: a toggle renders only when the wire text
+  // qualifies (merged: SSE of a recognized completion dialect; parsed:
+  // parses as a completion response via the transcript parser — headers
+  // and request payloads never do), and an active mode silently falls
+  // back to the wire view when the next body does not qualify.
+  const [mode, setMode] = useState<'wire' | 'merged' | 'parsed'>('wire');
   const rawText =
     value === undefined || value === null
       ? ''
@@ -190,17 +202,37 @@ function JsonBlock({ value }: { value: unknown }) {
       return null;
     }
   }, [rawText]);
+  const parsed = useMemo(() => (rawText ? parseAssistantResponse(rawText) : null), [rawText]);
+  const merged = useMemo(() => (rawText ? mergeSseToNonStream(rawText) : null), [rawText]);
+  const mergedText = useMemo(() => (merged ? JSON.stringify(merged, null, 2) : null), [merged]);
+  // Plain-text form of the parsed view — what the copy button grabs.
+  const parsedText = useMemo(() => {
+    if (!parsed) return '';
+    const sections: string[] = [];
+    if (parsed.reasoning) sections.push(`[${t('captures.msgThinking')}]\n${parsed.reasoning}`);
+    if (parsed.text) sections.push(parsed.text);
+    for (const c of parsed.toolCalls)
+      sections.push(`[${t('captures.toolCallLabel')}${c.name ? ` · ${c.name}` : ''}]\n${c.args}`);
+    return sections.join('\n\n');
+  }, [parsed, t]);
 
   if (value === undefined || value === null) return null;
   const text = formatted && pretty !== null ? pretty : rawText;
+  const showMerged = mode === 'merged' && merged !== null;
+  const showParsed = mode === 'parsed' && parsed !== null;
+  const copyTarget = showParsed
+    ? parsedText
+    : showMerged && mergedText !== null
+      ? mergedText
+      : text;
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(copyTarget);
     } catch {
       // Fallback for non-secure contexts (http://, older browsers).
       const ta = document.createElement('textarea');
-      ta.value = text;
+      ta.value = copyTarget;
       document.body.appendChild(ta);
       ta.select();
       document.execCommand('copy');
@@ -224,11 +256,58 @@ function JsonBlock({ value }: { value: unknown }) {
     cursor: 'pointer',
     fontFamily: FONT_MONO,
   };
+  const preStyle: React.CSSProperties = {
+    margin: 0,
+    padding: '12px 14px',
+    background: 'var(--well-bg)',
+    border: '1px solid var(--card-border)',
+    borderRadius: '6px',
+    fontSize: '11px',
+    lineHeight: 1.55,
+    // Without this the UA default monospace (Courier New on Windows)
+    // renders the JSON — match the standard chain used elsewhere here.
+    fontFamily: FONT_MONO,
+    overflow: 'auto',
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+  };
+  // Section label rows above the parsed view's Prose blocks — the Prose
+  // blocks own the collapse/expand; these only name the section.
+  const sectionLabelStyle: React.CSSProperties = {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 5,
+    fontSize: '11px',
+    fontWeight: 700,
+    color: 'var(--text-dim)',
+    margin: '0 0 3px',
+    letterSpacing: 0.3,
+  };
 
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, marginBottom: 4 }}>
-        {pretty !== null && (
+        {merged !== null && (
+          <button
+            style={{ ...btnStyle, color: showMerged ? 'var(--accent)' : 'var(--text-dim)' }}
+            onClick={() => setMode(m => (m === 'merged' ? 'wire' : 'merged'))}
+            title={t('captures.mergeHint')}
+          >
+            <Combine size={12} />
+            {t('captures.merge')}
+          </button>
+        )}
+        {parsed !== null && (
+          <button
+            style={{ ...btnStyle, color: showParsed ? 'var(--accent)' : 'var(--text-dim)' }}
+            onClick={() => setMode(m => (m === 'parsed' ? 'wire' : 'parsed'))}
+            title={t('captures.parseRenderHint')}
+          >
+            <FileText size={12} />
+            {t('captures.parseRender')}
+          </button>
+        )}
+        {pretty !== null && !showMerged && !showParsed && (
           <button
             style={btnStyle}
             onClick={() => setFormatted(f => !f)}
@@ -243,25 +322,37 @@ function JsonBlock({ value }: { value: unknown }) {
           {copied ? t('captures.copied') : t('captures.copy')}
         </button>
       </div>
-      <pre
-        style={{
-          margin: 0,
-          padding: '12px 14px',
-          background: 'var(--well-bg)',
-          border: '1px solid var(--card-border)',
-          borderRadius: '6px',
-          fontSize: '11px',
-          lineHeight: 1.55,
-          // Without this the UA default monospace (Courier New on Windows)
-          // renders the JSON — match the standard chain used elsewhere here.
-          fontFamily: FONT_MONO,
-          overflow: 'auto',
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-word',
-        }}
-      >
-        {text}
-      </pre>
+      {showMerged ? (
+        <pre style={preStyle}>{mergedText}</pre>
+      ) : showParsed && parsed ? (
+        <>
+          {parsed.reasoning && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={sectionLabelStyle}>{t('captures.msgThinking')}</div>
+              <Prose text={parsed.reasoning} clamp={8} color="var(--text-muted)" mono={false} />
+            </div>
+          )}
+          {parsed.text && (
+            <div style={{ marginBottom: parsed.toolCalls.length ? 10 : 0 }}>
+              <Prose text={parsed.text} markdown clamp={8} viewTitle={t('captures.msgAssistant')} />
+            </div>
+          )}
+          {parsed.toolCalls.map((c, i) => (
+            <div key={i} style={{ marginBottom: i < parsed.toolCalls.length - 1 ? 10 : 0 }}>
+              <div style={sectionLabelStyle}>
+                <span className="badge badge-amber">
+                  <Wrench size={9} style={{ flexShrink: 0 }} />
+                  {t('captures.toolCallLabel')}
+                </span>
+                {c.name ? <span style={{ fontFamily: FONT_MONO }}>{c.name}</span> : null}
+              </div>
+              <Prose text={c.args} clamp={4} />
+            </div>
+          ))}
+        </>
+      ) : (
+        <pre style={preStyle}>{text}</pre>
+      )}
     </div>
   );
 }

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <!-- Grok (xAI) mark, hand-drawn: the xAI logo is two diagonal strokes with a
+       stepped break in the down-stroke. Flattened to monochrome untagged
+       subpaths so BrandIcon's fill="currentColor" themes it like the rest of
+       the row. Locally maintained — simple-icons has no Grok glyph yet
+       (simple-icons/simple-icons#13853). -->
+  <path d="M2.5 2.5h3.4l15.6 19h-3.4z" />
+  <path d="M18.1 2.5h3.4l-6.1 7.6-1.7-2.1z" />
+  <path d="M8.2 14.6l1.7 2.1-4.4 5.3H2.1z" />
+</svg>

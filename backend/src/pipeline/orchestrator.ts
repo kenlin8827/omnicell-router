@@ -931,17 +931,50 @@ export class PipelineOrchestrator {
       sessionTurnCount = ratchetResult.session.turnCount;
     }
 
+    // Traces already recorded for this session (this turn's trace is written
+    // in step 8). Read once: the birth title is re-stamped from them, and the
+    // per-turn prompt summary needs the previous message count.
+    const prevTraces = this.traceTracker.getTracesBySession(sessionId);
+
+    // Multimodal content parts: keep the text ones. Shared by the session
+    // title below and the per-turn prompt summary in step 8.
+    const textPartOf = (p: unknown): string => {
+      if (typeof p !== 'object' || p === null || !('text' in p)) return '';
+      const text: unknown = p.text;
+      return typeof text === 'string' ? text : '';
+    };
+
+    // Session title: the FIRST user message of the conversation, flattened and
+    // capped like the capture preview (array content is joined, never dropped —
+    // a multimodal opening message must still name the session). Once written,
+    // every later turn copies the birth value verbatim, so the trace ring can
+    // evict the birth trace without blanking the console title. Written to two
+    // places from this ONE value: the live entity (attachOrigin, below) and the
+    // trace (step 8) — a row rebuilt from traces alone has no entity at all.
+    const firstUserSummary =
+      prevTraces[0]?.request.firstUserSummary ??
+      (() => {
+        const firstUser = normalizedRequest.messages.find((m) => m.role === 'user');
+        const raw =
+          typeof firstUser?.content === 'string'
+            ? firstUser.content
+            : Array.isArray(firstUser?.content)
+              ? firstUser.content.map(textPartOf).join(' ')
+              : '';
+        const flat = raw.replace(/\s+/g, ' ').trim();
+        return flat ? flat.slice(0, 200) : undefined;
+      })();
+
     // Birth metadata: attach once per session (first-write-wins inside the
     // manager), recording the inbound wire, the layer that resolved the id,
-    // the client ip and a first-message snippet for UI identification.
+    // the client ip and the first-message snippet for UI identification.
     const bornSession = this.sessionManager.getSession(sessionId);
     if (bornSession && bornSession.turnCount === 1) {
-      const firstUser = normalizedRequest.messages.find((m) => m.role === 'user');
       this.sessionManager.attachOrigin(
         sessionId,
         { wire: context?.wire, lookupType: sessionResolve.lookupType },
         context?.clientIp,
-        typeof firstUser?.content === 'string' ? firstUser.content : undefined
+        firstUserSummary
       );
     }
 
@@ -1814,13 +1847,6 @@ export class PipelineOrchestrator {
     // — see resolveTraceId). One id now joins capture events and the trace
     // record, so a console reader can pull both streams by traceId.
     const sharedTraceId = traceId ?? 'unknown';
-    // Multimodal content parts: keep the text ones (mirrors the early
-    // lastUserText join at 2C without the `any` cast).
-    const textPartOf = (p: unknown): string => {
-      if (typeof p !== 'object' || p === null || !('text' in p)) return '';
-      const text: unknown = p.text;
-      return typeof text === 'string' ? text : '';
-    };
 
     // The summary names the user message THAT TRIGGERED this turn. A
     // tool-result continuation turn carries the whole history, so its last
@@ -1844,11 +1870,8 @@ export class PipelineOrchestrator {
       : Array.isArray(lastUserMsg?.content)
         ? (lastUserMsg.content.map(textPartOf).join(' ')).slice(0, 200)
         : '';
-    if (userPromptSummary) {
-      const prevTraces = this.traceTracker.getTracesBySession(sessionId);
-      const prevMessageCount = prevTraces[prevTraces.length - 1]?.request.messageCount ?? 0;
-      if (lastUserIdx < prevMessageCount) userPromptSummary = '';
-    }
+    const prevMessageCount = prevTraces[prevTraces.length - 1]?.request.messageCount ?? 0;
+    if (userPromptSummary && lastUserIdx < prevMessageCount) userPromptSummary = '';
 
     this.traceTracker.record({
       traceId: sharedTraceId,
@@ -1861,6 +1884,7 @@ export class PipelineOrchestrator {
       request: {
         model: request.model || 'auto',
         userPromptSummary,
+        ...(firstUserSummary ? { firstUserSummary } : {}),
         messageCount: normalizedRequest.messages.length,
         hasSystemPrompt: normalizedRequest.messages.some(m => m.role === 'system'),
         hasToolsOrSchema: Boolean(decision.needsSchemaValidation),
