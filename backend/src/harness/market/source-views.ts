@@ -16,30 +16,6 @@ import type { HarnessSourceView } from '../types.js';
  */
 export const SOURCES: HarnessSourceView[] = [
   {
-    id: 'skills-sh',
-    label: 'skills.sh',
-    kinds: ['skill'],
-    trust: 'aggregator',
-    // `auth` describes the API (`/api/v1/skills` = 401 without a Vercel workload token), which this
-    // console never calls. The market reads the endpoint the SITE's own browser reads, so it needs no
-    // credential: measured 2026-10-25, `GET /api/skills/<view>/<page>` answers 200 anonymously with
-    // 200 rows per (0-based) page, its own `total` (9 911 on All-time) and `hasMore`
-    // (`harness/skills-sh.ts`).
-    auth: 'oidc',
-    enabled: true,
-    browsable: true,
-    // The site's three leaderboards in its own tab order. An empty query lands on the chosen board; a
-    // query of 2+ characters goes to the site's own search endpoint (`/api/search`, anonymous, whole
-    // catalog, capped at 200 rows). Rows install as `github:<owner/repo>#<skill-dir>` — the site's own
-    // `npx skills add` identity.
-    sorts: ['all-time', 'trending', 'hot'],
-    // FIRST on the skills axis on purpose: a row here IS a skill directory, ranked by the site's
-    // own install tally. github's topic-qualified search answers with REPOS that self-declare the
-    // topic — a noisier unit, one repo holding any number of skills or none — and npm's
-    // registry-wide keyword search (whose rows cannot install as skills at all) is the wide net
-    // below that.
-  },
-  {
     id: 'clawhub',
     label: 'ClawHub',
     kinds: ['skill'],
@@ -49,15 +25,13 @@ export const SOURCES: HarnessSourceView[] = [
     browsable: true,
     // OpenClaw's public skill registry (`clawhub.ai`), measured 2026-10-25: `GET /api/v1/skills`
     // pages by opaque CURSOR with its own `sort` enum, `GET /api/v1/search` covers the whole catalog
-    // with NO paging parameter (a `totalScope: 'window'` answer, like skills.sh's search), and
+    // with NO paging parameter (a `totalScope: 'window'` answer — the count is a reachable slice), and
     // `GET /api/v1/download?slug=&ownerHandle=&version=` answers deterministic ZIP bytes. Install
     // reads the newest published semver, downloads THAT version, and pins `{ clawhub: { slug,
     // version } }` — a registry-version pin, not a commit. `ownerHandle` is the disambiguator the
     // registry's own 409 error names; it is undocumented on the endpoints but measured working.
-    // AFTER skills-sh, BEFORE github on the skills axis on purpose: a row here IS a skill (a slug
-    // in a dedicated registry), while github's search answers with REPOS that self-declare the
-    // topic and npm's registry-wide search is the wide net. Rows carry no GitHub repo, so no star
-    // count is ever claimed for them.
+    // The ONLY skill-axis chip by owner decision: the skill market is a curated registry, not a
+    // wide-net search. Rows carry no GitHub repo, so no star count is ever claimed for them.
     sorts: ['downloads', 'stars', 'updated'],
   },
   {
@@ -82,31 +56,12 @@ export const SOURCES: HarnessSourceView[] = [
     sorts: ['downloads', 'recent', 'name'],
   },
   {
-    id: 'github',
-    label: 'GitHub',
-    kinds: ['skill'],
-    trust: 'community',
-    auth: 'none',
-    enabled: true,
-    browsable: true,
-    // AFTER skills-sh and clawhub on the skills axis on purpose: both answer with rows that ARE
-    // skills — the leaderboard ranked by installs, the registry by its own tally — while a topic
-    // is self-declared on the REPO and a star count rewards the repo, not the skill. github is
-    // the wider net here, and npm — whose rows cannot install as skills at all — stays below it.
-    //
-    // GitHub search repositories is the ONE market source with a published ordering contract:
-    // `sort=stars|forks|help-wanted-issues|updated` (+ best-match when the parameter is omitted).
-    // ALL of them are offered — the official set is the ceiling, not a curation of it; `stars` stays
-    // first because it is what this market has always shown.
-    sorts: ['stars', 'best-match', 'forks', 'updated', 'help-wanted-issues'],
-  },
-  {
     id: 'npm',
     label: 'npm registry',
     // The PLUGIN axis dropped npm as a browse chip by owner decision: the plugin market is a
     // directory (pi.dev + operator git sources), not a registry-wide search — npm remains the
     // INSTALL resolver for every `npm:<pkg>` handle and the MCP axis' wide net.
-    kinds: ['skill', 'mcp'],
+    kinds: ['mcp'],
     trust: 'community',
     auth: 'none',
     enabled: true,

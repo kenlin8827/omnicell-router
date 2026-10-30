@@ -48,12 +48,10 @@ import { harvestAll } from '../harness/plugin/catalog.js';
  * with their milestones; a request they cannot serve answers `unsupported_source`/`unsupported_kind`
  * — an endpoint that accepts a plan it cannot execute would be worse than a typed refusal.
  *
- * Measured accessibility, 2026-10-24: skills.sh API 401 (Vercel OIDC only), npm registry 200
+ * Measured accessibility, 2026-10-24: npm registry 200
  * anonymous. Measured 2026-10-25: `pi.dev/packages` 200 anonymous
- * (server-rendered HTML, no JSON API — the reader keys off the catalog's own card attributes), and
- * `skills.sh`'s leaderboard PAGES 200 anonymous (`/`, `/trending`, `/hot`, each shipping its 600-row
- * board in the RSC flight payload) and so does its own search endpoint (`/api/search`, 200 anonymous,
- * capped at 200 rows per query) even though its API stays closed. Measured the same day, ClawHub's
+ * (server-rendered HTML, no JSON API — the reader keys off the catalog's own card attributes).
+ * Measured the same day, ClawHub's
  * public v1 API (`clawhub.ai`) answers 200 anonymous throughout — cursor-paged catalog, capped
  * whole-catalog search, and deterministic per-version ZIP downloads (3000 reads/min/IP).
  */

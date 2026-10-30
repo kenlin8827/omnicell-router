@@ -1617,15 +1617,9 @@ export const enUS: TranslationDict = {
     marketSortName: 'Name A-Z',
     marketSortRelevance: 'Relevance (default)',
     marketSortStars: 'Stars ↓',
-    marketSortBestMatch: 'Best match',
-    marketSortForks: 'Forks ↓',
     marketSortUpdated: 'Recently updated ↓',
     marketSortDownloads: 'Downloads ↓',
     marketSortRecent: 'Recently published ↓',
-    marketSortHelpWanted: 'Help-wanted issues ↓',
-    marketSortAllTime: 'All time ↓',
-    marketSortTrending: 'Trending (24 h) ↓',
-    marketSortHot: 'Hot ↓',
     marketSortCatalog: 'Catalog order',
     marketSortLabel: 'Sort',
     marketRefresh: 'Refresh',
@@ -1693,7 +1687,6 @@ export const enUS: TranslationDict = {
       'Installing an plugin executes third-party code (npm lifecycle scripts) in the runtime’s own package manager. The exact command is shown below — nothing has been written yet.',
     sourceNames: {
       github: 'GitHub',
-      skillsSh: 'skills.sh',
       npm: 'npm registry',
       piDev: 'Pi package catalog',
       clawhub: 'ClawHub (community)',
@@ -1733,14 +1726,9 @@ export const enUS: TranslationDict = {
     },
     marketNote: {
       windowSorted: 'Server-side ordering across the source’s top {n} matches (npm has no sort parameter)',
-      githubAnonymous: 'anonymous GitHub search: 10 requests/minute',
       npmKeyword: 'no query: showing packages tagged {keyword}',
       npmDefault: 'no query: this runtime publishes no npm tag — showing packages matching "{query}"',
       piDev: 'official Pi package catalog — every row installs with `pi install npm:<pkg>`',
-      skillsShBoard:
-        'skills.sh leaderboard — {n} ranked skills, read 200 rows at a time from the site’s own paging endpoint; rows without a GitHub repository are not listed, so a page can hold fewer rows',
-      skillsShSearch:
-        'full-catalog skills.sh search — at most {n} matches per query, because the endpoint ignores paging',
       clawhubCatalog:
         "ClawHub community registry — rows install from the registry's own store, pinned to a version",
       clawhubSearch:

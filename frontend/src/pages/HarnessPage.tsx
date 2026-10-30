@@ -169,7 +169,6 @@ const KIND_META: Record<Kind, KindMeta> = {
  */
 const SOURCE_NAME_KEY: Record<string, string> = {
   github: 'harness.sourceNames.github',
-  'skills-sh': 'harness.sourceNames.skillsSh',
   npm: 'harness.sourceNames.npm',
   'pi-dev': 'harness.sourceNames.piDev',
   clawhub: 'harness.sourceNames.clawhub',
@@ -178,24 +177,18 @@ const SOURCE_NAME_KEY: Record<string, string> = {
 /**
  * Market orderings, keyed by the sort key a source DECLARES (`sorts` on `/sources`).
  *
- * The keys are the upstream's own vocabulary (GitHub: `stars` / `forks` / `updated` / `best-match`;
- * the Pi catalog: `downloads`), so this table only supplies the words. A key with no entry renders
- * verbatim — an upstream that gains an ordering must not print an i18n key.
+ * The keys are the upstream's own vocabulary (ClawHub: `downloads` / `stars` / `updated`; npm:
+ * `relevance`; the Pi catalog: `downloads` / `recent`), so this table only supplies the words. A
+ * key with no entry renders verbatim — an upstream that gains an ordering must not print an i18n key.
  */
 const MARKET_SORT_KEY: Record<string, string> = {
   catalog: 'harness.marketSortCatalog',
   name: 'harness.marketSortName',
   stars: 'harness.marketSortStars',
-  'best-match': 'harness.marketSortBestMatch',
-  forks: 'harness.marketSortForks',
   updated: 'harness.marketSortUpdated',
   downloads: 'harness.marketSortDownloads',
   relevance: 'harness.marketSortRelevance',
   recent: 'harness.marketSortRecent',
-  'help-wanted-issues': 'harness.marketSortHelpWanted',
-  'all-time': 'harness.marketSortAllTime',
-  trending: 'harness.marketSortTrending',
-  hot: 'harness.marketSortHot',
 };
 
 /** Market context line (under the source chips), keyed by the browse adapter's `noteCode` (the
@@ -203,13 +196,10 @@ const MARKET_SORT_KEY: Record<string, string> = {
  *  to — never the `keywords:` search expression itself; `{query}` carries the plain phrase used
  *  where the runtime publishes no npm tag at all. */
 const NOTE_KEY: Record<string, string> = {
-  'github-anonymous': 'harness.marketNote.githubAnonymous',
   'npm-keyword': 'harness.marketNote.npmKeyword',
   'npm-default': 'harness.marketNote.npmDefault',
   'pi-dev': 'harness.marketNote.piDev',
   'window-sorted': 'harness.marketNote.windowSorted',
-  'skills-sh-board': 'harness.marketNote.skillsShBoard',
-  'skills-sh-search': 'harness.marketNote.skillsShSearch',
   'clawhub-catalog': 'harness.marketNote.clawhubCatalog',
   'clawhub-search': 'harness.marketNote.clawhubSearch',
 };
@@ -744,7 +734,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   );
   /** Landing pages are bound to ONE harness (no "all"): the target runtime is part of the landing,
    *  so the pick lives in the URL and is resolved against the host catalog below. */
-  const [marketSource, setMarketSource] = useState('github');
+  const [marketSource, setMarketSource] = useState('');
   /**
    * The row order asked of the source — one of the keys the source DECLARES in `sorts`
    * (`/api/admin/harness/sources`), never a console-invented one. Empty = the source's own default.
@@ -779,7 +769,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   /** Rows the source reports for this query, when it reports one. */
   const [marketTotal, setMarketTotal] = useState<number | null>(null);
   /** What `marketTotal` counts: `window` = reachable rows only, so the pager keeps the number for its
-   *  page buttons but must not print it as the catalog's size (skills.sh: 600 rows of a 9 911 board). */
+   *  page buttons but must not print it as the catalog's size (a windowed search's cap). */
   const [marketTotalScope, setMarketTotalScope] = useState<'catalog' | 'window'>('catalog');
   /**
    * Stars resolved on demand, keyed by `owner/repo` (lowercase).
@@ -2358,7 +2348,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
             total={marketPagerTotal}
             onChange={(next) => setMarketPage(next)}
             disabled={marketLoading}
-            // A `window` total is NOT the catalog's size: skills.sh ranks 9 911 skills but ships 600,
+            // A `window` total is NOT the catalog's size: a windowed search caps every answer,
             // so printing "1-24 / 569" invited "the catalog has 569". The number stays for the page
             // buttons, the summary hides, and the note states the source's own figures instead.
             showSummary={marketTotalScope !== 'window'}

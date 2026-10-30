@@ -11,7 +11,7 @@
  *   `GET /api/v1/search?q=&limit=` → 200 `{results: [...]}` — relevance-ranked whole-catalog search
  *      with NO paging parameter (measured: `offset` is ignored, identical first page; the OpenAPI
  *      spec declares only `q`/`limit`/filters). One answer is the whole reach of a query, so the
- *      console treats it as a window, exactly like skills.sh's search.
+ *      console treats it as a window — a count the pager can use but the summary must not print.
  *   `GET /api/v1/skills/<slug>?ownerHandle=` → 200 `{skill, latestVersion, metadata, owner,
  *      moderation}` — the registry's own record for ONE skill, including `skill.description` (the
  *      published `SKILL.md` verbatim, frontmatter and all), `latestVersion.license/createdAt` and the
@@ -40,7 +40,7 @@
  * Deliberately NOT folded into `MarketItem.stars`: ClawHub's own `stats.stars` and download/install
  * counts. `MarketItem.stars` is a GitHub star count one unit per field (`harness/stars.ts` resolves
  * it from a repository, and these rows have none), so printing ClawHub's own rating under it would
- * relabel one number as another — the same rule that keeps skills.sh's install tally out. They travel
+ * relabel one number as another — a registry rating is not a GitHub star. They travel
  * in their OWN field (`MarketItem.registryStats` / `MarketDetail.registryStats`) instead, where the
  * console labels them with the source's name.
  */
@@ -72,7 +72,7 @@ export const CLAWHUB_MAX_BYTES = 8 * 1024 * 1024;
  * The registry's OWN popularity counters for one skill.
  *
  * A separate shape on purpose: `MarketItem.stars` means a GitHub star count (one unit per field, the
- * same rule that keeps skills.sh's install tally out of it), and ClawHub's star is a different unit
+ * same rule that keeps a registry rating out of it), and ClawHub's star is a different unit
  * from a different system. Carried WITH the source's name attached, so the console can label it
  * instead of relabelling one number as another (ADR-0015 §D6).
  */

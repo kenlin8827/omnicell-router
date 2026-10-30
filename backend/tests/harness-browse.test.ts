@@ -372,7 +372,8 @@ describe('browse refresh', () => {
     registerHarnessRoutes(app);
     try {
       resetBrowseCache();
-      const url = '/api/admin/harness/browse?source=github&q=mcp&limit=10';
+      // npm is a live view; github no longer has one (skill axis is clawhub-only, §D6).
+      const url = '/api/admin/harness/browse?source=npm&q=mcp&limit=10';
       await app.inject({ method: 'GET', url });
       const cached = seen.length;
       const warm = await app.inject({ method: 'GET', url });

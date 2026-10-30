@@ -282,7 +282,6 @@ the console renders. A source present in the view but absent from the registry a
 | npm registry | skill, plugin, mcp | anonymous search 200; `keywords:` is an exact tag filter | plugin package source AND MCP launch source: an mcp row resolves to a launch over the pinned spec (`npx -y <pkg@version>`, version + `dist.integrity` recorded — no author runtime arguments exist off-registry, so none are invented); npm-as-skill resolves `unsupported_kind`. An empty query opens on the PINNED runtime's own tag (per-harness map in `browse.ts`), the MCP axis on the author's own `mcp-server` tag (10 501 packages measured 2026-10-25; the wider `model-context-protocol` tag at 41 344 is mostly SDKs/clients); a runtime with no tag convention falls back to a relevance phrase and says so, never to another runtime's tag |
 | pi.dev package catalog | plugin | anonymous 200, server-rendered HTML — no JSON API; 50 cards per page, addressed by its own `&page` | official Pi catalog, bound to `pi`; browse-only: every row prints its own `pi install npm:<pkg>`, so the key is `npm:<pkg>` and install runs through the npm source |
 | MCP official registry | mcp | anonymous `/v0/servers` — list browsable (`limit` ≤ 100, opaque cursor, `version=latest`); per-server read at `/v0/servers/<name>/versions/latest` (the bare path answers 404) | authoritative server identity + launch spec; browse rows carry `mcp-official:<name>` and install merges the server into a host's `mcp` container. The registry publishes no star count and no ordering parameter, so the source declares no `sorts` and the market invents neither |
-| skills.sh | skill | API **401** without a Vercel workload token; the endpoint the SITE's own browser uses answers **200** anonymous: `GET /api/skills/<view>/<page>` — 0-based, **200 rows** an answer, stating `total` (All-time **9 911**, Trending 9 959, Hot 6 765) and `hasMore`; `GET /api/search?q=&limit=` — caps at **200** rows, IGNORES `offset`/`page`/`cursor`, refuses a term shorter than 2 characters | **live**, never through the closed API: an empty (or 1-character) query pages the chosen board through the site's own paging endpoint (so rank 601+ is reachable), a 2+ character query searches the WHOLE catalog through the site's own search endpoint. A board answer is a RANKING (`total` = 9 911 rows, of which 178 carry no GitHub repository and are dropped by the install grammar — `totalScope` therefore stays absent for boards), while a search answer is a WINDOW (`totalScope: 'window'`, summary hidden). Rows install as `github:<owner/repo>#<skill-dir>` (the site's own `npx skills add` identity). The `VERCEL_OIDC_TOKEN` the API asks for is minted inside a Vercel deployment with an hourly lifetime, so it is no operator secret |
 | ClawHub | skill | `GET /api/v1/skills?limit=&cursor=&sort=` (cursor-paged, its own `sort` enum), `GET /api/v1/search?q=` — NO paging parameter, one answer is a window; `GET /api/v1/skills/<slug>?ownerHandle=` → one skill's own record (`skill.description` IS the published `SKILL.md`, plus `latestVersion`, `stats`, `owner`); `GET /api/v1/download?slug=&ownerHandle=&version=` → deterministic ZIP bytes; anonymous reads 3000/min/IP with `Retry-After` (measured 2026-10-25) | **live**, and the one skill registry that installs from its OWN store: rows carry no GitHub repo, so the pin is the registry version (`{clawhub:{slug, version}}`) and `stars` stays `null` — the registry's own star/download/install tally travels in `registryStats` (its own unit, labelled as ClawHub's) instead of being relabelled a GitHub count. `ownerHandle` is the disambiguator the registry's own 409 error names — undocumented on the endpoints but measured working (a wrong owner answers 404). A 200 that answers JSON is the registry's `public-github` handoff for GitHub-backed skills; its shape is undocumented, so the adapter refuses it by name |
 | Smithery | mcp | `GET /servers` + `GET /servers/<name>` → **200** anonymous; the listing serves 500 rows however it is sliced while claiming ~20 765 | **live**: the one aggregator that HOSTS its records (`<slug>.run.tools`, measured MCP `initialize` → 401 without an `Authorization` header), so its launch spec is authoritative for its own deployments. Arbitration: the official record wins when it also carries the server. A connection that declares required config (`configSchema.required`) is refused by name — the writer can reference env KEY names, not a per-connection config object |
 | OpenCode ecosystem | plugin | curated docs table (mdx), shipped as a snapshot | browse-only, bound to `opencode`; a row with a verified package name installs through npm |
@@ -302,15 +301,14 @@ the console renders. A source present in the view but absent from the registry a
 - **The view order is the noise order.** The `SOURCES` array is both the console's chip row and its
   landing priority: per axis, the market opens on the FIRST enabled+browsable source. The order
   follows how far a row's claim reaches: a catalog whose row IS the artifact — an official catalog
-  (`mcp-official`, `pi-dev`), a curated snapshot (OpenCode ecosystem), the skills.sh leaderboard —
-  outranks a search over containers that CARRY the artifact (GitHub's topic-filtered repo search:
-  the topic is self-declared on the repo and the stars reward the repo, not the skill), which
-  outranks npm — the widest, noisiest net, a relevance search across the entire registry with inert
-  ranking weights, declared LAST: the wide net is what an operator opts into, never the landing
-  state. An opencode page therefore opens on the curated catalog, a skills page on the skills.sh
-  leaderboard; only a runtime with no narrower source (claude, codex, …) lands on npm. ClawHub — a
-  skill-only registry whose rows ARE skills but carry no GitHub repository, and therefore no star
-  signal — sits between skills.sh and github on the skills axis.
+  (`pi-dev`), a curated registry (ClawHub) — outranks a search over containers that CARRY the
+  artifact, which outranks npm — the widest, noisiest net, declared LAST: the wide net is what an
+  operator opts into, never the landing state. **Skill axis, one chip (owner decision, 2026-12):**
+  the skill market browses ClawHub ONLY — skills.sh, GitHub and npm are OFF the skill axis. A skill
+  market is a curated registry whose rows ARE skills, not a relevance search; skills.sh's closed
+  API and GitHub's topic search were removed with their adapters in the same commit (npm and
+  github remain INSTALL RESOLVERS on the host axis — a `github:<owner/repo>#<dir>` or `npm:<pkg>`
+  handle must still resolve — they are just not discovery chips).
 - **Sources are code-configured, not user-configured** (see Deferred).
 - **A catalog source may answer ANOTHER source's identity, and must earn it.** Three OpenCode catalogs
   carry no package name in their own rows, so a row cannot invent an install handle:
@@ -393,11 +391,7 @@ the console renders. A source present in the view but absent from the registry a
   source answers with its reason and never blanks the page. The console can also force a re-read: its
   refresh button sends `refresh=1`, and `browseSource` evicts THAT source's cache family
   (`evictBrowseCache`) before dispatch, so a still-warm window cannot answer a request that means to
-  be new — and refreshing one catalog never discards another's warm window. A LEADERBOARD source keeps
-  its BOARD pages for TEN MINUTES instead (`BOARD_TTL_MS`): a ranking moves over days, while skills.sh
-  throttles a burst with `429 Retry-After: 60` after roughly 30 requests and its all-time board is ~50
-  pages — so a deep scroll would otherwise spend two throttle windows to reach the end, and the next
-  visit would spend them again. The refresh button still bypasses that window (the eviction is
+  be new — and refreshing one catalog never discards another's warm window. The refresh button still bypasses that window (the eviction is
   unchanged), and search answers keep the shared 60 s. A failed read also names
   a `reason`
   (`network`, `timeout`, `http`, `rateLimited`, `unavailable`, `markupChanged`, `badPayload`,
@@ -613,7 +607,7 @@ explicit (`configured → lite`), so a shared session can never ratchet upward.
 | MCP landings beyond opencode | absent from the adapters; a target is refused with a reason, never guessed |
 | Plugin landings beyond opencode (`config`), pi (`subprocess`) and claude (`subprocess` + map record, §D8.11) | absent; other hosts refuse |
 | npm as a **skill** source | declared in the view, resolves `unsupported_kind` |
-| PulseMCP / mcp.so | no live adapter and no row in the view (measured 410 retired / 404). skills.sh moved out of this row: its PAGES are readable, see §D6 |
+| PulseMCP / mcp.so | no live adapter and no row in the view (measured 410 retired / 404) |
 | Curated OpenCode catalog | browse-only snapshot: no install adapter, and no runtime fetch — `raw.githubusercontent.com` and `cdn.jsdelivr.net` both reset from this environment, so the table ships in the repo and goes stale between refreshes. 29 of 31 rows carry a verified npm name and install through the npm source; 2 publish no package and cannot be installed from the console |
 | awesome-opencode | install adapter present, but a name must be EARNED: 89 of 136 plugin entries resolve to a package (a declared name, or a candidate whose own `repository` field matches owner AND repo). The other 47 answer `no_artifact` with the repo URL, because installing by a plausible name would be a supply-chain bet |
 | opencode.cafe | live and readable (54 approved rows, 40 of them `type: 'plugin'`), but on an UNDOCUMENTED contract: the Convex deployment URL and query name come from the site's own client bundle. Its `author.email` field is dropped by the reader. Entries whose install snippet names no package (a local path, `…other plugins`) fall back to the repository probe and may answer `no_artifact` |
@@ -847,7 +841,7 @@ the plugin market is a TAB of the harness page, not a separate destination. The 
 opens from the plugin tab AND the skill tab of the same harness page — the same
 `/plugins/:harness/sources*` route serves both. But the CONTENTS are isolated by the open tab's
 kind: `GET .../sources?kind=skill|plugin` filters BOTH lists — built-in chips by their declared
-`kinds` (the plugin tab sees pi-dev; the skill tab sees skills-sh / clawhub / github / npm), and
+`kinds` (the plugin tab sees pi-dev; the skill tab sees clawhub only), and
 operator entries by what their snapshot actually carries (a skills-only repo never lists on the
 plugin tab). A source that cannot serve the open tab is noise, not information. Built-in
 federated sources render read-only; operator `mp-` sources carry check-before-add, in-place edit

@@ -1,13 +1,4 @@
 import { fetchPiDevCatalog, PI_DEV_PAGE_SIZE, type PiDevEntry } from '../plugin/pi-dev.js';
-import {
-  fetchSkillsShPage,
-  isSkillsShBoard,
-  searchSkillsSh,
-  SKILLS_SH_MIN_QUERY,
-  SKILLS_SH_PAGE_SIZE,
-  SKILLS_SH_SEARCH_LIMIT,
-  type SkillsShEntry,
-} from '../skill/skills-sh.js';
 import { CLAWHUB_SEARCH_LIMIT, CLAWHUB_WALK_MAX, fetchClawHubCatalogPage, fetchClawHubSearch, type ClawHubEntry } from '../skill/clawhub.js';
 import { repoSlug } from './catalog-npm.js';
 import { describeFetchFailure, fetchFailureReason, fetchWithRetry, type FailureReason } from '../net.js';
@@ -17,13 +8,11 @@ import type { HarnessKind, HarnessSourceView } from '../types.js';
  * Marketplace browse (ADR-0015 §8, slice T4-lite).
  *
  * The console needs ONE standard shape from every source, so the adapter does the normalizing and
- * the page never learns a vendor's JSON. Five sources are live: GitHub (skills), the npm registry
- * (plugin and MCP packages), the official pi.dev package catalog (plugin packages, read from the
- * server-rendered catalog page), the skills.sh leaderboards (skills, read from the site's
- * server-rendered boards — its API is closed to callers without a Vercel workload token), and the
- * ClawHub community registry (skills, read through its own public API and installed from the
- * registry's own versioned store). A source whose upstream cannot be read answers
-`unavailable` with the measured reason rather than rendering an empty market that looks broken.
+ * the page never learns a vendor's JSON. Three sources are live: the npm registry (MCP packages),
+ * the official pi.dev package catalog (plugin packages, read from the server-rendered catalog
+ * page), and the ClawHub community registry (skills, read through its own public API and installed
+ * from the registry's own versioned store). A source whose upstream cannot be read answers
+ * `unavailable` with the measured reason rather than rendering an empty market that looks broken.
  *
  * Anonymous GitHub search is rate limited (10 req/min), so results are cached briefly — typing in the
  * search field must not spend the whole budget. npm search, the pi.dev catalog and the
@@ -34,18 +23,6 @@ const API = 'https://api.github.com';
 const NPM_REGISTRY = 'https://registry.npmjs.org';
 const CACHE_TTL_MS = 60_000;
 
-/**
- * Board pages of a leaderboard source live LONGER than a search answer.
- *
- * A ranking moves slowly (installs accumulate over days), while skills.sh throttles a burst with
- * `429 + Retry-After: 60` after roughly 30 requests (measured 2026-10-25). Its all-time board is ~50
- * upstream pages, so a deep scroll spends two throttle windows to reach the end — and a second visit
- * would spend them again under the shared 60 s window. Ten minutes keeps that to one walk per window.
- *
- * This is NOT a licence to stop re-reading: the market's refresh button evicts the source's whole cache
- * family before dispatch (`evictBrowseCache`), so an explicit "ask again" still reaches the site.
- */
-const BOARD_TTL_MS = 10 * 60_000;
 
 export interface MarketItem {
   /** Stable across sources: `<sourceId>:<repo or package>`. */
@@ -84,7 +61,7 @@ export interface MarketItem {
    *
    * Kept in a separate field, never folded into `stars`: the star column means "GitHub stars", and
    * printing a registry rating under it would relabel one number as another (ADR-0015 §D6 — the same
-   * rule that keeps skills.sh's install tally out). The console labels this one with its source.
+   * rule that keeps a registry rating out of it). The console labels this one with its source.
    */
   registryStats?: {
     stars: number | null;
@@ -106,9 +83,8 @@ export type BrowseResult =
       total?: number;
       /**
        * What `total` COUNTS. Absent means "the catalog, as far as the source can see it". `window`
-       * says the number is only the reachable slice — skills.sh ships a fixed 600-row board out of a
-       * 9 911-skill ranking, and its search caps every answer at 200 — so the console must not print it
-       * as the population. The pager still needs it to draw the page buttons.
+       * says the number is only the reachable slice — a windowed search caps every answer, so the
+       * console must not print it as the population. The pager still needs it to draw the page buttons.
        */
       totalScope?: 'catalog' | 'window';
       /** English copy, kept as the fallback the console shows when it has no string for `noteCode`. */
@@ -131,8 +107,6 @@ export type BrowseResult =
 
 /** The sentences a browse adapter attaches to an answer (`noteCode`). */
 export type HarnessNoteCode =
-  /** github — no GITHUB_TOKEN, so the anonymous search quota applies. */
-  | 'github-anonymous'
   /** npm — no query typed, so the empty-query keyword default (`{keyword}`) is what was searched. */
   | 'npm-keyword'
   /** npm — no query typed and this host has no tag convention, so a plain phrase (`{query}`) was
@@ -143,12 +117,6 @@ export type HarnessNoteCode =
   /** npm — an order the registry cannot serve natively: the backend fetched a window (npm's own
    *  ranking) and ordered THAT (`{n}` rows), so the list is sorted server-side, not in the page. */
   | 'window-sorted'
-  /** skills.sh — one BOARD answer: `{n}` is the size the site states for the board, read 200 rows at a
-   *  time from its own paging endpoint. */
-  | 'skills-sh-board'
-  /** skills.sh — a full-catalog search: `{n}` is the endpoint's own match cap per query (it ignores
-   *  paging), so a broad term stops there instead of paging into a void. */
-  | 'skills-sh-search'
   /** clawhub — the catalog endpoint's own ranking, cursor-paged and count-less. */
   | 'clawhub-catalog'
   /** clawhub — a full-catalog search: `{n}` is the limit one request carries (the endpoint has no
@@ -190,8 +158,6 @@ const cache = new Map<
     total?: number;
     catalogSize?: number;
     rows?: number;
-    /** skills.sh board pages only: one slot per upstream row, so a slice keeps the site's row index. */
-    slots?: (SkillsShEntry | null)[];
   }
 >();
 
@@ -215,7 +181,6 @@ const CACHE_PREFIX: Record<string, string> = {
   github: 'github|',
   npm: 'npm|',
   'pi-dev': 'pi-dev|',
-  'skills-sh': 'skills-sh|',
   clawhub: 'clawhub|',
 };
 
@@ -273,10 +238,9 @@ export async function browseGitHub(query: string, limit = 24, page = 1, sort = '
   const upstream = ORDER[order]!;
   const key = `github|${q}|${perPage}|${at}|${order}`;
   const note = process.env.GITHUB_TOKEN?.trim() ? undefined : 'anonymous GitHub search: 10 requests/minute';
-  const noteCode = process.env.GITHUB_TOKEN?.trim() ? undefined : ('github-anonymous' as const);
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < CACHE_TTL_MS) {
-    return { ok: true, items: hit.items, note, ...(noteCode ? { noteCode } : {}), hasMore: hit.hasMore ?? false, ...(hit.total !== undefined ? { total: hit.total } : {}) };
+    return { ok: true, items: hit.items, note, hasMore: hit.hasMore ?? false, ...(hit.total !== undefined ? { total: hit.total } : {}) };
   }
 
   // `order=desc` on every sort: best-match has no direction, and the other three are only useful
@@ -322,7 +286,7 @@ export async function browseGitHub(query: string, limit = 24, page = 1, sort = '
   const total = payload.total_count === undefined ? undefined : Math.min(payload.total_count, 1000);
   const hasMore = total !== undefined ? at * perPage < total : items.length === perPage;
   cache.set(key, { at: Date.now(), items, hasMore, ...(total !== undefined ? { total } : {}) });
-  return { ok: true, items, note, ...(noteCode ? { noteCode } : {}), hasMore, ...(total !== undefined ? { total } : {}) };
+  return { ok: true, items, note, hasMore, ...(total !== undefined ? { total } : {}) };
 }
 
 interface NpmSearchPackage {
@@ -654,145 +618,6 @@ export async function browsePiDev(query: string, limit = 24, page = 1, sort = 'd
 }
 
 /**
- * skills.sh (source `skills-sh`) — the browse half of `harness/skills-sh.ts`.
- *
- * TWO reads, and which one answers depends on the query:
- *  - an EMPTY query (or a 1-character one) is answered from the chosen BOARD — All time (`/`),
- *    Trending 24h (`/trending`), Hot (`/hot`), each a fixed 600-row window the site renders whole. The
- *    three boards are the source's three ORDERINGS, so they are declared as `sorts` rather than as
- *    three sources.
- *  - a query of 2+ characters goes to the site's own search endpoint (`/api/search`, anonymous), which
- *    covers the WHOLE catalog — 1.5M+ skills — instead of the board window. It caps at 200 matches per
- *    query and ignores paging, so `total` is that capped count; claiming the leaderboard's own total
- *    (or the catalog's) would be a number this market cannot reach.
- *  - Every row installs through the GITHUB writer (`github:owner/repo#skill-dir`), because that is what
- *    the site's own `npx skills add <owner/repo>` resolves to: one artifact, one identity, and the
- *    console's installed-state join stays exact.
- */
-function toSkillsShItem(entry: SkillsShEntry): MarketItem {
-  return {
-    id: `skills-sh:${entry.source}#${entry.skillId}`,
-    sourceId: 'skills-sh',
-    key: `github:${entry.source}#${entry.skillId}`,
-    installKind: 'skill',
-    name: entry.name,
-    repo: entry.source,
-    // The board prints no description; the skill's own page does, but reading 600 detail pages to fill
-    // one column would be 600 requests for a field the drawer resolves on click.
-    description: null,
-    url: `https://www.skills.sh/${entry.source}/${entry.skillId}`,
-    stars: null,
-    // The board states no per-skill date. `''` = unknown (the console renders "—"), never "today".
-    updatedAt: '',
-    topics: [],
-  };
-}
-
-export async function browseSkillsSh(
-  query: string,
-  limit = 24,
-  page = 1,
-  sort = 'all-time'
-): Promise<BrowseResult> {
-  const board = isSkillsShBoard(sort) ? sort : 'all-time';
-  const typed = query.trim();
-  const size = Math.min(Math.max(limit, 1), 50);
-  const offset = (Math.max(page, 1) - 1) * size;
-
-  // A query of 2+ characters goes to the site's own search endpoint, which covers the WHOLE catalog —
-  // not one board. An empty query (and a 1-character term, which that endpoint refuses with
-  // `400 "Query must be at least 2 characters"`) is answered from the board.
-  const viaSearch = typed.length >= SKILLS_SH_MIN_QUERY;
-
-  if (viaSearch) {
-    const cacheKey = `skills-sh|q|${typed.toLowerCase()}`;
-    let rows: MarketItem[];
-    const hit = cache.get(cacheKey);
-    if (hit && Date.now() - hit.at < CACHE_TTL_MS) {
-      rows = hit.items;
-    } else {
-      const read = await searchSkillsSh(typed, fetch);
-      if (!read.ok) return read;
-      rows = read.slots.filter((entry): entry is SkillsShEntry => entry !== null).map(toSkillsShItem);
-      cache.set(cacheKey, { at: Date.now(), items: rows });
-    }
-    const items = rows.slice(offset, offset + size);
-    // A search answer caps at 200 rows and the endpoint ignores `offset`/`page`/`cursor`, so its count
-    // is a WINDOW: the pager needs it for page buttons, but the summary stays hidden (`totalScope`).
-    return {
-      ok: true,
-      items,
-      hasMore: offset + items.length < rows.length,
-      total: rows.length,
-      totalScope: 'window',
-      note: `full-catalog skills.sh search — at most ${SKILLS_SH_SEARCH_LIMIT} matches per query (the endpoint ignores paging)`,
-      noteCode: 'skills-sh-search',
-      noteParams: { n: String(SKILLS_SH_SEARCH_LIMIT) },
-    };
-  }
-
-  // The board is PAGED UPSTREAM — `/api/skills/<view>/<n>`, 0-based, 200 rows an answer, and the answer
-  // states its own `total` — so a console page is a slice of the upstream pages it straddles. This is
-  // how the site's own leaderboard reaches row 601: the console asks for the same pages, caches each one
-  // for the shared TTL, and never re-ranks (the site's order IS the ranking).
-  const firstPage = Math.floor(offset / SKILLS_SH_PAGE_SIZE);
-  const lastPage = Math.floor((offset + size - 1) / SKILLS_SH_PAGE_SIZE);
-  // Slots, not entries: the slice is taken by the SITE's row index (its ranking), then the rows with no
-  // installable identity are dropped. Dropping first would shift every later row, so page N would
-  // repeat or skip rows after the first `open.feishu.cn` entry.
-  const merged: (SkillsShEntry | null)[] = [];
-  let rawRows = 0;
-  let total: number | undefined;
-  let upstreamHasMore = false;
-  for (let n = firstPage; n <= lastPage; n += 1) {
-    const cacheKey = `skills-sh|b|${board}|${n}`;
-    const hit = cache.get(cacheKey);
-    if (hit && Date.now() - hit.at < BOARD_TTL_MS) {
-      merged.push(...(hit.slots ?? []));
-      rawRows += hit.rows ?? (hit.slots ?? []).length;
-      total = hit.catalogSize ?? total;
-      upstreamHasMore = hit.hasMore ?? false;
-    } else {
-      const read = await fetchSkillsShPage(board, n, fetch);
-      if (!read.ok) return read;
-      merged.push(...read.slots);
-      rawRows += read.rows;
-      total = read.total ?? total;
-      upstreamHasMore = read.hasMore === true;
-      cache.set(cacheKey, {
-        at: Date.now(),
-        items: [],
-        slots: read.slots,
-        rows: read.rows,
-        hasMore: read.hasMore,
-        ...(read.total !== undefined ? { catalogSize: read.total } : {}),
-      });
-    }
-  }
-
-  const start = offset - firstPage * SKILLS_SH_PAGE_SIZE;
-  const items = merged
-    .slice(start, start + size)
-    .filter((entry): entry is SkillsShEntry => entry !== null)
-    .map(toSkillsShItem);
-  const served = offset + size;
-  const totalRows = total ?? 0;
-  return {
-    ok: true,
-    items,
-    // `hasMore` = more rows exist either upstream or in the stated total. A board whose tail is shorter
-    // than one answer reports `hasMore: false` on its last page, so the two agree by construction.
-    hasMore: upstreamHasMore || (totalRows > 0 && served < totalRows),
-    ...(totalRows > 0 ? { total: totalRows } : {}),
-    note: totalRows > 0
-      ? `skills.sh leaderboard — ${totalRows} ranked skills, read ${SKILLS_SH_PAGE_SIZE} rows at a time from the site's own paging endpoint`
-      : `skills.sh leaderboard — ${rawRows} rows on this page (the site states no total)`,
-    noteCode: 'skills-sh-board',
-    noteParams: totalRows > 0 ? { n: String(totalRows) } : { n: String(rawRows) },
-  };
-}
-
-/**
  * ClawHub (source `clawhub`) — the browse half of `harness/clawhub.ts`.
  *
  * TWO reads, and which one answers depends on the query:
@@ -802,11 +627,11 @@ export async function browseSkillsSh(
  *    refusal. The registry publishes no count for the listing, so the console shows the page number
  *    without inventing a total.
  *  - a typed query goes to `/api/v1/search`, which has NO paging parameter: one answer is the whole
- *    reach of the query (`totalScope: 'window'`, the skills.sh-search treatment), sliced locally.
+ *    reach of the query (`totalScope: 'window'`), sliced locally.
  *  - Every row installs from ClawHub's own versioned store (`clawhub:<owner>/<slug>`): the registry
  *    pins by version, not by commit, so no repo is claimed and `stars` stays `null` — the registry's
  *    own star/download/install tally travels in `registryStats` instead, where the console can label
- *    it as ClawHub's (the skills.sh rule).
+ *    it as ClawHub's own, never under the star column.
  */
 function toClawHubItem(entry: ClawHubEntry): MarketItem {
   return {
@@ -932,7 +757,6 @@ export async function browseSource(
   // A forced re-read drops this source's window BEFORE the adapter computes its cache key, so the
   // adapter's own read-through starts from an empty family and genuinely asks upstream.
   if (opts.refresh) evictBrowseCache(source.id);
-  if (source.id === 'github') return browseGitHub(query, limit, page, sort);
   if (source.id === 'npm')
     return browseNpm(
       query,
@@ -945,8 +769,11 @@ export async function browseSource(
       opts.kind === 'mcp' ? 'mcp' : 'plugin'
     );
   if (source.id === 'pi-dev') return browsePiDev(query, limit, page, sort, opts.fetchImpl);
-  if (source.id === 'skills-sh') return browseSkillsSh(query, limit, page, sort);
   if (source.id === 'clawhub') return browseClawHub(query, limit, page, sort);
+  // No console chip routes here any more (the skill axis is clawhub-only, §D6), but the GitHub
+  // search adapter stays: it is the generic ordering/refresh machinery's probe subject and the
+  // network-retry harness's traffic generator.
+  if (source.id === 'github') return browseGitHub(query, limit, page, sort);
   return { ok: false, code: 'unsupported_source', reason: 'unsupportedSource', message: `no browse adapter for '${source.id}' yet` };
 }
 

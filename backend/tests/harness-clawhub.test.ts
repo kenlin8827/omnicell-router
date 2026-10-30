@@ -19,7 +19,7 @@ import type { HarnessSourceView } from '../src/harness/types.js';
 /**
  * ClawHub source, fixture-driven (no network): the registry answers JSON catalog/search/versions
  * reads and ZIP download bytes, so every test crafts its own bodies — the same house pattern as the
- * skills-sh reader tests. The ZIP builder writes the exact 32-bit layout `readZip`
+ * ClawHub reader tests. The ZIP builder writes the exact 32-bit layout `readZip`
  * parses (local headers, central directory, EOCD), stored and deflate entries both.
  */
 

@@ -188,7 +188,7 @@ export interface HarnessSourceView {
   label: string;
   kinds: HarnessKind[];
   trust: TrustTier;
-  /** Credential the source's OWN API demands (`oidc` = skills.sh's closed endpoint); `none` otherwise.
+  /** Credential the source's OWN API demands (`oidc` = a closed, token-minted endpoint); `none` otherwise.
    *  Every source offered today is readable anonymously, so this is a declaration, not a gate. */
   auth: 'none' | 'oidc';
   /**
