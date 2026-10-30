@@ -175,6 +175,8 @@ Standard LLM clients do not transmit dedicated session headers. OCR derives sess
 $$\mathcal{H}_{\text{session}} = \text{SHA256}(\text{CanonicalJSON}(\text{messages}[0 \dots n-2]))$$
 Because $messages[0 \dots n-2]$ encapsulates the prior assistant turn $A_{n-1}$, cryptographic collision probability across concurrent requests is virtually zero.
 
+Clients that do transmit a vendor-namespaced header (`x-<app>-(session|conversation)-id`, e.g. `x-grok-session-id`) bypass the fingerprinting for NAMING only: the header value becomes the session id on fresh-mint turns (`header_fallback`; values claiming the reserved `ocr-internal:` prefix or over 200 chars are ignored), and the prefix-chain anchors still carry continuity from turn 2 (ADR-0002 §1 layer 8).
+
 ### 4.2 Monotonic Session Ratchet
 Once a dialogue escalates to a higher tier (`plus`, `pro`, or `ultra`), mid-session downgrades back to `lite` are strictly blocked. Subsequent follow-up prompts (e.g., "fix line 3", "thanks") continue executing on the established tier, preventing hallucination and context corruption.
 

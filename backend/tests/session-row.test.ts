@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { currentModelOf, projectSessionEntity, deriveSessionEntryMode } from '../src/session/session-row.js';
+import { currentModelOf, projectSessionEntity, deriveSessionEntryMode, promptTurnsOf, sessionTitleOf } from '../src/session/session-row.js';
 import type { ConversationSession } from '../src/session/session-manager.js';
 import type { ExecutionTrace } from '../src/trace/tracker.js';
 
@@ -32,6 +32,27 @@ describe('currentModelOf (execution view of a session)', () => {
       currentModel: 'only',
       currentProvider: 'prov',
     });
+  });
+});
+
+describe('promptTurnsOf (console Turns column ≠ traceCount)', () => {
+  const turnTrace = (prompt: string): ExecutionTrace =>
+    ({ request: { userPromptSummary: prompt } }) as unknown as ExecutionTrace;
+
+  it('counts only traces carrying a NEW user prompt', () => {
+    const traces = [
+      turnTrace('fix the bug'),
+      // Agent tool loop: continuation request, orchestrator blanks the summary.
+      turnTrace(''),
+      turnTrace(''),
+      turnTrace('now add tests'),
+    ];
+    assert.equal(promptTurnsOf(traces), 2);
+  });
+
+  it('no prompts → 0 (a session entity can exist before any served turn)', () => {
+    assert.equal(promptTurnsOf([]), 0);
+    assert.equal(promptTurnsOf([turnTrace(''), turnTrace('')]), 0);
   });
 });
 
@@ -75,6 +96,27 @@ describe('projectSessionEntity (console whitelist)', () => {
   it('is a closed set — a new entity field stays internal by default', () => {
     const widened = { ...entity, futureInternalField: 'secret' } as unknown as ConversationSession;
     assert.equal('futureInternalField' in (projectSessionEntity(widened) as Record<string, unknown>), false);
+  });
+});
+
+describe('sessionTitleOf (console title, entity-independent)', () => {
+  const titleTrace = (firstUserSummary: string | undefined, userPromptSummary: string): ExecutionTrace =>
+    ({ request: { firstUserSummary, userPromptSummary } }) as unknown as ExecutionTrace;
+
+  it('reads the birth trace, never a later turn prompt', () => {
+    const traces = [
+      titleTrace('Plan a trip to Kyoto', 'Plan a trip to Kyoto'),
+      titleTrace(undefined, 'Add a day in Osaka'),
+    ];
+    assert.equal(sessionTitleOf(traces), 'Plan a trip to Kyoto');
+  });
+
+  it('falls back to the opening turn summary on traces written before the field', () => {
+    assert.equal(sessionTitleOf([titleTrace(undefined, 'legacy prompt')]), 'legacy prompt');
+  });
+
+  it('no traces → undefined (nothing to name yet)', () => {
+    assert.equal(sessionTitleOf([]), undefined);
   });
 });
 

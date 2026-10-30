@@ -324,6 +324,273 @@ export function parseAssistantResponse(raw: string): TurnOutput | null {
   return null;
 }
 
+/**
+ * One wire dialect of streamed completions, as a merge-view adapter:
+ * recognize its payloads, accumulate per-stream state, and emit the
+ * equivalent NON-STREAM response body. The dialect determines both the
+ * chunk shape on the wire and the target shape of the merged body.
+ * Adding a dialect (e.g. OpenAI Responses events) means adding one entry
+ * to MERGE_ADAPTERS — the driver in mergeSseToNonStream stays
+ * dialect-agnostic (same registry idiom as the backend's quota/harness
+ * adapters).
+ */
+interface StreamMergeAdapter<A> {
+  /** Dialect id — labels tests and comments; never rendered. */
+  readonly id: string;
+  /** Does one parsed SSE payload belong to this dialect? */
+  recognizes: (chunk: Record<string, any>) => boolean;
+  /** Fresh per-stream accumulator. */
+  create: () => A;
+  /** Ingest one parsed payload; must ignore shapes it does not own. */
+  ingest: (acc: A, chunk: Record<string, any>) => void;
+  /** Emit the canonical non-stream body; null when nothing merged. */
+  finish: (acc: A) => Record<string, unknown> | null;
+}
+
+/**
+ * OpenAI chat-completions dialect: `chat.completion.chunk` stream →
+ * `chat.completion` body. Field set mirrors the backend's
+ * ChatCompletionResponse (types/openai.ts): the first chunk donates the
+ * envelope (id / created / model / service_tier / system_fingerprint),
+ * deltas fold per choice index into message.content / reasoning_content /
+ * refusal / annotations / tool_calls / legacy function_call, the last
+ * non-null finish_reason and the last usage frame win. Choice-level
+ * logprobs are never reconstructed (per-token logprob arrays are not
+ * mergeable); usage is omitted when the stream carried no frame.
+ */
+const openaiChatMerge: StreamMergeAdapter<{
+  head: Record<string, any> | null;
+  usage: unknown;
+  slots: Map<
+    number,
+    {
+      content: string;
+      reasoning: string;
+      refusal: string;
+      annotations: unknown[];
+      calls: Map<number, { id: string; name: string; args: string }>;
+      fnCall: { name: string; args: string } | null;
+      finish: unknown;
+    }
+  >;
+}> = {
+  id: 'openai-chat',
+  recognizes: chunk => Array.isArray(chunk.choices),
+  create: () => ({ head: null, usage: null, slots: new Map() }),
+  ingest: (acc, d) => {
+    if (!acc.head) acc.head = d;
+    // Usage rides terminal frames; some upstreams send it without a choices
+    // array, so fold it before the shape guard below (last cumulative wins).
+    if (d.usage && typeof d.usage === 'object') acc.usage = d.usage;
+    // Mid-stream foreign frames (error events, usage-only payloads) share the
+    // data: channel once the dialect is selected — ignore shapes we do not own
+    // instead of throwing on them (the driver ingests every later frame).
+    if (!Array.isArray(d.choices)) return;
+    for (const ch of d.choices) {
+      if (!ch || typeof ch !== 'object') continue;
+      const i = typeof ch.index === 'number' ? ch.index : 0;
+      let slot = acc.slots.get(i);
+      if (!slot)
+        acc.slots.set(
+          i,
+          (slot = { content: '', reasoning: '', refusal: '', annotations: [], calls: new Map(), fnCall: null, finish: null })
+        );
+      const delta = ch.delta;
+      if (delta && typeof delta === 'object') {
+        if (typeof delta.content === 'string') slot.content += delta.content;
+        if (typeof delta.reasoning_content === 'string') slot.reasoning += delta.reasoning_content;
+        if (typeof delta.refusal === 'string') slot.refusal += delta.refusal;
+        if (Array.isArray(delta.annotations)) slot.annotations.push(...delta.annotations);
+        if (Array.isArray(delta.tool_calls)) {
+          for (const tc of delta.tool_calls) {
+            if (!tc || typeof tc !== 'object') continue;
+            const ci = typeof tc.index === 'number' ? tc.index : slot.calls.size;
+            let call = slot.calls.get(ci);
+            if (!call) slot.calls.set(ci, (call = { id: '', name: '', args: '' }));
+            if (typeof tc.id === 'string' && tc.id) call.id = tc.id;
+            if (typeof tc.function?.name === 'string') call.name += tc.function.name;
+            if (typeof tc.function?.arguments === 'string') call.args += tc.function.arguments;
+          }
+        }
+        // Legacy function_call delta (deprecated dialect, still seen).
+        if (delta.function_call && typeof delta.function_call === 'object') {
+          if (!slot.fnCall) slot.fnCall = { name: '', args: '' };
+          if (typeof delta.function_call.name === 'string') slot.fnCall.name += delta.function_call.name;
+          if (typeof delta.function_call.arguments === 'string') slot.fnCall.args += delta.function_call.arguments;
+        }
+      }
+      if (ch.finish_reason) slot.finish = ch.finish_reason;
+    }
+  },
+  finish: acc => {
+    const choices = [...acc.slots.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([index, s]) => {
+        const message: Record<string, unknown> = { role: 'assistant' };
+        message.content = s.content ? s.content : null;
+        if (s.reasoning) message.reasoning_content = s.reasoning;
+        if (s.refusal) message.refusal = s.refusal;
+        if (s.annotations.length) message.annotations = s.annotations;
+        if (s.calls.size) {
+          message.tool_calls = [...s.calls.entries()]
+            .sort(([a], [b]) => a - b)
+            .map(([, c]) => ({ id: c.id, type: 'function', function: { name: c.name, arguments: c.args } }));
+        }
+        if (s.fnCall) message.function_call = { name: s.fnCall.name, arguments: s.fnCall.args };
+        return { index, message, finish_reason: s.finish ?? null };
+      });
+    const out: Record<string, unknown> = {
+      id: acc.head?.id,
+      object: 'chat.completion',
+      created: acc.head?.created,
+      model: acc.head?.model,
+      choices,
+    };
+    if (acc.head && typeof acc.head.service_tier === 'string') out.service_tier = acc.head.service_tier;
+    if (acc.head && acc.head.system_fingerprint !== undefined) out.system_fingerprint = acc.head.system_fingerprint;
+    if (acc.usage) out.usage = acc.usage;
+    return out;
+  },
+};
+
+/**
+ * Anthropic messages dialect: message_start / content_block_start /
+ * content_block_delta / message_delta / message_stop events → `message`
+ * body. Field set mirrors the message shape the backend synthesizes for
+ * Anthropic clients (routes/anthropic.ts toAnthropicMessage): content
+ * blocks in index order (text with citations, thinking with signature,
+ * tool_use with parsed input), stop_reason / stop_sequence from
+ * message_delta, usage = message_start.usage + the last output_tokens.
+ */
+const anthropicMessagesMerge: StreamMergeAdapter<{
+  head: Record<string, any> | null;
+  stopReason: unknown;
+  stopSeq: unknown;
+  outTokens: unknown;
+  blocks: Map<
+    number,
+    { type: string; text: string; thinking: string; signature: string; citations: unknown[]; id: string; name: string; input: string }
+  >;
+}> = {
+  id: 'anthropic-messages',
+  recognizes: chunk => {
+    const t = typeof chunk.type === 'string' ? chunk.type : '';
+    return (
+      t === 'message_start' ||
+      t === 'content_block_start' ||
+      t === 'content_block_delta' ||
+      t === 'message_delta' ||
+      t === 'message_stop'
+    );
+  },
+  create: () => ({ head: null, stopReason: undefined, stopSeq: undefined, outTokens: undefined, blocks: new Map() }),
+  ingest: (acc, d) => {
+    const t = d.type as string;
+    if (t === 'message_start' && !acc.head) acc.head = d.message ?? d;
+    else if (t === 'content_block_start') {
+      const i = typeof d.index === 'number' ? d.index : acc.blocks.size;
+      const cb = d.content_block ?? {};
+      acc.blocks.set(i, {
+        type: typeof cb.type === 'string' ? cb.type : 'text',
+        text: '',
+        thinking: '',
+        signature: '',
+        citations: [],
+        id: typeof cb.id === 'string' ? cb.id : '',
+        name: typeof cb.name === 'string' ? cb.name : '',
+        input: '',
+      });
+    } else if (t === 'content_block_delta') {
+      const i = typeof d.index === 'number' ? d.index : Math.max(0, acc.blocks.size - 1);
+      const blk = acc.blocks.get(i);
+      const dl = d.delta ?? {};
+      if (blk) {
+        if (dl.type === 'text_delta' && typeof dl.text === 'string') blk.text += dl.text;
+        else if (dl.type === 'thinking_delta' && typeof dl.thinking === 'string') blk.thinking += dl.thinking;
+        else if (dl.type === 'signature_delta' && typeof dl.signature === 'string') blk.signature += dl.signature;
+        else if (dl.type === 'citations_delta' && dl.citation && typeof dl.citation === 'object') blk.citations.push(dl.citation);
+        else if (dl.type === 'input_json_delta' && typeof dl.partial_json === 'string') blk.input += dl.partial_json;
+      }
+    } else if (t === 'message_delta') {
+      const dl = d.delta ?? {};
+      if (dl.stop_reason !== undefined) acc.stopReason = dl.stop_reason;
+      if (dl.stop_sequence !== undefined) acc.stopSeq = dl.stop_sequence;
+      if (d.usage && typeof d.usage === 'object' && d.usage.output_tokens !== undefined)
+        acc.outTokens = d.usage.output_tokens;
+    }
+  },
+  finish: acc => {
+    const content = [...acc.blocks.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([, b]) => {
+        if (b.type === 'tool_use') {
+          let input: unknown = {};
+          try {
+            input = b.input ? JSON.parse(b.input) : {};
+          } catch {
+            input = {}; // truncated argument stream — non-stream shape wants an object
+          }
+          return { type: 'tool_use', id: b.id, name: b.name, input };
+        }
+        if (b.type === 'thinking')
+          return { type: 'thinking', thinking: b.thinking, ...(b.signature ? { signature: b.signature } : {}) };
+        return { type: 'text', text: b.text, ...(b.citations.length ? { citations: b.citations } : {}) };
+      });
+    return {
+      id: acc.head?.id,
+      type: 'message',
+      role: 'assistant',
+      model: acc.head?.model,
+      content,
+      stop_reason: acc.stopReason ?? null,
+      stop_sequence: acc.stopSeq ?? null,
+      usage: {
+        ...(acc.head && typeof acc.head.usage === 'object' ? (acc.head.usage as object) : {}),
+        ...(acc.outTokens !== undefined ? { output_tokens: acc.outTokens } : {}),
+      },
+    };
+  },
+};
+
+/** Merge-view registry, in preference order (first recognized payload wins). */
+const MERGE_ADAPTERS: StreamMergeAdapter<any>[] = [openaiChatMerge, anthropicMessagesMerge];
+
+/**
+ * Merge a streamed SSE completion into the equivalent NON-STREAM response
+ * body — the shape the API would have returned for a non-streaming call.
+ * Dialect detection and accumulation live in MERGE_ADAPTERS (one adapter
+ * per wire protocol): the first recognized payload selects the dialect,
+ * later payloads of other dialects are ignored. Truncated tail payloads
+ * are skipped, never parsed. Returns null when no adapter recognizes the
+ * stream (e.g. Responses-API events) or the body is not SSE at all — the
+ * toggle caller uses that to hide the merge view.
+ */
+export function mergeSseToNonStream(raw: string): Record<string, unknown> | null {
+  let adapter: StreamMergeAdapter<any> | null = null;
+  let acc: any = null;
+  for (const line of raw.split('\n')) {
+    const t = line.trim();
+    if (!t.startsWith('data:')) continue;
+    const p = t.slice(5).trim();
+    if (!p || p === '[DONE]') continue;
+    let chunk: Record<string, any>;
+    try {
+      chunk = JSON.parse(p);
+    } catch {
+      continue; // truncated tail payload — nothing to merge from it
+    }
+    if (!chunk || typeof chunk !== 'object') continue;
+    if (!adapter) {
+      const hit = MERGE_ADAPTERS.find(a => a.recognizes(chunk));
+      if (!hit) continue;
+      adapter = hit;
+      acc = hit.create();
+    }
+    adapter.ingest(acc, chunk);
+  }
+  return adapter ? adapter.finish(acc) : null;
+}
+
 // ------------------------------------------------------------- media tokens
 
 /**

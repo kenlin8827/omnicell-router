@@ -13,7 +13,7 @@ export type CliAction =
   | 'version'
   | 'help';
 
-export type SupportedClient = 'opencode' | 'opencode-proxy' | 'claude' | 'codex' | 'pi' | 'dsh' | 'omp';
+export type SupportedClient = 'opencode' | 'opencode-proxy' | 'claude' | 'codex' | 'pi' | 'dsh' | 'omp' | 'grok';
 
 export interface CliOptions {
   action: CliAction;
@@ -64,10 +64,11 @@ export interface ModelProfileBinding {
 }
 
 /**
- * Virtual tier aliases the gateway resolves natively. Every adapter injects
- * these fixed into the client's model switcher, so they must never surface as
- * user-managed extra entries (write dedupe + status echo filter both key off
- * this list).
+ * Virtual tier aliases the gateway resolves natively. Adapters inject these
+ * into the client's model switcher; a follow-mode setup narrows the block to
+ * the subset the selected key's policy admits (`virtualModels`). They must
+ * never surface as user-managed extra entries (write dedupe + status echo
+ * filter both key off this list).
  */
 export const VIRTUAL_AUTO_IDS: ReadonlySet<string> = new Set([
   'auto',

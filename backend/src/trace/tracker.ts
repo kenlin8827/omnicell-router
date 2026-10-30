@@ -19,6 +19,18 @@ export interface ExecutionTrace {
   request: {
     model: string;
     userPromptSummary: string;
+    /**
+     * The session's FIRST user message — console session title. Unlike
+     * `userPromptSummary` (the last user message of THIS turn, blanked on
+     * tool-result continuations), this names the whole conversation: it is
+     * derived on the opening turn and then re-stamped verbatim on every later
+     * trace, so the trace ring evicting the birth record cannot blank the
+     * title, and a row rebuilt from traces alone — after a restart, or for a
+     * combo/stateless session that never mints a live entity — is still named.
+     * Absent on traces written before the field existed and when the opening
+     * request carried no user text.
+     */
+    firstUserSummary?: string;
     messageCount: number;
     hasSystemPrompt: boolean;
     hasToolsOrSchema: boolean;

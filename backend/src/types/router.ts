@@ -159,6 +159,7 @@ export type SessionLookupType =
   | 'prefix_chain'      // exact head-prefix anchor of a completed chain
   | 'tail_anchor'       // trailing-window anchor (survives history truncation)
   | 'conversation_key'  // deterministic apiKey + first-user-message key
+  | 'header_fallback'   // vendor x-*-session-id header naming an otherwise-minted cold start
   | 'cold_start';       // fresh mint (random, collision-free by construction)
 
 /**

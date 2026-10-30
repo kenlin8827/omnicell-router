@@ -11,6 +11,8 @@ import { CodexClientAdapter } from '../src/cli/clients/codex.js';
 import { PiClientAdapter } from '../src/cli/clients/pi.js';
 import { DshClientAdapter } from '../src/cli/clients/dsh.js';
 import { parse as parseYaml } from 'yaml';
+import TOML from '@iarna/toml';
+import { GrokClientAdapter } from '../src/cli/clients/grok.js';
 
 describe('CLI Client Setup & Teardown Adapters', () => {
   let tmpDir: string;
@@ -67,6 +69,29 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     const restored = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     expect(restored.model).toBe('anthropic/claude-sonnet-4');
     expect(restored.providers['omnicell-router']).toBeUndefined();
+  });
+
+  it('OpenCode follow-mode setup scopes the virtual tier block via virtualModels; absence keeps the full block', async () => {
+    const configPath = path.join(tmpDir, 'opencode-follow.json');
+    fs.writeFileSync(configPath, JSON.stringify({ $schema: 'https://opencode.ai/config.json', providers: {} }, null, 2));
+
+    const adapter = new OpenCodeClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    // Follow mode: only the tier entries the key policy admits.
+    await adapter.setup({ port: 4000, models: { main: 'auto' }, virtualModels: ['auto', 'pro'] });
+    let models = JSON.parse(fs.readFileSync(configPath, 'utf8')).providers['omnicell-router'].models;
+    expect(Object.keys(models)).toEqual(['auto', 'pro']);
+
+    // An empty verdict writes an empty virtual block — no silent full-block fallback.
+    await adapter.setup({ port: 4000, models: { main: 'auto' }, virtualModels: [] });
+    models = JSON.parse(fs.readFileSync(configPath, 'utf8')).providers['omnicell-router'].models;
+    expect(Object.keys(models)).toEqual([]);
+
+    // No virtualModels payload (none/custom modes) → the full tier block.
+    await adapter.setup({ port: 4000, models: { main: 'auto' } });
+    models = JSON.parse(fs.readFileSync(configPath, 'utf8')).providers['omnicell-router'].models;
+    expect(Object.keys(models)).toEqual(['auto', 'lite', 'plus', 'pro', 'ultra']);
   });
 
   it('OpenCode adapter must preserve JSONC comments on setup', async () => {
@@ -567,6 +592,187 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect(restored.providers.ollama.models[0].id).toBe('llama3.1:8b');
   });
 
+  it('Pi follow-mode setup scopes the virtual tier block via virtualModels; the echo stays concrete-only', async () => {
+    const configPath = path.join(tmpDir, 'pi-follow-models.json');
+    fs.writeFileSync(configPath, JSON.stringify({ providers: {} }, null, 2));
+
+    const adapter = new PiClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    await adapter.setup({ port: 4000, models: { main: 'auto' }, extraModels: ['gpt-4o'], virtualModels: ['pro', 'ultra'] });
+    const hooked = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(hooked.providers['omnicell-router'].models.map((m: any) => m.id)).toEqual(['auto', 'pro', 'ultra', 'gpt-4o']);
+
+    // The router-owned virtual entries never leak into the extras echo.
+    const status = await adapter.getStatus();
+    expect(status.extraModels).toEqual(['gpt-4o']);
+  });
+  it('Grok adapter should register a managed provider + model entries in TOML and revert', async () => {
+    const configPath = path.join(tmpDir, 'config.toml');
+    fs.writeFileSync(configPath, ['[cli]', 'installer = "internal"', '', '[models]', 'default = "grok-4.5"', ''].join('\n'));
+
+    const adapter = new GrokClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    let status = await adapter.getStatus();
+    expect(status.hooked).toBe(false);
+
+    const setupRes = await adapter.setup({ port: 4000, models: { main: 'pro' }, apiKey: 'sk-test', extraModels: ['gpt-4o', 'grok-4.5'] });
+    expect(setupRes.success).toBe(true);
+    expect(fs.existsSync(`${configPath}.bak.ocr`)).toBe(true);
+
+    status = await adapter.getStatus();
+    expect(status.hooked).toBe(true);
+    expect(status.modelSlots[0].value).toBe('pro');
+    expect(status.extraModels).toEqual(['gpt-4o', 'grok-4.5']);
+
+    const updated = TOML.parse(fs.readFileSync(configPath, 'utf8')) as TOML.JsonMap;
+    const provider = updated.model_providers as TOML.JsonMap;
+    expect((provider.ocr as TOML.JsonMap).base_url).toBe('http://127.0.0.1:4000/v1');
+    const models = updated.model as TOML.JsonMap;
+    expect((models.ocr as TOML.JsonMap).model).toBe('pro');
+    expect((models.ocr as TOML.JsonMap).api_key).toBe('sk-test');
+    // Dotted gateway ids must land as ONE quoted catalog key, not nested tables.
+    expect(Object.keys(models)).toContain('ocr-grok-4.5');
+    expect((updated.models as TOML.JsonMap).default).toBe('ocr');
+    // The user's own tables survive the round-trip.
+    expect((updated.cli as TOML.JsonMap).installer).toBe('internal');
+
+    const teardownRes = await adapter.teardown();
+    expect(teardownRes.success).toBe(true);
+
+    status = await adapter.getStatus();
+    expect(status.hooked).toBe(false);
+
+    const restored = TOML.parse(fs.readFileSync(configPath, 'utf8')) as TOML.JsonMap;
+    expect(restored.model).toBeUndefined();
+    expect(restored.model_providers).toBeUndefined();
+    // The pre-hook default pin comes back.
+    expect((restored.models as TOML.JsonMap).default).toBe('grok-4.5');
+    expect(restored['omnicell-router-managed']).toBeUndefined();
+  });
+
+  it('Grok follow-mode setup writes virtual tier entries as ocr-<id> and keeps them out of the echo', async () => {
+    const configPath = path.join(tmpDir, 'grok-follow.toml');
+    fs.writeFileSync(configPath, ['[cli]', 'installer = "internal"', ''].join('\n'));
+
+    const adapter = new GrokClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    await adapter.setup({ port: 4000, models: { main: 'auto' }, apiKey: 'sk-test', extraModels: ['gpt-4o'], virtualModels: ['auto', 'pro'] });
+    const data = TOML.parse(fs.readFileSync(configPath, 'utf8')) as TOML.JsonMap;
+    const models = data.model as TOML.JsonMap;
+    // Main covers 'auto'; the admitted tier lands as its own entry next to the extras.
+    expect(Object.keys(models).sort()).toEqual(['ocr', 'ocr-gpt-4o', 'ocr-pro']);
+    expect((models['ocr-pro'] as TOML.JsonMap).model).toBe('pro');
+
+    // The router-owned virtual entries never leak into the extras echo.
+    const status = await adapter.getStatus();
+    expect(status.extraModels).toEqual(['gpt-4o']);
+
+    // A re-setup with a narrower verdict must sweep the stale virtual entry.
+    await adapter.setup({ port: 4000, models: { main: 'auto' }, apiKey: 'sk-test', virtualModels: ['auto'] });
+    const narrowed = TOML.parse(fs.readFileSync(configPath, 'utf8')) as TOML.JsonMap;
+    expect(Object.keys(narrowed.model as TOML.JsonMap)).toEqual(['ocr']);
+  });
+
+  it('Grok adapter teardown after double-setup must leave the client fully unhooked (restore-then-strip)', async () => {
+    const configPath = path.join(tmpDir, 'grok-double.toml');
+    fs.writeFileSync(configPath, ['[models]', 'default = "grok-4.5"', ''].join('\n'));
+
+    const adapter = new GrokClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    await adapter.setup({ port: 4000, models: { main: 'pro' }, apiKey: 'sk-test' });
+    // The second setup re-backs-up the ALREADY-HOOKED config — teardown must
+    // not trust that backup alone.
+    await adapter.setup({ port: 4000, models: { main: 'lite' }, apiKey: 'sk-test' });
+    const teardownRes = await adapter.teardown();
+    expect(teardownRes.success).toBe(true);
+
+    const status = await adapter.getStatus();
+    expect(status.hooked).toBe(false);
+
+    const restored = TOML.parse(fs.readFileSync(configPath, 'utf8')) as TOML.JsonMap;
+    expect(restored.model).toBeUndefined();
+    expect(restored.model_providers).toBeUndefined();
+    expect((restored.models as TOML.JsonMap).default).toBe('grok-4.5');
+    expect(restored['omnicell-router-managed']).toBeUndefined();
+    expect(restored._ocr_previous_default).toBeUndefined();
+  });
+
+
+  it('Grok adapter refuses to overwrite an unparseable config', async () => {
+    const configPath = path.join(tmpDir, 'broken.toml');
+    fs.writeFileSync(configPath, '[model.unbalanced\n');
+
+    const adapter = new GrokClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    const setupRes = await adapter.setup({ port: 4000, models: { main: 'auto' }, apiKey: 'sk-test' });
+    expect(setupRes.success).toBe(false);
+  });
+  it('Grok adapter normalizes scalar hand-edited tables instead of throwing on a primitive write', async () => {
+    const configPath = path.join(tmpDir, 'grok-scalar.toml');
+    fs.writeFileSync(configPath, ['model = "grok-4"', 'models = "grok-4"', ''].join('\n'));
+
+    const adapter = new GrokClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    const res = await adapter.setup({ port: 4000, models: { main: 'pro' }, apiKey: 'sk-test' });
+    expect(res.success).toBe(true);
+    const data = TOML.parse(fs.readFileSync(configPath, 'utf8')) as TOML.JsonMap;
+    expect(((data.model as TOML.JsonMap).ocr as TOML.JsonMap).model).toBe('pro');
+    expect((data.models as TOML.JsonMap).default).toBe('ocr');
+  });
+
+  it('Grok getStatus survives a non-string base_url in the managed provider table', async () => {
+    const configPath = path.join(tmpDir, 'grok-badurl.toml');
+    fs.writeFileSync(configPath, ['[model_providers.ocr]', 'base_url = 8080', ''].join('\n'));
+
+    const adapter = new GrokClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    const status = await adapter.getStatus();
+    expect(status.hooked).toBe(false);
+  });
+
+  it('Grok getStatus flags an unparseable config instead of reporting a healthy direct connection', async () => {
+    const configPath = path.join(tmpDir, 'grok-broken-status.toml');
+    fs.writeFileSync(configPath, '[model.unbalanced\n');
+
+    const adapter = new GrokClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    const status = await adapter.getStatus();
+    expect(status.exists).toBe(true);
+    expect(status.hooked).toBe(false);
+    expect(status.details).toMatch(/could not be parsed/);
+  });
+
+  it('Grok adapter leaves user-authored ocr-* model entries alone (provider-marker ownership)', async () => {
+    const configPath = path.join(tmpDir, 'grok-user.toml');
+    fs.writeFileSync(
+      configPath,
+      ['[models]', 'default = "grok-4.5"', '', '[model."ocr-foo"]', 'model = "grok-4"', 'model_provider = "xai"', ''].join('\n')
+    );
+
+    const adapter = new GrokClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    await adapter.setup({ port: 4000, models: { main: 'pro' }, apiKey: 'sk-test' });
+    let data = TOML.parse(fs.readFileSync(configPath, 'utf8')) as TOML.JsonMap;
+    expect(((data.model as TOML.JsonMap)['ocr-foo'] as TOML.JsonMap).model_provider).toBe('xai');
+    // The user's entry never leaks into the extras echo.
+    expect((await adapter.getStatus()).extraModels).toEqual([]);
+
+    await adapter.teardown();
+    data = TOML.parse(fs.readFileSync(configPath, 'utf8')) as TOML.JsonMap;
+    expect(((data.model as TOML.JsonMap)['ocr-foo'] as TOML.JsonMap).model).toBe('grok-4');
+  });
+
+
+
   it('Pi adapter teardown after double-setup must leave the client fully unhooked (restore-then-strip)', async () => {
     const configPath = path.join(tmpDir, 'redouble.json');
     fs.writeFileSync(configPath, JSON.stringify({ providers: { ollama: { baseUrl: 'http://localhost:11434/v1', api: 'openai-completions', models: [{ id: 'x' }] } } }, null, 2));
@@ -815,6 +1021,22 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     expect((await adapter.getStatus()).hooked).toBe(false);
   });
 
+  it('Dsh follow-mode setup scopes the virtual tier block via virtualModels', async () => {
+    const profilesRoot = path.join(tmpDir, 'follow-profiles');
+    const webFile = path.join(profilesRoot, 'web', 'cordis.patch.yml');
+    const adapter = new DshClientAdapter();
+    adapter.getConfigPath = () => profilesRoot;
+
+    await adapter.setup({ port: 4000, models: { main: 'auto' }, extraModels: ['deepseek-v4-pro'], virtualModels: ['auto', 'ultra'] });
+    const data = parseYaml(fs.readFileSync(webFile, 'utf8'));
+    const route = data[0].config.providers['omnicell-router'];
+    expect(route.models.map((m: any) => m.id)).toEqual(['auto', 'ultra', 'deepseek-v4-pro']);
+
+    // The router-owned virtual entries never leak into the extras echo.
+    const status = await adapter.getStatus();
+    expect(status.extraModels).toEqual(['deepseek-v4-pro']);
+  });
+
   it('Dsh adapter should hook EVERY existing profile and preserve user entries in each', async () => {
     const profilesRoot = path.join(tmpDir, 'profiles');
     const desktopFile = path.join(profilesRoot, 'desktop', 'cordis.patch.yml');
@@ -967,7 +1189,7 @@ describe('Embedded UI & Management API Endpoints', () => {
     expect(json.metrics).toBeDefined();
     expect(json.circuitBreakers).toBeDefined();
     expect(Array.isArray(json.clients)).toBe(true);
-    expect(json.clients.length).toBe(7);
+    expect(json.clients.length).toBe(8);
   });
 
   it('should support reading and validating raw YAML config on /api/admin/config/raw', async () => {

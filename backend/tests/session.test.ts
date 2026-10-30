@@ -120,6 +120,164 @@ describe('Monotonic Session Ratchet & Zero-Header Fingerprinting', () => {
     assert.strictEqual(resolve.sessionId, 'custom-enterprise-session-888');
   });
 
+  it('renames the cold-start mint with a generic vendor header (header_fallback)', () => {
+    const req: ChatCompletionRequest = {
+      model: 'auto',
+      messages: [{ role: 'user', content: 'Anything' }],
+    };
+
+    const resolve = sessionManager.resolveSessionId(req, {
+      headers: { 'x-grok-session-id': 'conv_abc123' },
+    });
+
+    assert.strictEqual(resolve.lookupType, 'header_fallback');
+    assert.strictEqual(resolve.sessionId, 'conv_abc123');
+
+    // Same harness conversation resends turn 1 (retry / re-fork): the header
+    // is deterministic per conversation, so it re-attaches instead of split.
+    const resend = sessionManager.resolveSessionId(req, {
+      headers: { 'x-grok-session-id': 'conv_abc123' },
+    });
+    assert.strictEqual(resend.lookupType, 'header_fallback');
+    assert.strictEqual(resend.sessionId, 'conv_abc123', 'Turn-1 resend under the same vendor header must re-attach');
+  });
+
+  it('matches the conversation-id vendor spelling too, but never the bare explicit forms', () => {
+    const req: ChatCompletionRequest = {
+      model: 'auto',
+      messages: [{ role: 'user', content: 'Anything' }],
+    };
+
+    const conversationForm = sessionManager.resolveSessionId(req, {
+      headers: { 'x-my-harness-conversation-id': 'thread-42' },
+    });
+    assert.strictEqual(conversationForm.lookupType, 'header_fallback');
+    assert.strictEqual(conversationForm.sessionId, 'thread-42');
+
+    // Bare forms belong to step 1 (explicit_header) — the vendor probe must
+    // not shadow or re-rank them.
+    const bare = sessionManager.resolveSessionId(req, {
+      headers: { 'x-session-id': 'bare-explicit-1' },
+    });
+    assert.strictEqual(bare.lookupType, 'explicit_header');
+    assert.strictEqual(bare.sessionId, 'bare-explicit-1');
+
+    // Multiple vendor headers: alphabetically first lowercased name wins,
+    // independent of arrival order.
+    const multi = sessionManager.resolveSessionId(req, {
+      headers: { 'x-zed-session-id': 'zed-1', 'x-app-session-id': 'app-1' },
+    });
+    assert.strictEqual(multi.lookupType, 'header_fallback');
+    assert.strictEqual(multi.sessionId, 'app-1');
+  });
+
+  it('vendor header values claiming the reserved internal prefix or oversized are ignored', () => {
+    const req: ChatCompletionRequest = {
+      model: 'auto',
+      messages: [{ role: 'user', content: 'Anything' }],
+    };
+
+    // `ocr-internal:` is the gateway's internal-row marker — a client claim
+    // would hide the session from the console. The probe falls through to the
+    // random mint (cold_start), never naming the session with the value.
+    const internal = sessionManager.resolveSessionId(req, {
+      headers: { 'x-app-session-id': 'ocr-internal:stealth' },
+    });
+    assert.strictEqual(internal.lookupType, 'cold_start');
+    assert.ok(!internal.sessionId.startsWith('ocr-internal:'), 'reserved prefix must never become a session id');
+
+    // Unbounded header values would persist into the snapshot and console
+    // rows verbatim — >200 chars falls back to the random mint too.
+    const oversized = sessionManager.resolveSessionId(req, {
+      headers: { 'x-app-session-id': 'x'.repeat(201) },
+    });
+    assert.strictEqual(oversized.lookupType, 'cold_start');
+    assert.ok(oversized.sessionId.length <= 29, 'fallback must be the bounded random mint');
+
+    // Boundary: a 200-char id is accepted verbatim.
+    const atCap = sessionManager.resolveSessionId(req, {
+      headers: { 'x-app-session-id': 'a'.repeat(200) },
+    });
+    assert.strictEqual(atCap.lookupType, 'header_fallback');
+    assert.strictEqual(atCap.sessionId, 'a'.repeat(200));
+
+    // A guarded first header falls through to the next matching one.
+    const fallthrough = sessionManager.resolveSessionId(req, {
+      headers: { 'x-a-session-id': 'ocr-internal:x', 'x-b-session-id': 'conv_ok' },
+    });
+    assert.strictEqual(fallthrough.lookupType, 'header_fallback');
+    assert.strictEqual(fallthrough.sessionId, 'conv_ok');
+  });
+
+  it('vendor header never overrides an anchor the resolver already holds', () => {
+    const assistantReply = 'First reply.';
+    const req1: ChatCompletionRequest = {
+      model: 'auto',
+      messages: [{ role: 'user', content: 'Q' }],
+    };
+    const resolved = sessionManager.resolveSessionId(req1, {
+      headers: { 'x-grok-session-id': 'conv_abc123' },
+    });
+    assert.strictEqual(resolved.lookupType, 'header_fallback');
+    sessionManager.registerCompletedTurn(resolved.sessionId, req1.messages, assistantReply);
+
+    // Turn 2 carries the vendor header again, but the prefix chain anchor is
+    // stronger evidence — it must win ("honored ONLY on the cold-start path").
+    const req2: ChatCompletionRequest = {
+      model: 'auto',
+      messages: [
+        { role: 'user', content: 'Q' },
+        { role: 'assistant', content: assistantReply },
+        { role: 'user', content: 'Q2' },
+      ],
+    };
+    const turn2 = sessionManager.resolveSessionId(req2, {
+      headers: { 'x-grok-session-id': 'conv_abc123' },
+    });
+    assert.strictEqual(turn2.lookupType, 'prefix_chain');
+    assert.strictEqual(turn2.sessionId, resolved.sessionId);
+  });
+
+  it('ambiguity-split mint (step 8) re-attaches through the vendor header claim', () => {
+    const identityA = { headers: { 'x-grok-session-id': 'conv_aaa' } };
+    const identityB = { headers: { 'x-grok-session-id': 'conv_bbb' } };
+    const req1: ChatCompletionRequest = {
+      model: 'auto',
+      messages: [{ role: 'user', content: '继续' }],
+    };
+
+    // Two distinct conversations share the first message under one conv key.
+    const a = sessionManager.resolveSessionId(req1, identityA);
+    const b = sessionManager.resolveSessionId(req1, identityB);
+    assert.strictEqual(a.lookupType, 'header_fallback');
+    assert.strictEqual(b.lookupType, 'header_fallback');
+    assert.notStrictEqual(a.sessionId, b.sessionId, 'Different vendor headers = distinct conversations');
+
+    // Turn 2 with a REGENERATED assistant reply (byte drift → anchors miss);
+    // the conv key is ambiguous (two candidates) → step 8 re-mint. The claim
+    // outranks content ambiguity (same contract as step 1): A re-attaches to
+    // its OWN id instead of churning to a random one — no console/archive
+    // session-id split for a well-behaved client.
+    const req2: ChatCompletionRequest = {
+      model: 'auto',
+      messages: [
+        { role: 'user', content: '继续' },
+        { role: 'assistant', content: 'Regenerated, byte-different reply.' },
+        { role: 'user', content: 'next' },
+      ],
+    };
+    const split = sessionManager.resolveSessionId(req2, identityA);
+    assert.strictEqual(split.lookupType, 'header_fallback');
+    assert.strictEqual(split.sessionId, a.sessionId, 'The client re-attaches to its own claimed id');
+    assert.notStrictEqual(split.sessionId, b.sessionId, 'Distinct claims never cross-merge');
+
+    // A header-less conversation re-minting at the same ambiguous key still
+    // gets a random id — the no-false-merge guarantee protects content
+    // identity, and headerless splits keep it.
+    const headless = sessionManager.resolveSessionId(req2, {});
+    assert.strictEqual(headless.lookupType, 'cold_start');
+  });
+
   it('should support OpenAI native request.user field as session identity', () => {
     const req: ChatCompletionRequest = {
       model: 'auto',

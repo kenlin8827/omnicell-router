@@ -54,4 +54,5 @@
 
 - 成员资格、顺序、思考翻译 100% 显式、单处可审；目录动荡经由未入池/孤儿视图与保存期重叠告警变得可见，不再被静默吸收。Combo 引用可两级审阅——config.yaml 里的引用本身、每个池预览 / 保存检查里的展开结果（`deadCombo` 警告）；请求路径内不做任何展开。
 - 命名诚实：没有任何类型顶着代码从未落地的 `Identity`/`Ref` 契约；本篇的阶梯就是解析契约。
-- 测试：`tier-membership`、`tier-combo-members`、`tier-pools*`、`combos`、`variants`、`model-access`、`tier-match`（建议路径）。
+- 客户端挂接遵守同一套判定：控制台 clients 页的跟随模式按 key 作用域有效视图原样快照——具体行进 extras 列表，虚拟行经适配器的 `virtualModels` 载荷注入（`allowed` 判定决定 `auto`/档位别名注入哪些）。custom 模式经显式表单草稿范围化同一载荷（未改动的草稿 = 载荷缺省 = 适配器默认档位块：opencode/dsh/pi/omp 全量，grok 无），并存入控制台表单记忆。客户端切换器因此绝不宣传会被 key 策略 403 的条目，虚拟档位块也绝不同一词条出现第二个来源。
+- 测试：`tier-membership`、`tier-combo-members`、`tier-pools*`、`combos`、`variants`、`model-access`、`tier-match`（建议路径），以及 `cli.test.ts` 中的 `virtualModels` 范围化测试（opencode/dsh/pi/grok）。

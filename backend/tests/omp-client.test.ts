@@ -78,6 +78,25 @@ describe('omp client adapter — hook, roles, teardown', () => {
     expect(status.modelSlots.find(s => s.key === 'main')?.value).toBe('auto');
   });
 
+  it('follow-mode setup scopes the provider models list via virtualModels; the echo stays concrete-only', async () => {
+    const res = await adapter.setup({
+      port: 4000,
+      models: { main: 'auto' },
+      apiKey: 'ocr-key-1',
+      extraModels: ['qwen-max'],
+      virtualModels: ['pro', 'ultra'],
+    });
+    expect(res.success).toBe(true);
+
+    const models = readYml(modelsPath);
+    const entry = models.providers['omnicell-router'];
+    expect(entry.models.map((m: any) => m.id)).toEqual(['auto', 'pro', 'ultra', 'qwen-max']);
+
+    // The router-owned virtual entries never leak into the extras echo.
+    const status = await adapter.getStatus();
+    expect(status.extraModels).toEqual(['qwen-max']);
+  });
+
   it('setup preserves user comments and foreign providers in both YAML files', async () => {
     fs.writeFileSync(modelsPath, [
       '# my gateway setup',

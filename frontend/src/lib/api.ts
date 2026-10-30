@@ -83,6 +83,10 @@ export interface ClientProfileMemoryEntry {
   models?: Record<string, string>;
   agentModels?: Record<string, string>;
   extraModels?: string[];
+  /** Custom virtual-tier draft (auto/lite/plus/pro/ultra); undefined =
+   *  untouched — setup omits `virtualModels` (adapter default block); an
+   *  array (possibly empty) scopes the block to that set. Mirrors backend. */
+  virtualModels?: string[];
   /** Model-list source: 'none' (default) = no concrete models exposed,
    *  'follow' = mirror the selected API key's effective model access,
    *  'custom' = manual picker. Mirrors backend. */
@@ -1666,6 +1670,8 @@ export const api = {
       apiKey?: string;
       contextWindow?: number;
       extraModels?: string[];
+      /** Follow mode: the virtual tier subset (auto/lite/plus/pro/ultra) the selected key's policy admits. */
+      virtualModels?: string[];
       /** Manual agent bindings (opencode): agent name → modelRef. */
       agentModels?: Record<string, string>;
       /** Profile-linked rows (opencode): id + agent→slot-key tags, resolved server-side; id '' un-links (sweep). */

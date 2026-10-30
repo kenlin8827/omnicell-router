@@ -7,7 +7,7 @@
 
 ## 背景
 
-网关与六个运行时（`SupportedClient`：`opencode`、`opencode-proxy`、`claude`、`codex`、`pi`、`dsh`）之间已经存在一层 **client** 关系。那层关系只管 **流量**：适配器把运行时的模型/鉴权配置写好，让请求流经网关，到此为止。
+网关与八个运行时（`SupportedClient`：`opencode`、`opencode-proxy`、`claude`、`codex`、`pi`、`dsh`、`omp`、`grok`）之间已经存在一层 **client** 关系。那层关系只管 **流量**：适配器把运行时的模型/鉴权配置写好，让请求流经网关，到此为止。
 
 运行时还能获得的东西——**技能**（指令目录）、**MCP 服务**（工具后端）、**扩展**（运行时插件/包）——过去只能由各家 CLI 装进各自目录，网关里没有任何记录。三个后果：
 

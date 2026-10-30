@@ -39,6 +39,8 @@ import {
   currentModelOf,
   deriveSessionEntryMode,
   projectSessionEntity,
+  promptTurnsOf,
+  sessionTitleOf,
   type SessionRow,
 } from './session/session-row.js';
 import type { TripScope } from './resilience/types.js';
@@ -78,11 +80,15 @@ function reconstructSessionFromTraces(traceTracker: TraceTracker, id: string): S
     maxTier,
     entryMode: deriveSessionEntryMode(traces),
     ...currentModelOf(traces),
+    // Title from the birth trace: this row has no entity, so the trace is the
+    // only place the opening prompt survived (ADR-0002 §3).
+    firstUserMessage: sessionTitleOf(traces),
     createdAt: first?.timestamp ?? 0,
     lastActiveAt: last?.timestamp ?? 0,
-    turnCount: traces.length,
+    // User-prompt turns, not raw requests (traceCount below is the requests
+    // number — the entity/ratchet turnCount would equal it on every row).
+    turnCount: promptTurnsOf(traces),
     historyTiers: traces.map(t => t.routing.targetTier),
-    firstUserMessage: first?.request.userPromptSummary,
     // DISTINCT client API-key identities seen on this session's traces, in
     // write order (first element = display anchor). Only appears once key
     // attribution exists; a rotated-key session lists every contributor.
@@ -1190,8 +1196,14 @@ export function createServer(
         // deliberately NOT surfaced, so live and trace-reconstructed rows
         // report the same execution view instead of an anchor.
         ...projectSessionEntity(s),
+        // Title: the birth-time entity value wins; a live entity created
+        // before the field existed falls back to the same trace derivation the
+        // reconstructed rows use, so the two shapes cannot disagree.
+        firstUserMessage: s.firstUserMessage ?? sessionTitleOf(sessTraces),
         ...currentModelOf(sessTraces),
-        // The id IS the internal marker (reserved `ocr-internal:` prefix) —
+        // Same trace-derived turns number as reconstructed rows — the entity
+        // turnCount counts every request and would equal traceCount.
+        turnCount: promptTurnsOf(sessTraces),
         // derived, never stored, so live and trace-reconstructed rows agree.
         internal: isInternalSessionId(s.id),
         // Application attribution from the session's traces — distinct key set
@@ -1267,6 +1279,13 @@ export function createServer(
       // and the client IP stay inside the gateway, and `currentModel` reuses the
       // list's execution-view derivation so the endpoints cannot disagree.
       ...projectSessionEntity(session),
+      // Same turns number as the list rows (server.ts:1206): the entity
+      // turnCount counts EVERY request — displayed next to traceCount the two
+      // would always be equal.
+      turnCount: promptTurnsOf(traces),
+      // Same title derivation as the list rows (entity first, birth trace as
+      // the fallback) so list and detail cannot disagree.
+      firstUserMessage: session.firstUserMessage ?? sessionTitleOf(traces),
       ...currentModelOf(traces),
       traceCount: traces.length,
       recentTraces: traces.slice(-5),
