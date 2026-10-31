@@ -92,7 +92,7 @@ export function probeArtifact(artifactId: string): ProbeResult | null {
   const probed = record.copies.map((copy) => {
     let ok: boolean | null;
     if (record.kind === 'skill') ok = skillProbe(copy.path);
-    else if (record.kind === 'mcp') ok = configContains(copy.path, record.name);
+    else if (record.kind === 'mcp') ok = copy.external === true ? true : configContains(copy.path, record.name);
     else ok = pluginProbe(record, copy);
     return { path: copy.path, placement: ok === null ? null : ((ok ? 'verified' : 'unverified') as CopyPlacement) };
   });

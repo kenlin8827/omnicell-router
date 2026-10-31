@@ -6,6 +6,7 @@ import {
   isPluginHost,
   isMcpHost,
   isSkillsHost,
+  mcpHostIds,
   skillOwner,
   skillRootsFor,
 } from '../harness/host/adapters/index.js';
@@ -26,9 +27,17 @@ import { allHostProbes, createPluginAdapter, probeOptionsFor } from '../harness/
 import { fetchRepoStars, peekStarCache } from '../harness/common/stars.js';
 import { readMarketDetail } from '../harness/detail.js';
 import { installArtifact } from '../harness/host/install.js';
+import { editMcpServer, readMcpEntry } from '../harness/host/mcp-edit.js';
+import { searchMcpRegistry } from '../harness/host/mcp-registry.js';
+import { probeMcpCli } from '../harness/host/mcp-cli.js';
+import { probeMcpRuntimes } from '../harness/host/mcp-runtime.js';
+import { isProbeHost, probeTcp } from '../harness/tcp-reach.js';
+import { mcpServerNameFromPackage } from '../harness/host/mcp-entry.js';
+import { dbEngineFor, probeDatabase } from '../harness/db-probe.js';
 import { recentApplies } from '../harness/host/ledger.js';
 import { ENABLED_SCOPES, isEnabledScope } from '../harness/host/scopes.js';
 import type { HarnessHostId, HarnessSourceView } from '../harness/types.js';
+import type { McpLaunch } from '../harness/spi.js';
 import { MCP_DEFAULT_VIEWS, SKILL_VIEWS, SOURCES } from '../harness/common/source-views.js';
 import {
   checkSkillSource,
@@ -48,9 +57,11 @@ import {
   probeMarketplace,
   snapshotHistory,
   updateMarketplaceEntry,
+  writeMcpSourceSnapshot,
   writeNpmSourceSnapshot,
 } from '../harness/common/market.js';
 import { parseNpmSource, probeNpmSource } from '../harness/common/npm-source.js';
+import { parsePypiSource, probePypiSource } from '../harness/common/pypi-source.js';
 import { getBuiltinViewsForHarness } from '../harness/plugin/builtin.js';
 import { reconcileMarketplaces } from '../harness/host/marketplace-sync.js';
 import type { CatalogRow } from '../harness/plugin/types.js';
@@ -86,20 +97,51 @@ import type { CatalogRow } from '../harness/plugin/types.js';
 function mpSourceView(slug: string): HarnessSourceView | undefined {
   const entry = getMarketplaceEntry(slug);
   if (!entry) return undefined;
-  const npm = entry.type === 'npm';
   const snap = latestSnapshot(slug, entry.harness);
+  const mcp = entry.axis === 'mcp';
+  const packageType = entry.type === 'npm' || entry.type === 'pypi' ? entry.type : null;
+  const label = mcp
+    ? `${slug} (${packageType === 'pypi' ? 'PyPI' : 'npm'} MCP)`
+    : packageType === 'npm'
+      ? `${slug} (npm)`
+      : `${slug} (git marketplace)`;
   return {
     catalog: entry.catalog ?? 'default',
     id: marketplaceSourceId(slug),
-    label: npm ? `${slug} (npm)` : `${slug} (git marketplace)`,
-    // An npm entry carries packages only; a git entry may carry both kinds.
-    kinds: npm ? ['plugin'] : ['skill', 'plugin'],
+    label,
+    // A package entry carries packages only and serves ONE axis; a git entry may carry both kinds.
+    kinds: mcp ? ['mcp'] : packageType ? ['plugin'] : ['skill', 'plugin'],
     trust: 'community',
     auth: 'none',
     enabled: entry.enabled,
     browsable: entry.enabled && snap !== null,
-    hosts: entry.harness ? [entry.harness] : snap?.hosts,
+    // MCP: one shared catalogue, listed on every host with a verified landing. A package source
+    // has no detected form set, so the landing table (not the snapshot) is the honest host claim.
+    hosts: mcp ? mcpHostIds() : entry.harness ? [entry.harness] : snap?.hosts,
   };
+}
+
+/** Re-read one MCP package source's row from its own registry (npm / PyPI). The source names ONE
+ *  package, so the probe answers at most one row; a missing record is a probe failure, never an
+ *  empty success. */
+async function probeMcpPackage(
+  entry: { type?: string; repo: string },
+  fetchImpl?: typeof fetch,
+): Promise<{ ok: true; row: { name: string; description: string | null; version: string | null } } | { ok: false; message: string }> {
+  if (entry.type === 'pypi') {
+    const query = parsePypiSource(entry.repo);
+    if (!query.ok) return { ok: false, message: query.message };
+    const probed = await probePypiSource(query, fetchImpl);
+    return probed.ok ? { ok: true, row: probed.pkg } : { ok: false, message: probed.message };
+  }
+  const query = parseNpmSource(entry.repo);
+  if (!query.ok) return { ok: false, message: query.message };
+  const probed = await probeNpmSource(query, fetchImpl);
+  const pkg = probed.ok ? probed.packages[0] : undefined;
+  if (!pkg) {
+    return { ok: false, message: probed.ok ? `'${entry.repo}' published no package record` : probed.message };
+  }
+  return { ok: true, row: { name: pkg.name, description: pkg.description, version: null } };
 }
 
 export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceFetch?: typeof fetch } = {}): void {
@@ -120,13 +162,14 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
     return createPluginAdapter(harness as HarnessHostId, opts.marketplaceFetch, { custom: true });
   };
 
-  /** The entry behind a plugin-axis request: an entry whose snapshot carries no plugin row serves
-   *  the skill axis only, so this route must not edit or delete it (§D11 route isolation). */
+  /** The entry behind a plugin-axis request: an entry whose snapshot carries no plugin or MCP row
+   *  serves the skill axis only, so this route must not edit or delete it (§D11 route isolation). */
   const pluginEntry = (slug: string, harness: string) => {
     const entry = getMarketplaceEntry(slug, harness);
     if (!entry) return undefined;
-    const snap = latestSnapshot(slug, entry.harness ?? harness);
-    return (snap?.plugins.length ?? 0) > 0 ? entry : undefined;
+    const snap = latestSnapshot(slug, entry.axis === 'mcp' ? null : (entry.harness ?? harness));
+    const rows = (snap?.plugins.length ?? 0) + (snap?.mcps?.length ?? 0);
+    return rows > 0 ? entry : undefined;
   };
 
   // Per-harness sync: imports the marketplaces already configured in THIS harness's native
@@ -163,21 +206,27 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
       })),
       operator: listMarketplaceEntries(harness)
         .map((e) => {
-          const snap = latestSnapshot(e.slug, harness);
+          const snap = latestSnapshot(e.slug, e.axis === 'mcp' ? null : harness);
+          // A plugin entry lists on a tab only when its snapshot detected that harness's form
+          // (pre-detection snapshots recorded nothing and keep the tolerant everywhere-visibility).
+          // An MCP package source is shared, so its host claim is the LANDING table instead.
+          const hosts = e.axis === 'mcp' ? mcpHostIds() : snap?.hosts ?? [];
+          if (!e.harness && hosts.length > 0 && !hosts.includes(harness)) return null;
           const kinds = [
             ...((snap?.rows.length ?? 0) > 0 ? ['skill' as const] : []),
             ...((snap?.plugins.length ?? 0) > 0 ? ['plugin' as const] : []),
+            ...((snap?.mcps?.length ?? 0) > 0 ? ['mcp' as const] : []),
           ];
           return {
             ...e,
             type: e.type ?? ('github' as const),
             /** Harnesses the repository's own forms declare (detected at probe time). */
-            hosts: snap?.hosts ?? [],
+            hosts,
             marketplace: snap?.marketplace ?? null,
             kinds,
           };
         })
-        .filter((e) => kindOk(e.kinds)),
+        .filter((e): e is NonNullable<typeof e> => e !== null && kindOk(e.kinds)),
     };
   });
 
@@ -229,9 +278,22 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
       reply.code(404);
       return { status: 'error', code: 'not_found', message: `no source '${slug}'` };
     }
-    const scope = entry.harness ?? (harnessParam as HarnessHostId);
+    // An MCP package source has no harness scope: its snapshot is the one every capable tab
+    // reads, so a rescan from any tab rewrites the global file (legacy harness snapshots stay
+    // readable through the global fallback but are never written again).
+    const scope = entry.axis === 'mcp' ? null : (entry.harness ?? (harnessParam as HarnessHostId));
 
-    if (entry.type === 'npm') {
+    if (entry.type === 'npm' || entry.type === 'pypi') {
+      if (entry.axis === 'mcp') {
+        // An MCP package source's freshness is its registry read: one package, one rewritten row.
+        const probed = await probeMcpPackage(entry, opts.marketplaceFetch);
+        if (!probed.ok) {
+          reply.code(400);
+          return { status: 'error', code: 'probe_failed', message: probed.message };
+        }
+        writeMcpSourceSnapshot(slug, probed.row, scope);
+        return { status: 'ok', rows: 1 };
+      }
       const parsed = parseNpmSource(entry.repo);
       if (!parsed) {
         reply.code(400);
@@ -274,11 +336,12 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
       return { status: 'error', code: 'unknown_harness', message: `unknown harness` };
     }
     const slug = (req.params as { slug: string }).slug;
-    if (!getMarketplaceEntry(slug, harnessParam as HarnessHostId)) {
+    const entry = getMarketplaceEntry(slug, harnessParam as HarnessHostId);
+    if (!entry) {
       reply.code(404);
       return { status: 'error', code: 'unknown_source', message: `unknown source '${slug}'` };
     }
-    const history = snapshotHistory(slug, harnessParam as HarnessHostId);
+    const history = snapshotHistory(slug, entry.axis === 'mcp' ? null : harnessParam);
     return {
       status: 'ok',
       slug,
@@ -304,10 +367,15 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
     }
     const body = (req.body || {}) as {
       url?: string;
-      type?: 'github' | 'npm';
+      type?: 'github' | 'npm' | 'pypi';
+      /** Which market the source serves: the plugin axis (default) or the MCP axis. */
+      kind?: 'plugin' | 'mcp';
       extensionDir?: string;
       catalog?: string;
       rescan?: { enabled?: boolean; intervalMs?: number };
+      /** Opt-in sharing for a git PLUGIN source: register unpinned so every supporting harness's
+       *  tab reads it. MCP package sources are always shared and ignore this flag. */
+      shared?: boolean;
     };
     if (!body.url) {
       reply.code(400);
@@ -318,14 +386,23 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
       rescan: body.rescan,
       extensionDir: body.extensionDir,
       ...(body.type ? { type: body.type } : {}),
+      ...(body.kind ? { kind: body.kind } : {}),
+      ...(body.shared ? { shared: true } : {}),
     });
     if (!outcome.ok) {
-      const message = outcome.message ?? '';
-      const conflict = message.includes('already configured');
+      const reason = outcome.reason;
+      // `no_form`/`probe_failed` are answers about the SOURCE; only a duplicate is a conflict.
+      const conflict = reason === 'already_configured' || reason === 'slug_taken';
       reply.code(conflict ? 409 : 400);
-      return { status: 'error', code: conflict ? 'conflict' : 'bad_request', message };
+      return {
+        status: 'error',
+        code: conflict ? 'conflict' : 'bad_request',
+        reason,
+        params: outcome.params,
+        message: outcome.message ?? '',
+      };
     }
-    return { status: 'ok', message: outcome.message };
+    return { status: 'ok', reason: outcome.reason, params: outcome.params, message: outcome.message };
   });
 
   // Dry-run probe: reports counts without writing anything (the operator's "check before add").
@@ -335,7 +412,7 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
       reply.code(404);
       return { status: 'error', code: 'unknown_harness', message: `unknown harness` };
     }
-    const body = (req.body || {}) as { url?: string; type?: 'github' | 'npm'; extensionDir?: string };
+    const body = (req.body || {}) as { url?: string; type?: 'github' | 'npm' | 'pypi'; kind?: 'plugin' | 'mcp'; extensionDir?: string };
     if (!body.url) {
       reply.code(400);
       return { status: 'error', code: 'bad_request', message: 'url is required' };
@@ -343,6 +420,7 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
     const check = await adapter.checkSource(body.url, {
       extensionDir: body.extensionDir,
       ...(body.type ? { type: body.type } : {}),
+      ...(body.kind ? { kind: body.kind } : {}),
     });
     return { status: 'ok', ...check };
   });
@@ -392,6 +470,7 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
         const kinds = [
           ...((snap?.rows.length ?? 0) > 0 ? ['skill' as const] : []),
           ...((snap?.plugins.length ?? 0) > 0 ? ['plugin' as const] : []),
+          ...((snap?.mcps?.length ?? 0) > 0 ? ['mcp' as const] : []),
         ];
         return {
           ...e,
@@ -422,11 +501,17 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
     }
     const outcome = await registerSkillSource(body.url, { catalog: body.catalog, rescan: body.rescan }, opts.marketplaceFetch);
     if (!outcome.ok) {
-      const conflict = outcome.message?.includes('already configured') === true;
+      const conflict = outcome.reason === 'already_configured' || outcome.reason === 'slug_taken';
       reply.code(conflict ? 409 : 400);
-      return { status: 'error', code: conflict ? 'conflict' : 'bad_request', message: outcome.message };
+      return {
+        status: 'error',
+        code: conflict ? 'conflict' : 'bad_request',
+        reason: outcome.reason,
+        params: outcome.params,
+        message: outcome.message ?? '',
+      };
     }
-    return { status: 'ok', message: outcome.message };
+    return { status: 'ok', reason: outcome.reason, params: outcome.params, message: outcome.message };
   });
 
   app.patch('/api/admin/harness/skills/sources/:slug', async (req, reply) => {
@@ -590,7 +675,7 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
       }
       if (item.removal !== undefined) {
         const op = item.removal?.op;
-        if (op !== 'trash-path' && op !== 'drop-entry' && op !== 'drop-server') {
+        if (op !== 'trash-path' && op !== 'drop-entry' && op !== 'drop-server' && op !== 'cli-remove') {
           reply.code(400);
           return { status: 'error', code: 'bad_request', message: `unknown removal op '${String(op)}'` };
         }
@@ -634,6 +719,40 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
       const page = Math.max(Number(query.page) || 1, 1);
       const pageSize = Math.min(Number(query.limit) || 24, 100);
       const entry = getMarketplaceEntry(slug);
+      if (query.kind === 'mcp' && entry) {
+        // The MCP axis reads the snapshot's single package row; the install handle is the
+        // registry key (`npm:<pkg>` / `pypi:<pkg>`), which the resolver pins at install time.
+        const snapshot = latestSnapshot(slug);
+        const needle = (query.q || '').trim().toLowerCase();
+        const ecosystem = entry.type === 'pypi' ? 'pypi' : 'npm';
+        const all = (snapshot?.mcps ?? [])
+          .filter((m) => !needle || m.name.toLowerCase().includes(needle) || (m.description ?? '').toLowerCase().includes(needle))
+          .map((m) => ({
+            id: `${ecosystem}:${m.name}`,
+            key: `${ecosystem}:${m.name}`,
+            sourceId: source.id,
+            installKind: 'mcp' as const,
+            name: m.name,
+            // The key the install will merge under, derived by the SAME rule the resolver applies
+            // (`mcpServerNameFromPackage`): the sheet shows it read-only, and it must not promise a
+            // name the host grammar refuses (`@bytebase/dbhub` fails every verified landing).
+            serverName: mcpServerNameFromPackage(m.name),
+            description: m.description,
+            url: ecosystem === 'pypi' ? `https://pypi.org/project/${m.name}/` : `https://www.npmjs.com/package/${m.name}`,
+            version: m.version,
+            stars: null,
+            updatedAt: '',
+            topics: [],
+          }));
+        return {
+          status: 'ok',
+          source: source.id,
+          page,
+          items: all.slice((page - 1) * pageSize, page * pageSize),
+          hasMore: page * pageSize < all.length,
+          total: all.length,
+        };
+      }
       if (query.kind === 'plugin' && entry) {
         const snapshot = latestSnapshot(slug);
         const needle = (query.q || '').trim().toLowerCase();
@@ -786,6 +905,212 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
     return { status: 'ok', source: sourceId, detail };
   });
 
+  // ── MCP entry read / edit (ADR-0015 §D8 amendment, 2026-11-01) ──────────────────────────────
+  // The harness page's edit surface. A read answers the launch behind ONE existing server member,
+  // with env/header KEY NAMES plus the set of keys that already hold a value; the write changes that
+  // member through the same gate-2 discipline as install. `name` names an EXISTING key — renaming is
+  // delete + add, never an edit.
+
+  // ── MCP Registry parameter schema (ADR-0015 §D8 amendment, 2026-11-01) ──────────────────────
+  // The add/edit sheet's visual form is generated from the registry's own `server.json`, so it works
+  // for any server instead of a hand-written per-package form. Read-only: nothing here is written.
+  app.get('/api/admin/harness/mcp/registry', async (req, reply) => {
+    const query = (req.query || {}) as { q?: string };
+    if (!query.q) {
+      reply.code(400);
+      return { status: 'error', code: 'bad_request', message: 'q is required' };
+    }
+    const result = await searchMcpRegistry(query.q);
+    if (!result.ok) {
+      reply.code(result.code === 'bad_request' ? 400 : 502);
+      return { status: 'error', code: result.code, message: result.message };
+    }
+    return { status: 'ok', candidates: result.candidates };
+  });
+
+  // ── MCP npm package CLI flags (ADR-0015 §D8 amendment, 2026-11-01) ──────────────────────────
+  // The registry declares DBHub's environment variables and no `runtimeArguments`, so the package
+  // itself is read for the flags it parses (`--transport`, `--port`, `--dsn`). The tarball is
+  // downloaded into memory and scanned; the package is never executed and nothing is written.
+  app.get('/api/admin/harness/mcp/cli', async (req, reply) => {
+    const query = (req.query || {}) as { pkg?: string; registry?: string };
+    if (!query.pkg) {
+      reply.code(400);
+      return { status: 'error', code: 'bad_request', message: 'pkg is required' };
+    }
+    // npx / bunx resolve on npm; uvx resolves on PyPI. No parameter means npm.
+    if (query.registry !== undefined && query.registry !== 'npm' && query.registry !== 'pypi') {
+      reply.code(400);
+      return { status: 'error', code: 'bad_request', message: "registry must be 'npm' or 'pypi'" };
+    }
+    const result = await probeMcpCli(query.pkg, { registry: query.registry ?? 'npm' });
+    if (!result.ok) {
+      reply.code(
+        result.code === 'bad_request'
+          ? 400
+          : result.code === 'not_found'
+            ? 404
+            : result.code === 'too_large'
+              ? 413
+              : 502
+      );
+      return { status: 'error', code: result.code, message: result.message };
+    }
+    return { status: 'ok', ...result };
+  });
+
+  // ── Live MCP runtime status (ADR-0015 §D8.8) ────────────────────────────────────────────────
+  // The config landing says a server was WRITTEN; only the runtime knows whether it CONNECTED.
+  // Read-only, never installs or spawns a server, and a host absent from the answer (or reported
+  // unreachable) is "no live claim": the console keeps its on-disk state and adds no runtime verdict.
+  app.get('/api/admin/harness/mcp/runtime', async () => ({ status: 'ok', ...(await probeMcpRuntimes()) }));
+
+  // ── DSN connection test (ADR-0015 §D11 amendment, 2026-11) ──────────────────────────────────
+  // Two tiers, both read-only. For postgres/postgresql and mysql/mariadb the route logs in with the
+  // operator's values through the real driver (`select 1` / `ping`) and answers a verdict code,
+  // because a TCP answer cannot tell a wrong password from a missing database. Every other scheme
+  // gets the credential-free TCP dial. The credential is used for this one request: the admin route
+  // is auth + CSRF gated, the value is never logged and never echoed back, and the driver's failure
+  // text (which does not contain the password) is all that returns.
+  app.post('/api/admin/harness/mcp/dsn-probe', async (req, reply) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const text = (value: unknown, max: number): string =>
+      typeof value === 'string' ? value.slice(0, max) : '';
+    const host = text(body.host, 253).trim();
+    const port = typeof body.port === 'number' ? body.port : Number.NaN;
+    if (!isProbeHost(host) || !Number.isInteger(port) || port < 1 || port > 65535) {
+      reply.code(400);
+      return { status: 'error', code: 'bad_request', message: 'host and port (1-65535) are required' };
+    }
+    const target = `${host}:${port}`;
+    const params: Record<string, string> = {};
+    if (body.params && typeof body.params === 'object' && !Array.isArray(body.params)) {
+      for (const [key, value] of Object.entries(body.params as Record<string, unknown>).slice(0, 64)) {
+        if (key !== '' && typeof value === 'string') params[key.slice(0, 64)] = value.slice(0, 256);
+      }
+    }
+
+    const engine = dbEngineFor(text(body.driver, 32));
+    if (engine) {
+      const result = await probeDatabase({
+        engine,
+        host,
+        port,
+        user: text(body.user, 256),
+        password: text(body.password, 4_096),
+        database: text(body.database, 256),
+        params,
+      });
+      return { status: 'ok', target, engine, ...result };
+    }
+
+    const dial = await probeTcp(host, port);
+    const failure = dial.message ?? '';
+    const code = dial.reachable
+      ? 'reachable'
+      : failure.includes('ECONNREFUSED')
+        ? 'refused'
+        : /timeout/i.test(failure)
+          ? 'timeout'
+          : 'unreachable';
+    return {
+      status: 'ok',
+      target,
+      engine: null,
+      reachable: dial.reachable,
+      verified: false,
+      code,
+      ...(dial.message ? { message: dial.message } : {}),
+    };
+  });
+
+  app.get('/api/admin/harness/mcp/entry', async (req, reply) => {
+    const query = (req.query || {}) as { host?: string; scope?: string; name?: string };
+    if (!query.host || !query.name) {
+      reply.code(400);
+      return { status: 'error', code: 'bad_request', message: 'host and name are required' };
+    }
+    if (!HOSTS.some((host) => host.id === query.host)) {
+      reply.code(400);
+      return { status: 'error', code: 'bad_request', message: `unknown host '${query.host}'` };
+    }
+    const scope = query.scope ?? 'global';
+    if (!isEnabledScope(scope)) {
+      reply.code(400);
+      return {
+        status: 'error',
+        code: 'unsupported_scope',
+        message: `scope '${scope}' is not supported — reads target ${ENABLED_SCOPES.join(', ')} scope`,
+      };
+    }
+    const result = readMcpEntry({ host: query.host as HarnessHostId, scope, name: query.name });
+    if (!result.ok) {
+      reply.code(result.code === 'not_found' ? 404 : 400);
+      return { status: 'error', code: result.code, message: result.message };
+    }
+    return {
+      status: 'ok',
+      host: result.host,
+      name: result.name,
+      file: result.file,
+      container: result.container,
+      launch: result.launch,
+      setKeys: result.setKeys,
+    };
+  });
+
+  app.post('/api/admin/harness/mcp/edit', async (req, reply) => {
+    const body = (req.body || {}) as {
+      host?: string;
+      scope?: string;
+      name?: string;
+      launch?: unknown;
+      artifactId?: unknown;
+      confirm?: boolean;
+    };
+    if (!body.host || !body.name || body.launch === undefined) {
+      reply.code(400);
+      return { status: 'error', code: 'bad_request', message: 'host, name and launch are required' };
+    }
+    if (!HOSTS.some((host) => host.id === body.host)) {
+      reply.code(400);
+      return { status: 'error', code: 'bad_request', message: `unknown host '${body.host}'` };
+    }
+    // Same scope boundary as install: the body cannot widen the set the rest of the domain reads.
+    const scope = body.scope ?? 'global';
+    if (!isEnabledScope(scope)) {
+      reply.code(400);
+      return {
+        status: 'error',
+        code: 'unsupported_scope',
+        message: `scope '${scope}' is not supported — edits target ${ENABLED_SCOPES.join(', ')} scope`,
+      };
+    }
+    const result = await editMcpServer({
+      host: body.host as HarnessHostId,
+      scope,
+      name: body.name,
+      launch: body.launch as McpLaunch,
+      ...(typeof body.artifactId === 'string' ? { artifactId: body.artifactId } : {}),
+      confirm: body.confirm === true,
+    });
+    if (!result.ok) {
+      const status =
+        result.code === 'not_found' ? 404 : result.code === 'bad_request' ? 400 : 409;
+      reply.code(status);
+      return { status: 'error', ...result };
+    }
+    return {
+      status: 'ok',
+      changed: result.changed,
+      host: result.host,
+      name: result.name,
+      file: result.file,
+      container: result.container,
+      artifactId: result.artifactId,
+    };
+  });
+
   // Install one artifact into one or more host locations — one store entry, N copies. The route
   // speaks keys (`<sourceId>:<ref>[#detail]`); the SPI resolves the payload, the kind writer does
   // the disk work. An `ambiguous` answer carries `candidates` — the console picks one and retries
@@ -797,6 +1122,8 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
       repo?: string;
       kind?: string;
       skillDir?: string;
+      /** Operator-edited MCP launch (install form) — replaces the resolver's generated launch. */
+      launch?: unknown;
       manualPayload?: { name?: string; launch?: unknown };
       manualSpec?: string;
       confirm?: boolean;
@@ -862,6 +1189,10 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
       repo: body.repo,
       kind,
       skillDir: body.skillDir,
+      launch:
+        kind === 'mcp' && body.launch && typeof body.launch === 'object'
+          ? (body.launch as never)
+          : undefined,
       manualPayload,
       manualSpec: typeof body.manualSpec === 'string' ? body.manualSpec : undefined,
       confirm: body.confirm === true,
@@ -1015,7 +1346,7 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
       reply.code(400);
       return { status: 'error', code: 'bad_request', message: 'planId is required' };
     }
-    const result = applyRemove(body.planId, { discardLocalEdits: body.discardLocalEdits === true });
+    const result = await applyRemove(body.planId, { discardLocalEdits: body.discardLocalEdits === true });
     if (!result.ok) {
       reply.code(409);
       return { status: 'error', code: result.code, message: result.message };

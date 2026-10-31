@@ -56,7 +56,7 @@ describe('tracked config-landed copy', () => {
     expect(plan.actions[0]!.entry).toBe('my-plugin');
     expect(plan.actions[0]!.container).toBe('plugin');
 
-    const removed = applyRemove(plan.planId);
+    const removed = await applyRemove(plan.planId)
     expect(removed.ok).toBe(true);
     expect(fs.existsSync(config)).toBe(true);
     const after = readJson(config);
@@ -95,7 +95,7 @@ describe('tracked config-landed copy', () => {
     expect(plan.actions[0]!.op).toBe('prune-only');
     expect(plan.actions[0]!.exists).toBe(false);
 
-    expect(applyRemove(plan.planId).ok).toBe(true);
+    expect((await applyRemove(plan.planId)).ok).toBe(true);
     // A prune performs no filesystem op: the config file must still be there, byte-for-byte shape.
     expect(fs.existsSync(config)).toBe(true);
     expect(readJson(config)).toEqual({ plugin: [] });
@@ -103,7 +103,8 @@ describe('tracked config-landed copy', () => {
   });
 });
 
-describe('discovered row descriptor', () => {  it('removes a plugin[] row through the descriptor the scan produced', () => {
+describe('discovered row descriptor', () => {
+  it('removes a plugin[] row through the descriptor the scan produced', async () => {
     const root = tmp();
     const file = path.join(root, 'opencode.json');
     fs.writeFileSync(file, JSON.stringify({ mcp: { keep: { type: 'local' } }, plugin: ['ghost', 'stay'] }, null, 2));
@@ -123,7 +124,7 @@ describe('discovered row descriptor', () => {  it('removes a plugin[] row throug
     if ('error' in plan) throw new Error(plan.error);
     expect(plan.actions[0]!.op).toBe('drop-entry');
 
-    expect(applyRemove(plan.planId).ok).toBe(true);
+    expect((await applyRemove(plan.planId)).ok).toBe(true);
     const after = readJson(file);
     expect(after['plugin']).toEqual(['stay']);
     expect(after['mcp']).toEqual({ keep: { type: 'local' } });

@@ -47,10 +47,20 @@ export { KimiPluginMarketAdapter, KIMI_PROBE_OPTIONS } from './kimi.js';
 /** Every served harness's published form. ONE probe consumes the whole list, so support is
  *  DETECTED from the repository's own directories instead of inferred from the acting tab. */
 export function allHostProbes(): HostProbe[] {
-  return HOSTS.map((host) => {
+  const probes: HostProbe[] = HOSTS.map((host) => {
     const dir = adapterFor(host.id)?.extensionDir ?? null;
     return { harness: host.id, dir, options: probeOptionsFor(host.id) };
   });
+  // Grok accepts the `.claude-plugin/` equivalents of its own form (vendor user guide,
+  // "Skills, Plugins & Marketplaces": "Grok reads the index from `.grok-plugin/marketplace.json`.
+  // It also accepts `.grok-plugin/plugin.json` and the `.claude-plugin/` equivalents."). The alias
+  // probe makes a claude-form repository DETECTED for grok too — support stays measured from the
+  // repository, and grok-native repos still claim `.grok-plugin/` first. The alias sits after
+  // every host's own probe, so the claude reader keeps claiming its own directory.
+  const claudeDir = adapterFor('claude')?.extensionDir;
+  const grok = probes.find((probe) => probe.harness === 'grok');
+  if (claudeDir && grok) probes.push({ harness: 'grok', dir: claudeDir, options: grok.options });
+  return probes;
 }
 
 /** Create the per-harness adapter. `fetchImpl` is injectable for tests; production uses global
@@ -82,9 +92,10 @@ export function createPluginAdapter(
  * owner); each clone directory is claimed by its own adapter: claude → `.claude-plugin`,
  * grok → `.grok-plugin`, github-copilot → `.github/plugin`, universal → `.agents/plugins`.
  * Non-catalog forms are read by their own manifest readers: pi → layer `package.json`,
- * gemini-cli → root `gemini-extension.json`; codex/cursor/kimi/antigravity/factory are
- * directory-keyed. Every probe also carries the name reader, because a directory-keyed harness
- * still needs the marketplace/plugin NAMES its install command spells.
+ * gemini-cli → root `gemini-extension.json`, kimi → root `kimi.plugin.json` (with the
+ * `.kimi-plugin/` directory as fallback); codex/cursor/antigravity/factory are directory-keyed.
+ * Every probe also carries the name reader, because a directory-keyed harness still needs the
+ * marketplace/plugin NAMES its install command spells.
  */
 export function probeOptionsFor(harness: HarnessHostId | null | undefined): ProbeOptions {
   const hooks = probeHooks(harness);

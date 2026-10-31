@@ -36,6 +36,8 @@ export interface ClientStatus {
   backupExists: boolean;
   /** Extra concrete models exposed in the client's model switcher (opencode) */
   extraModels?: string[];
+  /** Installed CLI version vs the adapter's minimum-compatible floor (absent = adapter declares no probe). */
+  version?: { current: string; min?: string; meetsMin: boolean };
   /** This client's model slots; value undefined = auto (intelligent routing). */
   modelSlots: { key: string; value?: string; default?: string; description?: string }[];
   /** Last-linked model profile (opencode): profile id + agent→slot-key tags
@@ -1176,7 +1178,7 @@ export interface HarnessCopyView {
   /**
    * Skill copies only: every host that reads this directory, owner first. `host` is ownership (one
    * owner per directory — install/claims/removal); this is readership (the shared `.agents/skills`
-   * tree is read by up to ten runtimes), which is what the skills page's harness rail selects by.
+   * tree is read by up to twelve runtimes), which is what the skills page's harness rail selects by.
    */
   readers?: string[];
 }
@@ -1226,7 +1228,8 @@ export interface HarnessDiscoveredArtifact {
   removal?:
     | { op: 'trash-path'; path: string }
     | { op: 'drop-entry'; file: string; container: string; entry: string }
-    | { op: 'drop-server'; file: string; container: string; entry: string };
+    | { op: 'drop-server'; file: string; container: string; entry: string }
+    | { op: 'cli-remove'; host: string; entry: string };
 }
 
 export interface HarnessInventoryResponse {
@@ -1238,6 +1241,32 @@ export interface HarnessInventoryResponse {
   discovered: HarnessDiscoveredArtifact[];
   discoveredCopies: number;
   paths: { manifest: string; claims: string };
+}
+
+/** Live server state as the runtime reports it (backend `McpRuntimeStatus`). Distinct from
+ *  `HarnessCopyView.state`: that answers "is our config member intact", this answers "did the
+ *  runtime connect". A missing host/name is UNKNOWN, never a failure claim. */
+export type McpRuntimeStatus = 'connected' | 'pending' | 'disabled' | 'needs_auth' | 'failed';
+
+export interface McpRuntimeServer {
+  name: string;
+  status: McpRuntimeStatus;
+  /** The runtime's own failure text (`failed` / `needs_auth`). */
+  error?: string;
+}
+
+export interface McpRuntimeHostView {
+  host: string;
+  reachable: boolean;
+  /** Why the runtime could not answer; present only when `reachable` is false. */
+  message?: string;
+  servers: McpRuntimeServer[];
+}
+
+export interface McpRuntimeReport {
+  status: string;
+  probedAt: number;
+  hosts: McpRuntimeHostView[];
 }
 
 /** One row of a probed git-marketplace snapshot — a SKILL.md directory the source can install. */
@@ -1288,9 +1317,9 @@ export interface HarnessCatalogSource {
 export interface HarnessMarketplaceEntry {
   slug: string;
   catalog?: string;
-  /** GitHub `owner/repo`, or an npm package / `@scope/*`. */
+  /** GitHub `owner/repo`, an npm package / `@scope/*`, or one PyPI project name. */
   repo: string;
-  type?: 'github' | 'npm';
+  type?: 'github' | 'npm' | 'pypi';
   enabled: boolean;
   addedAt?: number;
   rescan: { enabled: boolean; intervalMs: number };
@@ -1303,7 +1332,7 @@ export interface HarnessMarketplaceEntry {
   /** Marketplace name the manifest declares, when the snapshot read one. */
   marketplace?: string | null;
   /** Kinds the source's snapshot actually carries — the dialog filters by the open tab's kind. */
-  kinds: ('skill' | 'plugin')[];
+  kinds: ('skill' | 'plugin' | 'mcp')[];
 }
 
 /** A summarized probe from the snapshot history (§D9) — never a raw dump. */
@@ -1364,6 +1393,13 @@ export interface HarnessMarketItem {
    * the skills page installs as an plugin).
    */
   installKind: 'skill' | 'mcp' | 'plugin';
+  /**
+   * MCP rows only: the server key the install merges under, derived backend-side from the package
+   * identity with the host grammar's intersection (`@bytebase/dbhub` → `bytebase-dbhub`). `name`
+   * stays the package identity the row is browsed by; the sheet's read-only name field shows THIS,
+   * because it is what the host config will carry.
+   */
+  serverName?: string;
   name: string;
   /** `owner/repo` for GitHub rows; absent for sources whose identity is a package name. */
   repo?: string;
@@ -1451,10 +1487,11 @@ export interface HarnessPlanAction {
    *  - `move-to-trash` — a file tree / loose file (reversible through the trash);
    *  - `drop-entry` — one string inside a JSON array (`plugin[]`, pi `packages[]`);
    *  - `drop-server` — one member of a JSON object (a server inside `mcp`);
+   *  - `cli-remove` — a CLI-materialized landing: the runtime's own remove verb runs;
    *  - `prune-only` — the copy or member is already gone, only the record is left;
    *  - `prune-record` — package-manager-owned with no declaration file to edit.
    */
-  op: 'move-to-trash' | 'prune-only' | 'prune-record' | 'drop-entry' | 'drop-server';
+  op: 'move-to-trash' | 'prune-only' | 'prune-record' | 'drop-entry' | 'drop-server' | 'cli-remove';
   /** The manifest copy key: a resolved path, or the identity token for an `external` copy. */
   path: string;
   /** The config file a `drop-*` op edits. */
@@ -1481,10 +1518,20 @@ export interface HarnessInstallRun {
   echo: string;
 }
 
+/** A manual MCP launch — the two shapes the writer accepts (ADR-0015 §D6/§D8).
+ *
+ *  Key NAMES are the default: env / header values are supplied by the runtime. A `envValues` /
+ *  `headerValues` entry is the value an operator typed into the registry-driven form — it is written
+ *  verbatim into the runtime's own config and never read back. */
+export type HarnessMcpLaunch =
+  | { command: string; args?: string[]; envKeys?: string[]; envValues?: Record<string, string> }
+  | { url: string; transport: 'http' | 'sse'; headerKeys?: string[]; headerValues?: Record<string, string> };
+
 export interface HarnessInstallTarget {
   host: string;
-  /** `subprocess` (a command chain), `config` (a merge), or `manual` (interactive-only). */
-  op: 'subprocess' | 'config' | 'manual';
+  /** `subprocess` (a command chain), `config` (a merge), `manual` (interactive-only), or
+   *  `webapi` (the runtime's own loopback REST install API — a transient vendor server). */
+  op: 'subprocess' | 'config' | 'manual' | 'webapi';
   file?: string;
   container?: string;
   /** Structured command for a single-run subprocess target — apply runs THIS. */
@@ -1494,8 +1541,106 @@ export interface HarnessInstallTarget {
   echo?: string;
   /** A native marketplace chain: registration first, install last, run in order. */
   runs?: HarnessInstallRun[];
+  /** `webapi` only: the plugin source string POSTed to the runtime's install route. */
+  source?: string;
+  /** MCP plan only: server keys the merge would add / overwrite in the target container. */
+  addedKeys?: string[];
+  changedKeys?: string[];
   refused?: string;
   added: boolean;
+}
+
+/** One EXISTING MCP server read from a host config (the edit sheet's pre-image).
+ *  Stored env/header VALUES never travel — only their key names, plus which keys are already set. */
+export interface HarnessMcpEntry {
+  host: string;
+  name: string;
+  file: string;
+  container: string;
+  launch: HarnessMcpLaunch;
+  /** Keys whose stored value is not a bare `{env:KEY}` reference (a literal or `{file:...}`). */
+  setKeys: string[];
+}
+
+/**
+ * The value-format vocabulary an MCP parameter can carry (ADR-0015 §D11). Two provenances, one
+ * superset: the registry `server.json` reader emits the four official `Input`/`Argument` formats
+ * (`McpRegistryFormat`); the CLI probe adds `dsn` — a connection-string flag it classifies by name
+ * (`McpCliFormat`). `McpParamRow.format` (the console render row) is the superset, since a row may
+ * come from either source. Declared once here so the four old inline copies cannot drift.
+ */
+export type McpRegistryFormat = 'string' | 'number' | 'boolean' | 'filepath';
+export type McpCliFormat = McpRegistryFormat | 'dsn';
+
+/** One configurable input declared by a registry `server.json` (`Input` in the registry schema). */
+export interface HarnessMcpRegistryInput {
+  name: string;
+  description?: string;
+  format: McpRegistryFormat;
+  secret: boolean;
+  required: boolean;
+  default?: string;
+  placeholder?: string;
+  choices?: string[];
+  /** Pinned by the registry — not operator-configurable. */
+  value?: string;
+}
+
+/** One CLI argument declared by a registry `server.json` (`positional` or `named`). */
+export interface HarnessMcpRegistryArgument {
+  type: 'positional' | 'named';
+  name: string;
+  value?: string;
+  valueHint?: string;
+  default?: string;
+  description?: string;
+  format: McpRegistryFormat;
+  secret: boolean;
+  required: boolean;
+  choices?: string[];
+}
+
+export interface HarnessMcpRegistryPackage {
+  registryType: string;
+  identifier: string;
+  version?: string;
+  transport: 'stdio' | 'http' | 'sse';
+  url?: string;
+  env: HarnessMcpRegistryInput[];
+  args: HarnessMcpRegistryArgument[];
+  headers: HarnessMcpRegistryInput[];
+}
+
+export interface HarnessMcpRegistryCandidate {
+  name: string;
+  title?: string;
+  description?: string;
+  version?: string;
+  repository?: string;
+  packages: HarnessMcpRegistryPackage[];
+}
+
+/** One CLI flag read from a published npm package (its bundled parser, not the registry). */
+export interface HarnessMcpCliOption {
+  /** Without dashes; the form adds `--` on write. */
+  name: string;
+  valueHint?: string;
+  choices?: string[];
+  format?: McpCliFormat;
+  secret?: boolean;
+  /** Environment variable the package falls back to when the flag is absent. */
+  env?: string;
+  /** The parser refuses to start without it. */
+  required?: boolean;
+}
+
+export interface HarnessMcpCliProbe {
+  status: string;
+  package: string;
+  version: string;
+  bin?: string;
+  options: HarnessMcpCliOption[];
+  files: number;
 }
 
 export interface HarnessRemovePlan {
@@ -1511,6 +1656,34 @@ export interface HarnessRemovePlan {
   blocked: { path: string; code: string; message: string }[];
   warnings: { code: string; message: string; path: string }[];
   createdAt: number;
+}
+/** Mirrors the backend `SourceReason` (ADR-0015 §D11): the console renders its localized copy
+ *  from the reason + params, so a new backend reason must be added here in the same pass. */
+export type SourceReason =
+  | 'registered'
+  | 'registered_scoped'
+  | 'already_configured'
+  | 'slug_taken'
+  | 'no_form'
+  | 'not_a_repo'
+  | 'invalid_layer'
+  | 'invalid_source'
+  | 'no_skill'
+  | 'probe_failed'
+  | 'unsupported_here';
+
+/** A refused source registration that still carries the machine-readable cause: the drawer
+ *  translates `reason`/`params` and only falls back to the English `message`. */
+export class SourceOutcomeError extends Error {
+  readonly reason?: SourceReason;
+  readonly params?: Record<string, string>;
+
+  constructor(message: string, reason?: SourceReason, params?: Record<string, string>) {
+    super(message);
+    this.name = 'SourceOutcomeError';
+    this.reason = reason;
+    this.params = params;
+  }
 }
 
 export const api = {
@@ -2297,6 +2470,50 @@ export const api = {
     return res.json();
   },
 
+  /** Live MCP status from each runtime that exposes one. Unknown hosts are absent, never assumed. */
+  async harnessMcpRuntime(): Promise<McpRuntimeReport> {
+    const res = await fetch('/api/admin/harness/mcp/runtime');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /**
+   * Test the DSN builder's current values. PostgreSQL and MySQL/MariaDB log in for real
+   * (`select 1` / `ping`) and answer a verdict code; every other scheme gets a TCP dial. The
+   * credential goes to the local admin route for this one request — never logged, never echoed
+   * (ADR-0015 §D11).
+   */
+  async harnessMcpDsnProbe(input: {
+    driver: string;
+    host: string;
+    port: number;
+    user: string;
+    password: string;
+    database: string;
+    params: Record<string, string>;
+  }): Promise<{
+    status: string;
+    target: string;
+    engine: 'postgres' | 'mysql' | null;
+    reachable: boolean;
+    verified: boolean;
+    code: string;
+    message?: string;
+  }> {
+    const res = await fetch('/api/admin/harness/mcp/dsn-probe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const err = new Error(data?.message || `HTTP ${res.status}`) as Error & { code?: string };
+      err.code = data?.code;
+      throw err;
+    }
+    return data;
+  },
+
   /** Dry-run a maintenance action (only `remove` exists today). Writes nothing. */
   async harnessPlan(body: {
     action: 'remove';
@@ -2460,6 +2677,10 @@ export const api = {
     sourceId?: string;
     skillDir?: string;
     manualSpec?: string;
+    /** Manual MCP server (`kind` must be `mcp`): written into the host's own config, no source. */
+    manualPayload?: { name: string; launch: HarnessMcpLaunch };
+    /** Operator-edited MCP launch (install form): replaces the resolver's generated launch. */
+    launch?: HarnessMcpLaunch;
     /** Gate 3 / gate 2 acknowledgement — without it an plugin/mcp install writes nothing. */
     confirm?: boolean;
     /** Surfaces the row was browsed on, besides the one that writes it (see `HarnessArtifactView`). */
@@ -2504,9 +2725,93 @@ export const api = {
     return data;
   },
 
-  /** Translate one description into the console language (derived cache; may call the gateway). */
+  /** Read ONE existing MCP server back as a launch (env/header KEY NAMES only). */
+  async harnessMcpEntry(params: { host: string; name: string; scope?: 'global' }): Promise<HarnessMcpEntry> {
+    const search = new URLSearchParams({ host: params.host, name: params.name, scope: params.scope ?? 'global' });
+    const res = await fetch(`/api/admin/harness/mcp/entry?${search.toString()}`);
+    const data = await res.json();
+    if (!res.ok) {
+      const err = new Error(data?.message || `HTTP ${res.status}`) as Error & { code?: string };
+      err.code = data?.code;
+      throw err;
+    }
+    return data;
+  },
+
   /**
-   * Translate one string into the console's language.
+   * Ask the MCP Registry for the latest `server.json` of every server matching `q` (a package name
+   * or a registry name). Read-only; the answer drives the visual parameter form.
+   */
+  async harnessMcpRegistry(q: string): Promise<{ status: string; candidates: HarnessMcpRegistryCandidate[] }> {
+    const res = await fetch(`/api/admin/harness/mcp/registry?q=${encodeURIComponent(q)}`);
+    const data = await res.json();
+    if (!res.ok) {
+      const err = new Error(data?.message || `HTTP ${res.status}`) as Error & { code?: string };
+      err.code = data?.code;
+      throw err;
+    }
+    return data;
+  },
+
+  /**
+   * Read one published npm package and list the CLI flags its own parser reads
+   * (`--transport`, `--port`, `--dsn` …). The tarball is downloaded and scanned in memory;
+   * the package is never executed.
+   */
+  async harnessMcpCli(pkg: string, registry: 'npm' | 'pypi' = 'npm'): Promise<HarnessMcpCliProbe> {
+    const res = await fetch(
+      `/api/admin/harness/mcp/cli?pkg=${encodeURIComponent(pkg)}&registry=${registry}`
+    );
+    const data = await res.json();
+    if (!res.ok) {
+      const err = new Error(data?.message || `HTTP ${res.status}`) as Error & { code?: string };
+      err.code = data?.code;
+      throw err;
+    }
+    return data;
+  },
+
+  /**
+   * Change one existing MCP server's launch. Gate 2: without `confirm` the backend answers
+   * `confirm_required` with the exact file/container plan and writes nothing.
+   */
+  async harnessMcpEdit(body: {
+    host: string;
+    name: string;
+    launch: HarnessMcpLaunch;
+    /** The manifest record to keep in sync; absent for a runtime-installed (discovered) entry. */
+    artifactId?: string;
+    scope?: 'global';
+    confirm?: boolean;
+  }): Promise<{
+    status: string;
+    changed: boolean;
+    host: string;
+    name: string;
+    file: string;
+    container: string;
+    artifactId: string | null;
+  }> {
+    const res = await fetch('/api/admin/harness/mcp/edit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope: 'global', ...body }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const err = new Error(data?.message || `HTTP ${res.status}`) as Error & {
+        code?: string;
+        plan?: HarnessInstallTarget[];
+      };
+      err.code = data?.code;
+      err.plan = data?.plan;
+      throw err;
+    }
+    return data;
+  },
+
+  /**
+   * Translate one description into the console language (derived cache; may call the gateway).
    *
    * `format: 'markdown'` selects the long-form contract (a README): prose is translated in chunked
    * runs, fenced code is preserved verbatim, and `truncated` says the document outran the budget so
@@ -2661,7 +2966,7 @@ export const api = {
     return res.json();
   },
 
-  async harnessPluginSources(harness: string, kind?: 'skill' | 'plugin'): Promise<{
+  async harnessPluginSources(harness: string, kind?: 'skill' | 'plugin' | 'mcp'): Promise<{
     status: string;
     extensionDir: string | null;
     sources: HarnessCatalogSource[];
@@ -2685,7 +2990,7 @@ export const api = {
     return res.json();
   },
 
-  async harnessPluginCheckSource(harness: string, url: string, opts: { type?: 'github' | 'npm'; extensionDir?: string } = {}): Promise<{
+  async harnessPluginCheckSource(harness: string, url: string, opts: { type?: 'github' | 'npm' | 'pypi'; kind?: 'plugin' | 'mcp'; extensionDir?: string } = {}): Promise<{
     status: string;
     ok: boolean;
     skills: number;
@@ -2693,12 +2998,15 @@ export const api = {
     plugins: number;
     hosts: string[];
     marketplace: string | null;
+    /** Duplicate of the backend contract's `SourceOutcome` (ADR-0015 §D11). */
+    reason?: SourceReason;
+    params?: Record<string, string>;
     message?: string;
   }> {
     const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/sources/check`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, type: opts.type, extensionDir: opts.extensionDir }),
+      body: JSON.stringify({ url, type: opts.type, kind: opts.kind, extensionDir: opts.extensionDir }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
@@ -2707,15 +3015,15 @@ export const api = {
   async harnessPluginRegisterSource(
     harness: string,
     url: string,
-    opts: { type?: 'github' | 'npm'; extensionDir?: string; rescan?: { enabled?: boolean; intervalMs?: number }; catalog?: string } = {},
-  ): Promise<{ status: string; message?: string }> {
+    opts: { type?: 'github' | 'npm' | 'pypi'; kind?: 'plugin' | 'mcp'; extensionDir?: string; rescan?: { enabled?: boolean; intervalMs?: number }; catalog?: string; shared?: boolean } = {},
+  ): Promise<{ status: string; reason?: SourceReason; params?: Record<string, string>; message?: string }> {
     const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/sources`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, type: opts.type, extensionDir: opts.extensionDir, rescan: opts.rescan, catalog: opts.catalog }),
+      body: JSON.stringify({ url, type: opts.type, kind: opts.kind, extensionDir: opts.extensionDir, rescan: opts.rescan, catalog: opts.catalog, shared: opts.shared }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data?.message || `HTTP ${res.status}`);
+    if (!res.ok) throw new SourceOutcomeError(data?.message || `HTTP ${res.status}`, data?.reason, data?.params);
     return data;
   },
 
@@ -2766,6 +3074,8 @@ export const api = {
     ok: boolean;
     skills: number;
     plugins: number;
+    reason?: SourceReason;
+    params?: Record<string, string>;
     message?: string;
   }> {
     const res = await fetch('/api/admin/harness/skills/sources/check', {
@@ -2780,14 +3090,14 @@ export const api = {
   async harnessSkillRegisterSource(
     url: string,
     opts: { catalog?: string; rescan?: { enabled?: boolean; intervalMs?: number } } = {},
-  ): Promise<{ status: string; message?: string }> {
+  ): Promise<{ status: string; reason?: SourceReason; params?: Record<string, string>; message?: string }> {
     const res = await fetch('/api/admin/harness/skills/sources', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url, catalog: opts.catalog, rescan: opts.rescan }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data?.message || `HTTP ${res.status}`);
+    if (!res.ok) throw new SourceOutcomeError(data?.message || `HTTP ${res.status}`, data?.reason, data?.params);
     return data;
   },
 

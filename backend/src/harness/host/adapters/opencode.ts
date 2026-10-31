@@ -1,8 +1,9 @@
 import path from 'node:path';
 import { opencodeConfigCandidates, resolveDefaultPaths } from '../../../opencode/credentials/paths.js';
+import { probeOpencodeMcpRuntime } from '../opencode-mcp-runtime.js';
 import { BaseHostAdapter, type HostMcpSpec } from './base.js';
 import { UNIVERSAL_SKILLS, xdgConfig } from './skills-paths.js';
-import type { PluginSpec, SkillsSpec } from './types.js';
+import type { McpRuntimeHostReport, PluginSpec, SkillsSpec } from './types.js';
 
 const CONFIG_CANDIDATES: string[] = opencodeConfigCandidates(resolveDefaultPaths());
 const CONFIG_DIR = path.dirname(CONFIG_CANDIDATES[0]!);
@@ -45,6 +46,11 @@ export class OpencodeAdapter extends BaseHostAdapter {
 
   supportedPluginSources(): ('github' | 'npm')[] {
     return ['github', 'npm'];
+  }
+
+  /** Live status from the running v2 service; writes only ever prove the config member. */
+  mcpRuntime(): Promise<McpRuntimeHostReport> {
+    return probeOpencodeMcpRuntime();
   }
 }
 

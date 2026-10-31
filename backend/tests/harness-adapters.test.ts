@@ -31,7 +31,7 @@ describe('capability matrix — who can do what', () => {
     expect(HOST_ADAPTERS.map((a) => a.id)).toEqual(HOSTS.map((h) => h.id));
   });
 
-  it('fourteen hosts land skills; only opencode lands MCP; claude, opencode and pi land plugins', () => {
+  it('fifteen hosts land skills; only opencode lands MCP; every host with a declared plugin write path lands plugins', () => {
     expect(ids((a) => isSkillsHost(a as never))).toEqual([
       'universal',
       'opencode',
@@ -42,14 +42,28 @@ describe('capability matrix — who can do what', () => {
       'cursor',
       'github-copilot',
       'gemini-cli',
+      'kimi',
       'cline',
       'amp',
       'windsurf',
       'zed',
       'grok',
     ]);
-    expect(ids(isMcpHost)).toEqual(['opencode']);
-    expect(ids(isPluginHost)).toEqual(['opencode', 'claude', 'pi']);
+    expect(ids(isMcpHost)).toEqual(['opencode', 'claude', 'codex', 'pi', 'omp', 'kimi', 'grok']);
+    // A verified landing = any declared write path (config / declared store / loose dir /
+    // subprocess / marketplace chain, ADR-0015 §D2 + §D9). Catalog order.
+    expect(ids(isPluginHost)).toEqual([
+      'opencode',
+      'claude',
+      'codex',
+      'pi',
+      'cursor',
+      'github-copilot',
+      'antigravity',
+      'factory',
+      'kimi',
+      'grok',
+    ]);
   });
 
   it('DSH is identity only — no skills location, so no SkillsHost', () => {
@@ -70,6 +84,7 @@ describe('shared skills directories — one owner, many readers', () => {
   it('a vendor directory is owned by its own host', () => {
     expect(skillOwner(path.join(os.homedir(), '.claude', 'skills'), 'global')).toBe('claude');
     expect(skillOwner(path.join(os.homedir(), '.omp', 'skills'), 'global')).toBe('omp');
+    expect(skillOwner(path.join(os.homedir(), '.kimi-code', 'skills'), 'global')).toBe('kimi');
     // Windsurf is one of the few hosts with its OWN project directory (cursor reads `.agents`).
     expect(skillOwner(path.resolve(process.cwd(), '.windsurf', 'skills'), 'project')).toBe('windsurf');
     expect(skillOwner(path.resolve(process.cwd(), '.omp', 'skills'), 'project')).toBe('omp');
@@ -79,7 +94,7 @@ describe('shared skills directories — one owner, many readers', () => {
     const roots = skillLocationRoots(process.cwd());
     const paths = roots.map((r) => r.root);
     expect(new Set(paths).size).toBe(paths.length);
-    // Thirteen hosts × two scopes collapses to far fewer rows because `.agents/skills` is shared.
+    // Fifteen hosts × two scopes collapses to far fewer rows because `.agents/skills` is shared.
     expect(roots.filter((r) => r.root === path.join(os.homedir(), '.agents', 'skills'))).toHaveLength(1);
   });
 });

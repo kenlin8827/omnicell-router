@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { KimiClientAdapter } from '../src/cli/clients/kimi.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -770,6 +771,151 @@ describe('CLI Client Setup & Teardown Adapters', () => {
     data = TOML.parse(fs.readFileSync(configPath, 'utf8')) as TOML.JsonMap;
     expect(((data.model as TOML.JsonMap)['ocr-foo'] as TOML.JsonMap).model).toBe('grok-4');
   });
+  it('Kimi adapter registers an openai provider + model entries in TOML and reverts', async () => {
+    const configPath = path.join(tmpDir, 'kimi-config.toml');
+    fs.writeFileSync(
+      configPath,
+      [
+        'default_model = "kimi-code/kimi-for-coding"',
+        '',
+        '[models."kimi-code/kimi-for-coding"]',
+        'provider = "managed:kimi-code"',
+        'model = "kimi-for-coding"',
+        '',
+        '[providers."managed:kimi-code"]',
+        'type = "kimi"',
+        'base_url = "https://api.kimi.com/coding/v1"',
+        '[secondary_model]',
+        'default_model = "kimi-code/kimi-for-coding"',
+        '',
+        '[services.moonshot_search]',
+        'base_url = "https://api.kimi.com/coding/v1/search"',
+      ].join('\n')
+    );
+
+    const adapter = new KimiClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    let status = await adapter.getStatus();
+    expect(status.hooked).toBe(false);
+
+    const setupRes = await adapter.setup({ port: 4000, models: { main: 'pro' }, apiKey: 'sk-test', extraModels: ['gpt-4o'] });
+    expect(setupRes.success).toBe(true);
+    expect(fs.existsSync(`${configPath}.bak.ocr`)).toBe(true);
+
+    status = await adapter.getStatus();
+    expect(status.hooked).toBe(true);
+    expect(status.modelSlots[0].value).toBe('pro');
+    // Virtual tier ids ride as omnicell-router-<id> entries and stay out of the extras echo.
+    expect(status.extraModels).toEqual(['gpt-4o']);
+
+    const updated = TOML.parse(fs.readFileSync(configPath, 'utf8')) as TOML.JsonMap;
+    const provider = (updated.providers as TOML.JsonMap)['omnicell-router'] as TOML.JsonMap;
+    expect(provider.type).toBe('openai');
+    expect(provider.base_url).toBe('http://127.0.0.1:4000/v1');
+    expect(provider.api_key).toBe('sk-test');
+    const models = updated.models as TOML.JsonMap;
+    const main = models['omnicell-router'] as TOML.JsonMap;
+    expect(main.provider).toBe('omnicell-router');
+    // Thinking toggle + effort ladder exposed for the client's /model picker.
+    expect(main.capabilities).toEqual(['thinking']);
+    expect(main.support_efforts).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+    expect(Object.keys(models)).toContain('omnicell-router-gpt-4o');
+    expect(Object.keys(models)).toContain('omnicell-router-auto');
+    // The user's own tables survive the round-trip.
+    expect((models['kimi-code/kimi-for-coding'] as TOML.JsonMap).provider).toBe('managed:kimi-code');
+    expect((updated.services as TOML.JsonMap).moonshot_search).toBeDefined();
+    expect(updated.default_model).toBe('omnicell-router');
+    // The subagent default is taken over too (a dangling managed reference
+    // breaks session startup when the vendor login expires).
+    expect(((updated.secondary_model as TOML.JsonMap).default_model)).toBe('omnicell-router');
+
+    await adapter.teardown();
+    const restored = TOML.parse(fs.readFileSync(configPath, 'utf8')) as TOML.JsonMap;
+    expect((restored.providers as TOML.JsonMap)['omnicell-router']).toBeUndefined();
+    expect((restored.providers as TOML.JsonMap)['managed:kimi-code']).toBeDefined();
+    expect(restored['omnicell-router-managed']).toBeUndefined();
+    // The pre-hook pins come back.
+    expect(restored.default_model).toBe('kimi-code/kimi-for-coding');
+    expect((restored.secondary_model as TOML.JsonMap).default_model).toBe('kimi-code/kimi-for-coding');
+    expect(restored._ocr_previous_default_model).toBeUndefined();
+    expect(restored._ocr_previous_secondary_model).toBeUndefined();
+  });
+
+  it('Kimi teardown without a backup drops a setup-created secondary pin instead of leaving a dangling one', async () => {
+    // A [secondary_model] table WITHOUT a default_model at setup time: the hook adds the pin
+    // but records no previous value; if the backup is gone at teardown, the pin must be removed
+    // (it names the provider teardown just deleted) rather than restored.
+    const configPath = path.join(tmpDir, 'kimi-nobak.toml');
+    fs.writeFileSync(configPath, ['[secondary_model]', 'max_turns = 8', ''].join('\n'));
+
+    const adapter = new KimiClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    const setupRes = await adapter.setup({ port: 4000, models: { main: 'pro' }, apiKey: 'sk-test' });
+    expect(setupRes.success).toBe(true);
+    fs.rmSync(`${configPath}.bak.ocr`);
+
+    const teardownRes = await adapter.teardown();
+    expect(teardownRes.success).toBe(true);
+    const restored = TOML.parse(fs.readFileSync(configPath, 'utf8')) as TOML.JsonMap;
+    // The provider table was created by the hook, so an empty one is dropped entirely.
+    expect(restored.providers).toBeUndefined();
+    expect((restored.secondary_model as TOML.JsonMap).default_model).toBeUndefined();
+    // The user's own table content survives.
+    expect((restored.secondary_model as TOML.JsonMap).max_turns).toBe(8);
+  });
+
+  it('Kimi follow-mode setup writes virtual tier entries as omnicell-router-<id>', async () => {
+    const configPath = path.join(tmpDir, 'kimi-follow.toml');
+    fs.writeFileSync(configPath, ['default_model = "x"', ''].join('\n'));
+
+    const adapter = new KimiClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    await adapter.setup({ port: 4000, models: { main: 'auto' }, apiKey: 'sk-test', virtualModels: ['auto', 'pro'] });
+    const data = TOML.parse(fs.readFileSync(configPath, 'utf8')) as TOML.JsonMap;
+    expect(Object.keys(data.models as TOML.JsonMap)).toEqual(['omnicell-router', 'omnicell-router-pro']);
+
+    await adapter.teardown();
+    const restored = TOML.parse(fs.readFileSync(configPath, 'utf8')) as TOML.JsonMap;
+    expect(restored.models).toBeUndefined();
+    expect(restored.default_model).toBe('x');
+  });
+
+  it('Kimi adapter teardown after double-setup must leave the client fully unhooked (restore-then-strip)', async () => {
+    const configPath = path.join(tmpDir, 'kimi-double.toml');
+    fs.writeFileSync(configPath, ['default_model = "kimi-code/kimi-for-coding"', ''].join('\n'));
+
+    const adapter = new KimiClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    await adapter.setup({ port: 4000, models: { main: 'pro' }, apiKey: 'sk-test' });
+    await adapter.setup({ port: 8000, models: { main: 'pro' }, apiKey: 'sk-test' });
+
+    const res = await adapter.teardown();
+    expect(res.success).toBe(true);
+
+    const status = await adapter.getStatus();
+    expect(status.hooked).toBe(false);
+    const restored = TOML.parse(fs.readFileSync(configPath, 'utf8')) as TOML.JsonMap;
+    expect(restored.providers).toBeUndefined();
+    expect(restored.models).toBeUndefined();
+    expect(restored.default_model).toBe('kimi-code/kimi-for-coding');
+    expect(restored['omnicell-router-managed']).toBeUndefined();
+  });
+
+  it('Kimi adapter refuses to overwrite an unparseable config', async () => {
+    const configPath = path.join(tmpDir, 'kimi-broken.toml');
+    fs.writeFileSync(configPath, '[models.unbalanced\n');
+
+    const adapter = new KimiClientAdapter();
+    adapter.getConfigPath = () => configPath;
+
+    const setupRes = await adapter.setup({ port: 4000, models: { main: 'auto' }, apiKey: 'sk-test' });
+    expect(setupRes.success).toBe(false);
+  });
+
 
 
 
@@ -1189,7 +1335,7 @@ describe('Embedded UI & Management API Endpoints', () => {
     expect(json.metrics).toBeDefined();
     expect(json.circuitBreakers).toBeDefined();
     expect(Array.isArray(json.clients)).toBe(true);
-    expect(json.clients.length).toBe(8);
+    expect(json.clients.length).toBe(9);
   });
 
   it('should support reading and validating raw YAML config on /api/admin/config/raw', async () => {

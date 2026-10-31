@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { BaseHostAdapter } from './base.js';
+import { BaseHostAdapter, type HostMcpSpec } from './base.js';
 import { home } from './skills-paths.js';
 import type { SkillsSpec } from './types.js';
 
@@ -16,6 +16,21 @@ export class OmpAdapter extends BaseHostAdapter {
     global: path.join(home(), '.omp', 'skills'),
     project: path.join('.omp', 'skills'),
     readsUniversal: true,
+  };
+
+  /**
+   * MCP: `~/.omp/agent/mcp.json` for the agent, `.omp/mcp.json` for one project (the schema names both,
+   * and the discovery provider reads `mcp.json` from the agent dir). Same `mcpServers` spelling as pi
+   * with `${KEY}` references, but the name grammar is the schema's broader
+   * `^[a-zA-Z0-9_.-]{1,100}$` — a dot is legal here, unlike pi.
+   */
+  protected readonly mcpSpec: HostMcpSpec = {
+    configGlobal: path.join(home(), '.omp', 'agent', 'mcp.json'),
+    configProject: path.join('.omp', 'mcp.json'),
+    container: 'mcpServers',
+    shape: 'mcpServers',
+    secretRef: 'shell',
+    namePattern: /^[A-Za-z0-9_.-]{1,100}$/,
   };
 }
 

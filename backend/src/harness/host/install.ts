@@ -4,6 +4,7 @@ import { adapterFor, type PluginHost } from './adapters/index.js';
 import { probeArtifact, type ProbeResult } from './probe.js';
 import type { McpTargetPlan } from './writers/mcp.js';
 import { applyMcp, planMcp } from './writers/mcp.js';
+import { INVALID_MCP_LAUNCH, isPackageRunnerCommand, mcpServerNameError, mcpStdioTransportError, validMcpLaunch } from './mcp-entry.js';
 import type { PluginTargetPlan } from './writers/plugin.js';
 import { applyPlugin, planPlugin, safeSpec } from './writers/plugin.js';
 import type { ExecImpl } from './writers/plugin.js';
@@ -42,6 +43,9 @@ export interface InstallRequest {
   manualPayload?: { name: string; launch: McpLaunch };
   /** Manual plugin spec (ADR-0015 §D6) — `kind` must be `plugin`; key becomes `manual:<spec>`. */
   manualSpec?: string;
+  /** Launch override for a key-resolved MCP install: the operator's edited command/args/env
+   *  replace the resolver's generated one (the pin still travels — provenance is untouched). */
+  launch?: McpLaunch;
   /** Confirm gate for config-merging kinds. Without it, `kind: 'mcp'` returns the plan only. */
   confirm?: boolean;
   /** Injectable process runner for plugin subprocess installs. */
@@ -120,38 +124,16 @@ export type InstallFailureCode =
   | 'exists'
   | 'foreign';
 
-/** Shape-validate a manual launch BEFORE any writer sees it — a primitive would 500 in desiredEntry. */
-function validLaunch(launch: unknown): launch is McpLaunch {
-  if (!launch || typeof launch !== 'object') return false;
-  const l = launch as Record<string, unknown>;
-  const stringArray = (v: unknown) => Array.isArray(v) && v.every((x) => typeof x === 'string');
-  if (typeof l.command === 'string' && l.command.trim() !== '') {
-    return (l.args === undefined || stringArray(l.args)) && (l.envKeys === undefined || stringArray(l.envKeys));
-  }
-  if (typeof l.url === 'string' && l.url.trim() !== '') {
-    return (
-      (l.transport === undefined || ['http', 'sse', 'stdio'].includes(l.transport as string)) &&
-      (l.headerKeys === undefined || stringArray(l.headerKeys))
-    );
-  }
-  return false;
-}
-
 /** Compose the canonical key from either request shape; validates the `#detail` segment. */
 function composeKey(req: InstallRequest): { ok: true; key: string; kind: HarnessKind } | { ok: false; message: string } {
   const kind = req.kind ?? 'skill';
   if (req.manualPayload) {
     if (kind !== 'mcp') return { ok: false, message: 'manualPayload currently serves kind mcp only' };
     const name = req.manualPayload.name.trim();
-    if (!name || !/^[\w.-]+$/.test(name)) return { ok: false, message: `invalid server name '${req.manualPayload.name}'` };
-    // A server name becomes an object KEY in the runtime's config. `__proto__` is not a key: an
-    // assignment to it rewrites the prototype, `JSON.stringify` then omits the entry, and the apply
-    // would report success over a config that never received the server.
-    if (['__proto__', 'prototype', 'constructor'].includes(name)) {
-      return { ok: false, message: `reserved server name '${name}'` };
-    }
-    if (!validLaunch(req.manualPayload.launch)) {
-      return { ok: false, message: 'invalid manual launch: expected {command, args?, envKeys?} or {url, transport?, headerKeys?}' };
+    const nameError = mcpServerNameError(req.manualPayload.name);
+    if (nameError) return { ok: false, message: nameError };
+    if (!validMcpLaunch(req.manualPayload.launch)) {
+      return { ok: false, message: INVALID_MCP_LAUNCH };
     }
     return { ok: true, key: `manual:${name}`, kind };
   }
@@ -178,6 +160,33 @@ function composeKey(req: InstallRequest): { ok: true; key: string; kind: Harness
   }
   if (!req.repo) return { ok: false, message: 'repo or key is required' };
   return { ok: true, key: `github:${req.repo}${dir ? `#${dir}` : ''}`, kind };
+}
+
+const NPM_PIN = /^((?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*)@([\w.-]+)$/i;
+const PYPI_PIN = /^([a-z0-9][\w.-]*)==(\S+)$/i;
+
+/**
+ * Re-apply the resolver's concrete spec to an operator-edited market launch.
+ *
+ * The sheet's prefill comes from the market KEY (`npm:@scope/name`), which carries no version, so
+ * filling in a parameter (`--dsn`, an env key) re-submits the whole launch with the bare package
+ * token. The version is resolved at INSTALL time (ADR-0015 §D9) and the manifest records its
+ * integrity — writing the bare token would let a later `latest` drift away from that pin. Only a
+ * bare token is replaced: an explicit `name@version` / `name==version` the operator typed stays.
+ */
+function repinMarketLaunch(launch: McpLaunch, resolved: McpLaunch): McpLaunch {
+  if (!('command' in launch) || !('command' in resolved)) return launch;
+  if (!isPackageRunnerCommand(launch.command)) return launch;
+  const args = launch.args ? [...launch.args] : [];
+  for (const token of resolved.args ?? []) {
+    const pin = NPM_PIN.exec(token) ?? PYPI_PIN.exec(token);
+    if (!pin) continue;
+    const index = args.indexOf(pin[1]!);
+    if (index < 0) continue;
+    args[index] = token;
+    return { ...launch, args };
+  }
+  return launch;
 }
 
 export async function installArtifact(req: InstallRequest): Promise<InstallResult> {
@@ -215,6 +224,14 @@ export async function installArtifact(req: InstallRequest): Promise<InstallResul
   let description: string | null | undefined;
   let trust: TrustTier;
 
+  /**
+   * A NATIVE marketplace install is GIT-BACKED identity only. An npm row may carry a display
+   * repository (the Pi catalog links every package to its GitHub page) while its key names the
+   * package the runtime installs; treating that marker as a marketplace request would demand a
+   * chain the host does not have and install the repository instead of the published package.
+   */
+  const nativeMarketplace =
+    req.marketplace && kind === 'plugin' && !key.startsWith('npm:') ? req.marketplace : undefined;
   if (req.manualPayload) {
     trust = 'manual';
     canonicalKey = key;
@@ -224,10 +241,10 @@ export async function installArtifact(req: InstallRequest): Promise<InstallResul
     trust = 'manual';
     canonicalKey = key;
     payloadName = req.manualSpec;
-  } else if (req.marketplace && kind === 'plugin') {
+  } else if (nativeMarketplace) {
     // Native marketplace install: the runtime owns the clone, so there is no payload to resolve.
     // The chain itself is planned/echoed by the plugin writer (gate 3), never invented here.
-    const identity = req.marketplace;
+    const identity = nativeMarketplace;
     if (
       typeof identity.repo !== 'string' ||
       typeof identity.plugin !== 'string' ||
@@ -241,7 +258,11 @@ export async function installArtifact(req: InstallRequest): Promise<InstallResul
     const harness = req.hosts[0]!;
     const hostAdapter = adapterFor(harness);
     const chain = (hostAdapter as Partial<PluginHost>)?.marketplaceSpec?.() ?? null;
-    if (!chain) {
+    // No CLI chain is fine when the runtime answers git-backed installs on its own loopback
+    // web API (kimi web): the writer derives the repository URL from the canonical key and
+    // posts it there. Only a host with NEITHER landing refuses.
+    const webApi = (hostAdapter as Partial<PluginHost>)?.webApiSpec?.() ?? null;
+    if (!chain && !webApi) {
       return { ok: false, code: 'bad_request', message: `harness '${harness}' declares no native marketplace install form` };
     }
     trust = 'community';
@@ -277,9 +298,27 @@ export async function installArtifact(req: InstallRequest): Promise<InstallResul
     storeKey = resolved.storeKey;
     pin = resolved.pin;
     description = resolved.description ?? null;
-    if (resolved.payload.kind === 'mcp') launch = resolved.payload.launch;
+    if (resolved.payload.kind === 'mcp') {
+      // An operator-edited launch (the install form's parameter fields) wins over the generated
+      // one; the resolved launch is the prefill, so an untouched form installs the resolver's own
+      // pinned command unchanged. The override crosses the same trust boundary as manualPayload
+      // and mcp-edit: it is validated here, or a malformed body would write a broken entry while
+      // reporting success. The sheet builds its prefill from a VERSION-LESS market key, so any
+      // operator edit re-submits the bare spec — re-apply the resolver's pin before it is written.
+      if (req.launch !== undefined && !validMcpLaunch(req.launch)) {
+        return { ok: false, code: 'bad_request', message: INVALID_MCP_LAUNCH };
+      }
+      launch = req.launch ? repinMarketLaunch(req.launch, resolved.payload.launch) : resolved.payload.launch;
+    }
     else if (resolved.payload.kind === 'skill') skillFiles = resolved.payload.files;
     else extSpec = resolved.payload.spec;
+  }
+  // A command launch is the host's stdio pipe; a flag asking the child for HTTP/SSE would install
+  // an entry that can only time out (DBHub's `--transport http` starts a server and never answers
+  // the pipe). The request is refused before any writer runs.
+  if (kind === 'mcp' && launch) {
+    const transportError = mcpStdioTransportError(launch);
+    if (transportError) return { ok: false, code: 'bad_request', message: transportError };
   }
   switch (kind) {
     case 'skill': {
@@ -331,6 +370,7 @@ export async function installArtifact(req: InstallRequest): Promise<InstallResul
         hosts: req.hosts,
         scope: req.scope,
         projectRoot: req.projectRoot,
+        execImpl: req.execImpl,
       };
       // Gate 1/2 — plan → confirm → apply. Without confirmation, NOTHING is written.
       if (!req.confirm) {
@@ -339,11 +379,11 @@ export async function installArtifact(req: InstallRequest): Promise<InstallResul
         return {
           ok: false,
           code: 'confirm_required',
-          message: `MCP install merges into ${plan.targets.filter((t) => !t.refused).length} config file(s) — confirm to apply`,
+          message: `MCP install plans ${plan.targets.filter((t) => !t.refused).length} host target(s) (config merge or the host's own CLI) — confirm to apply`,
           plan: plan.targets,
         };
       }
-      const applied = applyMcp(mcpReq);
+      const applied = await applyMcp(mcpReq);
       if (!applied.ok) {
         recordApply({
           action: 'install', kind: 'mcp', artifactId: `mcp:${canonicalKey}`, name: payloadName,
@@ -377,9 +417,10 @@ export async function installArtifact(req: InstallRequest): Promise<InstallResul
         scope: req.scope,
         projectRoot: req.projectRoot,
         execImpl: req.execImpl,
+        ...(req.fetchImpl ? { fetchImpl: req.fetchImpl } : {}),
         // A git-backed row names the runtime's own marketplace identity; the writer plans the
         // native chain from it (and ignores `spec`, which stays the plugin name for the record).
-        ...(req.marketplace ? { marketplace: req.marketplace } : {}),
+        ...(nativeMarketplace ? { marketplace: nativeMarketplace } : {}),
       };
       // Gate 1/3 — plan → confirm → apply; the plan echoes the EXACT third-party command(s).
       if (!req.confirm) {
@@ -388,13 +429,16 @@ export async function installArtifact(req: InstallRequest): Promise<InstallResul
         return {
           ok: false,
           code: 'confirm_required',
-          // An interactive chain (cursor/kimi) can never be spawned: the gate shows the command and
-          // says so, instead of asking for a confirmation whose apply would only refuse.
+          // An interactive chain (cursor) can never be spawned: the gate shows the command and
+          // says so, instead of asking for a confirmation whose apply would only refuse. A webapi
+          // target boots the runtime's own loopback server — named, not hidden.
           message: plan.targets.some((t) => t.op === 'manual')
             ? "this runtime installs plugins only from inside a session — run the shown command there"
-            : req.marketplace
-              ? "plugin install runs the runtime's own marketplace command(s) — confirm to apply"
-              : 'plugin install executes third-party code (npm lifecycle scripts) — confirm to apply',
+            : plan.targets.some((t) => t.op === 'webapi')
+              ? "plugin install drives the runtime's own local web API — a transient loopback server the gateway starts and stops — confirm to apply"
+              : nativeMarketplace
+                ? "plugin install runs the runtime's own marketplace command(s) — confirm to apply"
+                : 'plugin install executes third-party code (npm lifecycle scripts) — confirm to apply',
           plan: plan.targets,
         };
       }

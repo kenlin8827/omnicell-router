@@ -115,7 +115,7 @@ describe('remove plan + apply (audit)', () => {
       expect(plan.actions[0]!.path).toBe(token);
       expect(plan.external).toEqual([{ path: token, host: 'pi' }]);
 
-      const applied = applyRemove(plan.planId);
+      const applied = await applyRemove(plan.planId)
       expect(applied.ok).toBe(true);
       if (!applied.ok) return;
       // Nothing of ours exists on disk for this copy, so no trash directory is created.
@@ -132,7 +132,7 @@ describe('remove plan + apply (audit)', () => {
     const { artifactId, token } = await seedExternal('@pi/ledger-ext');
     const plan = planRemove([{ artifactId, copies: [{ scope: 'project', host: 'pi', path: token }] }]);
     if ('error' in plan) throw new Error(plan.error);
-    expect(applyRemove(plan.planId).ok).toBe(true);
+    expect((await applyRemove(plan.planId)).ok).toBe(true);
 
     const row = recentApplies(50).find((r) => r.action === 'remove' && r.artifactId === artifactId);
     expect(row).toBeDefined();
@@ -166,7 +166,7 @@ describe('remove plan + apply (audit)', () => {
     ]);
     if ('error' in plan) throw new Error(plan.error);
     expect(plan.actions[0]!.op).toBe('move-to-trash');
-    const removed = applyRemove(plan.planId);
+    const removed = await applyRemove(plan.planId)
     expect(removed.ok).toBe(true);
     if (!removed.ok) return;
     expect(fs.existsSync(copy.path)).toBe(false);
@@ -203,7 +203,7 @@ describe('copy drift per shape (skill directory regression)', () => {
     return plan;
   }
 
-  it('keeps an untouched skill tree clean and removable without a discard flag', () => {
+  it('keeps an untouched skill tree clean and removable without a discard flag', async () => {
     const root = tmpProject();
     const { artifactId, copy } = installSkill(root, 'drift-skill-clean');
 
@@ -212,10 +212,10 @@ describe('copy drift per shape (skill directory regression)', () => {
     const plan = planFor(artifactId, copy);
     expect(plan.actions[0]!.dirty).toBe(false);
     expect(plan.warnings).toEqual([]);
-    expect(applyRemove(plan.planId).ok).toBe(true);
+    expect((await applyRemove(plan.planId)).ok).toBe(true);
   });
 
-  it('reports an edited skill tree dirty and demands the discard flag', () => {
+  it('reports an edited skill tree dirty and demands the discard flag', async () => {
     const root = tmpProject();
     const { artifactId, copy } = installSkill(root, 'drift-skill-edited');
     fs.writeFileSync(path.join(copy.path, 'NOTES.md'), 'hand edit');
@@ -225,11 +225,11 @@ describe('copy drift per shape (skill directory regression)', () => {
     expect(plan.actions[0]!.dirty).toBe(true);
     expect(plan.warnings.map((w) => w.code)).toEqual(['dirty-copy']);
 
-    const refused = applyRemove(plan.planId);
+    const refused = await applyRemove(plan.planId)
     expect(refused.ok).toBe(false);
     if (refused.ok) return;
     expect(refused.code).toBe('dirty_copy');
-    expect(applyRemove(plan.planId, { discardLocalEdits: true }).ok).toBe(true);
+    expect((await applyRemove(plan.planId, { discardLocalEdits: true })).ok).toBe(true);
   });
 });
 

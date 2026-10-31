@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parse as parseJsonc, type ParseError } from 'jsonc-parser';
+import TOML from '@iarna/toml';
 import { HOST_ADAPTERS, isPluginHost, isMcpHost } from './adapters/index.js';
 import type { ExtSource } from './adapters/types.js';
 import type {
@@ -507,6 +508,10 @@ export interface McpSource {
   /** Absolute config path as the adapter resolves it (project spellings resolved by the adapter). */
   path: string;
   container: string;
+  /** Config syntax the landing reads (`toml` for a CLI-materialized codex landing). */
+  format: 'json' | 'toml';
+  /** The runtime's own MCP CLI, when writes (including removal) are CLI-materialized (§D8.13). */
+  cli?: { command: string };
 }
 
 /** `<host>|<serverKey>` — the dedupe key against manifest MCP copies. */
@@ -537,7 +542,14 @@ export function mcpSources(projectRoot: string = process.cwd()): McpSource[] {
       const id = `${scope}|${abs}`;
       if (seen.has(id)) continue;
       seen.add(id);
-      out.push({ host: adapter.id, scope, path: abs, container: adapter.container });
+      out.push({
+        host: adapter.id,
+        scope,
+        path: abs,
+        container: adapter.container,
+        format: adapter.mcpLandingFormat?.() ?? 'json',
+        ...(adapter.mcpCliSpec?.() ? { cli: { command: adapter.mcpCliSpec()!.command } } : {}),
+      });
     }
   }
   return out;
@@ -554,9 +566,13 @@ export function mcpSources(projectRoot: string = process.cwd()): McpSource[] {
 function mcpDescription(entry: unknown): string | null {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
   const record = entry as Record<string, unknown>;
+  // Two command spellings exist: opencode's `command: string[]` and the `mcpServers`
+  // `command: string` + `args: string[]` every other verified runtime uses.
   const command = Array.isArray(record.command)
     ? record.command.filter((part): part is string => typeof part === 'string').join(' ')
-    : null;
+    : typeof record.command === 'string'
+      ? [record.command, ...(Array.isArray(record.args) ? record.args.filter((p): p is string => typeof p === 'string') : [])].join(' ')
+      : null;
   const url = typeof record.url === 'string' ? record.url : null;
   const target = command || url;
   const type = typeof record.type === 'string' ? record.type : null;
@@ -589,7 +605,11 @@ export function discoverMcp(
     if (!deps.exists(source.path)) continue;
     let parsed: unknown;
     try {
-      parsed = deps.readJson(source.path);
+      if (source.format === 'toml') {
+        parsed = TOML.parse(fs.readFileSync(source.path, 'utf8')) as unknown;
+      } else {
+        parsed = deps.readJson(source.path);
+      }
     } catch {
       // A half-written or hand-broken config is "no rows", never a thrown error.
       continue;
@@ -622,9 +642,13 @@ export function discoverMcp(
           },
         ],
         hosts: [source.host],
+        // A CLI-materialized landing's config is runtime-owned state: the inverse runs the
+        // runtime's own remove verb (§D8.13), never a file edit.
+        removal: source.cli
+          ? { op: 'cli-remove', host: source.host, entry: name }
+          : { op: 'drop-server', file: source.path, container: source.container, entry: name },
         origin: 'runtime-store',
         observedFrom: source.path,
-        removal: { op: 'drop-server', file: source.path, container: source.container, entry: name },
       });
     }
   }

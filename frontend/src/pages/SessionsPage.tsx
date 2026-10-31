@@ -1511,12 +1511,6 @@ export const SessionsPage: React.FC = () => {
                         fontSize: '10px',
                         fontWeight: 700,
                         textTransform: 'uppercase',
-                        // Sticky on the grid's internal (expanded) scroll:
-                        // rows slide under the header, which keeps the card
-                        // background so they never bleed through.
-                        position: 'sticky',
-                        top: 0,
-                        background: 'var(--card-bg)',
                       }}
                     >
                       {label}

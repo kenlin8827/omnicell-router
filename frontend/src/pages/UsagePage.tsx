@@ -15,14 +15,9 @@ const TIME_RANGE_OPTIONS: { value: string; labelKey: string; hours: number }[] =
   { value: '168', labelKey: 'overview.range.7d', hours: 168 },
 ];
 
+/** Header metrics for the summary table — a plain first row, never a floating sticky head. */
 const TH_STYLE: React.CSSProperties = {
   padding: '10px 14px',
-  position: 'sticky',
-  top: 0,
-  // --card-bg is translucent (rgba .72) — flatten it against --bg so the
-  // sticky header never lets scrolled rows bleed through the titles.
-  background: 'color-mix(in srgb, var(--card-bg), var(--bg))',
-  zIndex: 1,
 };
 
 // Sum displayed rows when the ?key= filter is on, so the cards and the table

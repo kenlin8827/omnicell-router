@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Boxes, Download, ExternalLink, FolderTree, Globe, Inbox, Info, LayoutGrid, List, Maximize2, Minimize2, RefreshCw, Search, Settings2, ShieldAlert, Star, Terminal, Trash2, X } from 'lucide-react';
+import { Boxes, ChevronDown, Database, Download, ExternalLink, FolderTree, Globe, Inbox, Info, LayoutGrid, List, Maximize2, Minimize2, Pencil, Plus, RefreshCw, Save, Search, Settings2, ShieldAlert, SquareCheck, Star, Terminal, Trash2, X } from 'lucide-react';
 import {
   api,
   type HarnessArtifactView,
@@ -10,13 +10,25 @@ import {
   type HarnessInventoryResponse,
   type HarnessMarketDetail,
   type HarnessMarketItem,
+  type HarnessMcpLaunch,
+  type HarnessMcpRegistryArgument,
+  type HarnessMcpRegistryCandidate,
+  type HarnessMcpRegistryPackage,
   type HarnessSourceView,
+  type McpCliFormat,
+  type McpRuntimeReport,
+  type McpRuntimeStatus,
 } from '../lib/api';
 import { SegGroup } from '../components/SegGroup';
+import { Field } from '../components/Form';
 import { Switch } from '../components/Switch';
 import { Combobox, type ComboboxOption } from '../components/Combobox';
+import { SuggestInput } from '../components/SuggestInput';
+import { InfoTip } from '../components/InfoTip';
+import { ScrollTable, type ScrollTableColumn } from '../components/ScrollTable';
 import { Pagination } from '../components/Pagination';
 import { Dialog } from '../components/Dialog';
+import { DsnBuilder } from '../components/DsnBuilder';
 import { README_MD_REMARK_PLUGINS, README_MD_REHYPE_PLUGINS, README_MD_COMPONENTS } from '../lib/readme-markdown';
 import ReactMarkdown from 'react-markdown';
 import { useConfirm } from '../components/ConfirmProvider';
@@ -25,6 +37,10 @@ import { useI18n } from '../i18n/I18nContext';
 import { HarnessSourcesDrawer } from '../components/HarnessSourcesDrawer';
 import { BrandIcon } from '../components/BrandIcons';
 import { FONT_MONO } from '../lib/fonts';
+import { repoOfKey } from '../lib/harness-keys';
+import { argRowTokens, argRowsFromArgv, formatArgLine, parseArgLine } from '../lib/mcp-args';
+import { RUNTIME_BADGE, runtimeNeedsAttention } from '../lib/mcp-runtime';
+import { isDsnFlag, maskDsn } from '../lib/dsn';
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 /**
@@ -39,7 +55,7 @@ import { useLocation, useNavigate, useParams, useSearchParams } from 'react-rout
  *
  * The third axis is the HARNESS, and it exists for all three kinds — but it answers a different
  * question per kind, and that difference is the whole point of the rail copy:
- *   · skills     — one `.agents/skills` tree is loaded by up to ten runtimes, but the rail lists
+ *   · skills     — one `.agents/skills` tree is loaded by up to twelve runtimes, but the rail lists
  *                  only runtimes whose CLI is installed on this machine — WRITES stay owner-only
  *                  (`KIND_META.skill.installAxis`): materializing the same directory once per
  *                  reader would be ten writes of one tree.
@@ -73,7 +89,7 @@ interface KindMeta {
    * Which hosts an install may write to.
    *
    * `landing` — the verified landing flag decides (an MCP config, a plugin API).
-   * `skills-owner` — the OWNER of a skills directory decides, never its readers: ten runtimes read
+   * `skills-owner` — the OWNER of a skills directory decides, never its readers: twelve runtimes read
    * one `.agents/skills` tree, so offering every reader as a target would write the same directory
    * ten times. The rail still lists the owner's page (that is the one-click integrated set).
    */
@@ -102,7 +118,7 @@ interface KindMeta {
 
 const KIND_META: Record<Kind, KindMeta> = {
   skill: {
-    // A skill lands in a DIRECTORY, and one directory is read by up to ten runtimes. The rail lists
+    // A skill lands in a DIRECTORY, and one directory is read by up to twelve runtimes. The rail lists
     // the OWNER (the one-click installable set) — writes stay owner-only (`installAxis`), or the
     // same tree would be materialized once per reader.
     landing: 'hasSkills',
@@ -125,7 +141,10 @@ const KIND_META: Record<Kind, KindMeta> = {
     titleKey: 'nav.mcp',
     installedKey: 'harness.installedMcp',
     marketKey: 'harness.marketMcp',
-    installMode: 'multi',
+    // A market MCP row installs through the shared Add/Edit sheet to the page's pinned landing
+    // ONLY (ADR-0015 §D11 amendment): one server, one client config — no multi-client fan-out. The
+    // backend still accepts `hosts[]` for a future surface, but the console writes one at a time.
+    installMode: 'single',
     // The MCP landing is a config OBJECT (`mcp` inside the host's own file), and reading it is the
     // same observation the plugin page does over `plugin[]`: a server the operator added by hand
     // is installed, shows up here, and is removable by dropping that member from its own file.
@@ -241,6 +260,7 @@ const formatStars = (n: number): string => (n >= 1000 ? STARS_FMT.format(n) : St
 /**
  * What the detail dialog needs. A marketplace row already carries these fields; an INSTALLED row
  * names its artifact only through `canonicalKey` (`npm:<pkg>` / `github:<owner>/<repo>#<dir>` /
+ * `git:github.com/<owner>/<repo>` / `mp-<slug>:<owner>/<repo>#` / `clawhub:<owner>/<slug>` /
  * `manual:<name>`), so its subject is derived from that — the backend then reads the same registry
  * document or repository it reads for a market row.
  */
@@ -271,20 +291,6 @@ const subjectFromMarket = (item: HarnessMarketItem): DetailSubject => ({
   market: item,
 });
 
-/**
- * The GitHub repository a canonical key names (`github:owner/repo#dir`; the `gh:` spelling is the
- * same shape), as written in the key, or null.
- *
- * Single source for its two consumers: the detail subject (README/licence/stars) and the installed
- * row's star cell (an on-demand count). Callers lowercase when they key on it — GitHub slugs are
- * case-insensitive, the star cache is keyed lowercase.
- */
-function repoOfKey(canonicalKey: string | null | undefined): string | null {
-  if (!canonicalKey) return null;
-  const match = /^(?:gh|github):([\w.-]+\/[\w.-]+)/.exec(canonicalKey);
-  return match ? match[1]! : null;
-}
-
 /** An installed row as a detail subject — the identity comes from its `canonicalKey`. */
 const subjectFromRow = (row: Row): DetailSubject => {
   const canonical = row.canonicalKey ?? '';
@@ -311,9 +317,10 @@ interface Row {
   name: string;
   canonicalKey: string | null;
   description: string | null;
-  /** GitHub repository this row names (`github:owner/repo#dir`), as written in the key, or null.
-   *  Derived from `canonicalKey` — never a second identity — and the ONLY rows whose star count can
-   *  be resolved: an npm package has no repository to ask GitHub about. */
+  /** GitHub repository this row names (`github:owner/repo#dir`, a runtime store's
+   *  `git:github.com/owner/repo`, an operator marketplace's `mp-<slug>:owner/repo#`), resolved by
+   *  `repoOfKey` — never a second identity — and the ONLY rows whose star count can be resolved: an
+   *  npm package has no repository to ask GitHub about. */
   repo: string | null;
   copies: HarnessCopyView[] | HarnessDiscoveredArtifact['copies'];
   hosts: string[];
@@ -331,6 +338,12 @@ interface Row {
   version?: string;
   /** How to undo the runtime's own install record; present for a discovered plugin row. */
   removal?: HarnessDiscoveredArtifact['removal'];
+  /**
+   * Live MCP status reported by the runtime for this server key. Absent for non-MCP rows, for a
+   * runtime that exposes no status surface, and for a daemon that is not running — absence is
+   * "unknown", never a health verdict (`McpRuntimeReport`).
+   */
+  runtime?: { host: string; status: McpRuntimeStatus; error?: string };
   artifact?: HarnessArtifactView;
 }
 
@@ -382,6 +395,9 @@ const TD: React.CSSProperties = {
 const TH_CENTER: React.CSSProperties = { ...TH, textAlign: 'center' };
 const TD_CENTER: React.CSSProperties = { ...TD, textAlign: 'center' };
 
+/** Parameter table cells: the shared ScrollTable owns the head, borders and vertical centering. */
+const MCP_TABLE_CELL: React.CSSProperties = { padding: '8px 10px' };
+
 /** Compact toolbar control metrics — the host picker and the search field sit on one line, so
  *  they must be pixel-identical: same font size, same padding, same border box. */
 /** Header toolbars mix `.btn`, `.input` and segmented switches: they all take this height, so a row
@@ -416,6 +432,7 @@ const HOST_BRAND: Record<string, string> = {
   dsh: 'dsh',
   omp: 'omp',
   grok: 'grok',
+  kimi: 'kimi',
   'github-copilot': 'github-copilot',
   amp: 'amp',
   cursor: 'cursor',
@@ -441,11 +458,464 @@ const hostOption = (host: HarnessHostView): ComboboxOption => ({
 });
 
 /**
+ * Manual MCP draft — the console's `manual:` install path (ADR-0015 §D6 "manual"), extended by the
+ * registry-driven parameter form (2026-11-01 amendment).
+ *
+ * A draft started from the free-form fields carries key NAMES only. A draft filled from a registry
+ * `server.json` also carries the declared inputs (`params`) and CLI arguments (`args`), so the form
+ * can render the right control per parameter instead of asking the operator to type a command line.
+ */
+type McpTransport = 'stdio' | 'sse';
+
+/** stdio has two shapes: a runner + package (the argv is built for you) or a raw command line. */
+type McpStdioMode = 'advanced' | 'custom';
+const MCP_RUNNERS = ['npx', 'bunx', 'uvx'] as const;
+type McpRunner = (typeof MCP_RUNNERS)[number];
+/** What a runner needs in front of the package spec (`npx` asks y/N without `-y`). */
+const MCP_RUNNER_FLAGS: Record<McpRunner, string[]> = { npx: ['-y'], bunx: [], uvx: [] };
+const MCP_PKG_RE = /^(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*(?:@[\w.-]+)?$/i;
+/** uvx resolves PEP 508 requirements: `name`, `name==1.2.3`. */
+const MCP_PYPI_PKG_RE = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?(?:==[\w.-]+)?$/i;
+const mcpPkgValid = (runner: McpRunner, pkg: string): boolean =>
+  runner === 'uvx' ? MCP_PYPI_PKG_RE.test(pkg.trim()) : MCP_PKG_RE.test(pkg.trim());
+/** A token in an existing argv that names a package for the given runner. */
+const mcpPkgToken = (runner: McpRunner, arg: string): boolean =>
+  runner === 'uvx' ? MCP_PYPI_PKG_RE.test(arg) : MCP_PKG_RE.test(arg);
+
+/** A runner's argv: its install flags, the package spec, then whatever else the draft holds. */
+const mcpStdioArgv = (draft: McpDraft): string[] => {
+  const extra = parseArgLine(draft.argsText);
+  if (draft.mode === 'custom') return extra;
+  const pkg = draft.pkg.trim();
+  return pkg ? [...MCP_RUNNER_FLAGS[draft.runner], pkg, ...extra] : extra;
+};
+
+/** The executable the draft writes: the runner in standard mode, the typed command otherwise. */
+const mcpStdioCommand = (draft: McpDraft): string =>
+  draft.mode === 'custom' ? draft.command.trim() : draft.runner;
+
+/** One editable launch parameter: an argv entry, an environment variable, or a request header. */
+interface McpParamRow {
+  id: string;
+  /** `--flag` for argv, empty for a positional value; the variable / header NAME otherwise. */
+  name: string;
+  value: string;
+  description?: string;
+  required?: boolean;
+  /** Written into the launch line. Empty optional rows start unchecked and fold under the
+   *  candidate group; checking one is how the operator picks it without typing a value. */
+  selected?: boolean;
+  secret?: boolean;
+  format?: McpCliFormat;
+  placeholder?: string;
+  choices?: string[];
+}
+
+interface McpDraft {
+  name: string;
+  transport: McpTransport;
+  /** stdio only: standard = runner + package spec, custom = raw command + args. */
+  mode: McpStdioMode;
+  runner: McpRunner;
+  /** Package spec for standard mode (`@scope/name@1.2.3`). */
+  pkg: string;
+  command: string;
+  /** Space-separated argv tail; a value containing spaces is quoted. */
+  argsText: string;
+  /** Environment variable KEYS an existing stdio entry declares; carried through an edit unchanged. */
+  envRows: McpParamRow[];
+  url: string;
+  /** Remote only: request headers. A blank value keeps the runtime's stored value or writes its
+   *  environment reference; a typed value is stored literally and never read back (gate 4). */
+  headerRows: McpParamRow[];
+  /** Header keys whose stored value already exists (a literal or `{file:...}`) — names only. */
+  headerSetKeys: string[];
+  /** Registry arguments (kept across an edit) plus the selection the editor last applied. */
+  args: McpParamRow[];
+}
+
+/** A fresh server starts in CUSTOM mode: the raw executable + argv is the runtime's own shape. */
+const EMPTY_MCP_DRAFT: McpDraft = {
+  name: '',
+  transport: 'stdio',
+  mode: 'custom',
+  runner: 'npx',
+  pkg: '',
+  command: '',
+  argsText: '',
+  envRows: [],
+  url: '',
+  headerRows: [],
+  headerSetKeys: [],
+  args: [],
+};
+
+const MCP_NAME_RE = /^[\w.-]+$/;
+/** Server name becomes an object key: these rewrite the prototype instead. */
+const MCP_RESERVED_NAMES = new Set(['__proto__', 'prototype', 'constructor']);
+const MCP_URL_RE = /^https?:\/\/\S+$/i;
+
+let mcpArgRowSeq = 0;
+const nextArgRowId = (): string => `arg-${++mcpArgRowSeq}`;
+
+/** Reverse-render argv into editable rows, attaching the page's row ids. */
+const argRowsWithIds = (tokens: string[]): McpParamRow[] =>
+  argRowsFromArgv(tokens).map((row) => ({ id: nextArgRowId(), name: row.flag, value: row.value, selected: true }));
+
+/** A registry-declared named argument may arrive without its dash; the stored name always keeps it. */
+const mcpFlagToken = (name: string): string => {
+  const flag = name.trim();
+  return flag && !/^--?/.test(flag) ? `--${flag}` : flag;
+};
+
+/** Compose one row back into argv tokens — `name` carries the flag. */
+const mcpParamTokens = (row: McpParamRow): string[] =>
+  argRowTokens({ flag: mcpFlagToken(row.name), value: row.value });
+
+/**
+ * The table's name cell hides the dash prefix: the operator edits `transport`, while the stored
+ * name keeps `--` so apply round-trips. A dash typed by hand wins (`-p` stays single).
+ */
+const mcpRowNameText = (row: McpParamRow): string => row.name.replace(/^--?/, '');
+
+const mcpRowNamePatch = (row: McpParamRow, text: string): Partial<McpParamRow> => {
+  const typed = /^(--?)(.+)$/.exec(text);
+  if (typed) return { name: `${typed[1]}${typed[2]}` };
+  const prefix = row.name.startsWith('--') ? '--' : row.name.startsWith('-') ? '-' : '--';
+  return { name: text === '' ? '' : `${prefix}${text}` };
+};
+
+/**
+ * Fold declared parameters into a table: a matching name keeps the value already typed, and the
+ * declaration's description / required / choices replace whatever the table held before.
+ */
+const mergeMcpParamRows = (rows: McpParamRow[], declared: McpParamRow[]): McpParamRow[] => {
+  const merged = [...rows];
+  for (const row of declared) {
+    const index = merged.findIndex((item) =>
+      row.name !== '' ? item.name === row.name : item.name === '' && item.value === row.value
+    );
+    if (index < 0) {
+      merged.push(row);
+      continue;
+    }
+    const prev = merged[index]!;
+    merged[index] = { ...row, id: prev.id, value: prev.value !== '' ? prev.value : row.value, selected: prev.selected ?? row.selected };
+  }
+  return merged;
+};
+
+const mcpNameInvalid = (name: string): boolean => {
+  const value = name.trim();
+  return !value || !MCP_NAME_RE.test(value) || MCP_RESERVED_NAMES.has(value);
+};
+
+/** The launch half alone: an EDIT keeps an existing name, which may predate the install grammar. */
+const mcpDraftLaunchReady = (draft: McpDraft): boolean =>
+  draft.transport === 'sse'
+    ? MCP_URL_RE.test(draft.url.trim())
+    : draft.mode === 'advanced'
+      ? mcpPkgValid(draft.runner, draft.pkg)
+      : draft.command.trim() !== '';
+
+const mcpDraftReady = (draft: McpDraft): boolean => !mcpNameInvalid(draft.name) && mcpDraftLaunchReady(draft);
+
+/** Named rows that carry a value — the map the writer merges over the runtime's own entry. */
+const mcpValueMap = (rows: McpParamRow[]): Record<string, string> =>
+  Object.fromEntries(
+    rows
+      .filter((row) => row.name.trim() !== '' && row.value !== '')
+      .map((row) => [row.name.trim(), row.value] as const)
+  );
+
+const mcpLaunchFromDraft = (draft: McpDraft): HarnessMcpLaunch => {
+  if (draft.transport === 'sse') {
+    const rows = draft.headerRows.filter((row) => row.name.trim() !== '');
+    const headerKeys = rows.map((row) => row.name.trim());
+    const headerValues = mcpValueMap(rows);
+    return {
+      url: draft.url.trim(),
+      transport: 'sse',
+      ...(headerKeys.length > 0 ? { headerKeys } : {}),
+      ...(Object.keys(headerValues).length > 0 ? { headerValues } : {}),
+    };
+  }
+  const envRows = draft.envRows.filter((row) => row.name.trim() !== '');
+  const envKeys = envRows.map((row) => row.name.trim());
+  const envValues = mcpValueMap(envRows);
+  const args = mcpStdioArgv(draft);
+  return {
+    command: mcpStdioCommand(draft),
+    ...(args.length > 0 ? { args } : {}),
+    ...(envKeys.length > 0 ? { envKeys } : {}),
+    ...(Object.keys(envValues).length > 0 ? { envValues } : {}),
+  };
+};
+
+/** Pre-fill the install form for a MARKET MCP row (ADR-0015 §D11 amendment): the row's package
+ *  launch, expressed as the same stdio draft the Add/Edit sheet edits. The market key carries no
+ *  version (it is resolved at INSTALL time, §D9), so the prefill shows the bare runner spec; the
+ *  backend re-applies the resolved pin to every operator-edited launch. `null` for a key with no
+ *  package form (a git-backed row resolves server-side; the sheet has nothing to prefill).
+ *  An untouched form therefore installs the resolver's pinned command unchanged (§D9).
+ *  `name` is the entry KEY the row answered (`serverName`), never the package identity the row is
+ *  browsed by: the field is read-only, so it must show what the landing will carry. */
+const mcpDraftFromMarketKey = (name: string, key: string): McpDraft | null => {
+  let command = '';
+  let argsText = '';
+  if (key.startsWith('npm:')) {
+    command = 'npx';
+    argsText = `-y ${key.slice(4)}`;
+  } else if (key.startsWith('pypi:')) {
+    command = 'uvx';
+    argsText = key.slice(5);
+  } else {
+    return null;
+  }
+  const stdio = parseStdioLaunch({ command, args: parseArgLine(argsText) });
+  return { ...EMPTY_MCP_DRAFT, name, ...stdio };
+};
+
+/** A command line stored as one string (or a hand-written entry) reads back as exe + tokens. */
+const splitCommand = (command: string): { exe: string; tokens: string[] } => {
+  const parts = command.trim().split(/\s+/).filter(Boolean);
+  return { exe: parts[0] ?? '', tokens: parts.slice(1) };
+};
+
+/** Read an existing stdio launch back into the form: runner + package when the shape allows it. */
+const parseStdioLaunch = (launch: { command: string; args?: string[] }): Pick<McpDraft, 'mode' | 'runner' | 'pkg' | 'command' | 'argsText'> => {
+  const { exe, tokens } = splitCommand(launch.command);
+  const runner = MCP_RUNNERS.find((item) => item === exe.toLowerCase());
+  const argv = [...tokens, ...(launch.args ?? [])];
+  if (!runner) return { mode: 'custom', runner: 'npx', pkg: '', command: exe, argsText: formatArgLine(argv) };
+  const pkgIndex = argv.findIndex((arg) => mcpPkgToken(runner, arg) && !MCP_RUNNER_FLAGS[runner].includes(arg));
+  if (pkgIndex < 0) return { mode: 'custom', runner, pkg: '', command: runner, argsText: formatArgLine(argv) };
+  const pkg = argv[pkgIndex]!;
+  const rest = argv.filter((arg, i) => i !== pkgIndex && !MCP_RUNNER_FLAGS[runner].includes(arg));
+  return { mode: 'advanced', runner, pkg, command: runner, argsText: formatArgLine(rest) };
+};
+
+/** Pre-fill the shared form from an EXISTING launch: stdio and remote open different halves.
+ *  `setKeys` names the header/env keys whose stored value must not be overwritten by an empty form
+ *  field — the badge is the only thing the console learns about it (gate 4). */
+const mcpDraftFromLaunch = (name: string, launch: HarnessMcpLaunch, setKeys: string[] = []): McpDraft => {
+  if (!('command' in launch)) {
+    return {
+      ...EMPTY_MCP_DRAFT,
+      name,
+      transport: 'sse',
+      url: launch.url,
+      headerRows: (launch.headerKeys ?? []).map((key) => ({ id: nextArgRowId(), name: key, value: '' })),
+      headerSetKeys: setKeys,
+    };
+  }
+  return {
+    ...EMPTY_MCP_DRAFT,
+    ...parseStdioLaunch(launch),
+    name,
+    // Carried through an edit untouched: the writer keeps every key it does not hear about.
+    envRows: (launch.envKeys ?? []).map((key) => ({ id: nextArgRowId(), name: key, value: '' })),
+  };
+};
+
+/** Best-effort npm package behind an existing launch, used to prefill the registry search box. */
+const mcpPackageHint = (launch: HarnessMcpLaunch): string => {
+  if (!('command' in launch)) return '';
+  const { exe, tokens } = splitCommand(launch.command);
+  const runner = MCP_RUNNERS.find((item) => item === exe.toLowerCase());
+  if (!runner) return '';
+  return [...tokens, ...(launch.args ?? [])].find(
+    (arg) => mcpPkgToken(runner, arg) && !MCP_RUNNER_FLAGS[runner].includes(arg)
+  ) ?? '';
+};
+
+const mcpArgRow = (arg: HarnessMcpRegistryArgument): McpParamRow => ({
+  id: nextArgRowId(),
+  name: arg.type === 'named' ? mcpFlagToken(arg.name) : '',
+  value: arg.default ?? '',
+  // A declared default is written at once; a required declaration stays visible for its value.
+  selected: arg.required === true || (arg.default ?? '') !== '',
+  ...(arg.required ? { required: true } : {}),
+  ...(arg.secret ? { secret: true } : {}),
+  ...(arg.format ? { format: arg.format } : {}),
+  ...(arg.description ? { description: arg.description } : {}),
+  ...(arg.choices ? { choices: arg.choices } : {}),
+});
+
+/**
+ * Turn one registry package into form fields — the bridge from `server.json` to a launch.
+ *
+ * The npm shape fills the ADVANCED form (runner + package spec): the argv is composed by the form,
+ * so `npx -y` is never forgotten and the operator can switch to the custom form for anything the
+ * registry cannot express. Fixed arguments keep registry order and stay after the package. Registry
+ * environment variables are NOT copied into a new launch: DBHub declares only env vars while its
+ * real launch surface is `--transport` / `--port` / `--dsn`, and the sheet reads those from the
+ * package itself (see the CLI probe) instead of writing a runtime environment nobody asked for.
+ */
+const mcpDraftFromPackage = (
+  pkg: HarnessMcpRegistryPackage
+): Pick<
+  McpDraft,
+  'transport' | 'mode' | 'runner' | 'pkg' | 'command' | 'argsText' | 'url' | 'args' | 'envRows' | 'headerRows'
+> | null => {
+  if (pkg.registryType === 'remote') {
+    // `remotes[].transport.headers` is the only parameter surface a remote server declares
+    // statically: prefill the names it requires, plus a pinned/default value when it has one.
+    return {
+      transport: 'sse',
+      mode: 'advanced',
+      runner: 'npx',
+      pkg: '',
+      command: 'npx',
+      argsText: '',
+      url: pkg.url ?? '',
+      args: [],
+      envRows: [],
+      headerRows: pkg.headers.map((header) => ({
+        id: nextArgRowId(),
+        name: header.name,
+        value: header.value ?? header.default ?? '',
+        ...(header.description ? { description: header.description } : {}),
+        ...(header.required ? { required: true } : {}),
+        ...(header.secret ? { secret: true } : {}),
+        ...(header.placeholder ? { placeholder: header.placeholder } : {}),
+        ...(header.choices ? { choices: header.choices } : {}),
+      })),
+    };
+  }
+  if (pkg.registryType === 'pypi' && pkg.transport === 'stdio') {
+    // PyPI publishes no author runtime arguments here: the launch is `uvx <pkg>==<version>`, the
+    // Python twin of the npm form, and the operator continues in the parameter table if needed.
+    const spec = pkg.version ? `${pkg.identifier}==${pkg.version}` : pkg.identifier;
+    return {
+      transport: 'stdio',
+      mode: 'advanced',
+      runner: 'uvx',
+      pkg: spec,
+      command: 'uvx',
+      argsText: '',
+      url: '',
+      args: [],
+      envRows: [],
+      headerRows: [],
+    };
+  }
+  if (pkg.registryType !== 'npm' || pkg.transport !== 'stdio') return null;
+
+  const spec = pkg.version ? `${pkg.identifier}@${pkg.version}` : `${pkg.identifier}@latest`;
+  const fixed: string[] = [];
+  const rows: McpParamRow[] = [];
+  for (const arg of pkg.args) {
+    if (arg.value !== undefined) fixed.push(arg.type === 'named' ? `${arg.name}=${arg.value}` : arg.value);
+    else rows.push(mcpArgRow(arg));
+  }
+  // A registry default is applied immediately; the row stays so the editor can change it.
+  const initial = [...fixed, ...rows.flatMap((row) => (row.value !== '' ? mcpParamTokens(row) : []))];
+  return {
+    transport: 'stdio',
+    mode: 'advanced',
+    runner: 'npx',
+    pkg: spec,
+    command: 'npx',
+    argsText: formatArgLine(initial),
+    url: '',
+    args: rows,
+    envRows: [],
+    headerRows: [],
+  };
+};
+
+/** Gate plan rows, shared by the market install sheet and the manual MCP sheet. */
+const InstallGatePlan: React.FC<{ targets: HarnessInstallTarget[]; descKey: string }> = ({ targets, descKey }) => {
+  const { t } = useI18n();
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div
+        style={{
+          display: 'flex',
+          gap: 8,
+          alignItems: 'flex-start',
+          padding: '8px 10px',
+          border: '1px solid var(--divider)',
+          borderRadius: 8,
+          background: 'var(--chip-bg)',
+        }}
+      >
+        <ShieldAlert size={14} style={{ flex: '0 0 auto', color: 'var(--accent-rose)' }} aria-hidden />
+        <span style={{ fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.6 }}>{t(descKey)}</span>
+      </div>
+      {targets.map((target, index) => (
+        <div
+          key={`${target.host}:${index}`}
+          style={{
+            border: '1px solid var(--divider)',
+            borderRadius: 8,
+            padding: '8px 10px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 6,
+          }}
+        >
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '12.5px', fontWeight: 600 }}>
+            <HostIcon host={target.host} size={12} />
+            {target.host}
+          </span>
+          {target.refused ? (
+            <span style={{ fontSize: '11.5px', color: 'var(--accent-rose)' }}>{target.refused}</span>
+          ) : target.echo ? (
+            /* The verbatim command apply will run — never summarised, never reformatted. */
+            <code
+              style={{
+                ...MONO,
+                padding: '6px 8px',
+                background: 'var(--chip-bg)',
+                borderRadius: 6,
+                overflowX: 'auto',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-all',
+              }}
+            >
+              {target.echo}
+            </code>
+          ) : target.file ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <code style={{ ...MONO, color: 'var(--text-dim)', overflowX: 'auto' }}>{target.file}</code>
+              {target.container && <code style={{ ...MONO, color: 'var(--text-dim)' }}>{target.container}</code>}
+            </div>
+          ) : null}
+          {/* Gate 2's other half: which keys the merge adds or overwrites, exactly as the writer
+              planned them. A name collision is an overwrite, and it must be visible before confirm. */}
+          {((target.addedKeys?.length ?? 0) > 0 || (target.changedKeys?.length ?? 0) > 0) && (
+            <span style={{ fontSize: '11.5px', color: 'var(--text-dim)', lineHeight: 1.5 }}>
+              {target.addedKeys && target.addedKeys.length > 0 && (
+                <>
+                  {t('harness.mcpPlanAdd')}{' '}
+                  <code style={MONO}>{target.addedKeys.join(', ')}</code>
+                </>
+              )}
+              {target.addedKeys && target.addedKeys.length > 0 && target.changedKeys && target.changedKeys.length > 0
+                ? ' · '
+                : null}
+              {target.changedKeys && target.changedKeys.length > 0 && (
+                <>
+                  {t('harness.mcpPlanChange')}{' '}
+                  <code style={MONO}>{target.changedKeys.join(', ')}</code>
+                </>
+              )}
+            </span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+};
+
+/**
  * Does one COPY belong to the page's harness?
  *
  * Two answers, one predicate: ownership (`copy.host`) is who the copy is recorded under — the
  * landing that was written; readership (`copy.readers`, skills only) is every runtime that loads
- * that directory. A skill materialized once in `.agents/skills` is read by ten runtimes, so asking
+ * that directory. A skill materialized once in `.agents/skills` is read by twelve runtimes, so asking
  * only about `host` would show it under one rail entry and hide it under the other nine.
  */
 const copyServes =
@@ -498,16 +968,19 @@ const artifactNeedsAttention = (artifact: HarnessArtifactView): boolean =>
 
 /**
  * The row form of the same predicate: a tracked row asks its artifact, a discovered row asks its
- * copies (there is no rollup to consult — the runtime's own store is the only record).
+ * copies (there is no rollup to consult — the runtime's own store is the only record), and an MCP
+ * row ALSO asks the runtime's live answer: a config member can be intact on disk while the server
+ * failed to connect, which is exactly the false "clean" the runtime status exists to prevent.
  *
  * This is the one filter worth having. Provenance is a column (the `source` cell already answers it),
  * not a browsing mode: splitting the list into "tracked" and "local" made the SAME artifact look like
  * two different kinds of thing and hid the fact that both are removable.
  */
 const needsAttention = (row: Row): boolean =>
-  row.tracked && row.artifact
+  runtimeNeedsAttention(row.runtime) ||
+  (row.tracked && row.artifact
     ? artifactNeedsAttention(row.artifact)
-    : row.copies.some((c) => c.state === 'missing' || c.state === 'foreign');
+    : row.copies.some((c) => c.state === 'missing' || c.state === 'foreign'));
 
 /**
  * The harness rail: the page's first axis, as a vertical picker left of the content column.
@@ -672,6 +1145,9 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   const { landing, discovery, installMode, route, rail: railCopy, emptyNoteKey } = meta;
 
   const [inventory, setInventory] = useState<HarnessInventoryResponse | null>(null);
+  /** Live MCP status (`kind === 'mcp'` only): null until the probe answers, and null on a page
+   *  that has no MCP axis. Rows never invent a status from this — a missing entry is unknown. */
+  const [mcpRuntime, setMcpRuntime] = useState<McpRuntimeReport | null>(null);
   const [sources, setSources] = useState<HarnessSourceView[]>([]);
   const [activeCatalog, setActiveCatalog] = useState('all');
   /**
@@ -781,6 +1257,44 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   /** Gate 3: the plan the backend refuses to execute until a human reads it. Kept separately from
    *  `installTarget` so the confirmation dialog can show the exact commands on its own surface. */
   const [installGate, setInstallGate] = useState<{ targets: HarnessInstallTarget[]; skillDir?: string } | null>(null);
+  /** Manual MCP sheet: the draft while editing, and the backend's merge plan after `confirm_required`. */
+  const [mcpDraft, setMcpDraft] = useState<McpDraft | null>(null);
+  const [mcpGate, setMcpGate] = useState<{
+    targets: HarnessInstallTarget[];
+    payload: { name: string; launch: HarnessMcpLaunch };
+  } | null>(null);
+  /** Market MCP install: the row being installed through the shared Add/Edit sheet, plus the
+   *  resolver's pinned launch (prefilled). An UNTOUCHED form sends no override, so the resolver's
+   *  own command installs (ADR-0015 §D9). Single landing — the page's pinned harness. */
+  const [mcpMarket, setMcpMarket] = useState<{
+    item: HarnessMarketItem;
+    defaultLaunch: HarnessMcpLaunch;
+  } | null>(null);
+  /** Market install gate (gate 2): the merge plan, plus the draft/item/default it was computed
+   *  from, so the confirm re-send is identical to the first request. */
+  const [mcpMarketGate, setMcpMarketGate] = useState<{
+    targets: HarnessInstallTarget[];
+    draft: McpDraft;
+    item: HarnessMarketItem;
+    defaultLaunch: HarnessMcpLaunch;
+  } | null>(null);
+  /** Edit sheet: the existing server's identity (the NAME is read-only) and its manifest record. */
+  const [mcpEdit, setMcpEdit] = useState<{ name: string; artifactId?: string } | null>(null);
+  const [mcpEditLoading, setMcpEditLoading] = useState(false);
+  /** Edit gate's plan; the draft is the one the plan was computed from. */
+  const [mcpEditGate, setMcpEditGate] = useState<{ targets: HarnessInstallTarget[]; draft: McpDraft } | null>(null);
+  /** Registry lookup for the launch-argument editor: the search box, its candidates, and the pick. */
+  const [mcpDetectQ, setMcpDetectQ] = useState('');
+  const [mcpDetecting, setMcpDetecting] = useState(false);
+  const [mcpCandidates, setMcpCandidates] = useState<HarnessMcpRegistryCandidate[]>([]);
+  const [mcpPick, setMcpPick] = useState('');
+  /** The visual parameter editor; null = closed. */
+  const [mcpArgsEditor, setMcpArgsEditor] = useState<McpParamRow[] | null>(null);
+  /** The enlarged single-value editor opened from a row's expand button; null = closed. */
+  const [mcpValueEditor, setMcpValueEditor] = useState<{ id: string; name: string; value: string } | null>(null);
+  const [mcpDsnBuilder, setMcpDsnBuilder] = useState<{ id: string; name: string; value: string } | null>(null);
+  /** Empty rows are candidates that fold under their own header; filled rows always show. */
+  const [mcpAlternatesOpen, setMcpAlternatesOpen] = useState(true);
   // Open when an install fails with `ambiguous` — or with a stale `#dir` pin the adapter answers
   // `no_artifact` for — and the backend lists the directories that DO hold a SKILL.md (ADR-0015 §8).
   // Keeps the install dialog underneath (hosts/scope live there); confirming re-invokes the same
@@ -790,6 +1304,12 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   const [q, setQ] = useState('');
   const [picker, setPicker] = useState<{ row: Row; picked: Set<string> } | null>(null);
   const [sourcesOpen, setSourcesOpen] = useState(false);
+  /** Set by the sources drawer on every successful mutation; consumed on close to decide whether
+   *  the market behind the drawer must re-read (a ref-only flag: no re-render on each mutation). */
+  const sourcesDirtyRef = useRef(false);
+  /** Bumped AFTER the source list reloads following a drawer mutation: the market federation
+   *  iterates `activeCatalogSources`, so a newly added `mp-` chip must exist before the refetch. */
+  const [marketRefreshTick, setMarketRefreshTick] = useState(0);
   const [busy, setBusy] = useState(false);
   /** Translated text, keyed by row/item id. `src` pins the exact original it was produced from —
    *  re-downloading a skill whose description changed must not resurface the previous translation. */
@@ -798,7 +1318,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   const [hosts, setHosts] = useState<HarnessHostView[]>([]);
   const [hostFilter, setHostFilter] = useState('');
   /** Hide the rows that live in the shared `.agents` tree — ON by default. The shared set is the SAME
-   *  under every rail entry (ten runtimes read it), so leading a pinned page with it hides the one
+   *  under every rail entry (twelve runtimes read it), so leading a pinned page with it hides the one
    *  thing that page exists to answer: what was installed for THIS runtime. The rail cannot express
    *  that complement, and the switch is one tick away for anyone who wants the full list back. */
   const [hideShared, setHideShared] = useState(true);
@@ -819,14 +1339,18 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     setLoading(true);
     setError(null);
     try {
-      const [inv, src, hostList] = await Promise.all([
+      // The runtime probe is an independent read-only call: its failure must not hide the inventory
+      // (the on-disk state is still true), so it degrades to `null` = "no live answer".
+      const [inv, src, hostList, runtime] = await Promise.all([
         api.harnessInventory(),
         api.harnessSources(),
         api.harnessHosts(),
+        kind === 'mcp' ? api.harnessMcpRuntime().catch(() => null) : Promise.resolve(null),
       ]);
       setInventory(inv);
       setHosts(hostList.hosts);
       setSources(src.sources.filter((s) => s.kinds.includes(kind)));
+      setMcpRuntime(runtime);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -847,6 +1371,57 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     [inventory, kind]
   );
 
+  /** `host + server` → the runtime's answer. Only reachable hosts contribute: an unreachable
+   *  daemon is "no live claim", and its rows keep their on-disk state alone. */
+  const runtimeIndex = useMemo(() => {
+    const byKey = new Map<string, NonNullable<Row['runtime']>>();
+    for (const host of mcpRuntime?.hosts ?? []) {
+      if (!host.reachable) continue;
+      for (const server of host.servers) {
+        byKey.set(`${host.host}\u0000${server.name}`, {
+          host: host.host,
+          status: server.status,
+          ...(server.error ? { error: server.error } : {}),
+        });
+      }
+    }
+    return byKey;
+  }, [mcpRuntime]);
+
+  /** The runtime verdict is live, not a page-load snapshot: opening the sources drawer re-probes,
+   *  so a server that failed (or came back) while the tab sat idle cannot keep a stale badge. */
+  useEffect(() => {
+    if (!sourcesOpen || kind !== 'mcp') return;
+    let cancelled = false;
+    void api
+      .harnessMcpRuntime()
+      .then((runtime) => {
+        if (!cancelled) setMcpRuntime(runtime);
+      })
+      .catch(() => {
+        /* the drawer keeps the last known verdicts; a failed re-probe asserts nothing new */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sourcesOpen, kind]);
+
+  /** THE PINNED HARNESS's verdict, nothing else: a page is pinned to one harness, so its rows
+   *  answer "does this server work THERE" — kimi failing must never repaint a claude row (and
+   *  vice versa), same server or not. No verdict for this host = unknown, never healthy. */
+  const runtimeFor = (name: string): Row['runtime'] =>
+    kind === 'mcp' ? runtimeIndex.get(`${harness}\u0000${name}`) : undefined;
+
+  /** A drawer row is a SOURCE (a package), not the landed artifact: resolve the artifact by its
+   *  canonical key, then answer with THE PINNED HARNESS's own live verdict only. No verdict for
+   *  this host = unknown. */
+  const sourceRuntimeFor = (entry: { type?: 'github' | 'npm' | 'pypi'; repo: string }): Row['runtime'] => {
+    if (kind !== 'mcp') return undefined;
+    const canonical = `${entry.type ?? 'npm'}:${entry.repo}`;
+    const artifact = trackedRows.find((a) => a.kind === 'mcp' && a.canonicalKey === canonical);
+    return artifact ? runtimeFor(artifact.name) : undefined;
+  };
+
   /** Every host the kind has an axis for, BEFORE the presence filter. Rail counts are computed
    *  over this full list so a landed-but-undetected host still carries its number. */
   const landingHosts = useMemo(
@@ -864,15 +1439,21 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
       const found = discovery
         ? (inventory?.discovered ?? []).filter(
           (item) => item.kind === kind && rowServes(host.id)(item)
-        ).length
-        : 0;
-      // `artifactNeedsAttention` is the only health signal this page reports, so the rail's dot and
-      // the row's badge can never disagree. Rose, not amber: the runtime's own tree is compromised,
-      // which is a different sentence from "a file drifted".
-      counts[host.id] = { count: hits.length + found, warn: hits.some(artifactNeedsAttention) };
+        )
+        : [];
+      // THIS host's verdict only: the rail dot answers "is anything broken on THIS harness" —
+      // a kimi failure must not light the claude rail (and vice versa), same server or not.
+      const runtimeWarn =
+        kind === 'mcp' &&
+        (hits.some((artifact) => runtimeNeedsAttention(runtimeIndex.get(`${host.id}\u0000${artifact.name}`))) ||
+          found.some((item) => runtimeNeedsAttention(runtimeIndex.get(`${host.id}\u0000${item.name}`))));
+      counts[host.id] = {
+        count: hits.length + found.length,
+        warn: hits.some(artifactNeedsAttention) || runtimeWarn,
+      };
     }
     return counts;
-  }, [landingHosts, trackedRows, kind, discovery, inventory]);
+  }, [landingHosts, trackedRows, kind, discovery, inventory, runtimeIndex]);
 
   /** The harness segment the URL asks for, validated against the catalog: an unknown or missing
    *  id is not a harness, it is a broken URL. Validated against every axis host (not just the
@@ -887,11 +1468,11 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
    *  (frontend mirror; opencode/opencode-proxy fold to one; grok is skills-only, its plugin
    *  landing is unverified). Hosts OUTSIDE this set are never admitted by default, however
    *  installed they are. */
-  const ONE_CLICK_HOSTS: Record<string, true> = { opencode: true, claude: true, codex: true, pi: true, dsh: true, omp: true, grok: true };
+  const ONE_CLICK_HOSTS: Record<string, true> = { opencode: true, claude: true, codex: true, pi: true, dsh: true, omp: true, grok: true, kimi: true };
 
   /** The anchoring order: the Clients page's adapter order (backend insertion order — by market
    *  share: claude, codex, opencode, grok, then the niche pi/dsh/omp), mirrored. */
-  const CLIENT_ORDER = ['claude', 'codex', 'opencode', 'grok', 'pi', 'dsh', 'omp'];
+  const CLIENT_ORDER = ['claude', 'codex', 'opencode', 'grok', 'kimi', 'pi', 'dsh', 'omp'];
 
   /** Popularity ranking for hosts OUTSIDE the clients set (curated — the host catalog carries no
    *  download signal); hosts missing here fall back to catalog order after the ranked ones. */
@@ -1007,6 +1588,8 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     const trackedView: Row[] = scopedTrackedRows.map((artifact) => {
       const src = sources.find((s) => s.id === artifact.sourceId || (artifact.listedOn && artifact.listedOn.includes(s.id)));
       const channel = artifact.sourceId?.startsWith('mp-') ? artifact.sourceId.slice(3) : (artifact.sourceId ?? 'direct');
+      const hosts = [...new Set(artifact.copies.map((c) => c.host))];
+      const runtime = runtimeFor(artifact.name);
       return {
         key: artifact.id,
         name: artifact.name,
@@ -1014,35 +1597,40 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
         repo: repoOfKey(artifact.canonicalKey),
         description: artifact.description,
         copies: artifact.copies,
-        hosts: [...new Set(artifact.copies.map((c) => c.host))],
+        hosts,
         tracked: true,
         sourceId: artifact.sourceId ?? null,
         listedOn: artifact.listedOn ?? (artifact.sourceId ? [artifact.sourceId] : []),
         catalog: src?.catalog ?? 'default',
         channel,
         state: artifact.rollup,
+        ...(runtime ? { runtime } : {}),
         artifact,
       };
     });
-    const localView: Row[] = scopedDiscovered.map((item) => ({
-      key: `local:${item.kind}:${item.harness ?? ''}:${item.name}`,
-      name: item.name,
-      canonicalKey: item.canonicalKey ?? null,
-      repo: repoOfKey(item.canonicalKey),
-      description: item.description,
-      copies: item.copies,
-      hosts: item.hosts,
-      tracked: false,
-      sourceId: null,
-      listedOn: [],
-      state: 'local',
-      ...(item.origin ? { origin: item.origin } : {}),
-      ...(item.version ? { version: item.version } : {}),
-      ...(item.removal ? { removal: item.removal } : {}),
-    }));
+    const localView: Row[] = scopedDiscovered.map((item) => {
+      const runtime = runtimeFor(item.name);
+      return {
+        key: `local:${item.kind}:${item.harness ?? ''}:${item.name}`,
+        name: item.name,
+        canonicalKey: item.canonicalKey ?? null,
+        repo: repoOfKey(item.canonicalKey),
+        description: item.description,
+        copies: item.copies,
+        hosts: item.hosts,
+        tracked: false,
+        sourceId: null,
+        listedOn: [],
+        state: 'local',
+        ...(item.origin ? { origin: item.origin } : {}),
+        ...(item.version ? { version: item.version } : {}),
+        ...(item.removal ? { removal: item.removal } : {}),
+        ...(runtime ? { runtime } : {}),
+      };
+    });
     const all = [...trackedView, ...localView];
     return all.sort((a, b) => Number(b.tracked) - Number(a.tracked) || a.name.localeCompare(b.name));
-  }, [scopedTrackedRows, scopedDiscovered]);
+  }, [scopedTrackedRows, scopedDiscovered, runtimeIndex, harness]);
 
   /** Is there anything to hide — and anything left to show? Both are PAGE-level facts, never
    *  query-dependent, so the control cannot vanish mid-typing and a runtime whose skills ALL live in
@@ -1123,7 +1711,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
 
   /**
    * Hosts the dialog may write to — and the caliber differs per kind, which is why this used to be
-   * wrong for MCP: skills are LOCATIONS, not readers (ten hosts read the same project
+   * wrong for MCP: skills are LOCATIONS, not readers (twelve hosts read the same project
    * `.agents/skills`), so a host with no skills root, or one that is an alias of another host's
    * directory, is not a target. MCP and plugins need their OWN verified landing — a shared skills
    * directory says nothing about having a server config to merge into or a package manager to run.
@@ -1301,7 +1889,10 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
       >
         <Download size={12} aria-hidden />
         <span>{free === 0 ? t('harness.installDone') : t('harness.install')}</span>
-        {count > 0 && free > 0 && (
+        {/* A plugin row targets exactly ONE runtime: its button already says install/installed, and a
+            cross-host count on a single-host page reads as "partially installed" — a state that
+            cannot exist there. The count stays only on multi-target kinds (skills, MCP). */}
+        {count > 0 && free > 0 && KIND_META[item.installKind].installMode !== 'single' && (
           <span className="badge" style={{ fontSize: '10px', padding: '0 4px', lineHeight: '14px' }}>
             {t('harness.installedBadge').replace('{n}', String(count))}
           </span>
@@ -1880,6 +2471,14 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, marketQueryAxis, marketPage, canBrowse]);
 
+  // A drawer mutation reloads the SOURCE LIST first (new `mp-` chip); this tick then refetches the
+  // market with the fresh federation — bypassing the browse cache, since a rescan may have
+  // rewritten a source's rows under the same query.
+  useEffect(() => {
+    if (marketRefreshTick > 0 && tab === 'market') void loadMarket(marketSubmittedQ, marketPage, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [marketRefreshTick]);
+
   /** Commit a query: it becomes the axis, and the effect above owns the single request for it.
    *  Committing the text already submitted is not a new axis — a repeated Enter costs nothing. */
   const commitMarket = (query: string) => {
@@ -1919,10 +2518,12 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
         // carries an `npm:` key, so without this the record would claim npm was the only place the
         // operator saw it.
         listedOn: [target.sourceId],
-        // A git-backed plugin row installs through the runtime's OWN marketplace chain: the row's
-        // repository and manifest-declared marketplace name are the identity the CLI needs, and
-        // without them the backend would take the payload-resolver branch and refuse the kind.
-        ...(target.installKind === 'plugin' && target.repo
+        // A GIT-BACKED plugin row installs through the runtime's OWN marketplace chain: the row's
+        // repository and manifest-declared marketplace name are the identity the CLI needs. An npm
+        // row can still show a repository (Pi's catalog links every package to its GitHub page) —
+        // its key names the package, and sending `marketplace` for it would ask the runtime for a
+        // chain it does not have (pi: `install npm:<spec>` only).
+        ...(target.installKind === 'plugin' && target.repo && !target.key.startsWith('npm:')
           ? {
               marketplace: {
                 repo: target.repo,
@@ -1982,12 +2583,14 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   };
 
   /**
-   * Install entry for a market row (card button AND detail-dialog button). When the row has exactly
-   * ONE free target right now, the target-choice dialog has nothing to ask — a lone skills owner or
-   * a pinned landing is not a choice — so the install starts at once: a skill lands directly (no
-   * backend gate), an plugin/MCP first request comes back `confirm_required` and the plan dialog
-   * opens over `installTarget` exactly as before. With several free targets the sheet still asks
-   * which hosts to write, because a payload fanned to N owners IS a choice.
+   * Install entry for a market row (card button AND detail-dialog button). An MCP row opens the
+   *  SAME Add/Edit sheet the manual and edit paths use, prefilled from the resolver's pinned launch
+   *  (ADR-0015 §D11 amendment): the operator adjusts the full launch, then installs to the page's
+   *  pinned landing only. A skill/plugin row keeps the target-choice dialog: with exactly ONE free
+   *  target the dialog has nothing to ask — a lone skills owner or a pinned landing is not a
+   *  choice — so the install starts at once (a skill lands directly, an plugin first request comes
+   *  back `confirm_required` and the plan opens); with several free targets the sheet asks which
+   *  hosts to write, because a payload fanned to N owners IS a choice.
    */
   const startInstall = (item: HarnessMarketItem) => {
     // One install at a time: the fast path below bypasses the confirm dialog's
@@ -1996,6 +2599,23 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     // handlers yank shared state (setInstallTarget/setTab) out from under
     // each other.
     if (installBusy) return;
+    if (item.installKind === 'mcp') {
+      // The sheet's name is READ-ONLY, so it must be the key the resolver will write, not the
+      // package identity the row is browsed by (the backend answers that derived key as
+      // `serverName`; see `mcpServerNameFromPackage`).
+      const draft = mcpDraftFromMarketKey(item.serverName ?? item.name, item.key);
+      if (draft) {
+        setMcpMarket({ item, defaultLaunch: mcpLaunchFromDraft(draft) });
+        setMcpDraft(draft);
+        // The detect box starts on the package the launch names, so registry-driven params are one
+        // click away — the same affordance the edit sheet seeds (see openMcpEdit).
+        setMcpDetectQ(mcpPackageHint(mcpLaunchFromDraft(draft)));
+        setMcpCandidates([]);
+        setMcpPick('');
+        return;
+      }
+      // A package-less MCP key has no form prefill: fall through to the resolver install path.
+    }
     const free = hostsForKind(item.installKind).filter((host) => !takenOn(item, host));
     setInstallTarget(item);
     if (free.length === 1) {
@@ -2010,6 +2630,823 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     const { skillDir } = installGate;
     setInstallGate(null);
     await doInstall(skillDir, true);
+  };
+
+  /**
+   * Manual MCP install. It takes the `manualPayload` branch instead of a key, so it cannot ride
+   * `runInstall` (which speaks `<sourceId>:<ref>`). The gate contract is identical: the first call
+   * writes nothing and answers the merge plan, the second re-sends with `confirm`.
+   */
+  const submitManualMcp = async (
+    payload: { name: string; launch: HarnessMcpLaunch },
+    confirm = false
+  ) => {
+    if (!harness) return;
+    setInstallBusy(true);
+    try {
+      const res = await api.harnessInstall({
+        kind: 'mcp',
+        manualPayload: payload,
+        hosts: [harness],
+        scope: 'global',
+        ...(confirm ? { confirm: true } : {}),
+      });
+      toast.success(`${t('harness.installDone')}: ${res.name} → ${res.copies.map((c) => c.host).join(', ')}`);
+      if (res.skipped.length > 0) {
+        toast.error(`${t('harness.installPartial')}: ${res.skipped.map((s) => `${s.host} (${s.code})`).join(', ')}`);
+      }
+      setMcpDraft(null);
+      setMcpGate(null);
+      setTab('local');
+      await load();
+    } catch (e) {
+      const err = e as Error & { code?: string; plan?: HarnessInstallTarget[] };
+      if (err.code === 'confirm_required' && Array.isArray(err.plan) && err.plan.length > 0) {
+        setMcpGate({ targets: err.plan, payload });
+        return;
+      }
+      toast.error(t('harness.installFailed') + ': ' + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setInstallBusy(false);
+    }
+  };
+
+  const confirmMcpGate = async () => {
+    if (!mcpGate) return;
+    const { payload } = mcpGate;
+    setMcpGate(null);
+    await submitManualMcp(payload, true);
+  };
+
+  /**
+   * Market MCP install through the shared sheet. Unlike `submitManualMcp` (the `manualPayload`
+   * escape hatch), this rides the resolver's KEY path so the manifest keeps the row's `sourceId` /
+   * `listedOn` / `trust` / `canonicalKey` provenance. The launch override reaches the backend ONLY
+   * when the operator edited something — an untouched form installs the resolver's own pinned
+   * command unchanged (ADR-0015 §D9). One landing: the page's pinned harness. Gate 2 is identical
+   * to the manual/edit paths — the first call writes nothing and returns the merge plan.
+   */
+  const submitMarketMcp = async (
+    draft: McpDraft,
+    item: HarnessMarketItem,
+    defaultLaunch: HarnessMcpLaunch,
+    confirm = false
+  ) => {
+    if (!harness) return;
+    setInstallBusy(true);
+    try {
+      const launch = mcpLaunchFromDraft(draft);
+      const touched = JSON.stringify(launch) !== JSON.stringify(defaultLaunch);
+      const res = await api.harnessInstall({
+        key: item.key,
+        kind: 'mcp',
+        hosts: [harness],
+        scope: 'global',
+        listedOn: [item.sourceId],
+        ...(touched ? { launch } : {}),
+        ...(confirm ? { confirm: true } : {}),
+      });
+      toast.success(`${t('harness.installDone')}: ${res.name} → ${res.copies.map((c) => c.host).join(', ')}`);
+      if (res.skipped.length > 0) {
+        toast.error(`${t('harness.installPartial')}: ${res.skipped.map((s) => `${s.host} (${s.code})`).join(', ')}`);
+      }
+      setMcpMarket(null);
+      setMcpDraft(null);
+      setMcpMarketGate(null);
+      setTab('local');
+      await load();
+    } catch (e) {
+      const err = e as Error & { code?: string; plan?: HarnessInstallTarget[] };
+      if (err.code === 'confirm_required' && Array.isArray(err.plan) && err.plan.length > 0) {
+        setMcpMarketGate({ targets: err.plan, draft, item, defaultLaunch });
+        return;
+      }
+      toast.error(t('harness.installFailed') + ': ' + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setInstallBusy(false);
+    }
+  };
+
+  const confirmMcpMarketGate = async () => {
+    if (!mcpMarketGate) return;
+    const { draft, item, defaultLaunch } = mcpMarketGate;
+    setMcpMarketGate(null);
+    await submitMarketMcp(draft, item, defaultLaunch, true);
+  };
+
+  /**
+   * Open the edit sheet for one EXISTING server: read the launch first, then pre-fill the form.
+   *
+   * The name is not editable (it is the entry's key — renaming is delete + add), and the read is
+   * key-names-only: env/header VALUES stay in the runtime's file and are preserved on write.
+   */
+  const openMcpEdit = async (row: Row) => {
+    if (!harness || mcpEditLoading) return;
+    setMcpEditLoading(true);
+    try {
+      const entry = await api.harnessMcpEntry({ host: harness, name: row.name });
+      setMcpGate(null);
+      setMcpEditGate(null);
+      setMcpMarket(null);
+      setMcpMarketGate(null);
+      setMcpEdit({ name: row.name, ...(row.artifact ? { artifactId: row.artifact.id } : {}) });
+      setMcpDraft(mcpDraftFromLaunch(row.name, entry.launch, entry.setKeys));
+      // The search box starts on the package the launch names, so "Detect" is one click away.
+      setMcpDetectQ(mcpPackageHint(entry.launch));
+      setMcpCandidates([]);
+      setMcpPick('');
+    } catch (e) {
+      toast.error(`${t('harness.mcpEditLoadFailed')}: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setMcpEditLoading(false);
+    }
+  };
+
+  /**
+   * Apply one registry candidate: build an EMPTY launch, merge its declared argv rows, and return
+   * the npm spec the CLI probe should read (null when the candidate has no launchable npm package).
+   */
+  const applyMcpCandidate = (
+    candidate: HarnessMcpRegistryCandidate,
+  ): { spec: string; registry: 'npm' | 'pypi' } | null => {
+    const pkg =
+      candidate.packages.find((item) => item.registryType === 'npm' && item.transport === 'stdio') ??
+      candidate.packages.find((item) => item.registryType === 'pypi' && item.transport === 'stdio') ??
+      candidate.packages[0];
+    if (!pkg) return null;
+    const fields = mcpDraftFromPackage(pkg);
+    if (!fields) {
+      toast.error(t('harness.mcpDetectUnsupported'));
+      return null;
+    }
+    setMcpDraft((draft) => {
+      if (!draft) return draft;
+      // An edit (or a hand-typed command) keeps its own launch; only an empty one is built here.
+      if (mcpDraftLaunchReady(draft)) return draft;
+      // The chosen editing shape survives: custom gets the composed command line instead of the
+      // runner/package pair, so a candidate never flips the operator into advanced mode.
+      if (draft.mode === 'custom' && fields.mode === 'advanced') {
+        const argv = [...MCP_RUNNER_FLAGS[fields.runner], fields.pkg, ...parseArgLine(fields.argsText)];
+        return { ...draft, command: draft.command.trim() || fields.runner, argsText: formatArgLine(argv) };
+      }
+      return { ...draft, ...fields };
+    });
+    // The open table gains whatever the registry declares; a value already typed wins.
+    const parsed = argRowsWithIds(parseArgLine(fields.argsText));
+    const declared = parsed.map((row) => {
+      const seed =
+        fields.args.find((item) => item.name !== '' && item.name === row.name) ??
+        fields.args.find((item) => item.name === '' && row.name === '' && item.value === row.value);
+      return seed ? { ...seed, id: row.id, name: row.name, value: row.value } : row;
+    });
+    for (const seed of fields.args) {
+      const covered = seed.name
+        ? declared.some((row) => row.name === seed.name)
+        : declared.some((row) => row.name === '' && row.value === seed.value);
+      if (!covered) declared.push(seed);
+    }
+    // Required declarations come first; everything else keeps registry order.
+    declared.sort((a, b) => Number(Boolean(b.required)) - Number(Boolean(a.required)));
+    setMcpArgsEditor((rows) => (rows ? mergeMcpParamRows(rows, declared) : rows));
+    if (pkg.registryType === 'npm' && pkg.transport === 'stdio') {
+      return { spec: `${pkg.identifier}@${pkg.version ?? 'latest'}`, registry: 'npm' as const };
+    }
+    if (pkg.registryType === 'pypi' && pkg.transport === 'stdio') {
+      return { spec: pkg.version ? `${pkg.identifier}==${pkg.version}` : pkg.identifier, registry: 'pypi' as const };
+    }
+    return null;
+  };
+
+  /** The package source the editor implies; undefined = try npm first, then PyPI. */
+  const mcpProbeRegistry = (): 'npm' | 'pypi' | undefined => {
+    if (!mcpDraft || mcpDraft.transport !== 'stdio') return undefined;
+    const runner = mcpDraft.mode === 'advanced' ? mcpDraft.runner : mcpDraft.command.trim().toLowerCase();
+    if (runner === 'uvx') return 'pypi';
+    if (runner === 'npx' || runner === 'bunx') return 'npm';
+    return undefined;
+  };
+
+  /**
+   * Download one package and merge the flags its own parser reads into the open table.
+   * The package is scanned, never executed, so no confirmation gate is needed. With no runner
+   * chosen yet, an npm miss is retried on PyPI — that is how a bare `uvx` name still resolves.
+   */
+  const probeMcpPackage = async (spec: string, registry?: 'npm' | 'pypi') => {
+    try {
+      let probe: Awaited<ReturnType<typeof api.harnessMcpCli>>;
+      try {
+        probe = await api.harnessMcpCli(spec, registry ?? 'npm');
+      } catch (error) {
+        const code = (error as Error & { code?: string }).code;
+        if (registry || code !== 'not_found') throw error;
+        probe = await api.harnessMcpCli(spec, 'pypi');
+      }
+      if (probe.options.length === 0) {
+        toast.error(t('harness.mcpProbeEmpty'));
+        return;
+      }
+      const rows: McpParamRow[] = probe.options.map((option) => ({
+        id: nextArgRowId(),
+        name: mcpFlagToken(option.name),
+        value: '',
+        // A discovered flag is a suggestion: only a required one is written without a pick.
+        selected: option.required === true,
+        ...(option.valueHint ? { placeholder: option.valueHint } : {}),
+        ...(option.choices ? { choices: option.choices } : {}),
+        ...(option.format ? { format: option.format } : {}),
+        ...(option.secret ? { secret: true } : {}),
+        ...(option.env ? { description: t('harness.mcpProbeEnvHint', { name: option.env }) } : {}),
+        ...(option.required ? { required: true } : {}),
+      }));
+      setMcpArgsEditor((existing) => (existing ? mergeMcpParamRows(existing, rows) : rows));
+    } catch (e) {
+      toast.error(`${t('harness.mcpProbeFailed')}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  /** Switching candidates replaces the package under the table, so it is probed as well. */
+  const probeMcpCandidate = (candidate: HarnessMcpRegistryCandidate) => {
+    const target = applyMcpCandidate(candidate);
+    if (!target) return;
+    setMcpDetecting(true);
+    void probeMcpPackage(target.spec, target.registry).finally(() => setMcpDetecting(false));
+  };
+
+  /** Registry declarations plus the package's own CLI flags — only when clicked. */
+  const detectMcpParams = async () => {
+    const query = mcpDetectQ.trim();
+    if (!query || mcpDetecting) return;
+    setMcpDetecting(true);
+    try {
+      let candidates: HarnessMcpRegistryCandidate[] = [];
+      let registryError = '';
+      try {
+        candidates = (await api.harnessMcpRegistry(query)).candidates ?? [];
+      } catch (e) {
+        registryError = e instanceof Error ? e.message : String(e);
+      }
+      setMcpCandidates(candidates);
+      // The preferred match is applied at once — the picker only switches to another candidate.
+      const preferred =
+        candidates.length === 0
+          ? null
+          : candidates.length === 1
+            ? candidates[0]!
+            : candidates.find((item) =>
+                item.packages.some((pkg) => pkg.registryType === 'npm' && pkg.transport === 'stdio')
+              ) ?? candidates[0]!;
+      setMcpPick(preferred?.name ?? '');
+      const target = preferred ? applyMcpCandidate(preferred) : null;
+      if (target) {
+        await probeMcpPackage(target.spec, target.registry);
+        return;
+      }
+      // A package spec typed directly still gets probed even when the registry has no record.
+      const bare = query.split('==')[0]!.trim();
+      if (!MCP_PKG_RE.test(bare)) {
+        toast.error(
+          registryError ? `${t('harness.mcpDetectFailed')}: ${registryError}` : t('harness.mcpDetectEmpty')
+        );
+        return;
+      }
+      await probeMcpPackage(query, mcpProbeRegistry());
+    } finally {
+      setMcpDetecting(false);
+    }
+  };
+
+  /** Commit one edit — same gate as install: the plan is read before anything is written. */
+  const submitMcpEdit = async (draft: McpDraft, confirm = false) => {
+    if (!harness || !mcpEdit) return;
+    setInstallBusy(true);
+    try {
+      const res = await api.harnessMcpEdit({
+        host: harness,
+        name: mcpEdit.name,
+        launch: mcpLaunchFromDraft(draft),
+        ...(mcpEdit.artifactId ? { artifactId: mcpEdit.artifactId } : {}),
+        ...(confirm ? { confirm: true } : {}),
+      });
+      toast.success(res.changed ? t('harness.mcpEditDone') : t('harness.mcpEditNoChange'));
+      setMcpEdit(null);
+      setMcpEditGate(null);
+      setMcpDraft(null);
+      setTab('local');
+      await load();
+    } catch (e) {
+      const err = e as Error & { code?: string; plan?: HarnessInstallTarget[] };
+      if (err.code === 'confirm_required' && Array.isArray(err.plan) && err.plan.length > 0) {
+        setMcpEditGate({ targets: err.plan, draft });
+        return;
+      }
+      toast.error(`${t('harness.mcpEditFailed')}: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setInstallBusy(false);
+    }
+  };
+
+  const confirmMcpEditGate = async () => {
+    if (!mcpEditGate) return;
+    const { draft } = mcpEditGate;
+    setMcpEditGate(null);
+    await submitMcpEdit(draft, true);
+  };
+
+  /** Switch the stdio form between a raw command line and the runner+package helper, carrying argv. */
+  const setMcpStdioMode = (mode: McpStdioMode) => {
+    setMcpDraft((draft) => {
+      if (!draft || draft.mode === mode) return draft;
+      if (mode === 'custom') {
+        const argv = mcpStdioArgv(draft);
+        return { ...draft, mode, command: mcpStdioCommand(draft), argsText: formatArgLine(argv) };
+      }
+      const runner = MCP_RUNNERS.find((item) => item === draft.command.trim().toLowerCase()) ?? 'npx';
+      const argv = parseArgLine(draft.argsText);
+      const pkgIndex = argv.findIndex((arg) => mcpPkgToken(runner, arg) && !MCP_RUNNER_FLAGS[runner].includes(arg));
+      return {
+        ...draft,
+        mode: 'advanced',
+        runner,
+        pkg: pkgIndex >= 0 ? argv[pkgIndex]! : '',
+        argsText: formatArgLine(argv.filter((arg, i) => i !== pkgIndex && !MCP_RUNNER_FLAGS[runner].includes(arg))),
+      };
+    });
+  };
+
+  /** Remote request headers: a name plus an optional literal value (blank = runtime reference). */
+  const updateMcpHeaderRow = (id: string, patch: Partial<McpParamRow>) =>
+    setMcpDraft((draft) =>
+      draft ? { ...draft, headerRows: draft.headerRows.map((row) => (row.id === id ? { ...row, ...patch } : row)) } : draft
+    );
+
+  const addMcpHeaderRow = () =>
+    setMcpDraft((draft) =>
+      draft ? { ...draft, headerRows: [...draft.headerRows, { id: nextArgRowId(), name: '', value: '' }] } : draft
+    );
+
+  const removeMcpHeaderRow = (id: string) =>
+    setMcpDraft((draft) =>
+      draft ? { ...draft, headerRows: draft.headerRows.filter((row) => row.id !== id) } : draft
+    );
+
+  /** Close whichever MCP sheet is open (add form, install gate or edit gate) — never while applying. */
+  const closeMcpSheet = () => {
+    if (installBusy) return;
+    setMcpGate(null);
+    setMcpEditGate(null);
+    setMcpEdit(null);
+    setMcpMarket(null);
+    setMcpMarketGate(null);
+    setMcpDraft(null);
+    setMcpDetectQ('');
+    setMcpCandidates([]);
+    setMcpPick('');
+    setMcpArgsEditor(null);
+    setMcpValueEditor(null);
+  };
+
+  /** Open the visual editor: reverse-render the argv line, then attach registry metadata. */
+  const openMcpArgsEditor = () => {
+    if (!mcpDraft) return;
+    // The source IS the package the launch names — never a stale query from an earlier sheet.
+    setMcpDetectQ(mcpPackageHint(mcpLaunchFromDraft(mcpDraft)));
+    const parsed = argRowsWithIds(parseArgLine(mcpDraft.argsText));
+    const seeds = mcpDraft.args;
+    const rows = parsed.map((row) => {
+      const seed =
+        seeds.find((item) => item.name !== '' && item.name === row.name) ??
+        seeds.find((item) => item.name === '' && row.name === '' && item.value === row.value);
+      return seed ? { ...seed, id: row.id, name: row.name, value: row.value } : row;
+    });
+    for (const seed of seeds) {
+      const covered = seed.name
+        ? rows.some((row) => row.name === seed.name)
+        : rows.some((row) => row.name === '' && row.value === seed.value);
+      if (!covered) rows.push(seed);
+    }
+    setMcpAlternatesOpen(true);
+    setMcpArgsEditor(rows);
+  };
+
+  const updateMcpArgRow = (id: string, patch: Partial<McpParamRow>) =>
+    setMcpArgsEditor((rows) => rows?.map((row) => (row.id === id ? { ...row, ...patch } : row)) ?? rows);
+
+  const addMcpArgRow = () =>
+    setMcpArgsEditor((rows) => [...(rows ?? []), { id: nextArgRowId(), name: '', value: '', selected: true }]);
+
+  const removeMcpArgRow = (id: string) =>
+    setMcpArgsEditor((rows) => rows?.filter((row) => row.id !== id) ?? rows);
+
+  const applyMcpArgsEditor = () => {
+    if (!mcpArgsEditor) return;
+    const tokens = mcpArgsEditor.filter((row) => row.selected === true).flatMap(mcpParamTokens);
+    setMcpDraft((draft) => (draft ? { ...draft, argsText: formatArgLine(tokens), args: mcpArgsEditor } : draft));
+    setMcpArgsEditor(null);
+    setMcpValueEditor(null);
+  };
+
+  /** Discard the snapshot — the dialog's X and Cancel share it with Apply. While the enlarged
+   *  value editor sits on top, its Escape listener and this one both fire for a single keypress;
+   *  this handler then dismisses only the TOP layer, so Escape never throws away the whole sheet. */
+  const closeMcpArgsEditor = () => {
+    if (mcpValueEditor) {
+      setMcpValueEditor(null);
+      return;
+    }
+    setMcpArgsEditor(null);
+  };
+
+  /** Write the enlarged editor's text back into its row. Nothing is committed until Apply. */
+  const applyMcpValueEditor = () => {
+    if (!mcpValueEditor) return;
+    updateMcpArgRow(mcpValueEditor.id, { value: mcpValueEditor.value });
+    setMcpValueEditor(null);
+  };
+
+  /** Write the DSN builder's serialized connection string back into its row. */
+  const applyMcpDsnBuilder = (value: string) => {
+    if (!mcpDsnBuilder) return;
+    updateMcpArgRow(mcpDsnBuilder.id, { value });
+    setMcpDsnBuilder(null);
+  };
+
+  /** The argv tail, edited inline; the table editor is one click away. */
+  const renderMcpArgsField = () => {
+    if (!mcpDraft) return null;
+    return (
+      <Field
+        label={
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            {t('harness.mcpArgs')}
+            <InfoTip text={t('harness.mcpArgsHint')} />
+          </span>
+        }
+      >
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input
+            className="input"
+            style={{ ...MONO, flex: '1 1 auto', minWidth: 0 }}
+            value={mcpDraft.argsText}
+            onChange={(e) => setMcpDraft((d) => (d ? { ...d, argsText: e.target.value } : d))}
+          />
+          <button className="btn btn-sm" style={{ flexShrink: 0 }} onClick={openMcpArgsEditor}>
+            <Settings2 size={12} aria-hidden />
+            <span>{t('harness.mcpArgsEdit')}</span>
+          </button>
+        </div>
+      </Field>
+    );
+  };
+
+  /** The composed launch line, read-only, directly under the launch-parameters field — the argv that will be written. */
+  const renderMcpCommandPreview = () => {
+    if (!mcpDraft || mcpDraft.transport !== 'stdio') return null;
+    const line = [mcpStdioCommand(mcpDraft), ...mcpStdioArgv(mcpDraft)].join(' ').trim();
+    if (!line) return null;
+    return (
+      <div
+        style={{
+          ...MONO,
+          fontSize: 11,
+          color: 'var(--text-dim)',
+          padding: '6px 8px',
+          background: 'var(--chip-bg)',
+          borderRadius: 4,
+          overflowWrap: 'anywhere',
+        }}
+      >
+        {`$ ${line}`}
+      </div>
+    );
+  };
+
+  /** The launch-argument table — the one place a detected or hand-added row lives. */
+  const renderMcpParamTable = (
+    rows: McpParamRow[],
+    nameLabel: string,
+    namePlaceholder: string,
+    update: (id: string, patch: Partial<McpParamRow>) => void,
+    remove: (id: string) => void
+  ) => {
+    // Selection decides the launch: a checked row is written, whether or not it has a value yet
+    // (an empty checked row is a bare switch); an unchecked row folds under the candidate group and
+    // is not written. Required rows never hide — an empty required declaration stays visible.
+    const ordered = [...rows].sort((a, b) => Number(Boolean(b.required)) - Number(Boolean(a.required)));
+    const filled = ordered.filter((row) => row.selected === true);
+    const candidates = ordered.filter((row) => row.selected !== true);
+    const renderRow = (row: McpParamRow) => (
+      <tr key={row.id}>
+        <td style={{ ...MCP_TABLE_CELL, textAlign: 'center' }}>
+          <input
+            type="checkbox"
+            checked={row.selected === true}
+            style={{ margin: 0 }}
+            title={t('harness.mcpParamUseHint')}
+            aria-label={t('harness.mcpParamUse')}
+            onChange={() => update(row.id, { selected: row.selected !== true })}
+          />
+        </td>
+        <td style={MCP_TABLE_CELL}>
+          <input
+            className="input"
+            style={{ ...MONO, width: '100%', minWidth: 0 }}
+            placeholder={namePlaceholder}
+            value={mcpRowNameText(row)}
+            onChange={(e) => update(row.id, mcpRowNamePatch(row, e.target.value))}
+          />
+        </td>
+        <td style={MCP_TABLE_CELL}>
+          {row.format === 'dsn' || isDsnFlag(row.name) ? (
+            <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+              <input
+                className="input"
+                style={{ ...MONO, width: '100%', minWidth: 0 }}
+                readOnly
+                value={maskDsn(row.value)}
+                placeholder={row.placeholder ?? ''}
+              />
+              {/* A `dsn`-format flag opens a structured connection-string builder instead of the
+                  free-text expand; the cell shows a masked summary so the credential is not legible
+                  at a glance (the builder edits the password as plain text). */}
+              <button
+                type="button"
+                className="btn btn-sm"
+                style={{ flex: '0 0 auto', padding: '4px 6px' }}
+                title={t('harness.mcpDsnExpand')}
+                aria-label={t('harness.mcpDsnExpand')}
+                onClick={() => setMcpDsnBuilder({ id: row.id, name: row.name, value: row.value })}
+              >
+                <Database size={12} aria-hidden />
+              </button>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+              {/* Probe literals are hints, not an enum: suggestions come from what the scan saw,
+                  while any value is accepted (DBHub handles every non-`http` value as stdio). */}
+              <SuggestInput
+                value={row.value}
+                onChange={(v) => update(row.id, { value: v })}
+                suggestions={row.choices ?? []}
+                placeholder={row.placeholder ?? ''}
+                title={row.value || undefined}
+                inputMode={row.format === 'number' ? 'numeric' : undefined}
+                style={{ width: '100%', minWidth: 0 }}
+              />
+              {/* A long token or URL is unreadable in a ~40-character box; this opens the same value
+                  in a full-size editor instead of making the column wider for every row. */}
+              <button
+                type="button"
+                className="btn btn-sm"
+                style={{ flex: '0 0 auto', padding: '4px 6px' }}
+                title={t('harness.mcpValueExpand')}
+                aria-label={t('harness.mcpValueExpand')}
+                onClick={() => setMcpValueEditor({ id: row.id, name: row.name, value: row.value })}
+              >
+                <Maximize2 size={12} aria-hidden />
+              </button>
+            </div>
+          )}
+        </td>
+        <td style={{ ...MCP_TABLE_CELL, fontSize: 11, lineHeight: 1.45 }}>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <button
+              type="button"
+              className={row.required ? 'badge badge-info' : 'badge'}
+              style={{
+                flex: '0 0 auto',
+                fontFamily: 'inherit',
+                background: 'transparent',
+                cursor: 'pointer',
+                ...(row.required ? {} : { border: '1px solid var(--divider)', color: 'var(--text-dim)' }),
+              }}
+              title={t('harness.mcpParamRequiredHint')}
+              aria-pressed={Boolean(row.required)}
+              onClick={() => update(row.id, { required: !row.required })}
+            >
+              {row.required ? t('harness.mcpParamRequired') : t('harness.mcpParamOptionalTag')}
+            </button>
+            <span style={{ color: 'var(--text-dim)', minWidth: 0, overflowWrap: 'anywhere' }}>
+              {row.description ?? ''}
+            </span>
+          </div>
+        </td>
+        <td style={{ ...MCP_TABLE_CELL, textAlign: 'right', paddingRight: 14 }}>
+          <button className="btn btn-sm" title={t('common.delete')} onClick={() => remove(row.id)}>
+            <Trash2 size={12} aria-hidden />
+          </button>
+        </td>
+      </tr>
+    );
+    const columns: ScrollTableColumn[] = [
+      {
+        key: 'use',
+        label: (
+          <span
+            role="img"
+            aria-label={t('harness.mcpParamUse')}
+            title={t('harness.mcpParamUseHint')}
+            style={{ display: 'inline-flex', alignItems: 'center' }}
+          >
+            <SquareCheck size={13} aria-hidden />
+          </span>
+        ),
+        width: 44,
+        align: 'center',
+      },
+      // The name column holds a flag (`--dsn`) or a short env key — 22% is already generous. Every
+      // point it takes beyond that is a point the value column loses, and values are the long side.
+      { key: 'name', label: nameLabel, width: '22%' },
+      { key: 'value', label: t('harness.mcpParamValue') },
+      { key: 'description', label: t('harness.description'), width: '28%' },
+      {
+        key: 'actions',
+        label: t('common.delete'),
+        width: 72,
+        align: 'right',
+        headStyle: { paddingRight: 14 },
+      },
+    ];
+    return (
+      <ScrollTable columns={columns} maxHeight={280}>
+        {filled.map(renderRow)}
+        {/* A group head only makes sense when a committed row exists to keep the table open;
+            with everything still a candidate, collapsing would hide the whole sheet. */}
+        {filled.length > 0 && candidates.length > 0 && (
+          <tr>
+            <td
+              colSpan={5}
+              style={{
+                padding: '2px 8px',
+                background: 'var(--chip-bg)',
+                borderTop: '1px solid var(--divider)',
+              }}
+            >
+              <button className="btn btn-sm" onClick={() => setMcpAlternatesOpen((open) => !open)}>
+                <ChevronDown
+                  size={12}
+                  aria-hidden
+                  style={{ transform: mcpAlternatesOpen ? undefined : 'rotate(-90deg)', transition: 'transform 120ms' }}
+                />
+                <span>{t('harness.mcpParamCandidate', { n: candidates.length })}</span>
+              </button>
+            </td>
+          </tr>
+        )}
+        {filled.length === 0 || mcpAlternatesOpen ? candidates.map(renderRow) : null}
+      </ScrollTable>
+    );
+  };
+
+  /** Visual launch-argument editor — one table, opened from the launch-parameters field. */
+  const renderMcpArgsEditor = () => {
+    if (!mcpArgsEditor) return null;
+    // The probe reads the package the launch already names; the box is read-only in that case.
+    const source = mcpDraft ? mcpPackageHint(mcpLaunchFromDraft(mcpDraft)) : '';
+    return (
+      <Dialog
+        title={t('harness.mcpArgsEditorTitle')}
+        subtitle={t('harness.mcpArgsEditorHint')}
+        onClose={closeMcpArgsEditor}
+        closeLabel={t('combobox.close')}
+        width={880}
+        footerRight={
+          <>
+            <button className="btn btn-sm" onClick={closeMcpArgsEditor}>
+              {t('common.cancel')}
+            </button>
+            <button className="btn btn-sm" onClick={applyMcpArgsEditor}>
+              {t('harness.mcpArgsEditorApply')}
+            </button>
+          </>
+        }
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <Field
+            label={t('harness.mcpDetect')}
+            hint={source ? t('harness.mcpDetectDerivedHint') : t('harness.mcpDetectHint')}
+          >
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                className="input"
+                style={{ ...MONO, flex: '1 1 auto', minWidth: 0, ...(source ? { color: 'var(--text-dim)' } : {}) }}
+                value={source || mcpDetectQ}
+                readOnly={Boolean(source)}
+                title={source ? t('harness.mcpDetectDerivedHint') : undefined}
+                placeholder={t('harness.mcpDetectPlaceholder')}
+                onChange={(e) => {
+                  if (!source) setMcpDetectQ(e.target.value);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    void detectMcpParams();
+                  }
+                }}
+              />
+              <button
+                className="btn btn-sm"
+                onClick={() => void detectMcpParams()}
+                disabled={mcpDetecting || installBusy || !mcpDetectQ.trim()}
+              >
+                <Search size={12} aria-hidden />
+                <span>{mcpDetecting ? t('harness.mcpDetecting') : t('harness.mcpDetectAction')}</span>
+              </button>
+            </div>
+            {mcpCandidates.length > 1 && (
+              <Combobox
+                value={mcpPick}
+                onChange={(v) => {
+                  setMcpPick(v);
+                  const picked = mcpCandidates.find((item) => item.name === v);
+                  if (picked) probeMcpCandidate(picked);
+                }}
+                options={mcpCandidates.map((item) => ({
+                  value: item.name,
+                  label: `${item.title ?? item.name}${item.version ? ` · v${item.version}` : ''}`,
+                  meta: item.name,
+                }))}
+                placeholder={t('harness.mcpDetectPick')}
+                forceFilter
+              />
+            )}
+          </Field>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              {t('harness.mcpArgs')}
+              <InfoTip text={t('harness.mcpParamUseHint')} />
+            </div>
+            {renderMcpParamTable(mcpArgsEditor, t('harness.mcpArgFlag'), 'transport', updateMcpArgRow, removeMcpArgRow)}
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <button className="btn btn-sm" onClick={addMcpArgRow}>
+                <Plus size={12} aria-hidden />
+                <span>{t('harness.mcpArgAdd')}</span>
+              </button>
+              {/* Drops only the unchecked candidates: a selected or required row survives. */}
+              {mcpArgsEditor.some((row) => row.selected !== true && !row.required) && (
+                <button
+                  className="btn btn-sm"
+                  onClick={() =>
+                    setMcpArgsEditor((rows) => rows?.filter((row) => row.selected === true || row.required) ?? rows)
+                  }
+                >
+                  {t('harness.mcpClearCandidates')}
+                </button>
+              )}
+              <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{t('harness.mcpParamRequiredHint')}</span>
+            </div>
+          </div>
+        </div>
+      </Dialog>
+    );
+  };
+
+  /** Enlarged editor for one parameter value — stacked over the launch-argument editor. */
+  const renderMcpValueEditor = () => {
+    if (!mcpValueEditor) return null;
+    const row = mcpArgsEditor?.find((item) => item.id === mcpValueEditor.id);
+    return (
+      <Dialog
+        title={t('harness.mcpValueEditorTitle')}
+        subtitle={<span style={MONO}>{row?.name || t('harness.mcpParamValue')}</span>}
+        width={640}
+        onClose={() => setMcpValueEditor(null)}
+        closeLabel={t('combobox.close')}
+        footerRight={
+          <>
+            <button className="btn btn-sm" onClick={() => setMcpValueEditor(null)}>
+              {t('common.cancel')}
+            </button>
+            <button className="btn btn-sm" onClick={applyMcpValueEditor}>
+              {t('harness.mcpValueEditorSave')}
+            </button>
+          </>
+        }
+      >
+        <textarea
+          className="input"
+          rows={8}
+          autoFocus
+          spellCheck={false}
+          style={{ ...MONO, resize: 'vertical', lineHeight: 1.5, minHeight: 140 }}
+          value={mcpValueEditor.value}
+          onChange={(e) => setMcpValueEditor((cur) => (cur ? { ...cur, value: e.target.value } : cur))}
+        />
+        <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>{t('harness.mcpValueEditorHint')}</div>
+      </Dialog>
+    );
+  };
+
+  /** Structured DSN builder for a `dsn`-format row; falls back to a raw textarea inside the dialog. */
+  const renderMcpDsnBuilder = () => {
+    if (!mcpDsnBuilder) return null;
+    return (
+      <DsnBuilder
+        name={mcpDsnBuilder.name}
+        value={mcpDsnBuilder.value}
+        onClose={() => setMcpDsnBuilder(null)}
+        onSave={applyMcpDsnBuilder}
+      />
+    );
   };
 
   const renderMarket = () => (
@@ -2462,7 +3899,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
    *
    * `copyServes` is the same predicate the rail counts with, so the removal dialog can never disagree
    * with the list that opened it: on a skills page it answers by READERSHIP (the shared
-   * `.agents/skills` tree is one copy owned by `universal` and read by ten runtimes, so it belongs to
+   * `.agents/skills` tree is one copy owned by `universal` and read by twelve runtimes, so it belongs to
    * every rail entry that reads it), on MCP/plugin pages by the copy's own host. No harness on the
    * page (before the catalog resolves) means no scope to narrow by — every copy is in scope.
    */
@@ -2732,19 +4169,41 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   };
 
 
+  /** The catalog's word for a host (`Universal`, `OpenCode`); the raw id is only the fallback. The
+   *  rail and this chip name the same host, so they must not spell it two ways. */
+  const hostName = (id: string): string => {
+    const found = hosts.find((candidate) => candidate.id === id);
+    return found ? found.label.replace(/\s*\([^)]*\)\s*$/, '') : id;
+  };
   /**
-   * One word per row, not five.
+   * One badge per row — THE PINNED HARNESS's verdict only.
    *
-   * The column answers a yes/no question ("does this row need a look?"), and the answer comes from
-   * `needsAttention` — the same predicate the rail's health dot uses. `clean` renders nothing
-   * (silence is the normal state), and every answer that is not "no" prints the same word.
+   * Two independent claims can make a row unhealthy: the on-disk claim (`needsAttention`'s copy
+   * state — a member that is gone or claimed by another environment) and the runtime's live answer
+   * (the server failed to connect or needs a login, even while its config member is intact). The
+   * runtime verdict wins the badge text because that is the state the operator must act on. A
+   * page is pinned to one harness, so its badge answers "does this server work THERE" — another
+   * harness's failure can never repaint this row.
    *
-   * `dirty` is NOT one of those answers: a config file rewritten by its own runtime, or shared with
-   * another tool, is ordinary drift, not a defect. The CAUSE of a real issue (absent / another
-   * environment's claim / shadowed) is the badge's tooltip; drift is named per copy in the removal
-   * picker, which is the only place it changes what happens.
+   * A healthy live answer is also printed instead of silence: `connected` / `disabled` is the
+   * real state of the server, and a blank cell would claim nothing. Absent runtime data (no
+   * status surface, unreachable CLI) is not a verdict and prints nothing.
+   *
+   * `dirty` is never one of these answers: a config file rewritten by its own runtime, or shared
+   * with another tool, is ordinary drift, not a defect. The CAUSE of a real issue is the badge's
+   * tooltip; drift is named per copy in the removal picker, the only place it changes an outcome.
    */
   const stateBadge = (row: Row) => {
+    const runtime = row.runtime;
+    const badge = runtime ? RUNTIME_BADGE[runtime.status] : null;
+    if (runtime && badge && (runtimeNeedsAttention(runtime) || !needsAttention(row))) {
+      const title = runtime.error
+        ? `${hostName(runtime.host)}: ${runtime.error}`
+        : `${hostName(runtime.host)}: ${t(badge.key)}`;
+      return (
+        <span className={badge.className} title={title}>{t(badge.key)}</span>
+      );
+    }
     if (!needsAttention(row)) return null;
     // Copy-level evidence outranks the rollup: a row whose rollup is `dirty` can still hold a copy
     // that is gone, and the tooltip must name that instead of the drift that outranked it.
@@ -2768,27 +4227,26 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
    *  An npm-only page has nothing to resolve, so it gets no column — never a column of blanks. */
   const showStarColumn = pageRows.some((row) => row.repo !== null);
 
-  /** The catalog's word for a host (`Universal`, `OpenCode`); the raw id is only the fallback. The
-   *  rail and this chip name the same host, so they must not spell it two ways. */
-  const hostName = (id: string): string => {
-    const found = hosts.find((candidate) => candidate.id === id);
-    return found ? found.label.replace(/\s*\([^)]*\)\s*$/, '') : id;
-  };
-
   /**
    * WHICH harness a row is installed FOR — rendered on the row itself, in BOTH layouts.
    *
    * Readership is what makes this mandatory rather than decorative. A skills page is pinned to one
    * runtime but shows every row that runtime can LOAD, and two such rows can live in different
-   * places: one in the shared `.agents/skills` tree (`Universal` — ten runtimes load it, so removing
+   * places: one in the shared `.agents/skills` tree (`Universal` — twelve runtimes load it, so removing
    * it touches all ten) and one in that runtime's own directory (`OpenCode` — private to it). With
    * no tag, a pinned page reads as if every row were scoped to the pinned harness, which is exactly
    * the claim it must not make. The chip's tooltip is the copy's real path, so "which directory am I
    * about to remove" never needs a second click.
-   */
-  const hostChips = (row: Row, limit: number = HOSTS_PREVIEW) => (
+   *
+   * MCP is the exception: the page is pinned to one harness and every claim on the card (state,
+   * edit, remove) is THAT harness's, so other hosts' chips would only imply a shared fate the
+   * actions do not have. Where sharing actually matters — removal touches every host the artifact
+   * landed on — the picker names each copy (ADR-0015 §D8.6). */
+  const hostChips = (row: Row, limit: number = HOSTS_PREVIEW) => {
+    const shown = kind === 'mcp' ? row.hosts.filter((host) => host === harness) : row.hosts;
+    return (
     <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-      {row.hosts.slice(0, limit).map((host) => {
+      {shown.slice(0, limit).map((host) => {
         const paths = row.copies.filter((copy) => copy.host === host).map((copy) => copy.path);
         return (
           <span
@@ -2802,11 +4260,35 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
           </span>
         );
       })}
-      {row.hosts.length > limit && (
-        <span className="chip" style={{ fontSize: '10.5px', padding: '1px 7px' }}>+{row.hosts.length - limit}</span>
+      {shown.length > limit && (
+        <span className="chip" style={{ fontSize: '10.5px', padding: '1px 7px' }}>+{shown.length - limit}</span>
       )}
     </div>
-  );
+    );
+  };
+  /**
+   * Edit one EXISTING server's launch. Offered only where the page is pinned to an MCP-capable
+   * runtime that holds this row: the dialog reads that runtime's config entry, so a hand-broken or
+   * unreadable file answers a toast instead of opening a form over it. A row entirely claimed by
+   * another environment is refused up front — the write would only fail after the gate.
+   */
+  const editMcpButton = (row: Row) => {
+    if (kind !== 'mcp' || !harness || !row.hosts.includes(harness)) return null;
+    if (!hosts.some((host) => host.id === harness && host.hasMcp)) return null;
+    const allForeign = row.copies.length > 0 && row.copies.every((c) => c.state === 'foreign');
+    return (
+      <button
+        className="btn btn-sm"
+        disabled={allForeign || installBusy || mcpEditLoading}
+        title={allForeign ? t('harness.foreignHint') : t('harness.mcpEdit')}
+        onClick={() => void openMcpEdit(row)}
+        style={{ flex: '0 0 auto' }}
+      >
+        <Pencil size={11} />
+        <span>{t('harness.mcpEdit')}</span>
+      </button>
+    );
+  };
 
   const removeButton = (row: Row) => {
     const allForeign = row.copies.length > 0 && row.copies.every((c) => c.state === 'foreign');
@@ -2896,7 +4378,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
           ]}
         />
         <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: FONT_MONO }}>{breadcrumb()}</span>
-        {tab === 'market' && kind !== 'mcp' && (
+        {tab === 'market' && (
           <button
             type="button"
             className="btn btn-sm"
@@ -2921,6 +4403,27 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
             </span>
           </div>
           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            {kind === 'mcp' && harness && hosts.some((h) => h.id === harness && h.hasMcp && h.detected) && (
+              <button
+                className="btn btn-sm"
+                onClick={() => {
+                  setMcpGate(null);
+                  setMcpEditGate(null);
+                  setMcpEdit(null);
+                  setMcpMarket(null);
+                  setMcpMarketGate(null);
+                  setMcpDraft({ ...EMPTY_MCP_DRAFT });
+                  setMcpDetectQ('');
+                  setMcpCandidates([]);
+                  setMcpPick('');
+                }}
+                disabled={installBusy}
+                style={{ height: HEADER_CONTROL_HEIGHT, paddingTop: 0, paddingBottom: 0 }}
+              >
+                <Plus size={12} />
+                <span>{t('harness.mcpAdd')}</span>
+              </button>
+            )}
             <button
               className="btn btn-sm"
               onClick={() => void load()}
@@ -3208,7 +4711,12 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                       <td style={TD}>{hostChips(row)}</td>
                       {showStarColumn && <td style={TD_CENTER}>{installedStar(row)}</td>}
                       {showStateColumn && <td style={TD_CENTER}>{stateBadge(row)}</td>}
-                      <td style={TD_CENTER}>{removeButton(row)}</td>
+                      <td style={TD_CENTER}>
+                        <div style={{ display: 'inline-flex', gap: '6px' }}>
+                          {editMcpButton(row)}
+                          {removeButton(row)}
+                        </div>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -3258,6 +4766,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                       >
                         <span style={{ color: 'var(--text-muted)' }}>{t('harness.detailChannel')}:</span> {channelLabel(row)}
                       </span>
+                      {editMcpButton(row)}
                       {removeButton(row)}
                     </div>
                   </div>
@@ -3287,8 +4796,26 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
 
       {tab === 'market' && renderMarket()}
 
-      {tab === 'market' && kind !== 'mcp' && (
-        <HarnessSourcesDrawer harness={harness} kind={kind} open={sourcesOpen} onClose={() => setSourcesOpen(false)} />
+      {tab === 'market' && (
+        <HarnessSourcesDrawer
+          harness={harness}
+          kind={kind}
+          open={sourcesOpen}
+          runtimeForEntry={sourceRuntimeFor}
+          onChanged={() => {
+            sourcesDirtyRef.current = true;
+          }}
+          onClose={() => {
+            setSourcesOpen(false);
+            if (sourcesDirtyRef.current) {
+              sourcesDirtyRef.current = false;
+              // The federation list (`sources` state) must reload FIRST — a new `mp-` chip has to
+              // exist before any market refetch can ask it for rows. The tick fires loadMarket
+              // after that reload's re-render, with refresh=true to bypass the browse cache.
+              void load().then(() => setMarketRefreshTick((t) => t + 1));
+            }
+          }}
+        />
       )}
 
       {/* ── Location picker ──────────────────────────────────────────────── */}
@@ -3397,7 +4924,9 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
               <span style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
                 {picker.row.removal.op === 'trash-path'
                   ? t('harness.removeNoteTrash')
-                  : t('harness.removeNoteConfig').replace('{file}', picker.row.removal.file)}
+                  : picker.row.removal.op === 'cli-remove'
+                    ? t('harness.removeNoteCli')
+                    : t('harness.removeNoteConfig').replace('{file}', picker.row.removal.file)}
               </span>
             )}
             {picker.row.removal?.op === 'drop-entry' && picker.row.origin === 'runtime-store' && (
@@ -3457,68 +4986,13 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
           }
         >
           {installGate ? (
-            /* Gate 3: nothing has been written yet. The plan is shown verbatim — the exact
+            /* Gate 2/3: nothing has been written yet. The plan is shown verbatim — the exact
                third-party command (or the exact config file / container a merge would touch) — so the
                operator's "install" is an informed one. */
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <div
-                style={{
-                  display: 'flex',
-                  gap: 8,
-                  alignItems: 'flex-start',
-                  padding: '8px 10px',
-                  border: '1px solid var(--divider)',
-                  borderRadius: 8,
-                  background: 'var(--chip-bg)',
-                }}
-              >
-                <ShieldAlert size={14} style={{ flex: '0 0 auto', color: 'var(--accent-rose)' }} aria-hidden />
-                <span style={{ fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
-                  {t('harness.installGateDesc')}
-                </span>
-              </div>
-              {installGate.targets.map((target, index) => (
-                <div
-                  key={`${target.host}:${index}`}
-                  style={{
-                    border: '1px solid var(--divider)',
-                    borderRadius: 8,
-                    padding: '8px 10px',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 6,
-                  }}
-                >
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '12.5px', fontWeight: 600 }}>
-                    <HostIcon host={target.host} size={12} />
-                    {target.host}
-                  </span>
-                  {target.refused ? (
-                    <span style={{ fontSize: '11.5px', color: 'var(--accent-rose)' }}>{target.refused}</span>
-                  ) : target.echo ? (
-                    /* The verbatim command apply will run — never summarised, never reformatted. */
-                    <code
-                      style={{
-                        ...MONO,
-                        padding: '6px 8px',
-                        background: 'var(--chip-bg)',
-                        borderRadius: 6,
-                        overflowX: 'auto',
-                        whiteSpace: 'pre-wrap',
-                        wordBreak: 'break-all',
-                      }}
-                    >
-                      {target.echo}
-                    </code>
-                  ) : target.file ? (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                      <code style={{ ...MONO, color: 'var(--text-dim)', overflowX: 'auto' }}>{target.file}</code>
-                      {target.container && <code style={{ ...MONO, color: 'var(--text-dim)' }}>{target.container}</code>}
-                    </div>
-                  ) : null}
-                </div>
-              ))}
-            </div>
+            <InstallGatePlan
+              targets={installGate.targets}
+              descKey="harness.installGateDesc"
+            />
           ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
             {/* Fast-path installs run with this sheet already open (see startInstall): without a
@@ -3651,6 +5125,313 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
           </div>
         </Dialog>
       )}
+      {/* Manual MCP server (ADR-0015 §D6 "manual") and the EDIT sheet for an existing server share
+          one form and one gate: nothing is written until the exact file + container (and, for an
+          edit, the overwritten key) is confirmed. */}
+      {mcpDraft && (
+        <Dialog
+          title={
+            mcpGate || mcpEditGate || mcpMarketGate
+              ? t('harness.mcpGateTitle')
+              : mcpEdit
+                ? t('harness.mcpEditTitle')
+                : mcpMarket
+                  ? t('harness.mcpInstallTitle')
+                  : t('harness.mcpAddTitle')
+          }
+          subtitle={(mcpEdit ? t('harness.mcpEditSubtitle') : t('harness.mcpAddSubtitle')).replace(
+            '{name}',
+            hosts.find((h) => h.id === harness)?.label ?? harness
+          )}
+          onClose={closeMcpSheet}
+          closeLabel={t('combobox.close')}
+          width={mcpGate || mcpEditGate || mcpMarketGate ? 640 : 780}
+          footerRight={
+            mcpEditGate ? (
+              <>
+                <button className="btn btn-sm" onClick={() => setMcpEditGate(null)} disabled={installBusy}>
+                  {t('common.cancel')}
+                </button>
+                <button
+                  className="btn btn-sm btn-danger"
+                  onClick={() => void confirmMcpEditGate()}
+                  disabled={installBusy}
+                >
+                  <ShieldAlert size={12} aria-hidden />
+                  <span>{installBusy ? t('harness.installing') : t('harness.mcpEditConfirm')}</span>
+                </button>
+              </>
+            ) : mcpGate ? (
+              <>
+                <button className="btn btn-sm" onClick={() => setMcpGate(null)} disabled={installBusy}>
+                  {t('common.cancel')}
+                </button>
+                <button
+                  className="btn btn-sm btn-danger"
+                  onClick={() => void confirmMcpGate()}
+                  disabled={installBusy}
+                >
+                  <ShieldAlert size={12} aria-hidden />
+                  <span>{installBusy ? t('harness.installing') : t('harness.install')}</span>
+                </button>
+              </>
+            ) : mcpMarketGate ? (
+              <>
+                <button className="btn btn-sm" onClick={() => setMcpMarketGate(null)} disabled={installBusy}>
+                  {t('common.cancel')}
+                </button>
+                <button
+                  className="btn btn-sm btn-danger"
+                  onClick={() => void confirmMcpMarketGate()}
+                  disabled={installBusy}
+                >
+                  <ShieldAlert size={12} aria-hidden />
+                  <span>{installBusy ? t('harness.installing') : t('harness.install')}</span>
+                </button>
+              </>
+            ) : mcpEdit ? (
+              <>
+                <button className="btn btn-sm" onClick={closeMcpSheet} disabled={installBusy}>
+                  {t('common.cancel')}
+                </button>
+                <button
+                  className="btn btn-sm"
+                  onClick={() => void submitMcpEdit(mcpDraft)}
+                  disabled={installBusy || !mcpDraftLaunchReady(mcpDraft)}
+                >
+                  <Save size={12} aria-hidden />
+                  <span>{installBusy ? t('harness.installing') : t('harness.mcpEditSave')}</span>
+                </button>
+              </>
+            ) : mcpMarket ? (
+              <>
+                <button className="btn btn-sm" onClick={closeMcpSheet} disabled={installBusy}>
+                  {t('common.cancel')}
+                </button>
+                <button
+                  className="btn btn-sm"
+                  onClick={() =>
+                    void submitMarketMcp(mcpDraft, mcpMarket.item, mcpMarket.defaultLaunch)
+                  }
+                  disabled={installBusy || !mcpDraftLaunchReady(mcpDraft)}
+                >
+                  <Download size={12} aria-hidden />
+                  <span>{installBusy ? t('harness.installing') : t('harness.install')}</span>
+                </button>
+              </>
+            ) : (
+              <>
+                <button className="btn btn-sm" onClick={closeMcpSheet} disabled={installBusy}>
+                  {t('common.cancel')}
+                </button>
+                <button
+                  className="btn btn-sm"
+                  onClick={() =>
+                    void submitManualMcp({
+                      name: mcpDraft.name.trim(),
+                      launch: mcpLaunchFromDraft(mcpDraft),
+                    })
+                  }
+                  disabled={installBusy || !mcpDraftReady(mcpDraft)}
+                >
+                  <Plus size={12} aria-hidden />
+                  <span>{installBusy ? t('harness.installing') : t('harness.srcMgmt.add')}</span>
+                </button>
+              </>
+            )
+          }
+        >
+          {mcpEditGate ? (
+            <InstallGatePlan targets={mcpEditGate.targets} descKey={'harness.mcpEditGateDesc'} />
+          ) : mcpGate ? (
+            <InstallGatePlan targets={mcpGate.targets} descKey="harness.mcpGateDesc" />
+          ) : mcpMarketGate ? (
+            <InstallGatePlan targets={mcpMarketGate.targets} descKey="harness.mcpGateDesc" />
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <Field
+                label={t('harness.mcpName')}
+                hint={
+                  mcpEdit
+                    ? t('harness.mcpNameLocked')
+                    : mcpMarket
+                      ? undefined
+                      : mcpDraft.name.trim() && mcpNameInvalid(mcpDraft.name)
+                        ? t('harness.mcpNameInvalid')
+                        : undefined
+                }
+              >
+                <input
+                  className="input"
+                  value={mcpDraft.name}
+                  autoFocus={!mcpEdit && !mcpMarket}
+                  readOnly={!!mcpEdit || !!mcpMarket}
+                  onChange={(e) => {
+                    if (mcpEdit || mcpMarket) return;
+                    setMcpDraft((d) => (d ? { ...d, name: e.target.value } : d));
+                  }}
+                />
+              </Field>
+              <Field label={t('harness.mcpTransport')} inline>
+                <SegGroup
+                  value={mcpDraft.transport}
+                  onChange={(v) => setMcpDraft((d) => (d ? { ...d, transport: v as McpTransport } : d))}
+                  size="sm"
+                  options={[
+                    { value: 'stdio', label: t('harness.mcpTransportStdio') },
+                    { value: 'sse', label: t('harness.mcpTransportRemote') },
+                  ]}
+                />
+              </Field>
+              {mcpDraft.transport === 'stdio' && (
+                <Field label={t('harness.mcpEditMode')} inline>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <SegGroup
+                      value={mcpDraft.mode}
+                      onChange={(v) => setMcpStdioMode(v as McpStdioMode)}
+                      size="sm"
+                      options={[
+                        { value: 'custom', label: t('harness.mcpModeCustom') },
+                        { value: 'advanced', label: t('harness.mcpModeAdvanced') },
+                      ]}
+                    />
+                    <InfoTip text={t('harness.mcpEditModeHint')} />
+                  </div>
+                </Field>
+              )}
+              {mcpDraft.transport === 'stdio' ? (
+                <>
+                  {mcpDraft.mode === 'advanced' ? (
+                    <>
+                      <Field label={t('harness.mcpRunner')} inline>
+                        <SegGroup
+                          value={mcpDraft.runner}
+                          onChange={(v) => setMcpDraft((d) => (d ? { ...d, runner: v as McpRunner } : d))}
+                          size="sm"
+                          options={MCP_RUNNERS.map((runner) => ({ value: runner, label: runner }))}
+                        />
+                      </Field>
+                      <Field
+                        label={
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                            {t('harness.mcpPackage')}
+                            <InfoTip text={t('harness.mcpPackageHint')} />
+                          </span>
+                        }
+                        hint={
+                          mcpDraft.pkg.trim() && !mcpPkgValid(mcpDraft.runner, mcpDraft.pkg)
+                            ? t('harness.mcpPackageInvalid')
+                            : undefined
+                        }
+                      >
+                        <input
+                          className="input"
+                          style={MONO}
+                          placeholder={mcpDraft.runner === 'uvx' ? 'name==1.2.3' : '@scope/name@1.2.3'}
+                          value={mcpDraft.pkg}
+                          onChange={(e) => setMcpDraft((d) => (d ? { ...d, pkg: e.target.value } : d))}
+                        />
+                      </Field>
+                      {renderMcpArgsField()}
+                      {renderMcpCommandPreview()}
+                    </>
+                  ) : (
+                    <>
+                      <Field label={t('harness.mcpCommand')} hint={t('harness.mcpCommandHint')}>
+                        <input
+                          className="input"
+                          style={MONO}
+                          placeholder="npx"
+                          value={mcpDraft.command}
+                          onChange={(e) => setMcpDraft((d) => (d ? { ...d, command: e.target.value } : d))}
+                        />
+                      </Field>
+                      {renderMcpArgsField()}
+                      {renderMcpCommandPreview()}
+                    </>
+                  )}
+                </>
+              ) : (
+                <>
+                  <Field
+                    label={t('harness.mcpUrl')}
+                    hint={
+                      mcpDraft.url.trim() && !MCP_URL_RE.test(mcpDraft.url.trim())
+                        ? t('harness.mcpUrlInvalid')
+                        : undefined
+                    }
+                  >
+                    <input
+                      className="input"
+                      value={mcpDraft.url}
+                      onChange={(e) => setMcpDraft((d) => (d ? { ...d, url: e.target.value } : d))}
+                    />
+                  </Field>
+                  <Field label={t('harness.mcpHeaders')} hint={t('harness.mcpHeadersHint')}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {mcpDraft.headerRows.map((row) => {
+                        const alreadySet = row.value === '' && mcpDraft.headerSetKeys.includes(row.name.trim());
+                        return (
+                          <div key={row.id} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                            <input
+                              className="input"
+                              style={{ ...MONO, flex: '0 1 38%', minWidth: 0 }}
+                              placeholder={t('harness.mcpHeaderName')}
+                              value={row.name}
+                              onChange={(e) => updateMcpHeaderRow(row.id, { name: e.target.value })}
+                            />
+                            <input
+                              className="input"
+                              style={{ flex: '1 1 auto', minWidth: 0 }}
+                              type={row.secret ? 'password' : 'text'}
+                              autoComplete="off"
+                              placeholder={
+                                alreadySet
+                                  ? t('harness.mcpHeaderValueSet')
+                                  : (row.placeholder ?? t('harness.mcpHeaderValue'))
+                              }
+                              title={row.description}
+                              value={row.value}
+                              onChange={(e) => updateMcpHeaderRow(row.id, { value: e.target.value })}
+                            />
+                            {row.required && (
+                              <span className="badge badge-info" style={{ flex: '0 0 auto' }}>
+                                {t('harness.mcpParamRequired')}
+                              </span>
+                            )}
+                            <button
+                              type="button"
+                              className="btn btn-sm"
+                              style={{ flex: '0 0 auto', padding: '4px 6px' }}
+                              title={t('common.delete')}
+                              aria-label={t('common.delete')}
+                              onClick={() => removeMcpHeaderRow(row.id)}
+                            >
+                              <Trash2 size={12} aria-hidden />
+                            </button>
+                          </div>
+                        );
+                      })}
+                      {mcpDraft.headerRows.length === 0 && (
+                        <span style={{ fontSize: 11.5, color: 'var(--text-dim)' }}>{t('harness.mcpHeadersEmpty')}</span>
+                      )}
+                      <div>
+                        <button className="btn btn-sm" onClick={addMcpHeaderRow}>
+                          <Plus size={12} aria-hidden />
+                          <span>{t('harness.mcpHeaderAdd')}</span>
+                        </button>
+                      </div>
+                    </div>
+                  </Field>
+                </>
+              )}
+            </div>
+          )}
+        </Dialog>
+      )}
+      {renderMcpArgsEditor()}
+      {renderMcpValueEditor()}
+      {renderMcpDsnBuilder()}
       {/* Artifact detail (ADR-0015 §D6) — market rows AND installed rows. A native dialog, not an
           iframe: github.com answers `X-Frame-Options: deny`, npmjs.com and pi.dev `SAMEORIGIN`, so
           embedding the source page was measured impossible. The subject is the skeleton (it is what

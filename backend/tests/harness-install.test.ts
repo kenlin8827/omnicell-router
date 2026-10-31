@@ -274,6 +274,42 @@ describe('installArtifact orchestration', () => {
     const view = scanInventory(root).artifacts.find((a) => a.id === 'skill:github:owner/repo#demo');
     expect(view?.listedOn).toEqual(['github', 'npm']);
   });
+
+  // A package row may carry a display repository (Pi's catalog links every package to its GitHub
+  // page) without being a git-backed install. The npm key is the install identity; a `marketplace`
+  // marker on such a row must not demand a native chain from a host that has none (pi installs
+  // packages only), nor install the repository instead of the published package.
+  it('installs an npm package row through npm even when the row carries a repository', async () => {
+    const PACKUMENT = { name: 'pi-demo', 'dist-tags': { latest: '1.2.3' }, versions: { '1.2.3': {} } };
+    const VERSION_DOC = { name: 'pi-demo', version: '1.2.3', dist: { integrity: 'sha512-demo' } };
+    const npmFetch = (async (input: unknown) => {
+      const url = String(input);
+      const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
+      if (url === 'https://registry.npmjs.org/pi-demo') return json(PACKUMENT);
+      if (url === 'https://registry.npmjs.org/pi-demo/1.2.3') return json(VERSION_DOC);
+      return new Response('nf', { status: 404 });
+    }) as typeof fetch;
+    const echoes: string[] = [];
+    const result = await installArtifact({
+      key: 'npm:pi-demo',
+      kind: 'plugin',
+      hosts: ['pi'],
+      scope: 'global',
+      listedOn: ['pi-dev'],
+      marketplace: { repo: 'acme/pi-demo', plugin: 'pi-demo', name: 'pi-demo' },
+      confirm: true,
+      fetchImpl: npmFetch,
+      execImpl: async (command, args) => {
+        echoes.push([command, ...args].join(' '));
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(echoes).toEqual(['pi install npm:pi-demo@1.2.3']);
+    expect(result.artifactId).toBe('plugin:pi:npm:pi-demo');
+    expect(readManifest().artifacts.find((a) => a.id === 'plugin:pi:npm:pi-demo')?.nativeKey).toBeUndefined();
+  });
 });
 
 describe('install route (host validation at the boundary)', () => {

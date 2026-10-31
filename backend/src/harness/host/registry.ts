@@ -1,6 +1,7 @@
 import { clawhubAdapter } from './resolvers/clawhub.js';
 import { githubAdapter } from './resolvers/github.js';
 import { npmAdapter } from './resolvers/npm.js';
+import { pypiAdapter } from './resolvers/pypi.js';
 import { gitMarketplaceAdapter } from './resolvers/git-marketplace.js';
 import { getMarketplaceEntry } from '../common/market.js';
 import type { SourceAdapter } from '../spi.js';
@@ -14,13 +15,10 @@ import type { SourceAdapter } from '../spi.js';
  */
 
 const ADAPTERS: SourceAdapter[] = [
-
   clawhubAdapter,
   githubAdapter,
-
   npmAdapter,
-
-
+  pypiAdapter,
 ];
 
 export function getAdapter(sourceId: string): SourceAdapter | undefined {

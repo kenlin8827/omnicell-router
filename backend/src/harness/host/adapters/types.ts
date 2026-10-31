@@ -1,13 +1,15 @@
 import type { ExtDiscoveryOrigin, HarnessHostId, HarnessScope, ResolvedRoot } from '../../types.js';
+import type { McpEntrySpec } from '../mcp-entry.js';
+import type { McpLaunch } from '../../spi.js';
 
 /**
  * Host adaptation surface — one module per harness, capabilities as SEPARATE interfaces
  * (ADR-0015 §D3 R3, §D8.8).
  *
  * WHY capabilities instead of one fat `HarnessHost` with `list/install/uninstall × skill|mcp|ext`:
- * the capability matrix is wildly asymmetric. In the current catalog fourteen hosts have a skills
- * location, ONE has a verified MCP landing (opencode) and SIX have a verified plugin landing
- * (opencode, pi, claude, antigravity, factory, kimi). A nine-method flat interface would be 117
+ * the capability matrix is wildly asymmetric. In the current catalog fifteen hosts have a skills
+ * location, THREE have a verified MCP landing (opencode, pi, omp) and TEN have a verified plugin landing (any
+ * declared write path: local config, subprocess or marketplace chain). A nine-method flat interface would be 117
  * slots of which ~90 are `throw new Error('unsupported')`, and a caller still cannot tell "this
  * host cannot do MCP" from "this host forgot to implement it". Capability interfaces make absence a
  * TYPE fact, not a runtime throw.
@@ -18,8 +20,8 @@ import type { ExtDiscoveryOrigin, HarnessHostId, HarnessScope, ResolvedRoot } fr
  * become a forwarder. The split is: **the adapter answers WHERE, the writer answers HOW.**
  *
  * WHY skills are not a host capability at all: a skill lands in a DIRECTORY, and one directory is
- * read by up to ten hosts (`readsUniversal` / `skillOwner`). "Install this skill into this host"
- * would invite writing the same tree ten times; skills live on the location level
+ * read by up to twelve hosts (`readsUniversal` / `skillOwner`). "Install this skill into this host"
+ * would invite writing the same tree twelve times; skills live on the location level
  * (`skillRoots` / `skillTarget` on this interface, aggregated by `skillLocationRoots`).
  *
  * WHY one adapter per VERSION is not modelled: `opencode` v1 and v2 differ in landing SPELLINGS
@@ -94,6 +96,11 @@ export interface PluginSpec {
    *  plugin is installed by registering its repository as a marketplace and then installing
    *  `<plugin>@<marketplace>` — never by copying payload files. */
   marketplace?: PluginMarketplaceSpec;
+  /** The runtime ships a LOCAL REST install API (ADR-0015 §D9 amendment, 2026-11-01): a loopback
+   *  server — booted transiently by the writer — whose `POST <apiPrefix>/plugins {source}` runs
+   *  the vendor's own install code (the same manager the TUI slash command drives). The writer
+   *  never writes the vendor's state itself. Kimi Code (`kimi web`, kap-server) is the first. */
+  webApi?: { serverCommand: string; tokenFile: string; apiPrefix: string };
   /** The declared store is an object map (`installed_plugins.json`), not a string array. */
   storeShape?: 'map';
   /** Spec prefix grammar for a map store's canonical keys (`claude:`). */
@@ -115,9 +122,10 @@ export interface PluginSpec {
 export interface PluginMarketplaceSpec {
   commands: string[][];
   /**
-   * The runtime installs only from INSIDE a session (`/add-plugin`, `/plugins install`). The
-   * console still renders the exact command as gate-3 evidence, but apply never spawns it — the
-   * operator runs it themselves.
+   * The runtime installs only from INSIDE a session (cursor's `/add-plugin`). The console still
+   * renders the exact command as gate-3 evidence, but apply never spawns it — the operator runs
+   * it themselves. (Kimi Code answered this way until 2026-11-01; it now installs through its
+   * local web API, §ADR-0015 D9 amendment.)
    */
   interactive?: boolean;
 }
@@ -164,6 +172,9 @@ export interface HostAdapter {
    * keep its skills tree after the executable is gone, and its rows must stay manageable).
    */
   readonly presence?: HostPresence;
+  /** Verified plugin landing (any declared write path, base.ts). */
+  hasPluginLanding?(): boolean;
+
 }
 
 /** One way to detect an installed runtime; `dir` is an absolute path. */
@@ -218,17 +229,82 @@ export interface PluginHost extends HostAdapter {
   /** The runtime's native marketplace install chain, or null when it has no CLI form. Present on
    *  a host that can install a git-backed plugin by registering the repository as a marketplace. */
   marketplaceSpec?(): PluginMarketplaceInstall | null;
+  /** The runtime's local REST install API, or null when it has none. Present on a host whose
+   *  vendor ships a loopback server exposing the same install manager as its TUI (kimi web). */
+  webApiSpec?(): NonNullable<PluginSpec['webApi']> | null;
+}
+
+/**
+ * Live MCP server state as the RUNTIME itself reports it (`Mcp.Status` in opencode's HTTP API).
+ *
+ * This is deliberately NOT a `CopyState`/`CopyPlacement` value: those answer "what do we own and is
+ * it intact", while this answers "did the runtime actually connect to the server". A config member
+ * can be present and intact (`clean`) and still fail at runtime — the console must not call that
+ * healthy (ADR-0015 §D8.8).
+ */
+export type McpRuntimeStatus = 'connected' | 'pending' | 'disabled' | 'needs_auth' | 'failed';
+
+/**
+ * A CLI-materialized MCP landing (ADR-0015 §D8.13, the prerequisite for claude/codex).
+ *
+ * Claude's `~/.claude.json` is runtime state it rewrites itself and codex's config is
+ * comment-carrying TOML — neither may be reserialized by this gateway. Writes therefore run the
+ * runtime's OWN CLI (gate 3: the exact argv is echoed in the plan and confirmed before apply; the
+ * runtime's store is the truth, so the copy is recorded `external` like a package-manager plugin),
+ * and removal runs the runtime's own remove verb.
+ */
+export interface McpCliSpec {
+  /** The host's own CLI executable (the presence command). */
+  command: string;
+  /** argv for ADDING one server. The launch is validated and the name grammar-checked before this runs. */
+  addArgs(launch: McpLaunch, name: string, scope: HarnessScope): { ok: true; args: string[] } | { ok: false; reason: string };
+  /** argv for REMOVING one server (the runtime's own inverse verb). */
+  removeArgs(name: string, scope: HarnessScope): { ok: true; args: string[] } | { ok: false; reason: string };
+}
+
+export interface McpRuntimeServer {
+  name: string;
+  status: McpRuntimeStatus;
+  /** The runtime's own failure text (`failed` / `needs_auth`); absent for other states. */
+  error?: string;
+}
+
+/** One host's live answer. `reachable: false` means "no live status", never "servers failed". */
+export interface McpRuntimeHostReport {
+  reachable: boolean;
+  /** Why the runtime could not answer (service absent, transport error, unsupported endpoint). */
+  message?: string;
+  servers: McpRuntimeServer[];
 }
 
 /** A host whose MCP servers merge into a config file it owns. */
 export interface McpHost extends HostAdapter {
   /** Container key the server entries merge into. */
   readonly container: string;
+  /** Entry spelling + secret-reference syntax this runtime requires (ADR-0015 §D8 landing gate). */
+  mcpEntrySpec(): McpEntrySpec;
+  /** Server-name grammar this runtime accepts for a new key. */
+  mcpNamePattern(): RegExp;
+  /** Refuse unnamed secret keys: this runtime's config has no env/header expansion. */
+  mcpLiteralEnv?(): boolean;
+  /** Config-file syntax this landing reads; absent = plain JSON. */
+  mcpLandingFormat?(): 'json' | 'toml';
+  /**
+   * The runtime's own MCP CLI, when writes are CLI-materialized (§D8.13): present = the writer
+   * composes the runtime's add/remove argv instead of merging the config file, and the copy is
+   * recorded `external`. Absent = the config-merge write mode.
+   */
+  mcpCliSpec?(): McpCliSpec | null;
   /** The config file an MCP landing writes, or why this scope has none. */
   configPath(
     ctx: AdapterContext,
     scope: HarnessScope
   ): { ok: true; path: string } | { ok: false; reason: string };
+  /**
+   * Live server status from the runtime's own service, when it exposes one. Absent = this host has
+   * no status surface, and the console keeps its on-disk claim only (it never invents a state).
+   */
+  mcpRuntime?(): Promise<McpRuntimeHostReport>;
 }
 
 /** Capability probe — absence is a TYPE fact, so no caller needs a try/catch around "unsupported". */
@@ -240,13 +316,10 @@ export function isSkillsHost(adapter: HostAdapter | undefined): adapter is Skill
   );
 }
 
-/** Capability probe for the plugin landing. */
+/** Capability probe for the plugin landing — any declared write path, local or subprocess or
+ *  marketplace chain (`hasPluginLanding`, base.ts). */
 export function isPluginHost(adapter: HostAdapter | undefined): adapter is PluginHost {
-  return (
-    !!adapter &&
-    typeof (adapter as Partial<PluginHost>).readSources === 'function' &&
-    ((adapter as { hasLocalPluginLanding?: () => boolean }).hasLocalPluginLanding?.() ?? true)
-  );
+  return !!adapter && (adapter.hasPluginLanding?.() ?? false);
 }
 
 /** Capability probe for the MCP landing. */

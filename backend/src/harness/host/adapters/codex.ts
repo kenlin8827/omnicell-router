@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { BaseHostAdapter, runNativeMarketplaceCmd, type MarketplaceSyncResult, type NativeMarketplaceInfo } from './base.js';
+import { BaseHostAdapter, runNativeMarketplaceCmd, type HostMcpSpec, type MarketplaceSyncResult, type NativeMarketplaceInfo } from './base.js';
 import { home, UNIVERSAL_SKILLS } from './skills-paths.js';
 import type { PluginSpec, SkillsSpec } from './types.js';
 
@@ -11,6 +11,16 @@ import type { PluginSpec, SkillsSpec } from './types.js';
  * - `codex plugin marketplace upgrade <marketplace>`
  * - `codex plugin add <plugin>@<marketplace>`
  */
+
+/**
+ * MCP landing (ADR-0015 §D8.13): codex keeps its MCP servers in `~/.codex/config.toml` under
+ * `[mcp_servers.<name>]` — comment-carrying TOML this gateway must not reserialize. Writes run the
+ * runtime's own CLI: `codex mcp add <name> [--env K=V…] -- <command…>` for stdio,
+ * `codex mcp add <name> --url <url>` for streamable HTTP, and `codex mcp remove <name>` for the
+ * inverse. Two hard limits of that grammar shape the refusals below: TOML env values are LITERAL
+ * (no `${KEY}` expansion, so an unnamed secret cannot be referenced), and remote servers accept no
+ * custom headers — only `--bearer-token-env-var`.
+ */
 export class CodexAdapter extends BaseHostAdapter {
   readonly id = 'codex' as const;
   readonly extensionDir = '.codex-plugin';
@@ -20,6 +30,37 @@ export class CodexAdapter extends BaseHostAdapter {
     global: UNIVERSAL_SKILLS.global,
     project: UNIVERSAL_SKILLS.project,
     readsUniversal: true,
+  };
+
+  protected readonly mcpSpec: HostMcpSpec = {
+    configGlobal: path.join(home(), '.codex', 'config.toml'),
+    configProject: path.join('.codex', 'config.toml'),
+    container: 'mcp_servers',
+    shape: 'mcpServers',
+    format: 'toml',
+    cli: {
+      command: 'codex',
+      addArgs(launch, name) {
+        if ('command' in launch) {
+          // TOML env values are literal: an unnamed secret has no reference syntax to defer with,
+          // so the operator must type the value (the registry-form exception, gate 4).
+          for (const key of launch.envKeys ?? []) {
+            if (typeof launch.envValues?.[key] !== 'string' || launch.envValues[key] === '') {
+              return { ok: false, reason: `codex env values are literal (no \${KEY} expansion) — provide a value for '${key}'` };
+            }
+          }
+          const envArgs = Object.entries(launch.envValues ?? {}).flatMap(([k, v]) => ['--env', `${k}=${v}`]);
+          return { ok: true, args: ['mcp', 'add', name, ...envArgs, '--', launch.command, ...(launch.args ?? [])] };
+        }
+        if ((launch.headerKeys?.length ?? 0) > 0 || Object.keys(launch.headerValues ?? {}).length > 0) {
+          return { ok: false, reason: 'codex remote servers carry no custom headers — only --bearer-token-env-var' };
+        }
+        return { ok: true, args: ['mcp', 'add', name, '--url', launch.url] };
+      },
+      removeArgs(name) {
+        return { ok: true, args: ['mcp', 'remove', name] };
+      },
+    },
   };
 
   protected readonly extSpec: PluginSpec = {

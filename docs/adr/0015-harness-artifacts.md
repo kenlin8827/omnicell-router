@@ -2,10 +2,56 @@
 
 - **Status**: Implemented (recorded from current code, 2026-10-24)
 - **Date**: 2026-10-24
+- **Amended**: 2026-11-02 — CLI-materialized MCP landings for claude and codex (§D8.13
+  amendment): the runtime's own `mcp add` / `mcp remove` verbs are the write surface, the
+  runtime-owned config file is read-only observation, and the copy is recorded `external`.
 - **Amended**: 2026-10-25 — the installed row's source cell names the BROWSE surface (the install
   source: `pi.dev`), falling back to the writer when the record carries no other surface (§D8.6).
 - **Amended**: 2026-10-30 — operator git-marketplace sources (`mp-<slug>`): any GitHub repository
   becomes a browse/install source with no code change (§D9).
+- **Amended**: 2026-11-01 — the source store is split by axis: `plugin-market.json` (bucketed per
+  harness, `shared` = unpinned), `skill-market.json` (one shared bucket) and `mcp-market.json`
+  (one shared bucket); the flat `marketplaces.json` migrates once and is renamed
+  `marketplaces.legacy.json` (§D9). The duplicate answer is store-wide and names the holding
+  entry's harness/layer; adding a repository another harness already carries from this tab
+  registers a harness-scoped second source (`mp-<repo>-<harness>`). A slug is one `mp-` sourceId,
+  so per-harness isolation never widens identity.
+- **Amended**: 2026-11-01 — plugin source registration pins the acting harness by default
+  (git and npm alike): a source added on the claude tab never appears on the opencode tab unless
+  the operator opts into sharing. The console offers the share choice ONLY after a check detected
+  several supporting harnesses (`hosts.length > 1`); a repository that publishes no form for the
+  acting harness is refused at add time (`unsupported_here`, 400). The `shared` bucket survives
+  as the store for opted-in and pre-amendment entries; `GET .../sources` lists a shared entry on
+  a tab only when its snapshot's `hosts` recorded that harness's form (§D10/§D11).
+- **Amended**: 2026-11-01 — the MCP axis gains operator package sources (`npm` / `pypi`) in
+  `harness/mcp-market.json`: one source = one package, launched by `npx`/`bunx` or `uvx`, with the
+  version resolved at install time (§D9, "Package sources on the MCP axis"). The axis is SHARED:
+  one `shared` bucket and no harness pin, because the resolved launch is host-neutral. A pinned
+  package source hid itself from sibling MCP tabs and made a second add answer a false duplicate;
+  legacy harness buckets are read as shared and flattened on the next mutation.
+- **Amended**: 2026-12 — a market MCP row installs through the SAME Add/Edit MCP sheet the manual
+  and edit paths use, prefilled from the resolver's pinned launch, name read-only, to the page's
+  pinned landing only (no multi-client fan-out); the minimal command/args/env override and the
+  multi-target host chips on the install dialog are removed. Gate 2 is unchanged; an untouched form
+  installs the resolver's own pinned command (§D9) (§D11).
+- **Amended**: 2026-12 — two trust-boundary guards on the MCP landing: an operator-edited market
+  launch is re-pinned to the resolver's concrete spec (the sheet prefills from the version-less
+  market key, so filling in a parameter must not drop `name@version` or the integrity recorded
+  beside it), and a local (command) launch run through a package runner (`npx`/`bunx`/`uvx`/`uv`)
+  that passes `--transport <non-stdio>` is refused — the runner launches an MCP server package, and
+  every verified landing reads that child over stdio, so a network flag can only produce a timeout.
+  A custom command is exempt: its `--transport` may mean something else, and a name-based guess must
+  not refuse it. The CLI probe still reports the package's own `transport` flag — it is part of the
+  real launch surface, and its `choices` are literals found in the parser, never a closed enum
+  (DBHub maps every non-`http` value back to stdio). The scan records a ternary fallback's else
+  branch as a choice too. The parameter table still takes the value as free text: the probe
+  literals only feed a themed suggestion dropdown (and the full-size value editor), so a value
+  the scan never saw is always typeable.
+- **Amended**: 2026-11-02 — the remote (URL) half of the Add/Edit MCP sheet edits request headers as
+  name/value rows instead of a one-name-per-line list: registry `remotes[].transport.headers` prefill
+  the names, `setKeys` marks a stored value, a blank value keeps it (or writes the host's environment
+  reference) and a typed value is stored literally and never read back. The transport segment is
+  labelled "Remote URL", not "SSE": the verified hosts declare no transport field (§D8).
 - **Related**: ADR-0010 (definition ownership + materialization targets), ADR-0006 (credential store —
   never read by this domain), ADR-0013 (observation-ledger precedent), ADR-0007 (environment layout,
   trash-based delete)
@@ -55,8 +101,9 @@ Two files share the table, with a hard split:
   (`defineHost` + the `SkillsHost` / `McpHost` / `PluginHost` builders), so a wrong path is one
   small file's data bug and a wrong rule is one implementation bug.
 
-Capabilities are **separate interfaces**, not nine methods on every host: fourteen hosts have a skills
-location, one has a verified MCP landing, six have a verified plugin landing. A host that cannot do
+Capabilities are **separate interfaces**, not nine methods on every host: fifteen hosts have a skills
+location, seven have a verified MCP landing (four file-merge, three CLI-materialized), ten have a verified plugin landing (any declared write
+path — local config, subprocess, or marketplace chain; see the host table). A host that cannot do
 MCP never implements `McpHost`, so absence is a type fact instead of a runtime `unsupported` throw.
 
 Version differences are a **ladder inside one adapter**, never a second adapter: `opencode` v1 vs v2
@@ -73,24 +120,31 @@ a kind × host cell that is empty is refused at resolve time rather than guessed
 | :--- | :--- | :--- | :--- |
 | universal | `~/.agents/skills` / `.agents/skills` | — | — |
 | opencode | `$XDG/opencode/skills` / `.agents/skills` | `opencode.json` · `mcp` | v1 `opencode.json` · `plugin[]` · `plugin/`; v2 `opencode.jsonc` · `plugins[]` · `plugins/` |
-| claude | `~/.claude/skills` / `.claude/skills` | — | `claude plugin install <id> --scope user` (subprocess); record `~/.claude/plugins/installed_plugins.json` · `plugins` map (§D8.11) |
-| codex | `~/.agents/skills` / `.agents/skills` | — | — |
-| pi | `~/.agents/skills` / `.agents/skills` | — | `pi install npm:<spec>` (subprocess) |
+| claude | `~/.claude/skills` / `.claude/skills` | CLI (§D8.13): `claude mcp add-json <name> '<entry>' --scope user` → `~/.claude.json` · `mcpServers` (read-only) | `claude plugin install <id> --scope user` (subprocess); record `~/.claude/plugins/installed_plugins.json` · `plugins` map (§D8.11) |
+| codex | `~/.agents/skills` / `.agents/skills` | CLI (§D8.13): `codex mcp add <name> [--env K=V] -- <cmd>` / `--url` → `~/.codex/config.toml` · `mcp_servers` (TOML, read-only) | `codex plugin marketplace add {repo} --ref main` → `plugin marketplace upgrade` → `plugin add {plugin}@{marketplace}` (§D9) |
+| pi | `~/.agents/skills` / `.agents/skills` | `~/.pi/agent/mcp.json` · `mcpServers` | `pi install npm:<spec>` (subprocess) |
 | dsh | — | — | — |
-| omp | `~/.omp/skills` (relocated by `PI_CONFIG_DIR`) / `.omp/skills` | — | — |
-| cursor | `~/.cursor/skills` / `.agents/skills` | — | — |
-| github-copilot | `~/.copilot/skills` / `.agents/skills` | — | — |
+| omp | `~/.omp/skills` (relocated by `PI_CONFIG_DIR`) / `.omp/skills` | `~/.omp/agent/mcp.json` · `mcpServers` | — |
+| cursor | `~/.cursor/skills` / `.agents/skills` | — | `/add-plugin {plugin}` — interactive (§D9) |
+| github-copilot | `~/.copilot/skills` / `.agents/skills` | — | `copilot plugin marketplace add {repo}` → `plugin install {plugin}@{marketplace}` (§D9) |
+| kimi | `~/.kimi-code/skills` / `.kimi-code/skills` | FILE MERGE: `~/.kimi-code/mcp.json` (`KIMI_CODE_HOME`) · project `.kimi-code/mcp.json` · `mcpServers` (§D8.13, literalEnv) | `kimi web` local API (§D8.14) |
 | gemini-cli | `~/.gemini/skills` / `.agents/skills` | — | — |
 | cline | `~/.agents/skills` / `.agents/skills` | — | — |
 | amp | `$XDG/agents/skills` / `.agents/skills` | — | — |
+| grok | `~/.grok/skills` / `.grok/skills` | CLI (§D8.13): `grok mcp add <name> [-e K=V] -- <cmd>` / `--transport http <url> [-H "K: V"]` → `~/.grok/config.toml` · `mcp_servers` (TOML, read-only) | `grok plugin install <url> --trust` (subprocess; `--trust` is the vendor's required non-interactive grammar, not a confirmation bypass — gate 3 confirms first); record `~/.grok/plugins/` (§D9); marketplace sources persist in `~/.grok/settings.json` `extraKnownMarketplaces` (the `config.toml` TOML form is not read — no TOML reader in this repo) |
 | windsurf | `~/.codeium/windsurf/skills` / `.windsurf/skills` | — | — |
 | zed | `~/.agents/skills` / `.agents/skills` | — | — |
-| grok | `~/.grok/skills` / `.grok/skills` | — | — |
 | antigravity | — | — | `.antigravity-plugin/plugin.json` (`agy plugin install <url>`) |
 | factory | — | — | `.factory-plugin/` (`marketplace.json` + `plugin.json`; `droid plugin marketplace add <url>`) |
-| kimi | — | — | `.kimi-plugin/plugin.json` (`/plugins install <repo-url>`) |
+| kimi | `~/.kimi-code/skills` (relocated by `KIMI_CODE_HOME`) / `.kimi-code/skills` | — | root `kimi.plugin.json` (canonical; the `.kimi-plugin/` directory is the fallback); install via the local web API (`kimi web`, §D9 amendment 2026-11-01) |
 
-- **Most hosts read, few hosts own.** Ten hosts read the project `.agents/skills`; one directory is
+- **A verified plugin landing is any DECLARED write path.** Local config/declared-store/loose-dir
+  landings (opencode), package-manager subprocesses (pi, claude), and the runtime's own marketplace
+  chains (§D9: claude, codex, github-copilot, factory, antigravity, opencode, cursor, grok; kimi answers via its local web API instead)
+  all count — an INTERACTIVE chain is displayed at gate 3 and never spawned, which is still an
+  answerable write path. The console's `hasExt` gate reads the adapter's `hasPluginLanding()`
+  (base.ts): a host whose adapter declares none is hidden, never offered as a refusal-only checkbox.
+- **Most hosts read, few hosts own.** Twelve hosts read the project `.agents/skills`; one directory is
   one copy, so `skillOwner()` (first adapter in registry order resolving to that path) decides the
   recorded host and every other host is an alias. Install, inventory and the console all use that rule.
 - **Ownership and readership are two answers, and the console asks both.** `skillOwner()` answers "who
@@ -135,7 +189,7 @@ a kind × host cell that is empty is refused at resolve time rather than guessed
   write.
 - **The shared set has exactly one exclusion, and it is ON by default.** A pinned skills page shows
   every row its runtime can LOAD, so the rows owned by `universal` (the shared `.agents` tree, read by
-  ten runtimes) repeat under every rail entry and crowd out the rows that ARE private to the pinned
+  twelve runtimes) repeat under every rail entry and crowd out the rows that ARE private to the pinned
   runtime. A `hideShared` switch narrows them out by copy ownership (`row.hosts` contains the shared
   host). It is a facet, not a mode — it narrows the same list the source chips count from, so every
   chip number stays honest — and it is absent where it would mean nothing: on MCP/plugin pages (no
@@ -416,7 +470,8 @@ plugin table.
   own stars, downloads, installs — travel in `registryStats`, never in `stars`: the star column means
   a GitHub count, and its tooltip says whose number it shows. An INSTALLED row opens the same dialog:
   its subject is derived from `canonicalKey` (`npm:<pkg>` → the registry document, `github:<owner>/
-  <repo>#<dir>` → the repository, `clawhub:<owner>/<slug>` → the registry record), so "what did I
+  <repo>#<dir>` — and a runtime store's `git:github.com/<owner>/<repo>`, an operator marketplace's
+  `mp-<slug>:<owner>/<repo>#` — → the repository, `clawhub:<owner>/<slug>` → the registry record), so "what did I
   install and what does it document" is one click on either tab. A row with no public identity
   (`manual:<name>`) still opens, with its local metadata and no body — the dialog states what it knows
   instead of refusing. The console renders it in a
@@ -510,8 +565,11 @@ explicit (`configured → lite`), so a shared session can never ratchet upward.
 3. **The gateway installs instructions and executables — and says so.** A `SKILL.md` is the agent's
    instructions once installed; `pi install` runs npm lifecycle scripts and executes third-party code.
    The confirmation names that verbatim and records the exact command.
-4. **MCP secrets are named, not stored.** A launch record carries env/header **key names**; the value
-   is the operator's. Harness never reads, stores, or logs a credential (ADR-0006 untouched).
+4. **MCP secrets are named by default, never read back.** A launch record carries env/header **key
+   names**; a value exists only when the operator types one into the console's registry-driven form,
+   and it is written verbatim into the runtime's own config — never into the manifest, the ledger, a
+   log line or a read answer. Harness never reads a stored value back: an existing value is reported
+   as "set", not echoed. ADR-0006's provider credential store is untouched.
 5. **Untrusted input discipline.** Registry payloads are normalized into narrow shapes before they
    reach the console; validation runs before any writer sees a payload (name grammar, spec grammar,
    `..` segments, launch shape, file-count and byte caps).
@@ -587,24 +645,95 @@ explicit (`configured → lite`), so a shared session can never ratchet upward.
     key (`mp-…`), which is what the console joins to mark the row installed; the record also stores
     `nativeKey` — the runtime's own `<plugin>@<marketplace>` store key — and discovery excludes both
     spellings. Without it, one `claude plugin install` answers twice: once as the tracked artifact
-    and once as the map member read back from `installed_plugins.json`. Records written before this
-    field existed are deduped by `(harness, plugin name)` for git-marketplace installs, so the
-    guarantee holds without a manifest rewrite.
+12. **MCP health is read from the runtime, not inferred from disk.** The on-disk probe (§D8.8)
+    proves the config member exists; it cannot prove the server connected. For every MCP host that
+    exposes a live surface, the console reads the runtime's own
+    `connected | pending | disabled | needs_auth | failed` answer and shows it per server —
+    `needs_auth` / `failed` make the row unhealthy even when its config copy is intact, and a healthy
+    live answer is displayed rather than left blank. The read is separated from the inventory scan
+    (`GET /mcp/runtime`), bounded and read-only. Four hosts answer live (amendment, 2026-11-02):
+    opencode v2 (`GET /api/mcp`), grok (`grok mcp doctor --json` — exit 1 means "some server
+    failed" while the JSON still arrives), claude (`claude mcp list` health verdicts — the
+    vendor-documented `✔ Connected / ! Needs authentication / ✘ Failed to connect` lines, parsed
+    TOLERANTLY: only verdict lines become rows, an unrecognized format answers "no live claim"),
+    and kimi (`kimi mcp test <name>` per server — the runtime's own loader, exit 0 is the runtime's
+    "this server works"; no batch command exists, so the probe enumerates `mcp.json` and runs the
+    tests in parallel). A host without a usable surface answers "no live claim", never a failure
+    verdict, and the on-disk state stands alone: codex's `mcp list --json` carries only the auth
+    dimension, and pi / omp expose no status command at all.
+13. **An MCP landing is a per-host CONTRACT, not one entry spelling (amendment, 2026-12).** Seven hosts
+    land MCP servers and their configs agree on nothing but "named server": opencode merges an object
+    into a config file it already owns, pi and omp each keep a dedicated `mcp.json`, kimi keeps a
+    dedicated `mcp.json` with NO env expansion (`literalEnv`), and claude, codex and
+    grok write through their own CLI (the §D8.13 CLI-materialized landing below). The landing is
+    therefore four answers per host — path/container (§D8.2) plus `shape`, `secretRef` and
+    `namePattern` — and every one of them was READ from the runtime (its shipped docs, its config
+    schema, or the file its own `add` command writes), never inferred from a sibling runtime:
+
+    | host | global · project file | container | entry | secret reference | name grammar |
+    | :--- | :--- | :--- | :--- | :--- | :--- |
+    | opencode | `opencode.json` · `opencode.json` | `mcp` | `{type, command[], environment, enabled}` | `{env:KEY}` | `^[\w.-]+$` |
+    | pi | `~/.pi/agent/mcp.json` · `.pi/mcp.json` | `mcpServers` | `{command, args, env}` | `${KEY}` | `^[A-Za-z0-9_-]+$` (a dot is refused by pi itself) |
+    | omp | `~/.omp/agent/mcp.json` · `.omp/mcp.json` | `mcpServers` | `{command, args, env}` | `${KEY}` | `^[A-Za-z0-9_.-]{1,100}$` |
+
+    The evidence behind each cell is the runtime's own artifact, and it is why the row is trusted:
+    pi publishes `mcp.json` at the agent dir and its `mcp add` writer stores `{command, args, env}`
+    with `${VAR}` left for load-time expansion (`pi mcp add foo.bar` answers `invalid server name`);
+    omp's schema (`mcp-schema.json`) names `<agentDir>/mcp.json` and `.omp/mcp.json`, its discovery
+    reader opens exactly those, its helper expands `${VAR}` / `${VAR:-default}`, and it has no `mcp`
+    CLI verb at all — so for omp the FILE is the write surface, not a fallback.
+
+    Four consequences are enforced in code rather than by convention:
+    - the entry is COMPOSED per host (`mcpEntryForLaunch(existing, launch, spec)`), so opencode-only
+      vocabulary (`type`, `enabled`, `environment`) can never be grafted onto a runtime that has none
+      of it, and a field the operator wrote that we do not own survives an edit;
+    - the secret reference is spelled per host (`secretReference`), and BOTH spellings read back as "a
+      reference, not a value" — `${KEY}` must never be reported to the console as a stored secret;
+    - a name the runtime's own grammar rejects is a PER-TARGET refusal, not a whole-request failure:
+      `tools.brave` lands in omp and is refused for pi, and the apply result carries the skipped host
+      with its reason (gate 2 still shows the plan before anything is written);
+    - both command spellings are READ (`command[]`, and `command` + `args`), so a discovered row
+      describes itself identically whichever runtime wrote it.
+
+    **CLI-materialized landings (amendment, 2026-11-02).** A host whose config file is
+    RUNTIME-OWNED state — claude's `~/.claude.json` also carries session/user state and is rewritten
+    by the runtime itself; codex's and grok's configs are comment-carrying TOML — must never be
+    reserialized by this gateway. Those hosts get a FOURTH write surface, the CLI-materialized
+    landing: the adapter declares `mcpSpec.cli` (the runtime's own `addArgs` / `removeArgs`
+    grammars, verified from the vendor CLI: `claude mcp add-json <name> '<entry>' --scope
+    user|project`, `claude mcp remove`; `codex mcp add <name> [--env K=V…] -- <command…>` / `--url`,
+    `codex mcp remove`; `grok mcp add <name> [-e K=V] -- <command…>` / `--transport http <url>
+    [-H "K: V"]`, `grok mcp remove <name> -s user|project` — grok's scope flag sits BEFORE `--`),
+    and the writers branch on it:
+    - the config file stays a READ surface (JSON for claude, TOML via `@iarna/toml` for codex and
+      grok — a parse, never a write), feeding discovery, the change plan (`addedKeys`/`changedKeys`) and the
+      edit sheet's pre-image exactly as for a merge landing;
+    - the plan composes the runtime's own argv at PLAN time (`target.cli`, echoed both as
+      `cli.echo` and the shared `echo` key), so a grammar refusal (codex: env values are LITERAL —
+      no `${KEY}` expansion, so an unnamed secret is refused; codex remote servers carry no custom
+      headers) surfaces at gate 2, not after confirm;
+    - apply runs the echoed argv verbatim through the same bounded executor the plugin subprocess
+      uses and records the copy `external` (`path` = the `<canonicalKey>#<host>` identity token,
+      `contentHash` = the echoed command) — the runtime's store, not a file hash, is the truth;
+    - the inverse removal plans op `cli-remove` (a tracked external copy or a discovered row's
+      descriptor), checked for presence against the read-only landing file and executed by the
+      runtime's own remove verb. Claude's secret references stay `${KEY}` (its `mcp add-json`
+      stores the entry verbatim and Claude expands `${VAR}` from its environment); codex has no
+      expansion, so an env key without a typed value is refused per target.
 
 ## Deferred (not implemented — do not assume)
 
 | Area | State |
-| :--- | :--- |
-| Project-scoped discovery and install (skills, MCP, plugins) | closed at the product boundary: `ENABLED_SCOPES` is `['global']`, so install routes answer `unsupported_scope`, inventory scans no project root, and the console offers no scope selector. Adapter project landings and the writers' `scope` parameter stay DECLARED as the seam — shipping it is that list plus the selector, not a re-spelling of fourteen adapters |
-| MCP landings beyond opencode | absent from the adapters; a target is refused with a reason, never guessed |
-| Plugin landings beyond opencode (`config`), pi (`subprocess`), claude (`subprocess` + map record, §D8.11), antigravity / factory / kimi (their own plugin manifests + command chains) | absent; other hosts refuse |
+| MCP landings for claude / codex / grok | SHIPPED as CLI-materialized landings (§D8.13 amendment, 2026-11-02): the runtime's own `mcp add`/`mcp remove` verbs write, the runtime-owned config file is read-only observation, copies are recorded `external`. kimi SHIPPED as a file-merge landing (its dedicated `mcp.json` is plain JSON, `literalEnv`). Cursor and `dsh` still have no verified MCP surface at all |
+| ~~A CLI-materialized MCP landing~~ | built (§D8.13 amendment, 2026-11-02): plan composes the runtime's argv at gate 2, apply spawns it bounded, the copy is `external`, removal is the runtime's own verb (`cli-remove`) |
+| Plugin landings beyond the declared write paths (opencode `config`; pi, claude, grok `subprocess`; claude's map record §D8.11; antigravity / factory / kimi manifests; the §D9 marketplace chains of claude, codex, github-copilot, factory, antigravity, opencode, cursor, grok; kimi's web API §D9 amendment) | absent; other hosts refuse |
 | npm as a **skill** source | no longer a view source on any axis; `npm:<pkg>` is an install resolver only, and the skill axis answers `unsupported_kind` |
 | PulseMCP / mcp.so | no live adapter and no row in the view (measured 410 retired / 404) |
 | Sources declared in `config.yaml` | sources are the `common/source-views.ts` `SOURCES` + `registry.ts`; no `harness.sources` config section |
 | Write-ahead intent, cross-copy install rollback, manifest advisory lock | not built; the guarantee is "manifest last" + per-copy rollback |
 | `shadowed` rollup, `profile` root origin | named in the type unions, no producer |
 | Store/trash GC, adopt-an-untracked-directory action, harness export/import, `canonicalKey` alias overrides, name-collision suffix policy | not built (collision = refusal) |
-| `dsh` MCP/plugin surface, `codex` MCP (no TOML writer) | unsupported |
+| `dsh` MCP/plugin surface | unsupported: no verified MCP surface; the CLI-materialized landing pattern (§D8.13) is the seam a future verified surface would slot into |
 | A verified inverse package-manager command (`pi uninstall`) | not implemented; the declaration edit is the shipped undo |
 | Count parity across skills / MCP / plugins | not a goal: a landing is added only when its path, entry shape, secret-reference syntax and inverse removal are verified; a host without one is hidden by the console's `has*` gates instead of being offered as a refusal-only checkbox |
 
@@ -615,8 +744,10 @@ explicit (`configured → lite`), so a shared session can never ratchet upward.
   row, not a page rewrite; identity, trust and the removal ops are stated once and reused everywhere.
 - Positive: the removal op keyed on landing shape is what stops "uninstall one plugin" from meaning
   "delete the client's whole configuration" — the failure mode the earlier provenance-keyed design had.
-- Negative: capability per (kind × host) is very uneven — MCP only on opencode, plugins only on
-  opencode and pi. That is honest, but it means most host rows are read-only for two of the three kinds.
+- Negative: capability per (kind × host) is very uneven — MCP on opencode, pi and omp (file merge) plus claude and codex (CLI), extensions
+  wherever a write path is declared
+  (opencode/pi/claude/codex/cursor/github-copilot/antigravity/factory/kimi/grok).
+  That is honest, but it means most host rows are read-only for two of the three kinds.
 - Negative: a runtime-owned copy removed from the console stops loading but its bytes stay in the
   runtime's store; that is the truth of editing a declaration and the console must keep saying it.
 - Negative: no GC means store and trash grow; no export/import means harness intent does not travel
@@ -638,6 +769,14 @@ explicit (`configured → lite`), so a shared session can never ratchet upward.
   `applies` ledger on the shared event-ring skeleton, and post-apply placement evidence.
 - `backend/src/harness/host/resolvers/{github,npm,clawhub,git-marketplace}.ts` — the install
   resolvers; the git-marketplace one serves every operator `mp-<slug>` source.
+- `backend/src/harness/host/{mcp-entry,mcp-registry,mcp-edit,mcp-cli}.ts` +
+  `common/pypi-source.ts` — the MCP axis: entry validation and the launch grammar, the official
+  registry reader, the gated edit path, the in-memory tarball probe that extracts registry-form
+  launches, and the PyPI source grammar/probe feeding the `pypi` resolver
+  (`host/resolvers/pypi.ts`) and the `kimi-web` writer (`host/writers/kimi-web.ts`).
+- `backend/src/harness/{tcp-reach,db-probe}.ts` — the DSN builder's connection test: the
+  credential-free TCP dial (any scheme) and the real `pg` / `mysql2` login for the two mainstream
+  engines, with verdict codes that separate authentication, database and TLS.
 - `backend/src/harness/common/market.ts` — the operator git-marketplace store + probe: snapshot
   history, the format-neutral probe (`ProbeOptions`), browse rows, the federated section merge and
   `toCatalogRow`.
@@ -668,8 +807,9 @@ explicit (`configured → lite`), so a shared session can never ratchet upward.
 
 ## Open questions
 
-- Which additional MCP landings are worth verifying next (Claude and Cursor are the two with published
-  config files; each needs vendor-doc confirmation before it enters `HOSTS`).
+- Which additional MCP landings are worth verifying next: Cursor (vendor docs). Claude, codex and
+  grok shipped as CLI-materialized landings and kimi as a file-merge landing (§D8.13 amendment,
+  2026-11-02). Each needs vendor-doc confirmation before it enters `HOSTS`.
 - Whether a verified `pi uninstall` should be added as an additional op on top of the declaration edit,
   or whether the declaration edit is the wanted contract (it is the only one that cannot delete bytes
   we do not own).
@@ -681,9 +821,14 @@ explicit (`configured → lite`), so a shared session can never ratchet upward.
 ## D9 — Operator git-marketplace sources (amendment, 2026-10-30)
 
 Any GitHub repository the operator names becomes a browse/install source with **no code change**:
-`<ocrHome>/harness/marketplaces.json` is the config, one `mp-<slug>` adapter instance per entry
-(`host/resolvers/git-marketplace.ts`), and the registry resolves `mp-*` ids dynamically. The type exists
-because the Claude-style `marketplace.json` catalog format has become the industry's converging
+`<ocrHome>/harness/plugin-market.json` is the config — one `mp-<slug>` adapter instance per entry
+bucketed per harness (`{ "shared": [...], "<harness>": [...] }`, amendment 2026-11-01): the bucket
+IS the scope, so the record itself carries no `harness` field. `skill-market.json` and
+`mcp-market.json`, same directory, each hold ONE `shared` bucket: a skill is global by definition,
+and an MCP source names a package whose launch is the same in every runtime — only the landing
+file differs, so a harness key there would be a lie. `slug` stays one identity across all THREE
+files.
+`marketplace.json` catalog format has become the industry's converging
 distribution shape (grok, Copilot CLI, Goose, omp all read it or a clone), while the CONTENT under
 it has already converged on one primitive: `SKILL.md`.
 
@@ -700,10 +845,15 @@ business. Claude is the only vendor with a STANDARD catalog: the converged `mark
 (`plugins[].source` are REPO-RELATIVE paths), parsed once in `plugin/claude.ts`
 (`parseClaudeMarketplace` / `CLAUDE_CATALOG`). Two more vendor formats are parsed only because the
 install command REQUIRES a specific file: Gemini CLI's root `gemini-extension.json` and Pi's layer
-`package.json` (`PluginManifestReader` — `file`, optional `atRoot`, `base: 'layer' | 'repo'`). Every
-other harness is **directory-keyed**: vendor manifests inside `.codex-plugin/`, `.cursor-plugin/`,
-`.kimi-plugin/`, `.antigravity-plugin/`, … are not standardized and are never parsed through a
-shared schema. Presence of the harness's form directory (declared by its host adapter) IS the
+`package.json` (`PluginManifestReader` — `file`, optional `atRoot`, `base: 'layer' | 'repo'`).
+Kimi Code gained a fourth reader (amendment, 2026-11-01, vendor docs verified): its CANONICAL
+manifest is a root `kimi.plugin.json` — the layout the vendor docs' own example plugin ships, with
+no `.kimi-plugin/` directory at all. `kimi.ts` reads it vendor-specifically (name/description; the
+id is validated against the vendor's documented grammar, so a manifest that could never install is
+not a manifest), and the vendor's documented precedence makes the root manifest win over the
+`.kimi-plugin/` directory when both exist. Every remaining harness is **directory-keyed**: vendor
+manifests inside `.codex-plugin/`, `.cursor-plugin/`, `.antigravity-plugin/`, … are not
+standardized and are never parsed through a shared schema.
 support signal: one plugin row named after the repository, sourced at the repository root. The base
 `PluginMarketAdapter` supplies no hook and answers from a bare `SKILL.md` scan; `marketplace.json`
 is not pi's format, so there is no abstract "shape" registry to keep in sync.
@@ -713,9 +863,14 @@ directories, and each is claimed by its owning adapter, which reuses Claude's pa
 → `.claude-plugin/marketplace.json`, `grok.ts` → `.grok-plugin/marketplace.json`, `copilot.ts` →
 `.github/plugin/marketplace.json`, `factory.ts` → `.factory-plugin/marketplace.json`,
 `universal.ts` (the AGENTS/Goose convention) → `.agents/plugins/marketplace.json`. A harness with no
-catalog file is directory-keyed instead (codex, cursor, kimi, antigravity, and the catalog-less
-fallback of copilot/factory/grok); its vendor JSON is not parsed generically. A Claude source never
-reads grok's directory, and vice versa; the parser is shared, the DIRECTORY is not.
+catalog file is directory-keyed instead (codex, cursor, antigravity, and the catalog-less
+fallback of copilot/factory/grok; kimi joins this group only as the FALLBACK beneath its root
+manifest); its vendor JSON is not parsed generically. A Claude source never
+reads grok's own directory and vice versa; the parser is shared, the DIRECTORY is not. ONE
+exception, vendor-verified: Grok accepts the `.claude-plugin/` equivalents of its own form (user
+guide, "Skills, Plugins & Marketplaces"), so `allHostProbes()` emits a second grok probe pinned to
+claude's directory — a claude-form repository is DETECTED for grok too, and grok-native repos
+still claim `.grok-plugin/` first.
 
 **Extension layer (amendment, 2026-10-31).** Repositories that serve several runtimes ship one form
 per runtime (`pi-extension/`, `.claude-plugin/`, `.codex-plugin/`, …). A source MAY pin
@@ -724,9 +879,9 @@ drive letters, backslashes or `..`). When pinned, the probe refuses to look outs
 directory is `missing_dir`, never a silent whole-repo scan; for a Claude-format source the manifest
 search is `<layer>/marketplace.json` only. When no catalog is found, the harness's OWN hook
 describes the source: a layer-based manifest (pi's `package.json`) makes the layer itself the one
-plugin row; a directory-keyed harness (codex, cursor, kimi, antigravity) makes the DIRECTORY's
+plugin row; a directory-keyed harness (codex, cursor, antigravity) makes the DIRECTORY's
 existence the plugin, one row named after the repository; a root manifest (gemini-cli
-`gemini-extension.json`) needs no layer at all. Each host adapter declares the
+`gemini-extension.json`, kimi `kimi.plugin.json`) needs no layer at all. Each host adapter declares the
 ecosystem default (`extensionDir` in `harness/host/adapters/<host>.ts`), and the probe APPLIES it
 when the source pins none: the scan is the harness's own form directory (`.claude-plugin/`,
 `.codex-plugin/`, `.github/plugin/`, `.cursor-plugin/`, `.factory-plugin/`, `.kimi-plugin/`,
@@ -785,6 +940,78 @@ skill/MCP/plugin counts, writes nothing), `DELETE .../sources/:slug` (404 on unk
 `GET /api/admin/harness/sources` stays as a read-only view (built-ins + `mp-` chips) with no
 mutation verbs. Unknown or non-github targets answer 400; unknown harness 404.
 
+The duplicate answer is **store-wide, never per tab** (amendment, 2026-11-01): a slug IS the
+`mp-<slug>` sourceId the registry resolves without a harness (`host/registry.ts`) and the skill
+axis addresses entries by, so a twin entry under another harness would answer one identity twice.
+Per-harness isolation governs what each tab LISTS, owns and syncs; it never widens identity. Two
+answers follow from that:
+
+- **The repository is already carried by ANOTHER harness** — the operator adding it from this tab
+  means "I want my own source here", so the plugin route registers a SECOND, harness-scoped entry
+  instead of dead-ending: the slug takes the harness as its disambiguating token
+  (`mp-<repo>-<harness>`, `resolveScopedSlug`), the probe runs unpinned so the row content is the
+  repository's own forms, and `entry.harness` keeps the entry out of the sibling's tab, index and
+  host. The two sources are enabled, rescanned, synced and removed independently
+  (`registered 'o/r' for opencode as 'mp-r-opencode'`); the sibling entry is never mutated.
+- **Any other collision** (this harness already holds the repository, the entry is shared, or a
+  different repository owns the basename) answers 409 and NAMES the holding entry's pin and layer
+  (`'o/r' is already configured as 'r' for claude (layer .claude-plugin)`), because the acting tab
+  lists only its own scope and would otherwise look empty while refusing the add.
+
+Answers are machine-readable, never English prose only: registration and check outcomes carry a
+closed `reason` plus `params` (`registered`, `registered_scoped`, `already_configured`,
+`slug_taken`, `no_form`, `no_skill`, `not_a_repo`, `invalid_source`, `invalid_layer`,
+`probe_failed`), and `message` stays the English fallback for logs, the CLI and raw API consumers.
+The console renders its own localized copy from `reason` + `params` (repo UI-text rule). A new
+outcome must name a reason in the same commit as its i18n key; echoing `message` at the operator
+is a bug.
+
+**Package sources on the MCP axis (amendment, 2026-11-01).** The console's MCP market now has its
+own Sources drawer, and its "source type" is the PACKAGE ECOSYSTEM, not a launch shape: `npm` and
+`pypi`. `stdio` is a transport a package launches into, never a source type — a source answers
+"which registry do I read", and the launcher follows from the ecosystem (`npx -y <pkg@ver>` /
+`bunx` for npm, `uvx <pkg>==<ver>` for PyPI). The MCP axis lives in its OWN file,
+`<ocrHome>/harness/mcp-market.json`, with ONE `shared` bucket: a package source is a registry
+read, and the launch it resolves is the same command in every runtime — only the landing config
+differs. Pinning the source to the drawer that created it would hide it from sibling MCP tabs and
+make a second add answer a false duplicate (`already_configured`), so `harness` is never set on
+this axis. `slug` stays one `mp-` identity for the whole store; legacy per-harness buckets are
+read as shared and flattened on the next mutation.
+
+- **A shared source still installs per landing.** Sharing the catalogue does not fan an install
+  out: the market row installs into the page's pinned host (§D11, 2026-12), and only hosts with a
+  verified MCP landing (`opencode`, `pi`, `omp`, `claude`, `codex`, `kimi`, `grok`) list the source at all. The source view therefore
+  reports that landing set as its `hosts` claim, never the snapshot's (a package probe detects no
+  forms and records `hosts: []`).
+
+- **One source = one package.** No npm `@scope/*` and no PyPI namespace: a package registry is
+  not a curated server list, so listing a namespace would present non-servers as servers. A scope
+  input answers `invalid_source` at check and add time.
+- **A git repository is refused on the MCP axis** (check and add): `invalid_source` with a pointer
+  to the plugin axis. A repository is not an install handle there, and a silent registration
+  would create a plugin-axis entry the MCP tab can never list.
+- **The version is resolved at install, never frozen into the source.** The entry stores the bare
+  package name (`repo`), the snapshot records the version seen at probe time as information only,
+  and the install handle (`npm:<pkg>` / `pypi:<pkg>`) resolves through the registry adapter on
+  every install. `pypi` resolves to a `uvx` launch pinned to the concrete release plus
+  `pin: {pypi:{version}}` (`host/resolvers/pypi.ts`), mirroring npm's `npx -y <spec>` + integrity.
+  A reference carrying a version or extra (`name==1.0`, `name[cli]`) is not a source.
+- **The installed entry key is DERIVED from the package identity, never taken from it.** A host
+  config entry is an object key, and every verified host grammar refuses a scoped npm name
+  (`@bytebase/dbhub`: `@` and `/`; pi also refuses a dot), so using the registry name raw makes a
+  fully resolvable install answer `invalid server name` on every landing. `mcpServerNameFromPackage`
+  (`host/mcp-entry.ts`) derives it with the INTERSECTION grammar (`[A-Za-z0-9_-]`, 100 characters —
+  omp's schema bound) and keeps the scope (`@scope/name` → `scope-name`, so two scopes' packages can
+  never collide on one member). The registry identity stays in `canonicalKey` and in the market
+  row's `name`; the row also carries the derived `serverName`, which is what the console's read-only
+  name field shows — the sheet must never promise a key the landing refuses.
+- **Axis isolation is enforced in code, not by convention.** The plugin harvest skips `axis:
+  'mcp'` entries (`plugin/catalog.ts`), and marketplace sync/removal refuses to run a native
+  `marketplace add|remove` for one (`host/marketplace-sync.ts`): an MCP source writes a server
+  config, and registering its package as a plugin marketplace would be a lie the runtime acts on.
+  `dueMarketplaceEntries` likewise excludes package sources from the git rescan scheduler — their
+  freshness is the registry read the source's own rescan route performs.
+
 ## D10 — The plugin market: per-harness adapters over a two-tier catalog (amendment, 2026-10-30)
 
 **One file per harness, one adapter chain per harness.** Each harness's market lives in its OWN
@@ -792,8 +1019,8 @@ file under `harness/plugin/adapters/` (`pi-dev.ts`, `pi-github.ts`, `claude.ts`,
 `cursor.ts`, `gemini.ts`, `grok.ts`, `copilot.ts`, `antigravity.ts`, `factory.ts`, `kimi.ts`,
 `universal.ts`): pi keeps its two surfaces apart — `pi-dev.ts` holds the live official catalog and
 `PiDevPluginMarketAdapter`, `pi-github.ts` holds `PiGithubPluginMarketAdapter` and the git probe.
-Claude's catalog parser lives in `claude.ts`; Pi's package and Gemini's root manifest readers live in
-their own files; every other harness is directory-keyed and never parses vendor JSON. Each harness
+Claude's catalog parser lives in `claude.ts`; Pi's package and Gemini's and Kimi's root manifest
+readers live in their own files; every other harness is directory-keyed and never parses vendor JSON. Each harness
 file claims only its identity and directory (declared by its host adapter). Shared engine:
 `PiPluginMarketAdapter extends BasePluginMarketAdapter`. No harness-specific behavior outside its
 files. The base engine is deliberately FORMAT-NEUTRAL: it owns source CRUD, the index/federated
@@ -863,13 +1090,14 @@ rows to that harness. A skills-only git repo appears on the skill axis's view, n
 axis that gained nothing: a chip that names a source with zero rows would claim a tier the
 harvest never wrote.
 
-**Mutation re-harvests everyone — except a layer-pinned source.** The marketplace store is global
-(one `marketplaces.json`), so `registerSource`/`unregisterSource` — and the rescan scheduler after a
-probe — re-harvest the index of EVERY served harness. A source registered WITH an extension layer
-records that harness (`entry.harness`) and harvests into that harness's index only: a
-`pi-extension` source must not teach a claude tab to install it. Unscoped sources stay shared. A
-stale sibling tab would teach a per-harness model the store does not have; the harvest is a local
-read over snapshots — cheap by construction.
+**Mutation re-harvests everyone — except a layer-pinned source.** The source store is global (one
+identity namespace across `plugin-market.json` and `skill-market.json`), so
+`registerSource`/`unregisterSource` — and the rescan scheduler after a probe — re-harvest the index
+of EVERY served harness. The harvest itself stays scope-honest: a source's catalog only carries a
+row for a harness its snapshot detected (§D9 amendment), so a `pi-extension` source never teaches a
+claude tab to install it, and a per-harness-pinned entry never reaches a sibling's index. A stale
+sibling tab would teach a per-harness model the store does not have; the harvest is a local read
+over snapshots — cheap by construction.
 
 **Wiring.** `backend/src/harness/plugin/` (per-harness adapter files over the shared engine), the
 shared market core in `backend/src/harness/common/market.ts` (row contract, browse cache/dispatch,
@@ -889,21 +1117,23 @@ the plugin market is a TAB of the harness page, not a separate destination. The 
 "Plugin Management".
 
 **One dialog, one axis at a time — kind-isolated, scope-isolated and route-isolated.** The sources
-dialog (`HarnessSourcesDrawer`) opens from the market tab of a harness page — the skill tab and the
-plugin tab alike. Each axis owns BOTH its registry and its maintenance route: plugins (and the
-per-harness MCP views) live under `/plugins/:harness/sources*`, while the skill axis has a GLOBAL
-surface with no `:harness` — `GET/POST/PATCH/DELETE /api/admin/harness/skills/sources*`. Contents
-follow the same split: a route lists only its own registry's built-ins (`SKILL_VIEWS`,
-`MCP_DEFAULT_VIEWS`, `PLUGIN_DEFAULT_VIEWS`) plus the operator entries whose snapshot carries that
-kind. SKILLS are GLOBAL: ClawHub serves every harness alike, and a skill source is registered with
-NO harness scope, so the same list appears on every harness page and its snapshot lives in the
-global snapshot path. MCP and PLUGIN are PER-HARNESS: a server or plugin lands in a specific
-runtime, so their BUILT-INS (their `hosts` claim) and ROWS are narrowed to the page's harness. An
-operator entry is shared unless it pins an extension layer (§D10): each tab lists a shared entry
-only when its snapshot recorded that harness's form.
-A source that cannot serve the open axis is noise, not information. Built-in federated sources
-render read-only; operator `mp-` sources carry check-before-add, in-place edit (enable + rescan
-schedule), manual rescan with a reported diff, and remove.
+dialog (`HarnessSourcesDrawer`) opens from the market tab of a harness page — the skill and plugin
+tabs alike, and the MCP tab of a harness that has a verified landing. Each axis owns BOTH its
+registry and its maintenance route: plugins and MCP sources are maintained through
+`/plugins/:harness/sources*` (the path names the tab that opened the drawer), while the skill axis
+has a GLOBAL surface with no `:harness` — `GET/POST/PATCH/DELETE
+/api/admin/harness/skills/sources*`. Contents follow the same split: a route lists only its own
+registry's built-ins (`SKILL_VIEWS`, `MCP_DEFAULT_VIEWS`, `PLUGIN_DEFAULT_VIEWS`) plus the
+operator entries whose snapshot carries that kind. SKILLS are GLOBAL: ClawHub serves every harness
+alike, and a skill source is registered with NO harness scope, so the same list appears on every
+harness page and its snapshot lives in the global snapshot path. MCP PACKAGE SOURCES are GLOBAL
+too: one `shared` bucket, the same list on every MCP-capable page, one global snapshot — the
+landing set (`opencode`, `pi`, `omp`, `claude`, `codex`, `kimi`, `grok`) is the source's only host claim. PLUGIN is PER-HARNESS: a
+plugin is installed into a specific runtime, so its BUILT-INS (their `hosts` claim) and ROWS are
+narrowed to the page's harness. A newly registered plugin entry pins to the tab that added it by
+default (§D10, 2026-11-01); the dialog offers its share opt-in only when a check detected several
+supporting harnesses, and a legacy shared plugin entry lists on a tab only when its snapshot
+recorded that harness's form.
 
 **Support is detected, not declared.** The dialog carries three fields — source type
 (GitHub | npm), the repository (or package/scope), and the harnesses the entry supports, which the
@@ -922,11 +1152,14 @@ alike, so the two axes cannot drift apart. A path BELOW the repository stays ref
 `extensionDir` names, and silently dropping it would register a different layer than the one the
 operator pasted.
 
-**The dialog states the sharing.** The store behind the dialog is GLOBAL — one
-`marketplaces.json`, `mp-` ids shared by every served harness. The dialog's subtitle says so; the
-UI never labels the listed sources as THIS harness's own, and every mutation re-harvests all
-served harnesses' indexes (§D10). If per-harness exclusivity is ever needed, it is an OPTIONAL
-`scope` field on the marketplace entry — no migration, the file stays single.
+**The dialog states the scope.** The store behind the dialog is GLOBAL — one identity namespace,
+`mp-` ids shared by every served harness. `plugin-market.json` buckets entries per harness (a
+`shared` bucket remains as the store for opted-in and pre-amendment entries); `skill-market.json`
+and `mcp-market.json` are one shared bucket each. The dialog's subtitle says so; every mutation
+re-harvests all served harnesses' indexes (§D10), and a listed plugin source is always either
+THIS harness's own entry or a shared entry whose snapshot detected this harness's form. An MCP
+source lists on every MCP-capable tab, because the landing table — not the snapshot — answers its
+host claim.
 
 **Resolver vs chip.** npm and github remain INSTALL RESOLVERS on the host axis (an `npm:` row
 must resolve somewhere), but the npm BROWSING chip is not on the plugin axis — the plugin axis
@@ -939,6 +1172,163 @@ market tab with the tab's kind; API client mirrors the per-harness route shape 1
 deprecated global client functions and the `MarketplacesPage` were deleted with their i18n keys
 in the same commit.
 
+**Manual MCP add is a harness-page surface (amendment, 2026-11-01).** A harness whose adapter
+implements the MCP landing (`hasMcp`) offers **Add MCP** on its local tab: a stdio launch (command,
+args, env key NAMES) or a remote-URL launch (url, header names plus an optional literal value). It rides the SAME `manualPayload`
+branch and gate 2 as a market row — the first request writes nothing and returns the merge plan
+(file, container, and the exact added/changed keys), the second re-sends with `confirm`; env/header key
+NAMES are the default and a value is only written when the operator types one in the registry-driven
+form (gate 4, amended 2026-11-01). Both remote transports (`http`, `sse`) materialize
+through the host adapter's remote shape; opencode writes `{type: 'remote', url, headers}` and does
+not distinguish them. This exposes the manual escape hatch in the console — it does not open a browse
+directory (`MCP_DEFAULT_VIEWS` stays empty until the npm MCP source lands).
+
+**Editing an existing MCP server (amendment, 2026-11-01).** The same harness page edits any server its
+local tab lists — an OCR-installed `tracked` copy or a row the scan read from the runtime's own config.
+`GET /api/admin/harness/mcp/entry` reads the entry back as a launch (`command`/`args` plus env key
+NAMES, or `url` plus header key NAMES; values never travel) and reports `setKeys` — the keys whose
+stored value is not a bare `{env:KEY}` reference (a literal or `{file:...}`) — so the form can show
+"already set" without receiving the value. `POST /api/admin/harness/mcp/edit` composes the next entry
+from the current one, preserving unknown fields (`timeout`, `enabled`, …) and every existing
+env/header VALUE whose key survives, and drops the fields of the other shape on a stdio ⇄ remote
+switch. Gate 2 is unchanged: without `confirm` the route answers `confirm_required` with the exact
+file, container and overwritten key and writes nothing; an identical entry answers `changed: false`
+with no plan and no write. The name is an EXISTING key, so it is read-only — renaming is delete + add.
+A tracked copy's manifest hash is updated with the file, so an edit does not surface as a dirty copy; a
+discovered entry writes only the runtime's config and never creates a manifest record. A config
+claimed by another environment is refused (`foreign`), matching removal; an unclaimed runtime config
+is editable, because observation is not ownership.
+
+**MCP parameters are launch arguments discovered from the registry and the package itself (amendment,
+2026-11-01).** The Add/Edit MCP sheet no longer starts with a command line to transcribe, and it keeps
+ONE table: the launch arguments. `GET /api/admin/harness/mcp/registry?q=…` asks the official MCP
+Registry for the server's own `server.json` (the registry's `Input` and `Argument` declarations: name,
+description, `format`, `isRequired`, `isSecret`, `default`, `choices`), and the console renders one
+typed control per declared parameter — a plain text field for the value (a secret is never masked:
+the same text is already visible in the launch line), a numeric keypad for a number, a `Combobox` when
+the registry publishes `choices`, and a structured DSN builder for a `dsn` format — instead of a
+free-text args textarea. The answer is
+normalized and capped (`searchMcpRegistry`: `version=latest`, npm-only package shapes, ≤20 candidates,
+≤64 inputs, ≤32 arguments, ≤2 MB body, 15 s timeout) before it reaches the UI; malformed entries are
+dropped, never repaired (gate 5). Nothing is written by the lookup.
+
+Registry declarations alone are often too thin to build a launch. The official DBHub record declares no
+`runtimeArguments` at any version — only environment variables — so it cannot offer
+`--transport` / `--port` / `--dsn`. `GET /api/admin/harness/mcp/cli?pkg=…&registry=…` fills that gap:
+it resolves the published package, downloads its archive into memory and scans the shipped source for
+the flags the package's own parser reads. `registry=npm` (the default, used by `npx` / `bunx`) reads
+the tarball and scans JavaScript (`args.<name>`, `args["<name>"]`, a literal `'--name'`,
+`requireFlagValue("<name>"…`); `registry=pypi` (used by `uvx`) reads the PyPI source archive — sdist
+first, wheel as the fallback — and scans Python (`add_argument("--name"`,
+`click.option("--name"`, `Option("--name"`). Each flag comes back with an example value, enumerated
+`choices`, number/secret/required hints, a `dsn` format for a connection-string name (`dsn`,
+`connection-string`, `database-url`, …), and the environment name the package falls back to
+(`process.env` or `os.environ`). The package is never executed and nothing is written, so the probe
+needs no confirmation gate; the download is capped (20 s, ≤2 MB metadata, ≤25 MB archive, ≤64 options,
+≤8 MB of source) and a package that hides its flags behind an interpreter simply yields fewer options.
+
+Detection is explicit — the operator presses **Detect**; one match
+applies immediately, several wait for a picker, and switching the picker re-probes the package it
+switches to. A query that is itself a package spec is probed even when the registry has no record; when
+no runner has been chosen yet, an npm miss is retried on PyPI, so a bare uvx name still resolves. The
+source box itself is read-only whenever the launch already names a package — the probe reads that
+package, and switching sources means editing the launch, not retyping a second truth here.
+Applying a candidate fills the draft: `npx -y <package>@<version>` (the registry's `version`, else
+`@latest`), every fixed `runtimeArguments` / `packageArguments` value in registry order, and the
+declared inputs. A remote-only registry entry (`server.remotes`) fills the URL and header inputs
+instead. Arguments the registry leaves to the operator (a `valueHint` with no value) render as their
+own rows and are re-emitted into the argv once checked. A fetch MERGES into the open table — a
+matching name keeps the value already typed, new rows append (required declarations first), and
+hand-added rows stay put. Every row carries a **Use** checkbox in the leading column that decides
+whether it is written into the launch line: a discovered flag is a suggestion and starts unchecked,
+while a row parsed from the existing command, a declared default, a required declaration or a
+hand-added row starts checked. Checking a row writes it even before it has a value (a bare switch);
+unchecking leaves it under `Candidate parameters` with its value intact, and `Clear candidates` drops
+only the unchecked, non-required rows. The required tag next to the description is declaration
+metadata — registry declarations and Python `required=True` preset it, an npm package's parser
+usually carries none — and no longer decides the grouping. The probe still reports `secret` as
+knowledge, but it never masks the value column.
+
+**A `dsn`-format flag renders a structured DSN builder (amendment, 2026-12).** The CLI probe
+classifies a connection-string flag by name (`--dsn`, `--connection-string`, `--database-url`, …)
+as `format: 'dsn'` — the registry's own `Input`/`Argument` `format` stays its four official values
+(`string`/`number`/`boolean`/`filepath`), so `dsn` only arrives via the probe. The console renders a
+builder instead of the plain text field: the operator edits driver / host / port / database / user /
+password / a key=value parameter list, and the console serializes one URL-style
+`scheme://[user[:pass]@]host[:port][/db]?k=v` string back into the argv (the value still round-trips
+as one quoted token through `mcp-args`). The compact cell shows a masked summary so the credential is
+not legible at a glance; the builder edits the password as plain text (a secret is never masked on
+open). A value the builder cannot parse — an ODBC `DSN=;UID=;PWD=` string, a `file:` path with no
+`//` — opens a raw textarea fallback instead, and the operator can switch between the two; the
+probe's `secret` knowledge is unaffected (a `dsn` flag is already secret by name, but
+`connection-string` / `database-url` are not re-tagged).
+
+**The builder can test a connection, and for the two mainstream engines the test is a real login
+(amendment, 2026-11).** A string cannot show the operator whether the endpoint answers, and a TCP
+answer cannot tell a wrong password from a missing database. So the dialog's **Test connection**
+has two tiers, both read-only against the target and neither writing config nor running the MCP
+package:
+
+- **PostgreSQL (`postgres` / `postgresql`) and MySQL/MariaDB (`mysql` / `mariadb`)** are tested by
+  logging in with the operator's own values through `pg` / `mysql2` and running `select 1` / `ping`.
+  The answer is a verdict code — `ok`, `auth_failed`, `database_missing`, `tls_failed`,
+  `unsupported_auth`, `refused`, `timeout`, `unreachable`, `error` — plus the driver's own failure
+  text, so a wrong password is never reported as a wrong port. `sslmode` (MySQL also spells it
+  `ssl-mode`) maps to the engine's policy: `disable` / `allow` / `prefer` / `require` /
+  `verify-ca` / `verify-full`; an absent mode means `prefer`, and only "the server offers no TLS"
+  falls back to plaintext — a certificate error is never downgraded.
+- **Every other scheme** keeps the derived `host:port` TCP dial from `tcp-reach.ts`, which proves
+  reachability and nothing about credentials, and reports that limitation verbatim. No protocol
+  knowledge is invented for an engine the console does not speak.
+
+`POST /api/admin/harness/mcp/dsn-probe` carries the structured fields (driver / host / port / user /
+password / database / params) — never the raw string — for this one request. The credential therefore
+enters the gateway: the route sits inside the admin auth + CSRF gate, the value is used only for the
+handshake, is never logged, never echoed in the answer, and the driver's failure text (which does not
+contain the password) is all that returns. An absent port is filled from a per-driver default table
+for the test only; the saved value stays port-less. A verified test is still not the final authority
+on the MCP server: the runtime's own status after install (§D8.12) answers whether the server
+connected with that DSN.
+
+**The stdio sheet has two editing shapes, and Custom is the default.** Custom writes the executable and
+its arguments directly — the shape the runtime stores — while Advanced is only a helper over the same
+table: it composes the command line from a runner and a package spec (`npx` always gets `-y`). The two
+segments are labelled "editing" rather than "mode" because the transport already owns that word.
+Applying a candidate never flips the chosen shape: a custom draft receives the composed command line
+instead of the runner/package pair.
+
+**Environment variables are not part of this form.** Registry `environmentVariables` are deliberately
+not merged: the sheet has no environment editor, the edit read still reports only env key NAMES and
+`setKeys`, and `POST /api/admin/harness/mcp/edit` preserves every existing `environment` value whose
+key survives. The write-through `envValues` path therefore stays an API capability that this console
+form does not drive. The free-form textareas remain as the advanced view when no schema is applied,
+so a server the Registry does not publish is still installable.
+
+**Remote headers ARE name/value rows (amendment, 2026-11-02).** A remote entry's whole launch surface
+is the URL plus its `headers`, so the sheet edits them as rows instead of a name list. The registry's
+`remotes[].transport.headers` prefill the names (with `required` / `secret` / description and a
+pinned or default value), and `setKeys` from the edit read marks a key whose stored value is a literal
+or `{file:...}` as "already set". A row's value is written through the same `headerValues` map the
+stdio form uses for `envValues`: a typed value wins, a blank field keeps the stored value when the key
+survives, and a newly named key materializes the host's own reference via `referenceMap`
+(`{env:KEY}` for opencode, `${KEY}` for pi/omp). Read-back still answers key NAMES only, so a literal
+never travels to the console (gate 4). The transport segment is labelled **Remote URL** rather than
+"SSE": the three verified landings declare no transport field and `streamable-http` servers are
+written through the same `{url, headers}` shape, so the console must not claim a wire transport the
+config does not store.
+
+**A market MCP row installs through the shared Add/Edit sheet (amendment, 2026-12).** The install
+button no longer opens a separate target-choice dialog with a minimal command/args/env override; it
+opens the SAME sheet the manual add and edit paths use, prefilled from the resolver's pinned launch
+(`npx -y <pkg>` / `uvx <pkg>`), with the server name read-only. The install targets the page's pinned
+landing ONLY — the multi-client fan-out and the host chips are removed (the backend still accepts
+`hosts[]` for a future surface, but the console writes one client config at a time). Gate 2 is
+unchanged: the first call writes nothing and returns the merge plan; the second re-sends with
+`confirm`. An UNTOUCHED form sends no `launch` override, so the resolver's own pinned command
+installs (§D9); an edited form sends the edited launch, preserving the row's `sourceId` / `listedOn`
+/ `trust` / `canonicalKey` provenance because the install still rides the resolver's KEY path (not
+`manualPayload`).
+
 ## D12 — The market is built-in + code extension markets; an added entry is a PLUGIN (amendment, 2026-10-31)
 
 **The market surface has two tiers, both code.** One BUILT-IN market per harness (pi.dev for pi,
@@ -948,11 +1338,12 @@ and their adapters in `harness/plugin/adapters/` — an operator cannot invent o
 axis' maintenance dialog adds follows the axis: the PLUGIN dialog adds a plugin (one repository or
 npm package, installed into the harnesses that publish a form for it); the SKILL dialog adds a
 GitHub repository that publishes `SKILL.md`, registered with NO harness scope and visible to every
-harness. The stored `mp-` entry is that artifact's identity and provenance, not a new browsable
-"source" namespace.
-The per-harness tier is the MCP + PLUGIN tier: a server or plugin is bound to the runtime that
-loads it. The skill axis' built-in directory (ClawHub) is the one GLOBAL view, declared beside —
-never inside — the per-harness table.
+harness; the MCP dialog adds one npm/PyPI package, also with NO harness scope — every harness with
+a verified landing reads the same source, and only the install target differs. The stored `mp-`
+entry is that artifact's identity and provenance, not a new browsable "source" namespace.
+The per-harness tier is the PLUGIN tier: a plugin is bound to the runtime that loads it. The skill
+axis' built-in directory (ClawHub) and the shared MCP package catalogue are the GLOBAL views,
+declared beside — never inside — the per-harness table.
 Catalog identity is part of the registration, not an afterthought: the built-in skill directory
 registers as its OWN catalog (`ClawHub`), the plugin default as `pi.dev`, and `default` is the
 SYSTEM bucket operator sources fall into when they name none. The market's catalog picker always
@@ -975,13 +1366,44 @@ The chains shipped with this amendment:
 | antigravity | `plugin install {url}` |
 | opencode | `plugin add github:{repo}` |
 | cursor | `/add-plugin {plugin}` — interactive |
-| kimi | `/plugins install {url}` — interactive |
-| pi | npm only (`install npm:{spec}`); no marketplace chain |
+| grok | `plugin install {url} --trust` — installs straight from a repository (the vendor's `--trust` is required non-interactive grammar; gate 3 confirms first) |
 
 An INTERACTIVE chain is displayed at gate 3 and never spawned: the vendor installs from inside a
 session, so apply refuses with the reason instead of pretending a write happened. npm rows keep the
 resolver path and now require an EXPLICIT `subprocessArgs` grammar — a host that declares none
 refuses the spec rather than inheriting pi's.
+
+**A local REST install API is a write path too (amendment, 2026-11-01).** Kimi Code ships NO
+non-interactive CLI plugin verb — `/plugins install` exists only as a TUI slash command, and
+`kimi -p` treats slash commands as prompt text (both verified against the vendor source and the
+shipped v2.4.1 binary). But `kimi web` runs the vendor's kap-server on loopback with bearer auth
+(`~/.kimi-code/server.token`), and `POST /api/v1/plugins {source}` drives the SAME PluginManager
+the TUI command drives. The writer (`host/writers/kimi-web.ts`) boots a TRANSIENT
+`kimi web --no-open` on an ephemeral loopback port, polls the unauthenticated `/api/v1/healthz`,
+posts the source with the home token, and shuts the server down — vendor code owns the
+download/manifest/managed-copy/`installed.json` write, and this repo NEVER writes vendor state.
+The plan target is a new `webapi` op whose `echo` names the exact POST; gate 3 says a transient
+loopback server will be started and stopped. The retired interactive `/plugins install {url}`
+chain is replaced by this — cursor is now the only session-only plugin runtime.
+
+
+**Git-backed marketplace rows follow the same webapi landing (amendment, 2026-11-01).** A
+git-backed row carries `{repo, plugin, name}` marketplace identity, and the orchestrator's gate
+used to demand a CLI marketplace chain for it — refusing kimi with "declares no native
+marketplace install form" even though kimi's verified landing is the loopback web API. The gate
+now accepts EITHER landing: a host with a `marketplaceSpec()` chain plans the chain, a host with
+only `webApiSpec()` (kimi) plans the `webapi` op; a host with NEITHER still refuses.
+
+**Marketplace rows install through the vendor's LOCAL-PATH branch (amendment, 2026-11-01,
+verified against the shipped v2.4.1 binary).** The vendor's GitHub resolver cannot install a
+marketplace-form repository: it rebuilds the source as `<repo>@<plugin>@<marketplace>` and
+resolves THAT as a git ref (`postmanlabs/postman-plugin@@postman` when the source carries no
+plugin) — HTTP 404, always. Its LOCAL-PATH branch works. A marketplace row on a webapi host
+therefore stages a shallow clone in a writer-owned temp dir (`installMarketplaceRepoViaKimiWeb`),
+posts the absolute staging path, and removes the staging dir after apply; the vendor's own
+PluginManager does manifest/managed-copy/install from the clone. The plan echo shows the clone
+and the POST verbatim (gate 3). Plain `github:` keys keep the direct-URL POST. The snapshot
+support gate still refuses first when the probe detected no form for the target harness.
 
 **Source types.** `github` (default) probes the repository as before; `npm` registers a package
 (`@scope/pkg`) or a whole scope (`@scope/*`, first registry search page, 25 packages) as a plugin

@@ -37,7 +37,7 @@ pick (an unknown or missing segment is replaced, never pushed, so a stale bookma
 valid). The rail's TITLE is fixed — one column header, `HARNESS`, on all three pages, because it is the
 same control everywhere. What the pick MEANS differs, and the hint under the rail says which: on
 Plugins the runtime is the artifact's identity; on MCP it is the config landing the install fans out
-from; on Skills it is a READER — ten runtimes load one `.agents/skills` tree, so the rail narrows to
+from; on Skills it is a READER — twelve runtimes load one `.agents/skills` tree, so the rail narrows to
 "what this runtime can load" while writes stay owner-only (`skillReaders()` / `skillOwner()`,
 ADR-0015 §D2).
 
@@ -153,7 +153,7 @@ source adapter ──raw──► normalizer ──► ArtifactSummary / Artifac
   badges in the header; nothing is card-only or list-only, so a bug reproduces in both.
 - The **host tag is a row field, not page chrome.** A pinned page shows every row the selected
   runtime can *load*, while ownership stays per copy: one skill sits in the shared `.agents/skills`
-  tree (`Universal`, read by ten runtimes) and another in the runtime's own directory (that runtime
+  tree (`Universal`, read by twelve runtimes) and another in the runtime's own directory (that runtime
   only). Dropping the tag because "the page is already pinned" makes a reader-scoped row look
   runtime-scoped, so it renders in both layouts, labelled with the host catalog's own name and
   tooltipped with the copy's real path.
@@ -179,6 +179,7 @@ verification.
 | cursor | √ v | v | — | `~/.cursor/mcp.json` |
 | github-copilot / vscode | √ | v | — | `<repo>/.vscode/mcp.json` |
 | gemini-cli | √ | v | — | `~/.gemini/settings.json` |
+| kimi | √ | — | √ | `~/.kimi-code/skills` (relocated by `KIMI_CODE_HOME`) / `.kimi-code/skills`; root `kimi.plugin.json`, `/plugins install {url}` (interactive) |
 | cline | √ | v | — | `cline_mcp_settings.json` |
 | amp | √ | v | — | `~/.config/agents/skills` (distinct from `~/.agents`) |
 | windsurf | √ | v | — | `~/.codeium/windsurf/mcp_config.json` |
@@ -189,7 +190,7 @@ verification.
 `SupportedClient` — Cursor/VS Code/Zed will never be traffic clients, and welding the two would pollute
 the traffic domain (ADR-0015 §D2).
 
-**A host is a reader, not a location.** Ten hosts read the project `.agents/skills`, five read the
+**A host is a reader, not a location.** Twelve hosts read the project `.agents/skills`, eleven read the
 global one, so one directory has many readers and exactly one owner: the first adapter in registry
 order that resolves to that path (`skillOwner()` in `adapters/index.ts`). Installation, the inventory
 scan and the console all apply that rule. Without it the same directory is recorded as `codex` by an
@@ -308,6 +309,15 @@ type CopyState = {
 - **Placement is tri-state, not a boolean.** `materialized` (written) → `verified` (a host CLI probe
   actually lists it) → `unverified` (no probe exists for that host). The console never prints "loaded"
   without a probe result; `materialized` is the honest default.
+- **On-disk state is not runtime health — for MCP the console asks the runtime.** A config member can
+  be `clean` while the server fails to start, needs a login, or is deliberately disabled. Every MCP
+  host that exposes a live surface answers per server (`opencode v2` → `GET /api/mcp`:
+  `connected | pending | disabled | needs_auth | failed`, failure text included). The console joins
+  that answer by `(host, server name)` and prints it in the state cell: `needs_auth` / `failed` mark
+  the row unhealthy even when the copy is intact, and a healthy answer (`connected` / `starting` /
+  `disabled`) is shown rather than left blank. The probe is read-only and separate from the inventory
+  (`GET /mcp/runtime`): a host that does not answer contributes no status — "unknown" is never turned
+  into "healthy" or "failed", and the on-disk claim stands on its own.
 - "Is it installed?" is answered **without a per-row request**: the console joins each market row
   against the inventory it already holds (`installsFor`), using the row's `canonicalKey` (exact for an
   plugin, repo-prefix for a skill until the tarball names its directory). The market response
@@ -351,6 +361,7 @@ All under the existing `/api/admin/*` auth + CSRF gate. Reads are cheap; every w
 | `GET /hosts` | host catalog as the console sees it | `hasSkills` / `hasMcp` / `hasExt`, the accepted `scopes`, roots + owner for each of them |
 | `GET /applies` | last 100 ledger rows | `harness.json` mirror; no paging |
 | `GET /inventory` | manifest + disk reconciliation | per-copy `state` + `removal` descriptors on discovered rows |
+| `GET /mcp/runtime` | live MCP status from every host that exposes one | read-only daemon call (`opencode v2` `GET /api/mcp`); per-server `connected` / `pending` / `disabled` / `needs_auth` / `failed` + error text; an absent or unreachable service contributes no rows (no live claim, never a health verdict) |
 | `GET /browse?source&q&limit&harness&page` | marketplace browse | one normalized `MarketItem[]` for ONE 1-based `page`, plus `hasMore` and — when the source reports one — `total`; optional `note` + its `noteCode`/`noteParams`; 409 `unavailable` for a dead source |
 | `POST /install` | resolve + write | MCP / plugin answer `confirm_required` with the plan first |
 | `POST /plan` | dry run, `action: 'remove'` | returns `planId` + ops; writes nothing; 10-minute TTL |
@@ -358,6 +369,10 @@ All under the existing `/api/admin/*` auth + CSRF gate. Reads are cheap; every w
 | `POST /translate` | one description | cache-backed, via the gateway's own surface |
 | `POST /translate-batch` | ≤50 descriptions | per-item errors, never one failure for the batch |
 | `POST /translations` | cache-only seed for a page | no upstream call |
+| `GET /mcp/entry?harness&scope&name` | read one MCP entry for editing | `launch` + `setKeys` (keys whose value is not a bare `{env:X}`); never returns a secret value |
+| `GET /mcp/registry?q` | parameter schema for the manual MCP sheet | official MCP registry search; normalized `packages[]` / `remotes[]`; 400 on a bad query, 502 when the registry is unreachable |
+| `GET /mcp/cli?pkg&registry` | CLI flags a published package parses | downloads the tarball (npm: npx/bunx) or source archive (PyPI: uvx) and scans it in memory; the package is never executed and nothing is written; 400 bad spec, 404 unknown package, 413 oversized, 502 upstream |
+| `POST /mcp/dsn-probe` | DSN builder connection test | PostgreSQL and MySQL/MariaDB log in for real with the edited values (`select 1` / `ping`) and answer a verdict code (`ok` / `auth_failed` / `database_missing` / `tls_failed` / `unsupported_auth` / `refused` / `timeout` / `unreachable` / `error`) plus the driver's failure text; every other scheme gets one TCP dial of the derived `host:port` and is reported as reachability only. The route is inside the admin auth + CSRF gate, uses the credential for the handshake only, and never logs or echoes it; 400 on a malformed host/port |
 
 Removal plan response:
 
@@ -408,6 +423,79 @@ MCP differs in the middle step: the "diff" is a key-level diff of the target con
 `createBackup` → mutate → `safeWriteJson`. A config carrying comments (JSONC) is **refused** rather
 than rewritten without them. **TOML is not offered** — this repo has no TOML library, so a codex MCP
 write would mean hand-writing a comment-preserving TOML editor. Codex MCP is unsupported.
+
+**MCP sources are packages.** The MCP market has its own Sources drawer (`Manage sources`), and its
+source type is the package ECOSYSTEM — `npm` or `pypi` — never `stdio`: the transport follows from
+the launcher the ecosystem implies, while the source answers which registry to read. One source is
+ONE package (no `@scope/*`, no PyPI namespace): a package registry is not a curated server list, so
+listing a namespace would present non-servers as servers. The entry stores the bare name and the
+version is resolved at install time (`npx -y <pkg@ver>` / `uvx <pkg>==<ver>`); the snapshot's version
+is informational only. The axis lives in `harness/mcp-market.json` with ONE `shared` bucket: the
+resolved launch is the same command in every runtime, so only the landing config differs. Every
+MCP-capable tab (`opencode`, `pi`, `omp`) reads the same source; an install still lands in the
+page's pinned host. The axis is excluded from the plugin catalog harvest and from native
+`marketplace add|remove` (ADR-0015 §D9).
+
+The manual MCP sheet can build its launch from the official registry record instead of a pasted
+command. `GET /mcp/registry?q` looks the server up (`@scope/pkg`, `scope/pkg` and a registry name all
+resolve; an npm package without a registry hit is followed through its `mcpName`). Launch parameters
+have ONE editor, a dialog opened from the Launch parameters field: a single table of launch arguments. Opening
+it reverse-renders the inline argv line (`--flag value`, `--flag=value`, a lone switch, or a bare
+positional) and shows the name cell WITHOUT its dash prefix — the operator edits `transport`, the
+stored row keeps `--transport` so apply round-trips (a hand-typed `-p` stays single).
+
+The sheet's `Parameter source` box is the package the current launch already names, so it is
+read-only while that package is derivable (edit the runner/package or the command line to switch
+sources); only a launch that names no package falls back to a typed query. `Fetch parameters` runs
+only when clicked and merges two sources into that table: the registry's
+declared `runtimeArguments`, and the flags the package's own parser reads — obtained by downloading
+the published archive and scanning it in memory (`GET /mcp/cli?pkg&registry`). The registry picks the
+source: npm tarballs for `npx` / `bunx`, PyPI source archives (sdist first, wheel as the fallback)
+for `uvx`. The package is never executed and nothing is written to disk, so no confirmation gate is
+needed. The scan reports each flag with an example value, enumerated `choices`, a numeric keypad, a
+required marker and — as the row's description, never a second table — the environment name the
+package falls back to. Values render as plain text, never masked: the same text is already visible
+in the launch line, and a masked DSN only gets in the way of checking it. Enumerated `choices` feed
+a themed suggestion dropdown while the field stays free text — the scan records literals it
+recognized, not a closed enum. A required marker is a tag
+next to the row's description that the operator toggles in place — registry declarations and Python
+`required=True` preset it, but an npm package's parser usually carries no such metadata, so marking it
+by hand is expected; it is declaration metadata only. What the launch carries is decided by the
+leading **Use** checkbox: a discovered flag starts unchecked and folds under `Candidate parameters`,
+while a row parsed from the existing command, carrying a declared default, marked required or
+hand-added starts checked; `Clear candidates` drops only the unchecked, non-required rows. Registry
+`environmentVariables` are deliberately NOT
+merged: the sheet has no environment editor, and a launch's existing `environment` map is left
+untouched when the entry is edited. A matching name keeps the value already typed, new rows append
+(required declarations first), and hand-added rows stay put. A query that is itself a package spec is
+probed even when the registry has no record; with no runner chosen yet an npm miss is retried on
+PyPI. The preferred candidate is applied immediately and the picker re-probes whichever candidate it
+switches to. A fetch fills the runner/package/argv only when the launch is still empty; an existing
+server (or a hand-typed command) keeps its own launch and just gains rows. Remote `headers` are a
+name/value table: the registry's `remotes[].transport.headers` prefill the names (and a pinned/default
+value), a blank value keeps a stored value or writes the host's environment reference, and a typed
+value is stored literally and never read back.
+
+For stdio the sheet has two editing shapes, and a new server starts in **Custom** — the raw
+executable plus its arguments, which is the runtime's own shape. **Advanced** is only a helper of the
+same table: it takes a runner (`npx` / `bunx` / `uvx`) and a package spec and composes the argv (`npx`
+always gets `-y`, so an unpinned package never blocks on stdin). Applying a registry candidate never
+flips the chosen shape: custom receives the composed command line instead. The argv tail is edited as
+one space-separated line (a value with spaces is quoted), and the button beside it opens that visual
+editor. The field guidance for the package spec and the argv tail rides an `InfoTip` icon next to the
+label instead of a permanent hint line, and both shapes echo the composed `$ …` command directly
+BELOW the argv field, where the line the sheet will write is what the operator is about to check.
+Switching shapes carries the argv across, and an existing entry stored as one command string is
+split back into runner + package on open.
+
+The parameter table itself is the shared `ScrollTable` (`frontend/src/components/ScrollTable.tsx`):
+its head is a NORMAL ROW outside the scrolling body — never `position: sticky` — so only the body
+scrolls and rows never slide under a floating head. Column widths are measured from the body's
+first row, which keeps the head aligned whether the body lays out to content or to declared widths.
+The name column is the narrow one (a flag is short) and the value column takes the remainder, so a
+DSN is not squeezed into a sliver; a value that is still too long opens in a stacked, full-width
+editor from the expand button in its cell, and only Save writes it back to the row. The width split
+lives in the page, not in `ScrollTable` — the component only measures what it is given.
 
 Plugins differ in the last step: instead of writing files, the backend runs the landing command
 (`pi install npm:<pkg>`) with a timeout, captures stdout/stderr, and records the exit code. That command
@@ -496,9 +584,11 @@ Aggregation and identity live in §5.2. Rules that follow from the table:
    rejects. (The "adopt into the manifest" action is not built.)
 9. **Plugins install code.** `pi install` runs npm lifecycle scripts; the dialog says so verbatim,
    `-y` is never passed, and the exact command is recorded in the ledger.
-10. **MCP secrets are named, never stored.** The server record contributes env **key names**; values
-    come from the operator's environment. Harness never reads, writes, or logs a credential (ADR-0006
-    stays untouched).
+10. **MCP secrets stay out of the read path.** The server record contributes env **key names** by
+    default; values come from the operator's environment as `{env:KEY}`. A value the operator types
+    into the sheet is written verbatim into the runtime's own config — an explicit choice, made once,
+    never echoed back, never entering the manifest or the ledger (ADR-0015 gate 4; ADR-0006 stays
+    untouched).
 
 ## 10. What shipped — and what deliberately did not
 
@@ -510,12 +600,14 @@ Aggregation and identity live in §5.2. Rules that follow from the table:
 | inventory (`clean`/`dirty`/`missing`/`foreign`/`untracked`) + discovery channel for every kind | `shadowed` has no producer; the scan reads skill directories, a runtime's `plugin[]`/`packages[]`/loose files, and the `mcp` object of a host config |
 | skill writer, MCP merge (opencode), plugin (opencode `plugin[]` / pi subprocess) | plan → confirm → apply |
 | probe-driven `placement` | `materialized` → `verified` with evidence only |
+| runtime MCP status | opencode v2 `/api/mcp` joined by `(host, server)`; `needs_auth`/`failed` surface as row issues, healthy live states are displayed |
 | removal ops keyed on landing shape | `move-to-trash` / `drop-entry` / `drop-server` / `prune-record` |
 | source adapters: ClawHub (skills), pi.dev (plugins), operator git marketplaces (plugin/skill axes), GitHub + npm as install resolvers | ClawHub installs from its own versioned store; git marketplaces install through each runtime's own command chain |
 | console: three pages, harness rail, installed/market tabs, list ⇄ card, description translation | — |
 
-Not shipped — see ADR-0015 "Deferred" for the authoritative list: MCP landings beyond opencode,
-plugin landings beyond opencode/pi/claude/antigravity/factory/kimi, npm-as-skill, the console
+Not shipped — see ADR-0015 "Deferred" for the authoritative list: MCP landings beyond
+opencode/pi/omp (claude/codex need a CLI-materialized landing), plugin landings beyond
+opencode/pi/claude/antigravity/factory/kimi, npm-as-skill, the console
 MCP install gate, config-declared sources, write-ahead intent, store/trash GC, adopt, harness
 export/import, `canonicalKey` alias overrides, `shadowed`/`profile` producers.
 
@@ -565,8 +657,10 @@ echoed verbatim.
 - `dsh` row of the matrix: `dsh.ts` is profile-based, and no landing has been verified for it.
   Unsupported until one is.
 - OpenCode global skills: `~/.agents/skills` (universal) or `~/.config/opencode/skills`; never both.
-- Additional MCP landings (Claude, Cursor) must be verified against vendor docs before entering
-  `HOSTS`; an unverified landing is not wired.
+- Additional MCP landings (claude, codex, cursor) must be verified against vendor docs before entering
+  `HOSTS`; an unverified landing is not wired. opencode, pi and omp are wired (§ADR-0015 D8.13):
+  pi/omp are dedicated `mcp.json` files with `{command, args, env}` and `${KEY}` references, while
+  claude's `~/.claude.json` is runtime-owned state and codex's config is comment-carrying TOML.
 - `canonicalKey` alias override (catalog `overrides-store` precedent) — needed before any cross-source
   merge, otherwise dedupe would silently merge unrelated artifacts.
 - Directory-name collisions: two sources can publish the same `name` for different `canonicalKey`.

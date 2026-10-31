@@ -6,9 +6,12 @@ import { resolveEnvName } from '../../config/env.js';
 import { readConfigJson, writeConfigJson } from '../config-file.js';
 import { parsePluginSpec } from './discover.js';
 import { HOST_ADAPTERS, adapterFor, isPluginHost, isMcpHost } from './adapters/index.js';
-import { skillRoots } from './inventory.js';
-import { claimOwner, readManifest, releaseClaim, writeManifest } from './manifest.js';
+import { defaultExec } from './writers/plugin.js';
+import { echoArgv, MCP_CLI_TIMEOUT_MS } from './writers/mcp.js';
+import { readMcpLandingFile } from './mcp-entry.js';
 import { recordApply } from './ledger.js';
+import { claimOwner, readManifest, releaseClaim, writeManifest } from './manifest.js';
+import { skillRoots } from './inventory.js';
 import { copyDrift } from './drift.js';
 import type { ArtifactRecord, CopyRecord, DiscoveredRemoval, HarnessHostId } from '../types.js';
 
@@ -59,9 +62,12 @@ export interface PlanAction {
   /**
    * `move-to-trash` (a path we own), `prune-only` (the copy or member is already gone), `prune-record`
    * (package-manager-owned with no declaration file to edit), `drop-entry` (one string inside a JSON
-   * array) or `drop-server` (one member of a JSON object, e.g. a server in `mcp`).
+   * array), `drop-server` (one member of a JSON object, e.g. a server in `mcp`), or `cli-remove`
+   * (a CLI-materialized landing: the runtime's own remove verb runs, §D8.13).
    */
-  op: 'move-to-trash' | 'prune-only' | 'prune-record' | 'drop-entry' | 'drop-server';
+  op: 'move-to-trash' | 'prune-only' | 'prune-record' | 'drop-entry' | 'drop-server' | 'cli-remove';
+  /** The runtime's own remove command, for a `cli-remove` op — echoed by the plan, run by the apply. */
+  cli?: { echo: string; runs: { command: string; args: string[] }[] };
   /** The manifest copy key: a resolved path, or the identity token for an `external` copy. */
   path: string;
   /** The config file a `drop-*` op edits — display + the write target. */
@@ -295,6 +301,54 @@ export function planRemove(items: RemoveItem[]): RemovePlan | { error: string } 
         });
         continue;
       }
+      if (removal.op === 'cli-remove') {
+        // CLI-materialized landing (§D8.13): the inverse is the runtime's own remove verb. Presence
+        // is checked on the landing file (read-only), so an already-gone server answers prune-only
+        // instead of a CLI run that would report "not found".
+        const adapter = adapterFor(removal.host);
+        const cliSpec = adapter && isMcpHost(adapter) ? adapter.mcpCliSpec?.() ?? null : null;
+        if (!adapter || !isMcpHost(adapter) || !cliSpec) {
+          blocked.push({ path: '', code: 'not-found', message: `host '${removal.host}' has no CLI-materialized MCP landing` });
+          continue;
+        }
+        const landing = adapter.configPath({ projectRoot: process.cwd() }, 'global');
+        const file = landing.ok ? landing.path : '';
+        let present = false;
+        if (file) {
+          const parsedLanding = readMcpLandingFile(file, adapter.mcpLandingFormat?.() ?? 'json');
+          if (parsedLanding.ok) {
+            const container = parsedLanding.config[adapter.container];
+            present = !!container && typeof container === 'object' && !Array.isArray(container) && removal.entry in (container as Record<string, unknown>);
+          }
+        }
+        if (!present) {
+          actions.push({
+            op: 'prune-only',
+            path: file || removal.host,
+            host: removal.host,
+            artifactId: item.artifactId ?? null,
+            dirty: false,
+            exists: false,
+          });
+          continue;
+        }
+        const remove = cliSpec.removeArgs(removal.entry, 'global');
+        if (!remove.ok) {
+          blocked.push({ path: file, code: 'not-found', message: remove.reason });
+          continue;
+        }
+        actions.push({
+          op: 'cli-remove',
+          path: file,
+          host: removal.host,
+          artifactId: item.artifactId ?? null,
+          dirty: false,
+          exists: true,
+          entry: removal.entry,
+          cli: { echo: echoArgv(cliSpec.command, remove.args), runs: [{ command: cliSpec.command, args: remove.args }] },
+        });
+        continue;
+      }
       const parsed = fs.existsSync(removal.file) ? readConfigJson(removal.file) : null;
       if (parsed === null) {
         blocked.push({ path: removal.file, code: 'not-found', message: 'config file does not exist' });
@@ -348,6 +402,30 @@ export function planRemove(items: RemoveItem[]): RemovePlan | { error: string } 
       // the runtime's own declaration (`settings.json` `packages[]`), so the plan drops that entry
       // when the host catalog names the file — the same op a discovered row of the same package gets.
       if (copy?.external === true) {
+        // A CLI-materialized MCP copy (§D8.13) has no declaration file — its inverse IS the
+        // runtime's own remove verb.
+        const adapter0 = adapterFor(copy.host);
+        const cliSpec = artifact?.kind === 'mcp' && adapter0 && isMcpHost(adapter0) ? adapter0.mcpCliSpec?.() ?? null : null;
+        if (cliSpec && artifact) {
+          const remove = cliSpec.removeArgs(artifact.name, copy.scope);
+          if (!remove.ok) {
+            blocked.push({ path: copy.path, code: 'not-found', message: remove.reason });
+            continue;
+          }
+          actions.push({
+            op: 'cli-remove',
+            path: copy.path,
+            host: copy.host,
+            artifactId: item.artifactId ?? null,
+            dirty: false,
+            // The token is not a location: nothing to stat, and the apply must not fingerprint it.
+            exists: false,
+            entry: artifact.name,
+            cli: { echo: echoArgv(cliSpec.command, remove.args), runs: [{ command: cliSpec.command, args: remove.args }] },
+          });
+          external.push({ path: copy.path, host: copy.host });
+          continue;
+        }
         const declared = declaredFile(copy.host);
         const keys = declared && artifact ? matchingEntries(declared.file, [declared.container], artifact) : null;
         if (declared && keys === null && artifact) {
@@ -587,9 +665,8 @@ function externalPruneMessage(count: number, declared: boolean): string {
  *
  * `drop-entry` / `drop-server` edit a runtime's config file through `createBackup` + `safeWriteJson`
  * — the same discipline that wrote the member — and never release the path's claim: the file still
- * exists and commonly holds other artifacts' members.
  */
-export function applyRemove(planId: string, opts: { discardLocalEdits?: boolean } = {}): ApplyResult {
+export async function applyRemove(planId: string, opts: { discardLocalEdits?: boolean } = {}): Promise<ApplyResult> {
   pruneExpired();
   const plan = plans.get(planId);
   if (!plan) return { ok: false, code: 'plan_unknown', message: 'plan expired or never existed' };
@@ -613,8 +690,25 @@ export function applyRemove(planId: string, opts: { discardLocalEdits?: boolean 
   let moved = false;
   let dropEntryCount = 0;
   let dropServerCount = 0;
+  let cliRemoveCount = 0;
 
   for (const action of plan.actions) {
+    if (action.op === 'cli-remove') {
+      // The runtime's own remove verb (§D8.13): the echoed argv runs verbatim. The copy's token is
+      // pushed to `removed` either way, so the manifest record drops out — the store truth lives
+      // with the runtime, and a "not found" answer from the CLI means the record was already stale.
+      if (action.cli) {
+        for (const step of action.cli.runs) {
+          const result = await defaultExec(step.command, step.args, MCP_CLI_TIMEOUT_MS);
+          if (result.code !== 0) {
+            return { ok: false, code: 'apply_failed', message: `${action.cli.echo} exited ${result.code}: ${result.stderr.slice(0, 200)}` };
+          }
+        }
+      }
+      cliRemoveCount += 1;
+      removed.push(action.path);
+      continue;
+    }
     if (action.op === 'drop-entry' || action.op === 'drop-server') {
       const result =
         action.op === 'drop-entry'
@@ -633,10 +727,10 @@ export function applyRemove(planId: string, opts: { discardLocalEdits?: boolean 
     if (action.op !== 'prune-record') {
       if (action.exists) {
         fs.mkdirSync(trashDir, { recursive: true });
+        const hostTag = action.host.replace(/[^\w.-]+/g, '-') || 'unknown';
         // The host label is caller-shaped (a discovered row's descriptor carries it), so it is
         // flattened to a safe file-name token before it joins the trash path — a `../` in it would
         // otherwise land the moved directory outside the trash.
-        const hostTag = action.host.replace(/[^\w.-]+/g, '-') || 'unknown';
         const dest = path.join(trashDir, `${hostTag}-${path.basename(action.path)}`);
         try {
           fs.renameSync(action.path, dest);
@@ -708,6 +802,9 @@ export function applyRemove(planId: string, opts: { discardLocalEdits?: boolean 
   if (plan.external.length > 0) {
     const declared = plan.actions.some((action) => action.op === 'drop-entry' && action.exists === false);
     parts.push(externalPruneMessage(plan.external.length, declared));
+  }
+  if (cliRemoveCount > 0) {
+    parts.push(`removed ${cliRemoveCount} server(s) through the host's own CLI`);
   }
   const message = parts.length > 0 ? parts.join('; ') : undefined;
 

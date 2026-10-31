@@ -27,7 +27,7 @@ const clientSlots = (c: ClientStatus): { key: string; value?: string; default?: 
  * These get the shared model-list editor (none / custom / follow).
  */
 const supportsExtraModels = (name: string): boolean =>
-  name === 'opencode' || name === 'dsh' || name === 'pi' || name === 'omp' || name === 'grok';
+  name === 'opencode' || name === 'dsh' || name === 'pi' || name === 'omp' || name === 'grok' || name === 'kimi';
 
 /** Backend machine reasonCodes (ClientActionResult) → i18n keys (opencode-proxy failure modes). */
 const CLIENT_REASON_KEY: Record<string, string> = {
@@ -66,7 +66,7 @@ const MODEL_CHIP_LIMIT = 12;
 const VIRTUAL_TIER_IDS = ['auto', 'lite', 'plus', 'pro', 'ultra'];
 
 /** Adapter default virtual block when a custom-mode setup omits `virtualModels`:
- *  opencode/dsh/pi/omp inject the full block, grok injects none (its own
+ *  opencode/dsh/pi/omp/kimi inject the full block, grok injects none (its own
  *  historical default). Keep in sync with the adapters. */
 const virtualDefaultFor = (clientName: string): string[] =>
   clientName === 'grok' ? [] : [...VIRTUAL_TIER_IDS];
@@ -971,6 +971,19 @@ export const ClientsPage: React.FC = () => {
                   ) : (
                     <span className="badge" style={{ background: 'var(--chip-bg)', color: 'var(--text-dim)' }}>
                       {t('overview.notHooked')}
+                    </span>
+                  )}
+                  {c.version && (
+                    <span
+                      className="badge"
+                      title={c.version.meetsMin ? t('clients.versionOk') : t('clients.versionBelow', { min: c.version.min || '?' })}
+                      style={
+                        c.version.meetsMin
+                          ? { background: 'var(--chip-bg)', color: 'var(--text-dim)', fontFamily: FONT_MONO, fontSize: '10px' }
+                          : { background: 'var(--warning-bg, rgba(234,179,8,.15))', color: 'var(--warning, #eab308)', fontFamily: FONT_MONO, fontSize: '10px' }
+                      }
+                    >
+                      v{c.version.current}
                     </span>
                   )}
                   {!open && renderActionButtons(c, false)}

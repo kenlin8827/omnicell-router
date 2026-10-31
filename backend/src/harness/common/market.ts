@@ -244,7 +244,8 @@ export async function browseSource(
  * manifest path wins by construction (it narrows the scan scope).
  *
  * Persistence is harness-domain state, owned here like the manifest and the applies ledger:
- *   - config   `<ocrHome>/harness/marketplaces.json`         — the operator's source list
+ *   - config   `<ocrHome>/harness/plugin-market.json`         — the operator's source list,
+ *              bucketed per harness (`shared` = no pin, read by every served tab)
  *   - snapshots `<ocrHome>/harness/marketplaces/<slug>.json`  — latest probe + bounded history
  *
  * A rescan (opt-in, per source) re-probes and diffs against the last snapshot: it REPORTS
@@ -302,9 +303,69 @@ function extensionDirToken(dir: string): string {
     .slice(0, 24) || 'layer';
 }
 
-/** Config file for the operator's source list. */
-function marketplacesConfigPath(): string {
+/**
+ * Persisted sources, one FILE per consumer axis (ADR-0015 §D9):
+ *
+ *   `harness/plugin-market.json`  `{ "shared": [...], "<harness>": [...] }` — the plugin axis. A
+ *                                 bucket IS the scope: unpinned sources sit in `shared` and every
+ *                                 served tab reads them; a pinned source sits in its harness bucket.
+ *                                 The record carries no `harness` field, so ownership is visible at
+ *                                 a glance instead of being buried per entry.
+ *   `harness/skill-market.json`   `{ "shared": [...] }` — the skill axis. Skills are global by
+ *                                 definition (one directory read by every agent), so there is
+ *                                 exactly one bucket and no harness key to get wrong.
+ *   `harness/mcp-market.json`     `{ "shared": [...] }` — the MCP axis. A package source names a
+ *                                 registry entry, not a host-bound form: the launch it resolves
+ *                                 (`npx`/`bunx`/`uvx`) is the same in every runtime, so the axis has
+ *                                 one bucket. Legacy harness buckets are read as shared and
+ *                                 flattened on the next mutation.
+ *
+ * Identity stays GLOBAL across all three files: `slug` is one `mp-<slug>` sourceId for the whole
+ * registry, the skill and MCP axes address entries without a harness, and catalog row keys embed
+ * the sourceId — a twin slug in two files would answer one identity twice.
+ */
+export type SourceAxis = 'plugin' | 'skill' | 'mcp';
+
+function pluginMarketFile(): string {
+  return path.join(getOcrHomeDir(), 'harness', 'plugin-market.json');
+}
+
+function skillMarketFile(): string {
+  return path.join(getOcrHomeDir(), 'harness', 'skill-market.json');
+}
+
+function mcpMarketFile(): string {
+  return path.join(getOcrHomeDir(), 'harness', 'mcp-market.json');
+}
+
+/** The flat list both files replaced (one array with a `harness` field per entry). Read ONCE, then
+ *  renamed: a downgraded build must not keep writing a second, silently divergent store. */
+function legacyMarketplacesFile(): string {
   return path.join(getOcrHomeDir(), 'harness', 'marketplaces.json');
+}
+
+/** Bucket for sources that pin no harness (the only bucket on the skill axis). */
+const SHARED_BUCKET = 'shared';
+
+/** Drop the in-memory scope markers on write: the file (and the bucket) carries them. */
+function stripScope(entry: MarketplaceEntry): MarketplaceEntry {
+  const { harness: _harness, axis: _axis, ...rest } = entry;
+  return rest;
+}
+
+/** Validate + normalize one persisted record; `axis` is the file and `scope` the bucket it came
+ *  from — both win over whatever the record itself claims. */
+function normalizeStoredEntry(raw: MarketplaceEntry, axis: SourceAxis, scope?: string): MarketplaceEntry | null {
+  if (!raw || typeof raw.slug !== 'string' || typeof raw.repo !== 'string') return null;
+  const { harness: _harness, axis: _axis, ...rest } = raw;
+  const scoped = normalizeExtensionDir(raw.extensionDir);
+  return {
+    ...rest,
+    ...(raw.type === 'npm' || raw.type === 'pypi' ? { type: raw.type } : { type: 'github' as const }),
+    extensionDir: typeof scoped === 'string' ? scoped : null,
+    ...(scope ? { harness: scope as HarnessHostId } : {}),
+    axis,
+  };
 }
 
 export function snapshotPath(slug: string, harness?: HarnessHostId | string | null): string {
@@ -340,13 +401,15 @@ export interface MarketplaceEntry {
   slug: string;
   /**
    * GitHub: `owner/repo`. NPM: the package name, or `@scope/*` for a whole scope as one source.
+   * PyPI: one package name (uvx has no scope concept).
    */
   repo: string;
   /**
    * Source type (ADR-0015 §D9 amendment): `github` is the default. An `npm` source is a package
-   * (or a scope prefix) whose rows install through the npm resolver.
+   * (or a scope prefix) whose rows install through the npm resolver; a `pypi` source is one
+   * package launched by `uvx`. Both package types serve the MCP axis as well as the plugin axis.
    */
-  type?: 'github' | 'npm';
+  type?: 'github' | 'npm' | 'pypi';
   enabled: boolean;
   addedAt: number;
   rescan: {
@@ -355,9 +418,10 @@ export interface MarketplaceEntry {
     intervalMs: number;
   };
   /**
-   * Legacy per-harness pin: the harness whose add form registered this source. Support is now
-   * DETECTED from the repository's own form directories (`snapshot.hosts`), so this only
-   * disambiguates a manually pinned `extensionDir` and pre-detection snapshots.
+   * Plugin-axis per-harness pin: the harness whose add form registered this source. Support is
+   * otherwise DETECTED from the repository's own form directories (`snapshot.hosts`), so this only
+   * disambiguates a manually pinned `extensionDir` and pre-detection snapshots. The MCP axis never
+   * sets it: a package source is shared by every MCP-capable harness.
    */
   harness?: HarnessHostId | null;
   /**
@@ -365,6 +429,9 @@ export interface MarketplaceEntry {
    * `null`/absent = detect every served harness's form. When set, the probe never looks outside it.
    */
   extensionDir?: string | null;
+  /** Which store file holds this entry (`plugin-market.json` / `skill-market.json` /
+   *  `mcp-market.json`). In-memory only: the file IS the axis, so it is never persisted. */
+  axis?: SourceAxis;
 }
 
 export interface MarketplaceRow {
@@ -390,6 +457,18 @@ export interface MarketplacePluginRow {
   description: string | null;
 }
 
+/** One MCP package a package-typed source resolved. An MCP source is ONE package (no scope
+ *  listing): the row records what the package metadata said at probe time, while the install
+ *  handle stays `<npm|pypi>:<name>` so a later install resolves and pins the concrete version. */
+export interface MarketplaceMcpRow {
+  /** Package name, as the registry spells it (`@scope/name` or `name`). */
+  name: string;
+  /** Package description, `null` when the registry publishes none. */
+  description: string | null;
+  /** Registry version seen at probe time; informational, never an install pin. */
+  version: string | null;
+}
+
 export interface MarketplaceDiff {
   probedAt: number;
   shaChanged: boolean;
@@ -410,6 +489,8 @@ export interface MarketplaceSnapshot {
   extensionDir: string | null;
   /** Installable plugins declared by the manifest (`plugins[]`, relative in-repo sources). */
   plugins: MarketplacePluginRow[];
+  /** MCP packages a `npm` / `pypi` source resolved. Always empty for git sources. */
+  mcps?: MarketplaceMcpRow[];
   /**
    * Harnesses this repository's own forms declare support for — detected from the tree
    * (`<harness extensionDir>/` presence, or a root manifest). This is what the harvest and the
@@ -469,37 +550,136 @@ export type ProbeOutcome =
 // Config store
 // ---------------------------------------------------------------------------
 
-/** Read entries tolerantly: unknown fields are preserved, malformed extension scopes are dropped
- *  (a source registered before scoping existed keeps its whole-repository scan). */
-function readConfigFile(): { marketplaces: MarketplaceEntry[] } {
+/** Plugin axis: one bucket per harness plus `shared`; a bucket IS the scope. */
+function readPluginEntries(): MarketplaceEntry[] {
   try {
-    const parsed = JSON.parse(fs.readFileSync(marketplacesConfigPath(), 'utf8')) as {
-      marketplaces?: MarketplaceEntry[];
-    };
-    if (!Array.isArray(parsed.marketplaces)) return { marketplaces: [] };
-    return {
-      marketplaces: parsed.marketplaces
-        .filter((e) => e && typeof e.slug === 'string' && typeof e.repo === 'string')
-        .map((e) => {
-          const scoped = normalizeExtensionDir(e.extensionDir);
-          return {
-            ...e,
-            ...(e.type === 'npm' ? { type: 'npm' as const } : { type: 'github' as const }),
-            extensionDir: typeof scoped === 'string' ? scoped : null,
-            ...(typeof e.harness === 'string' ? { harness: e.harness } : {}),
-          };
-        }),
-    };
+    const parsed = JSON.parse(fs.readFileSync(pluginMarketFile(), 'utf8')) as Record<string, unknown>;
+    const entries: MarketplaceEntry[] = [];
+    for (const [bucket, list] of Object.entries(parsed)) {
+      if (!Array.isArray(list)) continue;
+      const scope = bucket === SHARED_BUCKET ? undefined : bucket;
+      for (const raw of list as MarketplaceEntry[]) {
+        const entry = normalizeStoredEntry(raw, 'plugin', scope);
+        if (entry) entries.push(entry);
+      }
+    }
+    return entries;
   } catch {
-    return { marketplaces: [] };
+    return [];
   }
 }
 
+/** MCP axis: ONE shared scope. A package source names a registry read whose launch is
+ *  host-neutral (only the landing file differs), so every MCP-capable harness reads the same
+ *  entries. Legacy per-harness buckets are accepted as shared on read and flattened by the next
+ *  write — a source added before the amendment must not disappear from sibling tabs. */
+function readMcpEntries(): MarketplaceEntry[] {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(mcpMarketFile(), 'utf8')) as Record<string, unknown>;
+    const entries: MarketplaceEntry[] = [];
+    for (const list of Object.values(parsed)) {
+      if (!Array.isArray(list)) continue;
+      for (const raw of list as MarketplaceEntry[]) {
+        const entry = normalizeStoredEntry(raw, 'mcp');
+        if (entry) entries.push(entry);
+      }
+    }
+    return entries;
+  } catch {
+    return [];
+  }
+}
+
+/** Skill axis: one shared bucket — a skill is global, so a harness key here would be a lie. */
+function readSkillEntries(): MarketplaceEntry[] {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(skillMarketFile(), 'utf8')) as
+      | { shared?: MarketplaceEntry[] }
+      | MarketplaceEntry[];
+    const list = Array.isArray(parsed) ? parsed : Array.isArray(parsed.shared) ? parsed.shared : [];
+    return list
+      .map((raw) => normalizeStoredEntry(raw, 'skill'))
+      .filter((entry): entry is MarketplaceEntry => entry !== null);
+  } catch {
+    return [];
+  }
+}
+
+/** Read entries tolerantly: unknown fields are preserved, malformed extension scopes are dropped
+ *  (a source registered before scoping existed keeps its whole-repository scan). */
+function readConfigFile(): { marketplaces: MarketplaceEntry[] } {
+  if (!fs.existsSync(pluginMarketFile()) && !fs.existsSync(skillMarketFile()) && !fs.existsSync(mcpMarketFile())) {
+    const migrated = migrateLegacyStore();
+    if (migrated) return { marketplaces: migrated };
+  }
+  return { marketplaces: [...readSkillEntries(), ...readPluginEntries(), ...readMcpEntries()] };
+}
+
+/**
+ * One-time upgrade from the flat `marketplaces.json` list. Each entry lands in the axis that
+ * would have SHOWN it before the split: a harness pin is a plugin source by construction, and an
+ * unpinned source with skill rows but no plugin rows was a skill source (snapshot inference, since
+ * the old file stored no axis). The legacy file is then renamed, never deleted: a downgraded build
+ * must not keep writing a second, silently divergent store.
+ */
+function migrateLegacyStore(): MarketplaceEntry[] | null {
+  let legacy: { marketplaces?: MarketplaceEntry[] };
+  try {
+    legacy = JSON.parse(fs.readFileSync(legacyMarketplacesFile(), 'utf8'));
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(legacy.marketplaces)) return null;
+  const migrated: MarketplaceEntry[] = [];
+  for (const raw of legacy.marketplaces) {
+    const entry = normalizeStoredEntry(raw, 'plugin', typeof raw?.harness === 'string' ? raw.harness : undefined);
+    if (!entry) continue;
+    if (!entry.harness) {
+      const snap = latestSnapshot(entry.slug, null);
+      if (snap && snap.plugins.length === 0 && snap.rows.length > 0) entry.axis = 'skill';
+    }
+    migrated.push(entry);
+  }
+  writeConfigFile(migrated);
+  try {
+    const legacyFile = legacyMarketplacesFile();
+    fs.renameSync(legacyFile, legacyFile.replace(/\.json$/, '.legacy.json'));
+  } catch {
+    // best-effort: the new files are already written; the old one is then simply stale
+  }
+  return migrated;
+}
+
+/** Deterministic layout: the shared bucket first, then harness buckets alphabetically. */
+function orderedBuckets(buckets: Record<string, MarketplaceEntry[]>): Record<string, MarketplaceEntry[]> {
+  const ordered: Record<string, MarketplaceEntry[]> = { [SHARED_BUCKET]: buckets[SHARED_BUCKET] ?? [] };
+  for (const bucket of Object.keys(buckets).filter((key) => key !== SHARED_BUCKET).sort()) {
+    ordered[bucket] = buckets[bucket] ?? [];
+  }
+  return ordered;
+}
+
 function writeConfigFile(entries: MarketplaceEntry[]): void {
-  const file = marketplacesConfigPath();
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  if (fs.existsSync(file)) createBackup(file);
-  safeWriteJson(file, { marketplaces: entries });
+  const write = (file: string, data: unknown) => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    if (fs.existsSync(file)) createBackup(file);
+    safeWriteJson(file, data);
+  };
+  const pluginBuckets: Record<string, MarketplaceEntry[]> = { [SHARED_BUCKET]: [] };
+  const mcpBuckets: Record<string, MarketplaceEntry[]> = { [SHARED_BUCKET]: [] };
+  for (const entry of entries) {
+    if (entry.axis === 'skill') continue;
+    // The MCP axis has no harness scope: a package source is read by every capable tab, so it
+    // always lands in `shared` and any legacy pin is flattened here.
+    const bucket = entry.axis === 'mcp' ? SHARED_BUCKET : (entry.harness ?? SHARED_BUCKET);
+    const target = entry.axis === 'mcp' ? mcpBuckets : pluginBuckets;
+    (target[bucket] ??= []).push(stripScope(entry));
+  }
+  write(pluginMarketFile(), orderedBuckets(pluginBuckets));
+  write(mcpMarketFile(), orderedBuckets(mcpBuckets));
+  write(skillMarketFile(), {
+    [SHARED_BUCKET]: entries.filter((entry) => entry.axis === 'skill').map(stripScope),
+  });
 }
 
 export function listMarketplaceEntries(harness?: HarnessHostId | string | null): MarketplaceEntry[] {
@@ -521,24 +701,26 @@ export function marketplaceSourceId(slug: string): string {
   return `mp-${slug}`;
 }
 
-export function validateSlug(slug: string, harness?: HarnessHostId | string | null): string | null {
+export function validateSlug(slug: string): string | null {
   if (!SLUG_RE.test(slug)) return `invalid slug '${slug}' (expected ${SLUG_RE})`;
-  if (listMarketplaceEntries(harness).some((e) => e.slug === slug)) return `slug '${slug}' is already configured`;
+  if (listMarketplaceEntries().some((e) => e.slug === slug)) return `slug '${slug}' is already configured`;
   return null;
 }
 
 /**
- * Pick the slug for a (repo, extension directory) pair. The repo basename is the slug; when that
- * basename already names ANOTHER layer of the same repository, the layer joins the slug
- * (`ponytail-pi-extension`), so one repo can ship a pi form and a claude form as two sources.
- * Re-registering the same (repo, directory) pair is a conflict, never a silent second entry.
+ * Name the scope that already holds a repository. A layer-pinned entry serves exactly ONE harness,
+ * a shared entry serves every harness whose form its snapshot recorded — so only the pin is stated
+ * as an owner, and the layer is always stated (it is why a sibling tab lists nothing).
  */
-export function resolveSlug(
-  repo: string,
-  extensionDir: string | null | undefined,
-  harness?: HarnessHostId | string | null,
-): { ok: true; slug: string } | { ok: false; message: string } {
-  const base =
+function duplicateOwner(entry: MarketplaceEntry): string {
+  const owner = entry.harness ? ` for ${entry.harness}` : '';
+  const layer = entry.extensionDir ? ` (layer ${entry.extensionDir})` : '';
+  return `${owner}${layer}`;
+}
+
+/** The repository's own slug candidate: its lowercase basename, punctuation folded to dashes. */
+function slugBase(repo: string): string {
+  return (
     repo
       .replace(/\/\*$/, '')
       .split('/')
@@ -546,40 +728,126 @@ export function resolveSlug(
       ?.toLowerCase()
       .replace(/^@/, '')
       .replace(/[^a-z0-9-]/g, '-')
-      .replace(/^-+|-+$/g, '') || 'source';
-  const entries = listMarketplaceEntries(harness);
-  const dir = extensionDir ?? null;
-  const exact = entries.find((e) => e.repo === repo && (e.extensionDir ?? null) === dir);
-  if (exact) return { ok: false, message: `'${repo}'${dir ? ` (${dir})` : ''} is already configured as '${exact.slug}'` };
-  const allEntries = listMarketplaceEntries();
-  const repoLayerTaken = allEntries.some((e) => e.repo === repo && (e.extensionDir ?? null) !== dir);
-  const taken = new Set(allEntries.map((e) => e.slug));
-  if (!taken.has(base) && !repoLayerTaken) return { ok: true, slug: base };
-  // Another layer of the same repo: the extension directory disambiguates. A different repository
-  // that happens to share a basename keeps the historical conflict (never silently aliased).
-  if (!dir) return { ok: false, message: `slug '${base}' is already configured` };
-  const token = extensionDirToken(dir);
+      .replace(/^-+|-+$/g, '') || 'source'
+  );
+}
+
+/** `base` plus one disambiguating token (`<base>-<token>`), suffixed if the store already has it. */
+function derivedSlug(base: string, token: string, taken: Set<string>): string {
   let candidate = `${base}-${token}`.slice(0, 40).replace(/-+$/g, '');
   for (let i = 2; taken.has(candidate); i++) candidate = `${base}-${token}-${i}`.slice(0, 40).replace(/-+$/g, '');
-  if (!SLUG_RE.test(candidate)) return { ok: false, message: `cannot derive a slug for '${repo}' (${dir})` };
+  return candidate;
+}
+
+/**
+ * Pick the slug for a (repo, extension directory) pair. The repo basename is the slug; when that
+ * basename already names ANOTHER layer of the same repository, the layer joins the slug
+ * (`ponytail-pi-extension`), so one repo can ship a pi form and a claude form as two sources.
+ * Re-registering the same (repo, directory) pair is a conflict, never a silent second entry.
+ *
+ * The duplicate answer is STORE-WIDE, never per harness: a slug is one `mp-<slug>` sourceId for
+ * the whole registry (`host/registry.ts` resolves it without a harness, and the skill axis
+ * addresses entries by slug alone). `code` lets a caller act on the CAUSE — `repo_taken` is the
+ * repository itself, which a second harness answers with its OWN scoped source
+ * (`resolveScopedSlug`) instead of a twin slug. The message names the holding entry's pin and
+ * layer, because the tab the operator is working in lists only its own scope.
+ */
+export function resolveSlug(
+  repo: string,
+  extensionDir: string | null | undefined,
+): {
+  ok: true;
+  slug: string;
+} | {
+  ok: false;
+  code: 'repo_taken' | 'slug_taken' | 'slug_unavailable';
+  /** Template values for the console's localized copy (`{repo}` `{slug}` `{harness}` `{layer}`). */
+  params: { repo: string; slug: string; harness?: string; layer?: string };
+  message: string;
+} {
+  const base = slugBase(repo);
+  const entries = listMarketplaceEntries();
+  const dir = extensionDir ?? null;
+  const exact = entries.find((e) => e.repo === repo && (e.extensionDir ?? null) === dir);
+  if (exact) {
+    return {
+      ok: false,
+      code: 'repo_taken',
+      params: { repo, slug: exact.slug, ...(exact.harness ? { harness: exact.harness } : {}), ...(exact.extensionDir ? { layer: exact.extensionDir } : {}) },
+      message: `'${repo}'${dir ? ` (${dir})` : ''} is already configured as '${exact.slug}'${duplicateOwner(exact)}`,
+    };
+  }
+  const layerHolder = entries.find((e) => e.repo === repo);
+  if (!dir && layerHolder) {
+    // The same repository under another layer: a layer-less add is ONE repository twice in the
+    // global store, so the answer names the entry that already carries it.
+    return {
+      ok: false,
+      code: 'repo_taken',
+      params: { repo, slug: layerHolder.slug, ...(layerHolder.harness ? { harness: layerHolder.harness } : {}), ...(layerHolder.extensionDir ? { layer: layerHolder.extensionDir } : {}) },
+      message: `'${repo}' is already configured as '${layerHolder.slug}'${duplicateOwner(layerHolder)}`,
+    };
+  }
+  const taken = new Set(entries.map((e) => e.slug));
+  if (!taken.has(base) && !layerHolder) return { ok: true, slug: base };
+  // Another layer of the same repo: the extension directory disambiguates. A different repository
+  // that happens to share a basename keeps the historical conflict (never silently aliased).
+  if (!dir) {
+    const holder = entries.find((e) => e.slug === base);
+    return {
+      ok: false,
+      code: 'slug_taken',
+      params: { repo: holder?.repo ?? repo, slug: base },
+      message: `slug '${base}' is already configured${holder ? ` by '${holder.repo}'` : ''}`,
+    };
+  }
+  const candidate = derivedSlug(base, extensionDirToken(dir), taken);
+  if (!SLUG_RE.test(candidate)) {
+    return { ok: false, code: 'slug_unavailable', params: { repo, slug: base }, message: `cannot derive a slug for '${repo}' (${dir})` };
+  }
+  return { ok: true, slug: candidate };
+}
+
+/** `resolveSlug`'s refusal codes as console reasons (ADR-0015 §D11): the two duplicate causes stay
+ *  distinct so the message names the occupying repository instead of echoing a slug. Shared by the
+ *  plugin and skill registration paths — the collision logic is one store rule, not two. */
+export const SLUG_FAILURE_REASON = {
+  repo_taken: 'already_configured',
+  slug_taken: 'slug_taken',
+  slug_unavailable: 'invalid_source',
+} as const;
+
+/**
+ * The slug for a repository that ANOTHER harness already carries and this one wants its own copy
+ * of: no extension layer is named, so the HARNESS is the disambiguating token
+ * (`mp-<repo>-<harness>`). A harness-scoped source is a distinct identity — it is enabled, synced
+ * and removed on its own tab — while the slug stays one `mp-` id for the whole store.
+ */
+export function resolveScopedSlug(repo: string, harness: string): { ok: true; slug: string } | { ok: false; message: string } {
+  const base = slugBase(repo);
+  const taken = new Set(listMarketplaceEntries().map((e) => e.slug));
+  const candidate = derivedSlug(base, extensionDirToken(harness), taken);
+  if (!SLUG_RE.test(candidate)) return { ok: false, message: `cannot derive a slug for '${repo}' (${harness})` };
   return { ok: true, slug: candidate };
 }
 
 export function addMarketplaceEntry(input: {
   slug: string;
   repo: string;
-  type?: 'github' | 'npm';
+  type?: 'github' | 'npm' | 'pypi';
   catalog?: string;
   rescan?: { enabled?: boolean; intervalMs?: number };
   harness?: HarnessHostId | null;
   extensionDir?: string | null;
+  /** Store file the entry belongs to: `plugin` (default), the global `skill` axis, or `mcp`. */
+  axis?: SourceAxis;
 }): MarketplaceEntry {
   const scoped = normalizeExtensionDir(input.extensionDir);
   const entry: MarketplaceEntry = {
     slug: input.slug,
     catalog: input.catalog?.trim() || 'default',
     repo: input.repo,
-    type: input.type === 'npm' ? 'npm' : 'github',
+    type: input.type === 'npm' || input.type === 'pypi' ? input.type : 'github',
     enabled: true,
     addedAt: Date.now(),
     rescan: {
@@ -588,14 +856,14 @@ export function addMarketplaceEntry(input: {
     },
     ...(input.harness ? { harness: input.harness } : {}),
     extensionDir: typeof scoped === 'string' ? scoped : null,
+    axis: input.axis === 'skill' || input.axis === 'mcp' ? input.axis : 'plugin',
   };
   const entries = readConfigFile().marketplaces;
-  // Conflict check scoped by harness
-  const conflict = entries.some(
-    (e) => e.slug === input.slug && ((!input.harness && !e.harness) || (input.harness && e.harness === input.harness)),
-  );
-  if (conflict) {
-    throw new Error(`slug '${input.slug}' is already configured${input.harness ? ` for ${input.harness}` : ''}`);
+  // One slug = one `mp-<slug>` sourceId for the WHOLE store (see `resolveSlug`): a twin under
+  // another harness would resolve to whichever entry the registry reads first.
+  const clash = entries.find((e) => e.slug === input.slug);
+  if (clash) {
+    throw new Error(`slug '${input.slug}' is already configured${clash.harness ? ` for ${clash.harness}` : ''}`);
   }
   entries.push(entry);
   writeConfigFile(entries);
@@ -624,11 +892,14 @@ export function updateMarketplaceEntry(
  *  uninstalled through the normal removal route — the ledger carries the provenance. */
 export function removeMarketplaceEntry(slug: string, harness?: HarnessHostId | string | null): boolean {
   const entries = readConfigFile().marketplaces;
-  const next = entries.filter((e) => !(e.slug === slug && (!harness || !e.harness || e.harness === harness)));
-  if (next.length === entries.length) return false;
-  writeConfigFile(next);
+  const target = entries.find((e) => e.slug === slug && (!harness || !e.harness || e.harness === harness));
+  if (!target) return false;
+  writeConfigFile(entries.filter((e) => e !== target));
   try {
-    fs.rmSync(snapshotPath(slug, harness), { force: true });
+    // MCP owns ONE global snapshot (a legacy pin may still have left a harness copy); every other
+    // axis keeps its snapshot beside the scope that wrote it.
+    fs.rmSync(snapshotPath(slug, target.axis === 'mcp' ? null : harness), { force: true });
+    if (target.axis === 'mcp' && harness) fs.rmSync(snapshotPath(slug, harness), { force: true });
   } catch {
     // snapshot cleanup is best-effort; the config removal already committed
   }
@@ -700,8 +971,40 @@ export function writeNpmSourceSnapshot(
     manifest: null,
     extensionDir: null,
     plugins: packages.map((pkg) => ({ name: pkg.name, source: '', description: pkg.description })),
+    mcps: [],
     // An npm package serves every runtime that has a package-manager landing — no detection is
     // possible (and none is claimed): the rows carry no host restriction.
+    hosts: [],
+    marketplace: null,
+    authorAdapters: [],
+    unsupported: [],
+    rows: [],
+  };
+  writeSnapshot(snapshot, harness);
+  return snapshot;
+}
+
+/**
+ * Persist an MCP source's single package in the same snapshot store. An MCP source is ONE package
+ * (no scope listing), so the snapshot holds one `mcps` row and no plugin rows: browse reads the
+ * package metadata, while the install handle (`<npm|pypi>:<name>`) stays version-free so every
+ * install resolves and pins the version current at that moment.
+ */
+export function writeMcpSourceSnapshot(
+  slug: string,
+  pkg: MarketplaceMcpRow,
+  harness?: HarnessHostId | string | null,
+): MarketplaceSnapshot {
+  const snapshot: MarketplaceSnapshot = {
+    slug,
+    probedAt: Date.now(),
+    sha: '',
+    stars: null,
+    pushedAt: null,
+    manifest: null,
+    extensionDir: null,
+    plugins: [],
+    mcps: [pkg],
     hosts: [],
     marketplace: null,
     authorAdapters: [],
@@ -1093,10 +1396,12 @@ export async function probeMarketplace(
   return { ok: true, snapshot };
 }
 
-/** Entries whose rescan is armed and due. Called by the scheduler tick in `server.ts`. */
+/** Entries whose rescan is armed and due. Called by the scheduler tick in `server.ts`.
+ *  Package sources (`npm` / `pypi`) are excluded: their freshness is a registry read owned by the
+ *  source's own rescan route, and handing one to the git prober would only ever answer `bad_request`. */
 export function dueMarketplaceEntries(now = Date.now()): { entry: MarketplaceEntry; snapshot: MarketplaceSnapshot | null }[] {
   return listMarketplaceEntries()
-    .filter((e) => e.enabled && e.rescan.enabled)
+    .filter((e) => e.enabled && e.rescan.enabled && (e.type ?? 'github') === 'github')
     .map((entry) => ({ entry, snapshot: latestSnapshot(entry.slug) }))
     .filter(({ entry, snapshot }) => !snapshot || now - snapshot.probedAt >= entry.rescan.intervalMs);
 }

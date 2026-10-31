@@ -7,9 +7,9 @@ import type { ProbeOptions } from '../../common/market.js';
  * converged marketplace format — grok ships no format of its own. The READER is Claude's (the
  * format owner, `claude.ts`); this file claims only the DIRECTORY and the harness identity.
  *
- * Grok is a served host for skills only (no verified plugin landing), so the plugin page never
- * opens on it; the shape is declared here so enabling the plugin landing needs no market change,
- * and so a source registered for `grok` is probed with its own layer.
+ * Grok's landing is the native CLI chain (`grok plugin install <url> --trust`, host adapter
+ * `host/adapters/grok.ts`); the shape is declared here so a source registered for `grok` is
+ * probed with its own layer.
  */
 export const GROK_PROBE_OPTIONS: ProbeOptions = {
   catalog: {

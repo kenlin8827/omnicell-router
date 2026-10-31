@@ -1,5 +1,6 @@
 import type { SourceAdapter, ResolveOptions, ResolveOutcome } from '../../spi.js';
 import { describeFetchFailure } from '../../net.js';
+import { mcpServerNameFromPackage } from '../mcp-entry.js';
 
 /**
  * npm registry adapter (ADR-0015 §8) — the plugin install path.
@@ -151,12 +152,17 @@ export const npmAdapter: SourceAdapter = {
       // No author runtime arguments exist off-registry, so the launch is the minimal non-interactive
       // npx invocation of the PINNED spec — the `-y` the house MCP configs carry (writers/mcp), and a
       // version+integrity pair the spawned command cannot drift away from.
+      //
+      // The NAME is the host config's entry key, not the package identity: `@bytebase/dbhub` is
+      // refused by every verified runtime's grammar, so the key is derived from it. The registry
+      // identity survives in `canonicalKey` (the market row's join key).
+      const serverName = mcpServerNameFromPackage(pkgName);
       return {
         ok: true,
         canonicalKey: `npm:${name}`,
-        name: pkgName,
+        name: serverName,
         description,
-        payload: { kind: 'mcp', name: pkgName, launch: { command: 'npx', args: ['-y', spec] } },
+        payload: { kind: 'mcp', name: serverName, launch: { command: 'npx', args: ['-y', spec] } },
         pin: { npm: { integrity } },
       };
     }

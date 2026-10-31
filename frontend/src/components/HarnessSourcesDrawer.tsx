@@ -1,11 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Plus, Trash2, Loader2, RefreshCw, Database, ChevronDown, Check } from 'lucide-react';
 import { Drawer } from './Drawer';
+import { Dialog } from './Dialog';
 import { Switch } from './Switch';
 import { Combobox } from './Combobox';
 import { Pagination } from './Pagination';
-import { api, type HarnessCatalogSource, type HarnessMarketplaceEntry } from '../lib/api';
+import { api, SourceOutcomeError, type HarnessCatalogSource, type HarnessMarketplaceEntry, type SourceReason } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
+import { useConfirm } from './ConfirmProvider';
+import { RUNTIME_BADGE, type McpRuntimeVerdict } from '../lib/mcp-runtime';
 
 /**
  * Market source maintenance drawer (ADR-0015 §D9/§D10/§D11), ONE AXIS AT A TIME.
@@ -30,8 +33,8 @@ const CatalogPicker: React.FC<{
 }> = ({ value, onChange, onCommit, options, placeholder, onEnter, compact }) => {
   const [internalVal, setInternalVal] = useState(value);
   const [open, setOpen] = useState(false);
-  /** Idle display is localized ("默认"); focus swaps in the raw wire value ("default") so the
-   *  operator edits what actually gets persisted — the display label never round-trips. */
+  /** Idle display is localized (the catalog label); focus swaps in the raw wire value ("default")
+   *  so the operator edits what actually gets persisted — the display label never round-trips. */
   const [editing, setEditing] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const { t } = useI18n();
@@ -190,14 +193,24 @@ const CatalogPicker: React.FC<{
 
 export const HarnessSourcesDrawer: React.FC<{
   harness: string;
-  kind: 'skill' | 'plugin';
+  kind: 'skill' | 'plugin' | 'mcp';
   open: boolean;
   onClose: () => void;
-}> = ({ harness, kind, open, onClose }) => {
+  /** Fired after every successful source mutation (add/remove/enable/rescan/sync) so the host
+   *  page can mark the market behind the drawer stale and refresh it when the drawer closes. */
+  onChanged?: () => void;
+  /** Live verdict for a SOURCE row (MCP only): the page resolves the landed artifact behind the
+   *  package and answers with the worst runtime state among the hosts carrying it. Absent = no
+   *  live claim (not installed, or the host exposes no state surface), never "healthy". */
+  runtimeForEntry?: (entry: HarnessMarketplaceEntry) => McpRuntimeVerdict | undefined;
+}> = ({ harness, kind, open, onClose, onChanged, runtimeForEntry }) => {
   /** The skill axis is GLOBAL (ADR-0015 §D11): it has its own route, no harness scope and no
    *  host-sync/type pickers — a skill source is a Git repository of SKILL.md, shared by all agents. */
   const isSkill = kind === 'skill';
+  /** The MCP axis: operator sources are packages (`npm` / `PyPI`) of MCP servers, one per source. */
+  const isMcp = kind === 'mcp';
   const { t } = useI18n();
+  const confirmDialog = useConfirm();
   const [sources, setSources] = useState<HarnessCatalogSource[]>([]);
   const [entries, setEntries] = useState<HarnessMarketplaceEntry[]>([]);
   const [page, setPage] = useState(1);
@@ -209,11 +222,13 @@ export const HarnessSourcesDrawer: React.FC<{
     const start = (safePage - 1) * pageSize;
     return entries.slice(start, start + pageSize);
   }, [entries, safePage, pageSize]);
-  /** Which source types this axis accepts. The skill axis is GitHub-only; the plugin axis offers
-   *  both registrations and lets the install gate refuse a host that cannot take one. */
-  const supportedTypes: ('github' | 'npm')[] = isSkill ? ['github'] : ['github', 'npm'];
+  /** Which source types this axis accepts. The skill axis is GitHub-only; the plugin axis offers a
+   *  repository or an npm package; the MCP axis offers PACKAGES only (npm / PyPI), because an MCP
+   *  server is a package the runtime launches — a repository is not an install handle there. */
+  const supportedTypes: ('github' | 'npm' | 'pypi')[] = isSkill ? ['github'] : isMcp ? ['npm', 'pypi'] : ['github', 'npm'];
   const [url, setUrl] = useState('');
-  const [sourceType, setSourceType] = useState<'github' | 'npm'>('github');
+  const defaultType: 'github' | 'npm' | 'pypi' = isSkill ? 'github' : isMcp ? 'npm' : 'github';
+  const [sourceType, setSourceType] = useState<'github' | 'npm' | 'pypi'>(defaultType);
   const [catalog, setCatalog] = useState('default');
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -232,6 +247,12 @@ export const HarnessSourcesDrawer: React.FC<{
   /** Per-row rescan-interval drafts. Typing never persists: a PATCH fires only on blur/Enter, so
    *  half-typed minutes never become a stored schedule. */
   const [intervalDrafts, setIntervalDrafts] = useState<Record<string, string>>({});
+  /** Hosts the last check detected for the typed URL. The share choice exists ONLY when the
+   *  repository serves several harnesses — a single-harness source pins here without asking. */
+  const [checkedHosts, setCheckedHosts] = useState<string[]>([]);
+  const [shareWithAll, setShareWithAll] = useState(false);
+  /** The scope dialog: open only when the add-click probe found several supporting harnesses. */
+  const [scopeAskOpen, setScopeAskOpen] = useState(false);
 
   /** The source table needs ~560px for its fixed control columns; below that the repo name would
    *  collapse to a couple of characters, so the rows fall back to a stacked layout and the column
@@ -276,6 +297,12 @@ export const HarnessSourcesDrawer: React.FC<{
     setNote('');
   }, [open, harness]);
 
+  /** The type picker never points at a type the open axis cannot register (switching the tab
+   *  resets it), so the next add cannot send `pypi` to the plugin axis or `github` to the MCP one. */
+  useEffect(() => {
+    setSourceType(defaultType);
+  }, [defaultType]);
+
   useEffect(() => {
     if (open) void load();
   }, [open, load]);
@@ -289,33 +316,111 @@ export const HarnessSourcesDrawer: React.FC<{
     return s.label;
   };
 
+  /**
+   * Localized copy for a source outcome: the backend's `reason` + `params` pick the string, so the
+   * console never echoes server English at the operator. The English `message` is only the fallback
+   * for an outcome that has no template (and the detail appended to a failed probe).
+   */
+  const sourceNote = (reason?: SourceReason, params?: Record<string, string>, message?: string) => {
+    const values: Record<string, string> = { ...(params ?? {}), ...(message ? { message } : {}) };
+    const fill = (text: string) => Object.entries(values).reduce((acc, [key, value]) => acc.split(`{${key}}`).join(value), text);
+    switch (reason) {
+      case 'registered':
+        return fill(t('harness.srcMgmt.srcRegistered'));
+      case 'registered_scoped':
+        return fill(t('harness.srcMgmt.srcRegisteredScoped'));
+      case 'already_configured':
+        if (values.harness && values.layer) return fill(t('harness.srcMgmt.srcAlreadyPinnedLayer'));
+        if (values.harness) return fill(t('harness.srcMgmt.srcAlreadyPinned'));
+        if (values.layer) return fill(t('harness.srcMgmt.srcAlreadyLayer'));
+        return fill(t('harness.srcMgmt.srcAlreadyShared'));
+      case 'slug_taken':
+        return fill(t('harness.srcMgmt.srcSlugTaken'));
+      case 'no_form':
+        return fill(t('harness.srcMgmt.srcNoForm'));
+      case 'not_a_repo':
+        return fill(t('harness.srcMgmt.srcNotARepo'));
+      case 'invalid_source':
+        return fill(t('harness.srcMgmt.srcInvalidSource'));
+      case 'invalid_layer':
+        return fill(t('harness.srcMgmt.srcInvalidLayer'));
+      case 'no_skill':
+        return fill(t('harness.srcMgmt.srcNoSkill'));
+      case 'probe_failed':
+        return fill(t('harness.srcMgmt.srcProbeFailed'));
+      case 'unsupported_here':
+        return fill(t('harness.srcMgmt.srcUnsupportedHere'));
+      default:
+        return message ?? t('harness.srcMgmt.fail');
+    }
+  };
+
   const check = async () => {
     if (!url.trim() || busy !== null) return;
     setBusy('check');
     setNote('');
     try {
       if (isSkill) {
+        setCheckedHosts([]);
+        setShareWithAll(false);
         const res = await api.harnessSkillCheckSource(url.trim());
         setNote(
           res.ok
             ? t('harness.srcMgmt.checkSkillOk').replace('{skills}', String(res.skills))
-            : res.message ?? t('harness.srcMgmt.fail'),
+            : sourceNote(res.reason, res.params, res.message),
         );
       } else {
-        const res = await api.harnessPluginCheckSource(scope, url.trim(), { type: sourceType });
+        const res = await api.harnessPluginCheckSource(scope, url.trim(), { type: sourceType, kind });
+        setCheckedHosts(res.ok ? (res.hosts ?? []) : []);
         setNote(
           res.ok
-            ? `${t('harness.srcMgmt.checkOk')
-                .replace('{skills}', String(res.skills))
-                .replace('{mcps}', String(res.mcps))
-                .replace('{plugins}', String(res.plugins))} — ${t('harness.srcMgmt.hostsDetected')}: ${
-                res.hosts.length > 0 ? res.hosts.join(', ') : t('harness.srcMgmt.hostsNone')
-              }`
-            : res.message ?? t('harness.srcMgmt.fail'),
+            ? isMcp
+              ? t('harness.srcMgmt.checkMcpOk').replace('{count}', String(res.mcps))
+              : `${t('harness.srcMgmt.checkOk')
+                  .replace('{skills}', String(res.skills))
+                  .replace('{mcps}', String(res.mcps))
+                  .replace('{plugins}', String(res.plugins))} — ${t('harness.srcMgmt.hostsDetected')}: ${
+                  res.hosts.length > 0 ? res.hosts.join(', ') : t('harness.srcMgmt.hostsNone')
+                }`
+            : sourceNote(res.reason, res.params, res.message),
         );
       }
     } catch (e) {
       setNote(e instanceof Error ? e.message : t('harness.srcMgmt.fail'));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /** The actual registration, shared by the direct path (single-host) and the scope dialog's
+   *  confirm button. Clears the form and refreshes the list on success. */
+  const registerScoped = async () => {
+    if (!url.trim() || busy !== null) return;
+    setBusy('add');
+    setNote('');
+    try {
+      if (isSkill) {
+        const res = await api.harnessSkillRegisterSource(url.trim(), { catalog: catalog.trim() || 'default' });
+        setNote(res.reason ? sourceNote(res.reason, res.params, res.message) : t('harness.srcMgmt.addOk'));
+      } else {
+        const res = await api.harnessPluginRegisterSource(scope, url.trim(), {
+          type: sourceType,
+          kind,
+          catalog: catalog.trim() || 'default',
+          ...(shareWithAll ? { shared: true } : {}),
+        });
+        setNote(res.reason ? sourceNote(res.reason, res.params, res.message) : t('harness.srcMgmt.addOk'));
+      }
+      setUrl('');
+      setCatalog('default');
+      setCheckedHosts([]);
+      setShareWithAll(false);
+      setScopeAskOpen(false);
+      setPage(1); // a new entry lands on page 1 — never behind the operator's current page
+      onChanged?.();
+      await load();
+    } catch (e) {
+      setNote(e instanceof SourceOutcomeError ? sourceNote(e.reason, e.params, e.message) : e instanceof Error ? e.message : t('harness.srcMgmt.fail'));
     } finally {
       setBusy(null);
     }
@@ -326,15 +431,34 @@ export const HarnessSourcesDrawer: React.FC<{
     setBusy('add');
     setNote('');
     try {
-      const res = isSkill
-        ? await api.harnessSkillRegisterSource(url.trim(), { catalog: catalog.trim() || 'default' })
-        : await api.harnessPluginRegisterSource(scope, url.trim(), { type: sourceType, catalog: catalog.trim() || 'default' });
-      setNote(res.message ?? t('harness.srcMgmt.addOk'));
-      setUrl('');
-      setCatalog('default');
-      await load();
-    } catch (e) {
-      setNote(e instanceof Error ? e.message : t('harness.srcMgmt.fail'));
+      if (!isSkill) {
+        // Phase 1 — probe before writing. The probe is skipped when Check already cached the
+        // hosts this session; both the refusal (this harness unsupported) and the scope dialog
+        // (several harnesses supported) are decided by the detected hosts either way, so a
+        // Check-then-Add flow must reach the same gates. An MCP package probe declares no
+        // hosts at all and the source is shared by definition, so it takes the direct path.
+        let hosts = checkedHosts;
+        if (hosts.length === 0) {
+          const chk = await api.harnessPluginCheckSource(scope, url.trim(), { type: sourceType, kind });
+          if (!chk.ok) {
+            setNote(sourceNote(chk.reason, chk.params, chk.message));
+            return;
+          }
+          hosts = chk.hosts ?? [];
+        }
+        if (!isMcp) {
+          setCheckedHosts(hosts);
+          if (!hosts.includes(harness)) {
+            setNote(sourceNote('unsupported_here', { hosts: hosts.join(', ') || 'none' }));
+            return;
+          }
+          if (hosts.length > 1) {
+            setScopeAskOpen(true);
+            return;
+          }
+        }
+      }
+      await registerScoped();
     } finally {
       setBusy(null);
     }
@@ -346,6 +470,7 @@ export const HarnessSourcesDrawer: React.FC<{
       if (isSkill) await api.harnessSkillUpdateSource(slug, { enabled });
       else await api.harnessPluginUpdateSource(scope, slug, { enabled });
       setNote(t('harness.srcMgmt.updated').replace('{slug}', slug));
+      onChanged?.();
       await load();
     } catch (e) {
       setNote(e instanceof Error ? e.message : t('harness.srcMgmt.fail'));
@@ -369,6 +494,7 @@ export const HarnessSourcesDrawer: React.FC<{
     try {
       if (isSkill) await api.harnessSkillUpdateSource(slug, { rescan: { enabled, intervalMs } });
       else await api.harnessPluginUpdateSource(scope, slug, { rescan: { enabled, intervalMs } });
+      onChanged?.();
       await load();
     } catch (e) {
       setNote(e instanceof Error ? e.message : t('harness.srcMgmt.fail'));
@@ -402,6 +528,7 @@ export const HarnessSourcesDrawer: React.FC<{
               .replace('{rows}', String(res.rows))
           : t('harness.srcMgmt.rescanOk').replace('{rows}', String(res.rows)),
       );
+      onChanged?.();
     } catch (e) {
       setNote(e instanceof Error ? e.message : t('harness.srcMgmt.fail'));
     } finally {
@@ -410,10 +537,12 @@ export const HarnessSourcesDrawer: React.FC<{
   };
 
   const remove = async (slug: string) => {
+    if (!(await confirmDialog({ title: t('harness.srcMgmt.removeConfirm').replace('{slug}', slug), danger: true }))) return;
     try {
       if (isSkill) await api.harnessSkillRemoveSource(slug);
       else await api.harnessPluginRemoveSource(scope, slug);
       await load();
+      onChanged?.();
       setNote(t('harness.srcMgmt.removed').replace('{slug}', slug));
     } catch (e) {
       setNote(e instanceof Error ? e.message : t('harness.srcMgmt.fail'));
@@ -428,6 +557,7 @@ export const HarnessSourcesDrawer: React.FC<{
       setNote(
         `${t('harness.srcMgmt.syncOk')}: ${t('harness.srcMgmt.syncDiscovered')} ${res.summary.discoveredCount}, ${t('harness.srcMgmt.syncImported')} ${res.summary.importedCount}, ${t('harness.srcMgmt.syncSynced')} ${res.summary.syncedCount}${res.summary.failedCount > 0 ? `, ${t('harness.srcMgmt.syncFailed')} ${res.summary.failedCount}` : ''}`
       );
+      onChanged?.();
       await load();
     } catch (e) {
       setNote(e instanceof Error ? e.message : t('harness.srcMgmt.fail'));
@@ -447,7 +577,7 @@ export const HarnessSourcesDrawer: React.FC<{
       title={t('harness.srcMgmt.syncMarketplaces')}
       style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '12px' }}
     >
-      {busy === 'syncHost' ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />}
+      {busy === 'syncHost' ? <Loader2 size={13} style={{ animation: 'ocr-spin 0.8s linear infinite' }} /> : <RefreshCw size={13} />}
       <span>{t('harness.srcMgmt.syncMarketplaces')}</span>
     </button>
   );
@@ -471,7 +601,7 @@ export const HarnessSourcesDrawer: React.FC<{
       title={
         <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <Database size={17} style={{ color: 'var(--primary, #3b82f6)' }} />
-          <span>{isSkill ? t('harness.srcMgmt.titleSkill') : kind === 'plugin' ? t('harness.srcMgmt.titlePlugin') : t('harness.srcMgmt.title')}</span>
+          <span>{isSkill ? t('harness.srcMgmt.titleSkill') : isMcp ? t('harness.srcMgmt.titleMcp') : kind === 'plugin' ? t('harness.srcMgmt.titlePlugin') : t('harness.srcMgmt.title')}</span>
           <span
             className="chip"
             style={{
@@ -487,7 +617,7 @@ export const HarnessSourcesDrawer: React.FC<{
           </span>
         </span>
       }
-      subtitle={isSkill ? t('harness.srcMgmt.subtitleSkill') : t('harness.srcMgmt.isolatedSubtitle')}
+      subtitle={isSkill ? t('harness.srcMgmt.subtitleSkill') : isMcp ? t('harness.srcMgmt.subtitleMcp') : t('harness.srcMgmt.isolatedSubtitle')}
       headerActions={isSkill ? undefined : headerActionsNode}
       onClose={onClose}
       closeLabel={t('harness.srcMgmt.close')}
@@ -553,24 +683,131 @@ export const HarnessSourcesDrawer: React.FC<{
         }}
       >
         <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text)' }}>
-          {isSkill ? t('harness.srcMgmt.addSkill') : kind === 'plugin' ? t('harness.srcMgmt.addPlugin') : t('harness.srcMgmt.add')}
+          {isSkill ? t('harness.srcMgmt.addSkill') : isMcp ? t('harness.srcMgmt.addMcp') : kind === 'plugin' ? t('harness.srcMgmt.addPlugin') : t('harness.srcMgmt.add')}
         </div>
+
+        {/* Scope dialog — opens when the add-click probe detected several supporting harnesses. */}
+        {scopeAskOpen && (
+          <Dialog
+            title={t('harness.srcMgmt.scopeTitle')}
+            subtitle={t('harness.srcMgmt.sharePrompt').replace('{hosts}', checkedHosts.join(', '))}
+            onClose={() => {
+              setScopeAskOpen(false);
+              setCheckedHosts([]);
+              setShareWithAll(false);
+            }}
+            closeLabel={t('common.cancel')}
+            width={520}
+            footerRight={
+              <>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => {
+                    setScopeAskOpen(false);
+                    setCheckedHosts([]);
+                    setShareWithAll(false);
+                  }}
+                >
+                  {t('common.cancel')}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={busy !== null}
+                  onClick={() => void registerScoped()}
+                >
+                  {busy === 'add' ? <Loader2 size={12} style={{ animation: 'ocr-spin 0.8s linear infinite' }} /> : null}
+                  <span>{t('common.confirm')}</span>
+                </button>
+              </>
+            }
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', cursor: 'pointer' }}>
+                <input
+                  type="radio"
+                  name="source-scope"
+                  checked={!shareWithAll}
+                  onChange={() => setShareWithAll(false)}
+                  style={{ accentColor: 'var(--primary, #3b82f6)' }}
+                />
+                <span>{t('harness.srcMgmt.scopePinned').replace('{harness}', harness)}</span>
+                <span
+                  className="chip"
+                  style={{
+                    cursor: 'default',
+                    fontSize: '9px',
+                    padding: '0 6px',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '3px',
+                    fontWeight: 600,
+                    color: 'var(--primary, #3b82f6)',
+                    background: 'rgba(59, 130, 246, 0.15)',
+                    border: '1px solid rgba(59, 130, 246, 0.35)',
+                  }}
+                >
+                  <Check size={10} />
+                  <span>{harness}</span>
+                </span>
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', cursor: 'pointer' }}>
+                <input
+                  type="radio"
+                  name="source-scope"
+                  checked={shareWithAll}
+                  onChange={() => setShareWithAll(true)}
+                  style={{ accentColor: 'var(--primary, #3b82f6)' }}
+                />
+                <span>{t('harness.srcMgmt.scopeShared')}</span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' }}>
+                  {checkedHosts.map((h) => {
+                    const current = h === harness;
+                    return (
+                      <span
+                        key={h}
+                        className="chip"
+                        style={{
+                          cursor: 'default',
+                          fontSize: '9px',
+                          padding: '0 6px',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '3px',
+                          fontWeight: current ? 600 : 500,
+                          color: current ? 'var(--primary, #3b82f6)' : 'var(--accent-emerald, #10b981)',
+                          background: current ? 'rgba(59, 130, 246, 0.15)' : 'rgba(16, 185, 129, 0.10)',
+                          border: current ? '1px solid rgba(59, 130, 246, 0.35)' : '1px solid rgba(16, 185, 129, 0.22)',
+                        }}
+                      >
+                        {current && <Check size={10} />}
+                        <span>{h}</span>
+                      </span>
+                    );
+                  })}
+                </span>
+              </label>
+            </div>
+          </Dialog>
+        )}
 
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
           {!isSkill && (
             <div style={{ width: '130px', flexShrink: 0 }}>
               <Combobox
                 value={sourceType}
-                onChange={(v) => setSourceType(v === 'npm' ? 'npm' : 'github')}
+                onChange={(v) => setSourceType(v === 'npm' ? 'npm' : v === 'pypi' ? 'pypi' : 'github')}
                 style={{ height: '34px', fontSize: '12px' }}
-                options={
-                  supportedTypes.length === 1 && supportedTypes[0] === 'npm'
-                    ? [{ value: 'npm', label: t('harness.srcMgmt.typeNpm') }]
-                    : [
-                        { value: 'github', label: t('harness.srcMgmt.typeGithub') },
-                        { value: 'npm', label: t('harness.srcMgmt.typeNpm') },
-                      ]
-                }
+                options={supportedTypes.map((type) => ({
+                  value: type,
+                  label:
+                    type === 'npm'
+                      ? t('harness.srcMgmt.typeNpm')
+                      : type === 'pypi'
+                        ? t('harness.srcMgmt.typePypi')
+                        : t('harness.srcMgmt.typeGithub'),
+                }))}
               />
             </div>
           )}
@@ -578,9 +815,20 @@ export const HarnessSourcesDrawer: React.FC<{
           <input
             className="input"
             style={{ flex: 1, minWidth: '200px', fontSize: '12px', height: '34px', boxSizing: 'border-box' }}
-            placeholder={sourceType === 'npm' ? t('harness.srcMgmt.placeholderNpm') : t('harness.srcMgmt.placeholder')}
+            placeholder={
+              sourceType === 'pypi'
+                ? t('harness.srcMgmt.placeholderPypi')
+                : sourceType === 'npm'
+                  ? t(isMcp ? 'harness.srcMgmt.placeholderMcpPackage' : 'harness.srcMgmt.placeholderNpm')
+                  : t('harness.srcMgmt.placeholder')
+            }
             value={url}
-            onChange={(e) => setUrl(e.target.value)}
+            onChange={(e) => {
+              setUrl(e.target.value);
+              // A new URL invalidates the previous check: no stale share offer.
+              setCheckedHosts([]);
+              setShareWithAll(false);
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.nativeEvent.isComposing && busy === null) void add();
             }}
@@ -601,7 +849,7 @@ export const HarnessSourcesDrawer: React.FC<{
             onClick={() => void check()}
             style={{ height: '34px', padding: '0 12px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
           >
-            {busy === 'check' ? <Loader2 size={12} className="spin" /> : null}
+            {busy === 'check' ? <Loader2 size={12} style={{ animation: 'ocr-spin 0.8s linear infinite' }} /> : null}
             <span>{t('harness.srcMgmt.check')}</span>
           </button>
 
@@ -612,7 +860,7 @@ export const HarnessSourcesDrawer: React.FC<{
             onClick={() => void add()}
             style={{ height: '34px', padding: '0 14px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
           >
-            {busy === 'add' ? <Loader2 size={12} className="spin" /> : <Plus size={13} />}
+            {busy === 'add' ? <Loader2 size={12} style={{ animation: 'ocr-spin 0.8s linear infinite' }} /> : <Plus size={13} />}
             <span>{t('harness.srcMgmt.add')}</span>
           </button>
         </div>
@@ -656,7 +904,7 @@ export const HarnessSourcesDrawer: React.FC<{
                             letterSpacing: '0.04em',
             }}
           >
-            {t('harness.srcMgmt.operatorSources') || 'Custom Sources'}
+            {t('harness.srcMgmt.operatorSources')}
           </span>
           <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
             {t('harness.srcMgmt.configuredCount').replace('{count}', String(entries.length))}
@@ -664,23 +912,74 @@ export const HarnessSourcesDrawer: React.FC<{
         </div>
 
         {entries.length === 0 ? (
-          <div
-            style={{
-              flex: '1 0 auto',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: '13px',
-              color: 'var(--text-muted)',
-              padding: '24px 16px',
-              textAlign: 'center',
-              border: '1px dashed var(--divider)',
-              borderRadius: '8px',
-              background: 'rgba(255, 255, 255, 0.01)',
-            }}
-          >
-            {isSkill ? t('harness.srcMgmt.emptySkill') : kind === 'plugin' ? t('harness.srcMgmt.emptyPlugin') : t('harness.srcMgmt.empty')}
-          </div>
+          isSkill || isMcp ? (
+            <div
+              style={{
+                flex: '1 0 auto',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: '13px',
+                color: 'var(--text-muted)',
+                padding: '24px 16px',
+                textAlign: 'center',
+                border: '1px dashed var(--divider)',
+                borderRadius: '8px',
+                background: 'rgba(255, 255, 255, 0.01)',
+              }}
+            >
+              {isSkill ? t('harness.srcMgmt.emptySkill') : t('harness.srcMgmt.emptyMcp')}
+            </div>
+          ) : (
+            // Plugin axis empty state: segmented steps, not one run-on sentence — each action
+            // (sync, add) is its own numbered row the operator can follow top to bottom.
+            <div
+              style={{
+                display: 'flex',
+                flex: '1 0 auto',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '10px',
+                padding: '24px 20px',
+                border: '1px dashed var(--divider)',
+                borderRadius: '8px',
+                background: 'rgba(255, 255, 255, 0.01)',
+              }}
+            >
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'flex-start' }}>
+                <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text)' }}>
+                  {builtin.length > 0 ? t('harness.srcMgmt.emptyPluginCustom') : t('harness.srcMgmt.emptyPlugin')}
+                </div>
+                {[
+                  { n: 1, text: t('harness.srcMgmt.emptyStepSync') },
+                  { n: 2, text: t('harness.srcMgmt.emptyStepAdd') },
+                ].map(({ n, text }) => (
+                  <div key={n} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span
+                      style={{
+                        flexShrink: 0,
+                        width: '18px',
+                        height: '18px',
+                        borderRadius: '50%',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: '10px',
+                        fontWeight: 700,
+                        color: 'var(--primary, #3b82f6)',
+                        background: 'rgba(59, 130, 246, 0.12)',
+                        border: '1px solid rgba(59, 130, 246, 0.3)',
+                      }}
+                    >
+                      {n}
+                    </span>
+                    <span style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.55 }}>{text}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )
         ) : (
           <div
             ref={tableRef}
@@ -754,7 +1053,7 @@ export const HarnessSourcesDrawer: React.FC<{
                       flexShrink: 0,
                     }}
                   >
-                    {e.type === 'npm' ? 'npm' : 'GitHub'}
+                    {e.type === 'npm' ? 'npm' : e.type === 'pypi' ? 'PyPI' : 'GitHub'}
                   </span>
                 </div>
 
@@ -818,7 +1117,7 @@ export const HarnessSourcesDrawer: React.FC<{
                       onClick={() => void rescan(e.slug)}
                       style={{ padding: '2px 5px' }}
                     >
-                      {busy === `rescan:${e.slug}` ? <Loader2 size={12} className="spin" /> : <RefreshCw size={12} />}
+                      {busy === `rescan:${e.slug}` ? <Loader2 size={12} style={{ animation: 'ocr-spin 0.8s linear infinite' }} /> : <RefreshCw size={12} />}
                     </button>
                     <button
                       type="button"
@@ -856,6 +1155,44 @@ export const HarnessSourcesDrawer: React.FC<{
                       flexWrap: 'wrap',
                     }}
                   >
+                    {/* The source is a package on disk; whether its server actually CONNECTED is
+                        the runtime's answer, not the landing's. Badge it here so a row that is
+                        installed-but-failing cannot read as "normal" (ADR-0015 §D8.8). */}
+                    {(() => {
+                      const runtime = runtimeForEntry?.(e);
+                      if (!runtime) return null;
+                      const badge = RUNTIME_BADGE[runtime.status];
+                      return (
+                        <span
+                          className={badge.className}
+                          title={runtime.error ?? `${runtime.host} · ${t(badge.key)}`}
+                          style={{ flexShrink: 0, fontSize: '9px', padding: '0 6px' }}
+                        >
+                          {t(badge.key)}
+                        </span>
+                      );
+                    })()}
+                    {/* A shared entry carries no harness pin: legacy pre-2026-11-01 entries and
+                        every MCP package source (that axis is shared by definition) land here.
+                        Badge it so scope is scannable, not inferred from absence. */}
+                    {!e.harness && (
+                      <span
+                        className="chip"
+                        title={t('harness.srcMgmt.sharedEntry')}
+                        style={{
+                          cursor: 'default',
+                          fontSize: '9px',
+                          padding: '0 6px',
+                          fontWeight: 600,
+                          color: 'var(--warning, #f59e0b)',
+                          background: 'rgba(245, 158, 11, 0.12)',
+                          border: '1px solid rgba(245, 158, 11, 0.3)',
+                          marginRight: '2px',
+                        }}
+                      >
+                        {t('harness.srcMgmt.sharedEntry')}
+                      </span>
+                    )}
                     <span style={{ marginRight: '2px' }}>{t('harness.srcMgmt.hostsDetected')}:</span>
                     {(() => {
                       const hosts = e.hosts ?? [];

@@ -4,9 +4,11 @@ import { hashFile } from '../../hash.js';
 import { adapterFor, isPluginHost } from '../adapters/index.js';
 import type { PluginHost, PluginMarketplaceInstall } from '../adapters/types.js';
 import { claimPath, readManifest, writeManifest } from '../manifest.js';
+import { installViaKimiWeb, installMarketplaceRepoViaKimiWeb, MARKET_REPO_RE, type KimiWebDeps } from './kimi-web.js';
 import type { InstallSkipped } from './skill.js';
 import { createBackup, safeWriteJson } from '../../../cli/clients/base.js';
 import type { HarnessHostId, HarnessScope, Pin, TrustTier } from '../../types.js';
+import { latestSnapshot } from '../../common/market.js';
 
 /**
  * Plugin kind writer (ADR-0015 §D8) — package install or `plugin[]` array edit.
@@ -56,6 +58,10 @@ export interface PluginApplyRequest {
   projectRoot?: string;
   /** Injectable process runner (house test style); defaults to a spawn-based impl. */
   execImpl?: ExecImpl;
+  /** Injectable HTTP fetch (webapi targets; house test style). */
+  fetchImpl?: typeof fetch;
+  /** Test seam for webapi targets (fake spawn/fetch/home); production leaves it undefined. */
+  webApiDeps?: KimiWebDeps;
   /** Hard timeout for one subprocess run. */
   timeoutMs?: number;
   /**
@@ -83,10 +89,11 @@ export interface PluginTargetPlan {
   host: HarnessHostId;
   /**
    * `subprocess` (a command chain: npm package grammar or the native marketplace chain),
-   * `config` (a `plugin[]` merge), or `manual` (an interactive runtime whose command the operator
-   * must run themselves — displayed, never spawned).
+   * `config` (a `plugin[]` merge), `manual` (an interactive runtime whose command the operator
+   * must run themselves — displayed, never spawned), or `webapi` (the runtime's own loopback
+   * REST install API — the writer boots the vendor server transiently and posts the source).
    */
-  op: 'subprocess' | 'config' | 'manual';
+  op: 'subprocess' | 'config' | 'manual' | 'webapi';
   file?: string;
   container?: string;
   /** Structured command for a single-run subprocess target — apply runs THIS. */
@@ -96,6 +103,12 @@ export interface PluginTargetPlan {
   echo?: string;
   /** Native chains run in ORDER; the first non-zero exit stops the chain. */
   runs?: PluginRun[];
+  /** `webapi` only: the plugin source string POSTed to the runtime's install route. */
+  source?: string;
+  /** `webapi` only: a marketplace-row identity — apply stages a local clone and posts its path
+   *  (the vendor's GitHub resolver cannot install a marketplace-form repository; its local-path
+   *  branch can). */
+  cloneRepo?: string;
   refused?: string;
   added: boolean;
 }
@@ -134,8 +147,21 @@ export function safeSpec(spec: string): string | null {
   if (spec.includes('..')) return null;
   return spec;
 }
-/** `owner/repo` — the only repository shape a marketplace chain may carry. */
-const MARKET_REPO_RE = /^[\w.-]+\/[\w.-]+$/;
+
+/**
+ * The source string a webapi target posts to the runtime's install route. Only GIT-BACKED keys
+ * are answerable: strip the source-id prefix (`github:`, `mp-<slug>:`), drop a layer/version pin
+ * (`#dir`, `@v1` — the vendor resolves the plugin root from its own manifest), and require the
+ * `owner/repo` grammar the runtime's GitHub resolver reads. Anything else is refused, not guessed.
+ */
+function webApiSource(canonicalKey: string): { ok: true; url: string } | { ok: false; message: string } {
+  const ref = canonicalKey.replace(/^[^:\s]+:/, '').replace(/^github:/, '');
+  const repo = ref.replace(/[#@].*$/, '');
+  if (!MARKET_REPO_RE.test(repo)) {
+    return { ok: false, message: `webapi install needs a github repository key, got '${canonicalKey}'` };
+  }
+  return { ok: true, url: `https://github.com/${repo}` };
+}
 /** A plugin/marketplace id token (`postman`, `claude-plugins-official`, `@scope/pkg`). */
 const MARKET_NAME_RE = /^[@A-Za-z0-9][@A-Za-z0-9._-]*$/;
 
@@ -245,20 +271,69 @@ export function planPlugin(req: PluginApplyRequest): PluginPlan {
   const adapter = adapterFor(host);
   if (req.marketplace) {
     const chain = (adapter as Partial<PluginHost>)?.marketplaceSpec?.() ?? null;
-    if (!chain) {
+    // No CLI chain: fall through to the webapi landing below when the runtime has one (kimi
+    // web) — the repository URL is derived from the canonical key there. Refuse only when the
+    // host has neither landing.
+    if (!chain && !(adapter as Partial<PluginHost>)?.webApiSpec?.()) {
       targets.push({ host, op: 'config', refused: `host '${host}' declares no native marketplace install form`, added: false });
       return { ok: true, targets };
     }
-    const built = marketplaceRuns(chain, req);
-    if (!built.ok) return { ok: false, code: 'bad_request', message: built.message };
+    if (chain) {
+      const built = marketplaceRuns(chain, req);
+      if (!built.ok) return { ok: false, code: 'bad_request', message: built.message };
+      targets.push({
+        host,
+        op: chain.interactive ? 'manual' : 'subprocess',
+        runs: built.runs,
+        echo: built.runs[built.runs.length - 1]!.echo,
+        ...(chain.interactive
+          ? { refused: `'${host}' installs plugins only from inside a session — run the shown command there` }
+          : {}),
+        added: true,
+      });
+      return { ok: true, targets };
+    }
+    // No chain but a webapi landing: fall through — the webapi branch below derives the
+    // repository URL from the canonical key and posts it to the runtime's own install route.
+  }
+
+  // A runtime with a LOCAL REST install API (kimi web's kap-server) answers a git-backed row by
+  // posting the repository — the vendor's own PluginManager runs the download/manifest/copy,
+  // never this writer. Precedes the generic spec flow: there is no package spec or config file.
+  const webApi = (adapter as Partial<PluginHost>)?.webApiSpec?.() ?? null;
+  if (webApi) {
+    const src = webApiSource(req.canonicalKey);
+    if (!src.ok) return { ok: false, code: 'bad_request', message: src.message };
+    // The vendor's PluginManager installs only what the repository's OWN form declares. The probe
+    // recorded which harnesses the tree supports; a repo whose only form is another vendor's (a
+    // Claude-format marketplace) is refused HERE, not after booting the vendor into a 40001.
+    const mp = /^mp-([a-z0-9][a-z0-9-]{0,38}):/.exec(req.canonicalKey);
+    if (mp) {
+      const snap = latestSnapshot(mp[1]!, null);
+      if (snap && snap.hosts.length > 0 && !snap.hosts.includes(host as HarnessHostId)) {
+        targets.push({
+          host,
+          op: 'config',
+          refused: `repository declares no '${host}' plugin form (detected: ${snap.hosts.join(', ')})`,
+          added: false,
+        });
+        return { ok: true, targets };
+      }
+    }
+    // A marketplace row stages a local clone and posts its absolute path: the vendor's GitHub
+    // resolver cannot install a marketplace-form repository (it rebuilds `<repo>@<plugin>@<market>`
+    // as a git ref and 404s — verified against the shipped v2.4.1 binary), while its local-path
+    // branch installs cleanly. The clone is the writer's staging dir, removed after apply.
+    const cloneRepo = req.marketplace && MARKET_REPO_RE.test(req.marketplace.repo) ? req.marketplace.repo : undefined;
+    const post = `POST ${webApi.apiPrefix}/plugins {"source":"${cloneRepo ? `<staging clone of ${cloneRepo}>` : src.url}"}`;
     targets.push({
       host,
-      op: chain.interactive ? 'manual' : 'subprocess',
-      runs: built.runs,
-      echo: built.runs[built.runs.length - 1]!.echo,
-      ...(chain.interactive
-        ? { refused: `'${host}' installs plugins only from inside a session — run the shown command there` }
-        : {}),
+      op: 'webapi',
+      source: src.url,
+      ...(cloneRepo ? { cloneRepo } : {}),
+      echo: cloneRepo
+        ? `git clone --depth 1 https://github.com/${cloneRepo}.git (staging) → ${webApi.serverCommand} (transient loopback server) → ${post}`
+        : `${webApi.serverCommand} (transient loopback server) → ${post}`,
       added: true,
     });
     return { ok: true, targets };
@@ -330,6 +405,34 @@ export async function applyPlugin(req: PluginApplyRequest): Promise<PluginApplyR
   for (const target of plan.targets) {
     if (target.refused) {
       skipped.push({ host: target.host, code: 'bad_request', message: target.refused });
+      continue;
+    }
+
+    if (target.op === 'webapi') {
+      // The vendor's loopback server does the install (same PluginManager the TUI drives). A
+      // marketplace row first stages a local clone — the vendor's GitHub resolver cannot install
+      // a marketplace-form repository; its local-path branch can. The copy lands in the runtime's
+      // own store — `external`, exactly like a subprocess install.
+      const deps = {
+        ...(req.webApiDeps ?? {}),
+        ...(req.fetchImpl ? { fetchImpl: req.fetchImpl } : {}),
+        ...(req.timeoutMs ? { installTimeoutMs: req.timeoutMs } : {}),
+      };
+      const outcome = target.cloneRepo
+        ? await installMarketplaceRepoViaKimiWeb(target.cloneRepo, deps)
+        : await installViaKimiWeb(target.source!, deps);
+      runs.push({
+        host: target.host,
+        command: target.echo!,
+        code: outcome.ok ? 0 : -1,
+        stdout: outcome.ok ? JSON.stringify(outcome.plugin) : '',
+        stderr: outcome.ok ? '' : outcome.message,
+      });
+      if (!outcome.ok) {
+        skipped.push({ host: target.host, code: 'upstream', message: outcome.message });
+        continue;
+      }
+      copies.push({ host: target.host, path: `${req.canonicalKey}#${target.host}`, external: true });
       continue;
     }
     if (target.op === 'subprocess') {

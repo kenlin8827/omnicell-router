@@ -19,7 +19,7 @@ import {
  * observability write: a ledger failure must never break an apply.
  */
 
-export type HarnessApplyAction = 'install' | 'remove';
+export type HarnessApplyAction = 'install' | 'remove' | 'edit';
 export type HarnessApplyOutcome = 'ok' | 'partial' | 'failed';
 
 export interface HarnessApplyEvent {

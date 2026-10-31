@@ -16,8 +16,8 @@ registries browsable since 2026-10-25), plugin discovery
 with `removal` descriptors, description translation, and the console (three pages, harness rail,
 installed/market tabs, list ⇄ card).
 
-**Not landed** (ADR-0015 "Deferred" is authoritative) — MCP landings beyond opencode, plugin
-landings beyond opencode/pi, npm-as-skill, the PulseMCP/mcp.so/curated-list adapters,
+**Not landed** (ADR-0015 "Deferred" is authoritative) — MCP landings beyond opencode/pi/omp,
+plugin landings beyond opencode/pi, npm-as-skill, the PulseMCP/mcp.so/curated-list adapters,
 config-declared sources, write-ahead intent, store/trash GC, adopt,
 harness export/import, `canonicalKey` alias overrides.
 

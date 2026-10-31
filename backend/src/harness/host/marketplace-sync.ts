@@ -61,6 +61,8 @@ export async function discoverNativeMarketplaces(hosts?: HarnessHostId[]): Promi
 
 /**
  * Import discovered native marketplaces into OCR's store, scoped to the discovering harness.
+ * The duplicate answer is `resolveSlug`'s alone — store-wide, because one slug is one `mp-` id —
+ * so a repository already carried under any scope is skipped, never twinned.
  */
 export async function importNativeMarketplacesToOcr(options: {
   hosts?: HarnessHostId[];
@@ -72,13 +74,8 @@ export async function importNativeMarketplacesToOcr(options: {
 
   for (const item of discovered) {
     const host = item.host;
-    const existing = listMarketplaceEntries(host);
-    if (existing.some((e) => e.repo === item.repo)) {
-      skipped.push(`${host ?? 'any'}:${item.repo}`);
-      continue;
-    }
 
-    const resolved = resolveSlug(item.repo, null, host);
+    const resolved = resolveSlug(item.repo, null);
     if (!resolved.ok) {
       skipped.push(`${host ?? 'any'}:${item.repo}`);
       continue;
@@ -131,6 +128,9 @@ export async function syncMarketplaceToHost(
   entry: MarketplaceEntry,
   execImpl?: ExecImpl,
 ): Promise<MarketplaceSyncResult[]> {
+  // The MCP axis is not a marketplace: its sources write MCP server configs, so a native
+  // `marketplace add` would register a package that is not one.
+  if (entry.axis === 'mcp') return [];
   if (entry.harness) {
     const adapter = adapterFor(entry.harness) as BaseHostAdapter | undefined;
     if (!adapter || typeof adapter.syncMarketplaceToHost !== 'function') return [];
@@ -157,6 +157,7 @@ export async function syncMarketplaceToAllHosts(
   entry: MarketplaceEntry,
   execImpl?: ExecImpl,
 ): Promise<MarketplaceSyncResult[]> {
+  if (entry.axis === 'mcp') return [];
   const results: MarketplaceSyncResult[] = [];
   const targets = entry.harness
     ? [adapterFor(entry.harness)].filter((a): a is BaseHostAdapter => a instanceof Object)
@@ -189,6 +190,7 @@ export async function removeMarketplaceFromHost(
   entry: MarketplaceEntry,
   execImpl?: ExecImpl,
 ): Promise<MarketplaceSyncResult[]> {
+  if (entry.axis === 'mcp') return [];
   if (entry.harness) {
     const adapter = adapterFor(entry.harness) as BaseHostAdapter | undefined;
     if (!adapter || typeof adapter.removeMarketplaceFromHost !== 'function') return [];
@@ -254,11 +256,13 @@ export async function reconcileMarketplaces(
   const discovered = await discoverNativeMarketplaces(hosts);
   const { imported } = await importNativeMarketplacesToOcr({ hosts, fetchImpl });
 
-  // Step 2: Egress & Sync down enabled OCR marketplaces
+  // Step 2: Egress & Sync down enabled OCR marketplaces. The MCP axis is not a marketplace the
+  // runtime's own CLI can add (it writes MCP server configs, not plugins), so those sources are
+  // excluded here — their installs go through the MCP writer instead.
   const currentEntries = (hosts && hosts.length === 1
     ? listMarketplaceEntries(hosts[0])
     : listMarketplaceEntries()
-  ).filter((e) => e.enabled);
+  ).filter((e) => e.enabled && e.axis !== 'mcp');
   const syncResults: MarketplaceSyncResult[] = [];
 
   for (const entry of currentEntries) {

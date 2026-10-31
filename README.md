@@ -95,6 +95,7 @@ ocr setup opencode      # Hook OpenCode to route via OCR
 ocr setup claude        # Hook Claude Code / Desktop to route via OCR
 ocr setup codex         # Hook Codex / OpenAI CLI to route via OCR
 ocr setup pi            # Hook Pi coding agent to route via OCR
+ocr setup kimi          # Hook Kimi CLI to route via OCR
 
 # Teardown hooks
 ocr teardown opencode   # Restore OpenCode to direct connection

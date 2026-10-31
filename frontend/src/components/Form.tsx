@@ -17,14 +17,32 @@ export const FormSection: React.FC<{ title: React.ReactNode; children: React.Rea
   </div>
 );
 
-/** Label above a control, with an optional dim hint underneath. */
-export const Field: React.FC<{ label: React.ReactNode; hint?: React.ReactNode; children: React.ReactNode }> = ({ label, hint, children }) => (
-  <div>
-    <label className="form-label">{label}</label>
-    {children}
-    {hint ? <div className="form-hint">{hint}</div> : null}
-  </div>
-);
+/** Label above a control, with an optional dim hint underneath.
+ * `inline` puts the label and control on one row, left-grouped; the hint
+ * still spans the full width below. */
+export const Field: React.FC<{ label: React.ReactNode; hint?: React.ReactNode; inline?: boolean; children: React.ReactNode }> = ({
+  label,
+  hint,
+  inline,
+  children,
+}) =>
+  inline ? (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <label className="form-label" style={{ marginBottom: 0, minWidth: 48, whiteSpace: 'nowrap' }}>
+          {label}
+        </label>
+        {children}
+      </div>
+      {hint ? <div className="form-hint">{hint}</div> : null}
+    </div>
+  ) : (
+    <div>
+      <label className="form-label">{label}</label>
+      {children}
+      {hint ? <div className="form-hint">{hint}</div> : null}
+    </div>
+  );
 
 /** Evenly spaced row of fields (2-up for paired values, 4-up for cost). */
 export const FieldRow: React.FC<{ columns?: number; children: React.ReactNode }> = ({ columns = 2, children }) => (

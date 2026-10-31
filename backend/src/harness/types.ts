@@ -92,6 +92,7 @@ export interface CopyRecord {
 export type Pin =
   | { git: { commitSha: string } }
   | { npm: { integrity: string } }
+  | { pypi: { version: string } }
   | { clawhub: { slug: string; version: string } }
   | { adopted: true };
 
@@ -163,7 +164,7 @@ export interface CopyView {
    * Skill copies only: every host whose skills roots resolve to this directory, owner FIRST.
    *
    * `host` answers ownership (one directory, one owner — install/claims/removal), this answers
-   * READERSHIP (the cross-agent `.agents/skills` tree is read by up to ten runtimes). Absent for
+   * READERSHIP (the cross-agent `.agents/skills` tree is read by up to twelve runtimes). Absent for
    * config-shaped copies, where the file IS the landing and its host is the only reader.
    */
   readers?: HarnessHostId[];
@@ -251,7 +252,9 @@ export type ExtDiscoveryOrigin = 'runtime-store' | 'config-array' | 'local-file'
 export type DiscoveredRemoval =
   | { op: 'trash-path'; path: string }
   | { op: 'drop-entry'; file: string; container: string; entry: string }
-  | { op: 'drop-server'; file: string; container: string; entry: string };
+  | { op: 'drop-server'; file: string; container: string; entry: string }
+  /** A CLI-materialized landing: removal runs the runtime's own verb (§D8.13), never a file edit. */
+  | { op: 'cli-remove'; host: HarnessHostId; entry: string };
 
 export interface DiscoveredArtifact {
   /**

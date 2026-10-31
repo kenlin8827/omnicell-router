@@ -8,6 +8,7 @@ import { useToast } from '../components/ToastProvider';
 import { ModelEditDialog } from '../components/ModelEditDialog';
 import { Combobox } from '../components/Combobox';
 import { Pagination } from '../components/Pagination';
+import { ScrollTable } from '../components/ScrollTable';
 import { Chip } from '../components/Chip';
 import { fmtLatency, copyToClipboard } from '../lib/format';
 
@@ -65,6 +66,7 @@ const badgeStyle = (color: string, _bg: string): React.CSSProperties => ({
   gap: 4,
 });
 
+/** Header-cell metrics handed to ScrollTable — the head row itself lives outside the scroll body. */
 const thStyle: React.CSSProperties = {
   padding: '10px 14px',
   fontSize: '11px',
@@ -72,14 +74,7 @@ const thStyle: React.CSSProperties = {
   color: 'var(--text-dim)',
   textTransform: 'uppercase',
   letterSpacing: '0.04em',
-  borderBottom: '1px solid var(--divider)',
   whiteSpace: 'nowrap',
-  position: 'sticky',
-  top: 0,
-  // --card-bg is translucent (rgba .72) — flatten against --bg so the sticky
-  // header never lets scrolled rows bleed through the titles.
-  background: 'color-mix(in srgb, var(--card-bg), var(--bg))',
-  zIndex: 1,
 };
 
 const tdStyle: React.CSSProperties = {
@@ -317,30 +312,27 @@ export const ModelsPage: React.FC = () => {
         </div>
 
         {/* ---- Table ---- */}
-        <div style={{ overflow: 'auto', flex: 1, minHeight: 0 }}>
-          {/* minWidth: every sibling column is whiteSpace:nowrap, so without a
-              floor the auto layout dumps ALL shrinkage on the model column and
-              its break-all name wraps one character per line on narrow screens.
-              The wrapper already has overflow:auto — overflow sideways instead
-              of crushing the column. */}
-          <table style={{ width: '100%', minWidth: 820, borderCollapse: 'collapse', textAlign: 'left', fontSize: '12px' }}>
-            <thead>
-              {/* Integer, multiple-of-4 row heights: at Windows 125%/150%
-                  scaling fractional row boundaries make some 1px hairlines
-                  land on device-pixel edges (crisp) and some straddle them
-                  (blurry) — the alternating sharp/blurry rows reported here. 4 CSS px
-                  x 1 / 1.25 / 1.5 are all integers, so every border snaps. */}
-              <tr style={{ height: 40 }}>
-                <th style={thStyle}>{t('models.thModel')}</th>
-                <th style={thStyle}>{t('models.thProvider')}</th>
-                <th style={thStyle}>{t('models.thContext')}</th>
-                <th style={thStyle}>{t('models.thInput')}</th>
-                <th style={thStyle}>{t('models.thOutput')}</th>
-                <th style={thStyle}>{t('models.thCapabilities')}</th>
-                <th style={thStyle}>{t('models.thSource')}</th>
-              </tr>
-            </thead>
-            <tbody>
+        {/* The head is its own row outside the scrolling body (ScrollTable), never sticky.
+            minWidth: every sibling column is nowrap, so without a floor the auto layout dumps ALL
+            shrinkage on the model column and its break-all name wraps one character per line on
+            narrow screens — scroll sideways instead of crushing the column.
+            Integer, multiple-of-4 header height: at Windows 125%/150% scaling fractional row
+            boundaries put some 1px hairlines on device-pixel edges (crisp) and some straddling
+            them (blurry). 4 CSS px x 1 / 1.25 / 1.5 are all integers, so every border snaps. */}
+        <ScrollTable
+          fill
+          minWidth={820}
+          headCellStyle={{ ...thStyle, height: 40 }}
+          columns={[
+            { key: 'model', label: t('models.thModel') },
+            { key: 'provider', label: t('models.thProvider') },
+            { key: 'context', label: t('models.thContext') },
+            { key: 'input', label: t('models.thInput') },
+            { key: 'output', label: t('models.thOutput') },
+            { key: 'capabilities', label: t('models.thCapabilities') },
+            { key: 'source', label: t('models.thSource') },
+          ]}
+        >
               {pagedModels.map((m) => {
                 const rowKey = `${m.providerId}/${m.id}`;
                 const res = testResults[rowKey];
@@ -507,9 +499,7 @@ export const ModelsPage: React.FC = () => {
                   </td>
                 </tr>
               )}
-            </tbody>
-          </table>
-        </div>
+        </ScrollTable>
 
         {/* ---- Footer: pagination (summary left, controls right, one row) ---- */}
         <Pagination

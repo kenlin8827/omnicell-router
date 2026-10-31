@@ -32,9 +32,10 @@ function indexFile(harness: string): string {
   return path.join(catalogDir(harness), 'index.jsonl');
 }
 
-/** Re-harvest EVERY host's index after a store mutation: the marketplace store is GLOBAL (one
- *  marketplaces.json, mp- ids shared), so a stale sibling index would teach a per-harness model the
- *  store does not have. The harvest is a local read over snapshots — cheap by construction. */
+/** Re-harvest EVERY host's index after a store mutation: the source store is GLOBAL (one identity
+ *  namespace across `plugin-market.json` and `skill-market.json`, mp- ids shared), so a stale
+ *  sibling index would teach a per-harness model the store does not have. The harvest is a local
+ *  read over snapshots — cheap by construction. */
 export function harvestAll(): void {
   for (const host of HOSTS) harvestIndex(host.id);
 }
@@ -45,6 +46,9 @@ export function harvestIndex(harness: string): { rows: number; sources: string[]
   for (const entry of listMarketplaceEntries(harness as HarnessHostId)) {
     const snapshot = latestSnapshot(entry.slug, harness as HarnessHostId);
     if (!snapshot || !entry.enabled) continue;
+    // The MCP axis is not a plugin catalog: its snapshot lists server packages, and an npm MCP
+    // source would otherwise be harvested as a plugin row for a package that ships no plugin.
+    if (entry.axis === 'mcp') continue;
     const sourceId = marketplaceSourceId(entry.slug);
     let rows: CatalogRow[];
     if (entry.type === 'npm') {

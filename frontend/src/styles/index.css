@@ -1234,6 +1234,17 @@ input[type='checkbox']:not(.switch):disabled {
   border: 1px solid color-mix(in srgb, var(--accent-amber) 45%, transparent);
 }
 
+/* ScrollTable (components/ScrollTable.tsx): the head is a normal row OUTSIDE the scrolling body —
+   never sticky — so only the body scrolls and its scrollbar never drags the head along. Cells
+   center vertically by default; callers add padding / column rules inline. */
+.scroll-table-body td {
+  vertical-align: middle;
+  border-bottom: 1px solid var(--divider);
+}
+.scroll-table-body tr:last-child td {
+  border-bottom: 0;
+}
+
 /* Animations */
 @keyframes pulse {
   0%, 100% { opacity: 1; transform: scale(1); }

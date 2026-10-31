@@ -20,7 +20,7 @@ import { piAdapter } from './pi.js';
 import { universalAdapter } from './universal.js';
 import { windsurfAdapter } from './windsurf.js';
 import { zedAdapter } from './zed.js';
-import { isSkillsHost } from './types.js';
+import { isMcpHost, isSkillsHost } from './types.js';
 
 export { BaseHostAdapter } from './base.js';
 export { isPluginHost, isMcpHost, isSkillsHost } from './types.js';
@@ -67,6 +67,13 @@ export const HOST_ADAPTERS: readonly HostAdapter[] = [
 
 const BY_ID = new Map<HarnessHostId, HostAdapter>(HOST_ADAPTERS.map((adapter) => [adapter.id, adapter]));
 
+/** Hosts with a verified MCP landing, in catalog order. The MCP market axis is shared, so this
+ *  set is the only host restriction an operator package source has: every one of these tabs
+ *  reads the same entries; the landing follows the page that installs. */
+export function mcpHostIds(): HarnessHostId[] {
+  return HOST_ADAPTERS.filter(isMcpHost).map((adapter) => adapter.id);
+}
+
 /** The adapter for one host, or `undefined` for an id the catalog does not know. */
 export function adapterFor(id: HarnessHostId | string): HostAdapter | undefined {
   return BY_ID.get(id as HarnessHostId);
@@ -75,7 +82,7 @@ export function adapterFor(id: HarnessHostId | string): HostAdapter | undefined 
 /**
  * Every physical skills directory the adapters resolve, deduplicated.
  *
- * One directory is ONE copy: ten hosts share `.agents/skills`, so the FIRST adapter in registry
+ * One directory is ONE copy: twelve hosts share `.agents/skills`, so the FIRST adapter in registry
  * order is the owner and every other host is an alias — installation, the inventory scan and the
  * console all use this rule, otherwise the same directory gets labeled two different ways.
  */

@@ -1,6 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
-import { BaseHostAdapter } from './base.js';
+import { BaseHostAdapter, type HostMcpSpec } from './base.js';
 import { home, UNIVERSAL_SKILLS } from './skills-paths.js';
 import type { PluginSpec, SkillsSpec } from './types.js';
 
@@ -19,6 +19,21 @@ export class PiAdapter extends BaseHostAdapter {
     global: UNIVERSAL_SKILLS.global,
     project: UNIVERSAL_SKILLS.project,
     readsUniversal: true,
+  };
+
+  /**
+   * MCP: `~/.pi/agent/mcp.json` for the agent itself, `.pi/mcp.json` for one project — both merge a
+   * server into `mcpServers`, spelled `{command, args, env}` / `{url, headers}` with `${KEY}`
+   * references (pi docs/mcp.md). The CLI refuses a dotted name, so the grammar is narrower than the
+   * union: `invalid server name "foo.bar" (use letters, digits, "_" and "-")`.
+   */
+  protected readonly mcpSpec: HostMcpSpec = {
+    configGlobal: path.join(AGENT_DIR, 'mcp.json'),
+    configProject: path.join('.pi', 'mcp.json'),
+    container: 'mcpServers',
+    shape: 'mcpServers',
+    secretRef: 'shell',
+    namePattern: /^[A-Za-z0-9_-]+$/,
   };
 
   protected readonly extSpec: PluginSpec = {

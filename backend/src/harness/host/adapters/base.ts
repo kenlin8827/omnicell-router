@@ -7,6 +7,7 @@ import type {
   HostAdapter,
   HostPresence,
   McpHost,
+  McpCliSpec,
   PluginHost,
   PluginMarketplaceInstall,
   PluginSpec,
@@ -16,6 +17,13 @@ import type {
 } from './types.js';
 import type { HarnessHostId, HarnessScope, ResolvedRoot } from '../../types.js';
 import { installArtifact, type InstallResult } from '../install.js';
+import {
+  MCP_SERVER_NAME,
+  OPENCODE_ENTRY_SPEC,
+  type McpEntryShape,
+  type McpEntrySpec,
+  type McpSecretRef,
+} from '../mcp-entry.js';
 import type { HarnessHostAdapter, HostInstallRequest } from '../request.js';
 import { defaultExec } from '../writers/plugin.js';
 
@@ -41,11 +49,34 @@ export function writeLanding(candidates: string[]): string {
 /** Skill names are directory names: lowercase, dash-separated, no path segments. */
 const SKILL_NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
+/**
+ * The config surface an MCP landing reads. A host whose WRITES go through its own CLI (a
+ * CLI-materialized landing, `cli` below) still declares this: the file is read-only observation —
+ * discovery, the change plan and the edit form read it, and only the runtime's own verb writes it
+ * (ADR-0015 §D8.13 amendment: a runtime-owned state file must never be reserialized by us).
+ */
 export interface HostMcpSpec {
   configGlobal: string | string[];
   configProject: string | string[];
   container: string;
+  /** Entry spelling inside `container`; absent = opencode's `{type, command[], environment}`. */
+  shape?: McpEntryShape;
+  /** Secret reference the runtime expands; absent = opencode's `{env:KEY}`. */
+  secretRef?: McpSecretRef;
+  /** Server-name grammar the runtime itself enforces; absent = the union `[\w.-]+`. */
+  namePattern?: RegExp;
+  /** Config file syntax; absent = plain JSON (a JSONC file is refused, never rewritten). */
+  format?: 'json' | 'toml';
+  /**
+   * The runtime has NO env/header expansion (kimi, grok): a KEY NAME without a typed value would
+   * land as a literal string and never resolve, so the plan refuses it instead of writing a dead
+   * reference. Absent = the landing's `secretRef` syntax is available for deferral.
+   */
+  literalEnv?: boolean;
+  /** The runtime's own MCP CLI — present = a CLI-materialized landing (§D8.13). */
+  cli?: McpCliSpec;
 }
+
 
 export type PluginInstallSource = 'github' | 'npm' | 'local';
 
@@ -109,6 +140,34 @@ export abstract class BaseHostAdapter implements HostAdapter, SkillsHost, McpHos
     return this.mcpSpec?.container ?? '';
   }
 
+  /** How this runtime spells one server entry and its secret references (ADR-0015 §D8). */
+  mcpEntrySpec(): McpEntrySpec {
+    return {
+      shape: this.mcpSpec?.shape ?? OPENCODE_ENTRY_SPEC.shape,
+      secretRef: this.mcpSpec?.secretRef ?? OPENCODE_ENTRY_SPEC.secretRef,
+    };
+  }
+
+  /** Config-file syntax the landing reads (`toml` for codex; JSON everywhere else). */
+  mcpLandingFormat(): 'json' | 'toml' {
+    return this.mcpSpec?.format ?? 'json';
+  }
+
+  /** Refuse unnamed secret keys: this runtime's config carries no env/header expansion. */
+  mcpLiteralEnv(): boolean {
+    return this.mcpSpec?.literalEnv ?? false;
+  }
+
+  /** The runtime's own MCP CLI, when writes are CLI-materialized. */
+  mcpCliSpec(): McpCliSpec | null {
+    return this.mcpSpec?.cli ?? null;
+  }
+
+  /** Server-name grammar this runtime accepts for a NEW key (it rejects the rest at load time). */
+  mcpNamePattern(): RegExp {
+    return this.mcpSpec?.namePattern ?? MCP_SERVER_NAME;
+  }
+
   /**
    * Return plugin install sources natively supported by this host.
    * Typical returns: `['github']`, `['npm']`, or `['github', 'npm']`.
@@ -130,11 +189,21 @@ export abstract class BaseHostAdapter implements HostAdapter, SkillsHost, McpHos
     return !!this.extSpec || this.supportedPluginSources().length > 0;
   }
 
-  hasLocalPluginLanding(): boolean {
+  /**
+   * A verified plugin landing = any DECLARED write path: a local config/declared/loose landing,
+   * a package-manager subprocess, the runtime's own marketplace chain (manual chains included —
+   * gate 3 displays them, the vendor's session executes), or its loopback REST install API
+   * (the writer boots the vendor server transiently and posts the source). The console hides a
+   * host whose adapter cannot answer for any of these (ADR-0015 §D2).
+   */
+  hasPluginLanding(): boolean {
     return Boolean(
       this.extSpec?.container ||
       this.extSpec?.declared ||
-      this.extSpec?.looseDir
+      this.extSpec?.looseDir ||
+      this.extSpec?.subprocess ||
+      this.extSpec?.marketplace ||
+      this.extSpec?.webApi
     );
   }
 
@@ -256,6 +325,10 @@ export abstract class BaseHostAdapter implements HostAdapter, SkillsHost, McpHos
       commands: this.extSpec.marketplace.commands,
       interactive: this.extSpec.marketplace.interactive === true,
     };
+  }
+
+  webApiSpec(): NonNullable<PluginSpec['webApi']> | null {
+    return this.extSpec?.webApi ?? null;
   }
 
   readSources(ctx: AdapterContext, scope: HarnessScope): ExtSource[] {
@@ -471,9 +544,12 @@ export abstract class BaseHostAdapter implements HostAdapter, SkillsHost, McpHos
    * Concrete adapters implement this to run e.g. `claude plugin marketplace add <repo>`.
    */
   async syncMarketplaceToHost(
-    entry: { repo: string; slug: string; type?: 'github' | 'npm' },
+    entry: { repo: string; slug: string; type?: 'github' | 'npm' | 'pypi'; axis?: 'plugin' | 'skill' | 'mcp' },
     _execImpl?: (cmd: string, args: string[], timeoutMs: number) => Promise<{ code: number; stdout: string; stderr: string }>,
   ): Promise<MarketplaceSyncResult> {
+    // The MCP axis is not a marketplace: its sources write MCP server configs, so the native
+    // `marketplace add/remove` CLI must never be invoked for one.
+    if (entry.axis === 'mcp') return { host: this.id, action: 'skipped', repo: entry.repo, ok: true };
     return { host: this.id, action: 'skipped', repo: entry.repo, ok: true };
   }
 
@@ -482,9 +558,10 @@ export abstract class BaseHostAdapter implements HostAdapter, SkillsHost, McpHos
    * Concrete adapters implement this to run e.g. `claude plugin marketplace remove <repo>`.
    */
   async removeMarketplaceFromHost(
-    entry: { repo: string; slug: string; type?: 'github' | 'npm' },
+    entry: { repo: string; slug: string; type?: 'github' | 'npm' | 'pypi'; axis?: 'plugin' | 'skill' | 'mcp' },
     _execImpl?: (cmd: string, args: string[], timeoutMs: number) => Promise<{ code: number; stdout: string; stderr: string }>,
   ): Promise<MarketplaceSyncResult> {
+    if (entry.axis === 'mcp') return { host: this.id, action: 'skipped', repo: entry.repo, ok: true };
     return { host: this.id, action: 'skipped', repo: entry.repo, ok: true };
   }
 }
