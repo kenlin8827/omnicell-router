@@ -1,26 +1,37 @@
 import os from 'node:os';
 import path from 'node:path';
-import { defineHost } from './declarative.js';
-import { UNIVERSAL_SKILLS, home } from './skills-paths.js';
-
-/**
- * Pi — shared skills directory + package-manager plugin landing (ADR-0015 §D8.9).
- *
- * `pi install npm:<spec>` writes `settings.json` `packages[]` (the declaration the runtime itself
- * reads), resolves the package under `<dir>/npm` (whose lock file answers the exact version), and
- * loads loose `plugins/*.ts` files from disk with no package at all. All three surfaces are
- * declared here, because all three are things the runtime loads and the console must be able to show.
- */
+import { BaseHostAdapter } from './base.js';
+import { home, UNIVERSAL_SKILLS } from './skills-paths.js';
+import type { PluginSpec, SkillsSpec } from './types.js';
 
 const AGENT_DIR = path.join(os.homedir(), '.pi', 'agent');
 
-export const piAdapter = defineHost('pi', {
-  presence: { command: 'pi', dir: path.join(home(), '.pi') },
-  skills: { global: UNIVERSAL_SKILLS.global, project: UNIVERSAL_SKILLS.project, readsUniversal: true },
-  ext: {
+/**
+ * Pi — shared skills directory plus native package-manager plugin landing.
+ * Pi natively ONLY supports npm plugin installs (`pi install npm:<spec>`).
+ */
+export class PiAdapter extends BaseHostAdapter {
+  readonly id = 'pi' as const;
+  readonly extensionDir = 'pi-extension';
+  readonly presence = { command: 'pi', dir: path.join(home(), '.pi') };
+
+  protected readonly skillsSpec: SkillsSpec = {
+    global: UNIVERSAL_SKILLS.global,
+    project: UNIVERSAL_SKILLS.project,
+    readsUniversal: true,
+  };
+
+  protected readonly extSpec: PluginSpec = {
     subprocess: 'pi',
+    subprocessArgs: (spec: string) => ['install', `npm:${spec}`],
     declared: { global: path.join(AGENT_DIR, 'settings.json'), key: 'packages' },
     looseDir: { global: path.join(AGENT_DIR, 'extensions') },
     lock: path.join(AGENT_DIR, 'npm', 'package-lock.json'),
-  },
-});
+  };
+
+  supportedPluginSources(): ('github' | 'npm')[] {
+    return ['npm'];
+  }
+}
+
+export const piAdapter = new PiAdapter();

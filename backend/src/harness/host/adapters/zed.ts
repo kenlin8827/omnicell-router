@@ -1,9 +1,18 @@
 import path from 'node:path';
-import { defineHost } from './declarative.js';
+import { BaseHostAdapter } from './base.js';
 import { home, UNIVERSAL_SKILLS } from './skills-paths.js';
+import type { SkillsSpec } from './types.js';
 
-/** Zed — reads the shared cross-agent skills directory; its plugin packages are editor-built. */
-export const zedAdapter = defineHost('zed', {
-  presence: { command: 'zed', dir: path.join(home(), '.zed') },
-  skills: { global: UNIVERSAL_SKILLS.global, project: UNIVERSAL_SKILLS.project, readsUniversal: true },
-});
+/** Zed — reads the shared cross-agent skills directory. */
+export class ZedAdapter extends BaseHostAdapter {
+  readonly id = 'zed' as const;
+  readonly presence = { command: 'zed', dir: path.join(home(), '.zed') };
+
+  protected readonly skillsSpec: SkillsSpec = {
+    global: UNIVERSAL_SKILLS.global,
+    project: UNIVERSAL_SKILLS.project,
+    readsUniversal: true,
+  };
+}
+
+export const zedAdapter = new ZedAdapter();

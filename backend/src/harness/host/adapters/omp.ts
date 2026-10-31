@@ -1,23 +1,22 @@
 import path from 'node:path';
-import { defineHost } from './declarative.js';
+import { BaseHostAdapter } from './base.js';
 import { home } from './skills-paths.js';
+import type { SkillsSpec } from './types.js';
 
 /**
  * omp (oh-my-pi) — its own `.omp/skills` directory plus the shared cross-agent tree.
- *
- * The native provider discovers `<config-dir>/skills/<name>/SKILL.md` at user level and
- * `.omp/skills/<name>/SKILL.md` at project level; the config root defaults to `~/.omp` and is
- * relocated by `PI_CONFIG_DIR` (omp runtime docs: environment-variables.md resolution model).
- * The `agents` provider additionally reads the cross-agent `.agents/skills` tree, so the shared
- * directory is REFERENCED from skills-paths, never re-spelled here. No VERIFIED MCP or plugin
- * landing is declared for omp.
+ * Relocated by `PI_CONFIG_DIR`.
  */
-export const ompAdapter = defineHost('omp', {
-  configRootEnv: 'PI_CONFIG_DIR',
-  presence: { command: 'omp', dir: path.join(home(), '.omp') },
-  skills: {
+export class OmpAdapter extends BaseHostAdapter {
+  readonly id = 'omp' as const;
+  readonly configRootEnv = 'PI_CONFIG_DIR';
+  readonly presence = { command: 'omp', dir: path.join(home(), '.omp') };
+
+  protected readonly skillsSpec: SkillsSpec = {
     global: path.join(home(), '.omp', 'skills'),
     project: path.join('.omp', 'skills'),
     readsUniversal: true,
-  },
-});
+  };
+}
+
+export const ompAdapter = new OmpAdapter();

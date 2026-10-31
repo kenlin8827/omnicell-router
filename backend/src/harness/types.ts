@@ -6,6 +6,8 @@
  * traffic clients, and welding the two would pollute the traffic domain.
  */
 
+import type { BrowseResult } from './common/market.js';
+
 export type HarnessKind = 'skill' | 'mcp' | 'plugin';
 
 export type HarnessHostId =
@@ -23,6 +25,9 @@ export type HarnessHostId =
   | 'amp'
   | 'windsurf'
   | 'zed'
+  | 'antigravity'
+  | 'factory'
+  | 'kimi'
   | 'grok';
 
 /**
@@ -185,6 +190,8 @@ export interface ArtifactView {
 
 export interface HarnessSourceView {
   id: string;
+  /** Showcase catalog grouping ('default', 'enterprise', etc.). */
+  catalog?: string;
   label: string;
   kinds: HarnessKind[];
   trust: TrustTier;
@@ -210,6 +217,8 @@ export interface HarnessSourceView {
    * would claim a global ranking nobody computed. `undefined` = one order only: the catalog's own.
    */
   sorts?: string[];
+  /** The source's OWN browse function (declared by its adapter file). Absent = no market chip. */
+  browse?: (query: string, limit: number, page: number, sort: string | undefined, fetchImpl?: typeof fetch) => Promise<BrowseResult>;
   lastSyncAt?: number;
 }
 

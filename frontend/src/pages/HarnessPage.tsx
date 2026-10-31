@@ -22,7 +22,7 @@ import ReactMarkdown from 'react-markdown';
 import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
 import { useI18n } from '../i18n/I18nContext';
-import { HarnessSourcesDialog } from '../components/HarnessSourcesDialog';
+import { HarnessSourcesDrawer } from '../components/HarnessSourcesDrawer';
 import { BrandIcon } from '../components/BrandIcons';
 import { FONT_MONO } from '../lib/fonts';
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
@@ -158,21 +158,6 @@ const KIND_META: Record<Kind, KindMeta> = {
   },
 };
 
-/**
- * Marketplace source copy, keyed by the backend source id.
- *
- * The registry (`GET /sources`) decides WHICH sources a page offers, what each one serves and whether
- * it is browsable — the console never re-declares a source. Only the WORDS live here: a chip, its
- * tooltip and the provenance cell must read in the console language, while the backend's own `label`
- * is English prose (`OpenCode ecosystem (curated)`). An id with no entry — a source onboarded without
- * a console string — falls back to that label instead of rendering a blank chip.
- */
-const SOURCE_NAME_KEY: Record<string, string> = {
-  github: 'harness.sourceNames.github',
-  npm: 'harness.sourceNames.npm',
-  'pi-dev': 'harness.sourceNames.piDev',
-  clawhub: 'harness.sourceNames.clawhub',
-};
 
 /**
  * Market orderings, keyed by the sort key a source DECLARES (`sorts` on `/sources`).
@@ -192,14 +177,10 @@ const MARKET_SORT_KEY: Record<string, string> = {
 };
 
 /** Market context line (under the source chips), keyed by the browse adapter's `noteCode` (the
- *  backend's `note` is the fallback). `{keyword}` carries the bare npm tag an empty query defaulted
- *  to — never the `keywords:` search expression itself; `{query}` carries the plain phrase used
- *  where the runtime publishes no npm tag at all. */
+ *  backend's `note` is the fallback). `{n}` carries the full-catalog search cap a cursor endpoint
+ *  imposes; the two live directories each explain their own ranking. */
 const NOTE_KEY: Record<string, string> = {
-  'npm-keyword': 'harness.marketNote.npmKeyword',
-  'npm-default': 'harness.marketNote.npmDefault',
   'pi-dev': 'harness.marketNote.piDev',
-  'window-sorted': 'harness.marketNote.windowSorted',
   'clawhub-catalog': 'harness.marketNote.clawhubCatalog',
   'clawhub-search': 'harness.marketNote.clawhubSearch',
 };
@@ -269,7 +250,7 @@ interface DetailSubject {
   name: string;
   description: string | null;
   /** Where "open in browser" goes, when the subject has a public page. */
-  url?: string;
+  url?: string | null;
   /** `owner/repo` the README is read from. */
   repo?: string;
   /** The portable handle the backend may parse for an npm package (`npm:<name>`). */
@@ -284,7 +265,7 @@ const subjectFromMarket = (item: HarnessMarketItem): DetailSubject => ({
   key: item.id,
   name: item.name,
   description: item.description,
-  url: item.url,
+  url: item.url ?? undefined,
   ...(item.repo ? { repo: item.repo } : {}),
   packageKey: item.key,
   market: item,
@@ -338,6 +319,8 @@ interface Row {
   hosts: string[];
   tracked: boolean;
   sourceId: string | null;
+  catalog?: string;
+  channel?: string;
   /** Surfaces this row was listed on at install time, writer source first. Empty for a discovered
    *  row: the runtime's own store is not a marketplace, so it was listed on nothing. */
   listedOn: string[];
@@ -352,18 +335,6 @@ interface Row {
 }
 
 const MONO: React.CSSProperties = { fontFamily: FONT_MONO, fontSize: '11.5px' };
-
-/**
- * Whether a source chip keeps a row.
- *
- * The facet is "where this came from", not "what wrote it": a Pi-catalog package installs through
- * npm, so its record carries `sourceId: 'npm'` with `listedOn: ['npm','pi-dev']` — both chips must
- * find it. The row's own source cell names the BROWSE surface — the install source this column
- * exists to answer — while the writer stays in `canonicalKey` (ADR-0015 §D8.6): the chip is a
- * discovery facet, never a claim about the artifact's identity.
- */
-const sourceMatches = (row: Row, id: string): boolean =>
-  id === 'all' || row.sourceId === id || row.listedOn.includes(id);
 
 /**
  * Name column: the row's identity, plus the version the runtime's own store records.
@@ -700,14 +671,9 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   const meta = KIND_META[kind];
   const { landing, discovery, installMode, route, rail: railCopy, emptyNoteKey } = meta;
 
-  /** The console-language name of a marketplace source; its backend `label` is the fallback. */
-  const sourceName = (source: HarnessSourceView): string => {
-    const key = SOURCE_NAME_KEY[source.id];
-    return key ? t(key) : source.label;
-  };
   const [inventory, setInventory] = useState<HarnessInventoryResponse | null>(null);
   const [sources, setSources] = useState<HarnessSourceView[]>([]);
-  const [activeSource, setActiveSource] = useState('all');
+  const [activeCatalog, setActiveCatalog] = useState('all');
   /**
    * Page tab, held in the URL (`?tab=market`).
    *
@@ -734,7 +700,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   );
   /** Landing pages are bound to ONE harness (no "all"): the target runtime is part of the landing,
    *  so the pick lives in the URL and is resolved against the host catalog below. */
-  const [marketSource, setMarketSource] = useState('');
+  const [marketCatalog, setMarketCatalog] = useState('default');
   /**
    * The row order asked of the source — one of the keys the source DECLARES in `sorts`
    * (`/api/admin/harness/sources`), never a console-invented one. Empty = the source's own default.
@@ -768,6 +734,9 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   const [marketHasMore, setMarketHasMore] = useState(false);
   /** Rows the source reports for this query, when it reports one. */
   const [marketTotal, setMarketTotal] = useState<number | null>(null);
+  /** Catalogs whose source reported an AUTHORITATIVE row total (not a cursor's lower bound and not a
+   *  windowed search cap). Only those get a chip count: an unknown size stays silent, not "24+". */
+  const [marketCatalogCounts, setMarketCatalogCounts] = useState<Record<string, number>>({});
   /** What `marketTotal` counts: `window` = reachable rows only, so the pager keeps the number for its
    *  page buttons but must not print it as the catalog's size (a windowed search's cap). */
   const [marketTotalScope, setMarketTotalScope] = useState<'catalog' | 'window'>('catalog');
@@ -915,8 +884,9 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   );
 
   /** The hosts the ONE-CLICK integration covers — the backend `ClientAdapter.harness` values
-   *  (frontend mirror; opencode/opencode-proxy fold to one, grok has no landing). Hosts OUTSIDE
-   *  this set are never admitted by default, however installed they are. */
+   *  (frontend mirror; opencode/opencode-proxy fold to one; grok is skills-only, its plugin
+   *  landing is unverified). Hosts OUTSIDE this set are never admitted by default, however
+   *  installed they are. */
   const ONE_CLICK_HOSTS: Record<string, true> = { opencode: true, claude: true, codex: true, pi: true, dsh: true, omp: true, grok: true };
 
   /** The anchoring order: the Clients page's adapter order (backend insertion order — by market
@@ -1008,21 +978,10 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     navigate(`/harness/${route}/${first.value}${location.search}`, { replace: true });
   }, [landing, harness, harnessOptions, route, navigate, location.search]);
 
-  // A harness CHANGE forfeits the market tab: the rail's badges count INSTALLED copies, so answering
-  // a rail pick with the source catalog would hide the number the operator just clicked. A fresh
-  // mount does NOT forfeit it — that is exactly what lets a reload of `?tab=market` stay on the
-  // market. Keyed to the URL segment, never the RESOLVED harness: the resolved one is '' until the
-  // host catalog arrives, so it would fake a change (and drop the tab) on every load. An EMPTY
-  // previous segment is the URL being completed (a bookmark without a harness), not a switch.
-  const harnessAxisRef = useRef(requestedHarness);
-  useEffect(() => {
-    if (!landing) return;
-    const prev = harnessAxisRef.current;
-    if (prev === requestedHarness) return;
-    harnessAxisRef.current = requestedHarness;
-    if (prev === '' || !searchParams.has('tab')) return;
-    setTab('local');
-  }, [landing, requestedHarness, searchParams, setTab]);
+  // A harness change leaves the TAB alone: the operator picked a runtime, not a view. The query
+  // rides along with the rail pick (see `pickHarness`), and Back/Forward replays the address it
+  // recorded, so the view they were reading survives both. Resetting on the resolved param would
+  // also fight the mount that completes a bookmark without a harness segment.
 
   /** Tracked artifacts narrowed to the pinned harness ('' = the un-pinned case does not occur:
    *  the redirect effect above replaces a missing segment before rows render). */
@@ -1045,20 +1004,26 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
 
   /** Every row this page holds, before any control narrows it (the facets below derive from it). */
   const allRows: Row[] = useMemo(() => {
-    const trackedView: Row[] = scopedTrackedRows.map((artifact) => ({
-      key: artifact.id,
-      name: artifact.name,
-      canonicalKey: artifact.canonicalKey,
-      repo: repoOfKey(artifact.canonicalKey),
-      description: artifact.description,
-      copies: artifact.copies,
-      hosts: [...new Set(artifact.copies.map((c) => c.host))],
-      tracked: true,
-      sourceId: artifact.sourceId ?? null,
-      listedOn: artifact.listedOn ?? (artifact.sourceId ? [artifact.sourceId] : []),
-      state: artifact.rollup,
-      artifact,
-    }));
+    const trackedView: Row[] = scopedTrackedRows.map((artifact) => {
+      const src = sources.find((s) => s.id === artifact.sourceId || (artifact.listedOn && artifact.listedOn.includes(s.id)));
+      const channel = artifact.sourceId?.startsWith('mp-') ? artifact.sourceId.slice(3) : (artifact.sourceId ?? 'direct');
+      return {
+        key: artifact.id,
+        name: artifact.name,
+        canonicalKey: artifact.canonicalKey,
+        repo: repoOfKey(artifact.canonicalKey),
+        description: artifact.description,
+        copies: artifact.copies,
+        hosts: [...new Set(artifact.copies.map((c) => c.host))],
+        tracked: true,
+        sourceId: artifact.sourceId ?? null,
+        listedOn: artifact.listedOn ?? (artifact.sourceId ? [artifact.sourceId] : []),
+        catalog: src?.catalog ?? 'default',
+        channel,
+        state: artifact.rollup,
+        artifact,
+      };
+    });
     const localView: Row[] = scopedDiscovered.map((item) => ({
       key: `local:${item.kind}:${item.harness ?? ''}:${item.name}`,
       name: item.name,
@@ -1127,10 +1092,19 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     ? narrowedRows.filter((row) => row.hosts.includes(SHARED_HOST)).length
     : 0;
 
-  /** The table's rows: the source chip is the LAST narrowing, and the only one that carries counts. */
+  const rowCatalog = useCallback((row: Row): string => {
+    if (row.catalog) return row.catalog;
+    if (row.sourceId) {
+      const s = sources.find((src) => src.id === row.sourceId || row.listedOn.includes(src.id));
+      if (s?.catalog) return s.catalog;
+    }
+    return 'default';
+  }, [sources]);
+
+  /** The table's rows: the catalog chip is the LAST narrowing, and the only one that carries counts. */
   const rows: Row[] = useMemo(
-    () => facetedRows.filter((row) => sourceMatches(row, activeSource)),
-    [facetedRows, activeSource]
+    () => facetedRows.filter((row) => (activeCatalog === 'all' || rowCatalog(row) === activeCatalog)),
+    [facetedRows, activeCatalog, rowCatalog]
   );
 
   // Only harnesses that actually hold something here: a filter listing empty hosts is noise.
@@ -1368,107 +1342,162 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
 
   const pageSources = useMemo(() => sourcesForHarness(kind, harness), [sources, kind, harness]);
 
-  /**
-   * Which sources the local tab offers: only the ones with something installed on THIS page.
-   *
-   * The predicate is deliberately UNFACETTED (`allRows`, i.e. kind + harness scope only): a chip for a
-   * source that never produced a record here can only ever show an empty list, but a chip whose count
-   * the current search happens to have narrowed to 0 must stay — hiding it there would make the whole
-   * row vanish while the operator types, and take the `all` reset with it.
-   */
-  const sourceInstalled = useMemo(() => {
-    const seen = new Set<string>();
+
+  const formatCatalog = (cat: string) => {
+    if (cat === 'default') return t('harness.srcMgmt.defaultCatalog');
+    if (cat === 'pi.dev') return t('harness.sourceNames.piDev');
+    if (cat === 'ClawHub') return t('harness.sourceNames.clawhub');
+    return cat;
+  };
+
+  /** Unique catalogs across all installed rows. */
+  const installedCatalogs = useMemo(() => {
+    const set = new Set<string>();
     for (const row of allRows) {
-      if (row.sourceId) seen.add(row.sourceId);
-      for (const id of row.listedOn) seen.add(id);
+      set.add(rowCatalog(row));
     }
-    return seen;
-  }, [allRows]);
+    return Array.from(set).sort();
+  }, [allRows, rowCatalog]);
 
-  /** Page sources that actually landed something here — the chips the local tab renders. */
-  const installedSources = useMemo(
-    () => pageSources.filter((source) => sourceInstalled.has(source.id)),
-    [pageSources, sourceInstalled]
-  );
-
-  /**
-   * Chip counts for the local tab.
-   *
-   * Each count is the size of the list that chip would show, derived from `facetedRows` — the rows
-   * the OTHER controls keep — so a number can never disagree with the table it selects. `all` counts
-   * that same list, so the row of numbers adds up in the only sense that matters: no chip is above
-   * the total. (A row listed on two sources is deliberately counted in both: each chip answers its
-   * own question, and one installed package genuinely came from two places.)
-   */
-  const sourceCounts = useMemo(() => {
+  /** Chip counts per catalog for the local tab. */
+  const catalogCounts = useMemo(() => {
     const counts: Record<string, number> = { all: facetedRows.length };
-    for (const source of installedSources) {
-      counts[source.id] = facetedRows.filter((row) => sourceMatches(row, source.id)).length;
+    for (const cat of installedCatalogs) {
+      counts[cat] = facetedRows.filter((row) => rowCatalog(row) === cat).length;
     }
     return counts;
-  }, [facetedRows, installedSources]);
+  }, [facetedRows, installedCatalogs, rowCatalog]);
 
-  /** The source the market would actually browse: offered for this axis, enabled AND browsable. */
-  const marketSourceView = pageSources.find((s) => s.id === marketSource);
-  const canBrowse = !!marketSourceView && marketSourceView.enabled && marketSourceView.browsable === true;
-  /** The official orderings the active source declares (empty = it has only its own order). */
-  const activeSorts = marketSourceView?.sorts ?? [];
+  /**
+   * Catalogs available on the market tab.
+   *
+   * `default` is a SYSTEM catalog, not a source-derived one: operator/local sources (an `mp-*` entry
+   * that names no catalog) live there, so it is always shown and sits FIRST — it is the axis'
+   * default bucket, and named built-ins (ClawHub / pi.dev) follow in registry order.
+   */
+  const marketCatalogs = useMemo(() => {
+    const named: string[] = [];
+    for (const s of pageSources) {
+      if (!s.enabled || !s.browsable) continue;
+      const cat = s.catalog || 'default';
+      if (cat !== 'default' && !named.includes(cat)) named.push(cat);
+    }
+    return ['default', ...named];
+  }, [pageSources]);
 
-  // A different source is a different set of orders: keeping `stars` while switching to a catalog that
-  // has none would send a key the source never declared (and the backend would silently drop it), so
-  // the pick resets to that source's own default.
-  const marketSortSourceRef = useRef<string | null>(null);
+  /** All active browsable sources contributing to the selected market catalog (federation). */
+  const activeCatalogSources = useMemo(() => {
+    return pageSources.filter(
+      (s) => (s.catalog || 'default') === marketCatalog && s.enabled && s.browsable
+    );
+  }, [pageSources, marketCatalog]);
+
+  const canBrowse = activeCatalogSources.length > 0;
+
+  const activeSorts = useMemo(() => {
+    const set = new Set<string>();
+    for (const s of activeCatalogSources) {
+      for (const sort of s.sorts ?? []) set.add(sort);
+    }
+    return Array.from(set);
+  }, [activeCatalogSources]);
+
+  /** The catalogs row is ordered by the system bucket first; the LANDING is the first catalog that
+   *  actually has a browsable source, so an empty `default` never opens the market onto nothing. */
+  const landingMarketCatalog = useMemo(
+    () =>
+      marketCatalogs.find((cat) =>
+        pageSources.some((s) => s.enabled && s.browsable && (s.catalog || 'default') === cat),
+      ) ?? 'default',
+    [marketCatalogs, pageSources],
+  );
+
   useEffect(() => {
-    if (marketSortSourceRef.current === marketSource) return;
-    marketSortSourceRef.current = marketSource;
+    if (!marketCatalogs.includes(marketCatalog)) {
+      setMarketCatalog(landingMarketCatalog);
+    }
+  }, [marketCatalogs, marketCatalog, landingMarketCatalog]);
+
+  // A different catalog is a different set of orders: keeping `stars` while switching to a catalog
+  // that never declared it would send a key the source cannot serve (the backend silently drops
+  // it), so the pick falls back to the first order the active catalog actually declares.
+  useEffect(() => {
+    if (marketSort && activeSorts.includes(marketSort)) return;
     setMarketSort(activeSorts[0] ?? '');
-    // `activeSorts` is derived from the same source, so the source id is the only trigger needed.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [marketSource]);
+  }, [activeSorts, marketSort]);
 
-  // The market opens on the first source that can actually browse THIS axis. Re-pick only when the
-  // axis changes: a rescan re-reads the registry and must not overwrite the operator's chosen source.
-  /** One expression for "the source this axis would open on", shared by the harness-switch reset and
-   *  the late-registry pick so the two can never disagree. */
-  const defaultMarketSource = (harnessId: string): string =>
-    sourcesForHarness(kind, harnessId).find((s) => s.enabled && s.browsable)?.id ?? '';
-  const marketAxis = `${kind}|${harness}`;
-  const marketAxisRef = useRef<string | null>(null);
+  /**
+   * Counts load ASYNCHRONOUSLY for every catalog on the tab — one cheap page-1 probe per source,
+   * reading only its authoritative `total`. The active catalog is skipped because `loadMarket`
+   * already reads it (and would race the same upstream); a cursor source with no total stays
+   * unnumbered. The probe runs once per (axis, harness, catalog): a silent miss never becomes a
+   * retry loop, and the browse cache absorbs a later click.
+   */
+  const countProbeRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (marketAxisRef.current === marketAxis) return;
-    // Registry + host catalog arrive asynchronously; pinning a default before them would lock the
-    // market to "no source" for the rest of the visit.
-    if (sources.length === 0) return;
-    if (landing && !harness) return;
-    marketAxisRef.current = marketAxis;
-    setMarketSource(defaultMarketSource(harness));
-  }, [marketAxis, pageSources, sources.length, landing, harness]);
+    if (tab !== 'market') return;
+    for (const cat of marketCatalogs) {
+      const key = `${kind}|${harness ?? ''}|${cat}`;
+      if (countProbeRef.current.has(key)) continue;
+      countProbeRef.current.add(key);
+      const sources = pageSources.filter(
+        (s) => s.enabled && s.browsable && (s.catalog || 'default') === cat,
+      );
+      if (sources.length === 0) {
+        setMarketCatalogCounts((prev) => (prev[cat] === 0 ? prev : { ...prev, [cat]: 0 }));
+        continue;
+      }
+      void Promise.all(
+        sources.map(async (source) => {
+          try {
+            const res = await api.harnessBrowse({
+              source: source.id,
+              kind,
+              limit: MARKET_PAGE_SIZE,
+              page: 1,
+              ...(marketSort ? { sort: marketSort } : {}),
+              ...(harness ? { harness } : {}),
+            });
+            return typeof res.total === 'number' && res.totalScope !== 'window' ? res.total : null;
+          } catch {
+            return null;
+          }
+        }),
+      ).then((totals) => {
+        if (totals.length > 0 && totals.every((n): n is number => typeof n === 'number')) {
+          const sum = totals.reduce((a, b) => a + b, 0);
+          setMarketCatalogCounts((prev) => (prev[cat] === sum ? prev : { ...prev, [cat]: sum }));
+        }
+      });
+    }
+  }, [tab, kind, harness, marketCatalogs, pageSources, marketSort]);
 
   // A harness switch invalidates every downstream pick: the install target list belongs to the
   // previous runtime's picker, page 4 of the old list is meaningless, and the market source may not
   // serve the new runtime at all. Driven by the resolved param — never by the click — so a Back or
   // Forward across two harnesses replays exactly the same reset as picking one in the rail.
   //
-  // The TAB is not reset here: it lives in the URL, so a true harness change drops it by arriving
-  // without `?tab=` (rail pick) or through the axis effect above (Back/Forward), while a plain
-  // reload keeps it. Resetting here would re-run on the mount that resolves the segment.
+  // The TAB is deliberately absent: switching runtimes keeps the operator on the view they were
+  // reading (the pick carries `?tab=market` across, and the market list reloads for the new runtime
+  // through `marketQueryAxis`). Forcing the local tab here would answer a runtime pick with a list
+  // the operator may not have asked for.
   useEffect(() => {
     if (!landing) return;
     setPage(1);
-    setMarketSource(defaultMarketSource(harness));
+    setMarketCatalog(landingMarketCatalog);
     // The page's harness is the default landing: an MCP server goes into THIS client's config and the
     // multi-select fans out from there. A single-target kind reads the harness directly (the dialog
     // renders it as one fixed chip), so it has no list to seed.
     setInstallHosts(installMode === 'multi' && harness ? [harness] : []);
-  }, [landing, installMode, kind, harness]);
+  }, [landing, installMode, kind, harness, landingMarketCatalog]);
 
   // A source that no longer has a chip here — narrowed away by the new harness, or emptied by an
   // uninstall — must not keep filtering the list invisibly.
   useEffect(() => {
-    if (activeSource === 'all') return;
-    if (installedSources.some((s) => s.id === activeSource)) return;
-    setActiveSource('all');
-  }, [installedSources, activeSource]);
+    if (activeCatalog === 'all') return;
+    if (installedCatalogs.includes(activeCatalog)) return;
+    setActiveCatalog('all');
+  }, [installedCatalogs, activeCatalog]);
 
   // The host axis exists only where the page spans several hosts (skills): a page pinned to one
   // harness has nothing to narrow.
@@ -1487,7 +1516,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   // Any narrowing resets to page 1: staying on page 4 of a 1-page result reads as an empty table.
   useEffect(() => {
     setPage(1);
-  }, [q, filter, activeSource, hostFilter, hideShared, kind, harness, pageSize]);
+  }, [q, filter, activeCatalog, hostFilter, hideShared, kind, harness, pageSize]);
 
   // Re-seed what previous visits already translated (cache-only lookup — no model call, no spend).
   useEffect(() => {
@@ -1560,10 +1589,6 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
       : (marketPage - 1) * MARKET_PAGE_SIZE + marketItems.length);
 
   const loadMarket = async (query: string, page: number = marketPage, refresh = false) => {
-    // No browsable source on this axis: sending nothing is the honest answer. An empty list would
-    // read as "nothing exists", which is a different (and false) claim — the view states the reason.
-    // The id bump retires any in-flight response: the empty state must not be painted over by rows
-    // that belong to a question the operator can no longer ask.
     if (!canBrowse) {
       marketReqRef.current += 1;
       setMarketItems([]);
@@ -1572,59 +1597,94 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
       setMarketHasMore(false);
       setMarketTotal(null);
       setMarketLoading(false);
+      // No source in this catalog: an exact 0, not an unknown size.
+      if (!query) setMarketCatalogCounts((prev) => ({ ...prev, [marketCatalog]: 0 }));
       return;
     }
-    // A response is rendered only while it still owns the table: the next commit fires a newer
-    // request, and a slow earlier one must neither paint its rows under the new query nor clear the
-    // newer spinner.
     const seq = ++marketReqRef.current;
     setMarketLoading(true);
     setMarketError(null);
     try {
-      const res = await api.harnessBrowse({
-        source: marketSource,
-        q: query,
-        // The axis this page renders: a source serving several axes (npm) picks its default query
-        // and stamps row install kinds from it.
-        kind,
-        // One page is one screenful. A catalog no longer needs its own bigger cap: the page it does
-        // not fit on is reachable with "next" instead of being hidden.
-        limit: MARKET_PAGE_SIZE,
-        ...(harness ? { harness } : {}),
-        page,
-        // Only a key the source declared travels: `''` lets the source answer in its own order.
-        ...(marketSort ? { sort: marketSort } : {}),
-        // A refresh means "ask again": the backend drops this source's 60 s window first, so the
-        // rows that come back were read now instead of minutes ago.
-        ...(refresh ? { refresh: true } : {}),
-      });
-      if (seq !== marketReqRef.current) return;
-      // A page past the end (a stale next, or a query that narrowed the list) steps back one page
-      // instead of rendering an empty table that pretends the market has nothing.
-      if (page > 1 && res.items.length === 0) {
-        setMarketPage(page - 1);
-        return;
-      }
-      setMarketItems(res.items);
-      setMarketHasMore(res.hasMore);
-      setMarketTotal(res.total ?? null);
-      setMarketTotalScope(res.totalScope ?? 'catalog');
-      setMarketNote(
-        res.note || res.noteCode
-          ? {
-              ...(res.note ? { text: res.note } : {}),
-              ...(res.noteCode ? { code: res.noteCode } : {}),
-              ...(res.noteParams ? { params: res.noteParams } : {}),
-            }
-          : null
+      // Federated fetch across all contributing sources of the active catalog. Each source is asked
+      // for THIS page at the console's page size — paging is the source's own cursor, never a slice
+      // of a first-page window (a 100-row window made a 5 401-row catalog look like 50).
+      const responses = await Promise.all(
+        activeCatalogSources.map(async (source) => {
+          try {
+            const res = await api.harnessBrowse({
+              source: source.id,
+              q: query,
+              kind,
+              limit: MARKET_PAGE_SIZE,
+              ...(harness ? { harness } : {}),
+              page,
+              ...(marketSort ? { sort: marketSort } : {}),
+              ...(refresh ? { refresh: true } : {}),
+            });
+            const channel = source.id.startsWith('mp-') ? source.id.slice(3) : source.id;
+            return {
+              total: res.total,
+              totalScope: res.totalScope,
+              hasMore: res.hasMore,
+              note: res.note,
+              noteCode: res.noteCode,
+              noteParams: res.noteParams,
+              items: res.items.map((item) => ({
+                ...item,
+                channel: item.channel ?? channel,
+                catalog: item.catalog ?? (source.catalog || 'default'),
+              })),
+            };
+          } catch {
+            return { items: [], total: undefined, totalScope: undefined, hasMore: false, note: undefined, noteCode: undefined, noteParams: undefined };
+          }
+        }),
       );
+      if (seq !== marketReqRef.current) return;
+
+      const mergedMap = new Map<string, HarnessMarketItem>();
+      for (const { items } of responses) {
+        for (const item of items) {
+          const key = item.key ?? item.id ?? item.name;
+          if (!mergedMap.has(key)) {
+            mergedMap.set(key, item);
+          }
+        }
+      }
+      const merged = Array.from(mergedMap.values());
+      // The catalog's own total when every contributor states one; a window cap is not a catalog
+      // size (the pager hides the summary), and a source with no total at all (ClawHub's cursor
+      // walk) leaves the total unknown instead of presenting the page's row count as a figure.
+      const totals = responses.map((r) => r.total);
+      const known = totals.length > 0 && totals.every((n): n is number => typeof n === 'number');
+      const catalogTotal = known ? totals.reduce((a, b) => a + b, 0) : null;
+      setMarketItems(merged);
+      setMarketHasMore(responses.some((r) => r.hasMore));
+      const windowed = responses.some((r) => r.totalScope === 'window');
+      setMarketTotal(catalogTotal);
+      setMarketTotalScope(windowed ? 'window' : 'catalog');
+      // The context line explains THIS answer. A federated catalog may join several sources, but
+      // only a source whose adapter attached a note has something to say — the first one wins.
+      const noted = responses.find((r) => r.noteCode !== undefined || r.note !== undefined);
+      setMarketNote(
+        noted
+          ? {
+              ...(noted.note !== undefined ? { text: noted.note } : {}),
+              ...(noted.noteCode !== undefined ? { code: noted.noteCode } : {}),
+              ...(noted.noteParams !== undefined ? { params: noted.noteParams } : {}),
+            }
+          : null,
+      );
+      // A chip count is shown ONLY for an authoritative total: a cursor source has none, and a
+      // windowed search cap is not the catalog's size.
+      if (!query && page === 1 && known && !windowed) {
+        setMarketCatalogCounts((prev) => ({ ...prev, [marketCatalog]: catalogTotal ?? 0 }));
+      }
     } catch (e) {
       if (seq !== marketReqRef.current) return;
       setMarketItems([]);
       setMarketHasMore(false);
       setMarketTotal(null);
-      // The note describes a list that is no longer on screen — keeping the previous source's
-      // sentence over an error panel would explain the wrong thing.
       setMarketNote(null);
       setMarketError(marketFailure(e));
     } finally {
@@ -1795,7 +1855,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   // leftover, not a place. The reset is folded into the load effect (early return) so one commit
   // never spends two requests on a page turn. `marketQ` is deliberately absent: typed text is not
   // a request — only `marketSubmittedQ` is.
-  const marketQueryAxis = `${marketSource}|${marketSubmittedQ}|${harness}|${kind}|${marketSort}`;
+  const marketQueryAxis = `${marketCatalog}|${marketSubmittedQ}|${harness}|${kind}|${marketSort}`;
   const marketQueryAxisRef = useRef('');
 
   // A new page is a new list: keeping the previous scroll offset lands the operator mid-page.
@@ -1859,6 +1919,18 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
         // carries an `npm:` key, so without this the record would claim npm was the only place the
         // operator saw it.
         listedOn: [target.sourceId],
+        // A git-backed plugin row installs through the runtime's OWN marketplace chain: the row's
+        // repository and manifest-declared marketplace name are the identity the CLI needs, and
+        // without them the backend would take the payload-resolver branch and refuse the kind.
+        ...(target.installKind === 'plugin' && target.repo
+          ? {
+              marketplace: {
+                repo: target.repo,
+                plugin: target.name,
+                name: target.marketplace ?? target.repo.split('/').pop() ?? target.name,
+              },
+            }
+          : {}),
         ...(confirmed ? { confirm: true } : {}),
       });
       toast.success(`${t('harness.installDone')}: ${res.name} → ${res.copies.map((c) => c.host).join(', ')}`);
@@ -2007,26 +2079,34 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
           view switch, not a filter. EVERY source that serves this axis is rendered — one that cannot
           serve stays visible with its reason, because a missing chip reads as "no such source". */}
       <div className="chip-row" style={{ alignItems: 'center', padding: '0 14px 10px 14px' }}>
-        <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('harness.sources')}</span>
-        {pageSources.map((source) => {
-          const selectable = source.enabled && source.browsable === true;
+        <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('harness.detailCatalog')}</span>
+        {marketCatalogs.map((cat) => {
+          const label = formatCatalog(cat);
+          // Exact 0 when no source belongs to the catalog; unvisited catalogs with sources stay
+          // silent (their size is not known until a browse answers).
+          const hasSources = pageSources.some(
+            (s) => s.enabled && s.browsable && (s.catalog || 'default') === cat,
+          );
+          const count = marketCatalogCounts[cat] ?? (hasSources ? undefined : 0);
           return (
             <button
-              key={source.id}
+              key={cat}
               className="chip"
-              aria-pressed={marketSource === source.id}
+              aria-pressed={marketCatalog === cat}
+              aria-label={
+                count === undefined ? label : t('harness.sourceCountAria', { name: label, count })
+              }
               onClick={() => {
-                setMarketSource(source.id);
-                // The chip is a view switch that re-asks the field's question in another catalog:
-                // committing the field keeps the shown list and the visible text in agreement.
+                setMarketCatalog(cat);
                 commitMarket(marketQ);
               }}
-              disabled={!selectable}
-              title={source.unavailableReason ?? (source.browsable ? sourceName(source) : t('harness.sourceUnbrowsable'))}
-              style={selectable ? undefined : { opacity: 0.55, cursor: 'not-allowed' }}
             >
-              {sourceName(source)}
-              {!selectable && <ShieldAlert size={10} style={{ marginLeft: 4, verticalAlign: 'middle' }} />}
+              {label}
+              {count !== undefined && (
+                <span className="chip-count" aria-hidden>
+                  {count}
+                </span>
+              )}
             </button>
           );
         })}
@@ -2324,7 +2404,8 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                       whiteSpace: 'nowrap',
                     }}
                   >
-                    {item.repo ?? item.key}
+                    <span style={{ color: 'var(--text-muted)' }}>{t('harness.detailChannel')}:</span>{' '}
+                    {item.channel ?? (item.sourceId?.startsWith('mp-') ? item.sourceId.slice(3) : item.sourceId)}
                   </span>
                   <span style={{ flex: '0 0 auto' }}>{marketInstallButton(item)}</span>
                 </div>
@@ -2355,6 +2436,10 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
             // A source without a total still knows ONE exact number on its last page (no successor =
             // the end), so "at least" is only honest while a successor exists.
             totalAtLeast={marketTotal === null && marketHasMore}
+            // No catalog total (ClawHub's cursor walk): page numbers would be invented. The bar
+            // keeps prev / current / next and lets the source's own `hasMore` own "next".
+            cursor={marketTotal === null}
+            hasNext={marketHasMore}
           />
         </div>
       )}
@@ -2368,7 +2453,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   const breadcrumb = (): string => {
     const scope = harness ? `${harness}/` : '';
     if (tab === 'local') return `harness://${scope}inventory`;
-    const market = marketSource ? `${marketSource}:search` : 'search';
+    const market = marketCatalog ? `catalog/${marketCatalog}:search` : 'search';
     return scope ? `harness://${scope}${market}` : market;
   };
 
@@ -2629,25 +2714,23 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
    *  the operator picked it on pi.dev, so the cell says pi.dev. The writer is not lost: it stays in
    *  the record and in `canonicalKey` (`npm:<pkg>`, the cell's tooltip), and the chips still narrow
    *  by both — only this column's question is answered literally (ADR-0015 §D8.6). */
-  const sourceLabel = (row: Row): string => {
+  const channelLabel = (row: Row): string => {
     if (!row.tracked) {
       if (row.origin === 'runtime-store') return t('harness.originRuntimeStore');
       if (row.origin === 'config-array') return t('harness.originConfigEntry');
       if (row.origin === 'local-file') return t('harness.originLocalFile');
       return t('harness.local');
     }
-    if (!row.sourceId) return t('harness.local');
-    const label = (id: string): string | undefined => {
-      const found = sources.find((candidate) => candidate.id === id);
-      return found ? sourceName(found) : undefined;
-    };
-    // Browse surface first: `listedOn` is writer-first, deduped and route-validated, so the first
-    // OTHER id is where the row was installed from. An id the registry cannot label is skipped,
-    // never printed raw, and the writer answers when no browse surface was recorded.
-    const browsed = row.listedOn.find((id) => id !== row.sourceId);
-    const fromBrowse = browsed ? label(browsed) : undefined;
-    return fromBrowse ?? label(row.sourceId) ?? t('harness.sourceOther');
+    if (row.channel) return row.channel;
+    for (const surface of [...row.listedOn].reverse()) {
+      if (surface === 'pi-dev') return 'pi-dev';
+      if (surface.startsWith('mp-')) return surface.slice(3);
+      if (surface) return surface;
+    }
+    if (row.sourceId?.startsWith('mp-')) return row.sourceId.slice(3);
+    return row.sourceId ?? 'direct';
   };
+
 
   /**
    * One word per row, not five.
@@ -2910,41 +2993,35 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
             never changes which sources EXIST. Here only the sources that landed something are
             rendered: a facet with nothing behind it can only ever empty the table, and the market tab
             is where the full registry (including a source that cannot serve) stays visible. */}
-        {installedSources.length > 0 && (
+        {installedCatalogs.length > 0 && (
           <div className="chip-row" style={{ alignItems: 'center', padding: '0 14px 10px 14px' }}>
-            <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('harness.sources')}</span>
-            {/* Each chip carries the number of rows it would show right now, computed with the other
-                controls applied — the label and the table can never disagree. */}
+            <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('harness.detailCatalog')}</span>
             <button
               className="chip"
-              aria-pressed={activeSource === 'all'}
-              aria-label={t('harness.sourceCountAria', { name: t('harness.filterAll'), count: sourceCounts.all ?? 0 })}
-              onClick={() => setActiveSource('all')}
+              aria-pressed={activeCatalog === 'all'}
+              aria-label={t('harness.sourceCountAria', { name: t('harness.filterAll'), count: catalogCounts.all ?? 0 })}
+              onClick={() => setActiveCatalog('all')}
             >
               {t('harness.filterAll')}
               <span className="chip-count" aria-hidden>
-                {sourceCounts.all ?? 0}
+                {catalogCounts.all ?? 0}
               </span>
             </button>
-            {installedSources.map((source) => (
+            {installedCatalogs.map((cat) => (
               <button
-                key={source.id}
+                key={cat}
                 className="chip"
-                aria-pressed={activeSource === source.id}
+                aria-pressed={activeCatalog === cat}
                 aria-label={t('harness.sourceCountAria', {
-                  name: sourceName(source),
-                  count: sourceCounts[source.id] ?? 0,
+                  name: cat === 'default' ? t('harness.srcMgmt.defaultCatalog') : cat,
+                  count: catalogCounts[cat] ?? 0,
                 })}
-                onClick={() => setActiveSource(source.id)}
-                disabled={!source.enabled}
-                title={source.unavailableReason ?? sourceName(source)}
-                style={source.enabled ? undefined : { opacity: 0.55, cursor: 'not-allowed' }}
+                onClick={() => setActiveCatalog(cat)}
               >
-                {sourceName(source)}
+                {formatCatalog(cat)}
                 <span className="chip-count" aria-hidden>
-                  {sourceCounts[source.id] ?? 0}
+                  {catalogCounts[cat] ?? 0}
                 </span>
-                {!source.enabled && <ShieldAlert size={10} style={{ marginLeft: 4, verticalAlign: 'middle' }} />}
               </button>
             ))}
           </div>
@@ -3126,7 +3203,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                         style={{ ...TD_CENTER, color: 'var(--text-dim)' }}
                         title={row.canonicalKey ?? (row.tracked ? undefined : t('harness.localHint'))}
                       >
-                        {sourceLabel(row)}
+                        {channelLabel(row)}
                       </td>
                       <td style={TD}>{hostChips(row)}</td>
                       {showStarColumn && <td style={TD_CENTER}>{installedStar(row)}</td>}
@@ -3179,7 +3256,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                         }}
                         title={row.sourceId ? row.canonicalKey ?? undefined : t('harness.localHint')}
                       >
-                        {sourceLabel(row)}
+                        <span style={{ color: 'var(--text-muted)' }}>{t('harness.detailChannel')}:</span> {channelLabel(row)}
                       </span>
                       {removeButton(row)}
                     </div>
@@ -3211,7 +3288,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
       {tab === 'market' && renderMarket()}
 
       {tab === 'market' && kind !== 'mcp' && (
-        <HarnessSourcesDialog harness={harness} kind={kind} open={sourcesOpen} onClose={() => setSourcesOpen(false)} />
+        <HarnessSourcesDrawer harness={harness} kind={kind} open={sourcesOpen} onClose={() => setSourcesOpen(false)} />
       )}
 
       {/* ── Location picker ──────────────────────────────────────────────── */}
@@ -3748,10 +3825,12 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   // A kind with a landing puts the rail left of that same column. `onSelect` pushes only the URL:
   // the reset chain lives in the effect keyed on the resolved param, so Back/Forward replays it.
   const pickHarness = (id: string): void => {
-    // A rail pick always answers "what is installed HERE" — the badge is a count of local copies.
-    // Navigating to a segment WITHOUT `?tab=` is that reset, and it also covers clicking the row you
-    // already stand on, where only the query changes.
-    navigate(`/harness/${route}/${id}`);
+    // A rail pick is a scope change, not a view change: the `?tab=` query rides along so the
+    // operator keeps reading the list (installed or market) they were on. Clicking the row they
+    // already stand on is a no-op — there is no view to reset, and a duplicate history entry would
+    // only bury the picks Back is meant to replay.
+    if (id === harness) return;
+    navigate(`/harness/${route}/${id}${location.search}`);
   };
   return (
     <div className="harness-frame">

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getOcrHomeDir } from '../../cli/paths.js';
-import { latestSnapshot, listMarketplaces, marketplaceSourceId } from '../market/marketplaces.js';
+import { latestSnapshot, listMarketplaceEntries, marketplaceSourceId } from '../common/market.js';
 import { HOSTS } from '../host/hosts.js';
 import type { HarnessHostId } from '../types.js';
 import type { CatalogRow, CatalogPage, CatalogSort, CatalogSource } from './types.js';
@@ -42,31 +42,65 @@ export function harvestAll(): void {
 /** Rebuild one harness's index from every marketplace snapshot that carries plugin rows. */
 export function harvestIndex(harness: string): { rows: number; sources: string[] } {
   const perSource: { source: CatalogSource; rows: CatalogRow[] }[] = [];
-  for (const entry of listMarketplaces()) {
-    const snapshot = latestSnapshot(entry.slug);
+  for (const entry of listMarketplaceEntries(harness as HarnessHostId)) {
+    const snapshot = latestSnapshot(entry.slug, harness as HarnessHostId);
     if (!snapshot || !entry.enabled) continue;
     const sourceId = marketplaceSourceId(entry.slug);
-    // Snapshots written before the `plugins` field existed have no array — read tolerantly.
-    const rows: CatalogRow[] = (snapshot.plugins ?? []).map((p) => ({
-      key: `${sourceId}:${entry.repo}#${p.source}`,
-      name: p.name,
-      summary: p.description,
-      // The snapshot's repo-level stars annotate every row from that repo — a real GitHub count.
-      stars: snapshot.stars,
-      updatedAt: snapshot.pushedAt ? Date.parse(snapshot.pushedAt) || null : null,
-      sourceId,
-      surfaces: [sourceId],
-      // A claude-shaped manifest is at minimum claude-installable; detected adapter directories
-      // widen the claim. Rows never claim a harness without a signal.
-      hosts: dedupeHosts(['claude', ...snapshot.authorAdapters.filter(isKnownHost)]),
-      repo: entry.repo,
-    }));
+    let rows: CatalogRow[];
+    if (entry.type === 'npm') {
+      // An npm source's packages ARE the plugin rows; identity is the package (`npm:<pkg>`), so a
+      // row registered here and the same package browsed elsewhere join one installed state.
+      rows = (snapshot.plugins ?? []).map((p) => ({
+        key: `npm:${p.name}`,
+        name: p.name,
+        summary: p.description,
+        stars: null,
+        updatedAt: null,
+        sourceId,
+        surfaces: [sourceId],
+        // Package-manager installs are runtime-agnostic; no host claim is invented.
+        hosts: [],
+        repo: null,
+        marketplace: null,
+      }));
+    } else {
+      // SUPPORT IS DETECTED per repository (§D9 amendment): a harness's catalog only carries a
+      // source whose snapshot recorded THAT harness's form. Snapshots written before detection
+      // existed fall back to the legacy per-harness pin / manifest claim.
+      const supported = snapshot.hosts ?? [];
+      if (supported.length > 0) {
+        if (!supported.includes(harness as HarnessHostId)) continue;
+      } else if (entry.harness && entry.harness !== harness) {
+        continue;
+      }
+      // Snapshots written before the `plugins` field existed have no array — read tolerantly.
+      rows = (snapshot.plugins ?? []).map((p) => ({
+        key: `${sourceId}:${entry.repo}#${p.source}`,
+        name: p.name,
+        summary: p.description,
+        // The snapshot's repo-level stars annotate every row from that repo — a real GitHub count.
+        stars: snapshot.stars,
+        updatedAt: snapshot.pushedAt ? Date.parse(snapshot.pushedAt) || null : null,
+        sourceId,
+        surfaces: [sourceId],
+        hosts:
+          supported.length > 0
+            ? dedupeHosts(supported)
+            : entry.harness
+              ? [entry.harness]
+              : dedupeHosts(['claude', ...snapshot.authorAdapters.filter(isKnownHost)]),
+        repo: entry.repo,
+        // The runtime's install command needs `<plugin>@<marketplace>`; the manifest's own name.
+        marketplace: snapshot.marketplace ?? entry.repo.split('/').pop() ?? null,
+      }));
+    }
     if (rows.length > 0) {
       perSource.push({
         source: {
           id: sourceId,
           label: entry.repo,
           tier: 'index',
+          // An npm source has no stars; `name` order is a local sort over its package list.
           sorts: ['name', 'updated', ...(snapshot.stars !== null ? (['stars'] as const) : [])],
           counts: true,
         },

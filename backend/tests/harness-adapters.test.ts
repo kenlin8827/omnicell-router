@@ -31,7 +31,7 @@ describe('capability matrix — who can do what', () => {
     expect(HOST_ADAPTERS.map((a) => a.id)).toEqual(HOSTS.map((h) => h.id));
   });
 
-  it('thirteen hosts land skills; only opencode lands MCP; claude, opencode and pi land plugins', () => {
+  it('fourteen hosts land skills; only opencode lands MCP; claude, opencode and pi land plugins', () => {
     expect(ids((a) => isSkillsHost(a as never))).toEqual([
       'universal',
       'opencode',
@@ -46,6 +46,7 @@ describe('capability matrix — who can do what', () => {
       'amp',
       'windsurf',
       'zed',
+      'grok',
     ]);
     expect(ids(isMcpHost)).toEqual(['opencode']);
     expect(ids(isPluginHost)).toEqual(['opencode', 'claude', 'pi']);

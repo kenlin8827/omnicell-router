@@ -36,6 +36,8 @@ export interface HostInstallRequest {
   confirm?: boolean;
   /** Where the row was browsed, for the manifest's provenance (§D9 listedOn). */
   listedOn?: string[];
+  /** GIT-BACKED plugin identity: the runtime's own marketplace chain installs `<plugin>@<name>`. */
+  marketplace?: { repo: string; plugin: string; name: string };
   fetchImpl?: typeof fetch;
   execImpl?: ExecImpl;
 }

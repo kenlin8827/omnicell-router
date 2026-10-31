@@ -1,6 +1,6 @@
 import { githubAdapter } from './github.js';
-import type { MarketplaceEntry } from '../../market/marketplaces.js';
-import { marketplaceSourceId } from '../../market/marketplaces.js';
+import type { MarketplaceEntry } from '../../common/market.js';
+import { marketplaceSourceId } from '../../common/market.js';
 import type { ResolveOutcome, SourceAdapter } from '../../spi.js';
 
 /**

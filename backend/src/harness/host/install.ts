@@ -1,5 +1,6 @@
 import { getAdapter } from './registry.js';
 import { recordApply } from './ledger.js';
+import { adapterFor, type PluginHost } from './adapters/index.js';
 import { probeArtifact, type ProbeResult } from './probe.js';
 import type { McpTargetPlan } from './writers/mcp.js';
 import { applyMcp, planMcp } from './writers/mcp.js';
@@ -62,6 +63,12 @@ export interface InstallRequest {
   fetchImpl?: typeof fetch;
   /** Project root for `project` scope; defaults to this process's cwd (threaded for tests). */
   projectRoot?: string;
+  /**
+   * GIT-BACKED plugin identity (ADR-0015 §D9 amendment): `repo` + the plugin/marketplace names the
+   * source's own manifest declares. When present, the harness's NATIVE chain installs it — no
+   * payload is resolved, no tarball is fetched, no config array is written.
+   */
+  marketplace?: { repo: string; plugin: string; name: string };
 }
 
 /** Upper bound on the recorded listing surfaces: a row is browsed on a handful of catalogs, and an
@@ -217,6 +224,29 @@ export async function installArtifact(req: InstallRequest): Promise<InstallResul
     trust = 'manual';
     canonicalKey = key;
     payloadName = req.manualSpec;
+  } else if (req.marketplace && kind === 'plugin') {
+    // Native marketplace install: the runtime owns the clone, so there is no payload to resolve.
+    // The chain itself is planned/echoed by the plugin writer (gate 3), never invented here.
+    const identity = req.marketplace;
+    if (
+      typeof identity.repo !== 'string' ||
+      typeof identity.plugin !== 'string' ||
+      typeof identity.name !== 'string' ||
+      !identity.repo ||
+      !identity.plugin ||
+      !identity.name
+    ) {
+      return { ok: false, code: 'bad_request', message: 'marketplace requires {repo, plugin, name}' };
+    }
+    const harness = req.hosts[0]!;
+    const hostAdapter = adapterFor(harness);
+    const chain = (hostAdapter as Partial<PluginHost>)?.marketplaceSpec?.() ?? null;
+    if (!chain) {
+      return { ok: false, code: 'bad_request', message: `harness '${harness}' declares no native marketplace install form` };
+    }
+    trust = 'community';
+    canonicalKey = key;
+    payloadName = identity.plugin;
   } else {
     if (!adapter) {
       return { ok: false, code: 'unsupported_source', message: `no install adapter for source '${sourceId}'` };
@@ -251,7 +281,6 @@ export async function installArtifact(req: InstallRequest): Promise<InstallResul
     else if (resolved.payload.kind === 'skill') skillFiles = resolved.payload.files;
     else extSpec = resolved.payload.spec;
   }
-
   switch (kind) {
     case 'skill': {
       if (!skillFiles || !pin) return { ok: false, code: 'bad_request', message: 'skill dispatch without a skill payload' };
@@ -348,15 +377,24 @@ export async function installArtifact(req: InstallRequest): Promise<InstallResul
         scope: req.scope,
         projectRoot: req.projectRoot,
         execImpl: req.execImpl,
+        // A git-backed row names the runtime's own marketplace identity; the writer plans the
+        // native chain from it (and ignores `spec`, which stays the plugin name for the record).
+        ...(req.marketplace ? { marketplace: req.marketplace } : {}),
       };
-      // Gate 1/3 — plan → confirm → apply; the plan echoes the EXACT third-party command.
+      // Gate 1/3 — plan → confirm → apply; the plan echoes the EXACT third-party command(s).
       if (!req.confirm) {
         const plan = planPlugin(extReq);
         if (!plan.ok) return { ok: false, code: 'bad_request', message: plan.message };
         return {
           ok: false,
           code: 'confirm_required',
-          message: 'plugin install executes third-party code (npm lifecycle scripts) — confirm to apply',
+          // An interactive chain (cursor/kimi) can never be spawned: the gate shows the command and
+          // says so, instead of asking for a confirmation whose apply would only refuse.
+          message: plan.targets.some((t) => t.op === 'manual')
+            ? "this runtime installs plugins only from inside a session — run the shown command there"
+            : req.marketplace
+              ? "plugin install runs the runtime's own marketplace command(s) — confirm to apply"
+              : 'plugin install executes third-party code (npm lifecycle scripts) — confirm to apply',
           plan: plan.targets,
         };
       }

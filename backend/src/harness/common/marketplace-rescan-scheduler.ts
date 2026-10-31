@@ -1,4 +1,5 @@
-import { dueMarketplaces, probeMarketplace } from './marketplaces.js';
+import { dueMarketplaceEntries, probeMarketplace } from './market.js';
+import type { MarketplaceEntry, ProbeOptions } from './market.js';
 import { harvestAll } from '../plugin/catalog.js';
 
 /**
@@ -17,6 +18,8 @@ export class MarketplaceRescanScheduler {
   constructor(
     private readonly tickIntervalMs = 60_000,
     private readonly fetchImpl: typeof fetch = fetch,
+    /** Probe hooks per entry — injected so this loop owns no marketplace format itself. */
+    private readonly optionsFor: (entry: MarketplaceEntry) => ProbeOptions = () => ({}),
   ) {}
 
   start(): void {
@@ -36,13 +39,13 @@ export class MarketplaceRescanScheduler {
 
   async tick(): Promise<void> {
     if (this.running) return;
-    const due = dueMarketplaces();
+    const due = dueMarketplaceEntries();
     if (due.length === 0) return;
     this.running = true;
     try {
       let probed = false;
       for (const { entry } of due) {
-        await probeMarketplace(entry, this.fetchImpl);
+        await probeMarketplace(entry, this.fetchImpl, this.optionsFor(entry));
         probed = true;
       }
       // A refreshed snapshot changes catalog rows: every harness's index re-reads it, or sibling

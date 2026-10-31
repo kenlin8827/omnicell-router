@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { currentModelOf, projectSessionEntity, deriveSessionEntryMode, promptTurnsOf, sessionTitleOf } from '../src/session/session-row.js';
+import { boundCredentialLabelOf, currentModelOf, projectSessionEntity, deriveSessionEntryMode, promptTurnsOf, sessionTitleOf } from '../src/session/session-row.js';
 import type { ConversationSession } from '../src/session/session-manager.js';
 import type { ExecutionTrace } from '../src/trace/tracker.js';
 
@@ -125,5 +125,27 @@ describe('sessionTitleOf (console title, entity-independent)', () => {
 describe('deriveSessionEntryMode (re-exported from the row contract)', () => {
   it('classifies an empty trace list as mixed (safe fallback)', () => {
     assert.equal(deriveSessionEntryMode([]), 'mixed');
+  });
+});
+
+describe('boundCredentialLabelOf (display label of the bound credential)', () => {
+  const chain = [
+    { keyHashPrefix: 'aaaaaaaaaaaa', label: '  primary  ', key: 'k1' },
+    { keyHashPrefix: 'bbbbbbbbbbbb', key: 'k2' },
+  ];
+
+  it('matches the serving chain by prefix and trims the operator label', () => {
+    assert.equal(boundCredentialLabelOf(chain, 'aaaaaaaaaaaa'), 'primary');
+  });
+
+  it('unnamed credential / absent binding / missing chain → undefined (console falls back to #prefix)', () => {
+    assert.equal(boundCredentialLabelOf(chain, 'bbbbbbbbbbbb'), undefined);
+    assert.equal(boundCredentialLabelOf(chain, undefined), undefined);
+    assert.equal(boundCredentialLabelOf(undefined, 'aaaaaaaaaaaa'), undefined);
+  });
+
+  it('a prefix that left the chain is not guessed from another provider', () => {
+    // The route passes ONE provider's chain; an unknown prefix never matches.
+    assert.equal(boundCredentialLabelOf(chain, 'cccccccccccc'), undefined);
   });
 });

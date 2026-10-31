@@ -18,7 +18,7 @@
  * (the header is shared with browse through `githubHeaders`).
  */
 
-import { githubHeaders } from './browse.js';
+import { githubHeaders } from './github.js';
 import { describeFetchFailure, fetchFailureReason, fetchWithRetry, type FailureReason } from '../net.js';
 
 const API = 'https://api.github.com';

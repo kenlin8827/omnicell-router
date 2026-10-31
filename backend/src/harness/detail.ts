@@ -170,6 +170,8 @@ function capReadme(text: string | undefined): string | null {
   if (typeof text !== 'string') return null;
   const body = text.replace(/\r\n/g, '\n').trim();
   if (!body) return null;
+  // npm registry's sentinel when the published package lacked a root README.md
+  if (/^ERROR:\s*No README(?:\s+data)?\s+found!?/i.test(body)) return null;
   return body.length > README_CAP ? `${body.slice(0, README_CAP)}\n\n…(README truncated)` : body;
 }
 

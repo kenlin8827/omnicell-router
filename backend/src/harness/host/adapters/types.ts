@@ -5,11 +5,12 @@ import type { ExtDiscoveryOrigin, HarnessHostId, HarnessScope, ResolvedRoot } fr
  * (ADR-0015 §D3 R3, §D8.8).
  *
  * WHY capabilities instead of one fat `HarnessHost` with `list/install/uninstall × skill|mcp|ext`:
- * the capability matrix is wildly asymmetric. In the current catalog twelve hosts have a skills
- * location, ONE has a verified MCP landing (opencode) and TWO have a verified plugin landing
- * (opencode, pi). A nine-method flat interface would be 117 slots of which ~72 are `throw new
- * Error('unsupported')`, and a caller still cannot tell "this host cannot do MCP" from "this host
- * forgot to implement it". Capability interfaces make absence a TYPE fact, not a runtime throw.
+ * the capability matrix is wildly asymmetric. In the current catalog fourteen hosts have a skills
+ * location, ONE has a verified MCP landing (opencode) and SIX have a verified plugin landing
+ * (opencode, pi, claude, antigravity, factory, kimi). A nine-method flat interface would be 117
+ * slots of which ~90 are `throw new Error('unsupported')`, and a caller still cannot tell "this
+ * host cannot do MCP" from "this host forgot to implement it". Capability interfaces make absence a
+ * TYPE fact, not a runtime throw.
  *
  * WHY installation verbs are NOT here: install/uninstall are one pipeline — plan → confirm → apply →
  * ledger → claims (ADR-0015 gates 2/3) — implemented once per KIND in `writers/`, not once per host.
@@ -86,12 +87,45 @@ export interface PluginSpec {
   lock?: string;
   /** Package-manager command that owns the install (`pi install …`), when the host is one. */
   subprocess?: string;
-  /** The subprocess install's argument grammar (`claude plugin install <id> --scope user`). */
+  /** The subprocess install's argument grammar (`claude plugin install <id> --scope user`). A host
+   *  that declares `subprocess` but no grammar refuses npm specs — the writer never invents one. */
   subprocessArgs?: (spec: string, scope: HarnessScope) => string[];
+  /** The runtime's OWN marketplace install chain (ADR-0015 §D9 amendment, 2026-10-31): a git-backed
+   *  plugin is installed by registering its repository as a marketplace and then installing
+   *  `<plugin>@<marketplace>` — never by copying payload files. */
+  marketplace?: PluginMarketplaceSpec;
   /** The declared store is an object map (`installed_plugins.json`), not a string array. */
   storeShape?: 'map';
   /** Spec prefix grammar for a map store's canonical keys (`claude:`). */
   specPrefix?: string;
+}
+
+/**
+ * One runtime's native marketplace install chain. Each entry is an argv TEMPLATE; the writer
+ * substitutes the tokens below and runs the templates in order, stopping at the first failure.
+ * Nothing is ever handed to a shell: the command and every argument stay separate argv items.
+ *
+ *   {repo}        `owner/repo` of the plugin source
+ *   {url}         `https://github.com/owner/repo`
+ *   {urlGit}      `https://github.com/owner/repo.git`
+ *   {plugin}      the plugin name the source declares (`postman`)
+ *   {marketplace} the marketplace name the source declares (`postman`, `claude-plugins-official`)
+ *   {scope}       the runtime's own scope word (`user` for global, `project` for project)
+ */
+export interface PluginMarketplaceSpec {
+  commands: string[][];
+  /**
+   * The runtime installs only from INSIDE a session (`/add-plugin`, `/plugins install`). The
+   * console still renders the exact command as gate-3 evidence, but apply never spawns it — the
+   * operator runs it themselves.
+   */
+  interactive?: boolean;
+}
+
+/** The chain a runtime declares for git-backed plugin rows, or null when it has no CLI form. */
+export interface PluginMarketplaceInstall {
+  commands: string[][];
+  interactive: boolean;
 }
 
 /** Where an install writes, or why it refuses. */
@@ -116,6 +150,13 @@ export interface HostAdapter {
   readonly id: HarnessHostId;
   /** Env var that relocates this runtime's config root, when it honours one. */
   readonly configRootEnv?: string;
+  /**
+   * The repository directory this runtime's ecosystem publishes its form in (`pi-extension`,
+   * `.claude-plugin`, …). It belongs to the HOST because it is a property of the runtime's
+   * distribution convention, spelled once in this host's file; the plugin market pre-fills it and
+   * a source registered with it is scanned inside that directory only.
+   */
+  readonly extensionDir?: string;
   /**
    * Install-presence markers: how the console answers "is this runtime on this machine". Either
    * marker suffices — the executable on PATH or its config directory on disk. A host whose
@@ -174,6 +215,9 @@ export interface PluginHost extends HostAdapter {
   looseDirs(ctx: AdapterContext, scope: HarnessScope): string[];
   /** Where an install for this host + scope lands (or the refusal reason). */
   writeTarget(ctx: AdapterContext, scope: HarnessScope): PluginWriteTarget;
+  /** The runtime's native marketplace install chain, or null when it has no CLI form. Present on
+   *  a host that can install a git-backed plugin by registering the repository as a marketplace. */
+  marketplaceSpec?(): PluginMarketplaceInstall | null;
 }
 
 /** A host whose MCP servers merge into a config file it owns. */
@@ -189,15 +233,27 @@ export interface McpHost extends HostAdapter {
 
 /** Capability probe — absence is a TYPE fact, so no caller needs a try/catch around "unsupported". */
 export function isSkillsHost(adapter: HostAdapter | undefined): adapter is SkillsHost {
-  return !!adapter && typeof (adapter as Partial<SkillsHost>).skillRoots === 'function';
+  return (
+    !!adapter &&
+    typeof (adapter as Partial<SkillsHost>).skillRoots === 'function' &&
+    ((adapter as { isSkillsSupported?: () => boolean }).isSkillsSupported?.() ?? true)
+  );
 }
 
 /** Capability probe for the plugin landing. */
 export function isPluginHost(adapter: HostAdapter | undefined): adapter is PluginHost {
-  return !!adapter && typeof (adapter as Partial<PluginHost>).readSources === 'function';
+  return (
+    !!adapter &&
+    typeof (adapter as Partial<PluginHost>).readSources === 'function' &&
+    ((adapter as { hasLocalPluginLanding?: () => boolean }).hasLocalPluginLanding?.() ?? true)
+  );
 }
 
 /** Capability probe for the MCP landing. */
 export function isMcpHost(adapter: HostAdapter | undefined): adapter is McpHost {
-  return !!adapter && typeof (adapter as Partial<McpHost>).configPath === 'function';
+  return (
+    !!adapter &&
+    typeof (adapter as Partial<McpHost>).configPath === 'function' &&
+    ((adapter as { isMcpSupported?: () => boolean }).isMcpSupported?.() ?? true)
+  );
 }

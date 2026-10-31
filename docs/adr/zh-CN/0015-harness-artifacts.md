@@ -36,7 +36,7 @@
 - `hosts.ts` 回答**有哪些宿主、顺序、叫什么**（`HOSTS`：只有 id + label）。
 - `adapters/<host>.ts` 回答**该运行时读什么、怎么写**——每宿主一个文件，每个落点路径只声明一次。共享规则（`defineHost` 与 `SkillsHost` / `McpHost` / `PluginHost` 构建器）在 `adapters/declarative.ts` 里，所以错路径是一个小文件的数据错误，错规则是一处实现错误。
 
-能力是**彼此独立的接口**，不是每宿主九个方法：十三个宿主有技能落点，一个（opencode）有经核实的 MCP 落点，三个（opencode、pi、claude）有经核实的插件落点。不会 MCP 的宿主根本不实现 `McpHost`——"没有这个能力"是类型事实，而不是运行时抛 `unsupported`。
+能力是**彼此独立的接口**，不是每宿主九个方法：十四个宿主有技能落点，一个（opencode）有经核实的 MCP 落点，六个（opencode、pi、claude、antigravity、factory、kimi）有经核实的插件落点。不会 MCP 的宿主根本不实现 `McpHost`——"没有这个能力"是类型事实，而不是运行时抛 `unsupported`。
 
 版本差异是**同一适配器内的阶梯**，绝不拆成第二个适配器：`opencode` v1/v2 只差落点拼写，而插件 identity 是 `plugin:<harness>:<canonicalKey>`（§D7；manifest v1/v2 拼作 `extension:`）——拆两个适配器 id 会在迁移期（一台机器同时有两种拼写）把同一个已装插件劈成两个制品。
 
@@ -49,6 +49,7 @@
 | claude | `~/.claude/skills` / `.claude/skills` | — | `claude plugin install <id> --scope user`（子进程）；记录在 `~/.claude/plugins/installed_plugins.json` · `plugins` 映射（§D8.11） |
 | codex | `~/.agents/skills` / `.agents/skills` | — | — |
 | pi | `~/.agents/skills` / `.agents/skills` | — | `pi install npm:<spec>`（子进程） |
+| dsh | — | — | — |
 | omp | `~/.omp/skills`（由 `PI_CONFIG_DIR` 迁移）/ `.omp/skills` | — | — |
 | cursor | `~/.cursor/skills` / `.agents/skills` | — | — |
 | github-copilot | `~/.copilot/skills` / `.agents/skills` | — | — |
@@ -57,6 +58,10 @@
 | amp | `$XDG/agents/skills` / `.agents/skills` | — | — |
 | windsurf | `~/.codeium/windsurf/skills` / `.windsurf/skills` | — | — |
 | zed | `~/.agents/skills` / `.agents/skills` | — | — |
+| grok | `~/.grok/skills` / `.grok/skills` | — | — |
+| antigravity | — | — | `.antigravity-plugin/plugin.json`（`agy plugin install <url>`） |
+| factory | — | — | `.factory-plugin/`（`marketplace.json` + `plugin.json`；`droid plugin marketplace add <url>`） |
+| kimi | — | — | `.kimi-plugin/plugin.json`（`/plugins install <repo-url>`） |
 
 - **多数宿主只是读者，少数才是归属者。** 十个宿主都读项目 `.agents/skills`；一个目录就是一个副本，所以由 `skillOwner()`（适配器注册表中第一个解析到该路径的条目）决定记录里的 host，其余宿主只是别名。安装、盘点、控制台共用这条规则。
 - **归属与可读是两个答案，控制台两个都要问。** `skillOwner()` 回答"这个副本归谁"（安装目标、claim、卸载）；`skillReaders()` 回答"谁能**加载**它"（`CopyView.readers`，归属者在最前）。技能页的 harness 轨道按**可读性**筛选——装在 `.agents/skills` 里的一份技能对十个运行时都可用，用归属去建轨道只会在一个条目下显示它、把另外九个藏起来。写入仍然只认归属者（`KIND_META.skill.installAxis = 'skills-owner'`）：轨道是镜头，绝不是扇出的许可。
@@ -151,39 +156,29 @@
 
 ### D6 — 来源是适配器,每个都要说清自己能做什么
 
-`registry.ts` 是能产出载荷的适配器；路由文件里的 `SOURCES` 是控制台渲染的视图。视图里有、注册表里没有的来源，回答 `unsupported_source`，而不是假装能用。
+`registry.ts` 是能产出载荷的适配器；`common/source-views.ts` 里的 `SOURCES` 是控制台渲染的视图（由各内建目录自己的声明组合而成）。视图里有、注册表里没有的来源，回答 `unsupported_source`，而不是假装能用。
 
 | 来源 | 种类 | 可访问性（实测） | 角色 |
 | :--- | :--- | :--- | :--- |
 | GitHub `owner/repo` | skill | 匿名；搜索 10 次/分，`GITHUB_TOKEN` 可选 | 内容来源：每次安装一个 tarball，上限 200 文件 / 8 MiB |
-| npm registry | skill, plugin, mcp | 匿名搜索 200；`keywords:` 是精确标签过滤 | 插件包来源，兼 MCP 启动来源：mcp 行解析为钉住 spec 的启动命令（`npx -y <pkg@version>`，记录版本 + `dist.integrity`——registry 之外没有作者运行时参数，因此一个也不编造）；npm 作技能解析为 `unsupported_kind`。空查询落在**钉住的运行时自己的**标签上（`browse.ts` 里的按宿主映射），MCP 轴落在作者自标的 `mcp-server` 标签上（实测 2026-10-25 为 10 501 个包；更宽的 `model-context-protocol` 标签 41 344 行里多为 SDK/客户端）；没有标签约定的运行时退回相关度短语并明说，绝不借用别的运行时的标签 |
+| npm registry | plugin, mcp | 匿名 200 | 仅作**安装解析器**（浏览目录已按所有者决定于 2026-10-31 移除）：`npm:<pkg>` 句柄解析为钉住 spec 的启动命令（`npx -y <pkg@version>`，记录版本 + `dist.integrity`——registry 之外没有作者运行时参数，因此一个也不编造）；pi.dev 行经它安装。npm 作技能解析为 `unsupported_kind` |
 | pi.dev 包目录 | plugin | 匿名 200，服务端渲染 HTML——没有 JSON API；每页 50 张卡片，用目录自己的 `&page` 寻址 | Pi 官方目录，绑定 `pi`；只读浏览：每行自带 `pi install npm:<pkg>` 命令，因此 key 是 `npm:<pkg>`，安装经 npm 源执行 |
-| MCP 官方注册表 | mcp | 匿名 `/v0/servers`——列表可浏览（`limit` ≤ 100、不透明游标、`version=latest`）；单体读取走 `/v0/servers/<name>/versions/latest`（裸路径回答 404） | 权威服务身份 + 启动参数；浏览行的句柄是 `mcp-official:<name>`，安装把服务合并进宿主的 `mcp` 容器。注册表不提供星标数、也不提供排序参数，因此该来源不声明 `sorts`，市场既不发明计数也不发明排序 |
 | ClawHub | skill | `GET /api/v1/skills?limit=&cursor=&sort=`（游标分页，自带 `sort` 枚举）、`GET /api/v1/search?q=` ——**没有分页参数**，一次应答就是一个窗口；`GET /api/v1/skills/<slug>?ownerHandle=` → 单条技能的自身记录（`skill.description` 就是发布的 `SKILL.md`，另带 `latestVersion`、`stats`、`owner`）；`GET /api/v1/download?slug=&ownerHandle=&version=` → 确定性 ZIP 字节；匿名读 3000 次/分/IP，429 带 `Retry-After`（实测 2026-10-25） | **在线**，且是唯一从**自己托管库**安装的技能注册表：行不带 GitHub 仓库，因此 pin 是注册表版本（`{clawhub:{slug, version}}`），`stars` 保持 `null`——注册表自己的星标/下载/安装计数走 `registryStats`（它自己的单位，标注为 ClawHub 的），绝不被当作 GitHub 星标重贴标签。`ownerHandle` 是注册表自己的 409 报错指明的消歧参数——端点上未文档化，但实测有效（owner 不对时回 404）。应答 200 却带 JSON 的是注册表给 GitHub-backed 技能的 `public-github` 移交描述符；其形状未文档化，适配器按名拒绝而不猜测 |
-| Smithery | mcp | 匿名 `GET /servers` + `GET /servers/<name>` 皆 **200**；列表无论怎么切片都只服务 500 行，却声称约 20 765 | **已上线**：唯一**托管**自己记录（`<slug>.run.tools`，实测 MCP `initialize` 无 `Authorization` 头时回 401）的聚合商，因此它对自己那些部署拥有启动权威。仲裁：官方注册表也收录同一服务时，官方记录优先。连接声明了必需配置（`configSchema.required`）的条目按名拒绝——写入器只能引用环境变量**键名**，无法承载逐连接的配置对象 |
-| OpenCode 生态 | plugin | 精选文档表（mdx），以快照形式随包发布 | 只读浏览，绑定 `opencode`；有已核实包名的行经 npm 源安装 |
-| awesome-opencode | plugin | `dist/registry.json`——带声明式 schema 的扁平数组，经 GitHub contents API 读取 | 社区目录，绑定 `opencode`；安装时按需解析包名（条目自述名 → 经 repository 核实的候选），并回答 npm 身份 |
-| opencode.cafe | plugin | Convex `plugins:listAllApproved`——匿名可读，直接 POST（未文档化契约） | 社区目录，绑定 `opencode`；只有 `type: 'plugin'` 是插件；安装同样按需解析包名；该查询会带出作者邮箱，读取器会将其收窄掉 |
 | manual | mcp, plugin | 操作者输入 | 逃生口：`manualPayload`（MCP）/ `manualSpec`（插件） |
+
+今天**没有可浏览的 MCP 目录**（`MCP_DEFAULT_VIEWS` 为空）：早期版本列出的官方注册表、Smithery 以及 OpenCode 目录适配器都随独立浏览目录一并移除。MCP 行仍可通过宿主自己的视图或操作者来源出现；该轴保留自己（空）的注册表，未来的 MCP 目录因此永远不会被声明进插件表。
 
 - **一份归一化载荷。** 写入器看不到来源：技能 → `{files}`；MCP → `{launch}`；插件 → `{spec}`。产不出载荷的来源就是只读浏览，并明说这一点。
 - **上限约束的是解压后的字节，且在任何解压之前。** 声明的压缩长度不构成内存边界（deflate 可达约 1000:1）：文件数从归档自己的目录记录读取，每次解压都被限制在剩余预算内，因此超限载荷以 `too_large` 被拒，而不是在网关进程里展开。
 - **来源可以绑定宿主。** `hosts?: HarnessHostId[]` 把适配器收窄到其载荷真正能喂的运行时；控制台只在那些页面渲染它的入口，安装会拒绝其它宿主。
 - **视图顺序就是噪音顺序。** `SOURCES` 数组既是控制台的 chip 行，也是落地优先级：每个轴上，市场打开的是**第一个** enabled+browsable 的来源。顺序跟随一行声明的边界有多宽：行**就是**制品本身的目录——官方目录（`pi-dev`）、精选注册表（ClawHub）——排在"承载制品的容器"的搜索之前，后者又排在 npm 之前——最宽也最吵的一张网，**刻意声明在最后**：宽网是操作者主动选入的面，绝不是默认落地面。**技能轴只留一个 chip（所有者决定，2026-12）：** 技能市场只浏览 ClawHub——skills.sh、GitHub 与 npm 全部移出技能轴。技能市场是一个行**就是**技能的精选注册表，不是相关度搜索；skills.sh 的封闭 API 与 GitHub 的主题搜索连同各自适配器在同一 commit 移除（npm 与 github 仍保留为 host 轴的**安装解析器**——`github:<owner/repo>#<dir>` 或 `npm:<pkg>` 句柄总得有地方解析——只是不再作为发现芯片）。
 - **来源是代码配置,不是用户配置**（见"未实现"）。
-- **托管型聚合商对自己托管的部署拥有权威。** 只做索引的来源可以排序与描述，但不得凭空发明启动规格。Smithery 是例外，因为它**运行**它列出的东西（`<slug>.run.tools`，实测对 MCP `initialize` 回 401 并要求 `Authorization`），所以它对自己托管的记录是首要记录——但官方注册表收录同一服务时仍然优先。这类来源绝不能携带密钥：启动规格只把 `Authorization` 写成环境变量**键名**，值由操作者提供（闸 4）。
-- **目录型来源可以回答另一个来源的身份，而且必须"挣得"这个身份。** 三个 OpenCode 目录都不在自己的行里给包名，因此行不能自己发明安装句柄：
-
-  - 精选 OpenCode 清单（`opencode-ecosystem.ts`）是随包快照。31 行中 29 行已对照 registry 与包自身的 `repository` 字段核实，这些行的 key 就是 `npm:<pkg>`，直接经 npm 源安装；另 2 行没有已发布包，保留没有任何适配器服务的 `static-opencode:<name>` 键，控制台因此给出"在 npm 中搜索"，而不是一个只会回答 `unsupported_source` 的安装按钮。
-  - awesome-opencode（`sources/awesome-opencode.ts`）在安装时解析包名：先看条目自己声明的名字，否则探测候选并要求包自身的 `repository` 同时匹配 owner 与 repo——绝不接受"存在一个同名包"。136 个条目中 89 个能解析；其余返回 `no_artifact` 并给出 repo 地址，而不是去装一个被抢注的名字。
-  - opencode.cafe（`sources/opencode-cafe.ts`）读 Convex 查询（`plugins:listAllApproved`，匿名可读、直接 POST——这是未文档化的契约，因此重新配置过的部署只会回答 `upstream`，绝不会回答"空目录"）。只有 `type: 'plugin'` 是插件。读取器把每一行收窄到一个**没有 `author` 字段**的形状：该公开查询会返回作者邮箱，这些地址不得进入市场、manifest 或日志。
-
-  "挣得包名"的规则只有一处，在 `catalog-npm.ts`。解析出的载荷由 npm 适配器产出，因此制品的 `canonicalKey` 是 `npm:<pkg>`——同一个包无论由哪个目录发现，都只有**一个身份**。`sourceId` 记录的是**在哪发现的**，那是来源出处而不是身份；正因如此，插件写入器的 `ref` 从 key 自身推导，而不是按请求来源的名字长度去切。行上带着**另一个来源** key 的目录（Pi 目录与精选清单都按 `npm:<pkg>` 安装）会因此丢掉这条出处，所以安装请求同时携带 `listedOn`，记录两者都保留（D8.6）。
-- **目录只发布 HTML 时，就从 HTML 读。** `pi.dev/packages`（Pi 官方目录）是服务端渲染、不提供 API，因此 `harness/pi-dev.ts` 依据目录自己的筛选/排序脚本已在消费的机器可读属性（`data-package-card`、`data-package-name`、`data-package-types`、`data-package-date`、`data-package-path`），再加上页面印出的 `pi install npm:<pkg>` 命令——那是目录自己对"这一行装什么"的声明。这份契约没有版本也没有文档，所以读取器**宁可大声失败**：页面既无包卡片也无结果计数标记，或卡片里取不出包名时，回答 `upstream`，绝不回答空市场。类型为 `plugin` 的行、无类型行、以及 `skill`/`theme`/`prompt` 行**全部列出**：每一行都用同一条印出的命令（`pi install npm:<pkg>`）写进同一个运行时包存储，所以这层不做剔除，目录自己的计数因此就是精确的 `total`。行上的类型徽章是目录的词汇，不是本市场的种类。卡片上的 `data-package-downloads` 只用来让上游按它排序，**不会**被塞进市场的 `stars` 字段。**翻页也交给目录自己**：每页 50 张卡片、用它的 `&page` 参数寻址，而网格上方的计数标记（`1-50 / 286 (of 5338)`）同时回答总数与"有没有下一页"——解析出来，绝不靠多打一次请求去探测。因为本市场不剔除任何行，目录第 `i` 行就是市场第 `i` 行，所以控制台的一页可以按算术映射到它跨界的那一到两个目录页（24 行 < 50 卡片）：任意深度最多两次抓取，既不用从第 1 页开始走，也不需要上限，更不会出现重复或缺行；每个目录页在共享的 60 秒窗口内只抓一次。适配器报告来源自己的 `total` 与 `hasMore`，因此控制台用**共用分页条**渲染这个市场（摘要 `1–24 of 5338` + 页码条），而不是给单个来源做特例。
-- **"来源没有热度信号"就是 `null`，绝不是 `0`。** 只有 GitHub 源发布星数；npm、Pi 目录、精选清单以及两个社区目录都不发布，因此这些行带 `stars: null`，控制台渲染成破折号。印 `0` 等于断言"没人星标过它"，而这些来源从未这样说过。行上如果**指名了仓库**，仍可取得真实星数，但只能**按需**（`harness/stars.ts`、`POST /api/admin/harness/market/stars`）：浏览本身绝不代操作者花掉星标配额。解析器做批量：GitHub 的搜索端点接受一条查询里的多个 `repo:` 限定符，因此 24 行的一页约花 3 次请求而不是 24 次；分组按查询的字符预算切，而不是固定条数；每个答案缓存数分钟，翻回去不重复花费；GitHub 没有收录的仓库进 `missing`，不会被折成 0。匿名搜索为 10 次/分钟，`GITHUB_TOKEN` 可提高上限，且与浏览读取器共用同一份请求头。
+- **目录型来源可以回答另一个来源的身份，而且必须"挣得"这个身份。** 行不能自己发明安装句柄："挣得包名"的规则只有一处，在 `common/npm-catalog.ts`（条目声明的包名 → 规范化候选 → 对照 registry 与包自身 `repository` 字段核实，绝不接受"存在一个同名包"）。解析出的载荷由 npm 适配器产出，因此制品的 `canonicalKey` 是 `npm:<pkg>`——同一个包无论由哪个目录发现，都只有**一个身份**。`sourceId` 记录的是**在哪发现的**，那是来源出处而不是身份；正因如此，插件写入器的 `ref` 从 key 自身推导，而不是按请求来源的名字长度去切。行上带着**另一个来源** key 的目录（Pi 目录按 `npm:<pkg>` 安装）会因此丢掉这条出处，所以安装请求同时携带 `listedOn`，记录两者都保留（D8.6）。
+- **目录只发布 HTML 时，就从 HTML 读。** `pi.dev/packages`（Pi 官方目录）是服务端渲染、不提供 API，因此 `plugin/adapters/pi-dev.ts` 依据目录自己的筛选/排序脚本已在消费的机器可读属性（`data-package-card`、`data-package-name`、`data-package-types`、`data-package-date`、`data-package-path`），再加上页面印出的 `pi install npm:<pkg>` 命令——那是目录自己对"这一行装什么"的声明。这份契约没有版本也没有文档，所以读取器**宁可大声失败**：页面既无包卡片也无结果计数标记，或卡片里取不出包名时，回答 `upstream`，绝不回答空市场。类型为 `plugin` 的行、无类型行、以及 `skill`/`theme`/`prompt` 行**全部列出**：每一行都用同一条印出的命令（`pi install npm:<pkg>`）写进同一个运行时包存储，所以这层不做剔除，目录自己的计数因此就是精确的 `total`。行上的类型徽章是目录的词汇，不是本市场的种类。卡片上的 `data-package-downloads` 只用来让上游按它排序，**不会**被塞进市场的 `stars` 字段。**翻页也交给目录自己**：每页 50 张卡片、用它的 `&page` 参数寻址，而网格上方的计数标记（`1-50 / 286 (of 5338)`）同时回答总数与"有没有下一页"——解析出来，绝不靠多打一次请求去探测。因为本市场不剔除任何行，目录第 `i` 行就是市场第 `i` 行，所以控制台的一页可以按算术映射到它跨界的那一到两个目录页（24 行 < 50 卡片）：任意深度最多两次抓取，既不用从第 1 页开始走，也不需要上限，更不会出现重复或缺行；每个目录页在共享的 60 秒窗口内只抓一次。适配器报告来源自己的 `total` 与 `hasMore`，因此控制台用**共用分页条**渲染这个市场（摘要 `1–24 of 5338` + 页码条），而不是给单个来源做特例。
+- **"来源没有热度信号"就是 `null`，绝不是 `0`。** 没有任何已上线的浏览来源发布 GitHub 星数：ClawHub 用自己的单位在 `registryStats` 里给出下载/星标计数，pi.dev 的下载量又是另一种度量，因此这些行带 `stars: null`，控制台渲染成破折号。印 `0` 等于断言"没人星标过它"，而这些来源从未这样说过。行上如果**指名了仓库**，仍可取得真实星数，但只能**按需**（`harness/common/stars.ts`、`POST /api/admin/harness/market/stars`）：浏览本身绝不代操作者花掉星标配额。解析器做批量：GitHub 的搜索端点接受一条查询里的多个 `repo:` 限定符，因此 24 行的一页约花 3 次请求而不是 24 次；分组按查询的字符预算切，而不是固定条数；每个答案缓存数分钟，翻回去不重复花费；GitHub 没有收录的仓库进 `missing`，不会被折成 0。匿名搜索为 10 次/分钟，`GITHUB_TOKEN` 可提高上限，且与浏览读取器共用同一份请求头。
 - **市场行与已装行的"详情"都由服务端读取，绝不放进 iframe。** `GET /api/admin/harness/detail` 回答一行的长文部分——README、许可证、最新版本、发布日期——先读 npm registry 文档；当它没有正文（或该行根本没有 npm 包）时，再读仓库（`api.github.com/repos/<repo>` 与 `/readme`）。`clawhub:<owner>/<slug>` 行两条路都不走：该注册表自己托管技能、不提供仓库，所以它的长文部分取自注册表的**单条记录**（`GET /api/v1/skills/<slug>?ownerHandle=`）——其 `skill.description` 就是发布的 `SKILL.md`（渲染前先剥掉 frontmatter），`latestVersion`/`stats` 提供版本、许可、日期与计数。这些计数（ClawHub 自己的星标、下载、安装）走 `registryStats`，**绝不进** `stars`：星标列的含义是 GitHub 星数，其 tooltip 会说明这个数字属于谁。控制台用**原生弹框**呈现，因为实测无法嵌入来源页面（2026-10-25：`github.com` 返回 `X-Frame-Options: deny`，`www.npmjs.com` 在 Cloudflare 挑战后返回 `SAMEORIGIN`，`pi.dev` 返回 `SAMEORIGIN`；少数可嵌的社区站点，其行内 URL 又都指回 GitHub）。**已装行打开的是同一个弹框**：它的身份从 `canonicalKey` 推出来（`npm:<pkg>` → registry 文档，`github:<owner>/<repo>#<dir>` → 仓库，`clawhub:<owner>/<slug>` → 注册表记录），所以"我装了什么、它自己怎么写的"在两个页签上都只需一次点击；没有公开身份的行（`manual:<name>`）也能打开，只显示本机元数据、没有正文——弹框陈述它知道的事，而不是拒绝。该端点只用这一行**声明的身份**构造上游——`npm:<name>` 里的包名、校验过的 `owner/repo`，以及 `clawhub:<owner>/<slug>` 这一对——绝不用行上的 `url`：一个会跟随调用方 URL 的 admin GET 就是一个 SSRF 代理。每一半都在边界处校验（`safePackageName` 拒绝路径穿越、多余分段与裸 `@scope`；`safeRepoSlug` 与 ClawHub 这一对拒绝 URL 与 `.`/`..`）。什么都读不到的行仍然给出答案（`readFrom: 'none'`、README 为 `null`），因为弹框是以浏览结果已经带回的行内容为骨架的；被拒绝或被限流时给出可翻译的 `reason`（GitHub 匿名额度用尽为 `rateLimited`，其余为带状态码的 `http`），英文 `message` 仅作兜底。README 上限 120 000 字符、缓存 10 分钟——比浏览缓存长，因为正文不会随键击变化，而匿名 GitHub 额度是 60 次/小时；失败的结果绝不缓存，所以下一次点击是**新一轮尝试预算**，而不是十分钟的死路。弹框默认是 900px 卡片，全屏由操作者自己切换、绝不是默认。它还能**翻译正文**：翻译路由的 `format: 'markdown'` 会切到**长文契约**——独立的系统提示（描述提示会把 3 000 字文档答成两句话）、散文按 4 500 字符分块、围栏代码**原样复制**而交给模型重打、以及 20 000 字符的预算：超出部分以源语言返回并置 `truncated: true`。任何一段都**绝不半译**——替换半译的段落会把它的尾部从文档里丢掉——结果写进**自己的一条文件**（`i18n/readme/<sha256>.<lang>.json`）、按完整源文建键，因此重新打开弹框不花钱，删掉某一页的译文也绝不影响别人。花在哪一个模型上是运营者的配置决策：`defaultModels.translation`（任何网关可见的 modelRef）指定首选，`lite` 别名殿后；`auto` 绝不自行出现——内部非关键调用不允许无上限花费，链条失败就如实报错而不是升档（运营者显式写 `auto` 视为自担成本，照常生效）。控制台默认模型选择器旁有链路探针（`POST /api/admin/harness/translations/probe`）：以一行短文走真实链路——测的是选择器里的未保存值（先测后存，清空则按纯 lite 测）——并报告实际服务的模型，绝不写缓存；显式点击即显式承担这一次调用的花费。这个存储会被**清扫**：条目 90 天过期，随后从最旧的开始裁剪，直到整个存储落进 32 MiB 预算——写入后每小时最多一次，也可用 `POST /api/admin/harness/translations/prune` 立即执行；崩溃写入留下的临时文件一小时后清除。拆分前的旧大文件一旦**自身**超过同一时限也会被删除（它的 mtime 就是旧构建最后一次写入的时间；留着它会让它比自己产出的每一条都活得更久）。重新打开一个翻译过的页面时，控制台用只读批量接口（`format: 'markdown'`）读回该条目，所以弹框**打开即译文**、既不用点也不调用模型；标题栏的徽章随时切回原发布文本。正文走**自己的**渲染管线（`frontend/src/lib/readme-markdown.tsx`）：原始 HTML 先被解析（`rehype-raw`）再立刻**净化**（`rehype-sanitize`）——依据库自带的 GitHub 派生白名单，外加 README 真的会用的表现型标签（`details`/`summary`/`kbd`/`picture`、`align`），`href` 只允许 http/https/mailto、`src` 只允许 http/https。这与模型输出是**不同的信任模型**（后者根本拒绝原始 HTML）：README 是操作者主动打开的仓库正文，其中一半是用 `<div align="center">` 写的。远程图片**只在**这个界面加载（`referrerPolicy="no-referrer"`、`loading="lazy"`）；其他界面不会因此获得 HTML 能力，`script`/`style`/`iframe`/事件处理器/`javascript:` URL 永远过不了净化器。
-- **排序是「源」的，不是控制台的。** 每个源在 `GET /sources` 里声明它真正能提供的顺序（`sorts`），控制台只渲染这张清单；选中的键作为 `sort` 送到 `/browse`，先按声明校验再交给适配器，因此源喂不动的顺序会被丢弃而不是照发。凡是有公开契约的源，控制台都给出**完整的官方集合**、绝不做"精选子集"：GitHub 给全部四个文档值（`stars`/`forks`/`updated`/`help-wanted-issues`，加上**省略参数**即 best match）；pi.dev 目录给它自己排序控件里的三种（`downloads`/`recent`/`name`，即实测会改变页序的 `?sort=` 值）。**后端整表读取**的目录（精选快照、awesome-opencode、opencode.cafe）在切片前对全部匹配行排序，因此那里的 `name` 是真全局序。npm 既没有 `sort`、也没有可用的等价物——文档里的 `quality`/`popularity`/`maintenance` 权重实测无效（五个查询、各 50 行，在三组极端权重下结果顺序完全一致）——所以 npm 的 `name`/`updated` 由**后端**在 registry 自身排序的一个最大窗口（`size=250`）上排序，并在答案里带 `window-sorted` 提示说明该窗口：页面照抄服务端给的顺序，`total` 也报窗口大小，因为翻出窗口之外答不出来。控制台永不重排任何列表；只有一种顺序（或没有）的源显示成一行静态文字，绝不是点不动的下拉——重排当前页等于宣称一个人人都没算过的全局顺序。
-- **浏览缓存 60 秒**，因为匿名 GitHub 搜索只允许 10 次/分，否则每次键击都会花掉一次。缓存按**精确查询串**建键，因此不同前缀就是不同的上游调用——控制台因此只在**提交**查询（回车、切来源、清空）时发请求，输入框里的文字永不上网。控制台也可以强行重读：刷新按钮发出 `refresh=1`，`browseSource` 在分发前先逐出**该来源**的缓存族（`evictBrowseCache`），因此一个仍然温热的窗口不可能回答一个本就意味着"要新数据"的请求——而且刷新一个目录绝不会丢掉另一个目录刚预热的窗口。刷新按钮照旧绕过该窗口（逐出逻辑不变），搜索应答仍用共享的 60 秒。单个来源挂掉只回答自己的原因，绝不清空整页。读取失败同时给出 `reason`（`network`、`timeout`、`http`、`rateLimited`、`unavailable`、`markupChanged`、`badPayload`、`unsupportedSource`），由控制台经 `harness.browseError.*` 翻译；英文 `message` 只作为控制台不认识的 reason 的兜底——与市场提示同一条规则：**后端陈述事实，控制台拥有措辞**。运行时自己的文字永远到不了操作者眼前（它既没有主语，又让人去传一个控制台无法设置的 fetch 选项），粗粒度的失败类别留在 `code` 里，调用方按它分支。
+- **排序是「源」的，不是控制台的。** 每个源在 `GET /sources` 里声明它真正能提供的顺序（`sorts`），控制台只渲染这张清单；选中的键作为 `sort` 送到 `/browse`，先按声明校验再交给适配器，因此源喂不动的顺序会被丢弃而不是照发。凡是有公开契约的源，控制台都给出**完整的官方集合**、绝不做"精选子集"：ClawHub 用它自己的 `sort` 枚举；pi.dev 目录给它自己排序控件里的三种（`downloads`/`recent`/`name`，即实测会改变页序的 `?sort=` 值）。没有任何已上线来源由后端整表读取，因此没有在本地计算出的全局序。控制台永不重排任何列表；只有一种顺序（或没有）的源显示成一行静态文字，绝不是点不动的下拉——重排当前页等于宣称一个人人都没算过的全局顺序。
+- **浏览缓存 60 秒**，因为匿名 GitHub 读取受 10 次/分 的配额约束，否则每次键击都会花掉一次。缓存按**精确查询串**建键，因此不同前缀就是不同的上游调用——控制台因此只在**提交**查询（回车、切来源、清空）时发请求，输入框里的文字永不上网。控制台也可以强行重读：刷新按钮发出 `refresh=1`，`browseSource` 在分发前先逐出**该来源**的缓存族（`evictBrowseCache`），因此一个仍然温热的窗口不可能回答一个本就意味着"要新数据"的请求——而且刷新一个目录绝不会丢掉另一个目录刚预热的窗口。刷新按钮照旧绕过该窗口（逐出逻辑不变），搜索应答仍用共享的 60 秒。单个来源挂掉只回答自己的原因，绝不清空整页。读取失败同时给出 `reason`（`network`、`timeout`、`http`、`rateLimited`、`unavailable`、`markupChanged`、`badPayload`、`unsupportedSource`），由控制台经 `harness.browseError.*` 翻译；英文 `message` 只作为控制台不认识的 reason 的兜底——与市场提示同一条规则：**后端陈述事实，控制台拥有措辞**。运行时自己的文字永远到不了操作者眼前（它既没有主语，又让人去传一个控制台无法设置的 fetch 选项），粗粒度的失败类别留在 `code` 里，调用方按它分支。
 
 - **市场读取对每一个失败应答都重试，不再只挑"看起来瞬时"的失败。** 每一次市场抓取都走**同一个** helper（`harness/net.ts` → `fetchWithRetry`）：同一套策略若在每个读取器里各写一遍，等其中一个学会了新状态码那天就会漂移。策略（`MARKET_RETRY`）是 5 次尝试、间隔 400 毫秒起逐次翻倍（±20% 抖动）、单次 6 秒、**总计 30 秒预算**——操作者确认的忍耐上限（2026-10-25；旧策略为 10 秒内 3 次尝试）。预算是契约、`attempts` 只是上限：每次尝试的截止时间是预算的剩余量，所以快速失败的端点约 7 秒内用完全部 5 次询问，而硬挂起的端点大约得到 4 次完整尝试，操作者在 30 秒耗尽时看到 `timeout`——不会更晚，因为预算连睡眠也一起封顶。重试：抛出的网络错误与**所有**状态码（含 `4xx`）——npm CDN 在发布传播期间的瞬时 `404`、比退避还短的突发 `403`/`429` 窗口都真实存在，而 10 秒预算框死了死胡同重试的代价（2026-10-25 修订：旧策略绝不重试 `403`/`429` 及其余 `4xx`）。唯一的提前返回是剩余预算放不下的 `Retry-After`——服务器点名了一个策略兑现不了的等待，再问一次必然徒劳；放得下的 `Retry-After` 则垫高下一次睡眠的下限。仍然绝不重试：解码不出的负载（`badPayload` / `markupChanged` 是**答案**，不是抖动）。helper 把**最后一个响应**原样交回而不是吞掉，因此每个读取器仍按自己的 `reason` 映射状态码；若每次尝试都抛错，则重抛最后一个错误，原有措辞不变。**只用于读**——安装仍然只尝试一次：写路径绝不能在操作者背后被重放。
 
@@ -223,13 +218,10 @@
 | :--- | :--- |
 | 项目级发现与安装（技能、MCP、插件） | 在产品边界处关闭：`ENABLED_SCOPES` 为 `['global']`，因此安装路由回答 `unsupported_scope`、盘点不扫任何项目根、控制台不提供范围选择器。适配器里的项目落点声明与写入器的 `scope` 参数**保留**作为接口——将来开放只需改这张表加选择器，不必重拼十四个适配器 |
 | opencode 之外的 MCP 落地 | 不在 `HOSTS` 中；目标被带原因拒绝，绝不猜 |
-| opencode（`config`）、pi（`subprocess`）与 claude（`subprocess` + 映射记录，§D8.11）之外的插件落地 | 不存在；其它宿主拒绝 |
-| npm 作为**技能**来源 | 视图已声明，解析返回 `unsupported_kind` |
+| opencode（`config`）、pi（`subprocess`）、claude（`subprocess` + 映射记录，§D8.11）、antigravity / factory / kimi（各自的插件清单 + 命令链）之外的插件落地 | 不存在；其它宿主拒绝 |
+| npm 作为**技能**来源 | 不再是任何轴上的视图来源；`npm:<pkg>` 只作安装解析器，技能轴解析返回 `unsupported_kind` |
 | PulseMCP / mcp.so | 无可用适配器、视图里也没有行（实测 410 已退役 / 404） |
-| OpenCode 精选清单 | 只读快照：无安装适配器，也不做运行时抓取——本环境下 `raw.githubusercontent.com` 与 `cdn.jsdelivr.net` 都会重置连接，故表格随包发布、两次刷新之间会腐化。31 行中 29 行有已核实的 npm 包名，经 npm 源安装；2 行没有发布包，无法从控制台安装 |
-| awesome-opencode | 有安装适配器，但包名必须"挣得"：136 个插件条目中 89 个能解析出包（条目自述名，或候选包自身的 `repository` 字段同时匹配 owner 与 repo）。其余 47 个返回 `no_artifact` 并附带 repo 地址——按"看起来像"的名字安装等于把供应链押上去 |
-| opencode.cafe | 在线且可读（54 条已批准，其中 40 条 `type: 'plugin'`），但建立在**未文档化契约**上：Convex 部署地址与查询名来自站点自己的客户端 bundle。读取器丢弃其 `author.email` 字段。安装说明未给出包名的条目（本地路径、`…other plugins`）会退到 repository 探测，可能返回 `no_artifact` |
-| 在 `config.yaml` 里声明来源 | 来源 = `SOURCES` 表 + `registry.ts`；没有 `harness.sources` 配置段 |
+| 在 `config.yaml` 里声明来源 | 来源 = `common/source-views.ts` 的 `SOURCES` + `registry.ts`；没有 `harness.sources` 配置段 |
 | 预写意图文件、跨副本安装回滚、manifest 咨询锁 | 未实现；保证是"最后写 manifest" + 逐副本回滚 |
 | `shadowed` 汇总、`profile` 根来源 | 类型联合里有名字，没有产出者 |
 | 内容库/回收站 GC、adopt 未跟踪目录、harness 导出/导入、`canonicalKey` 别名覆盖、目录重名后缀策略 | 未实现（重名 = 拒绝） |
@@ -247,26 +239,19 @@
 
 ## 实施锚点
 
-- `backend/src/harness/hosts.ts`——宿主身份表（`HOSTS`：id + label，目录顺序）。
-- `backend/src/harness/adapters/`——每宿主一个文件（各自的落点路径，只声明一次）、共享的 `defineHost` 规则、能力接口、注册表（`adapterFor`、`skillLocationRoots`、`skillOwner`、`skillRootsFor`）。
-- `backend/src/harness/{manifest,types}.ts`——manifest v2 + 迁移 + 孤儿、认领、词汇。
-- `backend/src/harness/writers/{skill,mcp,plugin}.ts`——三种写入模式及其闸门。
-- `backend/src/harness/{inventory,discover}.ts`——对账、发现通道、卸载描述符。
-- `backend/src/harness/{maintenance,config-file}.ts`——卸载操作、回收站快照、共享的配置读写纪律。
-- `backend/src/harness/{install,registry,spi,browse,sources/*}.ts`——编排、来源适配器、归一化载荷、浏览缓存。
-- `backend/src/harness/opencode-ecosystem.ts`——随包发布的 OpenCode 精选清单（数据模块，不是适配器：它不产出载荷），含已核实的 `名称 → npm 包名` 映射。
-- `backend/src/harness/browse.ts`——全部浏览适配器共用一个 `MarketItem` 形状，其中包括 awesome-opencode 的 registry 读取器（contents API，60 秒缓存）、纯磁盘的精选读取器，以及 Smithery 的列表/详情读取路径。
-- `backend/src/harness/smithery.ts`——Smithery 列表与单体读取器：把行收窄（不带 owner id、不带任何令牌），并把可达的 500 行窗口与它声称的总数分开陈述。
-- `backend/src/harness/detail.ts`——一行市场记录的长文部分（npm 文档、仓库事实、README、ClawHub 的自身记录），并在此校验身份，使读取不会跟随调用方给出的 URL。
-- `backend/src/harness/catalog-npm.ts`——唯一决定"什么才算挣得的包名"的地方（`declaredPackageName`、`sanitizePackageName`、`npmCandidates`、`verifyNpmIdentity`），被每个目录适配器共用。
-- `backend/src/harness/awesome-opencode.ts`——社区 registry 读取器（GitHub contents API）。
-- `backend/src/harness/opencode-cafe.ts`——opencode.cafe 的 Convex 读取器；把行收窄到没有 `author` 字段的形状。
-- `backend/src/harness/pi-dev.ts`——pi.dev 官方目录读取器：服务端渲染 HTML，依据目录自己的卡片属性与页面印出的 `pi install npm:<pkg>` 命令。
-- `backend/src/harness/sources/awesome-opencode.ts` / `sources/opencode-cafe.ts`——把一条目录条目变成包 spec 的安装适配器，载荷与 pin 委托给 npm 适配器。
+- `backend/src/harness/host/hosts.ts`——宿主身份表（`HOSTS`：id + label，目录顺序）。
+- `backend/src/harness/host/adapters/`——每宿主一个文件（各自的落点路径、技能根与 `extensionDir`，只声明一次）、共享的 `defineHost` 规则、能力接口、注册表（`adapterFor`、`skillLocationRoots`、`skillOwner`、`skillRootsFor`）。
+- `backend/src/harness/host/{manifest,types}.ts` / `backend/src/harness/{types,config-file}.ts`——manifest（无遗留迁移）、认领、词汇，以及共享的配置读写纪律。
+- `backend/src/harness/host/writers/{skill,mcp,plugin}.ts`——三种写入模式及其闸门。
+- `backend/src/harness/host/{install,registry,inventory,discover,drift,maintenance,ledger,probe,request,scopes}.ts`——编排、对账、发现通道、卸载描述符、回收站快照、共享事件环骨架上的 `applies` 账本，以及安装后的落点证据。
+- `backend/src/harness/host/resolvers/{github,npm,clawhub,git-marketplace}.ts`——安装解析器；git-marketplace 解析器服务所有操作者 `mp-<slug>` 源。
+- `backend/src/harness/common/market.ts`——操作者 git 市场存储 + probe：快照历史、格式中立的 probe（`ProbeOptions`）、浏览行、联邦分区合并与 `toCatalogRow`。
+- `backend/src/harness/common/{github,stars,npm-catalog,source-views,marketplace-rescan-scheduler}.ts`——仓库/树/tarball 读取（pin 与上限）、按需星数查询、npm 身份判定、来源视图注册顺序，以及 opt-in 重扫定时器。
+- `backend/src/harness/plugin/`——每 harness 一个文件：`adapters/base.ts`（共享市场引擎：源 CRUD、索引/联邦合并、`install(row)`）、`adapters/index.ts`（适配器工厂 + `probeOptionsFor`）、`adapters/pi-dev.ts` / `pi-github.ts` / `claude.ts` / `codex.ts` / `cursor.ts` / `gemini.ts` / `grok.ts` / `copilot.ts` / `antigravity.ts` / `factory.ts` / `kimi.ts` / `universal.ts`（各自的形态；pi 的官方面与操作者 git 面分居两文件），以及 `catalog.ts`（收割后的 JSONL 索引）与 `builtin.ts`（按 harness 的内建视图查找）。
 - `backend/src/harness/net.ts`——抓取失败**唯一**的措辞（哪个上游、怎么办），每个读取器共用，运行时错误文本因此到不了操作者眼前；同时也是**唯一**的重试点（`fetchWithRetry` / `MARKET_RETRY`），读取器不再各自携带尝试次数、退避或预算。
-- `backend/src/harness/{probe,ledger,translation}.ts`——安装后的 placement 证据、事件环骨架上的 `applies` 账本、派生描述缓存。
+- `backend/src/harness/{detail,tree,translation,spi,hash}.ts`——一行市场记录的长文部分、git 树过滤、派生描述缓存、来源适配器契约与哈希。
 - `backend/src/routes/harness.ts`——管理面（`sources`、`hosts`、`applies`、`inventory`、`plan`、`apply`、`browse`、`install`、`translate*`），全部位于既有 `/api/admin/*` 鉴权闸门之下。
-- `frontend/src/pages/HarnessPage.tsx`——每类一页、有落地时的宿主侧栏、已装/市场两个页签、逐目标安装门禁、卸载选择器。页签是地址的一部分（`?tab=market`，`local` 保持隐式），因此刷新后仍停在操作者正在读的那一页；而**宿主变化**会丢弃它——侧栏徽章数的是**已装**副本，所以点侧栏永远回本地页签。
+- `frontend/src/pages/HarnessPage.tsx`——每类一页、有落地时的宿主侧栏、已装/市场两个页签、逐目标安装门禁、卸载选择器。页签是地址的一部分（`?tab=market`，`local` 保持隐式），因此刷新后仍停在操作者正在读的那一页；侧栏选择只替换 `:harness` 段并把查询串原样带走——切换宿主只改变作用域，不改变页签。
 
 ## 待决问题
 
@@ -277,9 +262,15 @@
 
 ## D9 —— 操作者 git 市场源（修订，2026-10-30）
 
-操作者指定的任意 GitHub 仓库无需改代码即可成为浏览/安装源：`<ocrHome>/harness/marketplaces.json` 是配置，每个条目对应一个 `mp-<slug>` 适配器实例（`sources/git-marketplace.ts`），注册表动态解析 `mp-*` id。设立这一类型的背景：Claude 式 `marketplace.json` 目录格式已成为行业收敛中的分发形态（grok、Copilot CLI、Goose、omp 均直接读取或克隆它），而其下的内容早已收敛到一个原语：`SKILL.md`。
+操作者指定的任意 GitHub 仓库无需改代码即可成为浏览/安装源：`<ocrHome>/harness/marketplaces.json` 是配置，每个条目对应一个 `mp-<slug>` 适配器实例（`host/resolvers/git-marketplace.ts`），注册表动态解析 `mp-*` id。设立这一类型的背景：Claude 式 `marketplace.json` 目录格式已成为行业收敛中的分发形态（grok、Copilot CLI、Goose、omp 均直接读取或克隆它），而其下的内容早已收敛到一个原语：`SKILL.md`。
 
-**识别（probe）。** 添加时与每次重扫各探测一次：仓库元数据 + HEAD 提交 + git 树。识别出的清单（`.claude-plugin/marketplace.json` 及其 grok / Copilot / Goose 克隆，共用一个解析器）把扫描范围收窄到作者声明的仓库内相对路径目录；清单里的外部源（`git-subdir`、`url`、`npm` 等）只报告、不解析——一期不追随。没有清单（或清单不可解析——坏文件不是清单）则回退为全树 `SKILL.md` 扫描。行数封顶（30），按目录名去重、短路径优先：生成型镜像（如 `skills/` 的 `.openclaw/skills/` 副本）不会重复成行。
+**识别（probe）。** 添加时与每次重扫各探测一次：仓库元数据 + HEAD 提交 + git 树。识别出的清单（`.claude-plugin/marketplace.json` 及其 grok / Copilot / Goose 克隆）把扫描范围收窄到作者声明的仓库内相对路径目录；清单里的外部源（`git-subdir`、`url`、`npm` 等）只报告、不解析——一期不追随。没有清单（或清单不可解析——坏文件不是清单）则回退为全树 `SKILL.md` 扫描。行数封顶（30），按目录名去重、短路径优先：生成型镜像（如 `skills/` 的 `.openclaw/skills/` 副本）不会重复成行。
+
+**格式归属（修订，2026-10-31）。** 市场格式不是基类引擎的事。只有 Claude 有**标准** catalog：收敛后的 `marketplace.json`（`plugins[].source` 为仓库相对路径）只在 `plugin/adapters/claude.ts` 解析一次（`parseClaudeMarketplace` / `CLAUDE_CATALOG`）。另外只解析两种**安装命令强制要求**的厂商文件：Gemini CLI 的根 `gemini-extension.json` 与 Pi 的层内 `package.json`（`PluginManifestReader`——`file`、可选 `atRoot`、`base: 'layer' | 'repo'`）。其余 harness 一律**按目录**识别：`.codex-plugin/`、`.cursor-plugin/`、`.kimi-plugin/`、`.antigravity-plugin/` 里的厂商清单并不统一，probe 绝不用共享 schema 解析它们。该 harness 的形态目录（由 host 适配器声明）存在**即支持**：产出一行以仓库命名的插件，source 指向仓库根。基类 `BasePluginMarketAdapter` 不提供任何格式钩子，只走裸 `SKILL.md` 扫描；`marketplace.json` 不是 pi 的格式，因此也不存在需要同步的抽象「shape」注册表。
+
+**克隆目录归各自的 harness。** 同一格式会出现在各运行时的目录下，每个目录由自己的适配器认领并复用 Claude 的解析器：`claude.ts` → `.claude-plugin/marketplace.json`、`grok.ts` → `.grok-plugin/marketplace.json`、`copilot.ts` → `.github/plugin/marketplace.json`、`factory.ts` → `.factory-plugin/marketplace.json`、`universal.ts`（AGENTS/Goose 约定）→ `.agents/plugins/marketplace.json`。没有 catalog 文件的 harness 改为**按目录**识别（codex、cursor、kimi、antigravity，以及 copilot/factory/grok 的无 catalog 回退）：目录存在即支持，厂商 JSON 绝不按共享 schema 解析。Claude 源绝不读 grok 的目录，反之亦然；解析器共享，**目录不共享**。
+
+**扩展层（修订，2026-10-31）。** 同时服务多个运行时的仓库按运行时各出一个形态（`pi-extension/`、`.claude-plugin/`、`.codex-plugin/` 等）。源可钉扎 `extensionDir`——仓库内相对目录，按窄语法校验（禁止绝对路径、盘符、反斜杠与 `..`）。钉扎后 probe 绝不越界：目录缺失答 `missing_dir`，绝不静默退回全树扫描；对 Claude 格式的源，清单只在 `<layer>/marketplace.json` 里找。层内没有 catalog 时，该 harness **自己的**钩子仍可描述该源：层内清单（pi 的 `package.json`）使层本身成为一个插件行；按目录识别的 harness（codex、cursor、kimi、antigravity）以目录存在为插件、以仓库为名产出一行；根清单（gemini-cli 的 `gemini-extension.json`）根本不需要层。每个 host 适配器声明本生态的默认层（`harness/host/adapters/<host>.ts` 的 `extensionDir`），probe 在源未钉扎时**套用**它：扫描的是该 harness 自己的形态目录（`.claude-plugin/`、`.codex-plugin/`、`.github/plugin/`、`.cursor-plugin/`、`.factory-plugin/`、`.kimi-plugin/`、`.antigravity-plugin/`、`pi-extension/` 等），而不是整个仓库。显式 `extensionDir` 仍然优先；默认目录在仓库中不存在时降级为裸 `SKILL.md` 扫描而不是报错，实际生效的层记入快照。控制台也经 `GET .../sources` 广告并预填该默认值，操作者可见并可覆盖。
 
 **围栏与溯源。** `mp-<slug>` 适配器只解析其配置的仓库、且只接受 `#<skill-dir>` 钉扎引用——市场行自带钉扎，裸引用即猜测。解析委托给 github 适配器（tarball、上限、提交 pin），并**覆写** canonicalKey 为 `mp-<slug>:<repo>#<dir>`，使 manifest 记录永远记载操作者实际浏览的来源面，而不是把所有市场焊死在内建 `github:` 源上。
 
@@ -292,15 +283,20 @@
 **维护动词归入按 harness 的面（修订，2026-12）。** 全局 CRUD 路由
 （`POST/PATCH/DELETE /api/admin/harness/marketplaces*`、`rescan`、`snapshots`）已**移除**——独立的
 全局管理页面在教一种存储并不具备的所有权。注册与移除移入按 harness 的插件市场面（§D10/§D11）：
-`POST /api/admin/harness/plugins/:harness/sources {url}`（先探测，slug 由仓库**推导**——`mp-<repo>`——
-重复 slug 答 409）、`POST .../sources/check {url}`（操作者添加前的干跑；报告 skill/MCP/plugin 计数，
-不落任何状态）、`DELETE .../sources/:slug`（未知 harness 或 slug 均 404）。`GET /api/admin/harness/sources`
+`POST /api/admin/harness/plugins/:harness/sources {url, extensionDir?}`（先探测，slug 由仓库**推导**——
+`mp-<repo>`；同一仓库的第二个层以目录 token 作后缀 `mp-<repo>-<layer>`，重复注册同一 (repo, layer) 对答 409）、
+`POST .../sources/check {url, extensionDir?}`（操作者添加前的干跑；报告 skill/MCP/plugin 计数，不落任何状态）、
+`DELETE .../sources/:slug`（未知 harness 或 slug 均 404）。`GET /api/admin/harness/sources`
 保留为只读视图（内建源 + `mp-` chips），无任何变更动词。未知或非 github 目标答 400；未知 harness 答 404。
 
 ## D10 —— 插件市场：按 harness 的适配器 + 两层目录（修订，2026-10-30）
 
-**一个 harness 一个目录，一个 harness 一个适配器。** `PluginAdapter`（claude / opencode / pi）拥有
-`sources()` + `search()` + `checkSource()` + `registerSource()`/`unregisterSource()` + `install(row)`。
+**一个 harness 一个文件，一个 harness 一条适配器链。** 每个 harness 的市场住在 `harness/plugin/adapters/` 下**自己的文件**里
+（`pi-dev.ts`、`pi-github.ts`、`claude.ts`、`codex.ts`、`cursor.ts`、`gemini.ts`、`grok.ts`、`copilot.ts`、`antigravity.ts`、`factory.ts`、`kimi.ts`、`universal.ts`）：pi 的两个面分开——`pi-dev.ts` 持有实时官方目录与 `PiDevPluginMarketAdapter`，`pi-github.ts` 持有 `PiGithubPluginMarketAdapter` 与 git probe。Claude 的 catalog 解析器在 `claude.ts`；Pi 的 package 与 Gemini 的根清单读取器在各自文件里；其余 harness 一律按**目录**识别，绝不解析厂商 JSON。各 harness 文件只声明自己的身份与目录（由 host 适配器声明）。
+共享引擎为 `PiPluginMarketAdapter extends BasePluginMarketAdapter`；harness 专属行为不出其文件。
+`probeOptions()`（claude → `CLAUDE_PROBE_OPTIONS`；codex → `CODEX_PROBE_OPTIONS`；gemini-cli → `GEMINI_PROBE_OPTIONS`；
+pi 的 git 变体 → 自己的 `package.json` 清单读取器）。
+`PluginMarketAdapter` 拥有 `sources()` + `search()` + `checkSource()` + `registerSource()`/`unregisterSource()` + `install(row)`。
 刻意**不设** `supported()`：适配器的存在即支持声明——只为被服务的 harness 创建实例，落点验证发生在
 安装时，行级兼容性由 `CatalogRow.hosts[]` 携带。
 
@@ -338,22 +334,25 @@ harness 作为唯一宿主——插件恰好装进**一个** host，其身份包
 
 **双轴适配器（修订，2026-12）。** 市场沿领域其余部分相同的轴一分为二：HOST 轴（`harness/host/`）拥有全部
 安装；MARKET 轴（`harness/plugin/`）只管发现——`install(row)` 是一步翻译，把行转投 host 路由，闸门纪律
-（gate-3）原封不动。`createPluginAdapter(harness, fetchImpl)` 是唯一构造点；`claude` 得到声明式落点
+（gate-3）原封不动。`plugin/adapters/index.ts` 是唯一构造点；`claude` 得到声明式落点
 （container 形态、`specPrefix`、子进程参数），`pi` 得到 sibling-id 目录，其余走通用适配器。
 
 **sources 视图对贡献者诚实。** `GET .../sources` 应答本 harness 目录的索引层源——而索引收割只列出对该
 harness **贡献了行**的源。只有技能的 git 仓库出现在技能轴的视图上，而不会出现在一无所获的插件轴上：
 一个零行的源 chip 等于宣称收割从未写过的层。
 
-**变更后全量重收割。** marketplace 存储是全局的（单份 `marketplaces.json`），因此
+**变更后全量重收割——但按层钉扎的源例外。** marketplace 存储是全局的（单份 `marketplaces.json`），因此
 `registerSource`/`unregisterSource`——以及重扫调度器在 probe 之后——会重收割**每一个**被服务的 harness
-的索引，而非仅当前操作的那个。过期的兄弟 tab 会教出一种存储并不具备的按 harness 模型。收割是对快照的
-本地读——天然廉价（§D10 索引层）。
+的索引。带扩展层注册的源会记录所属 harness（`entry.harness`），只收割进该 harness 的索引：`pi-extension`
+源不得教 claude tab 去安装它。未钉扎的源保持共享。过期的兄弟 tab 会教出一种存储并不具备的按 harness
+模型；收割是对快照的本地读——天然廉价。
 
-**接线。** `backend/src/harness/plugin/`（适配器架在共享 market 层之上），host 轴在 `backend/src/harness/host/`；
-路由 `/api/admin/harness/plugins/:harness/{catalog,sources,sources/check,sources/:slug,install}`（§D11）；
-控制台页面 `PluginMarketPage`（`/harness/plugins`）。内置源视图移至 `harness/market/source-views.ts`，
-使领域层无需反向 import 路由层即可声明能力。
+**接线。** `backend/src/harness/plugin/adapters/`（按 harness 的适配器文件架在共享引擎上），共享市场内核在
+`backend/src/harness/common/market.ts`（行契约、浏览缓存/分发、操作者源存储 + probe、stars、npm 身份），
+host 轴在 `backend/src/harness/host/`；路由
+`/api/admin/harness/plugins/:harness/{catalog,sources,sources/check,sources/:slug,install}`（§D11）；
+控制台页面是 `HarnessPage` 的 `plugin` tab（`/harness/plugins` 路由回该页）。每个内建目录在自己的适配器里声明源视图与浏览函数
+（`skill/clawhub.ts`、`plugin/adapters/pi-dev.ts`）；`harness/common/source-views.ts` 只声明它们的顺序。
 
 ## D11 —— 控制台市场面：按 harness 的 tab、一个来源弹框、一份共享存储（修订，2026-12）
 
@@ -362,12 +361,28 @@ harness 页面的市场 tab。`/harness/plugins` 与 `/harness/plugins/:harness`
 `HarnessPage kind="plugin"`——插件市场是 harness 页面的一个 **tab**，不是独立目的地。导航名为
 「插件管理 / Plugin Management」。
 
-**一个弹框，两个 tab——按 kind 隔离。** 按 harness 的来源弹框（`HarnessSourcesDialog`）从同一 harness 页面的插件 tab
-**和**技能 tab 打开——同一条 `/plugins/:harness/sources*` 路由服务两者。但**内容按当前 tab 的 kind 隔离**：
-`GET .../sources?kind=skill|plugin` 对两个列表都过滤——内建芯片按声明的 `kinds`（插件 tab 见 pi-dev；技能 tab 只见
-clawhub），操作者条目按其快照实际携带的内容（只有技能的仓库绝不会出现在插件 tab）。
-一个无法服务当前 tab 的源是噪音，不是信息。内建联邦源只读渲染；操作者 `mp-` 源带先探测后添加、就地编辑
-（启用 + 重扫计划）、带 diff 报告的手动重扫与移除。
+**一个弹框，一次只服务一个轴——按 kind、按作用域、也按路由隔离。** 来源弹框（`HarnessSourcesDrawer`）从
+harness 页面的市场 tab 打开——技能 tab 与插件 tab 共用同一个组件。每个轴同时拥有自己的注册表**与**维护路由：
+插件（以及按 harness 的 MCP 视图）走 `/plugins/:harness/sources*`；技能轴有**全局**面，路径不带 `:harness`
+——`GET/POST/PATCH/DELETE /api/admin/harness/skills/sources*`。内容同样按轴拆分：每条路由只列出本轴注册表的
+内建源（`SKILL_VIEWS`、`MCP_DEFAULT_VIEWS`、`PLUGIN_DEFAULT_VIEWS`），以及快照实际携带该 kind 的操作者条目。
+**技能是全局的**：ClawHub 对所有 harness 一视同仁，技能来源注册时**不带 harness 作用域**，因此每个 harness
+页面看到同一份列表，快照落在全局快照路径。**MCP 与插件按 harness 划分**：服务或插件落地在特定运行时，
+它们的内建源（各自的 `hosts` 声明）与条目都收窄到当前打开的那个 harness。
+无法服务当前轴的源是噪音，不是信息。内建联邦源
+只读渲染；操作者 `mp-` 条目带先探测后添加、就地编辑（启用 + 重扫计划）、带 diff 报告的手动重扫与移除。
+
+**支持是探测出来的，不是声明的。** 弹框只有三个字段：源类型（GitHub | npm）、仓库（或包/作用域），
+以及条目的支持 Harness——由探测**报告**，绝不要求操作者选择。旧的「扩展目录」输入框已从 UI 移除：
+`extensionDir` 仍是后端探测参数（显式钉扎保留按 harness 的历史语义与严格 `missing_dir`），但弹框始终用
+**每个**被服务 harness 的形态对同一仓库探测一次，并把检测结果记入快照（`hosts`）。同一仓库以另一层再注册
+仍会派生第二个 slug（`mp-<repo>-<layer>`）。
+
+**操作者输入宽容，存储的身份不宽容。** 仓库输入框接受完整 URL、`github.com/owner/repo` 引用、
+`git@github.com:owner/repo.git` 克隆行、npm 的 `github:owner/repo`，以及裸 `owner/repo`——
+由**同一个**解析器（`harness/common/market.ts` 的 `githubRepoFromInput`）归一化，技能轴与插件适配器
+共用它，两个轴因此不会各自漂移。仓库**之下**的路径仍然拒绝：那正是 `extensionDir` 命名的东西，
+静默丢弃它等于注册了与粘贴内容不同的层。
 
 **弹框声明共享。** 弹框背后的存储是**全局**的——单份 `marketplaces.json`，`mp-` id 被每个被服务的 harness
 共享。弹框副标题写明这一点；UI 绝不把列出的源标成「本 harness 独有」，且每次变更都会重收割所有被服务
@@ -376,7 +391,51 @@ harness 的索引（§D10）。若未来确需按 harness 独占，那只是 mar
 
 **解析器 vs 芯片。** npm 与 github 在 host 轴上仍是**安装解析器**（`npm:` 行总得有地方解析），但 npm 的
 **浏览芯片**不在插件轴上——插件轴浏览 pi-dev（联邦）加操作者 git 源；技能轴保留自己的芯片。一个源的
-`kinds` 声明（`harness/market/source-views.ts`）是浏览芯片出现在哪个轴上的唯一裁决。
+`kinds` 声明（各自适配器里的视图，最终由 `harness/common/source-views.ts` 组装）是浏览芯片出现在哪个轴上的唯一裁决。
 
-**接线。** `frontend/src/components/HarnessSourcesDialog.tsx`；从 `HarnessPage` 的市场 tab 携带 tab 的 kind 打开；API client
+**接线。** `frontend/src/components/HarnessSourcesDrawer.tsx`；从 `HarnessPage` 的市场 tab 携带 tab 的 kind 打开；API client
 与按 harness 路由形状 1:1 镜像。废弃的全局 client 函数与 `MarketplacesPage` 连同其 i18n 键在同一 commit 删除。
+
+## D12 —— 市场 = 一个内置市场 + 代码实现的扩展市场；添加的条目是**插件**（修订，2026-10-31）
+
+**市场面两层，都由代码实现。** 每个 harness 一个**内置**市场（pi 的 pi.dev、Claude 的官方目录等），
+外加任意多个**扩展**市场（ClawHub、pi.dev、收敛格式的 `marketplace.json` 仓库）。扩展市场在
+`harness/common/source-views.ts` 声明、适配器在 `harness/plugin/adapters/`——操作者不能在运行时凭空造一个。
+每个轴维护弹框添加的东西跟随该轴：**插件**弹框添加插件（一个仓库或 npm 包，装进发布了该形态的 harness）；
+**技能**弹框添加一个发布 `SKILL.md` 的 GitHub 仓库，注册时**不带 harness 作用域**，对所有 harness 可见。
+存储的 `mp-` 条目是该制品的身份与溯源，不是新的可浏览「源」命名空间。
+按 harness 划分的是 **MCP + 插件**层：服务与插件都绑定到加载它的运行时。技能轴的内置目录（ClawHub）是唯一的
+**全局**视图，声明在按 harness 划分的表**旁边**，绝不混进那张表。
+目录身份是注册的一部分，不是事后补的标签：内建技能目录注册为**自己的**目录（`ClawHub`），插件默认目录注册为
+`pi.dev`；`default` 是操作者来源未指定目录时落入的**系统**桶。市场目录选择器始终显示这个系统桶；命名内建目录
+保持注册顺序并**排在前面**，系统桶永远不压过该轴的官方目录。
+
+**git 来源的安装走运行时自己的命令链。** `PluginMarketplaceSpec`（`host/adapters/types.ts`）是每 host 的
+argv 模板列表；writer 展开后**按序**执行，遇到第一个非零退出即停止。不抓 tarball、不写 `plugin[]` 数组、
+不解析 payload。门 3 逐条原样回显命令（计划目标上的 `runs[]`）；`req.marketplace` 让 `installArtifact`
+绕过解析分支。本次落地的命令链：
+
+| Harness | 命令链 |
+| --- | --- |
+| claude | `plugin marketplace add {repo}` → `plugin install {plugin}@{marketplace} --scope {scope}` |
+| codex | `plugin marketplace add {repo} --ref main` → `plugin marketplace upgrade {marketplace}` → `plugin add {plugin}@{marketplace}` |
+| github-copilot | `plugin marketplace add {repo}` → `plugin install {plugin}@{marketplace}` |
+| factory | `plugin marketplace add {urlGit}` → `plugin install {plugin}@{marketplace} --scope {scope}` |
+| antigravity | `plugin install {url}` |
+| opencode | `plugin add github:{repo}` |
+| cursor | `/add-plugin {plugin}`——交互式 |
+| kimi | `/plugins install {url}`——交互式 |
+| pi | 仅 npm（`install npm:{spec}`），无市场命令链 |
+
+**交互式**命令链只在门 3 展示、绝不 spawn：厂商只允许在会话内安装，所以 apply 会带着原因拒绝，而不是
+假装写入成功。npm 行仍走解析器路径，但必须显式声明 `subprocessArgs` 语法——没声明的 host 直接拒绝，
+不会继承 pi 的语法。
+
+**源类型。** `github`（默认）照常探测仓库；`npm` 注册一个包（`@scope/pkg`）或整个作用域
+（`@scope/*`，注册表搜索第一页，25 个包）为插件条目，行键为 `npm:<pkg>`。npm 条目只服务插件轴。
+包页面 URL（`https://www.npmjs.com/package/<name>`，含 scope / `%2F` 形式及其 `/v/<version>` 页签）
+会被归一成同一个包名——身份不变；tarball 或版本文档 URL 不是包页面，仍然无效：它命名的是源无法记录的钉扎。
+
+**安装命令需要的名字来自源自己的清单。** probe 记录 `snapshot.marketplace`（收敛 catalog 的顶层
+`name`，用 claude 解析器读取）与插件行的 `name`；按目录识别的 harness 只读这些**名字**，绝不读行。
+行携带 `marketplace`，使 `marketplaceSpec` 的 `{plugin}@{marketplace}` 是厂商身份，而不是从仓库 slug 猜出来的。

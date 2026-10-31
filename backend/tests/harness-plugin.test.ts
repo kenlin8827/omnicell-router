@@ -8,6 +8,7 @@ import { manifestPath, readManifest, writeManifest } from '../src/harness/host/m
 import { probeArtifact } from '../src/harness/host/probe.js';
 import { scanInventory } from '../src/harness/host/inventory.js';
 import { npmAdapter } from '../src/harness/host/resolvers/npm.js';
+import { parseNpmSource } from '../src/harness/common/npm-source.js';
 import type { ArtifactRecord, HarnessHostId, ManifestFile } from '../src/harness/types.js';
 
 /**
@@ -476,5 +477,41 @@ describe('npm source resolution', () => {
       // "no such version number" would be a false statement about the package.
       expect(outcome.message).toContain(`has no dist-tag '${tag}'`);
     }
+  });
+});
+
+describe('npm source input', () => {
+  // The operator copies a link from the registry site; it names the same package the registry
+  // answers for, so it must land on ONE identity (`npm:<name>`), never a URL-keyed second one.
+  it('normalizes a package page URL to the registry name', () => {
+    expect(parseNpmSource('https://www.npmjs.com/package/foo')).toEqual({ ok: true, kind: 'package', name: 'foo' });
+    expect(parseNpmSource('https://www.npmjs.com/package/@scope/pkg/v/1.2.3?activeTab=readme')).toEqual({
+      ok: true,
+      kind: 'package',
+      name: '@scope/pkg',
+    });
+    expect(parseNpmSource('https://www.npmjs.com/package/@scope%2Fpkg')).toEqual({
+      ok: true,
+      kind: 'package',
+      name: '@scope/pkg',
+    });
+    expect(parseNpmSource('https://registry.npmjs.org/@scope%2Fpkg')).toEqual({
+      ok: true,
+      kind: 'package',
+      name: '@scope/pkg',
+    });
+    expect(parseNpmSource('npm:https://www.npmjs.com/package/foo')).toEqual({ ok: true, kind: 'package', name: 'foo' });
+  });
+
+  it('keeps an archive or version URL invalid instead of resolving it to latest', () => {
+    // Both name a pin the source cannot record (no version path segment here, no integrity).
+    expect(parseNpmSource('https://registry.npmjs.org/foo/1.2.3').ok).toBe(false);
+    expect(parseNpmSource('https://registry.npmjs.org/foo/-/foo-1.2.3.tgz').ok).toBe(false);
+    expect(parseNpmSource('https://example.com/package/foo').ok).toBe(false);
+  });
+
+  it('keeps the bare forms unchanged', () => {
+    expect(parseNpmSource('@scope/*')).toEqual({ ok: true, kind: 'scope', scope: '@scope' });
+    expect(parseNpmSource('npm:@scope/pkg')).toEqual({ ok: true, kind: 'package', name: '@scope/pkg' });
   });
 });

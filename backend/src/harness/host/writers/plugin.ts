@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import { hashFile } from '../../hash.js';
 import { adapterFor, isPluginHost } from '../adapters/index.js';
+import type { PluginHost, PluginMarketplaceInstall } from '../adapters/types.js';
 import { claimPath, readManifest, writeManifest } from '../manifest.js';
 import type { InstallSkipped } from './skill.js';
 import { createBackup, safeWriteJson } from '../../../cli/clients/base.js';
@@ -57,6 +58,12 @@ export interface PluginApplyRequest {
   execImpl?: ExecImpl;
   /** Hard timeout for one subprocess run. */
   timeoutMs?: number;
+  /**
+   * A GIT-BACKED row whose runtime installs it natively (ADR-0015 §D9 amendment): the writer runs
+   * the host's own marketplace chain — register the repository, then install `<plugin>@<name>` —
+   * instead of resolving a payload. `plugin`/`name` come from the source's own manifest.
+   */
+  marketplace?: { repo: string; plugin: string; name: string };
 }
 
 export type ExecImpl = (
@@ -65,17 +72,30 @@ export type ExecImpl = (
   timeoutMs: number
 ) => Promise<{ code: number; stdout: string; stderr: string }>;
 
+/** One argv the plan will run, echoed verbatim (`echo` is what gate 3 shows). */
+export interface PluginRun {
+  command: string;
+  args: string[];
+  echo: string;
+}
+
 export interface PluginTargetPlan {
   host: HarnessHostId;
-  /** `subprocess` (package install) or `config` (`plugin[]` merge). */
-  op: 'subprocess' | 'config';
+  /**
+   * `subprocess` (a command chain: npm package grammar or the native marketplace chain),
+   * `config` (a `plugin[]` merge), or `manual` (an interactive runtime whose command the operator
+   * must run themselves — displayed, never spawned).
+   */
+  op: 'subprocess' | 'config' | 'manual';
   file?: string;
   container?: string;
-  /** Structured command for subprocess targets — apply runs THIS, `echo` is display-only. */
+  /** Structured command for a single-run subprocess target — apply runs THIS. */
   command?: string;
   args?: string[];
   /** The EXACT command that apply will run — gate 3 says it verbatim, never paraphrased. */
   echo?: string;
+  /** Native chains run in ORDER; the first non-zero exit stops the chain. */
+  runs?: PluginRun[];
   refused?: string;
   added: boolean;
 }
@@ -114,6 +134,66 @@ export function safeSpec(spec: string): string | null {
   if (spec.includes('..')) return null;
   return spec;
 }
+/** `owner/repo` — the only repository shape a marketplace chain may carry. */
+const MARKET_REPO_RE = /^[\w.-]+\/[\w.-]+$/;
+/** A plugin/marketplace id token (`postman`, `claude-plugins-official`, `@scope/pkg`). */
+const MARKET_NAME_RE = /^[@A-Za-z0-9][@A-Za-z0-9._-]*$/;
+
+/** One argv item: no whitespace and no shell metacharacters — the chain is never given to a shell. */
+function safeArg(value: string): boolean {
+  return !/[\s"'`;&|<>$\\]/.test(value);
+}
+
+/** Substitute `{token}` placeholders; an unknown token fails the whole template (never blanks it). */
+function fillTemplate(template: string, ctx: Record<string, string>): string | null {
+  let missing = false;
+  const out = template.replace(/\{(\w+)\}/g, (_match, key: string) => {
+    const value = ctx[key];
+    if (value === undefined) {
+      missing = true;
+      return '';
+    }
+    return value;
+  });
+  return missing ? null : out;
+}
+
+/**
+ * Expand one host's marketplace chain into runnable argv vectors. Every token is validated BEFORE
+ * it becomes an argument: a repository is `owner/repo`, an id carries no whitespace, and the final
+ * argv item may not smuggle a shell metacharacter (the writer never shells out).
+ */
+function marketplaceRuns(
+  spec: PluginMarketplaceInstall,
+  req: PluginApplyRequest,
+): { ok: true; runs: PluginRun[] } | { ok: false; message: string } {
+  const identity = req.marketplace!;
+  if (!MARKET_REPO_RE.test(identity.repo)) return { ok: false, message: `invalid repository '${identity.repo}'` };
+  if (!MARKET_NAME_RE.test(identity.plugin)) return { ok: false, message: `invalid plugin name '${identity.plugin}'` };
+  if (!MARKET_NAME_RE.test(identity.name)) return { ok: false, message: `invalid marketplace name '${identity.name}'` };
+  const ctx: Record<string, string> = {
+    repo: identity.repo,
+    url: `https://github.com/${identity.repo}`,
+    urlGit: `https://github.com/${identity.repo}.git`,
+    plugin: identity.plugin,
+    marketplace: identity.name,
+    // The runtimes that take a scope spell it `user`; project scope keeps the vendor's own word.
+    scope: req.scope === 'project' ? 'project' : 'user',
+  };
+  const runs: PluginRun[] = [];
+  for (const argv of spec.commands) {
+    const filled = argv.map((token) => fillTemplate(token, ctx));
+    if (filled.length < 2 || filled.some((item) => item === null)) {
+      return { ok: false, message: `incomplete marketplace command template '${argv.join(' ')}'` };
+    }
+    const items = filled as string[];
+    if (!items.every(safeArg)) return { ok: false, message: `unsafe marketplace command token in '${items.join(' ')}'` };
+    const [command, ...args] = items as [string, ...string[]];
+    runs.push({ command, args, echo: items.join(' ') });
+  }
+  if (runs.length === 0) return { ok: false, message: 'marketplace chain is empty' };
+  return { ok: true, runs };
+}
 
 /**
  * Windows: a runtime CLI is usually an npm `.cmd` shim, which libuv cannot exec without a shell
@@ -122,7 +202,7 @@ export function safeSpec(spec: string): string | null {
  * `cli/clients/opencode-proxy.ts:runOpenCode`, and safe here because `safeSpec` already rejects
  * anything shell-shaped. Other platforms spawn directly with an argv array.
  */
-function defaultExec(command: string, args: string[], timeoutMs: number): Promise<{ code: number; stdout: string; stderr: string }> {
+export function defaultExec(command: string, args: string[], timeoutMs: number): Promise<{ code: number; stdout: string; stderr: string }> {
   const isWin = process.platform === 'win32';
   const finalArgs = isWin ? args.map((a) => (/\s"%^&|<>()]/.test(a) ? `"${a.replace(/"/g, '""')}"` : a)) : args;
   return new Promise((resolve) => {
@@ -158,16 +238,38 @@ function readConfigObject(file: string): { ok: true; config: Record<string, unkn
 }
 
 export function planPlugin(req: PluginApplyRequest): PluginPlan {
-  const spec = safeSpec(req.spec);
-  if (!spec) return { ok: false, code: 'bad_request', message: `invalid package spec '${req.spec}'` };
+  // A GIT-BACKED row needs no package spec at all: its runtime installs from the marketplace. The
+  // native chain is planned FIRST, before any spec grammar is applied.
   const targets: PluginTargetPlan[] = [];
   const host = req.harness;
   const adapter = adapterFor(host);
+  if (req.marketplace) {
+    const chain = (adapter as Partial<PluginHost>)?.marketplaceSpec?.() ?? null;
+    if (!chain) {
+      targets.push({ host, op: 'config', refused: `host '${host}' declares no native marketplace install form`, added: false });
+      return { ok: true, targets };
+    }
+    const built = marketplaceRuns(chain, req);
+    if (!built.ok) return { ok: false, code: 'bad_request', message: built.message };
+    targets.push({
+      host,
+      op: chain.interactive ? 'manual' : 'subprocess',
+      runs: built.runs,
+      echo: built.runs[built.runs.length - 1]!.echo,
+      ...(chain.interactive
+        ? { refused: `'${host}' installs plugins only from inside a session — run the shown command there` }
+        : {}),
+      added: true,
+    });
+    return { ok: true, targets };
+  }
   if (!isPluginHost(adapter)) {
     targets.push({ host, op: 'config', refused: `host '${host}' has no verified plugin landing`, added: false });
     return { ok: true, targets };
   }
   const ext = adapter;
+  const spec = safeSpec(req.spec);
+  if (!spec) return { ok: false, code: 'bad_request', message: `invalid package spec '${req.spec}'` };
   const landing = ext.writeTarget({ projectRoot: req.projectRoot ?? process.cwd() }, req.scope);
   if (!landing.ok) {
     targets.push({ host, op: 'config', refused: landing.reason, added: false });
@@ -175,14 +277,19 @@ export function planPlugin(req: PluginApplyRequest): PluginPlan {
   }
   if (landing.op === 'subprocess') {
     // The adapter owns the argument grammar (pi: `install npm:<spec>`; claude: `plugin install
-    // <id> --scope user`) — the writer only passes the spec and composes the gate-3 echo.
-    const args = landing.args ? landing.args(spec, req.scope) : ['install', `npm:${spec}`];
+    // <id> --scope user`) — a host that declares none refuses the spec instead of guessing.
+    if (!landing.args) {
+      targets.push({ host, op: 'config', refused: `host '${host}' declares no package-install grammar`, added: false });
+      return { ok: true, targets };
+    }
+    const args = landing.args(spec, req.scope);
     targets.push({
       host,
       op: 'subprocess',
       command: landing.command,
       args,
       echo: [landing.command, ...args].join(' '),
+      runs: [{ command: landing.command, args, echo: [landing.command, ...args].join(' ') }],
       added: true,
     });
     return { ok: true, targets };
@@ -226,13 +333,21 @@ export async function applyPlugin(req: PluginApplyRequest): Promise<PluginApplyR
       continue;
     }
     if (target.op === 'subprocess') {
-      // Gate 3: the command was echoed in the plan and confirmed; never append -y/--yes here.
-      const result = await run(target.command!, target.args!, timeoutMs);
-      runs.push({ host: target.host, command: target.echo!, code: result.code, stdout: result.stdout, stderr: result.stderr });
-      if (result.code !== 0) {
-        skipped.push({ host: target.host, code: 'upstream', message: `${target.echo} exited ${result.code}: ${result.stderr.slice(0, 200)}` });
-        continue;
+      // Gate 3: every command was echoed in the plan and confirmed; never append -y/--yes here.
+      // A native marketplace chain runs in order and stops at the first non-zero exit — a failed
+      // `marketplace add` must not be followed by an install that would silently use a stale one.
+      const chain = target.runs ?? [{ command: target.command!, args: target.args ?? [], echo: target.echo! }];
+      let failed = false;
+      for (const step of chain) {
+        const result = await run(step.command, step.args, timeoutMs);
+        runs.push({ host: target.host, command: step.echo, code: result.code, stdout: result.stdout, stderr: result.stderr });
+        if (result.code !== 0) {
+          skipped.push({ host: target.host, code: 'upstream', message: `${step.echo} exited ${result.code}: ${result.stderr.slice(0, 200)}` });
+          failed = true;
+          break;
+        }
       }
+      if (failed) continue;
       // A subprocess install materializes into the runtime's own store — no file path of ours exists,
       // so the copy is marked `external` and its `path` is an opaque identity token, not a location.
       // The run log above is the audit trail.

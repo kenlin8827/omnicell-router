@@ -774,6 +774,12 @@ export interface SessionRecord {
   boundKeyHashPrefix?: string;
   /** Epoch ms of the bind/rebind. */
   boundAt?: number;
+  /**
+   * Operator label of the bound credential, resolved server-side from the
+   * live registry chain. Absent = unnamed or the credential left the chain —
+   * render `boundKeyHashPrefix` instead.
+   */
+  boundCredentialLabel?: string;
   /** Requests whose model differs from the previous request (chronological). */
   switchCount: number;
   /** Cumulative input tokens across the session's traces. */
@@ -1253,9 +1259,10 @@ export interface HarnessCatalogRow {
   stars: number | null;
   updatedAt: number | null;
   sourceId: string;
-  surfaces: string[];
   hosts: string[];
   repo: string | null;
+  /** Marketplace name the source's manifest declares (`postman`); git-backed installs need it. */
+  marketplace: string | null;
 }
 
 /** One federated source's answer, in the source's own native order (never co-ordered). */
@@ -1270,19 +1277,31 @@ export interface HarnessCatalogSection {
 
 export interface HarnessCatalogSource {
   id: string;
+  catalog?: string;
   label: string;
   tier: 'index' | 'federated';
   sorts: string[];
   counts: boolean;
 }
 
-/** One operator git-marketplace entry (the shared store's config row, mirrored by GET sources). */
+/** One operator plugin entry (the shared store's config row, mirrored by GET sources). */
 export interface HarnessMarketplaceEntry {
   slug: string;
+  catalog?: string;
+  /** GitHub `owner/repo`, or an npm package / `@scope/*`. */
   repo: string;
+  type?: 'github' | 'npm';
   enabled: boolean;
   addedAt?: number;
   rescan: { enabled: boolean; intervalMs: number };
+  /** The harness whose add form registered this entry; support is detected, not pinned. */
+  harness?: string | null;
+  /** Repo-relative layer the probe scanned; null = every served harness's form was detected. */
+  extensionDir?: string | null;
+  /** Harnesses the repository's own forms declare (detected at probe time). */
+  hosts?: string[];
+  /** Marketplace name the manifest declares, when the snapshot read one. */
+  marketplace?: string | null;
   /** Kinds the source's snapshot actually carries — the dialog filters by the open tab's kind. */
   kinds: ('skill' | 'plugin')[];
 }
@@ -1299,6 +1318,7 @@ export interface HarnessSourceSnapshot {
 
 export interface HarnessSourceView {
   id: string;
+  catalog?: string;
   label: string;
   kinds: ('skill' | 'mcp' | 'plugin')[];
   trust: string;
@@ -1330,6 +1350,9 @@ export interface HarnessRootView {
 export interface HarnessMarketItem {
   id: string;
   sourceId: string;
+  catalog?: string;
+  channel?: string;
+  categories?: string[];
   /**
    * Portable install handle — the key the install endpoint takes (`github:<owner/repo>` /
    * `npm:<name>` / `clawhub:<owner>/<slug>`). `id` carries the same value; `key` names its role.
@@ -1345,7 +1368,8 @@ export interface HarnessMarketItem {
   /** `owner/repo` for GitHub rows; absent for sources whose identity is a package name. */
   repo?: string;
   description: string | null;
-  url: string;
+  /** Public page for the row; `null` for a row whose source publishes none (operator `mp-` skills). */
+  url: string | null;
   /** GitHub stars, or `null` when the source publishes no popularity signal (npm, the Pi catalog,
    *  the community registries). `null` is not `0` — the console renders "unknown" for it, and can
    *  resolve a real count on demand for rows that name a repository. */
@@ -1362,6 +1386,8 @@ export interface HarnessMarketItem {
   };
   updatedAt: string;
   topics: string[];
+  /** The marketplace name the source's manifest declares, for a git-backed plugin row. */
+  marketplace?: string | null;
 }
 
 /**
@@ -1448,17 +1474,26 @@ export interface HarnessPlanAction {
  * Gate plan for an install that writes third-party state (plugin gate 3 / MCP gate 2). The page
  * shows `echo` / `file`+`container` verbatim and re-sends the request with `confirm: true`.
  */
+export interface HarnessInstallRun {
+  command: string;
+  args: string[];
+  /** The EXACT argv line apply will run — gate 3 shows it verbatim. */
+  echo: string;
+}
+
 export interface HarnessInstallTarget {
   host: string;
-  /** `subprocess` (package install) or `config` (`plugin[]` / server merge). */
-  op: 'subprocess' | 'config';
+  /** `subprocess` (a command chain), `config` (a merge), or `manual` (interactive-only). */
+  op: 'subprocess' | 'config' | 'manual';
   file?: string;
   container?: string;
-  /** Structured command for subprocess targets — apply runs THIS, `echo` is display-only. */
+  /** Structured command for a single-run subprocess target — apply runs THIS. */
   command?: string;
   args?: string[];
   /** The EXACT command apply will run — gate 3 shows it verbatim, never paraphrased. */
   echo?: string;
+  /** A native marketplace chain: registration first, install last, run in order. */
+  runs?: HarnessInstallRun[];
   refused?: string;
   added: boolean;
 }
@@ -1801,6 +1836,9 @@ export const api = {
   /** All models the gateway can route to: virtual (auto/lite/plus/pro/ultra), combos,
    *  registered models and variant exposures — `kind` tags which one each id is ('auto' = the bare auto alias, 'tier' = the bare tier aliases).
    *  `tiers` = the full membership set (a model may belong to several tiers).
+   *  `efforts` = declared thinking levels (registered/variant rows only); `[]`
+   *  means the model has no explicit level control. Any level written into a config
+   *  field must come from this list — the pipeline clamps everything else.
    *  `wire` = the model's resolved upstream wire (registered/variant rows only):
    *  'systemone' means a decision-wire model that NO chat surface can address.
    *  Reads the console endpoint — /v1/models requires a key like every surface. */
@@ -1810,6 +1848,7 @@ export const api = {
     tiers?: string[];
     kind?: string;
     members?: number;
+    efforts?: string[];
     wire?: string;
   }[]> {
     const res = await fetch('/api/admin/gateway-models');
@@ -1822,6 +1861,7 @@ export const api = {
       kind: m.kind || undefined,
       members: typeof m.members === 'number' ? m.members : undefined,
       wire: typeof m.wire === 'string' ? m.wire : undefined,
+      efforts: Array.isArray(m.efforts) ? m.efforts.filter((e: unknown): e is string => typeof e === 'string') : undefined,
     }));
   },
 
@@ -2393,13 +2433,14 @@ export const api = {
    * cannot be used as a generic proxy. A row with nothing readable still answers (`readFrom: 'none'`)
    * because the dialog is built on the fields the browse answer already carried.
    */
-  async harnessDetail(params: { source?: string; key?: string; repo?: string }): Promise<{
+  async harnessDetail(params: { source?: string; channel?: string; key?: string; repo?: string }): Promise<{
     status: string;
     source: string;
     detail: HarnessMarketDetail;
   }> {
     const search = new URLSearchParams();
-    if (params.source) search.set('source', params.source);
+    if (params.channel) search.set('channel', params.channel);
+    else if (params.source) search.set('source', params.source);
     if (params.key) search.set('key', params.key);
     if (params.repo) search.set('repo', params.repo);
     const res = await fetch(`/api/admin/harness/detail?${search.toString()}`);
@@ -2423,6 +2464,8 @@ export const api = {
     confirm?: boolean;
     /** Surfaces the row was browsed on, besides the one that writes it (see `HarnessArtifactView`). */
     listedOn?: string[];
+    /** GIT-BACKED plugin identity: the runtime's own marketplace chain installs `<plugin>@<name>`. */
+    marketplace?: { repo: string; plugin: string; name: string };
     hosts: string[];
     /** Global only for now — the backend answers `unsupported_scope` for anything else
      *  (ADR-0015 §D2 "Scope": project-level install is deferred). */
@@ -2618,34 +2661,58 @@ export const api = {
     return res.json();
   },
 
-  async harnessPluginSources(harness: string, kind?: 'skill' | 'plugin'): Promise<{ status: string; sources: HarnessCatalogSource[]; operator: HarnessMarketplaceEntry[] }> {
+  async harnessPluginSources(harness: string, kind?: 'skill' | 'plugin'): Promise<{
+    status: string;
+    extensionDir: string | null;
+    sources: HarnessCatalogSource[];
+    operator: HarnessMarketplaceEntry[];
+  }> {
     const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/sources${kind ? `?kind=${kind}` : ''}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },
 
-  async harnessPluginCheckSource(harness: string, url: string): Promise<{
+  async harnessSyncHarnessMarketplaces(harness: string): Promise<{
+    status: string;
+    timestamp: number;
+    discovered: { name: string; repo: string; type?: string; origin?: string }[];
+    imported: { slug: string; repo: string }[];
+    synced: { host: string; action: string; repo: string; ok: boolean; command?: string[]; error?: string }[];
+    summary: { discoveredCount: number; importedCount: number; syncedCount: number; failedCount: number };
+  }> {
+    const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/sources/sync`, { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async harnessPluginCheckSource(harness: string, url: string, opts: { type?: 'github' | 'npm'; extensionDir?: string } = {}): Promise<{
     status: string;
     ok: boolean;
     skills: number;
     mcps: number;
     plugins: number;
+    hosts: string[];
+    marketplace: string | null;
     message?: string;
   }> {
     const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/sources/check`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url }),
+      body: JSON.stringify({ url, type: opts.type, extensionDir: opts.extensionDir }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },
 
-  async harnessPluginRegisterSource(harness: string, url: string, rescan?: { enabled?: boolean; intervalMs?: number }): Promise<{ status: string; message?: string }> {
+  async harnessPluginRegisterSource(
+    harness: string,
+    url: string,
+    opts: { type?: 'github' | 'npm'; extensionDir?: string; rescan?: { enabled?: boolean; intervalMs?: number }; catalog?: string } = {},
+  ): Promise<{ status: string; message?: string }> {
     const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/sources`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, rescan }),
+      body: JSON.stringify({ url, type: opts.type, extensionDir: opts.extensionDir, rescan: opts.rescan, catalog: opts.catalog }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data?.message || `HTTP ${res.status}`);
@@ -2658,7 +2725,7 @@ export const api = {
     return res.json();
   },
 
-  async harnessPluginUpdateSource(harness: string, slug: string, patch: { enabled?: boolean; rescan?: { enabled?: boolean; intervalMs?: number } }): Promise<{ status: string }> {
+  async harnessPluginUpdateSource(harness: string, slug: string, patch: { enabled?: boolean; catalog?: string; rescan?: { enabled?: boolean; intervalMs?: number } }): Promise<{ status: string }> {
     const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/sources/${encodeURIComponent(slug)}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -2680,11 +2747,84 @@ export const api = {
     return res.json();
   },
 
-  async harnessPluginInstall(harness: string, row: HarnessCatalogRow): Promise<{ status: string; ok?: boolean; artifactId?: string; name?: string; message?: string }> {
+  /**
+   * Skill sources are GLOBAL (ADR-0015 §D11): the route carries no harness, because a skill
+   * registry serves every harness alike. Plugin sources keep their per-harness `/plugins/` verbs.
+   */
+  async harnessSkillSources(): Promise<{
+    status: string;
+    sources: HarnessCatalogSource[];
+    operator: HarnessMarketplaceEntry[];
+  }> {
+    const res = await fetch('/api/admin/harness/skills/sources');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async harnessSkillCheckSource(url: string): Promise<{
+    status: string;
+    ok: boolean;
+    skills: number;
+    plugins: number;
+    message?: string;
+  }> {
+    const res = await fetch('/api/admin/harness/skills/sources/check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async harnessSkillRegisterSource(
+    url: string,
+    opts: { catalog?: string; rescan?: { enabled?: boolean; intervalMs?: number } } = {},
+  ): Promise<{ status: string; message?: string }> {
+    const res = await fetch('/api/admin/harness/skills/sources', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, catalog: opts.catalog, rescan: opts.rescan }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.message || `HTTP ${res.status}`);
+    return data;
+  },
+
+  async harnessSkillUpdateSource(
+    slug: string,
+    patch: { enabled?: boolean; catalog?: string; rescan?: { enabled?: boolean; intervalMs?: number } },
+  ): Promise<{ status: string }> {
+    const res = await fetch(`/api/admin/harness/skills/sources/${encodeURIComponent(slug)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async harnessSkillRemoveSource(slug: string): Promise<{ status: string }> {
+    const res = await fetch(`/api/admin/harness/skills/sources/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async harnessSkillRescanSource(slug: string): Promise<{ status: string; diff: { added: string[]; removed: string[] } | null; rows: number }> {
+    const res = await fetch(`/api/admin/harness/skills/sources/${encodeURIComponent(slug)}/rescan`, { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async harnessPluginInstall(
+    harness: string,
+    row: HarnessCatalogRow,
+    opts: { scope?: string; confirm?: boolean } = {},
+  ): Promise<{ status: string; ok?: boolean; artifactId?: string; name?: string; message?: string }> {
     const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/install`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ row }),
+      body: JSON.stringify({ row, ...opts }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data?.message || `HTTP ${res.status}`);

@@ -41,17 +41,18 @@ from; on Skills it is a READER — ten runtimes load one `.agents/skills` tree, 
 "what this runtime can load" while writes stay owner-only (`skillReaders()` / `skillOwner()`,
 ADR-0015 §D2).
 
-The rail is a picker over the 14-row catalog, but its ENTRIES are the hosts detected on this
+The rail is a picker over the 18-row catalog, but its ENTRIES are the hosts detected on this
 machine (executable on PATH, config dir, or an existing skills root — measured by the backend, never
 configured), plus any host whose rows are already landed there; `universal` is always an entry, so a
 fresh machine still has a landing spot. It filters by name once the list is longer than a glance (>8
 entries, the same threshold the shared `Combobox` uses). The ACTIVE host is never filtered away: the
 rail must still answer "where am I" while the operator types a name that excludes it.
 
-A rail pick always lands on the `Installed` tab, including a click on the row already selected: the
-badge beside every host is a count of LOCAL copies, so answering a pick with the market catalog would
-hide the number the operator just clicked. Back/Forward gets the same reset because it is driven by the
-resolved `:harness` param, never by the click handler.
+A rail pick changes the SCOPE, never the view: the `?tab=` query rides along with the URL, so an
+operator reading the market catalog keeps the market catalog for the next runtime, and one reading
+`Installed` stays there. Back/Forward replays whatever each address recorded — a harness change is
+simply a new segment with the same query. Switching tabs is always the operator's own click; the
+rail's badge count never forces a view.
 
 Source chips are derived from `GET /sources`, filtered by the page's kind and by the source's declared
 `hosts`. A source that cannot serve renders disabled with its measured reason — never hidden, never
@@ -62,14 +63,11 @@ string for. A browse answer's `note` follows the same rule through its `noteCode
 
 Chip ORDER is the registry array order, so it is a deliberate choice and not an accident of the
 list: the market opens on the first enabled+browsable source, and the array's principle is
-low-noise first — the order follows how far a row's claim reaches. A catalog whose row IS the
-artifact (official catalogs, the curated snapshot, the skills.sh leaderboard) outranks a search
-over containers that CARRY it (GitHub's topic-filtered repo search — the topic is self-declared
-and the stars reward the repo, not the skill), which outranks `npm` — the widest, noisiest net: a
-relevance search across the entire registry, LAST on every axis it serves. On the skills axis
-`skills-sh` therefore opens the market, ClawHub's skill-only registry follows, and `github` is the
-wider net below it; an opencode plugins page opens on the curated catalog, not on a
-registry-wide keyword search. A disabled
+low-noise first — the order follows how far a row's claim reaches. Two built-in directories remain
+(owner decision, 2026-10-31, ADR-0015 §D6): ClawHub for skills and pi.dev for plugins, each a
+catalog whose row IS the artifact; operator git marketplaces are FEDERATED into the same answer,
+not chips of their own (§D12). GitHub and npm survive as INSTALL RESOLVERS, never as discovery
+chips. A disabled
 chip, when one exists, also sorts behind the live ones: a dead chip in front of a working
 catalogue reads as "the market is broken".
 
@@ -98,7 +96,7 @@ Every page reuses one layout: `Toolbar (search / filter) → ArtifactList → De
 
 ```
 ┌ Skills ────────────────────────────────────────────────────────────────────────┐
-│ [All][skills.sh][GitHub][npm]        search: ______________                │
+│ [ClawHub]                            search: ______________                │
 │ ┌────────────┬───────────────────┬────────┬──────────┬──────────┬────────────┐  │
 │ │ name       │ canonical source  │ listed │ trust    │ audit    │ installed  │  │
 │ │ tdd        │ gh:mattpocock/…   │ 2 src  │ community│ pass     │ global·univ│  │
@@ -185,6 +183,7 @@ verification.
 | amp | √ | v | — | `~/.config/agents/skills` (distinct from `~/.agents`) |
 | windsurf | √ | v | — | `~/.codeium/windsurf/mcp_config.json` |
 | zed | √ | v | — | `context_servers` |
+| grok | √ | — | — | `~/.grok/skills`; the `.grok-plugin` market form is declared, but no verified MCP or plugin landing |
 
 `opencode-proxy` never appears: it is a hook mode of `opencode`, not a separate host. Hosts are **not**
 `SupportedClient` — Cursor/VS Code/Zed will never be traffic clients, and welding the two would pollute
@@ -220,7 +219,7 @@ manufacturing `dirty` states.
     "kind": "skill",
     "name": "tdd",
     "source": { "sourceId": "github", "ref": "main", "commitSha": "<sha>", "contentHash": "sha256:…" },
-    "listedOn": ["github", "skills.sh"],
+    "listedOn": ["github"],
     "trust": "community",
     "storeRef": "…@sha256:…",
     "copies": [{
@@ -422,7 +421,7 @@ source list (ADR-0015 §D6).
 
 ```ts
 interface HarnessSourceAdapter {
-  id: string;                                   // 'mcp-official' | 'smithery' | 'npm' | 'manual' | …
+  id: string;                                   // 'clawhub' | 'pi-dev' | 'npm' | 'github' | 'manual' | …
   kinds: HarnessKind[];
   auth: 'none' | 'oidc';
   trust: 'official' | 'aggregator' | 'community' | 'manual';
@@ -436,7 +435,12 @@ Three-stage conversion, one direction, no source-specific JSX:
 
 ```
 raw JSON ──► source normalizer ──► ArtifactSummary / ArtifactDetail ──► List | Card
+
 ```
+
+The rows below record measurements at the stated date. Sources removed by later amendments (npm
+browse, the MCP official registry, Smithery, skills.sh, the OpenCode catalogs) stay as measurement
+history only; ADR-0015 §D6 is the shipped set.
 
 Measured availability, 2026-10-24 — every adapter degrades to `unavailable` + reason instead of
 throwing:
@@ -507,11 +511,11 @@ Aggregation and identity live in §5.2. Rules that follow from the table:
 | skill writer, MCP merge (opencode), plugin (opencode `plugin[]` / pi subprocess) | plan → confirm → apply |
 | probe-driven `placement` | `materialized` → `verified` with evidence only |
 | removal ops keyed on landing shape | `move-to-trash` / `drop-entry` / `drop-server` / `prune-record` |
-| source adapters: GitHub, npm, MCP official, Smithery, pi.dev, skills.sh, ClawHub, awesome-opencode, opencode.cafe, curated list | every MCP source offered is browsable and installable; ClawHub installs from its own versioned store |
+| source adapters: ClawHub (skills), pi.dev (plugins), operator git marketplaces (plugin/skill axes), GitHub + npm as install resolvers | ClawHub installs from its own versioned store; git marketplaces install through each runtime's own command chain |
 | console: three pages, harness rail, installed/market tabs, list ⇄ card, description translation | — |
 
 Not shipped — see ADR-0015 "Deferred" for the authoritative list: MCP landings beyond opencode,
-plugin landings beyond opencode/pi, npm-as-skill, the console
+plugin landings beyond opencode/pi/claude/antigravity/factory/kimi, npm-as-skill, the console
 MCP install gate, config-declared sources, write-ahead intent, store/trash GC, adopt, harness
 export/import, `canonicalKey` alias overrides, `shadowed`/`profile` producers.
 
@@ -615,11 +619,11 @@ row the other tab lists — a tab switch is the shortest confirmation loop.
 
 | Concern | Decision |
 | :--- | :--- |
-| Live sources | GitHub (skills), npm (plugins), the official MCP registry, pi.dev's catalog, skills.sh (its leaderboard boards + its own search endpoint), ClawHub (its catalog endpoint + its own search endpoint, rows installing from the registry's own versioned store), awesome-opencode, opencode.cafe and the curated snapshot. The skills.sh API answers 401 to unauthenticated callers (Vercel OIDC), so that source reads what the SITE reads — an API this console never calls must not decide what the market can show |
+| Live sources | ClawHub (skills; its catalog + its own search endpoint, rows installing from the registry's own versioned store) and pi.dev's catalog (plugins) — the two built-in directories. Operator git marketplaces federate into the plugin/skill answer. GitHub and npm are install resolvers only (ADR-0015 §D6) |
 | Normalized shape | the adapter maps a vendor payload to `MarketItem` once; the page never learns a vendor's JSON |
 | Search budget | anonymous GitHub search allows 10 req/min, and the backend cache is keyed by the EXACT query string — so a distinct prefix is a distinct upstream call. The field therefore spends nothing while typing: a query reaches the network only when COMMITTED (Enter, a source switch, clearing the field), and committing the already-shown query is not a new axis (a repeated Enter costs nothing). Committed queries are still cached 60 s |
 | Refresh | one button beside the source chips re-reads the SHOWN page under the current source/query/order — it sends `refresh=1`, and the backend evicts only that source's cache family before dispatch, so the rows come back newly read instead of 60 s old. The axis never changes (a re-search) and the page never moves (a re-page); while a read is in flight the button is disabled, so a second click cannot spend a second call |
-| Paging | the console asks for `page=N` and never slices a response itself: GitHub/npm page server-side (`page` / `from`), the catalogs slice a list they cache whole, and skills.sh asks the SITE's own paging endpoint (`/api/skills/<view>/<n>`, 0-based, 200 rows an answer, which states `total` and `hasMore`) — a console page is a slice of the upstream pages it straddles, so row 601 is reachable exactly as it is on the site. `hasMore` — never "the page looked full" — is what enables "next", and the spinner runs from the commit over the dimmed previous page rather than a blank one. Both tabs render the SHARED pager (`frontend/src/components/Pagination.tsx`, summary + size selector left, page buttons right) — a page never grows its own pager. A source whose count is only a WINDOW answers `totalScope: 'window'`: the pager keeps the number for its page buttons but hides the summary, because "1-24 / 200" must not read as the catalog's size. skills.sh's SEARCH is that case (200 rows an answer, `offset`/`page`/`cursor` ignored); its BOARDS are not — they report the site's own 9 911. ClawHub pages its catalog by cursor chain (the MCP walk) and answers search as a window for the same reason — its endpoint has no paging parameter |
+| Paging | the console asks for `page=N` and never slices a response itself: ClawHub pages by its own cursor, pi.dev by its own `&page`, and an operator source by its snapshot slice — a console page is a slice of the upstream pages it straddles. `hasMore` — never "the page looked full" — is what enables "next", and the spinner runs from the commit over the dimmed previous page rather than a blank one. Both tabs render the SHARED pager (`frontend/src/components/Pagination.tsx`, summary + size selector left, page buttons right) — a page never grows its own pager. A source whose count is only a WINDOW answers `totalScope: 'window'`: the pager keeps the number for its page buttons but hides the summary, because "1-24 / 200" must not read as the catalog's size. ClawHub's SEARCH is that case (its endpoint has no paging parameter); its catalog pages by cursor chain |
 | Download | one tarball request per install (`/repos/:r/tarball/:sha`), unpacked by a minimal tar reader. `raw.githubusercontent` is unreachable from some networks and the blob API would spend the whole hourly budget |
 | Order of writes | store first (content-addressed by commit), then the host copy, then the manifest — a failure leaves no half-installed skill |
 | Conflicts | an existing target or a foreign claim is refused before any download |

@@ -27,6 +27,7 @@ export type CatalogSort = 'name' | 'stars' | 'updated';
 export interface CatalogSource {
   /** Source id as it appears in row keys (`mp-ponytail`, `npm`, `pi-dev`, …). */
   id: string;
+  catalog?: string;
   label: string;
   tier: CatalogTier;
   /** Sort keys this source can honestly serve. Stars require a real GitHub count. */
@@ -53,6 +54,18 @@ export interface CatalogRow {
   hosts: HarnessHostId[];
   /** Repo slug `owner/repo` when the row is GitHub-backed — the star-sort and probe anchor. */
   repo: string | null;
+  /**
+   * The marketplace name the source's own manifest declares (`postman`,
+   * `claude-plugins-official`). A git-backed install runs `<plugin>@<marketplace>`, so the row
+   * carries the identity the runtime's install command needs. `null` for npm rows.
+   */
+  marketplace: string | null;
+  /** Showcase catalog grouping ('default', 'enterprise', etc.). */
+  catalog?: string;
+  /** Acquisition channel identifier ('pi-dev', 'clawhub', etc.). */
+  channel?: string;
+  /** Multi-dimensional categories ('plugin', 'skill', 'devops', etc.). */
+  categories?: string[];
 }
 
 export interface CatalogPage {
@@ -88,19 +101,42 @@ export interface CatalogSection {
 /** The per-harness facade over the shared catalog machinery (one implementation per harness). */
 export interface PluginAdapter {
   readonly harness: HarnessHostId;
+  /** The repo-relative directory this harness's published form lives in (`pi-extension`,
+   *  `.claude-plugin`, …), or `null` when the harness has no convention. The console pre-fills it
+   *  in the source dialog; a source registered with it is scanned inside that directory only. */
+  readonly extensionDir: string | null;
   /** Contributing sources with their capability declarations. */
   sources(): CatalogSource[];
   /** Merged search. Only plugin rows; skills/MCP live on their own axes. */
   search(q: string, opts: { page?: number; pageSize?: number; sort?: CatalogSort }): Promise<CatalogPage>;
-  /** Probe a source URL: does it fit this harness's catalog, and what shapes does it carry? */
-  checkSource(url: string): Promise<{ ok: boolean; skills: number; mcps: number; plugins: number; message?: string }>;
-  registerSource(url: string, opts?: { rescan?: { enabled?: boolean; intervalMs?: number } }): Promise<{ ok: boolean; message?: string }>;
+  /**
+   * Probe a source: which harnesses support it (detected from the repository's own forms), what
+   * shapes it carries, and the marketplace name its manifest declares. `extensionDir` pins the scan
+   * to one repo-relative layer (default = detect every served harness's form).
+   */
+  checkSource(
+    url: string,
+    opts?: { extensionDir?: string; type?: 'github' | 'npm' },
+  ): Promise<{
+    ok: boolean;
+    skills: number;
+    mcps: number;
+    plugins: number;
+    hosts: HarnessHostId[];
+    marketplace: string | null;
+    message?: string;
+  }>;
+  registerSource(
+    url: string,
+    opts?: { rescan?: { enabled?: boolean; intervalMs?: number }; extensionDir?: string; type?: 'github' | 'npm'; catalog?: string },
+  ): Promise<{ ok: boolean; message?: string }>;
   unregisterSource(slug: string): boolean;
   /**
    * Install one catalog row into THIS harness. A plugin takes exactly one host (the harness is
    * part of its identity, §D5); `row.key` is the portable install handle, `row.surfaces` travel
-   * as `listedOn`. Delegates to the ordinary install orchestrator — resolve, payload, writer,
-   * manifest — nothing here bypasses the gates.
+   * as `listedOn`. A git-backed row is installed by the runtime's OWN marketplace chain
+   * (`<plugin>@<marketplace>`); an npm row still resolves through the registry. Nothing here
+   * bypasses the gates.
    */
-  install(row: CatalogRow, opts: { scope?: 'global' | 'project' }): Promise<InstallResult>;
+  install(row: CatalogRow, opts?: { scope?: 'global' | 'project'; confirm?: boolean }): Promise<InstallResult>;
 }

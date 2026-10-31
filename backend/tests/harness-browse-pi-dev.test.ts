@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from 'bun:test';
-import { browsePiDev, browseSource, resetBrowseCache } from '../src/harness/market/browse.js';
-import { decodeEntities, fetchPiDevCatalog, parsePiDevCatalog, parsePiDevCount } from '../src/harness/plugin/pi-dev.js';
+import { browseSource, resetBrowseCache } from '../src/harness/common/market.js';
+import { browsePiDev } from '../src/harness/plugin/adapters/pi-dev.js';
+import { decodeEntities, fetchPiDevCatalog, parsePiDevCatalog, parsePiDevCount } from '../src/harness/plugin/adapters/pi-dev.js';
 import type { HarnessSourceView } from '../src/harness/types.js';
 
 /**

@@ -3,14 +3,18 @@ import path from 'node:path';
 import type { HarnessHostId, HarnessScope } from '../../types.js';
 import type { AdapterContext, HostAdapter } from './types.js';
 import { ampAdapter } from './amp.js';
+import { antigravityAdapter } from './antigravity.js';
 import { claudeAdapter } from './claude.js';
 import { clineAdapter } from './cline.js';
 import { codexAdapter } from './codex.js';
 import { cursorAdapter } from './cursor.js';
 import { dshAdapter } from './dsh.js';
-import { ompAdapter } from './omp.js';
+import { factoryAdapter } from './factory.js';
 import { geminiCliAdapter } from './gemini-cli.js';
 import { githubCopilotAdapter } from './github-copilot.js';
+import { grokAdapter } from './grok.js';
+import { kimiAdapter } from './kimi.js';
+import { ompAdapter } from './omp.js';
 import { opencodeAdapter } from './opencode.js';
 import { piAdapter } from './pi.js';
 import { universalAdapter } from './universal.js';
@@ -18,6 +22,7 @@ import { windsurfAdapter } from './windsurf.js';
 import { zedAdapter } from './zed.js';
 import { isSkillsHost } from './types.js';
 
+export { BaseHostAdapter } from './base.js';
 export { isPluginHost, isMcpHost, isSkillsHost } from './types.js';
 export type {
   AdapterContext,
@@ -50,10 +55,14 @@ export const HOST_ADAPTERS: readonly HostAdapter[] = [
   cursorAdapter,
   githubCopilotAdapter,
   geminiCliAdapter,
+  antigravityAdapter,
+  factoryAdapter,
+  kimiAdapter,
   clineAdapter,
   ampAdapter,
   windsurfAdapter,
   zedAdapter,
+  grokAdapter,
 ];
 
 const BY_ID = new Map<HarnessHostId, HostAdapter>(HOST_ADAPTERS.map((adapter) => [adapter.id, adapter]));

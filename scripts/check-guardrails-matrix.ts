@@ -9,6 +9,7 @@ import {
   effectiveState,
   effectiveCooldown,
   isTakenDown,
+  isModelWideTrip,
   type PairCard,
 } from '../frontend/src/lib/guardrails-matrix';
 import type { BreakerInfo, CredentialHealth } from '../frontend/src/lib/api';
@@ -128,6 +129,28 @@ const LABELS = { unnamed: '未命名', configKey: '配置密钥' };
   check('isTakenDown: disabled or suspect, regardless of breaker state',
     isTakenDown(taken as never) && isTakenDown(suspect as never) && !isTakenDown(healthy as never) && !isTakenDown(tripped as never));
   check('effectiveState ignores takedown (pure tuple truth)', effectiveState(taken as never) === 'CLOSED' && effectiveState(tripped as never) === 'OPEN');
+}
+
+// --- a credential-scope trip never reads as a model-level takedown -----------
+{
+  const accts = [
+    acct({ id: 'a1', providerId: 'p', keyHashPrefix: 'k1' }),
+    acct({ id: 'a2', providerId: 'p', keyHashPrefix: 'k2' }),
+  ];
+  // The fold is the worst tuple, so a credential-scoped trip on k1 raises it —
+  // but it is NOT a model-layer trip: the healthy sibling card must not render
+  // "model-level", and its action must stay a card-scoped trip.
+  const fold = snap({ modelId: 'p/x', provider: 'p', state: 'OPEN', scope: 'credential' });
+  const pair = snap({ modelId: 'p/x', provider: 'p', state: 'OPEN', keyHashPrefix: 'k1', scope: 'credential' });
+  const cards = buildPairCards([fold], [pair], accts, [], LABELS);
+  check('credential-scope fold is never model-wide', cards.every((c) => !isModelWideTrip(c)));
+  const sibling = cards.find((c) => c.prefix === 'k2')!;
+  check('healthy sibling stays CLOSED under a credential-scope fold', effectiveState(sibling) === 'CLOSED' && !isModelWideTrip(sibling));
+
+  // A genuine model-scope trip (every tuple carries the label) does qualify.
+  const modelFold = snap({ modelId: 'p/x', provider: 'p', state: 'OPEN', scope: 'model' });
+  const wide = buildPairCards([modelFold], [], accts, [], LABELS);
+  check('model-scope fold is model-wide', wide.every((c) => isModelWideTrip(c)));
 }
 
 if (failures > 0) {

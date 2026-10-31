@@ -12,7 +12,8 @@ import {
   ZipTooLargeError,
   type ZipEntry,
 } from '../src/harness/skill/clawhub.js';
-import { browseClawHub, browseSource, resetBrowseCache } from '../src/harness/market/browse.js';
+import { browseSource, resetBrowseCache } from '../src/harness/common/market.js';
+import { browseClawHub } from '../src/harness/skill/clawhub.js';
 import { clawhubAdapter } from '../src/harness/host/resolvers/clawhub.js';
 import type { HarnessSourceView } from '../src/harness/types.js';
 

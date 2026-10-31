@@ -237,6 +237,8 @@ describe('hosts route (capability flags)', () => {
     // A host with no MCP landing answers `false` — the flag is a capability, not a path guess.
     expect(byId.get('claude')).toMatchObject({ hasSkills: true, hasMcp: false, hasExt: true });
     expect(byId.get('universal')).toMatchObject({ hasSkills: true, hasMcp: false, hasExt: false });
+    // Grok is served for skills only: the `.grok-plugin` market form is declared, the landing is not.
+    expect(byId.get('grok')).toMatchObject({ hasSkills: true, hasMcp: false, hasExt: false });
   });
 });
 

@@ -10,6 +10,7 @@ import { useToast } from '../components/ToastProvider';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import { useBackdropDismiss } from '../lib/useBackdropDismiss';
 import { effortOptionList, EFFORT_UNSET, EFFORT_I18N_KEY } from '../lib/effort';
+import { globMatch } from '../lib/glob';
 import { fmtLatency } from '../lib/format';
 import { sortModelOptions } from '../lib/model-options';
 
@@ -31,6 +32,16 @@ interface MemberRow {
   pattern: string;
   weight?: number; // preserved verbatim; not edited in the v1 UI
   effortMap: Record<string, string>;
+}
+
+/** Console-catalog row (`/api/admin/gateway-models`). `efforts` is the model's
+ *  declared thinking-level list — the ONLY levels its effort map may target. */
+interface GatewayModelRow {
+  id: string;
+  kind?: string;
+  owned_by: string;
+  tiers?: string[];
+  efforts?: string[];
 }
 
 interface TierPolicyForm {
@@ -145,7 +156,7 @@ export const RulesPage: React.FC = () => {
   // behaviour); dragMember tracks the in-flight row for live reorder.
   const [armedDrag, setArmedDrag] = useState<string | null>(null);
   const [dragMember, setDragMember] = useState<{ tier: Tier; index: number } | null>(null);
-  const [gatewayModels, setGatewayModels] = useState<{ id: string; kind?: string; owned_by: string; tiers?: string[] }[]>([]);
+  const [gatewayModels, setGatewayModels] = useState<GatewayModelRow[]>([]);
   const [comboCatalog, setComboCatalog] = useState<ComboView[]>([]);
   const [pools, setPools] = useState<Record<string, TierPoolInfo>>({});
   const [poolsLive, setPoolsLive] = useState<Record<string, TierPoolInfo>>({});
@@ -325,6 +336,29 @@ export const RulesPage: React.FC = () => {
         return { value: m.id, label: m.id, meta };
       });
     return [...comboOptions, ...sortModelOptions(modelOptions)];
+  };
+
+  /** Declared thinking levels the gateway can actually serve for one member
+   *  rule. A rule is a PATTERN (glob / substring, ADR-0003) or a `combo:` ref,
+   *  so the honest answer is the UNION over every registered model it claims —
+   *  offering a level none of them declares would just be clamped straight back
+   *  by `downgradeReasoning`. `undefined` = the rule claims no registered model
+   *  yet (typo, unsaved combo, model not booted): keep the full ladder rather
+   *  than lock the operator out of a rule the registry may still resolve. */
+  const effortLevelsForPattern = (pattern: string): string[] | undefined => {
+    const raw = pattern.trim();
+    if (!raw) return undefined;
+    const combo = raw.startsWith('combo:') ? comboCatalog.find((c) => `combo:${c.id}` === raw) : undefined;
+    const claimed = combo
+      ? combo.members
+          .filter((m) => m.registered)
+          .map((m) => gatewayModels.find((g) => g.id === m.id))
+          .filter((m): m is GatewayModelRow => m !== undefined)
+      : gatewayModels.filter((m) => m.kind === 'model' && globMatch(raw, m.id));
+    if (claimed.length === 0) return undefined;
+    const declared = new Set<string>();
+    for (const m of claimed) for (const lvl of m.efforts ?? []) declared.add(lvl);
+    return EFFORT_LEVELS.filter((lvl) => declared.has(lvl));
   };
 
   const addMemberRules = (tier: Tier, ids: string[]) =>
@@ -1510,6 +1544,15 @@ export const RulesPage: React.FC = () => {
           const row = forms[mapTarget.tier].members[mapTarget.index];
           const tierMeta = TIERS.find((x) => x.key === mapTarget.tier);
           if (!row || !tierMeta) return null;
+          // Options for the TARGET column: the levels every model this rule
+          // claims actually declares (union), never the full ladder — see
+          // effortLevelsForPattern. `undefined` keeps the ladder for a rule
+          // whose models are not resolvable yet.
+          const targetLevels = effortLevelsForPattern(row.pattern) ?? [...EFFORT_LEVELS];
+          const targetOptions = [
+            { value: '', label: t('tierPolicy.effortPassthrough') },
+            ...effortOptionList(t, targetLevels).filter((o) => o.value !== EFFORT_UNSET),
+          ];
           return createPortal(
             <div
               style={{
@@ -1622,10 +1665,7 @@ export const RulesPage: React.FC = () => {
                       <Combobox
                         value={row.effortMap[lvl] ?? ''}
                         onChange={(v) => updateEffortMap(mapTarget.tier, mapTarget.index, lvl, v)}
-                        options={[
-                          { value: '', label: t('tierPolicy.effortPassthrough') },
-                          ...effortOptionList(t).filter((o) => o.value !== EFFORT_UNSET),
-                        ]}
+                        options={targetOptions}
                         style={{ width: '100%', fontSize: '12px', padding: '5px 10px' }}
                         panelMinWidth={170}
                       />

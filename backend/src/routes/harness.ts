@@ -15,31 +15,45 @@ import { applyRemove, planRemove, type RemoveItem } from '../harness/host/mainte
 import {
   pruneTranslationStore,
   probeTranslationChain,
+  isSupportedLang,
   readCachedTranslations,
   translateDescription,
   translateMarkdown,
 } from '../harness/translation.js';
 import { probeSystemoneDefault } from '../surfaces/systemone-probe.js';
-import { browseSource } from '../harness/market/browse.js';
-import { createPluginAdapter } from '../harness/plugin/market.js';
-import { fetchRepoStars, peekStarCache } from '../harness/market/stars.js';
+import { browseSource } from '../harness/common/market.js';
+import { allHostProbes, createPluginAdapter, probeOptionsFor } from '../harness/plugin/adapters/index.js';
+import { fetchRepoStars, peekStarCache } from '../harness/common/stars.js';
 import { readMarketDetail } from '../harness/detail.js';
 import { installArtifact } from '../harness/host/install.js';
 import { recentApplies } from '../harness/host/ledger.js';
 import { ENABLED_SCOPES, isEnabledScope } from '../harness/host/scopes.js';
-import type { HarnessHostId, HarnessKind, HarnessSourceView } from '../harness/types.js';
-import { SOURCES as SOURCES_VIEW } from '../harness/market/source-views.js';
+import type { HarnessHostId, HarnessSourceView } from '../harness/types.js';
+import { MCP_DEFAULT_VIEWS, SKILL_VIEWS, SOURCES } from '../harness/common/source-views.js';
+import {
+  checkSkillSource,
+  registerSkillSource,
+  removeSkillSource,
+  rescanSkillSource,
+  skillSourceEntry,
+  updateSkillSource,
+} from '../harness/skill/sources.js';
+import { harvestAll } from '../harness/plugin/catalog.js';
 import {
   browseMarketplace,
   getMarketplaceEntry,
-  listMarketplaces,
+  listMarketplaceEntries,
   latestSnapshot,
   marketplaceSourceId,
   probeMarketplace,
   snapshotHistory,
-  updateMarketplace,
-} from '../harness/market/marketplaces.js';
-import { harvestAll } from '../harness/plugin/catalog.js';
+  updateMarketplaceEntry,
+  writeNpmSourceSnapshot,
+} from '../harness/common/market.js';
+import { parseNpmSource, probeNpmSource } from '../harness/common/npm-source.js';
+import { getBuiltinViewsForHarness } from '../harness/plugin/builtin.js';
+import { reconcileMarketplaces } from '../harness/host/marketplace-sync.js';
+import type { CatalogRow } from '../harness/plugin/types.js';
 
 /**
  * Harness admin surface (ADR-0015): sources, hosts, inventory, install, uninstall, translate.
@@ -66,21 +80,25 @@ import { harvestAll } from '../harness/plugin/catalog.js';
  * outranks the one source that searches an entire package registry: npm, the wide net, is LAST
  * on purpose.
  */
-const SOURCES: HarnessSourceView[] = SOURCES_VIEW;
 
 /** One operator git-marketplace chip, materialized from the store: enabled state from the entry,
  *  browsable only once a probe has left a snapshot to browse. */
 function mpSourceView(slug: string): HarnessSourceView | undefined {
   const entry = getMarketplaceEntry(slug);
   if (!entry) return undefined;
+  const npm = entry.type === 'npm';
+  const snap = latestSnapshot(slug, entry.harness);
   return {
+    catalog: entry.catalog ?? 'default',
     id: marketplaceSourceId(slug),
-    label: `${slug} (git marketplace)`,
-    kinds: ['skill', 'plugin'],
+    label: npm ? `${slug} (npm)` : `${slug} (git marketplace)`,
+    // An npm entry carries packages only; a git entry may carry both kinds.
+    kinds: npm ? ['plugin'] : ['skill', 'plugin'],
     trust: 'community',
     auth: 'none',
     enabled: entry.enabled,
-    browsable: entry.enabled && latestSnapshot(slug) !== null,
+    browsable: entry.enabled && snap !== null,
+    hosts: entry.harness ? [entry.harness] : snap?.hosts,
   };
 }
 
@@ -88,7 +106,7 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
   // Source registry + health. The console derives its tab row from this, never from a hardcoded list.
   app.get('/api/admin/harness/sources', async () => ({
     status: 'ok',
-    sources: [...SOURCES, ...listMarketplaces().map((e) => mpSourceView(e.slug)!)],
+    sources: [...SOURCES, ...listMarketplaceEntries().map((e) => mpSourceView(e.slug)!)],
   }));
 
   // Per-harness plugin market (ADR-0015 §D10): the maintenance verbs live HERE, scoped to the
@@ -97,104 +115,181 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
   // re-harvests all served harnesses' indexes so no sibling tab goes stale.
   const pluginAdapterFor = (harness: string) => {
     if (!HOSTS.some((h) => h.id === harness)) return undefined;
-    return createPluginAdapter(harness as HarnessHostId, opts.marketplaceFetch);
+    // The dialog maintains OPERATOR sources, so it always gets the writable chain: pi's official
+    // surface is read-only by contract, while its git-source chain is the one that can add/remove.
+    return createPluginAdapter(harness as HarnessHostId, opts.marketplaceFetch, { custom: true });
   };
 
+  /** The entry behind a plugin-axis request: an entry whose snapshot carries no plugin row serves
+   *  the skill axis only, so this route must not edit or delete it (§D11 route isolation). */
+  const pluginEntry = (slug: string, harness: string) => {
+    const entry = getMarketplaceEntry(slug, harness);
+    if (!entry) return undefined;
+    const snap = latestSnapshot(slug, entry.harness ?? harness);
+    return (snap?.plugins.length ?? 0) > 0 ? entry : undefined;
+  };
+
+  // Per-harness sync: imports the marketplaces already configured in THIS harness's native
+  // environment and pushes OCR's registrations back into it (ADR-0015 §D9, one direction each).
+
   app.get('/api/admin/harness/plugins/:harness/sources', async (req, reply) => {
-    const adapter = pluginAdapterFor((req.params as { harness: string }).harness);
+    const harnessParam = (req.params as { harness: string }).harness;
+    const adapter = pluginAdapterFor(harnessParam);
     if (!adapter) {
       reply.code(404);
       return { status: 'error', code: 'unknown_harness', message: `unknown harness` };
     }
-    // Kind isolation (§D11): the dialog that opens on the skill tab must not list plugin sources
-    // and vice versa. `kind` narrows BOTH lists — the built-in chips by their declared `kinds`,
-    // the operator entries by what their snapshot actually carries. A source with no rows of the
-    // kind is not listed there: a chip that cannot serve the open tab is noise, not information.
+    // KIND isolation (§D11): this route is the PER-HARNESS surface (plugin, plus MCP views when a
+    // directory is wired). SKILLS are a GLOBAL directory with their OWN route (`/skills/sources`):
+    // they are never served from a harness-scoped endpoint, because a skill source is not any
+    // harness's private market. A source that cannot serve the open kind is noise, not information.
     const kindQ = ((req.query || {}) as { kind?: string }).kind;
     const kindOk = (kinds: readonly string[]) => !kindQ || kinds.includes(kindQ);
+    const harness = harnessParam as HarnessHostId;
+    const perHarness = [...MCP_DEFAULT_VIEWS, ...getBuiltinViewsForHarness(harness)].filter(
+      (v) => !v.hosts || v.hosts.includes(harness),
+    );
     return {
       status: 'ok',
-      sources: SOURCES_VIEW.filter((s) => kindOk(s.kinds)).map((s) => ({
+      // This harness's published extension layer (`pi-extension`, `.claude-plugin`, …) or null.
+      // The dialog pre-fills the add form with it; the API never applies it implicitly.
+      extensionDir: adapter.extensionDir,
+      sources: perHarness.filter((s) => kindOk(s.kinds)).map((s) => ({
         id: s.id,
         label: s.label,
         tier: 'federated' as const,
-        sorts: [] as string[],
+        sorts: s.sorts ?? ([] as string[]),
         counts: false,
       })),
-      operator: listMarketplaces()
+      operator: listMarketplaceEntries(harness)
         .map((e) => {
-          const snap = latestSnapshot(e.slug);
+          const snap = latestSnapshot(e.slug, harness);
           const kinds = [
             ...((snap?.rows.length ?? 0) > 0 ? ['skill' as const] : []),
             ...((snap?.plugins.length ?? 0) > 0 ? ['plugin' as const] : []),
           ];
-          return { ...e, kinds };
+          return {
+            ...e,
+            type: e.type ?? ('github' as const),
+            /** Harnesses the repository's own forms declare (detected at probe time). */
+            hosts: snap?.hosts ?? [],
+            marketplace: snap?.marketplace ?? null,
+            kinds,
+          };
         })
         .filter((e) => kindOk(e.kinds)),
     };
   });
 
   // Full CRUD (§D11): the dialog edits the entry config in place — enable/disable and the rescan
-  // schedule. Toggling enabled changes which snapshots the harvest reads, so the mutation
-  // re-harvests every served harness, same as register/remove.
+  // schedule are independent fields, updated through this PATCH without a whole-store replace.
   app.patch('/api/admin/harness/plugins/:harness/sources/:slug', async (req, reply) => {
-    if (!pluginAdapterFor((req.params as { harness: string }).harness)) {
+    const harnessParam = (req.params as { harness: string }).harness;
+    const adapter = pluginAdapterFor(harnessParam);
+    if (!adapter) {
       reply.code(404);
       return { status: 'error', code: 'unknown_harness', message: `unknown harness` };
     }
     const { slug } = req.params as { slug: string };
-    const body = (req.body || {}) as { enabled?: boolean; rescan?: { enabled?: boolean; intervalMs?: number } };
-    const updated = updateMarketplace(slug, body);
-    if (!updated) {
-      reply.code(404);
-      return { status: 'error', code: 'unknown_source', message: `unknown source '${slug}'` };
-    }
-    harvestAll();
-    return { status: 'ok', entry: updated };
-  });
-
-  // Manual rescan: same probe as the scheduler, persisted, then a full re-harvest. The diff
-  // REPORTS additions/removals — it never rewrites installed copies (§D9).
-  app.post('/api/admin/harness/plugins/:harness/sources/:slug/rescan', async (req, reply) => {
-    if (!pluginAdapterFor((req.params as { harness: string }).harness)) {
-      reply.code(404);
-      return { status: 'error', code: 'unknown_harness', message: `unknown harness` };
-    }
-    const { slug } = req.params as { slug: string };
-    const entry = getMarketplaceEntry(slug);
+    const entry = pluginEntry(slug, harnessParam);
     if (!entry) {
       reply.code(404);
-      return { status: 'error', code: 'unknown_source', message: `unknown source '${slug}'` };
+      return { status: 'error', code: 'not_found', message: `no source '${slug}'` };
     }
-    const outcome = await probeMarketplace(entry, opts.marketplaceFetch);
-    if (!outcome.ok) {
-      reply.code(409);
-      return { status: 'error', code: outcome.code ?? 'unavailable', message: outcome.message };
+    const body = (req.body || {}) as {
+      enabled?: boolean;
+      catalog?: string;
+      rescan?: { enabled?: boolean; intervalMs?: number };
+    };
+    const patch: { enabled?: boolean; catalog?: string; rescan?: { enabled?: boolean; intervalMs?: number } } = {};
+    if (typeof body.enabled === 'boolean') patch.enabled = body.enabled;
+    if (typeof body.catalog === 'string') patch.catalog = body.catalog;
+    if (body.rescan) patch.rescan = body.rescan;
+    if (Object.keys(patch).length === 0) return { status: 'ok' };
+    if (!updateMarketplaceEntry(slug, patch, harnessParam)) {
+      reply.code(404);
+      return { status: 'error', code: 'not_found', message: `no source '${slug}'` };
     }
+    // Enabling/disabling or re-cataloguing moves rows: every index re-reads the snapshot now.
     harvestAll();
-    return { status: 'ok', diff: outcome.snapshot.lastDiff ?? null, rows: outcome.snapshot.rows.length };
+    return { status: 'ok' };
   });
 
-  // Bounded snapshot history (§D9): probes are summarized, never a raw dump.
-  app.get('/api/admin/harness/plugins/:harness/sources/:slug/snapshots', async (req, reply) => {
-    if (!pluginAdapterFor((req.params as { harness: string }).harness)) {
+  // Manual rescan from the dialog (reports the diff: added / removed row counts).
+  app.post('/api/admin/harness/plugins/:harness/sources/:slug/rescan', async (req, reply) => {
+    const harnessParam = (req.params as { harness: string }).harness;
+    const adapter = pluginAdapterFor(harnessParam);
+    if (!adapter) {
       reply.code(404);
       return { status: 'error', code: 'unknown_harness', message: `unknown harness` };
     }
     const { slug } = req.params as { slug: string };
-    if (!getMarketplaceEntry(slug)) {
+    const entry = pluginEntry(slug, harnessParam);
+    if (!entry) {
+      reply.code(404);
+      return { status: 'error', code: 'not_found', message: `no source '${slug}'` };
+    }
+    const scope = entry.harness ?? (harnessParam as HarnessHostId);
+
+    if (entry.type === 'npm') {
+      const parsed = parseNpmSource(entry.repo);
+      if (!parsed) {
+        reply.code(400);
+        return { status: 'error', code: 'invalid_source', message: 'invalid npm source spec' };
+      }
+      const probed = await probeNpmSource(parsed, opts.marketplaceFetch);
+      if (!probed.ok) {
+        reply.code(400);
+        return { status: 'error', code: 'probe_failed', message: probed.message };
+      }
+      writeNpmSourceSnapshot(slug, probed.packages, scope);
+      harvestAll();
+      return { status: 'ok', rows: probed.packages.length };
+    }
+
+    const prev = latestSnapshot(slug, scope);
+    const probe = await probeMarketplace(entry, opts.marketplaceFetch, {
+      ...probeOptionsFor(entry.harness ?? (harnessParam as HarnessHostId)),
+      hosts: allHostProbes(),
+    });
+    if (!probe.ok) {
+      reply.code(400);
+      return { status: 'error', code: 'probe_failed', message: probe.message };
+    }
+    // The new snapshot is the index's input: re-harvest every served harness so a rescan that
+    // gained rows is visible in the catalog immediately.
+    harvestAll();
+    // Snapshots retain history: diff is against the IMMEDIATELY PRECEDING snapshot, not empty.
+    const added = prev ? probe.snapshot.rows.filter((r) => !prev.rows.some((p) => p.name === r.name)).map((r) => r.name) : [];
+    const removed = prev ? prev.rows.filter((p) => !probe.snapshot.rows.some((r) => r.name === p.name)).map((p) => p.name) : [];
+    return { status: 'ok', rows: probe.snapshot.rows.length, diff: { added, removed } };
+  });
+
+  // Snapshot ledger inspection: the dialog can render recent scans with their timestamps.
+  app.get('/api/admin/harness/plugins/:harness/sources/:slug/snapshots', async (req, reply) => {
+    const harnessParam = (req.params as { harness: string }).harness;
+    const adapter = pluginAdapterFor(harnessParam);
+    if (!adapter) {
+      reply.code(404);
+      return { status: 'error', code: 'unknown_harness', message: `unknown harness` };
+    }
+    const slug = (req.params as { slug: string }).slug;
+    if (!getMarketplaceEntry(slug, harnessParam as HarnessHostId)) {
       reply.code(404);
       return { status: 'error', code: 'unknown_source', message: `unknown source '${slug}'` };
     }
+    const history = snapshotHistory(slug, harnessParam as HarnessHostId);
     return {
       status: 'ok',
-      snapshots: snapshotHistory(slug).map((s) => ({
+      slug,
+      snapshots: history.map((s) => ({
         probedAt: s.probedAt,
         sha: s.sha,
-        stars: s.stars,
         rows: s.rows.length,
-        added: s.lastDiff?.added ?? null,
-        removed: s.lastDiff?.removed ?? null,
+        plugins: s.plugins?.length ?? 0,
+        stars: s.stars,
+        pushedAt: s.pushedAt,
+        marketplace: s.marketplace ?? null,
       })),
     };
   });
@@ -207,12 +302,23 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
       reply.code(404);
       return { status: 'error', code: 'unknown_harness', message: `unknown harness` };
     }
-    const body = (req.body || {}) as { url?: string; rescan?: { enabled?: boolean; intervalMs?: number } };
+    const body = (req.body || {}) as {
+      url?: string;
+      type?: 'github' | 'npm';
+      extensionDir?: string;
+      catalog?: string;
+      rescan?: { enabled?: boolean; intervalMs?: number };
+    };
     if (!body.url) {
       reply.code(400);
       return { status: 'error', code: 'bad_request', message: 'url is required' };
     }
-    const outcome = await adapter.registerSource(body.url, { rescan: body.rescan });
+    const outcome = await adapter.registerSource(body.url, {
+      catalog: body.catalog,
+      rescan: body.rescan,
+      extensionDir: body.extensionDir,
+      ...(body.type ? { type: body.type } : {}),
+    });
     if (!outcome.ok) {
       const message = outcome.message ?? '';
       const conflict = message.includes('already configured');
@@ -229,27 +335,134 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
       reply.code(404);
       return { status: 'error', code: 'unknown_harness', message: `unknown harness` };
     }
-    const body = (req.body || {}) as { url?: string };
+    const body = (req.body || {}) as { url?: string; type?: 'github' | 'npm'; extensionDir?: string };
     if (!body.url) {
       reply.code(400);
       return { status: 'error', code: 'bad_request', message: 'url is required' };
     }
-    const check = await adapter.checkSource(body.url);
+    const check = await adapter.checkSource(body.url, {
+      extensionDir: body.extensionDir,
+      ...(body.type ? { type: body.type } : {}),
+    });
     return { status: 'ok', ...check };
   });
 
   app.delete('/api/admin/harness/plugins/:harness/sources/:slug', async (req, reply) => {
-    const adapter = pluginAdapterFor((req.params as { harness: string }).harness);
+    const harnessParam = (req.params as { harness: string }).harness;
+    const adapter = pluginAdapterFor(harnessParam);
     if (!adapter) {
       reply.code(404);
       return { status: 'error', code: 'unknown_harness', message: `unknown harness` };
     }
     const { slug } = req.params as { slug: string };
-    if (!adapter.unregisterSource(slug)) {
+    if (!pluginEntry(slug, harnessParam) || !adapter.unregisterSource(slug)) {
       reply.code(404);
       return { status: 'error', code: 'unknown_source', message: `unknown source '${slug}'` };
     }
     return { status: 'ok' };
+  });
+
+  app.post('/api/admin/harness/plugins/:harness/sources/sync', async (req, reply) => {
+    const harnessParam = (req.params as { harness: string }).harness;
+    if (!pluginAdapterFor(harnessParam)) {
+      reply.code(404);
+      return { status: 'error', code: 'unknown_harness', message: 'unknown harness' };
+    }
+    const report = await reconcileMarketplaces([harnessParam as HarnessHostId], opts.marketplaceFetch);
+    return { status: 'ok', ...report };
+  });
+
+  // ── Skill sources: the GLOBAL maintenance surface (§D11) ─────────────────────────────────────
+  // The skill axis is not harness-scoped, so these verbs carry NO `:harness`: the registry is
+  // code-configured (ClawHub) and an operator extension is a GitHub repository that publishes
+  // SKILL.md rows. Plugin maintenance lives under `/plugins/:harness/sources*`; the two surfaces
+  // never serve each other's axis.
+  app.get('/api/admin/harness/skills/sources', async () => ({
+    status: 'ok',
+    sources: SKILL_VIEWS.map((s) => ({
+      id: s.id,
+      label: s.label,
+      tier: 'federated' as const,
+      sorts: s.sorts ?? ([] as string[]),
+      counts: false,
+    })),
+    operator: listMarketplaceEntries()
+      .map((e) => {
+        const snap = latestSnapshot(e.slug, e.harness);
+        const kinds = [
+          ...((snap?.rows.length ?? 0) > 0 ? ['skill' as const] : []),
+          ...((snap?.plugins.length ?? 0) > 0 ? ['plugin' as const] : []),
+        ];
+        return {
+          ...e,
+          type: e.type ?? ('github' as const),
+          hosts: snap?.hosts ?? [],
+          marketplace: snap?.marketplace ?? null,
+          kinds,
+        };
+      })
+      .filter((e) => e.kinds.includes('skill')),
+  }));
+
+  // Dry-run probe: a skill source must actually publish skills (check-before-add).
+  app.post('/api/admin/harness/skills/sources/check', async (req, reply) => {
+    const body = (req.body || {}) as { url?: string };
+    if (!body.url) {
+      reply.code(400);
+      return { status: 'error', code: 'bad_request', message: 'url is required' };
+    }
+    return { status: 'ok', ...(await checkSkillSource(body.url, opts.marketplaceFetch)) };
+  });
+
+  app.post('/api/admin/harness/skills/sources', async (req, reply) => {
+    const body = (req.body || {}) as { url?: string; catalog?: string; rescan?: { enabled?: boolean; intervalMs?: number } };
+    if (!body.url) {
+      reply.code(400);
+      return { status: 'error', code: 'bad_request', message: 'url is required' };
+    }
+    const outcome = await registerSkillSource(body.url, { catalog: body.catalog, rescan: body.rescan }, opts.marketplaceFetch);
+    if (!outcome.ok) {
+      const conflict = outcome.message?.includes('already configured') === true;
+      reply.code(conflict ? 409 : 400);
+      return { status: 'error', code: conflict ? 'conflict' : 'bad_request', message: outcome.message };
+    }
+    return { status: 'ok', message: outcome.message };
+  });
+
+  app.patch('/api/admin/harness/skills/sources/:slug', async (req, reply) => {
+    const body = (req.body || {}) as {
+      enabled?: boolean;
+      catalog?: string;
+      rescan?: { enabled?: boolean; intervalMs?: number };
+    };
+    if (!updateSkillSource((req.params as { slug: string }).slug, body)) {
+      reply.code(404);
+      return { status: 'error', code: 'not_found', message: `no source '${(req.params as { slug: string }).slug}'` };
+    }
+    return { status: 'ok' };
+  });
+
+  app.delete('/api/admin/harness/skills/sources/:slug', async (req, reply) => {
+    const { slug } = req.params as { slug: string };
+    if (!removeSkillSource(slug)) {
+      reply.code(404);
+      return { status: 'error', code: 'unknown_source', message: `unknown source '${slug}'` };
+    }
+    return { status: 'ok' };
+  });
+
+  app.post('/api/admin/harness/skills/sources/:slug/rescan', async (req, reply) => {
+    const { slug } = req.params as { slug: string };
+    if (!skillSourceEntry(slug)) {
+      reply.code(404);
+      return { status: 'error', code: 'not_found', message: `no source '${slug}'` };
+    }
+    const result = await rescanSkillSource(slug, opts.marketplaceFetch);
+    if (!result.ok) {
+      reply.code(400);
+      return { status: 'error', code: 'probe_failed', message: result.message };
+    }
+    return { status: 'ok', rows: result.rows, diff: { added: result.diff.added, removed: result.diff.removed } };
   });
 
   app.get('/api/admin/harness/plugins/:harness/catalog', async (req, reply) => {
@@ -275,12 +488,35 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
       reply.code(404);
       return { status: 'error', code: 'unknown_harness', message: `unknown harness` };
     }
-    const body = (req.body || {}) as { row?: never; scope?: 'global' | 'project' };
+    const body = (req.body || {}) as { row?: CatalogRow; scope?: string; confirm?: boolean };
     if (!body.row || typeof body.row !== 'object') {
       reply.code(400);
       return { status: 'error', code: 'bad_request', message: 'row is required' };
     }
-    const result = await adapter.install(body.row, { scope: body.scope });
+    // Same trust boundary as the main install route: `project` is deferred, and the body cannot
+    // widen the scope set the rest of the domain reads from `ENABLED_SCOPES`.
+    if (!isEnabledScope(body.scope ?? 'global')) {
+      reply.code(400);
+      return {
+        status: 'error',
+        code: 'unsupported_scope',
+        message: `scope '${body.scope}' is not supported — installs target ${ENABLED_SCOPES.join(', ')} scope`,
+      };
+    }
+    const result = await adapter.install(body.row, {
+      scope: (body.scope ?? 'global') as 'global',
+      confirm: body.confirm === true,
+    });
+    if (!result.ok) {
+      const status =
+        result.code === 'exists' || result.code === 'foreign' || result.code === 'confirm_required'
+          ? 409
+          : result.code === 'upstream' || result.code === 'unavailable'
+            ? 502
+            : 400;
+      reply.code(status);
+      return { status: 'error', ...result };
+    }
     return { status: 'ok', ...result };
   });
 
@@ -382,15 +618,58 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
       refresh?: string;
       kind?: string;
     };
-    const source = SOURCES.find((s) => s.id === (query.source || 'github')) ?? mpSourceView((query.source || '').startsWith('mp-') ? (query.source || '').slice(3) : '');
+    const requestedSource = query.source || SOURCES[0]?.id || '';
+    const source =
+      SOURCES.find((s) => s.id === requestedSource) ??
+      mpSourceView(requestedSource.startsWith('mp-') ? requestedSource.slice(3) : requestedSource);
     if (!source) {
       reply.code(404);
-      return { status: 'error', code: 'unknown_source', message: `unknown source '${query.source}'` };
+      return { status: 'error', code: 'unknown_source', message: `unknown source '${requestedSource}'` };
     }
-    // An operator git marketplace browses from its own snapshot, not the live-source dispatcher.
+    // An operator entry browses from its own snapshot, not the live-source dispatcher. The plugin
+    // axis reads the snapshot's plugin rows: those ARE the plugins the operator added, and their
+    // keys are the native install handles (`mp-<slug>:<repo>#<source>` / `npm:<pkg>`).
     if (source.id.startsWith('mp-')) {
+      const slug = source.id.slice(3);
       const page = Math.max(Number(query.page) || 1, 1);
-      const browsed = browseMarketplace(source.id.slice(3), { query: query.q, page, pageSize: Math.min(Number(query.limit) || 24, 100) });
+      const pageSize = Math.min(Number(query.limit) || 24, 100);
+      const entry = getMarketplaceEntry(slug);
+      if (query.kind === 'plugin' && entry) {
+        const snapshot = latestSnapshot(slug);
+        const needle = (query.q || '').trim().toLowerCase();
+        const all = (snapshot?.plugins ?? [])
+          .filter((p) => !needle || p.name.toLowerCase().includes(needle) || (p.description ?? '').toLowerCase().includes(needle))
+          .map((p) => {
+            const key = entry.type === 'npm' ? `npm:${p.name}` : `${source.id}:${entry.repo}#${p.source}`;
+            return {
+              id: key,
+              key,
+              sourceId: source.id,
+              installKind: 'plugin' as const,
+              name: p.name,
+              ...(entry.type === 'npm' ? {} : { repo: entry.repo }),
+              description: p.description,
+              url:
+                entry.type === 'npm'
+                  ? `https://www.npmjs.com/package/${p.name}`
+                  : `https://github.com/${entry.repo}`,
+              stars: entry.type === 'npm' ? null : snapshot?.stars ?? null,
+              updatedAt: '',
+              topics: [],
+              // The install command spells `<plugin>@<marketplace>`; an npm row installs by spec.
+              ...(entry.type === 'npm' ? {} : { marketplace: snapshot?.marketplace ?? null }),
+            };
+          });
+        return {
+          status: 'ok',
+          source: source.id,
+          page,
+          items: all.slice((page - 1) * pageSize, page * pageSize),
+          hasMore: page * pageSize < all.length,
+          total: all.length,
+        };
+      }
+      const browsed = browseMarketplace(slug, { query: query.q, page, pageSize });
       if (!browsed.ok) {
         reply.code(browsed.code === 'unknown_source' ? 404 : 409);
         return { status: 'error', code: browsed.code, message: browsed.message, source: source.id };
@@ -404,16 +683,10 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
         total: browsed.total,
       };
     }
-    // The market axis the console is browsing. Only npm forks on it today (default query + row
-    // install kind); a value outside the kind vocabulary is dropped, never forwarded.
-    const kind: HarnessKind | undefined = ['skill', 'mcp', 'plugin'].includes(query.kind ?? '')
-      ? (query.kind as HarnessKind)
-      : undefined;
     // `page` is 1-based; a nonsense value falls back to the first page rather than answering empty.
     const page = Math.max(Number(query.page) || 1, 1);
     const result = await browseSource(source, query.q || '', Number(query.limit) || 24, {
       ...(query.harness ? { harness: query.harness } : {}),
-      ...(kind ? { kind } : {}),
       page,
       // `sort` is validated against the source's OWN declared orderings inside `browseSource`: an
       // order the upstream cannot serve is dropped, never forwarded as a guess.
@@ -495,16 +768,22 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
   // would turn an admin GET into an arbitrary-URL proxy.
   app.get('/api/admin/harness/detail', async (req, reply) => {
     const query = (req.query || {}) as { source?: string; key?: string; repo?: string };
-    const source = SOURCES.find((s) => s.id === (query.source || 'github'));
-    if (!source) {
-      reply.code(404);
-      return { status: 'error', code: 'unknown_source', message: `unknown source '${query.source}'` };
+    let sourceId = 'direct';
+    if (query.source) {
+      const source =
+        SOURCES.find((s) => s.id === query.source) ??
+        mpSourceView(query.source.startsWith('mp-') ? query.source.slice(3) : query.source);
+      if (!source) {
+        reply.code(404);
+        return { status: 'error', code: 'unknown_source', message: `unknown source '${query.source}'` };
+      }
+      sourceId = source.id;
     }
     const detail = await readMarketDetail({
       ...(query.key ? { key: query.key } : {}),
       ...(query.repo ? { repo: query.repo } : {}),
     });
-    return { status: 'ok', source: source.id, detail };
+    return { status: 'ok', source: sourceId, detail };
   });
 
   // Install one artifact into one or more host locations — one store entry, N copies. The route
@@ -522,6 +801,7 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
       manualSpec?: string;
       confirm?: boolean;
       listedOn?: unknown;
+      marketplace?: { repo?: string; plugin?: string; name?: string };
       hosts?: unknown;
       scope?: string;
     };
@@ -588,6 +868,13 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
       listedOn,
       hosts: hostIds,
       scope: body.scope,
+      ...(kind === 'plugin' &&
+      body.marketplace &&
+      typeof body.marketplace.repo === 'string' &&
+      typeof body.marketplace.plugin === 'string' &&
+      typeof body.marketplace.name === 'string'
+        ? { marketplace: { repo: body.marketplace.repo, plugin: body.marketplace.plugin, name: body.marketplace.name } }
+        : {}),
     });
     if (!result.ok) {
       const status =
@@ -671,6 +958,12 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
     if (!body.lang || !Array.isArray(body.texts)) {
       reply.code(400);
       return { status: 'error', code: 'bad_request', message: 'lang and texts[] are required' };
+    }
+    // The cache seed READS a path derived from `lang`; an unchecked value would let a caller walk
+    // out of the cache directory. The translate verbs already check this.
+    if (!isSupportedLang(body.lang)) {
+      reply.code(400);
+      return { status: 'error', code: 'bad_request', message: `unsupported language '${body.lang}'` };
     }
     const texts = body.texts
       .filter((x): x is string => typeof x === 'string' && x.trim().length > 0)

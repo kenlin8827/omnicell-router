@@ -38,7 +38,7 @@
  * the registry's CDN drops bursts from this environment (`000` on roughly one probe in three).
  *
  * Deliberately NOT folded into `MarketItem.stars`: ClawHub's own `stats.stars` and download/install
- * counts. `MarketItem.stars` is a GitHub star count one unit per field (`harness/stars.ts` resolves
+ * counts. `MarketItem.stars` is a GitHub star count one unit per field (`harness/common/stars.ts` resolves
  * it from a repository, and these rows have none), so printing ClawHub's own rating under it would
  * relabel one number as another — a registry rating is not a GitHub star. They travel
  * in their OWN field (`MarketItem.registryStats` / `MarketDetail.registryStats`) instead, where the
@@ -47,6 +47,10 @@
 
 import zlib from 'node:zlib';
 import { describeFetchFailure, fetchFailureReason, fetchWithRetry, type FailureReason } from '../net.js';
+import { cache, CACHE_TTL_MS, registerBrowseCache, registerBrowseView } from '../common/market.js';
+import { catalogRegistry } from '../common/catalog-registry.js';
+import type { BrowseResult, MarketItem } from '../common/market.js';
+import type { HarnessSourceView } from '../types.js';
 
 const SITE = 'https://clawhub.ai';
 
@@ -554,3 +558,167 @@ export function readZip(buffer: Buffer): ZipEntry[] {
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// ClawHub market (browse + source view)
+// ---------------------------------------------------------------------------
+
+/** ClawHub pages and cursor chains — a cursor API has no offset, so page N is only reachable by
+ *  walking N-1 recorded cursors. */
+const clawhubPages = new Map<string, { at: number; items: MarketItem[]; next: string | null }>();
+const clawhubCursors = new Map<string, { at: number; cursors: string[] }>();
+
+/** Drop ClawHub's own two cache families (row pages and the cursor chain that reaches them). */
+export function evictClawHubCache(): void {
+  clawhubPages.clear();
+  clawhubCursors.clear();
+}
+
+function toClawHubItem(entry: ClawHubEntry): MarketItem {
+  return {
+    id: `clawhub:${entry.ownerHandle}/${entry.slug}`,
+    sourceId: 'clawhub',
+    key: `clawhub:${entry.ownerHandle}/${entry.slug}`,
+    installKind: 'skill',
+    name: entry.name,
+    description: entry.summary,
+    // The registry's usage terms ask third-party directories to link the canonical page, which is
+    // also where the operator can read the skill's own record before installing it.
+    url: `https://clawhub.ai/${entry.ownerHandle}/skills/${entry.slug}`,
+    stars: null,
+    ...(entry.stats ? { registryStats: entry.stats } : {}),
+    updatedAt: entry.updatedAtMs !== null ? new Date(entry.updatedAtMs).toISOString() : '',
+    topics: entry.topics,
+  };
+}
+
+/** One catalog page as market rows, cached by its own upstream index so a page costs one read. */
+async function clawhubCatalogPage(
+  sort: string,
+  size: number,
+  index: number,
+  cursor: string
+): Promise<{ ok: true; items: MarketItem[]; next: string | null } | { ok: false; code: 'upstream' | 'unavailable'; reason?: FailureReason; reasonParams?: Record<string, string>; message: string }> {
+  const cacheKey = `clawhub|${sort}|${size}|${index}`;
+  const hit = clawhubPages.get(cacheKey);
+  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return { ok: true, items: hit.items, next: hit.next };
+  const read = await fetchClawHubCatalogPage(sort, size, cursor || null);
+  if (!read.ok) return read;
+  const items = read.entries.map(toClawHubItem);
+  clawhubPages.set(cacheKey, { at: Date.now(), items, next: read.next });
+  return { ok: true, items, next: read.next };
+}
+
+/**
+ * ClawHub (source `clawhub`) — the browse half of this module.
+ *
+ * TWO reads, and which one answers depends on the query:
+ *  - an EMPTY query is answered from the catalog endpoint (`/api/v1/skills`), cursor-paged, so a
+ *    console page walks the recorded cursor chain — page N costs N reads once, then the chain
+ *    remembers them, and a page past the walk limit is a typed refusal. The registry publishes no
+ *    count for the listing, so the console shows the page number without inventing a total.
+ *  - a typed query goes to `/api/v1/search`, which has NO paging parameter: one answer is the whole
+ *    reach of the query (`totalScope: 'window'`), sliced locally.
+ *  - Every row installs from ClawHub's own versioned store (`clawhub:<owner>/<slug>`): the registry
+ *    pins by version, not by commit, so no repo is claimed and `stars` stays `null` — the registry's
+ *    own star/download/install tally travels in `registryStats` instead, where the console can label
+ *    it as ClawHub's own, never under the star column.
+ */
+export async function browseClawHub(query: string, limit = 24, page = 1, sort = 'downloads'): Promise<BrowseResult> {
+  const q = query.trim();
+  const size = Math.min(Math.max(limit, 1), 50);
+  const at = Math.max(page, 1);
+
+  if (q) {
+    const cacheKey = `clawhub|q|${q.toLowerCase()}`;
+    let rows: MarketItem[];
+    const hit = cache.get(cacheKey);
+    if (hit && Date.now() - hit.at < CACHE_TTL_MS) {
+      rows = hit.items;
+    } else {
+      const read = await fetchClawHubSearch(q);
+      if (!read.ok) return read;
+      rows = read.entries.map(toClawHubItem);
+      cache.set(cacheKey, { at: Date.now(), items: rows });
+    }
+    const offset = (at - 1) * size;
+    const items = rows.slice(offset, offset + size);
+    // The search endpoint ignores every paging parameter, so its answer count is a WINDOW: the pager
+    // keeps the number for its page buttons but the summary stays hidden (`totalScope`).
+    return {
+      ok: true,
+      items,
+      hasMore: offset + items.length < rows.length,
+      total: rows.length,
+      totalScope: 'window',
+      note: `full-catalog ClawHub search — at most ${CLAWHUB_SEARCH_LIMIT} matches per query (the endpoint has no paging)`,
+      noteCode: 'clawhub-search',
+      noteParams: { n: String(CLAWHUB_SEARCH_LIMIT) },
+    };
+  }
+
+  // The catalog walk: extend the (sort, size) chain in place so later pages are one read each.
+  if (at > CLAWHUB_WALK_MAX) {
+    return {
+      ok: false,
+      code: 'unavailable',
+      reason: 'unavailable',
+      message: `page ${at} is past the ${CLAWHUB_WALK_MAX}-page cursor walk limit`,
+    };
+  }
+  const chainKey = `clawhub|cursors|${sort}|${size}`;
+  let chain = clawhubCursors.get(chainKey);
+  if (!chain || Date.now() - chain.at >= CACHE_TTL_MS) {
+    chain = { at: Date.now(), cursors: [''] };
+    clawhubCursors.set(chainKey, chain);
+  }
+  while (chain.cursors.length - 1 < at - 1) {
+    const prev = await clawhubCatalogPage(sort, size, chain.cursors.length - 1, chain.cursors[chain.cursors.length - 1]!);
+    if (!prev.ok) return prev;
+    if (prev.next === null) break;
+    chain.cursors.push(prev.next);
+  }
+  const index = at - 1;
+  const beyond = index > chain.cursors.length - 1;
+  const read = beyond ? null : await clawhubCatalogPage(sort, size, index, chain.cursors[index]!);
+  if (read && !read.ok) return read;
+  return {
+    ok: true,
+    items: read?.items ?? [],
+    hasMore: read !== null && read.next !== null,
+    note: 'ClawHub community registry — rows install from the registry\u2019s own store, pinned to a version',
+    noteCode: 'clawhub-catalog',
+  };
+}
+
+/** The ClawHub chip (ADR-0015 §D10): the ONLY skill-axis directory by owner decision — a curated
+ *  registry, not a wide-net search. Rows carry no GitHub repo, so no star count is ever claimed. */
+export const CLAWHUB_VIEW: HarnessSourceView = {
+  id: 'clawhub',
+  // Its OWN built-in catalog, not the unnamed 'default' bucket: the skill market groups rows by
+  // where they come from, and ClawHub is a directory, so the console's catalog picker names it.
+  catalog: 'ClawHub',
+  label: 'ClawHub',
+  kinds: ['skill'],
+  trust: 'community',
+  auth: 'none',
+  enabled: true,
+  browsable: true,
+  sorts: ['downloads', 'stars', 'updated'],
+  browse: browseClawHub,
+};
+
+registerBrowseCache('clawhub', evictClawHubCache);
+
+registerBrowseView(CLAWHUB_VIEW);
+
+catalogRegistry.register({
+  id: 'clawhub',
+  catalog: 'ClawHub',
+  label: 'ClawHub',
+  kinds: ['skill'],
+  trust: 'community',
+  builtin: true,
+  sorts: ['downloads', 'stars', 'updated'],
+  browse: browseClawHub,
+});

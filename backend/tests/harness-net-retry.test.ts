@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { browseGitHub, resetBrowseCache } from '../src/harness/market/browse.js';
+import { browseClawHub } from '../src/harness/skill/clawhub.js';
+import { resetBrowseCache } from '../src/harness/common/market.js';
 import { fetchFailureReason, fetchWithRetry, MARKET_RETRY, type RetryPolicy } from '../src/harness/net.js';
 
 /**
@@ -179,7 +180,7 @@ describe('fetchWithRetry — the only early returns left', () => {
 });
 
 describe('browse readers use the shared policy', () => {
-  it('browseGitHub recovers from one 503 without surfacing an error', async () => {
+  it('browseClawHub recovers from one 503 without surfacing an error', async () => {
     const original = globalThis.fetch;
     let attempt = 0;
     globalThis.fetch = (async () => {
@@ -187,27 +188,17 @@ describe('browse readers use the shared policy', () => {
       if (attempt === 1) return new Response('boom', { status: 503 });
       return new Response(
         JSON.stringify({
-          items: [
-            {
-              full_name: 'acme/skill',
-              name: 'skill',
-              description: 'd',
-              html_url: 'https://github.com/acme/skill',
-              stargazers_count: 3,
-              pushed_at: '2026-10-25T00:00:00Z',
-            },
-          ],
-          total_count: 1,
+          results: [{ ownerHandle: 'acme', slug: 'skill', displayName: 'skill', summary: 'd' }],
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       );
     }) as unknown as typeof fetch;
 
     try {
-      const result = await browseGitHub('retry-probe-unique-query', 5, 1, 'stars');
+      const result = await browseClawHub('retry-probe-unique-query', 5);
       expect(result.ok).toBe(true);
       if (!result.ok) return;
-      expect(result.items[0]?.repo).toBe('acme/skill');
+      expect(result.items[0]?.name).toBe('skill');
       expect(attempt).toBe(2);
     } finally {
       globalThis.fetch = original;

@@ -19,7 +19,7 @@ import { applyRouteEntriesConfig, getRouteEntryStore, routeEntriesGate } from '.
 import { applyDirectivesConfig } from '../pipeline/directive-gate.js';
 import { appendRoutingLedger } from '../router/routing-ledger.js';
 import { Layer2Decision } from '../router/layer2-decision.js';
-import { EFFORT_LADDER, ReasoningEffort, TierLevel } from '../types/router.js';
+import { EFFORT_LADDER, ReasoningEffort, TierLevel, modelSupportsEfforts } from '../types/router.js';
 import { runSystemoneDecision } from '../protocols/systemone/decide.js';
 import { SMART_ASSIGN_TIMEOUT_MS, DEFAULT_REPLAY_TIMEOUT_MS, CREDENTIAL_WEIGHT_MAX } from '../config/defaults.js';
 import { initProxyConfig, proxiedFetch } from '../utils/proxy.js';
@@ -3977,6 +3977,12 @@ export function registerConsoleRoutes(
         kind: 'model' as const,
         owned_by: m.provider,
         tiers: registry.tiersOf(m) as string[],
+        // Declared thinking levels (ADR-0003 vocabulary). Console pickers that
+        // write a level into a config field (tier effort maps, variant pins)
+        // offer ONLY these — anything else would be clamped right back by
+        // downgradeReasoning. `[]` is a REAL answer ("no explicit level
+        // control", e.g. a toggle-only model), never "unknown".
+        efforts: modelSupportsEfforts(m.supportedReasoningEfforts, m.supportsReasoningEffort) ?? [],
         // Resolved upstream wire (model-level npm beats provider npm, see
         // providers/wire.ts). Console pickers MUST read it from here instead of
         // re-deriving it from the provider's npm string — `systemone` marks a

@@ -90,18 +90,6 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     ],
   },
   {
-    id: 'grp-traffic',
-    headingKey: 'nav.grpTraffic',
-    icon: Shuffle,
-    items: [
-      { to: '/tiers', labelKey: 'nav.rules', icon: Network },
-      { to: '/route-entries', labelKey: 'nav.routeEntries', icon: Waypoints },
-      { to: '/auto', labelKey: 'nav.auto', icon: BrainCircuit },
-      { to: '/combos', labelKey: 'nav.combos', icon: Layers },
-      { to: '/model-profiles', labelKey: 'nav.modelProfiles', icon: ClipboardList },
-    ],
-  },
-  {
     id: 'grp-upstream',
     headingKey: 'nav.grpUpstream',
     icon: ArrowUpRight,
@@ -111,6 +99,18 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
       { to: '/catalog', labelKey: 'nav.catalogSources', icon: CloudDownload },
       { to: '/proxy-upstream', labelKey: 'nav.proxy', icon: ArrowLeftRight },
       { to: '/token-saver', labelKey: 'nav.tokenSaver', icon: Zap },
+    ],
+  },
+  {
+    id: 'grp-traffic',
+    headingKey: 'nav.grpTraffic',
+    icon: Shuffle,
+    items: [
+      { to: '/tiers', labelKey: 'nav.rules', icon: Network },
+      { to: '/route-entries', labelKey: 'nav.routeEntries', icon: Waypoints },
+      { to: '/auto', labelKey: 'nav.auto', icon: BrainCircuit },
+      { to: '/combos', labelKey: 'nav.combos', icon: Layers },
+      { to: '/model-profiles', labelKey: 'nav.modelProfiles', icon: ClipboardList },
     ],
   },
   {
@@ -141,9 +141,9 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     headingKey: 'nav.grpHarness',
     icon: Boxes,
     items: [
+      { to: '/harness/plugins', labelKey: 'nav.plugins', icon: Layers },
       { to: '/harness/skills', labelKey: 'nav.skills', icon: Zap },
       { to: '/harness/mcp', labelKey: 'nav.mcp', icon: Plug },
-      { to: '/harness/plugins', labelKey: 'nav.plugins', icon: Layers },
     ],
   },
   {
@@ -170,9 +170,9 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/providers': { groupKey: 'nav.grpUpstream', titleKey: 'nav.providers' },
   '/models': { groupKey: 'nav.grpUpstream', titleKey: 'nav.models' },
   '/catalog': { groupKey: 'nav.grpUpstream', titleKey: 'nav.catalogSources' },
+  '/harness/plugins': { groupKey: 'nav.grpHarness', titleKey: 'nav.plugins' },
   '/harness/skills': { groupKey: 'nav.grpHarness', titleKey: 'nav.skills' },
   '/harness/mcp': { groupKey: 'nav.grpHarness', titleKey: 'nav.mcp' },
-  '/harness/plugins': { groupKey: 'nav.grpHarness', titleKey: 'nav.plugins' },
   '/proxy-upstream': { groupKey: 'nav.grpUpstream', titleKey: 'nav.proxy' },
   '/token-saver': { groupKey: 'nav.grpUpstream', titleKey: 'nav.tokenSaver' },
   '/clients': { groupKey: 'nav.grpAccess', titleKey: 'nav.clients' },

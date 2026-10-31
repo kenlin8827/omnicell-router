@@ -2,7 +2,7 @@ import { clawhubAdapter } from './resolvers/clawhub.js';
 import { githubAdapter } from './resolvers/github.js';
 import { npmAdapter } from './resolvers/npm.js';
 import { gitMarketplaceAdapter } from './resolvers/git-marketplace.js';
-import { getMarketplaceEntry } from '../market/marketplaces.js';
+import { getMarketplaceEntry } from '../common/market.js';
 import type { SourceAdapter } from '../spi.js';
 
 /**
