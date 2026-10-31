@@ -1735,6 +1735,20 @@ hiddenBadge: string;
       syncImported: string;
       syncSynced: string;
       syncFailed: string;
+      /** Source add/check outcomes (backend `reason` + `params`) — never echo backend English. */
+      srcRegistered: string;
+      srcRegisteredScoped: string;
+      srcAlreadyShared: string;
+      srcAlreadyPinned: string;
+      srcAlreadyPinnedLayer: string;
+      srcAlreadyLayer: string;
+      srcSlugTaken: string;
+      srcNoForm: string;
+      srcNotARepo: string;
+      srcInvalidSource: string;
+      srcInvalidLayer: string;
+      srcNoSkill: string;
+      srcProbeFailed: string;
     };
     browseError: {
       network: string;

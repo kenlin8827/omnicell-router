@@ -98,6 +98,32 @@ export interface CatalogSection {
   note?: string;
 }
 
+/**
+ * Machine-readable outcome of a source registration/check (ADR-0015 §D11). The console renders
+ * its localized copy from `reason` + `params`; `message` stays the English fallback for logs, the
+ * CLI and raw API consumers, so every new outcome must name a reason or the console can only echo
+ * English. The set is closed on purpose — an unknown reason is a bug, not a new string.
+ */
+export type SourceReason =
+  | 'registered'
+  | 'registered_scoped'
+  | 'already_configured'
+  | 'slug_taken'
+  | 'no_form'
+  | 'not_a_repo'
+  | 'invalid_source'
+  | 'invalid_layer'
+  | 'no_skill'
+  | 'probe_failed';
+
+export interface SourceOutcome {
+  ok: boolean;
+  reason?: SourceReason;
+  /** Placeholder values for the console's i18n template (`{repo}`, `{slug}`, `{harness}`, …). */
+  params?: Record<string, string>;
+  message?: string;
+}
+
 /** The per-harness facade over the shared catalog machinery (one implementation per harness). */
 export interface PluginAdapter {
   readonly harness: HarnessHostId;
@@ -117,19 +143,19 @@ export interface PluginAdapter {
   checkSource(
     url: string,
     opts?: { extensionDir?: string; type?: 'github' | 'npm' },
-  ): Promise<{
-    ok: boolean;
-    skills: number;
-    mcps: number;
-    plugins: number;
-    hosts: HarnessHostId[];
-    marketplace: string | null;
-    message?: string;
-  }>;
+  ): Promise<
+    {
+      skills: number;
+      mcps: number;
+      plugins: number;
+      hosts: HarnessHostId[];
+      marketplace: string | null;
+    } & SourceOutcome
+  >;
   registerSource(
     url: string,
     opts?: { rescan?: { enabled?: boolean; intervalMs?: number }; extensionDir?: string; type?: 'github' | 'npm'; catalog?: string },
-  ): Promise<{ ok: boolean; message?: string }>;
+  ): Promise<SourceOutcome>;
   unregisterSource(slug: string): boolean;
   /**
    * Install one catalog row into THIS harness. A plugin takes exactly one host (the harness is

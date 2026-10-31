@@ -1919,10 +1919,12 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
         // carries an `npm:` key, so without this the record would claim npm was the only place the
         // operator saw it.
         listedOn: [target.sourceId],
-        // A git-backed plugin row installs through the runtime's OWN marketplace chain: the row's
-        // repository and manifest-declared marketplace name are the identity the CLI needs, and
-        // without them the backend would take the payload-resolver branch and refuse the kind.
-        ...(target.installKind === 'plugin' && target.repo
+        // A GIT-BACKED plugin row installs through the runtime's OWN marketplace chain: the row's
+        // repository and manifest-declared marketplace name are the identity the CLI needs. An npm
+        // row can still show a repository (Pi's catalog links every package to its GitHub page) —
+        // its key names the package, and sending `marketplace` for it would ask the runtime for a
+        // chain it does not have (pi: `install npm:<spec>` only).
+        ...(target.installKind === 'plugin' && target.repo && !target.key.startsWith('npm:')
           ? {
               marketplace: {
                 repo: target.repo,

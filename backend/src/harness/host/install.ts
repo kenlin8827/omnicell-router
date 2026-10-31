@@ -215,6 +215,14 @@ export async function installArtifact(req: InstallRequest): Promise<InstallResul
   let description: string | null | undefined;
   let trust: TrustTier;
 
+  /**
+   * A NATIVE marketplace install is GIT-BACKED identity only. An npm row may carry a display
+   * repository (the Pi catalog links every package to its GitHub page) while its key names the
+   * package the runtime installs; treating that marker as a marketplace request would demand a
+   * chain the host does not have and install the repository instead of the published package.
+   */
+  const nativeMarketplace =
+    req.marketplace && kind === 'plugin' && !key.startsWith('npm:') ? req.marketplace : undefined;
   if (req.manualPayload) {
     trust = 'manual';
     canonicalKey = key;
@@ -224,10 +232,10 @@ export async function installArtifact(req: InstallRequest): Promise<InstallResul
     trust = 'manual';
     canonicalKey = key;
     payloadName = req.manualSpec;
-  } else if (req.marketplace && kind === 'plugin') {
+  } else if (nativeMarketplace) {
     // Native marketplace install: the runtime owns the clone, so there is no payload to resolve.
     // The chain itself is planned/echoed by the plugin writer (gate 3), never invented here.
-    const identity = req.marketplace;
+    const identity = nativeMarketplace;
     if (
       typeof identity.repo !== 'string' ||
       typeof identity.plugin !== 'string' ||
@@ -379,7 +387,7 @@ export async function installArtifact(req: InstallRequest): Promise<InstallResul
         execImpl: req.execImpl,
         // A git-backed row names the runtime's own marketplace identity; the writer plans the
         // native chain from it (and ignores `spec`, which stays the plugin name for the record).
-        ...(req.marketplace ? { marketplace: req.marketplace } : {}),
+        ...(nativeMarketplace ? { marketplace: nativeMarketplace } : {}),
       };
       // Gate 1/3 — plan → confirm → apply; the plan echoes the EXACT third-party command(s).
       if (!req.confirm) {
@@ -392,7 +400,7 @@ export async function installArtifact(req: InstallRequest): Promise<InstallResul
           // says so, instead of asking for a confirmation whose apply would only refuse.
           message: plan.targets.some((t) => t.op === 'manual')
             ? "this runtime installs plugins only from inside a session — run the shown command there"
-            : req.marketplace
+            : nativeMarketplace
               ? "plugin install runs the runtime's own marketplace command(s) — confirm to apply"
               : 'plugin install executes third-party code (npm lifecycle scripts) — confirm to apply',
           plan: plan.targets,

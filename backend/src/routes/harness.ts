@@ -320,12 +320,19 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
       ...(body.type ? { type: body.type } : {}),
     });
     if (!outcome.ok) {
-      const message = outcome.message ?? '';
-      const conflict = message.includes('already configured');
+      const reason = outcome.reason;
+      // `no_form`/`probe_failed` are answers about the SOURCE; only a duplicate is a conflict.
+      const conflict = reason === 'already_configured' || reason === 'slug_taken';
       reply.code(conflict ? 409 : 400);
-      return { status: 'error', code: conflict ? 'conflict' : 'bad_request', message };
+      return {
+        status: 'error',
+        code: conflict ? 'conflict' : 'bad_request',
+        reason,
+        params: outcome.params,
+        message: outcome.message ?? '',
+      };
     }
-    return { status: 'ok', message: outcome.message };
+    return { status: 'ok', reason: outcome.reason, params: outcome.params, message: outcome.message };
   });
 
   // Dry-run probe: reports counts without writing anything (the operator's "check before add").
@@ -422,11 +429,17 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
     }
     const outcome = await registerSkillSource(body.url, { catalog: body.catalog, rescan: body.rescan }, opts.marketplaceFetch);
     if (!outcome.ok) {
-      const conflict = outcome.message?.includes('already configured') === true;
+      const conflict = outcome.reason === 'already_configured' || outcome.reason === 'slug_taken';
       reply.code(conflict ? 409 : 400);
-      return { status: 'error', code: conflict ? 'conflict' : 'bad_request', message: outcome.message };
+      return {
+        status: 'error',
+        code: conflict ? 'conflict' : 'bad_request',
+        reason: outcome.reason,
+        params: outcome.params,
+        message: outcome.message ?? '',
+      };
     }
-    return { status: 'ok', message: outcome.message };
+    return { status: 'ok', reason: outcome.reason, params: outcome.params, message: outcome.message };
   });
 
   app.patch('/api/admin/harness/skills/sources/:slug', async (req, reply) => {

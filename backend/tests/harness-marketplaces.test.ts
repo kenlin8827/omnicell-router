@@ -14,6 +14,7 @@ import {
   probeMarketplace,
   readFrontmatter,
   removeMarketplaceEntry,
+  resolveScopedSlug,
   resolveSlug,
   rowsForScope,
   updateMarketplaceEntry,
@@ -373,6 +374,45 @@ describe('extension-dir grammar + slug derivation', () => {
     // Each catalog carries only its own layer.
     expect(readIndex('claude').map((r) => r.key)).toEqual(['mp-repo-claude-plugin:owner/repo#skills']);
   });
+  it('answers duplicates store-wide and names the entry that holds the repository', () => {
+    sandboxHome();
+    addMarketplaceEntry({
+      slug: 'postman-plugin',
+      repo: 'postmanlabs/postman-plugin',
+      harness: 'claude',
+      extensionDir: '.claude-plugin',
+    });
+    // The acting harness is irrelevant: one slug is one `mp-<slug>` sourceId for the registry, so
+    // a layer-less add from any other tab is refused with the holder named — that tab lists only
+    // its own scope and would otherwise look empty.
+    const layerless = resolveSlug('postmanlabs/postman-plugin', null);
+    expect(layerless.ok).toBe(false);
+    if (!layerless.ok) {
+      expect(layerless.message).toContain("'postmanlabs/postman-plugin' is already configured as 'postman-plugin'");
+      expect(layerless.message).toContain('for claude');
+      expect(layerless.message).toContain('layer .claude-plugin');
+    }
+    // The same (repo, layer) pair is one identity across scopes — never a second derived slug.
+    const samePair = resolveSlug('postmanlabs/postman-plugin', '.claude-plugin');
+    expect(samePair.ok).toBe(false);
+    // A genuinely different layer still derives its own slug.
+    expect(resolveSlug('postmanlabs/postman-plugin', '.opencode')).toEqual({ ok: true, slug: 'postman-plugin-opencode' });
+    // A different repository sharing the basename keeps the conflict, and names the holder.
+    const foreign = resolveSlug('someone-else/postman-plugin', null);
+    expect(foreign.ok).toBe(false);
+    if (!foreign.ok) expect(foreign.message).toContain("by 'postmanlabs/postman-plugin'");
+    // The second harness's own source is keyed by the HARNESS (no layer is named), and a repeat
+    // derivation never collides with the slug it already minted.
+    expect(resolveScopedSlug('postmanlabs/postman-plugin', 'opencode')).toEqual({ ok: true, slug: 'postman-plugin-opencode' });
+    addMarketplaceEntry({ slug: 'postman-plugin-opencode', repo: 'postmanlabs/postman-plugin', harness: 'opencode' });
+    expect(resolveScopedSlug('postmanlabs/postman-plugin', 'opencode')).toEqual({ ok: true, slug: 'postman-plugin-opencode-2' });
+  });
+
+  it('refuses a slug twin in another harness scope at the store level', () => {
+    sandboxHome();
+    addMarketplaceEntry({ slug: 'twin', repo: 'a/one', harness: 'claude' });
+    expect(() => addMarketplaceEntry({ slug: 'twin', repo: 'a/two', harness: 'opencode' })).toThrow(/already configured for claude/);
+  });
   it('each harness claims only its own marketplace directory', async () => {
     sandboxHome();
     const treeOf = (dir: string) => [
@@ -442,6 +482,56 @@ describe('git-marketplace store + adapter', () => {
     } else {
       expect(resolved.code).toBe('upstream');
     }
+  });
+  it('splits the store by axis: plugin buckets per harness, skill shared', () => {
+    sandboxHome();
+    addMarketplaceEntry({ slug: 'shared-plugin', repo: 'acme/one' });
+    addMarketplaceEntry({ slug: 'pinned-plugin', repo: 'acme/two', harness: 'claude', extensionDir: '.claude-plugin' });
+    addMarketplaceEntry({ slug: 'skill-src', repo: 'acme/three', axis: 'skill' });
+    const dir = path.join(process.env.OCR_HOME ?? '', 'harness');
+    const plugin = JSON.parse(fs.readFileSync(path.join(dir, 'plugin-market.json'), 'utf8')) as Record<
+      string,
+      { slug: string; harness?: string; axis?: string }[]
+    >;
+    expect(Object.keys(plugin)).toEqual(['shared', 'claude']);
+    expect(plugin.shared.map((e) => e.slug)).toEqual(['shared-plugin']);
+    expect(plugin.claude.map((e) => e.slug)).toEqual(['pinned-plugin']);
+    // The bucket IS the scope: the persisted record must not repeat it.
+    expect(plugin.claude[0]?.harness).toBeUndefined();
+    expect(plugin.claude[0]?.axis).toBeUndefined();
+    const skill = JSON.parse(fs.readFileSync(path.join(dir, 'skill-market.json'), 'utf8')) as { shared: { slug: string }[] };
+    expect(Object.keys(skill)).toEqual(['shared']);
+    expect(skill.shared.map((e) => e.slug)).toEqual(['skill-src']);
+    // Reads still see ONE set with its axis restored from the file it came from.
+    expect(listMarketplaceEntries().map((e) => [e.slug, e.axis, e.harness])).toEqual([
+      ['skill-src', 'skill', undefined],
+      ['shared-plugin', 'plugin', undefined],
+      ['pinned-plugin', 'plugin', 'claude'],
+    ]);
+  });
+
+  it('migrates the flat marketplaces.json once and keeps it as a legacy artefact', () => {
+    sandboxHome();
+    const dir = path.join(process.env.OCR_HOME ?? '', 'harness');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'marketplaces.json'),
+      JSON.stringify({
+        marketplaces: [
+          { slug: 'old-pinned', repo: 'acme/one', type: 'github', enabled: true, addedAt: 1, rescan: { enabled: false, intervalMs: 86_400_000 }, harness: 'claude', extensionDir: '.claude-plugin' },
+          { slug: 'old-shared', repo: 'acme/two', type: 'github', enabled: true, addedAt: 1, rescan: { enabled: false, intervalMs: 86_400_000 } },
+        ],
+      }),
+    );
+    expect(listMarketplaceEntries().map((e) => [e.slug, e.axis, e.harness])).toEqual([
+      ['old-pinned', 'plugin', 'claude'],
+      ['old-shared', 'plugin', undefined],
+    ]);
+    const plugin = JSON.parse(fs.readFileSync(path.join(dir, 'plugin-market.json'), 'utf8')) as Record<string, { slug: string }[]>;
+    expect(plugin.shared.map((e) => e.slug)).toEqual(['old-shared']);
+    expect(plugin.claude.map((e) => e.slug)).toEqual(['old-pinned']);
+    expect(fs.existsSync(path.join(dir, 'marketplaces.json'))).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'marketplaces.legacy.json'))).toBe(true);
   });
 
   it('disabled entries resolve to nothing', () => {
@@ -566,6 +656,57 @@ describe('per-harness plugin source routes', () => {
     expect(listMarketplaceEntries()).toEqual([]);
     expect(getMarketplaceEntry('repo')).toBeUndefined();
     expect(marketplaceSourceId('repo')).toBe('mp-repo');
+  });
+
+  it('registers this harness its own source when another harness already carries the repository', async () => {
+    sandboxHome();
+    // The repository is a claude-only source, so the opencode tab lists nothing. Adding it THERE
+    // gives opencode its OWN source: a second entry with a harness-suffixed slug, never a twin
+    // slug and never a mutation of the sibling's entry.
+    addMarketplaceEntry({ slug: 'repo', repo: 'owner/repo', harness: 'claude', extensionDir: '.claude-plugin' });
+    const app = fastify();
+    registerHarnessRoutes(app, { marketplaceFetch: fakeFetch() });
+    const added = await app.inject({
+      method: 'POST',
+      url: '/api/admin/harness/plugins/opencode/sources',
+      payload: { url: 'https://github.com/owner/repo' },
+    });
+    expect(added.statusCode).toBe(200);
+    const body = JSON.parse(added.body) as { status: string; message: string };
+    expect(body.message).toContain("registered 'owner/repo' for opencode as 'mp-repo-opencode'");
+    // The sibling entry is untouched; the new one is scoped to the acting harness.
+    expect(getMarketplaceEntry('repo')).toMatchObject({ harness: 'claude', extensionDir: '.claude-plugin' });
+    const mine = listMarketplaceEntries('opencode').filter((e) => e.repo === 'owner/repo');
+    expect(mine.map((e) => [e.slug, e.harness])).toEqual([['repo-opencode', 'opencode']]);
+    // Each tab lists exactly its own source, and each index carries only its own rows.
+    const opencodeView = JSON.parse(
+      (await app.inject({ method: 'GET', url: '/api/admin/harness/plugins/opencode/sources' })).body,
+    ) as { operator: { slug: string; kinds: string[] }[] };
+    expect(opencodeView.operator.filter((e) => e.kinds.includes('plugin')).map((e) => e.slug)).toEqual(['repo-opencode']);
+    const claudeView = JSON.parse(
+      (await app.inject({ method: 'GET', url: '/api/admin/harness/plugins/claude/sources' })).body,
+    ) as { operator: { slug: string }[] };
+    expect(claudeView.operator.map((e) => e.slug)).toEqual(['repo']);
+    expect(readIndex('opencode').map((r) => r.key)).toEqual(['mp-repo-opencode:owner/repo#skills']);
+    // The same add twice is a plain duplicate: this harness already holds the repository.
+    const again = await app.inject({
+      method: 'POST',
+      url: '/api/admin/harness/plugins/opencode/sources',
+      payload: { url: 'https://github.com/owner/repo' },
+    });
+    expect(again.statusCode).toBe(409);
+  });
+
+  it('keeps the refusal for a repository already shared or pinned to THIS harness', async () => {
+    sandboxHome();
+    addMarketplaceEntry({ slug: 'repo', repo: 'owner/repo', harness: 'opencode', extensionDir: '.opencode' });
+    addMarketplaceEntry({ slug: 'shared', repo: 'owner/shared' });
+    const app = fastify();
+    registerHarnessRoutes(app, { marketplaceFetch: fakeFetch() });
+    for (const url of ['https://github.com/owner/repo', 'https://github.com/owner/shared']) {
+      const dup = await app.inject({ method: 'POST', url: '/api/admin/harness/plugins/opencode/sources', payload: { url } });
+      expect(dup.statusCode).toBe(409);
+    }
   });
 
   it('unknown slugs and unknown harness answer 404, not silent success', async () => {

@@ -61,6 +61,8 @@ export async function discoverNativeMarketplaces(hosts?: HarnessHostId[]): Promi
 
 /**
  * Import discovered native marketplaces into OCR's store, scoped to the discovering harness.
+ * The duplicate answer is `resolveSlug`'s alone — store-wide, because one slug is one `mp-` id —
+ * so a repository already carried under any scope is skipped, never twinned.
  */
 export async function importNativeMarketplacesToOcr(options: {
   hosts?: HarnessHostId[];
@@ -72,13 +74,8 @@ export async function importNativeMarketplacesToOcr(options: {
 
   for (const item of discovered) {
     const host = item.host;
-    const existing = listMarketplaceEntries(host);
-    if (existing.some((e) => e.repo === item.repo)) {
-      skipped.push(`${host ?? 'any'}:${item.repo}`);
-      continue;
-    }
 
-    const resolved = resolveSlug(item.repo, null, host);
+    const resolved = resolveSlug(item.repo, null);
     if (!resolved.ok) {
       skipped.push(`${host ?? 'any'}:${item.repo}`);
       continue;

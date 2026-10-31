@@ -264,7 +264,7 @@
 
 ## D9 —— 操作者 git 市场源（修订，2026-10-30）
 
-操作者指定的任意 GitHub 仓库无需改代码即可成为浏览/安装源：`<ocrHome>/harness/marketplaces.json` 是配置，每个条目对应一个 `mp-<slug>` 适配器实例（`host/resolvers/git-marketplace.ts`），注册表动态解析 `mp-*` id。设立这一类型的背景：Claude 式 `marketplace.json` 目录格式已成为行业收敛中的分发形态（grok、Copilot CLI、Goose、omp 均直接读取或克隆它），而其下的内容早已收敛到一个原语：`SKILL.md`。
+操作者指定的任意 GitHub 仓库无需改代码即可成为浏览/安装源：`<ocrHome>/harness/plugin-market.json` 是插件轴配置——每个条目对应一个 `mp-<slug>` 适配器实例（`host/resolvers/git-marketplace.ts`），注册表动态解析 `mp-*` id。文件按 harness 分桶（`{ "shared": [...], "<harness>": [...] }`，2026-11-01 修订）：桶**就是**作用域，条目本身不再带 `harness` 字段；同目录的 `skill-market.json` 承载技能轴，只有单个 `shared` 桶——技能本就是全局的，写 harness 键是假话。`slug` 在**两份**文件中仍是同一个身份。设立这一类型的背景：Claude 式 `marketplace.json` 目录格式已成为行业收敛中的分发形态（grok、Copilot CLI、Goose、omp 均直接读取或克隆它），而其下的内容早已收敛到一个原语：`SKILL.md`。
 
 **识别（probe）。** 添加时与每次重扫各探测一次：仓库元数据 + HEAD 提交 + git 树。识别出的清单（`.claude-plugin/marketplace.json` 及其 grok / Copilot / Goose 克隆）把扫描范围收窄到作者声明的仓库内相对路径目录；清单里的外部源（`git-subdir`、`url`、`npm` 等）只报告、不解析——一期不追随。没有清单（或清单不可解析——坏文件不是清单）则回退为全树 `SKILL.md` 扫描。行数封顶（30），按目录名去重、短路径优先：生成型镜像（如 `skills/` 的 `.openclaw/skills/` 副本）不会重复成行。
 
@@ -343,7 +343,8 @@ harness 作为唯一宿主——插件恰好装进**一个** host，其身份包
 harness **贡献了行**的源。只有技能的 git 仓库出现在技能轴的视图上，而不会出现在一无所获的插件轴上：
 一个零行的源 chip 等于宣称收割从未写过的层。
 
-**变更后全量重收割——但按层钉扎的源例外。** marketplace 存储是全局的（单份 `marketplaces.json`），因此
+**变更后全量重收割——但按层钉扎的源例外。** 源存储是全局的（`plugin-market.json` 与 `skill-market.json`
+共享一个身份命名空间），因此
 `registerSource`/`unregisterSource`——以及重扫调度器在 probe 之后——会重收割**每一个**被服务的 harness
 的索引。带扩展层注册的源会记录所属 harness（`entry.harness`），只收割进该 harness 的索引：`pi-extension`
 源不得教 claude tab 去安装它。未钉扎的源保持共享。过期的兄弟 tab 会教出一种存储并不具备的按 harness
@@ -386,10 +387,10 @@ harness 页面的市场 tab 打开——技能 tab 与插件 tab 共用同一个
 共用它，两个轴因此不会各自漂移。仓库**之下**的路径仍然拒绝：那正是 `extensionDir` 命名的东西，
 静默丢弃它等于注册了与粘贴内容不同的层。
 
-**弹框声明共享。** 弹框背后的存储是**全局**的——单份 `marketplaces.json`，`mp-` id 被每个被服务的 harness
-共享。弹框副标题写明这一点；UI 绝不把列出的源标成「本 harness 独有」，且每次变更都会重收割所有被服务
-harness 的索引（§D10）。若未来确需按 harness 独占，那只是 marketplace 条目上的一个**可选** `scope` 字段——
-无迁移，文件保持单份。
+**弹框声明共享。** 弹框背后的存储是**全局**的——一个身份命名空间，`mp-` id 被每个被服务的 harness
+共享。`plugin-market.json` 按 harness 分桶（`shared` 桶服务所有页签），`skill-market.json` 只有一个
+`shared` 桶。弹框副标题写明这一点；UI 绝不把列出的源标成「本 harness 独有」，且每次变更都会重收割所有被服务
+harness 的索引（§D10）。
 
 **解析器 vs 芯片。** npm 与 github 在 host 轴上仍是**安装解析器**（`npm:` 行总得有地方解析），但 npm 的
 **浏览芯片**不在插件轴上——插件轴浏览 pi-dev（联邦）加操作者 git 源；技能轴保留自己的芯片。一个源的

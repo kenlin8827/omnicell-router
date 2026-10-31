@@ -4,7 +4,7 @@ import { Drawer } from './Drawer';
 import { Switch } from './Switch';
 import { Combobox } from './Combobox';
 import { Pagination } from './Pagination';
-import { api, type HarnessCatalogSource, type HarnessMarketplaceEntry } from '../lib/api';
+import { api, SourceOutcomeError, type HarnessCatalogSource, type HarnessMarketplaceEntry, type SourceReason } from '../lib/api';
 import { useI18n } from '../i18n/I18nContext';
 
 /**
@@ -289,6 +289,43 @@ export const HarnessSourcesDrawer: React.FC<{
     return s.label;
   };
 
+  /**
+   * Localized copy for a source outcome: the backend's `reason` + `params` pick the string, so the
+   * console never echoes server English at the operator. The English `message` is only the fallback
+   * for an outcome that has no template (and the detail appended to a failed probe).
+   */
+  const sourceNote = (reason?: SourceReason, params?: Record<string, string>, message?: string) => {
+    const values: Record<string, string> = { ...(params ?? {}), ...(message ? { message } : {}) };
+    const fill = (text: string) => Object.entries(values).reduce((acc, [key, value]) => acc.split(`{${key}}`).join(value), text);
+    switch (reason) {
+      case 'registered':
+        return fill(t('harness.srcMgmt.srcRegistered'));
+      case 'registered_scoped':
+        return fill(t('harness.srcMgmt.srcRegisteredScoped'));
+      case 'already_configured':
+        if (values.harness && values.layer) return fill(t('harness.srcMgmt.srcAlreadyPinnedLayer'));
+        if (values.harness) return fill(t('harness.srcMgmt.srcAlreadyPinned'));
+        if (values.layer) return fill(t('harness.srcMgmt.srcAlreadyLayer'));
+        return fill(t('harness.srcMgmt.srcAlreadyShared'));
+      case 'slug_taken':
+        return fill(t('harness.srcMgmt.srcSlugTaken'));
+      case 'no_form':
+        return fill(t('harness.srcMgmt.srcNoForm'));
+      case 'not_a_repo':
+        return fill(t('harness.srcMgmt.srcNotARepo'));
+      case 'invalid_source':
+        return fill(t('harness.srcMgmt.srcInvalidSource'));
+      case 'invalid_layer':
+        return fill(t('harness.srcMgmt.srcInvalidLayer'));
+      case 'no_skill':
+        return fill(t('harness.srcMgmt.srcNoSkill'));
+      case 'probe_failed':
+        return fill(t('harness.srcMgmt.srcProbeFailed'));
+      default:
+        return message ?? t('harness.srcMgmt.fail');
+    }
+  };
+
   const check = async () => {
     if (!url.trim() || busy !== null) return;
     setBusy('check');
@@ -299,7 +336,7 @@ export const HarnessSourcesDrawer: React.FC<{
         setNote(
           res.ok
             ? t('harness.srcMgmt.checkSkillOk').replace('{skills}', String(res.skills))
-            : res.message ?? t('harness.srcMgmt.fail'),
+            : sourceNote(res.reason, res.params, res.message),
         );
       } else {
         const res = await api.harnessPluginCheckSource(scope, url.trim(), { type: sourceType });
@@ -311,7 +348,7 @@ export const HarnessSourcesDrawer: React.FC<{
                 .replace('{plugins}', String(res.plugins))} — ${t('harness.srcMgmt.hostsDetected')}: ${
                 res.hosts.length > 0 ? res.hosts.join(', ') : t('harness.srcMgmt.hostsNone')
               }`
-            : res.message ?? t('harness.srcMgmt.fail'),
+            : sourceNote(res.reason, res.params, res.message),
         );
       }
     } catch (e) {
@@ -326,15 +363,18 @@ export const HarnessSourcesDrawer: React.FC<{
     setBusy('add');
     setNote('');
     try {
-      const res = isSkill
-        ? await api.harnessSkillRegisterSource(url.trim(), { catalog: catalog.trim() || 'default' })
-        : await api.harnessPluginRegisterSource(scope, url.trim(), { type: sourceType, catalog: catalog.trim() || 'default' });
-      setNote(res.message ?? t('harness.srcMgmt.addOk'));
+      if (isSkill) {
+        const res = await api.harnessSkillRegisterSource(url.trim(), { catalog: catalog.trim() || 'default' });
+        setNote(res.reason ? sourceNote(res.reason, res.params, res.message) : t('harness.srcMgmt.addOk'));
+      } else {
+        const res = await api.harnessPluginRegisterSource(scope, url.trim(), { type: sourceType, catalog: catalog.trim() || 'default' });
+        setNote(res.reason ? sourceNote(res.reason, res.params, res.message) : t('harness.srcMgmt.addOk'));
+      }
       setUrl('');
       setCatalog('default');
       await load();
     } catch (e) {
-      setNote(e instanceof Error ? e.message : t('harness.srcMgmt.fail'));
+      setNote(e instanceof SourceOutcomeError ? sourceNote(e.reason, e.params, e.message) : e instanceof Error ? e.message : t('harness.srcMgmt.fail'));
     } finally {
       setBusy(null);
     }

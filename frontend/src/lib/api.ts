@@ -1512,6 +1512,33 @@ export interface HarnessRemovePlan {
   warnings: { code: string; message: string; path: string }[];
   createdAt: number;
 }
+/** Mirrors the backend `SourceReason` (ADR-0015 §D11): the console renders its localized copy
+ *  from the reason + params, so a new backend reason must be added here in the same pass. */
+export type SourceReason =
+  | 'registered'
+  | 'registered_scoped'
+  | 'already_configured'
+  | 'slug_taken'
+  | 'no_form'
+  | 'not_a_repo'
+  | 'invalid_layer'
+  | 'invalid_source'
+  | 'no_skill'
+  | 'probe_failed';
+
+/** A refused source registration that still carries the machine-readable cause: the drawer
+ *  translates `reason`/`params` and only falls back to the English `message`. */
+export class SourceOutcomeError extends Error {
+  readonly reason?: SourceReason;
+  readonly params?: Record<string, string>;
+
+  constructor(message: string, reason?: SourceReason, params?: Record<string, string>) {
+    super(message);
+    this.name = 'SourceOutcomeError';
+    this.reason = reason;
+    this.params = params;
+  }
+}
 
 export const api = {
   async getStatus(): Promise<GatewayStatusResponse> {
@@ -2693,6 +2720,9 @@ export const api = {
     plugins: number;
     hosts: string[];
     marketplace: string | null;
+    /** Duplicate of the backend contract's `SourceOutcome` (ADR-0015 §D11). */
+    reason?: SourceReason;
+    params?: Record<string, string>;
     message?: string;
   }> {
     const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/sources/check`, {
@@ -2708,14 +2738,14 @@ export const api = {
     harness: string,
     url: string,
     opts: { type?: 'github' | 'npm'; extensionDir?: string; rescan?: { enabled?: boolean; intervalMs?: number }; catalog?: string } = {},
-  ): Promise<{ status: string; message?: string }> {
+  ): Promise<{ status: string; reason?: SourceReason; params?: Record<string, string>; message?: string }> {
     const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/sources`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url, type: opts.type, extensionDir: opts.extensionDir, rescan: opts.rescan, catalog: opts.catalog }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data?.message || `HTTP ${res.status}`);
+    if (!res.ok) throw new SourceOutcomeError(data?.message || `HTTP ${res.status}`, data?.reason, data?.params);
     return data;
   },
 
@@ -2766,6 +2796,8 @@ export const api = {
     ok: boolean;
     skills: number;
     plugins: number;
+    reason?: SourceReason;
+    params?: Record<string, string>;
     message?: string;
   }> {
     const res = await fetch('/api/admin/harness/skills/sources/check', {
@@ -2780,14 +2812,14 @@ export const api = {
   async harnessSkillRegisterSource(
     url: string,
     opts: { catalog?: string; rescan?: { enabled?: boolean; intervalMs?: number } } = {},
-  ): Promise<{ status: string; message?: string }> {
+  ): Promise<{ status: string; reason?: SourceReason; params?: Record<string, string>; message?: string }> {
     const res = await fetch('/api/admin/harness/skills/sources', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url, catalog: opts.catalog, rescan: opts.rescan }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data?.message || `HTTP ${res.status}`);
+    if (!res.ok) throw new SourceOutcomeError(data?.message || `HTTP ${res.status}`, data?.reason, data?.params);
     return data;
   },
 

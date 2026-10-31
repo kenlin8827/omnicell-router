@@ -5,23 +5,25 @@ import {
   addMarketplaceEntry,
   getMarketplaceEntry,
   latestSnapshot,
-  listMarketplaceEntries,
   marketplaceSourceId,
   probeMarketplace,
   removeMarketplaceEntry,
   resolveSlug,
+  SLUG_FAILURE_REASON,
   githubRepoFromInput,
   updateMarketplaceEntry,
   type MarketplaceEntry,
 } from '../common/market.js';
+import type { SourceOutcome, SourceReason } from '../plugin/types.js';
 
 /**
  * Skill-source maintenance (ADR-0015 §D6/§D11): the GLOBAL half of the operator source store.
  *
  * A skill is not bound to a runtime — one directory is read by many harnesses (and ClawHub answers
  * every harness alike) — so a skill source is registered WITHOUT a harness scope. That is the one
- * structural difference from `plugin/` sources, whose entries are per-harness. The store itself is
- * shared (`marketplaces.json`); what this module owns is the skill-axis semantics:
+ * structural difference from `plugin/` sources, whose entries are bucketed per harness. The skill
+ * axis has its OWN store file (`skill-market.json`, one `shared` bucket); what this module owns is
+ * the skill-axis semantics:
  *
  * - only GitHub repositories are accepted (npm packages resolve to plugins/MCP, never skills);
  * - a repository with no `SKILL.md` rows is refused — a source that cannot serve this axis is noise;
@@ -63,15 +65,17 @@ export interface SkillSourceCheck {
   ok: boolean;
   skills: number;
   plugins: number;
+  reason?: SourceReason;
+  params?: Record<string, string>;
   message?: string;
 }
 
 /** Dry-run: report what the repository carries without writing anything. */
 export async function checkSkillSource(url: string, fetchImpl: typeof fetch = fetch): Promise<SkillSourceCheck> {
   const repo = repoFromUrl(url);
-  if (!repo) return { ok: false, skills: 0, plugins: 0, message: NOT_A_REPO(url) };
+  if (!repo) return { ok: false, skills: 0, plugins: 0, reason: 'not_a_repo', params: { url: url.trim() }, message: NOT_A_REPO(url) };
   const read = await probeMarketplace(probeEntry('probe', repo), fetchImpl, { ...probeOptions(), persist: false });
-  if (!read.ok) return { ok: false, skills: 0, plugins: 0, message: read.message };
+  if (!read.ok) return { ok: false, skills: 0, plugins: 0, reason: 'probe_failed', params: { repo }, message: read.message };
   return { ok: true, skills: read.snapshot.rows.length, plugins: read.snapshot.plugins.length };
 }
 
@@ -85,20 +89,15 @@ export async function registerSkillSource(
   url: string,
   opts: SkillSourceWrite = {},
   fetchImpl: typeof fetch = fetch,
-): Promise<{ ok: boolean; message?: string }> {
+): Promise<SourceOutcome> {
   const repo = repoFromUrl(url);
-  if (!repo) return { ok: false, message: NOT_A_REPO(url) };
+  if (!repo) return { ok: false, reason: 'not_a_repo', params: { url: url.trim() }, message: NOT_A_REPO(url) };
   const slug = resolveSlug(repo, null);
-  if (!slug.ok) return { ok: false, message: slug.message };
-  // The store is shared with the per-harness plugin sources, so the duplicate gate spans scopes:
-  // the same repository registered twice under two axes would answer ONE identity twice.
-  if (listMarketplaceEntries().some((e) => e.slug === slug.slug || e.repo === repo)) {
-    return { ok: false, message: `slug '${slug.slug}' is already configured` };
-  }
+  if (!slug.ok) return { ok: false, reason: SLUG_FAILURE_REASON[slug.code], params: slug.params, message: slug.message };
   const read = await probeMarketplace(probeEntry(slug.slug, repo), fetchImpl, probeOptions());
-  if (!read.ok) return { ok: false, message: read.message };
+  if (!read.ok) return { ok: false, reason: 'probe_failed', params: { repo }, message: read.message };
   if (read.snapshot.rows.length === 0) {
-    return { ok: false, message: `'${repo}' publishes no SKILL.md — not a skill source` };
+    return { ok: false, reason: 'no_skill', params: { repo }, message: `'${repo}' publishes no SKILL.md — not a skill source` };
   }
   addMarketplaceEntry({
     slug: slug.slug,
@@ -108,9 +107,15 @@ export async function registerSkillSource(
     rescan: opts.rescan,
     harness: null,
     extensionDir: read.snapshot.extensionDir,
+    axis: 'skill',
   });
   harvestAll();
-  return { ok: true, message: `registered '${repo}' as '${marketplaceSourceId(slug.slug)}' (${read.snapshot.rows.length} skill(s))` };
+  return {
+    ok: true,
+    reason: 'registered',
+    params: { repo, slug: marketplaceSourceId(slug.slug), harnesses: '' },
+    message: `registered '${repo}' as '${marketplaceSourceId(slug.slug)}' (${read.snapshot.rows.length} skill(s))`,
+  };
 }
 
 /** The entry behind a skill-axis request: an entry whose snapshot carries NO `SKILL.md` row serves

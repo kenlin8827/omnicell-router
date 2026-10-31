@@ -6,6 +6,13 @@
   source: `pi.dev`), falling back to the writer when the record carries no other surface (§D8.6).
 - **Amended**: 2026-10-30 — operator git-marketplace sources (`mp-<slug>`): any GitHub repository
   becomes a browse/install source with no code change (§D9).
+- **Amended**: 2026-11-01 — the source store is split by axis: `plugin-market.json` (bucketed per
+  harness, `shared` = unpinned) and `skill-market.json` (one shared bucket); the flat
+  `marketplaces.json` migrates once and is renamed `marketplaces.legacy.json` (§D9). The duplicate
+  answer is store-wide and names the holding entry's harness/layer; adding a repository another
+  harness already carries from this tab registers a harness-scoped second source
+  (`mp-<repo>-<harness>`). A slug is one `mp-` sourceId, so per-harness isolation never widens
+  identity.
 - **Related**: ADR-0010 (definition ownership + materialization targets), ADR-0006 (credential store —
   never read by this domain), ADR-0013 (observation-ledger precedent), ADR-0007 (environment layout,
   trash-based delete)
@@ -681,9 +688,13 @@ explicit (`configured → lite`), so a shared session can never ratchet upward.
 ## D9 — Operator git-marketplace sources (amendment, 2026-10-30)
 
 Any GitHub repository the operator names becomes a browse/install source with **no code change**:
-`<ocrHome>/harness/marketplaces.json` is the config, one `mp-<slug>` adapter instance per entry
-(`host/resolvers/git-marketplace.ts`), and the registry resolves `mp-*` ids dynamically. The type exists
-because the Claude-style `marketplace.json` catalog format has become the industry's converging
+`<ocrHome>/harness/plugin-market.json` is the config — one `mp-<slug>` adapter instance per entry
+(`host/resolvers/git-marketplace.ts`), and the registry resolves `mp-*` ids dynamically. The file is
+bucketed per harness (`{ "shared": [...], "<harness>": [...] }`, amendment 2026-11-01): the bucket
+IS the scope, so the record itself carries no `harness` field. `skill-market.json`, same directory,
+holds the skill axis in a single `shared` bucket — a skill is global, so a harness key there would
+be a lie. `slug` stays one identity across BOTH files. The type exists because the Claude-style
+`marketplace.json` catalog format has become the industry's converging
 distribution shape (grok, Copilot CLI, Goose, omp all read it or a clone), while the CONTENT under
 it has already converged on one primitive: `SKILL.md`.
 
@@ -785,6 +796,32 @@ skill/MCP/plugin counts, writes nothing), `DELETE .../sources/:slug` (404 on unk
 `GET /api/admin/harness/sources` stays as a read-only view (built-ins + `mp-` chips) with no
 mutation verbs. Unknown or non-github targets answer 400; unknown harness 404.
 
+The duplicate answer is **store-wide, never per tab** (amendment, 2026-11-01): a slug IS the
+`mp-<slug>` sourceId the registry resolves without a harness (`host/registry.ts`) and the skill
+axis addresses entries by, so a twin entry under another harness would answer one identity twice.
+Per-harness isolation governs what each tab LISTS, owns and syncs; it never widens identity. Two
+answers follow from that:
+
+- **The repository is already carried by ANOTHER harness** — the operator adding it from this tab
+  means "I want my own source here", so the plugin route registers a SECOND, harness-scoped entry
+  instead of dead-ending: the slug takes the harness as its disambiguating token
+  (`mp-<repo>-<harness>`, `resolveScopedSlug`), the probe runs unpinned so the row content is the
+  repository's own forms, and `entry.harness` keeps the entry out of the sibling's tab, index and
+  host. The two sources are enabled, rescanned, synced and removed independently
+  (`registered 'o/r' for opencode as 'mp-r-opencode'`); the sibling entry is never mutated.
+- **Any other collision** (this harness already holds the repository, the entry is shared, or a
+  different repository owns the basename) answers 409 and NAMES the holding entry's pin and layer
+  (`'o/r' is already configured as 'r' for claude (layer .claude-plugin)`), because the acting tab
+  lists only its own scope and would otherwise look empty while refusing the add.
+
+Answers are machine-readable, never English prose only: registration and check outcomes carry a
+closed `reason` plus `params` (`registered`, `registered_scoped`, `already_configured`,
+`slug_taken`, `no_form`, `no_skill`, `not_a_repo`, `invalid_source`, `invalid_layer`,
+`probe_failed`), and `message` stays the English fallback for logs, the CLI and raw API consumers.
+The console renders its own localized copy from `reason` + `params` (repo UI-text rule). A new
+outcome must name a reason in the same commit as its i18n key; echoing `message` at the operator
+is a bug.
+
 ## D10 — The plugin market: per-harness adapters over a two-tier catalog (amendment, 2026-10-30)
 
 **One file per harness, one adapter chain per harness.** Each harness's market lives in its OWN
@@ -863,10 +900,10 @@ rows to that harness. A skills-only git repo appears on the skill axis's view, n
 axis that gained nothing: a chip that names a source with zero rows would claim a tier the
 harvest never wrote.
 
-**Mutation re-harvests everyone — except a layer-pinned source.** The marketplace store is global
-(one `marketplaces.json`), so `registerSource`/`unregisterSource` — and the rescan scheduler after a
-probe — re-harvest the index of EVERY served harness. A source registered WITH an extension layer
-records that harness (`entry.harness`) and harvests into that harness's index only: a
+**Mutation re-harvests everyone — except a layer-pinned source.** The source store is global (one
+identity namespace across `plugin-market.json` and `skill-market.json`), so
+`registerSource`/`unregisterSource` — and the rescan scheduler after a probe — re-harvest the index
+of EVERY served harness. A source registered WITH an extension layer
 `pi-extension` source must not teach a claude tab to install it. Unscoped sources stay shared. A
 stale sibling tab would teach a per-harness model the store does not have; the harvest is a local
 read over snapshots — cheap by construction.
@@ -922,11 +959,11 @@ alike, so the two axes cannot drift apart. A path BELOW the repository stays ref
 `extensionDir` names, and silently dropping it would register a different layer than the one the
 operator pasted.
 
-**The dialog states the sharing.** The store behind the dialog is GLOBAL — one
-`marketplaces.json`, `mp-` ids shared by every served harness. The dialog's subtitle says so; the
-UI never labels the listed sources as THIS harness's own, and every mutation re-harvests all
-served harnesses' indexes (§D10). If per-harness exclusivity is ever needed, it is an OPTIONAL
-`scope` field on the marketplace entry — no migration, the file stays single.
+**The dialog states the sharing.** The store behind the dialog is GLOBAL — one identity namespace,
+`mp-` ids shared by every served harness. `plugin-market.json` buckets entries per harness (a
+`shared` bucket serves every tab), `skill-market.json` is one shared bucket. The dialog's subtitle
+says so; the UI never labels the listed sources as THIS harness's own, and every mutation
+re-harvests all served harnesses' indexes (§D10).
 
 **Resolver vs chip.** npm and github remain INSTALL RESOLVERS on the host axis (an `npm:` row
 must resolve somewhere), but the npm BROWSING chip is not on the plugin axis — the plugin axis
