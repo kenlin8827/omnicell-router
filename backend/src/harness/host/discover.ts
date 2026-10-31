@@ -397,10 +397,17 @@ function rowFor(
  */
 export function discoverPlugins(
   sources: ExtSource[],
-  opts: { tracked?: Iterable<string>; deps?: Partial<DiscoveryDeps> } = {}
+  opts: { tracked?: Iterable<string>; trackedNames?: Iterable<string>; deps?: Partial<DiscoveryDeps> } = {}
 ): DiscoveredArtifact[] {
   const deps: DiscoveryDeps = { ...FS_DEPS, ...(opts.deps ?? {}) };
   const tracked = new Set(opts.tracked ?? []);
+  /**
+   * `host|name` for git-marketplace artifacts this environment installed. A MAP-shaped store keys
+   * its members by `<name>@<marketplace>`, and the marketplace name need not be recorded in older
+   * manifests — the plugin NAME is the one shared fact, so it is the fallback that keeps one
+   * `claude plugin install` from being counted twice.
+   */
+  const trackedNames = new Set(opts.trackedNames ?? []);
   const versions = lockVersions(sources, deps);
   const rows: DiscoveredArtifact[] = [];
   const seen = new Set<string>();
@@ -461,12 +468,15 @@ export function discoverPlugins(
       for (const [storeKey, value] of Object.entries(map)) {
         if (!storeKey.includes('@') || !value || typeof value !== 'object') continue;
         const entry = value as { version?: unknown; installPath?: unknown };
-        const key = trackedKey(source.host, `${prefix}${storeKey}`);
+        const parsedSpec = parsePluginSpec(`${prefix}${storeKey}`);
+        if (!parsedSpec) continue;
+        // The gateway installed a git-marketplace plugin under a market key this store cannot name;
+        // the plugin name is the shared fact. Without this, one install answers two rows.
+        if (trackedNames.has(`${source.host}|${parsedSpec.name}`)) continue;
+        const key = trackedKey(source.host, parsedSpec.canonicalKey);
         if (tracked.has(key) || seen.has(key)) continue;
         seen.add(key);
         const description = mapDescription(String(entry.installPath ?? ''), deps);
-        const parsedSpec = parsePluginSpec(`${prefix}${storeKey}`);
-        if (!parsedSpec) continue;
         rows.push(rowFor(source, parsedSpec, typeof entry.version === 'string' ? entry.version : undefined, storeKey, container, description));
       }
       continue;

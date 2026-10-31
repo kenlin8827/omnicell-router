@@ -583,6 +583,14 @@ explicit (`configured → lite`), so a shared session can never ratchet upward.
     `.claude-plugin/plugin.json`. The store is GLOBAL (like pi's); the `--scope` flag carries the
     install scope, the record does not fork.
 
+    **A native marketplace install carries TWO identities.** `canonicalKey` stays the market row's
+    key (`mp-…`), which is what the console joins to mark the row installed; the record also stores
+    `nativeKey` — the runtime's own `<plugin>@<marketplace>` store key — and discovery excludes both
+    spellings. Without it, one `claude plugin install` answers twice: once as the tracked artifact
+    and once as the map member read back from `installed_plugins.json`. Records written before this
+    field existed are deduped by `(harness, plugin name)` for git-marketplace installs, so the
+    guarantee holds without a manifest rewrite.
+
 ## Deferred (not implemented — do not assume)
 
 | Area | State |

@@ -212,6 +212,8 @@
 9. **`external` 是归属标记,不是状态。** 包管理器托管的副本没有我们的路径：`path` 是身份 token `<canonicalKey>#<harness>`，永不被 stat 或哈希，状态报 `clean`、`placement` 报 `verified`，因为子进程退出码就是证据。它的卸载编辑运行时自己读取的声明（`pi` 的 `settings.json` `packages[]`，claude 的 `installed_plugins.json` `plugins`）；宿主没有声明文件时退回 `prune-record`，并明说包体仍在。绝不发明未经验证的反向命令。
 10. **claude 的插件落点是运行时自己的 CLI 和映射记录。** 插件经 `claude plugin install <id> --scope user|project` 安装（铁律 3：逐字回显确切命令、确认后执行、硬超时——绝不手改 claude 自己的状态）。记录在 `~/.claude/plugins/installed_plugins.json`：一个以插件 id（`"<名称>@<市场>"`）为键的**对象映射**，每个值携带 `installPath` / `version` / `installedAt`；启用状态在各 settings.json 的 `enabledPlugins` 里，由运行时自己从这个记录同步。两条在代码里生效的推论：插件 id 与带版本的 npm spec 形状冲突，所以每条记录都以 **`claude:` spec 前缀**读取（canonicalKey 为 `claude:<名称>@<市场>`，绝不按 npm 解析）；记录是映射，所以发现层按形状读（来源上的 `containerShape: 'map'`），卸载反向操作是对运行时自身键的 `drop-server` 成员删除（`~/.claude/plugins/marketplaces/` 下的市场/物料缓存保留——与 pi 一样，明说包体仍在）。行的版本与描述取自条目值和已装插件自己的 `.claude-plugin/plugin.json`。这个记录是**全局的**（同 pi）；`--scope` 旗标携带安装范围，记录本身不分叉。
 
+    **原生市场安装携带两个身份。** `canonicalKey` 仍是市场行的键（`mp-…`，控制台用它把该行标为已装）；记录同时保存 `nativeKey`——运行时自己的 `<插件>@<市场>` 存储键——发现层两种拼写都排除。否则一次 `claude plugin install` 会出现两次：一次是受跟踪的制品，一次是从 `installed_plugins.json` 读回的映射成员。该字段出现之前写入的记录，对 git 市场安装按 `(harness, 插件名)` 去重，因此无需重写 manifest 也能保证不重复。
+
 ## 未实现清单（勿假设存在）
 
 | 领域 | 现状 |

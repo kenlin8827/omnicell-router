@@ -400,6 +400,12 @@ export async function applyPlugin(req: PluginApplyRequest): Promise<PluginApplyR
       kind: 'plugin',
       harness: req.harness,
       name: req.spec,
+      // A native marketplace install has TWO identities: the market row's key (above, what the
+      // console marks installed) and the runtime's own (`<plugin>@<marketplace>`). Recording the
+      // second lets discovery exclude the record it reads back — otherwise one install shows twice.
+      ...(req.marketplace
+        ? { nativeKey: `${req.marketplace.plugin}@${req.marketplace.name}` }
+        : {}),
       ...(req.description ? { description: req.description } : {}),
       sourceId: req.sourceId,
       // `ref` is the canonicalKey WITHOUT its `<sourceId>:` prefix. It is derived from the key, not

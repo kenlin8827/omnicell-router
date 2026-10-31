@@ -119,6 +119,43 @@ export function skillRoots(projectRoot: string = process.cwd()): { host: Harness
   return skillLocationRoots(projectRoot);
 }
 
+/**
+ * Keys under which discovery must NOT report a runtime row: the artifact's market identity AND,
+ * for a native marketplace install, the runtime's own `<plugin>@<marketplace>` identity in both
+ * spellings discovery may read it (`claude:postman@postman`, or the bare store key). Without the
+ * native form, a `claude plugin install` recorded as an `mp-` artifact is read back from
+ * `installed_plugins.json` as a SECOND artifact — one install, two rows.
+ */
+export function trackedPluginKeys(artifacts: ArtifactRecord[]): Set<string> {
+  const keys = new Set<string>();
+  for (const record of artifacts) {
+    if (record.kind !== 'plugin' || !record.harness) continue;
+    for (const key of [record.canonicalKey, record.nativeKey]) {
+      if (!key) continue;
+      keys.add(trackedKey(record.harness, key));
+      // A MAP store's discovery namespaces its key with the host's spec prefix (claude:).
+      keys.add(trackedKey(record.harness, `${record.harness}:${key}`));
+    }
+  }
+  return keys;
+}
+
+/**
+ * `host|name` for git-marketplace plugin artifacts. A native marketplace chain installs under the
+ * runtime's `<name>@<marketplace>` key, which an older record cannot name; the plugin name is the
+ * shared fact that keeps the runtime row from answering as a second artifact (see `discoverPlugins`
+ * `trackedNames`).
+ */
+export function trackedPluginNames(artifacts: ArtifactRecord[]): Set<string> {
+  const names = new Set<string>();
+  for (const record of artifacts) {
+    if (record.kind !== 'plugin' || !record.harness) continue;
+    if (!record.canonicalKey.startsWith('mp-')) continue;
+    names.add(`${record.harness}|${record.name}`);
+  }
+  return names;
+}
+
 export function scanInventory(projectRoot: string = process.cwd()): InventoryResponse {
   const envName = resolveEnvName();
   const manifest = readManifest();
@@ -179,15 +216,15 @@ export function scanInventory(projectRoot: string = process.cwd()): InventoryRes
     byName.set(name, entry);
   }
 
+
   // Plugins get the mirror treatment (ADR-0015 §D8.10): the runtime's own store is read-only
   // observation, and an artifact this environment already tracks is excluded so one install is
   // never reported twice under two different owners.
-  const trackedPlugins = new Set(
-    manifest.artifacts
-      .filter((record) => record.kind === 'plugin' && record.harness)
-      .map((record) => trackedKey(record.harness!, record.canonicalKey))
-  );
-  const plugins = discoverPlugins(pluginSources(projectRoot).filter((s) => isEnabledScope(s.scope)), { tracked: trackedPlugins });
+  const trackedPlugins = trackedPluginKeys(manifest.artifacts);
+  const plugins = discoverPlugins(pluginSources(projectRoot).filter((s) => isEnabledScope(s.scope)), {
+    tracked: trackedPlugins,
+    trackedNames: trackedPluginNames(manifest.artifacts),
+  });
 
   // MCP gets the same mirror treatment over the OBJECT-shaped landing: each server key inside a
   // host's `mcp` container is observed, tagged with the host it was read from, and excluded when this

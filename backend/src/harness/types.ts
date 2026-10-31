@@ -125,6 +125,14 @@ export interface ArtifactRecord {
   storeRef?: string;
   listedOn: string[];
   trust: TrustTier;
+  /**
+   * The runtime's OWN identity for a plugin installed through its native marketplace CLI
+   * (`<plugin>@<marketplace>`, e.g. claude's `postman@postman`). `canonicalKey` stays the MARKET
+   * row's identity (the `mp-` key) so the console can mark that row installed; this field is what
+   * lets discovery exclude the runtime record it would otherwise read back as a second artifact
+   * (ADR-0015 §D8.10). Absent for every other install path.
+   */
+  nativeKey?: string;
   copies: CopyRecord[];
 }
 
