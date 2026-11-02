@@ -16,6 +16,12 @@ export const DEFAULT_FORWARD_PROXY_PORT = 4555;
 /** Forward-proxy listen host when `forwardProxy.host` is unset (loopback only). */
 export const DEFAULT_FORWARD_PROXY_HOST = '127.0.0.1';
 
+/** Forward-proxy access log: day-file retention for the persisted JSONL (auto-cleanup). */
+export const DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS = 7;
+/** Day-file retention clamp bounds (config input is clamped into this range). */
+export const PROXY_ACCESS_LOG_PERSIST_DAYS_MIN = 1;
+export const PROXY_ACCESS_LOG_PERSIST_DAYS_MAX = 365;
+
 
 /** Headroom sidecar port (and base URL) when `compression.headroom.url` is unset. */
 export const DEFAULT_HEADROOM_PORT = 8787;

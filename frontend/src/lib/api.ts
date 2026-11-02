@@ -384,6 +384,56 @@ export interface GatewayStatusResponse {
   };
 }
 
+/** One row of the forward-proxy access log (backend forward-proxy/access-log.ts). */
+export interface ProxyAccessEvent {
+  id: string;
+  ts: number;
+  kind: 'connect' | 'http';
+  host: string;
+  port: number;
+  method?: string;
+  path?: string;
+  status?: number;
+  durationMs?: number;
+  reqBytes: number;
+  respBytes: number;
+  requestHeaders?: Record<string, string>;
+  responseHeaders?: Record<string, string>;
+  requestBody?: string;
+  responseBody?: string;
+  /** 'hex' when THAT side's stored body is an INLINE hex dump (persist off). */
+  reqBodyFormat?: 'hex';
+  resBodyFormat?: 'hex';
+  /** bodies-dir ref (`<day>/<name>.bin`) when THAT binary body was persisted as a raw file. */
+  reqBodyFile?: string;
+  resBodyFile?: string;
+  /** Sniffed MIME for the persisted binary body file. */
+  reqBodyMime?: string;
+  resBodyMime?: string;
+  truncated?: boolean;
+  note?: string;
+}
+
+export interface ProxyAccessLogResponse {
+  status: string;
+  enabled: boolean;
+  /** Per-side capture cap; absent = unlimited (backend `accessLog.bodyBytes`). */
+  bodyBytes?: number;
+  events: ProxyAccessEvent[];
+}
+
+/** OS system-proxy ownership state (backend forward-proxy/system-proxy.ts). */
+export interface SystemProxyStatus {
+  platform: string;
+  supported: boolean;
+  state: 'off' | 'on' | 'external' | 'stale' | 'unsupported';
+  currentServer?: string;
+  targetServer?: string;
+  override?: string;
+  caPath: string;
+  proxyEnabled?: boolean;
+}
+
 /**
  * Structured arguments for a localized routing reason — the optional
  * `reasonParams` the gateway emits beside `reason`. Values arrive ready to be
@@ -1689,6 +1739,40 @@ export class SourceOutcomeError extends Error {
 export const api = {
   async getStatus(): Promise<GatewayStatusResponse> {
     const res = await fetch('/api/admin/status');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async getProxyAccessLog(): Promise<ProxyAccessLogResponse> {
+    const res = await fetch('/api/admin/proxy-log');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async getProxyAccessBody(ref: string): Promise<ArrayBuffer> {
+    const res = await fetch(`/api/admin/proxy-log/bodies/${encodeURIComponent(ref)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.arrayBuffer();
+  },
+
+  async clearProxyAccessLog(): Promise<void> {
+    const res = await fetch('/api/admin/proxy-log/clear', { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  },
+  async getSystemProxy(): Promise<SystemProxyStatus> {
+    const res = await fetch('/api/admin/system-proxy');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async enableSystemProxy(): Promise<SystemProxyStatus> {
+    const res = await fetch('/api/admin/system-proxy/enable', { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async disableSystemProxy(): Promise<SystemProxyStatus> {
+    const res = await fetch('/api/admin/system-proxy/disable', { method: 'POST' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },

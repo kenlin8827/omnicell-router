@@ -93,7 +93,7 @@ function sanitizeHeadersForCapture(raw: Headers | undefined): Record<string, str
 }
 
 /** Plain-object variant for Fastify header maps (already lowercased). */
-function sanitizePlainHeadersForCapture(
+export function sanitizePlainHeadersForCapture(
   raw: Record<string, string | string[] | undefined> | undefined
 ): Record<string, string> {
   const out: Record<string, string> = {};

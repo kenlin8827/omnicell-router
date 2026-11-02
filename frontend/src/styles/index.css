@@ -447,6 +447,18 @@ td, th {
   padding: 16px;
 }
 
+/* Collapsible variant of .sub-card (a <details> carrying the sub-card class):
+   the summary row is the section header — kill the native disclosure marker,
+   the page renders its own chevron. */
+details.sub-card > summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+details.sub-card > summary::-webkit-details-marker {
+  display: none;
+}
+
 /* List-group: rows nested inside a card share ONE frame + hairline separators
    (Ant/Bootstrap pattern). Per-row borders inside an already-bordered card
    read as box-in-box noise — the boxy credential-list complaint. */

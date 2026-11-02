@@ -8,6 +8,12 @@
 
 /** Ring capacity (and, mirrored, the durable row budget). */
 export const EVENT_RING_CAPACITY = 500;
+/**
+ * Forward-proxy access-log ring capacity — body-bearing rows are heavy, so
+ * the fourth ledger carries a smaller ring than the other three (pass to the
+ * EventRing constructor; never re-declare per module).
+ */
+export const PROXY_ACCESS_RING_CAPACITY = 300;
 /** Repeats of the same coalescing key inside this window fold into one row. */
 export const EVENT_COALESCE_WINDOW_MS = 10_000;
 /** Error/note text bound — a row is an observation, not an archive of the wire body. */
@@ -49,8 +55,11 @@ export class EventRing<E extends { id: string; ts: number }> {
   private events: E[] = [];
   private store: RingEventStore<E> | undefined;
 
-  constructor(store?: RingEventStore<E>) {
+  private capacity: number;
+
+  constructor(store?: RingEventStore<E>, capacity: number = EVENT_RING_CAPACITY) {
     this.store = store;
+    this.capacity = capacity;
   }
 
   /**
@@ -59,7 +68,7 @@ export class EventRing<E extends { id: string; ts: number }> {
    */
   attachStore(store: RingEventStore<E>): number {
     this.store = store;
-    const replayed = store.loadRecent(EVENT_RING_CAPACITY);
+    const replayed = store.loadRecent(this.capacity);
     if (replayed.length > 0) this.events = replayed;
     return replayed.length;
   }
@@ -83,9 +92,9 @@ export class EventRing<E extends { id: string; ts: number }> {
   append(ev: E): void {
     this.events.push(ev);
     this.store?.upsert(ev);
-    if (this.events.length > EVENT_RING_CAPACITY) {
-      this.events.splice(0, this.events.length - EVENT_RING_CAPACITY);
-      this.store?.trim(EVENT_RING_CAPACITY);
+    if (this.events.length > this.capacity) {
+      this.events.splice(0, this.events.length - this.capacity);
+      this.store?.trim(this.capacity);
     }
   }
 

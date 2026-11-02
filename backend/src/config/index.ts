@@ -11,6 +11,9 @@ import { ensureEnvScaffold, getEnvPaths, resolveEnvName } from './env.js';
 import {
   DEFAULT_FORWARD_PROXY_PORT,
   DEFAULT_FORWARD_PROXY_HOST,
+  DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS,
+  PROXY_ACCESS_LOG_PERSIST_DAYS_MIN,
+  PROXY_ACCESS_LOG_PERSIST_DAYS_MAX,
   DEFAULT_HEADROOM_TIMEOUT_MS,
   DEFAULT_DIRECTIVE_PREFIX,
   DEFAULT_HEADROOM_URL,
@@ -109,6 +112,7 @@ const DEFAULT_CONFIG: RouterConfig = {
     host: DEFAULT_FORWARD_PROXY_HOST,
     bypassHosts: [],
     viaOutboundProxy: false, // opt-in: transit egress via the outbound proxy policy
+    accessLog: { enabled: true, persist: true, persistDays: DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS },
   },
   compression: {
     rtk: { enabled: false },
@@ -329,6 +333,35 @@ function resolveRequestCapture(parsed: any): RequestCaptureConfig {
     storeMedia: (raw.storeMedia ?? base.storeMedia) as boolean,
     redactSecrets: (raw.redactSecrets ?? base.redactSecrets) as boolean,
     dir: pick('dir'),
+  };
+}
+
+/**
+ * Resolve `forwardProxy.accessLog` — same trust boundary as resolveRateLimit:
+ * junk values fall back to defaults, not coercion. bodyBytes: absent = FULL
+ * body capture (no cap); 0 = headers only; a positive number = per-side cap.
+ * persistDays clamps to 1..365.
+ */
+function normalizeAccessLogConfig(raw: unknown): {
+  enabled: boolean;
+  bodyBytes: number | undefined;
+  persist: boolean;
+  persistDays: number;
+} {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const bodyBytes =
+    typeof r.bodyBytes === 'number' && Number.isFinite(r.bodyBytes)
+      ? Math.max(0, Math.floor(r.bodyBytes))
+      : undefined;
+  const persistDaysRaw =
+    typeof r.persistDays === 'number' && Number.isFinite(r.persistDays)
+      ? Math.floor(r.persistDays)
+      : DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS;
+  return {
+    enabled: r.enabled !== false,
+    bodyBytes,
+    persist: r.persist !== false,
+    persistDays: Math.min(PROXY_ACCESS_LOG_PERSIST_DAYS_MAX, Math.max(PROXY_ACCESS_LOG_PERSIST_DAYS_MIN, persistDaysRaw)),
   };
 }
 
@@ -585,6 +618,7 @@ export function loadConfig(configPath?: string): RouterConfig {
           ...DEFAULT_CONFIG.forwardProxy,
           ...flat.forwardProxy,
           unresolvedModel: normalizeUnresolvedModelConfig(flat.forwardProxy?.unresolvedModel),
+          accessLog: normalizeAccessLogConfig(flat.forwardProxy?.accessLog),
         },
         compression: {
           rtk: { ...DEFAULT_CONFIG.compression?.rtk, ...flat.compression?.rtk },

@@ -31,6 +31,9 @@ export const MD_COMPONENTS: Components = {
       <img {...props} src={src} loading="lazy" />
     ),
 };
+/** The `long` heuristic, shared with parents that place the toggle in their own header. */
+export const proseIsLong = (text: string, clamp: number): boolean =>
+  text.split('\n').length > clamp || text.length > clamp * 140;
 
 /** Prose with line-clamp collapse; the toggle only appears for long bodies.
  *  markdown=true renders GFM (assistant answers) instead of the pre-wrap
@@ -77,7 +80,7 @@ const Prose: React.FC<{
   const [viewOpen, setViewOpen] = useState(false);
   const [viewFull, setViewFull] = useState(false);
   const open = openProp ?? openState;
-  const long = useMemo(() => text.split('\n').length > clamp || text.length > clamp * 140, [text, clamp]);
+  const long = useMemo(() => proseIsLong(text, clamp), [text, clamp]);
   // Collapsed = line-clamp; expanded = full flow — the round's waterfall
   // panel owns vertical scrolling (two scroll layers, not three).
   const clampStyle: React.CSSProperties =

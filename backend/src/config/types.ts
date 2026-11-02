@@ -328,6 +328,23 @@ export interface ForwardProxyConfig {
   port?: number; // listen port; default 4555
   host?: string; // listen address; default '127.0.0.1' (loopback-only)
   /**
+   * Access log for the transparent-forward path: records EVERY non-intercepted
+   * HTTP exchange (and CONNECT tunnel decisions) in a memory ring, viewable on
+   * the console /proxy-log page. Bodies are captured in full unless a
+   * per-side cap is set; headers pass the shared credential deny-list.
+   * Hot-applies on save.
+   */
+  accessLog?: {
+    /** Record non-intercepted traffic; default true. */
+    enabled?: boolean;
+    /** Per-side body capture cap in bytes; absent = unlimited, 0 = headers only. */
+    bodyBytes?: number;
+    /** Persist events as daily JSONL under <ocrHome>/forward-proxy/access-log/; default true. */
+    persist?: boolean;
+    /** Day-file retention for auto-cleanup; default 7. */
+    persistDays?: number;
+  };
+  /**
    * Bypass list: bare glob strings = pure tunnel with DIRECT egress; object
    * entries `{ host, viaProxy }` choose the egress per host (viaProxy →
    * tunnel through the upstream proxy policy, e.g. clash). Loopback always
