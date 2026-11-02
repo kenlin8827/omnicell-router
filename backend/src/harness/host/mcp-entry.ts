@@ -1,6 +1,7 @@
 import type { McpLaunch } from '../spi.js';
 import fs from 'node:fs';
 import TOML from '@iarna/toml';
+import JSON5 from 'json5';
 
 /**
  * MCP launch ⇄ host config entry (ADR-0015 §D8, gate 4).
@@ -40,12 +41,15 @@ export const OPENCODE_ENTRY_SPEC: McpEntrySpec = { shape: 'opencode', secretRef:
 /**
  * Read + validate one landing config file in the format the host declares. Refuses anything a
  * plain-JSON round-trip would silently mangle (comments, trailing garbage) — the same refusal the
- * JSON writer applies, applied to every landing read (ADR-0015 §D8.13: a landing file is observed,
- * and only a CLI landing's runtime writes it anyway).
+ * JSON writer applies — EXCEPT for a `json5` landing, whose format is defined by a runtime whose
+ * own config legally carries comments and unquoted keys (OpenClaw — the vendor's documented
+ * examples spell `mcp: { servers: … }` bare): the file is read with a JSON5 parser, and the write
+ * side is CLI-materialized only (a `json5` host without its own MCP CLI is refused by the plan,
+ * never reserialized).
  */
 export function readMcpLandingFile(
   file: string,
-  format: 'json' | 'toml'
+  format: 'json' | 'toml' | 'json5'
 ): { ok: true; config: Record<string, unknown> } | { ok: false; reason: string } {
   if (!fs.existsSync(file)) return { ok: true, config: {} };
   let text: string;
@@ -66,6 +70,17 @@ export function readMcpLandingFile(
       return { ok: false, reason: `config is not valid TOML: ${e instanceof Error ? e.message : e}` };
     }
   }
+  if (format === 'json5') {
+    try {
+      const parsed = JSON5.parse(text) as unknown;
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return { ok: false, reason: 'config root is not a JSON object' };
+      }
+      return { ok: true, config: parsed as Record<string, unknown> };
+    } catch (e) {
+      return { ok: false, reason: `config is not valid JSON5: ${e instanceof Error ? e.message : e}` };
+    }
+  }
   try {
     const parsed = JSON.parse(text) as unknown;
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -81,6 +96,61 @@ export function readMcpLandingFile(
         : 'config is not valid JSON; refusing',
     };
   }
+}
+
+/**
+ * Resolve an MCP container inside a parsed config. The container key is a DOT PATH when the
+ * runtime nests its servers (OpenClaw keeps them at `mcp.servers`); every existing container
+ * spelling (`mcp`, `mcpServers`, `mcp_servers`) contains no dot, so the resolution is identical
+ * for them. Undefined when any segment is missing or not an object.
+ */
+export function mcpContainerAt(
+  config: Record<string, unknown>,
+  container: string
+): Record<string, unknown> | undefined {
+  let node: unknown = config;
+  for (const part of container.split('.')) {
+    if (!node || typeof node !== 'object' || Array.isArray(node)) return undefined;
+    node = (node as Record<string, unknown>)[part];
+  }
+  return node && typeof node === 'object' && !Array.isArray(node)
+    ? (node as Record<string, unknown>)
+    : undefined;
+}
+
+/**
+ * Resolve (creating when absent) the container an MCP merge writes into, dot-path aware like
+ * `mcpContainerAt`. Intermediate segments are only created as plain objects — a scalar at a nested
+ * path is the runtime's own state and is never overwritten here; the caller's object check refuses.
+ */
+export function ensureMcpContainer(
+  config: Record<string, unknown>,
+  container: string
+): Record<string, unknown> | undefined {
+  const parts = container.split('.');
+  let node: Record<string, unknown> = config;
+  for (let i = 0; i < parts.length; i += 1) {
+    const part = parts[i]!;
+    const next = node[part];
+    if (i === parts.length - 1) {
+      if (next && typeof next === 'object' && !Array.isArray(next)) {
+        return next as Record<string, unknown>;
+      }
+      if (next !== undefined) return undefined;
+      const leaf: Record<string, unknown> = {};
+      node[part] = leaf;
+      return leaf;
+    }
+    if (next && typeof next === 'object' && !Array.isArray(next)) {
+      node = next as Record<string, unknown>;
+    } else {
+      if (next !== undefined) return undefined;
+      const made: Record<string, unknown> = {};
+      node[part] = made;
+      node = made;
+    }
+  }
+  return undefined;
 }
 
 /** Package runners whose argv carries an MCP server package spec as a standalone token. */

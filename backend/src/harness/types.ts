@@ -19,7 +19,6 @@ export type HarnessHostId =
   | 'dsh'
   | 'omp'
   | 'cursor'
-  | 'github-copilot'
   | 'gemini-cli'
   | 'cline'
   | 'amp'
@@ -28,13 +27,13 @@ export type HarnessHostId =
   | 'antigravity'
   | 'factory'
   | 'kimi'
-  | 'grok';
+  | 'grok'
+  | 'openclaw';
 
 /**
  * Where an artifact may be materialized: project-local or user-level.
  *
- * The TYPE keeps both because the adapters and writers model both; only `global` is ENABLED today
- * (`ENABLED_SCOPES` in `scopes.ts`) — see ADR-0015 §D2 "Scope".
+ * Both scopes are enabled (`ENABLED_SCOPES` in `scopes.ts`) — see ADR-0015 §D2 "Scope".
  */
 export type HarnessScope = 'global' | 'project';
 
@@ -72,6 +71,12 @@ export interface CopyRecord {
    * IDENTITY TOKEN (`<canonicalKey>#<harness>`), NOT a filesystem path — see `external`.
    */
   path: string;
+  /**
+   * Project-scope attribution: the repo this copy was installed for. An `external` copy carries an
+   * opaque identity token in `path`, so this is the ONLY way to attribute such a copy to a project.
+   * Undefined on global copies.
+   */
+  projectRoot?: string;
   /**
    * Package-manager-managed copy with no path of our own (today: the `pi` subprocess install, which
    * materializes into the runtime's own store). Inventory must not stat/hash it and removal must not
@@ -155,6 +160,8 @@ export interface CopyView {
   rootId: string;
   /** Identity token, not a location, when `external` is true. */
   path: string;
+  /** Set on project-scope copies — the only project attribution for an external token copy. */
+  projectRoot?: string;
   /** Package-manager-managed (no own path) — the console shows "managed by the runtime", never a path. */
   external?: boolean;
   state: CopyState;
@@ -164,7 +171,7 @@ export interface CopyView {
    * Skill copies only: every host whose skills roots resolve to this directory, owner FIRST.
    *
    * `host` answers ownership (one directory, one owner — install/claims/removal), this answers
-   * READERSHIP (the cross-agent `.agents/skills` tree is read by up to twelve runtimes). Absent for
+   * READERSHIP (the cross-agent `.agents/skills` tree is read by up to fourteen runtimes). Absent for
    * config-shaped copies, where the file IS the landing and its host is the only reader.
    */
   readers?: HarnessHostId[];

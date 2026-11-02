@@ -328,9 +328,22 @@ describe('install route (host validation at the boundary)', () => {
     expect(readManifest().artifacts.find((a) => a.name === '@x/unknown-host-ext')).toBeUndefined();
   });
 
-  // Project-level install is deferred (ADR-0015 §D2 "Scope"): the boundary owns the refusal, so a
-  // request can never reach a writer that would happily land inside the repo.
-  it('answers unsupported_scope for project scope, and writes nothing', async () => {
+  // The boundary owns the scope decision (ADR-0015 §D2 "Scope"): an unknown scope is refused before
+  // any writer sees it, so a typo can never land inside the repo.
+  it('answers unsupported_scope for an unknown scope, and writes nothing', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/harness/install',
+      payload: { manualSpec: '@x/project-ext', kind: 'plugin', confirm: true, hosts: ['opencode'], scope: 'bogus' },
+    });
+    expect(res.statusCode).toBe(400);
+    const body = res.json() as { status: string; code: string; message: string };
+    expect(body.status).toBe('error');
+    expect(body.code).toBe('unsupported_scope');
+    expect(readManifest().artifacts.find((a) => a.name === '@x/project-ext')).toBeUndefined();
+  });
+
+  it('requires projectRoot for project scope install', async () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/admin/harness/install',
@@ -339,8 +352,61 @@ describe('install route (host validation at the boundary)', () => {
     expect(res.statusCode).toBe(400);
     const body = res.json() as { status: string; code: string; message: string };
     expect(body.status).toBe('error');
-    expect(body.code).toBe('unsupported_scope');
-    expect(body.message).toContain('global');
-    expect(readManifest().artifacts.find((a) => a.name === '@x/project-ext')).toBeUndefined();
+    expect(body.code).toBe('bad_request');
+    expect(body.message).toContain('projectRoot is required');
+  });
+
+  it('refuses a projectId that does not resolve to a registered project', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/harness/install',
+      payload: {
+        manualSpec: '@x/project-ext',
+        kind: 'plugin',
+        confirm: true,
+        hosts: ['opencode'],
+        scope: 'project',
+        projectId: 'no-such-project',
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    const body = res.json() as { status: string; code: string; message: string };
+    expect(body.code).toBe('bad_request');
+    expect(body.message).toContain("projectId 'no-such-project' not found");
+  });
+
+  it('refuses a projectRoot that is not an existing directory', async () => {
+    const file = path.join(tmpProject(), 'not-a-dir.txt');
+    fs.writeFileSync(file, 'x');
+
+    const missing = await app.inject({
+      method: 'POST',
+      url: '/api/admin/harness/install',
+      payload: {
+        manualSpec: '@x/project-ext',
+        kind: 'plugin',
+        confirm: true,
+        hosts: ['opencode'],
+        scope: 'project',
+        projectRoot: path.join(tmpProject(), 'nowhere'),
+      },
+    });
+    expect(missing.statusCode).toBe(400);
+    expect((missing.json() as { message: string }).message).toContain('does not exist');
+
+    const notDir = await app.inject({
+      method: 'POST',
+      url: '/api/admin/harness/install',
+      payload: {
+        manualSpec: '@x/project-ext',
+        kind: 'plugin',
+        confirm: true,
+        hosts: ['opencode'],
+        scope: 'project',
+        projectRoot: file,
+      },
+    });
+    expect(notDir.statusCode).toBe(400);
+    expect((notDir.json() as { message: string }).message).toContain('not a directory');
   });
 });

@@ -76,7 +76,7 @@ describe('apply ledger', () => {
     expect(result.ok).toBe(true);
     const row = recentApplies(10)[0]!;
     expect(row.kind).toBe('plugin');
-    expect(row.command).toBe('pi install npm:@x/pkg');
+    expect(row.command).toBe('pi install npm:@x/pkg --local');
     expect(row.outcome).toBe('ok');
   });
 });

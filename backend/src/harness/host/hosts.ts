@@ -27,7 +27,6 @@ export const HOSTS: HostDef[] = [
   { id: 'dsh', label: 'DSH' },
   { id: 'omp', label: 'OMP' },
   { id: 'cursor', label: 'Cursor' },
-  { id: 'github-copilot', label: 'GitHub Copilot / VS Code' },
   { id: 'gemini-cli', label: 'Gemini CLI' },
   { id: 'antigravity', label: 'Antigravity' },
   { id: 'factory', label: 'Factory Droid' },
@@ -37,4 +36,5 @@ export const HOSTS: HostDef[] = [
   { id: 'windsurf', label: 'Windsurf' },
   { id: 'zed', label: 'Zed' },
   { id: 'grok', label: 'Grok' },
+  { id: 'openclaw', label: 'OpenClaw' },
 ];

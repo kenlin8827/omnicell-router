@@ -258,8 +258,9 @@ describe('hosts route (capability flags)', () => {
     };
     // Only a VERIFIED landing is wired: path, entry shape, secret syntax and inverse removal were
     // read from the runtime itself (ADR-0015 §D8) — opencode, pi, omp, kimi merge files; claude,
-    // codex and grok are CLI-materialized landings (§D8.13).
-    expect(body.hosts.filter((host) => host.hasMcp).map((host) => host.id)).toEqual(['opencode', 'claude', 'codex', 'pi', 'omp', 'kimi', 'grok']);
+    // codex, grok and openclaw are CLI-materialized landings (§D8.13; openclaw's config is JSON5,
+    // so its CLI is the only legal writer).
+    expect(body.hosts.filter((host) => host.hasMcp).map((host) => host.id)).toEqual(['opencode', 'claude', 'codex', 'pi', 'omp', 'kimi', 'grok', 'openclaw']);
     const byId = new Map(body.hosts.map((host) => [host.id, host]));
     expect(byId.get('opencode')).toMatchObject({ hasSkills: true, hasMcp: true, hasExt: true });
     expect(byId.get('pi')).toMatchObject({ hasSkills: true, hasMcp: true, hasExt: true });
@@ -268,9 +269,12 @@ describe('hosts route (capability flags)', () => {
     // A host with no MCP landing answers `false` — the flag is a capability, not a path guess.
     expect(byId.get('universal')).toMatchObject({ hasSkills: true, hasMcp: false, hasExt: false });
     // Grok lands plugins through its native CLI chain (`grok plugin install <url> --trust`) and
-    // MCP through its own CLI (§D8.13); kimi merges its dedicated mcp.json.
+    // MCP through its own CLI (§D8.13); kimi merges its dedicated mcp.json. OpenClaw matches
+    // grok's shape (CLI-materialized MCP, `plugins install <spec> --force`) but is global-only —
+    // servers live centrally in ~/.openclaw/openclaw.json.
     expect(byId.get('grok')).toMatchObject({ hasSkills: true, hasMcp: true, hasExt: true });
     expect(byId.get('kimi')).toMatchObject({ hasSkills: true, hasMcp: true, hasExt: true });
+    expect(byId.get('openclaw')).toMatchObject({ hasSkills: true, hasMcp: true, hasExt: true });
   });
 });
 

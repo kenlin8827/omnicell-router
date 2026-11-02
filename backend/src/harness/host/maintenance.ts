@@ -8,12 +8,12 @@ import { parsePluginSpec } from './discover.js';
 import { HOST_ADAPTERS, adapterFor, isPluginHost, isMcpHost } from './adapters/index.js';
 import { defaultExec } from './writers/plugin.js';
 import { echoArgv, MCP_CLI_TIMEOUT_MS } from './writers/mcp.js';
-import { readMcpLandingFile } from './mcp-entry.js';
+import { mcpContainerAt, readMcpLandingFile } from './mcp-entry.js';
 import { recordApply } from './ledger.js';
 import { claimOwner, readManifest, releaseClaim, writeManifest } from './manifest.js';
 import { skillRoots } from './inventory.js';
 import { copyDrift } from './drift.js';
-import type { ArtifactRecord, CopyRecord, DiscoveredRemoval, HarnessHostId } from '../types.js';
+import type { ArtifactRecord, CopyRecord, DiscoveredRemoval, HarnessHostId, HarnessScope } from '../types.js';
 
 /**
  * Maintenance writes for harness artifacts (ADR-0015 §D5).
@@ -68,6 +68,8 @@ export interface PlanAction {
   op: 'move-to-trash' | 'prune-only' | 'prune-record' | 'drop-entry' | 'drop-server' | 'cli-remove';
   /** The runtime's own remove command, for a `cli-remove` op — echoed by the plan, run by the apply. */
   cli?: { echo: string; runs: { command: string; args: string[] }[] };
+  /** Project-scope CLI verbs locate their landing by the subprocess's working directory. */
+  cwd?: string;
   /** The manifest copy key: a resolved path, or the identity token for an `external` copy. */
   path: string;
   /** The config file a `drop-*` op edits — display + the write target. */
@@ -137,9 +139,8 @@ function removableRoots(projectRoot: string = process.cwd()): Set<string> {
   // host's version ladder (opencode v2 `plugins/`, v1 `plugin/`) — a discovered loose file is
   // removable only when its directory is one of these.
   //
-  // BOTH scopes stay in this guard while project INSTALL is disabled (ADR-0015 §D2 "Scope"): a copy
-  // that landed inside a repo before that gate existed is still recorded in the manifest, and losing
-  // the ability to remove it would strand real state on disk.
+  // BOTH scopes stay in this guard: a copy recorded under either scope must stay removable, and
+  // losing a scope here would strand real state on disk.
   const ctx = { projectRoot };
   for (const adapter of HOST_ADAPTERS) {
     if (!isPluginHost(adapter)) continue;
@@ -201,12 +202,48 @@ function configLanding(
 }
 
 /**
+ * Config files a discovered-row `drop-*` descriptor may name for one host + scope.
+ *
+ * The descriptor arrives from the console, so it cannot be trusted on its own: without this check a
+ * crafted request could point `drop-entry`/`drop-server` at ANY JSON file on disk and have the apply
+ * rewrite it. The answer comes from the adapter's own read surfaces, never from the request.
+ */
+function dropTargets(
+  host: HarnessHostId | undefined,
+  scope: HarnessScope,
+  projectRoot: string | undefined
+): Set<string> {
+  const out = new Set<string>();
+  if (!host) return out;
+  const adapter = adapterFor(host);
+  if (!adapter) return out;
+  const ctx = { projectRoot: projectRoot ?? process.cwd() };
+  if (isMcpHost(adapter)) {
+    const landing = adapter.configPath(ctx, scope);
+    if (landing.ok) out.add(path.resolve(landing.path));
+  }
+  if (isPluginHost(adapter)) {
+    for (const source of adapter.readSources(ctx, scope)) {
+      // A loose DIRECTORY holds files, never a JSON container a drop op could edit.
+      if (source.kind !== 'loose-dir') out.add(path.resolve(source.path));
+    }
+    for (const declared of adapter.declarations(ctx, scope)) out.add(path.resolve(declared.file));
+  }
+  return out;
+}
+
+/**
  * The declaration files a package-manager landing reads (pi's `settings.json`), when the adapter
  * names any. The first EXISTING file wins: a version ladder may list a v2 path and a legacy fallback.
  */
-function declaredFile(host: HarnessHostId): { file: string; container: string } | null {
+function declaredFile(
+  host: HarnessHostId,
+  scope: HarnessScope,
+  projectRoot: string | undefined
+): { file: string; container: string } | null {
   const adapter = adapterFor(host);
-  const declarations = isPluginHost(adapter) ? adapter.declarations() : [];
+  if (!isPluginHost(adapter)) return null;
+  const declarations = adapter.declarations({ projectRoot: projectRoot ?? process.cwd() }, scope);
   if (declarations.length === 0) return null;
   const chosen = declarations.find((d) => fs.existsSync(d.file)) ?? declarations[0]!;
   return { file: chosen.file, container: chosen.key };
@@ -250,10 +287,10 @@ function matchingEntries(
 }
 
 /** Build a dry-run removal plan over one or more artifacts. Writes nothing. */
-export function planRemove(items: RemoveItem[]): RemovePlan | { error: string } {
+export function planRemove(items: RemoveItem[], opts?: { projectRoot?: string }): RemovePlan | { error: string } {
   pruneExpired();
   const manifest = readManifest();
-  const roots = new Set(skillRoots().map((r) => path.resolve(r.root)));
+  const roots = new Set(skillRoots(opts?.projectRoot).map((r) => path.resolve(r.root)));
   const envName = resolveEnvName();
 
   const actions: PlanAction[] = [];
@@ -278,7 +315,7 @@ export function planRemove(items: RemoveItem[]): RemovePlan | { error: string } 
       const removal = item.removal;
       if (removal.op === 'trash-path') {
         const abs = path.resolve(removal.path);
-        if (!removableRoots().has(path.dirname(abs))) {
+        if (!removableRoots(opts?.projectRoot).has(path.dirname(abs))) {
           blocked.push({ path: abs, code: 'not-found', message: 'not directly under a known artifact root' });
           continue;
         }
@@ -311,14 +348,18 @@ export function planRemove(items: RemoveItem[]): RemovePlan | { error: string } 
           blocked.push({ path: '', code: 'not-found', message: `host '${removal.host}' has no CLI-materialized MCP landing` });
           continue;
         }
-        const landing = adapter.configPath({ projectRoot: process.cwd() }, 'global');
+        // The descriptor carries no scope of its own — the picked copies do (a discovered row's
+        // copy mirrors its source scope). Project landings resolve under the page's project root.
+        const removeScope = item.copies[0]?.scope ?? 'global';
+        const landing = adapter.configPath({ projectRoot: opts?.projectRoot ?? process.cwd() }, removeScope);
         const file = landing.ok ? landing.path : '';
         let present = false;
         if (file) {
           const parsedLanding = readMcpLandingFile(file, adapter.mcpLandingFormat?.() ?? 'json');
           if (parsedLanding.ok) {
-            const container = parsedLanding.config[adapter.container];
-            present = !!container && typeof container === 'object' && !Array.isArray(container) && removal.entry in (container as Record<string, unknown>);
+            // Dot-path aware: openclaw nests its servers at `mcp.servers`.
+            const container = mcpContainerAt(parsedLanding.config, adapter.container);
+            present = !!container && removal.entry in container;
           }
         }
         if (!present) {
@@ -332,7 +373,7 @@ export function planRemove(items: RemoveItem[]): RemovePlan | { error: string } 
           });
           continue;
         }
-        const remove = cliSpec.removeArgs(removal.entry, 'global');
+        const remove = cliSpec.removeArgs(removal.entry, removeScope);
         if (!remove.ok) {
           blocked.push({ path: file, code: 'not-found', message: remove.reason });
           continue;
@@ -346,7 +387,14 @@ export function planRemove(items: RemoveItem[]): RemovePlan | { error: string } 
           exists: true,
           entry: removal.entry,
           cli: { echo: echoArgv(cliSpec.command, remove.args), runs: [{ command: cliSpec.command, args: remove.args }] },
+          ...(removeScope === 'project' && opts?.projectRoot ? { cwd: opts.projectRoot } : {}),
         });
+        continue;
+      }
+      const descriptorHost = item.copies[0]?.host as HarnessHostId | undefined;
+      const descriptorScope = item.copies[0]?.scope ?? 'global';
+      if (!descriptorHost || !dropTargets(descriptorHost, descriptorScope, opts?.projectRoot).has(path.resolve(removal.file))) {
+        blocked.push({ path: removal.file, code: 'not-found', message: "not a config landing of the row's host" });
         continue;
       }
       const parsed = fs.existsSync(removal.file) ? readConfigJson(removal.file) : null;
@@ -360,12 +408,13 @@ export function planRemove(items: RemoveItem[]): RemovePlan | { error: string } 
       }
       // Two config shapes, one rule: the descriptor names the member and the container it was ACTUALLY
       // found in. `drop-entry` empties an array slot; `drop-server` drops an object member (an MCP
-      // server key), and its siblings keep their place.
-      const container = parsed.config[removal.container];
+      // server key), and its siblings keep their place. Container lookup is dot-path aware (openclaw
+      // `mcp.servers`), identical for every flat spelling.
+      const container = mcpContainerAt(parsed.config, removal.container);
       const isServer = removal.op === 'drop-server';
       const present = isServer
-        ? !!container && typeof container === 'object' && !Array.isArray(container) && removal.entry in (container as Record<string, unknown>)
-        : Array.isArray(container) && container.includes(removal.entry);
+        ? !!container && removal.entry in container
+        : Array.isArray(parsed.config[removal.container]) && (parsed.config[removal.container] as unknown[]).includes(removal.entry);
       if (!present) {
         blocked.push({
           path: removal.file,
@@ -422,11 +471,14 @@ export function planRemove(items: RemoveItem[]): RemovePlan | { error: string } 
             exists: false,
             entry: artifact.name,
             cli: { echo: echoArgv(cliSpec.command, remove.args), runs: [{ command: cliSpec.command, args: remove.args }] },
+            ...(copy.scope === 'project' && (copy.projectRoot ?? opts?.projectRoot)
+              ? { cwd: copy.projectRoot ?? opts?.projectRoot }
+              : {}),
           });
           external.push({ path: copy.path, host: copy.host });
           continue;
         }
-        const declared = declaredFile(copy.host);
+        const declared = declaredFile(copy.host, copy.scope, copy.projectRoot ?? opts?.projectRoot);
         const keys = declared && artifact ? matchingEntries(declared.file, [declared.container], artifact) : null;
         if (declared && keys === null && artifact) {
           blocked.push({ path: declared.file, code: 'unreadable', message: `cannot parse ${declared.file}; refusing a lossy rewrite` });
@@ -498,10 +550,8 @@ export function planRemove(items: RemoveItem[]): RemovePlan | { error: string } 
             blocked.push({ path: landing.file, code: 'unreadable', message: parsed.reason });
             continue;
           }
-          const container = parsed.config[landing.containers[0]!];
-          const present =
-            !!container && typeof container === 'object' && !Array.isArray(container) &&
-            landing.serverKey in (container as Record<string, unknown>);
+          const container = mcpContainerAt(parsed.config, landing.containers[0]!);
+          const present = !!container && landing.serverKey in container;
           actions.push({
             op: present ? 'drop-server' : 'prune-only',
             path: abs,
@@ -634,14 +684,14 @@ function applyDropEntry(file: string, container: string, entry: string): { ok: t
 function applyDropServer(file: string, container: string, serverKey: string): { ok: true } | { ok: false; reason: string } {
   const parsed = readConfigJson(file);
   if (!parsed.ok) return { ok: false, reason: parsed.reason };
-  const obj = parsed.config[container];
-  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+  const obj = mcpContainerAt(parsed.config, container);
+  if (!obj) {
     return { ok: false, reason: `${container} is not an object in ${file}` };
   }
-  if (!(serverKey in (obj as Record<string, unknown>))) {
+  if (!(serverKey in obj)) {
     return { ok: false, reason: `'${serverKey}' is no longer in ${container}` };
   }
-  delete (obj as Record<string, unknown>)[serverKey];
+  delete obj[serverKey];
   return writeConfigJson(file, parsed.config);
 }
 
@@ -699,7 +749,7 @@ export async function applyRemove(planId: string, opts: { discardLocalEdits?: bo
       // with the runtime, and a "not found" answer from the CLI means the record was already stale.
       if (action.cli) {
         for (const step of action.cli.runs) {
-          const result = await defaultExec(step.command, step.args, MCP_CLI_TIMEOUT_MS);
+          const result = await defaultExec(step.command, step.args, MCP_CLI_TIMEOUT_MS, action.cwd);
           if (result.code !== 0) {
             return { ok: false, code: 'apply_failed', message: `${action.cli.echo} exited ${result.code}: ${result.stderr.slice(0, 200)}` };
           }

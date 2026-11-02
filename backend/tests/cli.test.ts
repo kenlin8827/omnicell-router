@@ -1335,7 +1335,7 @@ describe('Embedded UI & Management API Endpoints', () => {
     expect(json.metrics).toBeDefined();
     expect(json.circuitBreakers).toBeDefined();
     expect(Array.isArray(json.clients)).toBe(true);
-    expect(json.clients.length).toBe(9);
+    expect(json.clients.length).toBe(10);
   });
 
   it('should support reading and validating raw YAML config on /api/admin/config/raw', async () => {

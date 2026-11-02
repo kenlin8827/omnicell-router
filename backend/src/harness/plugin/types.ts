@@ -167,5 +167,8 @@ export interface PluginAdapter {
    * (`<plugin>@<marketplace>`); an npm row still resolves through the registry. Nothing here
    * bypasses the gates.
    */
-  install(row: CatalogRow, opts?: { scope?: 'global' | 'project'; confirm?: boolean }): Promise<InstallResult>;
+  install(
+    row: CatalogRow,
+    opts?: { scope?: 'global' | 'project'; confirm?: boolean; projectRoot?: string }
+  ): Promise<InstallResult>;
 }

@@ -52,14 +52,25 @@
   the names, `setKeys` marks a stored value, a blank value keeps it (or writes the host's environment
   reference) and a typed value is stored literally and never read back. The transport segment is
   labelled "Remote URL", not "SSE": the verified hosts declare no transport field (§D8).
+- **Amended**: 2026-11-03 — `openclaw` joins the host catalog on all three kinds: skills
+  (`~/.openclaw/skills` global, bare workspace `skills/` project, both plus the shared tree,
+  `readsUniversal`), a CLI-materialized MCP landing (§D8.13, the JSON5 variant: the central
+  `~/.openclaw/openclaw.json` nests its servers at `mcp.servers` in a comment-carrying JSON5 file
+  read through `json5`, written only by `openclaw mcp add` / `mcp unset`, global-only), and a
+  plugin subprocess landing (`openclaw plugins install <spec> --force`; git rows run the
+  `--marketplace` chain). The MCP landing format union gains `json5` and the container key becomes
+  dot-path-aware (`mcpContainerAt` / `ensureMcpContainer`). The MCP grammar was verified against
+  the SHIPPED 2026.10.10 binary (a real add/unset round-trip confirmed the nested container,
+  `${KEY}` references and `--no-probe`; the CLI's `--header` takes `KEY=value`, not the
+  `KEY: value` its prose examples show).
 - **Related**: ADR-0010 (definition ownership + materialization targets), ADR-0006 (credential store —
   never read by this domain), ADR-0013 (observation-ledger precedent), ADR-0007 (environment layout,
   trash-based delete)
 
 ## Context
 
-The gateway already owns a **client** relationship with eight runtimes (`SupportedClient`: `opencode`,
-`opencode-proxy`, `claude`, `codex`, `pi`, `dsh`, `omp`, `grok`). That relationship is about **traffic**: an adapter
+The gateway already owns a **client** relationship with ten runtimes (`SupportedClient`: `opencode`,
+`opencode-proxy`, `claude`, `codex`, `pi`, `dsh`, `omp`, `grok`, `kimi`, `openclaw`). That relationship is about **traffic**: an adapter
 writes the runtime's model/auth config so requests flow through the gateway, and stops there.
 
 What the runtimes can additionally be given — **skills** (instruction folders), **MCP servers** (tool
@@ -102,7 +113,7 @@ Two files share the table, with a hard split:
   small file's data bug and a wrong rule is one implementation bug.
 
 Capabilities are **separate interfaces**, not nine methods on every host: fifteen hosts have a skills
-location, seven have a verified MCP landing (four file-merge, three CLI-materialized), ten have a verified plugin landing (any declared write
+location, eight have a verified MCP landing (four file-merge, four CLI-materialized), eleven have a verified plugin landing (any declared write
 path — local config, subprocess, or marketplace chain; see the host table). A host that cannot do
 MCP never implements `McpHost`, so absence is a type fact instead of a runtime `unsupported` throw.
 
@@ -112,39 +123,42 @@ differ in landing spellings only, and plugin identity is `plugin:<harness>:<cano
 carries both spellings during a migration.
 
 Global roots derive from `os.homedir()` and `XDG_CONFIG_HOME` (fallback `~/.config`); project roots
-are repo-relative and resolved against the gateway process's cwd — declared, but not reachable while
-`ENABLED_SCOPES` is `['global']` (see **Scope** below). Only the cells below have a landing;
+are repo-relative and resolved against the operator-selected project's root (the console sends it;
+the fallback is the gateway process's cwd) — see **Scope** below. Only the cells below have a landing;
 a kind × host cell that is empty is refused at resolve time rather than guessed.
 
 | Host | Skills: global / project | MCP landing | Plugin landing |
 | :--- | :--- | :--- | :--- |
 | universal | `~/.agents/skills` / `.agents/skills` | — | — |
 | opencode | `$XDG/opencode/skills` / `.agents/skills` | `opencode.json` · `mcp` | v1 `opencode.json` · `plugin[]` · `plugin/`; v2 `opencode.jsonc` · `plugins[]` · `plugins/` |
-| claude | `~/.claude/skills` / `.claude/skills` | CLI (§D8.13): `claude mcp add-json <name> '<entry>' --scope user` → `~/.claude.json` · `mcpServers` (read-only) | `claude plugin install <id> --scope user` (subprocess); record `~/.claude/plugins/installed_plugins.json` · `plugins` map (§D8.11) |
-| codex | `~/.agents/skills` / `.agents/skills` | CLI (§D8.13): `codex mcp add <name> [--env K=V] -- <cmd>` / `--url` → `~/.codex/config.toml` · `mcp_servers` (TOML, read-only) | `codex plugin marketplace add {repo} --ref main` → `plugin marketplace upgrade` → `plugin add {plugin}@{marketplace}` (§D9) |
-| pi | `~/.agents/skills` / `.agents/skills` | `~/.pi/agent/mcp.json` · `mcpServers` | `pi install npm:<spec>` (subprocess) |
+| claude | `~/.claude/skills` / `.claude/skills` | CLI (§D8.13): `claude mcp add-json <name> '<entry>' --scope user` → `~/.claude.json` · `mcpServers`; project `.mcp.json` (read-only observation) | `claude plugin install <id> --scope user\|project` (subprocess); record `~/.claude/plugins/installed_plugins.json` · `plugins` map (§D8.11) |
+| codex | `~/.agents/skills` / `.codex/skills` — plus the shared project tree, `readsUniversal` | CLI (§D8.13): `codex mcp add <name> [--env K=V] -- <cmd>` / `--url` → `~/.codex/config.toml` · `mcp_servers` (TOML, read-only; global-only — the verb has no project grammar) | `codex plugin marketplace add {repo} --ref main` → `plugin marketplace upgrade` → `plugin add {plugin}@{marketplace}` (§D9) |
+| pi | `~/.pi/agent/skills` / `.pi/skills` (still reads the shared tree, `readsUniversal`) | `~/.pi/agent/mcp.json` · `mcpServers` | `pi install npm:<spec>` (subprocess) |
 | dsh | — | — | — |
-| omp | `~/.omp/skills` (relocated by `PI_CONFIG_DIR`) / `.omp/skills` | `~/.omp/agent/mcp.json` · `mcpServers` | — |
+| omp | `~/.omp/skills` (relocated by `PI_CONFIG_DIR`) / `.omp/skills` | `~/.omp/agent/mcp.json` · `mcpServers`; project `.omp/mcp.json` | marketplace chain + loose `.omp/extensions` roots (both scopes) |
 | cursor | `~/.cursor/skills` / `.agents/skills` | — | `/add-plugin {plugin}` — interactive (§D9) |
-| github-copilot | `~/.copilot/skills` / `.agents/skills` | — | `copilot plugin marketplace add {repo}` → `plugin install {plugin}@{marketplace}` (§D9) |
-| kimi | `~/.kimi-code/skills` / `.kimi-code/skills` | FILE MERGE: `~/.kimi-code/mcp.json` (`KIMI_CODE_HOME`) · project `.kimi-code/mcp.json` · `mcpServers` (§D8.13, literalEnv) | `kimi web` local API (§D8.14) |
-| gemini-cli | `~/.gemini/skills` / `.agents/skills` | — | — |
-| cline | `~/.agents/skills` / `.agents/skills` | — | — |
+| kimi | `~/.kimi-code/skills` (relocated by `KIMI_CODE_HOME`) / `.kimi-code/skills` | FILE MERGE: `~/.kimi-code/mcp.json` (`KIMI_CODE_HOME`) · project `.kimi-code/mcp.json` · `mcpServers` (§D8.13, literalEnv) | root `kimi.plugin.json` (canonical; the `.kimi-plugin/` directory is the fallback); install via the local web API (`kimi web`, §D9 amendment 2026-11-01) |
+| gemini-cli | `~/.gemini/skills` / `.gemini/skills` — plus the shared tree, `readsUniversal` | — | — |
+| cline | `~/.cline/skills` / `.cline/skills` — plus the shared tree, `readsUniversal` | — | — |
 | amp | `$XDG/agents/skills` / `.agents/skills` | — | — |
-| grok | `~/.grok/skills` / `.grok/skills` | CLI (§D8.13): `grok mcp add <name> [-e K=V] -- <cmd>` / `--transport http <url> [-H "K: V"]` → `~/.grok/config.toml` · `mcp_servers` (TOML, read-only) | `grok plugin install <url> --trust` (subprocess; `--trust` is the vendor's required non-interactive grammar, not a confirmation bypass — gate 3 confirms first); record `~/.grok/plugins/` (§D9); marketplace sources persist in `~/.grok/settings.json` `extraKnownMarketplaces` (the `config.toml` TOML form is not read — no TOML reader in this repo) |
+| grok | `~/.grok/skills` / `.grok/skills` | CLI (§D8.13): `grok mcp add <name> [-e K=V] [-s user\|project] -- <cmd>` / `--transport http <url> [--header "K: V"] [-s …]` → `~/.grok/config.toml` / project `.grok/config.toml` · `mcp_servers` (TOML, read-only) | `grok plugin install <url> --trust` (subprocess; `--trust` is the vendor's required non-interactive grammar, not a confirmation bypass — gate 3 confirms first); record `~/.grok/plugins/` (§D9); marketplace sources persist in `~/.grok/settings.json` `extraKnownMarketplaces` (the `config.toml` TOML form is not read — no TOML reader in this repo) |
 | windsurf | `~/.codeium/windsurf/skills` / `.windsurf/skills` | — | — |
 | zed | `~/.agents/skills` / `.agents/skills` | — | — |
 | antigravity | — | — | `.antigravity-plugin/plugin.json` (`agy plugin install <url>`) |
 | factory | — | — | `.factory-plugin/` (`marketplace.json` + `plugin.json`; `droid plugin marketplace add <url>`) |
-| kimi | `~/.kimi-code/skills` (relocated by `KIMI_CODE_HOME`) / `.kimi-code/skills` | — | root `kimi.plugin.json` (canonical; the `.kimi-plugin/` directory is the fallback); install via the local web API (`kimi web`, §D9 amendment 2026-11-01) |
+| openclaw | `~/.openclaw/skills` (state dir, relocated by `OPENCLAW_STATE_DIR`) / bare `skills/` (workspace) — plus the shared tree, `readsUniversal` | CLI (§D8.13, JSON5 variant): `openclaw mcp add <name> --command C --arg A… --env K=V… [--cwd D]` / `--url U --transport streamable-http --header K=V` (always `--no-probe`) → `~/.openclaw/openclaw.json` (relocated by `OPENCLAW_CONFIG_PATH`) · `mcp.servers` (JSON5, read-only, global-only — no project landing) | `openclaw plugins install <spec> --force` (subprocess; npm specs pin the `npm:` prefix because a bare name resolves through ClawHub; `--force` is the vendor's required non-interactive confirmation for non-ClawHub sources — gate 3 confirms first); git rows run `openclaw plugins install {plugin} --marketplace {repo} --force`; loose `.openclaw/extensions` roots (state dir + workspace) are a read surface |
 
+- **Pi skills land in pi's own directories (amendment, 2026-12).** pi's resource loader serves
+  `<agentDir>/skills` (`~/.pi/agent/skills`) and `<cwd>/.pi/skills` as top-level user/project
+  resource roots, so the skills landing moved off the shared-only cell to the vendor directories
+  with `readsUniversal` still on. Earlier this cell rode `~/.agents/skills` alone.
 - **A verified plugin landing is any DECLARED write path.** Local config/declared-store/loose-dir
   landings (opencode), package-manager subprocesses (pi, claude), and the runtime's own marketplace
-  chains (§D9: claude, codex, github-copilot, factory, antigravity, opencode, cursor, grok; kimi answers via its local web API instead)
+  chains (§D9: claude, codex, factory, antigravity, opencode, cursor, grok; kimi answers via its local web API instead)
   all count — an INTERACTIVE chain is displayed at gate 3 and never spawned, which is still an
   answerable write path. The console's `hasExt` gate reads the adapter's `hasPluginLanding()`
   (base.ts): a host whose adapter declares none is hidden, never offered as a refusal-only checkbox.
-- **Most hosts read, few hosts own.** Twelve hosts read the project `.agents/skills`; one directory is
+- **Most hosts read, few hosts own.** Fourteen hosts read the project `.agents/skills`; one directory is
   one copy, so `skillOwner()` (first adapter in registry order resolving to that path) decides the
   recorded host and every other host is an alias. Install, inventory and the console all use that rule.
 - **Ownership and readership are two answers, and the console asks both.** `skillOwner()` answers "who
@@ -174,14 +188,31 @@ a kind × host cell that is empty is refused at resolve time rather than guessed
   reported as "not read".
 - **`host ≠ SupportedClient`.** Cursor/VS Code/Zed/Windsurf are artifact hosts that will never be
   traffic clients; the traffic enum is not widened for them.
-- **Scope — global only; project scope is deferred, not deleted.** The accept list is one constant,
-  `ENABLED_SCOPES` (`harness/scopes.ts`), and it holds `['global']`. Everything product-facing reads
-  it: the install route refuses anything else (`unsupported_scope`), `scanInventory` never reads or
-  scans a project skills root / plugin source / MCP landing, and the console offers no scope choice
-  (it always sends `global`). The seam is what the adapters already declare — `SkillsSpec.project`,
-  `configProject`, `looseDir.project` stay spelled exactly once per host — plus the writers' `scope`
-  parameter, so shipping project support is that list plus the console selector. The removal guard
-  keeps BOTH scopes: a copy that landed inside a repo before the gate existed is still removable.
+- **Scope — global and project.** The accept list is one constant, `ENABLED_SCOPES`
+  (`harness/scopes.ts`), and it holds `['global', 'project']`. Everything product-facing reads it:
+  the install/edit routes refuse anything else (`unsupported_scope`), `scanInventory` reads the
+  project skills roots / plugin sources / MCP landings under the console-selected project root, and
+  the console forks every kind's installed view into global/project tabs. The project landings are
+  what the adapters already declare — `SkillsSpec.project`, `configProject`, `looseDir.project` stay
+  spelled exactly once per host — plus the writers' `scope` parameter. Two scope-aware details: a
+  CLI-materialized project landing (§D8.13) runs the runtime's verb with the PROJECT ROOT as the
+  subprocess's cwd, because claude `--scope project` / grok `-s project` locate the landing by cwd —
+  codex's `mcp add`/`mcp remove` have no scope grammar at all, so the adapter REFUSES project scope
+  rather than silently writing the global config; and an `external` copy carries an identity token
+  instead of a path, so the manifest records `projectRoot` on every project-scope copy as the only
+  project attribution. The removal guard keeps BOTH scopes: a copy recorded under either scope is
+  removable.
+  Scope capability is per host × kind, not build-wide: `HostAdapter.supportedScopes(kind)` is the
+  answer every consumer reads, derived once in `BaseHostAdapter` from the kind's own declarations —
+  a project plugin landing exists only when the spec declares one (`configProject`+`container`,
+  `declared.project`, `looseDir.project`, a marketplace command carrying the `{scope}` token, or
+  scope-aware `subprocessArgs`); an explicit `scopes?` override on `PluginSpec`/`HostMcpSpec`
+  covers what no declaration carries (codex MCP: the project file is read-observable but
+  `codex mcp add` has no project-scope grammar, so the spec answers `['global']`).
+  `planPlugin`/`planMcp` refuse a scope absent from the list — landing global while the manifest
+  records `project` would split the manifest, the inventory and uninstall across different truths —
+  and `/hosts` serves the matrix as `kindScopes` so the console never offers a scope the writer
+  would refuse (the Project chip is hidden, and the submit path coerces a stale pick to `global`).
   A skill name is normalized to `^[a-z0-9]+(-[a-z0-9]+)*$` and the resolved target must stay inside
   its root (`adapter.skillTarget` refuses anything that escapes).
 - **`readsUniversal`** records whether a runtime reads the cross-agent `.agents` directory natively;
@@ -189,7 +220,7 @@ a kind × host cell that is empty is refused at resolve time rather than guessed
   write.
 - **The shared set has exactly one exclusion, and it is ON by default.** A pinned skills page shows
   every row its runtime can LOAD, so the rows owned by `universal` (the shared `.agents` tree, read by
-  twelve runtimes) repeat under every rail entry and crowd out the rows that ARE private to the pinned
+  fourteen runtimes) repeat under every rail entry and crowd out the rows that ARE private to the pinned
   runtime. A `hideShared` switch narrows them out by copy ownership (`row.hosts` contains the shared
   host). It is a facet, not a mode — it narrows the same list the source chips count from, so every
   chip number stays honest — and it is absent where it would mean nothing: on MCP/plugin pages (no
@@ -580,7 +611,7 @@ explicit (`configured → lite`), so a shared session can never ratchet upward.
    `sourceId` names the WRITER that produced the payload; `listedOn` (writer source first, deduped,
    capped at 8, validated against the source registry at the route) records the surfaces the row was
    BROWSED on, because a catalog row can carry the writing source's key — a Pi-catalog package installs
-   as `npm:<pkg>`. The local tab's source chips narrow and count by the union of both, and it offers a
+   as `npm:<pkg>`. The installed tab's source chips narrow and count by the union of both, and it offers a
    chip only where that source has at least one installed row on the page (an unfaceted predicate: a
    count narrowed to 0 by the search keeps its chip). The row's own source cell answers "where did I
    install this from" with the BROWSE surface — a Pi-catalog package reads `pi.dev`, because that is
@@ -658,14 +689,17 @@ explicit (`configured → lite`), so a shared session can never ratchet upward.
     TOLERANTLY: only verdict lines become rows, an unrecognized format answers "no live claim"),
     and kimi (`kimi mcp test <name>` per server — the runtime's own loader, exit 0 is the runtime's
     "this server works"; no batch command exists, so the probe enumerates `mcp.json` and runs the
-    tests in parallel). A host without a usable surface answers "no live claim", never a failure
-    verdict, and the on-disk state stands alone: codex's `mcp list --json` carries only the auth
-    dimension, and pi / omp expose no status command at all.
-13. **An MCP landing is a per-host CONTRACT, not one entry spelling (amendment, 2026-12).** Seven hosts
+    tests in parallel; amendment 2026-11-03: the SHIPPED v2.4.1 binary has no `mcp` subcommand —
+    `kimi --help` lists none and `kimi mcp test` answers `unknown command 'mcp'` — so the first
+    test doubles as a capability probe and that answer reads as "no live claim", never one fake
+    failure per configured server). A host without a usable surface answers "no live claim", never
+    a failure verdict, and the on-disk state stands alone: codex's `mcp list --json` carries only
+    the auth dimension, and pi / omp expose no status command at all.
+13. **An MCP landing is a per-host CONTRACT, not one entry spelling (amendment, 2026-12).** Eight hosts
     land MCP servers and their configs agree on nothing but "named server": opencode merges an object
     into a config file it already owns, pi and omp each keep a dedicated `mcp.json`, kimi keeps a
-    dedicated `mcp.json` with NO env expansion (`literalEnv`), and claude, codex and
-    grok write through their own CLI (the §D8.13 CLI-materialized landing below). The landing is
+    dedicated `mcp.json` with NO env expansion (`literalEnv`), and claude, codex, grok and
+    openclaw write through their own CLI (the §D8.13 CLI-materialized landing below). The landing is
     therefore four answers per host — path/container (§D8.2) plus `shape`, `secretRef` and
     `namePattern` — and every one of them was READ from the runtime (its shipped docs, its config
     schema, or the file its own `add` command writes), never inferred from a sibling runtime:
@@ -697,17 +731,27 @@ explicit (`configured → lite`), so a shared session can never ratchet upward.
 
     **CLI-materialized landings (amendment, 2026-11-02).** A host whose config file is
     RUNTIME-OWNED state — claude's `~/.claude.json` also carries session/user state and is rewritten
-    by the runtime itself; codex's and grok's configs are comment-carrying TOML — must never be
-    reserialized by this gateway. Those hosts get a FOURTH write surface, the CLI-materialized
-    landing: the adapter declares `mcpSpec.cli` (the runtime's own `addArgs` / `removeArgs`
-    grammars, verified from the vendor CLI: `claude mcp add-json <name> '<entry>' --scope
-    user|project`, `claude mcp remove`; `codex mcp add <name> [--env K=V…] -- <command…>` / `--url`,
-    `codex mcp remove`; `grok mcp add <name> [-e K=V] -- <command…>` / `--transport http <url>
-    [-H "K: V"]`, `grok mcp remove <name> -s user|project` — grok's scope flag sits BEFORE `--`),
-    and the writers branch on it:
+    by the runtime itself; codex's and grok's configs are comment-carrying TOML; openclaw's
+    `~/.openclaw/openclaw.json` is comment-and-unquoted-key JSON5 whose vendor examples spell
+    `mcp: { servers: … }` bare — must never be reserialized by this gateway. Those hosts get a
+    FOURTH write surface, the CLI-materialized landing: the adapter declares `mcpSpec.cli`
+    (the runtime's own `addArgs` / `removeArgs` grammars, verified from the vendor CLI: `claude mcp
+    add-json <name> '<entry>' --scope user|project`, `claude mcp remove`; `codex mcp add <name>
+    [--env K=V…] -- <command…>` / `--url`, `codex mcp remove`; `grok mcp add <name> [-e K=V] --
+    <command…>` / `--transport http <url> [-H "K: V"]`, `grok mcp remove <name> -s user|project`
+    — grok's scope flag sits BEFORE `--`; `openclaw mcp add <name> --command C --arg A… --env K=V…`
+    / `--url U --transport streamable-http --header K=V`, always with `--no-probe` because the
+    add probes the live server by default and a `${KEY}` secret reference unsatisfied in this shell
+    would fail the probe before the entry saves, and `openclaw mcp unset <name>` for the inverse —
+    the definition is CENTRAL by vendor design, so the landing is global-only with no project
+    grammar), and the writers branch on it:
     - the config file stays a READ surface (JSON for claude, TOML via `@iarna/toml` for codex and
-      grok — a parse, never a write), feeding discovery, the change plan (`addedKeys`/`changedKeys`) and the
-      edit sheet's pre-image exactly as for a merge landing;
+      grok, JSON5 via `json5` for openclaw — a parse, never a write), feeding discovery, the change
+      plan (`addedKeys`/`changedKeys`) and the
+      edit sheet's pre-image exactly as for a merge landing; openclaw's container key is a DOT PATH
+      (`mcp.servers`), resolved by `mcpContainerAt` (read) and `ensureMcpContainer`
+      (resolve-or-create) — the flat spellings every other host uses contain no dot, so their
+      resolution is unchanged;
     - the plan composes the runtime's own argv at PLAN time (`target.cli`, echoed both as
       `cli.echo` and the shared `echo` key), so a grammar refusal (codex: env values are LITERAL —
       no `${KEY}` expansion, so an unnamed secret is refused; codex remote servers carry no custom
@@ -724,9 +768,9 @@ explicit (`configured → lite`), so a shared session can never ratchet upward.
 ## Deferred (not implemented — do not assume)
 
 | Area | State |
-| MCP landings for claude / codex / grok | SHIPPED as CLI-materialized landings (§D8.13 amendment, 2026-11-02): the runtime's own `mcp add`/`mcp remove` verbs write, the runtime-owned config file is read-only observation, copies are recorded `external`. kimi SHIPPED as a file-merge landing (its dedicated `mcp.json` is plain JSON, `literalEnv`). Cursor and `dsh` still have no verified MCP surface at all |
+| MCP landings for claude / codex / grok / openclaw | SHIPPED as CLI-materialized landings (§D8.13 amendment, 2026-11-02; openclaw added 2026-11-03, the JSON5 variant): the runtime's own `mcp add`/`mcp remove` verbs write, the runtime-owned config file is read-only observation, copies are recorded `external`. kimi SHIPPED as a file-merge landing (its dedicated `mcp.json` is plain JSON, `literalEnv`). Cursor and `dsh` still have no verified MCP surface at all |
 | ~~A CLI-materialized MCP landing~~ | built (§D8.13 amendment, 2026-11-02): plan composes the runtime's argv at gate 2, apply spawns it bounded, the copy is `external`, removal is the runtime's own verb (`cli-remove`) |
-| Plugin landings beyond the declared write paths (opencode `config`; pi, claude, grok `subprocess`; claude's map record §D8.11; antigravity / factory / kimi manifests; the §D9 marketplace chains of claude, codex, github-copilot, factory, antigravity, opencode, cursor, grok; kimi's web API §D9 amendment) | absent; other hosts refuse |
+| Plugin landings beyond the declared write paths (opencode `config`; pi, claude, grok `subprocess`; claude's map record §D8.11; antigravity / factory / kimi manifests; the §D9 marketplace chains of claude, codex, factory, antigravity, opencode, cursor, grok; kimi's web API §D9 amendment) | absent; other hosts refuse |
 | npm as a **skill** source | no longer a view source on any axis; `npm:<pkg>` is an install resolver only, and the skill axis answers `unsupported_kind` |
 | PulseMCP / mcp.so | no live adapter and no row in the view (measured 410 retired / 404) |
 | Sources declared in `config.yaml` | sources are the `common/source-views.ts` `SOURCES` + `registry.ts`; no `harness.sources` config section |
@@ -744,9 +788,10 @@ explicit (`configured → lite`), so a shared session can never ratchet upward.
   row, not a page rewrite; identity, trust and the removal ops are stated once and reused everywhere.
 - Positive: the removal op keyed on landing shape is what stops "uninstall one plugin" from meaning
   "delete the client's whole configuration" — the failure mode the earlier provenance-keyed design had.
-- Negative: capability per (kind × host) is very uneven — MCP on opencode, pi and omp (file merge) plus claude and codex (CLI), extensions
+- Negative: capability per (kind × host) is very uneven — MCP on opencode, pi, omp and kimi
+  (file merge) plus claude, codex, grok and openclaw (CLI), extensions
   wherever a write path is declared
-  (opencode/pi/claude/codex/cursor/github-copilot/antigravity/factory/kimi/grok).
+  (opencode/pi/claude/codex/cursor/omp/antigravity/factory/kimi/grok/openclaw).
   That is honest, but it means most host rows are read-only for two of the three kinds.
 - Negative: a runtime-owned copy removed from the console stops loading but its bytes stay in the
   runtime's store; that is the truth of editing a declaration and the console must keep saying it.
@@ -786,7 +831,7 @@ explicit (`configured → lite`), so a shared session can never ratchet upward.
 - `backend/src/harness/plugin/adapters/` — one file per harness: `base.ts` (the shared market engine:
   source CRUD, index/federated merge, `install(row)`), `index.ts` (the adapter factory and
   `probeOptionsFor` — the only construction point), `pi-dev.ts` / `pi-github.ts` / `claude.ts` /
-  `codex.ts` / `cursor.ts` / `gemini.ts` / `grok.ts` / `copilot.ts` / `antigravity.ts` / `factory.ts` /
+  `codex.ts` / `cursor.ts` / `gemini.ts` / `grok.ts` / `antigravity.ts` / `factory.ts` /
   `kimi.ts` / `universal.ts` (each harness's form; pi keeps its official surface and its operator git
   surface in separate files), plus `plugin/catalog.ts` (the harvested JSONL index) and
   `plugin/builtin.ts` (the per-harness built-in view lookup).
@@ -807,9 +852,10 @@ explicit (`configured → lite`), so a shared session can never ratchet upward.
 
 ## Open questions
 
-- Which additional MCP landings are worth verifying next: Cursor (vendor docs). Claude, codex and
-  grok shipped as CLI-materialized landings and kimi as a file-merge landing (§D8.13 amendment,
-  2026-11-02). Each needs vendor-doc confirmation before it enters `HOSTS`.
+- Which additional MCP landings are worth verifying next: Cursor (vendor docs). Claude, codex,
+  grok and openclaw shipped as CLI-materialized landings and kimi as a file-merge landing
+  (§D8.13 amendment, 2026-11-02; openclaw 2026-11-03). Each needs vendor-doc confirmation before
+  it enters `HOSTS`.
 - Whether a verified `pi uninstall` should be added as an additional op on top of the declaration edit,
   or whether the declaration edit is the wanted contract (it is the only one that cannot delete bytes
   we do not own).
@@ -829,11 +875,11 @@ and an MCP source names a package whose launch is the same in every runtime — 
 file differs, so a harness key there would be a lie. `slug` stays one identity across all THREE
 files.
 `marketplace.json` catalog format has become the industry's converging
-distribution shape (grok, Copilot CLI, Goose, omp all read it or a clone), while the CONTENT under
+distribution shape (grok, Goose, omp all read it or a clone), while the CONTENT under
 it has already converged on one primitive: `SKILL.md`.
 
 **Recognition (the probe).** One probe at add-time and on each rescan: repo meta + HEAD commit +
-git tree. A recognized manifest (`.claude-plugin/marketplace.json` and its grok / Copilot / Goose
+git tree. A recognized manifest (`.claude-plugin/marketplace.json` and its grok / Goose
 clones, one parser) narrows the scan to the author's declared relative-path source directories;
 external manifest sources (`git-subdir`, `url`, `npm`, …) are REPORTED, not resolved — phase one
 does not follow them. No manifest (or an unparseable one — a broken file is not a manifest) falls
@@ -860,11 +906,11 @@ is not pi's format, so there is no abstract "shape" registry to keep in sync.
 
 **Clone directories belong to their harness.** The same format appears under per-runtime
 directories, and each is claimed by its owning adapter, which reuses Claude's parser: `claude.ts`
-→ `.claude-plugin/marketplace.json`, `grok.ts` → `.grok-plugin/marketplace.json`, `copilot.ts` →
-`.github/plugin/marketplace.json`, `factory.ts` → `.factory-plugin/marketplace.json`,
+→ `.claude-plugin/marketplace.json`, `grok.ts` → `.grok-plugin/marketplace.json`,
+`factory.ts` → `.factory-plugin/marketplace.json`,
 `universal.ts` (the AGENTS/Goose convention) → `.agents/plugins/marketplace.json`. A harness with no
 catalog file is directory-keyed instead (codex, cursor, antigravity, and the catalog-less
-fallback of copilot/factory/grok; kimi joins this group only as the FALLBACK beneath its root
+fallback of factory/grok; kimi joins this group only as the FALLBACK beneath its root
 manifest); its vendor JSON is not parsed generically. A Claude source never
 reads grok's own directory and vice versa; the parser is shared, the DIRECTORY is not. ONE
 exception, vendor-verified: Grok accepts the `.claude-plugin/` equivalents of its own form (user
@@ -884,7 +930,7 @@ existence the plugin, one row named after the repository; a root manifest (gemin
 `gemini-extension.json`, kimi `kimi.plugin.json`) needs no layer at all. Each host adapter declares the
 ecosystem default (`extensionDir` in `harness/host/adapters/<host>.ts`), and the probe APPLIES it
 when the source pins none: the scan is the harness's own form directory (`.claude-plugin/`,
-`.codex-plugin/`, `.github/plugin/`, `.cursor-plugin/`, `.factory-plugin/`, `.kimi-plugin/`,
+`.codex-plugin/`, `.cursor-plugin/`, `.factory-plugin/`, `.kimi-plugin/`,
 `.antigravity-plugin/`, `pi-extension/`, …), not the whole repository. An explicit
 `extensionDir` still wins; a default directory the repository does not publish degrades to the
 bare `SKILL.md` tree instead of failing, and the effective layer is recorded in the snapshot. The
@@ -980,7 +1026,7 @@ read as shared and flattened on the next mutation.
 
 - **A shared source still installs per landing.** Sharing the catalogue does not fan an install
   out: the market row installs into the page's pinned host (§D11, 2026-12), and only hosts with a
-  verified MCP landing (`opencode`, `pi`, `omp`, `claude`, `codex`, `kimi`, `grok`) list the source at all. The source view therefore
+  verified MCP landing (`opencode`, `pi`, `omp`, `claude`, `codex`, `kimi`, `grok`, `openclaw`) list the source at all. The source view therefore
   reports that landing set as its `hosts` claim, never the snapshot's (a package probe detects no
   forms and records `hosts: []`).
 
@@ -1016,7 +1062,7 @@ read as shared and flattened on the next mutation.
 
 **One file per harness, one adapter chain per harness.** Each harness's market lives in its OWN
 file under `harness/plugin/adapters/` (`pi-dev.ts`, `pi-github.ts`, `claude.ts`, `codex.ts`,
-`cursor.ts`, `gemini.ts`, `grok.ts`, `copilot.ts`, `antigravity.ts`, `factory.ts`, `kimi.ts`,
+`cursor.ts`, `gemini.ts`, `grok.ts`, `antigravity.ts`, `factory.ts`, `kimi.ts`,
 `universal.ts`): pi keeps its two surfaces apart — `pi-dev.ts` holds the live official catalog and
 `PiDevPluginMarketAdapter`, `pi-github.ts` holds `PiGithubPluginMarketAdapter` and the git probe.
 Claude's catalog parser lives in `claude.ts`; Pi's package and Gemini's and Kimi's root manifest
@@ -1128,7 +1174,7 @@ operator entries whose snapshot carries that kind. SKILLS are GLOBAL: ClawHub se
 alike, and a skill source is registered with NO harness scope, so the same list appears on every
 harness page and its snapshot lives in the global snapshot path. MCP PACKAGE SOURCES are GLOBAL
 too: one `shared` bucket, the same list on every MCP-capable page, one global snapshot — the
-landing set (`opencode`, `pi`, `omp`, `claude`, `codex`, `kimi`, `grok`) is the source's only host claim. PLUGIN is PER-HARNESS: a
+landing set (`opencode`, `pi`, `omp`, `claude`, `codex`, `kimi`, `grok`, `openclaw`) is the source's only host claim. PLUGIN is PER-HARNESS: a
 plugin is installed into a specific runtime, so its BUILT-INS (their `hosts` claim) and ROWS are
 narrowed to the page's harness. A newly registered plugin entry pins to the tab that added it by
 default (§D10, 2026-11-01); the dialog offers its share opt-in only when a check detected several
@@ -1173,7 +1219,7 @@ deprecated global client functions and the `MarketplacesPage` were deleted with 
 in the same commit.
 
 **Manual MCP add is a harness-page surface (amendment, 2026-11-01).** A harness whose adapter
-implements the MCP landing (`hasMcp`) offers **Add MCP** on its local tab: a stdio launch (command,
+implements the MCP landing (`hasMcp`) offers **Add MCP** on its installed tab: a stdio launch (command,
 args, env key NAMES) or a remote-URL launch (url, header names plus an optional literal value). It rides the SAME `manualPayload`
 branch and gate 2 as a market row — the first request writes nothing and returns the merge plan
 (file, container, and the exact added/changed keys), the second re-sends with `confirm`; env/header key
@@ -1184,7 +1230,7 @@ not distinguish them. This exposes the manual escape hatch in the console — it
 directory (`MCP_DEFAULT_VIEWS` stays empty until the npm MCP source lands).
 
 **Editing an existing MCP server (amendment, 2026-11-01).** The same harness page edits any server its
-local tab lists — an OCR-installed `tracked` copy or a row the scan read from the runtime's own config.
+installed tab lists — an OCR-installed `tracked` copy or a row the scan read from the runtime's own config.
 `GET /api/admin/harness/mcp/entry` reads the entry back as a launch (`command`/`args` plus env key
 NAMES, or `url` plus header key NAMES; values never travel) and reports `setKeys` — the keys whose
 stored value is not a bare `{env:KEY}` reference (a literal or `{file:...}`) — so the form can show
@@ -1361,7 +1407,6 @@ The chains shipped with this amendment:
 | --- | --- |
 | claude | `plugin marketplace add {repo}` → `plugin install {plugin}@{marketplace} --scope {scope}` |
 | codex | `plugin marketplace add {repo} --ref main` → `plugin marketplace upgrade {marketplace}` → `plugin add {plugin}@{marketplace}` |
-| github-copilot | `plugin marketplace add {repo}` → `plugin install {plugin}@{marketplace}` |
 | factory | `plugin marketplace add {urlGit}` → `plugin install {plugin}@{marketplace} --scope {scope}` |
 | antigravity | `plugin install {url}` |
 | opencode | `plugin add github:{repo}` |

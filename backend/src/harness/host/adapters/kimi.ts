@@ -45,7 +45,7 @@ export class KimiAdapter extends BaseHostAdapter {
     literalEnv: true,
   };
 
-  /** Live status from kimi's own per-server connection test; writes only prove the config member (§D8.8). */
+  /** Live status from kimi's own per-server connection test; a binary without the `mcp` subcommand (shipped v2.4.1) answers "no live claim" instead of fake failures. Writes only prove the config member (§D8.8). */
   mcpRuntime(execImpl?: (command: string, args: string[], timeoutMs: number) => Promise<{ code: number; stdout: string; stderr: string }>): Promise<McpRuntimeHostReport> {
     return probeKimiMcpRuntime(execImpl);
   }

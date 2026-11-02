@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { getProject } from '../projects/store.js';
 import type { FastifyInstance } from 'fastify';
 import { HOSTS } from '../harness/host/hosts.js';
 import {
@@ -65,6 +68,41 @@ import { parsePypiSource, probePypiSource } from '../harness/common/pypi-source.
 import { getBuiltinViewsForHarness } from '../harness/plugin/builtin.js';
 import { reconcileMarketplaces } from '../harness/host/marketplace-sync.js';
 import type { CatalogRow } from '../harness/plugin/types.js';
+
+/**
+ * Resolve the project attribution one harness request claims.
+ *
+ * `projectRoot`/`projectId` arrive from the console and become the base a writer lands in or a scan
+ * reads; an unvalidated string would let a request aim either at any directory on the machine.
+ * A `projectId` is looked up in the registry (a stale id is an ERROR, never a silent global read),
+ * and a raw root must name an existing directory — the same rule install already enforced.
+ */
+function resolveProjectRoot(
+  input: { projectRoot?: unknown; projectId?: unknown },
+  opts: { required: boolean }
+): { ok: true; projectRoot?: string } | { ok: false; message: string } {
+  const rawRoot = typeof input.projectRoot === 'string' ? input.projectRoot.trim() : '';
+  const rawId = typeof input.projectId === 'string' ? input.projectId.trim() : '';
+  let projectRoot: string | undefined;
+  if (rawRoot) {
+    projectRoot = path.resolve(rawRoot);
+    try {
+      if (!fs.statSync(projectRoot).isDirectory()) {
+        return { ok: false, message: `projectRoot is not a directory: ${projectRoot}` };
+      }
+    } catch {
+      return { ok: false, message: `projectRoot does not exist: ${projectRoot}` };
+    }
+  } else if (rawId) {
+    const proj = getProject(rawId);
+    if (!proj) return { ok: false, message: `projectId '${rawId}' not found` };
+    projectRoot = path.resolve(proj.path);
+  }
+  if (!projectRoot && opts.required) {
+    return { ok: false, message: 'projectRoot is required for project scope' };
+  }
+  return { ok: true, ...(projectRoot ? { projectRoot } : {}) };
+}
 
 /**
  * Harness admin surface (ADR-0015): sources, hosts, inventory, install, uninstall, translate.
@@ -573,23 +611,36 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
       reply.code(404);
       return { status: 'error', code: 'unknown_harness', message: `unknown harness` };
     }
-    const body = (req.body || {}) as { row?: CatalogRow; scope?: string; confirm?: boolean };
+    const body = (req.body || {}) as {
+      row?: CatalogRow;
+      scope?: string;
+      confirm?: boolean;
+      projectRoot?: string;
+      projectId?: string;
+    };
     if (!body.row || typeof body.row !== 'object') {
       reply.code(400);
       return { status: 'error', code: 'bad_request', message: 'row is required' };
     }
-    // Same trust boundary as the main install route: `project` is deferred, and the body cannot
-    // widen the scope set the rest of the domain reads from `ENABLED_SCOPES`.
-    if (!isEnabledScope(body.scope ?? 'global')) {
+    // Same trust boundary as the main install route: the body cannot widen the scope set the rest
+    // of the domain reads from `ENABLED_SCOPES`, and a project landing needs a verified root.
+    const scope = body.scope ?? 'global';
+    if (!isEnabledScope(scope)) {
       reply.code(400);
       return {
         status: 'error',
         code: 'unsupported_scope',
-        message: `scope '${body.scope}' is not supported — installs target ${ENABLED_SCOPES.join(', ')} scope`,
+        message: `scope '${scope}' is not supported — installs target ${ENABLED_SCOPES.join(', ')} scope`,
       };
     }
+    const root = resolveProjectRoot(body, { required: scope === 'project' });
+    if (!root.ok) {
+      reply.code(400);
+      return { status: 'error', code: 'bad_request', message: root.message };
+    }
     const result = await adapter.install(body.row, {
-      scope: (body.scope ?? 'global') as 'global',
+      scope,
+      ...(root.projectRoot ? { projectRoot: root.projectRoot } : {}),
       confirm: body.confirm === true,
     });
     if (!result.ok) {
@@ -608,9 +659,9 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
   // Host catalog + resolved roots. `origin` explains why a path is what it is.
   app.get('/api/admin/harness/hosts', async () => ({
     status: 'ok',
-    // The scopes this build accepts (ADR-0015 §D2 "Scope"). A consumer must read this instead of
-    // assuming a `project` landing exists: project support is deferred, and `roots` below carries
-    // exactly the scopes named here.
+    // The scopes this build accepts (ADR-0015 §D2 "Scope") — the build-wide accept list. What a
+    // given host can actually land per kind is narrower: `kindScopes` below is the per-host
+    // answer, and the writers refuse a scope absent from it.
     scopes: [...ENABLED_SCOPES],
     hosts: HOSTS.map((host) => {
       const roots = {
@@ -629,6 +680,14 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
         hasMcp: isMcpHost(adapterFor(host.id)),
         /** Plugin-capable host: its adapter implements the plugin landing capability. */
         hasExt: isPluginHost(adapterFor(host.id)),
+        /** Per-kind scope capability (ADR-0015 §D2): the scopes an install may target for each
+         *  kind. The console greys out a scope absent from the kind's list instead of letting
+         *  the operator aim an install at a landing the runtime has no write grammar for. */
+        kindScopes: {
+          skill: [...(adapterFor(host.id)?.supportedScopes('skill') ?? [])],
+          mcp: [...(adapterFor(host.id)?.supportedScopes('mcp') ?? [])],
+          plugin: [...(adapterFor(host.id)?.supportedScopes('plugin') ?? [])],
+        },
         roots,
         owner: {
           global: roots.global[0] ? skillOwner(roots.global[0].root, 'global') : null,
@@ -641,8 +700,14 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
   app.get('/api/admin/harness/applies', async () => ({ status: 'ok', applies: recentApplies(100) }));
 
   // Installed artifacts + untracked directories, reconciled per copy.
-  app.get('/api/admin/harness/inventory', async () => {
-    const inventory = scanInventory();
+  app.get('/api/admin/harness/inventory', async (req, reply) => {
+    const query = (req.query || {}) as { projectRoot?: string; projectId?: string };
+    const root = resolveProjectRoot(query, { required: false });
+    if (!root.ok) {
+      reply.code(400);
+      return { status: 'error', code: 'bad_request', message: root.message };
+    }
+    const inventory = scanInventory(root.projectRoot);
     return {
       status: 'ok',
       ...inventory,
@@ -652,7 +717,7 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
 
   // Dry run: nothing is written, and the plan expires in 10 minutes.
   app.post('/api/admin/harness/plan', async (req, reply) => {
-    const body = (req.body || {}) as { action?: string; items?: RemoveItem[] };
+    const body = (req.body || {}) as { action?: string; items?: RemoveItem[]; projectRoot?: string; projectId?: string };
     if (body.action !== 'remove') {
       reply.code(400);
       return { status: 'error', code: 'unsupported_action', message: "only 'remove' is implemented" };
@@ -682,7 +747,12 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
       }
     }
     // artifactId null = a directory with no manifest entry; root containment is the guard.
-    const plan = planRemove(body.items);
+    const root = resolveProjectRoot(body, { required: false });
+    if (!root.ok) {
+      reply.code(400);
+      return { status: 'error', code: 'bad_request', message: root.message };
+    }
+    const plan = planRemove(body.items, { projectRoot: root.projectRoot });
     if ('error' in plan) {
       reply.code(400);
       return { status: 'error', code: 'plan_rejected', message: plan.error };
@@ -1025,7 +1095,7 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
   });
 
   app.get('/api/admin/harness/mcp/entry', async (req, reply) => {
-    const query = (req.query || {}) as { host?: string; scope?: string; name?: string };
+    const query = (req.query || {}) as { host?: string; scope?: string; name?: string; projectRoot?: string; projectId?: string };
     if (!query.host || !query.name) {
       reply.code(400);
       return { status: 'error', code: 'bad_request', message: 'host and name are required' };
@@ -1043,7 +1113,17 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
         message: `scope '${scope}' is not supported — reads target ${ENABLED_SCOPES.join(', ')} scope`,
       };
     }
-    const result = readMcpEntry({ host: query.host as HarnessHostId, scope, name: query.name });
+    const root = resolveProjectRoot(query, { required: false });
+    if (!root.ok) {
+      reply.code(400);
+      return { status: 'error', code: 'bad_request', message: root.message };
+    }
+    const result = readMcpEntry({
+      host: query.host as HarnessHostId,
+      scope,
+      name: query.name,
+      ...(root.projectRoot ? { projectRoot: root.projectRoot } : {}),
+    });
     if (!result.ok) {
       reply.code(result.code === 'not_found' ? 404 : 400);
       return { status: 'error', code: result.code, message: result.message };
@@ -1067,6 +1147,8 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
       launch?: unknown;
       artifactId?: unknown;
       confirm?: boolean;
+      projectRoot?: string;
+      projectId?: string;
     };
     if (!body.host || !body.name || body.launch === undefined) {
       reply.code(400);
@@ -1086,12 +1168,18 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
         message: `scope '${scope}' is not supported — edits target ${ENABLED_SCOPES.join(', ')} scope`,
       };
     }
+    const root = resolveProjectRoot(body, { required: scope === 'project' });
+    if (!root.ok) {
+      reply.code(400);
+      return { status: 'error', code: 'bad_request', message: root.message };
+    }
     const result = await editMcpServer({
       host: body.host as HarnessHostId,
       scope,
       name: body.name,
       launch: body.launch as McpLaunch,
       ...(typeof body.artifactId === 'string' ? { artifactId: body.artifactId } : {}),
+      ...(root.projectRoot ? { projectRoot: root.projectRoot } : {}),
       confirm: body.confirm === true,
     });
     if (!result.ok) {
@@ -1131,15 +1219,16 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
       marketplace?: { repo?: string; plugin?: string; name?: string };
       hosts?: unknown;
       scope?: string;
+      projectRoot?: string;
+      projectId?: string;
     };
     const hosts = Array.isArray(body.hosts) ? body.hosts.filter((h): h is string => typeof h === 'string') : [];
     if (hosts.length === 0 || !body.scope) {
       reply.code(400);
       return { status: 'error', code: 'bad_request', message: 'hosts[] and scope are required' };
     }
-    // Scope is a capability, not a free-form field: this build installs to the user-level roots only
-    // (ADR-0015 §D2 "Scope"). The orchestrator keeps `scope` as the seam, so the refusal lives here —
-    // a request naming `project` must not reach a writer that would happily land inside the repo.
+    // Scope is a capability, not a free-form field (ADR-0015 §D2 "Scope"): the build's accept set is
+    // `ENABLED_SCOPES`, and a `project` landing additionally requires a verified `projectRoot` below.
     if (!isEnabledScope(body.scope)) {
       reply.code(400);
       return {
@@ -1148,6 +1237,12 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
         message: `scope '${body.scope}' is not supported — installs target ${ENABLED_SCOPES.join(', ')} scope`,
       };
     }
+    const root = resolveProjectRoot(body, { required: body.scope === 'project' });
+    if (!root.ok) {
+      reply.code(400);
+      return { status: 'error', code: 'bad_request', message: root.message };
+    }
+    const projectRoot = root.projectRoot;
     // Validate the host catalog HERE, at the trust boundary: an unknown id would otherwise travel
     // through resolve/write and fail deep inside a writer with a message about the wrong thing.
     const unknown = hosts.find((id) => !HOSTS.some((host) => host.id === id));
@@ -1199,6 +1294,7 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
       listedOn,
       hosts: hostIds,
       scope: body.scope,
+      ...(projectRoot ? { projectRoot } : {}),
       ...(kind === 'plugin' &&
       body.marketplace &&
       typeof body.marketplace.repo === 'string' &&
@@ -1331,7 +1427,7 @@ export function registerHarnessRoutes(app: FastifyInstance, opts: { marketplaceF
     );
   });
 
-  // System One default-model probe — the Settings "默认模型" card's second "test" button. Fires
+  // System One default-model probe — the Settings "default model" card's second "test" button. Fires
   // the REAL /v1/systemone fallback path; with a pending selection it rides as an explicit
   // `model` through the surface's own admission gates.
   app.post('/api/admin/systemone/probe', async (req) => {

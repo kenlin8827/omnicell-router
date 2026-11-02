@@ -16,7 +16,7 @@ import type { HarnessHostId, HarnessScope, Pin, TrustTier } from '../../types.js
  * skill; the store copy is content-addressed, so a retry re-uses it and costs no network.
  *
  * One host can refuse (no skills location, path already occupied, claimed by another environment)
- * while the rest proceed — refusals are reported per host, never silently dropped. Twelve hosts read
+ * while the rest proceed — refusals are reported per host, never silently dropped. Fourteen hosts read
  * the same project directory, so identical target paths are installed ONCE, labeled by the owner
  * host; the console can then never show "installed under Codex" for a directory the scan reports as
  * universal.
@@ -186,6 +186,9 @@ export function applySkill(req: SkillApplyRequest): SkillApplyResult {
           host: item.host as HarnessHostId,
           rootId: 'default',
           path: item.path,
+          // Project-scope attribution: a later project view reconciles by this root, and a copy
+          // without it would read as belonging to no project at all.
+          ...(req.scope === 'project' && req.projectRoot ? { projectRoot: req.projectRoot } : {}),
           contentHash,
           placement: 'materialized' as const,
           bytes: written,

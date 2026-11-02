@@ -275,12 +275,13 @@ describe('MCP source routes', () => {
     expect((await tab('codex')).operator.map((e) => e.slug)).toEqual(['mcp-server-fetch']);
     expect((await tab('kimi')).operator.map((e) => e.slug)).toEqual(['mcp-server-fetch']);
     expect((await tab('grok')).operator.map((e) => e.slug)).toEqual(['mcp-server-fetch']);
+    expect((await tab('openclaw')).operator.map((e) => e.slug)).toEqual(['mcp-server-fetch']);
     // A harness with no MCP landing is not a market for it.
     expect((await tab('cursor')).operator).toEqual([]);
     const globalSources = JSON.parse(
       (await app.inject({ method: 'GET', url: '/api/admin/harness/sources' })).body,
     ) as { sources: { id: string; hosts?: string[] }[] };
-    expect(globalSources.sources.find((s) => s.id === 'mp-mcp-server-fetch')?.hosts).toEqual(['opencode', 'claude', 'codex', 'pi', 'omp', 'kimi', 'grok']);
+    expect(globalSources.sources.find((s) => s.id === 'mp-mcp-server-fetch')?.hosts).toEqual(['opencode', 'claude', 'codex', 'pi', 'omp', 'kimi', 'grok', 'openclaw']);
     // The plugin tab must not list it: the snapshot carries no plugin row.
     const pluginTab = JSON.parse(
       (await app.inject({ method: 'GET', url: '/api/admin/harness/plugins/opencode/sources?kind=plugin' })).body,

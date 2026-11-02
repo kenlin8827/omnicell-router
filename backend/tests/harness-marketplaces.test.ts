@@ -26,7 +26,6 @@ import { CLAUDE_CATALOG, parseClaudeMarketplace } from '../src/harness/plugin/ad
 import { CODEX_PROBE_OPTIONS } from '../src/harness/plugin/adapters/codex.js';
 import { GEMINI_PROBE_OPTIONS } from '../src/harness/plugin/adapters/gemini.js';
 import { GROK_PROBE_OPTIONS } from '../src/harness/plugin/adapters/grok.js';
-import { COPILOT_PROBE_OPTIONS } from '../src/harness/plugin/adapters/copilot.js';
 import { UNIVERSAL_PROBE_OPTIONS } from '../src/harness/plugin/adapters/universal.js';
 import { PI_PROBE_OPTIONS } from '../src/harness/plugin/adapters/pi-github.js';
 import { harvestIndex, readIndex } from '../src/harness/plugin/catalog.js';
@@ -262,7 +261,6 @@ describe('git-marketplace probe', () => {
   it('treats a harness form directory as the plugin, never its vendor JSON', async () => {
     const cases = [
       ['claude', '.claude-plugin', true],
-      ['github-copilot', '.github/plugin', true],
       ['factory', '.factory-plugin', true],
       ['codex', '.codex-plugin', false],
       ['cursor', '.cursor-plugin', false],
@@ -523,8 +521,6 @@ describe('extension-dir grammar + slug derivation', () => {
     expect(grok.snapshot.manifest?.path).toBe('.grok-plugin/marketplace.json');
     expect(grok.snapshot.plugins).toHaveLength(1);
 
-    const copilot = await probeMarketplace(entryFor('cp'), fakeFetch({ tree: treeOf('.github/plugin') }), COPILOT_PROBE_OPTIONS);
-    expect(copilot.ok && copilot.snapshot.manifest?.path).toBe('.github/plugin/marketplace.json');
     const universal = await probeMarketplace(entryFor('u'), fakeFetch({ tree: treeOf('.agents/plugins') }), UNIVERSAL_PROBE_OPTIONS);
     expect(universal.ok && universal.snapshot.manifest?.path).toBe('.agents/plugins/marketplace.json');
   });

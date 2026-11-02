@@ -62,7 +62,7 @@ describe('mcpSources', () => {
     for (const host of capable) expect(isMcpHost(adapterFor(host))).toBe(true);
     // The catalog of verified landings is exactly the runtimes whose config path, entry shape and
     // secret syntax were READ from the runtime itself (ADR-0015 §D8) — never a guess.
-    expect([...capable].sort()).toEqual(['claude', 'codex', 'grok', 'kimi', 'omp', 'opencode', 'pi']);
+    expect([...capable].sort()).toEqual(['claude', 'codex', 'grok', 'kimi', 'omp', 'openclaw', 'opencode', 'pi']);
     expect(isMcpHost(undefined)).toBe(false);
   });
 });
@@ -136,6 +136,29 @@ describe('discoverMcp', () => {
     expect(rows.map((r) => r.name)).toEqual(['shared']);
   });
 
+  it('scopes a project key by projectRoot: one project install leaves the other project row visible', () => {
+    const projectA = path.join(path.sep, 'work', 'a');
+    const projectB = path.join(path.sep, 'work', 'b');
+    const rows = discoverMcp(
+      [
+        { ...source, scope: 'project', projectRoot: projectA },
+        { ...source, scope: 'project', projectRoot: projectB },
+      ],
+      {
+        tracked: [mcpTrackedKey('opencode', 'shared', 'project', projectA)],
+        deps: deps({ [FILE]: { mcp: { shared: { type: 'local' } } } }),
+      }
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.copies[0]!.scope).toBe('project');
+    expect(rows[0]!.copies[0]!.path).toBe(FILE);
+    // The global key stays stable — a project install must not hide a global row.
+    expect(mcpTrackedKey('opencode', 'shared')).toBe('opencode|shared');
+    expect(mcpTrackedKey('opencode', 'shared', 'project', projectA)).not.toBe(
+      mcpTrackedKey('opencode', 'shared', 'project', projectB)
+    );
+  });
+
   it('reads every declared container spelling a source names, and dedupes the same server', () => {
     const rows = discoverMcp([source, { ...source, path: FILE }], {
       deps: deps({ [FILE]: { mcp: { one: { type: 'local' } } } }),
@@ -186,10 +209,14 @@ describe('discovered MCP row removal', () => {
       )
     );
 
-    const row = discoverMcp([{ ...source, path: file }]).find((r) => r.name === 'ghost')!;
+    const row = discoverMcp([{ ...source, scope: 'project', projectRoot: root, path: file }]).find(
+      (r) => r.name === 'ghost'
+    )!;
     expect(row.removal).toEqual({ op: 'drop-server', file, container: 'mcp', entry: 'ghost' });
 
-    const plan = planRemove([{ artifactId: null, copies: row.copies, removal: row.removal }]);
+    const plan = planRemove([{ artifactId: null, copies: row.copies, removal: row.removal }], {
+      projectRoot: root,
+    });
     if ('error' in plan) throw new Error(plan.error);
     expect(plan.actions[0]!.op).toBe('drop-server');
     expect(plan.actions[0]!.file).toBe(file);

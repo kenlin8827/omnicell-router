@@ -342,12 +342,18 @@ describe('pluginSources — the host adapters are the only landing table', () =>
 
   it('reads pi through its own declaration file, lock file and loose directory', () => {
     const pi = sources.filter((s) => s.host === 'pi');
-    expect(pi.map((s) => s.kind).sort()).toEqual(['declared', 'loose-dir']);
-    const declared = pi.find((s) => s.kind === 'declared')!;
+    // `pi install --local` writes a PROJECT settings file, so both scopes declare a store; drop-in
+    // extensions exist in BOTH scopes too — `~/.pi/agent/extensions` and the project's `.pi/extensions`.
+    expect(pi.map((s) => s.kind).sort()).toEqual(['declared', 'declared', 'loose-dir', 'loose-dir']);
+    const declared = pi.find((s) => s.scope === 'global' && s.kind === 'declared')!;
     expect(declared.key).toBe('packages');
     expect(declared.path).toBe(PI_SETTINGS);
     expect(declared.lockPath).toBe(PI_LOCK);
-    expect(pi.find((s) => s.kind === 'loose-dir')!.path).toBe(PI_EXT_DIR);
+    const projectDeclared = pi.find((s) => s.scope === 'project' && s.kind === 'declared')!;
+    expect(projectDeclared.path.endsWith(path.join('.pi', 'settings.json'))).toBe(true);
+    const loose = pi.filter((s) => s.kind === 'loose-dir');
+    expect(loose.some((s) => s.path === PI_EXT_DIR)).toBe(true);
+    expect(loose.some((s) => s.scope === 'project' && s.path.endsWith(path.join('.pi', 'extensions')))).toBe(true);
   });
 
   it('reads opencode through BOTH major-version spellings, in both scopes', () => {
@@ -372,8 +378,24 @@ describe('pluginSources — the host adapters are the only landing table', () =>
     expect(loose.some((s) => s.scope === 'project')).toBe(true);
   });
 
+  it('reads openclaw through its auto-discovery extensions roots, both scopes', () => {
+    const openclaw = sources.filter((s) => s.host === 'openclaw');
+    // `.openclaw/extensions` (state dir global, workspace project) is a READ surface the runtime
+    // auto-discovers — there is no declared store on this machine, so these are the only sources.
+    expect(openclaw.map((s) => s.kind)).toEqual(['loose-dir', 'loose-dir']);
+    expect(openclaw[0]!.scope).toBe('global');
+    // The isolated runner pins OPENCLAW_STATE_DIR, so the state root is whatever the vendor env
+    // says — the test reads the same value the adapter does instead of assuming `~/.openclaw`.
+    const stateDir = process.env.OPENCLAW_STATE_DIR?.trim()
+      ? path.resolve(process.env.OPENCLAW_STATE_DIR.trim())
+      : path.join(os.homedir(), '.openclaw');
+    expect(openclaw[0]!.path).toBe(path.join(stateDir, 'extensions'));
+    expect(openclaw[1]!.scope).toBe('project');
+    expect(openclaw[1]!.path.endsWith(path.join('.openclaw', 'extensions'))).toBe(true);
+  });
+
   it('never emits a source for a host with no verified plugin landing', () => {
-    const landed = new Set(['pi', 'opencode', 'claude']);
+    const landed = new Set(['pi', 'opencode', 'claude', 'omp', 'openclaw']);
     for (const source of sources) expect(landed.has(source.host)).toBe(true);
   });
 });

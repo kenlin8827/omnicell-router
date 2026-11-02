@@ -1,23 +1,13 @@
 import type { HarnessScope } from '../types.js';
 
 /**
- * The scopes this build ACCEPTS — the single seam for project-level support (ADR-0015 §D2 "Scope",
- * "Deferred").
+ * The scopes this build ACCEPTS (ADR-0015 §D2 "Scope").
  *
- * Project discovery and install are **deferred, not deleted**: every adapter still DECLARES its
- * project landing (`SkillsSpec.project`, `configProject`, `looseDir.project`), the writers still take a
- * `scope`, and the removal guard still recognises project roots — so re-enabling project support is
- * this list plus the console's selector, not a re-spelling of thirteen adapters.
- *
- * Until then the PRODUCT boundary refuses `project`:
- *   · the install route answers `unsupported_scope` (the orchestrator keeps the parameter as the seam);
- *   · `scanInventory` never reads or scans a project root, so nothing project-local is discovered;
- *   · the console offers no scope choice and always sends `global`.
- *
- * Adding a scope here without the other three is a half-open door: installs would land where discovery
- * cannot see them.
+ * Both global and project scopes are active:
+ *   · Global scope materializes artifacts in user-level configuration directories;
+ *   · Project scope materializes artifacts in target project roots (.agents/skills, .claude, etc.).
  */
-export const ENABLED_SCOPES: readonly HarnessScope[] = ['global'];
+export const ENABLED_SCOPES: readonly HarnessScope[] = ['global', 'project'];
 
 /** True when a wire value names a scope this build accepts. */
 export function isEnabledScope(value: unknown): value is HarnessScope {

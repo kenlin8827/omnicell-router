@@ -8,9 +8,9 @@ import type { CatalogReader, MarketplacePluginRow, ParsedManifest, ProbeOptions 
  *
  * This file OWNS the converged marketplace FORMAT (`plugins[].source` are REPO-RELATIVE paths —
  * exactly the shape `openai/codex-plugin-cc` publishes, `source: "./plugins/codex"`). Claude's own
- * form is `.claude-plugin/marketplace.json`; the grok / Copilot / AGENTS clones are the SAME format
- * under their own directories, claimed by their own adapters (`grok.ts`, `copilot.ts`,
- * `universal.ts`) which reuse this parser. The shared probe executes only the hooks it is given.
+ * form is `.claude-plugin/marketplace.json`; the grok / AGENTS clones are the SAME format
+ * under their own directories, claimed by their own adapters (`grok.ts`, `universal.ts`)
+ * which reuse this parser. The shared probe executes only the hooks it is given.
  */
 export const CLAUDE_MANIFEST_PATHS = ['.claude-plugin/marketplace.json'];
 

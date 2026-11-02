@@ -38,9 +38,13 @@ export class GrokAdapter extends BaseHostAdapter {
   readonly extensionDir = '.grok-plugin';
   readonly presence = { command: 'grok', dir: path.join(home(), '.grok') };
 
+  // Measured 2026-12 against xai-org/grok-build (the repo renamed from grok-cli): user
+  // `~/.grok/skills`, project `.grok/skills`, and the shared tree `~/.agents/skills` /
+  // `.agents/skills` scanned at every tier between cwd and repo root (skills.rs:179-200).
   protected readonly skillsSpec: SkillsSpec = {
     global: path.join(home(), '.grok', 'skills'),
     project: path.join('.grok', 'skills'),
+    readsUniversal: true,
   };
 
   protected readonly extSpec: PluginSpec = {

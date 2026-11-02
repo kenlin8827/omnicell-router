@@ -1,13 +1,13 @@
 import fs from 'node:fs';
-import { hashFile } from '../../hash.js';
+import { hashFile, sha256 } from '../../hash.js';
 import { adapterFor, isMcpHost } from '../adapters/index.js';
 import { claimPath, readManifest, releaseClaim, writeManifest } from '../manifest.js';
 import type { McpLaunch } from '../../spi.js';
 import type { InstallSkipped } from './skill.js';
 import { createBackup, safeWriteJson } from '../../../cli/clients/base.js';
 import type { HarnessHostId, HarnessScope, Pin, TrustTier } from '../../types.js';
-import { mcpServerNameError, readMcpLandingFile, secretReference, type McpEntrySpec } from '../mcp-entry.js';
-import { defaultExec } from './plugin.js';
+import { mcpServerNameError, mcpContainerAt, ensureMcpContainer, readMcpLandingFile, secretReference, type McpEntrySpec } from '../mcp-entry.js';
+import { defaultExec, type ExecImpl } from './plugin.js';
 
 /**
  * MCP kind writer (ADR-0015 §8) — CONFIG MERGE, never overwrite.
@@ -55,7 +55,7 @@ export interface McpApplyRequest {
   scope: HarnessScope;
   projectRoot?: string;
   /** Test seam: the executor the CLI landing spawns (`defaultExec` when absent). */
-  execImpl?: (command: string, args: string[], timeoutMs: number) => Promise<{ code: number; stdout: string; stderr: string }>;
+  execImpl?: ExecImpl;
 }
 
 export interface McpTargetPlan {
@@ -168,6 +168,23 @@ export function echoArgv(command: string, args: string[]): string {
   return [command, ...args.map(quote)].join(' ');
 }
 
+/**
+ * The gate-3 echo with operator-typed secret values masked, for anything PERSISTED (ledger,
+ * skip messages, hashes).
+ *
+ * Gate 2 must stay verbatim — the operator is confirming the exact command about to run. A ledger
+ * row is not that confirmation: it outlives the request and is readable from the console, so a
+ * value the operator typed into the form must never be reproduced there (ADR-0015 gate 4).
+ */
+export function redactSecrets(echo: string, launch: McpLaunch): string {
+  const values = Object.values(('command' in launch ? launch.envValues : launch.headerValues) ?? {});
+  let out = echo;
+  for (const value of values) {
+    if (typeof value === 'string' && value) out = out.split(value).join('***');
+  }
+  return out;
+}
+
 export function planMcp(req: McpApplyRequest): McpPlan {
   const targets: McpTargetPlan[] = [];
   for (const host of req.hosts) {
@@ -186,6 +203,21 @@ export function planMcp(req: McpApplyRequest): McpPlan {
     const landing = adapter.configPath({ projectRoot: req.projectRoot ?? process.cwd() }, req.scope);
     if (!landing.ok) {
       targets.push({ host, file: '', exists: false, refused: landing.reason, addedKeys: [], changedKeys: [] });
+      continue;
+    }
+    // Scope capability gate (ADR-0015 §D2): the capability surface — not any one writer — owns
+    // "can this scope land here". Codex is the case: it SHIPS a project config.toml (so
+    // `configPath` answers ok) but `codex mcp add` has no project-scope grammar, so a project
+    // request must be refused before the plan claims a write path it does not have.
+    if (!adapter.supportedScopes('mcp').includes(req.scope)) {
+      targets.push({
+        host,
+        file: '',
+        exists: false,
+        refused: `host '${host}' declares no ${req.scope}-scope MCP landing`,
+        addedKeys: [],
+        changedKeys: [],
+      });
       continue;
     }
     // A host whose own grammar rejects this name is refused as a target: the merge would otherwise
@@ -220,15 +252,29 @@ export function planMcp(req: McpApplyRequest): McpPlan {
       targets.push({ host, file: landing.path, exists, refused: parsed.reason, addedKeys: [], changedKeys: [] });
       continue;
     }
-    const container = parsed.config[adapter.container];
+    const cliSpec = adapter.mcpCliSpec?.() ?? null;
+    if (!cliSpec && (adapter.mcpLandingFormat?.() ?? 'json') === 'json5') {
+      // A JSON5 config's only legal writer is the runtime's own CLI: a file merge would drop
+      // hand-written comments wholesale (§D8.13), so the plan refuses instead.
+      targets.push({
+        host,
+        file: landing.path,
+        exists,
+        refused: `host '${host}' keeps MCP servers in a JSON5 config — only its own CLI may write it`,
+        addedKeys: [],
+        changedKeys: [],
+      });
+      continue;
+    }
+    // Dot-path aware: openclaw nests its servers at `mcp.servers`.
+    const container = mcpContainerAt(parsed.config, adapter.container);
     const existing =
       container && typeof container === 'object' && !Array.isArray(container)
-        ? (container as Record<string, unknown>)[req.name]
+        ? container[req.name]
         : undefined;
     const desired = desiredEntry(req.launch, spec);
     const addedKeys = existing === undefined ? [req.name] : [];
     const changedKeys = existing !== undefined && !sameEntry(existing, desired) ? [req.name] : [];
-    const cliSpec = adapter.mcpCliSpec?.() ?? null;
     if (cliSpec) {
       // CLI-materialized landing: the command IS the write, so its argv is composed at PLAN time —
       // a grammar refusal (literal-only env, no headers) surfaces at gate 2, not after confirm.
@@ -271,9 +317,9 @@ export async function applyMcp(req: McpApplyRequest): Promise<McpApplyResult> {
   const artifactId = `mcp:${req.canonicalKey}`;
   const run = req.execImpl ?? defaultExec;
 
-  const copies: { host: string; path: string; external?: boolean }[] = [];
+  const copies: { host: string; path: string; external?: boolean; projectRoot?: string }[] = [];
   const skipped: InstallSkipped[] = [];
-  const hashedFiles: { path: string; hash: string }[] = [];
+  const hashedFiles: { path: string; hash: string; mtimeMs: number; bytes: number }[] = [];
   let firstCliEcho: string | undefined;
   for (const target of plan.targets) {
     if (target.refused) {
@@ -290,18 +336,33 @@ export async function applyMcp(req: McpApplyRequest): Promise<McpApplyResult> {
       // runtime's own store — no file of ours exists, so the copy is recorded `external` (the
       // identity token is the manifest key; the ledger row's echoed command is the audit trail).
       let cliFailed = false;
+      // Scope-aware CLIs (claude `--scope project`, grok `-s project`) locate the project landing
+      // by the subprocess's cwd — running from the gateway's own cwd would write a stray repo.
+      const cliCwd = req.scope === 'project' ? req.projectRoot : undefined;
       for (const step of target.cli.runs) {
-        const result = await run(step.command, step.args, MCP_CLI_TIMEOUT_MS);
+        const result = await run(step.command, step.args, MCP_CLI_TIMEOUT_MS, cliCwd);
         if (!firstCliEcho) firstCliEcho = target.cli.echo;
         if (result.code !== 0) {
-          skipped.push({ host: target.host, code: 'upstream', message: `${target.cli.echo} exited ${result.code}: ${result.stderr.slice(0, 200)}` });
+          skipped.push({
+            host: target.host,
+            code: 'upstream',
+            message: `${redactSecrets(target.cli.echo, req.launch)} exited ${result.code}: ${result.stderr.slice(0, 200)}`,
+          });
           cliFailed = true;
           break;
         }
       }
       // A failed CLI run installed nothing — recording an external copy would make the manifest
       // claim a landing that does not exist.
-      if (!cliFailed) copies.push({ host: target.host, path: `${req.canonicalKey}#${target.host}`, external: true });
+      // The identity token cannot attribute the copy to a project — `projectRoot` is the only
+      // marker a later project-scoped page has (mirrors the plugin writer's external copies).
+      if (!cliFailed)
+        copies.push({
+          host: target.host,
+          path: `${req.canonicalKey}#${target.host}`,
+          external: true,
+          ...(req.scope === 'project' && req.projectRoot ? { projectRoot: req.projectRoot } : {}),
+        });
       continue;
     }
     // One materialized path, one owning environment (§D4): a shared config file is claimed like any
@@ -319,10 +380,14 @@ export async function applyMcp(req: McpApplyRequest): Promise<McpApplyResult> {
       continue;
     }
     const key = target.container ?? 'mcp';
-    const container =
-      parsed.config[key] && typeof parsed.config[key] === 'object' && !Array.isArray(parsed.config[key])
-        ? (parsed.config[key] as Record<string, unknown>)
-        : (parsed.config[key] = {});
+    // Dot-path aware (openclaw `mcp.servers`); a scalar already sitting on the path is the
+    // runtime's own state — refuse rather than overwrite it.
+    const container = ensureMcpContainer(parsed.config, key);
+    if (!container) {
+      releaseClaim(target.file);
+      skipped.push({ host: target.host, code: 'bad_request', message: `'${key}' is not an object in ${target.file}` });
+      continue;
+    }
     container[req.name] = desiredEntry(req.launch, adapter.mcpEntrySpec());
     try {
       // ADR-0015 transactional apply: snapshot the pre-image BEFORE touching the target, then the
@@ -334,8 +399,13 @@ export async function applyMcp(req: McpApplyRequest): Promise<McpApplyResult> {
       releaseClaim(target.file);
       continue;
     }
-    hashedFiles.push({ path: target.file, hash: hashFile(target.file) });
-    copies.push({ host: target.host, path: target.file });
+    const stat = fs.statSync(target.file);
+    hashedFiles.push({ path: target.file, hash: hashFile(target.file), mtimeMs: stat.mtimeMs, bytes: stat.size });
+    copies.push({
+      host: target.host,
+      path: target.file,
+      ...(req.scope === 'project' && req.projectRoot ? { projectRoot: req.projectRoot } : {}),
+    });
   }
   if (copies.length === 0) {
     return { ok: false, code: skipped[0]?.code ?? 'no_target', message: skipped.map((s) => `${s.host}: ${s.message}`).join('; ') || 'no host config to merge into', skipped };
@@ -345,8 +415,9 @@ export async function applyMcp(req: McpApplyRequest): Promise<McpApplyResult> {
   const now = new Date().toISOString();
   const previous = manifest.artifacts.find((a) => a.id === artifactId);
   const kept = (previous?.copies ?? []).filter((c) => !copies.some((item) => item.path === c.path));
-  // A config merge hashes OUR file; a CLI landing has none — the echoed command is the record.
-  const contentHash = hashedFiles[0]?.hash ?? `cli:${firstCliEcho ?? req.canonicalKey}`;
+  // A config merge hashes OUR file; a CLI landing has none — a digest of the echoed command is the
+  // record. Hashed, never stored verbatim: the argv may carry an operator-typed secret value.
+  const contentHash = hashedFiles[0]?.hash ?? `cli:${sha256(firstCliEcho ?? req.canonicalKey)}`;
   manifest.artifacts = [
     ...manifest.artifacts.filter((a) => a.id !== artifactId),
     {
@@ -363,18 +434,25 @@ export async function applyMcp(req: McpApplyRequest): Promise<McpApplyResult> {
       trust: req.trust,
       copies: [
         ...kept,
-        ...copies.map((item) => ({
-          scope: req.scope,
-          host: item.host as HarnessHostId,
-          rootId: 'default',
-          path: item.path,
-          ...(item.external ? { external: true } : {}),
+        ...copies.map((item) => {
           // Match the recorded hash by path — copies mixes external CLI landings (no hash) with
           // file merges, so positional indexing against hashedFiles would misassign hashes.
-          contentHash: hashedFiles.find((h) => h.path === item.path)?.hash ?? contentHash,
-          placement: 'materialized' as const,
-          installedAt: now,
-        })),
+          const merged = hashedFiles.find((h) => h.path === item.path);
+          return {
+            scope: req.scope,
+            host: item.host as HarnessHostId,
+            rootId: 'default',
+            path: item.path,
+            ...(item.external ? { external: true } : {}),
+            ...(item.projectRoot ? { projectRoot: item.projectRoot } : {}),
+            contentHash: merged?.hash ?? contentHash,
+            placement: 'materialized' as const,
+            // The fast-path fingerprint the inventory compares against: without it every MCP copy
+            // re-hashes the host's whole config file on every scan.
+            ...(merged ? { mtimeMs: merged.mtimeMs, bytes: merged.bytes } : {}),
+            installedAt: now,
+          };
+        }),
       ],
     },
   ];

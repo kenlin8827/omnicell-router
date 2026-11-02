@@ -13,7 +13,7 @@ export type CliAction =
   | 'version'
   | 'help';
 
-export type SupportedClient = 'opencode' | 'opencode-proxy' | 'claude' | 'codex' | 'pi' | 'dsh' | 'omp' | 'grok' | 'kimi';
+export type SupportedClient = 'opencode' | 'opencode-proxy' | 'claude' | 'codex' | 'pi' | 'dsh' | 'omp' | 'grok' | 'kimi' | 'openclaw';
 
 export interface CliOptions {
   action: CliAction;

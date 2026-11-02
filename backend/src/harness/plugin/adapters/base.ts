@@ -457,7 +457,10 @@ export class BasePluginMarketAdapter implements PluginAdapter {
     return removed;
   }
 
-  async install(row: CatalogRow, opts: { scope?: 'global' | 'project'; confirm?: boolean } = {}): Promise<InstallResult> {
+  async install(
+    row: CatalogRow,
+    opts: { scope?: 'global' | 'project'; confirm?: boolean; projectRoot?: string } = {}
+  ): Promise<InstallResult> {
     // ALL writes live on the host axis (§D11): the market adapter only translates the row —
     // channel from the key's source prefix, provenance from `surfaces` — and hands it over.
     // A git-backed row additionally names its marketplace identity, so the runtime's OWN install
@@ -468,6 +471,7 @@ export class BasePluginMarketAdapter implements PluginAdapter {
       channel: channelOf(row),
       key: row.key,
       scope: opts.scope,
+      ...(opts.projectRoot ? { projectRoot: opts.projectRoot } : {}),
       ...(opts.confirm ? { confirm: true } : {}),
       listedOn: row.surfaces.filter((s) => s !== sourceIdOf(row)),
       ...(gitBacked

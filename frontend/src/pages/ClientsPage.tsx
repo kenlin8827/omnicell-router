@@ -27,7 +27,7 @@ const clientSlots = (c: ClientStatus): { key: string; value?: string; default?: 
  * These get the shared model-list editor (none / custom / follow).
  */
 const supportsExtraModels = (name: string): boolean =>
-  name === 'opencode' || name === 'dsh' || name === 'pi' || name === 'omp' || name === 'grok' || name === 'kimi';
+  name === 'opencode' || name === 'dsh' || name === 'pi' || name === 'omp' || name === 'grok' || name === 'kimi' || name === 'openclaw';
 
 /** Backend machine reasonCodes (ClientActionResult) → i18n keys (opencode-proxy failure modes). */
 const CLIENT_REASON_KEY: Record<string, string> = {
@@ -629,6 +629,9 @@ export const ClientsPage: React.FC = () => {
     sonnet: t('clients.slotSonnet'),
     haiku: t('clients.slotHaiku'),
     fable: t('clients.slotFable'),
+    fallback: t('clients.slotFallback'),
+    utility: t('clients.slotUtility'),
+    decision: t('clients.slotDecision'),
   };
 
   const modelOptions = sortModelOptions(models
@@ -1050,7 +1053,12 @@ export const ClientsPage: React.FC = () => {
                                 [c.name]: { ...(prev[c.name] || {}), [s.key]: v || 'auto' },
                               }))
                             }
-                            options={slotOptions(s)}
+                            options={s.key === 'main' ? slotOptions(s) : [
+                              // Secondary slots default to "not set": the value is
+                              // only written when the user picks a concrete model.
+                              { value: 'auto', label: t('clients.slotUnset') },
+                              ...slotOptions(s).filter(o => o.value !== 'auto'),
+                            ]}
                             panelMinWidth={360}
                           />
                         </div>

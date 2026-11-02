@@ -83,7 +83,10 @@ export class PiDevPluginMarketAdapter extends PiPluginMarketAdapter {
     return { ok: false, message: 'the official pi.dev catalog is read-only — no operator sources' };
   }
 
-  async install(row: CatalogRow, opts: { scope?: 'global' | 'project' } = {}): Promise<InstallResult> {
+  async install(
+    row: CatalogRow,
+    opts: { scope?: 'global' | 'project'; projectRoot?: string } = {}
+  ): Promise<InstallResult> {
     if (!row.key.startsWith('npm:')) {
       return { ok: false, code: 'bad_request', message: `the official catalog installs npm packages only, got '${row.key}'` };
     }
@@ -92,6 +95,7 @@ export class PiDevPluginMarketAdapter extends PiPluginMarketAdapter {
       channel: 'npm',
       key: row.key,
       scope: opts.scope,
+      ...(opts.projectRoot ? { projectRoot: opts.projectRoot } : {}),
       fetchImpl: this.fetchImpl,
     });
   }

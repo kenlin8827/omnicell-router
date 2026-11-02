@@ -1,4 +1,4 @@
-import type { ExtDiscoveryOrigin, HarnessHostId, HarnessScope, ResolvedRoot } from '../../types.js';
+import type { ExtDiscoveryOrigin, HarnessHostId, HarnessKind, HarnessScope, ResolvedRoot } from '../../types.js';
 import type { McpEntrySpec } from '../mcp-entry.js';
 import type { McpLaunch } from '../../spi.js';
 
@@ -8,20 +8,21 @@ import type { McpLaunch } from '../../spi.js';
  *
  * WHY capabilities instead of one fat `HarnessHost` with `list/install/uninstall × skill|mcp|ext`:
  * the capability matrix is wildly asymmetric. In the current catalog fifteen hosts have a skills
- * location, THREE have a verified MCP landing (opencode, pi, omp) and TEN have a verified plugin landing (any
- * declared write path: local config, subprocess or marketplace chain). A nine-method flat interface would be 117
- * slots of which ~90 are `throw new Error('unsupported')`, and a caller still cannot tell "this
+ * location, EIGHT have a verified MCP landing (four file merges: opencode, pi, omp, kimi; four
+ * CLI-materialized: claude, codex, grok, openclaw) and ELEVEN have a verified plugin landing (any
+ * declared write path: local config, subprocess or marketplace chain). A nine-method flat interface would be 162
+ * slots of which ~120 are `throw new Error('unsupported')`, and a caller still cannot tell "this
  * host cannot do MCP" from "this host forgot to implement it". Capability interfaces make absence a
  * TYPE fact, not a runtime throw.
  *
  * WHY installation verbs are NOT here: install/uninstall are one pipeline — plan → confirm → apply →
  * ledger → claims (ADR-0015 gates 2/3) — implemented once per KIND in `writers/`, not once per host.
- * An adapter that owned `installPlugin` would either duplicate that pipeline fourteen times or
+ * An adapter that owned `installPlugin` would either duplicate that pipeline eighteen times or
  * become a forwarder. The split is: **the adapter answers WHERE, the writer answers HOW.**
  *
  * WHY skills are not a host capability at all: a skill lands in a DIRECTORY, and one directory is
- * read by up to twelve hosts (`readsUniversal` / `skillOwner`). "Install this skill into this host"
- * would invite writing the same tree twelve times; skills live on the location level
+ * read by up to fourteen hosts (`readsUniversal` / `skillOwner`). "Install this skill into this host"
+ * would invite writing the same tree fourteen times; skills live on the location level
  * (`skillRoots` / `skillTarget` on this interface, aggregated by `skillLocationRoots`).
  *
  * WHY one adapter per VERSION is not modelled: `opencode` v1 and v2 differ in landing SPELLINGS
@@ -105,6 +106,14 @@ export interface PluginSpec {
   storeShape?: 'map';
   /** Spec prefix grammar for a map store's canonical keys (`claude:`). */
   specPrefix?: string;
+  /**
+   * EXPLICIT scope capability override (ADR-0015 §D2). When absent, `supportedScopes('plugin')`
+   *  derives the answer from this spec's own declarations; set it when a declaration is a READ
+   *  surface the derivation cannot tell apart from a write path (openclaw's loose
+   *  `.openclaw/extensions` discovery roots are auto-discovered by the runtime but never
+   *  installed into by this gateway).
+   */
+  scopes?: readonly HarnessScope[];
 }
 
 /**
@@ -174,7 +183,14 @@ export interface HostAdapter {
   readonly presence?: HostPresence;
   /** Verified plugin landing (any declared write path, base.ts). */
   hasPluginLanding?(): boolean;
-
+  /**
+   * The scopes an artifact kind can land in for THIS host (ADR-0015 §D2 "Scope") — derived from
+   *  the kind's own spec declarations, with `spec.scopes` as the explicit override. An empty list
+   *  means the host has no landing for the kind at all. The install writers refuse a scope absent
+   *  from this list: landing global while recording `project` would make the manifest, the
+   *  inventory and uninstall disagree about where the copy lives.
+   */
+  supportedScopes(kind: HarnessKind): readonly HarnessScope[];
 }
 
 /** One way to detect an installed runtime; `dir` is an absolute path. */
@@ -218,8 +234,8 @@ export interface PluginHost extends HostAdapter {
   readSources(ctx: AdapterContext, scope: HarnessScope): ExtSource[];
   /** Container keys the host's array record may live under, write default first. */
   containers(): string[];
-  /** Declaration files a package-manager install records itself in. */
-  declarations(): { file: string; key: string }[];
+  /** Declaration files a package-manager install records itself in, for one scope. */
+  declarations(ctx: AdapterContext, scope: HarnessScope): { file: string; key: string }[];
   /** Lock file answering exact versions, when the host's package manager writes one. */
   lock(): string | undefined;
   /** Loose plugin directories the runtime loads files from directly, for one scope. */
@@ -287,8 +303,9 @@ export interface McpHost extends HostAdapter {
   mcpNamePattern(): RegExp;
   /** Refuse unnamed secret keys: this runtime's config has no env/header expansion. */
   mcpLiteralEnv?(): boolean;
-  /** Config-file syntax this landing reads; absent = plain JSON. */
-  mcpLandingFormat?(): 'json' | 'toml';
+  /** Config-file syntax this landing reads; absent = plain JSON. `json5` marks a JSON5 config whose
+   *  only legal writer is the runtime's own CLI (§D8.13) — a file merge is refused, never lossy. */
+  mcpLandingFormat?(): 'json' | 'toml' | 'json5';
   /**
    * The runtime's own MCP CLI, when writes are CLI-materialized (§D8.13): present = the writer
    * composes the runtime's add/remove argv instead of merging the config file, and the copy is

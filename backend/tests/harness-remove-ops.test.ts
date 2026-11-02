@@ -111,7 +111,7 @@ describe('discovered row descriptor', () => {
 
     const source: ExtSource = {
       host: 'opencode',
-      scope: 'global',
+      scope: 'project',
       origin: 'config-array',
       kind: 'config-array',
       path: file,
@@ -120,7 +120,9 @@ describe('discovered row descriptor', () => {
     const row = discoverPlugins([source]).find((r) => r.name === 'ghost')!;
     expect(row.removal).toEqual({ op: 'drop-entry', file, container: 'plugin', entry: 'ghost' });
 
-    const plan = planRemove([{ artifactId: null, copies: row.copies, removal: row.removal }]);
+    const plan = planRemove([{ artifactId: null, copies: row.copies, removal: row.removal }], {
+      projectRoot: root,
+    });
     if ('error' in plan) throw new Error(plan.error);
     expect(plan.actions[0]!.op).toBe('drop-entry');
 
@@ -174,5 +176,23 @@ describe('discovered row descriptor', () => {
     expect('error' in plan).toBe(true);
     // Nothing was moved: the containment guard refuses before any write is planned.
     expect(fs.existsSync(file)).toBe(true);
+  });
+
+  it('refuses a drop-entry whose file is not a declared landing of the row host', () => {
+    const file = path.join(tmp(), 'settings.json');
+    fs.writeFileSync(file, JSON.stringify({ packages: [] }));
+
+    // The descriptor names pi but points at an unrelated file: the remove plan must never edit a
+    // file the host's own adapters did not declare.
+    const plan = planRemove([
+      {
+        artifactId: null,
+        copies: [{ scope: 'global', host: 'pi', path: `${path.dirname(file)}#pi` }],
+        removal: { op: 'drop-entry', file, container: 'packages', entry: 'npm:gone' },
+      },
+    ]);
+    expect('error' in plan).toBe(true);
+    if ('error' in plan) expect(plan.error).toContain('not a config landing');
+    expect(readJson(file)).toEqual({ packages: [] });
   });
 });

@@ -8,6 +8,7 @@ import { DshClientAdapter } from './dsh.js';
 import { GrokClientAdapter } from './grok.js';
 import { OmpClientAdapter } from './omp.js';
 import { KimiClientAdapter } from './kimi.js';
+import { OpenClawClientAdapter } from './openclaw.js';
 import { ClientHookStatus, SupportedClient } from '../types.js';
 
 const adapters: Record<SupportedClient, ClientAdapter> = {
@@ -20,6 +21,7 @@ const adapters: Record<SupportedClient, ClientAdapter> = {
   omp: new OmpClientAdapter(),
   grok: new GrokClientAdapter(),
   kimi: new KimiClientAdapter(),
+  openclaw: new OpenClawClientAdapter(),
 };
 
 export function getClientAdapter(name: string): ClientAdapter | null {

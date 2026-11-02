@@ -67,6 +67,11 @@ type ComboboxBaseProps = {
    * boxes would read as a form instead of "current value, click to change".
    */
   variant?: 'default' | 'ghost';
+  /**
+   * Suppress the meta text in the trigger button. The panel still shows meta
+   * on options, and the trigger's title tooltip surfaces it on hover.
+   */
+  hideMetaInTrigger?: boolean;
 };
 
 /**
@@ -99,7 +104,7 @@ export type ComboboxProps = ComboboxBaseProps &
 const FILTER_THRESHOLD = 8;
 
 export const Combobox: React.FC<ComboboxProps> = (props) => {
-  const { options, placeholder, style, clearable, panelMinWidth, forceFilter, multiple, disabled, variant } = props;
+  const { options, placeholder, style, clearable, panelMinWidth, forceFilter, multiple, disabled, variant, hideMetaInTrigger } = props;
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -261,7 +266,7 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
         aria-expanded={open}
         aria-haspopup="listbox"
         disabled={disabled}
-        title={selected ? `${selected.label}${selected.meta ? ` · ${selected.meta}` : ''}` : undefined}
+        title={selected ? (selected.meta ? `${selected.label} (${selected.meta})` : selected.label) : undefined}
         onClick={() => { if (disabled) return; (open ? close() : openPanel()); }}
         onKeyDown={onTriggerKeyDown}
         style={{ ...style, display: 'flex', alignItems: 'center', gap: 8, cursor: disabled ? 'not-allowed' : 'pointer', textAlign: 'left', opacity: disabled ? 0.5 : 1 }}
@@ -286,7 +291,7 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
                 : (placeholder ?? '')
               : (placeholder ?? '')}
         </span>
-        {selected?.meta && (
+        {!hideMetaInTrigger && selected?.meta && (
           <span style={{ fontSize: 11, color: 'var(--text-dim)', flexShrink: 0 }}>{selected.meta}</span>
         )}
         {clearable && values.length > 0 ? (
@@ -416,7 +421,7 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
                       {o.label}
                     </span>
                     {o.meta && (
-                      <span style={{ fontSize: 10.5, color: 'var(--text-dim)', flexShrink: 0 }}>{o.meta}</span>
+                      <span style={{ fontSize: 10.5, color: 'var(--text-dim)', flexShrink: 1, maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{o.meta}</span>
                     )}
                     {o.badge && (
                       <span

@@ -1,3 +1,17 @@
+export interface ProjectItem {
+  id: string;
+  name: string;
+  path: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectsResponse {
+  status: 'ok';
+  activeId: string | null;
+  projects: ProjectItem[];
+}
+
 // Mirrors backend FinOpsStats (backend/src/metrics/finops-tracker.ts getStats)
 export interface GatewayMetrics {
   totalRequests: number;
@@ -543,16 +557,16 @@ export interface ReplaySpec {
 export type CaptureReplayResult =
   | { status: 'loading' }
   | {
-      status: 'ok';
-      statusLine: string;
-      headers: Record<string, string>;
-      body: string;
-      truncated: boolean;
-      /** ms from dispatch to the status/headers event (first byte). */
-      ttfbMs: number;
-      /** ms from dispatch to stream end. */
-      totalMs: number;
-    }
+    status: 'ok';
+    statusLine: string;
+    headers: Record<string, string>;
+    body: string;
+    truncated: boolean;
+    /** ms from dispatch to the status/headers event (first byte). */
+    ttfbMs: number;
+    /** ms from dispatch to stream end. */
+    totalMs: number;
+  }
   | { status: 'error'; message: string };
 
 /** NDJSON stream events emitted by POST /api/admin/capture/replay. */
@@ -1222,13 +1236,15 @@ export interface HarnessCopyView {
    */
   external?: boolean;
   path: string;
+  /** Set on project-scope copies — the only project attribution for an external token copy. */
+  projectRoot?: string;
   state: 'clean' | 'dirty' | 'missing' | 'foreign' | 'untracked';
   placement: 'materialized' | 'verified' | 'unverified';
   contentHash?: string;
   /**
    * Skill copies only: every host that reads this directory, owner first. `host` is ownership (one
    * owner per directory — install/claims/removal); this is readership (the shared `.agents/skills`
-   * tree is read by up to twelve runtimes), which is what the skills page's harness rail selects by.
+   * tree is read by up to fourteen runtimes), which is what the skills page's harness rail selects by.
    */
   readers?: string[];
 }
@@ -1276,10 +1292,10 @@ export interface HarnessDiscoveredArtifact {
    * then the row cannot be removed from the console.
    */
   removal?:
-    | { op: 'trash-path'; path: string }
-    | { op: 'drop-entry'; file: string; container: string; entry: string }
-    | { op: 'drop-server'; file: string; container: string; entry: string }
-    | { op: 'cli-remove'; host: string; entry: string };
+  | { op: 'trash-path'; path: string }
+  | { op: 'drop-entry'; file: string; container: string; entry: string }
+  | { op: 'drop-server'; file: string; container: string; entry: string }
+  | { op: 'cli-remove'; host: string; entry: string };
 }
 
 export interface HarnessInventoryResponse {
@@ -1523,9 +1539,10 @@ export interface HarnessHostView {
    *  or container). `hasSkills` says nothing about this — a host can read the shared skills
    *  directory and still have nowhere to write an MCP server. */
   hasMcp: boolean;
-  /** Scopes this build accepts (today `['global']`) — project support is deferred (ADR-0015 §D2). */
-  scopes: ('global' | 'project')[];
-  /** Resolved roots per accepted scope; a scope absent from `scopes` has no key here. */
+  /** Per-kind landing scopes this host's adapter declares (ADR-0015 §D2). A scope absent from a
+   *  kind's list must not be offered as an install target for that kind — the writers refuse it. */
+  kindScopes: Record<'skill' | 'mcp' | 'plugin', ('global' | 'project')[]>;
+  /** Resolved roots per accepted scope; a scope absent from `kindScopes` has no key here. */
   roots: { global: HarnessRootView[] };
   /** Host that owns this host's directory per scope — differs from `id` when hosts share a path. */
   owner: { global: string | null };
@@ -2547,9 +2564,85 @@ export const api = {
     return res.json();
   },
 
-  /** Installed artifacts + untracked directories, reconciled per copy. */
-  async harnessInventory(): Promise<HarnessInventoryResponse> {
-    const res = await fetch('/api/admin/harness/inventory');
+  async listProjects(): Promise<ProjectsResponse> {
+    const res = await fetch('/api/admin/projects');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async createProject(input: { name: string; path: string }): Promise<{ status: 'ok'; project: ProjectItem }> {
+    const res = await fetch('/api/admin/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.message || `HTTP ${res.status}`);
+    }
+    return res.json();
+  },
+
+  async updateProject(id: string, input: { name?: string; path?: string }): Promise<{ status: 'ok'; project: ProjectItem }> {
+    const res = await fetch(`/api/admin/projects/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.message || `HTTP ${res.status}`);
+    }
+    return res.json();
+  },
+
+  async deleteProject(id: string): Promise<{ status: 'ok' }> {
+    const res = await fetch(`/api/admin/projects/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.message || `HTTP ${res.status}`);
+    }
+    return res.json();
+  },
+
+  async setActiveProject(id: string | null): Promise<{ status: 'ok'; activeId: string | null }> {
+    const res = await fetch('/api/admin/projects/active', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.message || `HTTP ${res.status}`);
+    }
+    return res.json();
+  },
+
+  async validateProjectPath(pathStr: string): Promise<{ status: 'ok'; resolved: string }> {
+    const res = await fetch('/api/admin/projects/validate-path', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: pathStr }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.message || `HTTP ${res.status}`);
+    }
+    return res.json();
+  },
+
+  /**
+   * Installed artifacts + untracked directories, reconciled per copy. With `projectId`, the scan
+   * resolves PROJECT-scope roots against that project's path instead of the gateway cwd — the
+   * same re-scan `/plan` does, so the project tab lists what that project holds.
+   */
+  async harnessInventory(params?: { projectId?: string }): Promise<HarnessInventoryResponse> {
+    const search = new URLSearchParams();
+    if (params?.projectId) search.set('projectId', params.projectId);
+    const qs = search.toString();
+    const res = await fetch(`/api/admin/harness/inventory${qs ? `?${qs}` : ''}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },
@@ -2601,6 +2694,8 @@ export const api = {
   /** Dry-run a maintenance action (only `remove` exists today). Writes nothing. */
   async harnessPlan(body: {
     action: 'remove';
+    /** Project whose roots resolve `project`-scope copies; absent = the gateway cwd. */
+    projectId?: string;
     items: {
       artifactId: string | null;
       copies: { scope: 'global' | 'project'; host: string; path: string }[];
@@ -2772,9 +2867,9 @@ export const api = {
     /** GIT-BACKED plugin identity: the runtime's own marketplace chain installs `<plugin>@<name>`. */
     marketplace?: { repo: string; plugin: string; name: string };
     hosts: string[];
-    /** Global only for now — the backend answers `unsupported_scope` for anything else
-     *  (ADR-0015 §D2 "Scope": project-level install is deferred). */
-    scope: 'global';
+    scope?: 'global' | 'project';
+    projectRoot?: string;
+    projectId?: string;
   }): Promise<{
     status: string;
     artifactId: string;
@@ -2810,8 +2905,9 @@ export const api = {
   },
 
   /** Read ONE existing MCP server back as a launch (env/header KEY NAMES only). */
-  async harnessMcpEntry(params: { host: string; name: string; scope?: 'global' }): Promise<HarnessMcpEntry> {
+  async harnessMcpEntry(params: { host: string; name: string; scope?: 'global' | 'project'; projectId?: string }): Promise<HarnessMcpEntry> {
     const search = new URLSearchParams({ host: params.host, name: params.name, scope: params.scope ?? 'global' });
+    if (params.projectId) search.set('projectId', params.projectId);
     const res = await fetch(`/api/admin/harness/mcp/entry?${search.toString()}`);
     const data = await res.json();
     if (!res.ok) {
@@ -2865,7 +2961,9 @@ export const api = {
     launch: HarnessMcpLaunch;
     /** The manifest record to keep in sync; absent for a runtime-installed (discovered) entry. */
     artifactId?: string;
-    scope?: 'global';
+    scope?: 'global' | 'project';
+    /** Project root resolution for `project` scope (the backend maps it to the project path). */
+    projectId?: string;
     confirm?: boolean;
   }): Promise<{
     status: string;
@@ -3492,7 +3590,7 @@ export const api = {
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = '';
-    for (;;) {
+    for (; ;) {
       const { done, value } = await reader.read();
       if (done) break;
       buf += dec.decode(value, { stream: true });

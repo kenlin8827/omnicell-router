@@ -230,7 +230,7 @@ export async function browseSource(
  * Operator-added git marketplace sources (ADR-0015 §D6 "git-repo source type").
  *
  * A marketplace is ANY git repository the operator points at — a Claude-style
- * `.claude-plugin/marketplace.json` catalog (the format grok / Copilot CLI / Goose clone), or a
+ * `.claude-plugin/marketplace.json` catalog (the format grok / Goose clone), or a
  * bare skills repository. The probe finds ONE canonical layer regardless of layout:
  *
  *   1. a pinned extension layer (`pi-extension`, `.claude-plugin`, …) when the operator named one;
@@ -529,7 +529,6 @@ const ADAPTER_DIR_HINTS: { prefix: string; label: string }[] = [
   { prefix: '.devin-plugin/', label: 'devin' },
   { prefix: '.antigravity-plugin/', label: 'antigravity' },
   { prefix: '.factory-plugin/', label: 'factory' },
-  { prefix: '.github/plugin/', label: 'github-copilot' },
   { prefix: '.agents/plugins/', label: 'goose' },
   { prefix: '.opencode/', label: 'opencode' },
   { prefix: '.cursor/', label: 'cursor' },

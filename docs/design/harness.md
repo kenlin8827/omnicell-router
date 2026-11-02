@@ -9,8 +9,9 @@ the page anatomy and data-model reasoning; where the two disagree, the ADR wins.
 
 In scope: browse three artifact registries, plan an install, materialize it into a chosen
 (host × rootId) target, keep an inventory with drift detection, remove tracked copies. Installs land
-in the USER-LEVEL roots only: `scope` is still part of the wire shape, but `ENABLED_SCOPES` is
-`['global']`, so a `project` request is refused with `unsupported_scope` (ADR-0015 §D2 "Scope").
+in either user-level (`global`) roots or the selected project's (`project`) roots. `ENABLED_SCOPES`
+is `['global', 'project']`; adapters refuse only a scope/landing combination they do not support
+(ADR-0015 §D2 "Scope").
 
 Out of scope (v1):
 
@@ -37,7 +38,7 @@ pick (an unknown or missing segment is replaced, never pushed, so a stale bookma
 valid). The rail's TITLE is fixed — one column header, `HARNESS`, on all three pages, because it is the
 same control everywhere. What the pick MEANS differs, and the hint under the rail says which: on
 Plugins the runtime is the artifact's identity; on MCP it is the config landing the install fans out
-from; on Skills it is a READER — twelve runtimes load one `.agents/skills` tree, so the rail narrows to
+from; on Skills it is a READER — fourteen runtimes load one `.agents/skills` tree, so the rail narrows to
 "what this runtime can load" while writes stay owner-only (`skillReaders()` / `skillOwner()`,
 ADR-0015 §D2).
 
@@ -153,7 +154,7 @@ source adapter ──raw──► normalizer ──► ArtifactSummary / Artifac
   badges in the header; nothing is card-only or list-only, so a bug reproduces in both.
 - The **host tag is a row field, not page chrome.** A pinned page shows every row the selected
   runtime can *load*, while ownership stays per copy: one skill sits in the shared `.agents/skills`
-  tree (`Universal`, read by twelve runtimes) and another in the runtime's own directory (that runtime
+  tree (`Universal`, read by fourteen runtimes) and another in the runtime's own directory (that runtime
   only). Dropping the tag because "the page is already pinned" makes a reader-scoped row look
   runtime-scoped, so it renders in both layouts, labelled with the host catalog's own name and
   tooltipped with the copy's real path.
@@ -165,33 +166,38 @@ source adapter ──raw──► normalizer ──► ArtifactSummary / Artifac
 
 ## 4. Host × kind matrix
 
-`√` supported · `—` not applicable · `?` unknown (read the adapter before wiring) · `v` needs vendor
-verification.
+`√` supported · `(CLI)` the landing is materialized by the runtime's own command, its config is
+read-only observation · `—` not applicable. Counts: 18 hosts in the catalog, 15 with a skills
+location, 8 with an MCP landing (4 file merges, 4 CLI-materialized), 11 with a plugin landing.
 
 | host | skills | mcp | plugins | notes |
 | :--- | :--- | :--- | :--- | :--- |
 | universal | √ | — | — | `.agents/skills` only |
-| opencode | √ | √ | √ | `opencode.json` `mcp` + `plugin[]`; root may be relocated by `OPENCODE_CONFIG_DIR` |
-| claude | √ | √ v | — | `~/.claude.json` / project `.mcp.json`; has `claude mcp add` CLI |
-| codex | √ | **—** | — | codex adapter writes `~/.codex/config.json`, **not** `config.toml`; no TOML writer in this repo → MCP only via `codex mcp add`, else not offered |
-| pi | √ | via plugin | √ | MCP arrives as `pi-mcp-adapter`; `pi install` runs npm lifecycle scripts |
-| dsh | ? | ? | ? | per-profile `$DSH_HOME/profiles/<name>/cordis.patch.yml` (`dsh.ts:15-25`) |
-| cursor | √ v | v | — | `~/.cursor/mcp.json` |
-| github-copilot / vscode | √ | v | — | `<repo>/.vscode/mcp.json` |
-| gemini-cli | √ | v | — | `~/.gemini/settings.json` |
-| kimi | √ | — | √ | `~/.kimi-code/skills` (relocated by `KIMI_CODE_HOME`) / `.kimi-code/skills`; root `kimi.plugin.json`, `/plugins install {url}` (interactive) |
-| cline | √ | v | — | `cline_mcp_settings.json` |
-| amp | √ | v | — | `~/.config/agents/skills` (distinct from `~/.agents`) |
-| windsurf | √ | v | — | `~/.codeium/windsurf/mcp_config.json` |
-| zed | √ | v | — | `context_servers` |
-| grok | √ | — | — | `~/.grok/skills`; the `.grok-plugin` market form is declared, but no verified MCP or plugin landing |
+| opencode | √ | √ | √ | `opencode.json` `mcp` + `plugin[]`; v2 `opencode.jsonc` `plugins[]`; root may be relocated by `OPENCODE_CONFIG_DIR` |
+| claude | √ | √ (CLI) | √ | `claude mcp add-json … --scope user` → `~/.claude.json`; project `.mcp.json` is read-only; `claude plugin install <id> --scope user\|project` |
+| codex | √ | √ (CLI) | √ | `codex mcp add` → `~/.codex/config.toml` (TOML, read-only, global-only); marketplace chain `codex plugin …` |
+| pi | √ | √ | √ | `~/.pi/agent/mcp.json` · `mcpServers`; `pi install npm:<spec>` runs npm lifecycle scripts |
+| dsh | — | — | — | profile-based runtime; no verified landing |
+| omp | √ | √ | √ | `~/.omp/agent/mcp.json` + project `.omp/mcp.json`; marketplace chain + loose `.omp/extensions` roots |
+| cursor | √ | — | √ | `/add-plugin {plugin}` — interactive chain, displayed at gate 3 and never spawned |
+| gemini-cli | √ | — | — | `~/.gemini/skills` / `.gemini/skills` — plus the shared tree |
+| antigravity | — | — | √ | `.antigravity-plugin/plugin.json` (`agy plugin install <url>`) |
+| factory | — | — | √ | `.factory-plugin/` (`marketplace.json` + `plugin.json`) |
+| kimi | √ | √ | √ | FILE MERGE: `~/.kimi-code/mcp.json` + project `.kimi-code/mcp.json` (`literalEnv`); root `kimi.plugin.json`, install via the local web API |
+| cline | √ | — | — | `~/.cline/skills` / `.cline/skills` — plus the shared tree |
+| amp | √ | — | — | `$XDG/agents/skills` (distinct from `~/.agents`) |
+| windsurf | √ | — | — | `~/.codeium/windsurf/skills` / `.windsurf/skills` |
+| zed | √ | — | — | `.agents/skills` only |
+| grok | √ | √ (CLI) | √ | `grok mcp add … [-s user\|project]` → `~/.grok/config.toml` / project `.grok/config.toml` (TOML, read-only); `grok plugin install {url} --trust` |
+| openclaw | √ | √ (CLI) | √ | `openclaw mcp add …` → `~/.openclaw/openclaw.json` (JSON5, read-only, global-only); `openclaw plugins install <spec> --force` |
 
 `opencode-proxy` never appears: it is a hook mode of `opencode`, not a separate host. Hosts are **not**
 `SupportedClient` — Cursor/VS Code/Zed will never be traffic clients, and welding the two would pollute
 the traffic domain (ADR-0015 §D2).
 
-**A host is a reader, not a location.** Twelve hosts read the project `.agents/skills`, eleven read the
-global one, so one directory has many readers and exactly one owner: the first adapter in registry
+**A host is a reader, not a location.** Fourteen hosts read the project `.agents/skills` tree and
+fourteen read the global one (claude is the only skills host outside that shared set), so one
+directory has many readers and exactly one owner: the first adapter in registry
 order that resolves to that path (`skillOwner()` in `adapters/index.ts`). Installation, the inventory
 scan and the console all apply that rule. Without it the same directory is recorded as `codex` by an
 install and reported as `universal` by a scan — the list and the dialog disagree about what was
@@ -276,7 +282,7 @@ The hub therefore maps one author-declared npm tag per runtime — `pi` → `pi-
 `dsh` → `dsh-plugin` (10 048), `opencode` → `opencode-plugin` (2 684), `claude` →
 `claude-code-plugin` (656), `codex` → `codex-plugin` (118), `gemini-cli` →
 `gemini-cli-plugin` (18) — so a page pinned to one harness never opens on another runtime's
-catalog. The remaining hosts (`cursor`, `windsurf`, `zed`, `cline`, `amp`, `github-copilot`) are
+catalog. The remaining hosts (`cursor`, `windsurf`, `zed`, `cline`, `amp`) are
 deliberately ABSENT: their tags answer 0–25 packages dominated by one cross-tagging publisher, so a
 tag default would render an empty market and call it a catalog. Those pages open on the relevance
 phrase `coding agent plugin` and say so (`noteCode: 'npm-default'`) instead of implying membership.
@@ -594,7 +600,7 @@ Aggregation and identity live in §5.2. Rules that follow from the table:
 
 | Shipped | Notes |
 | :--- | :--- |
-| host catalog + root resolver + owner/alias rule | 14 rows; landing cells empty where unverified |
+| host catalog + root resolver + owner/alias rule | 18 rows; landing cells empty where unverified |
 | per-env manifest v3 (no legacy migration) + machine-wide claims | no advisory lock |
 | store (skills only) + trash snapshots | append-only, no GC |
 | inventory (`clean`/`dirty`/`missing`/`foreign`/`untracked`) + discovery channel for every kind | `shadowed` has no producer; the scan reads skill directories, a runtime's `plugin[]`/`packages[]`/loose files, and the `mcp` object of a host config |

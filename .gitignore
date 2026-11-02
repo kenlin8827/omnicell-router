@@ -8,6 +8,11 @@ dist/
 # Local scratch space (agent / review notes, throwaway drafts). Never shipped —
 # a note that matters belongs in docs/ or an ADR, not here.
 .scratch/
+.tmp-docs/
+tmp-*.html
+.kimi-code/
+.omp/
+.ocp/
 
 # Runtime state never lives in the repository: every environment owns
 # ~/.omnicell-router/envs/<name>/ (config.yaml, data/, models/, catalog/,

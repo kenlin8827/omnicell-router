@@ -53,9 +53,9 @@ export interface InstallRequest {
   /** Landing hosts. `kind: 'plugin'` requires EXACTLY one — the harness is part of its identity. */
   hosts: HarnessHostId[];
   /**
-   * Landing scope. The signature keeps the full union as the SEAM for project support, but the admin
-   * route refuses anything outside `ENABLED_SCOPES` (`harness/scopes.ts`) — today `global` only — so
-   * no request from the product can land inside a repository (ADR-0015 §D2 "Scope").
+   * Landing scope. The signature keeps the full union; the admin route refuses anything outside
+   * `ENABLED_SCOPES` (`harness/scopes.ts` — both `global` and `project` are active), and project
+   * installs land under the request's verified `projectRoot` (ADR-0015 §D2 "Scope").
    */
   scope: HarnessScope;
   /**

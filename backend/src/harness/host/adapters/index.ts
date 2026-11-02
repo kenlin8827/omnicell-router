@@ -11,11 +11,11 @@ import { cursorAdapter } from './cursor.js';
 import { dshAdapter } from './dsh.js';
 import { factoryAdapter } from './factory.js';
 import { geminiCliAdapter } from './gemini-cli.js';
-import { githubCopilotAdapter } from './github-copilot.js';
 import { grokAdapter } from './grok.js';
 import { kimiAdapter } from './kimi.js';
 import { ompAdapter } from './omp.js';
 import { opencodeAdapter } from './opencode.js';
+import { openclawAdapter } from './openclaw.js';
 import { piAdapter } from './pi.js';
 import { universalAdapter } from './universal.js';
 import { windsurfAdapter } from './windsurf.js';
@@ -53,7 +53,6 @@ export const HOST_ADAPTERS: readonly HostAdapter[] = [
   dshAdapter,
   ompAdapter,
   cursorAdapter,
-  githubCopilotAdapter,
   geminiCliAdapter,
   antigravityAdapter,
   factoryAdapter,
@@ -63,6 +62,7 @@ export const HOST_ADAPTERS: readonly HostAdapter[] = [
   windsurfAdapter,
   zedAdapter,
   grokAdapter,
+  openclawAdapter,
 ];
 
 const BY_ID = new Map<HarnessHostId, HostAdapter>(HOST_ADAPTERS.map((adapter) => [adapter.id, adapter]));
@@ -82,7 +82,7 @@ export function adapterFor(id: HarnessHostId | string): HostAdapter | undefined 
 /**
  * Every physical skills directory the adapters resolve, deduplicated.
  *
- * One directory is ONE copy: twelve hosts share `.agents/skills`, so the FIRST adapter in registry
+ * One directory is ONE copy: fourteen hosts share `.agents/skills`, so the FIRST adapter in registry
  * order is the owner and every other host is an alias — installation, the inventory scan and the
  * console all use this rule, otherwise the same directory gets labeled two different ways.
  */

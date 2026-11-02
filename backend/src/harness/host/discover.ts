@@ -2,7 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parse as parseJsonc, type ParseError } from 'jsonc-parser';
 import TOML from '@iarna/toml';
+import JSON5 from 'json5';
 import { HOST_ADAPTERS, isPluginHost, isMcpHost } from './adapters/index.js';
+import { mcpContainerAt } from './mcp-entry.js';
 import type { ExtSource } from './adapters/types.js';
 import type {
   CopyView,
@@ -116,8 +118,8 @@ const LOOSE_FILE = /\.(?:ts|mts|js|mjs|cjs)$/i;
  * spelling it declares.
  *
  * This is the ADAPTER-side enumeration, deliberately exhaustive: `scanInventory` filters it through
- * `ENABLED_SCOPES` (project discovery is deferred, ADR-0015 §D2 "Scope"), so the project declarations
- * stay the seam instead of being re-spelled when project support ships.
+ * `ENABLED_SCOPES` (ADR-0015 §D2 "Scope"), so the project declarations stay the seam instead of
+ * being re-spelled at the scan.
  *
  * Project-scope roots use the gateway process's cwd — the same limitation the skill scan already has
  * (`scanInventory`), and the same reason: the gateway cannot see a shell that launched a runtime
@@ -508,15 +510,35 @@ export interface McpSource {
   /** Absolute config path as the adapter resolves it (project spellings resolved by the adapter). */
   path: string;
   container: string;
-  /** Config syntax the landing reads (`toml` for a CLI-materialized codex landing). */
-  format: 'json' | 'toml';
+  /** Config syntax the landing reads (`toml` for a CLI-materialized codex landing, `json5` for openclaw). */
+  format: 'json' | 'toml' | 'json5';
+  /** The root a project-scope landing was resolved against (absent for global). */
+  projectRoot?: string;
   /** The runtime's own MCP CLI, when writes (including removal) are CLI-materialized (§D8.13). */
   cli?: { command: string };
 }
 
-/** `<host>|<serverKey>` — the dedupe key against manifest MCP copies. */
-export function mcpTrackedKey(host: HarnessHostId, name: string): string {
-  return `${host}|${name}`;
+/** Normalized absolute root — the part of the dedupe key that separates two projects. */
+function projectKey(projectRoot: string): string {
+  return path.resolve(projectRoot).replace(/\\/g, '/').toLowerCase();
+}
+
+/**
+ * The dedupe key against manifest MCP copies: `<host>|<serverKey>`, plus the scope and project root
+ * for a project landing.
+ *
+ * Without the scope half, a global `github` server would hide a project `github` server (and two
+ * projects' same-named servers would hide each other), so `discoverMcp` could never report them.
+ */
+export function mcpTrackedKey(
+  host: HarnessHostId,
+  name: string,
+  scope?: HarnessScope,
+  projectRoot?: string
+): string {
+  const base = `${host}|${name}`;
+  if (scope !== 'project') return base;
+  return `${base}|project|${projectRoot ? projectKey(projectRoot) : ''}`;
 }
 
 /**
@@ -527,7 +549,7 @@ export function mcpTrackedKey(host: HarnessHostId, name: string): string {
  * capability is a type fact (`isMcpHost`), so a skills-only host can never fake a landing.
  *
  * Like `pluginSources`, this answers the adapter side and stays exhaustive; the inventory filters
- * it through `ENABLED_SCOPES` (project discovery is deferred, ADR-0015 §D2 "Scope").
+ * it through `ENABLED_SCOPES` (ADR-0015 §D2 "Scope").
  */
 export function mcpSources(projectRoot: string = process.cwd()): McpSource[] {
   const out: McpSource[] = [];
@@ -548,6 +570,7 @@ export function mcpSources(projectRoot: string = process.cwd()): McpSource[] {
         path: abs,
         container: adapter.container,
         format: adapter.mcpLandingFormat?.() ?? 'json',
+        ...(scope === 'project' ? { projectRoot } : {}),
         ...(adapter.mcpCliSpec?.() ? { cli: { command: adapter.mcpCliSpec()!.command } } : {}),
       });
     }
@@ -607,6 +630,8 @@ export function discoverMcp(
     try {
       if (source.format === 'toml') {
         parsed = TOML.parse(fs.readFileSync(source.path, 'utf8')) as unknown;
+      } else if (source.format === 'json5') {
+        parsed = JSON5.parse(fs.readFileSync(source.path, 'utf8')) as unknown;
       } else {
         parsed = deps.readJson(source.path);
       }
@@ -615,12 +640,13 @@ export function discoverMcp(
       continue;
     }
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
-    const container = (parsed as Record<string, unknown>)[source.container];
+    // Dot-path aware: openclaw nests its servers at `mcp.servers`.
+    const container = mcpContainerAt(parsed as Record<string, unknown>, source.container);
     if (!container || typeof container !== 'object' || Array.isArray(container)) continue;
 
     for (const [name, entry] of Object.entries(container as Record<string, unknown>)) {
       if (!name) continue;
-      const key = mcpTrackedKey(source.host, name);
+      const key = mcpTrackedKey(source.host, name, source.scope, source.projectRoot);
       if (tracked.has(key) || seen.has(key)) continue;
       seen.add(key);
       rows.push({

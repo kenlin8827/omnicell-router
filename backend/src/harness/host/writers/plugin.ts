@@ -75,7 +75,9 @@ export interface PluginApplyRequest {
 export type ExecImpl = (
   command: string,
   args: string[],
-  timeoutMs: number
+  timeoutMs: number,
+  /** Working directory for the child — the install's `projectRoot` when a scope needs one. */
+  cwd?: string
 ) => Promise<{ code: number; stdout: string; stderr: string }>;
 
 /** One argv the plan will run, echoed verbatim (`echo` is what gate 3 shows). */
@@ -228,25 +230,60 @@ function marketplaceRuns(
  * `cli/clients/opencode-proxy.ts:runOpenCode`, and safe here because `safeSpec` already rejects
  * anything shell-shaped. Other platforms spawn directly with an argv array.
  */
-export function defaultExec(command: string, args: string[], timeoutMs: number): Promise<{ code: number; stdout: string; stderr: string }> {
+export function defaultExec(command: string, args: string[], timeoutMs: number, cwd?: string): Promise<{ code: number; stdout: string; stderr: string }> {
   const isWin = process.platform === 'win32';
   const finalArgs = isWin ? args.map((a) => (/\s"%^&|<>()]/.test(a) ? `"${a.replace(/"/g, '""')}"` : a)) : args;
+  // A scope-aware install (`claude --scope project`, `pi install --local`, `omp --scope project`)
+  // resolves its landing from the child's cwd — anchor it to the verified project root, not to this
+  // process's cwd (which is the gateway's, never the operator's project).
+  const child = spawn(command, finalArgs, {
+    shell: isWin,
+    windowsHide: true,
+    // POSIX: a new process group, so the timeout can kill the whole tree (a package manager
+    // spawns children that keep the pipes open). Windows has no group kill — `taskkill /T` below.
+    ...(isWin ? {} : { detached: true }),
+    ...(cwd ? { cwd } : {}),
+  });
   return new Promise((resolve) => {
-    const child = spawn(command, finalArgs, { shell: isWin, windowsHide: true });
     let stdout = '';
     let stderr = '';
-    const timer = setTimeout(() => child.kill(), timeoutMs);
+    let settled = false;
+    const finish = (result: { code: number; stdout: string; stderr: string }): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const killTree = (): void => {
+      if (!child.pid) return;
+      if (isWin) {
+        spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true });
+        return;
+      }
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+      } catch {
+        child.kill('SIGKILL');
+      }
+    };
+    const timer = setTimeout(() => {
+      killTree();
+      // A shim that outlives its parent can hold the pipes open past the kill; the timeout is the
+      // contract, so settle it here rather than hanging the install on a `close` that may not come.
+      setTimeout(
+        () => finish({ code: -1, stdout, stderr: `${stderr}\n${command}: timed out after ${timeoutMs}ms` }),
+        5000
+      ).unref?.();
+    }, timeoutMs);
     child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString('utf8')));
     child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString('utf8')));
     child.on('error', (e: NodeJS.ErrnoException) => {
-      clearTimeout(timer);
       // ENOENT here means the harness CLI itself is not on PATH — say that, not just `spawn failed`.
       const message = e.code === 'ENOENT' ? `${command}: executable not found on PATH (${e.message})` : e.message;
-      resolve({ code: -1, stdout, stderr: `${stderr}${message}` });
+      finish({ code: -1, stdout, stderr: `${stderr}${message}` });
     });
     child.on('close', (code) => {
-      clearTimeout(timer);
-      resolve({ code: code ?? -1, stdout, stderr });
+      finish({ code: code ?? -1, stdout, stderr });
     });
   });
 }
@@ -269,6 +306,25 @@ export function planPlugin(req: PluginApplyRequest): PluginPlan {
   const targets: PluginTargetPlan[] = [];
   const host = req.harness;
   const adapter = adapterFor(host);
+  // Scope capability gate (ADR-0015 §D2): a host whose adapter declares no project plugin landing
+  // (codex, kimi, cursor, antigravity, grok) must refuse a project install up front — landing
+  // global while the manifest records `project` would split the manifest, the inventory and
+  // uninstall across different truths. This covers every landing form below, the marketplace
+  // chain included: `writeTarget` already refuses the local forms, but the native chain never
+  // consults it (a cursor row would plan `/plugin install` for a project scope the runtime has
+  // no grammar for).
+  // A host with NO plugin landing at all (universal, dsh) falls through to the landing checks
+  //  below — its refusal ("no verified plugin landing") is more informative than a scope claim.
+  const pluginScopes = adapter?.supportedScopes('plugin') ?? [];
+  if (pluginScopes.length > 0 && !pluginScopes.includes(req.scope)) {
+    targets.push({
+      host,
+      op: 'config',
+      refused: `host '${host}' declares no ${req.scope}-scope plugin landing`,
+      added: false,
+    });
+    return { ok: true, targets };
+  }
   if (req.marketplace) {
     const chain = (adapter as Partial<PluginHost>)?.marketplaceSpec?.() ?? null;
     // No CLI chain: fall through to the webapi landing below when the runtime has one (kimi
@@ -397,7 +453,7 @@ export async function applyPlugin(req: PluginApplyRequest): Promise<PluginApplyR
   const timeoutMs = req.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const run = req.execImpl ?? defaultExec;
 
-  const copies: { host: HarnessHostId; path?: string; external?: boolean }[] = [];
+  const copies: { host: HarnessHostId; path?: string; external?: boolean; projectRoot?: string }[] = [];
   const runs: { host: string; command: string; code: number; stdout: string; stderr: string }[] = [];
   const skipped: InstallSkipped[] = [];
   let firstConfigHash: string | undefined;
@@ -432,7 +488,13 @@ export async function applyPlugin(req: PluginApplyRequest): Promise<PluginApplyR
         skipped.push({ host: target.host, code: 'upstream', message: outcome.message });
         continue;
       }
-      copies.push({ host: target.host, path: `${req.canonicalKey}#${target.host}`, external: true });
+      // External token copies carry no path to attribute by — `projectRoot` is the only marker.
+      copies.push({
+        host: target.host,
+        path: `${req.canonicalKey}#${target.host}`,
+        external: true,
+        ...(req.scope === 'project' && req.projectRoot ? { projectRoot: req.projectRoot } : {}),
+      });
       continue;
     }
     if (target.op === 'subprocess') {
@@ -442,7 +504,7 @@ export async function applyPlugin(req: PluginApplyRequest): Promise<PluginApplyR
       const chain = target.runs ?? [{ command: target.command!, args: target.args ?? [], echo: target.echo! }];
       let failed = false;
       for (const step of chain) {
-        const result = await run(step.command, step.args, timeoutMs);
+        const result = await run(step.command, step.args, timeoutMs, req.projectRoot);
         runs.push({ host: target.host, command: step.echo, code: result.code, stdout: result.stdout, stderr: result.stderr });
         if (result.code !== 0) {
           skipped.push({ host: target.host, code: 'upstream', message: `${step.echo} exited ${result.code}: ${result.stderr.slice(0, 200)}` });
@@ -454,7 +516,12 @@ export async function applyPlugin(req: PluginApplyRequest): Promise<PluginApplyR
       // A subprocess install materializes into the runtime's own store — no file path of ours exists,
       // so the copy is marked `external` and its `path` is an opaque identity token, not a location.
       // The run log above is the audit trail.
-      copies.push({ host: target.host, path: `${req.canonicalKey}#${target.host}`, external: true });
+      copies.push({
+        host: target.host,
+        path: `${req.canonicalKey}#${target.host}`,
+        external: true,
+        ...(req.scope === 'project' && req.projectRoot ? { projectRoot: req.projectRoot } : {}),
+      });
       continue;
     }
     // plugin[] array edit — same ownership + backup + atomic-rename discipline as the MCP writer.
@@ -481,7 +548,11 @@ export async function applyPlugin(req: PluginApplyRequest): Promise<PluginApplyR
       continue;
     }
     firstConfigHash ??= hashFile(target.file!);
-    copies.push({ host: target.host, path: target.file });
+    copies.push({
+      host: target.host,
+      path: target.file,
+      ...(req.scope === 'project' && req.projectRoot ? { projectRoot: req.projectRoot } : {}),
+    });
   }
 
   // A failed subprocess run with no successful target must NOT mint a manifest entry — the guard is
@@ -532,6 +603,7 @@ export async function applyPlugin(req: PluginApplyRequest): Promise<PluginApplyR
           rootId: 'default',
           path: item.path ?? `${req.canonicalKey}#${item.host}`,
           ...(item.external ? { external: true } : {}),
+          ...(item.projectRoot ? { projectRoot: item.projectRoot } : {}),
           contentHash,
           placement: 'materialized' as const,
           installedAt: now,

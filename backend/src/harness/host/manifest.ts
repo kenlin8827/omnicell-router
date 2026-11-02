@@ -257,3 +257,60 @@ export function claimOwner(absPath: string): string | null {
 export function findArtifact(artifactId: string): ArtifactRecord | undefined {
   return readManifest().artifacts.find((a) => a.id === artifactId);
 }
+
+/**
+ * Rewrite project-scope attribution and copy paths after a registered project folder moved.
+ *
+ * A project-scope copy records the root twice: `projectRoot` (attribution) and — for a real path —
+ * the absolute landing inside it. Renaming/moving the project without this rewrite would leave both
+ * pointing at a folder that no longer exists, so the copy would read as missing while the files sit
+ * on disk under the new name. Claims are keyed by absolute path for the same reason and move too.
+ */
+export function retargetProjectRoot(oldRoot: string, newRoot: string): void {
+  const from = path.resolve(oldRoot);
+  const to = path.resolve(newRoot);
+  if (from === to) return;
+  /** The moved spelling of `value`, or null when it does not live under the old root. */
+  const remap = (value: string): string | null => {
+    const abs = path.resolve(value);
+    if (abs === from) return to;
+    const rel = path.relative(from, abs);
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+    return path.join(to, rel);
+  };
+
+  const manifest = readManifest();
+  let changed = false;
+  for (const artifact of manifest.artifacts) {
+    for (const copy of artifact.copies) {
+      if (copy.scope !== 'project') continue;
+      if (copy.projectRoot) {
+        const moved = remap(copy.projectRoot);
+        if (moved && moved !== copy.projectRoot) {
+          copy.projectRoot = moved;
+          changed = true;
+        }
+      }
+      // An `external` copy's `path` is an identity token, not a location.
+      if (copy.external !== true) {
+        const moved = remap(copy.path);
+        if (moved && moved !== copy.path) {
+          copy.path = moved;
+          changed = true;
+        }
+      }
+    }
+  }
+  if (changed) writeManifest(manifest);
+
+  const claims = readClaims();
+  let claimsChanged = false;
+  for (const key of Object.keys(claims.claims)) {
+    const moved = remap(key);
+    if (!moved || moved === key) continue;
+    claims.claims[moved] = claims.claims[key]!;
+    delete claims.claims[key];
+    claimsChanged = true;
+  }
+  if (claimsChanged) writeClaims(claims);
+}

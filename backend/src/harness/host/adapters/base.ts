@@ -15,7 +15,7 @@ import type {
   SkillsHost,
   SkillsSpec,
 } from './types.js';
-import type { HarnessHostId, HarnessScope, ResolvedRoot } from '../../types.js';
+import type { HarnessHostId, HarnessKind, HarnessScope, ResolvedRoot } from '../../types.js';
 import { installArtifact, type InstallResult } from '../install.js';
 import {
   MCP_SERVER_NAME,
@@ -65,8 +65,9 @@ export interface HostMcpSpec {
   secretRef?: McpSecretRef;
   /** Server-name grammar the runtime itself enforces; absent = the union `[\w.-]+`. */
   namePattern?: RegExp;
-  /** Config file syntax; absent = plain JSON (a JSONC file is refused, never rewritten). */
-  format?: 'json' | 'toml';
+  /** Config file syntax; absent = plain JSON (a JSONC file is refused, never rewritten — unless the
+   *  landing is `json5`, whose runtime's own CLI is the only writer). */
+  format?: 'json' | 'toml' | 'json5';
   /**
    * The runtime has NO env/header expansion (kimi, grok): a KEY NAME without a typed value would
    * land as a literal string and never resolve, so the plan refuses it instead of writing a dead
@@ -75,6 +76,13 @@ export interface HostMcpSpec {
   literalEnv?: boolean;
   /** The runtime's own MCP CLI — present = a CLI-materialized landing (§D8.13). */
   cli?: McpCliSpec;
+  /**
+   * EXPLICIT scope override (ADR-0015 §D2). Default derivation is both scopes whenever the host
+   *  has an MCP landing at all; set it when the write grammar cannot express a scope even though
+   *  the host ships a project file (Codex: `codex mcp add` has no project-scope grammar — see
+   *  codex.ts — so `configProject` alone is not a landing we may claim).
+   */
+  scopes?: readonly HarnessScope[];
 }
 
 
@@ -148,8 +156,8 @@ export abstract class BaseHostAdapter implements HostAdapter, SkillsHost, McpHos
     };
   }
 
-  /** Config-file syntax the landing reads (`toml` for codex; JSON everywhere else). */
-  mcpLandingFormat(): 'json' | 'toml' {
+  /** Config-file syntax the landing reads (`toml` for codex, `json5` for openclaw; JSON elsewhere). */
+  mcpLandingFormat(): 'json' | 'toml' | 'json5' {
     return this.mcpSpec?.format ?? 'json';
   }
 
@@ -187,6 +195,35 @@ export abstract class BaseHostAdapter implements HostAdapter, SkillsHost, McpHos
 
   isPluginSupported(): boolean {
     return !!this.extSpec || this.supportedPluginSources().length > 0;
+  }
+
+  /**
+   * Scope capability per kind (ADR-0015 §D2), derived from the kind's own spec declarations so
+   *  the truth stays single-sourced:
+   *  - skill: every declared host takes both scopes (harvest and landing share `skillsSpec`).
+   *  - mcp: both scopes whenever a spec exists — `configProject` is mandatory on `HostMcpSpec` —
+   *    unless `spec.scopes` says the write grammar cannot express one.
+   *  - plugin: project requires a declared PROJECT landing: configProject+container, or
+   *    `declared.project`, or `looseDir.project`, or a marketplace command carrying the `{scope}`
+   *    token, or subprocess argv that differs by scope; `spec.scopes` overrides when no
+   *    declaration carries the truth. A host with only global plugin paths answers `['global']`.
+   */
+  supportedScopes(kind: HarnessKind): readonly HarnessScope[] {
+    if (kind === 'skill') return this.skillsSpec ? ['global', 'project'] : [];
+    if (kind === 'mcp') return this.mcpSpec ? (this.mcpSpec.scopes ?? ['global', 'project']) : [];
+    const ext = this.extSpec;
+    if (!ext) return [];
+    if (ext.scopes) return ext.scopes;
+    const project =
+      Boolean(ext.configProject && ext.container) ||
+      Boolean(ext.declared?.project) ||
+      Boolean(ext.looseDir?.project) ||
+      (ext.marketplace?.commands.some((cmd) => cmd.includes('{scope}')) ?? false) ||
+      Boolean(
+        ext.subprocessArgs &&
+          ext.subprocessArgs('x', 'global').join('\u0000') !== ext.subprocessArgs('x', 'project').join('\u0000')
+      );
+    return project ? ['global', 'project'] : ['global'];
   }
 
   /**
@@ -285,9 +322,14 @@ export abstract class BaseHostAdapter implements HostAdapter, SkillsHost, McpHos
     return [this.extSpec.container, ...(this.extSpec.containerAliases ?? [])];
   }
 
-  declarations(): { file: string; key: string }[] {
+  declarations(ctx: AdapterContext, scope: HarnessScope): { file: string; key: string }[] {
     if (!this.extSpec?.declared) return [];
-    return extPaths(this.extSpec.declared.global).map((file) => ({ file, key: this.extSpec!.declared!.key }));
+    const declared = scope === 'project' ? this.extSpec.declared.project : this.extSpec.declared.global;
+    return extPaths(declared).map((file) => ({
+      // A project declaration is spelled relative to the repo (`pi install --local`).
+      file: scope === 'project' && !path.isAbsolute(file) ? path.resolve(ctx.projectRoot, file) : file,
+      key: this.extSpec!.declared!.key,
+    }));
   }
 
   lock(): string | undefined {
@@ -336,10 +378,14 @@ export abstract class BaseHostAdapter implements HostAdapter, SkillsHost, McpHos
     if (!this.extSpec) return out;
 
     if (this.extSpec.subprocess) {
-      for (const declaration of this.declarations()) {
+      // A global-only runtime store answers the SAME global record for a project ask (claude's
+      // store has no project scope): inventing a project-flavored path would report a landing the
+      // runtime never reads. A host WITH a project declaration (pi) is asked in its own scope.
+      const declaredScope: HarnessScope = this.declarations(ctx, scope).length > 0 ? scope : 'global';
+      for (const declaration of this.declarations(ctx, declaredScope)) {
         out.push({
           host: this.id,
-          scope: 'global',
+          scope: declaredScope,
           origin: 'runtime-store',
           kind: 'declared',
           path: declaration.file,
@@ -532,7 +578,7 @@ export abstract class BaseHostAdapter implements HostAdapter, SkillsHost, McpHos
 
   /**
    * Discover marketplaces natively configured in this host's local agent environment.
-   * Concrete adapters that support native marketplace configuration (e.g. Claude, Codex, Copilot)
+   * Concrete adapters that support native marketplace configuration (e.g. Claude, Codex)
    * override this method to scan their local config files.
    */
   async listNativeMarketplaces(): Promise<NativeMarketplaceInfo[]> {

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Boxes, ChevronDown, Database, Download, ExternalLink, FolderTree, Globe, Inbox, Info, LayoutGrid, List, Maximize2, Minimize2, Pencil, Plus, RefreshCw, Save, Search, Settings2, ShieldAlert, SquareCheck, Star, Terminal, Trash2, X } from 'lucide-react';
+import { Boxes, ChevronDown, FolderGit2, FolderCog, Database, Download, ExternalLink, FolderTree, Globe, Inbox, Info, LayoutGrid, List, Maximize2, Minimize2, Pencil, Plus, RefreshCw, Save, Search, Settings2, ShieldAlert, SquareCheck, Star, Terminal, Trash2, X } from 'lucide-react';
 import {
   api,
   type HarnessArtifactView,
@@ -18,7 +18,9 @@ import {
   type McpCliFormat,
   type McpRuntimeReport,
   type McpRuntimeStatus,
+  type ProjectItem,
 } from '../lib/api';
+import { ProjectsDialog } from '../components/ProjectsDialog';
 import { SegGroup } from '../components/SegGroup';
 import { Field } from '../components/Form';
 import { Switch } from '../components/Switch';
@@ -55,10 +57,10 @@ import { useLocation, useNavigate, useParams, useSearchParams } from 'react-rout
  *
  * The third axis is the HARNESS, and it exists for all three kinds — but it answers a different
  * question per kind, and that difference is the whole point of the rail copy:
- *   · skills     — one `.agents/skills` tree is loaded by up to twelve runtimes, but the rail lists
+ *   · skills     — one `.agents/skills` tree is loaded by up to fourteen runtimes, but the rail lists
  *                  only runtimes whose CLI is installed on this machine — WRITES stay owner-only
  *                  (`KIND_META.skill.installAxis`): materializing the same directory once per
- *                  reader would be ten writes of one tree.
+ *                  reader would be fourteen writes of one tree.
  *   · mcp        — an MCP server is one payload written into ONE OR MORE clients' config files, so
  *                  the page is pinned to one landing harness and the install may fan out from there.
  *   · plugins — code against ONE runtime's plugin API, so the runtime is part of the artifact's
@@ -89,15 +91,17 @@ interface KindMeta {
    * Which hosts an install may write to.
    *
    * `landing` — the verified landing flag decides (an MCP config, a plugin API).
-   * `skills-owner` — the OWNER of a skills directory decides, never its readers: twelve runtimes read
+   * `skills-owner` — the OWNER of a skills directory decides, never its readers: fourteen runtimes read
    * one `.agents/skills` tree, so offering every reader as a target would write the same directory
-   * ten times. The rail still lists the owner's page (that is the one-click integrated set).
+   * fourteen times. The rail still lists the owner's page (that is the one-click integrated set).
    */
   installAxis: 'landing' | 'skills-owner';
   /** URL segment carrying the harness id: `/harness/<route>/<harness>`. */
   route: string;
   /** Console title / "installed" count noun. */
   titleKey: string;
+  /** Bare artifact noun used by the global/project inventory tabs. */
+  scopeKindKey: string;
   installedKey: string;
   /** Market tab + market card title. Per-kind, not one shared "Marketplace": each axis browses its
    *  OWN registries (`sources[].kinds`), so a fixed noun would label the MCP page a skill market. */
@@ -118,13 +122,14 @@ interface KindMeta {
 
 const KIND_META: Record<Kind, KindMeta> = {
   skill: {
-    // A skill lands in a DIRECTORY, and one directory is read by up to twelve runtimes. The rail lists
+    // A skill lands in a DIRECTORY, and one directory is read by up to fourteen runtimes. The rail lists
     // the OWNER (the one-click installable set) — writes stay owner-only (`installAxis`), or the
     // same tree would be materialized once per reader.
     landing: 'hasSkills',
     installAxis: 'skills-owner',
     route: 'skills',
     titleKey: 'nav.skills',
+    scopeKindKey: 'harness.scopeKindSkill',
     installedKey: 'harness.installedSkills',
     marketKey: 'harness.marketSkills',
     installMode: 'multi',
@@ -139,6 +144,7 @@ const KIND_META: Record<Kind, KindMeta> = {
     installAxis: 'landing',
     route: 'mcp',
     titleKey: 'nav.mcp',
+    scopeKindKey: 'harness.scopeKindMcp',
     installedKey: 'harness.installedMcp',
     marketKey: 'harness.marketMcp',
     // A market MCP row installs through the shared Add/Edit sheet to the page's pinned landing
@@ -159,6 +165,7 @@ const KIND_META: Record<Kind, KindMeta> = {
     installAxis: 'landing',
     route: 'plugins',
     titleKey: 'nav.plugins',
+    scopeKindKey: 'harness.scopeKindPlugin',
     installedKey: 'harness.installedPlugins',
     marketKey: 'harness.marketPlugins',
     installMode: 'single',
@@ -433,17 +440,19 @@ const HOST_BRAND: Record<string, string> = {
   omp: 'omp',
   grok: 'grok',
   kimi: 'kimi',
-  'github-copilot': 'github-copilot',
+  openclaw: 'openclaw',
   amp: 'amp',
   cursor: 'cursor',
-  windsurf: 'windsurf',
   cline: 'cline',
   zed: 'zed',
+  windsurf: 'windsurf',
+  antigravity: 'antigravity',
+  factory: 'factory',
   'gemini-cli': 'gemini-cli',
 };
 
 /** Brand mark when one is vendored, otherwise a neutral glyph at the same size. */
-const HostIcon: React.FC<{ host: string; size?: number }> = ({ host, size = 11 }) => {
+const HostIcon: React.FC<{ host: string; size?: number }> = ({ host, size = 13 }) => {
   const brand = HOST_BRAND[host];
   if (brand) return <BrandIcon name={brand} size={size} />;
   return <Terminal size={size} aria-hidden style={{ flexShrink: 0 }} />;
@@ -454,7 +463,7 @@ const HostIcon: React.FC<{ host: string; size?: number }> = ({ host, size = 11 }
 const hostOption = (host: HarnessHostView): ComboboxOption => ({
   value: host.id,
   label: host.label.replace(/\s*\([^)]*\)\s*$/, ''),
-  icon: <HostIcon host={host.id} size={12} />,
+  icon: <HostIcon host={host.id} size={16} />,
 });
 
 /**
@@ -857,7 +866,7 @@ const InstallGatePlan: React.FC<{ targets: HarnessInstallTarget[]; descKey: stri
           }}
         >
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '12.5px', fontWeight: 600 }}>
-            <HostIcon host={target.host} size={12} />
+            <HostIcon host={target.host} size={14} />
             {target.host}
           </span>
           {target.refused ? (
@@ -915,8 +924,8 @@ const InstallGatePlan: React.FC<{ targets: HarnessInstallTarget[]; descKey: stri
  *
  * Two answers, one predicate: ownership (`copy.host`) is who the copy is recorded under — the
  * landing that was written; readership (`copy.readers`, skills only) is every runtime that loads
- * that directory. A skill materialized once in `.agents/skills` is read by twelve runtimes, so asking
- * only about `host` would show it under one rail entry and hide it under the other nine.
+ * that directory. A skill materialized once in `.agents/skills` is read by fourteen runtimes, so asking
+ * only about `host` would show it under one rail entry and hide it under the other thirteen.
  */
 const copyServes =
   (harnessId: string) =>
@@ -945,7 +954,7 @@ const rowServes = (harnessId: string) => (item: HarnessDiscoveredArtifact): bool
  *
  * `universal` is a HOST id, not a runtime: it owns that directory (first adapter in registry order)
  * and every `readsUniversal` runtime loads it. So on a skills page pinned to one runtime, a row whose
- * copies carry this host is NOT private to that runtime — the same row sits under all ten rail
+ * copies carry this host is NOT private to that runtime — the same row sits under all fourteen rail
  * entries, which is exactly why the pinned page cannot answer "what is actually mine" on its own.
  */
 const SHARED_HOST = 'universal';
@@ -1144,29 +1153,85 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   const meta = KIND_META[kind];
   const { landing, discovery, installMode, route, rail: railCopy, emptyNoteKey } = meta;
 
+  /** The raw `:harness` segment — read early: the page-tab gate below consults the picked host's
+   *  capability before `harness` itself is validated against the rail catalog. */
+  const requestedHarness = landing ? (params.harness ?? '') : '';
+
+  // Project management & scope view state
+  const [projects, setProjects] = useState<ProjectItem[]>([]);
+  const [, setActiveProjectId] = useState<string | null>(null);
+  /** Project pick used when the URL carries no explicit one (see `selectedProjectId` below). */
+  const [fallbackProjectId, setFallbackProjectId] = useState<string | null>(null);
+  const [projectsDialogOpen, setProjectsDialogOpen] = useState(false);
+  const [installScope, setInstallScope] = useState<'global' | 'project'>('global');
+  const [installProjectId, setInstallProjectId] = useState<string | null>(null);
+  /** Host catalog — declared before the page-tab gate and the scope helpers that consult it. */
+  const [hosts, setHosts] = useState<HarnessHostView[]>([]);
+
+  /** Scopes the host's adapter declares for one kind (ADR-0015 §D2, served as `kindScopes` by
+   *  /hosts). An absent host or field answers BOTH, so a stale payload never hides a scope the
+   *  backend would accept. */
+  const kindScopesFor = (hostId: string, k: Kind): ('global' | 'project')[] =>
+    hosts.find((h) => h.id === hostId)?.kindScopes?.[k] ?? ['global', 'project'];
+
+  /** Project is offered only when EVERY target host declares a project landing for the kind — a
+   *  host without one is refused by the writer anyway, so asking first would fake a choice. */
+  const projectScopeAllowed = (hostIds: string[], k: Kind): boolean =>
+    hostIds.length > 0 && hostIds.every((id) => kindScopesFor(id, k).includes('project'));
+
+  /** The scope an install actually targets: a picked `project` coerces to `global` when the target
+   *  set cannot land it (the chip is hidden in the same render; this is the submit-path backstop). */
+  const coercedScope = (hostIds: string[], k: Kind): 'global' | 'project' =>
+    installScope === 'project' && projectScopeAllowed(hostIds, k) ? 'project' : 'global';
+
+  const refreshProjects = useCallback(async () => {
+    try {
+      const data = await api.listProjects();
+      setProjects(data.projects);
+      setActiveProjectId(data.activeId);
+      setFallbackProjectId((prev) => prev ?? data.activeId ?? data.projects[0]?.id ?? null);
+      setInstallProjectId((prev) => prev ?? data.activeId ?? data.projects[0]?.id ?? null);
+    } catch {
+      // Tolerate error during initial load
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshProjects();
+  }, [refreshProjects]);
   const [inventory, setInventory] = useState<HarnessInventoryResponse | null>(null);
   /** Live MCP status (`kind === 'mcp'` only): null until the probe answers, and null on a page
    *  that has no MCP axis. Rows never invent a status from this — a missing entry is unknown. */
   const [mcpRuntime, setMcpRuntime] = useState<McpRuntimeReport | null>(null);
+  const [runtimeProbing, setRuntimeProbing] = useState(false);
   const [sources, setSources] = useState<HarnessSourceView[]>([]);
   const [activeCatalog, setActiveCatalog] = useState('all');
+  const [searchParams, setSearchParams] = useSearchParams();
   /**
-   * Page tab, held in the URL (`?tab=market`).
+   * Page tab, held in the URL (`?tab=market` or `?tab=project`).
    *
    * A reload must land on the view the operator was reading, and the market re-opens its own list
-   * from the same address (its load effect keys on `tab`). `local` is the default and stays implicit,
-   * so the ordinary address remains clean. The write REPLACES: switching a view is not a navigation
-   * step, and spending a history entry here would bury the rail picks that Back is meant to replay.
+   * from the same address (its load effect keys on `tab`). Every kind forks the installed view into
+   * two page-level tabs — global and project — aligned with the market tab in the same SegGroup.
+   * `global` is the default and stays implicit. The write REPLACES:
+   * switching a view is not a navigation step, and spending a history entry here would bury the
+   * rail picks that Back is meant to replay.
    */
-  const [searchParams, setSearchParams] = useSearchParams();
-  const tab: 'local' | 'market' = searchParams.get('tab') === 'market' ? 'market' : 'local';
+  const tabRaw = searchParams.get('tab');
+  /** The project VIEW answers to the same per-host×kind capability as the install sheet
+   *  (ADR-0015 §D2): a harness with no project landing for this kind gets no project tab, and a
+   *  stale `?tab=project` coerces to global rather than rendering a view that can never fill.
+   *  The raw pick stays in the URL — switching back to a capable harness restores it. */
+  const projectTabOk = kindScopesFor(requestedHarness, kind).includes('project');
+  const tab: 'global' | 'project' | 'market' =
+    tabRaw === 'market' ? 'market' : tabRaw === 'project' && projectTabOk ? 'project' : 'global';
   const setTab = useCallback(
-    (next: 'local' | 'market'): void => {
+    (next: 'global' | 'project' | 'market'): void => {
       setSearchParams(
         (prev) => {
           const params = new URLSearchParams(prev);
-          if (next === 'market') params.set('tab', 'market');
-          else params.delete('tab');
+          if (next === 'global') params.delete('tab');
+          else params.set('tab', next);
           return params;
         },
         { replace: true }
@@ -1174,6 +1239,34 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     },
     [setSearchParams]
   );
+  /**
+   * Project pick (`?project=<id>`), held in the URL. A reload must reopen the same project; the
+   * param is inert outside the project tab. A stale id (project deleted elsewhere) falls through
+   * to the seeded default rather than blanking the picker.
+   */
+  const urlProjectId = searchParams.get('project');
+  const selectedProjectId =
+    urlProjectId && projects.some((p) => p.id === urlProjectId) ? urlProjectId : fallbackProjectId;
+  const selectedProject = useMemo(
+    () => projects.find((p) => p.id === selectedProjectId) ?? null,
+    [projects, selectedProjectId]
+  );
+  const setSelectedProjectId = useCallback(
+    (id: string | null): void => {
+      setSearchParams(
+        (prev) => {
+          const params = new URLSearchParams(prev);
+          if (id) params.set('project', id);
+          else params.delete('project');
+          return params;
+        },
+        { replace: true }
+      );
+    },
+    [setSearchParams]
+  );
+  /** The inventory request is scoped only where it can differ: the skills project tab with a pick. */
+  const inventoryProjectId = tab === 'project' ? selectedProjectId : null;
   /** Landing pages are bound to ONE harness (no "all"): the target runtime is part of the landing,
    *  so the pick lives in the URL and is resolved against the host catalog below. */
   const [marketCatalog, setMarketCatalog] = useState('default');
@@ -1279,7 +1372,13 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     defaultLaunch: HarnessMcpLaunch;
   } | null>(null);
   /** Edit sheet: the existing server's identity (the NAME is read-only) and its manifest record. */
-  const [mcpEdit, setMcpEdit] = useState<{ name: string; artifactId?: string } | null>(null);
+  const [mcpEdit, setMcpEdit] = useState<{
+    name: string;
+    artifactId?: string;
+    /** The copy the CURRENT view edits — the project tab edits the project landing, not the global one. */
+    scope: 'global' | 'project';
+    projectId?: string;
+  } | null>(null);
   const [mcpEditLoading, setMcpEditLoading] = useState(false);
   /** Edit gate's plan; the draft is the one the plan was computed from. */
   const [mcpEditGate, setMcpEditGate] = useState<{ targets: HarnessInstallTarget[]; draft: McpDraft } | null>(null);
@@ -1315,10 +1414,9 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
    *  re-downloading a skill whose description changed must not resurface the previous translation. */
   const [tr, setTr] = useState<Record<string, { src: string; text: string; model: string }>>({});
   const [showOriginal, setShowOriginal] = useState<Record<string, boolean>>({});
-  const [hosts, setHosts] = useState<HarnessHostView[]>([]);
   const [hostFilter, setHostFilter] = useState('');
   /** Hide the rows that live in the shared `.agents` tree — ON by default. The shared set is the SAME
-   *  under every rail entry (twelve runtimes read it), so leading a pinned page with it hides the one
+   *  under every rail entry (fourteen runtimes read it), so leading a pinned page with it hides the one
    *  thing that page exists to answer: what was installed for THIS runtime. The rail cannot express
    *  that complement, and the switch is one tick away for anyone who wants the full list back. */
   const [hideShared, setHideShared] = useState(true);
@@ -1335,41 +1433,125 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  /** Latest-call token for overlapping probes: a refresh and a drawer-open can fire two runs,
+   *  and only the NEWER result may win the last-write race (stale verdicts / spinner flicker). */
+  const probeSeq = useRef(0);
+
+  /** Live MCP probe, deliberately NOT part of `load()`'s awaited set: the probe can sit for tens
+   *  of seconds (one timed CLI/HTTP call per host), and the inventory is true without it. The page
+   *  renders from on-disk state first; verdicts pop in whenever the runtimes answer. A failed probe
+   *  keeps the last known verdicts — absence asserts nothing new. */
+  const probeRuntime = async () => {
+    if (kind !== 'mcp') return;
+    const seq = ++probeSeq.current;
+    setRuntimeProbing(true);
+    try {
+      const runtime = await api.harnessMcpRuntime();
+      if (seq === probeSeq.current) setMcpRuntime(runtime);
+    } catch {
+      /* no live answer; the on-disk state stands alone */
+    } finally {
+      if (seq === probeSeq.current) setRuntimeProbing(false);
+    }
+  };
+
+  /** Monotonic request id for inventory loads: switching tabs/projects fires overlapping reads,
+   *  and only the NEWEST answer may paint the table (an older one names another project). */
+  const loadSeq = useRef(0);
   const load = async () => {
+    const seq = ++loadSeq.current;
     setLoading(true);
     setError(null);
+    void probeRuntime();
     try {
-      // The runtime probe is an independent read-only call: its failure must not hide the inventory
-      // (the on-disk state is still true), so it degrades to `null` = "no live answer".
-      const [inv, src, hostList, runtime] = await Promise.all([
-        api.harnessInventory(),
+      const [inv, src, hostList] = await Promise.all([
+        api.harnessInventory(inventoryProjectId ? { projectId: inventoryProjectId } : undefined),
         api.harnessSources(),
         api.harnessHosts(),
-        kind === 'mcp' ? api.harnessMcpRuntime().catch(() => null) : Promise.resolve(null),
       ]);
+      if (seq !== loadSeq.current) return;
       setInventory(inv);
       setHosts(hostList.hosts);
       setSources(src.sources.filter((s) => s.kinds.includes(kind)));
-      setMcpRuntime(runtime);
     } catch (e) {
+      if (seq !== loadSeq.current) return;
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      if (seq === loadSeq.current) setLoading(false);
     }
   };
   useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [kind]);
+  }, [kind, inventoryProjectId]);
 
   useEffect(() => {
     localStorage.setItem(`harness.view.${kind}`, layout);
   }, [layout, kind]);
 
-  const trackedRows = useMemo(
-    () => (inventory?.artifacts ?? []).filter((a) => a.kind === kind),
-    [inventory, kind]
+  /**
+   * Scope filter: the global tab shows ONLY global copies, the project tab ONLY copies belonging to
+   * the selected project. An external copy (CLI/package-manager landing) carries an identity token
+   * in `path`, so its project attribution comes from the recorded `projectRoot`, not a path prefix.
+   */
+  const copyMatchesScope = useCallback(
+    (copy: { scope: 'global' | 'project'; path: string; projectRoot?: string }): boolean => {
+      if (tab === 'global') return copy.scope === 'global';
+      if (tab === 'project') {
+        if (copy.scope !== 'project') return false;
+        // No project picked = the project view has nothing to show. Listing every project copy
+        // here would attribute copies to a project the operator never selected.
+        if (!selectedProject?.path) return false;
+        const norm = (p: string): string => p.replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
+        if (copy.projectRoot) return norm(copy.projectRoot) === norm(selectedProject.path);
+        const normCopy = copy.path.replace(/\\/g, '/').toLowerCase();
+        const normProj = selectedProject.path.replace(/\\/g, '/').toLowerCase();
+        return normCopy.startsWith(normProj.endsWith('/') ? normProj : normProj + '/');
+      }
+      return true;
+    },
+    [tab, selectedProject]
   );
+
+  const trackedRows = useMemo(() => {
+    const list = (inventory?.artifacts ?? []).filter((a) => a.kind === kind);
+    return list
+      .map((artifact) => {
+        const matchingCopies = artifact.copies.filter(copyMatchesScope);
+        if (matchingCopies.length === 0) return null;
+        // The backend's rollup covers EVERY copy; the row shows one scope, so a global row must not
+        // read "dirty" because a project copy of the same artifact drifted (and vice versa).
+        const rollup: HarnessArtifactView['rollup'] = matchingCopies.some((c) => c.state === 'dirty')
+          ? 'dirty'
+          : matchingCopies.some((c) => c.state === 'missing')
+            ? 'missing'
+            : matchingCopies.some((c) => c.state === 'foreign')
+              ? 'partial'
+              : 'clean';
+        return {
+          ...artifact,
+          copies: matchingCopies,
+          rollup,
+        };
+      })
+      .filter((a): a is NonNullable<typeof a> => a !== null);
+  }, [inventory, kind, copyMatchesScope]);
+
+  const discoveredRows = useMemo(() => {
+    if (!discovery || !inventory) return [];
+    const list = inventory.discovered.filter((item) => item.kind === kind);
+    return list
+      .map((item) => {
+        const matchingCopies = item.copies.filter(copyMatchesScope);
+        if (matchingCopies.length === 0) return null;
+        return {
+          ...item,
+          copies: matchingCopies,
+          hosts: [...new Set(matchingCopies.map((c) => c.host))],
+        };
+      })
+      .filter((item): item is HarnessDiscoveredArtifact => item !== null);
+  }, [discovery, inventory, kind, copyMatchesScope]);
 
   /** `host + server` → the runtime's answer. Only reachable hosts contribute: an unreachable
    *  daemon is "no live claim", and its rows keep their on-disk state alone. */
@@ -1392,18 +1574,8 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
    *  so a server that failed (or came back) while the tab sat idle cannot keep a stale badge. */
   useEffect(() => {
     if (!sourcesOpen || kind !== 'mcp') return;
-    let cancelled = false;
-    void api
-      .harnessMcpRuntime()
-      .then((runtime) => {
-        if (!cancelled) setMcpRuntime(runtime);
-      })
-      .catch(() => {
-        /* the drawer keeps the last known verdicts; a failed re-probe asserts nothing new */
-      });
-    return () => {
-      cancelled = true;
-    };
+    void probeRuntime();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourcesOpen, kind]);
 
   /** THE PINNED HARNESS's verdict, nothing else: a page is pinned to one harness, so its rows
@@ -1436,11 +1608,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     const counts: Record<string, { count: number; warn: boolean }> = {};
     for (const host of landingHosts) {
       const hits = trackedRows.filter(scopedTo(kind, host.id));
-      const found = discovery
-        ? (inventory?.discovered ?? []).filter(
-          (item) => item.kind === kind && rowServes(host.id)(item)
-        )
-        : [];
+      const found = discoveredRows.filter(rowServes(host.id));
       // THIS host's verdict only: the rail dot answers "is anything broken on THIS harness" —
       // a kimi failure must not light the claude rail (and vice versa), same server or not.
       const runtimeWarn =
@@ -1453,31 +1621,28 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
       };
     }
     return counts;
-  }, [landingHosts, trackedRows, kind, discovery, inventory, runtimeIndex]);
+  }, [landingHosts, trackedRows, discoveredRows, kind, runtimeIndex]);
 
   /** The harness segment the URL asks for, validated against the catalog: an unknown or missing
    *  id is not a harness, it is a broken URL. Validated against every axis host (not just the
    *  admitted ones) so a deep link to a collapsed host still pins its page. */
-  const requestedHarness = landing ? (params.harness ?? '') : '';
   const harness = useMemo(
     () => (landingHosts.some((h) => h.id === requestedHarness) ? requestedHarness : ''),
     [landingHosts, requestedHarness]
   );
 
   /** The hosts the ONE-CLICK integration covers — the backend `ClientAdapter.harness` values
-   *  (frontend mirror; opencode/opencode-proxy fold to one; grok is skills-only, its plugin
-   *  landing is unverified). Hosts OUTSIDE this set are never admitted by default, however
-   *  installed they are. */
-  const ONE_CLICK_HOSTS: Record<string, true> = { opencode: true, claude: true, codex: true, pi: true, dsh: true, omp: true, grok: true, kimi: true };
+   *  (frontend mirror; opencode/opencode-proxy fold to one). Hosts OUTSIDE this set are never
+   *  admitted by default, however installed they are. */
+  const ONE_CLICK_HOSTS: Record<string, true> = { opencode: true, claude: true, codex: true, pi: true, dsh: true, omp: true, grok: true, kimi: true, openclaw: true };
 
   /** The anchoring order: the Clients page's adapter order (backend insertion order — by market
-   *  share: claude, codex, opencode, grok, then the niche pi/dsh/omp), mirrored. */
-  const CLIENT_ORDER = ['claude', 'codex', 'opencode', 'grok', 'kimi', 'pi', 'dsh', 'omp'];
+   *  share: claude, codex, opencode, grok, kimi, openclaw, then the niche pi/dsh/omp), mirrored. */
+  const CLIENT_ORDER = ['claude', 'codex', 'opencode', 'grok', 'kimi', 'openclaw', 'pi', 'dsh', 'omp'];
 
   /** Popularity ranking for hosts OUTSIDE the clients set (curated — the host catalog carries no
    *  download signal); hosts missing here fall back to catalog order after the ranked ones. */
   const HOST_POPULARITY: Record<string, number> = {
-    'github-copilot': 0,
     cursor: 1,
     'gemini-cli': 2,
     windsurf: 3,
@@ -1574,13 +1739,8 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   /** Discovery rows for THIS page: the scan is one channel for every kind, so both axes are
    *  filtered here — `kind` always, the harness only where the page is pinned to one. */
   const scopedDiscovered = useMemo(
-    () =>
-      discovery
-        ? (inventory?.discovered ?? []).filter(
-            (item) => item.kind === kind && (!landing || rowServes(harness)(item))
-          )
-        : [],
-    [inventory, kind, discovery, landing, harness]
+    () => discoveredRows.filter((item) => !landing || rowServes(harness)(item)),
+    [discoveredRows, landing, harness]
   );
 
   /** Every row this page holds, before any control narrows it (the facets below derive from it). */
@@ -1711,7 +1871,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
 
   /**
    * Hosts the dialog may write to — and the caliber differs per kind, which is why this used to be
-   * wrong for MCP: skills are LOCATIONS, not readers (twelve hosts read the same project
+   * wrong for MCP: skills are LOCATIONS, not readers (fourteen hosts read the same project
    * `.agents/skills`), so a host with no skills root, or one that is an alias of another host's
    * directory, is not a target. MCP and plugins need their OWN verified landing — a shared skills
    * directory says nothing about having a server config to merge into or a package manager to run.
@@ -1736,12 +1896,12 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   /**
    * Installed copies indexed by `canonicalKey`, from BOTH truth sources: the manifest (what this
    * gateway installed) and the discovery scan (what a runtime installed for itself). A plugin the
-   * runtime owns IS installed — reporting it as "not installed" in the market while the local tab
+   * runtime owns IS installed — reporting it as "not installed" in the market while the global tab
    * lists it would describe one artifact two ways.
    */
   const installIndex = useMemo(() => {
-    const index = new Map<string, { host: string; scope: string; state: string }[]>();
-    const put = (key: string | null | undefined, copy: { host: string; scope: string; state: string }) => {
+    const index = new Map<string, { host: string; scope: string; state: string; path: string; projectRoot?: string }[]>();
+    const put = (key: string | null | undefined, copy: { host: string; scope: string; state: string; path: string; projectRoot?: string }) => {
       if (!key) return;
       const list = index.get(key) ?? [];
       list.push(copy);
@@ -1765,21 +1925,34 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
    * so the repo prefix is the honest match there and the exact per-target answer waits for the
    * install sheet.
    */
-  const installsFor = (item: HarnessMarketItem): { host: string; scope: string; state: string }[] => {
+  const installsFor = (item: HarnessMarketItem): { host: string; scope: string; state: string; path: string; projectRoot?: string }[] => {
     if (item.installKind !== 'skill') return installIndex.get(item.key) ?? [];
     const prefix = `${item.key.replace(/^github:/, 'gh:')}#`;
-    const out: { host: string; scope: string; state: string }[] = [];
+    const out: { host: string; scope: string; state: string; path: string; projectRoot?: string }[] = [];
     for (const [key, copies] of installIndex) if (key.startsWith(prefix)) out.push(...copies);
     return out;
   };
 
-  /**
-   * Already present at this host in the GLOBAL scope? A `missing` copy does not count — reinstalling
-   * repairs it. Project copies are not considered: this build installs to global roots only
-   * (ADR-0015 §D2 "Scope"), so a row that only exists inside a repo is still installable here.
-   */
-  const takenOn = (item: HarnessMarketItem, host: string): boolean =>
-    installsFor(item).some((c) => c.host === host && c.scope === 'global' && c.state !== 'missing');
+  /** A clean copy blocks only the same host and installation destination. */
+  const takenOn = (
+    item: HarnessMarketItem,
+    host: string,
+    scope = installScope,
+    projectId = installProjectId,
+  ): boolean => {
+    const project = scope === 'project' ? projects.find((p) => p.id === projectId) : null;
+    const norm = (value: string): string => value.replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
+    return installsFor(item).some((copy) =>
+      copy.host === host &&
+      copy.scope === scope &&
+      copy.state !== 'missing' &&
+      (scope === 'global' ||
+        (!!project &&
+          (copy.projectRoot
+            ? norm(copy.projectRoot) === norm(project.path)
+            : norm(copy.path).startsWith(`${norm(project.path)}/`)))),
+    );
+  };
 
   /** Candidate hosts for an install kind: a single-target kind (an plugin is code against ONE
    *  runtime's plugin API) reads the page's harness; a multi-target kind takes `ticked` when given
@@ -1794,6 +1967,17 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     const hosts = hostsForKind(item.installKind);
     return hosts.filter((host) => !takenOn(item, host)).length;
   };
+
+  /** The market stays actionable when the item has a free target in another project scope —
+   *  counting only hosts that DECLARE a project landing for the kind (ADR-0015 §D2): a host the
+   *  writer would refuse is not a free target. */
+  const canInstallFromMarket = (item: HarnessMarketItem): boolean =>
+    freeTargets(item) > 0 ||
+    projects.some((project) =>
+      hostsForKind(item.installKind)
+        .filter((host) => kindScopesFor(host, item.installKind).includes('project'))
+        .some((host) => !takenOn(item, host, 'project', project.id))
+    );
 
   /** Open the detail dialog for one row: paint the row immediately, then fill in the README and the
    *  package facts. The row is what the operator clicked, so a slow/hostile upstream never leaves
@@ -1879,16 +2063,17 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   const marketInstallButton = (item: HarnessMarketItem) => {
     const free = freeTargets(item);
     const count = installsFor(item).length;
+    const canInstall = canInstallFromMarket(item);
     return (
       <button
         className="btn btn-sm"
-        disabled={free === 0 || installBusy}
-        title={free === 0 ? t('harness.targetInstalled') : undefined}
+        disabled={!canInstall || installBusy}
+        title={!canInstall ? t('harness.targetInstalled') : undefined}
         onClick={() => startInstall(item)}
         style={{ flex: '0 0 auto', display: 'inline-flex', alignItems: 'center', gap: 5 }}
       >
         <Download size={12} aria-hidden />
-        <span>{free === 0 ? t('harness.installDone') : t('harness.install')}</span>
+        <span>{!canInstall ? t('harness.installDone') : t('harness.install')}</span>
         {/* A plugin row targets exactly ONE runtime: its button already says install/installed, and a
             cross-host count on a single-host page reads as "partially installed" — a state that
             cannot exist there. The count stays only on multi-target kinds (skills, MCP). */}
@@ -1950,7 +2135,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     return Array.from(set).sort();
   }, [allRows, rowCatalog]);
 
-  /** Chip counts per catalog for the local tab. */
+  /** Chip counts per catalog for the global tab. */
   const catalogCounts = useMemo(() => {
     const counts: Record<string, number> = { all: facetedRows.length };
     for (const cat of installedCatalogs) {
@@ -2070,7 +2255,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   //
   // The TAB is deliberately absent: switching runtimes keeps the operator on the view they were
   // reading (the pick carries `?tab=market` across, and the market list reloads for the new runtime
-  // through `marketQueryAxis`). Forcing the local tab here would answer a runtime pick with a list
+  // through `marketQueryAxis`). Forcing the global tab here would answer a runtime pick with a list
   // the operator may not have asked for.
   useEffect(() => {
     if (!landing) return;
@@ -2138,7 +2323,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   }, [lang, inventory, filter, kind]);
 
   // Same cache-first pass for the marketplace: anything translated on a previous visit (or on the
-  // local tab, before the skill was uninstalled) shows in the target language straight away.
+  // global tab, before the skill was uninstalled) shows in the target language straight away.
   useEffect(() => {
     const texts = [...new Set(marketItems.map((i) => i.description).filter((d): d is string => !!d))];
     if (texts.length === 0) return;
@@ -2490,9 +2675,18 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   const installTargetHosts = (): string[] => {
     if (!installTarget) return [];
     const raw = hostsForKind(installTarget.installKind, installHosts);
+    const scope = coercedScope(raw, installTarget.installKind);
     // A taken target is not offered: the writer would only answer `exists` after a full confirm.
-    return raw.filter((host) => !takenOn(installTarget, host));
+    return raw.filter((host) => !takenOn(installTarget, host, scope));
   };
+
+  // The scope the open sheets may offer and submit (ADR-0015 §D2): `installScope` is the raw
+  // picker state; these coerce it against the targets' declared capabilities. `sheetProjectOk`
+  // gates the chip itself; `sheetScope` drives the hint, the picker and the footer guard.
+  const sheetProjectOk = installTarget ? projectScopeAllowed(installTargetHosts(), installTarget.installKind) : false;
+  const sheetScope: 'global' | 'project' = installScope === 'project' && sheetProjectOk ? 'project' : 'global';
+  const mcpSheetProjectOk = harness !== '' ? projectScopeAllowed([harness], 'mcp') : false;
+  const mcpSheetScope: 'global' | 'project' = installScope === 'project' && mcpSheetProjectOk ? 'project' : 'global';
 
   /**
    * Install ONE market row into ONE explicit host set. The core of every install path — the
@@ -2505,15 +2699,17 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
       // A picker re-send must REPLACE the row's stale `#dir` pin, not append to it — the key arrives
       // as `github:<owner/repo>#<stale-dir>` and the chosen directory becomes the only pin.
       const baseKey = target.key.includes('#') ? target.key.slice(0, target.key.indexOf('#')) : target.key;
+      // The picker state is a wish; the target set's declared capability decides (ADR-0015 §D2).
+      const scope = coercedScope(hosts, target.installKind);
+      const targetProject = scope === 'project' ? projects.find((p) => p.id === installProjectId) : null;
       const res = await api.harnessInstall({
         // The key is the portable install handle (`github:<owner/repo>` / `npm:<name>`); `kind` picks
         // the writer. A skill directory pins the ambiguous case as `<key>#<dir>`.
         key: skillDir ? `${baseKey}#${skillDir}` : target.key,
         kind: target.installKind,
         hosts,
-        // Global only: project-level install is deferred, and the backend refuses anything else
-        // (ADR-0015 §D2 "Scope").
-        scope: 'global',
+        scope,
+        ...(scope === 'project' && targetProject ? { projectRoot: targetProject.path, projectId: targetProject.id } : {}),
         // The market row's own source is a discovery facet, not the writer: a Pi-catalog package
         // carries an `npm:` key, so without this the record would claim npm was the only place the
         // operator saw it.
@@ -2543,7 +2739,8 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
       setInstallTarget(null);
       setInstallGate(null);
       setSkillPick(null);
-      setTab('local');
+      // Land on the view that now holds the copy: a project install must not jump to global.
+      setTab(scope === 'project' ? 'project' : 'global');
       await load();
     } catch (e) {
       const err = e as Error & { code?: string; candidates?: string[]; plan?: HarnessInstallTarget[] };
@@ -2617,11 +2814,11 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
       // A package-less MCP key has no form prefill: fall through to the resolver install path.
     }
     const free = hostsForKind(item.installKind).filter((host) => !takenOn(item, host));
+    // Default to ONE host — the page's pinned landing harness when it can take the install, else
+    // the shared Universal tree — never a pre-ticked fan-out across every free host.
+    const preferred = free.includes(harness) ? harness : free.includes(SHARED_HOST) ? SHARED_HOST : free[0];
+    setInstallHosts(preferred ? [preferred] : []);
     setInstallTarget(item);
-    if (free.length === 1) {
-      setInstallHosts(free);
-      void runInstall(item, free);
-    }
   };
 
   /** Gate acknowledgement: re-send the SAME request with `confirm: true`. */
@@ -2644,11 +2841,14 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     if (!harness) return;
     setInstallBusy(true);
     try {
+      const scope = coercedScope([harness], 'mcp');
+      const targetProject = scope === 'project' ? projects.find((p) => p.id === installProjectId) : null;
       const res = await api.harnessInstall({
         kind: 'mcp',
         manualPayload: payload,
         hosts: [harness],
-        scope: 'global',
+        scope,
+        ...(scope === 'project' && targetProject ? { projectRoot: targetProject.path, projectId: targetProject.id } : {}),
         ...(confirm ? { confirm: true } : {}),
       });
       toast.success(`${t('harness.installDone')}: ${res.name} → ${res.copies.map((c) => c.host).join(', ')}`);
@@ -2657,7 +2857,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
       }
       setMcpDraft(null);
       setMcpGate(null);
-      setTab('local');
+      setTab(scope === 'project' ? 'project' : 'global');
       await load();
     } catch (e) {
       const err = e as Error & { code?: string; plan?: HarnessInstallTarget[] };
@@ -2697,11 +2897,14 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     try {
       const launch = mcpLaunchFromDraft(draft);
       const touched = JSON.stringify(launch) !== JSON.stringify(defaultLaunch);
+      const scope = coercedScope([harness], 'mcp');
+      const targetProject = scope === 'project' ? projects.find((p) => p.id === installProjectId) : null;
       const res = await api.harnessInstall({
         key: item.key,
         kind: 'mcp',
         hosts: [harness],
-        scope: 'global',
+        scope,
+        ...(scope === 'project' && targetProject ? { projectRoot: targetProject.path, projectId: targetProject.id } : {}),
         listedOn: [item.sourceId],
         ...(touched ? { launch } : {}),
         ...(confirm ? { confirm: true } : {}),
@@ -2713,7 +2916,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
       setMcpMarket(null);
       setMcpDraft(null);
       setMcpMarketGate(null);
-      setTab('local');
+      setTab(scope === 'project' ? 'project' : 'global');
       await load();
     } catch (e) {
       const err = e as Error & { code?: string; plan?: HarnessInstallTarget[] };
@@ -2742,14 +2945,33 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
    */
   const openMcpEdit = async (row: Row) => {
     if (!harness || mcpEditLoading) return;
+    // A project landing resolves under the picked root; without one there is no file to read.
+    if (tab === 'project' && !selectedProjectId) {
+      toast.error(t('harness.noProjectsAvailable'));
+      return;
+    }
     setMcpEditLoading(true);
     try {
-      const entry = await api.harnessMcpEntry({ host: harness, name: row.name });
+      // Edit the copy the CURRENT view shows: on the project tab the entry lives in the selected
+      // project's landing, not the global one.
+      const editScope = tab === 'project' ? ('project' as const) : ('global' as const);
+      const editProjectId = editScope === 'project' ? (selectedProjectId ?? undefined) : undefined;
+      const entry = await api.harnessMcpEntry({
+        host: harness,
+        name: row.name,
+        scope: editScope,
+        ...(editProjectId ? { projectId: editProjectId } : {}),
+      });
       setMcpGate(null);
       setMcpEditGate(null);
       setMcpMarket(null);
       setMcpMarketGate(null);
-      setMcpEdit({ name: row.name, ...(row.artifact ? { artifactId: row.artifact.id } : {}) });
+      setMcpEdit({
+        name: row.name,
+        ...(row.artifact ? { artifactId: row.artifact.id } : {}),
+        scope: editScope,
+        ...(editProjectId ? { projectId: editProjectId } : {}),
+      });
       setMcpDraft(mcpDraftFromLaunch(row.name, entry.launch, entry.setKeys));
       // The search box starts on the package the launch names, so "Detect" is one click away.
       setMcpDetectQ(mcpPackageHint(entry.launch));
@@ -2925,13 +3147,14 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
         name: mcpEdit.name,
         launch: mcpLaunchFromDraft(draft),
         ...(mcpEdit.artifactId ? { artifactId: mcpEdit.artifactId } : {}),
+        scope: mcpEdit.scope,
+        ...(mcpEdit.projectId ? { projectId: mcpEdit.projectId } : {}),
         ...(confirm ? { confirm: true } : {}),
       });
       toast.success(res.changed ? t('harness.mcpEditDone') : t('harness.mcpEditNoChange'));
       setMcpEdit(null);
       setMcpEditGate(null);
       setMcpDraft(null);
-      setTab('local');
       await load();
     } catch (e) {
       const err = e as Error & { code?: string; plan?: HarnessInstallTarget[] };
@@ -3889,7 +4112,11 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   /** Breadcrumb: a landing page names its harness because the harness IS the scope there. */
   const breadcrumb = (): string => {
     const scope = harness ? `${harness}/` : '';
-    if (tab === 'local') return `harness://${scope}inventory`;
+    if (tab === 'global') return `harness://${scope}inventory`;
+    if (tab === 'project') {
+      const proj = projects.find((p) => p.id === selectedProjectId);
+      return `harness://${scope}inventory:project${proj ? `/${proj.name}` : ''}`;
+    }
     const market = marketCatalog ? `catalog/${marketCatalog}:search` : 'search';
     return scope ? `harness://${scope}${market}` : market;
   };
@@ -3899,7 +4126,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
    *
    * `copyServes` is the same predicate the rail counts with, so the removal dialog can never disagree
    * with the list that opened it: on a skills page it answers by READERSHIP (the shared
-   * `.agents/skills` tree is one copy owned by `universal` and read by twelve runtimes, so it belongs to
+   * `.agents/skills` tree is one copy owned by `universal` and read by fourteen runtimes, so it belongs to
    * every rail entry that reads it), on MCP/plugin pages by the copy's own host. No harness on the
    * page (before the catalog resolves) means no scope to narrow by — every copy is in scope.
    */
@@ -4022,6 +4249,9 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
     try {
       const { plan } = await api.harnessPlan({
         action: 'remove',
+        // Project-scope copies resolve against the picked project's roots, exactly like the
+        // inventory that listed them — never against the gateway cwd.
+        ...(inventoryProjectId ? { projectId: inventoryProjectId } : {}),
         items: [
           {
             artifactId: picker.row.artifact?.id ?? null,
@@ -4232,8 +4462,8 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
    *
    * Readership is what makes this mandatory rather than decorative. A skills page is pinned to one
    * runtime but shows every row that runtime can LOAD, and two such rows can live in different
-   * places: one in the shared `.agents/skills` tree (`Universal` — twelve runtimes load it, so removing
-   * it touches all ten) and one in that runtime's own directory (`OpenCode` — private to it). With
+   * places: one in the shared `.agents/skills` tree (`Universal` — fourteen runtimes load it, so removing
+   * it touches all fourteen) and one in that runtime's own directory (`OpenCode` — private to it). With
    * no tag, a pinned page reads as if every row were scoped to the pinned harness, which is exactly
    * the claim it must not make. The chip's tooltip is the copy's real path, so "which directory am I
    * about to remove" never needs a second click.
@@ -4255,7 +4485,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
             title={paths.join('\n') || undefined}
             style={{ fontSize: '10.5px', padding: '1px 7px', display: 'inline-flex', alignItems: 'center', gap: 4 }}
           >
-            <HostIcon host={host} />
+            <HostIcon host={host} size={12} />
             {hostName(host)}
           </span>
         );
@@ -4368,12 +4598,15 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
       <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
         <SegGroup
           value={tab}
-          onChange={(v) => setTab(v as 'local' | 'market')}
+          onChange={(v) => setTab(v as 'global' | 'project' | 'market')}
           size="lg"
+          // Every kind forks the installed view into global/project tabs, aligned with the market
+          // tab in the same group.
           options={[
-            // Tab pairs with the market label per kind: "本机技能 | 技能市场". Reuses the
-            // installed noun so the local/本机 wording stays single-sourced.
-            { value: 'local', label: t(meta.installedKey) },
+            { value: 'global', label: t('harness.viewGlobal', { kind: t(meta.scopeKindKey) }) },
+            ...(projectTabOk
+              ? [{ value: 'project', label: t('harness.viewProject', { kind: t(meta.scopeKindKey) }) }]
+              : []),
             { value: 'market', label: t(meta.marketKey) },
           ]}
         />
@@ -4391,18 +4624,64 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
         )}
       </div>
 
-      {/* ── Header: scope totals + rescan (local inventory only) ─────────── */}
-      {tab === 'local' && (
+      {/* ── Header: scope totals + rescan (global / project inventory) ───────── */}
+      {(tab === 'global' || tab === 'project') && (
       <div className="card" style={{ display: 'flex', flexDirection: 'column', flex: '0 0 auto' }}>
-        <div className="card-header">
-          <div className="card-title">
+        <div className="card-header" style={{ flexWrap: 'wrap', gap: '10px' }}>
+          <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
             <Boxes size={18} color="var(--accent)" />
-            <span>{t(meta.titleKey)}</span>
-            <span style={{ fontSize: '11px', color: 'var(--text-dim)', marginLeft: '8px' }}>
+            <span>{tab === 'project' ? t('harness.viewProject', { kind: t(meta.scopeKindKey) }) : t(meta.titleKey)}</span>
+            <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
               {inventory ? `${installedNoun} ${total}` : t('harness.subtitle')}
             </span>
+            {tab === 'project' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: '8px' }}>
+                {projects.length > 0 ? (
+                  <div style={{ minWidth: 160, maxWidth: 240 }}>
+                    <Combobox
+                      value={selectedProjectId ?? ''}
+                      onChange={(v) => setSelectedProjectId(v)}
+                      options={projects.map((p) => ({ value: p.id, label: p.name, meta: p.path }))}
+                      placeholder={t('harness.switchProject')}
+                      hideMetaInTrigger
+                      panelMinWidth={280}
+                    />
+                  </div>
+                ) : (
+                  <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+                    {t('harness.noProjectsAvailable')}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  className="btn btn-sm btn-ghost"
+                  onClick={() => setProjectsDialogOpen(true)}
+                  title={t('harness.manageProjects')}
+                  style={{ height: HEADER_CONTROL_HEIGHT, padding: '0 6px', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                >
+                  <FolderCog size={13} />
+                  <span style={{ fontSize: '11.5px' }}>{t('projects.title')}</span>
+                </button>
+                {selectedProject && (
+                  <span
+                    style={{
+                      fontSize: '11px',
+                      color: 'var(--text-dim)',
+                      fontFamily: FONT_MONO,
+                      maxWidth: 280,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                    title={selectedProject.path}
+                  >
+                    ({selectedProject.path})
+                  </span>
+                )}
+              </div>
+            )}
           </div>
-          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginLeft: 'auto' }}>
             {kind === 'mcp' && harness && hosts.some((h) => h.id === harness && h.hasMcp && h.detected) && (
               <button
                 className="btn btn-sm"
@@ -4416,6 +4695,15 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                   setMcpDetectQ('');
                   setMcpCandidates([]);
                   setMcpPick('');
+                  // Opening Add from the project view presets the install target to that project;
+                  // opening it from the global view must not inherit a previous project pick.
+                  if (tab === 'project' && selectedProjectId) {
+                    setInstallScope('project');
+                    setInstallProjectId(selectedProjectId);
+                  } else {
+                    setInstallScope('global');
+                    setInstallProjectId(null);
+                  }
                 }}
                 disabled={installBusy}
                 style={{ height: HEADER_CONTROL_HEIGHT, paddingTop: 0, paddingBottom: 0 }}
@@ -4424,7 +4712,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                 <span>{t('harness.mcpAdd')}</span>
               </button>
             )}
-            <button
+<button
               className="btn btn-sm"
               onClick={() => void load()}
               disabled={loading}
@@ -4442,18 +4730,30 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
       )}
 
       {/* ── One list: tracked + local ────────────────────────────────────── */}
-      {tab === 'local' && (
+      {(tab === 'global' || tab === 'project') && (
       <div className="card" style={{ display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0 }}>
         {/* Wrap instead of squeezing: on a narrow window the action group drops to its own line
             rather than crushing the title. */}
         <div className="card-header" style={{ flexWrap: 'wrap', gap: '10px' }}>
-          <div className="card-title">
-            <span>{installedNoun}</span>
-            <span style={{ fontSize: '11px', color: 'var(--text-dim)', marginLeft: '8px' }}>{rows.length}</span>
+          <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center' }}>
+              <span>{installedNoun}</span>
+              <span style={{ fontSize: '11px', color: 'var(--text-dim)', marginLeft: '8px' }}>{rows.length}</span>
+            </div>
+
           </div>
           {/* Actions stay on the title line and never shrink: a squeezed flex item wraps its
               label one character per line, which is how this toolbar broke before. */}
           <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flex: '0 0 auto' }}>
+            {kind === 'mcp' && runtimeProbing && (
+              <span
+                style={{ fontSize: '11px', color: 'var(--text-dim)', display: 'inline-flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}
+                title={t('harness.mcpRuntimeProbing')}
+              >
+                <RefreshCw size={10} style={{ animation: 'ocr-spin 0.8s linear infinite' }} />
+                {t('harness.mcpRuntimeProbing')}
+              </span>
+            )}
             <button
               className="btn btn-sm"
               onClick={() => void translateAll()}
@@ -4882,7 +5182,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                     }
                   />
                   <span style={{ fontSize: '12.5px', fontWeight: 500, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                    <HostIcon host={copy.host} size={12} />
+                    <HostIcon host={copy.host} size={14} />
                     {copy.host}
                   </span>
                   <span style={{ ...MONO, color: 'var(--text-dim)' }}>{copy.scope}</span>
@@ -4976,7 +5276,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                 <button
                   className="btn btn-sm"
                   onClick={() => void doInstall()}
-                  disabled={installBusy || installTargetHosts().length === 0}
+                  disabled={installBusy || installTargetHosts().length === 0 || (sheetScope === 'project' && !installProjectId)}
                 >
                   <Download size={12} aria-hidden />
                   <span>{installBusy ? t('harness.installing') : t('harness.install')}</span>
@@ -4991,7 +5291,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                operator's "install" is an informed one. */
             <InstallGatePlan
               targets={installGate.targets}
-              descKey="harness.installGateDesc"
+              descKey={'harness.installGateDesc'}
             />
           ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
@@ -5002,7 +5302,82 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                 {t('harness.installing')}
               </span>
             )}
-            <label style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('harness.installHost')}</label>
+            {/* Install Scope selector: Global vs Project */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 4 }}>
+              <label style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('harness.installScope')}</label>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  type="button"
+                  className="chip"
+                  aria-pressed={sheetScope === 'global'}
+                  onClick={() => setInstallScope('global')}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '11.5px', padding: '4px 10px' }}
+                >
+                  <Globe size={12} />
+                  <span>{t('harness.scopeGlobal')}</span>
+                </button>
+                {/* Project is offered only when every target host declares a project landing for
+                    this kind (ADR-0015 §D2) — a hidden chip cannot aim an install at a landing
+                    the runtime has no write grammar for. */}
+                {sheetProjectOk && (
+                  <button
+                    type="button"
+                    className="chip"
+                    aria-pressed={sheetScope === 'project'}
+                    onClick={() => setInstallScope('project')}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '11.5px', padding: '4px 10px' }}
+                  >
+                    <FolderGit2 size={12} />
+                    <span>{t('harness.scopeProject')}</span>
+                  </button>
+                )}
+              </div>
+              <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+                {sheetScope === 'global' ? t('harness.scopeGlobalHint') : t('harness.scopeProjectHint')}
+              </span>
+
+              {sheetScope === 'project' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
+                  <label style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('harness.targetProject')}</label>
+                  {projects.length === 0 ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontSize: '11.5px', color: 'var(--accent-rose)' }}>{t('harness.noProjectsAvailable')}</span>
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        onClick={() => setProjectsDialogOpen(true)}
+                        style={{ fontSize: '11px', padding: '2px 8px' }}
+                      >
+                        {t('projects.add')}
+                      </button>
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      <div style={{ flex: 1 }}>
+                        <Combobox
+                          value={installProjectId ?? ''}
+                          onChange={(v) => setInstallProjectId(v)}
+                          options={projects.map((p) => ({ value: p.id, label: p.name, meta: p.path }))}
+                          placeholder={t('harness.selectProjectPlaceholder')}
+                          hideMetaInTrigger
+                          panelMinWidth={280}
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-ghost"
+                        onClick={() => setProjectsDialogOpen(true)}
+                        title={t('harness.manageProjects')}
+                      >
+                        <FolderCog size={13} />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+<label style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('harness.installHost')}</label>
             {installMeta.installMode === 'single' ? (
               /* One runtime is the whole target set (an plugin is code against ONE plugin API), so
                  the harness is rendered as a fixed chip rather than a choice the backend refuses. */
@@ -5213,7 +5588,11 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                   onClick={() =>
                     void submitMarketMcp(mcpDraft, mcpMarket.item, mcpMarket.defaultLaunch)
                   }
-                  disabled={installBusy || !mcpDraftLaunchReady(mcpDraft)}
+                  disabled={
+                    installBusy ||
+                    !mcpDraftLaunchReady(mcpDraft) ||
+                    (mcpSheetScope === 'project' && !installProjectId)
+                  }
                 >
                   <Download size={12} aria-hidden />
                   <span>{installBusy ? t('harness.installing') : t('harness.install')}</span>
@@ -5232,7 +5611,11 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                       launch: mcpLaunchFromDraft(mcpDraft),
                     })
                   }
-                  disabled={installBusy || !mcpDraftReady(mcpDraft)}
+                  disabled={
+                    installBusy ||
+                    !mcpDraftReady(mcpDraft) ||
+                    (mcpSheetScope === 'project' && !installProjectId)
+                  }
                 >
                   <Plus size={12} aria-hidden />
                   <span>{installBusy ? t('harness.installing') : t('harness.srcMgmt.add')}</span>
@@ -5244,12 +5627,86 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
           {mcpEditGate ? (
             <InstallGatePlan targets={mcpEditGate.targets} descKey={'harness.mcpEditGateDesc'} />
           ) : mcpGate ? (
-            <InstallGatePlan targets={mcpGate.targets} descKey="harness.mcpGateDesc" />
+            <InstallGatePlan targets={mcpGate.targets} descKey={'harness.mcpGateDesc'} />
           ) : mcpMarketGate ? (
-            <InstallGatePlan targets={mcpMarketGate.targets} descKey="harness.mcpGateDesc" />
+            <InstallGatePlan targets={mcpMarketGate.targets} descKey={'harness.mcpGateDesc'} />
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              <Field
+                            {!mcpEdit && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
+                  <label style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('harness.installScope')}</label>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button
+                      type="button"
+                      className="chip"
+                      aria-pressed={mcpSheetScope === 'global'}
+                      onClick={() => setInstallScope('global')}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '11.5px', padding: '4px 10px' }}
+                    >
+                      <Globe size={12} />
+                      <span>{t('harness.scopeGlobal')}</span>
+                    </button>
+                    {/* Same capability gate as the market sheet: the chip appears only when the
+                        pinned landing declares a project MCP landing (ADR-0015 §D2). */}
+                    {mcpSheetProjectOk && (
+                      <button
+                        type="button"
+                        className="chip"
+                        aria-pressed={mcpSheetScope === 'project'}
+                        onClick={() => setInstallScope('project')}
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '11.5px', padding: '4px 10px' }}
+                      >
+                        <FolderGit2 size={12} />
+                        <span>{t('harness.scopeProject')}</span>
+                      </button>
+                    )}
+                  </div>
+                  <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+                    {mcpSheetScope === 'global' ? t('harness.scopeGlobalHint') : t('harness.scopeProjectHint')}
+                  </span>
+
+                  {mcpSheetScope === 'project' && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
+                      <label style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('harness.targetProject')}</label>
+                      {projects.length === 0 ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span style={{ fontSize: '11.5px', color: 'var(--accent-rose)' }}>{t('harness.noProjectsAvailable')}</span>
+                          <button
+                            type="button"
+                            className="btn btn-sm"
+                            onClick={() => setProjectsDialogOpen(true)}
+                            style={{ fontSize: '11px', padding: '2px 8px' }}
+                          >
+                            {t('projects.add')}
+                          </button>
+                        </div>
+                      ) : (
+                        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                          <div style={{ flex: 1 }}>
+                            <Combobox
+                              value={installProjectId ?? ''}
+                              onChange={(v) => setInstallProjectId(v)}
+                              options={projects.map((p) => ({ value: p.id, label: p.name, meta: p.path }))}
+                              placeholder={t('harness.selectProjectPlaceholder')}
+                              hideMetaInTrigger
+                              panelMinWidth={280}
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-ghost"
+                            onClick={() => setProjectsDialogOpen(true)}
+                            title={t('harness.manageProjects')}
+                          >
+                            <FolderCog size={13} />
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+<Field
                 label={t('harness.mcpName')}
                 hint={
                   mcpEdit
@@ -5596,6 +6053,26 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
           </div>
         </Dialog>
       )}
+          <ProjectsDialog
+        open={projectsDialogOpen}
+        onClose={() => setProjectsDialogOpen(false)}
+        onProjectsChange={(updatedProjects, updatedActiveId) => {
+          setProjects(updatedProjects);
+          setActiveProjectId(updatedActiveId);
+          if (updatedProjects.length > 0) {
+            setFallbackProjectId((prev) =>
+              prev && updatedProjects.some((p) => p.id === prev) ? prev : (updatedActiveId ?? updatedProjects[0].id)
+            );
+            setInstallProjectId((prev) =>
+              prev && updatedProjects.some((p) => p.id === prev) ? prev : (updatedActiveId ?? updatedProjects[0].id)
+            );
+          } else {
+            setFallbackProjectId(null);
+            setInstallProjectId(null);
+          }
+          void load();
+        }}
+      />
     </>
   );
 

@@ -77,6 +77,7 @@ function toView(record: ArtifactRecord, envName: string, projectRoot: string): A
     rootId: copy.rootId,
     path: copy.path,
     ...(copy.external ? { external: true } : {}),
+    ...(copy.projectRoot ? { projectRoot: copy.projectRoot } : {}),
     state: copyState(copy, envName),
     placement: copy.placement,
     contentHash: copy.contentHash,
@@ -171,8 +172,8 @@ export function scanInventory(projectRoot: string = process.cwd()): InventoryRes
   const untracked: CopyView[] = [];
   let hostsScanned = 0;
   for (const { host, scope, root } of skillRoots(projectRoot)) {
-    // Project discovery is deferred (ADR-0015 §D2 "Scope"): an enabled-scope filter, not an adapter
-    // change — the project roots stay declared in the adapters as the seam.
+    // Scope filtering is an enabled-scope filter, not an adapter change (ADR-0015 §D2 "Scope") —
+    // the project roots stay declared in the adapters as the single seam.
     if (!isEnabledScope(scope)) continue;
     hostsScanned += 1;
     let entries: string[];
@@ -232,7 +233,11 @@ export function scanInventory(projectRoot: string = process.cwd()): InventoryRes
   const trackedMcp = new Set(
     manifest.artifacts
       .filter((record) => record.kind === 'mcp')
-      .flatMap((record) => record.copies.map((copy) => mcpTrackedKey(copy.host, record.name)))
+      .flatMap((record) =>
+        record.copies.map((copy) =>
+          mcpTrackedKey(copy.host, record.name, copy.scope, copy.projectRoot ?? projectRoot)
+        )
+      )
   );
   const mcp = discoverMcp(mcpSources(projectRoot).filter((s) => isEnabledScope(s.scope)), { tracked: trackedMcp });
 

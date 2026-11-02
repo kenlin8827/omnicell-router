@@ -20,6 +20,7 @@
     "@zip.js/zip.js": "^2.23.0",
     "fastify": "^5.2.1",
     "fflate": "^0.8.3",
+    "json5": "^2.2.3",
     "jsonc-parser": "^3.3.1",
     "mysql2": "^3.24.6",
     "node-forge": "^1.4.0",

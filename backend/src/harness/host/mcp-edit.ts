@@ -3,13 +3,14 @@ import path from 'node:path';
 import { resolveEnvName } from '../../config/env.js';
 import { hashFile } from '../hash.js';
 import { writeConfigJson } from '../config-file.js';
-import { defaultExec } from './writers/plugin.js';
-import { echoArgv, MCP_CLI_TIMEOUT_MS } from './writers/mcp.js';
+import { defaultExec, type ExecImpl } from './writers/plugin.js';
+import { echoArgv, MCP_CLI_TIMEOUT_MS, redactSecrets } from './writers/mcp.js';
 import { adapterFor, isMcpHost } from './adapters/index.js';
 import { claimOwner, readManifest, writeManifest } from './manifest.js';
 import { recordApply } from './ledger.js';
 import {
   INVALID_MCP_LAUNCH,
+  mcpContainerAt,
   mcpEntryForLaunch,
   mcpLaunchFromEntry,
   mcpStdioTransportError,
@@ -62,7 +63,7 @@ export interface McpEditRequest extends McpEntryRequest {
   /** Gate 2 acknowledgement; without it nothing is written. */
   confirm?: boolean;
   /** Test seam: the executor the CLI landing spawns (`defaultExec` when absent). */
-  execImpl?: (command: string, args: string[], timeoutMs: number) => Promise<{ code: number; stdout: string; stderr: string }>;
+  execImpl?: ExecImpl;
 }
 
 export type McpEntryFailure = { ok: false; code: 'bad_request' | 'not_found'; message: string };
@@ -97,7 +98,7 @@ function landingFor(
   host: HarnessHostId,
   scope: HarnessScope,
   projectRoot: string
-): { ok: true; file: string; container: string; spec: McpEntrySpec; format: 'json' | 'toml' } | { ok: false; message: string } {
+): { ok: true; file: string; container: string; spec: McpEntrySpec; format: 'json' | 'toml' | 'json5' } | { ok: false; message: string } {
   const adapter = adapterFor(host);
   if (!isMcpHost(adapter)) return { ok: false, message: `host '${host}' has no verified MCP landing` };
   const landing = adapter.configPath({ projectRoot }, scope);
@@ -122,14 +123,15 @@ function locate(req: McpEntryRequest): McpEntryReadResult {
   }
   const parsed = readMcpLandingFile(landing.file, landing.format);
   if (!parsed.ok) return { ok: false, code: 'bad_request', message: parsed.reason };
-  const container = parsed.config[landing.container];
-  if (!container || typeof container !== 'object' || Array.isArray(container)) {
+  // Dot-path aware: openclaw nests its servers at `mcp.servers`.
+  const container = mcpContainerAt(parsed.config, landing.container);
+  if (!container) {
     return { ok: false, code: 'not_found', message: `${landing.file} has no '${landing.container}' object` };
   }
-  if (!(req.name in (container as Record<string, unknown>))) {
+  if (!(req.name in container)) {
     return { ok: false, code: 'not_found', message: `server '${req.name}' is not in ${landing.file}` };
   }
-  const read = mcpLaunchFromEntry((container as Record<string, unknown>)[req.name]);
+  const read = mcpLaunchFromEntry(container[req.name]);
   if (!read.ok) return { ok: false, code: 'bad_request', message: read.reason };
   return {
     ok: true,
@@ -210,7 +212,21 @@ export async function editMcpServer(req: McpEditRequest): Promise<McpEditResult>
   if (!landing.ok) return { ok: false, code: 'bad_request', message: landing.message };
   const parsed = readMcpLandingFile(located.file, landing.format);
   if (!parsed.ok) return { ok: false, code: 'bad_request', message: parsed.reason };
-  const container = parsed.config[located.container] as Record<string, unknown>;
+  const adapterForEdit = adapterFor(located.host);
+  const cliSpec = isMcpHost(adapterForEdit) ? adapterForEdit.mcpCliSpec?.() ?? null : null;
+  if (!cliSpec && landing.format === 'json5') {
+    // A JSON5 config's only legal writer is the runtime's own CLI: a file edit would drop
+    // hand-written comments wholesale (§D8.13), so the edit refuses instead.
+    return {
+      ok: false,
+      code: 'bad_request',
+      message: `host '${located.host}' keeps MCP servers in a JSON5 config — only its own CLI may write it`,
+    };
+  }
+  const container = mcpContainerAt(parsed.config, located.container);
+  if (!container) {
+    return { ok: false, code: 'not_found', message: `${located.file} has no '${located.container}' object` };
+  }
   const existing = container[located.name];
   // The entry SPELLING is the host's: opencode's `{type, command[], environment}` vs the
   // `mcpServers` `{command, args, env}`. Composing with the wrong one would write a server every
@@ -234,8 +250,6 @@ export async function editMcpServer(req: McpEditRequest): Promise<McpEditResult>
   if (!owned.ok) return { ok: false, code: 'bad_request', message: owned.message };
   const record = owned.record;
 
-  const adapterForEdit = adapterFor(located.host);
-  const cliSpec = isMcpHost(adapterForEdit) ? adapterForEdit.mcpCliSpec?.() ?? null : null;
   if (cliSpec) {
     // CLI-materialized landing: the file is read-only observation, so the edit re-runs the
     // runtime's own verbs — remove (when the server already exists) then add. The config file is
@@ -268,11 +282,41 @@ export async function editMcpServer(req: McpEditRequest): Promise<McpEditResult>
         ],
       };
     }
-    for (const step of runs) {
-      const result = await (req.execImpl ?? defaultExec)(step.command, step.args, MCP_CLI_TIMEOUT_MS);
+    // Scope-aware CLI verbs (claude `--scope project`, grok `-s project`) locate the project
+    // landing by the subprocess's cwd — running from the gateway's cwd would edit a stray repo.
+    const cliCwd = req.scope === 'project' ? req.projectRoot : undefined;
+    // The ledger outlives this request, so it records the argv with secret values masked; gate 2
+    // already showed the operator the exact command they confirmed.
+    const auditEcho = redactSecrets(echo, req.launch);
+    const exec = req.execImpl ?? defaultExec;
+    let removedExisting = false;
+    for (let index = 0; index < runs.length; index++) {
+      const step = runs[index]!;
+      const result = await exec(step.command, step.args, MCP_CLI_TIMEOUT_MS, cliCwd);
       if (result.code !== 0) {
-        return { ok: false, code: 'bad_request', message: `${echo} exited ${result.code}: ${result.stderr.slice(0, 200)}` };
+        // A remove that succeeded followed by an add that failed would leave the server gone.
+        // Re-add the PREVIOUS launch best-effort, so a failed edit is not a silent uninstall.
+        if (removedExisting) {
+          const restore = cliSpec.addArgs(located.launch, located.name, req.scope);
+          if (restore.ok) {
+            const back = await exec(cliSpec.command, restore.args, MCP_CLI_TIMEOUT_MS, cliCwd);
+            if (back.code === 0) {
+              return {
+                ok: false,
+                code: 'bad_request',
+                message: `${auditEcho} exited ${result.code}: ${result.stderr.slice(0, 200)} — the previous entry was restored`,
+              };
+            }
+          }
+          return {
+            ok: false,
+            code: 'bad_request',
+            message: `${auditEcho} exited ${result.code} and restoring '${located.name}' also failed — it is no longer configured on ${located.host}`,
+          };
+        }
+        return { ok: false, code: 'bad_request', message: `${auditEcho} exited ${result.code}: ${result.stderr.slice(0, 200)}` };
       }
+      if (index === 0 && existing !== undefined) removedExisting = true;
     }
     recordApply({
       action: 'edit',
@@ -281,7 +325,7 @@ export async function editMcpServer(req: McpEditRequest): Promise<McpEditResult>
       name: located.name,
       hosts: [located.host],
       outcome: 'ok',
-      message: echo,
+      message: auditEcho,
     });
     return {
       ok: true,
@@ -319,15 +363,20 @@ export async function editMcpServer(req: McpEditRequest): Promise<McpEditResult>
     };
   }
 
-  parsed.config[located.container] = { ...container, [located.name]: next };
+  // The container leaf is a live reference into `parsed.config` (dot-path aware), so mutating it
+  // keeps every sibling — nested (`mcp.servers`) and flat (`mcpServers`) spellings alike.
+  container[located.name] = next;
   const written = writeConfigJson(located.file, parsed.config);
   if (!written.ok) return { ok: false, code: 'bad_request', message: written.reason };
 
   const hash = hashFile(located.file);
   if (record) {
     const abs = path.resolve(located.file);
+    const stat = fs.statSync(located.file);
     record.copies = record.copies.map((copy) =>
-      copy.host === located.host && path.resolve(copy.path) === abs ? { ...copy, contentHash: hash } : copy
+      copy.host === located.host && path.resolve(copy.path) === abs
+        ? { ...copy, contentHash: hash, mtimeMs: stat.mtimeMs, bytes: stat.size }
+        : copy
     );
     record.contentHash = hash;
     writeManifest(manifest);

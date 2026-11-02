@@ -15,6 +15,22 @@ export function getOcrHomeDir(): string {
   return dir;
 }
 
+/**
+ * The one OpenClaw config file, relocated by the vendor's own `OPENCLAW_CONFIG_PATH` (which does
+ * NOT follow the state dir). Shared by the takeover client and the harness host adapter so the
+ * gateway can never write one file while the runtime reads another.
+ */
+export function openclawConfigPath(): string {
+  const override = process.env.OPENCLAW_CONFIG_PATH?.trim();
+  return override ? path.resolve(override) : path.join(os.homedir(), '.openclaw', 'openclaw.json');
+}
+
+/** OpenClaw's state root (skills, plugin registry, sidecars), relocated by `OPENCLAW_STATE_DIR`. */
+export function openclawStateDir(): string {
+  const override = process.env.OPENCLAW_STATE_DIR?.trim();
+  return override ? path.resolve(override) : path.join(os.homedir(), '.openclaw');
+}
+
 export function getPidFilePath(): string {
   return path.join(getOcrHomeDir(), 'ocr.pid');
 }

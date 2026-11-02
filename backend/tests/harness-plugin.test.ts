@@ -78,7 +78,7 @@ describe('plugin config merge (opencode plugin[])', () => {
     });
     expect(plan.ok).toBe(true);
     if (!plan.ok) return;
-    expect(plan.targets[0]!.echo).toBe(`pi install npm:${SPEC}`);
+    expect(plan.targets[0]!.echo).toBe(`pi install npm:${SPEC} --local`);
   });
 
   it('runs the subprocess through the injected runner and refuses shell-shaped specs', async () => {
@@ -100,7 +100,7 @@ describe('plugin config merge (opencode plugin[])', () => {
       timeoutMs: 1000,
     });
     expect(result.ok).toBe(true);
-    expect(runs).toEqual([`pi install npm:${SPEC}`]);
+    expect(runs).toEqual([`pi install npm:${SPEC} --local`]);
     expect(runs[0]).not.toContain('-y');
     if (result.ok) {
       const record = readManifest().artifacts.find((a) => a.id === result.artifactId);
@@ -156,6 +156,21 @@ describe('plugin config merge (opencode plugin[])', () => {
     });
     expect(plan.ok && plan.targets[0]!.refused).toContain('no verified plugin landing');
   });
+
+  it('refuses a project-scope install on a host without a project plugin landing (ADR-0015 §D2)', () => {
+    // codex declares only a GLOBAL plugin landing; without this gate the writer would land global
+    // while the manifest recorded `project` — the split-truth bug this refusal exists to prevent.
+    const plan = planPlugin({
+      sourceId: 'manual',
+      canonicalKey: `manual:${SPEC}`,
+      spec: SPEC,
+      trust: 'manual',
+      harness: 'codex',
+      scope: 'project',
+      projectRoot: tmpProject(),
+    });
+    expect(plan.ok && plan.targets[0]!.refused).toContain("host 'codex' declares no project-scope plugin landing");
+  });
 });
 
 describe('installArtifact plugin orchestration', () => {
@@ -171,7 +186,7 @@ describe('installArtifact plugin orchestration', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.code).toBe('confirm_required');
-      expect(result.plan?.[0] && 'echo' in result.plan[0] && result.plan[0].echo).toBe(`pi install npm:${SPEC}`);
+      expect(result.plan?.[0] && 'echo' in result.plan[0] && result.plan[0].echo).toBe(`pi install npm:${SPEC} --local`);
     }
     expect(fs.existsSync(path.join(root, 'opencode.json'))).toBe(false);
   });

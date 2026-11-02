@@ -10,6 +10,7 @@ import { factoryAdapter, FactoryAdapter } from '../src/harness/host/adapters/fac
 import { opencodeAdapter, OpencodeAdapter } from '../src/harness/host/adapters/opencode.js';
 import { piAdapter, PiAdapter } from '../src/harness/host/adapters/pi.js';
 import { dshAdapter, DshAdapter } from '../src/harness/host/adapters/dsh.js';
+import { openclawAdapter, OpenClawAdapter } from '../src/harness/host/adapters/openclaw.js';
 import { getBuiltinViewsForHarness } from '../src/harness/plugin/builtin.js';
 import { syncMarketplaceToAllHosts, removeMarketplaceFromAllHosts } from '../src/harness/host/marketplace-sync.js';
 import type { ExecImpl } from '../src/harness/host/writers/plugin.js';
@@ -29,6 +30,7 @@ describe('Host Adapter Class Inheritance Hierarchy', () => {
     expect(opencodeAdapter instanceof OpencodeAdapter).toBe(true);
     expect(piAdapter instanceof PiAdapter).toBe(true);
     expect(dshAdapter instanceof DshAdapter).toBe(true);
+    expect(openclawAdapter instanceof OpenClawAdapter).toBe(true);
   });
 
   it('every adapter provides installPlugin, installSkill, installMcp methods', () => {
@@ -222,6 +224,47 @@ describe('Native Plugin Installation & Source Verification (github | npm)', () =
     expect(executed[0].args).toEqual(['plugin', 'add', 'github:postmanlabs/postman-plugin']);
   });
 
+  it('OpenClaw executes `openclaw plugins install` — npm specs get the npm: prefix, github rows run the marketplace chain', async () => {
+    expect(openclawAdapter.supportedPluginSources()).toEqual(['github', 'npm']);
+
+    // npm: a BARE package name would resolve through ClawHub, so the grammar pins `npm:`.
+    const executedNpm: { command: string; args: string[] }[] = [];
+    const npmResult = await openclawAdapter.installPlugin({
+      source: 'npm',
+      spec: '@postman/postman-plugin',
+      confirm: true,
+      execImpl: async (command, args) => {
+        executedNpm.push({ command, args });
+        return { code: 0, stdout: 'ok', stderr: '' };
+      },
+    });
+    expect(npmResult.ok).toBe(true);
+    expect(executedNpm).toHaveLength(1);
+    expect(executedNpm[0].command).toBe('openclaw');
+    // `--force` is the vendor's REQUIRED noninteractive confirmation for non-ClawHub sources; the
+    // npm spec is resolved through the registry, so it carries the pinned version.
+    expect(executedNpm[0].args[0]).toBe('plugins');
+    expect(executedNpm[0].args[1]).toBe('install');
+    expect(executedNpm[0].args[2]).toMatch(/^npm:@postman\/postman-plugin/);
+    expect(executedNpm[0].args.at(-1)).toBe('--force');
+
+    // github: the synthesized marketplace identity runs the vendor's own `--marketplace` chain.
+    const executedGithub: { command: string; args: string[] }[] = [];
+    const githubResult = await openclawAdapter.installPlugin({
+      source: 'github',
+      spec: 'postmanlabs/postman-plugin',
+      confirm: true,
+      execImpl: async (command, args) => {
+        executedGithub.push({ command, args });
+        return { code: 0, stdout: 'ok', stderr: '' };
+      },
+    });
+    expect(githubResult.ok).toBe(true);
+    expect(executedGithub).toHaveLength(1);
+    expect(executedGithub[0].command).toBe('openclaw');
+    expect(executedGithub[0].args).toEqual(['plugins', 'install', 'postman', '--marketplace', 'postmanlabs/postman-plugin', '--force']);
+  });
+
   it('DSH refuses plugin and skills installs since it lacks those landings', async () => {
     expect(dshAdapter.supportedPluginSources()).toEqual([]);
 
@@ -256,10 +299,10 @@ describe('Default Marketplace Architecture (No Hardcoded Presets - Real Native o
     // There are no hardcoded presets — if a harness has no remote market, it is empty by default
     expect(getBuiltinViewsForHarness('claude')).toEqual([]);
     expect(getBuiltinViewsForHarness('codex')).toEqual([]);
-    expect(getBuiltinViewsForHarness('github-copilot')).toEqual([]);
     expect(getBuiltinViewsForHarness('universal')).toEqual([]);
     expect(getBuiltinViewsForHarness('cursor')).toEqual([]);
     expect(getBuiltinViewsForHarness('cline')).toEqual([]);
+    expect(getBuiltinViewsForHarness('openclaw')).toEqual([]);
   });
 });
 
@@ -289,9 +332,6 @@ describe('Bidirectional Marketplace Synchronization', () => {
     const codexSync = syncResults.find((r) => r.host === 'codex');
     expect(codexSync?.command).toEqual(['codex', 'plugin', 'marketplace', 'add', 'my-team/team-plugins', '--ref', 'main']);
 
-    const copilotSync = syncResults.find((r) => r.host === 'github-copilot');
-    expect(copilotSync?.command).toEqual(['copilot', 'plugin', 'marketplace', 'add', 'my-team/team-plugins']);
-
     const factorySync = syncResults.find((r) => r.host === 'factory');
     expect(factorySync?.command).toEqual(['droid', 'plugin', 'marketplace', 'add', 'https://github.com/my-team/team-plugins.git']);
   });
@@ -318,9 +358,6 @@ describe('Bidirectional Marketplace Synchronization', () => {
 
     const codexRemove = removeResults.find((r) => r.host === 'codex');
     expect(codexRemove?.command).toEqual(['codex', 'plugin', 'marketplace', 'remove', 'my-team/team-plugins']);
-
-    const copilotRemove = removeResults.find((r) => r.host === 'github-copilot');
-    expect(copilotRemove?.command).toEqual(['copilot', 'plugin', 'marketplace', 'remove', 'my-team/team-plugins']);
 
     const factoryRemove = removeResults.find((r) => r.host === 'factory');
     expect(factoryRemove?.command).toEqual(['droid', 'plugin', 'marketplace', 'remove', 'https://github.com/my-team/team-plugins.git']);
