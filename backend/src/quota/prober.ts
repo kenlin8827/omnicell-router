@@ -98,6 +98,9 @@ export interface QuotaProberDeps {
   /** Test seam — plan() resolves pairs through this, run() fetches through it. */
   fetchImpl?: typeof fetch;
   now?: () => number;
+  /** L-e plugin layer (ADR-0009 §5): candidate ids + the quotaCheck
+   *  capability lookup. Omitted = no plugin quota coverage. */
+  pluginLayer?: Parameters<typeof buildEffectivePlan>[2];
 }
 
 export class QuotaProber {
@@ -106,6 +109,7 @@ export class QuotaProber {
   private readonly intervalMs: number;
   private readonly fetchImpl?: typeof fetch;
   private readonly nowFn: () => number;
+  private readonly pluginLayer: QuotaProberDeps['pluginLayer'];
 
   private timer: NodeJS.Timeout | null = null;
   /** The one in-flight cycle — the timer tick and a manual refresh share it. */
@@ -123,6 +127,7 @@ export class QuotaProber {
     this.intervalMs = deps.intervalMs ?? QuotaProber.clampInterval(deps.config().quota?.intervalMs ?? DEFAULT_TICK_MS);
     this.fetchImpl = deps.fetchImpl;
     this.nowFn = deps.now ?? Date.now;
+    this.pluginLayer = deps.pluginLayer;
     this.plan = this.buildPlan();
   }
 
@@ -133,7 +138,11 @@ export class QuotaProber {
 
   private buildPlan(): EffectiveQuotaPlan {
     const cfg = this.configFn();
-    return buildEffectivePlan(cfg.quotaProbes, (pid) => this.registry.getProviderBaseUrl(pid));
+    return buildEffectivePlan(
+      cfg.quotaProbes,
+      (pid) => this.registry.getProviderBaseUrl(pid),
+      this.pluginLayer
+    );
   }
 
   /** intervalMs clamp (constructor + docs): [10 s, 1 h]. */

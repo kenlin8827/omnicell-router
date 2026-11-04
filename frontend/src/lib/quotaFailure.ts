@@ -52,3 +52,14 @@ export function quotaStateWord(quota: CredentialQuotaView, t: TFn): string {
   if (quota.badge === 'stale') return t('quotaPage.stateStale');
   return quota.lastFailure ? t('quotaPage.stateFailed') : t('quotaPage.stateUnverified');
 }
+
+/**
+ * Sync-failure verdict shared by every quota surface (page directory, page
+ * summary strip, sidebar peek): a stale snapshot, or a covered pair whose
+ * last probe has a recorded upstream verdict (dead key, plan refusal,
+ * network). The status segments use it to split the directory; urgency
+ * ranking sinks such pairs independently.
+ */
+export function quotaSyncFailed(quota: CredentialQuotaView | undefined): boolean {
+  return quota?.badge === 'stale' || (quota?.badge === 'unverified' && !!quota.lastFailure);
+}

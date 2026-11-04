@@ -2512,7 +2512,7 @@ export function registerConsoleRoutes(
             // builtin-catalog coverage; an aggregated-unknown id (no catalog row
             // at all) is by definition custom.
             custom: u ? u.custom : true,
-            logo: u?.logo,
+            logo: u?.logo ?? v.logo,
             npm: v.npm ?? u?.npm,
             // Def-level custom headers (non-secret metadata — the edit dialog
             // prefills from this; secrets live in the bound store, never here).

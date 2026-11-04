@@ -6,7 +6,7 @@ import { api, type QuotaOverview, type QuotaWindow, type CredentialQuotaView } f
 import { useI18n } from '../i18n/I18nContext';
 import { fmtDur } from '../lib/format';
 import { byQuotaUrgency, headlineWindow } from '../lib/quotaRank';
-import { failureCaption, quotaStateWord } from '../lib/quotaFailure';
+import { failureCaption, quotaStateWord, quotaSyncFailed } from '../lib/quotaFailure';
 import { useQuotaRefresh } from '../lib/useQuotaRefresh';
 
 import { FONT_MONO } from '../lib/fonts';
@@ -50,6 +50,11 @@ export const QuotaPeek: React.FC = () => {
   const [data, setData] = useState<QuotaOverview | null>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  // Same status segments as the quota page, same default: sync-failed pairs
+  // stay out of the healthy view so the at-a-glance panel lists only pairs
+  // whose numbers are trustworthy.
+  const [peekFilter, setPeekFilter] = useState<'ok' | 'failed' | 'all'>('ok');
 
   const cancelClose = useCallback(() => {
     if (closeTimer.current) {
@@ -57,11 +62,34 @@ export const QuotaPeek: React.FC = () => {
       closeTimer.current = null;
     }
   }, []);
-  const scheduleClose = useCallback(() => {
-    cancelClose();
-    closeTimer.current = setTimeout(() => setOpen(false), 250);
-  }, [cancelClose]);
-  useEffect(() => cancelClose, [cancelClose]);
+
+  // Close model follows Radix HoverCard's safe-polygon pattern: while the
+  // panel is open, document-level pointermove is the ONLY close trigger.
+  // A pointer that moves OUTSIDE both the chip and the panel (each rect
+  // padded, so the chip→panel gap stays traversable) arms a short close
+  // timer; any move back inside disarms it. Nothing else closes the panel:
+  // a stationary cursor never fires pointermove, so layout shifts (the
+  // status-segment swap shrinking this bottom-anchored panel out from under
+  // the cursor, re-renders, jitter) can no longer synthesize a mouseleave
+  // and hide it mid-use; fast diagonal sweeps that clip a panel edge for a
+  // frame re-enter before the timer fires.
+  useEffect(() => {
+    if (!open) return;
+    const contains = (r: DOMRect | undefined, x: number, y: number, pad: number) =>
+      !!r && x >= r.left - pad && x <= r.right + pad && y >= r.top - pad && y <= r.bottom + pad;
+    const onMove = (e: MouseEvent) => {
+      const inside =
+        contains(btnRef.current?.getBoundingClientRect(), e.clientX, e.clientY, 12) ||
+        contains(panelRef.current?.getBoundingClientRect(), e.clientX, e.clientY, 6);
+      if (inside) cancelClose();
+      else if (!closeTimer.current) closeTimer.current = setTimeout(() => setOpen(false), 200);
+    };
+    document.addEventListener('mousemove', onMove);
+    return () => {
+      document.removeEventListener('mousemove', onMove);
+      cancelClose();
+    };
+  }, [open, cancelClose]);
 
   const openPanel = useCallback(() => {
     cancelClose();
@@ -93,8 +121,16 @@ export const QuotaPeek: React.FC = () => {
   // snapshot — the peek never needs to wait for its own 60 s poll.
   const { refresh, isRefreshing } = useQuotaRefresh(load);
 
-  // Same urgency-first order as the quota page — the scarcest pair leads.
-  const rows = useMemo(() => (data?.pairs ?? []).filter((r) => r.covered).sort(byQuotaUrgency), [data]);
+  // Same urgency-first order as the quota page, narrowed by the status
+  // segment (the healthy default hides sync-failed pairs).
+  const rows = useMemo(
+    () =>
+      (data?.pairs ?? [])
+        .filter((r) => r.covered)
+        .filter((r) => peekFilter === 'all' || (peekFilter === 'failed') === quotaSyncFailed(r.quota))
+        .sort(byQuotaUrgency),
+    [data, peekFilter]
+  );
 
   const globalWorst = useMemo(() => {
     let m: number | null = null;
@@ -122,7 +158,6 @@ export const QuotaPeek: React.FC = () => {
     <div
       style={{ position: 'relative', display: 'inline-flex', flexShrink: 0 }}
       onMouseEnter={openPanel}
-      onMouseLeave={scheduleClose}
     >
       <button
         ref={btnRef}
@@ -155,9 +190,8 @@ export const QuotaPeek: React.FC = () => {
         pos &&
         createPortal(
           <div
+            ref={panelRef}
             style={{ position: 'fixed', left: pos.left, bottom: pos.bottom, width: '340px', zIndex: 100 }}
-            onMouseEnter={cancelClose}
-            onMouseLeave={scheduleClose}
           >
             <div
               style={{
@@ -222,10 +256,33 @@ export const QuotaPeek: React.FC = () => {
               {data && !data.enabled && (
                 <div style={{ fontSize: '11px', color: 'var(--accent-amber)', padding: '2px 2px 6px' }}>{t('nav.quotaPeekOff')}</div>
               )}
+              {/* Status segments — same words and default as the page, sized
+                  down for the 340px panel. The count pill above reflects the
+                  active segment. */}
+              <div style={{ display: 'flex', gap: '4px', padding: '0 2px 8px' }}>
+                {(['ok', 'failed', 'all'] as const).map((f) => (
+                  <button
+                    key={f}
+                    style={{
+                      padding: '2px 9px',
+                      fontSize: '11px',
+                      border: '1px solid var(--card-border)',
+                      borderRadius: '999px',
+                      cursor: 'pointer',
+                      background: peekFilter === f ? 'var(--accent)' : 'transparent',
+                      color: peekFilter === f ? 'var(--bg)' : 'var(--text-dim)',
+                      fontWeight: peekFilter === f ? 700 : 400,
+                    }}
+                    onClick={() => setPeekFilter(f)}
+                  >
+                    {f === 'ok' ? t('quotaPage.filterOk') : f === 'failed' ? t('quotaPage.filterFailed') : t('quotaPage.filterAll')}
+                  </button>
+                ))}
+              </div>
               {rows.length === 0 ? (
                 <div style={{ fontSize: '11.5px', color: 'var(--text-dim)', padding: '10px 2px' }}>{t('nav.quotaPeekNoPairs')}</div>
               ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', maxHeight: 'min(60vh, 460px)', overflowY: 'auto' }}>
                   {rows.map((r) => {
                     const windows = r.quota?.windows ?? [];
                     const w = headlineWindow(windows);
@@ -241,7 +298,13 @@ export const QuotaPeek: React.FC = () => {
                           {Math.round(pct)}%
                         </span>
                       );
-                      subLabel = winLabel(w);
+                      // Absolute usage next to the label (page meters show
+                      // "used / total · pct" — the compact row keeps the pct
+                      // as the headline and puts the counts in the caption).
+                      subLabel =
+                        w.used !== null && w.total !== null
+                          ? `${winLabel(w)} · ${w.used.toLocaleString()} / ${w.total.toLocaleString()}`
+                          : winLabel(w);
                       if (w.resetAt !== null && w.resetAt > Date.now()) {
                         resetText = t('quotaPage.peekResets', { when: fmtDur(w.resetAt - Date.now()) });
                       }

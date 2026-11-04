@@ -21,7 +21,7 @@ import { openFailureEventStore, getFailureEventLog } from './observability/failu
 import { QuotaProber, setQuotaProber, getQuotaProber } from './quota/prober.js';
 import { getQuotaStore } from './quota/store.js';
 import { keyHashPrefix, type CredentialStore } from './opencode/credentials/types.js';
-import { getProviderNodeById } from './opencode/user-config.js';
+import { getProviderNodeById, listConfigProviders } from './opencode/user-config.js';
 import { getEnvPaths, resolveEnvName } from './config/env.js';
 import { getWarnThrottle } from './observability/warn-throttle.js';
 import { validateWebAuthStartup } from './auth/web-auth.js';
@@ -29,6 +29,9 @@ import { startForwardProxy } from './forward-proxy/index.js';
 import { setForwardProxyStatus } from './forward-proxy/status.js';
 import { defaultBreakerStateStore } from './resilience/breaker-state.js';
 import { startHeadroomSidecar } from './compression/headroom-sidecar.js';
+import { wireFor } from './providers/wire.js';
+import { getModelServicePlugin } from './plugins/host.js';
+import type { QuotaCodeAdapter } from './quota/types.js';
 
 /**
  * Provider-defs inference baseURL (the single def truth) for ids the registry
@@ -39,6 +42,25 @@ function providerDefBaseUrl(providerId: string): string | undefined {
   const def = getProviderNodeById(providerId);
   const base = def?.options?.baseURL ?? def?.settings?.baseURL;
   return typeof base === 'string' && base.length > 0 ? base : undefined;
+}
+
+/**
+ * L-e plugin quota layer (ADR-0009 §5): resolve one provider id to the
+ * model-service plugin that owns its wire, and expose that plugin's
+ * quotaCheck capability as a QuotaCodeAdapter the quota engine already
+ * speaks. Undefined = no capable plugin on this provider's wire.
+ */
+function pluginQuotaAdapterFor(providerId: string): QuotaCodeAdapter | undefined {
+  const def = getProviderNodeById(providerId);
+  const npm = typeof def?.npm === 'string' ? def.npm : typeof def?.package === 'string' ? def.package : undefined;
+  const plugin = getModelServicePlugin(wireFor(npm, providerDefBaseUrl(providerId)));
+  const check = plugin?.quotaCheck;
+  if (!plugin || !check) return undefined;
+  return {
+    id: `plugin:${plugin.manifest.id}`,
+    providerIds: [providerId],
+    probe: (ctx) => check(ctx),
+  };
 }
 
 async function main() {
@@ -306,6 +328,10 @@ async function main() {
             return [];
           }
         },
+      },
+      pluginLayer: {
+        candidateIds: () => listConfigProviders().map((p) => p.id),
+        adapterFor: pluginQuotaAdapterFor,
       },
       config: () => getRuntimeConfigRef() ?? config,
     });

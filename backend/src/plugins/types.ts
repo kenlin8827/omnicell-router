@@ -1,4 +1,5 @@
 import type { LLMProvider, CallCredential } from '../providers/base.js';
+import type { QuotaAdapterContext, QuotaProbeOutcome } from '../quota/types.js';
 import type { ProviderConfig } from '../config/types.js';
 
 /**
@@ -76,6 +77,23 @@ export interface ModelServicePlugin {
     authHint?: boolean;
     upstreamBody?: string;
   }>;
+  /**
+   * Quota-check capability (ADR-0009 L-e — plugin knowledge layer). A plugin
+   * that knows its vendor's usage endpoint declares it here; the quota
+   * scheduler covers every provider on the plugin's wire that holds
+   * credentials and has no higher-layer coverage (built-in table / built-in
+   * adapter / operator `quotaProbes:`). Same contract as QuotaCodeAdapter.
+   *
+   * Windows SHOULD carry a `nameCode` from the closed console vocabulary
+   * (session5h / sessionHours / modelSession / rolling / weekly / weekly7d /
+   * modelWeekly / monthly / limit / credits / balance). The code drives both
+   * display classes (short-period caps sort ahead of slower burns) and the
+   * localized label (i18n `quotaPage.wn.*`); a window without one renders
+   * under its raw `name` in the middle class band — functional, but the
+   * operator sees the vendor's untranslated wording and loses the
+   * period-aware ordering.
+   */
+  quotaCheck?(ctx: QuotaAdapterContext): Promise<QuotaProbeOutcome>;
 }
 
 /**

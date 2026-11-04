@@ -1314,11 +1314,16 @@ hiddenBadge: string;
     refreshUnavailable: string;
     searchPlaceholder: string;
     pairsEmpty: string;
+    /** Status segmented control next to the search: healthy (default —
+     *  hides sync-failed pairs), failed only, or everything. */
+    filterOk: string;
+    filterFailed: string;
+    filterAll: string;
     /** Summary strip chips: covered-pair count, nearly-drained window count,
-     *  failed-sync pair count, and the earliest upcoming window reset. */
+     *  and the earliest upcoming window reset. (Failed-sync pairs are counted
+     *  on the status segment's filterFailed, not repeated here.) */
     sumPairs: string;
     sumLow: string;
-    sumStale: string;
     sumNextReset: string;
     stateProbed: string;
     stateDeclared: string;

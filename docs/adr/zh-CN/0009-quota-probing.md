@@ -60,10 +60,11 @@ kimi 条目从同一次响应中读取两个窗口：顶层 `usage` 对象给出
 
 语义无法声明式表达的 provider 落为代码 adapter（`quota/adapters/`，仿 `providers/` 目录）。v1 只有一个：**MiniMax**（`minimax`、`minimax-cn`、`minimax-coding-plan`、`minimax-cn-coding-plan`）。原因：两级 URL 回退链且成员语义**互为反义**（`/coding_plan/` 端点的计数读作 REMAINING，`/token_plan/` 读作 USED），外加相对/绝对两种重置字段与纯百分比共享桶——“per-URL 反义映射”是禁列的表类（§6），且条目单 URL 是铁律。adapter 事实（各地区 URL 序、信封 `base_resp.status_code`、snake/camel 字段对、回退触发码 404/405/5xx、密钥无效判定 401/403/1004）**先自录进文件头部事实清单再动笔**；代码照清单，不照参考项目。地区由 provider id 的**段**决定（id 中任意位置出现 `-cn`），绝不是配置旋钮——`endsWith('-cn')` 会漏掉 `minimax-cn-coding-plan`，把它的中国区 key 发往全球主机，那里该 key 被读作无效（认证判定，因此不会回退 URL），该配对就永远只能显示 `unverified`。待办（列名，暂缓）：Copilot / Zed / Kimi-OAuth 通道——其认证需要铸造/设备流程（非推理形态头），因此永远不能进配置表；只能走 adapter，按需实现。
 
-### 5. L-a 与 L-d：预留的收割层与用户表
+### 5. L-a、L-d 与 L-e：预留的收割层、用户表与插件层
 
 - **L-a（二期，仅预留数据面）：** 从推理响应 `x-ratelimit-*` 头收割（捕获面对响应头保留 NAMES、仅脱敏凭据形态的 VALUE，故 `x-ratelimit-*` 三件套在捕获中存活——ADR-0008 §5），挂靠在已落地的 `ExecutionTrace.execution.credentialKeyHashPrefix` 逐轮归因上（第 1 步地基：orchestrator 为实际 SERVED 凭据打戳——与限流凭证 subject 同款链头退化；SQLite 无需 DDL，因为 trace 行是 JSON blob，旧行 replay 该字段为 `undefined`，即 `clientHeaders` 前向兼容先例）。目前没有任何写入方产出 `source: measured`。
 - **L-d（config.yaml `quotaProbes:` 节）：** 长尾与自建网关（以及对内置条目的显式 fork）。用户条目受下述铁律约束——它们是铁律**唯一**约束的层（内置代码与 release 表可信，改以 §3/§4 披露代替约束）。
+- **L-e（插件知识层）：** model-service 插件可在 `ModelServicePlugin` 上声明 `quotaCheck` 能力——与代码 adapter 同一契约（入参 `QuotaAdapterContext`、出参 `QuotaProbeOutcome`；原始密钥仅进程内流转）。覆盖解析**按 wire 走**：provider def 的 npm/baseURL 解析出 wire，已加载且声明了 `quotaCheck` 的该 wire 插件覆盖该 wire 上一切持凭证的 provider。优先级是**最低层**——内置表/内置 adapter（L-b/L-c）或用户 `quotaProbes:` 条目（L-d）永远优先；插件只补**更高层未覆盖**的 provider。端点知识归插件（独立仓库、自带协议文档）；调度、429 全局退避、存储与展示词汇归 core。能力缺失或插件未装 = 无覆盖，与未覆盖 provider 不可区分（有意为之——控制台不出行，而非显示 `unverified`）。动因案例是 vendored `qoder` gRPC wire：被 §3 核对规则结构性排除在内置表之外（不在 `catalog/ocr.json`），但插件装上后理应获得额度平权。
 
 ### 6. DSL：十二构件、五类禁例
 
@@ -100,6 +101,7 @@ due-based，形照主动健康 prober（借思路不借代码）：固定 tick�
 ## 后果
 
 - 新增一个覆盖 provider：语义可声明则一表行（执行 §3 catalog 核对 + auth 披露），不可声明则一家一文件 adapter，长尾则一条用户 `quotaProbes:` 条目——release 在长大，运行时无需知道凭证池。
+- 插件层（L-e）把覆盖扩展到核对规则永远无法入表的 vendor wire：能力跟插件二进制走、激活仍跟凭证走，优先级保证 release/用户知识始终权威。不带 `quotaCheck` 出货的插件让其 wire 的 provider 保持未覆盖——这是诚实状态。
 - 禁例列表在加载时可强制，因为它是结构性的：拼不出的东西就跑不起来；坏的用户条目大声落到 `/api/admin/quota.rejected`，不会半工作。
 - 额度可见性永远不会搁浅流量：探测结果只是展示证据；推理侧额度烧穿维持既有熔断语义，另得一本持久事件账本。
 - 测试：`quota-dsl`（构件、禁类、逐条目 fixture）、`quota-engine`（铁律、计划合并、探测执行、MiniMax 语义、调度器、事件联动、trace 配对）。

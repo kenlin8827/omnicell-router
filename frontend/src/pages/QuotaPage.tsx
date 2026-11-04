@@ -15,7 +15,7 @@ import { ProviderLogo } from '../components/ProviderLogo';
 import { Dialog } from '../components/Dialog';
 import { useToast } from '../components/ToastProvider';
 import { byQuotaUrgency, byWindowClass } from '../lib/quotaRank';
-import { failureCaption, quotaStateWord, type TFn } from '../lib/quotaFailure';
+import { failureCaption, quotaStateWord, quotaSyncFailed, type TFn } from '../lib/quotaFailure';
 import { useQuotaRefresh } from '../lib/useQuotaRefresh';
 
 import { FONT_MONO } from '../lib/fonts';
@@ -144,7 +144,12 @@ const WindowMeter: React.FC<{ w: QuotaWindow; t: (k: string, p?: Record<string, 
     value = t('quotaPage.windowNoCap');
     valueColor = 'var(--text-dim)';
   } else if (pct !== null) {
-    value = `${Math.round(pct)}%`;
+    // Both planes on one line: absolute used/cap plus the burn percent —
+    // a bare "59%" hides the numbers the operator actually manages against.
+    value =
+      w.total !== null
+        ? `${(w.used ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })} / ${w.total.toLocaleString(undefined, { maximumFractionDigits: 2 })} · ${Math.round(pct)}%`
+        : `${Math.round(pct)}%`;
     valueColor = pctColor(pct);
   } else {
     value = `${amount.toLocaleString()} / ${(w.total ?? 0).toLocaleString()}`;
@@ -189,6 +194,11 @@ export const QuotaPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [logoMap, setLogoMap] = useState<Record<string, string>>({});
   const [lastProbe, setLastProbe] = useState<{ title: string; http: LastProbeCapture | null } | null>(null);
+  // Status segmented control: the default view hides sync-failed pairs (a
+  // stale snapshot or a covered pair whose last probe has a recorded verdict)
+  // so the healthy directory stays scannable; the failure slice and the full
+  // directory are one click away.
+  const [statusFilter, setStatusFilter] = useState<'ok' | 'failed' | 'all'>('ok');
   const toast = useToast();
 
   // provider id → logo URL (OCR catalog view); logos are decorative, failures ignored
@@ -239,6 +249,9 @@ export const QuotaPage: React.FC = () => {
     // Covered pairs only — an uncovered (provider × credential) row carries no
     // probeable quota, so rendering it is noise; no view filter is offered.
     let rows = (data?.pairs ?? []).filter((r) => r.covered);
+    if (statusFilter !== 'all') {
+      rows = rows.filter((r) => (statusFilter === 'failed') === quotaSyncFailed(r.quota));
+    }
     if (q) {
       const needle = q.toLowerCase();
       // Row identity only: provider + credential (label or key-hash). Plan/entry
@@ -252,29 +265,36 @@ export const QuotaPage: React.FC = () => {
     // pairs sink to the bottom. See lib/quotaRank.ts.
     rows = [...rows].sort(byQuotaUrgency);
     return rows;
-  }, [data, q]);
+  }, [data, q, statusFilter]);
 
   // Compact summary strip — aggregate signals derived from the same covered
   // pairs the grid renders (the search box does not affect it): how many
-  // windows are nearly drained, how many pairs failed to sync, and when the
-  // earliest live window resets. Display-only, like everything on this page.
+  // windows are nearly drained, and when the earliest live window resets.
+  // Display-only, like everything on this page.
   const summary = useMemo(() => {
     const rows = (data?.pairs ?? []).filter((r) => r.covered);
     if (rows.length === 0) return null;
     const now = Date.now();
     let lowWindows = 0;
-    let stalePairs = 0;
     let nextReset: number | null = null;
     for (const r of rows) {
-      // A sync failure is either a stale snapshot or a covered pair whose last
-      // attempt has a recorded verdict (dead key, plan refusal, network).
-      if (r.quota?.badge === 'stale' || (r.quota?.badge === 'unverified' && r.quota.lastFailure)) stalePairs += 1;
       for (const w of r.quota?.windows ?? []) {
         if (!w.unlimited && w.remainingPct !== null && w.remainingPct < 10) lowWindows += 1;
         if (w.resetAt !== null && w.resetAt > now && (nextReset === null || w.resetAt < nextReset)) nextReset = w.resetAt;
       }
     }
-    return { pairs: rows.length, lowWindows, stalePairs, nextReset };
+    // Failed-sync pairs are NOT counted here: the status segment below carries
+    // that number (quotaPage.filterFailed) — a second chip would read as drift.
+    return { pairs: rows.length, lowWindows, nextReset };
+  }, [data]);
+
+  // Per-segment counts over ALL covered pairs (search-independent): the bare
+  // state words are short (2 CJK chars), so each segment carries its count —
+  // that is also what makes the healthy tab's hidden rows discoverable.
+  const statusCounts = useMemo(() => {
+    const rows = (data?.pairs ?? []).filter((r) => r.covered);
+    const failed = rows.filter((r) => quotaSyncFailed(r.quota)).length;
+    return { ok: rows.length - failed, failed, all: rows.length };
   }, [data]);
 
   return (
@@ -304,16 +324,15 @@ export const QuotaPage: React.FC = () => {
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
           <StatChip text={t('quotaPage.sumPairs', { n: summary.pairs })} />
           <StatChip text={t('quotaPage.sumLow', { n: summary.lowWindows })} tone={summary.lowWindows > 0 ? 'warn' : undefined} />
-          <StatChip text={t('quotaPage.sumStale', { n: summary.stalePairs })} tone={summary.stalePairs > 0 ? 'warn' : undefined} />
           {summary.nextReset !== null && (
             <StatChip text={t('quotaPage.sumNextReset', { when: fmtDur(summary.nextReset - Date.now()) })} tone="info" />
           )}
         </div>
       )}
 
-      {/* ── Filter toolbar: free-text search only — provider / credential (label
-          or key-hash) match through the search, plan/entry do not. Cards are
-          pre-filtered to covered pairs, so there is no view segment. ──────── */}
+      {/* ── Filter toolbar: free-text search (provider / credential label or
+          key-hash; plan/entry do not match) plus the status segment — the
+          default "healthy" view hides sync-failed pairs. ─────────────────── */}
       <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
         <div style={{ position: 'relative', width: '300px', maxWidth: '100%' }}>
           <Search size={13} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)' }} />
@@ -324,6 +343,28 @@ export const QuotaPage: React.FC = () => {
             value={q}
             onChange={(e) => setQ(e.target.value)}
           />
+        </div>
+        {/* Status segment (KeysPage's button-group pattern): healthy by
+            default, the failure slice on demand, everything last. */}
+        <div style={{ display: 'inline-flex', border: '1px solid var(--card-border)', borderRadius: 8, overflow: 'hidden', flexShrink: 0 }}>
+          {(['ok', 'failed', 'all'] as const).map((f) => (
+            <button
+              key={f}
+              style={{
+                padding: '4px 12px',
+                fontSize: '12px',
+                border: 'none',
+                cursor: 'pointer',
+                background: statusFilter === f ? 'var(--accent)' : 'transparent',
+                color: statusFilter === f ? 'var(--bg)' : 'var(--text-dim)',
+                fontWeight: statusFilter === f ? 700 : 400,
+              }}
+              onClick={() => setStatusFilter(f)}
+            >
+              {f === 'ok' ? t('quotaPage.filterOk') : f === 'failed' ? t('quotaPage.filterFailed') : t('quotaPage.filterAll')}
+              <span style={{ marginLeft: '5px', opacity: 0.75, ...MONO }}>{statusCounts[f]}</span>
+            </button>
+          ))}
         </div>
       </div>
 
@@ -339,7 +380,11 @@ export const QuotaPage: React.FC = () => {
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(330px, 1fr))', gap: '12px', alignContent: 'start', paddingRight: '2px' }}>
             {filteredPairs.map((row: QuotaPairRow) => {
-              const meta = [row.quota?.plan, row.quota?.entryId].filter(Boolean).join(' · ');
+              // Visible line: the upstream plan name only (product data, never
+              // translated — like "GLM lite"). The entry id is machine
+              // provenance: it stays available in the tooltip, not inline.
+              const meta = row.quota?.plan ?? '';
+              const metaTitle = [row.quota?.plan, row.quota?.entryId].filter(Boolean).join(' · ');
               return (
                 <div key={`${row.providerId}#${row.keyHashPrefix}`} className="card" style={{ padding: '14px 16px', minWidth: 0 }}>
                   {/* Header: identity + provenance badge + read freshness */}
@@ -402,7 +447,7 @@ export const QuotaPage: React.FC = () => {
                       minWidth: 0,
                     }}
                   >
-                    <span style={{ ...MONO, fontSize: '10.5px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }} title={meta || undefined}>
+                    <span style={{ ...MONO, fontSize: '10.5px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }} title={metaTitle || undefined}>
                       {meta}
                     </span>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}>
