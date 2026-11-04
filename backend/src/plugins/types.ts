@@ -77,6 +77,18 @@ export interface ModelServicePlugin {
     authHint?: boolean;
     upstreamBody?: string;
   }>;
+  /** Web authorization (device flow) driven from the console connect card —
+   *  the plugin is the ONLY owner of its vendor's login protocol; core just
+   *  relays start/poll (generic seam, same shape as probe). A done poll
+   *  returns the fresh token so the console route can wire it into the
+   *  credential store. */
+  webLogin?: {
+    /** Begin a login session and return the authorize URL for the browser. */
+    start(opts: { baseURL: string }): Promise<{ authUrl: string }>;
+    /** Poll the in-flight session once. done+token = login finished and the
+     *  plugin has already persisted its long-lived token bundle. */
+    poll(opts: { baseURL: string }): Promise<{ done: boolean; error?: string; token?: string }>;
+  };
   /**
    * Quota-check capability (ADR-0009 L-e — plugin knowledge layer). A plugin
    * that knows its vendor's usage endpoint declares it here; the quota

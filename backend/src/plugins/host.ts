@@ -557,11 +557,11 @@ const LANG_TO_BCP47: Record<string, string> = {
  *  key by BCP-47 ('zh-CN'/'en-US') — translated before lookup, en-US as the
  *  fallback. */
 export async function pluginPresetCatalogEntries(lang?: string): Promise<
-  { id: string; name: string; defaultName: string; logo?: string; npm?: string; baseURL?: string; custom: boolean; connected: boolean; sources: ['service'] }[]
+  { id: string; name: string; defaultName: string; logo?: string; npm?: string; baseURL?: string; custom: boolean; connected: boolean; webLogin?: boolean; sources: ['service'] }[]
 > {
   const { getCredentialStore } = await import('../opencode/credentials/index.js');
   const store = await getCredentialStore();
-  const out: { id: string; name: string; defaultName: string; logo?: string; npm?: string; baseURL?: string; custom: boolean; connected: boolean; sources: ['service'] }[] = [];
+  const out: { id: string; name: string; defaultName: string; logo?: string; npm?: string; baseURL?: string; custom: boolean; connected: boolean; webLogin?: boolean; sources: ['service'] }[] = [];
   for (const { plugin, view } of registry.values()) {
     const logoUrl = plugin.manifest.logo ? `/api/admin/plugins/${view.id}/logo` : undefined;
     for (const preset of plugin.manifest.presets ?? []) {
@@ -579,6 +579,9 @@ export async function pluginPresetCatalogEntries(lang?: string): Promise<
         baseURL: preset.baseUrl,
         custom: true,
         connected: Boolean(store.resolveKey(preset.providerId)?.key),
+        // Console connect card offers the web-authorization button when the
+        // plugin declares the capability (vendor knowledge stays in-plugin).
+        webLogin: typeof plugin.webLogin === 'object',
         sources: ['service'],
       });
     }

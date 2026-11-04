@@ -107,8 +107,8 @@ export class ProviderRegistry {
         this.providers.set(pConfig.name, new ResponsesProvider(pConfig));
       } else if (pConfig.type === 'google') {
         this.providers.set(pConfig.name, new GoogleProvider(pConfig));
-      } else if (pConfig.type === 'qoder') {
-        const plugin = getModelServicePlugin('qoder');
+      } else if (pConfig.type === 'qoder' || pConfig.type === 'workbuddy') {
+        const plugin = getModelServicePlugin(pConfig.type);
         this.providers.set(
           pConfig.name,
           plugin
@@ -116,7 +116,7 @@ export class ProviderRegistry {
             : {
                 name: pConfig.name,
                 createCompletion: async () => {
-                  throw new Error(`Provider '${pConfig.name}' is on the qoder wire but the qoder plugin is not installed (console /plugins)`);
+                  throw new Error(`Provider '${pConfig.name}' is on the ${pConfig.type} wire but the ${pConfig.type} plugin is not installed (console /plugins)`);
                 },
               }
         );

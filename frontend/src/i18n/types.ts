@@ -426,6 +426,12 @@ export interface TranslationDict {
     refreshDone: string;
     refreshFailed: string;
     connectBtn: string;
+    webLoginBtn: string;
+    webLoginTip: string;
+    webLoginWaiting: string;
+    webLoginWaitingShort: string;
+    webLoginDone: string;
+    webLoginFailed: string;
     connectOk: string;
     testBtn: string;
     testing: string;

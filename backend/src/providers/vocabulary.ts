@@ -49,6 +49,7 @@ const RAW_ENTRIES: Omit<NpmVocabularyEntry, 'wire'>[] = [
   // Vendored Qoder wire (model-service plugin) — baseURL is the service
   // gateway, key = the account token.
   { alias: '@ai-sdk/qoder', package: '@opencode/ai/providers/qoder', order: 95 },
+  { alias: '@ai-sdk/workbuddy', package: '@opencode/ai/providers/workbuddy', order: 96 },
 ];
 
 export const NPM_VOCABULARY: NpmVocabularyEntry[] = RAW_ENTRIES.map((e) => ({

@@ -2466,14 +2466,14 @@ export function registerConsoleRoutes(
     /** The npm SDK vocabulary — ONE backend-owned table (providers/vocabulary.ts)
      * served to every UI surface that renders npm choices or display names. */
     npmVocabulary: async () => {
-      // Plugin-backed wires (qoder gRPC) are only OFFERED when the plugin is
-      // installed — suggesting '@ai-sdk/qoder' without the executor would
-      // invite authoring a def that fails on every call.
-      const qoderReady = !!getModelServicePlugin('qoder');
-      return {
-        status: 'ok',
-        entries: NPM_VOCABULARY.filter((e) => qoderReady || e.wire !== 'qoder'),
-      };
+      // Plugin-backed wires (qoder gRPC, workbuddy HTTP) are only OFFERED when
+      // the plugin is installed — suggesting the alias without the executor
+      // would invite authoring a def that fails on every call.
+      const entries = NPM_VOCABULARY.filter((e) => {
+        if (e.wire !== 'qoder' && e.wire !== 'workbuddy') return true;
+        return !!getModelServicePlugin(e.wire);
+      });
+      return { status: 'ok', entries };
     },
 
     list: async (req: FastifyRequest) => {
@@ -2545,6 +2545,9 @@ export function registerConsoleRoutes(
         env: p.env,
         custom: p.custom,
         connected: p.connected,
+        // Plugin merges below may forward a preset's web-authorization
+        // capability onto this row.
+        webLogin: undefined as boolean | undefined,
         sources: p.sources,
         modelCount: p.models.length,
         priceFrom: catalogRepository.minInputPrice(p),
@@ -2567,6 +2570,9 @@ export function registerConsoleRoutes(
               // Catalog-covered preset: the catalog entry is the richer record.
               if (!existing.logo && preset.logo) existing.logo = preset.logo;
               existing.name = preset.name; // the stored def name is localeless — show the manifest's localized one
+              // Forward the web-authorization capability, or the connect card
+              // never offers the plugin's device-login button.
+              existing.webLogin = preset.webLogin;
               // Tag the plugin origin, or the trailing pure-config-source drop
               // below removes the row we just decided to keep.
               if (!existing.sources.includes('service')) existing.sources = [...existing.sources, 'service'];
@@ -2578,7 +2584,7 @@ export function registerConsoleRoutes(
             // preset's own baseURL/npm.
             providers.splice(idx, 1);
           }
-          providers.push({ id: preset.id, name: preset.name, logo: preset.logo, npm: preset.npm, api: undefined, baseURL: preset.baseURL, doc: undefined, env: undefined, custom: preset.custom, connected: preset.connected, sources: preset.sources, modelCount: 0, priceFrom: undefined });
+          providers.push({ id: preset.id, name: preset.name, logo: preset.logo, npm: preset.npm, api: undefined, baseURL: preset.baseURL, doc: undefined, env: undefined, custom: preset.custom, connected: preset.connected, webLogin: preset.webLogin, sources: preset.sources, modelCount: 0, priceFrom: undefined });
         }
       } catch {
         // catalog must survive a broken plugin host
@@ -2910,6 +2916,67 @@ export function registerConsoleRoutes(
       }
     },
 
+    /** Resolve the model-service plugin serving a provider def's wire
+     *  (plugin wires only — the vendor protocol stays in the plugin). */
+    webLoginPluginFor: async (id: string) => {
+      const { getProviderNodeById } = await import('../opencode/user-config.js');
+      const { wireFor } = await import('../providers/wire.js');
+      const def = getProviderNodeById(id);
+      if (!def) return { error: `provider '${id}' not found` };
+      const node = def as { baseURL?: string; options?: { baseURL?: string }; npm?: string; package?: string };
+      const baseURL = (node.options?.baseURL ?? node.baseURL ?? '').replace(/\/+$/, '');
+      const npm = node.npm || node.package || '';
+      const wire = npm ? wireFor(npm) : baseURL ? wireFor(undefined, baseURL) : 'unroutable';
+      const plugin = (await import('../plugins/host.js')).getModelServicePlugin(wire);
+      if (!plugin?.webLogin) {
+        return { error: `provider '${id}' is not on a plugin wire with a web-login capability` };
+      }
+      return { plugin, baseURL };
+    },
+    webLoginStart: async (req: any, reply: any) => {
+      const { id } = req.params as { id: string };
+      const r = await ocHandlers.webLoginPluginFor(id);
+      if ('error' in r) return reply.code(404).send({ success: false, error: r.error });
+      try {
+        const { authUrl } = await r.plugin.webLogin!.start({ baseURL: r.baseURL });
+        return { status: 'ok', authUrl };
+      } catch (err) {
+        return reply.code(502).send({ success: false, error: err instanceof Error ? err.message : String(err) });
+      }
+    },
+    webLoginPoll: async (req: any, reply: any) => {
+      const { id } = req.params as { id: string };
+      const r = await ocHandlers.webLoginPluginFor(id);
+      if ('error' in r) return reply.code(404).send({ success: false, error: r.error });
+      try {
+        const result = await r.plugin.webLogin!.poll({ baseURL: r.baseURL });
+        if (!result.done) {
+          return { status: 'ok', done: false, error: result.error };
+        }
+        // Login finished — wire the fresh token into the credential store
+        // (same write path as a manual connect), then connect-time model
+        // auto-fill so the card shows 已连接 with models.
+        if (!result.token) {
+          return { status: 'ok', done: true, connected: false, error: 'login finished without a token' };
+        }
+        const credentialStore = await (await import('../opencode/credentials/index.js')).getCredentialStore();
+        const { credential: keyMeta } = await connectKeyIdempotent(
+          credentialStore, id, result.token, undefined, registry.getCircuitBreakerManager(), registry
+        );
+        const { ensureConnectedProviderBook } = await import('../opencode/catalog/auto-pull.js');
+        const fill = await ensureConnectedProviderBook(id, { baseURL: r.baseURL }).catch((e: any) => ({
+          nodeCreated: false,
+          pulled: 0,
+          fillError: String(e?.message ?? e),
+        }));
+        if (fill.fillError) {
+          app.log.warn({ providerId: id, fillError: fill.fillError }, 'web-login connect-time model auto-fill failed (swallowed by design)');
+        }
+        return { status: 'ok', done: true, connected: true, credential: keyMeta };
+      } catch (err) {
+        return reply.code(502).send({ success: false, error: err instanceof Error ? err.message : String(err) });
+      }
+    },
     /**
      * One-shot upstream connectivity probe behind the console "Test" buttons.
      * Resolves baseURL/key/model from body overrides (test-before-save) or
@@ -3810,6 +3877,11 @@ export function registerConsoleRoutes(
     app.post(`${prefix}/opencode/providers`, withPoolSync(registry, ocHandlers.create));
     app.patch(`${prefix}/opencode/providers/:id`, withPoolSync(registry, ocHandlers.update));
     app.post(`${prefix}/opencode/providers/:id/connect`, withPoolSync(registry, ocHandlers.connect));
+    // Generic plugin web-authorization seam (device flow): start opens the
+    // vendor login page; poll returns done+token and wires the fresh token
+    // into the credential store. The plugin owns the whole protocol.
+    app.post(`${prefix}/opencode/providers/:id/web-login/start`, ocHandlers.webLoginStart);
+    app.get(`${prefix}/opencode/providers/:id/web-login/poll`, ocHandlers.webLoginPoll);
     app.post(`${prefix}/opencode/providers/:id/key`, withPoolSync(registry, ocHandlers.setKey));
     app.post(`${prefix}/opencode/providers/:id/test`, ocHandlers.test);
     app.delete(`${prefix}/opencode/providers/:id`, withPoolSync(registry, ocHandlers.remove));

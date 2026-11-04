@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
-import { Key, Check, RefreshCw, Trash2, Plug, Plus, Lock, Cpu, Zap, Upload, Download, AlertTriangle, Pencil, Unplug, Clock, ShieldAlert, Ban, PowerOff, Power, Copy, Gauge, Maximize2, ArrowUpToLine } from 'lucide-react';
+import { Key, Check, RefreshCw, Trash2, Plug, Plus, Lock, Cpu, Zap, Upload, Download, AlertTriangle, Pencil, Unplug, Clock, ShieldAlert, Ban, PowerOff, Power, Copy, Gauge, Maximize2, ArrowUpToLine, Globe } from 'lucide-react';
 import {
   opencodeApi,
   api,
@@ -1437,6 +1437,48 @@ export const KeysPage: React.FC = () => {
   const [connectedQuery, setConnectedQuery] = useState('');
   const [catalogPage, setCatalogPage] = useState(1);
   const [catalogPageSize, setCatalogPageSize] = useState(CATALOG_PAGE_SIZE);
+  const [webLoginPendingId, setWebLoginPendingId] = useState<string | null>(null);
+
+  // Console web authorization (plugin device flow): open the vendor login
+  // page, poll until the operator finishes — the backend wires the fresh
+  // token into the credential store on done, so the card flips to 已连接.
+  const startWebLogin = useCallback(async (providerId: string) => {
+    setWebLoginPendingId(providerId);
+    try {
+      const { authUrl } = await opencodeApi.webLoginStart(providerId);
+      window.open(authUrl, '_blank', 'noopener');
+      showNotice(t('op.webLoginWaiting'));
+      let attempts = 0;
+      const timer = window.setInterval(async () => {
+        attempts += 1;
+        try {
+          const r = await opencodeApi.webLoginPoll(providerId);
+          if (r.done || r.error) {
+            window.clearInterval(timer);
+            setWebLoginPendingId(null);
+            if (r.done) {
+              showNotice(t('op.webLoginDone'));
+              await loadCatalog();
+            } else {
+              showNotice(r.error ?? t('op.webLoginFailed'), 'err');
+            }
+          }
+        } catch (err) {
+          window.clearInterval(timer);
+          setWebLoginPendingId(null);
+          showNotice(err instanceof Error ? err.message : String(err), 'err');
+        }
+        if (attempts >= 150) { // 5 min budget — same as the plugin-side timeout
+          window.clearInterval(timer);
+          setWebLoginPendingId(null);
+          showNotice(t('op.webLoginFailed'), 'err');
+        }
+      }, 2000);
+    } catch (err) {
+      setWebLoginPendingId(null);
+      showNotice(err instanceof Error ? err.message : String(err), 'err');
+    }
+  }, [t]);
   const [connectedPage, setConnectedPage] = useState(1);
   const [connectedPageSize, setConnectedPageSize] = useState(CONNECTED_PAGE_SIZE);
   const [refreshingConnected, setRefreshingConnected] = useState(false);
@@ -2679,15 +2721,30 @@ export const KeysPage: React.FC = () => {
                     </button>
                   </div>
                 ) : (
-                  <button
-                    className="btn btn-sm"
-                    disabled={!canWriteCredential(c.id)}
-                    title={!canWriteCredential(c.id) ? t('op.integrationMissingTip') : undefined}
-                    onClick={() => { setConnectingId(c.id); setConnectKey(''); }}
-                  >
-                    <Plug size={12} />
-                    <span>{t('op.connectBtn')}</span>
-                  </button>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button
+                      className="btn btn-sm"
+                      disabled={!canWriteCredential(c.id)}
+                      title={!canWriteCredential(c.id) ? t('op.integrationMissingTip') : undefined}
+                      onClick={() => { setConnectingId(c.id); setConnectKey(''); }}
+                      style={{ flex: 1 }}
+                    >
+                      <Plug size={12} />
+                      <span>{t('op.connectBtn')}</span>
+                    </button>
+                    {c.webLogin && (
+                      <button
+                        className="btn btn-sm btn-primary"
+                        disabled={webLoginPendingId === c.id}
+                        title={t('op.webLoginTip')}
+                        onClick={() => startWebLogin(c.id)}
+                        style={{ flex: 1 }}
+                      >
+                        <Globe size={12} />
+                        <span>{webLoginPendingId === c.id ? t('op.webLoginWaitingShort') : t('op.webLoginBtn')}</span>
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
             );

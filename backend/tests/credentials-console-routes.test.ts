@@ -66,6 +66,16 @@ mock.module('../src/opencode/probe.js', () => ({
   },
 }));
 
+// Plugin-preset seam: the connect-catalog handler merges preset rows (logo,
+// localized name, webLogin capability) into /opencode/catalog. Programmable
+// per test; default empty keeps every other test on the no-plugin baseline.
+const actualHost = await import('../src/plugins/host.js');
+let presetEntries: any[] = [];
+mock.module('../src/plugins/host.js', () => ({
+  ...actualHost,
+  pluginPresetCatalogEntries: async () => presetEntries,
+}));
+
 const actualAutoPull = await import('../src/opencode/catalog/auto-pull.js');
 let pullMode: 'live' | 'catalog' | null = null;
 mock.module('../src/opencode/catalog/auto-pull.js', () => ({
@@ -124,6 +134,7 @@ beforeEach(() => {
   fs.mkdirSync(p.dataDir, { recursive: true });
   fs.writeFileSync(p.serviceJsonCandidates![0]!, JSON.stringify({ password: 'pw', port: 4100 }));
   catalogRecs = [];
+  presetEntries = [];
   postHandler = () => ({ status: 200, json: { credential: { id: 'c-new' } } });
   probeCalls = [];
   probeImpl = async () => ({ ok: true, kind: 'openai', latencyMs: 5 });
@@ -1459,6 +1470,47 @@ describe('DELETE .../providers/:id/credentials/:credentialId — disconnect (Dec
     } finally {
       state.clear('anthropic', prefix);
     }
+  });
+});
+
+/**
+ * Connect-catalog plugin merge: the preset's webLogin capability must reach
+ * the wire row on EVERY merge path, or the console connect card never shows
+ * the device-login button (frontend gates it on `row.webLogin`).
+ */
+describe('GET .../opencode/catalog — plugin preset webLogin forwarding', () => {
+  const catalogRow = (id: string, sources: string[]) => ({
+    id, name: id, custom: true, connected: false, sources, models: [],
+  });
+  const preset = (id: string, webLogin: boolean) => ({
+    id, name: id, defaultName: id, npm: '@ai-sdk/workbuddy', baseURL: 'https://wb.example',
+    custom: true, connected: false, webLogin, sources: ['service'],
+  });
+  const catalogRows = async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/admin/opencode/catalog' });
+    expect(res.statusCode).toBe(200);
+    return (res.json() as { providers: any[] }).providers;
+  };
+
+  it('forwards webLogin onto an existing catalog-covered row', async () => {
+    catalogRecs = [catalogRow('workbuddy', ['opencode'])];
+    presetEntries = [preset('workbuddy', true)];
+    const row = (await catalogRows()).find((p) => p.id === 'workbuddy');
+    expect(row?.webLogin).toBe(true);
+  });
+
+  it('forwards webLogin on a preset-only row (not covered by any catalog source)', async () => {
+    catalogRecs = [];
+    presetEntries = [preset('workbuddy-cn', true)];
+    const row = (await catalogRows()).find((p) => p.id === 'workbuddy-cn');
+    expect(row?.webLogin).toBe(true);
+  });
+
+  it('keeps webLogin false/absent for presets without the capability', async () => {
+    catalogRecs = [catalogRow('plain', ['opencode'])];
+    presetEntries = [preset('plain', false)];
+    const row = (await catalogRows()).find((p) => p.id === 'plain');
+    expect(row?.webLogin ?? false).toBe(false);
   });
 });
 

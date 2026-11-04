@@ -33,7 +33,7 @@ export class DispatchingProvider implements LLMProvider {
       if (w === 'anthropic') this.execs.set(w, new AnthropicProvider(wireCfg));
       else if (w === 'google') this.execs.set(w, new GoogleProvider(wireCfg));
       else if (w === 'responses') this.execs.set(w, new ResponsesProvider(wireCfg));
-      else if (w === 'qoder') {
+      else if (w === 'qoder' || w === 'workbuddy') {
         // Plugin-provided executor: absent plugin = no executor, and
         // exec() reports the honest "wire not registered" error per model.
         const plugin = getModelServicePlugin(w);
@@ -70,7 +70,7 @@ export class DispatchingProvider implements LLMProvider {
    */
   public supportsStreaming(model: ModelRegistration): boolean {
     const w = model.wire ?? 'openai';
-    if (w !== 'openai' && w !== 'qoder') return false;
+    if (w !== 'openai' && w !== 'qoder' && w !== 'workbuddy') return false;
     try {
       return !!this.exec(model).createStream;
     } catch {

@@ -465,11 +465,12 @@ export async function autoPullProvider(
   // Plugin-provided model-service wire: the model source is the plugin's own
   // pullModels() — a plain /models GET cannot exist on this transport class.
   const npm = def?.npm || def?.package || '';
-  if (npm && wireFor(npm) === 'qoder') {
+  const npmWire = npm ? wireFor(npm) : 'unroutable';
+  if (npmWire === 'qoder' || npmWire === 'workbuddy') {
     const { getModelServicePlugin } = await import('../../plugins/host.js');
-    const plugin = getModelServicePlugin('qoder');
+    const plugin = getModelServicePlugin(npmWire);
     if (!plugin?.pullModels) {
-      return { httpStatus: 400, body: { success: false, error: 'the qoder plugin is not installed (console /plugins)' } };
+      return { httpStatus: 400, body: { success: false, error: `the ${npmWire} plugin is not installed (console /plugins)` } };
     }
     return plugin.pullModels(id, opts);
   }

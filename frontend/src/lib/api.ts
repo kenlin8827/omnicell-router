@@ -3753,6 +3753,9 @@ export interface OpenCodeCatalogProvider {
   env?: string[];
   custom: boolean;
   connected: boolean;
+  /** Plugin wire declares a console web-authorization (device login) — the
+   *  connect card shows the 授权登录 button alongside the key input. */
+  webLogin?: boolean;
   sources: string[];
   modelCount: number;
   priceFrom?: number;
@@ -4850,7 +4853,29 @@ export const opencodeApi = {
     );
   },
 
-  /** One-shot upstream connectivity probe — optional overrides enable test-before-save; `credentialId` pins the probe to ONE credential row (per-credential test). */
+  /** Begin a plugin web-login session; returns the vendor authorize URL for
+   *  the browser (device flow — plugin-owned protocol). */
+  async webLoginStart(providerId: string): Promise<{ authUrl: string }> {
+    const res = await fetch(`/api/admin/opencode/providers/${encodeURIComponent(providerId)}/web-login/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const json = (await res.json().catch(() => ({}))) as { authUrl?: string; error?: string };
+    if (!res.ok || !json.authUrl) throw new Error(json.error ?? `web-login start failed (${res.status})`);
+    return { authUrl: json.authUrl };
+  },
+
+  /** Poll the in-flight web-login once. done = finished; the backend has
+   *  already wired the token into the credential store. */
+  async webLoginPoll(providerId: string): Promise<{ done: boolean; connected?: boolean; error?: string }> {
+    const res = await fetch(`/api/admin/opencode/providers/${encodeURIComponent(providerId)}/web-login/poll`, {
+      headers: { Accept: 'application/json' },
+    });
+    const json = (await res.json().catch(() => ({}))) as { done?: boolean; connected?: boolean; error?: string };
+    if (!res.ok) throw new Error(json.error ?? `web-login poll failed (${res.status})`);
+    return { done: Boolean(json.done), connected: json.connected, error: json.error };
+  },
   async testProvider(
     id: string,
     payload?: { modelId?: string; apiKey?: string; baseURL?: string; credentialId?: string }

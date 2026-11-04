@@ -341,6 +341,7 @@ const AI_SDK_TO_OPENCODE_V2_PACKAGE: Record<string, string> = {
   // (credentials/def-materialize.ts) — the book always keeps this value.
   '@ai-sdk/typesafe-ai': '@opencode/ai/providers/typesafe',
   '@ai-sdk/qoder': '@opencode/ai/providers/qoder',
+  '@ai-sdk/workbuddy': '@opencode/ai/providers/workbuddy',
 };
 
 /** npm string → the opencode v2 `package` value (mapped table, already-v2 passthrough, unknown passthrough). */

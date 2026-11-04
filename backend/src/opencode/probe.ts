@@ -20,7 +20,7 @@ import { wireFor, unroutableInfo, anthropicMessagesUrl } from '../providers/wire
 import { redactBodySecrets } from './credentials/opencode-v2-store.js';
 import { getModelServicePlugin } from '../plugins/host.js';
 
-export type ProbeKind = 'openai' | 'anthropic' | 'google' | 'responses' | 'systemone' | 'qoder' | 'unroutable';
+export type ProbeKind = 'openai' | 'anthropic' | 'google' | 'responses' | 'systemone' | 'qoder' | 'workbuddy' | 'unroutable';
 /** Wires the core probes natively with the HTTP logic below; any other kind is plugin-delegated. */
 const BUILTIN_PROBE_KINDS: Partial<Record<Exclude<ProbeKind, 'unroutable'>, true>> = {
   openai: true,
