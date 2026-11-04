@@ -1806,6 +1806,7 @@ export const esES: TranslationDict = {
     mcpEditSubtitle:
       'Cambia el arranque de un servidor existente en la configuración MCP de {name}. No se escribe nada hasta que confirmes el cambio.',
     mcpEditLoadFailed: 'No se pudo leer la configuración MCP',
+    mcpEditGone: 'Este servidor ya no está en la configuración MCP del propio runtime — la lista de instalados se ha actualizado',
     mcpEditFailed: 'No se pudo actualizar el servidor MCP',
     mcpEditDone: 'Servidor MCP actualizado',
     mcpEditNoChange: 'Sin cambios',

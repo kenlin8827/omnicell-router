@@ -1809,6 +1809,7 @@ export const deDE: TranslationDict = {
     mcpEditSubtitle:
       'Ändert den Start eines vorhandenen Servers in der MCP-Konfiguration von {name}. Bis zur Bestätigung wird nichts geschrieben.',
     mcpEditLoadFailed: 'MCP-Konfiguration konnte nicht gelesen werden',
+    mcpEditGone: 'Dieser Server steht nicht mehr in der eigenen MCP-Konfiguration des Runtimes — die Installationsliste wurde aktualisiert',
     mcpEditFailed: 'MCP-Server konnte nicht aktualisiert werden',
     mcpEditDone: 'MCP-Server aktualisiert',
     mcpEditNoChange: 'Keine Änderungen',

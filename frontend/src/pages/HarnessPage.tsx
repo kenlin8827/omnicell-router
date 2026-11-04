@@ -2978,7 +2978,16 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
       setMcpCandidates([]);
       setMcpPick('');
     } catch (e) {
-      toast.error(`${t('harness.mcpEditLoadFailed')}: ${e instanceof Error ? e.message : String(e)}`);
+      const err = e as Error & { code?: string };
+      if (err.code === 'not_found') {
+        // The clicked row is gone from the runtime's own config — the runtime rewrote its file
+        // (claude's `~/.claude.json` is its own state) or the listing was stale. Refresh so the
+        // page stops offering a dead row, instead of reporting a generic read failure.
+        void load();
+        toast.error(t('harness.mcpEditGone'));
+      } else {
+        toast.error(`${t('harness.mcpEditLoadFailed')}: ${e instanceof Error ? e.message : String(e)}`);
+      }
     } finally {
       setMcpEditLoading(false);
     }

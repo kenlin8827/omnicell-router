@@ -1814,6 +1814,7 @@ hiddenBadge: string;
     mcpEditTitle: string;
     mcpEditSubtitle: string;
     mcpEditLoadFailed: string;
+    mcpEditGone: string;
     mcpEditFailed: string;
     mcpEditDone: string;
     mcpEditNoChange: string;

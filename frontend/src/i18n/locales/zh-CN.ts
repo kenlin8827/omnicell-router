@@ -1788,6 +1788,7 @@ export const zhCN: TranslationDict = {
     mcpEditSave: '保存',
     mcpEditSubtitle: '修改 {name} 自己的 MCP 配置中已有服务器的启动方式；确认修改前不会写入任何东西。',
     mcpEditLoadFailed: '读取 MCP 配置失败',
+    mcpEditGone: '该服务器已不在 runtime 自己的 MCP 配置中——已安装列表已刷新',
     mcpEditFailed: '更新 MCP 服务器失败',
     mcpEditDone: 'MCP 服务器已更新',
     mcpEditNoChange: '没有变化',

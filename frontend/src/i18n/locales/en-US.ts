@@ -1822,6 +1822,7 @@ export const enUS: TranslationDict = {
     mcpEditSubtitle:
       'Changes the launch of an existing server in {name}’s own MCP config. Nothing is written until you confirm the change.',
     mcpEditLoadFailed: 'Could not read the MCP config',
+    mcpEditGone: 'This server is no longer in the runtime’s own MCP config — the installed list has been refreshed',
     mcpEditFailed: 'Could not update the MCP server',
     mcpEditDone: 'MCP server updated',
     mcpEditNoChange: 'No changes',

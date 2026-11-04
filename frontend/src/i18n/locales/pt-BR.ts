@@ -1808,6 +1808,7 @@ export const ptBR: TranslationDict = {
     mcpEditSubtitle:
       'Altera a inicialização de um servidor existente na configuração MCP do próprio {name}. Nada é gravado até você confirmar a alteração.',
     mcpEditLoadFailed: 'Não foi possível ler a configuração MCP',
+    mcpEditGone: 'Este servidor não está mais na configuração MCP do próprio runtime — a lista de instalados foi atualizada',
     mcpEditFailed: 'Não foi possível atualizar o servidor MCP',
     mcpEditDone: 'Servidor MCP atualizado',
     mcpEditNoChange: 'Sem alterações',

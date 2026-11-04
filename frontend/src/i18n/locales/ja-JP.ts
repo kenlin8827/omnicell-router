@@ -1807,6 +1807,7 @@ export const jaJP: TranslationDict = {
     mcpEditSubtitle:
       '{name} 自身の MCP 設定にある既存サーバーの起動方法を変更します。変更を確認するまで何も書き込みません。',
     mcpEditLoadFailed: 'MCP 設定を読み取れませんでした',
+    mcpEditGone: 'このサーバーはランタイム自身の MCP 設定には存在しません — インストール済みリストを更新しました',
     mcpEditFailed: 'MCP サーバーを更新できませんでした',
     mcpEditDone: 'MCP サーバーを更新しました',
     mcpEditNoChange: '変更なし',

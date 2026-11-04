@@ -1807,6 +1807,7 @@ export const koKR: TranslationDict = {
     mcpEditSubtitle:
       '{name}의 MCP 설정에 있는 기존 서버의 실행 방식을 변경합니다. 변경을 확인하기 전에는 아무것도 기록하지 않습니다.',
     mcpEditLoadFailed: 'MCP 설정을 읽지 못했습니다',
+    mcpEditGone: '이 서버는 더 이상 런타임 자체의 MCP 설정에 없습니다 — 설치된 목록을 새로 고쳤습니다',
     mcpEditFailed: 'MCP 서버를 업데이트하지 못했습니다',
     mcpEditDone: 'MCP 서버가 업데이트되었습니다',
     mcpEditNoChange: '변경 없음',
