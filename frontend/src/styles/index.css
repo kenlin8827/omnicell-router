@@ -321,15 +321,15 @@
   --surface-hover: color-mix(in srgb, var(--text-main) 5%, transparent);
 }
 
-/* Provider logo glyphs (models.dev catalog SVGs) are dark ink. On dark-class
-   themes the theme-tinted --chip-bg plate is dark too, so invert the glyph
-   bright (hue-rotate keeps colored marks roughly true); light-class themes
-   draw the dark glyph as-is on the light plate. */
+/* Provider logos are brand artwork (colored, gray or dark-ink SVGs) — any
+   theme-driven tint or invert filter mangles non-monochrome marks (e.g. the
+   mid-gray 302.AI roundel turns into a dark murk under invert). Logos
+   therefore always draw unfiltered on a FIXED light plate, independent of
+   the theme, so original brand colors read correctly on dark and light
+   themes alike. */
 :root {
-  --logo-glyph-filter: invert(1) hue-rotate(180deg);
-}
-[data-theme="azure"], [data-theme="amber"] {
-  --logo-glyph-filter: none;
+  --logo-plate-bg: #ececec;
+  --logo-plate-ink: #1c1c1c;
 }
 
 /* Capability/source badge hues — semantic identity is fixed (reasoning=violet,
@@ -739,6 +739,16 @@ details.sub-card > summary::-webkit-details-marker {
 .btn-success:hover {
   background: rgba(16, 185, 129, 0.25);
   border-color: var(--accent-emerald);
+}
+
+.btn-warning {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--accent-amber);
+  border-color: rgba(245, 158, 11, 0.3);
+}
+.btn-warning:hover {
+  background: rgba(245, 158, 11, 0.25);
+  border-color: var(--accent-amber);
 }
 
 .btn-sm {

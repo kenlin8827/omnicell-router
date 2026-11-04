@@ -1266,10 +1266,18 @@ export const PlaygroundPage: React.FC = () => {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 5, minWidth: 230, flex: '1 1 230px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <label style={labelStyle}>{t('chat.modelLabel')}</label>
-              {/* A decision-wire model is a STATE, not a field error: an amber
-                  glyph beside the label keeps the row's grid intact (the inline
-                  red line used to push the stream-toggle column out of line). */}
-              {mode === 'chat' && decisionWire && <InfoTip variant="danger" text={t('chat.decisionBlocked')} />}
+              {/* Tips live in the LABEL ROW, never as a standalone line under the
+                  picker — a separate hint line grows this column and pushes the
+                  stream-toggle column out of line. A decision-wire model is a
+                  STATE (danger tip); a translated non-openai wire is context (info
+                  tip); the two are mutually exclusive. */}
+              {mode === 'chat' &&
+                (decisionWire ? (
+                  <InfoTip variant="danger" text={t('chat.decisionBlocked')} />
+                ) : (
+                  selectedWire &&
+                  selectedWire !== 'openai' && <InfoTip variant="info" text={t('chat.wireHint', { wire: selectedWire })} />
+                ))}
             </div>
             <Combobox
               value={model}
@@ -1291,12 +1299,6 @@ export const PlaygroundPage: React.FC = () => {
               style={{ width: '100%' }}
             />
             {modelsFailed && <div style={{ fontSize: 11, color: 'var(--accent-amber)' }}>{t('chat.modelsLoadFailed')}</div>}
-            {mode === 'chat' &&
-              !decisionWire &&
-              selectedWire &&
-              selectedWire !== 'openai' && (
-                <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>{t('chat.wireHint', { wire: selectedWire })}</div>
-              )}
           </div>
 
           {mode === 'chat' && (

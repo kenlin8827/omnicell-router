@@ -31,6 +31,7 @@ import {
   Waves,
   BarChart3,
   Settings,
+  Puzzle,
   ScrollText,
   Archive,
   FolderCog,
@@ -153,6 +154,7 @@ const NAV_GROUP_DEFS: NavGroupDef[] = [
     items: [
       { to: '/environments', labelKey: 'nav.environments', icon: FolderCog },
       { to: '/settings', labelKey: 'nav.settings', icon: Sliders },
+      { to: '/plugins', labelKey: 'nav.pluginsManage', icon: Puzzle },
       { to: '/yaml', labelKey: 'nav.yaml', icon: FileCode2 },
     ],
   },
@@ -188,6 +190,7 @@ const ROUTE_META_KEYS: Record<string, { groupKey: string; titleKey: string }> = 
   '/captures': { groupKey: 'nav.grpObservability', titleKey: 'nav.captures' },
   '/environments': { groupKey: 'nav.grpSystem', titleKey: 'nav.environments' },
   '/settings': { groupKey: 'nav.grpSystem', titleKey: 'nav.settings' },
+  '/plugins': { groupKey: 'nav.grpSystem', titleKey: 'nav.pluginsManage' },
   '/yaml': { groupKey: 'nav.grpSystem', titleKey: 'nav.yaml' },
 };
 

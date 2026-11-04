@@ -3673,6 +3673,34 @@ export interface WebAuthConfigView extends WebAuthStatus {
 }
 
 // ---------------------------------------------------------------------------
+// Plugin management (model-service plugins installed by the operator)
+// ---------------------------------------------------------------------------
+
+export interface PluginProviderPresetInfo {
+  presetId: string;
+  providerId: string;
+  displayName: string;
+  npm: string;
+  baseUrl: string;
+  description?: string;
+}
+
+export interface PluginViewInfo {
+  id: string;
+  name: string;
+  version: string;
+  type: string;
+  wires: string[];
+  description?: string | Record<string, string>;
+  presets?: PluginProviderPresetInfo[];
+  source: 'dev' | 'packaged';
+  path: string;
+  loaded: boolean;
+  error?: string;
+  disabled?: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Provider management (defs file `providers` map + bound credential store)
 // ---------------------------------------------------------------------------
 
@@ -4451,7 +4479,7 @@ export const opencodeApi = {
     configPath: string;
     providers: OpenCodeProviderView[];
   }> {
-    return ocJson(await fetch('/api/admin/opencode/providers'));
+    return ocJson(await fetch(`/api/admin/opencode/providers?lang=${encodeURIComponent(api.commentLang())}`));
   },
 
   /** One entry of the backend-owned npm SDK vocabulary (providers/vocabulary.ts). */
@@ -4610,8 +4638,53 @@ export const opencodeApi = {
     );
   },
 
+  async listPlugins(): Promise<{ status: string; plugins: PluginViewInfo[] }> {
+    return ocJson(await fetch('/api/admin/plugins'));
+  },
+
+  async uninstallPlugin(id: string): Promise<{ status: string; removed: string[]; providersRemoved?: string[]; devOnly?: boolean; plugins: PluginViewInfo[] }> {
+    const res = await fetch(`/api/admin/plugins/${encodeURIComponent(id)}/uninstall`, { method: 'DELETE' });
+    const parsed = (await res.json()) as { status: string; error?: string; removed: string[]; plugins: PluginViewInfo[] };
+    if (!res.ok) throw new Error(parsed.error ?? `HTTP ${res.status}`);
+    return parsed;
+  },
+
+  async setPluginDisabled(id: string, disabled: boolean): Promise<{ status: string; plugins: PluginViewInfo[] }> {
+    const res = await fetch(`/api/admin/plugins/${encodeURIComponent(id)}/${disabled ? 'disable' : 'enable'}`, { method: 'POST' });
+    const parsed = (await res.json()) as { status: string; error?: string; plugins: PluginViewInfo[] };
+    if (!res.ok) throw new Error(parsed.error ?? `HTTP ${res.status}`);
+    return parsed;
+  },
+
+  async installPlugin(bytes: ArrayBuffer): Promise<{ status: string; id: string; plugins: PluginViewInfo[] }> {
+    const res = await fetch(`/api/admin/plugins/install`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: bytes,
+    });
+    const text = await res.text();
+    // An empty body (proxy cut, server abort) must not surface as a cryptic
+    // "Unexpected end of JSON input" — report the HTTP status instead.
+    const parsed = (text ? JSON.parse(text) : {}) as { status: string; id?: string; error?: string; plugins: PluginViewInfo[] };
+    if (!res.ok || parsed.status !== 'ok') throw new Error(parsed.error ?? `HTTP ${res.status}${text ? '' : ' (empty response)'}`);
+    return { ...parsed, id: parsed.id ?? '' };
+  },
+
+  async reloadPlugins(): Promise<{ status: string; plugins: PluginViewInfo[] }> {
+    return ocJson(
+      await fetch('/api/admin/plugins/reload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      })
+    );
+  },
+
   async catalog(refresh = false): Promise<{ status: string; source: string; providers: OpenCodeCatalogProvider[] }> {
-    return ocJson(await fetch(`/api/admin/opencode/catalog${refresh ? '?refresh=1' : ''}`));
+    // Plugin preset name lookup uses the UI Lang short code — the backend maps
+    // it to the manifest's BCP-47 locale keys (host.ts LANG_TO_BCP47 mirror).
+    const lang = (typeof localStorage !== 'undefined' && localStorage.getItem('ocr_lang')) || 'zh';
+    return ocJson(await fetch(`/api/admin/opencode/catalog?lang=${encodeURIComponent(lang)}${refresh ? '&refresh=1' : ''}`));
   },
 
   async catalogSources(): Promise<{ status: string; syncIntervalMs: number; sources: CatalogSourceView[] }> {

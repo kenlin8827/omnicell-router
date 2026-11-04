@@ -204,6 +204,18 @@ async function main() {
 
   let registry: ProviderRegistry;
   try {
+    const { loadInstalledPlugins, syncPluginPresets } = await import('./plugins/host.js');
+    // Plugin host loads BEFORE the pool: plugin wires must have
+    // executors registered by the time DispatchingProvider is constructed.
+    const plugins = await loadInstalledPlugins();
+    const registered = await syncPluginPresets();
+    if (registered.length > 0) console.log(`[OCR] Plugins: registered provider presets: ${registered.join(', ')}`);
+    const loaded = plugins.filter((p) => p.loaded);
+    if (plugins.length > 0) {
+      console.log(
+        `[OCR] Plugins: ${loaded.length}/${plugins.length} loaded (${plugins.map((p) => `${p.id}${p.loaded ? '' : ': ' + p.error}`).join(', ')})`
+      );
+    }
     const boot = await buildDirectPool();
     config.models = boot.models;
 

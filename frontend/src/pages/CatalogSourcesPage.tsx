@@ -25,6 +25,7 @@ import { SegGroup } from '../components/SegGroup';
 import { Field, FieldRow, FormSection } from '../components/Form';
 import { useBodyScrollLock } from '../lib/useBodyScrollLock';
 import { EFFORT_LADDER, effectiveEffortLadder, effortOptionList } from '../lib/effort';
+import { FALLBACK_NPM_VOCABULARY } from '../lib/npm-vocabulary';
 
 import { FONT_MONO } from '../lib/fonts';
 /**
@@ -1242,15 +1243,9 @@ const OcrEditModal: React.FC<{
               onChange={(v) => setNpm(v)}
               options={[
                 { value: '', label: t('catalogPage.ocrEditNpmFollow') },
-                ...(npmVocab.length > 0
-                  ? npmVocab.map((e) => ({ value: e.alias, label: e.alias, meta: e.wire }))
-                  : [
-                      { value: '@ai-sdk/openai-compatible', label: '@ai-sdk/openai-compatible', meta: 'OpenAI Chat' },
-                      { value: '@ai-sdk/openai', label: '@ai-sdk/openai', meta: 'OpenAI Responses' },
-                      { value: '@ai-sdk/anthropic', label: '@ai-sdk/anthropic', meta: 'Anthropic' },
-                      { value: '@ai-sdk/google', label: '@ai-sdk/google', meta: 'Gemini' },
-                      { value: '@ai-sdk/typesafe-ai', label: '@ai-sdk/typesafe-ai', meta: 'TypeSafe Decision' },
-                    ]),
+                  ...(npmVocab.length > 0
+                    ? npmVocab.map((e) => ({ value: e.alias, label: e.alias, meta: e.wire }))
+                    : FALLBACK_NPM_VOCABULARY.map((e) => ({ value: e.alias, label: e.alias, meta: e.wire }))),
               ]}
             />
           </Field>

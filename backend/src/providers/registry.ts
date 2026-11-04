@@ -3,6 +3,7 @@ import { OpenAICompatibleProvider } from './openai-compatible.js';
 import { AnthropicProvider } from './anthropic.js';
 import { ResponsesProvider } from './responses.js';
 import { GoogleProvider } from './google.js';
+import { getModelServicePlugin } from '../plugins/host.js';
 import { ModelRegistration, ModelVariant, ProviderConfig, RouterConfig, TiersConfig, TierMemberRule, ComboConfig, ComboModelRef } from '../config/types.js';
 import { PoolMembership, ReasoningEffort, TierLevel, EFFORT_LADDER, downgradeReasoning, modelSupportsEfforts, type EffortMap } from '../types/router.js';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
@@ -106,6 +107,19 @@ export class ProviderRegistry {
         this.providers.set(pConfig.name, new ResponsesProvider(pConfig));
       } else if (pConfig.type === 'google') {
         this.providers.set(pConfig.name, new GoogleProvider(pConfig));
+      } else if (pConfig.type === 'qoder') {
+        const plugin = getModelServicePlugin('qoder');
+        this.providers.set(
+          pConfig.name,
+          plugin
+            ? plugin.createProvider(pConfig)
+            : {
+                name: pConfig.name,
+                createCompletion: async () => {
+                  throw new Error(`Provider '${pConfig.name}' is on the qoder wire but the qoder plugin is not installed (console /plugins)`);
+                },
+              }
+        );
       } else if (pConfig.type === 'systemone') {
         // Decision-wire providers have NO chat executor (ADR-0008 §7) — the
         // native decision limb calls them through protocols/systemone/native.ts.

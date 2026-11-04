@@ -3,8 +3,9 @@ import { ModelRegistration, ProviderConfig } from '../config/types.js';
 import { ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse } from '../types/openai.js';
 import { WireKind } from './wire.js';
 import { OpenAICompatibleProvider } from './openai-compatible.js';
-import { AnthropicProvider } from './anthropic.js';
+import { getModelServicePlugin } from '../plugins/host.js';
 import { ResponsesProvider } from './responses.js';
+import { AnthropicProvider } from './anthropic.js';
 import { GoogleProvider } from './google.js';
 
 /**
@@ -30,8 +31,14 @@ export class DispatchingProvider implements LLMProvider {
       // its throw is the honest leftover for any direct misuse.
       const wireCfg: ProviderConfig = { ...config, type: w as ProviderConfig['type'], baseUrl: base };
       if (w === 'anthropic') this.execs.set(w, new AnthropicProvider(wireCfg));
-      else if (w === 'responses') this.execs.set(w, new ResponsesProvider(wireCfg));
       else if (w === 'google') this.execs.set(w, new GoogleProvider(wireCfg));
+      else if (w === 'responses') this.execs.set(w, new ResponsesProvider(wireCfg));
+      else if (w === 'qoder') {
+        // Plugin-provided executor: absent plugin = no executor, and
+        // exec() reports the honest "wire not registered" error per model.
+        const plugin = getModelServicePlugin(w);
+        if (plugin) this.execs.set(w, plugin.createProvider(wireCfg));
+      }
       else this.execs.set(w, new OpenAICompatibleProvider(wireCfg));
     }
   }
@@ -55,17 +62,15 @@ export class DispatchingProvider implements LLMProvider {
   }
 
   /**
-   * Phase-1 ceiling: streaming is served ONLY on the plain OpenAI
-   * `chat/completions` wire, because that is the single executor with an SSE
-   * reader (`OpenAICompatibleProvider.createStream`). Anthropic / Google /
-   * Responses executors still return a buffered JSON document, so their models
-   * keep the buffered path and the fake-stream re-chunker.
-   * Upgrade path: implement `createStream` on those executors and drop the wire
-   * restriction below — the relay, commit point and header split are already
-   * wire-agnostic.
+   * Streaming capability: only executors with a native streaming reader are
+   * admitted to the streamed relay path — the OpenAI `chat/completions` SSE
+   * reader and the Qoder gRPC server-streaming bridge. Anthropic /
+   * Google / Responses executors still return a buffered JSON document, so
+   * their models keep the buffered path and the fake-stream re-chunker.
    */
   public supportsStreaming(model: ModelRegistration): boolean {
-    if ((model.wire ?? 'openai') !== 'openai') return false;
+    const w = model.wire ?? 'openai';
+    if (w !== 'openai' && w !== 'qoder') return false;
     try {
       return !!this.exec(model).createStream;
     } catch {

@@ -53,4 +53,14 @@ describe('npm vocabulary consistency', () => {
     expect(wireFor('@ai-sdk/typesafe-ai')).toBe('systemone');
     expect(wireFor('@opencode/ai/providers/typesafe')).toBe('systemone');
   });
+
+  // Unroutable wires (SDK-side URL construction / SigV4 signing) must never be
+  // OFFERED: the dropdown would invite authoring a def the router can't serve.
+  test('unroutable aliases are not offered', () => {
+    for (const e of NPM_VOCABULARY) {
+      expect(wireFor(e.alias)).not.toBe('unroutable');
+    }
+    expect(NPM_VOCABULARY.find((e) => e.alias === '@ai-sdk/azure')).toBeUndefined();
+    expect(NPM_VOCABULARY.find((e) => e.alias === '@ai-sdk/amazon-bedrock')).toBeUndefined();
+  });
 });

@@ -23,6 +23,7 @@ import { CapturesPage } from './pages/CapturesPage';
 import { ClientsPage } from './pages/ClientsPage';
 import { EnvironmentsPage } from './pages/EnvironmentsPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { PluginsManagePage } from './pages/PluginsManagePage';
 import { AutoPage } from './pages/AutoPage';
 import { CombosPage } from './pages/CombosPage';
 import { ModelProfilesPage } from './pages/ModelProfilesPage';
@@ -98,6 +99,7 @@ export const App: React.FC = () => {
         <Route path="captures" element={<CapturesPage />} />
         <Route path="environments" element={<EnvironmentsPage />} />
         <Route path="settings" element={<SettingsPage />} />
+        <Route path="plugins" element={<PluginsManagePage />} />
         <Route path="yaml" element={<YamlPage />} />
         <Route path="harness/plugins" element={<HarnessPage kind="plugin" />} />
         <Route path="harness/skills" element={<HarnessPage kind="skill" />} />

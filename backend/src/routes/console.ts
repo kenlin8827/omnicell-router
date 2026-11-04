@@ -1,5 +1,5 @@
-import { FastifyInstance } from 'fastify';
-import fs from 'node:fs';
+import { FastifyInstance, FastifyRequest } from 'fastify';
+import fs, { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { getAllClientStatuses, refreshClientProfileBindings, setupClient, teardownClient } from '../cli/clients/index.js';
 import { VIRTUAL_AUTO_IDS } from '../cli/types.js';
@@ -7,6 +7,8 @@ import { ProviderRegistry } from '../providers/registry.js';
 import { MEMBER_TIER_ORDER } from '../providers/member-match.js';
 import { refreshDirectPool } from '../providers/boot-direct.js';
 import { TIER_PURPOSE } from '../providers/virtual-meta.js';
+import { NPM_VOCABULARY } from '../providers/vocabulary.js';
+import { getModelServicePlugin } from '../plugins/host.js';
 import { globMatchAny } from '../utils/glob.js';
 import { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import { getRawConfig, loadConfig, saveConfig, saveRawConfig, getRuntimeConfigRef, getConfigPath } from '../config/index.js';
@@ -21,7 +23,7 @@ import { appendRoutingLedger } from '../router/routing-ledger.js';
 import { Layer2Decision } from '../router/layer2-decision.js';
 import { EFFORT_LADDER, ReasoningEffort, TierLevel, modelSupportsEfforts } from '../types/router.js';
 import { runSystemoneDecision } from '../protocols/systemone/decide.js';
-import { SMART_ASSIGN_TIMEOUT_MS, DEFAULT_REPLAY_TIMEOUT_MS, CREDENTIAL_WEIGHT_MAX, DEFAULT_FORWARD_PROXY_PORT } from '../config/defaults.js';
+import { SMART_ASSIGN_TIMEOUT_MS, DEFAULT_REPLAY_TIMEOUT_MS, CREDENTIAL_WEIGHT_MAX, DEFAULT_FORWARD_PROXY_PORT, PLUGIN_PACKAGE_MAX_BYTES } from '../config/defaults.js';
 import { initProxyConfig, proxiedFetch } from '../utils/proxy.js';
 import { getOcrHomeDir } from '../cli/paths.js';
 import { getHeadroomSidecarStatus, startHeadroomSidecar, stopHeadroomSidecar } from '../compression/headroom-sidecar.js';
@@ -780,7 +782,7 @@ async function mapCredentialWriteFailure(
  * Raw keys never enter the view (CredentialMeta is masked by interface
  * contract; Decision 1 risk limb).
  */
-async function storeProviderViews(store: CredentialStore): Promise<OpenCodeProviderView[]> {
+async function storeProviderViews(store: CredentialStore, lang?: string): Promise<OpenCodeProviderView[]> {
   const { listConfigProviders } = await import('../opencode/user-config.js');
   const views = listConfigProviders();
   // Per-provider auto-pull whitelist rides the view (edit dialog prefills from it).
@@ -819,6 +821,20 @@ async function storeProviderViews(store: CredentialStore): Promise<OpenCodeProvi
         models: [],
         auth: { connected: true, ...badge, ...(shown?.maskedKey ? { keyMasked: shown.maskedKey } : {}) },
       });
+    }
+  }
+  // Plugin-preset overlay: the def's stored name is a single localeless string,
+  // so the localized display name (+logo) comes from the owning plugin manifest.
+  {
+    const { pluginPresetCatalogEntries } = await import('../plugins/host.js');
+    for (const preset of await pluginPresetCatalogEntries(lang)) {
+      const v = byId.get(preset.id);
+      if (v) {
+        // localize only the name the preset itself registered — an operator
+        // rename (providers.json is operator-owned, ADR-0010) stays untouched
+        if (!v.name || v.name === preset.defaultName || v.name === preset.name) v.name = preset.name;
+        if (preset.logo && !v.logo) v.logo = preset.logo;
+      }
     }
   }
   return [...byId.values()].sort((a, b) => {
@@ -2450,11 +2466,17 @@ export function registerConsoleRoutes(
     /** The npm SDK vocabulary — ONE backend-owned table (providers/vocabulary.ts)
      * served to every UI surface that renders npm choices or display names. */
     npmVocabulary: async () => {
-      const { NPM_VOCABULARY } = await import('../providers/vocabulary.js');
-      return { status: 'ok', entries: NPM_VOCABULARY };
+      // Plugin-backed wires (qoder gRPC) are only OFFERED when the plugin is
+      // installed — suggesting '@ai-sdk/qoder' without the executor would
+      // invite authoring a def that fails on every call.
+      const qoderReady = !!getModelServicePlugin('qoder');
+      return {
+        status: 'ok',
+        entries: NPM_VOCABULARY.filter((e) => qoderReady || e.wire !== 'qoder'),
+      };
     },
 
-    list: async () => {
+    list: async (req: FastifyRequest) => {
       const { getProviderNodeById } = await import('../opencode/user-config.js');
       const { getProviderDefsPath } = await import('../opencode/provider-defs.js');
       const { getCredentialStore } = await import('../opencode/credentials/index.js');
@@ -2463,7 +2485,8 @@ export function registerConsoleRoutes(
       // B4: credentials come from the BOUND store on every binding — the masked store
       // credentials merge into the config views, so a stale auth.json entry can never
       // masquerade as a connected provider.
-      const views = await storeProviderViews(store);
+      const lang = typeof (req.query as any)?.lang === 'string' ? (req.query as any).lang : undefined;
+      const views = await storeProviderViews(store, lang);
       const unified = await catalogRepository.list();
       const byId = new Map(unified.map((p) => [p.id, p]));
       return {
@@ -2506,7 +2529,8 @@ export function registerConsoleRoutes(
       };
     },
 
-    catalog: async () => {
+    catalog: async (req: FastifyRequest) => {
+      const lang = typeof (req.query as { lang?: unknown })?.lang === 'string' ? (req.query as { lang: string }).lang : undefined;
       const { catalogRepository } = await import('../opencode/catalog/repository.js');
       const unified = await catalogRepository.list();
       // Trim model arrays from the list payload (detail endpoint can serve them later)
@@ -2525,7 +2549,46 @@ export function registerConsoleRoutes(
         modelCount: p.models.length,
         priceFrom: catalogRepository.minInputPrice(p),
       }));
-      return { status: 'ok', source: catalogRepository.lastSyncOrigin, providers };
+      // Plugin presets join the connect catalog (logo + one-click credential),
+      // deduped against repository entries that already carry the same id.
+      // Pure config-source rows are dropped: a defs-file node is already fully
+      // presented on the Connected tab — the connect catalog is a DISCOVERY
+      // surface (remote catalog sources + plugin presets), not a mirror of the
+      // operator's own declared relays.
+      try {
+        const { pluginPresetCatalogEntries } = await import('../plugins/host.js');
+        for (const preset of await pluginPresetCatalogEntries(lang)) {
+          const idx = providers.findIndex((p) => p.id === preset.id);
+          if (idx >= 0) {
+            const existing = providers[idx];
+            if (preset.connected || existing.sources.some((s) => s !== 'config')) {
+              // Connected preset: the config entry IS the live row (its models
+              // ride along) — keep it, just attach the plugin logo if missing.
+              // Catalog-covered preset: the catalog entry is the richer record.
+              if (!existing.logo && preset.logo) existing.logo = preset.logo;
+              existing.name = preset.name; // the stored def name is localeless — show the manifest's localized one
+              // Tag the plugin origin, or the trailing pure-config-source drop
+              // below removes the row we just decided to keep.
+              if (!existing.sources.includes('service')) existing.sources = [...existing.sources, 'service'];
+              continue;
+            }
+            // Unconnected preset materialized only as a pure config-source row
+            // (syncPluginPresets upserts the def at install): swap in the
+            // preset row — plugin logo, displayName, connectable via the
+            // preset's own baseURL/npm.
+            providers.splice(idx, 1);
+          }
+          providers.push({ id: preset.id, name: preset.name, logo: preset.logo, npm: preset.npm, api: undefined, baseURL: preset.baseURL, doc: undefined, env: undefined, custom: preset.custom, connected: preset.connected, sources: preset.sources, modelCount: 0, priceFrom: undefined });
+        }
+      } catch {
+        // catalog must survive a broken plugin host
+      }
+      // Pure config-source rows are dropped: a self-declared defs node is
+      // already fully presented on the Connected tab — the connect catalog is
+      // a DISCOVERY surface (remote catalog sources + plugin presets), not a
+      // mirror of the operator's own declared relays.
+      const connectable = providers.filter((p) => !(p.sources.length === 1 && p.sources[0] === 'config'));
+      return { status: 'ok', source: catalogRepository.lastSyncOrigin, providers: connectable };
     },
 
     /** Flat model view across providers. `?maintained=1` narrows it to the
@@ -3760,6 +3823,126 @@ export function registerConsoleRoutes(
     app.post(`${prefix}/opencode/providers/:id/models/reorder`, withPoolSync(registry, ocHandlers.modelReorder));
     app.post(`${prefix}/opencode/providers/:id/models/clear`, withPoolSync(registry, ocHandlers.modelsClear));
 
+    // Plugin host: read-only views + hot reload of the plugin dir.
+    app.get(`${prefix}/plugins`, async () => {
+      // views only — a read route must not clear+rebuild the live registry
+      // (in-flight dispatch/probe would see an empty plugin set mid-rebuild)
+      const { listInstalledPlugins } = await import('../plugins/host.js');
+      return { status: 'ok', plugins: listInstalledPlugins() };
+    });
+    app.post(`${prefix}/plugins/reload`, async () => {
+      const { loadInstalledPlugins, syncPluginPresets, listInstalledPlugins } = await import('../plugins/host.js');
+      await loadInstalledPlugins();
+      const plugins = listInstalledPlugins();
+      const registered = await syncPluginPresets();
+      await refreshDirectPool(registry);
+      return { status: 'ok', plugins, registered };
+    });
+    // Upload-install: raw zip bytes (application/octet-stream), id in the query.
+    app.get(`${prefix}/plugins/:id/logo`, async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const { pluginLogoFile } = await import('../plugins/host.js');
+      const file = pluginLogoFile(id);
+      if (!file) return reply.code(404).send({ status: 'error', error: 'no logo' });
+      const ext = file.split('.').pop()?.toLowerCase();
+      const mime =
+        ext === 'png' ? 'image/png'
+        : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
+        : ext === 'webp' ? 'image/webp'
+        : ext === 'svg' ? 'image/svg+xml'
+        : undefined;
+      if (!mime) return reply.code(415).send({ status: 'error', error: 'unsupported logo format' });
+      // Logos ship inside operator-installed packages: treat them as untrusted
+      // content. SVG can carry scripts on direct navigation — lock it down;
+      // buffered send also avoids the uninstall race between check and stream.
+      reply.header('X-Content-Type-Options', 'nosniff');
+      reply.header('Content-Security-Policy', "default-src 'none'");
+      return reply.type(mime).send(await fs.promises.readFile(file));
+    });
+
+    app.delete(`${prefix}/plugins/:id/uninstall`, async (req, reply) => {
+      const { id } = req.params as { id: string };
+      try {
+        const { uninstallPlugin, loadInstalledPlugins, listInstalledPlugins } = await import('../plugins/host.js');
+        const result = await uninstallPlugin(id);
+        await loadInstalledPlugins();
+        const plugins = listInstalledPlugins();
+        await refreshDirectPool(registry);
+        return { status: 'ok', removed: result.removed, providersRemoved: result.providersRemoved, plugins };
+      } catch (err) {
+        return reply.code(400).send({ status: 'error', error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // Toggle a plugin without deleting anything (works for dev-tree plugins
+    // too): disabled.json skips it at discovery; enable + reload restores it.
+    app.post(`${prefix}/plugins/:id/disable`, async (req, reply) => {
+      const { id } = req.params as { id: string };
+      try {
+        const { setPluginDisabled, loadInstalledPlugins, listInstalledPlugins } = await import('../plugins/host.js');
+        const result = await setPluginDisabled(id, true);
+        await loadInstalledPlugins();
+        const plugins = listInstalledPlugins();
+        await refreshDirectPool(registry);
+        return { status: 'ok', providersRemoved: result.providersRemoved, plugins };
+      } catch (err) {
+        return reply.code(400).send({ status: 'error', error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    app.post(`${prefix}/plugins/:id/enable`, async (req, reply) => {
+      const { id } = req.params as { id: string };
+      try {
+        const { setPluginDisabled, loadInstalledPlugins, listInstalledPlugins, syncPluginPresets } = await import('../plugins/host.js');
+        await setPluginDisabled(id, false);
+        await loadInstalledPlugins();
+        const plugins = listInstalledPlugins();
+        const registered = await syncPluginPresets();
+        await refreshDirectPool(registry);
+        return { status: 'ok', registered, plugins };
+      } catch (err) {
+        return reply.code(400).send({ status: 'error', error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    app.post(
+      `${prefix}/plugins/install`,
+      { bodyLimit: PLUGIN_PACKAGE_MAX_BYTES },
+      async (req, reply) => {
+      const body = req.body as Buffer | string | undefined;
+      const bytes = typeof body === 'string' ? Buffer.from(body, 'binary') : body;
+      if (!bytes || bytes.length === 0) {
+        return reply.code(400).send({ status: 'error', error: 'empty body — send the plugin zip as application/octet-stream' });
+      }
+      if (bytes.length > PLUGIN_PACKAGE_MAX_BYTES) {
+        return reply.code(413).send({ status: 'error', error: 'package exceeds 64 MiB' });
+      }
+      try {
+        const { installPluginPackage } = await import('../plugins/host.js');
+        const { id: installed } = installPluginPackage(new Uint8Array(bytes));
+        const { loadInstalledPlugins, syncPluginPresets, listInstalledPlugins } = await import('../plugins/host.js');
+        await loadInstalledPlugins();
+        const plugins = listInstalledPlugins();
+        const view = plugins.find((p) => p.id === installed && !p.disabled);
+        if (!view?.loaded) {
+          // a package that cannot load would re-fail every boot — discard it;
+          // discard BEFORE preset sync / pool refresh so a broken package
+          // registers nothing
+          const { discardPluginPackage } = await import('../plugins/host.js');
+          discardPluginPackage(installed);
+          return reply.code(422).send({ status: 'error', error: `package installed but failed to load (discarded): ${view?.error ?? 'unknown error'}`, plugins });
+        }
+        // presets register at install time (same contract as boot/reload) —
+        // after a verified successful load, BEFORE the pool refresh so the
+        // fresh defs are routable immediately
+        const registered = await syncPluginPresets();
+        await refreshDirectPool(registry);
+        return { status: 'ok', id: installed, plugins, registered };
+      } catch (err) {
+        return reply.code(400).send({ status: 'error', error: err instanceof Error ? err.message : String(err) });
+      }
+      },
+    );
     // Per-credential credential writes (reorder / rename / disconnect).
     // Decision 8 double-confirm lives in the console UI; these honor the call.
     app.post(`${prefix}/opencode/providers/:id/credentials/reorder`, withPoolSync(registry, ocHandlers.credentialReorder));

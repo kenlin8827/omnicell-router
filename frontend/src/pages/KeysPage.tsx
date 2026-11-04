@@ -44,6 +44,7 @@ import { useModelTest } from '../lib/useModelTest';
 import { useBackdropDismiss } from '../lib/useBackdropDismiss';
 import { fmtLatency } from '../lib/format';
 import { byWindowClass, headlineWindow } from '../lib/quotaRank';
+import { FALLBACK_NPM_VOCABULARY } from '../lib/npm-vocabulary';
 import { failureCaption } from '../lib/quotaFailure';
 
 import { FONT_MONO } from '../lib/fonts';
@@ -65,23 +66,6 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const CONNECTED_PAGE_SIZES = [12, 24, 48];
 const CATALOG_PAGE_SIZES = [10, 20, 50, 100, 200];
 
-/**
- * Offline fallback ONLY (the npm-vocabulary endpoint lives in the same gateway
- * process, so this list is practically unreachable — it keeps the form usable
- * if the fetch fails). Source of truth = backend providers/vocabulary.ts,
- * served over /api/admin/opencode/npm-vocabulary.
- */
-const FALLBACK_NPM_PACKAGES = [
-  '@ai-sdk/openai-compatible',
-  '@ai-sdk/anthropic',
-  '@ai-sdk/openai',
-  '@ai-sdk/google',
-  '@ai-sdk/typesafe-ai',
-  '@ai-sdk/azure',
-  '@ai-sdk/amazon-bedrock',
-  '@ai-sdk/xai',
-  '@ai-sdk/mistral',
-];
 const CUSTOM_NPM = '__custom__';
 
 /** One editable header row (2-column editor state). */
@@ -173,16 +157,15 @@ const FormField: React.FC<{ label: string; required?: boolean; style?: React.CSS
   </div>
 );
 
-/** Provider logo on the theme-tinted chip plate (models.dev SVGs are dark glyphs:
- *  --logo-glyph-filter inverts them bright on dark-class themes, light-class
- *  themes draw as-is). Falls back to an initial-letter chip. */
+/** Provider logo on the fixed light `--logo-plate-bg` plate, unfiltered
+ *  (see index.css). Falls back to an initial-letter chip. */
 const ProviderLogo: React.FC<{ id: string; logo?: string; size?: number }> = ({ id, logo, size = 28 }) => {
   const [failed, setFailed] = useState(false);
   const chip: React.CSSProperties = {
     width: size,
     height: size,
     borderRadius: Math.max(6, size * 0.28),
-    background: 'var(--chip-bg)',
+    background: 'var(--logo-plate-bg)',
     border: '1px solid var(--card-border)',
     display: 'flex',
     alignItems: 'center',
@@ -197,7 +180,7 @@ const ProviderLogo: React.FC<{ id: string; logo?: string; size?: number }> = ({ 
           style={{
             fontWeight: 800,
             fontSize: size * 0.52,
-            color: 'var(--text-main)',
+            color: 'var(--logo-plate-ink)',
             textTransform: 'uppercase',
             lineHeight: 1,
           }}
@@ -215,7 +198,7 @@ const ProviderLogo: React.FC<{ id: string; logo?: string; size?: number }> = ({ 
         width={Math.round(size * 0.72)}
         height={Math.round(size * 0.72)}
         onError={() => setFailed(true)}
-        style={{ objectFit: 'contain', filter: 'var(--logo-glyph-filter)' }}
+        style={{ objectFit: 'contain' }}
         loading="lazy"
       />
     </div>
@@ -1447,13 +1430,10 @@ export const KeysPage: React.FC = () => {
     }
   };
   const [activeTab, setActiveTab] = useState<'connected' | 'catalog' | 'custom' | 'sync'>('connected');
-  // Default OFF (show connected providers): a connected provider is exactly where
-  // a SECOND credential is added, so hiding connected rows made multi-credential
-  // unreachable from this tab. Hiding is opt-in for "only show what's new".
-  // Default ON: the catalog tab is pure-connect — hide rows already connected
-  // (their credential management lives in the Connected tab). The toggle stays
-  // available to reveal them as read-only badges.
-  const [hideConnected, setHideConnected] = useState(true);
+  // Three-state catalog filter (all / connected / unconnected). The old binary
+  // "hide connected" toggle could not answer "which catalog entries have I
+  // already connected?" — the segmented filter covers both directions.
+  const [catalogFilter, setCatalogFilter] = useState<'all' | 'connected' | 'unconnected'>('all');
   const [connectedQuery, setConnectedQuery] = useState('');
   const [catalogPage, setCatalogPage] = useState(1);
   const [catalogPageSize, setCatalogPageSize] = useState(CATALOG_PAGE_SIZE);
@@ -1479,22 +1459,20 @@ export const KeysPage: React.FC = () => {
   }, [npmVocabulary]);
 
   // npm dropdown options: the vocabulary's ordered aliases ARE the list — the
-  // wire truth is backend data, not a frontend copy. models.dev catalog
-  // packages that the vocabulary does not know ride through after it (they
-  // resolve through wireFor's openai default anyway).
-  const npmOptions = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const c of catalog) {
-      if (!c.npm) continue;
-      counts.set(c.npm, (counts.get(c.npm) || 0) + 1);
-    }
-    const fromCatalog = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]).map(([pkg]) => pkg);
-    const known = npmVocabulary.length > 0 ? npmVocabulary.map((e) => e.alias) : FALLBACK_NPM_PACKAGES;
-    const extra = fromCatalog.filter((p) => !known.includes(p));
-    return [...known, ...extra];
-  }, [catalog, npmVocabulary]);
+  // wire truth is backend data, not a frontend copy. Catalog-observed packages
+  // do NOT ride through: the catalog carries unroutable SDKs (azure, bedrock,
+  // vertex — SDK-side signing) and v2-package spellings that duplicate their
+  // alias entries. Anything else can still be typed into the custom field.
+  const npmOptions = useMemo(
+    () => (npmVocabulary.length > 0 ? npmVocabulary.map((e) => e.alias) : FALLBACK_NPM_VOCABULARY.map((e) => e.alias)),
+    [npmVocabulary]
+  );
 
   const connectedIds = useMemo(() => new Set(ocProviders.map((p) => p.id)), [ocProviders]);
+  // "Hide connected" in the catalog tab means HAS A CREDENTIAL — a merely
+  // defined provider (e.g. a plugin-registered preset awaiting its key) must
+  // stay searchable; connectedIds is the pre-write snapshot for the connect flow.
+  const keyedProviderIds = useMemo(() => new Set(ocProviders.filter((p) => p.auth.connected).map((p) => p.id)), [ocProviders]);
 
   // Decision 1: whether a submitted key ADDS an credential or OVERWRITES the only
   // one is a capability of the bound store, never a name-check on `kind` — the
@@ -1842,9 +1820,12 @@ export const KeysPage: React.FC = () => {
     let list = q
       ? catalog.filter((c) => (c.id || '').toLowerCase().includes(q) || (c.name || '').toLowerCase().includes(q))
       : catalog;
-    if (hideConnected) list = list.filter((c) => !connectedIds.has(c.id));
+    if (catalogFilter !== 'all') {
+      const wantConnected = catalogFilter === 'connected';
+      list = list.filter((c) => keyedProviderIds.has(c.id) === wantConnected);
+    }
     return list;
-  }, [catalog, catalogQuery, hideConnected, connectedIds]);
+  }, [catalog, catalogQuery, catalogFilter, keyedProviderIds]);
 
   const pagedCatalog = catalogResults.slice(
     (catalogPage - 1) * catalogPageSize,
@@ -2286,8 +2267,10 @@ export const KeysPage: React.FC = () => {
             (minus gaps), so a wide screen never stretches 4+ cards into slivers.
             The 340px floor is deliberate: below ~1050px of row width three cards
             cramp (URL text truncates, action rows wrap), so mid-size windows
-            drop to 2 columns instead. */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(max(340px, calc((100% - 28px) / 3)), 1fr))', gap: '14px' }}>
+            drop to 2 columns instead.
+            auto-fill (not auto-fit): empty tracks keep their width, so a single
+            card sits at one-third of the row instead of stretching full width. */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(max(340px, calc((100% - 28px) / 3)), 1fr))', gap: '14px' }}>
           {pagedConnected.map(p => {
             const credentialList = credentialsByProvider.get(p.id) ?? [];
             const caps = storeStatus?.capabilities;
@@ -2314,6 +2297,22 @@ export const KeysPage: React.FC = () => {
                     moved to the URL row, so the small chips fit; the 96px title
                     floor keeps the id readable on the narrowest card (badges
                     wrap inside their own box below that). */}
+                {/* Empty defs node = this provider routes nothing (the boot pool
+                    only logs the exclusion). Deliberately understated: an
+                    icon-only warning chip, tooltip carries the full story and
+                    the click still opens the model dialog to pull / add. */}
+                {p.models.length === 0 && (
+                  <button
+                    className="btn btn-sm"
+                    style={{ ...badgeStyle('var(--accent-amber)', 'color-mix(in srgb, var(--accent-amber) 12%, transparent)'), flexShrink: 0, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', padding: '0 5px' }}
+                    disabled={busy}
+                    title={t('op.pmEmptyBadgeTip')}
+                    aria-label={t('op.pmEmptyBadgeTip')}
+                    onClick={() => setModelsPanelId(p.id)}
+                  >
+                    <AlertTriangle size={11} />
+                  </button>
+                )}
                 {(p.custom || p.auth.inline || p.auth.type === 'oauth') && (
                   <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center', minWidth: 0 }}>
                     {p.custom && <span style={badgeStyle('var(--accent)', 'var(--accent-bg)')} title={t('op.badgeCustomTip')}>{t('op.badgeCustom')}</span>}
@@ -2329,20 +2328,6 @@ export const KeysPage: React.FC = () => {
                         descriptions), identical on every card — a per-card
                         repetition carried zero information. */}
                   </div>
-                )}
-                {/* Empty defs node = this provider routes nothing (the boot pool
-                    only logs the exclusion). Surface it on the card and make the
-                    fix one click: the same model dialog that pulls / adds. */}
-                {p.models.length === 0 && (
-                  <button
-                    className="btn btn-sm"
-                    style={{ ...badgeStyle('var(--accent-amber)', ''), flexShrink: 0, cursor: 'pointer' }}
-                    disabled={busy}
-                    title={t('op.pmEmptyBadgeTip')}
-                    onClick={() => setModelsPanelId(p.id)}
-                  >
-                    {t('op.pmEmptyBadge')}
-                  </button>
                 )}
                 {caps && credentialList.length > 0 && (
                   <button
@@ -2592,20 +2577,42 @@ export const KeysPage: React.FC = () => {
             <RefreshCw size={12} style={refreshingCatalog ? { animation: 'ocr-spin 0.8s linear infinite' } : undefined} />
             <span>{t('op.refreshCatalog')}</span>
           </button>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
-            <Switch size="sm" checked={hideConnected} onChange={v => { setHideConnected(v); setCatalogPage(1); }} />
-            {t('op.hideConnected')}
-          </label>
+          {/* Segmented control: one bordered pill, inner cells share edges —
+              three lone buttons read as unrelated actions. */}
+          <div style={{ display: 'inline-flex', border: '1px solid var(--card-border)', borderRadius: 8, overflow: 'hidden', flexShrink: 0 }}>
+            {(['all', 'connected', 'unconnected'] as const).map((f) => (
+              <button
+                key={f}
+                style={{
+                  padding: '6px 14px',
+                  fontSize: 12,
+                  fontWeight: catalogFilter === f ? 700 : 500,
+                  color: catalogFilter === f ? 'var(--accent)' : 'var(--text-dim)',
+                  background: catalogFilter === f ? 'var(--surface-hover)' : 'transparent',
+                  border: 'none',
+                  borderRight: f !== 'unconnected' ? '1px solid var(--card-border)' : 'none',
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                }}
+                onClick={() => { setCatalogFilter(f); setCatalogPage(1); }}
+              >
+                {f === 'all' ? t('op.filterAll') : f === 'connected' ? t('op.tabConnected') : t('op.filterUnconnected')}
+              </button>
+            ))}
+          </div>
         </div>
         {/* Same responsive cap as the connected grid — one column rhythm across
-            the page's tabs (3 cards per row on a wide screen, floor 280px). */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(max(280px, calc((100% - 20px) / 3)), 1fr))', gap: '10px' }}>
+            the page's tabs (3 cards per row on a wide screen, floor 280px).
+            auto-fill keeps empty tracks, so few-card results don't stretch. */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(max(280px, calc((100% - 20px) / 3)), 1fr))', gap: '10px' }}>
           {pagedCatalog.map(c => {
-            const connected = connectedIds.has(c.id);
+            // badge = HAS A CREDENTIAL — a merely-defined provider (plugin preset
+            // awaiting its key) must not read as already connected
+            const connected = keyedProviderIds.has(c.id);
             return (
-              // Connected rows keep their place in the grid but carry a static
-              // badge: adding or replacing a credential lives in the Connected
-              // tab — this tab only starts new connections.
+              // Connected rows keep their place in the grid: static badge plus a
+              // quick "add credential" affordance that opens the same inline key
+              // editor as a fresh connect (connectProvider adds one credential).
               <div key={c.id} className="sub-card" style={{ ...cardFlex, padding: 12 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                   <ProviderLogo id={c.id} logo={c.logo} size={38} />
@@ -2639,12 +2646,7 @@ export const KeysPage: React.FC = () => {
                     <span style={{ color: 'var(--accent-emerald)' }}>{t('op.priceFrom', { price: c.priceFrom })}</span>
                   )}
                 </div>
-                {connected ? (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--accent-emerald)', padding: '7px 0' }}>
-                    <Check size={12} />
-                    <span>{t('op.alreadyConnected')}</span>
-                  </div>
-                ) : connectingId === c.id ? (
+                {connectingId === c.id ? (
                   <div style={{ display: 'flex', gap: 6 }}>
                     <input
                       className="input"
@@ -2660,15 +2662,27 @@ export const KeysPage: React.FC = () => {
                     </button>
                     <button className="btn btn-sm" onClick={() => { setConnectingId(null); setConnectKey(''); }}>✕</button>
                   </div>
+                ) : connected ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 0' }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--accent-emerald)', flex: 1 }}>
+                      <Check size={12} />
+                      <span>{t('op.alreadyConnected')}</span>
+                    </span>
+                    <button
+                      className="btn btn-sm"
+                      disabled={!canWriteCredential(c.id)}
+                      title={canWriteCredential(c.id) ? t('op.addCredentialQuickTip') : t('op.integrationMissingTip')}
+                      onClick={() => { setConnectingId(c.id); setConnectKey(''); }}
+                    >
+                      <Plug size={12} />
+                      <span>{t('op.addCredentialQuick')}</span>
+                    </button>
+                  </div>
                 ) : (
                   <button
                     className="btn btn-sm"
                     disabled={!canWriteCredential(c.id)}
-                    title={
-                      !canWriteCredential(c.id)
-                          ? t('op.integrationMissingTip')
-                          : undefined
-                    }
+                    title={!canWriteCredential(c.id) ? t('op.integrationMissingTip') : undefined}
                     onClick={() => { setConnectingId(c.id); setConnectKey(''); }}
                   >
                     <Plug size={12} />

@@ -18,3 +18,13 @@ tmp-*.html
 # ~/.omnicell-router/envs/<name>/ (config.yaml, data/, models/, catalog/,
 # traces/, capture/, webauth-secret). If a rule for a repo-root state dir ever
 # reappears here, the layout has regressed — see docs/adr/0018.
+
+# Third-party protocol plugins: vendor-specific protocol knowledge (native
+# transports, signing chains, vendor binaries) is USER-INSTALLED, never
+# distributed by OCR. Each plugin lives in its own (typically private)
+# repository cloned under plugins/<id>/; `bun run plugins:build` packages it
+# into <ocrHome>/plugins/*.zip for the runtime host.
+/plugins/
+diff.patch
+plugins2/
+frontend/.vite/

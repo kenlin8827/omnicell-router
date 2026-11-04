@@ -69,3 +69,8 @@ export const DEFAULT_REPLAY_TIMEOUT_MS = 300_000;
  *  Weights only shape the NEW-session hash spread — they never touch the
  *  ratchet, failover order, or the sync boundary. */
 export const CREDENTIAL_WEIGHT_MAX = 100;
+
+/** Plugin package (.zip) upload cap — route bodyLimit and the handler's
+ *  413 check both read this so they can never desync. */
+export const PLUGIN_PACKAGE_MAX_BYTES = 64 * 1024 * 1024;
+

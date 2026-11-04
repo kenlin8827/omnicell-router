@@ -2,6 +2,7 @@ import { catalogModelToDef } from '../provider-defs.js';
 import { loadConfig } from '../../config/index.js';
 import { isSelfBaseURL } from '../../utils/self-url.js';
 import type { CatalogModel } from './types.js';
+import { wireFor } from '../../providers/wire.js';
 
 /**
  * Model pull engine for provider definitions (providers.json).
@@ -203,7 +204,7 @@ function infoScore(m: CatalogModel): number {
  * entries; among duplicates the info-richest record wins. Values already
  * present on the pulled model (e.g. live context_length) are never overwritten.
  */
-async function enrichFromCatalog(models: CatalogModel[], excludeProviderId: string): Promise<CatalogModel[]> {
+export async function enrichFromCatalog(models: CatalogModel[], excludeProviderId: string): Promise<CatalogModel[]> {
   const { catalogRepository } = await import('./repository.js');
   const unified = await catalogRepository.list();
   const byBare = new Map<string, CatalogModel[]>();
@@ -461,6 +462,17 @@ export async function autoPullProvider(
   const { getProviderNodeById, expandEnvTemplate } = await import('../user-config.js');
   const { getCredentialStore } = await import('../credentials/index.js');
   const def = getProviderNodeById(id);
+  // Plugin-provided model-service wire: the model source is the plugin's own
+  // pullModels() — a plain /models GET cannot exist on this transport class.
+  const npm = def?.npm || def?.package || '';
+  if (npm && wireFor(npm) === 'qoder') {
+    const { getModelServicePlugin } = await import('../../plugins/host.js');
+    const plugin = getModelServicePlugin('qoder');
+    if (!plugin?.pullModels) {
+      return { httpStatus: 400, body: { success: false, error: 'the qoder plugin is not installed (console /plugins)' } };
+    }
+    return plugin.pullModels(id, opts);
+  }
   // B4: live capability keyed on the BOUND store (pullLiveModels resolves the
   // same way — one source, no live/catalog branch mismatch). P3-5: capability
   // only — listCredentials is masked, no raw key ever enters here.

@@ -36,12 +36,19 @@ const RAW_ENTRIES: Omit<NpmVocabularyEntry, 'wire'>[] = [
   // loadable by CLIENT_PACKAGE_FALLBACK (def-materialize.ts) — offering the
   // alias must not depend on the client having shipped the segment.
   { alias: '@ai-sdk/typesafe-ai', package: '@opencode/ai/providers/typesafe', order: 50 },
-  { alias: '@ai-sdk/azure', package: '@opencode/ai/providers/azure', order: 60 },
-  { alias: '@ai-sdk/amazon-bedrock', package: '@opencode/ai/providers/amazon-bedrock', order: 70 },
+  // Unroutable packages (@ai-sdk/azure, @ai-sdk/amazon-bedrock, …vertex, …bedrock
+  // — SDK-side URL construction / SigV4 signing, wire 'unroutable') are
+  // deliberately NOT offered: suggesting them would invite authoring a def the
+  // router can never serve. The write-side mapping in user-config.ts keeps
+  // normalizing existing defs that already use those aliases.
   // Catalog-only chat packages (plain openai wire) — kept for the dropdown's
   // offline fallback completeness; they carry no special wire semantics.
   { alias: '@ai-sdk/xai', package: '@ai-sdk/xai', order: 80 },
   { alias: '@ai-sdk/mistral', package: '@ai-sdk/mistral', order: 90 },
+
+  // Vendored Qoder wire (model-service plugin) — baseURL is the service
+  // gateway, key = the account token.
+  { alias: '@ai-sdk/qoder', package: '@opencode/ai/providers/qoder', order: 95 },
 ];
 
 export const NPM_VOCABULARY: NpmVocabularyEntry[] = RAW_ENTRIES.map((e) => ({

@@ -5,7 +5,7 @@ import { Decoration, WidgetType } from '@codemirror/view';
 import type { DecorationSet } from '@codemirror/view';
 import type { Range } from '@codemirror/state';
 import { EditorState, StateField } from '@codemirror/state';
-import { ChevronDown, ChevronRight, FileCode2, PanelRightClose, PanelRightOpen, Save, RefreshCw, Check, AlertCircle } from 'lucide-react';
+import { ChevronDown, ChevronRight, FileCode2, FileText, Folder, FolderOpen, PanelRightClose, PanelRightOpen, Save, RefreshCw, Check, AlertCircle } from 'lucide-react';
 import { api } from '../lib/api';
 import { FONT_MONO } from '../lib/fonts';
 import { DEFAULT_THEME, isLightTheme } from '../lib/theme';
@@ -492,7 +492,7 @@ export const YamlPage: React.FC = () => {
           flex: 1,
           minWidth: 0,
           textAlign: 'left',
-          fontSize: level === 0 ? '12px' : '11px',
+          fontSize: level === 0 ? '13px' : '12px',
           fontWeight: level === 0 ? 600 : 400,
           fontFamily: editorFont,
           padding: level === 0 ? '4px 10px' : '3px 10px 3px 4px',
@@ -503,8 +503,30 @@ export const YamlPage: React.FC = () => {
           color: active ? 'var(--accent)' : 'var(--text-muted)',
         }}
       >
-        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {level === 0 || filtering ? s.path : label}
+        <span style={{ display: 'flex', alignItems: 'center', gap: '6px', overflow: 'hidden' }}>
+          {children.length > 0 ? (
+            <span
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleExpanded(s.path);
+              }}
+              style={{
+                display: 'inline-flex',
+                flexShrink: 0,
+                cursor: 'pointer',
+                color: open ? 'var(--accent)' : 'var(--text-dim)',
+              }}
+            >
+              {open ? <FolderOpen size={13} /> : <Folder size={13} />}
+            </span>
+          ) : (
+            <span style={{ display: 'inline-flex', flexShrink: 0, opacity: 0.4 }}>
+              <FileText size={13} />
+            </span>
+          )}
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {level === 0 || filtering ? s.path : label}
+          </span>
         </span>
         <span style={{ fontSize: '10px', opacity: 0.6, flexShrink: 0 }}>{s.line}</span>
       </button>
@@ -548,7 +570,7 @@ export const YamlPage: React.FC = () => {
             style={{
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'center',
+              justifyContent: 'flex-start',
               width: children.length > 0 ? '16px' : '6px',
               flexShrink: 0,
               background: 'transparent',
