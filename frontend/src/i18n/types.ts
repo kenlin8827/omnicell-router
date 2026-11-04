@@ -2020,7 +2020,12 @@ hiddenBadge: string;
     smartScopeEmpty: string;
     proxyHint: string;
     nameOpencodeProxy: string;
-    /** Model-profile link UI (opencode setup) */
+    nameOpencode: string;
+    /** Hook-tab roster filter placeholder */
+    filterPh: string;
+    /** Proxy-tab prerequisite banners (inbound forward proxy off / not running) */
+    fpPrereqOff: string;
+    fpPrereqDown: string;
     profileNone: string;
     profileEmpty: string;
     profileManage: string;
@@ -2065,8 +2070,14 @@ hiddenBadge: string;
     profileRowsOffHint: string;
     /** Static "Other clients" row: manual hookup guide for non-hooked clients. */
     otherTitle: string;
-    otherBadge: string;
-    otherHint: string;
+    tabHook: string;
+    tabProxy: string;
+    tabManual: string;
+    manualKeyPh: string;
+    manualTest: string;
+    manualTestOk: string;
+    manualTestFail: string;
+    manualCopied: string;
     otherIntro: string;
     otherStep1: string;
     otherStep2: string;

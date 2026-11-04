@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { Terminal, Check, X, RefreshCw, Undo2, ArrowUpRight, RotateCcw, ChevronDown, Puzzle, Eraser, Sparkles } from 'lucide-react';
+import { Terminal, Check, X, RefreshCw, Undo2, ArrowUpRight, RotateCcw, ChevronDown, Eraser, Sparkles, Copy, Activity, Search } from 'lucide-react';
 import { BrandIcon } from '../components/BrandIcons';
 import { Combobox } from '../components/Combobox';
+import { SegGroup } from '../components/SegGroup';
 import { InfoTip } from '../components/InfoTip';
 import { ProfileLinkTable } from '../components/ProfileLinkTable';
 import { SmartAssignDialog, type SmartAssignTarget, type SmartAssignCandidate } from '../components/SmartAssignDialog';
@@ -12,7 +13,6 @@ import { gatewayBaseUrl } from '../lib/gateway-url';
 import { sortModelOptions } from '../lib/model-options';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
-
 import { FONT_MONO } from '../lib/fonts';
 /**
  * Slots to render for a client. An explicit `[]` means the client is
@@ -154,22 +154,36 @@ export const ClientsPage: React.FC = () => {
     { value: '200000', label: '200K' },
     { value: '1048576', label: '1M' },
   ];
-  /** Accordion: the single client whose config form is expanded ('other' = the
-   *  static manual-setup row, null = all collapsed). Single-open by design — the
-   *  forms are tall, and every draft lives in page-level state keyed by client
-   *  name, so collapsing never loses edits and opening a form is always a
-   *  deliberate user action. */
+  /** Accordion: the single client whose config form is expanded (null = all
+   *  collapsed). Single-open by design — the forms are tall, and every draft
+   *  lives in page-level state keyed by client name, so collapsing never loses
+   *  edits and opening a form is always a deliberate user action. */
   const [expanded, setExpanded] = useState<string | null>(null);
+  /** Access-mode tabs: 'hook' = setup adapters writing tokens/models into the
+   *  client's own config, 'proxy' = OpenCode proxy mode (MITM service env),
+   *  'manual' = the hookup guide for anything the gateway can't auto-hook. */
+  const [activeTab, setActiveTab] = useState<'hook' | 'proxy' | 'manual'>('hook');
+  /** Manual-tab connectivity probe: optional API key draft + last result. */
+  const [manualKey, setManualKey] = useState('');
+  const [manualTest, setManualTest] = useState<{ state: 'running' | 'ok' | 'fail'; detail?: string } | null>(null);
+  /** Hook-tab filter: case-insensitive substring over display name, adapter
+   *  name and config path — the client roster keeps growing. */
+  const [filter, setFilter] = useState('');
   /** Live gateway port for the manual-endpoint guide (status poll; the
    *  snippet helper owns the origin/daemon fallbacks and the viewer host). */
   const [port, setPort] = useState<string>('');
   const gwBase = gatewayBaseUrl(port ? Number(port) : undefined);
-
+  /** Inbound forward-proxy runtime state — the proxy-tab prerequisite banner
+   *  reads it (null = older gateway without the field, banner suppressed). */
+  const [fpEnabled, setFpEnabled] = useState<boolean | null>(null);
+  const [fpRunning, setFpRunning] = useState<boolean | null>(null);
   const loadClients = async () => {
     try {
       const data = await api.getStatus();
       setClients(data.clients || []);
       if (data.port) setPort(String(data.port));
+      setFpEnabled(data.forwardProxy ? data.forwardProxy.enabled : null);
+      setFpRunning(data.forwardProxy ? data.forwardProxy.running : null);
       // Seed selections from the client config's current slot values (don't clobber unsaved edits)
       setModelSel(prev => {
         const next = { ...prev };
@@ -896,9 +910,6 @@ export const ClientsPage: React.FC = () => {
       </button>
     );
 
-  /** Accordion state for the static "Other clients" manual-setup row ('other' can't collide with adapter names). */
-  const otherOpen = expanded === 'other';
-  const toggleOther = () => setExpanded(prev => (prev === 'other' ? null : 'other'));
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
@@ -921,14 +932,62 @@ export const ClientsPage: React.FC = () => {
           </div>
         )}
 
-        <p style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: '1.6', marginBottom: '20px' }}>
-          {t('clients.desc')}
-        </p>
+        {activeTab === 'hook' && (
+          <p style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: '1.6', marginBottom: '12px' }}>
+            {t('clients.desc', { base: `${gwBase}/v1` })}
+          </p>
+        )}
 
+        {/* Access-mode tabs — three ways in: written config (token hook),
+            transparent MITM proxy, or a manual baseURL+key hookup. */}
+        <div style={{ marginBottom: '16px' }}>
+          <SegGroup
+            size="lg"
+            value={activeTab}
+            onChange={v => setActiveTab(v as typeof activeTab)}
+            options={[
+              { value: 'hook', label: t('clients.tabHook') },
+              { value: 'proxy', label: t('clients.tabProxy') },
+              { value: 'manual', label: t('clients.tabManual') },
+            ]}
+          />
+        </div>
+        {/* Proxy-tab prerequisite: the opencode-proxy adapter persists the
+            service env pointing at the inbound forward proxy — without it the
+            takeover is dead on arrival, so say so BEFORE the setup button. */}
+        {activeTab === 'proxy' && (fpEnabled === false || fpRunning === false) && (
+          <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'color-mix(in srgb, var(--accent-amber) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-amber) 35%, transparent)', color: 'var(--accent-amber)', fontSize: '12.5px', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+            <X size={14} />
+            <span style={{ flex: 1 }}>
+              {t(fpEnabled === false ? 'clients.fpPrereqOff' : 'clients.fpPrereqDown')}
+            </span>
+            <Link to="/proxy-access" style={{ color: 'var(--accent)', textDecoration: 'none', flexShrink: 0 }}>
+              {t('nav.proxyAccess')} →
+            </Link>
+          </div>
+        )}
+
+
+        {/* Hook-tab roster filter: name / adapter id / config path substring. */}
+        {activeTab === 'hook' && (
+          <div style={{ position: 'relative', marginBottom: '12px' }}>
+            <Search size={13} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)' }} />
+            <input
+              value={filter}
+              onChange={e => setFilter(e.target.value)}
+              placeholder={t('clients.filterPh')}
+              style={{ width: '100%', boxSizing: 'border-box', padding: '7px 10px 7px 30px', borderRadius: '8px', border: '1px solid var(--card-border)', background: 'var(--well-bg)', color: 'var(--text-main)', fontSize: '12.5px' }}
+            />
+          </div>
+        )}
         {/* Accordion: one full-width row per client — collapsed shows identity + status +
             quick action, expanding reveals the progressive setup form. */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-          {clients.map(c => {
+          {clients.filter(c => activeTab === 'proxy'
+            ? c.name === 'opencode-proxy'
+            : activeTab === 'hook'
+              && c.name !== 'opencode-proxy'
+              && (!filter || [c.displayName, c.name, c.configPath].some(v => (v || '').toLowerCase().includes(filter.toLowerCase())))).map(c => {
             const open = expanded === c.name;
             const toggle = () => setExpanded(prev => (prev === c.name ? null : c.name));
             return (
@@ -961,7 +1020,7 @@ export const ClientsPage: React.FC = () => {
                   />
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', fontSize: '14px', fontWeight: 700 }}>
                     <BrandIcon name={c.name === 'opencode-proxy' ? 'opencode' : c.name} size={18} />
-                    {c.name === 'opencode-proxy' ? t('clients.nameOpencodeProxy') : c.displayName}
+                    {c.name === 'opencode-proxy' ? t('clients.nameOpencode') : c.displayName}
                   </span>
                   <span
                     title={c.configPath}
@@ -1261,94 +1320,110 @@ export const ClientsPage: React.FC = () => {
             />
           )}
 
-          {/* Static row: manual hookup guide for clients the gateway can't auto-hook
-              (anything speaking OpenAI or Anthropic wire protocol). Pure documentation —
-              no backend adapter, no status, no action buttons. */}
-          <div
-            style={{
-              background: 'var(--bg-elev)',
-              border: '1px solid var(--card-border)',
-              borderRadius: '10px',
-              overflow: 'hidden',
-            }}
-          >
-            <div
-              role="button"
-              tabIndex={0}
-              aria-expanded={otherOpen}
-              onClick={toggleOther}
-              onKeyDown={e => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  toggleOther();
-                }
-              }}
-              style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '14px 18px', cursor: 'pointer', userSelect: 'none' }}
-            >
-              <ChevronDown
-                size={16}
-                color="var(--text-dim)"
-                style={{ flexShrink: 0, transition: 'transform 0.15s ease', transform: otherOpen ? 'rotate(180deg)' : 'none' }}
-              />
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', fontSize: '14px', fontWeight: 700 }}>
-                <Puzzle size={18} color="var(--accent)" />
-                {t('clients.otherTitle')}
-              </span>
-              <span style={{ flex: 1, fontSize: '11px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {t('clients.otherHint')}
-              </span>
-              <span className="badge" style={{ background: 'var(--chip-bg)', color: 'var(--text-dim)' }}>
-                {t('clients.otherBadge')}
-              </span>
+          {/* Manual hookup guide: any client speaking the OpenAI or Anthropic wire
+              protocol. Documentation + a live connectivity probe — no backend
+              adapter, no status, no setup buttons. */}
+          {activeTab === 'manual' && (
+          <div style={{ padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: '14px', background: 'var(--bg-elev)', border: '1px solid var(--card-border)', borderRadius: '10px' }}>
+            <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.7 }}>
+              {t('clients.otherIntro')}
+            </p>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.7 }}>
+              <div>{t('clients.otherStep1')}</div>
+              <div>{t('clients.otherStep2')}</div>
             </div>
 
-            {otherOpen && (
-              <div style={{ padding: '16px 18px', borderTop: '1px solid var(--divider)', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.7 }}>
-                  {t('clients.otherIntro')}
-                </p>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.7 }}>
-                  <div>{t('clients.otherStep1')}</div>
-                  <div>{t('clients.otherStep2')}</div>
-                </div>
-
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '12px' }}>
-                  <div style={{ background: 'var(--well-bg)', border: '1px solid var(--card-border)', borderRadius: '8px', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                    <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('clients.otherProtoOpenai')}</div>
-                    <code style={{ fontFamily: FONT_MONO, fontSize: '12px', color: 'var(--text-main)', wordBreak: 'break-all' }}>
-                      {`${gwBase}/v1`}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '12px' }}>
+              {([
+                { proto: t('clients.otherProtoOpenai'), base: `${gwBase}/v1`, endpoints: 'POST /v1/chat/completions · /v1/responses · /v1/models', auth: t('clients.otherOpenaiAuth') },
+                { proto: t('clients.otherProtoAnthropic'), base: gwBase, endpoints: 'POST /v1/messages', auth: t('clients.otherAnthropicAuth') },
+              ] as const).map(x => (
+                <div key={x.proto} style={{ background: 'var(--well-bg)', border: '1px solid var(--card-border)', borderRadius: '8px', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{x.proto}</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <code style={{ fontFamily: FONT_MONO, fontSize: '12px', color: 'var(--text-main)', wordBreak: 'break-all', flex: 1 }}>
+                      {x.base}
                     </code>
-                    <div style={{ fontFamily: FONT_MONO, fontSize: '11px', color: 'var(--text-dim)' }}>
-                      POST /v1/chat/completions · /v1/responses · /v1/models
-                    </div>
-                    <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('clients.otherOpenaiAuth')}</div>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      style={{ flexShrink: 0 }}
+                      title={t('clients.manualCopied')}
+                      onClick={() => navigator.clipboard.writeText(x.base).then(
+                        () => toast.success(t('clients.manualCopied')),
+                        () => toast.error(t('common.failed')),
+                      )}
+                    >
+                      <Copy size={11} />
+                    </button>
                   </div>
-                  <div style={{ background: 'var(--well-bg)', border: '1px solid var(--card-border)', borderRadius: '8px', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                    <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('clients.otherProtoAnthropic')}</div>
-                    <code style={{ fontFamily: FONT_MONO, fontSize: '12px', color: 'var(--text-main)', wordBreak: 'break-all' }}>
-                      {gwBase}
-                    </code>
-                    <div style={{ fontFamily: FONT_MONO, fontSize: '11px', color: 'var(--text-dim)' }}>
-                      POST /v1/messages
-                    </div>
-                    <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('clients.otherAnthropicAuth')}</div>
+                  <div style={{ fontFamily: FONT_MONO, fontSize: '11px', color: 'var(--text-dim)' }}>
+                    {x.endpoints}
                   </div>
+                  <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{x.auth}</div>
                 </div>
+              ))}
+            </div>
 
-                <div style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.7 }}>
-                  {t('clients.otherStep3')}
-                </div>
-
-                <div style={{ fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.7 }}>
-                  {t('clients.otherMore')}{' '}
-                  <Link to="/api-keys" style={{ color: 'var(--accent)', textDecoration: 'none' }}>
-                    {t('nav.apiKeys')} →
-                  </Link>
-                </div>
+            <div style={{ borderTop: '1px solid var(--divider)', paddingTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <div style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.7 }}>
+                {t('clients.otherStep3')}
               </div>
-            )}
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                <input
+                  type="text"
+                  value={manualKey}
+                  onChange={e => setManualKey(e.target.value)}
+                  placeholder={t('clients.manualKeyPh')}
+                  style={{ flex: '1 1 220px', minWidth: 0, padding: '6px 10px', borderRadius: '8px', border: '1px solid var(--card-border)', background: 'var(--well-bg)', color: 'var(--text-main)', fontSize: '12px', fontFamily: FONT_MONO }}
+                />
+                <button
+                  className="btn btn-primary btn-sm"
+                  disabled={manualTest?.state === 'running'}
+                  onClick={async () => {
+                    setManualTest({ state: 'running' });
+                    try {
+                      const res = await fetch(`${gwBase}/v1/models`, {
+                        headers: manualKey
+                          ? { Authorization: `Bearer ${manualKey}`, 'x-api-key': manualKey, 'anthropic-version': '2023-06-01' }
+                          : {},
+                      });
+                      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                      const body = await res.json();
+                      const n = Array.isArray(body?.data) ? body.data.length : 0;
+                      setManualTest({ state: 'ok', detail: String(n) });
+                    } catch (err) {
+                      setManualTest({ state: 'fail', detail: err instanceof Error ? err.message : String(err) });
+                    }
+                  }}
+                >
+                  <Activity size={12} />
+                  <span>{t('clients.manualTest')}</span>
+                </button>
+              </div>
+              {manualTest?.state === 'ok' && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--accent-emerald)' }}>
+                  <Check size={14} />
+                  <span>{t('clients.manualTestOk', { n: manualTest.detail || '0' })}</span>
+                </div>
+              )}
+              {manualTest?.state === 'fail' && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--accent-amber)' }}>
+                  <X size={14} />
+                  <span>{t('clients.manualTestFail', { detail: manualTest.detail || '' })}</span>
+                </div>
+              )}
+            </div>
+
+            <div style={{ fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.7 }}>
+              {t('clients.otherMore')}{' '}
+              <Link to="/api-keys" style={{ color: 'var(--accent)', textDecoration: 'none' }}>
+                {t('nav.apiKeys')} →
+              </Link>
+            </div>
           </div>
+          )}
         </div>
       </div>
     </div>
