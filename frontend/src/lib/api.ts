@@ -1,3 +1,17 @@
+export interface ProjectItem {
+  id: string;
+  name: string;
+  path: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectsResponse {
+  status: 'ok';
+  activeId: string | null;
+  projects: ProjectItem[];
+}
+
 // Mirrors backend FinOpsStats (backend/src/metrics/finops-tracker.ts getStats)
 export interface GatewayMetrics {
   totalRequests: number;
@@ -26,6 +40,9 @@ export interface GatewayMetrics {
 export interface ClientStatus {
   name: string;
   displayName: string;
+  /** The harness host this client's artifacts land in (backend `ClientAdapter.harness`); `null` =
+   *  traffic-only client with no landing. Absent on older gateways — callers fall back to `name`. */
+  harness?: string | null;
   configPath: string;
   exists: boolean;
   hooked: boolean;
@@ -33,6 +50,8 @@ export interface ClientStatus {
   backupExists: boolean;
   /** Extra concrete models exposed in the client's model switcher (opencode) */
   extraModels?: string[];
+  /** Installed CLI version vs the adapter's minimum-compatible floor (absent = adapter declares no probe). */
+  version?: { current: string; min?: string; meetsMin: boolean };
   /** This client's model slots; value undefined = auto (intelligent routing). */
   modelSlots: { key: string; value?: string; default?: string; description?: string }[];
   /** Last-linked model profile (opencode): profile id + agent→slot-key tags
@@ -83,6 +102,10 @@ export interface ClientProfileMemoryEntry {
   models?: Record<string, string>;
   agentModels?: Record<string, string>;
   extraModels?: string[];
+  /** Custom virtual-tier draft (auto/lite/plus/pro/ultra); undefined =
+   *  untouched — setup omits `virtualModels` (adapter default block); an
+   *  array (possibly empty) scopes the block to that set. Mirrors backend. */
+  virtualModels?: string[];
   /** Model-list source: 'none' (default) = no concrete models exposed,
    *  'follow' = mirror the selected API key's effective model access,
    *  'custom' = manual picker. Mirrors backend. */
@@ -375,6 +398,56 @@ export interface GatewayStatusResponse {
   };
 }
 
+/** One row of the forward-proxy access log (backend forward-proxy/access-log.ts). */
+export interface ProxyAccessEvent {
+  id: string;
+  ts: number;
+  kind: 'connect' | 'http';
+  host: string;
+  port: number;
+  method?: string;
+  path?: string;
+  status?: number;
+  durationMs?: number;
+  reqBytes: number;
+  respBytes: number;
+  requestHeaders?: Record<string, string>;
+  responseHeaders?: Record<string, string>;
+  requestBody?: string;
+  responseBody?: string;
+  /** 'hex' when THAT side's stored body is an INLINE hex dump (persist off). */
+  reqBodyFormat?: 'hex';
+  resBodyFormat?: 'hex';
+  /** bodies-dir ref (`<day>/<name>.bin`) when THAT binary body was persisted as a raw file. */
+  reqBodyFile?: string;
+  resBodyFile?: string;
+  /** Sniffed MIME for the persisted binary body file. */
+  reqBodyMime?: string;
+  resBodyMime?: string;
+  truncated?: boolean;
+  note?: string;
+}
+
+export interface ProxyAccessLogResponse {
+  status: string;
+  enabled: boolean;
+  /** Per-side capture cap; absent = unlimited (backend `accessLog.bodyBytes`). */
+  bodyBytes?: number;
+  events: ProxyAccessEvent[];
+}
+
+/** OS system-proxy ownership state (backend forward-proxy/system-proxy.ts). */
+export interface SystemProxyStatus {
+  platform: string;
+  supported: boolean;
+  state: 'off' | 'on' | 'external' | 'stale' | 'unsupported';
+  currentServer?: string;
+  targetServer?: string;
+  override?: string;
+  caPath: string;
+  proxyEnabled?: boolean;
+}
+
 /**
  * Structured arguments for a localized routing reason — the optional
  * `reasonParams` the gateway emits beside `reason`. Values arrive ready to be
@@ -484,16 +557,16 @@ export interface ReplaySpec {
 export type CaptureReplayResult =
   | { status: 'loading' }
   | {
-      status: 'ok';
-      statusLine: string;
-      headers: Record<string, string>;
-      body: string;
-      truncated: boolean;
-      /** ms from dispatch to the status/headers event (first byte). */
-      ttfbMs: number;
-      /** ms from dispatch to stream end. */
-      totalMs: number;
-    }
+    status: 'ok';
+    statusLine: string;
+    headers: Record<string, string>;
+    body: string;
+    truncated: boolean;
+    /** ms from dispatch to the status/headers event (first byte). */
+    ttfbMs: number;
+    /** ms from dispatch to stream end. */
+    totalMs: number;
+  }
   | { status: 'error'; message: string };
 
 /** NDJSON stream events emitted by POST /api/admin/capture/replay. */
@@ -767,6 +840,12 @@ export interface SessionRecord {
   boundKeyHashPrefix?: string;
   /** Epoch ms of the bind/rebind. */
   boundAt?: number;
+  /**
+   * Operator label of the bound credential, resolved server-side from the
+   * live registry chain. Absent = unnamed or the credential left the chain —
+   * render `boundKeyHashPrefix` instead.
+   */
+  boundCredentialLabel?: string;
   /** Requests whose model differs from the previous request (chronological). */
   switchCount: number;
   /** Cumulative input tokens across the session's traces. */
@@ -1157,23 +1236,25 @@ export interface HarnessCopyView {
    */
   external?: boolean;
   path: string;
+  /** Set on project-scope copies — the only project attribution for an external token copy. */
+  projectRoot?: string;
   state: 'clean' | 'dirty' | 'missing' | 'foreign' | 'untracked';
   placement: 'materialized' | 'verified' | 'unverified';
   contentHash?: string;
   /**
    * Skill copies only: every host that reads this directory, owner first. `host` is ownership (one
    * owner per directory — install/claims/removal); this is readership (the shared `.agents/skills`
-   * tree is read by up to ten runtimes), which is what the skills page's harness rail selects by.
+   * tree is read by up to fourteen runtimes), which is what the skills page's harness rail selects by.
    */
   readers?: string[];
 }
 
-/** `artifact.harness` is set for `kind: 'extension'` — the runtime whose plugin API the code targets
+/** `artifact.harness` is set for `kind: 'plugin'` — the runtime whose plugin API the code targets
  *  is part of the artifact's identity (one package in two runtimes is two artifacts). */
 export interface HarnessArtifactView {
   id: string;
   canonicalKey: string;
-  kind: 'skill' | 'mcp' | 'extension';
+  kind: 'skill' | 'mcp' | 'plugin';
   harness?: string;
   name: string;
   description: string | null;
@@ -1190,14 +1271,14 @@ export interface HarnessArtifactView {
 
 export interface HarnessDiscoveredArtifact {
   /** Which kind the row belongs to — one discovery channel serves every kind. */
-  kind: 'skill' | 'mcp' | 'extension';
-  /** Set iff `kind === 'extension'`: the runtime whose own store the row was read from. */
+  kind: 'skill' | 'mcp' | 'plugin';
+  /** Set iff `kind === 'plugin'`: the runtime whose own store the row was read from. */
   harness?: string;
   name: string;
   description: string | null;
   copies: HarnessCopyView[];
   hosts: string[];
-  /** Provenance of an extension row: the runtime's own record it came from. */
+  /** Provenance of an plugin row: the runtime's own record it came from. */
   origin?: 'runtime-store' | 'config-array' | 'local-file';
   /** File/dir the row was read from — a tooltip, never a location we own. */
   observedFrom?: string;
@@ -1211,9 +1292,10 @@ export interface HarnessDiscoveredArtifact {
    * then the row cannot be removed from the console.
    */
   removal?:
-    | { op: 'trash-path'; path: string }
-    | { op: 'drop-entry'; file: string; container: string; entry: string }
-    | { op: 'drop-server'; file: string; container: string; entry: string };
+  | { op: 'trash-path'; path: string }
+  | { op: 'drop-entry'; file: string; container: string; entry: string }
+  | { op: 'drop-server'; file: string; container: string; entry: string }
+  | { op: 'cli-remove'; host: string; entry: string };
 }
 
 export interface HarnessInventoryResponse {
@@ -1227,17 +1309,120 @@ export interface HarnessInventoryResponse {
   paths: { manifest: string; claims: string };
 }
 
+/** Live server state as the runtime reports it (backend `McpRuntimeStatus`). Distinct from
+ *  `HarnessCopyView.state`: that answers "is our config member intact", this answers "did the
+ *  runtime connect". A missing host/name is UNKNOWN, never a failure claim. */
+export type McpRuntimeStatus = 'connected' | 'pending' | 'disabled' | 'needs_auth' | 'failed';
+
+export interface McpRuntimeServer {
+  name: string;
+  status: McpRuntimeStatus;
+  /** The runtime's own failure text (`failed` / `needs_auth`). */
+  error?: string;
+}
+
+export interface McpRuntimeHostView {
+  host: string;
+  reachable: boolean;
+  /** Why the runtime could not answer; present only when `reachable` is false. */
+  message?: string;
+  servers: McpRuntimeServer[];
+}
+
+export interface McpRuntimeReport {
+  status: string;
+  probedAt: number;
+  hosts: McpRuntimeHostView[];
+}
+
+/** One row of a probed git-marketplace snapshot — a SKILL.md directory the source can install. */
+export interface HarnessMarketplaceRow {
+  dir: string;
+  name: string;
+  title: string;
+  description: string | null;
+}
+
+
+
+
+/** One row of the per-harness plugin catalog (ADR-0015 §D10). Plugin kind ONLY. */
+export interface HarnessCatalogRow {
+  key: string;
+  name: string;
+  summary: string | null;
+  stars: number | null;
+  updatedAt: number | null;
+  sourceId: string;
+  hosts: string[];
+  repo: string | null;
+  /** Marketplace name the source's manifest declares (`postman`); git-backed installs need it. */
+  marketplace: string | null;
+}
+
+/** One federated source's answer, in the source's own native order (never co-ordered). */
+export interface HarnessCatalogSection {
+  sourceId: string;
+  label: string;
+  rows: HarnessCatalogRow[];
+  total?: number;
+  totalExact?: boolean;
+  note?: string;
+}
+
+export interface HarnessCatalogSource {
+  id: string;
+  catalog?: string;
+  label: string;
+  tier: 'index' | 'federated';
+  sorts: string[];
+  counts: boolean;
+}
+
+/** One operator plugin entry (the shared store's config row, mirrored by GET sources). */
+export interface HarnessMarketplaceEntry {
+  slug: string;
+  catalog?: string;
+  /** GitHub `owner/repo`, an npm package / `@scope/*`, or one PyPI project name. */
+  repo: string;
+  type?: 'github' | 'npm' | 'pypi';
+  enabled: boolean;
+  addedAt?: number;
+  rescan: { enabled: boolean; intervalMs: number };
+  /** The harness whose add form registered this entry; support is detected, not pinned. */
+  harness?: string | null;
+  /** Repo-relative layer the probe scanned; null = every served harness's form was detected. */
+  extensionDir?: string | null;
+  /** Harnesses the repository's own forms declare (detected at probe time). */
+  hosts?: string[];
+  /** Marketplace name the manifest declares, when the snapshot read one. */
+  marketplace?: string | null;
+  /** Kinds the source's snapshot actually carries — the dialog filters by the open tab's kind. */
+  kinds: ('skill' | 'plugin' | 'mcp')[];
+}
+
+/** A summarized probe from the snapshot history (§D9) — never a raw dump. */
+export interface HarnessSourceSnapshot {
+  probedAt: number;
+  sha: string;
+  stars: number | null;
+  rows: number;
+  added: string[] | null;
+  removed: string[] | null;
+}
+
 export interface HarnessSourceView {
   id: string;
+  catalog?: string;
   label: string;
-  kinds: ('skill' | 'mcp' | 'extension')[];
+  kinds: ('skill' | 'mcp' | 'plugin')[];
   trust: string;
   auth: string;
   enabled: boolean;
   /** True when the source has a browse adapter (the market tab can show results for it). */
   browsable?: boolean;
   /**
-   * Harnesses the source serves, when its artifacts are runtime-bound. An extension source lists its
+   * Harnesses the source serves, when its artifacts are runtime-bound. An plugin source lists its
    * one runtime (its packages are written against that plugin API); a source without `hosts` serves
    * every capable harness and lets the operator name one at install time.
    */
@@ -1260,22 +1445,33 @@ export interface HarnessRootView {
 export interface HarnessMarketItem {
   id: string;
   sourceId: string;
+  catalog?: string;
+  channel?: string;
+  categories?: string[];
   /**
    * Portable install handle — the key the install endpoint takes (`github:<owner/repo>` /
-   * `npm:<name>` / `mcp-official:<registry name>`). `id` carries the same value; `key` names its role.
+   * `npm:<name>` / `clawhub:<owner>/<slug>`). `id` carries the same value; `key` names its role.
    */
   key: string;
   /**
-   * Which writer serves this row: a skill copy tree, an extension package, or an MCP server merged
+   * Which writer serves this row: a skill copy tree, an plugin package, or an MCP server merged
    * into a host's own config. It is the WRITER's kind, not the page's (an npm package reached from
-   * the skills page installs as an extension).
+   * the skills page installs as an plugin).
    */
-  installKind: 'skill' | 'mcp' | 'extension';
+  installKind: 'skill' | 'mcp' | 'plugin';
+  /**
+   * MCP rows only: the server key the install merges under, derived backend-side from the package
+   * identity with the host grammar's intersection (`@bytebase/dbhub` → `bytebase-dbhub`). `name`
+   * stays the package identity the row is browsed by; the sheet's read-only name field shows THIS,
+   * because it is what the host config will carry.
+   */
+  serverName?: string;
   name: string;
   /** `owner/repo` for GitHub rows; absent for sources whose identity is a package name. */
   repo?: string;
   description: string | null;
-  url: string;
+  /** Public page for the row; `null` for a row whose source publishes none (operator `mp-` skills). */
+  url: string | null;
   /** GitHub stars, or `null` when the source publishes no popularity signal (npm, the Pi catalog,
    *  the community registries). `null` is not `0` — the console renders "unknown" for it, and can
    *  resolve a real count on demand for rows that name a repository. */
@@ -1292,6 +1488,8 @@ export interface HarnessMarketItem {
   };
   updatedAt: string;
   topics: string[];
+  /** The marketplace name the source's manifest declares, for a git-backed plugin row. */
+  marketplace?: string | null;
 }
 
 /**
@@ -1335,15 +1533,16 @@ export interface HarnessHostView {
    *  console rail hides undetected hosts — but never one whose rows are already landed. */
   detected: boolean;
   hasSkills: boolean;
-  /** Extension-capable host: a verified package-manager landing exists for it. */
+  /** Plugin-capable host: a verified package-manager landing exists for it. */
   hasExt: boolean;
   /** MCP-capable host: a verified server-config landing exists for it (the client's own config file
    *  or container). `hasSkills` says nothing about this — a host can read the shared skills
    *  directory and still have nowhere to write an MCP server. */
   hasMcp: boolean;
-  /** Scopes this build accepts (today `['global']`) — project support is deferred (ADR-0015 §D2). */
-  scopes: ('global' | 'project')[];
-  /** Resolved roots per accepted scope; a scope absent from `scopes` has no key here. */
+  /** Per-kind landing scopes this host's adapter declares (ADR-0015 §D2). A scope absent from a
+   *  kind's list must not be offered as an install target for that kind — the writers refuse it. */
+  kindScopes: Record<'skill' | 'mcp' | 'plugin', ('global' | 'project')[]>;
+  /** Resolved roots per accepted scope; a scope absent from `kindScopes` has no key here. */
   roots: { global: HarnessRootView[] };
   /** Host that owns this host's directory per scope — differs from `id` when hosts share a path. */
   owner: { global: string | null };
@@ -1355,10 +1554,11 @@ export interface HarnessPlanAction {
    *  - `move-to-trash` — a file tree / loose file (reversible through the trash);
    *  - `drop-entry` — one string inside a JSON array (`plugin[]`, pi `packages[]`);
    *  - `drop-server` — one member of a JSON object (a server inside `mcp`);
+   *  - `cli-remove` — a CLI-materialized landing: the runtime's own remove verb runs;
    *  - `prune-only` — the copy or member is already gone, only the record is left;
    *  - `prune-record` — package-manager-owned with no declaration file to edit.
    */
-  op: 'move-to-trash' | 'prune-only' | 'prune-record' | 'drop-entry' | 'drop-server';
+  op: 'move-to-trash' | 'prune-only' | 'prune-record' | 'drop-entry' | 'drop-server' | 'cli-remove';
   /** The manifest copy key: a resolved path, or the identity token for an `external` copy. */
   path: string;
   /** The config file a `drop-*` op edits. */
@@ -1375,22 +1575,139 @@ export interface HarnessPlanAction {
 }
 
 /**
- * Gate plan for an install that writes third-party state (extension gate 3 / MCP gate 2). The page
+ * Gate plan for an install that writes third-party state (plugin gate 3 / MCP gate 2). The page
  * shows `echo` / `file`+`container` verbatim and re-sends the request with `confirm: true`.
  */
+export interface HarnessInstallRun {
+  command: string;
+  args: string[];
+  /** The EXACT argv line apply will run — gate 3 shows it verbatim. */
+  echo: string;
+}
+
+/** A manual MCP launch — the two shapes the writer accepts (ADR-0015 §D6/§D8).
+ *
+ *  Key NAMES are the default: env / header values are supplied by the runtime. A `envValues` /
+ *  `headerValues` entry is the value an operator typed into the registry-driven form — it is written
+ *  verbatim into the runtime's own config and never read back. */
+export type HarnessMcpLaunch =
+  | { command: string; args?: string[]; envKeys?: string[]; envValues?: Record<string, string> }
+  | { url: string; transport: 'http' | 'sse'; headerKeys?: string[]; headerValues?: Record<string, string> };
+
 export interface HarnessInstallTarget {
   host: string;
-  /** `subprocess` (package install) or `config` (`plugin[]` / server merge). */
-  op: 'subprocess' | 'config';
+  /** `subprocess` (a command chain), `config` (a merge), `manual` (interactive-only), or
+   *  `webapi` (the runtime's own loopback REST install API — a transient vendor server). */
+  op: 'subprocess' | 'config' | 'manual' | 'webapi';
   file?: string;
   container?: string;
-  /** Structured command for subprocess targets — apply runs THIS, `echo` is display-only. */
+  /** Structured command for a single-run subprocess target — apply runs THIS. */
   command?: string;
   args?: string[];
   /** The EXACT command apply will run — gate 3 shows it verbatim, never paraphrased. */
   echo?: string;
+  /** A native marketplace chain: registration first, install last, run in order. */
+  runs?: HarnessInstallRun[];
+  /** `webapi` only: the plugin source string POSTed to the runtime's install route. */
+  source?: string;
+  /** MCP plan only: server keys the merge would add / overwrite in the target container. */
+  addedKeys?: string[];
+  changedKeys?: string[];
   refused?: string;
   added: boolean;
+}
+
+/** One EXISTING MCP server read from a host config (the edit sheet's pre-image).
+ *  Stored env/header VALUES never travel — only their key names, plus which keys are already set. */
+export interface HarnessMcpEntry {
+  host: string;
+  name: string;
+  file: string;
+  container: string;
+  launch: HarnessMcpLaunch;
+  /** Keys whose stored value is not a bare `{env:KEY}` reference (a literal or `{file:...}`). */
+  setKeys: string[];
+}
+
+/**
+ * The value-format vocabulary an MCP parameter can carry (ADR-0015 §D11). Two provenances, one
+ * superset: the registry `server.json` reader emits the four official `Input`/`Argument` formats
+ * (`McpRegistryFormat`); the CLI probe adds `dsn` — a connection-string flag it classifies by name
+ * (`McpCliFormat`). `McpParamRow.format` (the console render row) is the superset, since a row may
+ * come from either source. Declared once here so the four old inline copies cannot drift.
+ */
+export type McpRegistryFormat = 'string' | 'number' | 'boolean' | 'filepath';
+export type McpCliFormat = McpRegistryFormat | 'dsn';
+
+/** One configurable input declared by a registry `server.json` (`Input` in the registry schema). */
+export interface HarnessMcpRegistryInput {
+  name: string;
+  description?: string;
+  format: McpRegistryFormat;
+  secret: boolean;
+  required: boolean;
+  default?: string;
+  placeholder?: string;
+  choices?: string[];
+  /** Pinned by the registry — not operator-configurable. */
+  value?: string;
+}
+
+/** One CLI argument declared by a registry `server.json` (`positional` or `named`). */
+export interface HarnessMcpRegistryArgument {
+  type: 'positional' | 'named';
+  name: string;
+  value?: string;
+  valueHint?: string;
+  default?: string;
+  description?: string;
+  format: McpRegistryFormat;
+  secret: boolean;
+  required: boolean;
+  choices?: string[];
+}
+
+export interface HarnessMcpRegistryPackage {
+  registryType: string;
+  identifier: string;
+  version?: string;
+  transport: 'stdio' | 'http' | 'sse';
+  url?: string;
+  env: HarnessMcpRegistryInput[];
+  args: HarnessMcpRegistryArgument[];
+  headers: HarnessMcpRegistryInput[];
+}
+
+export interface HarnessMcpRegistryCandidate {
+  name: string;
+  title?: string;
+  description?: string;
+  version?: string;
+  repository?: string;
+  packages: HarnessMcpRegistryPackage[];
+}
+
+/** One CLI flag read from a published npm package (its bundled parser, not the registry). */
+export interface HarnessMcpCliOption {
+  /** Without dashes; the form adds `--` on write. */
+  name: string;
+  valueHint?: string;
+  choices?: string[];
+  format?: McpCliFormat;
+  secret?: boolean;
+  /** Environment variable the package falls back to when the flag is absent. */
+  env?: string;
+  /** The parser refuses to start without it. */
+  required?: boolean;
+}
+
+export interface HarnessMcpCliProbe {
+  status: string;
+  package: string;
+  version: string;
+  bin?: string;
+  options: HarnessMcpCliOption[];
+  files: number;
 }
 
 export interface HarnessRemovePlan {
@@ -1407,10 +1724,72 @@ export interface HarnessRemovePlan {
   warnings: { code: string; message: string; path: string }[];
   createdAt: number;
 }
+/** Mirrors the backend `SourceReason` (ADR-0015 §D11): the console renders its localized copy
+ *  from the reason + params, so a new backend reason must be added here in the same pass. */
+export type SourceReason =
+  | 'registered'
+  | 'registered_scoped'
+  | 'already_configured'
+  | 'slug_taken'
+  | 'no_form'
+  | 'not_a_repo'
+  | 'invalid_layer'
+  | 'invalid_source'
+  | 'no_skill'
+  | 'probe_failed'
+  | 'unsupported_here';
+
+/** A refused source registration that still carries the machine-readable cause: the drawer
+ *  translates `reason`/`params` and only falls back to the English `message`. */
+export class SourceOutcomeError extends Error {
+  readonly reason?: SourceReason;
+  readonly params?: Record<string, string>;
+
+  constructor(message: string, reason?: SourceReason, params?: Record<string, string>) {
+    super(message);
+    this.name = 'SourceOutcomeError';
+    this.reason = reason;
+    this.params = params;
+  }
+}
 
 export const api = {
   async getStatus(): Promise<GatewayStatusResponse> {
     const res = await fetch('/api/admin/status');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async getProxyAccessLog(): Promise<ProxyAccessLogResponse> {
+    const res = await fetch('/api/admin/proxy-log');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async getProxyAccessBody(ref: string): Promise<ArrayBuffer> {
+    const res = await fetch(`/api/admin/proxy-log/bodies/${encodeURIComponent(ref)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.arrayBuffer();
+  },
+
+  async clearProxyAccessLog(): Promise<void> {
+    const res = await fetch('/api/admin/proxy-log/clear', { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  },
+  async getSystemProxy(): Promise<SystemProxyStatus> {
+    const res = await fetch('/api/admin/system-proxy');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async enableSystemProxy(): Promise<SystemProxyStatus> {
+    const res = await fetch('/api/admin/system-proxy/enable', { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async disableSystemProxy(): Promise<SystemProxyStatus> {
+    const res = await fetch('/api/admin/system-proxy/disable', { method: 'POST' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },
@@ -1666,6 +2045,8 @@ export const api = {
       apiKey?: string;
       contextWindow?: number;
       extraModels?: string[];
+      /** Follow mode: the virtual tier subset (auto/lite/plus/pro/ultra) the selected key's policy admits. */
+      virtualModels?: string[];
       /** Manual agent bindings (opencode): agent name → modelRef. */
       agentModels?: Record<string, string>;
       /** Profile-linked rows (opencode): id + agent→slot-key tags, resolved server-side; id '' un-links (sweep). */
@@ -1729,6 +2110,9 @@ export const api = {
   /** All models the gateway can route to: virtual (auto/lite/plus/pro/ultra), combos,
    *  registered models and variant exposures — `kind` tags which one each id is ('auto' = the bare auto alias, 'tier' = the bare tier aliases).
    *  `tiers` = the full membership set (a model may belong to several tiers).
+   *  `efforts` = declared thinking levels (registered/variant rows only); `[]`
+   *  means the model has no explicit level control. Any level written into a config
+   *  field must come from this list — the pipeline clamps everything else.
    *  `wire` = the model's resolved upstream wire (registered/variant rows only):
    *  'systemone' means a decision-wire model that NO chat surface can address.
    *  Reads the console endpoint — /v1/models requires a key like every surface. */
@@ -1738,6 +2122,7 @@ export const api = {
     tiers?: string[];
     kind?: string;
     members?: number;
+    efforts?: string[];
     wire?: string;
   }[]> {
     const res = await fetch('/api/admin/gateway-models');
@@ -1750,6 +2135,7 @@ export const api = {
       kind: m.kind || undefined,
       members: typeof m.members === 'number' ? m.members : undefined,
       wire: typeof m.wire === 'string' ? m.wire : undefined,
+      efforts: Array.isArray(m.efforts) ? m.efforts.filter((e: unknown): e is string => typeof e === 'string') : undefined,
     }));
   },
 
@@ -2178,16 +2564,138 @@ export const api = {
     return res.json();
   },
 
-  /** Installed artifacts + untracked directories, reconciled per copy. */
-  async harnessInventory(): Promise<HarnessInventoryResponse> {
-    const res = await fetch('/api/admin/harness/inventory');
+  async listProjects(): Promise<ProjectsResponse> {
+    const res = await fetch('/api/admin/projects');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
+  },
+
+  async createProject(input: { name: string; path: string }): Promise<{ status: 'ok'; project: ProjectItem }> {
+    const res = await fetch('/api/admin/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.message || `HTTP ${res.status}`);
+    }
+    return res.json();
+  },
+
+  async updateProject(id: string, input: { name?: string; path?: string }): Promise<{ status: 'ok'; project: ProjectItem }> {
+    const res = await fetch(`/api/admin/projects/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.message || `HTTP ${res.status}`);
+    }
+    return res.json();
+  },
+
+  async deleteProject(id: string): Promise<{ status: 'ok' }> {
+    const res = await fetch(`/api/admin/projects/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.message || `HTTP ${res.status}`);
+    }
+    return res.json();
+  },
+
+  async setActiveProject(id: string | null): Promise<{ status: 'ok'; activeId: string | null }> {
+    const res = await fetch('/api/admin/projects/active', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.message || `HTTP ${res.status}`);
+    }
+    return res.json();
+  },
+
+  async validateProjectPath(pathStr: string): Promise<{ status: 'ok'; resolved: string }> {
+    const res = await fetch('/api/admin/projects/validate-path', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: pathStr }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.message || `HTTP ${res.status}`);
+    }
+    return res.json();
+  },
+
+  /**
+   * Installed artifacts + untracked directories, reconciled per copy. With `projectId`, the scan
+   * resolves PROJECT-scope roots against that project's path instead of the gateway cwd — the
+   * same re-scan `/plan` does, so the project tab lists what that project holds.
+   */
+  async harnessInventory(params?: { projectId?: string }): Promise<HarnessInventoryResponse> {
+    const search = new URLSearchParams();
+    if (params?.projectId) search.set('projectId', params.projectId);
+    const qs = search.toString();
+    const res = await fetch(`/api/admin/harness/inventory${qs ? `?${qs}` : ''}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /** Live MCP status from each runtime that exposes one. Unknown hosts are absent, never assumed. */
+  async harnessMcpRuntime(): Promise<McpRuntimeReport> {
+    const res = await fetch('/api/admin/harness/mcp/runtime');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /**
+   * Test the DSN builder's current values. PostgreSQL and MySQL/MariaDB log in for real
+   * (`select 1` / `ping`) and answer a verdict code; every other scheme gets a TCP dial. The
+   * credential goes to the local admin route for this one request — never logged, never echoed
+   * (ADR-0015 §D11).
+   */
+  async harnessMcpDsnProbe(input: {
+    driver: string;
+    host: string;
+    port: number;
+    user: string;
+    password: string;
+    database: string;
+    params: Record<string, string>;
+  }): Promise<{
+    status: string;
+    target: string;
+    engine: 'postgres' | 'mysql' | null;
+    reachable: boolean;
+    verified: boolean;
+    code: string;
+    message?: string;
+  }> {
+    const res = await fetch('/api/admin/harness/mcp/dsn-probe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const err = new Error(data?.message || `HTTP ${res.status}`) as Error & { code?: string };
+      err.code = data?.code;
+      throw err;
+    }
+    return data;
   },
 
   /** Dry-run a maintenance action (only `remove` exists today). Writes nothing. */
   async harnessPlan(body: {
     action: 'remove';
+    /** Project whose roots resolve `project`-scope copies; absent = the gateway cwd. */
+    projectId?: string;
     items: {
       artifactId: string | null;
       copies: { scope: 'global' | 'project'; host: string; path: string }[];
@@ -2213,7 +2721,7 @@ export const api = {
     harness?: string;
     /** The market axis being browsed — a source serving several axes (npm) forks its default
      *  query and row install kind on it. */
-    kind?: 'skill' | 'mcp' | 'extension';
+    kind?: 'skill' | 'mcp' | 'plugin';
     /** 1-based page; the backend clamps a nonsense value to the first page. */
     page?: number;
     /** One of the source's declared `sorts`; the backend drops an order it cannot serve. */
@@ -2321,13 +2829,14 @@ export const api = {
    * cannot be used as a generic proxy. A row with nothing readable still answers (`readFrom: 'none'`)
    * because the dialog is built on the fields the browse answer already carried.
    */
-  async harnessDetail(params: { source?: string; key?: string; repo?: string }): Promise<{
+  async harnessDetail(params: { source?: string; channel?: string; key?: string; repo?: string }): Promise<{
     status: string;
     source: string;
     detail: HarnessMarketDetail;
   }> {
     const search = new URLSearchParams();
-    if (params.source) search.set('source', params.source);
+    if (params.channel) search.set('channel', params.channel);
+    else if (params.source) search.set('source', params.source);
     if (params.key) search.set('key', params.key);
     if (params.repo) search.set('repo', params.repo);
     const res = await fetch(`/api/admin/harness/detail?${search.toString()}`);
@@ -2337,24 +2846,30 @@ export const api = {
   },
 
   /**
-   * Install one artifact — one store entry, N copies (skills) or ONE runtime's package (extensions).
+   * Install one artifact — one store entry, N copies (skills) or ONE runtime's package (plugins).
    * The request speaks a portable `key` (`<sourceId>:<ref>[#dir]`); `kind` picks the writer.
    */
   async harnessInstall(body: {
     key?: string;
-    kind?: 'skill' | 'mcp' | 'extension';
+    kind?: 'skill' | 'mcp' | 'plugin';
     repo?: string;
     sourceId?: string;
     skillDir?: string;
     manualSpec?: string;
-    /** Gate 3 / gate 2 acknowledgement — without it an extension/mcp install writes nothing. */
+    /** Manual MCP server (`kind` must be `mcp`): written into the host's own config, no source. */
+    manualPayload?: { name: string; launch: HarnessMcpLaunch };
+    /** Operator-edited MCP launch (install form): replaces the resolver's generated launch. */
+    launch?: HarnessMcpLaunch;
+    /** Gate 3 / gate 2 acknowledgement — without it an plugin/mcp install writes nothing. */
     confirm?: boolean;
     /** Surfaces the row was browsed on, besides the one that writes it (see `HarnessArtifactView`). */
     listedOn?: string[];
+    /** GIT-BACKED plugin identity: the runtime's own marketplace chain installs `<plugin>@<name>`. */
+    marketplace?: { repo: string; plugin: string; name: string };
     hosts: string[];
-    /** Global only for now — the backend answers `unsupported_scope` for anything else
-     *  (ADR-0015 §D2 "Scope": project-level install is deferred). */
-    scope: 'global';
+    scope?: 'global' | 'project';
+    projectRoot?: string;
+    projectId?: string;
   }): Promise<{
     status: string;
     artifactId: string;
@@ -2373,7 +2888,7 @@ export const api = {
     if (!res.ok) {
       // `ambiguous` failures carry `candidates` (the skill directories found) — the install dialog
       // uses them to offer a picker; `confirm_required` carries `plan` (the exact commands/merges an
-      // extension or MCP install would perform) — the page shows it and retries with `confirm: true`.
+      // plugin or MCP install would perform) — the page shows it and retries with `confirm: true`.
       const err: Error & {
         code?: string;
         candidates?: string[];
@@ -2389,9 +2904,96 @@ export const api = {
     return data;
   },
 
-  /** Translate one description into the console language (derived cache; may call the gateway). */
+  /** Read ONE existing MCP server back as a launch (env/header KEY NAMES only). */
+  async harnessMcpEntry(params: { host: string; name: string; scope?: 'global' | 'project'; projectId?: string }): Promise<HarnessMcpEntry> {
+    const search = new URLSearchParams({ host: params.host, name: params.name, scope: params.scope ?? 'global' });
+    if (params.projectId) search.set('projectId', params.projectId);
+    const res = await fetch(`/api/admin/harness/mcp/entry?${search.toString()}`);
+    const data = await res.json();
+    if (!res.ok) {
+      const err = new Error(data?.message || `HTTP ${res.status}`) as Error & { code?: string };
+      err.code = data?.code;
+      throw err;
+    }
+    return data;
+  },
+
   /**
-   * Translate one string into the console's language.
+   * Ask the MCP Registry for the latest `server.json` of every server matching `q` (a package name
+   * or a registry name). Read-only; the answer drives the visual parameter form.
+   */
+  async harnessMcpRegistry(q: string): Promise<{ status: string; candidates: HarnessMcpRegistryCandidate[] }> {
+    const res = await fetch(`/api/admin/harness/mcp/registry?q=${encodeURIComponent(q)}`);
+    const data = await res.json();
+    if (!res.ok) {
+      const err = new Error(data?.message || `HTTP ${res.status}`) as Error & { code?: string };
+      err.code = data?.code;
+      throw err;
+    }
+    return data;
+  },
+
+  /**
+   * Read one published npm package and list the CLI flags its own parser reads
+   * (`--transport`, `--port`, `--dsn` …). The tarball is downloaded and scanned in memory;
+   * the package is never executed.
+   */
+  async harnessMcpCli(pkg: string, registry: 'npm' | 'pypi' = 'npm'): Promise<HarnessMcpCliProbe> {
+    const res = await fetch(
+      `/api/admin/harness/mcp/cli?pkg=${encodeURIComponent(pkg)}&registry=${registry}`
+    );
+    const data = await res.json();
+    if (!res.ok) {
+      const err = new Error(data?.message || `HTTP ${res.status}`) as Error & { code?: string };
+      err.code = data?.code;
+      throw err;
+    }
+    return data;
+  },
+
+  /**
+   * Change one existing MCP server's launch. Gate 2: without `confirm` the backend answers
+   * `confirm_required` with the exact file/container plan and writes nothing.
+   */
+  async harnessMcpEdit(body: {
+    host: string;
+    name: string;
+    launch: HarnessMcpLaunch;
+    /** The manifest record to keep in sync; absent for a runtime-installed (discovered) entry. */
+    artifactId?: string;
+    scope?: 'global' | 'project';
+    /** Project root resolution for `project` scope (the backend maps it to the project path). */
+    projectId?: string;
+    confirm?: boolean;
+  }): Promise<{
+    status: string;
+    changed: boolean;
+    host: string;
+    name: string;
+    file: string;
+    container: string;
+    artifactId: string | null;
+  }> {
+    const res = await fetch('/api/admin/harness/mcp/edit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope: 'global', ...body }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const err = new Error(data?.message || `HTTP ${res.status}`) as Error & {
+        code?: string;
+        plan?: HarnessInstallTarget[];
+      };
+      err.code = data?.code;
+      err.plan = data?.plan;
+      throw err;
+    }
+    return data;
+  },
+
+  /**
+   * Translate one description into the console language (derived cache; may call the gateway).
    *
    * `format: 'markdown'` selects the long-form contract (a README): prose is translated in chunked
    * runs, fenced code is preserved verbatim, and `truncated` says the document outran the budget so
@@ -2515,6 +3117,209 @@ export const api = {
       error.code = data?.code;
       throw error;
     }
+    return data;
+  },
+
+  // ---------------------------------------------------------------------------
+  // Plugin catalog (ADR-0015 §D10): one merged directory per harness.
+  // ---------------------------------------------------------------------------
+
+  async harnessPluginCatalog(
+    harness: string,
+    opts: { q?: string; page?: number; pageSize?: number; sort?: string } = {},
+  ): Promise<{
+    status: string;
+    sort: string;
+    rows: HarnessCatalogRow[];
+    page: number;
+    pageSize: number;
+    hasMore: boolean;
+    total: number | null;
+    notes: string[];
+    sections?: HarnessCatalogSection[];
+  }> {
+    const search = new URLSearchParams();
+    if (opts.q) search.set('q', opts.q);
+    if (opts.page) search.set('page', String(opts.page));
+    if (opts.pageSize) search.set('pageSize', String(opts.pageSize));
+    if (opts.sort) search.set('sort', opts.sort);
+    const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/catalog?${search.toString()}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async harnessPluginSources(harness: string, kind?: 'skill' | 'plugin' | 'mcp'): Promise<{
+    status: string;
+    extensionDir: string | null;
+    sources: HarnessCatalogSource[];
+    operator: HarnessMarketplaceEntry[];
+  }> {
+    const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/sources${kind ? `?kind=${kind}` : ''}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async harnessSyncHarnessMarketplaces(harness: string): Promise<{
+    status: string;
+    timestamp: number;
+    discovered: { name: string; repo: string; type?: string; origin?: string }[];
+    imported: { slug: string; repo: string }[];
+    synced: { host: string; action: string; repo: string; ok: boolean; command?: string[]; error?: string }[];
+    summary: { discoveredCount: number; importedCount: number; syncedCount: number; failedCount: number };
+  }> {
+    const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/sources/sync`, { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async harnessPluginCheckSource(harness: string, url: string, opts: { type?: 'github' | 'npm' | 'pypi'; kind?: 'plugin' | 'mcp'; extensionDir?: string } = {}): Promise<{
+    status: string;
+    ok: boolean;
+    skills: number;
+    mcps: number;
+    plugins: number;
+    hosts: string[];
+    marketplace: string | null;
+    /** Duplicate of the backend contract's `SourceOutcome` (ADR-0015 §D11). */
+    reason?: SourceReason;
+    params?: Record<string, string>;
+    message?: string;
+  }> {
+    const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/sources/check`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, type: opts.type, kind: opts.kind, extensionDir: opts.extensionDir }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async harnessPluginRegisterSource(
+    harness: string,
+    url: string,
+    opts: { type?: 'github' | 'npm' | 'pypi'; kind?: 'plugin' | 'mcp'; extensionDir?: string; rescan?: { enabled?: boolean; intervalMs?: number }; catalog?: string; shared?: boolean } = {},
+  ): Promise<{ status: string; reason?: SourceReason; params?: Record<string, string>; message?: string }> {
+    const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/sources`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, type: opts.type, kind: opts.kind, extensionDir: opts.extensionDir, rescan: opts.rescan, catalog: opts.catalog, shared: opts.shared }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new SourceOutcomeError(data?.message || `HTTP ${res.status}`, data?.reason, data?.params);
+    return data;
+  },
+
+  async harnessPluginRemoveSource(harness: string, slug: string): Promise<{ status: string }> {
+    const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/sources/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async harnessPluginUpdateSource(harness: string, slug: string, patch: { enabled?: boolean; catalog?: string; rescan?: { enabled?: boolean; intervalMs?: number } }): Promise<{ status: string }> {
+    const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/sources/${encodeURIComponent(slug)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async harnessPluginRescanSource(harness: string, slug: string): Promise<{ status: string; diff: { added: string[]; removed: string[] } | null; rows: number }> {
+    const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/sources/${encodeURIComponent(slug)}/rescan`, { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async harnessPluginSourceSnapshots(harness: string, slug: string): Promise<{ status: string; snapshots: HarnessSourceSnapshot[] }> {
+    const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/sources/${encodeURIComponent(slug)}/snapshots`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  /**
+   * Skill sources are GLOBAL (ADR-0015 §D11): the route carries no harness, because a skill
+   * registry serves every harness alike. Plugin sources keep their per-harness `/plugins/` verbs.
+   */
+  async harnessSkillSources(): Promise<{
+    status: string;
+    sources: HarnessCatalogSource[];
+    operator: HarnessMarketplaceEntry[];
+  }> {
+    const res = await fetch('/api/admin/harness/skills/sources');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async harnessSkillCheckSource(url: string): Promise<{
+    status: string;
+    ok: boolean;
+    skills: number;
+    plugins: number;
+    reason?: SourceReason;
+    params?: Record<string, string>;
+    message?: string;
+  }> {
+    const res = await fetch('/api/admin/harness/skills/sources/check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async harnessSkillRegisterSource(
+    url: string,
+    opts: { catalog?: string; rescan?: { enabled?: boolean; intervalMs?: number } } = {},
+  ): Promise<{ status: string; reason?: SourceReason; params?: Record<string, string>; message?: string }> {
+    const res = await fetch('/api/admin/harness/skills/sources', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, catalog: opts.catalog, rescan: opts.rescan }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new SourceOutcomeError(data?.message || `HTTP ${res.status}`, data?.reason, data?.params);
+    return data;
+  },
+
+  async harnessSkillUpdateSource(
+    slug: string,
+    patch: { enabled?: boolean; catalog?: string; rescan?: { enabled?: boolean; intervalMs?: number } },
+  ): Promise<{ status: string }> {
+    const res = await fetch(`/api/admin/harness/skills/sources/${encodeURIComponent(slug)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async harnessSkillRemoveSource(slug: string): Promise<{ status: string }> {
+    const res = await fetch(`/api/admin/harness/skills/sources/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async harnessSkillRescanSource(slug: string): Promise<{ status: string; diff: { added: string[]; removed: string[] } | null; rows: number }> {
+    const res = await fetch(`/api/admin/harness/skills/sources/${encodeURIComponent(slug)}/rescan`, { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async harnessPluginInstall(
+    harness: string,
+    row: HarnessCatalogRow,
+    opts: { scope?: string; confirm?: boolean } = {},
+  ): Promise<{ status: string; ok?: boolean; artifactId?: string; name?: string; message?: string }> {
+    const res = await fetch(`/api/admin/harness/plugins/${encodeURIComponent(harness)}/install`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ row, ...opts }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.message || `HTTP ${res.status}`);
     return data;
   },
 
@@ -2785,7 +3590,7 @@ export const api = {
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = '';
-    for (;;) {
+    for (; ;) {
       const { done, value } = await reader.read();
       if (done) break;
       buf += dec.decode(value, { stream: true });

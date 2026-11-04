@@ -11,15 +11,16 @@ import {
   stripFrontmatter,
   ZipTooLargeError,
   type ZipEntry,
-} from '../src/harness/clawhub.js';
-import { browseClawHub, browseSource, resetBrowseCache } from '../src/harness/browse.js';
-import { clawhubAdapter } from '../src/harness/sources/clawhub.js';
+} from '../src/harness/skill/clawhub.js';
+import { browseSource, resetBrowseCache } from '../src/harness/common/market.js';
+import { browseClawHub } from '../src/harness/skill/clawhub.js';
+import { clawhubAdapter } from '../src/harness/host/resolvers/clawhub.js';
 import type { HarnessSourceView } from '../src/harness/types.js';
 
 /**
  * ClawHub source, fixture-driven (no network): the registry answers JSON catalog/search/versions
  * reads and ZIP download bytes, so every test crafts its own bodies — the same house pattern as the
- * smithery and skills-sh reader tests. The ZIP builder writes the exact 32-bit layout `readZip`
+ * ClawHub reader tests. The ZIP builder writes the exact 32-bit layout `readZip`
  * parses (local headers, central directory, EOCD), stored and deflate entries both.
  */
 
@@ -192,7 +193,7 @@ describe('clawhubAdapter.resolve', () => {
 
   it('refuses a non-skill kind and a malformed reference before any network work', async () => {
     const noFetch = fetchRouter([]);
-    const kind = await clawhubAdapter.resolve('openclaw/gitcrawl', 'extension', { fetchImpl: noFetch });
+    const kind = await clawhubAdapter.resolve('openclaw/gitcrawl', 'plugin', { fetchImpl: noFetch });
     expect(kind.ok).toBe(false);
     if (!kind.ok) expect(kind.code).toBe('unsupported_kind');
     const ref = await clawhubAdapter.resolve('gitcrawl', 'skill', { fetchImpl: noFetch });

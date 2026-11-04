@@ -220,7 +220,7 @@ const buildGhostDecorations = (state: EditorState, dict: Record<string, string>,
  * Block decorations MUST come from a StateField — CodeMirror rejects block
  * ranges provided via a ViewPlugin ("Block decorations may not be specified
  * via plugins"). The field rebuilds on doc changes; a dict change swaps the
- * extension (memoized by commentDict), re-creating the field.
+ * plugin (memoized by commentDict), re-creating the field.
  */
 const ghostComments = (dict: Record<string, string>, truncatedSuffix: string) =>
   StateField.define<DecorationSet>({

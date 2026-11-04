@@ -36,6 +36,12 @@ rg -n '[\x{4e00}-\x{9fff}]' docs/adr/*.md docs/design/*.md docs/reviews/*.md REA
 
 - `frontend/src/lib/api.ts` mirrors backend response types 1:1 **by the backend contract name** (`CredentialMeta`, `CredentialHealth`, …). Never weld a consuming page/panel prefix onto the wire type; module prefixes are reserved for genuinely different entities (`CredentialStore*` = the key repository).
 - **Dropdowns: always `Combobox`, never native `<select>`** (native popups can't be themed). Use `frontend/src/components/Combobox.tsx`: `value: string`, `onChange: (v: string) => void`, `options: { value, label, meta?, swatch? }[]`, optional `placeholder` / `clearable`; filter input only appears when `options.length > 8`.
+- **Tables that scroll: always `ScrollTable`, and never a sticky `<th>`.** The header is a normal
+  row OUTSIDE the scrolling body, so the scrollbar belongs to the body and rows never slide under a
+  floating head; column widths are measured from the body's first row, so the head stays aligned
+  under either `auto` or `fixed` body layout (`fill` for flex parents, `maxHeight` for dialogs,
+  `minWidth` for a sideways floor). Page-level tables keep a plain header row too. Reference
+  consumers: `pages/HarnessPage.tsx` (MCP parameters) and `pages/ModelsPage.tsx`.
 
 ## Single-source constants — no drift twins
 

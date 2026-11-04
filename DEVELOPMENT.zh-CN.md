@@ -175,6 +175,8 @@ $$\mathcal{H}_{\text{prompt}} = \text{SHA256}(\text{normalize}(\text{prompt}))[0
 $$\mathcal{H}_{\text{session}} = \text{SHA256}(\text{CanonicalJSON}(\text{messages}[0 \dots n-2]))$$
 由于前缀 $messages[0 \dots n-2]$ 包含了上一轮 Assistant 实际输出 $A_{n-1}$，由于大模型自回归采样的巨大随机熵，哈希碰撞概率在数学上趋于零。
 
+携带厂商命名空间 header（`x-<app>-(session|conversation)-id`，如 `x-grok-session-id`）的客户端仅在"命名"上绕过指纹：新 mint 轮次以该 header 值作为会话 id（`header_fallback`；认领保留前缀 `ocr-internal:` 或超过 200 字符的值被忽略），会话连续性仍由前缀链锚点从第 2 轮起承载（ADR-0002 §1 第 8 层）。
+
 ### 4.2 单调会话棘轮 (Monotonic Session Ratchet)
 一旦某多轮对话因任务复杂升级至更高层级（`plus`/`pro`/`ultra`），后续该会话的一切简短追问（如“修复第 5 行”、“谢谢”）严禁向廉价 `lite` 模型降级，强制锁定在既有层级及物理模型实例上，彻底阻断降智与上下文理解断裂。
 

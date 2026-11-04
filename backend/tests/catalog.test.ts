@@ -315,7 +315,7 @@ describe('Catalog sources & repository', () => {
     expect(models[1].limit?.context).toBe(8192);
   });
 
-  it('normalizeMapped applies the declarative schema map (zero-code type extension)', () => {
+  it('normalizeMapped applies the declarative schema map (zero-code type plugin)', () => {
     const { normalizeMapped } = require('../src/opencode/catalog/sources/registry.js');
     const map = {
       items: 'data.models',

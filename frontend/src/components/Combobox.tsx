@@ -2,8 +2,15 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, Search, X } from 'lucide-react';
 import { useI18n } from '../i18n/I18nContext';
-
-import { FONT_MONO } from '../lib/fonts';
+import {
+  DROPDOWN_PANEL_MAX_HEIGHT,
+  DROPDOWN_PANEL_MIN_WIDTH,
+  DROPDOWN_PANEL_Z,
+  dropdownOptionStyle,
+  dropdownSurfaceStyle,
+  positionDropdown,
+  type DropdownPosition,
+} from './dropdown';
 export interface ComboboxOption {
   value: string;
   label: string;
@@ -60,6 +67,11 @@ type ComboboxBaseProps = {
    * boxes would read as a form instead of "current value, click to change".
    */
   variant?: 'default' | 'ghost';
+  /**
+   * Suppress the meta text in the trigger button. The panel still shows meta
+   * on options, and the trigger's title tooltip surfaces it on hover.
+   */
+  hideMetaInTrigger?: boolean;
 };
 
 /**
@@ -85,44 +97,20 @@ export type ComboboxProps = ComboboxBaseProps &
  *   `backdrop-filter: blur(16px)`, which makes it the containing block for
  *   fixed descendants — a non-portal panel inside a card/dialog would be
  *   positioned relative to the card instead of the viewport.
- * - Panel z-index 220 sits between nested sub-dialogs (210) and the global
- *   confirm dialog (300) in the project z-index scale.
+ * - Panel z-index comes from the shared dropdown chrome (between nested sub-dialogs
+ *   at 210 and the global confirm dialog at 300 in the project z-index scale).
  */
-const PANEL_Z = 220;
-const PANEL_MAX_HEIGHT = 380;
-/** Panel never shrinks below this, even when the trigger is tiny. */
-const PANEL_MIN_WIDTH_DEFAULT = 200;
 /** Show the filter input only above this many options. */
 const FILTER_THRESHOLD = 8;
 
-const optionStyle: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 8,
-  padding: '7px 10px',
-  borderRadius: 6,
-  fontSize: 12,
-  cursor: 'pointer',
-  color: 'var(--text-main)',
-  // Mono for model ids, but JetBrains Mono/Consolas have no CJK glyphs — without
-  // these fallbacks Chinese labels render in the OS default monospace (SimSun on
-  // Windows), which looks unlike the rest of the UI. Same stack as the .input rule.
-  fontFamily: FONT_MONO,
-};
-
 export const Combobox: React.FC<ComboboxProps> = (props) => {
-  const { options, placeholder, style, clearable, panelMinWidth, forceFilter, multiple, disabled, variant } = props;
+  const { options, placeholder, style, clearable, panelMinWidth, forceFilter, multiple, disabled, variant, hideMetaInTrigger } = props;
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
   const [selectedOnly, setSelectedOnly] = useState(false);
-  const [pos, setPos] = useState<{
-    left: number;
-    width: number;
-    top?: number;
-    bottom?: number;
-  } | null>(null);
+  const [pos, setPos] = useState<DropdownPosition | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -159,17 +147,7 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
   const position = useCallback(() => {
     const el = triggerRef.current;
     if (!el) return;
-    const r = el.getBoundingClientRect();
-    const spaceBelow = window.innerHeight - r.bottom;
-    const openUp = spaceBelow < PANEL_MAX_HEIGHT && r.top > spaceBelow;
-    const width = Math.max(r.width, panelMinWidth ?? PANEL_MIN_WIDTH_DEFAULT);
-    // Clamp horizontally: a panel wider than its trigger must not overflow the right edge.
-    const left = Math.max(8, Math.min(r.left, window.innerWidth - width - 8));
-    setPos(
-      openUp
-        ? { left, width, bottom: window.innerHeight - r.top + 4 }
-        : { left, width, top: r.bottom + 4 }
-    );
+    setPos(positionDropdown(el, panelMinWidth ?? DROPDOWN_PANEL_MIN_WIDTH, DROPDOWN_PANEL_MAX_HEIGHT));
   }, [panelMinWidth]);
 
   const openPanel = useCallback(() => {
@@ -288,7 +266,7 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
         aria-expanded={open}
         aria-haspopup="listbox"
         disabled={disabled}
-        title={selected ? `${selected.label}${selected.meta ? ` · ${selected.meta}` : ''}` : undefined}
+        title={selected ? (selected.meta ? `${selected.label} (${selected.meta})` : selected.label) : undefined}
         onClick={() => { if (disabled) return; (open ? close() : openPanel()); }}
         onKeyDown={onTriggerKeyDown}
         style={{ ...style, display: 'flex', alignItems: 'center', gap: 8, cursor: disabled ? 'not-allowed' : 'pointer', textAlign: 'left', opacity: disabled ? 0.5 : 1 }}
@@ -313,7 +291,7 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
                 : (placeholder ?? '')
               : (placeholder ?? '')}
         </span>
-        {selected?.meta && (
+        {!hideMetaInTrigger && selected?.meta && (
           <span style={{ fontSize: 11, color: 'var(--text-dim)', flexShrink: 0 }}>{selected.meta}</span>
         )}
         {clearable && values.length > 0 ? (
@@ -352,23 +330,16 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
             data-combobox-panel=""
             onKeyDown={onPanelKeyDown}
             style={{
+              ...dropdownSurfaceStyle,
               position: 'fixed',
               left: pos.left,
               width: pos.width,
               top: pos.top,
               bottom: pos.bottom,
-              zIndex: PANEL_Z,
+              zIndex: DROPDOWN_PANEL_Z,
               display: 'flex',
               flexDirection: 'column',
-              background: 'var(--card-bg)',
-              backdropFilter: 'blur(16px)',
-              WebkitBackdropFilter: 'blur(16px)',
-              border: '1px solid var(--card-border)',
-              borderRadius: 10,
-              boxShadow: '0 12px 32px rgba(0,0,0,0.5)',
-              padding: 6,
-              maxHeight: PANEL_MAX_HEIGHT,
-              animation: 'ocr-pop-in 0.12s ease',
+              maxHeight: DROPDOWN_PANEL_MAX_HEIGHT,
             }}
           >
             {multiple && (
@@ -440,7 +411,7 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
                     onMouseEnter={() => setActive(i)}
                     onClick={() => pick(o)}
                     style={{
-                      ...optionStyle,
+                      ...dropdownOptionStyle,
                       background: isActive ? 'var(--accent-bg)' : 'transparent',
                     }}
                   >
@@ -450,7 +421,7 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
                       {o.label}
                     </span>
                     {o.meta && (
-                      <span style={{ fontSize: 10.5, color: 'var(--text-dim)', flexShrink: 0 }}>{o.meta}</span>
+                      <span style={{ fontSize: 10.5, color: 'var(--text-dim)', flexShrink: 1, maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{o.meta}</span>
                     )}
                     {o.badge && (
                       <span

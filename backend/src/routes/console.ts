@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getAllClientStatuses, refreshClientProfileBindings, setupClient, teardownClient } from '../cli/clients/index.js';
+import { VIRTUAL_AUTO_IDS } from '../cli/types.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { MEMBER_TIER_ORDER } from '../providers/member-match.js';
 import { refreshDirectPool } from '../providers/boot-direct.js';
@@ -18,9 +19,9 @@ import { applyRouteEntriesConfig, getRouteEntryStore, routeEntriesGate } from '.
 import { applyDirectivesConfig } from '../pipeline/directive-gate.js';
 import { appendRoutingLedger } from '../router/routing-ledger.js';
 import { Layer2Decision } from '../router/layer2-decision.js';
-import { EFFORT_LADDER, ReasoningEffort, TierLevel } from '../types/router.js';
+import { EFFORT_LADDER, ReasoningEffort, TierLevel, modelSupportsEfforts } from '../types/router.js';
 import { runSystemoneDecision } from '../protocols/systemone/decide.js';
-import { SMART_ASSIGN_TIMEOUT_MS, DEFAULT_REPLAY_TIMEOUT_MS, CREDENTIAL_WEIGHT_MAX } from '../config/defaults.js';
+import { SMART_ASSIGN_TIMEOUT_MS, DEFAULT_REPLAY_TIMEOUT_MS, CREDENTIAL_WEIGHT_MAX, DEFAULT_FORWARD_PROXY_PORT } from '../config/defaults.js';
 import { initProxyConfig, proxiedFetch } from '../utils/proxy.js';
 import { getOcrHomeDir } from '../cli/paths.js';
 import { getHeadroomSidecarStatus, startHeadroomSidecar, stopHeadroomSidecar } from '../compression/headroom-sidecar.js';
@@ -28,6 +29,8 @@ import { APP_VERSION } from '../version.js';
 import { isSyncClientId } from '../opencode/credentials/sync.js';
 import { ensureCa } from '../forward-proxy/ca.js';
 import { getForwardProxyStatus } from '../forward-proxy/status.js';
+import { listProxyAccessEvents, clearProxyAccessLog, proxyAccessLogSettings, readProxyAccessBodyFile } from '../forward-proxy/access-log.js';
+import { getSystemProxyStatus, enableSystemProxy, disableSystemProxy } from '../forward-proxy/system-proxy.js';
 import { RouterConfig, type CredentialLimitConfig, type ModelRegistration, type RateLimitRule } from '../config/types.js';
 
 import type { CredentialMeta, CredentialStore, RawCred } from '../opencode/credentials/types.js';
@@ -1068,6 +1071,62 @@ export function registerConsoleRoutes(
 
   app.get('/api/admin/status', handleStatus);
 
+  // 3A2. Forward-proxy access log: every NON-intercepted HTTP exchange plus
+  // CONNECT tunnel decisions (forward-proxy/access-log.ts — memory ring backed
+  // by persisted daily JSONL under <ocrHome>/forward-proxy/access-log/; binary
+  // bodies land as raw files referenced by reqBodyFile/resBodyFile). Newest
+  // first; the Proxy Access page renders it.
+  app.get('/api/admin/proxy-log', async () => {
+    const s = proxyAccessLogSettings();
+    return {
+      status: 'ok',
+      enabled: s.enabled,
+      bodyBytes: s.bodyBytes,
+      events: listProxyAccessEvents(),
+    };
+  });
+
+  app.post('/api/admin/proxy-log/clear', async () => {
+    clearProxyAccessLog();
+    return { status: 'ok' };
+  });
+
+  // Raw persisted binary body (ref format `<day>/pa-...-<side>.bin`, validated
+  // inside readProxyAccessBodyFile — no traversal).
+  app.get('/api/admin/proxy-log/bodies/*', async (req, reply) => {
+    const ref = (req.params as Record<string, string>)['*'];
+    const body = readProxyAccessBodyFile(ref ?? '');
+    if (!body) {
+      reply.code(404);
+      return { status: 'error', message: 'body file not found' };
+    }
+    reply.header('content-type', 'application/octet-stream');
+    return body;
+  });
+
+  // 3A3. OS system proxy ownership for the inbound forward proxy: snapshot →
+  // point at 127.0.0.1:<port> → one-click restore (forward-proxy/system-proxy.ts).
+  app.get('/api/admin/system-proxy', async () => {
+    const fp = getRuntimeConfigRef()?.forwardProxy;
+    const port = fp?.port ?? DEFAULT_FORWARD_PROXY_PORT;
+    const sys = await getSystemProxyStatus(port, fp?.bypassHosts || []);
+    return { status: 'ok', ...sys, proxyEnabled: Boolean(fp?.enabled) };
+  });
+
+  app.post('/api/admin/system-proxy/enable', async () => {
+    const fp = getRuntimeConfigRef()?.forwardProxy;
+    const port = fp?.port ?? DEFAULT_FORWARD_PROXY_PORT;
+    const sys = await enableSystemProxy(port, fp?.bypassHosts || []);
+    return { status: 'ok', ...sys };
+  });
+
+  app.post('/api/admin/system-proxy/disable', async () => {
+    const fp = getRuntimeConfigRef()?.forwardProxy;
+    const port = fp?.port ?? DEFAULT_FORWARD_PROXY_PORT;
+    const sys = await disableSystemProxy(port, fp?.bypassHosts || []);
+    return { status: 'ok', ...sys };
+  });
+
   // 3B. Token usage aggregation from the trace ring: windowed totals plus
   // per-API-key rows (raw counts only — no cost accounting). Optional
   // `?since=<epoch-ms>` narrows to traces with `timestamp >= since`;
@@ -1222,11 +1281,12 @@ export function registerConsoleRoutes(
   // 4. Client Interception Setup / Teardown
   const handleSetup = async (req: any, reply: any) => {
     const { client } = req.params as { client: string };
-    const { models, apiKey, contextWindow, extraModels, agentModels, profile } = (req.body || {}) as {
+    const { models, apiKey, contextWindow, extraModels, virtualModels, agentModels, profile } = (req.body || {}) as {
       models?: Record<string, string>;
       apiKey?: string;
       contextWindow?: number;
       extraModels?: string[];
+      virtualModels?: string[];
       agentModels?: Record<string, string>;
       profile?: { id?: string; bindings?: Record<string, string> };
     };
@@ -1235,6 +1295,12 @@ export function registerConsoleRoutes(
       : undefined;
     const cleanedExtra = Array.isArray(extraModels)
       ? extraModels.map(s => String(s || '').trim()).filter(Boolean)
+      : undefined;
+    // Follow-mode virtual block: clamp to the known tier aliases in canonical
+    // order — the field carries the key policy's allowed verdicts, never
+    // arbitrary ids (concrete pins ride in extraModels).
+    const cleanedVirtual = Array.isArray(virtualModels)
+      ? [...VIRTUAL_AUTO_IDS].filter(id => virtualModels.map(s => String(s || '').trim()).includes(id))
       : undefined;
     const cw = Number(contextWindow);
 
@@ -1318,6 +1384,7 @@ export function registerConsoleRoutes(
       ...(apiKey?.trim() ? { apiKey: apiKey.trim() } : {}),
       ...(Number.isFinite(cw) && cw > 0 ? { contextWindow: Math.floor(cw) } : {}),
       ...(cleanedExtra ? { extraModels: cleanedExtra } : {}),
+      ...(cleanedVirtual !== undefined ? { virtualModels: cleanedVirtual } : {}),
       ...(agentModelsPayload ? { agentModels: agentModelsPayload } : {}),
       ...(profileEcho ? { profile: profileEcho } : {}),
     });
@@ -3968,6 +4035,12 @@ export function registerConsoleRoutes(
         kind: 'model' as const,
         owned_by: m.provider,
         tiers: registry.tiersOf(m) as string[],
+        // Declared thinking levels (ADR-0003 vocabulary). Console pickers that
+        // write a level into a config field (tier effort maps, variant pins)
+        // offer ONLY these — anything else would be clamped right back by
+        // downgradeReasoning. `[]` is a REAL answer ("no explicit level
+        // control", e.g. a toggle-only model), never "unknown".
+        efforts: modelSupportsEfforts(m.supportedReasoningEfforts, m.supportsReasoningEffort) ?? [],
         // Resolved upstream wire (model-level npm beats provider npm, see
         // providers/wire.ts). Console pickers MUST read it from here instead of
         // re-deriving it from the provider's npm string — `systemone` marks a

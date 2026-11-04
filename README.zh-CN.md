@@ -95,6 +95,8 @@ ocr setup opencode      # 将 OpenCode 路由无缝接入 OCR
 ocr setup claude        # 将 Claude Code / Claude Desktop 接入 OCR
 ocr setup codex         # 将 Codex / OpenAI CLI 接入 OCR
 ocr setup pi            # 将 Pi 接入 OCR
+ocr setup kimi          # 将 Kimi CLI 接入 OCR
+ocr setup openclaw      # 将 OpenClaw 接入 OCR
 
 # 卸载客户端代理挂载
 ocr teardown opencode   # 恢复 OpenCode 直连

@@ -2,16 +2,16 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { skillOwner, skillReaders } from '../src/harness/adapters/index.js';
-import { applySkill } from '../src/harness/writers/skill.js';
-import { scanInventory } from '../src/harness/inventory.js';
+import { skillOwner, skillReaders } from '../src/harness/host/adapters/index.js';
+import { applySkill } from '../src/harness/host/writers/skill.js';
+import { scanInventory } from '../src/harness/host/inventory.js';
 
 /**
  * Skills readership (ADR-0015 §D2) — the second answer a skills directory has.
  *
  * OWNERSHIP (`skillOwner`) is one host per directory: it decides the install target, the claim and
  * the removal. READERSHIP (`skillReaders`) is every runtime whose skills roots resolve to that
- * directory — the cross-agent `.agents/skills` tree is loaded by ten of them. The skills page's
+ * directory — the cross-agent `.agents/skills` tree is loaded by fourteen of them. The skills page's
  * harness rail selects by readership, so these cases pin the two answers apart: a shared tree must
  * list every reader (owner first) and a vendor-private directory must list only its own host.
  */
@@ -29,16 +29,18 @@ describe('skillReaders', () => {
 
     expect(readers[0]).toBe(skillOwner(shared, 'project', root));
     expect(readers[0]).toBe('universal');
-    // Ten hosts read the cross-agent project root: universal plus the nine vendors that spell it.
+    // Fourteen hosts read the cross-agent project root: universal plus the thirteen vendors that spell it.
     expect(readers.length).toBeGreaterThan(1);
     expect(readers).toContain('opencode');
     expect(readers).toContain('pi');
     expect(readers).toContain('omp');
     expect(readers).toContain('cursor');
     expect(readers).toContain('zed');
+    expect(readers).toContain('kimi');
+    expect(readers).toContain('windsurf');
+    expect(readers).toContain('grok');
     // A vendor-private directory is not a reader of the shared tree.
     expect(readers).not.toContain('claude');
-    expect(readers).not.toContain('windsurf');
   });
 
   it('answers one reader for a vendor-private directory, and never the shared tree', () => {
@@ -94,16 +96,15 @@ describe('inventory carries readership on skill copies', () => {
     expect(copy?.readers).not.toContain('claude');
   });
 
-  it('does not discover a project skills directory (project discovery is deferred)', () => {
+  it('discovers a project skills directory when project scope is enabled', () => {
     const root = tmpProject();
     const dir = path.join(root, '.agents', 'skills', 'loose');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'SKILL.md'), '---\nname: loose\n---\n# loose');
 
-    // ADR-0015 §D2 "Scope": the scan reads global roots only, so the project declaration in the
-    // adapters is a seam rather than a discovery surface. A project directory must not surface as a
-    // row — the console would offer to remove something this build never installs.
+    // With project scope enabled, scanInventory(projectRoot) discovers project-local skills.
     const row = scanInventory(root).discovered.find((d) => d.kind === 'skill' && d.name === 'loose');
-    expect(row).toBeUndefined();
+    expect(row).toBeDefined();
+    expect(row?.name).toBe('loose');
   });
 });

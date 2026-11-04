@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { currentModelOf, projectSessionEntity, deriveSessionEntryMode } from '../src/session/session-row.js';
+import { boundCredentialLabelOf, currentModelOf, projectSessionEntity, deriveSessionEntryMode, promptTurnsOf, sessionTitleOf } from '../src/session/session-row.js';
 import type { ConversationSession } from '../src/session/session-manager.js';
 import type { ExecutionTrace } from '../src/trace/tracker.js';
 
@@ -32,6 +32,27 @@ describe('currentModelOf (execution view of a session)', () => {
       currentModel: 'only',
       currentProvider: 'prov',
     });
+  });
+});
+
+describe('promptTurnsOf (console Turns column ≠ traceCount)', () => {
+  const turnTrace = (prompt: string): ExecutionTrace =>
+    ({ request: { userPromptSummary: prompt } }) as unknown as ExecutionTrace;
+
+  it('counts only traces carrying a NEW user prompt', () => {
+    const traces = [
+      turnTrace('fix the bug'),
+      // Agent tool loop: continuation request, orchestrator blanks the summary.
+      turnTrace(''),
+      turnTrace(''),
+      turnTrace('now add tests'),
+    ];
+    assert.equal(promptTurnsOf(traces), 2);
+  });
+
+  it('no prompts → 0 (a session entity can exist before any served turn)', () => {
+    assert.equal(promptTurnsOf([]), 0);
+    assert.equal(promptTurnsOf([turnTrace(''), turnTrace('')]), 0);
   });
 });
 
@@ -78,10 +99,53 @@ describe('projectSessionEntity (console whitelist)', () => {
   });
 });
 
+describe('sessionTitleOf (console title, entity-independent)', () => {
+  const titleTrace = (firstUserSummary: string | undefined, userPromptSummary: string): ExecutionTrace =>
+    ({ request: { firstUserSummary, userPromptSummary } }) as unknown as ExecutionTrace;
+
+  it('reads the birth trace, never a later turn prompt', () => {
+    const traces = [
+      titleTrace('Plan a trip to Kyoto', 'Plan a trip to Kyoto'),
+      titleTrace(undefined, 'Add a day in Osaka'),
+    ];
+    assert.equal(sessionTitleOf(traces), 'Plan a trip to Kyoto');
+  });
+
+  it('falls back to the opening turn summary on traces written before the field', () => {
+    assert.equal(sessionTitleOf([titleTrace(undefined, 'legacy prompt')]), 'legacy prompt');
+  });
+
+  it('no traces → undefined (nothing to name yet)', () => {
+    assert.equal(sessionTitleOf([]), undefined);
+  });
+});
+
 // The classifier moved here with the row contract; one smoke case so a bad
 // re-export in server.ts cannot silently break the console tier column.
 describe('deriveSessionEntryMode (re-exported from the row contract)', () => {
   it('classifies an empty trace list as mixed (safe fallback)', () => {
     assert.equal(deriveSessionEntryMode([]), 'mixed');
+  });
+});
+
+describe('boundCredentialLabelOf (display label of the bound credential)', () => {
+  const chain = [
+    { keyHashPrefix: 'aaaaaaaaaaaa', label: '  primary  ', key: 'k1' },
+    { keyHashPrefix: 'bbbbbbbbbbbb', key: 'k2' },
+  ];
+
+  it('matches the serving chain by prefix and trims the operator label', () => {
+    assert.equal(boundCredentialLabelOf(chain, 'aaaaaaaaaaaa'), 'primary');
+  });
+
+  it('unnamed credential / absent binding / missing chain → undefined (console falls back to #prefix)', () => {
+    assert.equal(boundCredentialLabelOf(chain, 'bbbbbbbbbbbb'), undefined);
+    assert.equal(boundCredentialLabelOf(chain, undefined), undefined);
+    assert.equal(boundCredentialLabelOf(undefined, 'aaaaaaaaaaaa'), undefined);
+  });
+
+  it('a prefix that left the chain is not guessed from another provider', () => {
+    // The route passes ONE provider's chain; an unknown prefix never matches.
+    assert.equal(boundCredentialLabelOf(chain, 'cccccccccccc'), undefined);
   });
 });

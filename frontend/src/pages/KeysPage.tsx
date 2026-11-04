@@ -2461,26 +2461,33 @@ export const KeysPage: React.FC = () => {
                 </div>
               )}
 
-              {testResults[p.id] && (
-                <div
-                  style={{
-                    fontSize: 11,
-                    fontFamily: FONT_MONO,
-                    color: testResults[p.id].ok ? 'var(--accent-emerald)' : 'var(--accent-rose)',
-                    wordBreak: 'break-all',
-                  }}
-                  title={testResults[p.id].ok ? `${testResults[p.id].latencyMs} ms` : testResults[p.id].error}
-                >
-                  {testResults[p.id].ok
-                    ? `✓ ${testResults[p.id].model} · ${fmtLatency(testResults[p.id].latencyMs ?? NaN)}`
-                    : `✗ ${testResults[p.id].error || t('op.testFailMsg')}`}
-                </div>
-              )}
 
               {/* Action footer pinned to the card bottom (margin-top auto in
                   the flex-column card) so button rows align across a grid row
                   regardless of how many credential rows each card holds. */}
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 'auto' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 'auto' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  {testResults[p.id] ? (
+                    <div
+                      style={{
+                        fontSize: 11,
+                        fontFamily: FONT_MONO,
+                        color: testResults[p.id].ok ? 'var(--accent-emerald)' : 'var(--accent-rose)',
+                        wordBreak: 'break-all',
+                      }}
+                      title={testResults[p.id].ok ? `${testResults[p.id].latencyMs} ms` : testResults[p.id].error}
+                    >
+                      {testResults[p.id].ok
+                        ? `✓ ${testResults[p.id].model} · ${fmtLatency(testResults[p.id].latencyMs ?? NaN)}`
+                        : `✗ ${testResults[p.id].error || t('op.testFailMsg')}`}
+                    </div>
+                  ) : (
+                    <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                      {t('op.credCount', { n: credentialList.length })}
+                    </span>
+                  )}
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
                 {keyEditId === p.id ? (
                   <>
                     <input
@@ -2536,6 +2543,7 @@ export const KeysPage: React.FC = () => {
                     </button>
                   </>
                 )}
+                </div>
               </div>
 
               {modelsPanelId === p.id && (

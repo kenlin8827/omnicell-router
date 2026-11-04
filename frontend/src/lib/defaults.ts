@@ -14,6 +14,13 @@ export const DEFAULT_FORWARD_PROXY_PORT = 4555;
 /** `forwardProxy.host` backend default (loopback only). */
 export const DEFAULT_FORWARD_PROXY_HOST = '127.0.0.1';
 
+/** `forwardProxy.accessLog.persistDays` backend default (day-file retention). */
+export const DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS = 7;
+/** `persistDays` clamp bounds — mirrors backend
+ *  `PROXY_ACCESS_LOG_PERSIST_DAYS_MIN/MAX` (backend/src/config/defaults.ts). */
+export const PROXY_ACCESS_LOG_PERSIST_DAYS_MIN = 1;
+export const PROXY_ACCESS_LOG_PERSIST_DAYS_MAX = 365;
+
 /** `compression.headroom.url` backend default (loopback-only sidecar). */
 export const DEFAULT_HEADROOM_URL = 'http://127.0.0.1:8787';
 

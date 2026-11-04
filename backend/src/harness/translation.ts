@@ -5,7 +5,7 @@ import { defaultGatewayPort } from '../cli/clients/base.js';
 import { loadConfig } from '../config/index.js';
 import { INTERNAL_SESSION_PREFIX } from '../session/session-manager.js';
 import { renameWithRetry } from '../utils/atomic-write.js';
-import { harnessEnvDir } from './manifest.js';
+import { harnessEnvDir } from './host/manifest.js';
 
 /**
  * Description translation cache (ADR-0015 follow-up).

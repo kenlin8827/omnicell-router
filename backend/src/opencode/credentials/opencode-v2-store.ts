@@ -379,6 +379,37 @@ export const defaultServiceStatusRunner: ServiceStatusRunner = () =>
     });
   });
 
+/**
+ * Service discovery shared by the credential write path and read-only runtime probes.
+ *
+ * Stage 1: the sync file/env resolution (uncached on purpose: a failed call re-reads service.json
+ * to pick up password rotation / port drift). Stage 2 (live gap, opencode 2.0.32, observed
+ * 2026-10-18): when env/service.json carry NO explicit url, the sync stage would fall back to the
+ * legacy default — but current builds pick an ephemeral port per boot and no longer record it in
+ * service.json (the file holds {password, env} only, while `opencode service status` answers the
+ * real URL). Ask the CLI instead; a failed probe keeps the legacy default, so this only ever widens
+ * reachability, never breaks it.
+ */
+export async function discoverOpencodeServiceConfig(
+  paths: CredentialPaths,
+  env: Readonly<Record<string, string | undefined>> = defaultEnv(),
+  runServiceStatus: ServiceStatusRunner = defaultServiceStatusRunner
+): Promise<OpencodeV2ServiceConfig | null> {
+  const cfg = resolveServiceConfigForPaths(paths, env);
+  if (!cfg) return null;
+  const raw = resolveRawServiceConfig(paths, env);
+  if (raw?.url) return cfg; // explicit env/service.json url — never second-guessed
+  const live = await runServiceStatus();
+  if (!live || live === cfg.baseUrl) return cfg;
+  const targetPolicy = classifyServiceTarget(live);
+  if (targetPolicy !== 'loopback') {
+    console.warn(
+      `[credentials] opencode v2 service discovered via CLI at ${live} (${targetPolicy}) — service.json carries no explicit url`
+    );
+  }
+  return { ...cfg, baseUrl: live, targetPolicy };
+}
+
 // ---------------------------------------------------------------------------
 // end WIRE ADAPTER
 // ---------------------------------------------------------------------------
@@ -858,33 +889,6 @@ export class OpencodeV2Store implements CredentialStore {
   }
 
   /**
-   * Service discovery for writes. Stage 1: the sync file/env resolution
-   * (uncached on purpose: a failed write re-reads service.json to pick up
-   * password rotation / port drift). Stage 2 (live gap, opencode 2.0.32,
-   * observed 2026-10-18): when env/service.json carry NO explicit url, the
-   * sync stage would fall back to the legacy default — but current builds
-   * pick an ephemeral port per boot and no longer record it in service.json
-   * (the file holds {password, env} only, while `opencode service status`
-   * answers the real URL). Ask the CLI instead; a failed probe keeps the
-   * legacy default, so this only ever widens reachability, never breaks it.
-   */
-  private async resolveServiceConfig(): Promise<OpencodeV2ServiceConfig | null> {
-    const cfg = resolveServiceConfigForPaths(this.paths, this.env);
-    if (!cfg) return null;
-    const raw = resolveRawServiceConfig(this.paths, this.env);
-    if (raw?.url) return cfg; // explicit env/service.json url — never second-guessed
-    const live = await this.runServiceStatus();
-    if (!live || live === cfg.baseUrl) return cfg;
-    const targetPolicy = classifyServiceTarget(live);
-    if (targetPolicy !== 'loopback') {
-      console.warn(
-        `[credentials] opencode v2 service discovered via CLI at ${live} (${targetPolicy}) — service.json carries no explicit url`
-      );
-    }
-    return { ...cfg, baseUrl: live, targetPolicy };
-  }
-
-  /**
    * The provider ids this sink will accept a credential write for — the registry
    * `resolveIntegrationId()` consults, UNIONED with the ids declared in the OCR
    * defs file: an unmatched write self-heals via the materialize → reload path
@@ -990,13 +994,13 @@ export class OpencodeV2Store implements CredentialStore {
 
   /**
    * One service call with retry: on failure, RE-READ service.json
-   * (password rotation / port drift — resolveServiceConfig is uncached) and
+   * (password rotation / port drift — discoverOpencodeServiceConfig is uncached) and
    * retry once; the second failure surfaces as WriteFailedError.
    */
   private async callService(label: string, fn: (cfg: OpencodeV2ServiceConfig) => Promise<unknown>): Promise<unknown> {
     let lastError: unknown;
     for (let attempt = 0; attempt < 2; attempt++) {
-      const cfg = await this.resolveServiceConfig();
+      const cfg = await discoverOpencodeServiceConfig(this.paths, this.env, this.runServiceStatus);
       if (!cfg) {
         lastError = new Error('no opencode v2 service config (OPENCODE_SERVER_PASSWORD / service.json absent)');
         continue;

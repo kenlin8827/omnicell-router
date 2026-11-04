@@ -16,6 +16,7 @@ import {
   setLiveForwardProxy,
   transitProxyFor,
 } from './egress.js';
+import { createAccessTap, recordProxyConnect, type AccessTap } from './access-log.js';
 
 /**
  * Inbound forward proxy (the HTTP_PROXY / HTTPS_PROXY server).
@@ -94,18 +95,27 @@ interface ForwardTarget {
   secure: boolean;
   /** Per-request egress override (bypass entries); undefined = global flag. */
   viaProxy?: boolean;
+  /** Access-log tap (non-intercepted forwards only); undefined = no capture. */
+  tap?: AccessTap;
 }
 
-
 /** Send the request body upstream: a straight pipe (non-intercepted
- *  forwards never had their stream consumed). */
-function pumpRequestBody(req: http.IncomingMessage, upstream: http.ClientRequest): void {
+ *  forwards never had their stream consumed). With a tap, chunks tee into
+ *  the access log alongside the pipe (both consumers see every chunk). */
+function pumpRequestBody(req: http.IncomingMessage, upstream: http.ClientRequest, tap?: AccessTap): void {
+  if (tap) req.on('data', (d: Buffer) => tap.onReqChunk(d));
   req.pipe(upstream);
   req.on('error', () => {
     try {
       upstream.destroy();
     } catch {}
   });
+}
+
+/** Pipe the upstream response to the client, teeing chunks into the tap. */
+function pipeUpResponse(up: http.IncomingMessage, res: http.ServerResponse, tap?: AccessTap): void {
+  if (tap) up.on('data', (d: Buffer) => tap.onResChunk(d));
+  up.pipe(res);
 }
 
 function forwardTo(
@@ -143,14 +153,16 @@ function forwardDirect(
         // timer so long-lived streams (SSE direct forwards) are never killed.
         upstream.setTimeout(0);
         res.writeHead(up.statusCode || 502, filterHeaders(up.headers as http.IncomingHttpHeaders));
-        up.pipe(res);
+        pipeUpResponse(up, res, t.tap);
         up.on('end', () => {
+          t.tap?.finish(up.statusCode, up.headers);
           resolve();
         });
         up.on('error', () => {
           try {
             res.destroy();
           } catch {}
+          t.tap?.finish(up.statusCode, up.headers, 'upstream error mid-response');
           resolve();
         });
       }
@@ -163,13 +175,14 @@ function forwardDirect(
     });
     upstream.on('error', (err: any) => {
       const timedOut = err?.message === 'upstream timeout';
+      t.tap?.finish(undefined, undefined, timedOut ? 'upstream timeout' : 'upstream connect failed');
       try {
         if (!res.headersSent) res.writeHead(timedOut ? 504 : 502, { 'content-type': 'text/plain; charset=utf-8' });
         res.end(timedOut ? 'Forward proxy: upstream timed out (target unreachable from this machine?)' : 'Forward proxy: upstream connection failed');
       } catch {}
       resolve();
     });
-    pumpRequestBody(req, upstream);
+    pumpRequestBody(req, upstream, t.tap);
   });
 }
 
@@ -221,8 +234,9 @@ function forwardSecureViaProxy(
             (up) => {
               upstream.setTimeout(0);
               res.writeHead(up.statusCode || 502, filterHeaders(up.headers as http.IncomingHttpHeaders));
-              up.pipe(res);
+              pipeUpResponse(up, res, t.tap);
               up.on('end', () => {
+                t.tap?.finish(up.statusCode, up.headers);
                 cleanup();
                 resolve();
               });
@@ -230,6 +244,7 @@ function forwardSecureViaProxy(
                 try {
                   res.destroy();
                 } catch {}
+                t.tap?.finish(up.statusCode, up.headers, 'upstream error mid-response');
                 cleanup();
                 resolve();
               });
@@ -240,6 +255,7 @@ function forwardSecureViaProxy(
           });
           upstream.on('error', (err: any) => {
             const timedOut = err?.message === 'upstream timeout';
+            t.tap?.finish(undefined, undefined, timedOut ? 'upstream timeout' : 'upstream connect failed');
             proxyFail(
               res,
               timedOut ? 504 : 502,
@@ -248,10 +264,11 @@ function forwardSecureViaProxy(
             cleanup();
             resolve();
           });
-          pumpRequestBody(req, upstream);
+          pumpRequestBody(req, upstream, t.tap);
         });
       })
       .catch((err: any) => {
+        t.tap?.finish(undefined, undefined, 'outbound proxy connect failed');
         proxyFail(res, 502, `Forward proxy: outbound proxy connection failed (${err?.message || err})`);
         resolve();
       });
@@ -284,14 +301,16 @@ function forwardPlainViaProxy(
       (up) => {
         upstream.setTimeout(0);
         res.writeHead(up.statusCode || 502, filterHeaders(up.headers as http.IncomingHttpHeaders));
-        up.pipe(res);
+        pipeUpResponse(up, res, t.tap);
         up.on('end', () => {
+          t.tap?.finish(up.statusCode, up.headers);
           resolve();
         });
         up.on('error', () => {
           try {
             res.destroy();
           } catch {}
+          t.tap?.finish(up.statusCode, up.headers, 'upstream error mid-response');
           resolve();
         });
       }
@@ -301,6 +320,7 @@ function forwardPlainViaProxy(
     });
     upstream.on('error', (err: any) => {
       const timedOut = err?.message === 'upstream timeout';
+      t.tap?.finish(undefined, undefined, timedOut ? 'upstream timeout' : 'upstream connect failed');
       proxyFail(
         res,
         timedOut ? 504 : 502,
@@ -308,7 +328,7 @@ function forwardPlainViaProxy(
       );
       resolve();
     });
-    pumpRequestBody(req, upstream);
+    pumpRequestBody(req, upstream, t.tap);
   });
 }
 
@@ -349,7 +369,14 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
         res.end('Forward proxy: missing Host header');
         return;
       }
-      await forwardTo(req, res, { host, port, path: req.url || '/', secure: true });
+      const tap = createAccessTap({
+        host,
+        port,
+        method: req.method,
+        path: req.url || '/',
+        requestHeaders: req.headers,
+      });
+      await forwardTo(req, res, { host, port, path: req.url || '/', secure: true, tap });
     } catch {
       try {
         if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
@@ -480,6 +507,7 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
 
     const bb = matchBypass(rawHost, currentBypassHosts(deps.bypassHosts));
     if (bb.bypassed) {
+      recordProxyConnect({ host: rawHost, port, note: 'connect (bypassed, blind tunnel)' });
       tunnel(socket, rawHost, port, undefined, bb.viaProxy);
       return;
     }
@@ -498,7 +526,7 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
         socket.pause();
         socket.removeListener('data', onData);
         log(`MITM ${sni}`);
-        void startMitm(socket, buf, sni);
+        void startMitm(socket, buf, sni, port);
         return;
       }
       if (total > MAX_HELLO_BYTES) {
@@ -506,6 +534,7 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
         socket.pause();
         socket.removeListener('data', onData);
         log(`tunnel ${rawHost}:${port} (no SNI parsed)`);
+        recordProxyConnect({ host: rawHost, port, note: 'connect (no SNI parsed, blind tunnel)' });
         tunnel(socket, rawHost, port, buf);
       }
     };
@@ -517,9 +546,10 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
     });
   }
 
-  async function startMitm(socket: net.Socket, hello: Buffer, sni: string): Promise<void> {
+  async function startMitm(socket: net.Socket, hello: Buffer, sni: string, connectPort: number): Promise<void> {
     try {
       const port = await hostTlsPort(sni);
+      recordProxyConnect({ host: sni, port: connectPort, note: 'connect (mitm)' });
       const up = net.connect(port, '127.0.0.1', () => {
         up.write(hello);
         splice(socket, up);
@@ -536,7 +566,8 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
       });
     } catch (err: any) {
       log(`MITM setup failed for ${sni}: ${err?.message || err} — blind tunnel fallback`);
-      tunnel(socket, sni, 443);
+      recordProxyConnect({ host: sni, port: connectPort, note: 'connect (mitm setup failed, blind tunnel fallback)' });
+      tunnel(socket, sni, connectPort);
     }
   }
 
@@ -563,12 +594,20 @@ export async function createForwardProxyServer(deps: ForwardProxyDeps): Promise<
     const bb = matchBypass(target.hostname, currentBypassHosts(deps.bypassHosts));
     try {
       if (!bb.bypassed && (await deps.intercept(req, res))) return;
+      const tap = createAccessTap({
+        host: target.hostname,
+        port: parseInt(target.port || (target.protocol === 'https:' ? '443' : '80'), 10),
+        method: req.method,
+        path: req.url || '/',
+        requestHeaders: req.headers,
+      });
       await forwardTo(req, res, {
         host: target.hostname,
         port: parseInt(target.port || (target.protocol === 'https:' ? '443' : '80'), 10),
         path: target.pathname + target.search,
         secure: target.protocol === 'https:',
         viaProxy: bb.bypassed ? bb.viaProxy : undefined,
+        tap,
       });
     } catch {
       try {

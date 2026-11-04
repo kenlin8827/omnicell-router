@@ -1,11 +1,14 @@
-import { ClientAdapter, ClientActionResult } from './base.js';
+import { ClientAdapter, ClientActionResult, probeClientVersion } from './base.js';
 import { OpenCodeClientAdapter } from './opencode.js';
 import { OpenCodeProxyClientAdapter } from './opencode-proxy.js';
 import { ClaudeClientAdapter } from './claude.js';
 import { CodexClientAdapter } from './codex.js';
 import { PiClientAdapter } from './pi.js';
 import { DshClientAdapter } from './dsh.js';
+import { GrokClientAdapter } from './grok.js';
 import { OmpClientAdapter } from './omp.js';
+import { KimiClientAdapter } from './kimi.js';
+import { OpenClawClientAdapter } from './openclaw.js';
 import { ClientHookStatus, SupportedClient } from '../types.js';
 
 const adapters: Record<SupportedClient, ClientAdapter> = {
@@ -16,6 +19,9 @@ const adapters: Record<SupportedClient, ClientAdapter> = {
   pi: new PiClientAdapter(),
   dsh: new DshClientAdapter(),
   omp: new OmpClientAdapter(),
+  grok: new GrokClientAdapter(),
+  kimi: new KimiClientAdapter(),
+  openclaw: new OpenClawClientAdapter(),
 };
 
 export function getClientAdapter(name: string): ClientAdapter | null {
@@ -28,7 +34,33 @@ export function getAllClientAdapters(): ClientAdapter[] {
 }
 
 export async function getAllClientStatuses(): Promise<ClientHookStatus[]> {
-  return Promise.all(getAllClientAdapters().map(adapter => adapter.getStatus()));
+  return Promise.all(
+    getAllClientAdapters().map(async adapter => {
+      const status = await adapter.getStatus();
+      if (adapter.versionCmd) {
+        const current = await probeClientVersion(adapter.versionCmd);
+        if (current) {
+          status.version = {
+            current,
+            min: adapter.minVersion,
+            meetsMin: !adapter.minVersion || compareVersions(current, adapter.minVersion) >= 0,
+          };
+        }
+      }
+      return status;
+    })
+  );
+}
+
+/** Semver-ish three-segment compare; missing segments count as 0. */
+function compareVersions(a: string, b: string): number {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d !== 0) return d;
+  }
+  return 0;
 }
 
 export async function setupClient(

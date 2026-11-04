@@ -28,7 +28,7 @@ import { useConfirm } from '../components/ConfirmProvider';
 import { Combobox } from '../components/Combobox';
 import { SegGroup } from '../components/SegGroup';
 import { Switch } from '../components/Switch';
-import { MD_COMPONENTS, MD_PLUGINS } from '../components/SessionTranscript';
+import { MD_COMPONENTS, MD_PLUGINS } from '../components/Prose';
 import { copyToClipboard } from '../lib/format';
 import { FONT_MONO } from '../lib/fonts';
 import type { PlaygroundPresetQuestion } from '../i18n/types';

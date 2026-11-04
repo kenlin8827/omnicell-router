@@ -2,10 +2,10 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { discoverExtensions, type ExtSource } from '../src/harness/discover.js';
-import { applyRemove, planRemove } from '../src/harness/maintenance.js';
-import { findArtifact } from '../src/harness/manifest.js';
-import { applyExtension } from '../src/harness/writers/extension.js';
+import { discoverPlugins, type ExtSource } from '../src/harness/host/discover.js';
+import { applyRemove, planRemove } from '../src/harness/host/maintenance.js';
+import { findArtifact } from '../src/harness/host/manifest.js';
+import { applyPlugin } from '../src/harness/host/writers/plugin.js';
 
 /**
  * Removal ops (ADR-0015 §D5 / §D8.9 / §D8.10).
@@ -33,7 +33,7 @@ describe('tracked config-landed copy', () => {
     // A hand-written config: another plugin and an unrelated key must survive our removal.
     fs.writeFileSync(config, JSON.stringify({ theme: 'keep-me', plugin: ['other-plugin'] }, null, 2));
 
-    const applied = await applyExtension({
+    const applied = await applyPlugin({
       sourceId: 'manual',
       canonicalKey: 'manual:my-plugin',
       spec: 'my-plugin',
@@ -56,7 +56,7 @@ describe('tracked config-landed copy', () => {
     expect(plan.actions[0]!.entry).toBe('my-plugin');
     expect(plan.actions[0]!.container).toBe('plugin');
 
-    const removed = applyRemove(plan.planId);
+    const removed = await applyRemove(plan.planId)
     expect(removed.ok).toBe(true);
     expect(fs.existsSync(config)).toBe(true);
     const after = readJson(config);
@@ -70,7 +70,7 @@ describe('tracked config-landed copy', () => {
     const config = path.join(root, 'opencode.json');
     fs.writeFileSync(config, JSON.stringify({ plugin: [] }, null, 2));
 
-    const applied = await applyExtension({
+    const applied = await applyPlugin({
       sourceId: 'manual',
       canonicalKey: 'manual:forgotten',
       spec: 'forgotten',
@@ -95,7 +95,7 @@ describe('tracked config-landed copy', () => {
     expect(plan.actions[0]!.op).toBe('prune-only');
     expect(plan.actions[0]!.exists).toBe(false);
 
-    expect(applyRemove(plan.planId).ok).toBe(true);
+    expect((await applyRemove(plan.planId)).ok).toBe(true);
     // A prune performs no filesystem op: the config file must still be there, byte-for-byte shape.
     expect(fs.existsSync(config)).toBe(true);
     expect(readJson(config)).toEqual({ plugin: [] });
@@ -103,36 +103,39 @@ describe('tracked config-landed copy', () => {
   });
 });
 
-describe('discovered row descriptor', () => {  it('removes a plugin[] row through the descriptor the scan produced', () => {
+describe('discovered row descriptor', () => {
+  it('removes a plugin[] row through the descriptor the scan produced', async () => {
     const root = tmp();
     const file = path.join(root, 'opencode.json');
     fs.writeFileSync(file, JSON.stringify({ mcp: { keep: { type: 'local' } }, plugin: ['ghost', 'stay'] }, null, 2));
 
     const source: ExtSource = {
       host: 'opencode',
-      scope: 'global',
+      scope: 'project',
       origin: 'config-array',
       kind: 'config-array',
       path: file,
       key: 'plugin',
     };
-    const row = discoverExtensions([source]).find((r) => r.name === 'ghost')!;
+    const row = discoverPlugins([source]).find((r) => r.name === 'ghost')!;
     expect(row.removal).toEqual({ op: 'drop-entry', file, container: 'plugin', entry: 'ghost' });
 
-    const plan = planRemove([{ artifactId: null, copies: row.copies, removal: row.removal }]);
+    const plan = planRemove([{ artifactId: null, copies: row.copies, removal: row.removal }], {
+      projectRoot: root,
+    });
     if ('error' in plan) throw new Error(plan.error);
     expect(plan.actions[0]!.op).toBe('drop-entry');
 
-    expect(applyRemove(plan.planId).ok).toBe(true);
+    expect((await applyRemove(plan.planId)).ok).toBe(true);
     const after = readJson(file);
     expect(after['plugin']).toEqual(['stay']);
     expect(after['mcp']).toEqual({ keep: { type: 'local' } });
   });
 
-  it('describes a loose extension file as a trash path, not a config entry', () => {
+  it('describes a loose plugin file as a trash path, not a config entry', () => {
     const dir = path.join(tmp(), 'extensions');
     const source: ExtSource = { host: 'pi', scope: 'global', origin: 'local-file', kind: 'loose-dir', path: dir };
-    const rows = discoverExtensions([source], {
+    const rows = discoverPlugins([source], {
       deps: {
         exists: () => true,
         readJson: () => ({}),
@@ -173,5 +176,23 @@ describe('discovered row descriptor', () => {  it('removes a plugin[] row throug
     expect('error' in plan).toBe(true);
     // Nothing was moved: the containment guard refuses before any write is planned.
     expect(fs.existsSync(file)).toBe(true);
+  });
+
+  it('refuses a drop-entry whose file is not a declared landing of the row host', () => {
+    const file = path.join(tmp(), 'settings.json');
+    fs.writeFileSync(file, JSON.stringify({ packages: [] }));
+
+    // The descriptor names pi but points at an unrelated file: the remove plan must never edit a
+    // file the host's own adapters did not declare.
+    const plan = planRemove([
+      {
+        artifactId: null,
+        copies: [{ scope: 'global', host: 'pi', path: `${path.dirname(file)}#pi` }],
+        removal: { op: 'drop-entry', file, container: 'packages', entry: 'npm:gone' },
+      },
+    ]);
+    expect('error' in plan).toBe(true);
+    if ('error' in plan) expect(plan.error).toContain('not a config landing');
+    expect(readJson(file)).toEqual({ packages: [] });
   });
 });

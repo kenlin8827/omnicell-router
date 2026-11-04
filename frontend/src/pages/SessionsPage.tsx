@@ -855,7 +855,9 @@ export const SessionsPage: React.FC = () => {
                   </span>
                 </th>
                 <th style={TH_STYLE}>{t('sessions.thSwitches')}</th>
-                <th style={TH_STYLE}>{t('sessions.thTurns')}</th>
+                <th style={TH_STYLE}>
+                  <span title={t('sessions.thTurnsTip')}>{t('sessions.thTurns')}</span>
+                </th>
                 <th style={TH_STYLE}>{t('sessions.thRequests')}</th>
                 <th style={TH_LEFT}>{t('sessions.thTokens')}</th>
                 <th style={TH_STYLE}>{t('sessions.thCost')}</th>
@@ -994,7 +996,9 @@ export const SessionsPage: React.FC = () => {
                   </td>
                   <td style={{ padding: '10px 14px', fontWeight: 600 }}>
                     <ModelRefCell model={s.currentModel} provider={s.currentProvider} />
-                    {/* Credential affinity (display-safe keyHash). */}
+                    {/* Credential affinity: the operator's label when the
+                        registry chain carries one, else the display-safe
+                        keyHash prefix (ADR-0002 §3). */}
                     {s.boundKeyHashPrefix && (
                       <span
                         title={t('sessions.boundCredentialTip', {
@@ -1005,7 +1009,7 @@ export const SessionsPage: React.FC = () => {
                           display: 'block',
                           marginTop: '3px',
                           fontSize: '10px',
-                          fontFamily: FONT_MONO,
+                          fontFamily: s.boundCredentialLabel ? undefined : FONT_MONO,
                           lineHeight: '14px',
                           padding: '1px 6px',
                           borderRadius: '4px',
@@ -1019,7 +1023,7 @@ export const SessionsPage: React.FC = () => {
                           whiteSpace: 'nowrap',
                         }}
                       >
-                        #{s.boundKeyHashPrefix}
+                        {s.boundCredentialLabel || `#${s.boundKeyHashPrefix}`}
                       </span>
                     )}
                   </td>
@@ -1507,12 +1511,6 @@ export const SessionsPage: React.FC = () => {
                         fontSize: '10px',
                         fontWeight: 700,
                         textTransform: 'uppercase',
-                        // Sticky on the grid's internal (expanded) scroll:
-                        // rows slide under the header, which keeps the card
-                        // background so they never bleed through.
-                        position: 'sticky',
-                        top: 0,
-                        background: 'var(--card-bg)',
                       }}
                     >
                       {label}

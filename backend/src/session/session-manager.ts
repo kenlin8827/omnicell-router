@@ -148,9 +148,19 @@ const PERSIST_SAVE_DEBOUNCE_MS = 2_000;
  *      conversation into dozens of session ids. The full history is in
  *      ADR-0002.
  *   7. Cold start — mint `sess_<24 random hex>` and claim the conversation key.
- *      A turn-1-shaped resend (retry / harness re-fork, no assistant yet) ALWAYS
- *      mints a distinct id (preserving the no-false-merge guarantee); it
- *      self-heals from turn 2 when the branches get their own anchors.
+ *      A generic vendor header (`x-<app>-(session|conversation)-id`) RENAMES
+ *      the minted id (lookupType header_fallback) and is honored ONLY on the
+ *      two fresh-mint paths (turn-1-shaped start, step-8 ambiguity re-mint):
+ *      it can name a session that would be freshly minted anyway — the claim
+ *      outranks content ambiguity exactly like step 1 outranks everything —
+ *      never redirect one the anchors already hold. Values claiming the
+ *      reserved `ocr-internal:` prefix or exceeding 200 chars are ignored
+ *      (fall through to the next header / the random mint).
+ *      A turn-1-shaped resend (retry / harness re-fork, no assistant yet) with
+ *      no vendor header ALWAYS mints a distinct id (preserving the no-false-
+ *      merge guarantee); carrying the SAME header value re-attaches instead —
+ *      the value IS the conversation claim. Headerless splits self-heal from
+ *      turn 2 when the branches get their own anchors.
  *      Deterministic birth ids are rejected: they collide across conversations
  *      sharing boilerplate openings on a local gateway.
  *
@@ -335,6 +345,46 @@ export class SessionManager {
     return null;
   }
 
+  /** Generic vendor session header: `x-<app>-(session|conversation)-id`, any app segment. */
+  private static readonly VENDOR_SESSION_HEADER_RE = /^x-[a-z0-9][a-z0-9-]*-(session|conversation)-id$/;
+
+  /**
+   * Length cap for a client-supplied vendor session id. The value persists
+   * into the session snapshot and console rows verbatim; HTTP headers can
+   * carry far more than any sane id. Generous (matches the title cap), so
+   * real ids — `sess_*`, UUIDs, `conv_*`, thread slugs — never clip.
+   */
+  private static readonly VENDOR_SESSION_ID_MAX = 200;
+
+  /**
+   * Vendor-header fallback probe — see step 7 in the class doc. Returns the
+   * trimmed value of the first `x-<app>-(session|conversation)-id` header
+   * (array header → first entry), or null. The bare `x-session-id` /
+   * `x-conversation-id` / `session-id` / `conversation-id` forms never match
+   * (the app segment must be non-empty) — they are step 1's explicit_header
+   * territory, never re-probed here. Two namespace guards bind each value: a
+   * value claiming the reserved `ocr-internal:` prefix (a gateway-internal
+   * row marker — a client must not be able to hide its row from the console)
+   * or exceeding `VENDOR_SESSION_ID_MAX` is skipped, falling through to the
+   * next matching header, else to the random mint. Deterministic pick:
+   * alphabetically first match on the lowercased name, so the same header
+   * set always resolves to the same id regardless of arrival order.
+   */
+  private static vendorSessionHeader(headers?: Record<string, string | string[] | undefined>): string | null {
+    if (!headers) return null;
+    const hits = Object.entries(headers)
+      .map(([name, value]) => ({ lower: name.toLowerCase(), value }))
+      .filter(h => SessionManager.VENDOR_SESSION_HEADER_RE.test(h.lower))
+      .sort((a, b) => (a.lower < b.lower ? -1 : a.lower > b.lower ? 1 : 0));
+    for (const hit of hits) {
+      const id = (Array.isArray(hit.value) ? hit.value[0] : hit.value)?.trim();
+      if (id && !id.startsWith(INTERNAL_SESSION_PREFIX) && id.length <= SessionManager.VENDOR_SESSION_ID_MAX) {
+        return id;
+      }
+    }
+    return null;
+  }
+
   /**
    * Seamless Session Resolver — see the class doc for the full priority list.
    */
@@ -373,6 +423,10 @@ export class SessionManager {
     const messages = request.messages || [];
     const priorHistory = messages.slice(0, -1);
     const key = SessionManager.conversationKey(messages, identity?.keyId);
+    // Vendor-header fallback rides the fresh-mint paths only (turn-1 start +
+    // step-8 ambiguity re-mint — see vendorSessionHeader): resolved once
+    // here, consumed by mintColdStart.
+    const vendorHeader = SessionManager.vendorSessionHeader(identity?.headers);
 
     // Cold start: nothing to anchor on — either a literal turn 1 (single
     // message) or harness turn 1 ([system, user]: no completed exchange yet).
@@ -380,7 +434,7 @@ export class SessionManager {
     // sharing a byte-identical first message must not false-merge — the split
     // self-heals from turn 2 when the branches get their own anchors).
     if (messages.length < 2 || !priorHistory.some(m => m?.role === 'assistant')) {
-      return this.mintColdStart(key);
+      return this.mintColdStart(key, vendorHeader);
     }
 
     // 5/6. Byte-exact anchor evidence (turn 2+ fast paths). Anchors carry the
@@ -407,7 +461,7 @@ export class SessionManager {
     }
 
     // 8. Nothing to anchor on: fresh mint + claim.
-    return this.mintColdStart(key);
+    return this.mintColdStart(key, vendorHeader);
   }
 
   private probeChainAnchors(priorHistory: any[]): SessionResolveResult | null {
@@ -444,14 +498,22 @@ export class SessionManager {
   }
 
   /**
-   * Mint a fresh session id with random entropy (collision-free by
-   * construction) and claim the conversation key so later turns re-anchor
-   * through content alone (retries, regenerated assistant bytes).
+   * Mint a fresh session id — the vendor header's value when present
+   * (deterministic per conversation, so a turn-1-shaped resend from the same
+   * harness conversation re-attaches instead of splitting; distinct
+   * conversations never share the header value, so the no-false-merge
+   * guarantee holds) — else random entropy (collision-free by construction).
+   * The conversation key is claimed either way so later turns re-anchor
+   * through content alone (retries, regenerated assistant bytes). The claim
+   * rides BOTH mint call sites (turn-1 start and the step-8 ambiguity
+   * re-mint): a well-behaved client re-attaches to its own id instead of
+   * churning to a random one; a per-turn junk value only renames that mint,
+   * and the anchors re-acquire the conversation from the next turn.
    */
-  private mintColdStart(key: string | null): SessionResolveResult {
-    const sessionId = 'sess_' + crypto.randomBytes(12).toString('hex');
+  private mintColdStart(key: string | null, vendorHeader?: string | null): SessionResolveResult {
+    const sessionId = vendorHeader || 'sess_' + crypto.randomBytes(12).toString('hex');
     if (key) this.claimConvKey(key, sessionId);
-    return { sessionId, lookupType: 'cold_start' };
+    return { sessionId, lookupType: vendorHeader ? 'header_fallback' : 'cold_start' };
   }
 
   /**

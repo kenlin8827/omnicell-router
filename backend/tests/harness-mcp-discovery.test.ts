@@ -2,12 +2,12 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { discoverMcp, mcpSources, mcpTrackedKey, type DiscoveryDeps, type McpSource } from '../src/harness/discover.js';
-import { applyRemove, planRemove } from '../src/harness/maintenance.js';
-import { isMcpHost } from '../src/harness/adapters/index.js';
+import { discoverMcp, mcpSources, mcpTrackedKey, type DiscoveryDeps, type McpSource } from '../src/harness/host/discover.js';
+import { applyRemove, planRemove } from '../src/harness/host/maintenance.js';
+import { adapterFor, isMcpHost } from '../src/harness/host/adapters/index.js';
 
 /**
- * MCP discovery (ADR-0015 §D8.10) — the object-shaped landing, read the same way the extension page
+ * MCP discovery (ADR-0015 §D8.10) — the object-shaped landing, read the same way the plugin page
  * reads `plugin[]`.
  *
  * The rules under test are the ones that keep observation from becoming ownership: one row per
@@ -46,8 +46,9 @@ describe('mcpSources', () => {
     for (const entry of sources) {
       const declared = mcpSources(process.cwd()).filter((s) => s.host === entry.host);
       expect(declared.length).toBeGreaterThan(0);
-      expect(entry.container).toBe('mcp');
-      // The scan and the writer must never disagree about the landing.
+      // The scan and the writer must never disagree about the landing's container.
+      const adapter = adapterFor(entry.host);
+      expect(isMcpHost(adapter) && entry.container === adapter.container).toBe(true);
       expect(path.isAbsolute(entry.path)).toBe(true);
     }
     expect(sources.some((s) => s.scope === 'global')).toBe(true);
@@ -58,13 +59,34 @@ describe('mcpSources', () => {
     const sources = mcpSources(process.cwd());
     const capable = new Set(sources.map((s) => s.host));
     // Every declared source belongs to a host that actually implements `McpHost`.
-    for (const host of capable) expect(host).toBeTruthy();
-    expect(capable.size).toBeLessThanOrEqual(1);
+    for (const host of capable) expect(isMcpHost(adapterFor(host))).toBe(true);
+    // The catalog of verified landings is exactly the runtimes whose config path, entry shape and
+    // secret syntax were READ from the runtime itself (ADR-0015 §D8) — never a guess.
+    expect([...capable].sort()).toEqual(['claude', 'codex', 'grok', 'kimi', 'omp', 'openclaw', 'opencode', 'pi']);
     expect(isMcpHost(undefined)).toBe(false);
   });
 });
 
 describe('discoverMcp', () => {
+  it('reads the `mcpServers` spelling: a string command with args, and ${KEY} references', () => {
+    const piFile = path.join(path.sep, 'home', '.pi', 'agent', 'mcp.json');
+    const rows = discoverMcp([{ host: 'pi', scope: 'global', path: piFile, container: 'mcpServers' }], {
+      deps: deps({
+        [piFile]: {
+          mcpServers: {
+            brave: { command: 'npx', args: ['-y', '@acme/server'], env: { BRAVE_API_KEY: '${BRAVE_API_KEY}' } },
+          },
+        },
+      }),
+    });
+    expect(rows.map((r) => r.name)).toEqual(['brave']);
+    // The description is the command line, whether the runtime stores it as one array or as
+    // `command` + `args`.
+    expect(rows[0]!.description).toBe('npx -y @acme/server');
+    expect(rows[0]!.harness).toBe('pi');
+    expect(rows[0]!.removal).toEqual({ op: 'drop-server', file: piFile, container: 'mcpServers', entry: 'brave' });
+  });
+
   it('answers one row per server key, with the inverse descriptor and the host it was read from', () => {
     const rows = discoverMcp([source], {
       deps: deps({
@@ -114,6 +136,29 @@ describe('discoverMcp', () => {
     expect(rows.map((r) => r.name)).toEqual(['shared']);
   });
 
+  it('scopes a project key by projectRoot: one project install leaves the other project row visible', () => {
+    const projectA = path.join(path.sep, 'work', 'a');
+    const projectB = path.join(path.sep, 'work', 'b');
+    const rows = discoverMcp(
+      [
+        { ...source, scope: 'project', projectRoot: projectA },
+        { ...source, scope: 'project', projectRoot: projectB },
+      ],
+      {
+        tracked: [mcpTrackedKey('opencode', 'shared', 'project', projectA)],
+        deps: deps({ [FILE]: { mcp: { shared: { type: 'local' } } } }),
+      }
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.copies[0]!.scope).toBe('project');
+    expect(rows[0]!.copies[0]!.path).toBe(FILE);
+    // The global key stays stable — a project install must not hide a global row.
+    expect(mcpTrackedKey('opencode', 'shared')).toBe('opencode|shared');
+    expect(mcpTrackedKey('opencode', 'shared', 'project', projectA)).not.toBe(
+      mcpTrackedKey('opencode', 'shared', 'project', projectB)
+    );
+  });
+
   it('reads every declared container spelling a source names, and dedupes the same server', () => {
     const rows = discoverMcp([source, { ...source, path: FILE }], {
       deps: deps({ [FILE]: { mcp: { one: { type: 'local' } } } }),
@@ -147,8 +192,7 @@ describe('discoverMcp', () => {
 });
 
 describe('discovered MCP row removal', () => {
-  it('drops exactly that member from its own file and keeps every sibling', () => {
-    const root = tmp();
+  it('drops exactly that member from its own file and keeps every sibling', async () => { const root = tmp();
     const file = path.join(root, 'opencode.json');
     fs.writeFileSync(
       file,
@@ -165,17 +209,21 @@ describe('discovered MCP row removal', () => {
       )
     );
 
-    const row = discoverMcp([{ ...source, path: file }]).find((r) => r.name === 'ghost')!;
+    const row = discoverMcp([{ ...source, scope: 'project', projectRoot: root, path: file }]).find(
+      (r) => r.name === 'ghost'
+    )!;
     expect(row.removal).toEqual({ op: 'drop-server', file, container: 'mcp', entry: 'ghost' });
 
-    const plan = planRemove([{ artifactId: null, copies: row.copies, removal: row.removal }]);
+    const plan = planRemove([{ artifactId: null, copies: row.copies, removal: row.removal }], {
+      projectRoot: root,
+    });
     if ('error' in plan) throw new Error(plan.error);
     expect(plan.actions[0]!.op).toBe('drop-server');
     expect(plan.actions[0]!.file).toBe(file);
     expect(plan.actions[0]!.container).toBe('mcp');
     expect(plan.actions[0]!.entry).toBe('ghost');
 
-    expect(applyRemove(plan.planId).ok).toBe(true);
+    expect((await applyRemove(plan.planId)).ok).toBe(true);
     const after = JSON.parse(fs.readFileSync(file, 'utf8'));
     expect(after.mcp).toEqual({ keep: { type: 'remote', url: 'https://example.test/mcp' } });
     // The plugin array is another kind's landing: an MCP removal must not touch it.

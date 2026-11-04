@@ -151,7 +151,7 @@ export class DshClientAdapter implements ClientAdapter {
     };
   }
 
-  async setup(options?: { port?: number; models?: Record<string, string>; apiKey?: string; contextWindow?: number; extraModels?: string[] }): Promise<{ success: boolean; message: string }> {
+  async setup(options?: { port?: number; models?: Record<string, string>; apiKey?: string; contextWindow?: number; extraModels?: string[]; /** Follow mode: the virtual tier subset the selected key's policy admits. */ virtualModels?: string[] }): Promise<{ success: boolean; message: string }> {
     let files = this.existingPatchFiles();
 
     // No profile initialized yet → create the canonical `web` layer (the file
@@ -179,11 +179,15 @@ export class DshClientAdapter implements ClientAdapter {
     const port = options?.port || defaultGatewayPort();
     const targetUrl = `http://127.0.0.1:${port}/v1`;
     const main = options?.models?.main?.trim() || 'auto';
-    // Fixed auto* tier aliases are always exposed (the gateway resolves them
-    // natively), then the user's extra concrete models. Main stays slot #1;
-    // everything is deduped against what is already listed.
+    // Virtual tier block: follow mode scopes it to the subset the selected
+    // key's policy admits (`virtualModels`); other callers get the full block.
+    // Then the user's extra concrete models. Main stays slot #1; everything
+    // is deduped against what is already listed.
     const extras = (options?.extraModels || []).map(id => id.trim()).filter(id => id && id !== main);
-    const ids = [main, ...[...VIRTUAL_AUTO_IDS].filter(id => id !== main && !extras.includes(id)), ...extras];
+    const virtuals = Array.isArray(options?.virtualModels)
+      ? [...VIRTUAL_AUTO_IDS].filter(id => options.virtualModels!.includes(id))
+      : [...VIRTUAL_AUTO_IDS];
+    const ids = [main, ...virtuals.filter(id => id !== main && !extras.includes(id)), ...extras];
     const contextWindow = options?.contextWindow && options.contextWindow > 0 ? Math.floor(options.contextWindow) : undefined;
 
     // Gateway-issued key wins; else harvest the bearer from any already-hooked

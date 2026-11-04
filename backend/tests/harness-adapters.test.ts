@@ -5,20 +5,20 @@ import {
   HOST_ADAPTERS,
   adapterFor,
   hostDetected,
-  isExtensionHost,
+  isPluginHost,
   isMcpHost,
   isSkillsHost,
   skillLocationRoots,
   skillOwner,
-} from '../src/harness/adapters/index.js';
-import { opencodeAdapter } from '../src/harness/adapters/opencode.js';
-import { HOSTS } from '../src/harness/hosts.js';
+} from '../src/harness/host/adapters/index.js';
+import { opencodeAdapter } from '../src/harness/host/adapters/opencode.js';
+import { HOSTS } from '../src/harness/host/hosts.js';
 
 /**
  * Host adapter capabilities (ADR-0015 §D2/§D3 R3).
  *
  * The point of the capability split is that ABSENCE is a type fact: a host either implements
- * `SkillsHost` / `McpHost` / `ExtensionHost` or it does not. These cases pin the matrix, so a new host
+ * `SkillsHost` / `McpHost` / `PluginHost` or it does not. These cases pin the matrix, so a new host
  * cannot quietly claim a landing the vendor has not verified — and a shared skills directory cannot
  * end up with two owners.
  */
@@ -31,7 +31,7 @@ describe('capability matrix — who can do what', () => {
     expect(HOST_ADAPTERS.map((a) => a.id)).toEqual(HOSTS.map((h) => h.id));
   });
 
-  it('thirteen hosts land skills; only opencode lands MCP; only opencode and pi land extensions', () => {
+  it('fifteen hosts land skills; every host with a declared MCP write path lands MCP; every host with a declared plugin write path lands plugins', () => {
     expect(ids((a) => isSkillsHost(a as never))).toEqual([
       'universal',
       'opencode',
@@ -40,21 +40,68 @@ describe('capability matrix — who can do what', () => {
       'pi',
       'omp',
       'cursor',
-      'github-copilot',
       'gemini-cli',
+      'kimi',
       'cline',
       'amp',
       'windsurf',
       'zed',
+      'grok',
+      'openclaw',
     ]);
-    expect(ids(isMcpHost)).toEqual(['opencode']);
-    expect(ids(isExtensionHost)).toEqual(['opencode', 'pi']);
+    expect(ids(isMcpHost)).toEqual(['opencode', 'claude', 'codex', 'pi', 'omp', 'kimi', 'grok', 'openclaw']);
+    // A verified landing = any declared write path (config / declared store / loose dir /
+    // subprocess / marketplace chain, ADR-0015 §D2 + §D9). Catalog order.
+    expect(ids(isPluginHost)).toEqual([
+      'opencode',
+      'claude',
+      'codex',
+      'pi',
+      'omp',
+      'cursor',
+      'antigravity',
+      'factory',
+      'kimi',
+      'grok',
+      'openclaw',
+    ]);
   });
 
   it('DSH is identity only — no skills location, so no SkillsHost', () => {
     expect(isSkillsHost(adapterFor('dsh'))).toBe(false);
     expect(isMcpHost(adapterFor('dsh'))).toBe(false);
-    expect(isExtensionHost(adapterFor('dsh'))).toBe(false);
+    expect(isPluginHost(adapterFor('dsh'))).toBe(false);
+  });
+
+  it('supportedScopes — project landings follow the declared write grammar (ADR-0015 §D2)', () => {
+    // Skills: every landing host takes both scopes; a host with no skillsSpec takes none.
+    for (const a of HOST_ADAPTERS) {
+      expect(a.supportedScopes('skill')).toEqual(isSkillsHost(a as never) ? ['global', 'project'] : []);
+    }
+    // MCP: every MCP host takes both scopes EXCEPT the global-only set — codex ships a project
+    // config.toml for READ observation but `codex mcp add` has no project-scope grammar, and
+    // openclaw stores servers centrally in `~/.openclaw/openclaw.json` with no project landing
+    // (explicit spec overrides).
+    const globalOnlyMcp = new Set(['codex', 'openclaw']);
+    for (const a of HOST_ADAPTERS) {
+      if (!isMcpHost(a as never)) {
+        expect(a.supportedScopes('mcp')).toEqual([]);
+        continue;
+      }
+      expect(a.supportedScopes('mcp')).toEqual(globalOnlyMcp.has(a.id) ? ['global'] : ['global', 'project']);
+    }
+    // Plugins: project only where the adapter DECLARES a project landing (configProject+container,
+    // declared.project, looseDir.project, a marketplace `{scope}` token, or scope-aware argv).
+    const projectPlugin = ['opencode', 'claude', 'pi', 'omp', 'factory'];
+    const globalOnlyPlugin = ['codex', 'cursor', 'antigravity', 'kimi', 'grok', 'openclaw'];
+    for (const id of projectPlugin) {
+      expect(adapterFor(id)!.supportedScopes('plugin'), `${id} must land project plugins`).toEqual(['global', 'project']);
+    }
+    for (const id of globalOnlyPlugin) {
+      expect(adapterFor(id)!.supportedScopes('plugin'), `${id} must be global-only for plugins`).toEqual(['global']);
+    }
+    // A host with no plugin landing at all answers no scope.
+    expect(adapterFor('universal')!.supportedScopes('plugin')).toEqual([]);
   });
 });
 
@@ -69,7 +116,18 @@ describe('shared skills directories — one owner, many readers', () => {
   it('a vendor directory is owned by its own host', () => {
     expect(skillOwner(path.join(os.homedir(), '.claude', 'skills'), 'global')).toBe('claude');
     expect(skillOwner(path.join(os.homedir(), '.omp', 'skills'), 'global')).toBe('omp');
-    // Windsurf is one of the few hosts with its OWN project directory (cursor reads `.agents`).
+    expect(skillOwner(path.join(os.homedir(), '.kimi-code', 'skills'), 'global')).toBe('kimi');
+    // Measured 2026-12 vendor dirs: cline owns `~/.cline/skills` + `.cline/skills`
+    // (cline/cline skill-directories.ts), codex owns project `.codex/skills` (its user
+    // `~/.codex/skills` is deprecated — the shared tree stays codex's global landing).
+    expect(skillOwner(path.join(os.homedir(), '.cline', 'skills'), 'global')).toBe('cline');
+    expect(skillOwner(path.resolve(process.cwd(), '.cline', 'skills'), 'project')).toBe('cline');
+    expect(skillOwner(path.resolve(process.cwd(), '.codex', 'skills'), 'project')).toBe('codex');
+    expect(skillOwner(path.resolve(process.cwd(), '.codex', 'skills'), 'global')).toBeNull();
+    // gemini-cli owns its project tree (`.gemini/skills`) while its global stays vendor-private
+    // (`~/.gemini/skills`).
+    expect(skillOwner(path.resolve(process.cwd(), '.gemini', 'skills'), 'project')).toBe('gemini-cli');
+    // Windsurf is one of the hosts with its OWN project directory (cursor reads `.agents`).
     expect(skillOwner(path.resolve(process.cwd(), '.windsurf', 'skills'), 'project')).toBe('windsurf');
     expect(skillOwner(path.resolve(process.cwd(), '.omp', 'skills'), 'project')).toBe('omp');
     expect(skillOwner(path.resolve(process.cwd(), '.cursor', 'skills'), 'project')).toBeNull();
@@ -78,7 +136,7 @@ describe('shared skills directories — one owner, many readers', () => {
     const roots = skillLocationRoots(process.cwd());
     const paths = roots.map((r) => r.root);
     expect(new Set(paths).size).toBe(paths.length);
-    // Thirteen hosts × two scopes collapses to far fewer rows because `.agents/skills` is shared.
+    // Fifteen hosts × two scopes collapses to far fewer rows because `.agents/skills` is shared.
     expect(roots.filter((r) => r.root === path.join(os.homedir(), '.agents', 'skills'))).toHaveLength(1);
   });
 });

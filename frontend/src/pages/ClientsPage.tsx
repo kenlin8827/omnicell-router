@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { Terminal, Check, X, RefreshCw, Undo2, ArrowUpRight, RotateCcw, ChevronDown, Puzzle, Eraser, Sparkles } from 'lucide-react';
+import { Terminal, Check, X, RefreshCw, Undo2, ArrowUpRight, RotateCcw, ChevronDown, Eraser, Sparkles, Copy, Activity, Search } from 'lucide-react';
 import { BrandIcon } from '../components/BrandIcons';
 import { Combobox } from '../components/Combobox';
+import { SegGroup } from '../components/SegGroup';
 import { InfoTip } from '../components/InfoTip';
 import { ProfileLinkTable } from '../components/ProfileLinkTable';
 import { SmartAssignDialog, type SmartAssignTarget, type SmartAssignCandidate } from '../components/SmartAssignDialog';
@@ -12,7 +13,6 @@ import { gatewayBaseUrl } from '../lib/gateway-url';
 import { sortModelOptions } from '../lib/model-options';
 import { useI18n } from '../i18n/I18nContext';
 import { useToast } from '../components/ToastProvider';
-
 import { FONT_MONO } from '../lib/fonts';
 /**
  * Slots to render for a client. An explicit `[]` means the client is
@@ -27,7 +27,7 @@ const clientSlots = (c: ClientStatus): { key: string; value?: string; default?: 
  * These get the shared model-list editor (none / custom / follow).
  */
 const supportsExtraModels = (name: string): boolean =>
-  name === 'opencode' || name === 'dsh' || name === 'pi' || name === 'omp';
+  name === 'opencode' || name === 'dsh' || name === 'pi' || name === 'omp' || name === 'grok' || name === 'kimi' || name === 'openclaw';
 
 /** Backend machine reasonCodes (ClientActionResult) → i18n keys (opencode-proxy failure modes). */
 const CLIENT_REASON_KEY: Record<string, string> = {
@@ -61,6 +61,16 @@ const isRoleTableClient = (name: string): boolean => name === 'pi' || name === '
 /** Model-chip lists longer than this render truncated behind a "+N more" chip toggle. */
 const MODEL_CHIP_LIMIT = 12;
 
+/** The gateway's virtual tier namespace (bare alias + tier aliases), canonical order —
+ *  mirrors backend VIRTUAL_AUTO_IDS (cli/types.ts). */
+const VIRTUAL_TIER_IDS = ['auto', 'lite', 'plus', 'pro', 'ultra'];
+
+/** Adapter default virtual block when a custom-mode setup omits `virtualModels`:
+ *  opencode/dsh/pi/omp/kimi inject the full block, grok injects none (its own
+ *  historical default). Keep in sync with the adapters. */
+const virtualDefaultFor = (clientName: string): string[] =>
+  clientName === 'grok' ? [] : [...VIRTUAL_TIER_IDS];
+
 export const ClientsPage: React.FC = () => {
   const { t } = useI18n();
   const toast = useToast();
@@ -81,8 +91,10 @@ export const ClientsPage: React.FC = () => {
   const [ctxSel, setCtxSel] = useState<Record<string, string>>({});
   /** Per-client extra concrete models (model-list editors: opencode/dsh/pi) */
   const [extraSel, setExtraSel] = useState<Record<string, string[]>>({});
-  /** Draft value of the extra-model add Combobox */
-  const [extraDraft, setExtraDraft] = useState<Record<string, string>>({});
+  /** Per-client custom virtual-tier draft (custom mode): the explicit set the
+   *  switcher gets. Undefined = untouched draft — the setup payload omits
+   *  `virtualModels` and the adapter injects its own default block. */
+  const [virtualSel, setVirtualSel] = useState<Record<string, string[] | undefined>>({});
   /** Expanded/collapsed state of long model-chip walls (follow/custom lists). */
   const [extrasOpen, setExtrasOpen] = useState<Record<string, boolean>>({});
   /** Per-client model-list source: 'none' (default) exposes no concrete
@@ -142,22 +154,36 @@ export const ClientsPage: React.FC = () => {
     { value: '200000', label: '200K' },
     { value: '1048576', label: '1M' },
   ];
-  /** Accordion: the single client whose config form is expanded ('other' = the
-   *  static manual-setup row, null = all collapsed). Single-open by design — the
-   *  forms are tall, and every draft lives in page-level state keyed by client
-   *  name, so collapsing never loses edits and opening a form is always a
-   *  deliberate user action. */
+  /** Accordion: the single client whose config form is expanded (null = all
+   *  collapsed). Single-open by design — the forms are tall, and every draft
+   *  lives in page-level state keyed by client name, so collapsing never loses
+   *  edits and opening a form is always a deliberate user action. */
   const [expanded, setExpanded] = useState<string | null>(null);
+  /** Access-mode tabs: 'hook' = setup adapters writing tokens/models into the
+   *  client's own config, 'proxy' = OpenCode proxy mode (MITM service env),
+   *  'manual' = the hookup guide for anything the gateway can't auto-hook. */
+  const [activeTab, setActiveTab] = useState<'hook' | 'proxy' | 'manual'>('hook');
+  /** Manual-tab connectivity probe: optional API key draft + last result. */
+  const [manualKey, setManualKey] = useState('');
+  const [manualTest, setManualTest] = useState<{ state: 'running' | 'ok' | 'fail'; detail?: string } | null>(null);
+  /** Hook-tab filter: case-insensitive substring over display name, adapter
+   *  name and config path — the client roster keeps growing. */
+  const [filter, setFilter] = useState('');
   /** Live gateway port for the manual-endpoint guide (status poll; the
    *  snippet helper owns the origin/daemon fallbacks and the viewer host). */
   const [port, setPort] = useState<string>('');
   const gwBase = gatewayBaseUrl(port ? Number(port) : undefined);
-
+  /** Inbound forward-proxy runtime state — the proxy-tab prerequisite banner
+   *  reads it (null = older gateway without the field, banner suppressed). */
+  const [fpEnabled, setFpEnabled] = useState<boolean | null>(null);
+  const [fpRunning, setFpRunning] = useState<boolean | null>(null);
   const loadClients = async () => {
     try {
       const data = await api.getStatus();
       setClients(data.clients || []);
       if (data.port) setPort(String(data.port));
+      setFpEnabled(data.forwardProxy ? data.forwardProxy.enabled : null);
+      setFpRunning(data.forwardProxy ? data.forwardProxy.running : null);
       // Seed selections from the client config's current slot values (don't clobber unsaved edits)
       setModelSel(prev => {
         const next = { ...prev };
@@ -287,6 +313,17 @@ export const ClientsPage: React.FC = () => {
       }
       return next;
     });
+    setVirtualSel(prev => {
+      const next = { ...prev };
+      for (const c of clients) {
+        if (!supportsExtraModels(c.name) || next[c.name] !== undefined) continue;
+        // Memory is the only source: the config echo cannot express a scoped
+        // virtual block (getStatus strips the router-owned ids), so an absent
+        // memory entry stays undefined = adapter default.
+        next[c.name] = mem[c.name]?.virtualModels;
+      }
+      return next;
+    });
 
     // Extras: the committed snapshot wins over the echo seed on first
     // hydration (loadClients already claimed the slot from the config echo).
@@ -343,6 +380,7 @@ export const ClientsPage: React.FC = () => {
           ? { main: ms.main || 'auto' }
           : ms,
       extraModels: extraSel[clientName] || [],
+      virtualModels: virtualSel[clientName],
       modelMode: modeSel[clientName] ?? 'none',
       apiKeyId: keyIdOf(apiKeySel[clientName] || ''),
       linksOn: linksOn[clientName],
@@ -364,9 +402,11 @@ export const ClientsPage: React.FC = () => {
   const followKeyOf = (clientName: string): ApiKeyItem | undefined =>
     apiKeys.find(k => k.key === (apiKeySel[clientName] || ''));
 
-  /** Effective extras for a followed key: its allowed non-virtual models. */
+  /** The key's allowed model view (follow preview): virtual tier entries the
+   *  policy admits (injected by the adapters per the same verdict) plus the
+   *  allowed concrete rows — mirrors the API-key effective view exactly. */
   const followExtrasOf = (k: ApiKeyItem): string[] =>
-    (keyModels[k.id]?.models || []).filter(m => !m.virtual && m.allowed).map(m => m.id);
+    (keyModels[k.id]?.models || []).filter(m => m.allowed).map(m => m.id);
 
   /** Flip the model-list source (draft only — the setup commit persists it). */
   const setModelMode = (clientName: string, mode: 'none' | 'custom' | 'follow') => {
@@ -419,14 +459,19 @@ export const ClientsPage: React.FC = () => {
     setLoading(true);
     try {
       let extras = extraSel[clientName] || [];
+      let virtuals: string[] | undefined;
       if (action === 'setup' && supportsExtraModels(clientName)) {
         const mode = modeSel[clientName] ?? 'none';
         if (mode === 'none') {
-          // Explicit 'none': the switcher keeps only the auto* virtual entries.
+          // Explicit 'none': no concrete extras; the virtual block stays at the
+          // adapter default (full auto* block for the JSON clients, none for grok).
           extras = [];
         } else if (mode === 'follow') {
-          // Follow mode: the hook exposes exactly the models the picked key can use
-          // (snapshot at setup — the key's policy is the single source of truth).
+          // Follow mode: the hook exposes exactly the models the picked key can
+          // use (snapshot at setup — the key's policy is the single source of
+          // truth). Virtual tier entries ride separately: the adapters inject
+          // the `allowed` subset, so the switcher matches the key's effective
+          // view instead of promising entries the policy would 403.
           const k = followKeyOf(clientName);
           if (!k) {
             toast.error(t('clients.followNoKey'));
@@ -435,6 +480,12 @@ export const ClientsPage: React.FC = () => {
           const view = keyModels[k.id] || (await api.getKeyModels(k.id));
           setKeyModels(prev => (prev[k.id] ? prev : { ...prev, [k.id]: view }));
           extras = view.models.filter(m => !m.virtual && m.allowed).map(m => m.id);
+          virtuals = view.models.filter(m => m.virtual && m.allowed).map(m => m.id);
+        } else {
+          // Custom mode: the virtual-tier draft decides the block — undefined
+          // (untouched) stays absent so the adapter default applies; an array
+          // (possibly empty) scopes the block to that set.
+          virtuals = virtualSel[clientName];
         }
       }
       // The picker is mandatory for key-writing clients: without an explicit
@@ -454,6 +505,7 @@ export const ClientsPage: React.FC = () => {
         ...(keyless ? {} : { apiKey: apiKeySel[clientName] }),
         contextWindow: Number(ctxSel[clientName] || '262144'),
         extraModels: extras,
+        ...(virtuals !== undefined ? { virtualModels: virtuals } : {}),
         ...(piPayload.agentModels ? { agentModels: piPayload.agentModels } : {}),
         profile: piPayload.profile,
         ...agentPayload,
@@ -546,6 +598,7 @@ export const ClientsPage: React.FC = () => {
     }
     setModelSel(prev => ({ ...prev, [clientName]: slots }));
     setExtraSel(prev => ({ ...prev, [clientName]: m?.extraModels ? [...m.extraModels] : [] }));
+    setVirtualSel(prev => ({ ...prev, [clientName]: m?.virtualModels }));
     const candidate = m?.profile || '';
     setProfileSel(prev => ({ ...prev, [clientName]: candidate && profiles.some(p => p.id === candidate) ? candidate : '' }));
     if (isRoleTableClient(clientName)) {
@@ -590,6 +643,9 @@ export const ClientsPage: React.FC = () => {
     sonnet: t('clients.slotSonnet'),
     haiku: t('clients.slotHaiku'),
     fable: t('clients.slotFable'),
+    fallback: t('clients.slotFallback'),
+    utility: t('clients.slotUtility'),
+    decision: t('clients.slotDecision'),
   };
 
   const modelOptions = sortModelOptions(models
@@ -734,30 +790,51 @@ export const ClientsPage: React.FC = () => {
     setModelSel(prev => ({ ...prev, [clientName]: { ...(prev[clientName] || {}), ...apply(assignments) } }));
   };
 
-  const addExtraModel = (clientName: string, id: string) => {
-    if (!id) return;
-    setExtraSel(prev => {
-      const list = prev[clientName] || [];
-      return list.includes(id) ? prev : { ...prev, [clientName]: [...list, id] };
+  /** Multi-select toggle → route the next set into the two drafts: virtual
+   *  tier ids into the virtual draft (materializing the adapter default only
+   *  when the set actually changes — an untouched draft keeps the payload
+   *  absent), everything else into the concrete extras draft. */
+  const applyModelDraft = (clientName: string, next: string[]) => {
+    const virtualNext = next.filter(id => VIRTUAL_TIER_IDS.includes(id));
+    setExtraSel(prev => ({ ...prev, [clientName]: next.filter(id => !VIRTUAL_TIER_IDS.includes(id)) }));
+    setVirtualSel(prev => {
+      const effective = prev[clientName] ?? virtualDefaultFor(clientName);
+      const changed = virtualNext.length !== effective.length || virtualNext.some(id => !effective.includes(id));
+      return changed ? { ...prev, [clientName]: virtualNext } : prev;
     });
-    setExtraDraft(prev => ({ ...prev, [clientName]: '' }));
   };
 
   const removeExtraModel = (clientName: string, id: string) => {
+    if (VIRTUAL_TIER_IDS.includes(id)) {
+      // Removing a default-present virtual entry materializes the draft
+      // (adapter default minus this id); an already-materialized draft just
+      // drops the id. Untouched drafts keep the payload absent.
+      setVirtualSel(prev => {
+        const cur = prev[clientName] ?? virtualDefaultFor(clientName);
+        return { ...prev, [clientName]: cur.filter(m => m !== id) };
+      });
+      return;
+    }
     setExtraSel(prev => ({ ...prev, [clientName]: (prev[clientName] || []).filter(m => m !== id) }));
   };
 
-  const extraOptions = (clientName: string) =>
-    models
-      // The virtual auto* aliases are injected fixed into every client's model
-      // switcher by the adapters — hide them here (filter by catalog kind, never
-      // by id prefix: registered ids may legally start with "auto").
-      .filter(m => m.kind !== 'auto' && !(extraSel[clientName] || []).includes(m.id))
-      .map(m => ({ value: m.id, label: m.id, ...modelRefBadge(m.kind, t) }));
+  const extraOptions = () =>
+    // The whole catalog stays listed — multi-select toggles in place (the
+    // checkmark marks what is on), so present entries must remain pickable
+    // for un-toggling inside the panel. Filter by catalog kind for badges,
+    // never by id prefix: registered ids may legally start with "auto".
+    models.map(m => ({ value: m.id, label: m.id, ...modelRefBadge(m.kind, t) }));
 
-  /** Clear the whole custom model draft in one click (chips are per-model; bulk reset needs its own affordance). */
-  const clearExtraModels = (clientName: string) =>
+  /** Clear the whole custom model draft in one click (chips are per-model; bulk reset needs its own affordance):
+   *  concrete picks empty out, the virtual draft returns to "untouched" (adapter default block). */
+  const clearExtraModels = (clientName: string) => {
     setExtraSel(prev => ({ ...prev, [clientName]: [] }));
+    setVirtualSel(prev => ({ ...prev, [clientName]: undefined }));
+  };
+
+  /** Effective virtual set for display: the explicit draft, else the adapter default. */
+  const effectiveVirtualTiers = (clientName: string): string[] =>
+    virtualSel[clientName] ?? virtualDefaultFor(clientName);
 
   /** Chip wall for the model-list editor (follow snapshot / custom picks).
    *  Long lists truncate to the first MODEL_CHIP_LIMIT chips with a "+N more"
@@ -833,9 +910,6 @@ export const ClientsPage: React.FC = () => {
       </button>
     );
 
-  /** Accordion state for the static "Other clients" manual-setup row ('other' can't collide with adapter names). */
-  const otherOpen = expanded === 'other';
-  const toggleOther = () => setExpanded(prev => (prev === 'other' ? null : 'other'));
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
@@ -858,14 +932,62 @@ export const ClientsPage: React.FC = () => {
           </div>
         )}
 
-        <p style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: '1.6', marginBottom: '20px' }}>
-          {t('clients.desc')}
-        </p>
+        {activeTab === 'hook' && (
+          <p style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: '1.6', marginBottom: '12px' }}>
+            {t('clients.desc', { base: `${gwBase}/v1` })}
+          </p>
+        )}
 
+        {/* Access-mode tabs — three ways in: written config (token hook),
+            transparent MITM proxy, or a manual baseURL+key hookup. */}
+        <div style={{ marginBottom: '16px' }}>
+          <SegGroup
+            size="lg"
+            value={activeTab}
+            onChange={v => setActiveTab(v as typeof activeTab)}
+            options={[
+              { value: 'hook', label: t('clients.tabHook') },
+              { value: 'proxy', label: t('clients.tabProxy') },
+              { value: 'manual', label: t('clients.tabManual') },
+            ]}
+          />
+        </div>
+        {/* Proxy-tab prerequisite: the opencode-proxy adapter persists the
+            service env pointing at the inbound forward proxy — without it the
+            takeover is dead on arrival, so say so BEFORE the setup button. */}
+        {activeTab === 'proxy' && (fpEnabled === false || fpRunning === false) && (
+          <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'color-mix(in srgb, var(--accent-amber) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-amber) 35%, transparent)', color: 'var(--accent-amber)', fontSize: '12.5px', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+            <X size={14} />
+            <span style={{ flex: 1 }}>
+              {t(fpEnabled === false ? 'clients.fpPrereqOff' : 'clients.fpPrereqDown')}
+            </span>
+            <Link to="/proxy-access" style={{ color: 'var(--accent)', textDecoration: 'none', flexShrink: 0 }}>
+              {t('nav.proxyAccess')} →
+            </Link>
+          </div>
+        )}
+
+
+        {/* Hook-tab roster filter: name / adapter id / config path substring. */}
+        {activeTab === 'hook' && (
+          <div style={{ position: 'relative', marginBottom: '12px' }}>
+            <Search size={13} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)' }} />
+            <input
+              value={filter}
+              onChange={e => setFilter(e.target.value)}
+              placeholder={t('clients.filterPh')}
+              style={{ width: '100%', boxSizing: 'border-box', padding: '7px 10px 7px 30px', borderRadius: '8px', border: '1px solid var(--card-border)', background: 'var(--well-bg)', color: 'var(--text-main)', fontSize: '12.5px' }}
+            />
+          </div>
+        )}
         {/* Accordion: one full-width row per client — collapsed shows identity + status +
             quick action, expanding reveals the progressive setup form. */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-          {clients.map(c => {
+          {clients.filter(c => activeTab === 'proxy'
+            ? c.name === 'opencode-proxy'
+            : activeTab === 'hook'
+              && c.name !== 'opencode-proxy'
+              && (!filter || [c.displayName, c.name, c.configPath].some(v => (v || '').toLowerCase().includes(filter.toLowerCase())))).map(c => {
             const open = expanded === c.name;
             const toggle = () => setExpanded(prev => (prev === c.name ? null : c.name));
             return (
@@ -898,7 +1020,7 @@ export const ClientsPage: React.FC = () => {
                   />
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', fontSize: '14px', fontWeight: 700 }}>
                     <BrandIcon name={c.name === 'opencode-proxy' ? 'opencode' : c.name} size={18} />
-                    {c.name === 'opencode-proxy' ? t('clients.nameOpencodeProxy') : c.displayName}
+                    {c.name === 'opencode-proxy' ? t('clients.nameOpencode') : c.displayName}
                   </span>
                   <span
                     title={c.configPath}
@@ -911,6 +1033,19 @@ export const ClientsPage: React.FC = () => {
                   ) : (
                     <span className="badge" style={{ background: 'var(--chip-bg)', color: 'var(--text-dim)' }}>
                       {t('overview.notHooked')}
+                    </span>
+                  )}
+                  {c.version && (
+                    <span
+                      className="badge"
+                      title={c.version.meetsMin ? t('clients.versionOk') : t('clients.versionBelow', { min: c.version.min || '?' })}
+                      style={
+                        c.version.meetsMin
+                          ? { background: 'var(--chip-bg)', color: 'var(--text-dim)', fontFamily: FONT_MONO, fontSize: '10px' }
+                          : { background: 'var(--warning-bg, rgba(234,179,8,.15))', color: 'var(--warning, #eab308)', fontFamily: FONT_MONO, fontSize: '10px' }
+                      }
+                    >
+                      v{c.version.current}
                     </span>
                   )}
                   {!open && renderActionButtons(c, false)}
@@ -977,7 +1112,12 @@ export const ClientsPage: React.FC = () => {
                                 [c.name]: { ...(prev[c.name] || {}), [s.key]: v || 'auto' },
                               }))
                             }
-                            options={slotOptions(s)}
+                            options={s.key === 'main' ? slotOptions(s) : [
+                              // Secondary slots default to "not set": the value is
+                              // only written when the user picks a concrete model.
+                              { value: 'auto', label: t('clients.slotUnset') },
+                              ...slotOptions(s).filter(o => o.value !== 'auto'),
+                            ]}
                             panelMinWidth={360}
                           />
                         </div>
@@ -1029,10 +1169,15 @@ export const ClientsPage: React.FC = () => {
                             <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('clients.modelModeNoneHint')}</div>
                           ) : (
                             <>
-                              {(extraSel[c.name] || []).length > 0 &&
-                                renderModelChips(
+                              {(() => {
+                                // One wall, two sources: the virtual tier entries
+                                // (adapter default block until edited) lead, concrete
+                                // picks follow — mirroring the switcher's own order.
+                                const merged = [...effectiveVirtualTiers(c.name), ...(extraSel[c.name] || [])];
+                                if (merged.length === 0) return null;
+                                return renderModelChips(
                                   c.name,
-                                  extraSel[c.name] || [],
+                                  merged,
                                   id => removeExtraModel(c.name, id),
                                   <button
                                     type="button"
@@ -1045,11 +1190,13 @@ export const ClientsPage: React.FC = () => {
                                     <Eraser size={11} />
                                     <span>{t('clients.modelsClear')}</span>
                                   </button>
-                                )}
+                                );
+                              })()}
                               <Combobox
-                                value={extraDraft[c.name] || ''}
-                                onChange={v => addExtraModel(c.name, v)}
-                                options={extraOptions(c.name)}
+                                multiple
+                                value={[...effectiveVirtualTiers(c.name), ...(extraSel[c.name] || [])]}
+                                onChange={next => applyModelDraft(c.name, next)}
+                                options={extraOptions()}
                                 placeholder={t('clients.addModel')}
                                 panelMinWidth={360}
                               />
@@ -1173,94 +1320,110 @@ export const ClientsPage: React.FC = () => {
             />
           )}
 
-          {/* Static row: manual hookup guide for clients the gateway can't auto-hook
-              (anything speaking OpenAI or Anthropic wire protocol). Pure documentation —
-              no backend adapter, no status, no action buttons. */}
-          <div
-            style={{
-              background: 'var(--bg-elev)',
-              border: '1px solid var(--card-border)',
-              borderRadius: '10px',
-              overflow: 'hidden',
-            }}
-          >
-            <div
-              role="button"
-              tabIndex={0}
-              aria-expanded={otherOpen}
-              onClick={toggleOther}
-              onKeyDown={e => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  toggleOther();
-                }
-              }}
-              style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '14px 18px', cursor: 'pointer', userSelect: 'none' }}
-            >
-              <ChevronDown
-                size={16}
-                color="var(--text-dim)"
-                style={{ flexShrink: 0, transition: 'transform 0.15s ease', transform: otherOpen ? 'rotate(180deg)' : 'none' }}
-              />
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', fontSize: '14px', fontWeight: 700 }}>
-                <Puzzle size={18} color="var(--accent)" />
-                {t('clients.otherTitle')}
-              </span>
-              <span style={{ flex: 1, fontSize: '11px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {t('clients.otherHint')}
-              </span>
-              <span className="badge" style={{ background: 'var(--chip-bg)', color: 'var(--text-dim)' }}>
-                {t('clients.otherBadge')}
-              </span>
+          {/* Manual hookup guide: any client speaking the OpenAI or Anthropic wire
+              protocol. Documentation + a live connectivity probe — no backend
+              adapter, no status, no setup buttons. */}
+          {activeTab === 'manual' && (
+          <div style={{ padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: '14px', background: 'var(--bg-elev)', border: '1px solid var(--card-border)', borderRadius: '10px' }}>
+            <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.7 }}>
+              {t('clients.otherIntro')}
+            </p>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.7 }}>
+              <div>{t('clients.otherStep1')}</div>
+              <div>{t('clients.otherStep2')}</div>
             </div>
 
-            {otherOpen && (
-              <div style={{ padding: '16px 18px', borderTop: '1px solid var(--divider)', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.7 }}>
-                  {t('clients.otherIntro')}
-                </p>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.7 }}>
-                  <div>{t('clients.otherStep1')}</div>
-                  <div>{t('clients.otherStep2')}</div>
-                </div>
-
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '12px' }}>
-                  <div style={{ background: 'var(--well-bg)', border: '1px solid var(--card-border)', borderRadius: '8px', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                    <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('clients.otherProtoOpenai')}</div>
-                    <code style={{ fontFamily: FONT_MONO, fontSize: '12px', color: 'var(--text-main)', wordBreak: 'break-all' }}>
-                      {`${gwBase}/v1`}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '12px' }}>
+              {([
+                { proto: t('clients.otherProtoOpenai'), base: `${gwBase}/v1`, endpoints: 'POST /v1/chat/completions · /v1/responses · /v1/models', auth: t('clients.otherOpenaiAuth') },
+                { proto: t('clients.otherProtoAnthropic'), base: gwBase, endpoints: 'POST /v1/messages', auth: t('clients.otherAnthropicAuth') },
+              ] as const).map(x => (
+                <div key={x.proto} style={{ background: 'var(--well-bg)', border: '1px solid var(--card-border)', borderRadius: '8px', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{x.proto}</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <code style={{ fontFamily: FONT_MONO, fontSize: '12px', color: 'var(--text-main)', wordBreak: 'break-all', flex: 1 }}>
+                      {x.base}
                     </code>
-                    <div style={{ fontFamily: FONT_MONO, fontSize: '11px', color: 'var(--text-dim)' }}>
-                      POST /v1/chat/completions · /v1/responses · /v1/models
-                    </div>
-                    <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('clients.otherOpenaiAuth')}</div>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      style={{ flexShrink: 0 }}
+                      title={t('clients.manualCopied')}
+                      onClick={() => navigator.clipboard.writeText(x.base).then(
+                        () => toast.success(t('clients.manualCopied')),
+                        () => toast.error(t('common.failed')),
+                      )}
+                    >
+                      <Copy size={11} />
+                    </button>
                   </div>
-                  <div style={{ background: 'var(--well-bg)', border: '1px solid var(--card-border)', borderRadius: '8px', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                    <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('clients.otherProtoAnthropic')}</div>
-                    <code style={{ fontFamily: FONT_MONO, fontSize: '12px', color: 'var(--text-main)', wordBreak: 'break-all' }}>
-                      {gwBase}
-                    </code>
-                    <div style={{ fontFamily: FONT_MONO, fontSize: '11px', color: 'var(--text-dim)' }}>
-                      POST /v1/messages
-                    </div>
-                    <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('clients.otherAnthropicAuth')}</div>
+                  <div style={{ fontFamily: FONT_MONO, fontSize: '11px', color: 'var(--text-dim)' }}>
+                    {x.endpoints}
                   </div>
+                  <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{x.auth}</div>
                 </div>
+              ))}
+            </div>
 
-                <div style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.7 }}>
-                  {t('clients.otherStep3')}
-                </div>
-
-                <div style={{ fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.7 }}>
-                  {t('clients.otherMore')}{' '}
-                  <Link to="/api-keys" style={{ color: 'var(--accent)', textDecoration: 'none' }}>
-                    {t('nav.apiKeys')} →
-                  </Link>
-                </div>
+            <div style={{ borderTop: '1px solid var(--divider)', paddingTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <div style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.7 }}>
+                {t('clients.otherStep3')}
               </div>
-            )}
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                <input
+                  type="text"
+                  value={manualKey}
+                  onChange={e => setManualKey(e.target.value)}
+                  placeholder={t('clients.manualKeyPh')}
+                  style={{ flex: '1 1 220px', minWidth: 0, padding: '6px 10px', borderRadius: '8px', border: '1px solid var(--card-border)', background: 'var(--well-bg)', color: 'var(--text-main)', fontSize: '12px', fontFamily: FONT_MONO }}
+                />
+                <button
+                  className="btn btn-primary btn-sm"
+                  disabled={manualTest?.state === 'running'}
+                  onClick={async () => {
+                    setManualTest({ state: 'running' });
+                    try {
+                      const res = await fetch(`${gwBase}/v1/models`, {
+                        headers: manualKey
+                          ? { Authorization: `Bearer ${manualKey}`, 'x-api-key': manualKey, 'anthropic-version': '2023-06-01' }
+                          : {},
+                      });
+                      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                      const body = await res.json();
+                      const n = Array.isArray(body?.data) ? body.data.length : 0;
+                      setManualTest({ state: 'ok', detail: String(n) });
+                    } catch (err) {
+                      setManualTest({ state: 'fail', detail: err instanceof Error ? err.message : String(err) });
+                    }
+                  }}
+                >
+                  <Activity size={12} />
+                  <span>{t('clients.manualTest')}</span>
+                </button>
+              </div>
+              {manualTest?.state === 'ok' && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--accent-emerald)' }}>
+                  <Check size={14} />
+                  <span>{t('clients.manualTestOk', { n: manualTest.detail || '0' })}</span>
+                </div>
+              )}
+              {manualTest?.state === 'fail' && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--accent-amber)' }}>
+                  <X size={14} />
+                  <span>{t('clients.manualTestFail', { detail: manualTest.detail || '' })}</span>
+                </div>
+              )}
+            </div>
+
+            <div style={{ fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.7 }}>
+              {t('clients.otherMore')}{' '}
+              <Link to="/api-keys" style={{ color: 'var(--accent)', textDecoration: 'none' }}>
+                {t('nav.apiKeys')} →
+              </Link>
+            </div>
           </div>
+          )}
         </div>
       </div>
     </div>

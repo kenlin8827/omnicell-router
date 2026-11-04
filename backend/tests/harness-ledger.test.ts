@@ -2,12 +2,12 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { installArtifact } from '../src/harness/install.js';
-import { applySkill } from '../src/harness/writers/skill.js';
-import { applyRemove, planRemove } from '../src/harness/maintenance.js';
-import { recentApplies, type HarnessApplyEvent } from '../src/harness/ledger.js';
-import { findArtifact } from '../src/harness/manifest.js';
-import { scanInventory } from '../src/harness/inventory.js';
+import { installArtifact } from '../src/harness/host/install.js';
+import { applySkill } from '../src/harness/host/writers/skill.js';
+import { applyRemove, planRemove } from '../src/harness/host/maintenance.js';
+import { recentApplies, type HarnessApplyEvent } from '../src/harness/host/ledger.js';
+import { findArtifact } from '../src/harness/host/manifest.js';
+import { scanInventory } from '../src/harness/host/inventory.js';
 
 /**
  * Apply ledger + post-apply probe (ADR-0015): every WRITER-level apply appends one observation row
@@ -62,11 +62,11 @@ describe('apply ledger', () => {
     expect(mine[1]!.hosts).toBe('opencode');
   });
 
-  it('records the exact subprocess command for extension installs (gate 3)', async () => {
+  it('records the exact subprocess command for plugin installs (gate 3)', async () => {
     const root = tmpProject();
     const result = await installArtifact({
       manualSpec: '@x/pkg',
-      kind: 'extension',
+      kind: 'plugin',
       confirm: true,
       hosts: ['pi'],
       scope: 'project',
@@ -75,18 +75,18 @@ describe('apply ledger', () => {
     });
     expect(result.ok).toBe(true);
     const row = recentApplies(10)[0]!;
-    expect(row.kind).toBe('extension');
-    expect(row.command).toBe('pi install npm:@x/pkg');
+    expect(row.kind).toBe('plugin');
+    expect(row.command).toBe('pi install npm:@x/pkg --local');
     expect(row.outcome).toBe('ok');
   });
 });
 
 describe('remove plan + apply (audit)', () => {
-  /** Install one package-manager-owned (external) extension and return its artifact id + token. */
+  /** Install one package-manager-owned (external) plugin and return its artifact id + token. */
   async function seedExternal(spec: string): Promise<{ artifactId: string; token: string }> {
     const installed = await installArtifact({
       manualSpec: spec,
-      kind: 'extension',
+      kind: 'plugin',
       confirm: true,
       hosts: ['pi'],
       scope: 'project',
@@ -115,7 +115,7 @@ describe('remove plan + apply (audit)', () => {
       expect(plan.actions[0]!.path).toBe(token);
       expect(plan.external).toEqual([{ path: token, host: 'pi' }]);
 
-      const applied = applyRemove(plan.planId);
+      const applied = await applyRemove(plan.planId)
       expect(applied.ok).toBe(true);
       if (!applied.ok) return;
       // Nothing of ours exists on disk for this copy, so no trash directory is created.
@@ -132,11 +132,11 @@ describe('remove plan + apply (audit)', () => {
     const { artifactId, token } = await seedExternal('@pi/ledger-ext');
     const plan = planRemove([{ artifactId, copies: [{ scope: 'project', host: 'pi', path: token }] }]);
     if ('error' in plan) throw new Error(plan.error);
-    expect(applyRemove(plan.planId).ok).toBe(true);
+    expect((await applyRemove(plan.planId)).ok).toBe(true);
 
     const row = recentApplies(50).find((r) => r.action === 'remove' && r.artifactId === artifactId);
     expect(row).toBeDefined();
-    expect(row?.kind).toBe('extension');
+    expect(row?.kind).toBe('plugin');
     expect(row?.name).toBe('@pi/ledger-ext');
     expect(row?.hosts).toBe('pi');
     expect(row?.outcome).toBe('ok');
@@ -166,7 +166,7 @@ describe('remove plan + apply (audit)', () => {
     ]);
     if ('error' in plan) throw new Error(plan.error);
     expect(plan.actions[0]!.op).toBe('move-to-trash');
-    const removed = applyRemove(plan.planId);
+    const removed = await applyRemove(plan.planId)
     expect(removed.ok).toBe(true);
     if (!removed.ok) return;
     expect(fs.existsSync(copy.path)).toBe(false);
@@ -203,7 +203,7 @@ describe('copy drift per shape (skill directory regression)', () => {
     return plan;
   }
 
-  it('keeps an untouched skill tree clean and removable without a discard flag', () => {
+  it('keeps an untouched skill tree clean and removable without a discard flag', async () => {
     const root = tmpProject();
     const { artifactId, copy } = installSkill(root, 'drift-skill-clean');
 
@@ -212,10 +212,10 @@ describe('copy drift per shape (skill directory regression)', () => {
     const plan = planFor(artifactId, copy);
     expect(plan.actions[0]!.dirty).toBe(false);
     expect(plan.warnings).toEqual([]);
-    expect(applyRemove(plan.planId).ok).toBe(true);
+    expect((await applyRemove(plan.planId)).ok).toBe(true);
   });
 
-  it('reports an edited skill tree dirty and demands the discard flag', () => {
+  it('reports an edited skill tree dirty and demands the discard flag', async () => {
     const root = tmpProject();
     const { artifactId, copy } = installSkill(root, 'drift-skill-edited');
     fs.writeFileSync(path.join(copy.path, 'NOTES.md'), 'hand edit');
@@ -225,11 +225,11 @@ describe('copy drift per shape (skill directory regression)', () => {
     expect(plan.actions[0]!.dirty).toBe(true);
     expect(plan.warnings.map((w) => w.code)).toEqual(['dirty-copy']);
 
-    const refused = applyRemove(plan.planId);
+    const refused = await applyRemove(plan.planId)
     expect(refused.ok).toBe(false);
     if (refused.ok) return;
     expect(refused.code).toBe('dirty_copy');
-    expect(applyRemove(plan.planId, { discardLocalEdits: true }).ok).toBe(true);
+    expect((await applyRemove(plan.planId, { discardLocalEdits: true })).ok).toBe(true);
   });
 });
 

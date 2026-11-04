@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { harnessEnvDir } from '../src/harness/manifest.js';
+import { harnessEnvDir } from '../src/harness/host/manifest.js';
 import { getCachedTranslation, translateMarkdown } from '../src/harness/translation.js';
 
 /**

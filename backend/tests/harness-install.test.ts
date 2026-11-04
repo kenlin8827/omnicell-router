@@ -6,11 +6,11 @@ import zlib from 'node:zlib';
 import fastify from 'fastify';
 import { skillDirs } from '../src/harness/tree.js';
 import { normalizeName } from '../src/harness/spi.js';
-import { githubAdapter } from '../src/harness/sources/github.js';
-import { applySkill } from '../src/harness/writers/skill.js';
-import { installArtifact } from '../src/harness/install.js';
-import { scanInventory } from '../src/harness/inventory.js';
-import { claimPath, readManifest } from '../src/harness/manifest.js';
+import { githubAdapter } from '../src/harness/host/resolvers/github.js';
+import { applySkill } from '../src/harness/host/writers/skill.js';
+import { installArtifact } from '../src/harness/host/install.js';
+import { scanInventory } from '../src/harness/host/inventory.js';
+import { claimPath, readManifest } from '../src/harness/host/manifest.js';
 import { registerHarnessRoutes } from '../src/routes/harness.js';
 
 /**
@@ -274,6 +274,42 @@ describe('installArtifact orchestration', () => {
     const view = scanInventory(root).artifacts.find((a) => a.id === 'skill:github:owner/repo#demo');
     expect(view?.listedOn).toEqual(['github', 'npm']);
   });
+
+  // A package row may carry a display repository (Pi's catalog links every package to its GitHub
+  // page) without being a git-backed install. The npm key is the install identity; a `marketplace`
+  // marker on such a row must not demand a native chain from a host that has none (pi installs
+  // packages only), nor install the repository instead of the published package.
+  it('installs an npm package row through npm even when the row carries a repository', async () => {
+    const PACKUMENT = { name: 'pi-demo', 'dist-tags': { latest: '1.2.3' }, versions: { '1.2.3': {} } };
+    const VERSION_DOC = { name: 'pi-demo', version: '1.2.3', dist: { integrity: 'sha512-demo' } };
+    const npmFetch = (async (input: unknown) => {
+      const url = String(input);
+      const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
+      if (url === 'https://registry.npmjs.org/pi-demo') return json(PACKUMENT);
+      if (url === 'https://registry.npmjs.org/pi-demo/1.2.3') return json(VERSION_DOC);
+      return new Response('nf', { status: 404 });
+    }) as typeof fetch;
+    const echoes: string[] = [];
+    const result = await installArtifact({
+      key: 'npm:pi-demo',
+      kind: 'plugin',
+      hosts: ['pi'],
+      scope: 'global',
+      listedOn: ['pi-dev'],
+      marketplace: { repo: 'acme/pi-demo', plugin: 'pi-demo', name: 'pi-demo' },
+      confirm: true,
+      fetchImpl: npmFetch,
+      execImpl: async (command, args) => {
+        echoes.push([command, ...args].join(' '));
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(echoes).toEqual(['pi install npm:pi-demo@1.2.3']);
+    expect(result.artifactId).toBe('plugin:pi:npm:pi-demo');
+    expect(readManifest().artifacts.find((a) => a.id === 'plugin:pi:npm:pi-demo')?.nativeKey).toBeUndefined();
+  });
 });
 
 describe('install route (host validation at the boundary)', () => {
@@ -284,7 +320,7 @@ describe('install route (host validation at the boundary)', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/admin/harness/install',
-      payload: { manualSpec: '@x/unknown-host-ext', kind: 'extension', confirm: true, hosts: ['nosuchhost'], scope: 'global' },
+      payload: { manualSpec: '@x/unknown-host-ext', kind: 'plugin', confirm: true, hosts: ['nosuchhost'], scope: 'global' },
     });
     expect(res.statusCode).toBe(400);
     expect(res.json()).toEqual({ status: 'error', code: 'bad_request', message: "unknown host 'nosuchhost'" });
@@ -292,19 +328,85 @@ describe('install route (host validation at the boundary)', () => {
     expect(readManifest().artifacts.find((a) => a.name === '@x/unknown-host-ext')).toBeUndefined();
   });
 
-  // Project-level install is deferred (ADR-0015 §D2 "Scope"): the boundary owns the refusal, so a
-  // request can never reach a writer that would happily land inside the repo.
-  it('answers unsupported_scope for project scope, and writes nothing', async () => {
+  // The boundary owns the scope decision (ADR-0015 §D2 "Scope"): an unknown scope is refused before
+  // any writer sees it, so a typo can never land inside the repo.
+  it('answers unsupported_scope for an unknown scope, and writes nothing', async () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/admin/harness/install',
-      payload: { manualSpec: '@x/project-ext', kind: 'extension', confirm: true, hosts: ['opencode'], scope: 'project' },
+      payload: { manualSpec: '@x/project-ext', kind: 'plugin', confirm: true, hosts: ['opencode'], scope: 'bogus' },
     });
     expect(res.statusCode).toBe(400);
     const body = res.json() as { status: string; code: string; message: string };
     expect(body.status).toBe('error');
     expect(body.code).toBe('unsupported_scope');
-    expect(body.message).toContain('global');
     expect(readManifest().artifacts.find((a) => a.name === '@x/project-ext')).toBeUndefined();
+  });
+
+  it('requires projectRoot for project scope install', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/harness/install',
+      payload: { manualSpec: '@x/project-ext', kind: 'plugin', confirm: true, hosts: ['opencode'], scope: 'project' },
+    });
+    expect(res.statusCode).toBe(400);
+    const body = res.json() as { status: string; code: string; message: string };
+    expect(body.status).toBe('error');
+    expect(body.code).toBe('bad_request');
+    expect(body.message).toContain('projectRoot is required');
+  });
+
+  it('refuses a projectId that does not resolve to a registered project', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/harness/install',
+      payload: {
+        manualSpec: '@x/project-ext',
+        kind: 'plugin',
+        confirm: true,
+        hosts: ['opencode'],
+        scope: 'project',
+        projectId: 'no-such-project',
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    const body = res.json() as { status: string; code: string; message: string };
+    expect(body.code).toBe('bad_request');
+    expect(body.message).toContain("projectId 'no-such-project' not found");
+  });
+
+  it('refuses a projectRoot that is not an existing directory', async () => {
+    const file = path.join(tmpProject(), 'not-a-dir.txt');
+    fs.writeFileSync(file, 'x');
+
+    const missing = await app.inject({
+      method: 'POST',
+      url: '/api/admin/harness/install',
+      payload: {
+        manualSpec: '@x/project-ext',
+        kind: 'plugin',
+        confirm: true,
+        hosts: ['opencode'],
+        scope: 'project',
+        projectRoot: path.join(tmpProject(), 'nowhere'),
+      },
+    });
+    expect(missing.statusCode).toBe(400);
+    expect((missing.json() as { message: string }).message).toContain('does not exist');
+
+    const notDir = await app.inject({
+      method: 'POST',
+      url: '/api/admin/harness/install',
+      payload: {
+        manualSpec: '@x/project-ext',
+        kind: 'plugin',
+        confirm: true,
+        hosts: ['opencode'],
+        scope: 'project',
+        projectRoot: file,
+      },
+    });
+    expect(notDir.statusCode).toBe(400);
+    expect((notDir.json() as { message: string }).message).toContain('not a directory');
   });
 });

@@ -328,6 +328,23 @@ export interface ForwardProxyConfig {
   port?: number; // listen port; default 4555
   host?: string; // listen address; default '127.0.0.1' (loopback-only)
   /**
+   * Access log for the transparent-forward path: records EVERY non-intercepted
+   * HTTP exchange (and CONNECT tunnel decisions) in a memory ring, viewable on
+   * the console /proxy-log page. Bodies are captured in full unless a
+   * per-side cap is set; headers pass the shared credential deny-list.
+   * Hot-applies on save.
+   */
+  accessLog?: {
+    /** Record non-intercepted traffic; default true. */
+    enabled?: boolean;
+    /** Per-side body capture cap in bytes; absent = unlimited, 0 = headers only. */
+    bodyBytes?: number;
+    /** Persist events as daily JSONL under <ocrHome>/forward-proxy/access-log/; default true. */
+    persist?: boolean;
+    /** Day-file retention for auto-cleanup; default 7. */
+    persistDays?: number;
+  };
+  /**
    * Bypass list: bare glob strings = pure tunnel with DIRECT egress; object
    * entries `{ host, viaProxy }` choose the egress per host (viaProxy →
    * tunnel through the upstream proxy policy, e.g. clash). Loopback always
@@ -751,6 +768,11 @@ export interface ClientProfileMemoryEntry {
   agentModels?: Record<string, string>;
   /** Custom model-list draft (the manual extra models picked on the form). */
   extraModels?: string[];
+  /** Custom virtual-tier draft (auto/lite/plus/pro/ultra): the explicit set
+   *  the form shows for the client's switcher. Undefined = untouched draft —
+   *  the setup payload omits `virtualModels` and the adapter injects its own
+   *  default block; an array (possibly empty) scopes the block to that set. */
+  virtualModels?: string[];
   /** Model-list source on the opencode form: 'none' (default) exposes no
    *  concrete models, 'follow' derives the extra-model set from the selected
    *  API key's effective access, 'custom' keeps the manual picker. UI-only —

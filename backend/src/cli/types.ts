@@ -13,7 +13,7 @@ export type CliAction =
   | 'version'
   | 'help';
 
-export type SupportedClient = 'opencode' | 'opencode-proxy' | 'claude' | 'codex' | 'pi' | 'dsh' | 'omp';
+export type SupportedClient = 'opencode' | 'opencode-proxy' | 'claude' | 'codex' | 'pi' | 'dsh' | 'omp' | 'grok' | 'kimi' | 'openclaw';
 
 export interface CliOptions {
   action: CliAction;
@@ -44,12 +44,21 @@ export interface ClientHookStatus {
   hooked: boolean;
   backupExists: boolean;
   details: string;
+  /**
+   * Installed CLI version probe (absent when the adapter declares no
+   * versionCmd or the probe fails). `meetsMin` compares against the adapter's
+   * `minVersion` — the oldest release whose config contract the adapter's
+   * writes still honor, NOT the newest verified version.
+   */
+  version?: ClientVersionInfo;
+
   /** This client's model slots as declared by the adapter (value undefined/'auto' = intelligent routing) */
   modelSlots: ClientModelSlot[];
+
   /** Extra concrete models exposed in the client's model switcher (opencode provider models list) */
   extraModels?: string[];
-  /**
-   * Last-linked model profile (opencode, pi), echoed from the OCR sidecar
+
+  /** Last-linked model profile (opencode, pi), echoed from the OCR sidecar
    * meta: profile id + the agent-name → modelRef map actually written into the
    * config ('' id = no profile; the bindings are informational echo — the
    * config's agent node is the live truth).
@@ -63,11 +72,19 @@ export interface ModelProfileBinding {
   bindings: Record<string, string>;
 }
 
+/** Installed-version probe result: current CLI version vs the adapter's minimum-compatible floor. */
+export interface ClientVersionInfo {
+  current: string;
+  min?: string;
+  meetsMin: boolean;
+}
+
 /**
- * Virtual tier aliases the gateway resolves natively. Every adapter injects
- * these fixed into the client's model switcher, so they must never surface as
- * user-managed extra entries (write dedupe + status echo filter both key off
- * this list).
+ * Virtual tier aliases the gateway resolves natively. Adapters inject these
+ * into the client's model switcher; a follow-mode setup narrows the block to
+ * the subset the selected key's policy admits (`virtualModels`). They must
+ * never surface as user-managed extra entries (write dedupe + status echo
+ * filter both key off this list).
  */
 export const VIRTUAL_AUTO_IDS: ReadonlySet<string> = new Set([
   'auto',

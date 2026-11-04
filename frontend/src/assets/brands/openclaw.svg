@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <!-- OpenClaw mascot, derived from the official openclaw.ai favicon.svg (120x120,
+       lobster body + side claws + antennae + dark eyes). Flattened to monochrome:
+       eyes become evenodd holes so currentColor themes the whole mark; the antennae
+       keep their stroke. Glyph rescaled to fill ~20/24 of the box, aspect preserved. -->
+  <g transform="translate(1.43 1.87) scale(0.1762)">
+    <path fill="currentColor" fill-rule="evenodd" d="M60 10 C30 10 15 35 15 55 C15 75 30 95 45 100 L45 110 L55 110 L55 100 C55 100 60 102 65 100 L65 110 L75 110 L75 100 C90 95 105 75 105 55 C105 35 90 10 60 10Z M20 45 C5 40 0 50 5 60 C10 70 20 65 25 55 C28 48 25 45 20 45Z M100 45 C115 40 120 50 115 60 C110 70 100 65 95 55 C92 48 95 45 100 45Z M45 29 a6 6 0 1 0 0 12 a6 6 0 1 0 0 -12 Z M75 29 a6 6 0 1 0 0 12 a6 6 0 1 0 0 -12 Z"/>
+    <path fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" d="M45 15 Q35 5 30 8 M75 15 Q85 5 90 8"/>
+  </g>
+</svg>

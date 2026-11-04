@@ -89,12 +89,19 @@ function sandboxEnvFor(tag: string): Record<string, string | undefined> {
   const xdgData = path.join(dir, 'xdg-data');
   fs.mkdirSync(xdgConfig, { recursive: true });
   fs.mkdirSync(xdgData, { recursive: true });
+  // OpenClaw resolves its config/state from the vendor's own env vars (the host adapter and the
+  // takeover client share `cli/paths.ts`), so both are pinned into the per-file sandbox — a test
+  // must never read or rewrite the operator's `~/.openclaw`.
+  const openclawState = path.join(dir, 'openclaw');
+  fs.mkdirSync(openclawState, { recursive: true });
   const env: Record<string, string | undefined> = {
     ...process.env,
     OCR_HOME: ocrHome,
     OCR_ENV: SANDBOX_ENV,
     XDG_CONFIG_HOME: xdgConfig,
     XDG_DATA_HOME: xdgData,
+    OPENCLAW_STATE_DIR: openclawState,
+    OPENCLAW_CONFIG_PATH: path.join(openclawState, 'openclaw.json'),
   };
   // opencode v2 service discovery (connector/OpencodeV2Store) must be inert in
   // the sandbox: DELIBERATELY UNSET (not ''), or a test hitting the connector

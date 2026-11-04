@@ -15,13 +15,15 @@ import type { HarnessHostId, HarnessKind, Pin, TrustTier } from './types.js';
 
 /** MCP launch spec — the two shapes ADR-0015 §8 normalizes for the `mcp` kind.
  *
- *  Gate 4 of the write gates: secret/env values are NEVER carried or written — only the KEY NAMES
- *  (`envKeys` / `headerKeys`). The writer materializes `{env:KEY}` references; the operator supplies
- *  values in their own runtime (ADR-0006 stays untouched).
+ *  Gate 4 of the write gates: a launch carries KEY NAMES (`envKeys` / `headerKeys`), and the writer
+ *  materializes `{env:KEY}` references for the operator to satisfy in their own runtime. An
+ *  `envValues` / `headerValues` entry is the ONE exception (2026-11-01 amendment): a value the
+ *  operator typed into the registry-driven form, written verbatim into the runtime's own config at
+ *  their explicit request. Values still never reach the manifest, the ledger, or any read answer.
  */
 export type McpLaunch =
-  | { command: string; args?: string[]; envKeys?: string[] }
-  | { url: string; transport: 'http' | 'sse' | 'stdio'; headerKeys?: string[] };
+  | { command: string; args?: string[]; envKeys?: string[]; envValues?: Record<string, string> }
+  | { url: string; transport: 'http' | 'sse' | 'stdio'; headerKeys?: string[]; headerValues?: Record<string, string> };
 
 /** One file of a skill payload: repo-relative path + content bytes. */
 export interface SkillFile {
@@ -32,7 +34,7 @@ export interface SkillFile {
 export type InstallPayload =
   | { kind: 'skill'; name: string; files: SkillFile[] }
   | { kind: 'mcp'; name: string; launch: McpLaunch }
-  | { kind: 'extension'; name: string; pm: 'npm'; spec: string };
+  | { kind: 'plugin'; name: string; pm: 'npm'; spec: string };
 
 export interface ResolveOptions {
   /** Injectable fetch (house test style); defaults to globalThis.fetch. */
@@ -53,8 +55,8 @@ export type ResolveOutcome =
       ok: true;
       /**
        * `<sourceId>:<ref>[#detail]` — the manifest canonicalKey. The artifactId is
-       * `<kind>:<canonicalKey>`, except for `extension`, where the harness is part of the identity:
-       * `extension:<harness>:<canonicalKey>`.
+       * `<kind>:<canonicalKey>`, except for `plugin`, where the harness is part of the identity:
+       * `plugin:<harness>:<canonicalKey>`.
        */
       canonicalKey: string;
       /** Raw artifact name (vendor spelling); the writer normalizes it for target paths. */
@@ -81,7 +83,7 @@ export interface SourceAdapter {
   /**
    * Harnesses this source's artifacts are bound to (ADR-0015 §D2). ABSENT = harness-agnostic: the
    * operator picks the landing host, as with skills and MCP. Present = the source only serves those
-   * runtimes, and an extension request for any other harness is refused before any network work.
+   * runtimes, and an plugin request for any other harness is refused before any network work.
    */
   hosts?: HarnessHostId[];
   /**
