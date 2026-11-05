@@ -523,7 +523,7 @@ export const esES: TranslationDict = {
     connectMethodKey: 'Clave API',
     webLoginBtn: 'Web login',
     webLoginTip: 'Authorize in the browser — the token is written back automatically',
-    webLoginTitle: 'Web authorization — {name}',
+    webLoginTitle: 'Web authorization',
     webLoginStarting: 'Requesting a login session…',
     webLoginWaiting: 'Waiting for authorization — open the URL here or on any machine, polling…',
     webLoginDone: 'Authorized — credential connected',

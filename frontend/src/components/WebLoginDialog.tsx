@@ -122,13 +122,17 @@ export const WebLoginDialog: React.FC<{
 
   return (
     <Dialog
-      title={<span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><Globe size={15} />{t('op.webLoginTitle', { name: providerName })}</span>}
-      subtitle={t('op.webLoginTip')}
+      title={<span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><Globe size={15} />{t('op.webLoginTitle')}</span>}
+      subtitle={providerName}
       onClose={onClose}
       closeLabel={t('common.close')}
       width={560}
     >
       {switcher}
+      {/* The tip describes the WEB flow only — it belongs inside the flow
+          body, below the method switcher, not in the dialog subtitle slot
+          where it would read as describing both tabs. */}
+      <p style={{ color: 'var(--text-dim)', fontSize: 12, margin: 0 }}>{t('op.webLoginTip')}</p>
       {phase === 'starting' && <p style={{ color: 'var(--text-dim)', fontSize: 12, margin: 0 }}>{t('op.webLoginStarting')}</p>}
       {phase !== 'starting' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>

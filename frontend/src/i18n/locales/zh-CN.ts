@@ -512,7 +512,7 @@ export const zhCN: TranslationDict = {
     connectMethodKey: 'API 密钥',
     webLoginBtn: '授权登录',
     webLoginTip: '在浏览器中完成授权，token 将自动写回',
-    webLoginTitle: '网页授权 — {name}',
+    webLoginTitle: '网页授权',
     webLoginStarting: '正在请求登录会话…',
     webLoginWaiting: '等待授权完成——链接可复制到任意机器打开，正在轮询…',
     webLoginDone: '授权成功，凭证已连接',
