@@ -1482,9 +1482,9 @@ describe('GET .../opencode/catalog — plugin preset webLogin forwarding', () =>
   const catalogRow = (id: string, sources: string[]) => ({
     id, name: id, custom: true, connected: false, sources, models: [],
   });
-  const preset = (id: string, webLogin: boolean) => ({
+  const preset = (id: string, webLogin: boolean, authTypes?: ('webLogin' | 'key')[]) => ({
     id, name: id, defaultName: id, npm: '@ai-sdk/workbuddy', baseURL: 'https://wb.example',
-    custom: true, connected: false, webLogin, sources: ['service'],
+    custom: true, connected: false, webLogin, authTypes, sources: ['service'],
   });
   const catalogRows = async () => {
     const res = await app.inject({ method: 'GET', url: '/api/admin/opencode/catalog' });
@@ -1511,6 +1511,17 @@ describe('GET .../opencode/catalog — plugin preset webLogin forwarding', () =>
     presetEntries = [preset('plain', false)];
     const row = (await catalogRows()).find((p) => p.id === 'plain');
     expect(row?.webLogin ?? false).toBe(false);
+  });
+
+  it('forwards authTypes onto the wire row on every merge path (console default = first entry)', async () => {
+    catalogRecs = [catalogRow('workbuddy', ['opencode'])];
+    presetEntries = [preset('workbuddy', true, ['webLogin', 'key'])];
+    const covered = (await catalogRows()).find((p) => p.id === 'workbuddy');
+    expect(covered?.authTypes).toEqual(['webLogin', 'key']);
+    catalogRecs = [];
+    presetEntries = [preset('workbuddy-cn', true, ['webLogin', 'key'])];
+    const presetOnly = (await catalogRows()).find((p) => p.id === 'workbuddy-cn');
+    expect(presetOnly?.authTypes).toEqual(['webLogin', 'key']);
   });
 });
 

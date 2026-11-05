@@ -1,5 +1,5 @@
 import { FastifyInstance, FastifyRequest } from 'fastify';
-import fs, { createReadStream } from 'node:fs';
+import fs from 'node:fs';
 import path from 'node:path';
 import { getAllClientStatuses, refreshClientProfileBindings, setupClient, teardownClient } from '../cli/clients/index.js';
 import { VIRTUAL_AUTO_IDS } from '../cli/types.js';
@@ -8,7 +8,8 @@ import { MEMBER_TIER_ORDER } from '../providers/member-match.js';
 import { refreshDirectPool } from '../providers/boot-direct.js';
 import { TIER_PURPOSE } from '../providers/virtual-meta.js';
 import { NPM_VOCABULARY } from '../providers/vocabulary.js';
-import { getModelServicePlugin } from '../plugins/host.js';
+import { getModelServicePlugin, pluginProviderOrigins } from '../plugins/host.js';
+import { PluginAuthType } from '../plugins/types.js';
 import { globMatchAny } from '../utils/glob.js';
 import { PipelineOrchestrator } from '../pipeline/orchestrator.js';
 import { getRawConfig, loadConfig, saveConfig, saveRawConfig, getRuntimeConfigRef, getConfigPath } from '../config/index.js';
@@ -2489,6 +2490,9 @@ export function registerConsoleRoutes(
       const views = await storeProviderViews(store, lang);
       const unified = await catalogRepository.list();
       const byId = new Map(unified.map((p) => [p.id, p]));
+      // Plugin-origin provenance for the Connected-tab origin filter — same
+      // ledger join as the catalog endpoint (ADR-0010: never written to providers.json).
+      const origins = pluginProviderOrigins();
       return {
         status: 'ok',
         configPath: getProviderDefsPath(),
@@ -2522,6 +2526,9 @@ export function registerConsoleRoutes(
             // wire-base chain (def baseURL > models.dev `api` > live service
             // hint) so the card shows the SAME endpoint inference routes to.
             baseURL: v.baseURL || u?.baseURL || u?.api,
+            // Owning plugin id when the def was registered by a plugin preset —
+            // the Connected tab mirrors the catalog's origin filter on it.
+            pluginOrigin: origins[v.id],
             priceFrom: u ? catalogRepository.minInputPrice(u) : undefined,
             modelsCount: u?.models.length ?? v.models.length,
           };
@@ -2532,6 +2539,9 @@ export function registerConsoleRoutes(
     catalog: async (req: FastifyRequest) => {
       const lang = typeof (req.query as { lang?: unknown })?.lang === 'string' ? (req.query as { lang: string }).lang : undefined;
       const { catalogRepository } = await import('../opencode/catalog/repository.js');
+      // Plugin-origin provenance for the console tag/filter — ledger join only,
+      // never a field written into providers.json (ADR-0010).
+      const origins = pluginProviderOrigins();
       const unified = await catalogRepository.list();
       // Trim model arrays from the list payload (detail endpoint can serve them later)
       const providers = unified.map((p) => ({
@@ -2548,6 +2558,11 @@ export function registerConsoleRoutes(
         // Plugin merges below may forward a preset's web-authorization
         // capability onto this row.
         webLogin: undefined as boolean | undefined,
+        webLoginSubmit: undefined as boolean | undefined,
+        authTypes: undefined as PluginAuthType[] | undefined,
+        keyHint: undefined as string | undefined,
+        // Owning plugin id when the def was registered by a plugin preset.
+        pluginOrigin: origins[p.id],
         sources: p.sources,
         modelCount: p.models.length,
         priceFrom: catalogRepository.minInputPrice(p),
@@ -2573,6 +2588,10 @@ export function registerConsoleRoutes(
               // Forward the web-authorization capability, or the connect card
               // never offers the plugin's device-login button.
               existing.webLogin = preset.webLogin;
+              existing.pluginOrigin = existing.pluginOrigin ?? origins[preset.id];
+              existing.webLoginSubmit = preset.webLoginSubmit;
+              existing.authTypes = preset.authTypes;
+              existing.keyHint = preset.keyHint;
               // Tag the plugin origin, or the trailing pure-config-source drop
               // below removes the row we just decided to keep.
               if (!existing.sources.includes('service')) existing.sources = [...existing.sources, 'service'];
@@ -2584,7 +2603,7 @@ export function registerConsoleRoutes(
             // preset's own baseURL/npm.
             providers.splice(idx, 1);
           }
-          providers.push({ id: preset.id, name: preset.name, logo: preset.logo, npm: preset.npm, api: undefined, baseURL: preset.baseURL, doc: undefined, env: undefined, custom: preset.custom, connected: preset.connected, webLogin: preset.webLogin, sources: preset.sources, modelCount: 0, priceFrom: undefined });
+          providers.push({ id: preset.id, name: preset.name, logo: preset.logo, npm: preset.npm, api: undefined, baseURL: preset.baseURL, doc: undefined, env: undefined, custom: preset.custom, connected: preset.connected, webLogin: preset.webLogin, webLoginSubmit: preset.webLoginSubmit, authTypes: preset.authTypes, keyHint: preset.keyHint, pluginOrigin: origins[preset.id], sources: preset.sources, modelCount: 0, priceFrom: undefined });
         }
       } catch {
         // catalog must survive a broken plugin host
@@ -2955,7 +2974,7 @@ export function registerConsoleRoutes(
         }
         // Login finished — wire the fresh token into the credential store
         // (same write path as a manual connect), then connect-time model
-        // auto-fill so the card shows 已连接 with models.
+        // auto-fill so the card shows as connected with models.
         if (!result.token) {
           return { status: 'ok', done: true, connected: false, error: 'login finished without a token' };
         }
@@ -2973,6 +2992,44 @@ export function registerConsoleRoutes(
           app.log.warn({ providerId: id, fillError: fill.fillError }, 'web-login connect-time model auto-fill failed (swallowed by design)');
         }
         return { status: 'ok', done: true, connected: true, credential: keyMeta };
+      } catch (err) {
+        return reply.code(502).send({ success: false, error: err instanceof Error ? err.message : String(err) });
+      }
+    },
+    webLoginSubmit: async (req: any, reply: any) => {
+      const { id } = req.params as { id: string };
+      const code = String((req.body || {}).code ?? '').trim();
+      if (!code) return reply.code(400).send({ success: false, error: 'missing code' });
+      const r = await ocHandlers.webLoginPluginFor(id);
+      if ('error' in r) return reply.code(404).send({ success: false, error: r.error });
+      if (!r.plugin.webLogin!.submit) {
+        return reply.code(404).send({ success: false, error: `provider '${id}' web-login has no manual token submission` });
+      }
+      try {
+        const result = await r.plugin.webLogin!.submit({ baseURL: r.baseURL, code });
+        if (!result.ok) return { status: 'ok', connected: false, error: result.error };
+        // Same wiring as a finished poll: credential-store write + connect-time
+        // model auto-fill so the card flips to connected. A submit that
+        // consumed the code without returning a token is a plugin bug — refuse
+        // to persist the (likely expired) raw code as the credential, exactly
+        // like the poll path's 'login finished without a token' guard.
+        if (!result.token) {
+          return { status: 'ok', connected: false, error: 'submit finished without a token' };
+        }
+        const credentialStore = await (await import('../opencode/credentials/index.js')).getCredentialStore();
+        const { credential: keyMeta } = await connectKeyIdempotent(
+          credentialStore, id, result.token, undefined, registry.getCircuitBreakerManager(), registry
+        );
+        const { ensureConnectedProviderBook } = await import('../opencode/catalog/auto-pull.js');
+        const fill = await ensureConnectedProviderBook(id, { baseURL: r.baseURL }).catch((e: any) => ({
+          nodeCreated: false,
+          pulled: 0,
+          fillError: String(e?.message ?? e),
+        }));
+        if (fill.fillError) {
+          app.log.warn({ providerId: id, fillError: fill.fillError }, 'web-login submit connect-time model auto-fill failed (swallowed by design)');
+        }
+        return { status: 'ok', connected: true, credential: keyMeta };
       } catch (err) {
         return reply.code(502).send({ success: false, error: err instanceof Error ? err.message : String(err) });
       }
@@ -3881,7 +3938,10 @@ export function registerConsoleRoutes(
     // vendor login page; poll returns done+token and wires the fresh token
     // into the credential store. The plugin owns the whole protocol.
     app.post(`${prefix}/opencode/providers/:id/web-login/start`, ocHandlers.webLoginStart);
-    app.get(`${prefix}/opencode/providers/:id/web-login/poll`, ocHandlers.webLoginPoll);
+    // Both terminal paths write the fresh credential into the store, so both
+    // must trigger a credential re-sync (same contract as the key route).
+    app.get(`${prefix}/opencode/providers/:id/web-login/poll`, withPoolSync(registry, ocHandlers.webLoginPoll));
+    app.post(`${prefix}/opencode/providers/:id/web-login/submit`, withPoolSync(registry, ocHandlers.webLoginSubmit));
     app.post(`${prefix}/opencode/providers/:id/key`, withPoolSync(registry, ocHandlers.setKey));
     app.post(`${prefix}/opencode/providers/:id/test`, ocHandlers.test);
     app.delete(`${prefix}/opencode/providers/:id`, withPoolSync(registry, ocHandlers.remove));

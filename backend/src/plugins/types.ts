@@ -56,7 +56,19 @@ export interface PluginProviderPreset {
   npm: string;
   baseUrl: string;
   description?: string;
+  /** How-to hint shown above the key form in the console add-credential
+   *  dialog — plain string or locale map (same contract as displayName).
+   *  Plugins use it for "where to get this key" guidance (qoder's PAT) or
+   *  fallback-tab explanations (workbuddy: web-login first, pasted token
+   *  as fallback). Optional; absent = the dialog renders no hint line. */
+  keyHint?: string | Record<string, string>;
 }
+
+/** Credential methods the console may offer for this plugin's providers, in
+ *  display order; the FIRST entry is the default selection. 'webLogin'
+ *  requires the webLogin capability below. Absent = legacy behavior (the key
+ *  form always renders, the web tab appears after it when webLogin exists). */
+export type PluginAuthType = 'webLogin' | 'key';
 
 export interface ModelServicePlugin {
   manifest: PluginManifest;
@@ -88,7 +100,15 @@ export interface ModelServicePlugin {
     /** Poll the in-flight session once. done+token = login finished and the
      *  plugin has already persisted its long-lived token bundle. */
     poll(opts: { baseURL: string }): Promise<{ done: boolean; error?: string; token?: string }>;
+    /** Optional manual completion for off-box authorization: the operator
+     *  opens the authorize URL on another machine (or copies a token from the
+     *  vendor console) and pastes the resulting token/code back. Absent = the
+     *  vendor flow has no user-visible token — the console hides the paste
+     *  box and relies on poll alone. */
+    submit?(opts: { baseURL: string; code: string }): Promise<{ ok: boolean; error?: string; token?: string }>;
   };
+  /** Ordered credential methods for the console connect card (see PluginAuthType). */
+  authTypes?: PluginAuthType[];
   /**
    * Quota-check capability (ADR-0009 L-e — plugin knowledge layer). A plugin
    * that knows its vendor's usage endpoint declares it here; the quota

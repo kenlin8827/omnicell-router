@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
-import { Key, Check, RefreshCw, Trash2, Plug, Plus, Lock, Cpu, Zap, Upload, Download, AlertTriangle, Pencil, Unplug, Clock, ShieldAlert, Ban, PowerOff, Power, Copy, Gauge, Maximize2, ArrowUpToLine, Globe } from 'lucide-react';
+import { Key, Check, RefreshCw, Trash2, Plug, Plus, Lock, Cpu, Zap, Upload, Download, AlertTriangle, Pencil, Unplug, Clock, ShieldAlert, Ban, PowerOff, Power, Copy, Gauge, Maximize2, ArrowUpToLine } from 'lucide-react';
 import {
   opencodeApi,
   api,
@@ -22,6 +22,7 @@ import {
   type RateLimitSnapshotEntry,
   type CredentialQuotaView,
   type NpmVocabularyEntry,
+  type PluginAuthType,
 } from '../lib/api';
 import { CREDENTIAL_WEIGHT_MAX } from '../lib/defaults';
 import {
@@ -32,7 +33,9 @@ import {
   type LimitDraft,
 } from '../components/RateLimitEditor';
 import { ProviderModelsDialog } from '../components/ProviderModelsDialog';
+import { SearchInput } from '../components/SearchInput';
 import { Dialog } from '../components/Dialog';
+import { AddCredentialDialog } from '../components/AddCredentialDialog';
 import { useI18n } from '../i18n/I18nContext';
 import { useConfirm } from '../components/ConfirmProvider';
 import { useToast } from '../components/ToastProvider';
@@ -48,6 +51,15 @@ import { FALLBACK_NPM_VOCABULARY } from '../lib/npm-vocabulary';
 import { failureCaption } from '../lib/quotaFailure';
 
 import { FONT_MONO } from '../lib/fonts';
+/** Shared provider display sort: localized display name A→Z (case-insensitive),
+ *  falling back to the id when a row carries no display name (def-only
+ *  providers often have no `name`), with id as the stable tiebreak. Both the
+ *  Connected tab and the catalog "All" tab render through this — the raw wire
+ *  orders (providers.json write order, models.dev source order) carry no
+ *  meaning for finding a provider. */
+const byDisplayName = (a: { id: string; name?: string }, b: { id: string; name?: string }): number =>
+  (a.name ?? a.id).localeCompare(b.name ?? b.id, undefined, { sensitivity: 'base' }) ||
+  a.id.localeCompare(b.id);
 // Nested-card surface (bg/border/radius/padding) is the global .sub-card
 // class in index.css — single source of truth across all pages and themes.
 const cardFlex: React.CSSProperties = {
@@ -1353,10 +1365,17 @@ export const KeysPage: React.FC = () => {
   const [catalog, setCatalog] = useState<OpenCodeCatalogProvider[]>([]);
   const [catalogSource, setCatalogSource] = useState('');
   const [catalogQuery, setCatalogQuery] = useState('');
-  const [connectingId, setConnectingId] = useState<string | null>(null);
-  const [connectKey, setConnectKey] = useState('');
-  const [keyEditId, setKeyEditId] = useState<string | null>(null);
-  const [keyEditValue, setKeyEditValue] = useState('');
+  // Unified add-credential dialog: every provider card (connected quick-add,
+  // catalog connect) opens the SAME dialog; it hosts the key form and hands
+  // web-login-capable providers over to the device-flow dialog.
+  const [addCredential, setAddCredential] = useState<{
+    id: string;
+    name: string;
+    webLogin?: boolean;
+    webLoginSubmit?: boolean;
+    authTypes?: PluginAuthType[];
+    keyHint?: string;
+  } | null>(null);
   const [modelsPanelId, setModelsPanelId] = useState<string | null>(null);
   const { testingIds, testResults, testAll, testOne, testAllTargets } = useModelTest();
   const [notice, setNotice] = useState('');
@@ -1434,51 +1453,12 @@ export const KeysPage: React.FC = () => {
   // "hide connected" toggle could not answer "which catalog entries have I
   // already connected?" — the segmented filter covers both directions.
   const [catalogFilter, setCatalogFilter] = useState<'all' | 'connected' | 'unconnected'>('all');
+  // Origin filter: 'all' | 'builtin' | 'custom' | 'plugin' (any) | a plugin id.
+  const [catalogOrigin, setCatalogOrigin] = useState('all');
   const [connectedQuery, setConnectedQuery] = useState('');
+  const [connectedOrigin, setConnectedOrigin] = useState('all');
   const [catalogPage, setCatalogPage] = useState(1);
   const [catalogPageSize, setCatalogPageSize] = useState(CATALOG_PAGE_SIZE);
-  const [webLoginPendingId, setWebLoginPendingId] = useState<string | null>(null);
-
-  // Console web authorization (plugin device flow): open the vendor login
-  // page, poll until the operator finishes — the backend wires the fresh
-  // token into the credential store on done, so the card flips to 已连接.
-  const startWebLogin = useCallback(async (providerId: string) => {
-    setWebLoginPendingId(providerId);
-    try {
-      const { authUrl } = await opencodeApi.webLoginStart(providerId);
-      window.open(authUrl, '_blank', 'noopener');
-      showNotice(t('op.webLoginWaiting'));
-      let attempts = 0;
-      const timer = window.setInterval(async () => {
-        attempts += 1;
-        try {
-          const r = await opencodeApi.webLoginPoll(providerId);
-          if (r.done || r.error) {
-            window.clearInterval(timer);
-            setWebLoginPendingId(null);
-            if (r.done) {
-              showNotice(t('op.webLoginDone'));
-              await loadCatalog();
-            } else {
-              showNotice(r.error ?? t('op.webLoginFailed'), 'err');
-            }
-          }
-        } catch (err) {
-          window.clearInterval(timer);
-          setWebLoginPendingId(null);
-          showNotice(err instanceof Error ? err.message : String(err), 'err');
-        }
-        if (attempts >= 150) { // 5 min budget — same as the plugin-side timeout
-          window.clearInterval(timer);
-          setWebLoginPendingId(null);
-          showNotice(t('op.webLoginFailed'), 'err');
-        }
-      }, 2000);
-    } catch (err) {
-      setWebLoginPendingId(null);
-      showNotice(err instanceof Error ? err.message : String(err), 'err');
-    }
-  }, [t]);
   const [connectedPage, setConnectedPage] = useState(1);
   const [connectedPageSize, setConnectedPageSize] = useState(CONNECTED_PAGE_SIZE);
   const [refreshingConnected, setRefreshingConnected] = useState(false);
@@ -1841,17 +1821,45 @@ export const KeysPage: React.FC = () => {
     }
   };
 
+  // Origin-filter predicate shared by both tabs: builtin = covered by the
+  // built-in models.dev catalog; custom = self-declared AND plugin-free
+  // (plugin rows answer to the plugin / per-plugin options instead).
+  const matchOrigin = (origin: string, p: { custom: boolean; pluginOrigin?: string }): boolean =>
+    origin === 'builtin'
+      ? !p.custom
+      : origin === 'custom'
+        ? p.custom && !p.pluginOrigin
+        : origin === 'plugin'
+          ? Boolean(p.pluginOrigin)
+          : origin === 'all' || p.pluginOrigin === origin;
+  // One origin-dropdown option list for both tabs (built from each tab's own
+  // plugin id set).
+  const originFilterOptions = (pluginIds: string[]) => [
+    { value: 'all', label: t('op.filterOriginAll') },
+    { value: 'builtin', label: t('op.filterOriginBuiltin') },
+    { value: 'custom', label: t('op.filterOriginCustom') },
+    { value: 'plugin', label: t('op.filterOriginPlugin') },
+    ...pluginIds.map((id) => ({ value: id, label: `${t('op.pluginTag')} · ${id}` })),
+  ];
+  // Plugin ids among connected providers (mirrors the catalog tab's origin
+  // dropdown options).
+  const connectedPluginIds = useMemo(
+    () => [...new Set(ocProviders.map((p) => p.pluginOrigin).filter((p): p is string => Boolean(p)))],
+    [ocProviders]
+  );
   const connectedResults = useMemo(() => {
     const q = connectedQuery.trim().toLowerCase();
-    if (!q) return ocProviders;
-    return ocProviders.filter(
-      (p) =>
-        p.id.toLowerCase().includes(q) ||
-        (p.name || '').toLowerCase().includes(q) ||
-        (p.baseURL || '').toLowerCase().includes(q) ||
-        p.models.some((m) => m.toLowerCase().includes(q))
-    );
-  }, [ocProviders, connectedQuery]);
+    const list = q
+      ? ocProviders.filter(
+          (p) =>
+            p.id.toLowerCase().includes(q) ||
+            (p.name || '').toLowerCase().includes(q) ||
+            (p.baseURL || '').toLowerCase().includes(q) ||
+            p.models.some((m) => m.toLowerCase().includes(q))
+        )
+      : [...ocProviders];
+    return list.filter((p) => matchOrigin(connectedOrigin, p)).sort(byDisplayName);
+  }, [ocProviders, connectedQuery, connectedOrigin]);
   const pagedConnected = useMemo(() => {
     const start = (connectedPage - 1) * connectedPageSize;
     return connectedResults.slice(start, start + connectedPageSize);
@@ -1861,13 +1869,28 @@ export const KeysPage: React.FC = () => {
     const q = catalogQuery.trim().toLowerCase();
     let list = q
       ? catalog.filter((c) => (c.id || '').toLowerCase().includes(q) || (c.name || '').toLowerCase().includes(q))
-      : catalog;
+      : [...catalog];
     if (catalogFilter !== 'all') {
       const wantConnected = catalogFilter === 'connected';
       list = list.filter((c) => keyedProviderIds.has(c.id) === wantConnected);
     }
-    return list;
-  }, [catalog, catalogQuery, catalogFilter, keyedProviderIds]);
+    list = list.filter((c) => matchOrigin(catalogOrigin, c));
+    // Same display sort as the Connected tab — a copy, never the state array.
+    return list.sort(byDisplayName);
+  }, [catalog, catalogQuery, catalogFilter, catalogOrigin, keyedProviderIds]);
+  // Plugin ids present in the catalog (for the origin filter dropdown).
+  const catalogPluginIds = useMemo(
+    () => [...new Set(catalog.map((c) => c.pluginOrigin).filter((p): p is string => Boolean(p)))],
+    [catalog]
+  );
+
+  // Web-login capability for the unified add-credential dialog: only catalog
+  // rows carry webLogin/webLoginSubmit (plugin-driven), so connected-tab cards
+  // resolve it through the same catalog snapshot — never a duplicated flag.
+  const webLoginByProvider = useMemo(
+    () => new Map(catalog.map((c) => [c.id, { webLogin: c.webLogin, webLoginSubmit: c.webLoginSubmit, authTypes: c.authTypes, keyHint: c.keyHint }])),
+    [catalog]
+  );
 
   const pagedCatalog = catalogResults.slice(
     (catalogPage - 1) * catalogPageSize,
@@ -2068,40 +2091,6 @@ export const KeysPage: React.FC = () => {
     showNotice(t(multiCredentialStore ? 'op.keyAdded' : 'op.keyUpdated', { sink: sinkLabel }));
   };
 
-  const handleConnect = async (id: string) => {
-    if (!connectKey.trim()) return;
-    setBusy(true);
-    try {
-      const res = await opencodeApi.connectProvider(id, connectKey.trim());
-      // connectedIds is the pre-write snapshot — a first connect is NOT in it
-      // yet; announceConnect lands the row before refreshAll() has returned.
-      announceConnect(res, id);
-      setConnectingId(null);
-      setConnectKey('');
-      await refreshAll();
-    } catch (err: any) {
-      toast.error(reasonError(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleUpdateKey = async (id: string) => {
-    if (!keyEditValue.trim()) return;
-    setBusy(true);
-    try {
-      const res = await opencodeApi.connectProvider(id, keyEditValue.trim());
-      announceConnect(res, id);
-      setKeyEditId(null);
-      setKeyEditValue('');
-      await refreshAll();
-    } catch (err: any) {
-      toast.error(reasonError(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   /** Batch test: bounded concurrency over the currently visible connected providers. */
   const handleTestAllProviders = () =>
     testAllTargets(connectedResults.map((p) => ({ key: p.id, providerId: p.id })));
@@ -2228,8 +2217,11 @@ export const KeysPage: React.FC = () => {
         <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
         {activeTab === 'connected' && (<>
         {/* ---- Connected providers: bound credential-store status (defs file providers map ∪ bound store) ---- */}
+        {/* Full-height flex column: the store-status note + filter toolbar stay
+            pinned, only the provider card grid scrolls in the nested container. */}
+        <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
         {storeStatus && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, margin: '0 0 12px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, margin: '0 0 12px', flexShrink: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               {storeStatus.degradedCode ? (
                 <span
@@ -2266,13 +2258,25 @@ export const KeysPage: React.FC = () => {
             )}
           </div>
         )}
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
-          <input
-            className="input"
-            style={{ fontSize: 12, maxWidth: 420, flex: 1, minWidth: 200 }}
+        {/* Divider under the toolbar separates the filter controls from the
+            provider card grid (the catalog tab has the same rule). */}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', flexShrink: 0, borderBottom: '1px solid var(--card-border)', paddingBottom: 12, marginBottom: 14 }}>
+          {/* Origin filter leads the toolbar: it is the coarsest selector, so
+              it sits leftmost and the search/filter controls refine within it
+              (same layout as the catalog tab). */}
+          <Combobox
+            style={{ fontSize: 12, flexShrink: 0, width: 'fit-content', minWidth: 180 }}
+            forceFilter
+            value={connectedOrigin}
+            onChange={(v) => { setConnectedOrigin(v || 'all'); setConnectedPage(1); }}
+            placeholder={t('op.filterOrigin')}
+            options={originFilterOptions(connectedPluginIds)}
+          />
+          <SearchInput
+            style={{ maxWidth: 420 }}
             placeholder={t('op.searchConnected')}
             value={connectedQuery}
-            onChange={e => { setConnectedQuery(e.target.value); setConnectedPage(1); }}
+            onChange={(v) => { setConnectedQuery(v); setConnectedPage(1); }}
           />
           <button
             className="btn btn-sm"
@@ -2312,6 +2316,7 @@ export const KeysPage: React.FC = () => {
             drop to 2 columns instead.
             auto-fill (not auto-fit): empty tracks keep their width, so a single
             card sits at one-third of the row instead of stretching full width. */}
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(max(340px, calc((100% - 28px) / 3)), 1fr))', gap: '14px' }}>
           {pagedConnected.map(p => {
             const credentialList = credentialsByProvider.get(p.id) ?? [];
@@ -2393,17 +2398,15 @@ export const KeysPage: React.FC = () => {
                     <Pencil size={12} />
                   </button>
                 )}
-                {keyEditId !== p.id && (
-                  <button
-                    className="btn btn-sm"
-                    style={{ color: 'var(--accent-rose)', flexShrink: 0 }}
-                    disabled={busy || testingIds.size > 0 || testAll.running}
-                    title={t('op.deleteBtn')}
-                    onClick={() => handleDelete(p)}
-                  >
-                    <Trash2 size={12} />
-                  </button>
-                )}
+                <button
+                  className="btn btn-sm"
+                  style={{ color: 'var(--accent-rose)', flexShrink: 0 }}
+                  disabled={busy || testingIds.size > 0 || testAll.running}
+                  title={t('op.deleteBtn')}
+                  onClick={() => handleDelete(p)}
+                >
+                  <Trash2 size={12} />
+                </button>
               </div>
 
               {(p.baseURL || displayNpm(p.npm)) && (
@@ -2515,41 +2518,21 @@ export const KeysPage: React.FC = () => {
                   )}
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
-                {keyEditId === p.id ? (
-                  <>
-                    <input
-                      className="input"
-                      style={{ fontSize: 12, flex: 1, minWidth: 140 }}
-                      placeholder={t(multiCredentialStore ? 'op.addKeyPrompt' : 'op.updateKeyPrompt')}
-                      value={keyEditValue}
-                      onChange={e => setKeyEditValue(e.target.value)}
-                      autoFocus
-                    />
-                    <button className="btn btn-sm btn-primary" disabled={busy} onClick={() => handleUpdateKey(p.id)}>
-                      <Check size={12} />
-                    </button>
-                    <button className="btn btn-sm" onClick={() => { setKeyEditId(null); setKeyEditValue(''); }}>
-                      ✕
-                    </button>
-                  </>
-                ) : (
+                <button
+                  className="btn btn-sm"
+                  disabled={!keyWritable}
+                  title={
+                    !keyWritable
+                        ? t('op.integrationMissingTip')
+                        : t(multiCredentialStore ? 'op.addKeyCredentialTip' : 'op.updateKeyTip')
+                  }
+                  onClick={() => setAddCredential({ id: p.id, name: p.name ?? p.id, ...(webLoginByProvider.get(p.id) ?? {}) })}
+                >
+                  {multiCredentialStore ? <Plus size={12} /> : <Key size={12} />}
+                  <span>{t(multiCredentialStore ? 'op.addKeyCredential' : 'op.updateKey')}</span>
+                </button>
+                <>
                   <button
-                    className="btn btn-sm"
-                    disabled={!keyWritable}
-                    title={
-                      !keyWritable
-                          ? t('op.integrationMissingTip')
-                          : t(multiCredentialStore ? 'op.addKeyCredentialTip' : 'op.updateKeyTip')
-                    }
-                    onClick={() => setKeyEditId(p.id)}
-                  >
-                    {multiCredentialStore ? <Plus size={12} /> : <Key size={12} />}
-                    <span>{t(multiCredentialStore ? 'op.addKeyCredential' : 'op.updateKey')}</span>
-                  </button>
-                )}
-                {keyEditId !== p.id && (
-                  <>
-                    <button
                       className="btn btn-sm"
                       disabled={testingIds.size > 0 || testAll.running}
                       title={testingIds.has(p.id) ? t('op.testing') : t('op.testBtn')}
@@ -2569,7 +2552,6 @@ export const KeysPage: React.FC = () => {
                       <span>{t('op.pmManage')}</span>
                     </button>
                   </>
-                )}
                 </div>
               </div>
 
@@ -2588,21 +2570,36 @@ export const KeysPage: React.FC = () => {
             <div style={{ color: 'var(--text-dim)', fontSize: 12 }}>{t('op.emptyConnected')}</div>
           )}
         </div>
+        </div>
+        </div>
 
         </>)}
 
         {activeTab === 'catalog' && (<>
         {/* ---- Connect catalog provider ---- */}
-        <p style={{ color: 'var(--text-dim)', fontSize: 11, margin: '0 0 12px' }}>
+        {/* Full-height flex column: the source note + filter toolbar stay pinned,
+            only the card grid scrolls inside the nested container below. */}
+        <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+        <p style={{ color: 'var(--text-dim)', fontSize: 11, margin: '0 0 12px', flexShrink: 0 }}>
           {t('op.connectDesc')} · {t('op.catalogSource', { source: catalogSource || 'none' })}
         </p>
-        <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-          <input
-            className="input"
-            style={{ fontSize: 12, flex: 1 }}
+        {/* Divider under the toolbar separates the filter controls from the
+            provider card grid below. */}
+        <div style={{ display: 'flex', gap: 8, flexShrink: 0, borderBottom: '1px solid var(--card-border)', paddingBottom: 12, marginBottom: 14 }}>
+          {/* Origin filter leads the toolbar: it is the coarsest selector, so
+              it sits leftmost and the search/filter controls refine within it. */}
+          <Combobox
+            style={{ fontSize: 12, flexShrink: 0, width: 'fit-content', minWidth: 180 }}
+            forceFilter
+            value={catalogOrigin}
+            onChange={(v) => { setCatalogOrigin(v || 'all'); setCatalogPage(1); }}
+            placeholder={t('op.filterOrigin')}
+            options={originFilterOptions(catalogPluginIds)}
+          />
+          <SearchInput
             placeholder={t('op.searchCatalog')}
             value={catalogQuery}
-            onChange={e => { setCatalogQuery(e.target.value); setCatalogPage(1); }}
+            onChange={(v) => { setCatalogQuery(v); setCatalogPage(1); }}
           />
           <button
             className="btn btn-sm"
@@ -2646,6 +2643,7 @@ export const KeysPage: React.FC = () => {
         {/* Same responsive cap as the connected grid — one column rhythm across
             the page's tabs (3 cards per row on a wide screen, floor 280px).
             auto-fill keeps empty tracks, so few-card results don't stretch. */}
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(max(280px, calc((100% - 20px) / 3)), 1fr))', gap: '10px' }}>
           {pagedCatalog.map(c => {
             // badge = HAS A CREDENTIAL — a merely-defined provider (plugin preset
@@ -2667,6 +2665,14 @@ export const KeysPage: React.FC = () => {
                       {(displayNpm(c.npm) || '').replace('@ai-sdk/', '')}
                     </span>
                   )}
+                  {c.pluginOrigin && (
+                    <span
+                      style={{ fontSize: 9.5, color: 'var(--accent)', flexShrink: 0, border: '1px solid color-mix(in srgb, var(--accent) 45%, transparent)', borderRadius: 4, padding: '1px 4px' }}
+                      title={t('op.pluginOriginTip', { plugin: c.pluginOrigin })}
+                    >
+                      {t('op.pluginTag')}
+                    </span>
+                  )}
                   {(c.baseURL || c.api) && (
                     <button
                       className="btn btn-sm"
@@ -2682,29 +2688,15 @@ export const KeysPage: React.FC = () => {
                     </button>
                   )}
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--text-dim)' }}>
+                {/* marginTop auto absorbs the slack so the meta + status rows sit
+                    at the card bottom and align across the grid row. */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--text-dim)', marginTop: 'auto' }}>
                   <span>{t('op.modelsCount', { n: c.modelCount })}</span>
                   {typeof c.priceFrom === 'number' && (
                     <span style={{ color: 'var(--accent-emerald)' }}>{t('op.priceFrom', { price: c.priceFrom })}</span>
                   )}
                 </div>
-                {connectingId === c.id ? (
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <input
-                      className="input"
-                      style={{ fontSize: 12, flex: 1 }}
-                      placeholder={t('op.apiKeyPlaceholder')}
-                      value={connectKey}
-                      onChange={e => setConnectKey(e.target.value)}
-                      autoFocus
-                      onKeyDown={e => e.key === 'Enter' && handleConnect(c.id)}
-                    />
-                    <button className="btn btn-sm btn-primary" disabled={busy} onClick={() => handleConnect(c.id)}>
-                      <Check size={12} />
-                    </button>
-                    <button className="btn btn-sm" onClick={() => { setConnectingId(null); setConnectKey(''); }}>✕</button>
-                  </div>
-                ) : connected ? (
+                {connected ? (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 0' }}>
                     <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--accent-emerald)', flex: 1 }}>
                       <Check size={12} />
@@ -2714,7 +2706,7 @@ export const KeysPage: React.FC = () => {
                       className="btn btn-sm"
                       disabled={!canWriteCredential(c.id)}
                       title={canWriteCredential(c.id) ? t('op.addCredentialQuickTip') : t('op.integrationMissingTip')}
-                      onClick={() => { setConnectingId(c.id); setConnectKey(''); }}
+                      onClick={() => setAddCredential({ id: c.id, name: c.name, webLogin: c.webLogin, webLoginSubmit: c.webLoginSubmit, authTypes: c.authTypes, keyHint: webLoginByProvider.get(c.id)?.keyHint })}
                     >
                       <Plug size={12} />
                       <span>{t('op.addCredentialQuick')}</span>
@@ -2726,24 +2718,12 @@ export const KeysPage: React.FC = () => {
                       className="btn btn-sm"
                       disabled={!canWriteCredential(c.id)}
                       title={!canWriteCredential(c.id) ? t('op.integrationMissingTip') : undefined}
-                      onClick={() => { setConnectingId(c.id); setConnectKey(''); }}
+                      onClick={() => setAddCredential({ id: c.id, name: c.name, webLogin: c.webLogin, webLoginSubmit: c.webLoginSubmit, authTypes: c.authTypes, keyHint: c.keyHint })}
                       style={{ flex: 1 }}
                     >
                       <Plug size={12} />
                       <span>{t('op.connectBtn')}</span>
                     </button>
-                    {c.webLogin && (
-                      <button
-                        className="btn btn-sm btn-primary"
-                        disabled={webLoginPendingId === c.id}
-                        title={t('op.webLoginTip')}
-                        onClick={() => startWebLogin(c.id)}
-                        style={{ flex: 1 }}
-                      >
-                        <Globe size={12} />
-                        <span>{webLoginPendingId === c.id ? t('op.webLoginWaitingShort') : t('op.webLoginBtn')}</span>
-                      </button>
-                    )}
                   </div>
                 )}
               </div>
@@ -2752,6 +2732,8 @@ export const KeysPage: React.FC = () => {
           {catalog.length === 0 && (
             <div style={{ color: 'var(--text-dim)', fontSize: 12 }}>{t('op.catalogEmpty')}</div>
           )}
+        </div>
+        </div>
         </div>
 
         </>)}
@@ -2982,6 +2964,42 @@ export const KeysPage: React.FC = () => {
 
         {/* Decision 10 password gate — fixed overlay, mounted outside the tab
             bodies so a tab switch cannot orphan it mid-reveal. */}
+        {/* Unified add-credential dialog — the ONLY surface for "hand this key
+            to the store": connected quick-add, catalog connect and web-login-
+            capable plugins all funnel here. Save announcements reuse the shared
+            announceConnect rule; the device-flow callback refreshes catalog +
+            connected views. */}
+        {addCredential &&
+          (() => {
+            const ac = addCredential;
+            return (
+              <AddCredentialDialog
+                providerId={ac.id}
+                providerName={ac.name}
+                webLogin={ac.webLogin}
+                webLoginSubmit={ac.webLoginSubmit}
+                authTypes={ac.authTypes}
+                keyHint={ac.keyHint}
+                multiCredential={multiCredentialStore}
+                formatError={reasonError}
+                onClose={() => setAddCredential(null)}
+                onSaved={(res) => {
+                  // connectedIds is the pre-write snapshot — a first connect is
+                  // NOT in it yet; announce lands before refreshAll() returns.
+                  announceConnect(res, ac.id);
+                  setAddCredential(null);
+                  refreshAll();
+                }}
+                onConnected={() => {
+                  showNotice(t('op.webLoginDone'));
+                  setAddCredential(null);
+                  loadCatalog();
+                  refreshAll();
+                }}
+              />
+            );
+          })()}
+
         {revealTarget && (
           <RevealKeyDialog
             credential={revealTarget}

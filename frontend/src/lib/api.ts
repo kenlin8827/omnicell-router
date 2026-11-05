@@ -1,3 +1,6 @@
+/** Credential methods a plugin's connect card may offer (backend PluginAuthType). */
+export type PluginAuthType = 'webLogin' | 'key';
+
 export interface ProjectItem {
   id: string;
   name: string;
@@ -3734,6 +3737,9 @@ export interface OpenCodeProviderView {
   logo?: string;
   priceFrom?: number;
   modelsCount?: number;
+  /** Owning plugin id when the def was registered by a plugin preset —
+   *  provenance for the Connected-tab origin filter (backend ledger join). */
+  pluginOrigin?: string;
   auth: {
     connected: boolean;
     type?: 'api' | 'oauth' | 'wellknown';
@@ -3754,8 +3760,22 @@ export interface OpenCodeCatalogProvider {
   custom: boolean;
   connected: boolean;
   /** Plugin wire declares a console web-authorization (device login) — the
-   *  connect card shows the 授权登录 button alongside the key input. */
+   *  connect card offers it through the auth-method picker. */
   webLogin?: boolean;
+  /** The plugin's web-login also accepts a manually pasted token (off-box
+   *  authorization) — the dialog shows the paste box. */
+  webLoginSubmit?: boolean;
+  /** Plugin-declared credential methods in display order; the FIRST entry is
+   *  the dialog's default selection. Absent = legacy behavior (key first,
+   *  web tab after it when webLogin is set). Mirrors backend PluginAuthType. */
+  authTypes?: PluginAuthType[];
+  /** Plugin-provided how-to hint (already localized server-side) rendered
+   *  above the key form in the add-credential dialog — "where to get this
+   *  key" guidance or fallback-tab explanation. Mirrors the preset keyHint. */
+  keyHint?: string;
+  /** Owning plugin id when the def was registered by a plugin preset —
+   *  provenance for the catalog tag/filter (backend ledger join). */
+  pluginOrigin?: string;
   sources: string[];
   modelCount: number;
   priceFrom?: number;
@@ -4875,6 +4895,19 @@ export const opencodeApi = {
     const json = (await res.json().catch(() => ({}))) as { done?: boolean; connected?: boolean; error?: string };
     if (!res.ok) throw new Error(json.error ?? `web-login poll failed (${res.status})`);
     return { done: Boolean(json.done), connected: json.connected, error: json.error };
+  },
+
+  /** Manually complete a web login: the operator pastes a token/code obtained
+   *  off-box. connected=false carries the plugin's rejection reason. */
+  async webLoginSubmit(providerId: string, code: string): Promise<{ connected: boolean; error?: string }> {
+    const res = await fetch(`/api/admin/opencode/providers/${encodeURIComponent(providerId)}/web-login/submit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+    const json = (await res.json().catch(() => ({}))) as { connected?: boolean; error?: string };
+    if (!res.ok) throw new Error(json.error ?? `web-login submit failed (${res.status})`);
+    return { connected: Boolean(json.connected), error: json.error };
   },
   async testProvider(
     id: string,

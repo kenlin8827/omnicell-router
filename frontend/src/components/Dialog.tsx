@@ -111,6 +111,14 @@ export const Dialog: React.FC<DialogProps> = ({
           flexDirection: 'column',
           gap: '12px',
           overflow: 'hidden',
+          // `ocr-pop-in` animates transform on an element that also clips
+          // (`overflow: hidden`). Without a stable compositing layer, Chromium
+          // WebViews can keep the pre-animation paint of the clipped children
+          // — e.g. an input's bottom border stays invisible until any click
+          // forces a repaint. A permanent `will-change` keeps the card on its
+          // own layer for the whole mount, so the layer is correctly
+          // re-rasterized when the animation ends.
+          willChange: 'transform, opacity',
           animation: 'ocr-pop-in 0.18s ease',
         }}
       >
@@ -146,7 +154,14 @@ export const Dialog: React.FC<DialogProps> = ({
             reserved, so the loop cannot start (and text never shifts by 6 px when a dialog grows). */}
         <div
           style={{
-            flex: 1,
+            // `1 1 auto`, NOT shorthand `flex: 1` (basis 0%): with an auto-height
+            // card the zero basis lets the scroll body's hypothetical main size
+            // detach from its content, and the body ends up a few px SHORTER than
+            // the content — the last child's bottom border gets clipped by the
+            // overflow edge and the footer's borderTop draws across it. Basis
+            // auto keeps the body ≥ content when the card is content-sized; grow
+            // still hands the remaining height to `full` / maxSize-height dialogs.
+            flex: '1 1 auto',
             overflowY: 'auto',
             minHeight: 0,
             display: 'flex',

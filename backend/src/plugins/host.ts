@@ -11,7 +11,7 @@ import {
   emitUpstreamFailureOnce,
   withUpstreamFailureGuard,
 } from '../observability/upstream-events.js';
-import type { ModelServicePlugin, ModelServicePluginHost, PluginManifest, PluginView } from './types.js';
+import type { ModelServicePlugin, ModelServicePluginHost, PluginAuthType, PluginManifest, PluginView } from './types.js';
 
 /**
  * Plugin host: discovers, unpacks and loads model-service plugins.
@@ -470,9 +470,23 @@ function writeRegistrations(map: Record<string, string[]>): void {
   writeFileSync(registrationsPath(), JSON.stringify(map, null, 2));
 }
 
-/** A MEANINGFUL def is operator-owned and never overwritten/deleted; a bare
- *  stub (New-custom leftover: only a package field) carries nothing worth
- *  keeping — a plugin preset may take it over. Reads the RAW defs-file node:
+/** Inverted preset ledger: providerId → owning plugin id. Read-only projection
+ *  for console catalog tagging/filtering — providers.json itself stays
+ *  unmarked (ADR-0010: the ledger, not the defs file, is the provenance truth). */
+export function pluginProviderOrigins(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [pluginId, ids] of Object.entries(readRegistrations())) {
+    for (const id of ids) out[id] = pluginId;
+  }
+  return out;
+}
+
+/** A MEANINGFUL def is operator-owned and never overwritten/deleted, and
+ *  joins the ledger (provenance tag/filter). A bare stub (New-custom leftover:
+ *  only a package field) is left un-ledgered so uninstall never deletes an
+ *  operator file node the plugin never created; an existing node is NEVER
+ *  taken over by a preset (syncPluginPresets skips every id already present).
+ *  Reads the RAW defs-file node:
  *  getProviderNodeById returns a normalized view that derives npm/options from
  *  package+settings, which would make even a bare stub look meaningful. */
 function isMeaningfulDef(raw: Record<string, unknown> | undefined): boolean {
@@ -486,8 +500,10 @@ function isMeaningfulDef(raw: Record<string, unknown> | undefined): boolean {
   );
 }
 
-/** Register every not-yet-defined preset of every loaded plugin. Returns the
- *  created provider ids (for boot/reload logging). */
+/** Register every not-yet-defined preset of every loaded plugin. A preset is
+ *  skipped whenever the defs file already holds ANY node with that id — even a
+ *  bare New-custom stub — so presets never take over operator file state.
+ *  Returns the created provider ids (for boot/reload logging). */
 export async function syncPluginPresets(): Promise<string[]> {
   const { upsertProviderDef } = await import('../opencode/user-config.js');
   const { readProviderDefsFile } = await import('../opencode/provider-defs.js');
@@ -496,7 +512,15 @@ export async function syncPluginPresets(): Promise<string[]> {
   for (const { plugin, view } of registry.values()) {
     const mine = new Set(ledger[view.id] ?? []);
     for (const preset of plugin.manifest.presets ?? []) {
-      if (isMeaningfulDef(readProviderDefsFile()?.providers?.[preset.providerId] as Record<string, unknown> | undefined)) continue;
+      const raw = readProviderDefsFile()?.providers?.[preset.providerId] as Record<string, unknown> | undefined;
+      if (raw) {
+        // Pre-existing operator def with the same id: never overwritten (ADR-0010).
+        // Only a MEANINGFUL def joins the ledger (provenance tag/filter): a bare
+        // stub is left un-ledgered so uninstall never deletes an operator file
+        // node the plugin never created (isMeaningfulDef skips meaningful defs).
+        if (isMeaningfulDef(raw)) mine.add(preset.providerId);
+        continue;
+      }
       const result = upsertProviderDef({
         id: preset.providerId,
         name: typeof preset.displayName === 'string' ? preset.displayName : (preset.displayName['en-US'] ?? Object.values(preset.displayName)[0]),
@@ -557,11 +581,11 @@ const LANG_TO_BCP47: Record<string, string> = {
  *  key by BCP-47 ('zh-CN'/'en-US') — translated before lookup, en-US as the
  *  fallback. */
 export async function pluginPresetCatalogEntries(lang?: string): Promise<
-  { id: string; name: string; defaultName: string; logo?: string; npm?: string; baseURL?: string; custom: boolean; connected: boolean; webLogin?: boolean; sources: ['service'] }[]
+  { id: string; name: string; defaultName: string; logo?: string; npm?: string; baseURL?: string; custom: boolean; connected: boolean; webLogin?: boolean; webLoginSubmit?: boolean; authTypes?: PluginAuthType[]; sources: ['service']; keyHint?: string }[]
 > {
   const { getCredentialStore } = await import('../opencode/credentials/index.js');
   const store = await getCredentialStore();
-  const out: { id: string; name: string; defaultName: string; logo?: string; npm?: string; baseURL?: string; custom: boolean; connected: boolean; webLogin?: boolean; sources: ['service'] }[] = [];
+  const out: { id: string; name: string; defaultName: string; logo?: string; npm?: string; baseURL?: string; custom: boolean; connected: boolean; webLogin?: boolean; webLoginSubmit?: boolean; authTypes?: PluginAuthType[]; sources: ['service']; keyHint?: string }[] = [];
   for (const { plugin, view } of registry.values()) {
     const logoUrl = plugin.manifest.logo ? `/api/admin/plugins/${view.id}/logo` : undefined;
     for (const preset of plugin.manifest.presets ?? []) {
@@ -570,6 +594,10 @@ export async function pluginPresetCatalogEntries(lang?: string): Promise<
         ? preset.displayName
         : (preset.displayName[key ?? ''] ?? preset.displayName['en-US'] ?? Object.values(preset.displayName)[0] ?? preset.providerId);
       const defaultName = typeof preset.displayName === 'string' ? preset.displayName : preset.displayName['en-US'] ?? name;
+      // Resolve the key-form hint to the console locale here — the dialog
+      // receives plain text, same contract as `name`.
+      const hint = preset.keyHint;
+      const keyHint = typeof hint === 'string' ? hint : hint ? (hint[key ?? ''] ?? hint['en-US'] ?? Object.values(hint)[0]) : undefined;
       out.push({
         id: preset.providerId,
         name,
@@ -582,7 +610,11 @@ export async function pluginPresetCatalogEntries(lang?: string): Promise<
         // Console connect card offers the web-authorization button when the
         // plugin declares the capability (vendor knowledge stays in-plugin).
         webLogin: typeof plugin.webLogin === 'object',
+        webLoginSubmit: typeof plugin.webLogin?.submit === 'function',
+        // Ordered credential-method declaration (first = console default).
+        authTypes: plugin.authTypes,
         sources: ['service'],
+        keyHint,
       });
     }
   }
