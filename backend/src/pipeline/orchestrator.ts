@@ -288,6 +288,11 @@ export class PipelineOrchestrator {
     if (this.healthProber) this.healthProber.stop();
   }
 
+  /** The health prober's CLAMPED sweep interval (0 when probing is off). */
+  public getProberIntervalMs(): number {
+    return this.healthProber?.getIntervalMs() ?? 0;
+  }
+
   /**
    * Public entry point — thin capture wrapper around processInternal.
    *
@@ -2401,20 +2406,38 @@ export class PipelineOrchestrator {
             this.config.circuitBreaker,
             this.config.retry
           );
-          // The classifier carried the registry-stamped usedCredentialKeyHashPrefix
-          // onto the diagnosis (tripScope + credentialSuspect + usedKeyHashPrefix);
-          // the manager attributes from `credentialPrefix` OR that stamp, so a
+          // Breaker accounting is per logical request, NOT per in-place
+          // attempt: a retried attempt that eventually succeeds leaves no
+          // failure on the breaker, and an abandoned candidate records
+          // exactly one failure. Counting every attempt let a single request
+          // burn the whole trip threshold by itself (retry amplification).
+          // The final attempt's diagnosis is the one recorded — it carries
+          // the same registry-stamped usedCredentialKeyHashPrefix
+          // (tripScope + credentialSuspect + usedKeyHashPrefix); the manager
+          // attributes from `credentialPrefix` OR that stamp, so a
           // credential-fault error cools its credential even when selection
           // returned no prefix (all-unhealthy / no-session): the manager then
           // attributes from the diagnosis stamp itself. Only a chain-less
           // provider (no stamp at all) stays on the sentinel tuple.
-          cbManager.recordFailureScoped(
-            candidate.id,
-            diagnosis,
-            candidate.provider,
-            credentialPrefix,
-            this.registry.getCredentialChain(candidate.provider)?.map((c) => c.keyHashPrefix)
-          );
+          // A committed attempt can never actually in-place retry (the commit
+          // check below returns first), so `committed` belongs in this
+          // condition: without it a mid-stream CONNECTION_RESET on a streamed
+          // turn would skip BOTH the retry and the record — zero breaker
+          // evidence from clients dying mid-body on a dying upstream.
+          // Single source for BOTH the recording decision above and the step-2
+          // retry decision below — the committed check at the commit point
+          // returns first, so the two can never disagree.
+          const willRetryInPlace =
+            diagnosis.isInPlaceRetriable && attempt < maxInplaceAttempts && !opts.relay?.committed;
+          if (!willRetryInPlace) {
+            cbManager.recordFailureScoped(
+              candidate.id,
+              diagnosis,
+              candidate.provider,
+              credentialPrefix,
+              this.registry.getCredentialChain(candidate.provider)?.map((c) => c.keyHashPrefix)
+            );
+          }
 
           // Upstream-429 feedback into the local shaping window: the provider
           // just TOLD us this credential is at-cap — feed the declared wait
@@ -2475,7 +2498,7 @@ export class PipelineOrchestrator {
           }
 
           // 2. Can we in-place retry on the SAME candidate model to preserve KV Cache?
-          if (diagnosis.isInPlaceRetriable && attempt < maxInplaceAttempts) {
+          if (willRetryInPlace) {
             let sleepMs = backoffMs + Math.random() * jitterMs;
             if (diagnosis.networkCause === 'RATE_LIMIT_BURST' && diagnosis.retryAfterSeconds) {
               sleepMs = Math.max(sleepMs, diagnosis.retryAfterSeconds * 1000);

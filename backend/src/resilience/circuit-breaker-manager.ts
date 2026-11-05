@@ -473,6 +473,67 @@ export class CircuitBreakerManager {
     return tuple !== undefined && !tuple.breaker.peekExecute().allowed;
   }
 
+  /**
+   * Probe trial admission — the single consuming gate for synthetic recovery
+   * probes, mirroring the real-traffic gate (`canExecuteScoped`): the call
+   * drives the OPEN→HALF_OPEN transition once the cooldown elapses and
+   * consumes a HALF_OPEN trial slot, so synthetic and real trials never race
+   * on the quota. Returns the prefix the probe OUTCOME must be recorded
+   * against, or undefined when the trial is denied (slot already held by a
+   * real canary, still cooling, nothing to recover).
+   *
+   * Usually that prefix is the probe target itself. When the target never
+   * failed (the representative-credential pick for a model-scope trip) there
+   * is no tuple to recover — the trial belongs to the model's armed (due)
+   * tuple, and the outcome closes THAT one, otherwise a successful probe
+   * would leave the armed breaker HALF_OPEN forever (slot never released,
+   * outcome recorded on a tuple that holds no trial).
+   */
+  public acquireProbeTrial(
+    modelId: string,
+    keyHashPrefix: string | undefined
+  ): { recordPrefix: string | undefined } | undefined {
+    const own = this.tuples.get(pairKey(modelId, keyHashPrefix ?? ''));
+    if (own) {
+      // The own tuple takes priority ONLY when it is the one that needs
+      // recovery (HALF_OPEN / OPEN with an expired cooldown). A CLOSED own
+      // tuple must NOT swallow the trial: the probe would execute against the
+      // representative credential but record its outcome on the healthy
+      // representative's ladder, leaving the model's ARMED tuple HALF_OPEN
+      // forever (slot never consumed there, verdict never delivered there).
+      const ownSnap = own.breaker.getSnapshot();
+      const ownDue =
+        ownSnap.state === 'HALF_OPEN' || (ownSnap.state === 'OPEN' && ownSnap.remainingCooldownMs <= 0);
+      if (ownDue) {
+        // Mirror planProbes' SUSPECT rule on the own-tuple path too: a
+        // SUSPECT credential must be reconnected, not probed. DISABLED is the
+        // operator's takedown — same verdict, it never auto-returns either.
+        if (this.isSuspect(modelId, keyHashPrefix ?? '')) return undefined;
+        if (this.isDisabled(modelId, keyHashPrefix ?? '')) return undefined;
+        return own.breaker.canExecute().allowed ? { recordPrefix: keyHashPrefix } : undefined;
+      }
+      // Own tuple healthy — the trial belongs to whichever model tuple is
+      // armed, resolved by the scan below.
+    }
+    for (const tuple of this.tuples.values()) {
+      if (tuple.modelId !== modelId) continue;
+      // getSnapshot() refreshes the state first (OPEN→HALF_OPEN once due),
+      // so the due test sees the transition without consuming a slot.
+      const snap = tuple.breaker.getSnapshot();
+      const due = snap.state === 'HALF_OPEN' || (snap.state === 'OPEN' && snap.remainingCooldownMs <= 0);
+      if (!due) continue;
+      // Mirror planProbes' SUSPECT rule: a SUSPECT credential must be
+      // reconnected, not probed — arming its tuple here would burn the one
+      // HALF_OPEN trial slot a cycle offers on a target the plan phase would
+      // never pick. DISABLED is the same story (a takedown never auto-returns):
+      // skip it and let the scan fall through to a healthy sibling tuple.
+      if (this.isSuspect(modelId, tuple.keyHashPrefix)) continue;
+      if (this.isDisabled(modelId, tuple.keyHashPrefix)) continue;
+      if (tuple.breaker.canExecute().allowed) return { recordPrefix: tuple.keyHashPrefix };
+    }
+    return undefined;
+  }
+
   /** Retire a model: every tuple breaker and identity bookkeeping goes with it
    *  (the registry's hot pool sync — a removed model must not ghost through
    *  credential-wide expansion or snapshots). */
@@ -679,6 +740,89 @@ export class CircuitBreakerManager {
   }
 
   /**
+   * Record a PROBE verdict: the trial was armed on `armedPrefix`, the ping
+   * physically ran through `probePrefix`. Two facts, two deliveries:
+   *
+   *   1. the PHYSICAL fact — recorded against `probePrefix` (the credential
+   *      `registry.execute` actually stamped), never against the armed tuple,
+   *      which was not the one probed. Attribution is load-bearing: the
+   *      credential blast radius (every model of that credential), the SUSPECT
+   *      mark and the `quota_events` row all hang off it, so charging the armed
+   *      prefix would cool and possibly mark a HEALTHY credential that never
+   *      failed while the credential that did stays CLOSED — and the SUSPECT
+   *      token is never set from a probe (§6), which holds only while this
+   *      direction is right;
+   *   2. the armed tuple's verdict, when the blast radius in (1) did not
+   *      already reach it — pair-scoped, never fanned out, because the trial
+   *      slot lives on that tuple and an OPEN tuple that took no rung would
+   *      strand it (a dead model must re-cool exactly as serving traffic would).
+   *
+   * Complementary: (1) alone leaves the armed tuple uncooled whenever the
+   * physical answer was narrower than the model, (2) alone leaves the real
+   * culprit uncooled when the representative was not the armed credential.
+   */
+  public recordProbeFailure(
+    modelId: string,
+    diagnosis: ErrorDiagnosis,
+    provider: string | undefined,
+    armedPrefix: string | undefined,
+    probePrefix: string | undefined
+  ): void {
+    // A missing probe prefix still resolves to the physical stamp inside
+    // recordFailureScoped (`keyHashPrefix ?? diagnosis.usedKeyHashPrefix`).
+    this.recordFailureScoped(modelId, diagnosis, provider, probePrefix);
+    // Mirror applyFailure's branch condition: a model scope (or a chain-less
+    // attribution, which degenerates to it) already delivered to every existing
+    // tuple of the model, the armed one included. A '' armed prefix is the
+    // sentinel tuple, not a credential — anything else here would fan out twice.
+    if (this.effectiveScope(diagnosis) === 'model') return;
+    const attributed = probePrefix ?? diagnosis.usedKeyHashPrefix;
+    if (!attributed) return;
+    if (!armedPrefix || armedPrefix === attributed) return;
+    this.deliverScoped(modelId, diagnosis, provider, armedPrefix);
+  }
+
+  /** Failure evidence on EXACTLY one (model, credential) tuple. The rule gate
+   *  still applies (a disabled counting rule drops it); the blast radius does
+   *  not — no fan-out, so a verdict recorded elsewhere is never doubled. */
+  private deliverScoped(
+    modelId: string,
+    diagnosis: ErrorDiagnosis,
+    provider: string | undefined,
+    keyHashPrefix: string
+  ): void {
+    this.schedulePersist();
+    const owner = this.resolveProvider(modelId, provider);
+    const tuple = this.getOrCreateTuple(modelId, keyHashPrefix, owner);
+    tuple.lastScope = 'pair';
+    this.deliverFailure(tuple, this.dispatchFailure(diagnosis), diagnosis);
+  }
+
+  /** How one resolved diagnosis enters one tuple breaker (rules already resolved). */
+  private deliverFailure(tuple: PairRecord, dispatch: BreakerFailureDispatch, diagnosis: ErrorDiagnosis): void {
+    switch (dispatch.kind) {
+      case 'drop':
+        // NOTE: on a fan-out scope this releases a HALF_OPEN slot on EVERY
+        // target tuple — including a concurrent REAL canary's slot on a
+        // sibling tuple (guards prevent underflow; the skew is maxProbes
+        // temporarily exceeded, not corruption, and only matters for
+        // successThreshold > 1 configs). Accepted: drop is the rare
+        // rule-disabled path, and the alternative (per-tuple slot tracking)
+        // costs more complexity than the skew.
+        tuple.breaker.releaseProbeSlot();
+        return;
+      case 'hard':
+        tuple.breaker.recordHardTrip(diagnosis, dispatch.cooldownMs);
+        return;
+      case 'count':
+        tuple.breaker.recordFailure(dispatch.diagnosis);
+        return;
+      default:
+        tuple.breaker.recordFailure(diagnosis);
+    }
+  }
+
+  /**
    * The manager-side rule gate (spec invariant 1) — the single join point for
    * the orchestrator AND the ActiveHealthProber (which classifies WITHOUT any
    * circuit config; that gap is closed HERE, never by feeding config to the
@@ -711,19 +855,7 @@ export class CircuitBreakerManager {
     const dispatch = this.dispatchFailure(diagnosis);
     const deliver = (tuple: PairRecord, scope: TripScope): void => {
       tuple.lastScope = scope;
-      switch (dispatch.kind) {
-        case 'drop':
-          tuple.breaker.releaseProbeSlot();
-          return;
-        case 'hard':
-          tuple.breaker.recordHardTrip(diagnosis, dispatch.cooldownMs);
-          return;
-        case 'count':
-          tuple.breaker.recordFailure(dispatch.diagnosis);
-          return;
-        default:
-          tuple.breaker.recordFailure(diagnosis);
-      }
+      this.deliverFailure(tuple, dispatch, diagnosis);
     };
 
     const scope = this.effectiveScope(diagnosis);

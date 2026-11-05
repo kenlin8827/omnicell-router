@@ -22,6 +22,7 @@ import {
   DEFAULT_MAX_BODY_BYTES,
   DEFAULT_ROUTE_ENTRIES_MAX,
 } from './defaults.js';
+import { DEFAULT_PROBE_INTERVAL_MS } from '../utils/probe-interval.js';
 import { getRateLimiter } from '../ratelimit/rate-limiter.js';
 import { getQuotaProber } from '../quota/prober.js';
 import { migrateConfig, toDiskConfig, toRuntimeConfig, SCHEMA_VERSION, type DiskConfig } from './schema.js';
@@ -149,7 +150,7 @@ const DEFAULT_CONFIG: RouterConfig = {
     halfOpenMaxProbes: 1,
     activeProbing: {
       enabled: false,
-      intervalMs: 60000,
+      intervalMs: DEFAULT_PROBE_INTERVAL_MS,
     },
     credentialAffinity: {
       // a session keeps its credential while its pair breaker is up;

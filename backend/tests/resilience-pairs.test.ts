@@ -7,6 +7,8 @@ import { BreakerStateStore } from '../src/resilience/breaker-state.js';
 import { CircuitBreakerManager } from '../src/resilience/circuit-breaker-manager.js';
 import { ErrorClassifier, UpstreamError } from '../src/resilience/error-classifier.js';
 import { ActiveHealthProber, type ProberTargetResolver } from '../src/resilience/health-prober.js';
+import { clampProbeIntervalMs, DEFAULT_PROBE_INTERVAL_MS } from '../src/utils/probe-interval.js';
+import { FailureEventLog, getFailureEventLog, setFailureEventLogForTests } from '../src/observability/failure-events.js';
 import type { CredentialPaths } from '../src/opencode/credentials/paths.js';
 import type { ChatCompletionRequest, ChatCompletionResponse } from '../src/types/openai.js';
 import type { ModelRegistration } from '../src/config/types.js';
@@ -514,10 +516,12 @@ describe('(f) prober probes one representative pair per model', () => {
     const prober = new ActiveHealthProber(manager, resolver);
     return prober.probeTrippedModels().then(() => {
       expect(calls.map((c) => c.prefix)).toEqual(['K4']);
-      // The probe's success lands on K4's tuple; the sentinel tuple that armed
-      // the trial stays armed, and K1 was never probed (budget spent).
-      expect(manager.getPairBreaker('p/x', 'K4')?.getState()).toBe('CLOSED');
-      expect(manager.getPairBreaker('p/x', '')?.getState()).toBe('HALF_OPEN');
+      // The probe EXECUTES through K4 (the live representative), but the trial
+      // slot belongs to the armed sentinel tuple — the outcome closes THAT one
+      // (verified recovery; see acquireProbeTrial). K4 never failed, so no K4
+      // tuple is created, and K1 was never probed (budget spent).
+      expect(manager.getPairBreaker('p/x', 'K4')).toBeUndefined();
+      expect(manager.getPairBreaker('p/x', '')?.getState()).toBe('CLOSED');
       expect(manager.getPairBreaker('p/x', 'K1')?.getState()).toBe('OPEN'); // never probed: budget spent
     });
   });
@@ -558,7 +562,8 @@ describe('(f) prober probes one representative pair per model', () => {
     });
   });
 
-  it('no pair breakers and no chain = today\'s bare model probe', () => {    const clock = makeClock();
+  it('no pair breakers and no chain = today\'s bare model probe', () => {
+    const clock = makeClock();
     const { manager } = makeManager(CELL_CFG, clock);
     const m = model('p/x', 'p');
     manager.registerModel(m);
@@ -571,6 +576,295 @@ describe('(f) prober probes one representative pair per model', () => {
       expect(calls).toEqual([{ modelId: 'p/x', prefix: undefined }]);
       expect(manager.getPairBreaker('p/x', '')?.getState()).toBe('CLOSED');
     });
+  });
+});
+
+// ─── recordProbeFailure: physical fact + armed verdict ──────────────────────
+
+describe('recordProbeFailure attribution', () => {
+  it('a failed representative probe also cools the credential that served it', () => {
+    const { manager } = makeManager();
+    manager.registerModel(model('p/x', 'p'));
+    // K2 holds the trial slot; the ping physically ran through K1 (the live
+    // representative of a model-scope trip). Charging only the armed tuple left
+    // K1 CLOSED, so it was re-picked as representative on every cycle while the
+    // console showed nothing but a role:'probe' ledger row.
+    manager.recordProbeFailure('p/x', diagnosis({ tripScope: 'pair' }), 'p', 'K2', 'K1');
+    expect(manager.getPairBreaker('p/x', 'K2')?.getState()).toBe('OPEN'); // armed: its own pair-scoped verdict
+    expect(manager.getPairBreaker('p/x', 'K1')?.getState()).toBe('OPEN'); // probe target: the physical record
+  });
+
+  it('the pair record never doubles a rung the blast radius already delivered', () => {
+    const { manager } = makeManager();
+    manager.registerModel(model('p/x', 'p'));
+    const counted = (over: Partial<ErrorDiagnosis>): ErrorDiagnosis =>
+      diagnosis({ category: 'SERVICE_UNAVAILABLE', hardTrip: false, retryAfterSeconds: undefined, ...over });
+    manager.recordFailureScoped('p/x', counted({ tripScope: 'pair' }), 'p', 'K1');
+    const rung = (): number => manager.getPairBreaker('p/x', 'K1')!.getSnapshot().consecutiveFailures;
+    expect(rung()).toBe(1);
+    // Model scope: the fan-out hands K1 its rung itself, so the probe-target
+    // record must be skipped — one failure, one rung.
+    manager.recordProbeFailure('p/x', counted({ tripScope: 'model' }), 'p', 'K2', 'K1');
+    expect(rung()).toBe(2);
+  });
+
+  it('a credential-scope probe verdict charges the credential that served it, never the armed one', () => {
+    const { manager } = makeManager();
+    manager.registerModel(model('p/x', 'p'));
+    manager.registerModel(model('p/y', 'p'));
+    // K2 holds the trial slot; the ping physically ran through K1 and got a 401.
+    // Charging the armed prefix would have cooled K2 across every model it can
+    // serve AND marked it SUSPECT (administrative, never self-returning) while
+    // K1 — the dead key — stayed selectable.
+    manager.recordProbeFailure(
+      'p/x',
+      diagnosis({ category: 'AUTHENTICATION_ERROR', tripScope: 'credential', credentialSuspect: true }),
+      'p',
+      'K2',
+      'K1'
+    );
+    expect(manager.isSuspect('p/x', 'K1')).toBe(true); // the culprit is flagged
+    expect(manager.isSuspect('p/x', 'K2')).toBe(false); // the armed tuple is not
+    expect(manager.getPairBreaker('p/y', 'K1')?.getState()).toBe('OPEN'); // credential-wide on the culprit
+    expect(manager.getPairBreaker('p/y', 'K2')).toBeUndefined(); // armed stays pair-scoped
+    expect(manager.getPairBreaker('p/x', 'K2')?.getState()).toBe('OPEN'); // ...but its trial slot is released
+  });
+
+  it('a sentinel armed prefix never turns the physical record into a model-wide fan-out', () => {
+    const { manager } = makeManager();
+    manager.registerModel(model('p/x', 'p'));
+    // armedPrefix '' is the chain-less sentinel, not a credential: the physical
+    // verdict must stay a single pair rung on K1 (and no sentinel tuple at all).
+    manager.recordProbeFailure('p/x', diagnosis({ tripScope: 'pair' }), 'p', '', 'K1');
+    expect(manager.getPairBreaker('p/x', 'K1')?.getSnapshot().consecutiveFailures).toBe(1);
+    expect(manager.getPairBreaker('p/x', '')).toBeUndefined(); // no sentinel tuple materialized
+  });
+});
+
+// ─── acquireProbeTrial: the consuming probe-admission gate ──────────────────
+
+describe('acquireProbeTrial admission (consuming gate)', () => {
+  it('denies while the own tuple is still cooling (nothing due to recover)', () => {
+    const clock = makeClock();
+    const { manager } = makeManager(CELL_CFG, clock);
+    manager.registerModel(model('p/x', 'p'));
+    manager.recordFailureScoped('p/x', diagnosis({ tripScope: 'model', hardTrip: true, retryAfterSeconds: 600 }), 'p', 'K0');
+    clock.advance(120_000); // within the 600 s cooldown: OPEN, still cooling
+    expect(manager.acquireProbeTrial('p/x', 'K0')).toBeUndefined();
+    expect(manager.acquireProbeTrial('p/x', undefined)).toBeUndefined();
+  });
+
+  it('denies when the only due slot is held by a real canary', () => {
+    const clock = makeClock();
+    const { manager } = makeManager(CELL_CFG, clock);
+    manager.registerModel(model('p/x', 'p'));
+    manager.recordFailureScoped('p/x', diagnosis({ tripScope: 'model', hardTrip: true }), 'p', 'K0');
+    clock.advance(120_000); // sentinel due (HALF_OPEN after refresh)
+
+    // A real canary consumes the HALF_OPEN slot first — the prober must not
+    // double-book the same tuple's single trial slot.
+    expect(manager.getPairBreaker('p/x', '')!.canExecute().allowed).toBe(true);
+    expect(manager.acquireProbeTrial('p/x', undefined)).toBeUndefined();
+    expect(manager.acquireProbeTrial('p/x', 'K4')).toBeUndefined();
+  });
+
+  it('denies when nothing needs recovery (all tuples CLOSED)', () => {
+    const clock = makeClock();
+    const { manager } = makeManager(CELL_CFG, clock);
+    manager.registerModel(model('p/x', 'p'));
+    // One counted failure — below the 3-rung threshold, tuple stays CLOSED.
+    manager.recordFailureScoped('p/x', diagnosis({ tripScope: 'pair', hardTrip: false, retryAfterSeconds: 1 }), 'p', 'K1');
+    expect(manager.getPairBreaker('p/x', 'K1')?.getState()).toBe('CLOSED');
+    expect(manager.acquireProbeTrial('p/x', 'K1')).toBeUndefined();
+  });
+
+  it('routes a healthy representative pick onto the ARMED tuple (own CLOSED must not swallow the trial)', () => {
+    const clock = makeClock();
+    const { manager } = makeManager(CELL_CFG, clock);
+    manager.registerModel(model('p/x', 'p'));
+    // K4 took one counted pair failure — below threshold, own tuple CLOSED.
+    manager.recordFailureScoped('p/x', diagnosis({ tripScope: 'pair', hardTrip: false, retryAfterSeconds: 1 }), 'p', 'K4');
+    // Arm the sentinel DIRECTLY (a model-scope hard trip would blast every
+    // existing tuple OPEN — the (d)/(c3) whole-chain contract — and this
+    // scenario is about a healthy representative coexisting with an armed
+    // model tuple, not about the blast radius).
+    manager.tripPair('p/x', '', { cooldownMs: 1000 }, 'p');
+    clock.advance(120_000); // sentinel due (HALF_OPEN after refresh)
+
+    const trial = manager.acquireProbeTrial('p/x', 'K4');
+    // The trial belongs to the armed sentinel — NOT to K4's healthy CLOSED
+    // tuple (recording there would leave the sentinel HALF_OPEN forever).
+    expect(trial?.recordPrefix).toBe('');
+
+    // Deliver the verdict the way probeOne does: success on the armed tuple.
+    manager.recordSuccessScoped('p/x', trial!.recordPrefix, 'p');
+    expect(manager.getPairBreaker('p/x', '')?.getState()).toBe('CLOSED'); // verified recovery
+    expect(manager.getPairBreaker('p/x', 'K4')?.getSnapshot().consecutiveFailures).toBe(1); // ladder untouched
+  });
+
+  it('skips a SUSPECT tuple in the armed-tuple scan (the due slot is not burned)', () => {
+    const clock = makeClock();
+    const paths = sandboxPaths();
+    const store = new CredentialStateStore({ paths, now: clock.now });
+    const { manager } = makeManager(CELL_CFG, clock, store);
+    manager.registerModel(model('p/x', 'p'));
+    // K4: healthy representative with its own CLOSED tuple (1 counted rung).
+    manager.recordFailureScoped('p/x', diagnosis({ tripScope: 'pair', hardTrip: false, retryAfterSeconds: 1 }), 'p', 'K4');
+    // K1: tripped AND suspect — planProbes would never pick it.
+    store.mark('p', 'K1', 'dead key');
+    manager.tripPair('p/x', 'K1', { cooldownMs: 1000 }, 'p');
+    // Sentinel armed directly.
+    manager.tripPair('p/x', '', { cooldownMs: 1000 }, 'p');
+    clock.advance(120_000); // all three due (HALF_OPEN after refresh)
+
+    // Probe target is the representative K4; without the SUSPECT skip the scan
+    // would arm K1's due tuple (its HALF_OPEN slot burned on a credential the
+    // plan phase rejects). With the skip, the trial lands on the sentinel.
+    const trial = manager.acquireProbeTrial('p/x', 'K4');
+    expect(trial?.recordPrefix).toBe('');
+    // K1's single HALF_OPEN slot is untouched — a later real canary (or a
+    // post-reconnect probe) can still claim it.
+    expect(manager.getPairBreaker('p/x', 'K1')!.canExecute().allowed).toBe(true);
+  });
+
+  it('denies a SUSPECT own tuple (own-tuple path mirrors the plan-phase rule)', () => {
+    const clock = makeClock();
+    const paths = sandboxPaths();
+    const store = new CredentialStateStore({ paths, now: clock.now });
+    const { manager } = makeManager(CELL_CFG, clock, store);
+    manager.registerModel(model('p/x', 'p'));
+    store.mark('p', 'K1', 'dead key');
+    manager.tripPair('p/x', 'K1', { cooldownMs: 1000 }, 'p');
+    clock.advance(120_000); // pair cooldown elapsed, but the credential is SUSPECT
+
+    expect(manager.acquireProbeTrial('p/x', 'K1')).toBeUndefined();
+  });
+});
+
+// ─── operator DISABLED: probes never touch a taken-down credential ─────────
+
+describe('probe admission never touches operator-disabled credentials', () => {
+  it('pair scan skips a disabled pair and probes the enabled sibling instead', () => {
+    const clock = makeClock();
+    const paths = sandboxPaths();
+    const store = new CredentialStateStore({ paths, now: clock.now });
+    const { manager } = makeManager(CELL_CFG, clock, store);
+    const m = model('p/x', 'p');
+    manager.registerModel(m);
+    store.disable('p', 'K1', 'operator takedown');
+    manager.tripPair('p/x', 'K1', { cooldownMs: 1000 }, 'p');
+    manager.tripPair('p/x', 'K2', { cooldownMs: 1000 }, 'p');
+    clock.advance(120_000); // both due (HALF_OPEN after refresh)
+
+    const { resolver, calls } = makeResolver({ models: [m], chains: { p: chain('K1', 'K2') } });
+    const prober = new ActiveHealthProber(manager, resolver);
+    return prober.probeTrippedModels().then(() => {
+      // Only the enabled sibling was planned and executed: the disabled K1
+      // can never auto-return, so probing it would burn budget for nothing.
+      expect(calls.map((c) => c.prefix)).toEqual(['K2']);
+      // Verified recovery on K2; the disabled tuple stays armed untouched.
+      expect(manager.getPairBreaker('p/x', 'K2')?.getState()).toBe('CLOSED');
+      expect(manager.getPairBreaker('p/x', 'K1')?.getState()).toBe('HALF_OPEN');
+    });
+  });
+
+  it('skips a DISABLED tuple in the armed-tuple scan (the due slot is not burned)', () => {
+    const clock = makeClock();
+    const paths = sandboxPaths();
+    const store = new CredentialStateStore({ paths, now: clock.now });
+    const { manager } = makeManager(CELL_CFG, clock, store);
+    manager.registerModel(model('p/x', 'p'));
+    // K4: healthy representative with its own CLOSED tuple (1 counted rung).
+    manager.recordFailureScoped('p/x', diagnosis({ tripScope: 'pair', hardTrip: false, retryAfterSeconds: 1 }), 'p', 'K4');
+    // K1: tripped AND operator-disabled — the plan phase would never pick it.
+    store.disable('p', 'K1', 'operator takedown');
+    manager.tripPair('p/x', 'K1', { cooldownMs: 1000 }, 'p');
+    // Sentinel armed directly.
+    manager.tripPair('p/x', '', { cooldownMs: 1000 }, 'p');
+    clock.advance(120_000); // all three due (HALF_OPEN after refresh)
+
+    // Probe target is the representative K4; without the DISABLED skip the
+    // scan would arm K1's due tuple on a credential the operator took down.
+    // With it, the trial lands on the sentinel — and K1's HALF_OPEN slot is
+    // untouched, claimable by a real canary once the credential is re-enabled.
+    const trial = manager.acquireProbeTrial('p/x', 'K4');
+    expect(trial?.recordPrefix).toBe('');
+    expect(manager.getPairBreaker('p/x', 'K1')!.canExecute().allowed).toBe(true);
+  });
+
+  it('denies a DISABLED own tuple even when it is the only candidate', () => {
+    const clock = makeClock();
+    const paths = sandboxPaths();
+    const store = new CredentialStateStore({ paths, now: clock.now });
+    const { manager } = makeManager(CELL_CFG, clock, store);
+    manager.registerModel(model('p/x', 'p'));
+    store.disable('p', 'K1', 'operator takedown');
+    manager.tripPair('p/x', 'K1', { cooldownMs: 1000 }, 'p');
+    clock.advance(120_000); // pair cooldown elapsed, but the credential is DISABLED
+
+    // Both the own-tuple path and the armed scan (same single tuple) deny.
+    expect(manager.acquireProbeTrial('p/x', 'K1')).toBeUndefined();
+  });
+
+  it('an enabled SUSPECT pair is still skipped as before (existing behavior preserved)', () => {
+    const clock = makeClock();
+    const paths = sandboxPaths();
+    const store = new CredentialStateStore({ paths, now: clock.now });
+    const { manager } = makeManager(CELL_CFG, clock, store);
+    const m = model('p/x', 'p');
+    manager.registerModel(m);
+    store.mark('p', 'K1', 'dead key'); // SUSPECT, not disabled
+    store.disable('p', 'K3', 'operator takedown'); // DISABLED, not suspect
+    manager.tripPair('p/x', 'K1', { cooldownMs: 1000 }, 'p');
+    manager.tripPair('p/x', 'K2', { cooldownMs: 1000 }, 'p');
+    manager.tripPair('p/x', 'K3', { cooldownMs: 1000 }, 'p');
+    clock.advance(120_000); // all three due (HALF_OPEN after refresh)
+
+    const { resolver, calls } = makeResolver({ models: [m], chains: { p: chain('K1', 'K2', 'K3') } });
+    const prober = new ActiveHealthProber(manager, resolver);
+    return prober.probeTrippedModels().then(() => {
+      // Only the plain tripped sibling is probed: the SUSPECT rule and the
+      // DISABLED rule each exclude their own credential.
+      expect(calls.map((c) => c.prefix)).toEqual(['K2']);
+    });
+  });
+});
+
+describe('probe failure ledger (role + outage evidence)', () => {
+  it('a failing probe records a role:probe ledger row and re-cools the tuple (no stuck HALF_OPEN)', () => {
+    const clock = makeClock();
+    const { manager } = makeManager(CELL_CFG, clock);
+    const m = model('p/x', 'p');
+    manager.registerModel(m);
+    manager.recordFailureScoped('p/x', diagnosis({ tripScope: 'pair' }), 'p', 'K1');
+    clock.advance(120_000); // due for probe
+
+    const { resolver } = makeResolver({ models: [m], chains: { p: chain('K1') }, failing: new Set(['p/x|K1']) });
+    const prober = new ActiveHealthProber(manager, resolver);
+    const prev = setFailureEventLogForTests(new FailureEventLog());
+    return prober.probeTrippedModels()
+      .then(() => {
+        const rows = getFailureEventLog().list({ model: 'p/x', role: 'probe' });
+        expect(rows).toHaveLength(1);
+        expect(rows[0]!.errorClass).toBe('SERVICE_UNAVAILABLE'); // the simulated 503
+
+        // Outage evidence: the failed HALF_OPEN trial re-cooled the breaker —
+        // OPEN again, and NOT pinned in HALF_OPEN (the pre-timeout livelock).
+        const snap = manager.getPairBreaker('p/x', 'K1')!.getSnapshot();
+        expect(snap.state).toBe('OPEN');
+      })
+      .finally(() => setFailureEventLogForTests(prev));
+  });
+});
+
+describe('probe sweep interval clamp (shared by both probers)', () => {
+  it('clamps to [10 s, 1 h] and falls back on absent / NaN / non-positive input', () => {
+    expect(clampProbeIntervalMs(undefined)).toBe(DEFAULT_PROBE_INTERVAL_MS);
+    expect(clampProbeIntervalMs(Number.NaN)).toBe(DEFAULT_PROBE_INTERVAL_MS);
+    expect(clampProbeIntervalMs(-5)).toBe(DEFAULT_PROBE_INTERVAL_MS);
+    expect(clampProbeIntervalMs(1)).toBe(10_000);
+    expect(clampProbeIntervalMs(10_000_000)).toBe(3_600_000);
+    expect(clampProbeIntervalMs(30_000)).toBe(30_000);
   });
 });
 
@@ -769,5 +1063,22 @@ describe('(c4) recovery symmetry per scope, including the lastScope label round-
     second.restoreState();
     expect(second.snapshotsWithPairs().find((s) => s.keyHashPrefix === 'K1')?.scope).toBe('pair');
     expect(second.snapshotsWithPairs().find((s) => s.keyHashPrefix === 'K2')?.scope).toBe('model');
+  });
+});
+
+describe('probe timeout (withTimeout)', () => {
+  it('a hanging probe rejects at the deadline and the late settlement is dropped', async () => {
+    const { withTimeout } = await import('../src/resilience/health-prober.js');
+    let settled = false;
+    const hanging = new Promise<void>((resolve) => setTimeout(() => { settled = true; resolve(); }, 200));
+    await expect(withTimeout(hanging, 20)).rejects.toThrow('timed out');
+    expect(settled).toBe(false); // the loser has not settled yet; its late resolve is dropped
+    await new Promise((r) => setTimeout(r, 250));
+    expect(settled).toBe(true); // and when it does, nothing throws
+  });
+
+  it('a probe that resolves in time passes through untouched', async () => {
+    const { withTimeout } = await import('../src/resilience/health-prober.js');
+    await expect(withTimeout(Promise.resolve('ok'), 1000)).resolves.toBe('ok');
   });
 });

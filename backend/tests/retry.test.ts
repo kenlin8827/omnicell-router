@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { RouterConfig } from '../src/config/types.js';
 import { ProviderRegistry } from '../src/providers/registry.js';
@@ -8,6 +8,15 @@ import { getRouteEntryStore, promptHashOf } from '../src/router/route-entries.js
 import { createServer } from '../src/server.js';
 import { ErrorClassifier, UpstreamError } from '../src/resilience/index.js';
 import { loadConfig } from '../src/config/index.js';
+import { credentialSubject, getRateLimiter } from '../src/ratelimit/rate-limiter.js';
+
+/** Restores a monkey-patched rate-limiter singleton (see the 429 shaping test);
+ *  a leaked spy would shape every later test in this process. */
+let restoreRateLimiterPenalize: (() => void) | null = null;
+afterEach(() => {
+  restoreRateLimiterPenalize?.();
+  restoreRateLimiterPenalize = null;
+});
 
 /**
  * Auth mirror of server.ts preHandler key resolution: when the local
@@ -112,9 +121,15 @@ describe('Resilience: Cost-Aware In-Place Retry & KV Cache Preservation ', () =>
     assert.equal(result.failoverAttempts, 1);
     assert.equal(result.inplaceRetries, 1);
 
-    // Circuit breaker must still be CLOSED because the in-place retry recovered
+    // Circuit breaker must still be CLOSED because the in-place retry recovered.
+    // CLOSED alone would also pass under the OLD per-attempt accounting (a
+    // single 503 never reaches baseConfig's threshold) — the load-bearing
+    // assertion is the LADDER: per logical-request accounting must have
+    // recorded ZERO failures for a request that eventually succeeded.
     const breaker = registry.getCircuitBreakerManager().getPairBreaker('primary-plus', '');
     assert.equal(breaker?.getState(), 'CLOSED');
+    assert.equal(breaker?.getSnapshot().consecutiveFailures, 0);
+    assert.equal(breaker?.getSnapshot().totalFailures, 0);
   });
 
   it('should skip in-place retry and immediately failover to backup model when inplace.enabled is false', async () => {
@@ -622,6 +637,130 @@ describe('Resilience: Fine-Grained Network Jitter Taxonomy & Cause Filtering ', 
     });
     assert.equal(diag.isInPlaceRetriable, true);
     assert.equal(diag.networkCause, 'CONNECTION_RESET');
+  });
+
+  it('three in-place 503 attempts against one dying upstream record ONE ladder failure (logical-request accounting, ADR-0004 §2)', async () => {
+    const config: RouterConfig = {
+      port: 3000,
+      host: '127.0.0.1',
+      baselineModel: 'primary-plus',
+      fallback: { enabled: false, maxRetries: 1, escalateTier: 'plus', injectErrorContext: true },
+      circuitBreaker: { enabled: true, failureThreshold: 2 },
+      retry: {
+        enabled: true,
+        inplace: { enabled: true, maxAttempts: 2, backoffMs: 1, jitterMs: 0 },
+        failover: { enabled: true, maxAttempts: 2, tierCrossPolicy: 'allow_escalate' },
+      },
+      models: [
+        { id: 'primary-plus', provider: 'mock', upstreamModel: 'primary-plus', tier: 'plus', priority: 1, isDefaultInTier: true, pricing: { input: 3, cacheRead: 0.3, output: 15 } },
+        { id: 'secondary-plus', provider: 'mock', upstreamModel: 'secondary-plus', tier: 'plus', priority: 2, pricing: { input: 3, cacheRead: 0.3, output: 15 } },
+      ],
+    };
+    const registry = new ProviderRegistry(config, true);
+    const tracker = new FinOpsTracker();
+    const orchestrator = new PipelineOrchestrator(config, registry, tracker);
+
+    // All three in-place attempts hit 503 on the same model+credential.
+    const req: any = {
+      model: 'plus',
+      messages: [{ role: 'user', content: 'ping' }],
+      __simulate_error_model__: 'primary-plus',
+      __simulate_status__: 503,
+      __simulate_message__: 'upstream dying',
+      __simulate_fail_times__: 3,
+    };
+
+    const result = await orchestrator.process(req);
+
+    // The turn survives via failover; the question is what the breaker saw.
+    assert.equal(result.modelUsed, 'secondary-plus');
+    assert.equal(result.failoverOccurred, true);
+    assert.equal(result.inplaceRetries, 2);
+
+    // Before the accounting fix each of the 3 attempts recorded a rung:
+    // consecutiveFailures 3 ≥ threshold 2 → the breaker OPENED on ONE bad
+    // logical request. Now: one candidate visit = one failure record.
+    const snap = registry.getCircuitBreakerManager().getPairBreaker('primary-plus', '')!.getSnapshot();
+    assert.equal(snap.consecutiveFailures, 1);
+    assert.equal(snap.state, 'CLOSED');
+  });
+
+  it('a soft 429 retried away in-place feeds SHAPING but NOT the breaker ladder (suppression pins both contracts)', async () => {
+    const config: RouterConfig = {
+      port: 3000,
+      host: '127.0.0.1',
+      baselineModel: 'primary-plus',
+      fallback: { enabled: false, maxRetries: 1, escalateTier: 'plus', injectErrorContext: true },
+      circuitBreaker: { enabled: true, failureThreshold: 2 },
+      retry: {
+        enabled: true,
+        inplace: { enabled: true, maxAttempts: 2, backoffMs: 1, jitterMs: 0 },
+        failover: { enabled: true, maxAttempts: 2, tierCrossPolicy: 'allow_escalate' },
+      },
+      models: [
+        { id: 'primary-plus', provider: 'mock', upstreamModel: 'primary-plus', tier: 'plus', priority: 1, isDefaultInTier: true, pricing: { input: 3, cacheRead: 0.3, output: 15 } },
+        { id: 'secondary-plus', provider: 'mock', upstreamModel: 'secondary-plus', tier: 'plus', priority: 2, pricing: { input: 3, cacheRead: 0.3, output: 15 } },
+      ],
+    };
+    const registry = new ProviderRegistry(config, true);
+    // A real credential chain gives the call a selection prefix — without it
+    // limitPrefix is undefined and the shaping half of this contract has no
+    // subject to observe.
+    registry.refreshCredentialChain('mock', [
+      { keyHashPrefix: 'aa11bb22', label: 'k1', key: 'sk-k1' },
+    ]);
+    const tracker = new FinOpsTracker();
+    const orchestrator = new PipelineOrchestrator(config, registry, tracker);
+
+    // Soft 429: Retry-After 1 s sits below the in-place boundary, so the
+    // diagnosis is COUNTED and in-place retriable — the attempt is retried
+    // away and the breaker record is suppressed. Shaping evidence is captured
+    // by spying on penalize: the keep-bound wait on attempt 2 lasts exactly
+    // the declared window, so a post-hoc peek() would always race expiry.
+    const penalizeCalls: Array<{ subject: string; ms: number }> = [];
+    const limiter = getRateLimiter();
+    const originalPenalize = limiter.penalize.bind(limiter);
+    (limiter as any).penalize = (subject: string, ms: number) => {
+      penalizeCalls.push({ subject, ms });
+      originalPenalize(subject, ms);
+    };
+    restoreRateLimiterPenalize = () => {
+      (limiter as any).penalize = originalPenalize;
+    };
+
+    const req: any = {
+      model: 'plus',
+      messages: [{ role: 'user', content: 'ping' }],
+      __simulate_error_model__: 'primary-plus',
+      __simulate_status__: 429,
+      __simulate_retry_after__: 1,
+      __simulate_message__: 'soft throttle',
+      __simulate_fail_times__: 1,
+    };
+
+    const result = await orchestrator.process(req);
+
+    assert.equal(result.modelUsed, 'primary-plus');
+    assert.equal(result.inplaceRetries, 1);
+
+    // Contract 1 (breaker suppression): a retried-away attempt leaves NO
+    // ladder rung even though the diagnosis is counted — so thoroughly that
+    // no breaker tuple was ever materialized for the credential.
+    assert.equal(registry.getCircuitBreakerManager().getPairBreaker('primary-plus', 'aa11bb22'), undefined);
+    // The model-level gate materializes the sentinel tuple for its own
+    // bookkeeping — what matters is that its ladder stayed at zero.
+    const sentinel = registry.getCircuitBreakerManager().getPairBreaker('primary-plus', '')!.getSnapshot();
+    assert.equal(sentinel.consecutiveFailures, 0);
+    assert.equal(sentinel.totalFailures, 0);
+
+    // Contract 2 (shaping fed): the provider-declared wait reached the local
+    // shaper for THIS credential — subject and duration pinned.
+    assert.ok(
+      penalizeCalls.some(
+        (c) => c.subject === credentialSubject('mock', 'aa11bb22') && c.ms >= 1_000
+      ),
+      `expected penalize on the credential subject, got ${JSON.stringify(penalizeCalls)}`
+    );
   });
 });
 

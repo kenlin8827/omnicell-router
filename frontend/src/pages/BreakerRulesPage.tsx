@@ -19,6 +19,7 @@ import { InfoTip } from '../components/InfoTip';
 import { Switch } from '../components/Switch';
 
 import { FONT_MONO } from '../lib/fonts';
+import { DEFAULT_PROBE_INTERVAL_MS } from '../lib/defaults';
 /* ═══════════════════════════════════════════════════════════════════════════
  * Breaker-rules page — Configuration UX contract (spec
  * docs/design/circuit-breaker-rules-config.md): three collapsible blocks A/B/C
@@ -44,6 +45,7 @@ const CB_KNOB_DEFAULTS = {
   cooldownMultiplier: 2.0,
   quotaCooldownMs: 12 * 3600 * 1000,
   halfOpenMaxProbes: 1,
+  activeProbingIntervalMs: DEFAULT_PROBE_INTERVAL_MS,
 };
 
 const fmtPlain = (n: number): string => (Number.isInteger(n) ? String(n) : String(parseFloat(n.toFixed(4))));
@@ -630,7 +632,7 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
     { label: t('breakerRules.kQuota'), value: fmtMs(cb.quotaCooldownMs ?? CB_KNOB_DEFAULTS.quotaCooldownMs, durLabels), key: 'circuitBreaker.quotaCooldownMs' },
     { label: t('breakerRules.kProbes'), value: fmtPlain(cb.halfOpenMaxProbes ?? CB_KNOB_DEFAULTS.halfOpenMaxProbes), key: 'circuitBreaker.halfOpenMaxProbes' },
     { label: t('breakerRules.kProbing'), value: cb.activeProbing?.enabled ? t('breakerRules.stateOn') : t('breakerRules.stateOff'), key: 'circuitBreaker.activeProbing.enabled' },
-    { label: t('breakerRules.kInterval'), value: fmtMs(cb.activeProbing?.intervalMs ?? 60_000, durLabels), key: 'circuitBreaker.activeProbing.intervalMs' },
+    { label: t('breakerRules.kInterval'), value: fmtMs(cb.activeProbing?.intervalMs ?? CB_KNOB_DEFAULTS.activeProbingIntervalMs, durLabels), key: 'circuitBreaker.activeProbing.intervalMs' },
     { label: t('breakerRules.kAffinity'), value: fmtMs(cb.credentialAffinity?.cacheTtlMs ?? 300_000, durLabels), key: 'circuitBreaker.credentialAffinity.cacheTtlMs' },
     { label: t('breakerRules.kDebounce'), value: fmtMs(cb.persistence?.debounceMs ?? 1000, durLabels), key: 'circuitBreaker.persistence.debounceMs' },
     { label: t('breakerRules.kHardBoundary'), value: fmtMs(retryBoundary ?? 2000, durLabels), key: 'retry.inplace.maxRateLimitWaitMs', note: t('breakerRules.kHardBoundaryNote') },
@@ -1116,9 +1118,9 @@ const BreakerRulesSection: React.FC<BreakerRulesSectionProps> = ({ live }) => {
           <AutoField
             label={t('breakerRules.pInterval')}
             value={cb.activeProbing?.intervalMs}
-            live={cb.activeProbing?.intervalMs ?? 60_000}
+            live={cb.activeProbing?.intervalMs ?? CB_KNOB_DEFAULTS.activeProbingIntervalMs}
             unit="ms"
-            autoKnob="circuitBreaker.activeProbing.intervalMs (default 60000)"
+            autoKnob={`circuitBreaker.activeProbing.intervalMs (default ${CB_KNOB_DEFAULTS.activeProbingIntervalMs})`}
             keyName="circuitBreaker.activeProbing.intervalMs"
             onChange={(v) => patch((prev) => ({ ...prev, activeProbing: { ...prev.activeProbing, intervalMs: v } }))}
           />

@@ -10,6 +10,20 @@ import type { ReasoningEffort } from '../types/router.js';
 /** Provider upstream request timeout when `provider.timeoutMs` is unset. */
 export const DEFAULT_PROVIDER_TIMEOUT_MS = 300_000;
 
+/**
+ * Synthetic health-probe wall-clock bound (backend/src/resilience/health-prober.ts).
+ * A 1-token liveness ping should answer in seconds, and one hung upstream must
+ * never stall the whole sweep (the sweep's re-entry guard would otherwise stay
+ * held). Deliberately much shorter than DEFAULT_PROVIDER_TIMEOUT_MS: a probe is
+ * evidence, not serving work. Known consequence — a provider that legitimately
+ * needs longer than this for a 1-token completion (long prefill / cold queue)
+ * fails every probe; and because a probe timeout classifies SERVICE_UNAVAILABLE
+ * at model scope, every such cycle re-OPENs EVERY existing tuple of that model
+ * with a fresh escalated cooldown (not just the probed one).
+ * `circuitBreaker.activeProbing` stays off by default for exactly that reason.
+ */
+export const DEFAULT_PROBE_TIMEOUT_MS = 30_000;
+
 /** Forward-proxy listen port when `forwardProxy.port` is unset. */
 export const DEFAULT_FORWARD_PROXY_PORT = 4555;
 

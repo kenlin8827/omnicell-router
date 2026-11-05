@@ -23,13 +23,23 @@
 
 作用域规则：仅当错误携带凭证归属（由 `registry.execute` 统一盖戳）才允许 scoped 跳闸；无归属错误永不带 `tripScope`（缺省 = model）。规则 per-class `scope` 覆写诊断——在归属**之后**生效，从不之前。
 
-### 2. 三态机；消耗门 vs 非消耗 peek
+### 2. (模型 × 凭证) 元组上的三态机；作用域即扇出写入
 
-`CLOSED | HALF_OPEN | OPEN`（`CircuitBreakerState`）——这套词汇属于断路器组件，**永不**用于模型级聚合（见 §4）。探测：per-class 连续失败阶梯 + 滑动失败率窗（默认阈值 3/窗 20/50%；`initialCooldownMs` 30s、×2 递增、`maxCooldownMs` 5h 顶；quota 固定 12h）。恢复试飞：`recovery.halfOpen.{maxProbes,successThreshold,maxWaitMs}` + `onCanaryFailure: backoff|initial|close`（MANUAL 强制 backoff；默认阈值 1 = 金丝雀一击即闭；卡住的单金丝雀受 `maxWaitMs` 限界，0 = 永等）。
+`CLOSED | HALF_OPEN | OPEN`（`CircuitBreakerState`）——这套词汇属于断路器组件，**永不**用于模型级聚合（见 §4）。唯一存在的状态机是键为 `modelId::keyHashPrefix` 的 (模型 × 凭证)**元组**断路器；`keyHashPrefix === ''` 是链外凭证（provider 配置内置 key）的**哨兵**元组，故一切 legacy 模型级路径恰好退化为一个元组。没有模型级断路器状态机：所谓"模型级"是这些元组的派生折叠（`getAllSnapshots`/`getSnapshot`）——最坏态胜出，仅为摘要/UI 兼容而留。
 
-- **消耗门** `canExecute` 只在紧贴上游调用前被调。**Peek** `peekExecute`（选择、池过滤、leader 挑选、控制台）永不占探针槽——查找会把恢复中的模型饿死在永久 HALF_OPEN。
-- pair/credential 裁定刻意不触模型断路器（单个 pair 吃 429 不应株连整个模型）；模型级跳闸经**聚合**读成"全部前缀 out"，不改写 pair 状态。
+跳闸作用域是对元组的**扇出写入**，每个目标记录自己的作用域标签（`CircuitBreakerSnapshot.scope`）：
+
+- `pair` → 单个元组（provider + modelId + 凭证）；
+- `credential` → (provider, 凭证) 在其可达的全部模型上的每一个元组；
+- `model` → 该 modelId 的**每一个**元组（等量扇出记账：每个元组的阶梯都吃到模型级失败，故一把 key 服务着垂死上游仍在阈值处拄倒整个模型）；编排层传入完整凭证链，故未服务过失败尝试的 key 也被覆盖——MANUAL 模型级跳闸同样贯通整条链（REST 入口经注册表解析 provider 链），操作员下架不会在无失败史的模型上退化成哨兵元组。
+
+探测：per-class 连续失败阶梯 + 滑动失败率窗（默认阈值 3/窗 20/50%；`initialCooldownMs` 30s、×2 递增、`maxCooldownMs` 5h 顶；quota 固定 12h）。恢复试飞：`recovery.halfOpen.{maxProbes,successThreshold,maxWaitMs}` + `onCanaryFailure: backoff|initial|close`（MANUAL 强制 backoff；默认阈值 1 = 金丝雀一击即闭）。试飞是**按元组**的：模型级扇出跳闸后每个元组各自需要 `successThreshold` 次成功，故整模型恢复时延随凭证数增长（有意为之——元组只在其**自己的** key 再次服务成功时关闭）。每模型探针预算（每探测周期 `halfOpen.maxProbes`）在同一模型的诸元组间共享，扇出无法放大后台负载。
+
+- **OPEN 吸收证据**：元组已 OPEN 期间观察到的失败会被分类并写入事件账，但**不**喂断路器的任何计数——阶梯、失败率窗、总量皆然（`recordFailure`/`recordHardTrip` 提前返回）：跳闸已为该次中断定价，冷却期内持续的流量不得把恢复后的阶梯顶高（否则一场 5h 中断会在恢复后第一次抖动就以阈值 3 重新武装）。
+- **消耗门** `canExecuteScoped` 只在紧贴上游调用前被调——它是**那一个**元组的门（+SUSPECT）；`canExecute(modelId)` 是哨兵元组的门（链外路径）。**Peek** `peekExecute`（选择、池过滤、leader 挑选、控制台）永不占探针槽——查找会把恢复中的元组饿死在永久 HALF_OPEN。
+- 凭证级裁定不触其他凭证的元组；元组状态才是控制台卡片的自身真相，派生的模型折叠只是展示背景，永不刷到健康的兄弟卡片上。
 - 非惩罚结局（规则 drop、`shouldTripBreaker:false`）释放已消耗的探针槽；客户端侧 413/499 根本到不了断路器（无上游调用即无记录）。
+- **记账单位是逻辑请求，不是尝试。** 一个候选位若原地重试，只在**最后一次**尝试上记一次失败（编排器在 `isInPlaceRetriable && attempt < maxInPlaceAttempts && !relay.committed` 期间抑制逐次记录；存活下来的诊断带着 `usedCredentialKeyHashPrefix` 盖戳，故阶梯归因到真正出错的那把凭证）。原地重试从来不是新证据——对同一个垂死上游的三次尝试不得记成三级阶梯。429 整形惩罚与失败事件账仍按尝试记（每次尝试都是一次真实的上下游交换）。
 
 ### 3. 热规则树，OFF 语义即契约
 
@@ -48,7 +58,11 @@
 
 ### 6. 主动健康探测（opt-in）
 
-`circuitBreaker.activeProbing.enabled:false` 默认；节奏 `activeProbing.intervalMs`。每 tick 扫描到期的 pair（HALF_OPEN，或 OPEN 且冷却尽），用 `max_tokens:1` 的 `health_check_ping` 走**真实执行路径**（凭证重盖 → 诊断带作用域）。探针永不占流量金丝雀槽：自带模型槽预算（= `halfOpen.maxProbes`），每 pair 取第一个 not-out 的"代表凭证"；SUSPECT 从不自愈；全 out 的链本周期跳过。探测把被动等冷却变成有验证的恢复，代价约等于零 token。
+`circuitBreaker.activeProbing.enabled:false` 默认；节奏 `activeProbing.intervalMs`（由与配额探测共享的 `utils/probe-interval.ts` 钳到 [10 s, 1 h]；缺省/NaN/非正数回落 `DEFAULT_PROBE_INTERVAL_MS`）。启用时随进程启停（boot 时 `orchestrator.startProber()`，关机时停）——恢复探测与配额探测同属进程生命周期机器。每 tick 扫描到期的 pair（HALF_OPEN，或 OPEN 且冷却尽），用 `max_tokens:1` 的 `health_check_ping` 走**真实执行路径**（凭证重盖 → 诊断带作用域），受 30 s 探针超时限界（`DEFAULT_PROBE_TIMEOUT_MS`，`config/defaults.ts`）。该限界刻意远低于服务路径的 `DEFAULT_PROVIDER_TIMEOUT_MS`（300 s）：探针是证据不是服务负载，且一个挂死的上游绝不能占住扫描的 `isProbing` 重入锁。代价写在这里而不是藏着——某 provider 若对 1-token 补全真需要 30 s 以上（长 prefill、冷排队），它会每次探测都失败；而探针超时按 SERVICE_UNAVAILABLE 归入 model 作用域，故这类周期是把该模型**所有已存在元组**重新 OPEN 并各自抬升冷却，而不只是冷却被探的那一个 pair——这正是 `activeProbing` 默认关闭的理由；探针也永不继承服务超时。放弃等待同样不等于取消该请求：`resolver.execute` 没有 AbortSignal 契约，挂死的 provider 每个周期都会留一条孤儿调用直到它自己的 provider 超时（300 s），期间仍占那把凭证的并发与额度。
+
+全部凭证 out 的链在本周期跳过。**消耗式准入**：每轮试飞前先过 `manager.acquireProbeTrial`（取探针槽——驱动 OPEN→HALF_OPEN、占用试飞槽、真实金丝雀已持槽时直接跳过，合成与真实试飞永不竞争）；探针行在失败账上带 `role:'probe'`，控制台据此把合成试飞与服务流量分开。探针**不**自带宽裕槽位、也不吃「自己的一份预算」——它用的就是 `halfOpen.maxProbes` 这份真实试飞预算（按模型计，跨元组共享）；SUSPECT 凭证永不自动回场。
+
+若探针目标自身从未失败过（模型级跳闸的"代表凭证"挑选），试飞归该模型**武装中（到期）**的元组，结果记在**那里**——关闭真正持槽的断路器，否则成功无法释放它已消耗的槽。因此失败的探针会交付**两件**事实（`manager.recordProbeFailure`）：(1) 真正服务那次 ping 的凭证给出的**物理**事实——该凭证的 credential 作用域（它在每个模型上的 pair）、SUSPECT 标记与 `quota_events` 行全部归因于它；若改记在武装前缀上，就会去冷却、甚至标记一把从未失败的健康凭证，而真正出错的凭证保持 CLOSED；(2) 武装元组的裁定，当上述作用域尚未覆盖它时——按 pair 记、绝不扇出，因为试飞槽就在那个元组上，一个没吃到阶梯的 OPEN 元组会把槽永远卡住；死模型也必须像服务流量那样重新冷却。两刀是互补的：(1) 单打在物理答案比 model 更窄时不会冷却武装元组，(2) 单打在代表凭证不是武装凭证时不会冷却真凶。探针**作为探针**永不设置 SUSPECT：该标记只随 credential 作用域诊断的物理记录走（`trip.auth.markSuspect`），即服务流量拿到的同一条行政断言；而探针驱动的元组跳闸已经凭 auth 冷却期把那把凭证从选择中摘除。探测把被动等冷却变成有验证的恢复，代价约等于零 token。
 
 ### 7. 限流——另一根轴：配额整形，不是健康
 

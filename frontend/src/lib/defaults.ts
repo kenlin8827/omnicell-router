@@ -34,6 +34,11 @@ export const DEFAULT_DIRECTIVE_PREFIX = '@ocr-';
  *  in-code default 3000 applies to bare `bun run dev` only). */
 export const DEFAULT_GATEWAY_PORT = 4000;
 
+/** `circuitBreaker.activeProbing.intervalMs` backend default — mirrors backend
+ *  `DEFAULT_PROBE_INTERVAL_MS` (backend/src/utils/probe-interval.ts, shared by
+ *  the health prober and the quota prober). */
+export const DEFAULT_PROBE_INTERVAL_MS = 60_000;
+
 /** Upper bound for a per-credential spread weight — mirrors backend
  *  `CREDENTIAL_WEIGHT_MAX` (backend/src/config/defaults.ts). Integers >= 1;
  *  absence = 1. Weights only shape the NEW-session hash spread. */

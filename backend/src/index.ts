@@ -308,7 +308,10 @@ async function main() {
   // real user traffic. Opt-in: default off (probes are paid upstream calls).
   if (config.circuitBreaker?.activeProbing?.enabled) {
     orchestrator.startProber();
-    console.log(`[OCR] Health prober: active sweep every ${config.circuitBreaker.activeProbing.intervalMs ?? 60000}ms`);
+    // Print the prober's CLAMPED interval — the constructor clamps the raw
+    // config value to [10 s, 1 h], and the log must not advertise a sweep
+    // period the prober will not honor.
+    console.log(`[OCR] Health prober: active sweep every ${orchestrator.getProberIntervalMs()}ms`);
   }
 
   // Quota prober: coverage ships with the release, activation
