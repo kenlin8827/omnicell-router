@@ -93,6 +93,26 @@ export interface TransportContext {
   logError(err: unknown, message: string): void;
 }
 
+/**
+ * Request-path context handed to `parse`. A wire that addresses its model IN
+ * THE URL — the Gemini genai shape (`POST
+ * /v1beta/models/<model>:generateContent`) or Bedrock Converse
+ * (`POST /model/<id>/converse`) — has nothing model-shaped in the body, so
+ * `body` alone cannot lower it to the canonical IR. The path is already known
+ * to both transports (TransportContext.url), which is why the SECOND argument
+ * carries it instead of widening the parse contract of every surface.
+ *
+ * On the MITM leg the request target may be absolute-form
+ * (`http://host/v1/...`), exactly like detectSurface already tolerates; a
+ * URL-addressed wire normalizes that itself.
+ */
+export interface SurfacePathContext {
+  /** Request target with the query stripped, as the transport received it (never lowercased). */
+  readonly path: string;
+  /** Query without the leading '?', or '' when absent. */
+  readonly query: string;
+}
+
 /** Parse outcome: exactly one of `request` (valid) or `error` (400 message) is set. */
 export interface SurfaceParseResult {
   request?: ChatCompletionRequest;
@@ -124,7 +144,7 @@ export interface ChatSurface {
   readonly routePath: string;
   readonly detectSuffix: string;
   /** The `model` field stays client-sent verbatim — resolution authority is the orchestrator's fork. */
-  parse(body: unknown): SurfaceParseResult;
+  parse(body: unknown, pathCtx?: SurfacePathContext): SurfaceParseResult;
   encodeJson(result: ExecutionResult, state: unknown): unknown;
   encodeStream(result: ExecutionResult, state: unknown): string[];
   /**

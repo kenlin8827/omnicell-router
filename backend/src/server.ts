@@ -16,7 +16,7 @@ import { registerHarnessRoutes } from './routes/harness.js';
 import { registerProjectRoutes } from './routes/projects.js';
 import { MarketplaceRescanScheduler } from './harness/common/marketplace-rescan-scheduler.js';
 import { allHostProbes, probeOptionsFor } from './harness/plugin/adapters/index.js';
-import { SURFACES } from './surfaces/table.js';
+import { INFERENCE_ROUTE_PATHS, SURFACES } from './surfaces/table.js';
 import { createFastifyTransport } from './surfaces/transport-fastify.js';
 import { dispatchSurface } from './surfaces/dispatch.js';
 import fastify, { FastifyInstance, LogController } from 'fastify';
@@ -304,14 +304,6 @@ export function createServer(
   const isModelsSurface = (path: string | null): boolean =>
     path !== null &&
     (path === '/v1/models' || path.startsWith('/v1/models/') || path === '/v1/catalog.json');
-
-  /**
-   * Inbound limits meter exactly the protocol surfaces — the routePath set of
-   * the SURFACES table (chat, anthropic, responses, systemone), so a new wire
-   * joins the metered set by the same single-table registration. The models
-   * listing and the admin plane are NOT metered.
-   */
-  const INFERENCE_ROUTE_PATHS: ReadonlySet<string> = new Set(SURFACES.map((s) => s.routePath));
 
   // Load the rate-limit rule table from the same auth view the preHandler
   // uses (boot snapshot with the disk fallback resolveActiveAuthConfig does).
