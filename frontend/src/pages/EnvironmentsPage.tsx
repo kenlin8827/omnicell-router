@@ -85,10 +85,10 @@ const MONO = FONT_MONO;
 const SPIN: React.CSSProperties = { animation: 'ocr-spin 0.8s linear infinite' };
 
 const TH_STYLE: React.CSSProperties = {
-  fontSize: 11,
-  fontWeight: 700,
+  fontSize: 'var(--text-xs)',
+  fontWeight: 'var(--font-bold)',
   textTransform: 'uppercase',
-  letterSpacing: '0.04em',
+  letterSpacing: 'var(--tracking-wide)',
   color: 'var(--text-dim)',
   textAlign: 'left',
   padding: '8px 10px',
@@ -97,7 +97,7 @@ const TH_STYLE: React.CSSProperties = {
 
 const TD_STYLE: React.CSSProperties = {
   padding: '11px 10px',
-  fontSize: 12.5,
+  fontSize: 'var(--text-md)',
   color: 'var(--text-main)',
   // Name cells can grow a second line (description) — keep the other cells
   // centered against the tallest one instead of pinned to the top.
@@ -650,7 +650,7 @@ export const EnvironmentsPage: React.FC = () => {
   };
 
   const summaryRow = (label: string, value: React.ReactNode) => (
-    <div key={label} style={{ display: 'flex', gap: 10, fontSize: 12, lineHeight: 1.6 }}>
+    <div key={label} style={{ display: 'flex', gap: 10, fontSize: 'var(--text-sm)', lineHeight: 'var(--leading-normal)' }}>
       <span style={{ color: 'var(--text-dim)', flexShrink: 0, minWidth: 110 }}>{label}</span>
       <span style={{ fontFamily: MONO, color: 'var(--text-main)', wordBreak: 'break-all' }}>{value}</span>
     </div>
@@ -676,29 +676,29 @@ export const EnvironmentsPage: React.FC = () => {
             </button>
           </div>
         </div>
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6, marginBottom: 12 }}>
+        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', lineHeight: 'var(--leading-normal)', marginBottom: 12 }}>
           {t('env.subtitle')}
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', rowGap: 8 }}>
-          <span style={{ fontSize: 11, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 'var(--tracking-wide)' }}>
             {t('env.running')}
           </span>
-          <span style={{ fontFamily: MONO, fontSize: 14, fontWeight: 700 }}>{runningName || '—'}</span>
+          <span style={{ fontFamily: MONO, fontSize: 'var(--text-base)', fontWeight: 'var(--font-bold)' }}>{runningName || '—'}</span>
           {runningEnv?.name === BOOTSTRAP_DEFAULT_ENV && (
             <span className="badge badge-info">{t('env.badge.bootstrap')}</span>
           )}
           {runningEnv && (
-            <span style={{ fontFamily: MONO, fontSize: 11, color: 'var(--text-dim)' }} title={runningEnv.configPath}>
+            <span style={{ fontFamily: MONO, fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }} title={runningEnv.configPath}>
               {runningEnv.configPath}
             </span>
           )}
           {pendingRestart && (
             <>
-              <span style={{ fontSize: 11, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.04em', marginLeft: 6 }}>
+              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 'var(--tracking-wide)', marginLeft: 6 }}>
                 {t('env.pointer')}
               </span>
-              <span style={{ fontFamily: MONO, fontSize: 14, fontWeight: 700, color: 'var(--accent-amber)' }}>
+              <span style={{ fontFamily: MONO, fontSize: 'var(--text-base)', fontWeight: 'var(--font-bold)', color: 'var(--accent-amber)' }}>
                 {pointerName}
               </span>
               <span className="badge badge-warning">{t('env.badge.pendingRestart')}</span>
@@ -707,12 +707,12 @@ export const EnvironmentsPage: React.FC = () => {
         </div>
 
         {pendingRestart && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, color: 'var(--accent-amber)', fontSize: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, color: 'var(--accent-amber)', fontSize: 'var(--text-sm)' }}>
             <AlertTriangle size={14} />
             <span>{t('env.pendingRestart', { name: pointerName })}</span>
           </div>
         )}
-        <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 10 }}>{t('env.switchHint')}</div>
+        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginTop: 10 }}>{t('env.switchHint')}</div>
       </div>
 
       {/* Environments table */}
@@ -721,7 +721,7 @@ export const EnvironmentsPage: React.FC = () => {
           <div className="card-title" style={{ minWidth: 0 }}>
             <PackageOpen size={18} color="var(--accent)" />
             <span>{t('env.col.name')}</span>
-            <span style={{ fontSize: 11, color: 'var(--text-dim)', fontWeight: 500 }}>
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontWeight: 'var(--font-medium)' }}>
               {data ? `${data.environments.length}` : ''}
             </span>
           </div>
@@ -733,12 +733,12 @@ export const EnvironmentsPage: React.FC = () => {
               { value: 'regular', label: t('env.type.regular') },
               { value: 'sandbox', label: t('env.type.sandbox') },
             ]}
-            style={{ width: 150, padding: '5px 10px', fontSize: 12 }}
+            style={{ width: 150, padding: '5px 10px', fontSize: 'var(--text-sm)' }}
           />
         </div>
 
         {loadError && (
-          <div style={{ fontSize: 12, color: 'var(--accent-rose)', marginBottom: 12 }}>
+          <div style={{ fontSize: 'var(--text-sm)', color: 'var(--accent-rose)', marginBottom: 12 }}>
             {t('env.loadFailed')}
             {loadError}
           </div>
@@ -748,7 +748,7 @@ export const EnvironmentsPage: React.FC = () => {
           {loading && !data ? (
             <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-dim)' }}>{t('common.loading')}</div>
           ) : (
-            <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed', fontSize: 12.5 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed', fontSize: 'var(--text-md)' }}>
               <colgroup>
                 <col style={{ width: '26%' }} />
                 <col style={{ width: '8%' }} />
@@ -781,7 +781,7 @@ export const EnvironmentsPage: React.FC = () => {
                     >
                       <td style={TD_STYLE}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', rowGap: 4 }}>
-                          <span style={{ fontFamily: MONO, fontWeight: 700, fontSize: 13, wordBreak: 'break-all' }}>
+                          <span style={{ fontFamily: MONO, fontWeight: 'var(--font-bold)', fontSize: 'var(--text-md)', wordBreak: 'break-all' }}>
                             {e.name}
                           </span>
                           {e.running && <span className="badge badge-success">{t('env.badge.running')}</span>}
@@ -793,7 +793,7 @@ export const EnvironmentsPage: React.FC = () => {
                           )}
                         </div>
                         {provenance && (
-                          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 4, lineHeight: 1.5 }}>
+                          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginTop: 4, lineHeight: 'var(--leading-snug)' }}>
                             {provenance}
                           </div>
                         )}
@@ -805,10 +805,10 @@ export const EnvironmentsPage: React.FC = () => {
                           <span style={{ color: 'var(--text-muted)' }}>{t('env.type.regular')}</span>
                         )}
                       </td>
-                      <td style={{ ...TD_STYLE, fontFamily: MONO, fontSize: 11.5 }} title={e.configPath}>
+                      <td style={{ ...TD_STYLE, fontFamily: MONO, fontSize: 'var(--text-sm)' }} title={e.configPath}>
                         {t('env.loc.envs', { name: e.name })}
                       </td>
-                      <td style={{ ...TD_STYLE, fontFamily: MONO, fontSize: 11.5 }}>{fmtBytes(e.sizeBytes)}</td>
+                      <td style={{ ...TD_STYLE, fontFamily: MONO, fontSize: 'var(--text-sm)' }}>{fmtBytes(e.sizeBytes)}</td>
                       <td style={{ ...TD_STYLE, color: 'var(--text-muted)' }}>{fmtDate(e.createdAt)}</td>
                       <td style={{ ...TD_STYLE, textAlign: 'right' }}>
                         <div style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
@@ -964,7 +964,7 @@ export const EnvironmentsPage: React.FC = () => {
                 onChange={(e) => setCDesc(e.target.value)}
               />
             </Field>
-            {cError && <div style={{ fontSize: 12, color: 'var(--accent-rose)' }}>{cError}</div>}
+            {cError && <div style={{ fontSize: 'var(--text-sm)', color: 'var(--accent-rose)' }}>{cError}</div>}
           </form>
         </Dialog>
       )}
@@ -1016,7 +1016,7 @@ export const EnvironmentsPage: React.FC = () => {
                 onChange={(e) => setRDesc(e.target.value)}
               />
             </Field>
-            {rError && <div style={{ fontSize: 12, color: 'var(--accent-rose)' }}>{rError}</div>}
+            {rError && <div style={{ fontSize: 'var(--text-sm)', color: 'var(--accent-rose)' }}>{rError}</div>}
           </form>
         </Dialog>
       )}
@@ -1052,7 +1052,7 @@ export const EnvironmentsPage: React.FC = () => {
               display: 'flex',
               alignItems: 'center',
               gap: 10,
-              fontSize: 13,
+              fontSize: 'var(--text-md)',
               cursor: exportEncrypt ? 'default' : 'pointer',
               userSelect: 'none',
               opacity: exportEncrypt ? 0.75 : 1,
@@ -1077,8 +1077,8 @@ export const EnvironmentsPage: React.FC = () => {
                 border: '1px solid var(--accent-rose)',
                 background: 'color-mix(in srgb, var(--accent-rose) 10%, transparent)',
                 color: 'var(--accent-rose)',
-                fontSize: 12,
-                lineHeight: 1.6,
+                fontSize: 'var(--text-sm)',
+                lineHeight: 'var(--leading-normal)',
               }}
             >
               <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 2 }} />
@@ -1090,7 +1090,7 @@ export const EnvironmentsPage: React.FC = () => {
               display: 'flex',
               alignItems: 'center',
               gap: 10,
-              fontSize: 13,
+              fontSize: 'var(--text-md)',
               cursor: 'pointer',
               userSelect: 'none',
               marginTop: 4,
@@ -1120,8 +1120,8 @@ export const EnvironmentsPage: React.FC = () => {
                   border: '1px solid var(--card-border)',
                   background: 'var(--bg-elev)',
                   color: 'var(--text-dim)',
-                  fontSize: 12,
-                  lineHeight: 1.6,
+                  fontSize: 'var(--text-sm)',
+                  lineHeight: 'var(--leading-normal)',
                 }}
               >
                 <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 2 }} />
@@ -1137,7 +1137,7 @@ export const EnvironmentsPage: React.FC = () => {
                       autoComplete="new-password"
                       aria-label={t('env.export.password')}
                       onChange={(e) => setExportPassword(e.target.value)}
-                      style={{ fontFamily: MONO, fontSize: 12, padding: '7px 10px' }}
+                      style={{ fontFamily: MONO, fontSize: 'var(--text-sm)', padding: '7px 10px' }}
                     />
                   </Field>
                 </div>
@@ -1150,21 +1150,21 @@ export const EnvironmentsPage: React.FC = () => {
                       autoComplete="new-password"
                       aria-label={t('env.export.passwordConfirm')}
                       onChange={(e) => setExportPasswordConfirm(e.target.value)}
-                      style={{ fontFamily: MONO, fontSize: 12, padding: '7px 10px' }}
+                      style={{ fontFamily: MONO, fontSize: 'var(--text-sm)', padding: '7px 10px' }}
                     />
                   </Field>
                 </div>
               </div>
-              {exportError && <div style={{ color: 'var(--accent-rose)', fontSize: 12 }}>{exportError}</div>}
+              {exportError && <div style={{ color: 'var(--accent-rose)', fontSize: 'var(--text-sm)' }}>{exportError}</div>}
             </>
           )}
           <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
             <div
               style={{
-                fontSize: 11,
-                fontWeight: 700,
+                fontSize: 'var(--text-xs)',
+                fontWeight: 'var(--font-bold)',
                 textTransform: 'uppercase',
-                letterSpacing: '0.04em',
+                letterSpacing: 'var(--tracking-wide)',
                 color: 'var(--text-dim)',
               }}
             >
@@ -1177,7 +1177,7 @@ export const EnvironmentsPage: React.FC = () => {
                   display: 'flex',
                   alignItems: 'center',
                   gap: 10,
-                  fontSize: 13,
+                  fontSize: 'var(--text-md)',
                   cursor: 'pointer',
                   userSelect: 'none',
                 }}
@@ -1191,7 +1191,7 @@ export const EnvironmentsPage: React.FC = () => {
                 <span>{t(opt.i18nKey)}</span>
               </label>
             ))}
-            <div style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.6 }}>
+            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
               {t('env.export.payloadHint')}
             </div>
           </div>
@@ -1233,7 +1233,7 @@ export const EnvironmentsPage: React.FC = () => {
                 accept=".orc_env.zip,.zip"
                 className="input"
                 aria-label={t('env.import.pickFile')}
-                style={{ fontSize: 12, padding: '7px 10px' }}
+                style={{ fontSize: 'var(--text-sm)', padding: '7px 10px' }}
                 onChange={(e) => {
                   const file = e.target.files?.[0];
                   if (file) void readArchive(file);
@@ -1268,7 +1268,7 @@ export const EnvironmentsPage: React.FC = () => {
                     setIPassword(e.target.value);
                     setIError('');
                   }}
-                  style={{ fontFamily: MONO, fontSize: 12, padding: '7px 10px' }}
+                  style={{ fontFamily: MONO, fontSize: 'var(--text-sm)', padding: '7px 10px' }}
                 />
               </Field>
             )}
@@ -1285,7 +1285,7 @@ export const EnvironmentsPage: React.FC = () => {
                   background: 'var(--bg-elev)',
                 }}
               >
-                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-dim)', marginBottom: 6 }}>
+                <div style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', textTransform: 'uppercase', letterSpacing: 'var(--tracking-wide)', color: 'var(--text-dim)', marginBottom: 6 }}>
                   {t('env.import.summary')}
                 </div>                {summaryRow(t('env.import.source'), summary.sourceName)}
                 {summaryRow(t('env.col.type'), summary.sourceType === 'sandbox' ? t('env.type.sandbox') : t('env.type.regular'))}
@@ -1350,7 +1350,7 @@ export const EnvironmentsPage: React.FC = () => {
               </div>
             )}
 
-            {iError && <div style={{ fontSize: 12, color: 'var(--accent-rose)' }}>{iError}</div>}
+            {iError && <div style={{ fontSize: 'var(--text-sm)', color: 'var(--accent-rose)' }}>{iError}</div>}
           </form>
         </Dialog>
       )}

@@ -319,6 +319,9 @@ export const zhCN: TranslationDict = {
 
     grpSystem: '系统与配置',
     searchPlaceholder: '搜索功能菜单...',
+    collapse: '收起导航',
+    expand: '展开导航',
+    openMenu: '打开导航',
     consoleTag: '网关控制台',
     version: 'v{version}',
     footerOnline: '网关在线',
@@ -337,13 +340,9 @@ export const zhCN: TranslationDict = {
     restartTimeout: '网关未能在预期时间内恢复，请检查日志或手动执行 ocr start',
     switchLang: '切换系统语言',
     themes: {
-      onyx: '曜石玄黑',
-      indigo: '午夜靛蓝',
-      emerald: '赛博翡翠',
-      violet: '星云幻紫',
-      rose: '玫瑰晚霞',
-      azure: '碧空皓白',
-      amber: '琥珀鎏金',
+      light: '浅色',
+      dark: '深色',
+      system: '跟随系统',
     },
   },
   overview: {

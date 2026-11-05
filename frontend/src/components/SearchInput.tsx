@@ -24,7 +24,7 @@ export const SearchInput: React.FC<SearchInputProps> = ({ value, onChange, place
       <input
         ref={ref}
         className="input"
-        style={{ fontSize: 12, paddingLeft: 30, paddingRight: value ? 26 : 10, width: '100%' }}
+        style={{ fontSize: 'var(--text-sm)', paddingLeft: 30, paddingRight: value ? 26 : 10, width: '100%' }}
         placeholder={placeholder}
         value={value}
         onChange={(e) => onChange(e.target.value)}

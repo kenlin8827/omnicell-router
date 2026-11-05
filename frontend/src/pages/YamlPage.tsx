@@ -231,8 +231,8 @@ const ghostComments = (dict: Record<string, string>, truncatedSuffix: string) =>
 
 /** Editor chrome (bg / gutters / selection / caret) driven by the app's CSS variables. */
 const appChrome = EditorView.theme({
-  '&': { backgroundColor: 'var(--input-bg)', color: 'var(--text-main)', fontSize: '13px' },
-  '.cm-content': { fontFamily: editorFont, lineHeight: '1.6' },
+  '&': { backgroundColor: 'var(--input-bg)', color: 'var(--text-main)', fontSize: 'var(--text-md)' },
+  '.cm-content': { fontFamily: editorFont, lineHeight: 'var(--leading-normal)' },
   '.cm-gutters': { backgroundColor: 'transparent', color: 'var(--text-dim)', border: 'none', fontFamily: editorFont },
   '.cm-activeLine': { backgroundColor: 'rgba(127, 127, 127, 0.12)' },
   '.cm-activeLineGutter': { backgroundColor: 'rgba(127, 127, 127, 0.18)' },
@@ -243,9 +243,9 @@ const appChrome = EditorView.theme({
     color: 'var(--text-dim)',
     opacity: 0.55,
     fontStyle: 'italic',
-    fontSize: '11px',
+    fontSize: 'var(--text-xs)',
     pointerEvents: 'none',
-    lineHeight: 1.5,
+    lineHeight: 'var(--leading-snug)',
     userSelect: 'none',
     whiteSpace: 'pre-wrap',
   },
@@ -492,8 +492,8 @@ export const YamlPage: React.FC = () => {
           flex: 1,
           minWidth: 0,
           textAlign: 'left',
-          fontSize: level === 0 ? '13px' : '12px',
-          fontWeight: level === 0 ? 600 : 400,
+          fontSize: level === 0 ? 'var(--text-md)' : 'var(--text-sm)',
+          fontWeight: level === 0 ? 'var(--font-semibold)' : 'var(--font-regular)',
           fontFamily: editorFont,
           padding: level === 0 ? '4px 10px' : '3px 10px 3px 4px',
           borderRadius: '6px',
@@ -528,7 +528,7 @@ export const YamlPage: React.FC = () => {
             {level === 0 || filtering ? s.path : label}
           </span>
         </span>
-        <span style={{ fontSize: '10px', opacity: 0.6, flexShrink: 0 }}>{s.line}</span>
+        <span style={{ fontSize: 'var(--text-2xs)', opacity: 0.6, flexShrink: 0 }}>{s.line}</span>
       </button>
     );
     if (filtering) {
@@ -545,7 +545,7 @@ export const YamlPage: React.FC = () => {
               gap: '8px',
               width: '100%',
               textAlign: 'left',
-              fontSize: '11px',
+              fontSize: 'var(--text-xs)',
               fontFamily: editorFont,
               padding: '3px 10px',
               borderRadius: '6px',
@@ -556,7 +556,7 @@ export const YamlPage: React.FC = () => {
             }}
           >
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.path}</span>
-            <span style={{ fontSize: '10px', opacity: 0.6, flexShrink: 0 }}>{s.line}</span>
+            <span style={{ fontSize: 'var(--text-2xs)', opacity: 0.6, flexShrink: 0 }}>{s.line}</span>
           </button>
         </div>
       );
@@ -613,7 +613,7 @@ export const YamlPage: React.FC = () => {
           <div
             style={{
               fontFamily: editorFont,
-              fontSize: '11px',
+              fontSize: 'var(--text-xs)',
               color: 'var(--text-dim)',
               wordBreak: 'break-all',
               userSelect: 'text',
@@ -631,7 +631,7 @@ export const YamlPage: React.FC = () => {
               background: notice.type === 'success' ? 'color-mix(in srgb, var(--accent-emerald) 15%, transparent)' : 'color-mix(in srgb, var(--accent-rose) 15%, transparent)',
               border: `1px solid ${notice.type === 'success' ? 'color-mix(in srgb, var(--accent-emerald) 30%, transparent)' : 'color-mix(in srgb, var(--accent-rose) 30%, transparent)'}`,
               color: notice.type === 'success' ? 'var(--accent-emerald)' : 'var(--accent-rose)',
-              fontSize: '13px',
+              fontSize: 'var(--text-md)',
               display: 'flex',
               alignItems: 'center',
               gap: '8px',
@@ -643,7 +643,7 @@ export const YamlPage: React.FC = () => {
           </div>
         )}
 
-        <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '14px' }}>
+        <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', marginBottom: '14px' }}>
           {t('yaml.desc')}
         </p>
 
@@ -657,7 +657,7 @@ export const YamlPage: React.FC = () => {
               >
               <input
                 className="input"
-                style={{ fontSize: '11px', padding: '5px 10px' }}
+                style={{ fontSize: 'var(--text-xs)', padding: '5px 10px' }}
                 placeholder={t('yaml.filterPlaceholder')}
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
@@ -743,14 +743,14 @@ export const YamlPage: React.FC = () => {
                 padding: '12px 14px',
                 overflowY: 'auto',
                 minHeight: 0,
-                fontSize: '12px',
+                fontSize: 'var(--text-sm)',
                 color: 'var(--text-muted)',
-                lineHeight: 1.6,
+                lineHeight: 'var(--leading-normal)',
                 scrollbarWidth: 'thin',
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
-                <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>{t('yaml.commentsTitle')}</span>
+                <span style={{ fontWeight: 'var(--font-semibold)', color: 'var(--text-main)' }}>{t('yaml.commentsTitle')}</span>
                 <button
                   onClick={toggleComments}
                   title={t('yaml.commentsTitle')}
@@ -779,7 +779,7 @@ export const YamlPage: React.FC = () => {
                   <div
                     style={{
                       fontFamily: editorFont,
-                      fontSize: '11px',
+                      fontSize: 'var(--text-xs)',
                       color: 'var(--accent)',
                       marginBottom: '8px',
                       wordBreak: 'break-all',
@@ -797,7 +797,7 @@ export const YamlPage: React.FC = () => {
                           display: 'flex',
                           gap: '6px',
                           marginBottom: '6px',
-                          lineHeight: 1.55,
+                          lineHeight: 'var(--leading-normal)',
                           whiteSpace: 'pre-wrap',
                         }}
                       >
@@ -805,9 +805,9 @@ export const YamlPage: React.FC = () => {
                           style={{
                             flexShrink: 0,
                             color: 'var(--text-dim)',
-                            fontSize: '16px',
-                            lineHeight: '12px',
-                            fontWeight: 700,
+                            fontSize: 'var(--text-xl)',
+                            lineHeight: 'var(--leading-12)',
+                            fontWeight: 'var(--font-bold)',
                           }}
                         >
                           ·
@@ -818,7 +818,7 @@ export const YamlPage: React.FC = () => {
                   </ul>
                 </>
               ) : commentHeader ? (
-                <div style={{ lineHeight: 1.65, fontSize: '12px' }}>
+                <div style={{ lineHeight: 'var(--leading-relaxed)', fontSize: 'var(--text-sm)' }}>
                   {commentHeader.split('\n').map((ln, i) => {
                     // Group rows ("  client      Client entry surface: …") render as
                     // chip + description rows; everything else is prose.
@@ -829,7 +829,7 @@ export const YamlPage: React.FC = () => {
                           <span
                             style={{
                               fontFamily: editorFont,
-                              fontSize: '11px',
+                              fontSize: 'var(--text-xs)',
                               color: 'var(--accent)',
                               background: 'var(--surface)',
                               border: '1px solid var(--card-border)',
@@ -855,7 +855,7 @@ export const YamlPage: React.FC = () => {
                         style={{
                           marginBottom: '6px',
                           whiteSpace: 'pre-wrap',
-                          fontWeight: isHeading ? 600 : 400,
+                          fontWeight: isHeading ? 'var(--font-semibold)' : 'var(--font-regular)',
                           color: isHeading ? 'var(--text-main)' : 'var(--text-secondary)',
                         }}
                       >
@@ -865,7 +865,7 @@ export const YamlPage: React.FC = () => {
                   })}
                 </div>
               ) : (
-                <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>{t('yaml.commentsHint')}</div>
+                <div style={{ whiteSpace: 'pre-wrap', lineHeight: 'var(--leading-normal)' }}>{t('yaml.commentsHint')}</div>
               )}
             </aside>
             )}

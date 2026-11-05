@@ -52,8 +52,8 @@ export const TipBubble: React.FC<{
       border: '1px solid var(--card-border)',
       boxShadow: '0 12px 32px rgba(0,0,0,0.45)',
       color: 'var(--text-main)',
-      fontSize: 12,
-      lineHeight: 1.6,
+      fontSize: 'var(--text-sm)',
+      lineHeight: 'var(--leading-normal)',
       textAlign: 'left',
       pointerEvents: 'none',
     }}

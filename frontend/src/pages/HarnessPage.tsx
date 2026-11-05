@@ -354,7 +354,7 @@ interface Row {
   artifact?: HarnessArtifactView;
 }
 
-const MONO: React.CSSProperties = { fontFamily: FONT_MONO, fontSize: '11.5px' };
+const MONO: React.CSSProperties = { fontFamily: FONT_MONO, fontSize: 'var(--text-sm)' };
 
 /**
  * Name column: the row's identity, plus the version the runtime's own store records.
@@ -367,7 +367,7 @@ const MONO: React.CSSProperties = { fontFamily: FONT_MONO, fontSize: '11.5px' };
 /** Installed-row name. `onOpen` turns it into the detail dialog's opener; a row with no public
  *  identity (a manual MCP server) still opens — the dialog simply has less to say. */
 const NameCell: React.FC<{ row: Row; onOpen?: (row: Row) => void }> = ({ row, onOpen }) => (
-  <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 6, maxWidth: '100%', fontWeight: 600 }}>
+  <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 6, maxWidth: '100%', fontWeight: 'var(--font-semibold)' }}>
     {onOpen ? (
       <button type="button" className="harness-detail-link" onClick={() => onOpen(row)}>
         {row.name}
@@ -376,7 +376,7 @@ const NameCell: React.FC<{ row: Row; onOpen?: (row: Row) => void }> = ({ row, on
       <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.name}</span>
     )}
     {row.version && (
-      <span style={{ ...MONO, fontWeight: 400, color: 'var(--text-dim)', flex: '0 0 auto' }}>@{row.version}</span>
+      <span style={{ ...MONO, fontWeight: 'var(--font-regular)', color: 'var(--text-dim)', flex: '0 0 auto' }}>@{row.version}</span>
     )}
   </span>
 );
@@ -384,10 +384,10 @@ const NameCell: React.FC<{ row: Row; onOpen?: (row: Row) => void }> = ({ row, on
 const TH: React.CSSProperties = {
   padding: '6px 10px',
   textAlign: 'left',
-  fontSize: '11px',
+  fontSize: 'var(--text-xs)',
   color: 'var(--text-dim)',
   textTransform: 'uppercase',
-  letterSpacing: '0.4px',
+  letterSpacing: 'var(--tracking-label)',
   borderBottom: '1px solid var(--divider)',
   whiteSpace: 'nowrap',
 };
@@ -418,7 +418,7 @@ const HEADER_CONTROL_HEIGHT = 34;
 const CHIP_ROW_CONTROL_HEIGHT = 28;
 
 const TOOLBAR_CONTROL: React.CSSProperties = {
-  fontSize: '13px',
+  fontSize: 'var(--text-md)',
   padding: '7px 10px',
   boxSizing: 'border-box',
   height: `${HEADER_CONTROL_HEIGHT}px`,
@@ -851,7 +851,7 @@ const InstallGatePlan: React.FC<{ targets: HarnessInstallTarget[]; descKey: stri
         }}
       >
         <ShieldAlert size={14} style={{ flex: '0 0 auto', color: 'var(--accent-rose)' }} aria-hidden />
-        <span style={{ fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.6 }}>{t(descKey)}</span>
+        <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>{t(descKey)}</span>
       </div>
       {targets.map((target, index) => (
         <div
@@ -865,12 +865,12 @@ const InstallGatePlan: React.FC<{ targets: HarnessInstallTarget[]; descKey: stri
             gap: 6,
           }}
         >
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '12.5px', fontWeight: 600 }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 'var(--text-md)', fontWeight: 'var(--font-semibold)' }}>
             <HostIcon host={target.host} size={14} />
             {target.host}
           </span>
           {target.refused ? (
-            <span style={{ fontSize: '11.5px', color: 'var(--accent-rose)' }}>{target.refused}</span>
+            <span style={{ fontSize: 'var(--text-sm)', color: 'var(--accent-rose)' }}>{target.refused}</span>
           ) : target.echo ? (
             /* The verbatim command apply will run — never summarised, never reformatted. */
             <code
@@ -895,7 +895,7 @@ const InstallGatePlan: React.FC<{ targets: HarnessInstallTarget[]; descKey: stri
           {/* Gate 2's other half: which keys the merge adds or overwrites, exactly as the writer
               planned them. A name collision is an overwrite, and it must be visible before confirm. */}
           {((target.addedKeys?.length ?? 0) > 0 || (target.changedKeys?.length ?? 0) > 0) && (
-            <span style={{ fontSize: '11.5px', color: 'var(--text-dim)', lineHeight: 1.5 }}>
+            <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', lineHeight: 'var(--leading-snug)' }}>
               {target.addedKeys && target.addedKeys.length > 0 && (
                 <>
                   {t('harness.mcpPlanAdd')}{' '}
@@ -2078,7 +2078,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
             cross-host count on a single-host page reads as "partially installed" — a state that
             cannot exist there. The count stays only on multi-target kinds (skills, MCP). */}
         {count > 0 && free > 0 && KIND_META[item.installKind].installMode !== 'single' && (
-          <span className="badge" style={{ fontSize: '10px', padding: '0 4px', lineHeight: '14px' }}>
+          <span className="badge" style={{ fontSize: 'var(--text-2xs)', padding: '0 4px', lineHeight: 'var(--leading-14)' }}>
             {t('harness.installedBadge').replace('{n}', String(count))}
           </span>
         )}
@@ -2092,7 +2092,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
   /** Shown in place of the target chips when nothing here can take the install. Null for skills: a
    *  skill's landing list is its owned locations, which the chips already enumerate honestly. */
   const missingLanding = installMeta.rail ? (
-    <span style={{ fontSize: '11.5px', color: 'var(--accent-rose)' }}>{t(installMeta.rail.emptyKey)}</span>
+    <span style={{ fontSize: 'var(--text-sm)', color: 'var(--accent-rose)' }}>{t(installMeta.rail.emptyKey)}</span>
   ) : null;
 
   // Scope or dialog changes swap which locations exist; a selection that is no longer offered must
@@ -3339,7 +3339,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
       <div
         style={{
           ...MONO,
-          fontSize: 11,
+          fontSize: 'var(--text-xs)',
           color: 'var(--text-dim)',
           padding: '6px 8px',
           background: 'var(--chip-bg)',
@@ -3439,7 +3439,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
             </div>
           )}
         </td>
-        <td style={{ ...MCP_TABLE_CELL, fontSize: 11, lineHeight: 1.45 }}>
+        <td style={{ ...MCP_TABLE_CELL, fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-tight)' }}>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
             <button
               type="button"
@@ -3603,7 +3603,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
             )}
           </Field>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <div style={{ fontSize: 'var(--text-sm)', fontWeight: 'var(--font-semibold)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
               {t('harness.mcpArgs')}
               <InfoTip text={t('harness.mcpParamUseHint')} />
             </div>
@@ -3624,7 +3624,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                   {t('harness.mcpClearCandidates')}
                 </button>
               )}
-              <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{t('harness.mcpParamRequiredHint')}</span>
+              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('harness.mcpParamRequiredHint')}</span>
             </div>
           </div>
         </div>
@@ -3659,11 +3659,11 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
           rows={8}
           autoFocus
           spellCheck={false}
-          style={{ ...MONO, resize: 'vertical', lineHeight: 1.5, minHeight: 140 }}
+          style={{ ...MONO, resize: 'vertical', lineHeight: 'var(--leading-snug)', minHeight: 140 }}
           value={mcpValueEditor.value}
           onChange={(e) => setMcpValueEditor((cur) => (cur ? { ...cur, value: e.target.value } : cur))}
         />
-        <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>{t('harness.mcpValueEditorHint')}</div>
+        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('harness.mcpValueEditorHint')}</div>
       </Dialog>
     );
   };
@@ -3686,7 +3686,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
       <div className="card-header" style={{ flexWrap: 'wrap', gap: '10px' }}>
         <div className="card-title">
           <span>{t(meta.marketKey)}</span>
-          <span style={{ fontSize: '11px', color: 'var(--text-dim)', marginLeft: '8px' }}>
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginLeft: '8px' }}>
             {marketLoading ? t('harness.scanning') : marketItems.length}
           </span>
         </div>
@@ -3748,7 +3748,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
           view switch, not a filter. EVERY source that serves this axis is rendered — one that cannot
           serve stays visible with its reason, because a missing chip reads as "no such source". */}
       <div className="chip-row" style={{ alignItems: 'center', padding: '0 14px 10px 14px' }}>
-        <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('harness.detailCatalog')}</span>
+        <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('harness.detailCatalog')}</span>
         {marketCatalogs.map((cat) => {
           const label = formatCatalog(cat);
           // Exact 0 when no source belongs to the catalog; unvisited catalogs with sources stay
@@ -3802,7 +3802,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
               // own 200px floor (Combobox PANEL_MIN_WIDTH_DEFAULT), so a narrow trigger still opens a
               // legible menu; growth happens leftward against the row edge, so refresh never moves.
               style={{
-                fontSize: 12,
+                fontSize: 'var(--text-sm)',
                 width: 'auto',
                 height: CHIP_ROW_CONTROL_HEIGHT,
                 paddingTop: 0,
@@ -3815,7 +3815,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
               style={{
                 display: 'inline-flex',
                 alignItems: 'center',
-                fontSize: 11,
+                fontSize: 'var(--text-xs)',
                 color: 'var(--text-dim)',
                 whiteSpace: 'nowrap',
               }}
@@ -3880,7 +3880,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
             alignItems: 'center',
             gap: 6,
             padding: '0 14px 10px',
-            fontSize: '11px',
+            fontSize: 'var(--text-xs)',
             color: 'var(--text-dim)',
           }}
         >
@@ -3902,7 +3902,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
             justifyContent: 'center',
             gap: '8px',
             color: 'var(--text-dim)',
-            fontSize: '13px',
+            fontSize: 'var(--text-md)',
             padding: '28px',
             textAlign: 'center',
           }}
@@ -3911,7 +3911,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
           <span>{t('harness.noBrowsableSource')}</span>
         </div>
       ) : marketError ? (
-        <div style={{ padding: '16px', color: 'var(--accent-rose)', fontSize: '13px' }}>
+        <div style={{ padding: '16px', color: 'var(--accent-rose)', fontSize: 'var(--text-md)' }}>
           {marketError.reason && BROWSE_ERROR_KEY[marketError.reason]
             ? t(BROWSE_ERROR_KEY[marketError.reason]!, marketError.reasonParams)
             : marketError.message}
@@ -3924,7 +3924,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
             justifyContent: 'center',
             gap: '8px',
             color: 'var(--text-dim)',
-            fontSize: '13px',
+            fontSize: 'var(--text-md)',
             padding: '28px',
           }}
         >
@@ -3960,7 +3960,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                   border: '1px solid var(--card-border)',
                   boxShadow: 'var(--card-shadow)',
                   color: 'var(--text-dim)',
-                  fontSize: 12,
+                  fontSize: 'var(--text-sm)',
                 }}
               >
                 <RefreshCw size={14} style={{ animation: 'ocr-spin 0.8s linear infinite' }} aria-hidden />
@@ -3980,7 +3980,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
             }}
           >
           {layout === 'list' ? (
-            <table style={{ width: '100%', tableLayout: 'fixed', borderCollapse: 'collapse', fontSize: '13px' }}>
+            <table style={{ width: '100%', tableLayout: 'fixed', borderCollapse: 'collapse', fontSize: 'var(--text-md)' }}>
               <colgroup>
                 <col style={{ width: '26%' }} />
                 <col />
@@ -4000,7 +4000,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
               <tbody>
                 {marketItems.map((item) => (
                   <tr key={item.id}>
-                    <td style={{ ...TD, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <td style={{ ...TD, fontWeight: 'var(--font-semibold)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       <button
                         type="button"
                         className="harness-detail-link"
@@ -4040,7 +4040,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                   display: 'flex',
                   flexDirection: 'column',
                   gap: '6px',
-                  fontSize: '13px',
+                  fontSize: 'var(--text-md)',
                 }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -4065,7 +4065,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                     title={item.repo ?? item.key}
                     style={{
                       ...MONO,
-                      fontSize: '11px',
+                      fontSize: 'var(--text-xs)',
                       color: 'var(--text-dim)',
                       flex: '1 1 auto',
                       overflow: 'hidden',
@@ -4329,7 +4329,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                   // Fixed height, not min-height: line-clamp only clips inside a box that cannot
                   // grow, otherwise a long description spills over the row beneath it.
                   height: '2.9em',
-                  lineHeight: 1.45,
+                  lineHeight: 'var(--leading-tight)',
                 }
               : {
                   flex: '0 1 auto',
@@ -4353,10 +4353,10 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
             aria-pressed={showingTranslation}
             style={{
               flex: '0 0 auto',
-              fontSize: '9.5px',
+              fontSize: 'var(--text-2xs)',
               padding: '0 5px',
-              letterSpacing: 0,
-              lineHeight: '15px',
+              letterSpacing: 'var(--tracking-normal)',
+              lineHeight: 'var(--leading-15)',
               cursor: 'pointer',
               border: '1px solid var(--divider)',
               background: 'transparent',
@@ -4492,7 +4492,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
             key={host}
             className="chip"
             title={paths.join('\n') || undefined}
-            style={{ fontSize: '10.5px', padding: '1px 7px', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+            style={{ fontSize: 'var(--text-xs)', padding: '1px 7px', display: 'inline-flex', alignItems: 'center', gap: 4 }}
           >
             <HostIcon host={host} size={12} />
             {hostName(host)}
@@ -4500,7 +4500,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
         );
       })}
       {shown.length > limit && (
-        <span className="chip" style={{ fontSize: '10.5px', padding: '1px 7px' }}>+{shown.length - limit}</span>
+        <span className="chip" style={{ fontSize: 'var(--text-xs)', padding: '1px 7px' }}>+{shown.length - limit}</span>
       )}
     </div>
     );
@@ -4619,7 +4619,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
             { value: 'market', label: t(meta.marketKey) },
           ]}
         />
-        <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: FONT_MONO }}>{breadcrumb()}</span>
+        <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontFamily: FONT_MONO }}>{breadcrumb()}</span>
         {tab === 'market' && (
           <button
             type="button"
@@ -4640,7 +4640,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
           <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
             <Boxes size={18} color="var(--accent)" />
             <span>{tab === 'project' ? t('harness.viewProject', { kind: t(meta.scopeKindKey) }) : t(meta.titleKey)}</span>
-            <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
               {inventory ? `${installedNoun} ${total}` : t('harness.subtitle')}
             </span>
             {tab === 'project' && (
@@ -4657,7 +4657,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                     />
                   </div>
                 ) : (
-                  <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+                  <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
                     {t('harness.noProjectsAvailable')}
                   </span>
                 )}
@@ -4669,12 +4669,12 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                   style={{ height: HEADER_CONTROL_HEIGHT, padding: '0 6px', display: 'inline-flex', alignItems: 'center', gap: 4 }}
                 >
                   <FolderCog size={13} />
-                  <span style={{ fontSize: '11.5px' }}>{t('projects.title')}</span>
+                  <span style={{ fontSize: 'var(--text-sm)' }}>{t('projects.title')}</span>
                 </button>
                 {selectedProject && (
                   <span
                     style={{
-                      fontSize: '11px',
+                      fontSize: 'var(--text-xs)',
                       color: 'var(--text-dim)',
                       fontFamily: FONT_MONO,
                       maxWidth: 280,
@@ -4747,7 +4747,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
           <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
             <div style={{ display: 'flex', alignItems: 'center' }}>
               <span>{installedNoun}</span>
-              <span style={{ fontSize: '11px', color: 'var(--text-dim)', marginLeft: '8px' }}>{rows.length}</span>
+              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginLeft: '8px' }}>{rows.length}</span>
             </div>
 
           </div>
@@ -4756,7 +4756,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
           <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flex: '0 0 auto' }}>
             {kind === 'mcp' && runtimeProbing && (
               <span
-                style={{ fontSize: '11px', color: 'var(--text-dim)', display: 'inline-flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}
+                style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', display: 'inline-flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}
                 title={t('harness.mcpRuntimeProbing')}
               >
                 <RefreshCw size={10} style={{ animation: 'ocr-spin 0.8s linear infinite' }} />
@@ -4807,7 +4807,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
             is where the full registry (including a source that cannot serve) stays visible. */}
         {installedCatalogs.length > 0 && (
           <div className="chip-row" style={{ alignItems: 'center', padding: '0 14px 10px 14px' }}>
-            <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('harness.detailCatalog')}</span>
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('harness.detailCatalog')}</span>
             <button
               className="chip"
               aria-pressed={activeCatalog === 'all'}
@@ -4893,7 +4893,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                 alignItems: 'center',
                 gap: 6,
                 flex: '0 0 auto',
-                fontSize: '12px',
+                fontSize: 'var(--text-sm)',
                 color: 'var(--text-dim)',
                 cursor: 'pointer',
                 whiteSpace: 'nowrap',
@@ -4910,7 +4910,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
           )}
         </div>
         {error ? (
-          <div style={{ padding: '16px', color: 'var(--accent-rose)', fontSize: '13px' }}>{error}</div>
+          <div style={{ padding: '16px', color: 'var(--accent-rose)', fontSize: 'var(--text-md)' }}>{error}</div>
         ) : rows.length === 0 && !loading && inventory ? (
           <div
             style={{
@@ -4919,7 +4919,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
               justifyContent: 'center',
               gap: '8px',
               color: 'var(--text-dim)',
-              fontSize: '13px',
+              fontSize: 'var(--text-md)',
               padding: '28px',
             }}
           >
@@ -4929,7 +4929,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
               {/* The one place that must say what "0" means for a kind with no discovery scan: an
                   empty list is "this gateway installed nothing", never "this machine has none". */}
               {total === 0 && emptyNoteKey && (
-                <span style={{ fontSize: '11px', lineHeight: 1.5 }}>{t(emptyNoteKey)}</span>
+                <span style={{ fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-snug)' }}>{t(emptyNoteKey)}</span>
               )}
             </span>
           </div>
@@ -4962,7 +4962,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                     border: '1px solid var(--card-border)',
                     boxShadow: 'var(--card-shadow)',
                     color: 'var(--text-dim)',
-                    fontSize: 12,
+                    fontSize: 'var(--text-sm)',
                   }}
                 >
                   <RefreshCw size={14} style={{ animation: 'ocr-spin 0.8s linear infinite' }} aria-hidden />
@@ -4981,7 +4981,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
               }}
             >
             {layout === 'list' ? (
-              <table style={{ width: '100%', tableLayout: 'fixed', borderCollapse: 'collapse', fontSize: '13px' }}>
+              <table style={{ width: '100%', tableLayout: 'fixed', borderCollapse: 'collapse', fontSize: 'var(--text-md)' }}>
                 <colgroup>
                   <col style={{ width: '18%' }} />
                   <col />
@@ -5007,7 +5007,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                 <tbody>
                   {pageRows.map((row) => (
                     <tr key={row.key}>
-                      <td style={{ ...TD, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <td style={{ ...TD, fontWeight: 'var(--font-semibold)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         <NameCell row={row} onOpen={(r) => openDetail(subjectFromRow(r))} />
                       </td>
                       <td style={TD}>{descCell(row)}</td>
@@ -5050,7 +5050,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                       display: 'flex',
                       flexDirection: 'column',
                       gap: '6px',
-                      fontSize: '13px',
+                      fontSize: 'var(--text-md)',
                     }}
                   >
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -5064,7 +5064,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0, marginTop: 'auto' }}>
                       <span
                         style={{
-                          fontSize: '11.5px',
+                          fontSize: 'var(--text-sm)',
                           color: 'var(--text-dim)',
                           flex: '1 1 auto',
                           overflow: 'hidden',
@@ -5136,7 +5136,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
           closeLabel={t('combobox.close')}
           width={560}
           footerLeft={
-            <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
               {t('harness.selectedCount').replace('{n}', String(picker.picked.size))}
             </span>
           }
@@ -5190,7 +5190,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                       })
                     }
                   />
-                  <span style={{ fontSize: '12.5px', fontWeight: 500, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                  <span style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--font-medium)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
                     <HostIcon host={copy.host} size={14} />
                     {copy.host}
                   </span>
@@ -5199,12 +5199,12 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                   {copy.state === 'dirty' && (
                     /* The ONLY place drift is spoken: removing this copy would take the edits with
                        it, so the sentence belongs beside the checkbox that decides that. */
-                    <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('harness.stateDirty')}</span>
+                    <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('harness.stateDirty')}</span>
                   )}
                   {copy.external ? (
                     /* `path` is an identity token for a package-manager-owned copy, not a directory
                        to reveal — showing a folder icon would promise a path that does not exist. */
-                    <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('harness.extManaged')}</span>
+                    <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('harness.extManaged')}</span>
                   ) : (
                     <span
                       data-tip={copy.path}
@@ -5230,7 +5230,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                 row carries it). Everything else is spelled out by the dialog subtitle: a path goes to
                 the trash, a config member leaves its own file. */}
             {picker.row.removal && (
-              <span style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
+              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
                 {picker.row.removal.op === 'trash-path'
                   ? t('harness.removeNoteTrash')
                   : picker.row.removal.op === 'cli-remove'
@@ -5239,7 +5239,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
               </span>
             )}
             {picker.row.removal?.op === 'drop-entry' && picker.row.origin === 'runtime-store' && (
-              <span style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
+              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
                 {t('harness.removeNoteDecl').replace('{file}', picker.row.removal.file)}
               </span>
             )}
@@ -5307,20 +5307,20 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
             {/* Fast-path installs run with this sheet already open (see startInstall): without a
                 visible state the only busy signal would be the disabled footer button. */}
             {installBusy && (
-              <span style={{ fontSize: '11.5px', color: 'var(--text-dim)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                 {t('harness.installing')}
               </span>
             )}
             {/* Install Scope selector: Global vs Project */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 4 }}>
-              <label style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('harness.installScope')}</label>
+              <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('harness.installScope')}</label>
               <div style={{ display: 'flex', gap: 8 }}>
                 <button
                   type="button"
                   className="chip"
                   aria-pressed={sheetScope === 'global'}
                   onClick={() => setInstallScope('global')}
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '11.5px', padding: '4px 10px' }}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--text-sm)', padding: '4px 10px' }}
                 >
                   <Globe size={12} />
                   <span>{t('harness.scopeGlobal')}</span>
@@ -5334,28 +5334,28 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                     className="chip"
                     aria-pressed={sheetScope === 'project'}
                     onClick={() => setInstallScope('project')}
-                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '11.5px', padding: '4px 10px' }}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--text-sm)', padding: '4px 10px' }}
                   >
                     <FolderGit2 size={12} />
                     <span>{t('harness.scopeProject')}</span>
                   </button>
                 )}
               </div>
-              <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
                 {sheetScope === 'global' ? t('harness.scopeGlobalHint') : t('harness.scopeProjectHint')}
               </span>
 
               {sheetScope === 'project' && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
-                  <label style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('harness.targetProject')}</label>
+                  <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('harness.targetProject')}</label>
                   {projects.length === 0 ? (
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ fontSize: '11.5px', color: 'var(--accent-rose)' }}>{t('harness.noProjectsAvailable')}</span>
+                      <span style={{ fontSize: 'var(--text-sm)', color: 'var(--accent-rose)' }}>{t('harness.noProjectsAvailable')}</span>
                       <button
                         type="button"
                         className="btn btn-sm"
                         onClick={() => setProjectsDialogOpen(true)}
-                        style={{ fontSize: '11px', padding: '2px 8px' }}
+                        style={{ fontSize: 'var(--text-xs)', padding: '2px 8px' }}
                       >
                         {t('projects.add')}
                       </button>
@@ -5386,7 +5386,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
               )}
             </div>
 
-<label style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('harness.installHost')}</label>
+<label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('harness.installHost')}</label>
             {installMeta.installMode === 'single' ? (
               /* One runtime is the whole target set (an plugin is code against ONE plugin API), so
                  the harness is rendered as a fixed chip rather than a choice the backend refuses. */
@@ -5396,19 +5396,19 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                       <span
                         className="chip"
-                        style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '11.5px', padding: '3px 9px' }}
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 'var(--text-sm)', padding: '3px 9px' }}
                       >
                         {singleTarget.icon}
                         {singleTarget.label}
                       </span>
                     </div>
                     {installMeta.singleHintKey && (
-                      <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+                      <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
                         {t(installMeta.singleHintKey, { name: singleTarget.label })}
                       </span>
                     )}
                     {installTarget && takenOn(installTarget, singleTarget.value) && (
-                      <span style={{ fontSize: '11px', color: 'var(--accent-rose)' }}>{t('harness.targetInstalled')}</span>
+                      <span style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-rose)' }}>{t('harness.targetInstalled')}</span>
                     )}
                   </>
                 ) : (
@@ -5446,7 +5446,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                         display: 'inline-flex',
                         alignItems: 'center',
                         gap: 5,
-                        fontSize: '11.5px',
+                        fontSize: 'var(--text-sm)',
                         padding: '3px 9px',
                         ...(taken ? { opacity: 0.5, cursor: 'not-allowed' } : {}),
                       }}
@@ -5460,7 +5460,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
             )}
             {installTarget &&
               installHostOffers.some((o) => takenOn(installTarget, o.value)) && (
-                <span style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.5 }}>
+                <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-snug)' }}>
                   {t('harness.targetTakenHint')}
                 </span>
               )}
@@ -5496,10 +5496,10 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
           }
         >
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            <span style={{ fontSize: '12px', color: 'var(--text-dim)' }}>
+            <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
               {t('harness.multiSkillsHint').replace('{n}', String(skillPick.candidates.length))}
             </span>
-            <label style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('harness.multiSkillsPick')}</label>
+            <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('harness.multiSkillsPick')}</label>
             <Combobox
               value={skillPick.value}
               onChange={(v) => setSkillPick((p) => (p ? { ...p, value: v } : p))}
@@ -5643,14 +5643,14 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                             {!mcpEdit && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
-                  <label style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('harness.installScope')}</label>
+                  <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('harness.installScope')}</label>
                   <div style={{ display: 'flex', gap: 8 }}>
                     <button
                       type="button"
                       className="chip"
                       aria-pressed={mcpSheetScope === 'global'}
                       onClick={() => setInstallScope('global')}
-                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '11.5px', padding: '4px 10px' }}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--text-sm)', padding: '4px 10px' }}
                     >
                       <Globe size={12} />
                       <span>{t('harness.scopeGlobal')}</span>
@@ -5663,28 +5663,28 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                         className="chip"
                         aria-pressed={mcpSheetScope === 'project'}
                         onClick={() => setInstallScope('project')}
-                        style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '11.5px', padding: '4px 10px' }}
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--text-sm)', padding: '4px 10px' }}
                       >
                         <FolderGit2 size={12} />
                         <span>{t('harness.scopeProject')}</span>
                       </button>
                     )}
                   </div>
-                  <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+                  <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
                     {mcpSheetScope === 'global' ? t('harness.scopeGlobalHint') : t('harness.scopeProjectHint')}
                   </span>
 
                   {mcpSheetScope === 'project' && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
-                      <label style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('harness.targetProject')}</label>
+                      <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('harness.targetProject')}</label>
                       {projects.length === 0 ? (
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <span style={{ fontSize: '11.5px', color: 'var(--accent-rose)' }}>{t('harness.noProjectsAvailable')}</span>
+                          <span style={{ fontSize: 'var(--text-sm)', color: 'var(--accent-rose)' }}>{t('harness.noProjectsAvailable')}</span>
                           <button
                             type="button"
                             className="btn btn-sm"
                             onClick={() => setProjectsDialogOpen(true)}
-                            style={{ fontSize: '11px', padding: '2px 8px' }}
+                            style={{ fontSize: 'var(--text-xs)', padding: '2px 8px' }}
                           >
                             {t('projects.add')}
                           </button>
@@ -5879,7 +5879,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                         );
                       })}
                       {mcpDraft.headerRows.length === 0 && (
-                        <span style={{ fontSize: 11.5, color: 'var(--text-dim)' }}>{t('harness.mcpHeadersEmpty')}</span>
+                        <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>{t('harness.mcpHeadersEmpty')}</span>
                       )}
                       <div>
                         <button className="btn btn-sm" onClick={addMcpHeaderRow}>
@@ -5981,7 +5981,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', flex: '0 0 auto' }}>
             {detailDesc && (
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-                <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.6, flex: '1 1 auto' }}>
+                <p style={{ margin: 0, fontSize: 'var(--text-sm)', color: 'var(--text-muted)', lineHeight: 'var(--leading-normal)', flex: '1 1 auto' }}>
                   {detailDesc}
                 </p>
                 {/* The description travels the same translation path as the table cells; the README
@@ -6001,16 +6001,16 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
               </div>
             )}
             {detailRegistryText && (
-              <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{detailRegistryText}</span>
+              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{detailRegistryText}</span>
             )}
             {detailLoading && (
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-dim)' }}>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
                 <RefreshCw size={13} style={{ animation: 'ocr-spin 0.8s linear infinite' }} aria-hidden />
                 {t('harness.detailLoading')}
               </span>
             )}
             {!detailLoading && detailProblem && (
-              <span style={{ fontSize: 12, color: 'var(--accent-rose)' }}>
+              <span style={{ fontSize: 'var(--text-sm)', color: 'var(--accent-rose)' }}>
                 {detailProblem.reason && BROWSE_ERROR_KEY[detailProblem.reason]
                   ? t(BROWSE_ERROR_KEY[detailProblem.reason]!, detailProblem.reasonParams)
                   : detailProblem.message}
@@ -6026,10 +6026,10 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                   title={detailShowSrc ? t('harness.translated') : t('harness.showOriginal')}
                   aria-pressed={!detailShowSrc}
                   style={{
-                    fontSize: '9.5px',
+                    fontSize: 'var(--text-2xs)',
                     padding: '0 5px',
-                    letterSpacing: 0,
-                    lineHeight: '15px',
+                    letterSpacing: 'var(--tracking-normal)',
+                    lineHeight: 'var(--leading-15)',
                     cursor: 'pointer',
                     border: '1px solid var(--divider)',
                     background: 'transparent',
@@ -6039,12 +6039,12 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
                   {detailShowSrc ? t('harness.origBadge') : t('harness.mtBadge')}
                 </button>
                 {detailTr.truncated && (
-                  <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{t('harness.detailTruncated')}</span>
+                  <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('harness.detailTruncated')}</span>
                 )}
               </div>
             )}
             {!detailLoading && detailReadme && (
-              <div className="md-well" style={{ fontSize: '13px' }}>
+              <div className="md-well" style={{ fontSize: 'var(--text-md)' }}>
                 {/* README surface: raw HTML is PARSED and sanitized here (see lib/readme-markdown) —
                     a plugin page written in `<div align="center">` must not render as nothing. */}
                 <ReactMarkdown
@@ -6057,7 +6057,7 @@ export const HarnessPage: React.FC<{ kind: Kind }> = ({ kind }) => {
               </div>
             )}
             {!detailLoading && !detailReadme && !detailProblem && detailSubject.url && (
-              <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>{t('harness.detailNoReadme')}</span>
+              <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>{t('harness.detailNoReadme')}</span>
             )}
           </div>
         </Dialog>

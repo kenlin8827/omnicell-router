@@ -56,12 +56,12 @@ export const ProxyPage: React.FC = () => {
         </button>
       </div>
 
-      <div style={{ fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.6, marginBottom: '16px' }}>
+      <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginBottom: '16px' }}>
         {t('proxy.hint')}
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', maxWidth: '640px' }}>
-        <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
+        <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 'var(--text-md)', cursor: 'pointer' }}>
           <span>{t('proxy.enable')}</span>
           <Switch
             checked={proxy.enabled ?? false}
@@ -70,7 +70,7 @@ export const ProxyPage: React.FC = () => {
         </label>
 
         <div>
-          <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('proxy.url')}</label>
+          <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('proxy.url')}</label>
           <input
             type="text"
             placeholder="http://user:pass@127.0.0.1:7890"

@@ -847,7 +847,7 @@ export const ClientsPage: React.FC = () => {
       padding: '3px 10px',
       borderRadius: '999px',
       border: '1px solid var(--card-border)',
-      fontSize: '11px',
+      fontSize: 'var(--text-xs)',
       fontFamily: FONT_MONO,
     };
     return (
@@ -926,14 +926,14 @@ export const ClientsPage: React.FC = () => {
         </div>
 
         {actionNotice && (
-          <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'color-mix(in srgb, var(--accent-emerald) 15%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-emerald) 30%, transparent)', color: 'var(--accent-emerald)', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+          <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'color-mix(in srgb, var(--accent-emerald) 15%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-emerald) 30%, transparent)', color: 'var(--accent-emerald)', fontSize: 'var(--text-md)', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
             <Check size={16} />
             <span>{actionNotice}</span>
           </div>
         )}
 
         {activeTab === 'hook' && (
-          <p style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: '1.6', marginBottom: '12px' }}>
+          <p style={{ fontSize: 'var(--text-md)', color: 'var(--text-muted)', lineHeight: 'var(--leading-normal)', marginBottom: '12px' }}>
             {t('clients.desc', { base: `${gwBase}/v1` })}
           </p>
         )}
@@ -956,7 +956,7 @@ export const ClientsPage: React.FC = () => {
             service env pointing at the inbound forward proxy — without it the
             takeover is dead on arrival, so say so BEFORE the setup button. */}
         {activeTab === 'proxy' && (fpEnabled === false || fpRunning === false) && (
-          <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'color-mix(in srgb, var(--accent-amber) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-amber) 35%, transparent)', color: 'var(--accent-amber)', fontSize: '12.5px', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+          <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'color-mix(in srgb, var(--accent-amber) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-amber) 35%, transparent)', color: 'var(--accent-amber)', fontSize: 'var(--text-md)', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
             <X size={14} />
             <span style={{ flex: 1 }}>
               {t(fpEnabled === false ? 'clients.fpPrereqOff' : 'clients.fpPrereqDown')}
@@ -976,7 +976,7 @@ export const ClientsPage: React.FC = () => {
               value={filter}
               onChange={e => setFilter(e.target.value)}
               placeholder={t('clients.filterPh')}
-              style={{ width: '100%', boxSizing: 'border-box', padding: '7px 10px 7px 30px', borderRadius: '8px', border: '1px solid var(--card-border)', background: 'var(--well-bg)', color: 'var(--text-main)', fontSize: '12.5px' }}
+              style={{ width: '100%', boxSizing: 'border-box', padding: '7px 10px 7px 30px', borderRadius: '8px', border: '1px solid var(--card-border)', background: 'var(--well-bg)', color: 'var(--text-main)', fontSize: 'var(--text-md)' }}
             />
           </div>
         )}
@@ -1018,13 +1018,13 @@ export const ClientsPage: React.FC = () => {
                     color="var(--text-dim)"
                     style={{ flexShrink: 0, transition: 'transform 0.15s ease', transform: open ? 'rotate(180deg)' : 'none' }}
                   />
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', fontSize: '14px', fontWeight: 700 }}>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', fontSize: 'var(--text-base)', fontWeight: 'var(--font-bold)' }}>
                     <BrandIcon name={c.name === 'opencode-proxy' ? 'opencode' : c.name} size={18} />
                     {c.name === 'opencode-proxy' ? t('clients.nameOpencode') : c.displayName}
                   </span>
                   <span
                     title={c.configPath}
-                    style={{ flex: 1, fontFamily: FONT_MONO, fontSize: '11px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                    style={{ flex: 1, fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
                   >
                     {c.configPath}
                   </span>
@@ -1041,8 +1041,8 @@ export const ClientsPage: React.FC = () => {
                       title={c.version.meetsMin ? t('clients.versionOk') : t('clients.versionBelow', { min: c.version.min || '?' })}
                       style={
                         c.version.meetsMin
-                          ? { background: 'var(--chip-bg)', color: 'var(--text-dim)', fontFamily: FONT_MONO, fontSize: '10px' }
-                          : { background: 'var(--warning-bg, rgba(234,179,8,.15))', color: 'var(--warning, #eab308)', fontFamily: FONT_MONO, fontSize: '10px' }
+                          ? { background: 'var(--chip-bg)', color: 'var(--text-dim)', fontFamily: FONT_MONO, fontSize: 'var(--text-2xs)' }
+                          : { background: 'var(--warning-bg, rgba(234,179,8,.15))', color: 'var(--warning, #eab308)', fontFamily: FONT_MONO, fontSize: 'var(--text-2xs)' }
                       }
                     >
                       v{c.version.current}
@@ -1053,14 +1053,14 @@ export const ClientsPage: React.FC = () => {
 
                 {open && (
                   <div style={{ padding: '16px 18px', borderTop: '1px solid var(--divider)', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                    <div style={{ fontSize: '12px', color: 'var(--text-dim)' }}>
+                    <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
                       {t('clients.configPath')}
-                      <div style={{ fontFamily: FONT_MONO, fontSize: '11px', color: 'var(--text-muted)', wordBreak: 'break-all', marginTop: '3px' }}>
+                      <div style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-muted)', wordBreak: 'break-all', marginTop: '3px' }}>
                         {c.configPath}
                       </div>
                     </div>
 
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '11px', color: 'var(--text-dim)' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                         {c.exists ? <Check size={12} color="var(--accent-emerald)" /> : <X size={12} color="var(--text-dim)" />}
                         <span>{t('clients.fileExists')} {c.exists ? t('clients.yes') : t('clients.no')}</span>
@@ -1072,7 +1072,7 @@ export const ClientsPage: React.FC = () => {
                     </div>
 
                     {c.name === 'opencode-proxy' && (
-                      <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, borderLeft: '2px solid var(--accent)', paddingLeft: '10px' }}>
+                      <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', borderLeft: '2px solid var(--accent)', paddingLeft: '10px' }}>
                         {t('clients.proxyHint')}
                       </div>
                     )}
@@ -1080,7 +1080,7 @@ export const ClientsPage: React.FC = () => {
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '12px' }}>
                 {c.name !== 'opencode-proxy' && (
                   <div style={{ gridColumn: '1 / -1' }}>
-                    <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '6px' }}>{t('clients.apiKey')}</div>
+                    <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '6px' }}>{t('clients.apiKey')}</div>
                     <Combobox
                       value={apiKeySel[c.name] || ''}
                       onChange={v => setApiKeySel(prev => ({ ...prev, [c.name]: v }))}
@@ -1091,7 +1091,7 @@ export const ClientsPage: React.FC = () => {
                 )}
                       {c.name === 'claude' && (
                   <div>
-                    <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '6px' }}>{t('clients.contextWindow')}</div>
+                    <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '6px' }}>{t('clients.contextWindow')}</div>
                     <Combobox
                       value={ctxSel[c.name] || '262144'}
                       onChange={v => setCtxSel(prev => ({ ...prev, [c.name]: v }))}
@@ -1101,7 +1101,7 @@ export const ClientsPage: React.FC = () => {
                 )}
                 {clientSlots(c).filter(s => !isRoleTableClient(c.name) || s.key === 'main').map(s => (
                         <div key={s.key}>
-                          <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '6px' }}>
+                          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '6px' }}>
                             {slotLabels[s.key] || s.key}
                           </div>
                           <Combobox
@@ -1131,7 +1131,7 @@ export const ClientsPage: React.FC = () => {
                         return (
                         <div style={{ gridColumn: '1 / -1' }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                            <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('clients.models')} <InfoTip text={t('clients.modelsInfo')} /></div>
+                            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('clients.models')} <InfoTip text={t('clients.modelsInfo')} /></div>
                             <div style={{ display: 'inline-flex', gap: '4px' }}>
                               {(['none', 'custom', 'follow'] as const).map(m => (
                                 <button
@@ -1151,22 +1151,22 @@ export const ClientsPage: React.FC = () => {
                           {follow ? (
                             <>
                               {!fk && (
-                                <div style={{ fontSize: '11px', color: 'var(--accent-amber)' }}>{t('clients.followNoKey')}</div>
+                                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber)' }}>{t('clients.followNoKey')}</div>
                               )}
                               {!!fk && !followLoaded && (
-                                <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('clients.followLoading')}</div>
+                                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('clients.followLoading')}</div>
                               )}
                               {followLoaded && (
                                 <>
                                   {renderModelChips(c.name, followList)}
-                                  <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
+                                  <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
                                     {t('clients.followCount', { n: followList.length })} · {t('clients.followSnapshot')}
                                   </div>
                                 </>
                               )}
                             </>
                           ) : mode === 'none' ? (
-                            <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('clients.modelModeNoneHint')}</div>
+                            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('clients.modelModeNoneHint')}</div>
                           ) : (
                             <>
                               {(() => {
@@ -1182,7 +1182,7 @@ export const ClientsPage: React.FC = () => {
                                   <button
                                     type="button"
                                     className="btn btn-sm"
-                                    style={{ fontSize: '11px' }}
+                                    style={{ fontSize: 'var(--text-xs)' }}
                                     onClick={() => clearExtraModels(c.name)}
                                     disabled={loading}
                                     title={t('clients.modelsClearHint')}
@@ -1203,7 +1203,7 @@ export const ClientsPage: React.FC = () => {
                             </>
                           )}
                           {isRoleTableClient(c.name) && (
-                            <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '8px' }}>
+                            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginTop: '8px' }}>
                               {t(c.name === 'pi' ? 'clients.piMetaHint' : 'clients.ompMetaHint')}
                             </div>
                           )}
@@ -1224,7 +1224,7 @@ export const ClientsPage: React.FC = () => {
                         <button
                           type="button"
                           className="btn btn-sm"
-                          style={{ flexShrink: 0, fontSize: '11px' }}
+                          style={{ flexShrink: 0, fontSize: 'var(--text-xs)' }}
                           onClick={() => openSmartAssign(c)}
                           disabled={loading}
                           title={t('clients.smartBtn')}
@@ -1245,7 +1245,7 @@ export const ClientsPage: React.FC = () => {
                       onToggle={v => setLinksOn(prev => ({ ...prev, [c.name]: v }))}
                       linkedCount={Object.keys(linkTagsOf(bindSel[c.name])).length}
                     />
-                    <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginTop: '8px' }}>
+                    <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginTop: '8px' }}>
                       {t(c.name === 'pi' ? 'clients.piMetaHint' : 'clients.ompMetaHint')}
                     </div>
                   </div>
@@ -1267,7 +1267,7 @@ export const ClientsPage: React.FC = () => {
                         <button
                           type="button"
                           className="btn btn-sm"
-                          style={{ flexShrink: 0, fontSize: '11px' }}
+                          style={{ flexShrink: 0, fontSize: 'var(--text-xs)' }}
                           onClick={() => openSmartAssign(c)}
                           disabled={loading}
                           title={t('clients.smartBtn')}
@@ -1325,11 +1325,11 @@ export const ClientsPage: React.FC = () => {
               adapter, no status, no setup buttons. */}
           {activeTab === 'manual' && (
           <div style={{ padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: '14px', background: 'var(--bg-elev)', border: '1px solid var(--card-border)', borderRadius: '10px' }}>
-            <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.7 }}>
+            <p style={{ margin: 0, fontSize: 'var(--text-sm)', color: 'var(--text-dim)', lineHeight: 'var(--leading-relaxed)' }}>
               {t('clients.otherIntro')}
             </p>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.7 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: 'var(--text-sm)', color: 'var(--text-muted)', lineHeight: 'var(--leading-relaxed)' }}>
               <div>{t('clients.otherStep1')}</div>
               <div>{t('clients.otherStep2')}</div>
             </div>
@@ -1340,9 +1340,9 @@ export const ClientsPage: React.FC = () => {
                 { proto: t('clients.otherProtoAnthropic'), base: gwBase, endpoints: 'POST /v1/messages', auth: t('clients.otherAnthropicAuth') },
               ] as const).map(x => (
                 <div key={x.proto} style={{ background: 'var(--well-bg)', border: '1px solid var(--card-border)', borderRadius: '8px', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{x.proto}</div>
+                  <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{x.proto}</div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <code style={{ fontFamily: FONT_MONO, fontSize: '12px', color: 'var(--text-main)', wordBreak: 'break-all', flex: 1 }}>
+                    <code style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-sm)', color: 'var(--text-main)', wordBreak: 'break-all', flex: 1 }}>
                       {x.base}
                     </code>
                     <button
@@ -1358,16 +1358,16 @@ export const ClientsPage: React.FC = () => {
                       <Copy size={11} />
                     </button>
                   </div>
-                  <div style={{ fontFamily: FONT_MONO, fontSize: '11px', color: 'var(--text-dim)' }}>
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
                     {x.endpoints}
                   </div>
-                  <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{x.auth}</div>
+                  <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{x.auth}</div>
                 </div>
               ))}
             </div>
 
             <div style={{ borderTop: '1px solid var(--divider)', paddingTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <div style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.7 }}>
+              <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', lineHeight: 'var(--leading-relaxed)' }}>
                 {t('clients.otherStep3')}
               </div>
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -1376,7 +1376,7 @@ export const ClientsPage: React.FC = () => {
                   value={manualKey}
                   onChange={e => setManualKey(e.target.value)}
                   placeholder={t('clients.manualKeyPh')}
-                  style={{ flex: '1 1 220px', minWidth: 0, padding: '6px 10px', borderRadius: '8px', border: '1px solid var(--card-border)', background: 'var(--well-bg)', color: 'var(--text-main)', fontSize: '12px', fontFamily: FONT_MONO }}
+                  style={{ flex: '1 1 220px', minWidth: 0, padding: '6px 10px', borderRadius: '8px', border: '1px solid var(--card-border)', background: 'var(--well-bg)', color: 'var(--text-main)', fontSize: 'var(--text-sm)', fontFamily: FONT_MONO }}
                 />
                 <button
                   className="btn btn-primary btn-sm"
@@ -1403,20 +1403,20 @@ export const ClientsPage: React.FC = () => {
                 </button>
               </div>
               {manualTest?.state === 'ok' && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--accent-emerald)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: 'var(--text-sm)', color: 'var(--accent-emerald)' }}>
                   <Check size={14} />
                   <span>{t('clients.manualTestOk', { n: manualTest.detail || '0' })}</span>
                 </div>
               )}
               {manualTest?.state === 'fail' && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--accent-amber)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: 'var(--text-sm)', color: 'var(--accent-amber)' }}>
                   <X size={14} />
                   <span>{t('clients.manualTestFail', { detail: manualTest.detail || '' })}</span>
                 </div>
               )}
             </div>
 
-            <div style={{ fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.7 }}>
+            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', lineHeight: 'var(--leading-relaxed)' }}>
               {t('clients.otherMore')}{' '}
               <Link to="/api-keys" style={{ color: 'var(--accent)', textDecoration: 'none' }}>
                 {t('nav.apiKeys')} →

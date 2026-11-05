@@ -123,7 +123,7 @@ export const DurationInput: React.FC<DurationInputProps> = ({ value, onChange, a
         style={{
           width: 72,
           padding: '6px 4px',
-          fontSize: 13,
+          fontSize: 'var(--text-md)',
           textAlign: 'center',
           border: 'none',
           background: 'transparent',
@@ -137,7 +137,7 @@ export const DurationInput: React.FC<DurationInputProps> = ({ value, onChange, a
         style={{
           width: 88,
           padding: '6px 8px',
-          fontSize: 12,
+          fontSize: 'var(--text-sm)',
           border: 'none',
           background: 'transparent',
           borderRadius: 0,

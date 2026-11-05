@@ -100,7 +100,7 @@ export const Pagination: React.FC<PaginationProps> = ({
     minWidth: 32,
     height: 32,
     padding: '0 10px',
-    fontSize: 12,
+    fontSize: 'var(--text-sm)',
     justifyContent: 'center',
     fontFamily: FONT_MONO,
   };
@@ -116,7 +116,7 @@ export const Pagination: React.FC<PaginationProps> = ({
       }}
     >
       {showSummary && (
-        <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>
+        <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
           {t(totalAtLeast ? 'pagination.summaryAtLeast' : 'pagination.summary', {
             from: Math.min((page - 1) * pageSize + 1, total),
             to: Math.min(page * pageSize, total),
@@ -128,7 +128,7 @@ export const Pagination: React.FC<PaginationProps> = ({
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto' }}>
           {pageSizeOptions && onPageSizeChange && (
             <Combobox
-              style={{ fontSize: 12, width: 118, height: 32, padding: '0 10px', cursor: 'pointer', marginRight: 6 }}
+              style={{ fontSize: 'var(--text-sm)', width: 118, height: 32, padding: '0 10px', cursor: 'pointer', marginRight: 6 }}
               value={String(pageSize)}
               onChange={(v) => onPageSizeChange(Number(v))}
               options={pageSizeOptions.map((n) => ({
@@ -158,7 +158,7 @@ export const Pagination: React.FC<PaginationProps> = ({
           ) : (
             pageItems(page, totalPages).map((item, idx) =>
               item === '…' ? (
-                <span key={`gap-${idx}`} style={{ fontSize: 12, color: 'var(--text-dim)', padding: '0 2px' }}>
+                <span key={`gap-${idx}`} style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', padding: '0 2px' }}>
                   …
                 </span>
               ) : (

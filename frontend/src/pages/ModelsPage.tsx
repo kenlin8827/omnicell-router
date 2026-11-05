@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Cpu, RefreshCw, Search, Brain, Wrench, Eye, EyeOff, AudioLines, Video, Thermometer, Pencil, Zap, Loader2, Lock, LockOpen, Copy } from 'lucide-react';
+import { RefreshCw, Search, Brain, Wrench, Eye, EyeOff, AudioLines, Video, Thermometer, Pencil, Zap, Loader2, Lock, LockOpen, Copy } from 'lucide-react';
 import { opencodeApi, type OpenCodeModelView } from '../lib/api';
 import { useModelTest } from '../lib/useModelTest';
 import { useI18n } from '../i18n/I18nContext';
@@ -56,8 +56,8 @@ const hasCapability = (m: OpenCodeModelView): boolean =>
 const badgeStyle = (color: string, _bg: string): React.CSSProperties => ({
   background: 'transparent',
   color,
-  fontSize: '10px',
-  fontWeight: 600,
+  fontSize: 'var(--text-2xs)',
+  fontWeight: 'var(--font-semibold)',
   padding: '2px 8px',
   borderRadius: '99px',
   border: `1px solid color-mix(in srgb, ${color} 45%, transparent)`,
@@ -69,11 +69,11 @@ const badgeStyle = (color: string, _bg: string): React.CSSProperties => ({
 /** Header-cell metrics handed to ScrollTable — the head row itself lives outside the scroll body. */
 const thStyle: React.CSSProperties = {
   padding: '10px 14px',
-  fontSize: '11px',
-  fontWeight: 700,
+  fontSize: 'var(--text-xs)',
+  fontWeight: 'var(--font-bold)',
   color: 'var(--text-dim)',
   textTransform: 'uppercase',
-  letterSpacing: '0.04em',
+  letterSpacing: 'var(--tracking-wide)',
   whiteSpace: 'nowrap',
 };
 
@@ -227,37 +227,40 @@ export const ModelsPage: React.FC = () => {
   const pagedModels = filtered.slice((page - 1) * pageSize, page * pageSize);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', height: '100%' }}>
-      <div className="card" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-        <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-          <Cpu size={18} color="var(--accent)" />
-          <span style={{ fontWeight: 700, fontSize: 15 }}>{t('models.title')}</span>
+    <div className="page-stack">
+      <section className="page-intro">
+        <div className="page-intro-copy">
+          <h1>{t('models.title')}</h1>
+          <p>{t('models.desc')}{source && <span> · {t('models.source', { source })}</span>}</p>
         </div>
-        <p style={{ color: 'var(--text-dim)', fontSize: 12, margin: '0 0 16px' }}>
-          {t('models.desc')}
-          {source && <span> · {t('models.source', { source })}</span>}
-        </p>
-
+        <div className="page-intro-actions">
+          <button className="btn" onClick={load} disabled={loading}>
+            <RefreshCw size={14} className={loading ? 'is-spinning' : undefined} />
+            <span>{t('models.refresh')}</span>
+          </button>
+        </div>
+      </section>
+      <div className="card table-surface" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
         {error && (
-          <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'color-mix(in srgb, var(--accent-rose) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-rose) 30%, transparent)', color: 'var(--accent-rose)', fontSize: '13px', marginBottom: '16px' }}>
+          <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'color-mix(in srgb, var(--accent-rose) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-rose) 30%, transparent)', color: 'var(--accent-rose)', fontSize: 'var(--text-md)', marginBottom: '16px' }}>
             {error}
           </div>
         )}
 
         {/* ---- Toolbar ---- */}
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
+        <div className="filter-toolbar">
           <div style={{ position: 'relative', flex: 1, minWidth: 200 }}>
             <Search size={13} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)', pointerEvents: 'none' }} />
             <input
               className="input"
-              style={{ fontSize: 12, paddingLeft: 30, width: '100%' }}
+              style={{ fontSize: 'var(--text-sm)', paddingLeft: 30, width: '100%' }}
               placeholder={t('models.search')}
               value={query}
               onChange={(e) => { setQuery(e.target.value); setPage(1); }}
             />
           </div>
           <Combobox
-            style={{ fontSize: 12, width: 220, cursor: 'pointer' }}
+            style={{ fontSize: 'var(--text-sm)', width: 220, cursor: 'pointer' }}
             value={provider}
             onChange={selectProvider}
             clearable
@@ -271,7 +274,7 @@ export const ModelsPage: React.FC = () => {
             ]}
           />
           <Combobox
-            style={{ fontSize: 12, width: 'auto', cursor: 'pointer' }}
+            style={{ fontSize: 'var(--text-sm)', width: 'auto', cursor: 'pointer' }}
             value={sort}
             onChange={(v) => { setSort(v as SortKey); setPage(1); }}
             options={[
@@ -305,10 +308,6 @@ export const ModelsPage: React.FC = () => {
             title={t('catalogPage.ocrOnlyHiddenHint')}
             onToggle={() => { setOnlyHidden((v) => !v); setPage(1); }}
           />
-          <button className="btn btn-sm" onClick={load} disabled={loading}>
-            <RefreshCw size={12} />
-            <span>{t('models.refresh')}</span>
-          </button>
         </div>
 
         {/* ---- Table ---- */}
@@ -365,12 +364,12 @@ export const ModelsPage: React.FC = () => {
                       return (
                         <>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                            <span style={{ fontWeight: 600, wordBreak: 'break-all' }}>{displayName}</span>
+                            <span style={{ fontWeight: 'var(--font-semibold)', wordBreak: 'break-all' }}>{displayName}</span>
                             {res && (
                               <span
                                 style={{
                                   fontFamily: mono,
-                                  fontSize: 10,
+                                  fontSize: 'var(--text-2xs)',
                                   whiteSpace: 'nowrap',
                                   color: res.ok ? 'var(--accent-emerald)' : 'var(--accent-rose)',
                                 }}
@@ -435,7 +434,7 @@ export const ModelsPage: React.FC = () => {
                             )}
                           </div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 2, minWidth: 0 }}>
-                            <span style={{ fontFamily: mono, fontSize: 11, color: 'var(--text-dim)', wordBreak: 'break-all' }}>{m.providerId}/{m.id}</span>
+                            <span style={{ fontFamily: mono, fontSize: 'var(--text-xs)', color: 'var(--text-dim)', wordBreak: 'break-all' }}>{m.providerId}/{m.id}</span>
                             {copyBtn}
                           </div>
                         </>
@@ -445,7 +444,7 @@ export const ModelsPage: React.FC = () => {
                   <td style={{ ...tdStyle, fontFamily: FONT_MONO, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
                     {m.providerId}
                     {!m.connected && (
-                      <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--text-dim)' }} title={t('models.notConnected')}>○</span>
+                      <span style={{ marginLeft: 6, fontSize: 'var(--text-2xs)', color: 'var(--text-dim)' }} title={t('models.notConnected')}>○</span>
                     )}
                   </td>
                   <td style={{ ...tdStyle, fontFamily: FONT_MONO, whiteSpace: 'nowrap' }}>{fmtContext(m.limit?.context)}</td>
@@ -477,13 +476,13 @@ export const ModelsPage: React.FC = () => {
                 <tr>
                   <td colSpan={7} style={{ padding: 24, textAlign: 'center', color: 'var(--text-dim)' }}>
                     {t('models.empty')}
-                    {models.length > 0 && <div style={{ marginTop: 6, fontSize: 11 }}>{t('models.emptyFiltered')}</div>}
+                    {models.length > 0 && <div style={{ marginTop: 6, fontSize: 'var(--text-xs)' }}>{t('models.emptyFiltered')}</div>}
                     {/* Empty defs plane: the page is maintained-only, so "no rows"
                         means nothing was pulled yet — send the operator to the
                         page where pulling happens instead of a dead end. */}
                     {models.length === 0 && (
                       <div style={{ marginTop: 10 }}>
-                        <div style={{ fontSize: 11, marginBottom: 8 }}>{t('models.emptyMaintainHint')}</div>
+                        <div style={{ fontSize: 'var(--text-xs)', marginBottom: 8 }}>{t('models.emptyMaintainHint')}</div>
                         <button className="btn btn-sm" onClick={() => navigate('/providers')}>
                           {t('models.emptyMaintainAction')}
                         </button>

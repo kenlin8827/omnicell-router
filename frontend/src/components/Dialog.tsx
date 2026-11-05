@@ -123,7 +123,7 @@ export const Dialog: React.FC<DialogProps> = ({
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: 'var(--text-main)' }}>{title}</h3>
+          <h3 style={{ margin: 0, fontSize: 'var(--text-base)', fontWeight: 'var(--font-bold)', color: 'var(--text-main)' }}>{title}</h3>
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
             {headerActions}
             <button
@@ -139,7 +139,7 @@ export const Dialog: React.FC<DialogProps> = ({
           </div>
         </div>
         {subtitle ? (
-          <div style={{ fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.6, display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', display: 'flex', flexDirection: 'column', gap: 4 }}>
             {subtitle}
           </div>
         ) : null}

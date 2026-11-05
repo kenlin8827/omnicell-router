@@ -45,7 +45,7 @@ import { FONT_MONO } from '../lib/fonts';
  * rendered here.
  */
 
-const MONO: React.CSSProperties = { fontFamily: FONT_MONO, fontSize: '11.5px' };
+const MONO: React.CSSProperties = { fontFamily: FONT_MONO, fontSize: 'var(--text-sm)' };
 
 /** Pretty-print a captured probe body: parsed JSON → indented, text → verbatim. */
 function prettyBody(b: unknown): string {
@@ -99,8 +99,8 @@ const BadgePill: React.FC<{ quota: CredentialQuotaView; t: TFn }> = ({ quota, t 
   return (
     <span
       style={{
-        fontSize: '10.5px',
-        fontWeight: 600,
+        fontSize: 'var(--text-xs)',
+        fontWeight: 'var(--font-semibold)',
         padding: '2px 8px',
         borderRadius: '99px',
         border: `1px solid color-mix(in srgb, ${color} 45%, transparent)`,
@@ -165,10 +165,10 @@ const WindowMeter: React.FC<{ w: QuotaWindow; t: (k: string, p?: Record<string, 
   return (
     <div style={{ marginTop: '10px', minWidth: 0 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '10px', minWidth: 0 }}>
-        <span style={{ fontSize: '11px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }} title={caption}>
+        <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }} title={caption}>
           {caption}
         </span>
-        <span style={{ ...MONO, fontWeight: 700, color: valueColor, flexShrink: 0 }}>{value}</span>
+        <span style={{ ...MONO, fontWeight: 'var(--font-bold)', color: valueColor, flexShrink: 0 }}>{value}</span>
       </div>
       {pct !== null && !isBalance && !noCap && (
         <div style={{ marginTop: '5px', height: '6px', borderRadius: '3px', background: 'var(--chip-bg)', overflow: 'hidden' }}>
@@ -302,8 +302,8 @@ export const QuotaPage: React.FC = () => {
       {/* ── Page header: identity + refresh ───────────────────────────────── */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
         <Wallet size={20} color="var(--accent)" style={{ flexShrink: 0 }} />
-        <span style={{ fontSize: '16px', fontWeight: 700, whiteSpace: 'nowrap' }}>{t('quotaPage.pageTitle')}</span>
-        <span style={{ fontSize: '11.5px', color: 'var(--text-dim)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <span style={{ fontSize: 'var(--text-xl)', fontWeight: 'var(--font-bold)', whiteSpace: 'nowrap' }}>{t('quotaPage.pageTitle')}</span>
+        <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {t('quotaPage.pageSubtitle')}
         </span>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px', alignItems: 'center', flexShrink: 0 }}>
@@ -314,7 +314,7 @@ export const QuotaPage: React.FC = () => {
       </div>
 
       {data && !data.enabled && (
-        <div style={{ padding: '6px 10px', fontSize: '12px', borderRadius: '8px', background: 'color-mix(in srgb, var(--accent-amber) 10%, transparent)', color: 'var(--accent-amber)' }}>
+        <div style={{ padding: '6px 10px', fontSize: 'var(--text-sm)', borderRadius: '8px', background: 'color-mix(in srgb, var(--accent-amber) 10%, transparent)', color: 'var(--accent-amber)' }}>
           {t('quotaPage.disabledBanner')}
         </div>
       )}
@@ -338,7 +338,7 @@ export const QuotaPage: React.FC = () => {
           <Search size={13} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)' }} />
           <input
             className="input"
-            style={{ width: '100%', fontSize: '12px', paddingLeft: '30px' }}
+            style={{ width: '100%', fontSize: 'var(--text-sm)', paddingLeft: '30px' }}
             placeholder={t('quotaPage.searchPlaceholder')}
             value={q}
             onChange={(e) => setQ(e.target.value)}
@@ -352,12 +352,12 @@ export const QuotaPage: React.FC = () => {
               key={f}
               style={{
                 padding: '4px 12px',
-                fontSize: '12px',
+                fontSize: 'var(--text-sm)',
                 border: 'none',
                 cursor: 'pointer',
                 background: statusFilter === f ? 'var(--accent)' : 'transparent',
                 color: statusFilter === f ? 'var(--bg)' : 'var(--text-dim)',
-                fontWeight: statusFilter === f ? 700 : 400,
+                fontWeight: statusFilter === f ? 'var(--font-bold)' : 'var(--font-regular)',
               }}
               onClick={() => setStatusFilter(f)}
             >
@@ -371,10 +371,10 @@ export const QuotaPage: React.FC = () => {
       {/* ── Connected pairs directory — the single surface ────────────────── */}
       <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
         {error && (
-          <div style={{ padding: '10px 14px', fontSize: '12px', color: 'var(--accent-rose)' }}>{error}</div>
+          <div style={{ padding: '10px 14px', fontSize: 'var(--text-sm)', color: 'var(--accent-rose)' }}>{error}</div>
         )}
         {filteredPairs.length === 0 ? (
-          <div style={{ padding: '24px 14px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '12.5px' }}>
+          <div style={{ padding: '24px 14px', textAlign: 'center', color: 'var(--text-dim)', fontSize: 'var(--text-md)' }}>
             {t('quotaPage.pairsEmpty')}
           </div>
         ) : (
@@ -391,21 +391,21 @@ export const QuotaPage: React.FC = () => {
                   <div style={{ display: 'flex', alignItems: 'center', gap: '9px', minWidth: 0 }}>
                     <ProviderLogo providerId={row.providerId} logoMap={logoMap} size={30} />
                     <div style={{ minWidth: 0, flex: 1 }}>
-                      <div style={{ fontSize: '13px', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.providerId}>
+                      <div style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--font-bold)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.providerId}>
                         {row.providerId}
                       </div>
-                      <div style={{ ...MONO, fontSize: '11px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${pairName(row)} · #${row.keyHashPrefix}`}>
+                      <div style={{ ...MONO, fontSize: 'var(--text-xs)', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${pairName(row)} · #${row.keyHashPrefix}`}>
                         {pairName(row)}
                       </div>
                     </div>
                     <div style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-end', gap: '3px', flexShrink: 0 }}>
                       {!row.quota ? (
-                        <span style={{ color: 'var(--text-dim)', fontSize: '11.5px' }}>—</span>
+                        <span style={{ color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>—</span>
                       ) : (
                         <BadgePill quota={row.quota} t={t} />
                       )}
                       {row.quota?.verifiedAt && (
-                        <span style={{ ...MONO, fontSize: '10.5px', color: 'var(--text-dim)' }}>
+                        <span style={{ ...MONO, fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
                           {t('quotaPage.agoLine', { when: fmtDur(Date.now() - row.quota.verifiedAt) })}
                         </span>
                       )}
@@ -424,7 +424,7 @@ export const QuotaPage: React.FC = () => {
                       <div
                         style={{
                           marginTop: '10px',
-                          fontSize: '11.5px',
+                          fontSize: 'var(--text-sm)',
                           color: failed ? 'var(--accent-rose)' : 'var(--text-dim)',
                           wordBreak: 'break-word',
                         }}
@@ -447,7 +447,7 @@ export const QuotaPage: React.FC = () => {
                       minWidth: 0,
                     }}
                   >
-                    <span style={{ ...MONO, fontSize: '10.5px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }} title={metaTitle || undefined}>
+                    <span style={{ ...MONO, fontSize: 'var(--text-xs)', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }} title={metaTitle || undefined}>
                       {meta}
                     </span>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}>
@@ -527,7 +527,7 @@ export const QuotaPage: React.FC = () => {
           {lastProbe.http ? (
             <>
               <div style={{ display: 'flex', gap: '10px', alignItems: 'baseline', marginBottom: 6 }}>
-                <span style={{ ...MONO, fontWeight: 700, color: lastProbe.http.ok ? 'var(--accent)' : 'var(--accent-rose)' }}>
+                <span style={{ ...MONO, fontWeight: 'var(--font-bold)', color: lastProbe.http.ok ? 'var(--accent)' : 'var(--accent-rose)' }}>
                   {lastProbe.http.status != null ? `HTTP ${lastProbe.http.status}` : t('quotaPage.lastProbeNetwork')}
                 </span>
                 {lastProbe.http.durationMs !== undefined && (
@@ -540,8 +540,8 @@ export const QuotaPage: React.FC = () => {
                   margin: 0,
                   maxHeight: 420,
                   overflow: 'auto',
-                  fontSize: 12,
-                  lineHeight: 1.55,
+                  fontSize: 'var(--text-sm)',
+                  lineHeight: 'var(--leading-normal)',
                   fontFamily: FONT_MONO,
                   color: 'var(--text-main)',
                   whiteSpace: 'pre-wrap',
@@ -556,7 +556,7 @@ export const QuotaPage: React.FC = () => {
               </pre>
             </>
           ) : (
-            <div style={{ fontSize: 12.5, color: 'var(--text-dim)', padding: '12px 0' }}>{t('quotaPage.lastProbeEmpty')}</div>
+            <div style={{ fontSize: 'var(--text-md)', color: 'var(--text-dim)', padding: '12px 0' }}>{t('quotaPage.lastProbeEmpty')}</div>
           )}
         </Dialog>
       )}

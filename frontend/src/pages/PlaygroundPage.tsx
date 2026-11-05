@@ -177,7 +177,7 @@ const CAN_MASK_TEXT =
   typeof CSS !== 'undefined' && typeof CSS.supports === 'function' && CSS.supports('-webkit-text-security', 'disc');
 
 const labelStyle: React.CSSProperties = {
-  fontSize: 11,
+  fontSize: 'var(--text-xs)',
   color: 'var(--text-dim)',
 };
 
@@ -226,7 +226,7 @@ const JsonBlock: React.FC<{
         marginBottom: 2,
       }}
     >
-      {!bare && <span style={{ fontSize: 10.5, color: 'var(--text-dim)' }}>{label}</span>}
+      {!bare && <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{label}</span>}
       <button
         type="button"
         className="btn btn-sm"
@@ -315,8 +315,8 @@ const JsonBlock: React.FC<{
 };
 
 const chipStyle: React.CSSProperties = {
-  fontSize: 10.5,
-  lineHeight: 1.5,
+  fontSize: 'var(--text-xs)',
+  lineHeight: 'var(--leading-snug)',
   padding: '0 6px',
   borderRadius: 999,
   border: '1px solid var(--card-border)',
@@ -333,7 +333,7 @@ const jsonWell: React.CSSProperties = {
   border: '1px solid var(--card-border)',
   borderRadius: 6,
   fontFamily: FONT_MONO,
-  fontSize: 10.5,
+  fontSize: 'var(--text-xs)',
   whiteSpace: 'pre-wrap',
   color: 'var(--text-dim)',
 };
@@ -353,7 +353,7 @@ const TurnBubble: React.FC<{ turn: ChatTurn }> = ({ turn }) => {
   const facts = turn.facts;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: isUser ? 'flex-end' : 'flex-start' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: 'var(--text-dim)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
         {isUser ? <User size={12} /> : <Bot size={12} />}
         <span>{isUser ? t('chat.you') : t('chat.assistant')}</span>
         {turn.pending && <Loader2 size={11} style={{ animation: 'ocr-spin 0.8s linear infinite' }} />}
@@ -367,15 +367,15 @@ const TurnBubble: React.FC<{ turn: ChatTurn }> = ({ turn }) => {
           borderRadius: 10,
           background: isUser ? 'var(--accent-bg)' : 'var(--well-bg)',
           border: `1px solid ${isUser ? 'color-mix(in srgb, var(--accent) 35%, transparent)' : 'var(--card-border)'}`,
-          fontSize: 12.5,
-          lineHeight: 1.65,
+          fontSize: 'var(--text-md)',
+          lineHeight: 'var(--leading-relaxed)',
           color: 'var(--text-main)',
           wordBreak: 'break-word',
         }}
       >
         {turn.reasoning && (
           <details style={{ marginBottom: turn.content ? 8 : 0 }}>
-            <summary style={{ cursor: 'pointer', fontSize: 11, color: 'var(--text-dim)' }}>
+            <summary style={{ cursor: 'pointer', fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
               {t('chat.thinkingLabel')}
             </summary>
             <pre
@@ -386,7 +386,7 @@ const TurnBubble: React.FC<{ turn: ChatTurn }> = ({ turn }) => {
                 border: '1px solid var(--card-border)',
                 borderRadius: 6,
                 fontFamily: FONT_MONO,
-                fontSize: 11,
+                fontSize: 'var(--text-xs)',
                 whiteSpace: 'pre-wrap',
                 color: 'var(--text-dim)',
               }}
@@ -405,7 +405,7 @@ const TurnBubble: React.FC<{ turn: ChatTurn }> = ({ turn }) => {
             </ReactMarkdown>
           </div>
         ) : turn.pending ? (
-          <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>{t('chat.pending')}</span>
+          <span style={{ color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>{t('chat.pending')}</span>
         ) : null}
 
         {turn.error && (
@@ -418,7 +418,7 @@ const TurnBubble: React.FC<{ turn: ChatTurn }> = ({ turn }) => {
               border: '1px solid color-mix(in srgb, var(--accent-rose) 45%, transparent)',
               color: 'var(--accent-rose)',
               fontFamily: FONT_MONO,
-              fontSize: 11,
+              fontSize: 'var(--text-xs)',
               whiteSpace: 'pre-wrap',
             }}
           >
@@ -454,7 +454,7 @@ const TurnBubble: React.FC<{ turn: ChatTurn }> = ({ turn }) => {
 
       {!isUser && (turn.requestJson !== undefined || turn.responseJson !== undefined) && (
         <details style={{ maxWidth: '88%' }}>
-          <summary style={{ cursor: 'pointer', fontSize: 11, color: 'var(--text-dim)' }}>{t('chat.detailsLabel')}</summary>
+          <summary style={{ cursor: 'pointer', fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('chat.detailsLabel')}</summary>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 6 }}>
             {turn.requestJson !== undefined && (
               <div>
@@ -520,7 +520,7 @@ const QuestionBuilder: React.FC<{
               value={q.id}
               onChange={(e) => patch(i, { id: e.target.value })}
               placeholder="q1"
-              style={{ width: 130, fontSize: 12, fontFamily: FONT_MONO }}
+              style={{ width: 130, fontSize: 'var(--text-sm)', fontFamily: FONT_MONO }}
             />
             <div style={{ flex: 1 }} />
             <button
@@ -538,7 +538,7 @@ const QuestionBuilder: React.FC<{
             value={q.instructions}
             onChange={(e) => patch(i, { instructions: e.target.value })}
             placeholder={t('decision.instructionsPlaceholder')}
-            style={{ fontSize: 12 }}
+            style={{ fontSize: 'var(--text-sm)' }}
           />
 
           {q.type === 'choice' && (
@@ -553,7 +553,7 @@ const QuestionBuilder: React.FC<{
                       patch(i, { choices: q.choices.map((x, j) => (j === ci ? { ...x, key: e.target.value } : x)) })
                     }
                     placeholder={t('decision.optionKey')}
-                    style={{ width: 130, fontSize: 12, fontFamily: FONT_MONO }}
+                    style={{ width: 130, fontSize: 'var(--text-sm)', fontFamily: FONT_MONO }}
                   />
                   <input
                     className="input"
@@ -562,7 +562,7 @@ const QuestionBuilder: React.FC<{
                       patch(i, { choices: q.choices.map((x, j) => (j === ci ? { ...x, desc: e.target.value } : x)) })
                     }
                     placeholder={t('decision.optionDesc')}
-                    style={{ flex: 1, fontSize: 12 }}
+                    style={{ flex: 1, fontSize: 'var(--text-sm)' }}
                   />
                   <button
                     className="btn btn-sm"
@@ -598,7 +598,7 @@ const QuestionBuilder: React.FC<{
                       patch(i, { levels: q.levels.map((x, j) => (j === li ? e.target.value : x)) })
                     }
                     placeholder={t('decision.levelPlaceholder')}
-                    style={{ flex: 1, fontSize: 12 }}
+                    style={{ flex: 1, fontSize: 'var(--text-sm)' }}
                   />
                   <button
                     className="btn btn-sm"
@@ -622,7 +622,7 @@ const QuestionBuilder: React.FC<{
           )}
 
           {q.type === 'noul' && (
-            <div style={{ fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.5 }}>{t('decision.noulHint')}</div>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-snug)' }}>{t('decision.noulHint')}</div>
           )}
         </div>
       ))}
@@ -1124,7 +1124,7 @@ export const PlaygroundPage: React.FC = () => {
             { value: 'decision', label: t('decision.tabDecision') },
           ]}
         />
-        <span style={{ fontSize: 11, color: 'var(--text-dim)', fontFamily: FONT_MONO }}>
+        <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontFamily: FONT_MONO }}>
           {mode === 'chat' ? 'POST /v1/chat/completions' : 'POST /v1/systemone'}
         </span>
       </div>
@@ -1173,7 +1173,7 @@ export const PlaygroundPage: React.FC = () => {
           </div>
         </div>
 
-        <div style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.6, marginBottom: 14 }}>
+        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginBottom: 14 }}>
           {mode === 'chat' ? t('chat.subtitle') : t('decision.subtitle')}
         </div>
 
@@ -1220,7 +1220,7 @@ export const PlaygroundPage: React.FC = () => {
                       flex: 1,
                       minWidth: 0,
                       width: 'auto',
-                      fontSize: 12,
+                      fontSize: 'var(--text-sm)',
                       border: 'none',
                       borderRadius: 0,
                       background: 'transparent',
@@ -1259,7 +1259,7 @@ export const PlaygroundPage: React.FC = () => {
               />
             </div>
             {keySource === 'configured' && keys.length === 0 && (
-              <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>{t('chat.keyEmpty')}</div>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('chat.keyEmpty')}</div>
             )}
           </div>
 
@@ -1298,7 +1298,7 @@ export const PlaygroundPage: React.FC = () => {
               panelMinWidth={320}
               style={{ width: '100%' }}
             />
-            {modelsFailed && <div style={{ fontSize: 11, color: 'var(--accent-amber)' }}>{t('chat.modelsLoadFailed')}</div>}
+            {modelsFailed && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber)' }}>{t('chat.modelsLoadFailed')}</div>}
           </div>
 
           {mode === 'chat' && (
@@ -1328,7 +1328,7 @@ export const PlaygroundPage: React.FC = () => {
                 value={temperature}
                 onChange={(e) => setTemperature(e.target.value)}
                 placeholder="0.7"
-                style={{ fontSize: 12, fontFamily: FONT_MONO }}
+                style={{ fontSize: 'var(--text-sm)', fontFamily: FONT_MONO }}
               />
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 5, width: 140 }}>
@@ -1338,7 +1338,7 @@ export const PlaygroundPage: React.FC = () => {
                 value={maxTokens}
                 onChange={(e) => setMaxTokens(e.target.value)}
                 placeholder="1024"
-                style={{ fontSize: 12, fontFamily: FONT_MONO }}
+                style={{ fontSize: 'var(--text-sm)', fontFamily: FONT_MONO }}
               />
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 5, flex: '1 1 320px', minWidth: 260 }}>
@@ -1349,7 +1349,7 @@ export const PlaygroundPage: React.FC = () => {
                 onChange={(e) => setSystemPrompt(e.target.value)}
                 placeholder={t('chat.systemPlaceholder')}
                 rows={2}
-                style={{ fontSize: 12, resize: 'vertical', lineHeight: 1.5 }}
+                style={{ fontSize: 'var(--text-sm)', resize: 'vertical', lineHeight: 'var(--leading-snug)' }}
               />
             </div>
           </div>
@@ -1390,7 +1390,7 @@ export const PlaygroundPage: React.FC = () => {
                 onChange={(e) => setStateInput(e.target.value)}
                 placeholder={t('decision.statePlaceholder')}
                 rows={3}
-                style={{ fontSize: 12, resize: 'vertical', lineHeight: 1.5 }}
+                style={{ fontSize: 'var(--text-sm)', resize: 'vertical', lineHeight: 'var(--leading-snug)' }}
               />
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -1452,8 +1452,8 @@ export const PlaygroundPage: React.FC = () => {
             }}
           >
             {turns.length === 0 ? (
-              <div style={{ margin: 'auto', textAlign: 'center', color: 'var(--text-dim)', fontSize: 12, lineHeight: 1.8 }}>
-                <div style={{ fontSize: 13, color: 'var(--text-main)', marginBottom: 4 }}>{t('chat.emptyTitle')}</div>
+              <div style={{ margin: 'auto', textAlign: 'center', color: 'var(--text-dim)', fontSize: 'var(--text-sm)', lineHeight: 'var(--leading-loose)' }}>
+                <div style={{ fontSize: 'var(--text-md)', color: 'var(--text-main)', marginBottom: 4 }}>{t('chat.emptyTitle')}</div>
                 <div>{t('chat.emptyHint')}</div>
               </div>
             ) : (
@@ -1476,7 +1476,7 @@ export const PlaygroundPage: React.FC = () => {
               }}
               placeholder={t('chat.composerPlaceholder')}
               rows={3}
-              style={{ flex: 1, fontSize: 12.5, resize: 'vertical', lineHeight: 1.6 }}
+              style={{ flex: 1, fontSize: 'var(--text-md)', resize: 'vertical', lineHeight: 'var(--leading-normal)' }}
             />
             {busy ? (
               <button className="btn btn-danger" onClick={stop} style={{ height: 36 }}>
@@ -1509,15 +1509,15 @@ export const PlaygroundPage: React.FC = () => {
                   border: '1px solid color-mix(in srgb, var(--accent-rose) 45%, transparent)',
                   color: 'var(--accent-rose)',
                   fontFamily: FONT_MONO,
-                  fontSize: 11,
+                  fontSize: 'var(--text-xs)',
                   whiteSpace: 'pre-wrap',
                 }}
               >
                 {decisionError}
               </pre>
             ) : !decision ? (
-              <div style={{ minHeight: 180, display: 'flex', flexDirection: 'column', justifyContent: 'center', textAlign: 'center', color: 'var(--text-dim)', fontSize: 12, lineHeight: 1.8 }}>
-                <div style={{ fontSize: 13, color: 'var(--text-main)', marginBottom: 4 }}>{t('decision.emptyTitle')}</div>
+              <div style={{ minHeight: 180, display: 'flex', flexDirection: 'column', justifyContent: 'center', textAlign: 'center', color: 'var(--text-dim)', fontSize: 'var(--text-sm)', lineHeight: 'var(--leading-loose)' }}>
+                <div style={{ fontSize: 'var(--text-md)', color: 'var(--text-main)', marginBottom: 4 }}>{t('decision.emptyTitle')}</div>
                 <div>{t('decision.emptyHint')}</div>
               </div>
             ) : (

@@ -26,7 +26,7 @@ export const MD_COMPONENTS: Components = {
   a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
   img: ({ node: _node, src, ...props }) =>
     typeof src === 'string' && /^(?:https?:)?\/\//i.test(src) ? (
-      <span style={{ color: 'var(--text-dim)', fontSize: '11px' }}>[image]</span>
+      <span style={{ color: 'var(--text-dim)', fontSize: 'var(--text-xs)' }}>[image]</span>
     ) : (
       <img {...props} src={src} loading="lazy" />
     ),
@@ -100,8 +100,8 @@ const Prose: React.FC<{
     // contrast against the panel bg — borderless wells read as edgeless void.
     border: `1px solid ${border ?? 'var(--card-border)'}`,
     borderRadius: 6,
-    fontSize: '12px',
-    lineHeight: 1.6,
+    fontSize: 'var(--text-sm)',
+    lineHeight: 'var(--leading-normal)',
     color: color ?? 'var(--text)',
     wordBreak: 'break-word',
   };
@@ -126,7 +126,7 @@ const Prose: React.FC<{
               border: 'none',
               color: 'var(--accent)',
               cursor: 'pointer',
-              fontSize: '11px',
+              fontSize: 'var(--text-xs)',
               padding: '2px 4px',
               marginLeft: 2,
             }}
@@ -141,7 +141,7 @@ const Prose: React.FC<{
                 border: 'none',
                 color: 'var(--accent)',
                 cursor: 'pointer',
-                fontSize: '11px',
+                fontSize: 'var(--text-xs)',
                 padding: '2px 4px',
                 marginLeft: 6,
               }}

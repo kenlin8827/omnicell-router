@@ -1,38 +1,27 @@
-/**
- * Theme identity shared by the pre-paint bootstrap (main.tsx), the picker
- * (Layout) and anything that branches on the active `data-theme` value.
- * Ids are bare color/material nouns (no brand words, no generic adjectives);
- * localized display names in i18n are the product-facing copy.
- * The persisted key in localStorage is `ocr_theme`.
- */
-export type ThemeId = 'onyx' | 'indigo' | 'emerald' | 'violet' | 'rose' | 'azure' | 'amber';
+/** Theme preference and resolved color scheme shared by the shell and editor. */
+export type ThemeId = 'light' | 'dark';
+export type ThemePreference = ThemeId | 'system';
 
 export const THEME_STORAGE_KEY = 'ocr_theme';
+export const DEFAULT_THEME: ThemeId = 'light';
+export const LIGHT_THEME_IDS: readonly ThemeId[] = ['light'];
 
-export const THEME_IDS: readonly ThemeId[] = [
-  'onyx', 'indigo', 'emerald', 'violet', 'rose', 'azure', 'amber',
-];
-
-/** Light-class themes (paper surfaces). The CSS light-group token overrides and
- *  the CodeMirror chrome both branch on this set — keep them in sync. */
-export const LIGHT_THEME_IDS: readonly ThemeId[] = ['azure', 'amber'];
-
-/** Theme applied when the user has never picked one (fresh install / cleared storage). */
-export const DEFAULT_THEME: ThemeId = 'azure';
-
-/** Pre-rename theme ids persisted in existing users' localStorage. */
 const LEGACY_THEME_IDS: Record<string, ThemeId> = {
-  obsidian: 'onyx',
-  cyber: 'emerald',
-  sunset: 'rose',
-  light: 'azure',
+  light: 'light', azure: 'light', amber: 'light',
+  onyx: 'dark', indigo: 'dark', emerald: 'dark', violet: 'dark', rose: 'dark',
+  obsidian: 'dark', cyber: 'dark', sunset: 'dark',
 };
 
-/** Migrate a raw stored value to a current ThemeId; unknown/absent → DEFAULT_THEME. */
+export function resolveThemePreference(raw: string | null): ThemePreference {
+  if (!raw || raw === 'system') return 'system';
+  if (raw === 'light' || raw === 'dark') return raw;
+  return LEGACY_THEME_IDS[raw] ?? 'system';
+}
+
 export function resolveStoredTheme(raw: string | null): ThemeId {
-  if (!raw) return DEFAULT_THEME;
-  if ((THEME_IDS as readonly string[]).includes(raw)) return raw as ThemeId;
-  return LEGACY_THEME_IDS[raw] ?? DEFAULT_THEME;
+  const preference = resolveThemePreference(raw);
+  if (preference !== 'system') return preference;
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
 
 export function isLightTheme(id: string): boolean {

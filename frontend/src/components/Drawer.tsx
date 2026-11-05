@@ -115,8 +115,8 @@ export const Drawer: React.FC<DrawerProps> = ({
             <h3
               style={{
                 margin: 0,
-                fontSize: '16px',
-                fontWeight: 600,
+                fontSize: 'var(--text-xl)',
+                fontWeight: 'var(--font-semibold)',
                 color: 'var(--text)',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
@@ -128,7 +128,7 @@ export const Drawer: React.FC<DrawerProps> = ({
             {subtitle && (
               <div
                 style={{
-                  fontSize: '12px',
+                  fontSize: 'var(--text-sm)',
                   color: 'var(--text-muted)',
                   marginTop: '4px',
                   overflow: 'hidden',
@@ -151,7 +151,7 @@ export const Drawer: React.FC<DrawerProps> = ({
               aria-label={closeLabel}
               style={{
                 padding: '6px',
-                lineHeight: 1,
+                lineHeight: 'var(--leading-none)',
                 display: 'inline-flex',
                 alignItems: 'center',
                 justifyContent: 'center',

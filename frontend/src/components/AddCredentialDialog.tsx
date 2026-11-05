@@ -61,8 +61,8 @@ export const AddCredentialDialog: React.FC<{
             key={m}
             style={{
               padding: '6px 14px',
-              fontSize: 12,
-              fontWeight: method === m ? 700 : 500,
+              fontSize: 'var(--text-sm)',
+              fontWeight: method === m ? 'var(--font-bold)' : 'var(--font-medium)',
               color: method === m ? 'var(--accent)' : 'var(--text-dim)',
               background: method === m ? 'var(--surface-hover)' : 'transparent',
               border: 'none',
@@ -134,21 +134,21 @@ export const AddCredentialDialog: React.FC<{
             a fallback (workbuddy: web-login is the primary path). Content is
             plugin-provided and localized server-side, like the preset name. */}
         {keyHint && (
-          <p style={{ display: 'flex', gap: 6, alignItems: 'flex-start', margin: 0, fontSize: 11.5, color: 'var(--text-dim)', lineHeight: 1.5 }}>
+          <p style={{ display: 'flex', gap: 6, alignItems: 'flex-start', margin: 0, fontSize: 'var(--text-sm)', color: 'var(--text-dim)', lineHeight: 'var(--leading-snug)' }}>
             <Key size={12} style={{ flexShrink: 0, marginTop: 2 }} aria-hidden />
             <span>{keyHint}</span>
           </p>
         )}
         <input
           className="input"
-          style={{ fontSize: 12.5 }}
+          style={{ fontSize: 'var(--text-md)' }}
           placeholder={t(multiCredential ? 'op.addKeyPrompt' : 'op.updateKeyPrompt')}
           value={key}
           onChange={(e) => { setKey(e.target.value); setError(''); }}
           autoFocus
           onKeyDown={(e) => e.key === 'Enter' && save()}
         />
-        {error && <p style={{ color: 'var(--accent-rose)', fontSize: 11.5, margin: 0 }}>{error}</p>}
+        {error && <p style={{ color: 'var(--accent-rose)', fontSize: 'var(--text-sm)', margin: 0 }}>{error}</p>}
       </div>
     </Dialog>
   );

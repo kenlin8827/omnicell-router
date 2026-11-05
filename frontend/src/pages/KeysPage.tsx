@@ -113,7 +113,7 @@ const HeadersEditor: React.FC<{
         <div key={i} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 3fr) auto', gap: 6, alignItems: 'center' }}>
           <input
             className="input"
-            style={{ fontSize: 12, fontFamily: FONT_MONO }}
+            style={{ fontSize: 'var(--text-sm)', fontFamily: FONT_MONO }}
             placeholder={t('op.headerNamePh')}
             value={r.name}
             disabled={disabled}
@@ -121,7 +121,7 @@ const HeadersEditor: React.FC<{
           />
           <input
             className="input"
-            style={{ fontSize: 12, fontFamily: FONT_MONO }}
+            style={{ fontSize: 'var(--text-sm)', fontFamily: FONT_MONO }}
             placeholder={t('op.headerValuePh')}
             value={r.value}
             disabled={disabled}
@@ -161,7 +161,7 @@ const normalizeProviderIdInput = (raw: string): string =>
  *  identity when its placeholder disappears. */
 const FormField: React.FC<{ label: string; required?: boolean; style?: React.CSSProperties; children: React.ReactNode }> = ({ label, required, style, children }) => (
   <div style={{ display: 'flex', flexDirection: 'column', gap: 4, ...style }}>
-    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)' }}>
+    <span style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-semibold)', color: 'var(--text-dim)' }}>
       {label}
       {required && <span style={{ color: 'var(--accent-rose)', marginLeft: 3 }} aria-hidden>*</span>}
     </span>
@@ -190,11 +190,11 @@ const ProviderLogo: React.FC<{ id: string; logo?: string; size?: number }> = ({ 
       <div style={chip}>
         <span
           style={{
-            fontWeight: 800,
+            fontWeight: 'var(--font-extrabold)',
             fontSize: size * 0.52,
             color: 'var(--logo-plate-ink)',
             textTransform: 'uppercase',
-            lineHeight: 1,
+            lineHeight: 'var(--leading-none)',
           }}
         >
           {id.slice(0, 1)}
@@ -224,8 +224,8 @@ const ProviderLogo: React.FC<{ id: string; logo?: string; size?: number }> = ({ 
 const badgeStyle = (color: string, _bg: string): React.CSSProperties => ({
   background: 'transparent',
   color,
-  fontSize: '10px',
-  fontWeight: 600,
+  fontSize: 'var(--text-2xs)',
+  fontWeight: 'var(--font-semibold)',
   padding: '2px 8px',
   borderRadius: '99px',
   border: `1px solid color-mix(in srgb, ${color} 45%, transparent)`,
@@ -304,8 +304,8 @@ const syncOutcomeBreakdown = (o: CredentialSyncOutcome | undefined, t: TFn): str
 };
 
 const syncHeadCell: React.CSSProperties = {
-  fontSize: 11,
-  fontWeight: 600,
+  fontSize: 'var(--text-xs)',
+  fontWeight: 'var(--font-semibold)',
   color: 'var(--text-dim)',
   borderBottom: '1px solid var(--divider)',
   paddingBottom: 6,
@@ -314,13 +314,13 @@ const syncTimeCell: React.CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   gap: 2,
-  fontSize: 12,
+  fontSize: 'var(--text-sm)',
   color: 'var(--text-main)',
 };
 const syncOutcomeStyle: React.CSSProperties = {
-  fontSize: 10.5,
+  fontSize: 'var(--text-xs)',
   color: 'var(--text-dim)',
-  lineHeight: 1.5,
+  lineHeight: 'var(--leading-snug)',
 };
 
 /**
@@ -593,8 +593,8 @@ type CredentialRowProps = {
 };
 
 /** Compact icon-button look shared by every per-credential action. */
-const CRED_ICON_BTN: React.CSSProperties = { padding: '2px 6px', fontSize: 11, lineHeight: 1 };
-const CRED_ICON_BTN_LG: React.CSSProperties = { padding: '3px 7px', fontSize: 12, lineHeight: 1 };
+const CRED_ICON_BTN: React.CSSProperties = { padding: '2px 6px', fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-none)' };
+const CRED_ICON_BTN_LG: React.CSSProperties = { padding: '3px 7px', fontSize: 'var(--text-sm)', lineHeight: 'var(--leading-none)' };
 
 /**
  * Status badges for one credential — shared by the card row and the zoom
@@ -886,7 +886,7 @@ const CredentialRow: React.FC<CredentialRowProps> = ({
         <>
           <input
             className="input"
-            style={{ fontSize: 12, flex: 1, minWidth: 110 }}
+            style={{ fontSize: 'var(--text-sm)', flex: 1, minWidth: 110 }}
             aria-label={t('op.credentialLabelPlaceholder')}
             placeholder={t('op.credentialLabelPlaceholder')}
             maxLength={80}
@@ -923,8 +923,8 @@ const CredentialRow: React.FC<CredentialRowProps> = ({
             style={{
               display: 'inline-flex',
               alignItems: 'center',
-              fontSize: 10,
-              fontWeight: 600,
+              fontSize: 'var(--text-2xs)',
+              fontWeight: 'var(--font-semibold)',
               minWidth: 12,
               color: 'var(--text-dim)',
               fontVariantNumeric: 'tabular-nums',
@@ -937,13 +937,13 @@ const CredentialRow: React.FC<CredentialRowProps> = ({
               the editor). Absent = 1 and stays unlabeled — clutter rule. */}
           {(credential.weight ?? 1) > 1 && (
             <span
-              style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums' }}
+              style={{ fontSize: 'var(--text-2xs)', fontWeight: 'var(--font-semibold)', color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums' }}
             >
               ×{credential.weight}
             </span>
           )}
           <span
-            style={{ fontWeight: 700, fontSize: 12, flex: '0 1 auto', minWidth: 48, overflow: 'hidden', textOverflow: 'ellipsis' }}
+            style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-sm)', flex: '0 1 auto', minWidth: 48, overflow: 'hidden', textOverflow: 'ellipsis' }}
             title={name}
           >
             {name}
@@ -957,7 +957,7 @@ const CredentialRow: React.FC<CredentialRowProps> = ({
           {credential.maskedKey && (
             <span
               style={{
-                fontSize: 11,
+                fontSize: 'var(--text-xs)',
                 fontFamily: FONT_MONO,
                 color: 'var(--text-dim)',
                 // Shrinkable so a narrow card clips the KEY, never the buttons
@@ -1001,8 +1001,8 @@ const CredentialRow: React.FC<CredentialRowProps> = ({
 
 const ZOOM_TH: React.CSSProperties = {
   textAlign: 'left',
-  fontSize: 11.5,
-  fontWeight: 700,
+  fontSize: 'var(--text-sm)',
+  fontWeight: 'var(--font-bold)',
   color: 'var(--text-dim)',
   padding: '5px 10px',
   borderBottom: '1px solid var(--border)',
@@ -1079,15 +1079,15 @@ const CredentialZoomRow: React.FC<CredentialZoomRowProps> = ({
     <tr>
       {/* Chain order column: plain slot number — head = #1, no star (the pin
           action in the action columns is how the order changes). */}
-      <td style={{ ...ZOOM_TD, textAlign: 'center', color: 'var(--text-dim)', fontWeight: 600, fontSize: 12 }}>
+      <td style={{ ...ZOOM_TD, textAlign: 'center', color: 'var(--text-dim)', fontWeight: 'var(--font-semibold)', fontSize: 'var(--text-sm)' }}>
         #{position}
       </td>
-      <td style={{ ...ZOOM_TD, fontWeight: 700, fontSize: 13.5, maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis' }} title={name}>
+      <td style={{ ...ZOOM_TD, fontWeight: 'var(--font-bold)', fontSize: 'var(--text-base)', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis' }} title={name}>
         {renaming ? (
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
             <input
               className="input"
-              style={{ fontSize: 13, width: 180 }}
+              style={{ fontSize: 'var(--text-md)', width: 180 }}
               aria-label={t('op.credentialLabelPlaceholder')}
               placeholder={t('op.credentialLabelPlaceholder')}
               maxLength={80}
@@ -1139,7 +1139,7 @@ const CredentialZoomRow: React.FC<CredentialZoomRowProps> = ({
           </span>
         )}
       </td>
-      <td style={{ ...ZOOM_TD, fontSize: 12.5, fontFamily: FONT_MONO, color: 'var(--text-dim)', maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+      <td style={{ ...ZOOM_TD, fontSize: 'var(--text-md)', fontFamily: FONT_MONO, color: 'var(--text-dim)', maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis' }}>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
           {credential.maskedKey && (
             <span
@@ -1166,7 +1166,7 @@ const CredentialZoomRow: React.FC<CredentialZoomRowProps> = ({
             defaultValue={credential.weight ?? 1}
             disabled={pending}
             aria-label={t('op.credentialWeight')}
-            style={{ width: 58, fontSize: 12.5, textAlign: 'center' }}
+            style={{ width: 58, fontSize: 'var(--text-md)', textAlign: 'center' }}
             onKeyDown={(e) => {
               if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
             }}
@@ -1179,7 +1179,7 @@ const CredentialZoomRow: React.FC<CredentialZoomRowProps> = ({
           />
         ) : (
           (credential.weight ?? 1) > 1 && (
-            <span style={{ fontSize: 12.5, color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums' }}>
+            <span style={{ fontSize: 'var(--text-md)', color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums' }}>
               ×{credential.weight}
             </span>
           )
@@ -1193,7 +1193,7 @@ const CredentialZoomRow: React.FC<CredentialZoomRowProps> = ({
           {action('clearSuspect')}
           {/* Explicit "normal" word: an empty cell reads as broken data. */}
           {!credential.disabled && !credential.suspect && remaining <= 0 && (credential.limits ?? []).length === 0 && !credential.quota && (
-            <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>{t('op.credentialZoomStatusNormal')}</span>
+            <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>{t('op.credentialZoomStatusNormal')}</span>
           )}
         </span>
       </td>
@@ -1268,7 +1268,7 @@ const RevealKeyDialog: React.FC<RevealDialogProps> = ({
         autoComplete="off"
         spellCheck={false}
         autoFocus
-        style={{ fontSize: 12, width: '100%', marginBottom: 8 }}
+        style={{ fontSize: 'var(--text-sm)', width: '100%', marginBottom: 8 }}
         placeholder={t('op.copyKeyPassword')}
         value={password}
         onChange={(e) => onPassword(e.target.value)}
@@ -1277,7 +1277,7 @@ const RevealKeyDialog: React.FC<RevealDialogProps> = ({
           if (e.key === 'Escape') onCancel();
         }}
       />
-      {error && <div style={{ fontSize: 11, color: 'var(--accent-rose)' }}>{error}</div>}
+      {error && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-rose)' }}>{error}</div>}
     </Dialog>
   );
 };
@@ -1322,7 +1322,7 @@ const CredentialLimitsDialog: React.FC<{
 
         {windows.length > 0 && (
           <div>
-            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', marginBottom: 6 }}>
+            <div style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', color: 'var(--text-dim)', marginBottom: 6 }}>
               {t('op.credentialLimitsWindows')}
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -1333,7 +1333,7 @@ const CredentialLimitsDialog: React.FC<{
                     display: 'flex',
                     justifyContent: 'space-between',
                     gap: 10,
-                    fontSize: 11.5,
+                    fontSize: 'var(--text-sm)',
                     fontFamily: FONT_MONO,
                     color: w.retryAfterMs > 0 ? 'var(--accent-amber)' : 'var(--text-dim)',
                   }}
@@ -1900,8 +1900,8 @@ export const KeysPage: React.FC = () => {
   const tabBtn = (tab: typeof activeTab, label: string, count?: number): React.CSSProperties => ({
     padding: '7px 14px',
     borderRadius: '8px',
-    fontSize: '12.5px',
-    fontWeight: activeTab === tab ? 700 : 500,
+    fontSize: 'var(--text-md)',
+    fontWeight: activeTab === tab ? 'var(--font-bold)' : 'var(--font-medium)',
     color: activeTab === tab ? 'var(--accent)' : 'var(--text-muted)',
     background: activeTab === tab ? 'var(--surface-hover)' : 'transparent',
     border: activeTab === tab ? '1px solid var(--card-border)' : '1px solid transparent',
@@ -2181,18 +2181,18 @@ export const KeysPage: React.FC = () => {
       <div className="card" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column'}}>
         <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
           <Plug size={18} color="var(--accent)" />
-          <span style={{ fontWeight: 700, fontSize: 15 }}>{t('op.title')}</span>
+          <span style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-lg)' }}>{t('op.title')}</span>
         </div>
-        <p style={{ color: 'var(--text-muted)', fontSize: 12, margin: '0 0 16px' }} title={ocPaths.configPath}>{t('op.desc', { sink: sinkLabel })}</p>
+        <p style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)', margin: '0 0 16px' }} title={ocPaths.configPath}>{t('op.desc', { sink: sinkLabel })}</p>
 
         {notice && (
-          <div style={{ padding: '10px 14px', borderRadius: '8px', background: noticeTone === 'err' ? 'color-mix(in srgb, var(--accent-rose) 12%, transparent)' : 'color-mix(in srgb, var(--accent-emerald) 15%, transparent)', border: `1px solid ${noticeTone === 'err' ? 'color-mix(in srgb, var(--accent-rose) 30%, transparent)' : 'color-mix(in srgb, var(--accent-emerald) 30%, transparent)'}`, color: noticeTone === 'err' ? 'var(--accent-rose)' : 'var(--accent-emerald)', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+          <div style={{ padding: '10px 14px', borderRadius: '8px', background: noticeTone === 'err' ? 'color-mix(in srgb, var(--accent-rose) 12%, transparent)' : 'color-mix(in srgb, var(--accent-emerald) 15%, transparent)', border: `1px solid ${noticeTone === 'err' ? 'color-mix(in srgb, var(--accent-rose) 30%, transparent)' : 'color-mix(in srgb, var(--accent-emerald) 30%, transparent)'}`, color: noticeTone === 'err' ? 'var(--accent-rose)' : 'var(--accent-emerald)', fontSize: 'var(--text-md)', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
             {noticeTone === 'err' ? <AlertTriangle size={16} /> : <Check size={16} />}
             <span>{notice}</span>
           </div>
         )}
         {ocError && (
-          <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'color-mix(in srgb, var(--accent-rose) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-rose) 30%, transparent)', color: 'var(--accent-rose)', fontSize: '13px', marginBottom: '16px' }}>
+          <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'color-mix(in srgb, var(--accent-rose) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-rose) 30%, transparent)', color: 'var(--accent-rose)', fontSize: 'var(--text-md)', marginBottom: '16px' }}>
             {ocError}
           </div>
         )}
@@ -2237,7 +2237,7 @@ export const KeysPage: React.FC = () => {
                 </span>
               )}
               <span
-                style={{ fontSize: 10, fontFamily: FONT_MONO, color: 'var(--text-muted)', maxWidth: '60%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                style={{ fontSize: 'var(--text-2xs)', fontFamily: FONT_MONO, color: 'var(--text-muted)', maxWidth: '60%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
                 title={`${t('op.storeCredentialFile')}: ${storeStatus.credentialFile}`}
               >
                 {storeStatus.credentialFile}
@@ -2245,11 +2245,11 @@ export const KeysPage: React.FC = () => {
             </div>
             {storeStatus.excluded.length > 0 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 2 }}>
-                <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)' }}>
+                <span style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-semibold)', color: 'var(--text-dim)' }}>
                   {t('op.excludedTitle', { n: storeStatus.excluded.length })}
                 </span>
                 {storeStatus.excluded.map((e) => (
-                  <div key={`${e.provider}:${e.reasonCode}`} style={{ fontSize: 11, color: 'var(--text-dim)' }} title={e.detail}>
+                  <div key={`${e.provider}:${e.reasonCode}`} style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }} title={e.detail}>
                     <span style={{ fontFamily: FONT_MONO }}>{e.provider}</span>
                     <span> — {t(EXCLUDED_REASON_LABEL[e.reasonCode] ?? e.reasonCode)}</span>
                   </div>
@@ -2265,7 +2265,7 @@ export const KeysPage: React.FC = () => {
               it sits leftmost and the search/filter controls refine within it
               (same layout as the catalog tab). */}
           <Combobox
-            style={{ fontSize: 12, flexShrink: 0, width: 'fit-content', minWidth: 180 }}
+            style={{ fontSize: 'var(--text-sm)', flexShrink: 0, width: 'fit-content', minWidth: 180 }}
             forceFilter
             value={connectedOrigin}
             onChange={(v) => { setConnectedOrigin(v || 'all'); setConnectedPage(1); }}
@@ -2337,8 +2337,8 @@ export const KeysPage: React.FC = () => {
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                 <ProviderLogo id={p.id} logo={p.logo} size={44} />
                 <div style={{ flex: '1 1 96px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  <span style={{ fontWeight: 700, fontSize: 14, fontFamily: FONT_MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.id}</span>
-                  {p.name && <span style={{ fontSize: 11, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>}
+                  <span style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-base)', fontFamily: FONT_MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.id}</span>
+                  {p.name && <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>}
                 </div>
                 {/* Identity badges ride the title row again — the wide npm badge
                     moved to the URL row, so the small chips fit; the 96px title
@@ -2412,13 +2412,13 @@ export const KeysPage: React.FC = () => {
               {(p.baseURL || displayNpm(p.npm)) && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   {p.baseURL && (
-                    <div style={{ flex: 1, minWidth: 0, fontSize: 11, fontFamily: FONT_MONO, color: 'var(--text-muted)', wordBreak: 'break-all' }}>
+                    <div style={{ flex: 1, minWidth: 0, fontSize: 'var(--text-xs)', fontFamily: FONT_MONO, color: 'var(--text-muted)', wordBreak: 'break-all' }}>
                       {p.baseURL}
                     </div>
                   )}
                   {displayNpm(p.npm) && (
                     <span
-                      style={{ ...badgeStyle('var(--text-dim)', 'var(--chip-bg)'), fontFamily: FONT_MONO, fontSize: 9.5, flexShrink: 0 }}
+                      style={{ ...badgeStyle('var(--text-dim)', 'var(--chip-bg)'), fontFamily: FONT_MONO, fontSize: 'var(--text-2xs)', flexShrink: 0 }}
                       title={`${displayNpm(p.npm)} — ${t('catalogPage.ocrEditNpmHint')}`}
                     >
                       {displayNpm(p.npm)!.replace('@ai-sdk/', '')}
@@ -2432,7 +2432,7 @@ export const KeysPage: React.FC = () => {
                   does not. The old OAuth-expiry line is gone: the provider view
                   never carried a live expiry (store credentials are api keys). */}
               {!(caps && credentialList.length > 0) && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, fontFamily: FONT_MONO }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--text-xs)', fontFamily: FONT_MONO }}>
                   <Lock size={11} />
                   <span>{p.auth.keyMasked || '—'}</span>
                 </div>
@@ -2443,13 +2443,13 @@ export const KeysPage: React.FC = () => {
                   is the reason this page exists, and hiding it behind a click put
                   the active credential out of sight. */}
               {caps && credentialList.length > 0 && liveIds.length > 1 && (
-                <div style={{ fontSize: 10.5, color: 'var(--text-dim)' }} title={t('op.credentialChainHeadTip')}>
+                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }} title={t('op.credentialChainHeadTip')}>
                   {t('op.credentialsSpreadHint', { n: liveIds.length })}
                 </div>
               )}
               {/* Everything parked: say so plainly instead of letting the card look live. */}
               {caps && credentialList.length > 0 && liveIds.length === 0 && (
-                <div style={{ fontSize: 10.5, color: 'var(--accent-rose)' }} title={t('op.credentialsAllDisabledTip')}>
+                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-rose)' }} title={t('op.credentialsAllDisabledTip')}>
                   {t('op.credentialsAllDisabled')}
                 </div>
               )}
@@ -2500,7 +2500,7 @@ export const KeysPage: React.FC = () => {
                   {testResults[p.id] ? (
                     <div
                       style={{
-                        fontSize: 11,
+                        fontSize: 'var(--text-xs)',
                         fontFamily: FONT_MONO,
                         color: testResults[p.id].ok ? 'var(--accent-emerald)' : 'var(--accent-rose)',
                         wordBreak: 'break-all',
@@ -2512,7 +2512,7 @@ export const KeysPage: React.FC = () => {
                         : `✗ ${testResults[p.id].error || t('op.testFailMsg')}`}
                     </div>
                   ) : (
-                    <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                    <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
                       {t('op.credCount', { n: credentialList.length })}
                     </span>
                   )}
@@ -2567,7 +2567,7 @@ export const KeysPage: React.FC = () => {
             );
           })}
           {connectedResults.length === 0 && !ocError && (
-            <div style={{ color: 'var(--text-dim)', fontSize: 12 }}>{t('op.emptyConnected')}</div>
+            <div style={{ color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>{t('op.emptyConnected')}</div>
           )}
         </div>
         </div>
@@ -2580,7 +2580,7 @@ export const KeysPage: React.FC = () => {
         {/* Full-height flex column: the source note + filter toolbar stay pinned,
             only the card grid scrolls inside the nested container below. */}
         <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-        <p style={{ color: 'var(--text-dim)', fontSize: 11, margin: '0 0 12px', flexShrink: 0 }}>
+        <p style={{ color: 'var(--text-dim)', fontSize: 'var(--text-xs)', margin: '0 0 12px', flexShrink: 0 }}>
           {t('op.connectDesc')} · {t('op.catalogSource', { source: catalogSource || 'none' })}
         </p>
         {/* Divider under the toolbar separates the filter controls from the
@@ -2589,7 +2589,7 @@ export const KeysPage: React.FC = () => {
           {/* Origin filter leads the toolbar: it is the coarsest selector, so
               it sits leftmost and the search/filter controls refine within it. */}
           <Combobox
-            style={{ fontSize: 12, flexShrink: 0, width: 'fit-content', minWidth: 180 }}
+            style={{ fontSize: 'var(--text-sm)', flexShrink: 0, width: 'fit-content', minWidth: 180 }}
             forceFilter
             value={catalogOrigin}
             onChange={(v) => { setCatalogOrigin(v || 'all'); setCatalogPage(1); }}
@@ -2624,8 +2624,8 @@ export const KeysPage: React.FC = () => {
                 key={f}
                 style={{
                   padding: '6px 14px',
-                  fontSize: 12,
-                  fontWeight: catalogFilter === f ? 700 : 500,
+                  fontSize: 'var(--text-sm)',
+                  fontWeight: catalogFilter === f ? 'var(--font-bold)' : 'var(--font-medium)',
                   color: catalogFilter === f ? 'var(--accent)' : 'var(--text-dim)',
                   background: catalogFilter === f ? 'var(--surface-hover)' : 'transparent',
                   border: 'none',
@@ -2657,17 +2657,17 @@ export const KeysPage: React.FC = () => {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                   <ProviderLogo id={c.id} logo={c.logo} size={38} />
                   <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    <span style={{ fontWeight: 700, fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</span>
-                    <span style={{ fontSize: 10, color: 'var(--text-dim)', fontFamily: FONT_MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.id}</span>
+                    <span style={{ fontWeight: 'var(--font-bold)', fontSize: 'var(--text-md)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</span>
+                    <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', fontFamily: FONT_MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.id}</span>
                   </div>
                   {c.npm && (
-                    <span style={{ fontSize: 9.5, color: 'var(--text-dim)', fontFamily: FONT_MONO, flexShrink: 0, border: '1px solid var(--chip-bg)', borderRadius: 4, padding: '1px 4px' }} title={t('catalogPage.ocrEditNpmHint')}>
+                    <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', fontFamily: FONT_MONO, flexShrink: 0, border: '1px solid var(--chip-bg)', borderRadius: 4, padding: '1px 4px' }} title={t('catalogPage.ocrEditNpmHint')}>
                       {(displayNpm(c.npm) || '').replace('@ai-sdk/', '')}
                     </span>
                   )}
                   {c.pluginOrigin && (
                     <span
-                      style={{ fontSize: 9.5, color: 'var(--accent)', flexShrink: 0, border: '1px solid color-mix(in srgb, var(--accent) 45%, transparent)', borderRadius: 4, padding: '1px 4px' }}
+                      style={{ fontSize: 'var(--text-2xs)', color: 'var(--accent)', flexShrink: 0, border: '1px solid color-mix(in srgb, var(--accent) 45%, transparent)', borderRadius: 4, padding: '1px 4px' }}
                       title={t('op.pluginOriginTip', { plugin: c.pluginOrigin })}
                     >
                       {t('op.pluginTag')}
@@ -2690,7 +2690,7 @@ export const KeysPage: React.FC = () => {
                 </div>
                 {/* marginTop auto absorbs the slack so the meta + status rows sit
                     at the card bottom and align across the grid row. */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--text-dim)', marginTop: 'auto' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', marginTop: 'auto' }}>
                   <span>{t('op.modelsCount', { n: c.modelCount })}</span>
                   {typeof c.priceFrom === 'number' && (
                     <span style={{ color: 'var(--accent-emerald)' }}>{t('op.priceFrom', { price: c.priceFrom })}</span>
@@ -2698,7 +2698,7 @@ export const KeysPage: React.FC = () => {
                 </div>
                 {connected ? (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 0' }}>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--accent-emerald)', flex: 1 }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--text-xs)', color: 'var(--accent-emerald)', flex: 1 }}>
                       <Check size={12} />
                       <span>{t('op.alreadyConnected')}</span>
                     </span>
@@ -2730,7 +2730,7 @@ export const KeysPage: React.FC = () => {
             );
           })}
           {catalog.length === 0 && (
-            <div style={{ color: 'var(--text-dim)', fontSize: 12 }}>{t('op.catalogEmpty')}</div>
+            <div style={{ color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>{t('op.catalogEmpty')}</div>
           )}
         </div>
         </div>
@@ -2740,46 +2740,46 @@ export const KeysPage: React.FC = () => {
 
         {activeTab === 'custom' && (<>
         {/* ---- Custom provider form ---- */}
-        <p style={{ color: 'var(--text-dim)', fontSize: 11, margin: '0 0 12px' }}>{t('op.customDesc')}</p>
+        <p style={{ color: 'var(--text-dim)', fontSize: 'var(--text-xs)', margin: '0 0 12px' }}>{t('op.customDesc')}</p>
         {/* Capped two-column form (was an uncapped 3-col grid that stretched every
             input to ~900px on wide screens). Base URL spans the row — it is the one
             long value; the inline switch lives INSIDE the key cell so the pair reads
             as one control. auto-fit collapses to a single column below ~580px. */}
         <div style={{ maxWidth: 720, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(280px, 100%), 1fr))', gap: '12px 14px' }}>
           <FormField label={t('op.fId')} required>
-            <input className="input" style={{ fontSize: 12 }} placeholder={t('op.phId')} value={form.id} onChange={e => setForm({ ...form, id: normalizeProviderIdInput(e.target.value) })} />
-            <span style={{ fontSize: 10.5, color: 'var(--text-dim)' }}>{t('op.idRule')}</span>
+            <input className="input" style={{ fontSize: 'var(--text-sm)' }} placeholder={t('op.phId')} value={form.id} onChange={e => setForm({ ...form, id: normalizeProviderIdInput(e.target.value) })} />
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('op.idRule')}</span>
           </FormField>
           <FormField label={t('op.fName')}>
-            <input className="input" style={{ fontSize: 12 }} placeholder={t('op.phName')} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
+            <input className="input" style={{ fontSize: 'var(--text-sm)' }} placeholder={t('op.phName')} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
           </FormField>
           <FormField label={t('op.fBaseUrl')} required style={{ gridColumn: '1 / -1' }}>
-            <input className="input" style={{ fontSize: 12 }} placeholder={t('op.phBaseUrl')} value={form.baseURL} onChange={e => setForm({ ...form, baseURL: e.target.value })} />
+            <input className="input" style={{ fontSize: 'var(--text-sm)' }} placeholder={t('op.phBaseUrl')} value={form.baseURL} onChange={e => setForm({ ...form, baseURL: e.target.value })} />
           </FormField>
           {/* Key cell spans the row: the inline-switch sentence needs the full
               720px to stay on one line, and long sk- values want the width too. */}
           <FormField label={t('op.fKey', { sink: sinkLabel })} style={{ gridColumn: '1 / -1' }}>
-            <input className="input" style={{ fontSize: 12 }} placeholder={t('op.phKey')} value={form.apiKey} onChange={e => setForm({ ...form, apiKey: e.target.value })} />
-            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
+            <input className="input" style={{ fontSize: 'var(--text-sm)' }} placeholder={t('op.phKey')} value={form.apiKey} onChange={e => setForm({ ...form, apiKey: e.target.value })} />
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginTop: 2 }}>
               <Switch size="sm" checked={form.inline} onChange={v => setForm({ ...form, inline: v })} />
               <span>{t('op.fKeyInline')}</span>
             </label>
           </FormField>
           <FormField label={t('op.fPullPattern')} style={{ gridColumn: '1 / -1' }}>
-            <input className="input" style={{ fontSize: 12, fontFamily: FONT_MONO }} placeholder={t('op.phPullPattern')} value={form.pullPattern} onChange={e => setForm({ ...form, pullPattern: e.target.value })} />
-            <span style={{ fontSize: 10.5, color: 'var(--text-dim)' }}>{t('op.fPullPatternTip')}</span>
+            <input className="input" style={{ fontSize: 'var(--text-sm)', fontFamily: FONT_MONO }} placeholder={t('op.phPullPattern')} value={form.pullPattern} onChange={e => setForm({ ...form, pullPattern: e.target.value })} />
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('op.fPullPatternTip')}</span>
           </FormField>
           {/* AI SDK package is low-frequency (almost always the openai-compatible
               default) — parked last so the common path reads ID → name → URL → key. */}
           <FormField label={t('op.fNpmLabel')}>
             {npmChoice === CUSTOM_NPM ? (
               <div style={{ display: 'flex', gap: 6 }}>
-                <input className="input" style={{ fontSize: 12, flex: 1, minWidth: 0 }} placeholder={t('op.fNpmCustom')} value={form.npm} onChange={e => setForm({ ...form, npm: e.target.value })} autoFocus />
+                <input className="input" style={{ fontSize: 'var(--text-sm)', flex: 1, minWidth: 0 }} placeholder={t('op.fNpmCustom')} value={form.npm} onChange={e => setForm({ ...form, npm: e.target.value })} autoFocus />
                 <button className="btn btn-sm" title={t('op.fNpmLabel')} onClick={() => { setNpmChoice(''); setForm({ ...form, npm: '' }); }}>↩</button>
               </div>
             ) : (
               <Combobox
-                style={{ fontSize: 12, cursor: 'pointer' }}
+                style={{ fontSize: 'var(--text-sm)', cursor: 'pointer' }}
                 value={npmChoice}
                 onChange={(v) => {
                   setNpmChoice(v);
@@ -2810,8 +2810,8 @@ export const KeysPage: React.FC = () => {
 
         {activeTab === 'sync' && (<>
         {/* ---- Credential sync (client ⇄ OCR file; the OCR file is the single truth) ---- */}
-        <p style={{ color: 'var(--text-dim)', fontSize: 11, lineHeight: 1.7, margin: '0 0 7px' }}>{t('op.syncDesc')}</p>
-        <p style={{ color: 'var(--text-dim)', fontSize: 11, lineHeight: 1.7, margin: '0 0 14px' }}>{t('op.syncDescModes')}</p>
+        <p style={{ color: 'var(--text-dim)', fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-relaxed)', margin: '0 0 7px' }}>{t('op.syncDesc')}</p>
+        <p style={{ color: 'var(--text-dim)', fontSize: 'var(--text-xs)', lineHeight: 'var(--leading-relaxed)', margin: '0 0 14px' }}>{t('op.syncDescModes')}</p>
         <div
           style={{
             display: 'grid',
@@ -2833,7 +2833,7 @@ export const KeysPage: React.FC = () => {
             return (
             <React.Fragment key={c.id}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', paddingTop: 2 }}>
-                <span style={{ fontSize: 12.5, fontWeight: 600 }}>{c.label}</span>
+                <span style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--font-semibold)' }}>{c.label}</span>
                 {!c.present && (
                   // Absent client: compact amber warning glyph + hover bubble
                   // instead of a text badge (the condition is static per client).
@@ -2863,7 +2863,7 @@ export const KeysPage: React.FC = () => {
               </div>
               <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 16, paddingTop: 2 }}>
                 <label
-                  style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-main)', cursor: 'pointer' }}
+                  style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--text-sm)', color: 'var(--text-main)', cursor: 'pointer' }}
                   title={t('op.syncAutoReadTip')}
                 >
                   <Switch
@@ -2874,7 +2874,7 @@ export const KeysPage: React.FC = () => {
                   <span>{t('op.syncAutoRead')}</span>
                 </label>
                 <label
-                  style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-main)', cursor: 'pointer' }}
+                  style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--text-sm)', color: 'var(--text-main)', cursor: 'pointer' }}
                   title={t('op.syncAutoWriteTip')}
                 >
                   <Switch
@@ -2933,7 +2933,7 @@ export const KeysPage: React.FC = () => {
           })}
         </div>
         {syncClients.length === 0 && (
-          <div style={{ color: 'var(--text-dim)', fontSize: 12, marginTop: 10 }}>{t('op.syncEmpty')}</div>
+          <div style={{ color: 'var(--text-dim)', fontSize: 'var(--text-sm)', marginTop: 10 }}>{t('op.syncEmpty')}</div>
         )}
         </>)}
         </div>
@@ -3124,19 +3124,19 @@ export const KeysPage: React.FC = () => {
               style={{ width: 'min(560px, 100%)', maxHeight: '90vh', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 12 }}
               onClick={e => e.stopPropagation()}
             >
-              <div style={{ fontSize: 14, fontWeight: 700 }}>{t('op.editDefTitle')} — {editDef.id}</div>
+              <div style={{ fontSize: 'var(--text-base)', fontWeight: 'var(--font-bold)' }}>{t('op.editDefTitle')} — {editDef.id}</div>
               <FormField label={t('op.fName')}>
-                <input className="input" style={{ fontSize: 12 }} value={editDef.name} onChange={e => setEditDef({ ...editDef, name: e.target.value })} />
+                <input className="input" style={{ fontSize: 'var(--text-sm)' }} value={editDef.name} onChange={e => setEditDef({ ...editDef, name: e.target.value })} />
               </FormField>
               <FormField label={t('op.fBaseUrl')}>
-                <input className="input" style={{ fontSize: 12, fontFamily: FONT_MONO }} value={editDef.baseURL} onChange={e => setEditDef({ ...editDef, baseURL: e.target.value })} />
+                <input className="input" style={{ fontSize: 'var(--text-sm)', fontFamily: FONT_MONO }} value={editDef.baseURL} onChange={e => setEditDef({ ...editDef, baseURL: e.target.value })} />
               </FormField>
               <FormField label={t('op.fNpmLabel')}>
                 {/* Combobox, not a free input (repo dropdown convention). The
                     current value always rides first so a non-vocabulary def
                     stays visible; selections may also be cleared. */}
                 <Combobox
-                  style={{ fontSize: 12 }}
+                  style={{ fontSize: 'var(--text-sm)' }}
                   value={editDef.npm}
                   onChange={(v) => setEditDef({ ...editDef, npm: v })}
                   clearable
@@ -3152,12 +3152,12 @@ export const KeysPage: React.FC = () => {
                 />
               </FormField>
               <FormField label={t('op.fPullPattern')}>
-                <input className="input" style={{ fontSize: 12, fontFamily: FONT_MONO }} placeholder={t('op.phPullPattern')} value={editDef.pullPattern} onChange={e => setEditDef({ ...editDef, pullPattern: e.target.value })} />
-                <span style={{ fontSize: 10.5, color: 'var(--text-dim)' }}>{t('op.fPullPatternTip')}</span>
+                <input className="input" style={{ fontSize: 'var(--text-sm)', fontFamily: FONT_MONO }} placeholder={t('op.phPullPattern')} value={editDef.pullPattern} onChange={e => setEditDef({ ...editDef, pullPattern: e.target.value })} />
+                <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('op.fPullPatternTip')}</span>
               </FormField>
               <FormField label={t('op.fHeaders')}>
                 <HeadersEditor rows={editDef.headerRows} onChange={headerRows => setEditDef({ ...editDef, headerRows })} disabled={savingDef} />
-                <span style={{ fontSize: 10.5, color: 'var(--text-dim)' }}>{t('op.fHeadersTip')}</span>
+                <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('op.fHeadersTip')}</span>
               </FormField>
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
                 <button className="btn btn-sm" disabled={savingDef} onClick={() => setEditDef(null)}>{t('op.cancelDefEdit')}</button>

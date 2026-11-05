@@ -145,7 +145,7 @@ const CatalogPicker: React.FC<{
             gap: '2px',
           }}
         >
-          <div style={{ fontSize: '10px', color: 'var(--text-muted)', padding: '2px 6px' }}>
+          <div style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-muted)', padding: '2px 6px' }}>
             {t('harness.detailCatalog')}
           </div>
           {options.map((opt) => {
@@ -159,7 +159,7 @@ const CatalogPicker: React.FC<{
                   alignItems: 'center',
                   justifyContent: 'space-between',
                   padding: compact ? '4px 6px' : '5px 8px',
-                  fontSize: compact ? '11px' : '12px',
+                  fontSize: compact ? 'var(--text-xs)' : 'var(--text-sm)',
                   borderRadius: '4px',
                   border: 'none',
                   background: isSelected ? 'rgba(59, 130, 246, 0.15)' : 'transparent',
@@ -575,7 +575,7 @@ export const HarnessSourcesDrawer: React.FC<{
       onClick={() => void syncHost()}
       disabled={busy !== null}
       title={t('harness.srcMgmt.syncMarketplaces')}
-      style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '12px' }}
+      style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: 'var(--text-sm)' }}
     >
       {busy === 'syncHost' ? <Loader2 size={13} style={{ animation: 'ocr-spin 0.8s linear infinite' }} /> : <RefreshCw size={13} />}
       <span>{t('harness.srcMgmt.syncMarketplaces')}</span>
@@ -605,12 +605,12 @@ export const HarnessSourcesDrawer: React.FC<{
           <span
             className="chip"
             style={{
-              fontSize: '11px',
+              fontSize: 'var(--text-xs)',
               padding: '2px 8px',
               background: 'var(--chip-bg)',
               color: 'var(--text-muted)',
               borderRadius: '12px',
-              fontWeight: 500,
+              fontWeight: 'var(--font-medium)',
             }}
           >
             {isSkill ? t('harness.srcMgmt.globalScope') : harness}
@@ -628,11 +628,11 @@ export const HarnessSourcesDrawer: React.FC<{
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', flexShrink: 0 }}>
           <div
             style={{
-              fontSize: '12px',
-              fontWeight: 600,
+              fontSize: 'var(--text-sm)',
+              fontWeight: 'var(--font-semibold)',
               color: 'var(--text-muted)',
               textTransform: 'uppercase',
-              letterSpacing: '0.04em',
+              letterSpacing: 'var(--tracking-wide)',
             }}
           >
             {t('harness.srcMgmt.builtin')}
@@ -651,10 +651,10 @@ export const HarnessSourcesDrawer: React.FC<{
                   border: '1px solid var(--divider)',
                 }}
               >
-                <span style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text)' }}>{formatSourceLabel(s)}</span>
+                <span style={{ fontSize: 'var(--text-sm)', fontWeight: 'var(--font-medium)', color: 'var(--text)' }}>{formatSourceLabel(s)}</span>
                 <span
                   style={{
-                    fontSize: '10px',
+                    fontSize: 'var(--text-2xs)',
                     color: 'var(--primary, #3b82f6)',
                     background: 'rgba(59, 130, 246, 0.12)',
                     padding: '1px 6px',
@@ -682,7 +682,7 @@ export const HarnessSourcesDrawer: React.FC<{
           background: 'var(--card-bg, #1e1e24)',
         }}
       >
-        <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text)' }}>
+        <div style={{ fontSize: 'var(--text-sm)', fontWeight: 'var(--font-semibold)', color: 'var(--text)' }}>
           {isSkill ? t('harness.srcMgmt.addSkill') : isMcp ? t('harness.srcMgmt.addMcp') : kind === 'plugin' ? t('harness.srcMgmt.addPlugin') : t('harness.srcMgmt.add')}
         </div>
 
@@ -724,7 +724,7 @@ export const HarnessSourcesDrawer: React.FC<{
             }
           >
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', cursor: 'pointer' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: 'var(--text-md)', cursor: 'pointer' }}>
                 <input
                   type="radio"
                   name="source-scope"
@@ -737,12 +737,12 @@ export const HarnessSourcesDrawer: React.FC<{
                   className="chip"
                   style={{
                     cursor: 'default',
-                    fontSize: '9px',
+                    fontSize: 'var(--text-3xs)',
                     padding: '0 6px',
                     display: 'inline-flex',
                     alignItems: 'center',
                     gap: '3px',
-                    fontWeight: 600,
+                    fontWeight: 'var(--font-semibold)',
                     color: 'var(--primary, #3b82f6)',
                     background: 'rgba(59, 130, 246, 0.15)',
                     border: '1px solid rgba(59, 130, 246, 0.35)',
@@ -752,7 +752,7 @@ export const HarnessSourcesDrawer: React.FC<{
                   <span>{harness}</span>
                 </span>
               </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', cursor: 'pointer' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: 'var(--text-md)', cursor: 'pointer' }}>
                 <input
                   type="radio"
                   name="source-scope"
@@ -770,12 +770,12 @@ export const HarnessSourcesDrawer: React.FC<{
                         className="chip"
                         style={{
                           cursor: 'default',
-                          fontSize: '9px',
+                          fontSize: 'var(--text-3xs)',
                           padding: '0 6px',
                           display: 'inline-flex',
                           alignItems: 'center',
                           gap: '3px',
-                          fontWeight: current ? 600 : 500,
+                          fontWeight: current ? 'var(--font-semibold)' : 'var(--font-medium)',
                           color: current ? 'var(--primary, #3b82f6)' : 'var(--accent-emerald, #10b981)',
                           background: current ? 'rgba(59, 130, 246, 0.15)' : 'rgba(16, 185, 129, 0.10)',
                           border: current ? '1px solid rgba(59, 130, 246, 0.35)' : '1px solid rgba(16, 185, 129, 0.22)',
@@ -798,7 +798,7 @@ export const HarnessSourcesDrawer: React.FC<{
               <Combobox
                 value={sourceType}
                 onChange={(v) => setSourceType(v === 'npm' ? 'npm' : v === 'pypi' ? 'pypi' : 'github')}
-                style={{ height: '34px', fontSize: '12px' }}
+                style={{ height: '34px', fontSize: 'var(--text-sm)' }}
                 options={supportedTypes.map((type) => ({
                   value: type,
                   label:
@@ -814,7 +814,7 @@ export const HarnessSourcesDrawer: React.FC<{
 
           <input
             className="input"
-            style={{ flex: 1, minWidth: '200px', fontSize: '12px', height: '34px', boxSizing: 'border-box' }}
+            style={{ flex: 1, minWidth: '200px', fontSize: 'var(--text-sm)', height: '34px', boxSizing: 'border-box' }}
             placeholder={
               sourceType === 'pypi'
                 ? t('harness.srcMgmt.placeholderPypi')
@@ -868,14 +868,14 @@ export const HarnessSourcesDrawer: React.FC<{
         {note && (
           <div
             style={{
-              fontSize: '12px',
+              fontSize: 'var(--text-sm)',
               color: 'var(--text-muted)',
               whiteSpace: 'pre-wrap',
               padding: '8px 12px',
               borderRadius: '6px',
               background: 'rgba(255, 255, 255, 0.03)',
               border: '1px solid var(--divider)',
-              lineHeight: 1.5,
+              lineHeight: 'var(--leading-snug)',
             }}
           >
             {note}
@@ -898,15 +898,15 @@ export const HarnessSourcesDrawer: React.FC<{
         >
           <span
             style={{
-              fontSize: '12px',
-              fontWeight: 600,
+              fontSize: 'var(--text-sm)',
+              fontWeight: 'var(--font-semibold)',
               color: 'var(--text-muted)',
-                            letterSpacing: '0.04em',
+                            letterSpacing: 'var(--tracking-wide)',
             }}
           >
             {t('harness.srcMgmt.operatorSources')}
           </span>
-          <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>
             {t('harness.srcMgmt.configuredCount').replace('{count}', String(entries.length))}
           </span>
         </div>
@@ -919,7 +919,7 @@ export const HarnessSourcesDrawer: React.FC<{
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                fontSize: '13px',
+                fontSize: 'var(--text-md)',
                 color: 'var(--text-muted)',
                 padding: '24px 16px',
                 textAlign: 'center',
@@ -948,7 +948,7 @@ export const HarnessSourcesDrawer: React.FC<{
               }}
             >
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'flex-start' }}>
-                <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text)' }}>
+                <div style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--font-semibold)', color: 'var(--text)' }}>
                   {builtin.length > 0 ? t('harness.srcMgmt.emptyPluginCustom') : t('harness.srcMgmt.emptyPlugin')}
                 </div>
                 {[
@@ -965,8 +965,8 @@ export const HarnessSourcesDrawer: React.FC<{
                         display: 'inline-flex',
                         alignItems: 'center',
                         justifyContent: 'center',
-                        fontSize: '10px',
-                        fontWeight: 700,
+                        fontSize: 'var(--text-2xs)',
+                        fontWeight: 'var(--font-bold)',
                         color: 'var(--primary, #3b82f6)',
                         background: 'rgba(59, 130, 246, 0.12)',
                         border: '1px solid rgba(59, 130, 246, 0.3)',
@@ -974,7 +974,7 @@ export const HarnessSourcesDrawer: React.FC<{
                     >
                       {n}
                     </span>
-                    <span style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.55 }}>{text}</span>
+                    <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', lineHeight: 'var(--leading-normal)' }}>{text}</span>
                   </div>
                 ))}
               </div>
@@ -999,9 +999,9 @@ export const HarnessSourcesDrawer: React.FC<{
                   borderBottom: '1px solid var(--divider)',
                   borderRadius: '8px 8px 0 0',
                   background: 'rgba(255, 255, 255, 0.02)',
-                  fontSize: '10px',
+                  fontSize: 'var(--text-2xs)',
                   color: 'var(--text-muted)',
-                  letterSpacing: '0.04em',
+                  letterSpacing: 'var(--tracking-wide)',
                 }}
               >
                 <span />
@@ -1030,9 +1030,9 @@ export const HarnessSourcesDrawer: React.FC<{
                     title={`${e.repo} · mp-${e.slug}`}
                     style={{
                       flex: '1 1 auto',
-                      fontFamily: 'var(--mono, monospace)',
-                      fontSize: '12px',
-                      fontWeight: 600,
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: 'var(--text-sm)',
+                      fontWeight: 'var(--font-semibold)',
                       color: 'var(--text)',
                       overflow: 'hidden',
                       textOverflow: 'ellipsis',
@@ -1046,10 +1046,10 @@ export const HarnessSourcesDrawer: React.FC<{
                     className="chip"
                     style={{
                       cursor: 'default',
-                      fontSize: '9px',
+                      fontSize: 'var(--text-3xs)',
                       padding: '0 5px',
                       textTransform: 'uppercase',
-                      fontWeight: 600,
+                      fontWeight: 'var(--font-semibold)',
                       flexShrink: 0,
                     }}
                   >
@@ -1085,7 +1085,7 @@ export const HarnessSourcesDrawer: React.FC<{
                       className="input"
                       type="number"
                       min={1}
-                      style={{ width: '46px', height: '22px', fontSize: '11px', padding: '1px 4px', boxSizing: 'border-box' }}
+                      style={{ width: '46px', height: '22px', fontSize: 'var(--text-xs)', padding: '1px 4px', boxSizing: 'border-box' }}
                       aria-label={t('harness.srcMgmt.intervalMin')}
                       value={intervalDrafts[e.slug] ?? Math.round(e.rescan.intervalMs / 60000)}
                       onChange={(ev) => setIntervalDrafts((prev) => ({ ...prev, [e.slug]: ev.target.value }))}
@@ -1096,7 +1096,7 @@ export const HarnessSourcesDrawer: React.FC<{
                         commitInterval(e.slug, e.rescan.enabled, e.rescan.intervalMs);
                       }}
                     />
-                    <span style={{ fontSize: '10px', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{t('harness.srcMgmt.intervalMin')}</span>
+                    <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{t('harness.srcMgmt.intervalMin')}</span>
                   </span>
 
                   <span style={{ display: 'flex', justifyContent: narrow ? 'flex-start' : 'center' }}>
@@ -1150,7 +1150,7 @@ export const HarnessSourcesDrawer: React.FC<{
                       display: 'flex',
                       alignItems: 'center',
                       gap: '4px',
-                      fontSize: '10px',
+                      fontSize: 'var(--text-2xs)',
                       color: 'var(--text-muted)',
                       flexWrap: 'wrap',
                     }}
@@ -1166,7 +1166,7 @@ export const HarnessSourcesDrawer: React.FC<{
                         <span
                           className={badge.className}
                           title={runtime.error ?? `${runtime.host} · ${t(badge.key)}`}
-                          style={{ flexShrink: 0, fontSize: '9px', padding: '0 6px' }}
+                          style={{ flexShrink: 0, fontSize: 'var(--text-3xs)', padding: '0 6px' }}
                         >
                           {t(badge.key)}
                         </span>
@@ -1181,9 +1181,9 @@ export const HarnessSourcesDrawer: React.FC<{
                         title={t('harness.srcMgmt.sharedEntry')}
                         style={{
                           cursor: 'default',
-                          fontSize: '9px',
+                          fontSize: 'var(--text-3xs)',
                           padding: '0 6px',
-                          fontWeight: 600,
+                          fontWeight: 'var(--font-semibold)',
                           color: 'var(--warning, #f59e0b)',
                           background: 'rgba(245, 158, 11, 0.12)',
                           border: '1px solid rgba(245, 158, 11, 0.3)',
@@ -1205,12 +1205,12 @@ export const HarnessSourcesDrawer: React.FC<{
                               className="chip"
                               style={{
                                 cursor: 'default',
-                                fontSize: '9px',
+                                fontSize: 'var(--text-3xs)',
                                 padding: '0 6px',
                                 display: 'inline-flex',
                                 alignItems: 'center',
                                 gap: '3px',
-                                fontWeight: 600,
+                                fontWeight: 'var(--font-semibold)',
                                 color: 'var(--primary, #3b82f6)',
                                 background: 'rgba(59, 130, 246, 0.15)',
                                 border: '1px solid rgba(59, 130, 246, 0.35)',
@@ -1218,7 +1218,7 @@ export const HarnessSourcesDrawer: React.FC<{
                             >
                               <Check size={10} />
                               <span>{harness}</span>
-                              <span style={{ fontWeight: 400, opacity: 0.75 }}>
+                              <span style={{ fontWeight: 'var(--font-regular)', opacity: 0.75 }}>
                                 ({t('harness.srcMgmt.currentHost')})
                               </span>
                             </span>
@@ -1231,9 +1231,9 @@ export const HarnessSourcesDrawer: React.FC<{
                                 className="chip"
                                 style={{
                                   cursor: 'default',
-                                  fontSize: '9px',
+                                  fontSize: 'var(--text-3xs)',
                                   padding: '0 6px',
-                                  fontWeight: 500,
+                                  fontWeight: 'var(--font-medium)',
                                   color: 'var(--accent-emerald, #10b981)',
                                   background: 'rgba(16, 185, 129, 0.10)',
                                   border: '1px solid rgba(16, 185, 129, 0.22)',

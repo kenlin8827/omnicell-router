@@ -19,7 +19,7 @@ import { FONT_MONO } from '../lib/fonts';
  */
 
 const HEADER: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, margin: '0 0 12px', flexWrap: 'wrap' };
-const TITLE: React.CSSProperties = { fontSize: 16, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 };
+const TITLE: React.CSSProperties = { fontSize: 'var(--text-xl)', fontWeight: 'var(--font-bold)', display: 'flex', alignItems: 'center', gap: 8 };
 const CELL: React.CSSProperties = { padding: '7px 10px', verticalAlign: 'middle' };
 
 export function PluginsManagePage(): React.ReactElement {
@@ -123,7 +123,7 @@ export function PluginsManagePage(): React.ReactElement {
           </button>
         </div>
       </div>
-      <p style={{ margin: '0 0 14px', fontSize: 12, color: 'var(--text-dim)' }}>{t('pluginPage.desc')}</p>
+      <p style={{ margin: '0 0 14px', fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>{t('pluginPage.desc')}</p>
       <div style={{ display: 'flex', gap: 8, alignItems: 'stretch', margin: '0 0 10px', flexWrap: 'wrap' }}>
         <input
           className="input"
@@ -172,16 +172,16 @@ export function PluginsManagePage(): React.ReactElement {
           })
           .map((p) => (
           <tr key={p.id}>
-            <td style={{ ...CELL, fontWeight: 600 }}>{p.name}</td>
-            <td style={{ ...CELL, fontFamily: FONT_MONO, fontSize: 11 }}>{p.version}</td>
+            <td style={{ ...CELL, fontWeight: 'var(--font-semibold)' }}>{p.name}</td>
+            <td style={{ ...CELL, fontFamily: FONT_MONO, fontSize: 'var(--text-xs)' }}>{p.version}</td>
             <td style={CELL}>{t('pluginPage.typeModelService')}</td>
-            <td style={{ ...CELL, fontFamily: FONT_MONO, fontSize: 11 }}>{p.wires.join(', ') || '—'}</td>
+            <td style={{ ...CELL, fontFamily: FONT_MONO, fontSize: 'var(--text-xs)' }}>{p.wires.join(', ') || '—'}</td>
             <td style={CELL}>
               <span className={`badge ${p.disabled ? 'badge-warning' : p.loaded ? 'badge-success' : 'badge-danger'}`}>
                 {p.disabled ? t('pluginPage.statusDisabled') : p.loaded ? t('pluginPage.statusLoaded') : t('pluginPage.statusError')}
               </span>
             </td>
-            <td style={{ ...CELL, fontSize: 11, color: 'var(--text-dim)' }}>
+            <td style={{ ...CELL, fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
               {p.error ?? (
                 <span title={`${p.source === 'dev' ? t('pluginPage.sourceDev') : t('pluginPage.sourcePackaged')} · ${p.path}`}>
                   {(() => {

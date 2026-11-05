@@ -182,7 +182,7 @@ export const QuotaPeek: React.FC = () => {
             (the chip itself is the at-a-glance alarm); falls back to the
             panel name while data is absent (loading, gateway down, or no
             pairs). */}
-        <span style={{ ...MONO, fontSize: '11px', fontWeight: 700, color: lamp, whiteSpace: 'nowrap' }}>
+        <span style={{ ...MONO, fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', color: lamp, whiteSpace: 'nowrap' }}>
           {globalWorst === null ? t('nav.quotaPeekTitle') : `${Math.round(globalWorst)}%`}
         </span>
       </button>
@@ -217,7 +217,7 @@ export const QuotaPeek: React.FC = () => {
               >
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: '7px' }}>
                   <Wallet size={13} color="var(--accent)" />
-                  <span style={{ fontSize: '12.5px', fontWeight: 700, letterSpacing: '0.02em', color: 'var(--text-main)' }}>
+                  <span style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--font-bold)', letterSpacing: 'var(--tracking-wide)', color: 'var(--text-main)' }}>
                     {t('nav.quotaPeekTitle')}
                   </span>
                 </span>
@@ -241,7 +241,7 @@ export const QuotaPeek: React.FC = () => {
                   <span
                     style={{
                       ...MONO,
-                      fontSize: '10.5px',
+                      fontSize: 'var(--text-xs)',
                       color: 'var(--text-dim)',
                       border: '1px solid var(--card-border)',
                       borderRadius: '999px',
@@ -254,7 +254,7 @@ export const QuotaPeek: React.FC = () => {
                 </span>
               </div>
               {data && !data.enabled && (
-                <div style={{ fontSize: '11px', color: 'var(--accent-amber)', padding: '2px 2px 6px' }}>{t('nav.quotaPeekOff')}</div>
+                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber)', padding: '2px 2px 6px' }}>{t('nav.quotaPeekOff')}</div>
               )}
               {/* Status segments — same words and default as the page, sized
                   down for the 340px panel. The count pill above reflects the
@@ -265,13 +265,13 @@ export const QuotaPeek: React.FC = () => {
                     key={f}
                     style={{
                       padding: '2px 9px',
-                      fontSize: '11px',
+                      fontSize: 'var(--text-xs)',
                       border: '1px solid var(--card-border)',
                       borderRadius: '999px',
                       cursor: 'pointer',
                       background: peekFilter === f ? 'var(--accent)' : 'transparent',
                       color: peekFilter === f ? 'var(--bg)' : 'var(--text-dim)',
-                      fontWeight: peekFilter === f ? 700 : 400,
+                      fontWeight: peekFilter === f ? 'var(--font-bold)' : 'var(--font-regular)',
                     }}
                     onClick={() => setPeekFilter(f)}
                   >
@@ -280,7 +280,7 @@ export const QuotaPeek: React.FC = () => {
                 ))}
               </div>
               {rows.length === 0 ? (
-                <div style={{ fontSize: '11.5px', color: 'var(--text-dim)', padding: '10px 2px' }}>{t('nav.quotaPeekNoPairs')}</div>
+                <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', padding: '10px 2px' }}>{t('nav.quotaPeekNoPairs')}</div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', maxHeight: 'min(60vh, 460px)', overflowY: 'auto' }}>
                   {rows.map((r) => {
@@ -294,7 +294,7 @@ export const QuotaPeek: React.FC = () => {
                     if (w && w.remainingPct !== null) {
                       pct = w.remainingPct;
                       headValue = (
-                        <span style={{ ...MONO, fontSize: '13px', fontWeight: 700, color: pctColor(pct), flexShrink: 0 }}>
+                        <span style={{ ...MONO, fontSize: 'var(--text-md)', fontWeight: 'var(--font-bold)', color: pctColor(pct), flexShrink: 0 }}>
                           {Math.round(pct)}%
                         </span>
                       );
@@ -311,9 +311,9 @@ export const QuotaPeek: React.FC = () => {
                     } else if (balance) {
                       const amount = Math.max(0, (balance.total ?? 0) - (balance.used ?? 0));
                       headValue = (
-                        <span style={{ ...MONO, fontSize: '13px', fontWeight: 700, color: amount <= 0 ? 'var(--accent-rose)' : 'var(--text-main)', flexShrink: 0 }}>
+                        <span style={{ ...MONO, fontSize: 'var(--text-md)', fontWeight: 'var(--font-bold)', color: amount <= 0 ? 'var(--accent-rose)' : 'var(--text-main)', flexShrink: 0 }}>
                           {amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                          {balance.nameArg ? <span style={{ fontSize: '10.5px', fontWeight: 500, color: 'var(--text-dim)' }}> {balance.nameArg}</span> : null}
+                          {balance.nameArg ? <span style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-medium)', color: 'var(--text-dim)' }}> {balance.nameArg}</span> : null}
                         </span>
                       );
                       subLabel = winLabel(balance);
@@ -323,8 +323,8 @@ export const QuotaPeek: React.FC = () => {
                       headValue = (
                         <span
                           style={{
-                            fontSize: '11px',
-                            fontWeight: 600,
+                            fontSize: 'var(--text-xs)',
+                            fontWeight: 'var(--font-semibold)',
                             color: quota?.badge === 'stale' || failed ? 'var(--accent-rose)' : 'var(--text-dim)',
                             flexShrink: 0,
                           }}
@@ -346,8 +346,8 @@ export const QuotaPeek: React.FC = () => {
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '10px', minWidth: 0 }}>
                           <span
                             style={{
-                              fontSize: '12px',
-                              fontWeight: 600,
+                              fontSize: 'var(--text-sm)',
+                              fontWeight: 'var(--font-semibold)',
                               color: 'var(--text-main)',
                               overflow: 'hidden',
                               textOverflow: 'ellipsis',
@@ -416,12 +416,12 @@ export const QuotaPeek: React.FC = () => {
                         {(subLabel || resetText) && (
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '10px', marginTop: '4px', minWidth: 0 }}>
                             <span
-                              style={{ fontSize: '10.5px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}
+                              style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}
                               title={subLabel || undefined}
                             >
                               {subLabel}
                             </span>
-                            {resetText && <span style={{ fontSize: '10.5px', color: 'var(--text-dim)', whiteSpace: 'nowrap', flexShrink: 0 }}>{resetText}</span>}
+                            {resetText && <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', whiteSpace: 'nowrap', flexShrink: 0 }}>{resetText}</span>}
                           </div>
                         )}
                       </div>

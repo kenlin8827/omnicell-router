@@ -232,6 +232,9 @@ export interface TranslationDict {
     plugins: string;
     grpSystem: string;
     searchPlaceholder: string;
+    collapse: string;
+    expand: string;
+    openMenu: string;
     consoleTag: string;
     /** Brand header tagline suffix; interpolates the runtime gateway version. */
     version: string;
@@ -257,13 +260,9 @@ export interface TranslationDict {
     restartTimeout: string;
     switchLang: string;
     themes: {
-      onyx: string;
-      indigo: string;
-      emerald: string;
-      violet: string;
-      rose: string;
-      azure: string;
-      amber: string;
+      light: string;
+      dark: string;
+      system: string;
     };
   };
   overview: {

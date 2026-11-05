@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useSearchParams, useNavigate, useNavigationType } from 'react-router-dom';
-import { BarChart3, X, ArrowLeft } from 'lucide-react';
+import { X, ArrowLeft } from 'lucide-react';
 import { api, type UsageStatsResponse, type KeyUsageRow, type TraceRecord } from '../lib/api';
 import { formatCost, shortId, decodeRate, formatRate, fmtLatency } from '../lib/format';
 import { Combobox } from '../components/Combobox';
@@ -194,79 +194,36 @@ export const UsagePage: React.FC = () => {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-      {/* Toolbar: title + filter chip + range picker */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          {canGoBack && (
-            <button
-              type="button"
-              onClick={() => navigate(-1)}
-              title={t('usage.back')}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '4px',
-                background: 'transparent',
-                border: '1px solid var(--divider)',
-                color: 'var(--text-muted)',
-                borderRadius: '6px',
-                padding: '3px 8px',
-                fontSize: '11px',
-                cursor: 'pointer',
-              }}
-            >
-              <ArrowLeft size={12} />
-              {t('usage.back')}
-            </button>
-          )}
-          <BarChart3 size={16} color="var(--accent)" />
-          <span style={{ fontSize: '14px', fontWeight: 700 }}>
-            {sessionFilter ? t('usage.sessionTitle') : modelFilter ? t('usage.modelTitle') : t('nav.usage')}
-          </span>
-          {(keyFilter || sessionFilter || modelFilter) && (
-            <span
-              className="badge"
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '6px',
-                padding: '3px 8px',
-                background: 'transparent',
-                border: '1px solid var(--accent)',
-                color: 'var(--accent)',
-                borderRadius: '6px',
-                fontSize: '11px',
-              }}
-            >
-              {/* Filter chip: app name when known; session view shows the short id; model view the model id. */}
-              {sessionFilter ? shortId(sessionFilter) : modelFilter ? modelFilter : (allRows.find(r => r.id === keyFilter)?.name ?? keyFilter)}
-              <span role="button" aria-label={t('usage.clearFilter')} title={t('usage.clearFilter')} onClick={clearFilter} style={{ cursor: 'pointer', display: 'inline-flex' }}>
-                <X size={11} />
+      <section className="page-intro">
+        <div className="page-intro-copy">
+          <div className="page-title-row">
+            {canGoBack && <button type="button" className="app-icon-button" onClick={() => navigate(-1)} title={t('usage.back')} aria-label={t('usage.back')}><ArrowLeft size={17} /></button>}
+            <h1>{sessionFilter ? t('usage.sessionTitle') : modelFilter ? t('usage.modelTitle') : t('nav.usage')}</h1>
+            {(keyFilter || sessionFilter || modelFilter) && (
+              <span className="active-filter">
+                {sessionFilter ? shortId(sessionFilter) : modelFilter ? modelFilter : (allRows.find(r => r.id === keyFilter)?.name ?? keyFilter)}
+                <button type="button" aria-label={t('usage.clearFilter')} title={t('usage.clearFilter')} onClick={clearFilter}><X size={12} /></button>
               </span>
-            </span>
-          )}
+            )}
+          </div>
+          <p>{t('usage.windowHint')}</p>
         </div>
         {!sessionFilter && (
-          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-            <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{t('overview.rangeLabel')}</span>
-            <Combobox
-              value={rangeHours}
-              onChange={setRangeHours}
-              options={TIME_RANGE_OPTIONS.map(o => ({ value: o.value, label: t(o.labelKey) }))}
-              style={{ fontSize: '12px', padding: '5px 10px', width: '120px' }}
-            />
+          <div className="page-intro-actions">
+            <span className="page-control-label">{t('overview.rangeLabel')}</span>
+            <Combobox value={rangeHours} onChange={setRangeHours} options={TIME_RANGE_OPTIONS.map(o => ({ value: o.value, label: t(o.labelKey) }))}
+              style={{ fontSize: 'var(--text-sm)', padding: '6px 10px', width: '128px' }} />
           </div>
         )}
-      </div>
-      <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('usage.windowHint')}</div>
+      </section>
 
       {/* Totals cards (recomputed over the filtered row when ?key= is set) */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '12px' }}>
+      <div className="usage-metric-grid">
         {cards.map(c => (
-          <div key={c.label} className="card" style={{ padding: '12px 16px' }} title={c.tip}>
-            <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{c.label}</div>
-            <div style={{ fontSize: '20px', fontWeight: 800, marginTop: '4px', color: c.color }}>{c.value}</div>
-            {c.sub && <div style={{ fontSize: '11px', marginTop: '2px', color: 'var(--text-dim)' }}>{c.sub}</div>}
+          <div key={c.label} className="card usage-metric" title={c.tip}>
+            <div className="usage-metric-label">{c.label}</div>
+            <div className="usage-metric-value" style={{ color: c.color }}>{c.value}</div>
+            {c.sub && <div className="usage-metric-sub">{c.sub}</div>}
           </div>
         ))}
       </div>
@@ -274,7 +231,7 @@ export const UsagePage: React.FC = () => {
       {scoped ? (
         <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
           {scopedTraces.length === 0 ? (
-            <div style={{ padding: '48px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '13px' }}>
+            <div style={{ padding: '48px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 'var(--text-md)' }}>
               {t('usage.empty')}
             </div>
           ) : (
@@ -286,7 +243,7 @@ export const UsagePage: React.FC = () => {
                   gridTemplateColumns: '64px 64px 30px minmax(90px, 1fr) 56px 56px 60px 86px 52px 44px',
                   columnGap: '8px',
                   rowGap: '6px',
-                  fontSize: '11px',
+                  fontSize: 'var(--text-xs)',
                   fontFamily: FONT_MONO,
                 }}
               >
@@ -302,7 +259,7 @@ export const UsagePage: React.FC = () => {
                   t('sessions.colMs'),
                   t('usage.thToks'),
                 ].map((label, i) => (
-                  <span key={i} style={{ color: 'var(--text-dim)', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase' }}>
+                  <span key={i} style={{ color: 'var(--text-dim)', fontSize: 'var(--text-2xs)', fontWeight: 'var(--font-bold)', textTransform: 'uppercase' }}>
                     {label}
                   </span>
                 ))}
@@ -359,20 +316,20 @@ export const UsagePage: React.FC = () => {
         {loading ? (
           <div style={{ padding: '48px', textAlign: 'center', color: 'var(--text-muted)' }}>{t('common.loading')}</div>
         ) : rows.length === 0 ? (
-          <div style={{ padding: '48px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '13px' }}>{t('usage.empty')}</div>
+          <div style={{ padding: '48px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 'var(--text-md)' }}>{t('usage.empty')}</div>
         ) : (
           <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: 'var(--text-md)' }}>
               <thead>
                 <tr
                   style={{
                     background: 'var(--bg-elev)',
                     borderBottom: '1px solid var(--divider)',
-                    fontSize: '11px',
-                    fontWeight: 700,
+                    fontSize: 'var(--text-xs)',
+                    fontWeight: 'var(--font-bold)',
                     color: 'var(--text-dim)',
                     textTransform: 'uppercase',
-                    letterSpacing: '0.04em',
+                    letterSpacing: 'var(--tracking-wide)',
                   }}
                 >
                   <th style={TH_STYLE}>{t('usage.thApp')}</th>
@@ -394,9 +351,9 @@ export const UsagePage: React.FC = () => {
                     onClick={() => (r.id ? navigate(`/sessions?apiKey=${encodeURIComponent(r.id)}`) : undefined)}
                   >
                     <td style={{ padding: '10px 14px' }}>
-                      <div style={{ fontWeight: 600 }}>{r.id ? r.name : t('usage.anonymous')}</div>
+                      <div style={{ fontWeight: 'var(--font-semibold)' }}>{r.id ? r.name : t('usage.anonymous')}</div>
                       {r.id && (
-                        <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: FONT_MONO }}>
+                        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontFamily: FONT_MONO }}>
                           {shortId(r.id)}
                         </div>
                       )}
@@ -408,7 +365,7 @@ export const UsagePage: React.FC = () => {
                       {r.cachedTokens.toLocaleString()}
                       {/* Token-weighted hit share per app, matching the cards. */}
                       {r.inputTokens > 0 && (
-                        <div style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 400 }}>
+                        <div style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', fontWeight: 'var(--font-regular)' }}>
                           {t('sessions.cacheHitRate', { pct: ((r.cachedTokens / r.inputTokens) * 100).toFixed(1) })}
                         </div>
                       )}

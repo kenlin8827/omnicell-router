@@ -60,20 +60,20 @@ const TokenStatRow: React.FC<{ label: string; value: string; color?: string; tit
       display: 'flex',
       alignItems: 'baseline',
       gap: 6,
-      lineHeight: 1.7,
+      lineHeight: 'var(--leading-relaxed)',
       // span: bleed across every grid column (no-op in the 1-col narrow
       // layout) so a lone trailing row doesn't strand an empty half-column.
       ...(span ? { gridColumn: '1 / -1' } : {}),
     }}
   >
-    <span style={{ fontSize: '10px', color: 'var(--text-dim)', flexShrink: 0, minWidth: 24 }}>
+    <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)', flexShrink: 0, minWidth: 24 }}>
       {label}
     </span>
     <span
       title={title}
       style={{
         fontFamily: FONT_MONO,
-        fontWeight: 600,
+        fontWeight: 'var(--font-semibold)',
         color: color ?? 'var(--text-main)',
       }}
     >
@@ -166,8 +166,8 @@ const ModelRefCell: React.FC<{ model: string | null; provider?: string | null }>
           style={{
             ...MODEL_LINE_STYLE,
             marginTop: '3px',
-            fontSize: '10px',
-            fontWeight: 500,
+            fontSize: 'var(--text-2xs)',
+            fontWeight: 'var(--font-medium)',
             color: 'var(--text-dim)',
           }}
         >
@@ -185,8 +185,8 @@ const ModelRefCell: React.FC<{ model: string | null; provider?: string | null }>
  */
 const PROVIDER_CHIP_STYLE: React.CSSProperties = {
   fontFamily: FONT_MONO,
-  fontSize: '10px',
-  fontWeight: 500,
+  fontSize: 'var(--text-2xs)',
+  fontWeight: 'var(--font-medium)',
   color: 'var(--text-dim)',
   background: 'var(--chip-bg)',
   border: '1px solid var(--card-border)',
@@ -769,7 +769,7 @@ export const SessionsPage: React.FC = () => {
               { value: '', label: t('sessions.apiKeyAll') },
               ...apiKeyOptions.map(k => ({ value: k.id, label: k.name })),
             ]}
-            style={{ fontSize: '12px', padding: '5px 8px', width: 180 }}
+            style={{ fontSize: 'var(--text-sm)', padding: '5px 8px', width: 180 }}
           />
           <div style={{ position: 'relative', flex: '1 1 240px', minWidth: 180, maxWidth: 420 }}>
             <Search
@@ -781,7 +781,7 @@ export const SessionsPage: React.FC = () => {
               value={filterInput}
               onChange={e => setFilterInput(e.target.value)}
               placeholder={t('sessions.filterPlaceholder')}
-              style={{ fontSize: '12px', padding: '5px 8px 5px 24px', width: '100%' }}
+              style={{ fontSize: 'var(--text-sm)', padding: '5px 8px 5px 24px', width: '100%' }}
             />
           </div>
           <button className="btn btn-sm" onClick={clearAll} disabled={loading || total === 0}>
@@ -803,11 +803,11 @@ export const SessionsPage: React.FC = () => {
           checkbox drop to its own right-aligned row instead of squeezing the
           copy to a column of single words. */}
       <div style={{ display: 'flex', alignItems: 'flex-start', flexWrap: 'wrap', gap: 16, margin: '0 0 12px 0' }}>
-        <p style={{ flex: 1, fontSize: '13px', color: 'var(--text-muted)', lineHeight: '1.6', margin: 0 }}>
+        <p style={{ flex: 1, fontSize: 'var(--text-md)', color: 'var(--text-muted)', lineHeight: 'var(--leading-normal)', margin: 0 }}>
           {t('sessions.sessionsDesc')}
         </p>
         <label
-          style={{ display: 'flex', alignItems: 'center', gap: 5, paddingTop: 2, flexShrink: 0, marginLeft: 'auto', fontSize: '12px', color: 'var(--text-dim)', whiteSpace: 'nowrap', cursor: 'pointer', userSelect: 'none' }}
+          style={{ display: 'flex', alignItems: 'center', gap: 5, paddingTop: 2, flexShrink: 0, marginLeft: 'auto', fontSize: 'var(--text-sm)', color: 'var(--text-dim)', whiteSpace: 'nowrap', cursor: 'pointer', userSelect: 'none' }}
           title={t('sessions.hideInternalTip')}
         >
           <input
@@ -829,7 +829,7 @@ export const SessionsPage: React.FC = () => {
           same gutter on both so the body's scrollbar never desyncs widths. */}
       <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
         <div style={{ scrollbarGutter: 'stable' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'center', fontSize: '12px', tableLayout: 'fixed' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'center', fontSize: 'var(--text-sm)', tableLayout: 'fixed' }}>
             <colgroup>{colWidths.map((w, i) => <col key={i} style={{ width: w }} />)}</colgroup>
             <thead>
               <tr style={{ borderBottom: '1px solid var(--divider)', color: 'var(--text-dim)' }}>
@@ -870,7 +870,7 @@ export const SessionsPage: React.FC = () => {
           </table>
         </div>
         <div style={{ overflowY: 'auto', flex: 1, minHeight: 0, scrollbarGutter: 'stable' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'center', fontSize: '12px', tableLayout: 'fixed' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'center', fontSize: 'var(--text-sm)', tableLayout: 'fixed' }}>
             <colgroup>{colWidths.map((w, i) => <col key={i} style={{ width: w }} />)}</colgroup>
             <tbody>
             {sessions.length > 0 ? (
@@ -908,8 +908,8 @@ export const SessionsPage: React.FC = () => {
                           marginLeft: '6px',
                           verticalAlign: 'middle',
                           fontFamily: 'inherit',
-                          fontSize: '10px',
-                          lineHeight: '14px',
+                          fontSize: 'var(--text-2xs)',
+                          lineHeight: 'var(--leading-14)',
                           padding: '1px 6px',
                           borderRadius: '4px',
                           background: 'var(--chip-bg)',
@@ -927,7 +927,7 @@ export const SessionsPage: React.FC = () => {
                         title={s.firstUserMessage}
                         style={{
                           marginTop: '2px',
-                          fontSize: '11px',
+                          fontSize: 'var(--text-xs)',
                           color: 'var(--text-dim)',
                           whiteSpace: 'nowrap',
                           overflow: 'hidden',
@@ -952,8 +952,8 @@ export const SessionsPage: React.FC = () => {
                             key={k.id}
                             title={t('captures.apiKeyTooltip', { name: k.name, id: k.id })}
                             style={{
-                              fontSize: '10px',
-                              lineHeight: '14px',
+                              fontSize: 'var(--text-2xs)',
+                              lineHeight: 'var(--leading-14)',
                               padding: '1px 6px',
                               borderRadius: '4px',
                               background: 'color-mix(in srgb, var(--accent-emerald) 10%, transparent)',
@@ -973,8 +973,8 @@ export const SessionsPage: React.FC = () => {
                             key={ua}
                             title={t('sessions.clientTip', { ua })}
                             style={{
-                              fontSize: '10px',
-                              lineHeight: '14px',
+                              fontSize: 'var(--text-2xs)',
+                              lineHeight: 'var(--leading-14)',
                               padding: '1px 6px',
                               borderRadius: '4px',
                               background: 'color-mix(in srgb, var(--accent-violet) 10%, transparent)',
@@ -994,7 +994,7 @@ export const SessionsPage: React.FC = () => {
                       <span style={{ color: 'var(--text-dim)' }}>—</span>
                     )}
                   </td>
-                  <td style={{ padding: '10px 14px', fontWeight: 600 }}>
+                  <td style={{ padding: '10px 14px', fontWeight: 'var(--font-semibold)' }}>
                     <ModelRefCell model={s.currentModel} provider={s.currentProvider} />
                     {/* Credential affinity: the operator's label when the
                         registry chain carries one, else the display-safe
@@ -1008,15 +1008,15 @@ export const SessionsPage: React.FC = () => {
                         style={{
                           display: 'block',
                           marginTop: '3px',
-                          fontSize: '10px',
+                          fontSize: 'var(--text-2xs)',
                           fontFamily: s.boundCredentialLabel ? undefined : FONT_MONO,
-                          lineHeight: '14px',
+                          lineHeight: 'var(--leading-14)',
                           padding: '1px 6px',
                           borderRadius: '4px',
                           background: 'var(--chip-bg)',
                           border: '1px solid var(--card-border)',
                           color: 'var(--text-dim)',
-                          fontWeight: 500,
+                          fontWeight: 'var(--font-medium)',
                           maxWidth: '100%',
                           overflow: 'hidden',
                           textOverflow: 'ellipsis',
@@ -1041,7 +1041,7 @@ export const SessionsPage: React.FC = () => {
                         alignItems: 'center',
                         gap: 4,
                         fontFamily: FONT_MONO,
-                        fontWeight: 600,
+                        fontWeight: 'var(--font-semibold)',
                         // Color = signal: blue only when switches actually
                         // happened; a zero row stays quiet gray.
                         color: s.switchCount > 0 ? 'var(--accent)' : 'var(--text-dim)',
@@ -1240,7 +1240,7 @@ export const SessionsPage: React.FC = () => {
             </span>
           }
           subtitle={
-            <span style={{ fontFamily: FONT_MONO, fontSize: '11px', wordBreak: 'break-all' }}>
+            <span style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', wordBreak: 'break-all' }}>
               {timeline.session.id}
             </span>
           }
@@ -1288,10 +1288,10 @@ export const SessionsPage: React.FC = () => {
               {timeline.trailOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
               <span
                 style={{
-                  fontSize: '11px',
-                  fontWeight: 700,
+                  fontSize: 'var(--text-xs)',
+                  fontWeight: 'var(--font-bold)',
                   textTransform: 'uppercase',
-                  letterSpacing: '0.04em',
+                  letterSpacing: 'var(--tracking-wide)',
                   color: 'var(--text-dim)',
                 }}
               >
@@ -1303,7 +1303,7 @@ export const SessionsPage: React.FC = () => {
             </div>
             {timeline.trailOpen &&
               (timeline.events.length === 0 ? (
-                <p style={{ fontSize: '13px', color: 'var(--text-dim)', margin: 0 }}>{t('sessions.switchEmpty')}</p>
+                <p style={{ fontSize: 'var(--text-md)', color: 'var(--text-dim)', margin: 0 }}>{t('sessions.switchEmpty')}</p>
               ) : (
               <div
                 style={{
@@ -1335,7 +1335,7 @@ export const SessionsPage: React.FC = () => {
                         display: 'flex',
                         alignItems: 'baseline',
                         gap: '10px',
-                        fontSize: '12px',
+                        fontSize: 'var(--text-sm)',
                         flexWrap: 'wrap',
                         position: 'relative',
                       }}
@@ -1363,14 +1363,14 @@ export const SessionsPage: React.FC = () => {
                       </span>
                       <span
                         title={providerNs ? (ev.from ? `${ev.from} → ${ev.to}` : ev.to) : undefined}
-                        style={{ fontWeight: 600, fontFamily: FONT_MONO }}
+                        style={{ fontWeight: 'var(--font-semibold)', fontFamily: FONT_MONO }}
                       >
                         {ev.from ? <><span style={{ color: 'var(--text-dim)' }}>{shortModel(providerNs, ev.from)}</span>{' → '}</> : null}
                         {shortModel(providerNs, ev.to)}
                       </span>
                       {detail && (
                         <span
-                          style={{ color: 'var(--text-dim)', fontSize: '11px', flexBasis: '100%', wordBreak: 'break-word' }}
+                          style={{ color: 'var(--text-dim)', fontSize: 'var(--text-xs)', flexBasis: '100%', wordBreak: 'break-word' }}
                           title={detailTip}
                         >
                           {ev.tieredDetail ? (
@@ -1419,10 +1419,10 @@ export const SessionsPage: React.FC = () => {
                     display: 'flex',
                     alignItems: 'center',
                     gap: '6px',
-                    fontSize: '11px',
-                    fontWeight: 700,
+                    fontSize: 'var(--text-xs)',
+                    fontWeight: 'var(--font-bold)',
                     textTransform: 'uppercase',
-                    letterSpacing: '0.04em',
+                    letterSpacing: 'var(--tracking-wide)',
                     color: 'var(--text-dim)',
                     marginBottom: timeline.detailOpen ? '8px' : 0,
                     cursor: 'pointer',
@@ -1476,7 +1476,7 @@ export const SessionsPage: React.FC = () => {
                     // provider) and sets the row height — center every cell
                     // vertically so the single-line cells don't hug the top.
                     alignItems: 'center',
-                    fontSize: '11px',
+                    fontSize: 'var(--text-xs)',
                     fontFamily: FONT_MONO,
                     // Below the ~1008px column minimum (narrow window), scroll
                     // the grid instead of clipping the cost/latency columns.
@@ -1508,8 +1508,8 @@ export const SessionsPage: React.FC = () => {
                       style={{
                         textAlign: 'center',
                         color: 'var(--text-dim)',
-                        fontSize: '10px',
-                        fontWeight: 700,
+                        fontSize: 'var(--text-2xs)',
+                        fontWeight: 'var(--font-bold)',
                         textTransform: 'uppercase',
                       }}
                     >

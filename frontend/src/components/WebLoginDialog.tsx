@@ -132,18 +132,18 @@ export const WebLoginDialog: React.FC<{
       {/* The tip describes the WEB flow only — it belongs inside the flow
           body, below the method switcher, not in the dialog subtitle slot
           where it would read as describing both tabs. */}
-      <p style={{ color: 'var(--text-dim)', fontSize: 12, margin: 0 }}>{t('op.webLoginTip')}</p>
-      {phase === 'starting' && <p style={{ color: 'var(--text-dim)', fontSize: 12, margin: 0 }}>{t('op.webLoginStarting')}</p>}
+      <p style={{ color: 'var(--text-dim)', fontSize: 'var(--text-sm)', margin: 0 }}>{t('op.webLoginTip')}</p>
+      {phase === 'starting' && <p style={{ color: 'var(--text-dim)', fontSize: 'var(--text-sm)', margin: 0 }}>{t('op.webLoginStarting')}</p>}
       {phase !== 'starting' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div>
-            <div style={{ fontSize: 11, fontWeight: 700, margin: '0 0 4px' }}>{t('op.webLoginAuthUrlLabel')}</div>
+            <div style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', margin: '0 0 4px' }}>{t('op.webLoginAuthUrlLabel')}</div>
             <div style={{ display: 'flex', gap: 6 }}>
               <code
                 style={{
                   flex: 1,
                   fontFamily: FONT_MONO,
-                  fontSize: 11,
+                  fontSize: 'var(--text-xs)',
                   padding: '7px 9px',
                   border: '1px solid var(--card-border)',
                   borderRadius: 6,
@@ -172,17 +172,17 @@ export const WebLoginDialog: React.FC<{
             </div>
           </div>
 
-          {phase === 'waiting' && <p style={{ color: 'var(--text-dim)', fontSize: 12, margin: 0 }}>{t('op.webLoginWaiting')}</p>}
-          {phase === 'done' && <p style={{ color: 'var(--accent-emerald)', fontSize: 12, margin: 0 }}>{t('op.webLoginDone')}</p>}
-          {phase === 'failed' && <p style={{ color: 'var(--accent-rose)', fontSize: 12, margin: 0 }}>{error || t('op.webLoginFailed')}</p>}
+          {phase === 'waiting' && <p style={{ color: 'var(--text-dim)', fontSize: 'var(--text-sm)', margin: 0 }}>{t('op.webLoginWaiting')}</p>}
+          {phase === 'done' && <p style={{ color: 'var(--accent-emerald)', fontSize: 'var(--text-sm)', margin: 0 }}>{t('op.webLoginDone')}</p>}
+          {phase === 'failed' && <p style={{ color: 'var(--accent-rose)', fontSize: 'var(--text-sm)', margin: 0 }}>{error || t('op.webLoginFailed')}</p>}
 
           {submitSupported && phase !== 'done' && (
             <div>
-              <div style={{ fontSize: 11, fontWeight: 700, margin: '0 0 4px' }}>{t('op.webLoginSubmitLabel')}</div>
+              <div style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', margin: '0 0 4px' }}>{t('op.webLoginSubmitLabel')}</div>
               <div style={{ display: 'flex', gap: 6 }}>
                 <input
                   className="input"
-                  style={{ fontSize: 12, flex: 1 }}
+                  style={{ fontSize: 'var(--text-sm)', flex: 1 }}
                   placeholder={t('op.webLoginSubmitPlaceholder')}
                   value={code}
                   onChange={(e) => setCode(e.target.value)}

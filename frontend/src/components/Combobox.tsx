@@ -292,7 +292,7 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
               : (placeholder ?? '')}
         </span>
         {!hideMetaInTrigger && selected?.meta && (
-          <span style={{ fontSize: 11, color: 'var(--text-dim)', flexShrink: 0 }}>{selected.meta}</span>
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', flexShrink: 0 }}>{selected.meta}</span>
         )}
         {clearable && values.length > 0 ? (
           // span (not button): interactive content must not nest inside <button>.
@@ -356,7 +356,7 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
                         setActive(0);
                       }}
                       className={`btn btn-sm ${selectedOnly ? 'btn-primary' : ''}`}
-                      style={{ flexShrink: 0, fontSize: 11, padding: '3px 10px' }}
+                      style={{ flexShrink: 0, fontSize: 'var(--text-xs)', padding: '3px 10px' }}
                     >
                       {t('combobox.showSelectedOnly')}
                     </button>
@@ -394,7 +394,7 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
                     setQuery(e.target.value);
                     setActive(0);
                   }}
-                  style={{ fontSize: 12, padding: '6px 10px', paddingLeft: 26 }}
+                  style={{ fontSize: 'var(--text-sm)', padding: '6px 10px', paddingLeft: 26 }}
                 />
               </div>
             )}
@@ -421,16 +421,16 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
                       {o.label}
                     </span>
                     {o.meta && (
-                      <span style={{ fontSize: 10.5, color: 'var(--text-dim)', flexShrink: 1, maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{o.meta}</span>
+                      <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', flexShrink: 1, maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{o.meta}</span>
                     )}
                     {o.badge && (
                       <span
                         style={{
-                          fontSize: 9.5,
-                          fontWeight: 700,
+                          fontSize: 'var(--text-2xs)',
+                          fontWeight: 'var(--font-bold)',
                           textTransform: 'uppercase',
-                          letterSpacing: '0.04em',
-                          lineHeight: 1.5,
+                          letterSpacing: 'var(--tracking-wide)',
+                          lineHeight: 'var(--leading-snug)',
                           padding: '0 6px',
                           borderRadius: 999,
                           flexShrink: 0,
@@ -446,7 +446,7 @@ export const Combobox: React.FC<ComboboxProps> = (props) => {
                 );
               })}
               {filtered.length === 0 && (
-                <div style={{ padding: '10px', fontSize: 12, color: 'var(--text-dim)', textAlign: 'center' }}>
+                <div style={{ padding: '10px', fontSize: 'var(--text-sm)', color: 'var(--text-dim)', textAlign: 'center' }}>
                   {t('common.noResults')}
                 </div>
               )}

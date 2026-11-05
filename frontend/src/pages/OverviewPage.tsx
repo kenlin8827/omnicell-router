@@ -83,81 +83,53 @@ export const OverviewPage: React.FC = () => {
             border: '1px solid var(--accent-rose)',
             background: 'color-mix(in srgb, var(--accent-rose) 8%, transparent)',
             color: 'var(--accent-rose)',
-            fontSize: '13px',
+            fontSize: 'var(--text-md)',
           }}
         >
           {t('overview.statusOffline')}
         </div>
       )}
 
-      {/* 4 Core Usage Metrics */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
-        <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
-          {t('overview.windowScope')}
+      <section className="page-intro">
+        <div className="page-intro-copy">
+          <h1>{t('nav.overview')}</h1>
+          <p>{t('overview.windowScope')}</p>
         </div>
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-          <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{t('overview.rangeLabel')}</span>
+        <div className="page-intro-actions">
+          <span className="page-control-label">{t('overview.rangeLabel')}</span>
           <Combobox
             value={rangeHours}
             onChange={setRangeHours}
             options={RANGE_OPTIONS.map(o => ({ value: o.value, label: t(o.labelKey) }))}
-            style={{ fontSize: '12px', padding: '5px 10px', width: '120px' }}
+            style={{ fontSize: 'var(--text-sm)', padding: '6px 10px', width: '128px' }}
           />
         </div>
-      </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '16px' }}>
-        <div className="card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', fontSize: '13px' }}>
-            <span>{t('overview.requests')}</span>
-            <Activity size={16} color="var(--accent-emerald)" />
-          </div>
-          <div style={{ fontSize: '28px', fontWeight: 800, margin: '8px 0 4px 0', color: 'var(--accent-emerald)' }}>
-            {requests.toLocaleString()}
-          </div>
-          <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
-            {t('overview.requestsSub', { fallbacks: (metrics?.fallbackCount ?? 0).toLocaleString() })}
-          </div>
+      </section>
+      <div className="metric-grid">
+        <div className="card metric-card">
+          <div className="metric-card-top"><span>{t('overview.requests')}</span><span className="metric-icon"><Activity size={16} /></span></div>
+          <div className="metric-value">{requests.toLocaleString()}</div>
+          <div className="metric-sub">{t('overview.requestsSub', { fallbacks: (metrics?.fallbackCount ?? 0).toLocaleString() })}</div>
         </div>
-
-        <div className="card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', fontSize: '13px' }}>
-            <span>{t('overview.tokensIn')}</span>
-            <Cpu size={16} color="var(--accent)" />
-          </div>
-          <div style={{ fontSize: '28px', fontWeight: 800, margin: '8px 0 4px 0', color: 'var(--text-main)' }}>
-            {inputTokens.toLocaleString()}
-          </div>
-          <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+        <div className="card metric-card">
+          <div className="metric-card-top"><span>{t('overview.tokensIn')}</span><span className="metric-icon"><Cpu size={16} /></span></div>
+          <div className="metric-value">{inputTokens.toLocaleString()}</div>
+          <div className="metric-sub">
             {t('overview.tokensInSub', { cached: cachedTokens.toLocaleString() })}
             {inputTokens > 0 && ` · ${t('sessions.cacheHitRate', { pct: ((cachedTokens / inputTokens) * 100).toFixed(1) })}`}
           </div>
         </div>
-
-        <div className="card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', fontSize: '13px' }}>
-            <span>{t('overview.tokensOut')}</span>
-            <Zap size={16} color="var(--accent-violet)" />
-          </div>
-          <div style={{ fontSize: '28px', fontWeight: 800, margin: '8px 0 4px 0', color: 'var(--text-main)' }}>
-            {outputTokens.toLocaleString()}
-          </div>
-          <div style={{ fontSize: '11px', color: 'var(--text-dim)' }} title={t('usage.toksTip')}>
-            {t('overview.tokensOutSub')}
-            {toksRate !== null ? ` ≈ ${formatRate(toksRate)} tok/s` : ''}
+        <div className="card metric-card">
+          <div className="metric-card-top"><span>{t('overview.tokensOut')}</span><span className="metric-icon"><Zap size={16} /></span></div>
+          <div className="metric-value">{outputTokens.toLocaleString()}</div>
+          <div className="metric-sub" title={t('usage.toksTip')}>
+            {t('overview.tokensOutSub')}{toksRate !== null ? ` ≈ ${formatRate(toksRate)} tok/s` : ''}
           </div>
         </div>
-
-        <div className="card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', fontSize: '13px' }}>
-            <span>{t('overview.avgLatency')}</span>
-            <Clock size={16} color="var(--accent-amber)" />
-          </div>
-          <div style={{ fontSize: '28px', fontWeight: 800, margin: '8px 0 4px 0', color: 'var(--text-main)' }} title={`${latency} ms`}>
-            {fmtLatency(latency)}
-          </div>
-          <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
-            {t('overview.latencySub')}
-          </div>
+        <div className="card metric-card">
+          <div className="metric-card-top"><span>{t('overview.avgLatency')}</span><span className="metric-icon"><Clock size={16} /></span></div>
+          <div className="metric-value" title={`${latency} ms`}>{fmtLatency(latency)}</div>
+          <div className="metric-sub">{t('overview.latencySub')}</div>
         </div>
       </div>
 
@@ -173,26 +145,26 @@ export const OverviewPage: React.FC = () => {
             <ArrowRight size={12} />
           </Link>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '14px' }}>
+        <div className="pipeline-grid">
           <div className="sub-card" style={{ padding: 14 }}>
-            <div style={{ fontSize: '11px', color: 'var(--accent)', fontWeight: 700 }}>STAGE 1</div>
-            <div style={{ fontSize: '14px', fontWeight: 600, margin: '4px 0' }}>{t('overview.stage1')}</div>
-            <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('overview.stage1Desc')}</div>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent)', fontWeight: 'var(--font-bold)' }}>STAGE 1</div>
+            <div style={{ fontSize: 'var(--text-base)', fontWeight: 'var(--font-semibold)', margin: '4px 0' }}>{t('overview.stage1')}</div>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('overview.stage1Desc')}</div>
           </div>
           <div className="sub-card" style={{ padding: 14 }}>
-            <div style={{ fontSize: '11px', color: 'var(--accent-emerald)', fontWeight: 700 }}>STAGE 2</div>
-            <div style={{ fontSize: '14px', fontWeight: 600, margin: '4px 0' }}>{t('overview.stage2')}</div>
-            <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('overview.stage2Desc')}</div>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-emerald)', fontWeight: 'var(--font-bold)' }}>STAGE 2</div>
+            <div style={{ fontSize: 'var(--text-base)', fontWeight: 'var(--font-semibold)', margin: '4px 0' }}>{t('overview.stage2')}</div>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('overview.stage2Desc')}</div>
           </div>
           <div className="sub-card" style={{ padding: 14 }}>
-            <div style={{ fontSize: '11px', color: 'var(--accent-violet)', fontWeight: 700 }}>STAGE 3</div>
-            <div style={{ fontSize: '14px', fontWeight: 600, margin: '4px 0' }}>{t('overview.stage3')}</div>
-            <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('overview.stage3Desc')}</div>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-violet)', fontWeight: 'var(--font-bold)' }}>STAGE 3</div>
+            <div style={{ fontSize: 'var(--text-base)', fontWeight: 'var(--font-semibold)', margin: '4px 0' }}>{t('overview.stage3')}</div>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('overview.stage3Desc')}</div>
           </div>
           <div className="sub-card" style={{ padding: 14 }}>
-            <div style={{ fontSize: '11px', color: 'var(--accent-rose)', fontWeight: 700 }}>STAGE 4</div>
-            <div style={{ fontSize: '14px', fontWeight: 600, margin: '4px 0' }}>{t('overview.stage4')}</div>
-            <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('overview.stage4Desc')}</div>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-rose)', fontWeight: 'var(--font-bold)' }}>STAGE 4</div>
+            <div style={{ fontSize: 'var(--text-base)', fontWeight: 'var(--font-semibold)', margin: '4px 0' }}>{t('overview.stage4')}</div>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('overview.stage4Desc')}</div>
           </div>
         </div>
       </div>
@@ -225,8 +197,8 @@ export const OverviewPage: React.FC = () => {
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
                   <BrandIcon name={c.name === 'opencode-proxy' ? 'opencode' : c.name} size={18} />
                   <div>
-                    <div style={{ fontWeight: 600, fontSize: '13px' }}>{c.name === 'opencode-proxy' ? t('clients.nameOpencodeProxy') : c.displayName}</div>
-                    <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: FONT_MONO }}>
+                    <div style={{ fontWeight: 'var(--font-semibold)', fontSize: 'var(--text-md)' }}>{c.name === 'opencode-proxy' ? t('clients.nameOpencodeProxy') : c.displayName}</div>
+                    <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontFamily: FONT_MONO }}>
                       {c.configPath}
                     </div>
                   </div>
@@ -241,7 +213,7 @@ export const OverviewPage: React.FC = () => {
                   )}
                 </div>
               </div>
-            )) || <div style={{ fontSize: '12px', color: 'var(--text-dim)' }}>...</div>}
+            )) || <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>...</div>}
           </div>
         </div>
 
@@ -256,17 +228,17 @@ export const OverviewPage: React.FC = () => {
           </div>
           <div style={{ display: 'flex', gap: '16px', marginBottom: '14px' }}>
             <div style={{ flex: 1, padding: '12px', background: 'var(--bg-elev)', borderRadius: '8px' }}>
-              <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('overview.totalBreakers')}</div>
-              <div style={{ fontSize: '20px', fontWeight: 700 }}>{status?.circuitBreakers?.total || 0}</div>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('overview.totalBreakers')}</div>
+              <div style={{ fontSize: 'var(--text-3xl)', fontWeight: 'var(--font-bold)' }}>{status?.circuitBreakers?.total || 0}</div>
             </div>
             <div style={{ flex: 1, padding: '12px', background: 'var(--bg-elev)', borderRadius: '8px' }}>
-              <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('overview.openBreakers')}</div>
-              <div style={{ fontSize: '20px', fontWeight: 700, color: status?.circuitBreakers?.tripped ? 'var(--accent-rose)' : 'var(--accent-emerald)' }}>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('overview.openBreakers')}</div>
+              <div style={{ fontSize: 'var(--text-3xl)', fontWeight: 'var(--font-bold)', color: status?.circuitBreakers?.tripped ? 'var(--accent-rose)' : 'var(--accent-emerald)' }}>
                 {status?.circuitBreakers?.tripped || 0}
               </div>
             </div>
           </div>
-          <div style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: '1.6' }}>
+          <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', lineHeight: 'var(--leading-normal)' }}>
             {t('overview.breakersDesc')}
           </div>
         </div>

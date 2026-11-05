@@ -38,10 +38,10 @@ export const ProviderLogo: React.FC<{ providerId: string; logoMap: Record<string
         <span
           style={{
             fontSize: Math.round(size * 0.55),
-            fontWeight: 700,
+            fontWeight: 'var(--font-bold)',
             color: 'var(--logo-plate-ink)',
             textTransform: 'uppercase',
-            lineHeight: 1,
+            lineHeight: 'var(--leading-none)',
           }}
         >
           {providerId.charAt(0)}

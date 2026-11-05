@@ -251,7 +251,7 @@ export function JsonBlock({ value }: { value: unknown }) {
     border: '1px solid var(--card-border)',
     borderRadius: '4px',
     color: 'var(--text-dim)',
-    fontSize: '11px',
+    fontSize: 'var(--text-xs)',
     padding: '3px 8px',
     cursor: 'pointer',
     fontFamily: FONT_MONO,
@@ -262,8 +262,8 @@ export function JsonBlock({ value }: { value: unknown }) {
     background: 'var(--well-bg)',
     border: '1px solid var(--card-border)',
     borderRadius: '6px',
-    fontSize: '11px',
-    lineHeight: 1.55,
+    fontSize: 'var(--text-xs)',
+    lineHeight: 'var(--leading-normal)',
     // Without this the UA default monospace (Courier New on Windows)
     // renders the JSON — match the standard chain used elsewhere here.
     fontFamily: FONT_MONO,
@@ -277,11 +277,11 @@ export function JsonBlock({ value }: { value: unknown }) {
     display: 'flex',
     alignItems: 'center',
     gap: 5,
-    fontSize: '11px',
-    fontWeight: 700,
+    fontSize: 'var(--text-xs)',
+    fontWeight: 'var(--font-bold)',
     color: 'var(--text-dim)',
     margin: '0 0 3px',
-    letterSpacing: 0.3,
+    letterSpacing: 'var(--tracking-label)',
   };
 
   return (
@@ -491,7 +491,7 @@ const CaptureDrawer: React.FC<{
             </span>
           )}
           {headerTs !== undefined && (
-            <span style={{ fontSize: '12px', color: 'var(--text-muted)', fontFamily: FONT_MONO }}>
+            <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', fontFamily: FONT_MONO }}>
               {new Date(headerTs).toLocaleString()}
             </span>
           )}
@@ -505,7 +505,7 @@ const CaptureDrawer: React.FC<{
               else toast.error(t('common.failed'));
             }}
             style={{
-              fontSize: '11px',
+              fontSize: 'var(--text-xs)',
               color: 'var(--text-dim)',
               fontFamily: FONT_MONO,
               cursor: 'copy',
@@ -514,7 +514,7 @@ const CaptureDrawer: React.FC<{
             {shortId(turn.traceId)}
           </span>
           <span
-            style={{ fontSize: '12px', color: 'var(--text-dim)', fontFamily: FONT_MONO }}
+            style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', fontFamily: FONT_MONO }}
             title={t('captures.inboundModel')}
           >
             {turn.model}
@@ -527,7 +527,7 @@ const CaptureDrawer: React.FC<{
             if (!upstreamModel || upstreamModel === turn.model) return null;
             return (
               <span
-                style={{ fontSize: '12px', color: 'var(--text-dim)', fontFamily: FONT_MONO }}
+                style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', fontFamily: FONT_MONO }}
                 title={t('captures.outboundModel')}
               >
                 → {upstreamModel}
@@ -543,7 +543,7 @@ const CaptureDrawer: React.FC<{
                 background: 'var(--hue-blue-soft)',
                 color: 'var(--hue-blue)',
                 fontFamily: FONT_MONO,
-                fontSize: '10px',
+                fontSize: 'var(--text-2xs)',
               }}
             >
               ⇢ {turn.upstreamRequest.proxy}
@@ -554,7 +554,7 @@ const CaptureDrawer: React.FC<{
           {turn.gatewayLatencyMs !== undefined && (
             <span
               title={`${t('captures.gatewayLatency')} · ${turn.gatewayLatencyMs} ms`}
-              style={{ fontSize: '12px', color: 'var(--text-dim)', fontFamily: FONT_MONO }}
+              style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', fontFamily: FONT_MONO }}
             >
               <ArrowDownRight size={12} strokeWidth={2.75} style={{ verticalAlign: '-1px', color: 'var(--text)' }} /> {fmtLatency(turn.gatewayLatencyMs)}
               <span title={[t('captures.timingTip'), legTimingTip(turn, 'gateway')].filter(Boolean).join(' · ')}>
@@ -565,7 +565,7 @@ const CaptureDrawer: React.FC<{
           {turn.upstreamLatencyMs !== undefined && (
             <span
               title={`${t('captures.upstreamLatency')} · ${turn.upstreamLatencyMs} ms`}
-              style={{ fontSize: '12px', color: 'var(--text-dim)', fontFamily: FONT_MONO }}
+              style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', fontFamily: FONT_MONO }}
             >
               <ArrowUpRight size={12} strokeWidth={2.75} style={{ verticalAlign: '-1px', color: 'var(--text)' }} /> {fmtLatency(turn.upstreamLatencyMs)}
               <span title={[t('captures.timingTip'), legTimingTip(turn, 'upstream')].filter(Boolean).join(' · ')}>
@@ -583,7 +583,7 @@ const CaptureDrawer: React.FC<{
                 background: 'var(--hue-blue-soft)',
                 color: 'var(--hue-blue)',
                 fontFamily: FONT_MONO,
-                fontSize: '10px',
+                fontSize: 'var(--text-2xs)',
               }}
             >
               <Scale size={10} style={{ verticalAlign: '-1px', marginRight: '3px' }} />
@@ -612,8 +612,8 @@ const CaptureDrawer: React.FC<{
             style={{
               padding: '6px 16px 10px',
               borderBottom: '1px solid var(--divider)',
-              fontSize: '12px',
-              lineHeight: 1.5,
+              fontSize: 'var(--text-sm)',
+              lineHeight: 'var(--leading-snug)',
               color: 'var(--text-muted)',
               whiteSpace: 'nowrap',
               overflow: 'hidden',
@@ -635,7 +635,7 @@ const CaptureDrawer: React.FC<{
               background: 'rgba(239,68,68,0.08)',
               border: '1px solid rgba(239,68,68,0.3)',
               color: '#ef4444',
-              fontSize: '12px',
+              fontSize: 'var(--text-sm)',
               display: 'flex',
               alignItems: 'center',
               gap: '8px',
@@ -661,7 +661,7 @@ const CaptureDrawer: React.FC<{
                   borderBottom: tab === x.key ? '2px solid var(--accent)' : '2px solid transparent',
                   color: tab === x.key ? 'var(--accent)' : 'var(--text-dim)',
                   opacity: empty ? 0.5 : 1,
-                  fontSize: '12px',
+                  fontSize: 'var(--text-sm)',
                   padding: '8px 12px',
                   cursor: 'pointer',
                   fontFamily: FONT_MONO,
@@ -672,7 +672,7 @@ const CaptureDrawer: React.FC<{
                   <span
                     style={{
                       marginLeft: 6,
-                      fontSize: '11px',
+                      fontSize: 'var(--text-xs)',
                       color: x.ev.status === 'error' ? '#ef4444' : 'var(--text-dim)',
                     }}
                   >
@@ -687,12 +687,12 @@ const CaptureDrawer: React.FC<{
         {/* Body: one wire dump (request line + headers + body) OR (response line + status + headers + body) */}
         <div style={{ flex: 1, overflow: 'auto', padding: '14px 16px', minHeight: 0 }}>
           {loading ? (
-            <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '12px' }}>
+            <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>
               <RefreshCw size={14} style={{ animation: 'ocr-spin 0.8s linear infinite', verticalAlign: '-2px', marginRight: 6 }} />
               {t('captures.turnLoading')}
             </div>
           ) : !active.ev ? (
-            <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '12px' }}>
+            <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>
               {t('captures.tabEmpty')}
             </div>
           ) : (
@@ -703,7 +703,7 @@ const CaptureDrawer: React.FC<{
                     display: 'flex',
                     alignItems: 'center',
                     gap: '6px',
-                    fontSize: '11px',
+                    fontSize: 'var(--text-xs)',
                     color: 'var(--accent-amber)',
                     padding: '0 0 10px',
                   }}
@@ -722,7 +722,7 @@ const CaptureDrawer: React.FC<{
                     background: 'color-mix(in srgb, var(--accent-amber) 8%, transparent)',
                     border: '1px solid color-mix(in srgb, var(--accent-amber) 30%, transparent)',
                     color: 'var(--accent-amber)',
-                    fontSize: '11px',
+                    fontSize: 'var(--text-xs)',
                   }}
                 >
                   {t('captures.truncatedBadge')}
@@ -817,7 +817,7 @@ const WireBlock: React.FC<{ event: HttpExchangeEvent }> = ({ event }) => {
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-        <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: FONT_MONO }}>
+        <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontFamily: FONT_MONO }}>
           {isResponse ? '← status line' : '→ request line'}
         </span>
         <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -827,7 +827,7 @@ const WireBlock: React.FC<{ event: HttpExchangeEvent }> = ({ event }) => {
                 display: 'inline-flex', alignItems: 'center', gap: 4,
                 background: 'var(--chip-bg)', border: '1px solid var(--card-border)',
                 borderRadius: '4px', color: curlCopied ? 'var(--accent)' : 'var(--text-dim)',
-                fontSize: '11px', padding: '3px 8px', cursor: 'pointer', fontFamily: FONT_MONO,
+                fontSize: 'var(--text-xs)', padding: '3px 8px', cursor: 'pointer', fontFamily: FONT_MONO,
               }}
               onClick={copyCurl}
               title={t('chat.copyCurl')}
@@ -842,7 +842,7 @@ const WireBlock: React.FC<{ event: HttpExchangeEvent }> = ({ event }) => {
                 display: 'inline-flex', alignItems: 'center', gap: 4,
                 background: 'var(--chip-bg)', border: '1px solid var(--card-border)',
                 borderRadius: '4px', color: replaying ? 'var(--accent)' : 'var(--text-dim)',
-                fontSize: '11px', padding: '3px 8px', cursor: 'pointer', fontFamily: FONT_MONO,
+                fontSize: 'var(--text-xs)', padding: '3px 8px', cursor: 'pointer', fontFamily: FONT_MONO,
                 opacity: replaying ? 0.6 : 1,
               }}
               onClick={() => void runReplay()}
@@ -862,7 +862,7 @@ const WireBlock: React.FC<{ event: HttpExchangeEvent }> = ({ event }) => {
           background: 'var(--well-bg)',
           border: '1px solid var(--card-border)',
           borderRadius: '6px',
-          fontSize: '12px',
+          fontSize: 'var(--text-sm)',
           fontFamily: FONT_MONO,
           whiteSpace: 'pre-wrap',
           wordBreak: 'break-word',
@@ -877,7 +877,7 @@ const WireBlock: React.FC<{ event: HttpExchangeEvent }> = ({ event }) => {
         <div
           style={{
             marginTop: 6,
-            fontSize: '11px',
+            fontSize: 'var(--text-xs)',
             color: 'var(--text-dim)',
             fontFamily: FONT_MONO,
           }}
@@ -885,11 +885,11 @@ const WireBlock: React.FC<{ event: HttpExchangeEvent }> = ({ event }) => {
           ⇢ {t('captures.viaProxy')}: {event.proxy}
         </div>
       )}
-      <div style={{ fontSize: '11px', color: 'var(--text-dim)', margin: '14px 0 6px', fontFamily: FONT_MONO }}>
+      <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', margin: '14px 0 6px', fontFamily: FONT_MONO }}>
         {isResponse ? '← response headers' : '→ request headers'}
       </div>
       <JsonBlock value={isResponse ? event.wire.responseHeaders : event.wire.requestHeaders} />
-      <div style={{ fontSize: '11px', color: 'var(--text-dim)', margin: '14px 0 6px', fontFamily: FONT_MONO }}>
+      <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', margin: '14px 0 6px', fontFamily: FONT_MONO }}>
         {isResponse ? '← response body' : '→ request body'}
       </div>
       <JsonBlock value={isResponse ? event.wire.responseBody : event.wire.requestBody} />
@@ -972,7 +972,7 @@ const ReplayResultDialog: React.FC<{
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <Send size={16} color="var(--accent)" />
-          <span style={{ fontSize: '14px', fontWeight: 700 }}>{t('captures.replayResult')}</span>
+          <span style={{ fontSize: 'var(--text-base)', fontWeight: 'var(--font-bold)' }}>{t('captures.replayResult')}</span>
           <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6 }}>
             <button
               className="btn btn-sm"
@@ -1002,23 +1002,23 @@ const ReplayResultDialog: React.FC<{
           </span>
         </div>
         {result.status === 'ok' && (
-          <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: FONT_MONO }}>
+          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontFamily: FONT_MONO }}>
             {t('captures.replayTiming', { ttfb: result.ttfbMs, total: result.totalMs })}
           </div>
         )}
         {busy && (
-          <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: FONT_MONO }}>
+          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontFamily: FONT_MONO }}>
             {t('captures.replayElapsed', { ms: elapsed })}
           </div>
         )}
         <div style={{ overflow: 'auto', minHeight: 0 }}>
           {result.status === 'loading' ? (
-            <div style={{ padding: '48px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '12px' }}>
+            <div style={{ padding: '48px', textAlign: 'center', color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>
               <RefreshCw size={16} style={{ animation: 'ocr-spin 0.8s linear infinite', verticalAlign: '-3px', marginRight: 8 }} />
               {t('captures.replaying')}
             </div>
           ) : result.status === 'error' ? (
-            <div style={{ fontSize: '12px', color: 'var(--error, #c0392b)', fontFamily: FONT_MONO, padding: '8px 12px', background: 'var(--well-bg)', border: '1px solid var(--card-border)', borderRadius: '6px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--error, #c0392b)', fontFamily: FONT_MONO, padding: '8px 12px', background: 'var(--well-bg)', border: '1px solid var(--card-border)', borderRadius: '6px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
               {result.message}
             </div>
           ) : (
@@ -1030,7 +1030,7 @@ const ReplayResultDialog: React.FC<{
                   background: 'var(--well-bg)',
                   border: '1px solid var(--card-border)',
                   borderRadius: '6px',
-                  fontSize: '12px',
+                  fontSize: 'var(--text-sm)',
                   fontFamily: FONT_MONO,
                   whiteSpace: 'pre-wrap',
                   wordBreak: 'break-word',
@@ -1039,11 +1039,11 @@ const ReplayResultDialog: React.FC<{
               >
                 {result.statusLine}
               </pre>
-              <div style={{ fontSize: '11px', color: 'var(--text-dim)', margin: '10px 0 6px', fontFamily: FONT_MONO }}>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', margin: '10px 0 6px', fontFamily: FONT_MONO }}>
                 {t('captures.replayRespHeaders')}
               </div>
               <JsonBlock value={result.headers} />
-              <div style={{ fontSize: '11px', color: 'var(--text-dim)', margin: '10px 0 6px', fontFamily: FONT_MONO }}>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', margin: '10px 0 6px', fontFamily: FONT_MONO }}>
                 {t('captures.replayRespBody')}
               </div>
               <JsonBlock value={result.body + (result.truncated ? '\n…' : '')} />
@@ -1130,12 +1130,12 @@ const ExportDialog: React.FC<{
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <Download size={16} color="var(--accent)" />
-          <span style={{ fontSize: '14px', fontWeight: 700 }}>{t('captures.exportOptionsTitle')}</span>
+          <span style={{ fontSize: 'var(--text-base)', fontWeight: 'var(--font-bold)' }}>{t('captures.exportOptionsTitle')}</span>
         </div>
         <div
           style={{
             fontFamily: FONT_MONO,
-            fontSize: '11px',
+            fontSize: 'var(--text-xs)',
             color: 'var(--text-dim)',
             wordBreak: 'break-all',
           }}
@@ -1151,7 +1151,7 @@ const ExportDialog: React.FC<{
                 alignItems: 'center',
                 justifyContent: 'space-between',
                 gap: 10,
-                fontSize: '12.5px',
+                fontSize: 'var(--text-md)',
                 cursor: 'pointer',
               }}
             >
@@ -1166,7 +1166,7 @@ const ExportDialog: React.FC<{
             alignItems: 'center',
             justifyContent: 'space-between',
             gap: 10,
-            fontSize: '12.5px',
+            fontSize: 'var(--text-md)',
             cursor: 'pointer',
             paddingTop: 2,
             borderTop: '1px dashed var(--card-border)',
@@ -1175,7 +1175,7 @@ const ExportDialog: React.FC<{
           <span>{t('captures.exportIncludeImages')}</span>
           <Switch checked={withImages} onChange={setWithImages} ariaLabel={t('captures.exportIncludeImages')} />
         </label>
-        <div style={{ fontSize: '11.5px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
+        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)' }}>
           {t('captures.exportOptionsHint')}
         </div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
@@ -1754,7 +1754,7 @@ export const CapturesPage: React.FC = () => {
             <span>{t('captures.title')}</span>
           </div>
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', cursor: 'pointer' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: 'var(--text-sm)', cursor: 'pointer' }}>
               <span style={{ color: status?.enabled ? 'var(--accent-emerald)' : 'var(--text-dim)' }}>
                 {status?.enabled ? t('captures.on') : t('captures.off')}
               </span>
@@ -1771,12 +1771,12 @@ export const CapturesPage: React.FC = () => {
             </button>
           </div>
         </div>
-        <div style={{ padding: '12px 14px', fontSize: '12px' }}>
+        <div style={{ padding: '12px 14px', fontSize: 'var(--text-sm)' }}>
           {status?.enabled && (
             <div style={{ color: 'var(--text-dim)', marginBottom: '10px' }}>{t('captures.hotHint')}</div>
           )}
           {status && !status.enabled && (
-            <div style={{ color: 'var(--text-dim)', lineHeight: 1.8 }}>
+            <div style={{ color: 'var(--text-dim)', lineHeight: 'var(--leading-loose)' }}>
               <div>{t('captures.disabledHint')}</div>
             </div>
           )}
@@ -1811,7 +1811,7 @@ export const CapturesPage: React.FC = () => {
           }}
         >
           {dates.length === 0 ? (
-            <div style={{ padding: '32px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '12px' }}>
+            <div style={{ padding: '32px', textAlign: 'center', color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>
               {t('captures.emptyDates')}
             </div>
           ) : (
@@ -1896,7 +1896,7 @@ export const CapturesPage: React.FC = () => {
                       value={query}
                       onChange={e => setQuery(e.target.value)}
                       placeholder={t('captures.searchPlaceholder')}
-                      style={{ width: '100%', fontSize: '12px', padding: '6px 10px' }}
+                      style={{ width: '100%', fontSize: 'var(--text-sm)', padding: '6px 10px' }}
                     />
                     <Combobox
                       value={apiKeyFilter}
@@ -1905,7 +1905,7 @@ export const CapturesPage: React.FC = () => {
                         { value: '', label: t('captures.apiKeyAll') },
                         ...apiKeyOptions.map(k => ({ value: k.id, label: k.name })),
                       ]}
-                      style={{ width: '100%', fontSize: '12px', padding: '6px 10px', marginTop: 6 }}
+                      style={{ width: '100%', fontSize: 'var(--text-sm)', padding: '6px 10px', marginTop: 6 }}
                     />
                   </div>
                   <div style={{ overflowY: 'auto', flex: 1, minHeight: 0 }}>
@@ -1941,8 +1941,8 @@ export const CapturesPage: React.FC = () => {
                       style={{
                         padding: '8px 10px',
                         cursor: 'pointer',
-                        fontSize: '12px',
-                        lineHeight: 1.4,
+                        fontSize: 'var(--text-sm)',
+                        lineHeight: 'var(--leading-tight)',
                         // Full-bleed list row: hairline between neighbors,
                         // 2px left rail marks the selection (transparent
                         // otherwise so text columns never shift).
@@ -1990,7 +1990,7 @@ export const CapturesPage: React.FC = () => {
                           style={{
                             flex: 1,
                             minWidth: 0,
-                            fontWeight: 600,
+                            fontWeight: 'var(--font-semibold)',
                             whiteSpace: 'nowrap',
                             overflow: 'hidden',
                             textOverflow: 'ellipsis',
@@ -2001,7 +2001,7 @@ export const CapturesPage: React.FC = () => {
                         <span
                           style={{
                             color: 'var(--text-dim)',
-                            fontSize: '11px',
+                            fontSize: 'var(--text-xs)',
                             fontFamily: FONT_MONO,
                             flexShrink: 0,
                           }}
@@ -2029,13 +2029,13 @@ export const CapturesPage: React.FC = () => {
                           <span
                             title={t('captures.protocolTip', { protocol: t(PROTOCOL_LABEL[s.protocol]) })}
                             style={{
-                              fontSize: '10px',
-                              lineHeight: '14px',
+                              fontSize: 'var(--text-2xs)',
+                              lineHeight: 'var(--leading-14)',
                               padding: '1px 6px',
                               borderRadius: '4px',
                               background: PROTOCOL_HUE[s.protocol].bg,
                               color: PROTOCOL_HUE[s.protocol].fg,
-                              fontWeight: 600,
+                              fontWeight: 'var(--font-semibold)',
                               flexShrink: 0,
                             }}
                           >
@@ -2046,7 +2046,7 @@ export const CapturesPage: React.FC = () => {
                           <span
                             style={{
                               fontFamily: FONT_MONO,
-                              fontSize: '10.5px',
+                              fontSize: 'var(--text-xs)',
                               color: 'var(--text-dim)',
                               whiteSpace: 'nowrap',
                               overflow: 'hidden',
@@ -2073,8 +2073,8 @@ export const CapturesPage: React.FC = () => {
                             <span
                               title={t('captures.apiKeyTooltip', { name: s.apiKeys[0].name, id: s.apiKeys[0].id })}
                               style={{
-                                fontSize: '10px',
-                                lineHeight: '14px',
+                                fontSize: 'var(--text-2xs)',
+                                lineHeight: 'var(--leading-14)',
                                 padding: '1px 6px',
                                 borderRadius: '4px',
                                 background: 'color-mix(in srgb, var(--accent-emerald) 10%, transparent)',
@@ -2108,8 +2108,8 @@ export const CapturesPage: React.FC = () => {
                             <span
                               title={t('captures.spansDays', { n: s.spanDates.length })}
                               style={{
-                                fontSize: '10px',
-                                lineHeight: '14px',
+                                fontSize: 'var(--text-2xs)',
+                                lineHeight: 'var(--leading-14)',
                                 padding: '1px 6px',
                                 borderRadius: '4px',
                                 background: 'var(--hue-blue-soft)',
@@ -2179,7 +2179,7 @@ export const CapturesPage: React.FC = () => {
                     </div>
                   ))}
                   {!sessionsLoading && visibleSessions.length === 0 && (
-                    <div style={{ padding: '8px 10px', fontSize: '11px', color: 'var(--text-dim)' }}>
+                    <div style={{ padding: '8px 10px', fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
                       {q ? t('captures.noMatchSessions') : t('captures.emptySessions')}
                     </div>
                   )}
@@ -2198,7 +2198,7 @@ export const CapturesPage: React.FC = () => {
                 {/* Main pane: session timeline */}
                 <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
                   {!selectedFile ? (
-                    <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '12px' }}>
+                    <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>
                       {t('captures.pickSession')}
                     </div>
                   ) : (
@@ -2213,8 +2213,8 @@ export const CapturesPage: React.FC = () => {
                           flexWrap: 'wrap',
                         }}
                       >
-                        <span style={{ fontSize: '13px', fontWeight: 600 }}>{t('captures.turnsTitle')}</span>
-                        <span style={{ fontFamily: FONT_MONO, fontSize: '11px', color: 'var(--text-dim)' }}>
+                        <span style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--font-semibold)' }}>{t('captures.turnsTitle')}</span>
+                        <span style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
                           {selectedFile.replace(/\.jsonl$/, '')} · {totalTurns} {t('captures.turnsUnit')}
                         </span>
                         {fragmentDates > 1 && (
@@ -2226,8 +2226,8 @@ export const CapturesPage: React.FC = () => {
                                 : '')
                             }
                             style={{
-                              fontSize: '10px',
-                              lineHeight: '16px',
+                              fontSize: 'var(--text-2xs)',
+                              lineHeight: 'var(--leading-16)',
                               padding: '0 6px',
                               borderRadius: '4px',
                               background: 'var(--hue-blue-soft)',
@@ -2240,7 +2240,7 @@ export const CapturesPage: React.FC = () => {
                         {totalLatencyMs > 0 && (
                           <span
                             title={t('captures.totalTimeHint', { n: turns.length })}
-                            style={{ fontFamily: FONT_MONO, fontSize: '11px', color: 'var(--text-dim)' }}
+                            style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}
                           >
                             · {t('captures.totalTime')} {fmtDur(totalLatencyMs)}
                           </span>
@@ -2264,7 +2264,7 @@ export const CapturesPage: React.FC = () => {
                                   color: mainView === v ? 'var(--accent)' : 'var(--text-dim)',
                                   border: 'none',
                                   cursor: 'pointer',
-                                  fontSize: '11.5px',
+                                  fontSize: 'var(--text-sm)',
                                   padding: '4px 10px',
                                   minWidth: 64,
                                   textAlign: 'center',
@@ -2335,7 +2335,7 @@ export const CapturesPage: React.FC = () => {
                               display: 'flex',
                               alignItems: 'center',
                               gap: '6px',
-                              fontSize: '11px',
+                              fontSize: 'var(--text-xs)',
                               color: 'var(--accent-amber)',
                               padding: '4px 0 8px',
                             }}
@@ -2358,7 +2358,7 @@ export const CapturesPage: React.FC = () => {
                             }}
                           />
                           {turns.length === 0 && (
-                            <div style={{ padding: '18px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '12px' }}>
+                            <div style={{ padding: '18px', textAlign: 'center', color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}>
                               {t('captures.emptyRecords')}
                             </div>
                           )}
@@ -2400,7 +2400,7 @@ export const CapturesPage: React.FC = () => {
                                       gap: 8,
                                       margin: '8px 0 4px',
                                       color: 'var(--text-dim)',
-                                      fontSize: '10.5px',
+                                      fontSize: 'var(--text-xs)',
                                       fontFamily: FONT_MONO,
                                     }}
                                   >
@@ -2420,7 +2420,7 @@ export const CapturesPage: React.FC = () => {
                                   marginBottom: '2px',
                                   borderRadius: '6px',
                                   cursor: 'pointer',
-                                  fontSize: '12px',
+                                  fontSize: 'var(--text-sm)',
                                 }}
                                 onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface-hover)')}
                                 onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
@@ -2464,7 +2464,7 @@ export const CapturesPage: React.FC = () => {
                                     <span
                                       title={upstreamModel && upstreamModel !== turn.model ? `${turn.model} → ${upstreamModel}` : turn.model}
                                       style={{
-                                        fontWeight: 600,
+                                        fontWeight: 'var(--font-semibold)',
                                         flexShrink: 0,
                                         maxWidth: 240,
                                         overflow: 'hidden',
@@ -2474,7 +2474,7 @@ export const CapturesPage: React.FC = () => {
                                     >
                                       {turn.model}
                                       {showUpstream && (
-                                        <span style={{ fontWeight: 400, color: 'var(--text-dim)' }}>
+                                        <span style={{ fontWeight: 'var(--font-regular)', color: 'var(--text-dim)' }}>
                                           {' '}→ {upstreamModel}
                                         </span>
                                       )}
@@ -2511,7 +2511,7 @@ export const CapturesPage: React.FC = () => {
                                       background: 'var(--hue-blue-soft)',
                                       color: 'var(--hue-blue)',
                                       fontFamily: FONT_MONO,
-                                      fontSize: '10px',
+                                      fontSize: 'var(--text-2xs)',
                                       flexShrink: 0,
                                     }}
                                   >
@@ -2528,7 +2528,7 @@ export const CapturesPage: React.FC = () => {
                                       legTimingTip(turn, 'gateway'),
                                       t('captures.timingTip'),
                                     ].filter(Boolean).join('\n')}
-                                    style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: FONT_MONO, flexShrink: 0 }}
+                                    style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontFamily: FONT_MONO, flexShrink: 0 }}
                                   >
                                     <ArrowDownRight size={11} strokeWidth={2.75} style={{ verticalAlign: '-1px', color: 'var(--text)' }} /> {fmtLatency(turn.gatewayLatencyMs)}{legRateText(turn, 'gateway')}
                                   </span>
@@ -2540,7 +2540,7 @@ export const CapturesPage: React.FC = () => {
                                       legTimingTip(turn, 'upstream'),
                                       t('captures.timingTip'),
                                     ].filter(Boolean).join('\n')}
-                                    style={{ fontSize: '11px', color: 'var(--text-dim)', fontFamily: FONT_MONO, flexShrink: 0 }}
+                                    style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', fontFamily: FONT_MONO, flexShrink: 0 }}
                                   >
                                     <ArrowUpRight size={11} strokeWidth={2.75} style={{ verticalAlign: '-1px', color: 'var(--text)' }} /> {fmtLatency(turn.upstreamLatencyMs)}{legRateText(turn, 'upstream')}
                                   </span>
@@ -2557,7 +2557,7 @@ export const CapturesPage: React.FC = () => {
                                       background: 'var(--hue-blue-soft)',
                                       color: 'var(--hue-blue)',
                                       fontFamily: FONT_MONO,
-                                      fontSize: '10px',
+                                      fontSize: 'var(--text-2xs)',
                                       flexShrink: 0,
                                       cursor: 'pointer',
                                     }}
@@ -2615,11 +2615,11 @@ export const CapturesPage: React.FC = () => {
                 flexShrink: 0,
               }}
             >
-              <span style={{ fontSize: '13px', fontWeight: 700 }}>{t('captures.viewChat')}</span>
+              <span style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--font-bold)' }}>{t('captures.viewChat')}</span>
               <span
                 style={{
                   fontFamily: FONT_MONO,
-                  fontSize: '11px',
+                  fontSize: 'var(--text-xs)',
                   color: 'var(--text-dim)',
                   wordBreak: 'break-all',
                 }}

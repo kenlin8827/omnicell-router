@@ -49,8 +49,8 @@ const preStyle: React.CSSProperties = {
   background: 'var(--well-bg)',
   border: '1px solid var(--card-border)',
   fontFamily: FONT_MONO,
-  fontSize: '11px',
-  lineHeight: 1.6,
+  fontSize: 'var(--text-xs)',
+  lineHeight: 'var(--leading-normal)',
   whiteSpace: 'pre-wrap',
   wordBreak: 'break-all',
   color: 'var(--text-muted)',
@@ -62,24 +62,24 @@ const LOG_TH: React.CSSProperties = {
   padding: '6px 10px',
   borderBottom: '1px solid var(--divider)',
   color: 'var(--text-dim)',
-  fontWeight: 500,
-  fontSize: '11px',
+  fontWeight: 'var(--font-medium)',
+  fontSize: 'var(--text-xs)',
   whiteSpace: 'nowrap',
 };
 const LOG_TD: React.CSSProperties = {
   padding: '5px 10px',
   borderBottom: '1px solid var(--divider)',
   verticalAlign: 'top',
-  fontSize: '12px',
+  fontSize: 'var(--text-sm)',
 };
 
 /** Section header inside a .sub-card group — 11px bold dim, one tier under card titles. */
 const SEC_TITLE: React.CSSProperties = {
-  fontSize: '11px',
-  fontWeight: 700,
+  fontSize: 'var(--text-xs)',
+  fontWeight: 'var(--font-bold)',
   color: 'var(--text-dim)',
   marginBottom: '12px',
-  letterSpacing: '0.02em',
+  letterSpacing: 'var(--tracking-wide)',
 };
 const fmtBytes = (n: number): string => (n === 0 ? '0' : n < 1024 ? String(n) : `${(n / 1024).toFixed(1)}K`);
 
@@ -244,7 +244,7 @@ const HexSection: React.FC<{ title: string; file?: string; inlineDump?: string; 
     border: 'none',
     cursor: 'pointer',
     color: 'var(--text-dim)',
-    fontSize: '11px',
+    fontSize: 'var(--text-xs)',
     padding: '0 2px',
     display: 'inline-flex',
     alignItems: 'center',
@@ -256,7 +256,7 @@ const HexSection: React.FC<{ title: string; file?: string; inlineDump?: string; 
         <ChevronDown size={14} color="var(--text-dim)" style={{ flexShrink: 0 }} />
         <span style={{ ...SEC_TITLE, marginBottom: 0, flexShrink: 0 }}>{title}</span>
         <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: '4px', flexShrink: 1, minWidth: 0 }}>
-          <span style={{ fontSize: '11px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t('proxyLog.hexHint')}</span>
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t('proxyLog.hexHint')}</span>
           <button
             type="button"
             style={btn}
@@ -286,14 +286,14 @@ const HexSection: React.FC<{ title: string; file?: string; inlineDump?: string; 
         </span>
       </summary>
       <div style={{ marginTop: '8px' }}>
-        {file && !bytes && !loadError && <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('proxyLog.hexLoading')}</div>}
-        {loadError && <div style={{ fontSize: '11px', color: 'var(--accent-amber)' }}>{t('proxyLog.hexLoadFailed')}</div>}
+        {file && !bytes && !loadError && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('proxyLog.hexLoading')}</div>}
+        {loadError && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber)' }}>{t('proxyLog.hexLoadFailed')}</div>}
         {bytes && view === 'hex' && <Prose text={bytesToHexDump(bytes)} clamp={14} />}
         {bytes && view === 'text' && <Prose text={text || t('proxyLog.hexTextEmpty')} clamp={14} />}
         {bytes && view === 'img' && (
           <div style={{ padding: '8px', background: 'var(--well-bg)', border: '1px solid var(--card-border)', borderRadius: 6, textAlign: 'center' }}>
             <img src={dataUrl} alt={filename || 'captured body'} style={{ maxWidth: '100%', maxHeight: 320, imageRendering: 'auto' }} />
-            <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginTop: '4px' }}>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginTop: '4px' }}>
               {mime} · {bytes.length} B
             </div>
           </div>
@@ -362,14 +362,14 @@ const ProxyAccessDetail: React.FC<{ ev: ProxyAccessEvent }> = ({ ev }) => {
   const [exp, setExp] = useState({ reqH: false, reqB: false, resH: false, resB: false });
   const flip = (k: keyof typeof exp, v: boolean) => setExp(s => ({ ...s, [k]: v }));
   const empty = (
-    <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('proxyLog.captureEmpty')}</div>
+    <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('proxyLog.captureEmpty')}</div>
   );
   const urlRow = (
     <div style={{ display: 'flex', alignItems: 'center', gap: '4px', minWidth: 0 }}>
       {ev.kind === 'http' && (
-        <span style={{ fontFamily: FONT_MONO, fontSize: '11px', color: 'var(--text-main)', flexShrink: 0 }}>{ev.method}</span>
+        <span style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-main)', flexShrink: 0 }}>{ev.method}</span>
       )}
-      <span style={{ fontFamily: FONT_MONO, fontSize: '11px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }} title={eventUrl()}>
+      <span style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }} title={eventUrl()}>
         {eventUrl()}
       </span>
       <button type="button" style={miniBtn} title={t('proxyLog.copyUrl')} onClick={() => void copy(eventUrl(), t('proxyLog.urlCopied'))}>
@@ -384,11 +384,11 @@ const ProxyAccessDetail: React.FC<{ ev: ProxyAccessEvent }> = ({ ev }) => {
   );
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-      {ev.note && <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{ev.note}</div>}
-      {ev.truncated && <div style={{ fontSize: '11px', color: 'var(--accent-amber)' }}>{t('proxyLog.truncated')}</div>}
+      {ev.note && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{ev.note}</div>}
+      {ev.truncated && <div style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber)' }}>{t('proxyLog.truncated')}</div>}
       {urlRow}
       {ev.kind === 'connect' ? (
-        <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('proxyLog.detailNone')}</div>
+        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('proxyLog.detailNone')}</div>
       ) : (
         <>
           <SegGroup
@@ -436,7 +436,7 @@ const ProxyAccessDetail: React.FC<{ ev: ProxyAccessEvent }> = ({ ev }) => {
                 {resHeaders ? <Prose text={resHeaders} clamp={10} open={exp.resH} onOpenChange={v => flip('resH', v)} hideToggle /> : empty}
               </DetailSection>
               {(ev.status === 204 || ev.status === 304) && (
-                <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('proxyLog.noBodyStatus', { status: ev.status })}</div>
+                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('proxyLog.noBodyStatus', { status: ev.status })}</div>
               )}
               {ev.resBodyFile || ev.resBodyFormat === 'hex' ? (
                 <HexSection
@@ -585,7 +585,7 @@ const ProxyAccessLogCard: React.FC = () => {
           <span
             className="badge"
             style={{
-              fontSize: '10px',
+              fontSize: 'var(--text-2xs)',
               background: enabled ? 'color-mix(in srgb, var(--accent-emerald) 13%, transparent)' : 'var(--chip-bg)',
               color: enabled ? 'var(--accent-emerald)' : 'var(--text-dim)',
               border: '1px solid var(--divider)',
@@ -611,13 +611,13 @@ const ProxyAccessLogCard: React.FC = () => {
       </div>
 
 
-      <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, padding: '0 14px 10px', flexShrink: 0 }}>
+      <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', padding: '0 14px 10px', flexShrink: 0 }}>
         {t('proxyLog.hint')}
       </div>
       <div style={{ padding: '0 14px 10px', flexShrink: 0, display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
         <input
           className="input"
-          style={{ flex: 1, minWidth: '160px', fontSize: '12px' }}
+          style={{ flex: 1, minWidth: '160px', fontSize: 'var(--text-sm)' }}
           value={query}
           onChange={(ev) => setQuery(ev.target.value)}
           placeholder={t('proxyLog.search')}
@@ -657,7 +657,7 @@ const ProxyAccessLogCard: React.FC = () => {
         />
         <input
           className="input"
-          style={{ width: '150px', fontSize: '12px' }}
+          style={{ width: '150px', fontSize: 'var(--text-sm)' }}
           value={fPath}
           onChange={(ev) => setFPath(ev.target.value)}
           placeholder={t('proxyLog.fPath')}
@@ -670,16 +670,16 @@ const ProxyAccessLogCard: React.FC = () => {
       </div>
       <div style={{ flex: 1, minHeight: 0, overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
         {events.length === 0 ? (
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', color: 'var(--text-dim)', fontSize: '13px', padding: '24px' }}>
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', color: 'var(--text-dim)', fontSize: 'var(--text-md)', padding: '24px' }}>
             <Inbox size={24} />
             <span>{t('proxyLog.empty')}</span>
           </div>
         ) : visible.length === 0 ? (
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-dim)', fontSize: '13px', padding: '24px' }}>
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-dim)', fontSize: 'var(--text-md)', padding: '24px' }}>
             <span>{t('proxyLog.noMatch')}</span>
           </div>
         ) : (
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--text-sm)' }}>
             <thead>
               <tr>
                 <th style={LOG_TH}>
@@ -707,7 +707,7 @@ const ProxyAccessLogCard: React.FC = () => {
                 >
                   <td style={{ ...LOG_TD, ...FONT_MONO_COLOR }}>{new Date(e.ts).toLocaleTimeString()}</td>
                   <td style={LOG_TD}>
-                    <span className="badge" style={{ fontSize: '10px', border: '1px solid var(--divider)', color: e.kind === 'http' ? 'var(--accent)' : 'var(--text-dim)' }}>
+                    <span className="badge" style={{ fontSize: 'var(--text-2xs)', border: '1px solid var(--divider)', color: e.kind === 'http' ? 'var(--accent)' : 'var(--text-dim)' }}>
                       {e.kind === 'http' ? t('proxyLog.kindHttp') : t('proxyLog.kindConnect')}
                     </span>
                   </td>
@@ -736,7 +736,7 @@ const ProxyAccessLogCard: React.FC = () => {
             <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <Activity size={17} color="var(--accent)" />
               <span>{t('proxyLog.detailTitle')}</span>
-              <span style={{ fontFamily: FONT_MONO, fontSize: '11px', fontWeight: 400, color: 'var(--text-dim)' }}>
+              <span style={{ fontFamily: FONT_MONO, fontSize: 'var(--text-xs)', fontWeight: 'var(--font-regular)', color: 'var(--text-dim)' }}>
                 {new Date(selected.ts).toLocaleString()}
               </span>
             </span>
@@ -817,14 +817,14 @@ const SystemProxyCard: React.FC = () => {
           <MonitorCog size={18} color="var(--accent)" />
           <span>{t('proxyLog.sysTitle')}</span>
           {st && (
-            <span className="badge" style={{ fontSize: '10px', border: '1px solid var(--divider)', color: stateColor, background: 'var(--chip-bg)' }}>
+            <span className="badge" style={{ fontSize: 'var(--text-2xs)', border: '1px solid var(--divider)', color: stateColor, background: 'var(--chip-bg)' }}>
               {t(stateKey[st.state] || 'proxyLog.sysStateOff')}
             </span>
           )}
         </div>
         {st?.supported && (
           <div style={{ display: 'flex', gap: '8px' }}>
-            {st.state === 'stale' && <span style={{ fontSize: '11px', color: 'var(--accent-amber)', alignSelf: 'center' }}>{t('proxyLog.sysStaleHint')}</span>}
+            {st.state === 'stale' && <span style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-amber)', alignSelf: 'center' }}>{t('proxyLog.sysStaleHint')}</span>}
             <button className="btn btn-primary btn-sm" disabled={busy || st.state === 'on'} onClick={() => act('enable')}>
               <MonitorCog size={12} />
               <span>{t('proxyLog.sysEnableBtn')}</span>
@@ -837,12 +837,12 @@ const SystemProxyCard: React.FC = () => {
         )}
       </div>
 
-      <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, padding: '0 14px 10px' }}>
+      <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', padding: '0 14px 10px' }}>
         {t('proxyLog.sysHint')}
       </div>
 
       {st?.supported && st.override && (
-        <div style={{ padding: '0 14px 10px', fontSize: '11px', color: 'var(--text-dim)' }}>
+        <div style={{ padding: '0 14px 10px', fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
           <span style={{ marginRight: '6px' }}>{t('proxyLog.sysOverrideLabel')}</span>
           <span style={{ fontFamily: FONT_MONO, wordBreak: 'break-all' }}>{st.override}</span>
         </div>
@@ -875,7 +875,7 @@ const SystemProxyCard: React.FC = () => {
           )}
         </div>
       ) : (
-        st && <div style={{ padding: '0 14px 14px', fontSize: '11px', color: 'var(--text-dim)' }}>{t('proxyLog.sysUnsupportedNote')}</div>
+        st && <div style={{ padding: '0 14px 14px', fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('proxyLog.sysUnsupportedNote')}</div>
       )}
     </div>
   );
@@ -887,8 +887,8 @@ const stepCircle = (active: boolean): React.CSSProperties => ({
   borderRadius: '50%',
   background: active ? 'var(--btn-primary-bg)' : 'var(--surface-hover)',
   color: active ? 'var(--btn-primary-text)' : 'var(--text-dim)',
-  fontSize: '12px',
-  fontWeight: 700,
+  fontSize: 'var(--text-sm)',
+  fontWeight: 'var(--font-bold)',
   display: 'inline-flex',
   alignItems: 'center',
   justifyContent: 'center',
@@ -1063,7 +1063,7 @@ export const ProxyAccessPage: React.FC = () => {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
           <div>{t('forwardProxy.helpStep2')}</div>
           <pre style={preStyle}>{t('forwardProxy.helpStep2Code')}</pre>
-          <div style={{ fontSize: '11px', color: 'var(--text-dim)', whiteSpace: 'pre-line' }}>{t('forwardProxy.helpStep2Sys')}</div>
+          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', whiteSpace: 'pre-line' }}>{t('forwardProxy.helpStep2Sys')}</div>
         </div>
       ),
     },
@@ -1084,7 +1084,7 @@ export const ProxyAccessPage: React.FC = () => {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
           <div>{t('forwardProxy.helpStep4')}</div>
           <pre style={preStyle}>{t('forwardProxy.helpStep4Code', { port })}</pre>
-          <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{t('forwardProxy.helpNotes')}</div>
+          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{t('forwardProxy.helpNotes')}</div>
         </div>
       ),
     },
@@ -1131,12 +1131,12 @@ export const ProxyAccessPage: React.FC = () => {
           </div>
         </div>
         <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '16px 20px 20px' }}>
-        <div style={{ fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.6, marginBottom: '12px', whiteSpace: 'pre-line' }}>
+        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginBottom: '12px', whiteSpace: 'pre-line' }}>
           {t('forwardProxy.hint')}
         </div>
 
         {/* Live runtime status chip */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px', fontSize: '12px', color: 'var(--text-muted)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px', fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
           <span
             style={{
               width: '8px',
@@ -1155,12 +1155,12 @@ export const ProxyAccessPage: React.FC = () => {
           <div className="sub-card">
             <div style={SEC_TITLE}>{t('forwardProxy.secListener')}</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
+              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 'var(--text-md)', cursor: 'pointer' }}>
                 <span>{t('forwardProxy.enable')}</span>
                 <Switch checked={fp.enabled ?? false} onChange={v => setFp({ ...fp, enabled: v })} />
               </label>
               <div>
-                <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('forwardProxy.port')}</label>
+                <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{t('forwardProxy.port')}</label>
                 <input
                   type="text"
                   inputMode="numeric"
@@ -1180,7 +1180,7 @@ export const ProxyAccessPage: React.FC = () => {
           <div className="sub-card">
             <div style={SEC_TITLE}>{t('forwardProxy.bypassHosts')}</div>
             <div>
-              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
+              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 'var(--text-md)', cursor: 'pointer' }}>
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
                   {t('forwardProxy.viaOutboundProxy')}
                   <InfoTip text={t('forwardProxy.viaOutboundProxyHint')} />
@@ -1204,7 +1204,7 @@ export const ProxyAccessPage: React.FC = () => {
                   />
                   <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexShrink: 0 }}>
                     <label
-                      style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '11px', color: 'var(--text-dim)', cursor: 'pointer', whiteSpace: 'nowrap' }}
+                      style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: 'var(--text-xs)', color: 'var(--text-dim)', cursor: 'pointer', whiteSpace: 'nowrap' }}
                     >
                     <input
                       type="checkbox"
@@ -1255,7 +1255,7 @@ export const ProxyAccessPage: React.FC = () => {
             </summary>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginTop: '12px' }}>
               <div>
-                <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
+                <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 'var(--text-md)', cursor: 'pointer' }}>
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
                     {t('proxyLog.switch')}
                     <InfoTip text={t('proxyLog.switchHint')} />
@@ -1264,7 +1264,7 @@ export const ProxyAccessPage: React.FC = () => {
                 </label>
               </div>
               <div>
-                <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', cursor: 'pointer' }}>
+                <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 'var(--text-md)', cursor: 'pointer' }}>
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
                     {t('proxyLog.persistSwitch')}
                     <InfoTip text={t('proxyLog.persistHint')} />
@@ -1272,13 +1272,13 @@ export const ProxyAccessPage: React.FC = () => {
                   <Switch checked={fp.accessLog?.persist ?? true} onChange={v => setFp({ ...fp, accessLog: { ...(fp.accessLog || {}), persist: v } })} />
                 </label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '8px' }}>
-                  <span style={{ fontSize: '11px', color: 'var(--text-dim)', flexShrink: 0 }}>{t('proxyLog.persistDays')}</span>
+                  <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', flexShrink: 0 }}>{t('proxyLog.persistDays')}</span>
                   <input
                     type="number"
                     min={PROXY_ACCESS_LOG_PERSIST_DAYS_MIN}
                     max={PROXY_ACCESS_LOG_PERSIST_DAYS_MAX}
                     className="input"
-                    style={{ width: '90px', fontSize: '12px' }}
+                    style={{ width: '90px', fontSize: 'var(--text-sm)' }}
                     value={fp.accessLog?.persistDays ?? DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS}
                     onChange={e => {
                       const n = Math.min(PROXY_ACCESS_LOG_PERSIST_DAYS_MAX, Math.max(PROXY_ACCESS_LOG_PERSIST_DAYS_MIN, Math.floor(Number(e.target.value) || DEFAULT_PROXY_ACCESS_LOG_PERSIST_DAYS)));
@@ -1305,12 +1305,12 @@ export const ProxyAccessPage: React.FC = () => {
               <span style={{ ...SEC_TITLE, marginBottom: 0 }}>{t('forwardProxy.unresolvedTitle')}</span>
             </summary>
             <div style={{ marginTop: '12px' }}>
-            <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginBottom: '10px', whiteSpace: 'pre-line' }}>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', lineHeight: 'var(--leading-normal)', marginBottom: '10px', whiteSpace: 'pre-line' }}>
               {t('forwardProxy.unresolvedHint')}
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', maxWidth: '520px' }}>
               <div>
-                <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
+                <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
                   {t('forwardProxy.unresolvedOnMiss')}
                 </label>
                 <Combobox
@@ -1323,7 +1323,7 @@ export const ProxyAccessPage: React.FC = () => {
                 />
               </div>
               <div>
-                <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
+                <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>
                   {t('forwardProxy.unresolvedHosts')}
                 </label>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -1375,7 +1375,7 @@ export const ProxyAccessPage: React.FC = () => {
             </div>
           </details>
 
-          <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
             {t('forwardProxy.caHint')} · {t('forwardProxy.hostNote')}
           </div>
           </div>
@@ -1400,7 +1400,7 @@ export const ProxyAccessPage: React.FC = () => {
         </div>
 
         {!(fp.enabled ?? false) ? (
-          <div style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.7, maxWidth: '640px' }}>
+          <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', lineHeight: 'var(--leading-relaxed)', maxWidth: '640px' }}>
             {t('forwardProxy.wizardDisabledHint')}
           </div>
         ) : (
@@ -1424,8 +1424,8 @@ export const ProxyAccessPage: React.FC = () => {
                     background: isActive ? 'var(--chip-bg)' : 'transparent',
                     border: isActive ? '1px solid var(--card-border)' : '1px solid transparent',
                     color: isActive ? 'var(--text-main)' : 'var(--text-muted)',
-                    fontSize: '12px',
-                    fontWeight: isActive ? 600 : 500,
+                    fontSize: 'var(--text-sm)',
+                    fontWeight: isActive ? 'var(--font-semibold)' : 'var(--font-medium)',
                     whiteSpace: 'nowrap',
                     flexShrink: 0,
                   }}
@@ -1439,7 +1439,7 @@ export const ProxyAccessPage: React.FC = () => {
         </div>
 
         {/* Step content panel */}
-        <div style={{ minHeight: '140px', fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.7, maxWidth: '760px' }}>
+        <div style={{ minHeight: '140px', fontSize: 'var(--text-sm)', color: 'var(--text-muted)', lineHeight: 'var(--leading-relaxed)', maxWidth: '760px' }}>
           {active.body}
         </div>
 
@@ -1454,7 +1454,7 @@ export const ProxyAccessPage: React.FC = () => {
             <ChevronLeft size={13} />
             <span>{t('forwardProxy.wizardPrev')}</span>
           </button>
-          <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{stepIndex + 1} / {steps.length}</span>
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>{stepIndex + 1} / {steps.length}</span>
           <button
             className="btn btn-sm"
             disabled={stepIndex >= steps.length - 1}

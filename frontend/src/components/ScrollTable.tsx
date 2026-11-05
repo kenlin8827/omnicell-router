@@ -13,11 +13,11 @@ export interface ScrollTableColumn {
 const HEAD_CELL: React.CSSProperties = {
   padding: '6px 10px',
   textAlign: 'left',
-  fontSize: 11,
-  fontWeight: 600,
+  fontSize: 'var(--text-xs)',
+  fontWeight: 'var(--font-semibold)',
   color: 'var(--text-dim)',
   textTransform: 'uppercase',
-  letterSpacing: '0.4px',
+  letterSpacing: 'var(--tracking-label)',
   whiteSpace: 'nowrap',
   // The head's widths are measured from the body, so a longer label must clip rather than push
   // its column out of line with the tracks below.
@@ -30,7 +30,7 @@ const baseTable = (fixed: boolean): React.CSSProperties => ({
   tableLayout: fixed ? 'fixed' : 'auto',
   borderCollapse: 'collapse',
   textAlign: 'left',
-  fontSize: 12,
+  fontSize: 'var(--text-sm)',
 });
 
 /**
@@ -171,7 +171,7 @@ export const ScrollTable: React.FC<{
                 <tr>
                   <td
                     colSpan={columns.length}
-                    style={{ padding: '18px 10px', textAlign: 'center', color: 'var(--text-dim)', fontSize: 12 }}
+                    style={{ padding: '18px 10px', textAlign: 'center', color: 'var(--text-dim)', fontSize: 'var(--text-sm)' }}
                   >
                     {empty}
                   </td>

@@ -38,15 +38,15 @@ const ROLE_COLORS: Record<FailureEventRole, string> = {
   probe: 'var(--text-dim)',
 };
 
-const MONO: React.CSSProperties = { fontFamily: FONT_MONO, fontSize: '11.5px' };
+const MONO: React.CSSProperties = { fontFamily: FONT_MONO, fontSize: 'var(--text-sm)' };
 
 const TH: React.CSSProperties = {
   padding: '6px 10px',
   textAlign: 'left',
-  fontSize: '11px',
+  fontSize: 'var(--text-xs)',
   color: 'var(--text-dim)',
   textTransform: 'uppercase',
-  letterSpacing: '0.4px',
+  letterSpacing: 'var(--tracking-label)',
   borderBottom: '1px solid var(--divider)',
   whiteSpace: 'nowrap',
 };
@@ -257,7 +257,7 @@ export const FailuresPage: React.FC = () => {
           <div className="card-title">
             <AlertOctagon size={18} color="var(--accent-amber)" />
             <span>{t('failuresPage.byModelTitle')}</span>
-            <span style={{ fontSize: '11px', color: 'var(--text-dim)', marginLeft: '8px' }}>
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginLeft: '8px' }}>
               {t('failuresPage.shownOf', { shown: filteredEvents.length, total: events.length })}
             </span>
           </div>
@@ -282,7 +282,7 @@ export const FailuresPage: React.FC = () => {
         </div>
         <div style={{ overflow: 'auto', padding: '0 14px 12px 14px' }}>
           {modelAggs.length === 0 ? (
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', color: 'var(--text-dim)', fontSize: '13px', padding: '18px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', color: 'var(--text-dim)', fontSize: 'var(--text-md)', padding: '18px' }}>
               <Inbox size={20} />
               <span>{events.length === 0 ? t('failuresPage.eventsEmpty') : t('failuresPage.filterEmpty')}</span>
             </div>
@@ -303,21 +303,21 @@ export const FailuresPage: React.FC = () => {
                     gap: '4px',
                   }}
                 >
-                  <div style={{ ...MONO, fontSize: '12.5px', color: 'var(--text-main)', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={agg.model}>
+                  <div style={{ ...MONO, fontSize: 'var(--text-md)', color: 'var(--text-main)', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={agg.model}>
                     {agg.model}
                   </div>
-                  <div style={{ fontSize: '15px', fontWeight: 600, color: 'var(--accent-amber)', display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'baseline' }}>
+                  <div style={{ fontSize: 'var(--text-lg)', fontWeight: 'var(--font-semibold)', color: 'var(--accent-amber)', display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'baseline' }}>
                     {t('failuresPage.cardTotal', { n: agg.total })}
                     {Object.entries(agg.classes)
                       .sort(([, a], [, b]) => (b ?? 0) - (a ?? 0))
                       .slice(0, 3)
                       .map(([c, n]) => (
-                        <span key={c} style={{ fontSize: '10.5px', fontWeight: 400, color: 'var(--text-dim)' }}>
+                        <span key={c} style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-regular)', color: 'var(--text-dim)' }}>
                           {classLabel(c as FailureErrorClass)} ×{n}
                         </span>
                       ))}
                   </div>
-                  <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+                  <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)' }}>
                     {t('failuresPage.cardLastSeen', { time: fmtTime(agg.lastTs) })}
                   </div>
                 </div>
@@ -354,13 +354,13 @@ export const FailuresPage: React.FC = () => {
               { value: '', label: t('failuresPage.classAll') },
               ...presentClasses.map((c) => ({ value: c, label: classLabel(c) })),
             ]}
-            style={{ fontSize: '12px', padding: '5px 10px', width: '160px' }}
+            style={{ fontSize: 'var(--text-sm)', padding: '5px 10px', width: '160px' }}
           />
           <div style={{ position: 'relative', flex: 1, minWidth: '180px', maxWidth: '320px' }}>
             <Search size={13} style={{ position: 'absolute', left: '8px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)' }} />
             <input
               className="input"
-              style={{ paddingLeft: '26px', width: '100%', fontSize: '12px', padding: '5px 10px 5px 26px' }}
+              style={{ paddingLeft: '26px', width: '100%', fontSize: 'var(--text-sm)', padding: '5px 10px 5px 26px' }}
               placeholder={t('failuresPage.searchPlaceholder')}
               value={q}
               onChange={(e) => setQ(e.target.value)}
@@ -377,22 +377,22 @@ export const FailuresPage: React.FC = () => {
               { value: '24h', label: t('failuresPage.time24h') },
               { value: '7d', label: t('failuresPage.time7d') },
             ]}
-            style={{ fontSize: '12px', padding: '5px 10px', width: '130px', marginLeft: 'auto' }}
+            style={{ fontSize: 'var(--text-sm)', padding: '5px 10px', width: '130px', marginLeft: 'auto' }}
           />
         </div>
 
         {error && (
-          <div style={{ padding: '0 14px 10px', color: '#ef4444', fontSize: '12px' }}>{error}</div>
+          <div style={{ padding: '0 14px 10px', color: '#ef4444', fontSize: 'var(--text-sm)' }}>{error}</div>
         )}
 
         <div style={{ flex: 1, overflow: 'auto' }}>
           {filteredEvents.length === 0 ? (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '8px', color: 'var(--text-dim)', fontSize: '13px', padding: '24px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '8px', color: 'var(--text-dim)', fontSize: 'var(--text-md)', padding: '24px' }}>
               <Inbox size={28} />
               <span>{events.length === 0 ? t('failuresPage.eventsEmpty') : t('failuresPage.filterEmpty')}</span>
             </div>
           ) : (
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12.5px' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--text-md)' }}>
               <thead>
                 <tr>
                   <th style={TH}>{t('failuresPage.colTime')}</th>
@@ -421,7 +421,7 @@ export const FailuresPage: React.FC = () => {
                     <td style={{ ...TD, ...MONO }}>{e.status ?? '—'}</td>
                     <td style={{ ...TD, ...MONO, color: 'var(--text-dim)' }}>{e.sessionId ?? '—'}</td>
                     <td style={{ ...TD, maxWidth: '420px', color: 'var(--text-dim)' }} title={e.message}>
-                      <div style={{ ...MONO, wordBreak: 'break-all', lineHeight: 1.9, padding: '4px 0', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                      <div style={{ ...MONO, wordBreak: 'break-all', lineHeight: 'var(--leading-loose)', padding: '4px 0', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
                         {e.message}
                       </div>
                     </td>

@@ -14,7 +14,7 @@ export const PatternListEditor: React.FC<{
   onChange: (patterns: string[]) => void;
 }> = ({ label, placeholder, addLabel, patterns, onChange }) => (
   <div>
-    <label style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{label}</label>
+    <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-dim)', marginBottom: '4px', display: 'block' }}>{label}</label>
     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
       {patterns.map((p, idx) => (
         <div key={idx} style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>

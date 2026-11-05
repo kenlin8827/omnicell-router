@@ -331,6 +331,9 @@ export const enUS: TranslationDict = {
 
     grpSystem: 'System & Settings',
     searchPlaceholder: 'Search menus...',
+    collapse: 'Collapse navigation',
+    expand: 'Expand navigation',
+    openMenu: 'Open navigation',
     consoleTag: 'Gateway Console',
     version: 'v{version}',
     footerOnline: 'gateway online',
@@ -349,13 +352,9 @@ export const enUS: TranslationDict = {
     restartTimeout: 'Gateway did not come back in time — check the log or run `ocr start` manually',
     switchLang: 'Switch language',
     themes: {
-      onyx: 'Onyx Dark',
-      indigo: 'Midnight Indigo',
-      emerald: 'Cyber Emerald',
-      violet: 'Nebula Violet',
-      rose: 'Sunset Rose',
-      azure: 'Azure Light',
-      amber: 'Warm Amber',
+      light: 'Light',
+      dark: 'Dark',
+      system: 'System',
     },
   },
   overview: {

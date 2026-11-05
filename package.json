@@ -43,6 +43,7 @@
     "check:matrix": "bun --no-env-file scripts/check-guardrails-matrix.ts",
     "test:node": "tsx --test backend/tests/**/*.test.ts",
     "test:system": "bun --no-env-file scripts/full-system-test.ts",
+    "check:typography": "node frontend/scripts/check-typography.mjs",
     "typecheck": "tsc -p backend --noEmit && tsc -p frontend --noEmit",
     "prepublishOnly": "bun run build"
   },

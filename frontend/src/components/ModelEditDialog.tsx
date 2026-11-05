@@ -280,7 +280,7 @@ export const ModelEditDialog: React.FC<{
           style={{ display: 'flex', alignItems: 'center', gap: 4, height: 24, padding: '0 8px' }}
         >
           {filling ? <Loader2 size={13} style={spin} /> : <Wand2 size={13} />}
-          <span style={{ fontSize: 11 }}>{t('op.pmAutofill')}</span>
+          <span style={{ fontSize: 'var(--text-xs)' }}>{t('op.pmAutofill')}</span>
         </button>
       }
       footerRight={footer}
@@ -290,7 +290,7 @@ export const ModelEditDialog: React.FC<{
       blur={blur}
     >
       {loading || !form ? (
-        <div style={{ minHeight: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, color: 'var(--text-dim)' }}>
+        <div style={{ minHeight: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 'var(--text-sm)', color: 'var(--text-dim)' }}>
           <Loader2 size={14} style={{ ...spin, marginRight: 6 }} />
           {t('common.loading')}
         </div>
@@ -301,14 +301,14 @@ export const ModelEditDialog: React.FC<{
           <FormSection title={t('form.identity')}>
             <FieldRow>
               <Field label={t('op.pmAddId')}>
-                <input className="input" style={{ fontSize: 12, fontFamily: FONT_MONO, width: '100%' }} value={form.modelKey} onChange={(e) => setForm({ ...form, modelKey: e.target.value })} />
+                <input className="input" style={{ fontSize: 'var(--text-sm)', fontFamily: FONT_MONO, width: '100%' }} value={form.modelKey} onChange={(e) => setForm({ ...form, modelKey: e.target.value })} />
               </Field>
               <Field label={t('op.pmEditName')}>
-                <input className="input" style={{ fontSize: 12, width: '100%' }} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && handleSave()} />
+                <input className="input" style={{ fontSize: 'var(--text-sm)', width: '100%' }} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && handleSave()} />
               </Field>
             </FieldRow>
             <Field label={t('op.pmModelID')}>
-              <input className="input" style={{ fontSize: 12, fontFamily: FONT_MONO, width: '100%' }} placeholder="gpt-5.2" value={form.modelID} onChange={(e) => setForm({ ...form, modelID: e.target.value })} />
+              <input className="input" style={{ fontSize: 'var(--text-sm)', fontFamily: FONT_MONO, width: '100%' }} placeholder="gpt-5.2" value={form.modelID} onChange={(e) => setForm({ ...form, modelID: e.target.value })} />
             </Field>
           </FormSection>
 
@@ -343,10 +343,10 @@ export const ModelEditDialog: React.FC<{
           <FormSection title={t('form.limits')}>
             <FieldRow>
               <Field label={t('op.pmEditContext')}>
-                <input className="input" style={{ fontSize: 12, width: '100%' }} type="number" placeholder="200000" value={form.contextLimit} onChange={(e) => setForm({ ...form, contextLimit: e.target.value })} />
+                <input className="input" style={{ fontSize: 'var(--text-sm)', width: '100%' }} type="number" placeholder="200000" value={form.contextLimit} onChange={(e) => setForm({ ...form, contextLimit: e.target.value })} />
               </Field>
               <Field label={t('op.pmEditOutput')}>
-                <input className="input" style={{ fontSize: 12, width: '100%' }} type="number" placeholder="64000" value={form.outputLimit} onChange={(e) => setForm({ ...form, outputLimit: e.target.value })} />
+                <input className="input" style={{ fontSize: 'var(--text-sm)', width: '100%' }} type="number" placeholder="64000" value={form.outputLimit} onChange={(e) => setForm({ ...form, outputLimit: e.target.value })} />
               </Field>
             </FieldRow>
           </FormSection>
@@ -354,16 +354,16 @@ export const ModelEditDialog: React.FC<{
           <FormSection title={t('form.cost')}>
             <FieldRow columns={4}>
               <Field label={t('op.pmCostInput')}>
-                <input className="input" style={{ fontSize: 12, width: '100%' }} type="number" step="any" min="0" placeholder="3.00" value={form.costInput} onChange={(e) => setForm({ ...form, costInput: e.target.value })} />
+                <input className="input" style={{ fontSize: 'var(--text-sm)', width: '100%' }} type="number" step="any" min="0" placeholder="3.00" value={form.costInput} onChange={(e) => setForm({ ...form, costInput: e.target.value })} />
               </Field>
               <Field label={t('op.pmCostOutput')}>
-                <input className="input" style={{ fontSize: 12, width: '100%' }} type="number" step="any" min="0" placeholder="15.00" value={form.costOutput} onChange={(e) => setForm({ ...form, costOutput: e.target.value })} />
+                <input className="input" style={{ fontSize: 'var(--text-sm)', width: '100%' }} type="number" step="any" min="0" placeholder="15.00" value={form.costOutput} onChange={(e) => setForm({ ...form, costOutput: e.target.value })} />
               </Field>
               <Field label={t('op.pmCostCacheRead')}>
-                <input className="input" style={{ fontSize: 12, width: '100%' }} type="number" step="any" min="0" placeholder="0.30" value={form.costCacheRead} onChange={(e) => setForm({ ...form, costCacheRead: e.target.value })} />
+                <input className="input" style={{ fontSize: 'var(--text-sm)', width: '100%' }} type="number" step="any" min="0" placeholder="0.30" value={form.costCacheRead} onChange={(e) => setForm({ ...form, costCacheRead: e.target.value })} />
               </Field>
               <Field label={t('op.pmCostCacheWrite')}>
-                <input className="input" style={{ fontSize: 12, width: '100%' }} type="number" step="any" min="0" placeholder="3.75" value={form.costCacheWrite} onChange={(e) => setForm({ ...form, costCacheWrite: e.target.value })} />
+                <input className="input" style={{ fontSize: 'var(--text-sm)', width: '100%' }} type="number" step="any" min="0" placeholder="3.75" value={form.costCacheWrite} onChange={(e) => setForm({ ...form, costCacheWrite: e.target.value })} />
               </Field>
             </FieldRow>
           </FormSection>
@@ -371,7 +371,7 @@ export const ModelEditDialog: React.FC<{
           <FormSection title={t('form.reasoning')}>
             <Field label={t('op.pmSettingsReasoning')}>
               <Combobox
-                style={{ fontSize: 12, width: '100%', cursor: 'pointer', maxWidth: 220 }}
+                style={{ fontSize: 'var(--text-sm)', width: '100%', cursor: 'pointer', maxWidth: 220 }}
                 value={form.reasoningEffort}
                 onChange={(v) =>
                   setForm({ ...form, reasoningEffort: v, efforts: v && !form.efforts.includes(v) ? [...form.efforts, v] : form.efforts })
@@ -392,7 +392,7 @@ export const ModelEditDialog: React.FC<{
               />
             </Field>
             <Field label={t('op.pmReasoningField')}>
-              <input className="input" style={{ fontSize: 12, width: '100%', fontFamily: FONT_MONO }} placeholder="reasoning_content" list="ocr-thinking-fields-m" value={form.reasoningField} onChange={(e) => setForm({ ...form, reasoningField: e.target.value })} />
+              <input className="input" style={{ fontSize: 'var(--text-sm)', width: '100%', fontFamily: FONT_MONO }} placeholder="reasoning_content" list="ocr-thinking-fields-m" value={form.reasoningField} onChange={(e) => setForm({ ...form, reasoningField: e.target.value })} />
               <datalist id="ocr-thinking-fields-m">
                 <option value="reasoning" />
                 <option value="reasoning_content" />
@@ -413,10 +413,10 @@ export const ModelEditDialog: React.FC<{
 
           <FormSection title={t('form.raw')}>
             <Field label={t('op.pmHeaders')}>
-              <textarea className="input" style={{ fontSize: 11.5, width: '100%', minHeight: 44, fontFamily: FONT_MONO, resize: 'vertical' }} placeholder={'X-Team: platform'} value={form.headersText} onChange={(e) => setForm({ ...form, headersText: e.target.value })} />
+              <textarea className="input" style={{ fontSize: 'var(--text-sm)', width: '100%', minHeight: 44, fontFamily: FONT_MONO, resize: 'vertical' }} placeholder={'X-Team: platform'} value={form.headersText} onChange={(e) => setForm({ ...form, headersText: e.target.value })} />
             </Field>
             <Field label={t('op.pmBody')}>
-              <textarea className="input" style={{ fontSize: 11.5, width: '100%', minHeight: 44, fontFamily: FONT_MONO, resize: 'vertical' }} placeholder={'{ "store": false }'} value={form.bodyText} onChange={(e) => setForm({ ...form, bodyText: e.target.value })} />
+              <textarea className="input" style={{ fontSize: 'var(--text-sm)', width: '100%', minHeight: 44, fontFamily: FONT_MONO, resize: 'vertical' }} placeholder={'{ "store": false }'} value={form.bodyText} onChange={(e) => setForm({ ...form, bodyText: e.target.value })} />
             </Field>
           </FormSection>
         </>
