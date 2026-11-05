@@ -71,7 +71,6 @@ export interface PluginProviderPreset {
 export type PluginAuthType = 'webLogin' | 'key';
 
 export interface ModelServicePlugin {
-  manifest: PluginManifest;
   /** Build the chat executor for one wire the plugin declared. */
   createProvider(config: ProviderConfig): LLMProvider;
   /** Model-catalog pull in PullResult shape (auto-pull.ts contract). */
@@ -175,6 +174,8 @@ export interface PluginView {
   wires: string[];
   description?: string | Record<string, string>;
   presets?: PluginProviderPreset[];
+  /** Logo asset inside the package (served at /api/admin/plugins/:id/logo). */
+  logo?: string;
   /** Where the runtime code was loaded from (packaged extract or dev dir). */
   source: 'packaged' | 'dev';
   path: string;

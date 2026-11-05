@@ -21,7 +21,7 @@ describe('plugin package zip-slip guard', () => {
     };
     const zip = zipSync({
       'plugin.json': strToU8(JSON.stringify(manifest)),
-      'index.ts': strToU8('export function createPlugin() { return { manifest: ' + JSON.stringify(manifest) + ', createProvider() {} }; }'),
+      'index.ts': strToU8('export function createPlugin() { return { createProvider() {} }; }'),
       '../../evil.txt': strToU8('pwned'),
     });
     const scratch = mkdtempSync(join(tmpdir(), 'ocr-zip-slip-'));

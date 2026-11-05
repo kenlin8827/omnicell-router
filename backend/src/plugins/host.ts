@@ -163,17 +163,10 @@ async function importPlugin(dir: string, source: PluginView['source']): Promise<
   if (typeof mod.createPlugin !== 'function') throw new Error('plugin entry missing createPlugin(host)');
   const plugin = mod.createPlugin({ ...buildHostSdk(), pull: await pluginPullServices() });
   if (!plugin || typeof plugin.createProvider !== 'function') throw new Error('createPlugin returned no createProvider()');
-  // plugin.json IS the manifest truth (name/description/presets may carry
-  // localized maps that a TS literal would only drift from); the runtime
-  // manifest must agree on identity only.
-  if (plugin.manifest.id !== manifest.id || plugin.manifest.type !== manifest.type) {
-    throw new Error('runtime manifest identity differs from plugin.json');
-  }
-  if (JSON.stringify(plugin.manifest.wires) !== JSON.stringify(manifest.wires)) {
-    throw new Error('runtime manifest wires differ from plugin.json');
-  }
+  // plugin.json IS the single manifest truth — the runtime module never
+  // declares one (a TS literal would only drift from the JSON).
   return {
-    plugin: { ...plugin, manifest },
+    plugin,
     view: {
       id: manifest.id,
       name: manifest.name,
@@ -182,6 +175,7 @@ async function importPlugin(dir: string, source: PluginView['source']): Promise<
       wires: manifest.wires,
       description: manifest.description,
       presets: manifest.presets,
+      logo: manifest.logo,
       source,
       path: dir,
       loaded: true,
@@ -189,8 +183,8 @@ async function importPlugin(dir: string, source: PluginView['source']): Promise<
   };
 }
 
-function manifestWireKey(manifest: PluginManifest): string {
-  return manifest.wires[0] ?? manifest.id;
+function viewWireKey(view: PluginView): string {
+  return view.wires[0] ?? view.id;
 }
 
 function failedView(id: string, source: PluginView['source'], path: string, err: unknown): PluginView {
@@ -236,7 +230,7 @@ async function doLoadInstalledPlugins(): Promise<PluginView[]> {
       seenIds.add(name);
       try {
         const { plugin, view } = await importPlugin(dir, 'dev');
-        nextRegistry.set(manifestWireKey(plugin.manifest), { plugin, view });
+        nextRegistry.set(viewWireKey(view), { plugin, view });
         views.push(view);
       } catch (err) {
         views.push(failedView(name, 'dev', dir, err));
@@ -264,7 +258,7 @@ async function doLoadInstalledPlugins(): Promise<PluginView[]> {
       try {
         const dir = ensureUnpacked(packagedPath, id);
         const { plugin, view } = await importPlugin(dir, 'packaged');
-        nextRegistry.set(manifestWireKey(plugin.manifest), { plugin, view });
+        nextRegistry.set(viewWireKey(view), { plugin, view });
         seenIds.add(id);
         views.push(view);
       } catch (err) {
@@ -318,6 +312,7 @@ function stubDisabledView(id: string, dir: string, source: PluginView['source'])
       wires: m.wires,
       description: m.description,
       presets: m.presets,
+      logo: m.logo,
       source,
       path: dir,
       disabled: true,
@@ -347,11 +342,15 @@ export async function setPluginDisabled(id: string, disabled: boolean): Promise<
 }
 
 /** Executor lookup for one wire — the dispatch layer's only entry point. */
-export function getModelServicePlugin(wire: string): ModelServicePlugin | undefined {
-  for (const { plugin } of registry.values()) {
-    if (plugin.manifest.wires.includes(wire)) return plugin;
+export function getModelServicePluginEntry(wire: string): { plugin: ModelServicePlugin; view: PluginView } | undefined {
+  for (const entry of registry.values()) {
+    if (entry.view.wires.includes(wire)) return entry;
   }
   return undefined;
+}
+
+export function getModelServicePlugin(wire: string): ModelServicePlugin | undefined {
+  return getModelServicePluginEntry(wire)?.plugin;
 }
 
 /** Install an uploaded package: validate the zip carries a valid plugin.json,
@@ -509,9 +508,9 @@ export async function syncPluginPresets(): Promise<string[]> {
   const { readProviderDefsFile } = await import('../opencode/provider-defs.js');
   const created: string[] = [];
   const ledger = readRegistrations();
-  for (const { plugin, view } of registry.values()) {
+  for (const { view } of registry.values()) {
     const mine = new Set(ledger[view.id] ?? []);
-    for (const preset of plugin.manifest.presets ?? []) {
+    for (const preset of view.presets ?? []) {
       const raw = readProviderDefsFile()?.providers?.[preset.providerId] as Record<string, unknown> | undefined;
       if (raw) {
         // Pre-existing operator def with the same id: never overwritten (ADR-0010).
@@ -587,8 +586,8 @@ export async function pluginPresetCatalogEntries(lang?: string): Promise<
   const store = await getCredentialStore();
   const out: { id: string; name: string; defaultName: string; logo?: string; npm?: string; baseURL?: string; custom: boolean; connected: boolean; webLogin?: boolean; webLoginSubmit?: boolean; authTypes?: PluginAuthType[]; sources: ['service']; keyHint?: string }[] = [];
   for (const { plugin, view } of registry.values()) {
-    const logoUrl = plugin.manifest.logo ? `/api/admin/plugins/${view.id}/logo` : undefined;
-    for (const preset of plugin.manifest.presets ?? []) {
+    const logoUrl = view.logo ? `/api/admin/plugins/${view.id}/logo` : undefined;
+    for (const preset of view.presets ?? []) {
       const key = lang ? (LANG_TO_BCP47[lang] ?? (lang.includes('-') ? lang : undefined)) : undefined;
       const name = typeof preset.displayName === 'string'
         ? preset.displayName
@@ -624,9 +623,9 @@ export async function pluginPresetCatalogEntries(lang?: string): Promise<
 /** Serve a plugin package's logo asset (path-safe: manifest-declared only). */
 export function pluginLogoFile(id: string): string | undefined {
   if (!/^[a-z0-9][a-z0-9-]*$/i.test(id)) return undefined;
-  for (const { plugin, view } of registry.values()) {
-    if (!plugin.manifest.wires || view.id !== id) continue;
-    const rel = plugin.manifest.logo;
+  for (const { view } of registry.values()) {
+    if (view.id !== id) continue;
+    const rel = view.logo;
     if (!rel) return undefined;
     const file = resolve(view.path, rel);
     if (file !== view.path && !file.startsWith(view.path + sep)) return undefined; // manifest path escape

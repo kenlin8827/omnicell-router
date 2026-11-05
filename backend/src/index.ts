@@ -30,7 +30,7 @@ import { setForwardProxyStatus } from './forward-proxy/status.js';
 import { defaultBreakerStateStore } from './resilience/breaker-state.js';
 import { startHeadroomSidecar } from './compression/headroom-sidecar.js';
 import { wireFor } from './providers/wire.js';
-import { getModelServicePlugin } from './plugins/host.js';
+import { getModelServicePluginEntry } from './plugins/host.js';
 import type { QuotaCodeAdapter } from './quota/types.js';
 
 /**
@@ -53,11 +53,12 @@ function providerDefBaseUrl(providerId: string): string | undefined {
 function pluginQuotaAdapterFor(providerId: string): QuotaCodeAdapter | undefined {
   const def = getProviderNodeById(providerId);
   const npm = typeof def?.npm === 'string' ? def.npm : typeof def?.package === 'string' ? def.package : undefined;
-  const plugin = getModelServicePlugin(wireFor(npm, providerDefBaseUrl(providerId)));
+  const entry = getModelServicePluginEntry(wireFor(npm, providerDefBaseUrl(providerId)));
+  const plugin = entry?.plugin;
   const check = plugin?.quotaCheck;
-  if (!plugin || !check) return undefined;
+  if (!plugin || !check || !entry) return undefined;
   return {
-    id: `plugin:${plugin.manifest.id}`,
+    id: `plugin:${entry.view.id}`,
     providerIds: [providerId],
     probe: (ctx) => check(ctx),
   };
@@ -300,6 +301,16 @@ async function main() {
 
   const orchestrator = new PipelineOrchestrator(config, registry, tracker);
 
+  // Health prober (ADR-0004: recovery is verified, never accidental): with
+  // circuitBreaker.activeProbing.enabled the orchestrator constructed an
+  // ActiveHealthProber — start its sweep here, next to the quota prober, so
+  // OPEN breakers are validated by synthetic max_tokens:1 trials instead of
+  // real user traffic. Opt-in: default off (probes are paid upstream calls).
+  if (config.circuitBreaker?.activeProbing?.enabled) {
+    orchestrator.startProber();
+    console.log(`[OCR] Health prober: active sweep every ${config.circuitBreaker.activeProbing.intervalMs ?? 60000}ms`);
+  }
+
   // Quota prober: coverage ships with the release, activation
   // follows credentials — the bound credential store is the activation source
   // (ADR-0009 §1: a covered provider whose model list is still empty holds
@@ -398,6 +409,8 @@ async function main() {
     // (the store debounces; a graceful exit should not lose the last cycles).
     getQuotaProber()?.stop();
     getQuotaStore().flush();
+    // Health prober: same contract — stop the sweep before exit.
+    orchestrator.stopProber();
     // Rate-limit windows: flush the last checkpoint so a controlled restart
     // (console restart route included) rehydrates with zero under-count, then
     // stop the periodic timer and close the SQLite handle — explicit teardown
